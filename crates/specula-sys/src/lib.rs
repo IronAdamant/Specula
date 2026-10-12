@@ -63,6 +63,8 @@ pub mod dynlib {
 
     /// A loaded library; unloaded on drop. Symbols must not be used after the `Library` is dropped.
     pub struct Library {
+        // Only constructed on Windows so far; other platforms always fail in `open`.
+        #[cfg_attr(not(windows), allow(dead_code))]
         handle: *mut c_void,
         name: String,
     }
