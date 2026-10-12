@@ -14,10 +14,34 @@
 //!
 //! Tool names must match `^[a-zA-Z0-9_-]{1,64}$` (Claude Code rejects others) — e.g. `world_spawn`.
 
+//! Revision targeted: **2025-11-25** (the latest session-based revision; `2025-06-18` and
+//! `2025-03-26` are also accepted). Revision 2026-07-28 drops `initialize` and sessions; per its
+//! backward-compatibility rules a dual-era client that probes with a modern request gets a plain
+//! `400` here and falls back to `initialize`.
+//!
+//! Limits: request bodies up to 16 MiB (`413` beyond); idle connections close after 60 s;
+//! at most 256 concurrent connections (`503` beyond) and 1024 open sessions (oldest evicted).
+
+mod http;
+mod mcp;
+mod server;
+
 use specula_core::Json;
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::Arc;
+use std::thread::JoinHandle;
+
+/// Protocol revisions accepted in `initialize` and the `MCP-Protocol-Version` header, newest first.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
+
+/// Answered in `initialize` when the client asks for a revision we do not support.
+pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Whether `name` matches `^[a-zA-Z0-9_-]{1,64}$` (tools with other names are not listed).
+pub fn is_valid_tool_name(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
@@ -91,27 +115,80 @@ impl fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {}
 
 /// Running server: an accept thread plus one thread per connection.
+///
+/// Dropping a `Server` shuts it down like [`Server::shutdown`].
 pub struct Server {
-    _private: (),
+    local_addr: SocketAddr,
+    shared: Arc<server::Shared>,
+    accept: Option<JoinHandle<()>>,
 }
 
 impl Server {
+    /// Binds `config.bind` (loopback addresses only — anything else is an error) and starts serving.
     pub fn start(config: ServerConfig, handler: Arc<dyn ToolHandler>) -> Result<Server, ProtocolError> {
-        let _ = (config, handler);
-        todo!("specula-protocol: Server::start")
+        let err = |message: String| ProtocolError { message };
+        let addrs: Vec<SocketAddr> = config
+            .bind
+            .to_socket_addrs()
+            .map_err(|e| err(format!("invalid bind address {:?}: {e}", config.bind)))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(err(format!("bind address {:?} resolved to nothing", config.bind)));
+        }
+        if let Some(bad) = addrs.iter().find(|a| !a.ip().is_loopback()) {
+            return Err(err(format!(
+                "refusing to bind {bad} (from {:?}): the agent protocol serves loopback addresses only",
+                config.bind
+            )));
+        }
+        let listener = TcpListener::bind(&addrs[..]).map_err(|e| err(format!("bind {:?} failed: {e}", config.bind)))?;
+        let local_addr = listener.local_addr().map_err(|e| err(format!("local_addr failed: {e}")))?;
+        let shared = Arc::new(server::Shared::new(mcp::State::new(config, handler)));
+        let accept = server::spawn_accept(listener, Arc::clone(&shared))
+            .map_err(|e| err(format!("could not spawn the accept thread: {e}")))?;
+        Ok(Server { local_addr, shared, accept: Some(accept) })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        todo!("specula-protocol: Server::local_addr")
+        self.local_addr
     }
 
-    /// Currently open sessions.
+    /// Currently open sessions, oldest first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
-        todo!("specula-protocol: Server::sessions")
+        self.shared.state.sessions()
     }
 
     /// Stop accepting, close connections, join threads.
-    pub fn shutdown(self) {
-        todo!("specula-protocol: Server::shutdown")
+    ///
+    /// Waits for tool calls already running to return (their responses are dropped).
+    pub fn shutdown(mut self) {
+        self.stop();
+    }
+
+    fn stop(&mut self) {
+        if let Some(accept) = self.accept.take() {
+            server::stop(&self.shared, self.local_addr, accept);
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_names() {
+        for ok in ["world_spawn", "sight-frame", "A1", &"a".repeat(64)] {
+            assert!(is_valid_tool_name(ok), "{ok}");
+        }
+        for bad in ["", "world.spawn", "has space", "é", &"a".repeat(65)] {
+            assert!(!is_valid_tool_name(bad), "{bad}");
+        }
     }
 }
