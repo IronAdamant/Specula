@@ -1,7 +1,18 @@
 # Choosing the first game
 
-Status on 2026-10-13: the owner is choosing between a few game ideas. Pick the one that is **fast enough to work with**
-on Specula. This is the first item of the next session.
+**Decided 2026-10-13:** the **3D tower defence** ("three angles": defend a shattered slab, rotating it to cover its top
+and sides) is the first game and Specula's test bed. Working title *Sepulcra*. Design draft:
+[games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md). Platforms: Windows + Steam Deck for v1.0; mobile later (foundation F6 keeps the engine portable).
+
+The three ideas were separate games, not one universe, and the other two stay on file for later:
+
+| Idea | Verdict | Why |
+|---|---|---|
+| **Tower defence on a shattered slab** | **Chosen** | Its MVP (survive 10 waves) is the Phase B slice. Shape-driven art, distant creatures, no dialogue, perfect for deterministic replay and balance swarms. The owner has enjoyed many TDs and Factorio (500+ h). |
+| Floating-castle builder (cozy) | Later, likely flagship | The game version of Specula's thesis (animated automata build a city). Too broad to go first: first person + colony sim + builder + exploration. |
+| Fantasy squad RPG | Third | Pulls the most expensive lanes first: many animated humanoids with visible gear, melee, squad AI, inventory, story. |
+
+The rest of this file is the method used, kept for future games.
 
 The first game is the forcing function for the engine. Its needs decide which roadmap lanes grow first in Phase B
 (see "Path to production" in [ROADMAP.md](ROADMAP.md)). A well-chosen first game saves years; a poorly chosen one pulls
@@ -68,9 +79,10 @@ For each idea, Claude produces:
 ## Decisions this settles
 
 These are also listed in ROADMAP.md under "Path to production":
-- [ ] **First game chosen**, with genre, art style, slice scope and launch languages.
+- [ ] **First game chosen**, with genre, art style, slice scope and launch languages. *Genre and slice chosen
+  2026-10-13; art style and languages open.*
 - [ ] **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service?
-- [ ] **v1.0 platforms:** Windows + Steam Deck, or macOS too?
+- [x] **v1.0 platforms:** Windows + Steam Deck (2026-10-13).
 
 ## After choosing
 

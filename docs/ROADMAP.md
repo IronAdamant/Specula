@@ -86,10 +86,14 @@ Phase D  Ship                export, packaging, Steam (owner decision), Deck Ver
 
 **Owner decisions that affect speed:**
 - [ ] **First game's scope:** genre, art style, size and languages. This sets every lane's depth for Phase B.
-  Criteria, questions and scoring: [GAME_SELECTION.md](GAME_SELECTION.md).
+  Criteria, questions and scoring: [GAME_SELECTION.md](GAME_SELECTION.md). **Genre chosen 2026-10-13:** a 3D tower
+  defence on a shattered slab, working title *Sepulcra* ([games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md)).
+  Art style and launch languages are still open.
 - [ ] **Steamworks** (`steam_api64.dll`, runtime-loaded like Vulkan): allowed as an optional platform service? It's
   needed for achievements, cloud saves and Steam Input glyphs.
-- [ ] **v1.0 platforms:** Windows + Steam Deck as proposed, or add macOS before v1.0?
+- [x] **v1.0 platforms:** Windows + Steam Deck (owner, 2026-10-13). macOS stays on the platform track for after v1.0.
+  **Mobile (Android, iOS) comes later**, after v1.0, once the owner is ready to learn it. Foundation F6 keeps the
+  engine portable so that port stays cheap.
 
 ---
 
@@ -125,6 +129,23 @@ or impossible to bolt on later.
   Designs: [design/PHYSICS.md](design/PHYSICS.md), [design/ANIMATION.md](design/ANIMATION.md).
 - [ ] **F5. Humans optional, never locked out.** Every engine feature is reachable through the protocol first. The
   human UI is a client of that protocol.
+- [ ] **F6. Portable by design, mobile included** (owner, 2026-10-13: mobile later, but make a later port easy now).
+  Nothing in the engine may assume a desktop, x86 or a keyboard:
+  - **Platform seam.** Window/surface, input, file access and app lifecycle go through `specula-platform` traits.
+    Mobile apps get suspended, lose their GPU surface and read assets from a package, not loose files. Supporting
+    *suspend/resume* and *surface lost/recreated* from M1 costs little on Windows and is painful to retrofit.
+  - **Input is actions, not keys** (M3), with **touch as a first-class device** next to mouse and gamepad. UI layout
+    handles DPI, aspect ratio and safe areas (M5).
+  - **Tile-GPU friendly rendering.** Android has Vulkan natively, but its GPUs are tile-based. The render graph uses
+    correct load/store ops, avoids needless mid-frame readbacks, and keeps to a mobile-safe Vulkan feature subset.
+    iOS uses the Metal backend already planned for macOS.
+  - **Compressed textures by target** (BC on PC, ASTC/ETC2 on mobile), chosen by the asset packer, never hardcoded.
+  - **Determinism across x86 and ARM** (F2): our own maths functions, and a replay-hash test on an ARM target when
+    one is available (Apple Silicon, Android).
+  - **CI guard:** `cargo check` for `aarch64-linux-android`, so every crate keeps compiling for mobile, as rule 4 does
+    for non-Windows.
+  - **Known hard part:** linking for Android and iOS without external tools (the NDK linker, Xcode signing) collides
+    with hard rule 3. That gets researched before the port; don't solve it now.
 
 ---
 
@@ -425,6 +446,50 @@ shapes?"
   *Why after M2:* the render-hardware interface needs to settle first.
 - [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend. No MoltenVK, to stay zero-dep.
 - [ ] **Handheld-class targets** (for example Steam Deck, Linux + Vulkan) as part of F3's low-end story.
+- [ ] **Mobile (after v1.0)**: Android first (Vulkan already, so the render backend carries over), then iOS on the
+  Metal backend. Prepared by F6; the zero-dep linking and signing story is researched first.
+
+## Fidelity track: from greybox to Unreal-class realism (grows with M2, M4 and beyond)
+
+A standing challenge, separate from any one game: the same benchmark assets are rebuilt at each fidelity tier, so the
+engine's visual progress is measurable. The owner asked for it on 2026-10-13: "single assets to challenge ourselves as
+we move up to completion stage", from simple up to Unreal Engine's realism.
+
+**Benchmark set:**
+- a carved runestone (stone, engraving, moss)
+- a banded wooden barrel (wood, metal)
+- an iron lantern (metal, glass, emissive flame, point light)
+- a gnarled tree (foliage, alpha, wind, LOD)
+- a skeleton warrior (rigged, animated)
+- optional final boss: a realistic human head (skin, hair)
+
+Each tier is rendered in the M4 stage world from fixed cameras, and every milestone adds one contact sheet to
+`docs/fidelity/`.
+
+| Tier | Look | Unlocked by |
+|---|---|---|
+| T0 | Greybox: coloured primitives | M0 (now) |
+| T1 | Stylised flat: low-poly, vertex colour, bevels | M2 materials + procedural tier 1 |
+| T2 | Indie polish: shadows, sky, fog, tonemapping, AA | rest of M2 |
+| T3 | Detailed stylised: SDF sculpting, normal maps, baked GI, decals, particles | M4 |
+| T4 | Realistic, Unreal-class | the items below |
+
+- [ ] **Benchmark recipes** for all subjects at T0, with the contact sheet scripted.
+- [ ] **Every rung has an integrated-GPU budget** (F3). T4 is reached through quality presets that scale down to the
+  iGPU and the Deck, not through Nanite/Lumen-style brute force. *Why:* "realistic within budget" is itself a way to
+  stand out from Unreal.
+- [ ] ➕ **Image-based lighting:** prefiltered environment maps, BRDF lookup table, reflection probes.
+- [ ] ➕ **Normal and parallax-occlusion maps**; detail maps.
+- [ ] ➕ **Cascaded shadow maps with soft filtering**, plus contact shadows.
+- [ ] ➕ **TAA** (with an upscaling path), **GTAO**, screen-space reflections.
+- [ ] ➕ **Subsurface and translucency:** leaves first, skin later.
+- [ ] ➕ **Procedural texture graphs** (Substance Designer-style, as text recipes): agents author PBR texture sets
+  without scans or third-party tools.
+- [ ] ➕ **Hair and fur cards**, for the optional head.
+- [ ] **Reference comparison:** a T4 sheet next to reference photos or renders, critiqued with the taste loop.
+
+*Why:* lighting carries most of Unreal's realism, so this track is mainly a renderer track. The benchmark keeps the
+renderer honest, and the best rung of each asset doubles as game content.
 
 ## Rust track (from M1, long-term)
 
