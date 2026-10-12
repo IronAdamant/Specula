@@ -115,6 +115,9 @@ fn run() -> Result<(), String> {
         Some(window) => engine.run_windowed(window, &requests, &server),
         None => engine.run_headless(&requests, &server),
     };
+    // Drop queued requests first: their reply channels close, so in-flight tool calls return at
+    // once instead of holding up shutdown until their 30 s timeout.
+    drop(requests);
     server.shutdown();
     result
 }

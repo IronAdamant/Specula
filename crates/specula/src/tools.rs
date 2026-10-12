@@ -67,9 +67,10 @@ impl ToolHandler for Tools {
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
-        answer
-            .recv_timeout(REPLY_TIMEOUT)
-            .unwrap_or_else(|_| ToolOutput::error("the engine did not answer within 30 s"))
+        answer.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => ToolOutput::error("the engine did not answer within 30 s"),
+            mpsc::RecvTimeoutError::Disconnected => ToolOutput::error("the engine is shutting down"),
+        })
     }
 }
 
