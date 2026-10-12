@@ -83,19 +83,28 @@ Each milestone ends with something agents can use.
       (`Cargo.lock` must contain only workspace packages)
 - [x] `.cargo/config.toml`: `[target.x86_64-pc-windows-gnu] rustflags = ["-C", "link-self-contained=yes"]` — link with the
       Rust toolchain's own linker only (proven 2026-10-12; lands with the workspace reset because Bevy-era `tempfile` needs `ktmw32`)
-- [ ] All OS/driver FFI via `#[link(name = "…", kind = "raw-dylib")]` — no import libraries from anyone
+- [x] All OS/driver FFI via `#[link(name = "…", kind = "raw-dylib")]` — no import libraries from anyone
       (proven: `vulkan-1` raw-dylib → `vkEnumerateInstanceVersion` = 1.4.341, no SDK)
 - [x] Crate contracts (public APIs as stubs) for core, platform, gpu, protocol; `specula-core::json` implemented
-- [ ] `specula-core`: math, base64, CRC32/Adler32, DEFLATE (real compression) + inflate, PNG encode + decode
-- [ ] Win32 window + message loop (raw FFI)
-- [ ] Vulkan: instance, debug messenger (validation when SDK present), physical-device selection (list both GPUs),
+- [x] `specula-core`: math, base64, CRC32/Adler32, DEFLATE (real compression) + inflate, PNG encode + decode
+- [x] Win32 window + message loop (raw FFI)
+- [x] Vulkan: instance, debug messenger (validation when SDK present), physical-device selection (list both GPUs),
       device/queues, offscreen render target, Win32 surface + swapchain
-- [ ] One pipeline: unlit coloured mesh; SPIR-V built with `glslc` at dev time, checked in
-- [ ] Readback → PNG
-- [ ] HTTP server + MCP subset: `initialize`, `tools/list`, `tools/call`
-- [ ] Tools: `world_spawn` (cube/quad, transform, colour), `sight_frame` (PNG + subject list) — underscores: Claude Code
+- [x] One pipeline: unlit coloured mesh; SPIR-V built with `glslc` at dev time, checked in
+- [x] Readback → PNG
+- [x] HTTP server + MCP subset: `initialize`, `tools/list`, `tools/call`
+- [x] Tools: `world_spawn` (cube/quad, transform, colour), `sight_frame` (PNG + subject list) — underscores: Claude Code
       rejects dots in tool names
-- [ ] Proof: Claude Code connects over HTTP, spawns a cube, captures the frame, sees it
+- [~] Proof: two MCP sessions (Python client, protocol 2025-11-25) built one scene in the live windowed engine;
+      `sight_frame` returned PNG + subject rects that match the image; duplicate name rejected; 0 validation warnings
+      (2026-10-12). **Remaining:** the same from Claude Code itself (open Claude Code in the repo so `.mcp.json` loads).
+- [x] `specula-sys`: single owner of kernel32 imports (windows-gnu drops a second crate's raw-dylib imports of the same DLL)
+
+**M0 findings to carry forward**
+- Occlusion: `on_screen` ≠ visible (a crate hidden behind the tower still reports a full rect) → M2 ID buffer with
+  per-entity visible-pixel counts.
+- MCP: revision 2026-07-28 drops `initialize`/sessions; we serve 2025-11-25 (+06-18, 03-26). Revisit when clients move.
+- Auto-framing fits the bounding box diagonal, so flat wide scenes look small in frame; tighten in M2.
 
 ### M1 — World and multi-agent
 
@@ -159,3 +168,4 @@ Each milestone ends with something agents can use.
 | Date | Change |
 |---|---|
 | 2026-10-12 | Engine direction decided; plan created |
+| 2026-10-12 | M0 built by 4 parallel subagents + integration; end-to-end MCP proof passed |
