@@ -153,7 +153,7 @@ impl Server {
         self.local_addr
     }
 
-    /// Currently open sessions, oldest first.
+    /// Sessions used in the last 30 minutes, oldest first (idle ones stay valid but are not listed).
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.shared.state.sessions()
     }

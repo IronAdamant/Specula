@@ -7,22 +7,45 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -Dwarnings
 
 jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -Dwarnings
     strategy:
       fail-fast: false
       matrix:
-        # Windows is the primary target. Linux checks the portable crates and that
-        # platform/GPU crates still compile (they report "unsupported" at runtime there).
+        # Windows (MSVC host) and Linux: platform/GPU crates must still compile on Linux (they report
+        # "unsupported" at runtime there). GPU/window tests skip without a GPU and a desktop.
         os: [windows-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --workspace --all-targets
-      - name: Test (GPU/window tests skip when unavailable)
+      - name: Test
         run: cargo test --workspace
+
+  windows-gnu:
+    # The toolchain development uses: windows-gnu with the Rust toolchain's own linker and raw-dylib
+    # imports (AGENTS.md rules 2–3). An env RUSTFLAGS replaces .cargo/config.toml rustflags, so the
+    # link-self-contained flag is repeated here.
+    name: test (windows-gnu, self-contained linker)
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -Dwarnings -C link-self-contained=yes
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install stable-x86_64-pc-windows-gnu
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component clippy
+          rustup default stable-x86_64-pc-windows-gnu
+          rustc -vV
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

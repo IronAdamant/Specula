@@ -104,9 +104,36 @@ Each milestone ends with something agents can use.
 - Occlusion: `on_screen` ≠ visible (a crate hidden behind the tower still reports a full rect) → M2 ID buffer with
   per-entity visible-pixel counts.
 - MCP: revision 2026-07-28 drops `initialize`/sessions; we serve 2025-11-25 (+06-18, 03-26). Revisit when clients move.
-- Sphere rects are loose (projected from the bounding cube's corners: ~7 px padding on a 30 px orb) → shape-aware
-  bounds or ID-buffer extents in M2. Independent skeptic check: all six rects within 1–2 px of a fresh projection.
+- Rectangles are projected **bounding boxes**: spheres come out up to ~30% wider than their pixels (a 40×38 px orb
+  reported as 52×47) → shape-aware bounds or ID-buffer extents in M2. Boxes are exact to 1–2 px.
 - Auto-framing fits the bounding box diagonal, so flat wide scenes look small in frame; tighten in M2.
+- Windowed tool throughput is paced by vsync (~60 calls/s from one agent; concurrent agents' calls batch per frame).
+- With 256 idle connections open, a new client gets a TCP reset rather than an HTTP 503.
+
+**M0 adversarial review (2026-10-12) — fixed**
+- Top-down / bottom-up cameras rendered blank (`look_at_rh` degenerate) → fallback up axis (north up); `eye == target`
+  rejected
+- Fixed 2 km far plane blanked large worlds while sight reported them on screen → **reversed-Z, infinite far
+  plane**, fixed 0.05 m near (a first attempt that fitted near/far to the world let a distant "sun" push the near
+  plane out to 10 m — caught on re-review); depth order tested in both modes on the GPU
+- Subjects partly behind the camera (a floor under a first-person camera) reported off screen → boxes clipped against
+  near/far planes; `nearest_depth` (0..1) replaced by `distance_m`
+- Offscreen targets cached per size forever (51 MB each) → LRU of 4
+- Tool calls stalled while the window was dragged → window pumped on its own thread
+- Timed-out calls were still applied later → engine drops commands past their deadline (25 s < 30 s caller timeout)
+- Captures overwritten across runs → per-run folders `captures/run-<secs>-<pid>/`, newest 20 finished runs kept
+  (exact `run-<digits>-<digits>` names only, never a running engine's, pruned only after the port bind), `--captures`
+- 2000-entity frames returned 458 KB packets → response holds the `max_subjects` most relevant (default 50); full list
+  in the saved packet
+- Unbounded positions/scales (1e30, scale 1e39) broke the camera → validated (±1e6 m, scale 0.001..1e5), names ≤ 128
+  chars without control characters; ids only consumed by successful spawns
+- `window_check.py` could write into a live engine on 7471 → own port 7491 and captures folder
+- CI never built the windows-gnu dev toolchain → `windows-gnu` CI job with the self-contained linker
+- Disconnected agents listed forever → sessions idle > 30 min hidden from listings (still valid if the agent
+  returns); non-finite JSON-RPC ids rejected
+- A second engine on a taken port flashed a window → port bound before the window opens
+- `world_set` with both `id` and `name` silently ignored `name` → rejected, pointing to `rename`
+- `world_set` (change an entity in place, id kept) pulled forward from M1 for game work
 
 **M0 follow-ups (done 2026-10-12)**
 - `zlib_decompress`/`decompress` capped at `DEFAULT_MAX_OUTPUT` (256 MiB); `_with_limit` variants for other caps
@@ -127,7 +154,8 @@ Each milestone ends with something agents can use.
 
 - [ ] Render graph; 3D meshes, PBR-lite materials, directional/point lights, shadow maps
 - [ ] 2D: sprites, tilemaps, vector shapes; ortho cameras
-- [ ] PNG decode (inflate); glTF import (meshes, materials, textures)
+- [x] PNG decode (inflate) — done early, in M0's `specula-core`
+- [ ] glTF import (meshes, materials, textures)
 - [ ] Per-agent offscreen cameras; `sight.subjects` exact screen rects; `sight.orbit`
 
 ### M3 — Logic and time

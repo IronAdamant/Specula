@@ -14,7 +14,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The MCP endpoint path.
 pub(crate) const ENDPOINT: &str = "/mcp";
@@ -22,6 +22,11 @@ pub(crate) const ENDPOINT: &str = "/mcp";
 /// Open sessions beyond this evict the oldest (a local client looping on `initialize` cannot
 /// grow memory without bound).
 const MAX_SESSIONS: usize = 1024;
+
+/// Sessions unused for this long are left out of [`State::sessions`] (agent listings), so agents
+/// that went away without `DELETE` stop being shown. They stay valid: an agent returning after a
+/// long pause carries on in the same session. (Memory stays bounded by [`MAX_SESSIONS`].)
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 // JSON-RPC 2.0 error codes.
 const PARSE_ERROR: i64 = -32700;
@@ -46,8 +51,8 @@ pub(crate) struct State {
 
 #[derive(Default)]
 struct Sessions {
-    /// id → (creation sequence, info).
-    map: HashMap<String, (u64, SessionInfo)>,
+    /// id → (creation sequence, info, last request).
+    map: HashMap<String, (u64, SessionInfo, Instant)>,
     next_seq: u64,
 }
 
@@ -81,12 +86,14 @@ impl State {
         }
     }
 
-    /// Open sessions, oldest first.
+    /// Sessions used within [`SESSION_IDLE_TIMEOUT`], oldest first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
         let sessions = lock(&self.sessions);
-        let mut list: Vec<&(u64, SessionInfo)> = sessions.map.values().collect();
-        list.sort_by_key(|(seq, _)| *seq);
-        list.into_iter().map(|(_, info)| info.clone()).collect()
+        let now = Instant::now();
+        let mut list: Vec<&(u64, SessionInfo, Instant)> =
+            sessions.map.values().filter(|(_, _, used)| now.duration_since(*used) < SESSION_IDLE_TIMEOUT).collect();
+        list.sort_by_key(|(seq, _, _)| *seq);
+        list.into_iter().map(|(_, info, _)| info.clone()).collect()
     }
 
     pub fn clear_sessions(&self) {
@@ -193,8 +200,15 @@ impl State {
                 "Bad Request: Mcp-Session-Id header is required (send initialize first)",
             ));
         };
-        let Some(session) = lock(&self.sessions).map.get(id).map(|(_, s)| s.clone()) else {
-            return Err(error_response(404, SESSION_NOT_FOUND, "Session not found"));
+        let session = {
+            let mut sessions = lock(&self.sessions);
+            match sessions.map.get_mut(id) {
+                Some((_, info, used)) => {
+                    *used = Instant::now();
+                    info.clone()
+                }
+                None => return Err(error_response(404, SESSION_NOT_FOUND, "Session not found")),
+            }
         };
         if let Some(v) = req.header("mcp-protocol-version") {
             if !SUPPORTED_PROTOCOL_VERSIONS.contains(&v) {
@@ -230,14 +244,14 @@ impl State {
         {
             let mut sessions = lock(&self.sessions);
             if sessions.map.len() >= MAX_SESSIONS {
-                let oldest = sessions.map.iter().min_by_key(|(_, (seq, _))| *seq).map(|(k, _)| k.clone());
+                let oldest = sessions.map.iter().min_by_key(|(_, (seq, _, _))| *seq).map(|(k, _)| k.clone());
                 if let Some(oldest) = oldest {
                     sessions.map.remove(&oldest);
                 }
             }
             let seq = sessions.next_seq;
             sessions.next_seq += 1;
-            sessions.map.insert(info.id.clone(), (seq, info.clone()));
+            sessions.map.insert(info.id.clone(), (seq, info.clone(), Instant::now()));
         }
 
         let mut result = Json::obj([
@@ -357,6 +371,7 @@ fn classify(msg: &Json) -> Result<Message<'_>, Invalid> {
     // MCP ids are strings or numbers (never null).
     let id = match msg.get("id") {
         None => None,
+        Some(Json::Num(n)) if !n.is_finite() => return Err(invalid(Json::Null, "id must be a finite number")),
         Some(id @ (Json::Str(_) | Json::Num(_))) => Some(id),
         Some(_) => return Err(invalid(Json::Null, "id must be a string or a number")),
     };
@@ -509,6 +524,7 @@ mod tests {
             r#"{"id":1,"method":"ping"}"#,
             r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#,
             r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#,
+            r#"{"jsonrpc":"2.0","id":1e999,"method":"ping"}"#,
             r#"{"jsonrpc":"2.0","id":1,"method":5}"#,
             r#"{"jsonrpc":"2.0","id":1,"method":"x","params":[1]}"#,
             r#"{"jsonrpc":"2.0","id":1}"#,

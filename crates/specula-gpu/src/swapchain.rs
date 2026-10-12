@@ -286,7 +286,7 @@ impl Window {
             return Ok(());
         }
         let scfns = swapchain_fns(dev)?;
-        let pipeline = pipelines.get(dev, self.format.format)?;
+        let pipeline = pipelines.get(dev, self.format.format, frame.reverse_z)?;
         let f = &self.frames[self.frame_index];
         if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
             return Err(GpuError::new(

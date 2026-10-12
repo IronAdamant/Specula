@@ -62,6 +62,28 @@ pub fn perspective_vk(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16]
     ]
 }
 
+/// Reversed-Z, infinite-far perspective (depth 1 at `near`, → 0 at infinity).
+pub fn perspective_vk_reverse_z(fov_y: f32, aspect: f32, near: f32) -> [f32; 16] {
+    let f = 1.0 / (fov_y / 2.0).tan();
+    [
+        f / aspect, 0.0, 0.0, 0.0, //
+        0.0, -f, 0.0, 0.0, //
+        0.0, 0.0, 0.0, -1.0, //
+        0.0, 0.0, near, 0.0,
+    ]
+}
+
+pub fn scale_translation(s: f32, t: V3) -> [f32; 16] {
+    let mut m = IDENTITY;
+    m[0] = s;
+    m[5] = s;
+    m[10] = s;
+    m[12] = t[0];
+    m[13] = t[1];
+    m[14] = t[2];
+    m
+}
+
 pub fn translation(t: V3) -> [f32; 16] {
     let mut m = IDENTITY;
     m[12] = t[0];

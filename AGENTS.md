@@ -21,6 +21,8 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
 5. **Structured errors.** Error types carry machine-readable fields (codes, offsets, VkResult) — agents debug from data.
 6. **Conventions** (see `specula-core::math` docs): right-handed, +Y up, metres; column-major matrices;
    Vulkan clip (y down, depth 0..1); screen pixels origin top-left; colours given to APIs are sRGB.
+   The engine renders with **reversed Z** (`perspective_vk_reverse_z`, `FrameDesc::reverse_z = true`: depth 1 at
+   the 0.05 m near plane, 0 at infinity) so huge and distant worlds keep depth precision.
 7. **Tests.** Pure code gets unit tests. Tests needing a GPU or a window must **skip cleanly** (print why, pass) when
    Vulkan / a desktop session is unavailable, so CI without a GPU stays green.
 8. **`unsafe`** only at FFI boundaries, each block with a `// SAFETY:` comment.

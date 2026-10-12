@@ -12,7 +12,8 @@
 //!
 //! - Matrices are column-major `[f32; 16]` in Vulkan clip conventions (y down, depth 0..1) — build
 //!   them with `specula_core::math` (`perspective_vk`, `look_at_rh`, `from_trs`).
-//! - One pipeline: triangle lists of [`Vertex`], depth test (less, D32), **no face culling**, a fixed
+//! - One pipeline: triangle lists of [`Vertex`], D32 depth test (LESS with clear 1, or GREATER with clear 0
+//!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`), **no face culling**, a fixed
 //!   directional light (world direction towards the light ≈ normalize(0.4, 0.8, 0.45)) with
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are
@@ -156,6 +157,9 @@ pub struct FrameDesc<'a> {
     /// sRGB clear colour.
     pub clear_color: [f32; 4],
     pub draws: &'a [DrawItem],
+    /// `view_proj` uses reversed Z (depth 1 at the near plane, 0 at infinity): depth test GREATER,
+    /// depth cleared to 0. `false`: standard depth 0..1, test LESS, cleared to 1.
+    pub reverse_z: bool,
 }
 
 /// True if the Vulkan loader can be loaded and an instance created.

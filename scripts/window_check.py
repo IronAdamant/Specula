@@ -30,7 +30,9 @@ from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-URL = "http://127.0.0.1:7471/mcp"
+# Its own port by default, so the check can never touch an engine you are working in (7471).
+DEFAULT_PORT = 7491
+URL = f"http://127.0.0.1:{DEFAULT_PORT}/mcp"
 
 WM_CLOSE = 0x0010
 SW_MINIMIZE, SW_RESTORE = 6, 9
@@ -149,11 +151,14 @@ def screenshot(hwnd, path):
     return ok != 0 and colours > 2  # captured, and not a blank/solid frame
 
 
-def check_adapter(exe, adapter, out):
+def check_adapter(exe, adapter, out, port):
     """Returns True (clean), False (problem) or None (no such adapter)."""
     log_path = out / f"engine_adapter{adapter}.log"
     with open(log_path, "w") as log:
-        proc = subprocess.Popen([str(exe), "--adapter", str(adapter), "--size", "960x540"], stderr=log)
+        proc = subprocess.Popen(
+            [str(exe), "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
+            stderr=log,
+        )
     try:
         for _ in range(150):
             if proc.poll() is not None:
@@ -235,17 +240,20 @@ def main():
     parser.add_argument("--exe", type=Path, default=ROOT / "target" / "debug" / "specula.exe")
     parser.add_argument("--adapters", default="all", help="'all' or comma-separated indices, e.g. 0,1")
     parser.add_argument("--out", type=Path, default=ROOT / "target" / "window-check")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"engine port (default {DEFAULT_PORT})")
     args = parser.parse_args()
+    global URL
+    URL = f"http://127.0.0.1:{args.port}/mcp"
     if not args.exe.is_file():
         sys.exit(f"window_check: {args.exe} not found (cargo build -p specula)")
     if server_up():
-        sys.exit("window_check: something is already serving on 127.0.0.1:7471; stop it first")
+        sys.exit(f"window_check: something is already serving on port {args.port}; stop it or pass --port")
     args.out.mkdir(parents=True, exist_ok=True)
 
     indices = range(16) if args.adapters == "all" else [int(i) for i in args.adapters.split(",")]
     results = {}
     for i in indices:
-        result = check_adapter(args.exe, i, args.out)
+        result = check_adapter(args.exe, i, args.out, args.port)
         if result is None:
             if args.adapters != "all":
                 results[i] = False

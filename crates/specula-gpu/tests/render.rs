@@ -52,7 +52,7 @@ fn render_cube_on(adapter: AdapterPreference, label: &str) {
     let target = gpu.create_target(SIZE, SIZE).expect("create_target");
     let view_proj = camera();
     let draws = [DrawItem { mesh, model: IDENTITY, color: CUBE_SRGB }];
-    gpu.render(target, &FrameDesc { view_proj, clear_color: clear_color(), draws: &draws }).expect("render");
+    gpu.render(target, &FrameDesc { view_proj, clear_color: clear_color(), draws: &draws, reverse_z: false }).expect("render");
     let rgba = gpu.read_rgba8(target).expect("read_rgba8");
     assert_eq!(rgba.len(), (SIZE * SIZE * 4) as usize);
 
@@ -107,6 +107,39 @@ fn headless_cube_on_every_adapter() {
     }
 }
 
+/// The nearer object must win the depth test in both depth modes, whatever the draw order.
+#[test]
+fn depth_order_in_standard_and_reversed_z() {
+    let test = "depth_order";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let (vertices, indices) = cube();
+    let mesh = gpu.upload_mesh(&vertices, &indices).unwrap();
+    let target = gpu.create_target(64, 64).unwrap();
+    let view = look_at_rh([0.0, 0.0, 5.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    // Red unit cube in front; blue 3 m cube behind it. On the 64 px image the blue cube's top edge
+    // is at y ≈ 18 and the red one's at y ≈ 24, so row 21 shows blue and the centre shows red.
+    let near_red = DrawItem { mesh, model: IDENTITY, color: [1.0, 0.0, 0.0, 1.0] };
+    let far_blue = DrawItem { mesh, model: scale_translation(3.0, [0.0, 0.0, -4.0]), color: [0.0, 0.0, 1.0, 1.0] };
+    for reverse_z in [false, true] {
+        let proj = if reverse_z {
+            perspective_vk_reverse_z(50f32.to_radians(), 1.0, 0.05)
+        } else {
+            perspective_vk(50f32.to_radians(), 1.0, 0.05, 100.0)
+        };
+        let view_proj = mul(&proj, &view);
+        for draws in [[near_red, far_blue], [far_blue, near_red]] {
+            gpu.render(target, &FrameDesc { view_proj, clear_color: clear_color(), draws: &draws, reverse_z }).unwrap();
+            let rgba = gpu.read_rgba8(target).unwrap();
+            let [r, g, b, _] = pixel(&rgba, 64, 32, 32);
+            assert!(r > 100 && g < 40 && b < 40, "reverse_z={reverse_z}: centre should be the near red cube, got {r},{g},{b}");
+            let [r, _, b, _] = pixel(&rgba, 64, 32, 21);
+            assert!(b > 100 && r < 40, "reverse_z={reverse_z}: blue cube visible above the red one, got {r},{b}");
+        }
+    }
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+}
+
 #[test]
 fn preferences_pick_expected_kinds() {
     let Some(gpu) = gpu_or_skip("preferences", AdapterPreference::HighPerformance) else { return };
@@ -143,9 +176,9 @@ fn resource_churn_and_errors() {
     let t = gpu.create_target(8, 8).unwrap();
     assert!(gpu.read_rgba8(t).is_err(), "reading an unrendered target is an error");
     let bogus = [DrawItem { mesh: MeshId(9999), model: IDENTITY, color: CUBE_SRGB }];
-    let err = gpu.render(t, &FrameDesc { view_proj, clear_color: clear_color(), draws: &bogus }).unwrap_err();
+    let err = gpu.render(t, &FrameDesc { view_proj, clear_color: clear_color(), draws: &bogus, reverse_z: false }).unwrap_err();
     assert!(err.message.contains("9999"), "{err}");
-    assert!(gpu.render(TargetId(9999), &FrameDesc { view_proj, clear_color: clear_color(), draws: &[] }).is_err());
+    assert!(gpu.render(TargetId(9999), &FrameDesc { view_proj, clear_color: clear_color(), draws: &[], reverse_z: false }).is_err());
     gpu.destroy_target(t);
     gpu.destroy_target(t); // double destroy is a no-op
     gpu.destroy_mesh(MeshId(12345));
@@ -161,7 +194,7 @@ fn resource_churn_and_errors() {
             DrawItem { mesh, model: translation([0.9, 0.0, -0.8]), color: [0.2, 0.6, 0.9, 1.0] },
         ];
         for _ in 0..2 {
-            gpu.render(target, &FrameDesc { view_proj, clear_color: clear_color(), draws: &draws }).expect("render");
+            gpu.render(target, &FrameDesc { view_proj, clear_color: clear_color(), draws: &draws, reverse_z: false }).expect("render");
             let rgba = gpu.read_rgba8(target).expect("read");
             assert_eq!(rgba.len(), (w * h * 4) as usize);
             assert_eq!(pixel(&rgba, w, 0, 0), CLEAR_BYTES);

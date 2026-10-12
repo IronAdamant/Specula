@@ -20,6 +20,14 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - `specula-protocol`: HTTP/1.1 server and MCP (Streamable HTTP, revision 2025-11-25) for agents
 - `specula` world server: tools `world_spawn`, `world_list`, `world_delete`, `sight_frame`, `engine_info`
 - CI on Windows and Linux; `Cargo.lock` must contain workspace crates only
+- `world_set` (change an entity in place); `sight_frame` `max_subjects`, `distance_m`, camera `near_m`/`far_m`
+- `scripts/window_check.py`: window-path regression check on every GPU
+- Engine: window on its own thread; per-run capture folders (`--captures`); Ctrl+C / console close shut down cleanly
+
+### Fixed (M0 adversarial review)
+
+- Top-down cameras, large worlds and partly-behind-camera subjects in sight; unbounded target cache; stale timed-out
+  commands; capture overwrites; unvalidated huge inputs; session expiry (see docs/ENGINE_PLAN.md)
 
 ### Removed
 

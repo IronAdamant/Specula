@@ -107,7 +107,7 @@ impl GpuInner {
         gpu.pool = gpu.device.create_command_pool()?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
-        gpu.pipelines.get(&gpu.device, TARGET_FORMAT)?;
+        gpu.pipelines.get(&gpu.device, TARGET_FORMAT, false)?;
         Ok(gpu)
     }
 
@@ -302,7 +302,7 @@ impl GpuInner {
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_meshes(&self.meshes, frame)?;
         let t = self.targets.get(&target.0).ok_or_else(|| GpuError::new(format!("unknown target id {}", target.0)))?;
-        let pipeline = self.pipelines.get(&self.device, TARGET_FORMAT)?;
+        let pipeline = self.pipelines.get(&self.device, TARGET_FORMAT, frame.reverse_z)?;
         let rt = RenderTarget {
             color_view: t.color.view,
             depth_view: t.depth.view,
@@ -400,7 +400,7 @@ impl GpuInner {
             old.destroy(&self.instance, &self.device, self.pool);
         }
         let window = Window::new(&self.instance, &self.device, self.pool, hinstance, hwnd, width, height)?;
-        self.pipelines.get(&self.device, window.format())?;
+        self.pipelines.get(&self.device, window.format(), false)?;
         self.window = Some(window);
         Ok(())
     }

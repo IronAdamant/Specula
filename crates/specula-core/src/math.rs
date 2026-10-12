@@ -228,9 +228,20 @@ impl Mat4 {
 
     /// Right-handed view matrix: camera at `eye` looking at `target`.
     /// The camera looks down its local −Z, with `up` projected onto its local +Y.
+    ///
+    /// When the view direction is (anti)parallel to `up` — e.g. looking straight down with
+    /// `up = +Y`, the usual top-down view — `up` gives no roll, so a fallback is used: the world
+    /// axis least aligned with the view direction, signed so that looking down along −Y puts −Z
+    /// (north) at the top of the image. `eye == target` has no direction; the result then looks
+    /// down −Z from `eye` (callers should reject it).
     pub fn look_at_rh(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
-        let f = (target - eye).normalize();
-        let s = f.cross(up).normalize();
+        let dir = target - eye;
+        let f = if dir.length() > NORMALIZE_EPSILON { dir.normalize() } else { -Vec3::Z };
+        let mut s = f.cross(up);
+        if s.length() <= 1e-6 * up.length().max(1.0) {
+            s = f.cross(look_at_fallback_up(f));
+        }
+        let s = s.normalize();
         let u = s.cross(f);
         Mat4 {
             cols: [
@@ -253,6 +264,22 @@ impl Mat4 {
                 [0.0, -f, 0.0, 0.0],
                 [0.0, 0.0, far / range, -1.0],
                 [0.0, 0.0, near * far / range, 0.0],
+            ],
+        }
+    }
+
+    /// Right-handed perspective for Vulkan with **reversed Z and an infinite far plane**: depth is 1
+    /// at `near` and falls towards 0 at infinity (render with depth compare GREATER, clear depth 0).
+    /// With a float depth buffer this keeps precision roughly uniform from centimetres to
+    /// thousands of kilometres, so nothing far away ever pushes the near plane out. Clip y is down.
+    pub fn perspective_vk_reverse_z(fov_y_radians: f32, aspect: f32, near: f32) -> Mat4 {
+        let f = 1.0 / (fov_y_radians * 0.5).tan();
+        Mat4 {
+            cols: [
+                [f / aspect, 0.0, 0.0, 0.0],
+                [0.0, -f, 0.0, 0.0],
+                [0.0, 0.0, 0.0, -1.0],
+                [0.0, 0.0, near, 0.0],
             ],
         }
     }
@@ -376,6 +403,20 @@ impl Mul for Mat4 {
     }
 }
 
+/// Up vector for [`Mat4::look_at_rh`] when the requested one is parallel to the view direction.
+fn look_at_fallback_up(f: Vec3) -> Vec3 {
+    if f.y.abs() >= f.x.abs().max(f.z.abs()) {
+        // Looking (mostly) down: −Z up on screen; looking up: +Z.
+        if f.y < 0.0 {
+            -Vec3::Z
+        } else {
+            Vec3::Z
+        }
+    } else {
+        Vec3::Y
+    }
+}
+
 /// Project a world point through `view_proj` to screen pixels (origin top-left) for a
 /// `width`×`height` image. Returns `(x, y, depth)` with depth in 0..1, or `None` if the point is
 /// behind the camera (clip w ≤ 0). Points outside the image are still returned (callers clip).
@@ -465,6 +506,49 @@ mod tests {
         // At or behind the camera.
         assert_eq!(project_to_screen(&vp, Vec3::new(0.0, 0.0, 6.0), w, h), None);
         assert_eq!(project_to_screen(&vp, Vec3::new(0.0, 0.0, 5.0), w, h), None);
+    }
+
+    #[test]
+    fn reverse_z_depth_is_one_at_near_and_falls_towards_zero() {
+        let near = 0.05;
+        let p = Mat4::perspective_vk_reverse_z(1.0, 1.5, near);
+        let depth = |z: f32| {
+            let c = p.mul_vec4(Vec4::new(0.0, 0.0, -z, 1.0));
+            c.z / c.w
+        };
+        assert!(close(depth(near), 1.0));
+        assert!(depth(10.0) > depth(1000.0) && depth(1000.0) > depth(1.0e6) && depth(1.0e6) > 0.0);
+        // A point 1 mm apart at 1 km still gets a distinct f32 depth (no z-fighting there).
+        assert_ne!(depth(1000.0), depth(1000.001));
+        // Behind the camera: w ≤ 0.
+        assert!(p.mul_vec4(Vec4::new(0.0, 0.0, 1.0, 1.0)).w <= 0.0);
+        // Same x/y mapping as the standard projection.
+        let s = Mat4::perspective_vk(1.0, 1.5, near, 100.0);
+        let (a, b) = (p.mul_vec4(Vec4::new(1.0, 2.0, -5.0, 1.0)), s.mul_vec4(Vec4::new(1.0, 2.0, -5.0, 1.0)));
+        assert!(close(a.x / a.w, b.x / b.w) && close(a.y / a.w, b.y / b.w));
+    }
+
+    #[test]
+    fn look_at_handles_straight_down_up_and_degenerate() {
+        let (w, h) = (800, 600);
+        // Top-down (the common agent view): +X right, −Z (north) up, nothing NaN.
+        let down = camera(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO);
+        assert!(down.to_cols_array().iter().all(|v| v.is_finite()));
+        let (cx, cy, _) = project_to_screen(&down, Vec3::ZERO, w, h).unwrap();
+        assert!(close(cx, 400.0) && close(cy, 300.0));
+        let (ex, _, _) = project_to_screen(&down, Vec3::X, w, h).unwrap();
+        let (_, ny, _) = project_to_screen(&down, -Vec3::Z, w, h).unwrap();
+        assert!(ex > cx, "+X must be right of centre");
+        assert!(ny < cy, "−Z must be above centre");
+        // Straight up and eye == target stay finite too.
+        let up = camera(Vec3::ZERO, Vec3::new(0.0, 5.0, 0.0));
+        assert!(up.to_cols_array().iter().all(|v| v.is_finite()));
+        let same = Mat4::look_at_rh(Vec3::ONE, Vec3::ONE, Vec3::Y);
+        assert!(same.to_cols_array().iter().all(|v| v.is_finite()));
+        // Nearly-but-not-exactly vertical still uses the requested up (no snapping).
+        let tilted = Mat4::look_at_rh(Vec3::new(0.0, 10.0, 0.01), Vec3::ZERO, Vec3::Y);
+        let (_, fy, _) = project_to_screen(&(Mat4::perspective_vk(1.0, 1.0, 0.1, 100.0) * tilted), Vec3::new(0.0, 0.0, -1.0), w, h).unwrap();
+        assert!(fy < 300.0, "slightly tilted top-down keeps north up");
     }
 
     #[test]

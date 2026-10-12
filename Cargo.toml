@@ -18,7 +18,7 @@ authors = ["Specula contributors"]
 rust-version = "1.85"
 
 # Zero third-party crates: only path dependencies on workspace members are allowed.
-# Enforced by scripts/check_zero_dep.py (CI).
+# Enforced by crates/specula/tests/zero_dep.rs (runs in CI).
 [workspace.dependencies]
 specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }

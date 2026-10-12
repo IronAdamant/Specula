@@ -98,6 +98,16 @@ pub struct SpawnSpec {
     pub color: [f32; 3],
 }
 
+/// Fields to change in [`World::update`]; `None` leaves a field as it is.
+#[derive(Default)]
+pub struct UpdateSpec {
+    pub name: Option<String>,
+    pub position: Option<Vec3>,
+    pub rotation_deg: Option<Vec3>,
+    pub scale: Option<Vec3>,
+    pub color: Option<[f32; 3]>,
+}
+
 #[derive(Default)]
 pub struct World {
     entities: Vec<Entity>,
@@ -106,12 +116,13 @@ pub struct World {
 
 impl World {
     pub fn spawn(&mut self, spec: SpawnSpec, created_by: &str) -> Result<&Entity, String> {
-        self.next_id += 1;
-        let id = self.next_id;
+        // Ids are only used up by spawns that succeed.
+        let id = self.next_id + 1;
         let name = spec.name.unwrap_or_else(|| format!("{}_{id}", spec.shape.name()));
         if self.entities.iter().any(|e| e.name == name) {
             return Err(format!("an entity named '{name}' already exists; names must be unique"));
         }
+        self.next_id = id;
         self.entities.push(Entity {
             id,
             name,
@@ -123,6 +134,32 @@ impl World {
             created_by: created_by.to_owned(),
         });
         Ok(self.entities.last().expect("just pushed"))
+    }
+
+    /// Change some properties of an existing entity; its id never changes.
+    pub fn update(&mut self, key: &EntityKey, change: UpdateSpec) -> Result<&Entity, String> {
+        if let Some(name) = &change.name {
+            if self.entities.iter().any(|e| e.name == *name && !key.matches(e)) {
+                return Err(format!("an entity named '{name}' already exists; names must be unique"));
+            }
+        }
+        let e = self.entities.iter_mut().find(|e| key.matches(e)).ok_or("no such entity")?;
+        if let Some(name) = change.name {
+            e.name = name;
+        }
+        if let Some(p) = change.position {
+            e.position = p;
+        }
+        if let Some(r) = change.rotation_deg {
+            e.rotation_deg = r;
+        }
+        if let Some(s) = change.scale {
+            e.scale = s;
+        }
+        if let Some(c) = change.color {
+            e.color = c;
+        }
+        Ok(e)
     }
 
     /// Remove by id or name.

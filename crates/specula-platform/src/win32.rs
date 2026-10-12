@@ -387,12 +387,7 @@ impl Window {
     }
 
     pub(crate) fn client_size(&self) -> (u32, u32) {
-        let mut rect = Rect::default();
-        // SAFETY: `hwnd` is live; `rect` is writable.
-        if unsafe { GetClientRect(self.hwnd, &mut rect) } == 0 {
-            return (0, 0);
-        }
-        ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32)
+        client_size_of(self.hwnd)
     }
 
     pub(crate) fn set_title(&mut self, title: &str) {
@@ -435,6 +430,17 @@ impl Drop for Window {
             drop(Box::from_raw(self.state));
         }
     }
+}
+
+/// Client size of any window, callable from any thread; `(0, 0)` if the window is gone.
+pub(crate) fn client_size_of(hwnd: Hwnd) -> (u32, u32) {
+    let mut rect = Rect::default();
+    // SAFETY: GetClientRect validates the handle (failing for stale or foreign-invalid ones) and may
+    // be called from any thread; `rect` is writable.
+    if unsafe { GetClientRect(hwnd, &mut rect) } == 0 {
+        return (0, 0);
+    }
+    ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32)
 }
 
 unsafe extern "system" fn wndproc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {

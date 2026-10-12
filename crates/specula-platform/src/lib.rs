@@ -37,6 +37,27 @@ pub struct RawWindow {
     pub hwnd: *mut c_void,
 }
 
+// SAFETY: the handles are plain identifiers, not pointers this crate dereferences. A render thread
+// may hold them while another thread owns and pumps the `Window`: surface creation, presentation and
+// `client_size_of` are valid from any thread on Win32.
+unsafe impl Send for RawWindow {}
+// SAFETY: as above; sharing the identifiers grants no access by itself.
+unsafe impl Sync for RawWindow {}
+
+/// Client-area size of a window from **any** thread (e.g. a render thread presenting to a window
+/// that another thread pumps). `(0, 0)` if the window no longer exists or there is no backend.
+pub fn client_size_of(raw: RawWindow) -> (u32, u32) {
+    #[cfg(windows)]
+    {
+        win32::client_size_of(raw.hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = raw;
+        (0, 0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     Left,

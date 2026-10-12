@@ -34,12 +34,12 @@ pub struct Mesh {
     pub index_count: u32,
 }
 
-/// Shader modules, layout and one pipeline per colour format.
+/// Shader modules, layout and one pipeline per (colour format, depth mode).
 pub struct Pipelines {
     vert: VkShaderModule,
     frag: VkShaderModule,
     pub layout: VkPipelineLayout,
-    by_format: Vec<(VkFormat, VkPipeline)>,
+    by_format: Vec<((VkFormat, bool), VkPipeline)>,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -96,17 +96,19 @@ impl Pipelines {
         }
     }
 
-    /// The pipeline rendering into `color_format` (+ D32 depth), created on first use.
-    pub fn get(&mut self, dev: &Device, color_format: VkFormat) -> Result<VkPipeline, GpuError> {
-        if let Some(&(_, p)) = self.by_format.iter().find(|(f, _)| *f == color_format) {
+    /// The pipeline rendering into `color_format` (+ D32 depth, reversed or standard), created on
+    /// first use.
+    pub fn get(&mut self, dev: &Device, color_format: VkFormat, reverse_z: bool) -> Result<VkPipeline, GpuError> {
+        let key = (color_format, reverse_z);
+        if let Some(&(_, p)) = self.by_format.iter().find(|(k, _)| *k == key) {
             return Ok(p);
         }
-        let p = self.create(dev, color_format)?;
-        self.by_format.push((color_format, p));
+        let p = self.create(dev, color_format, reverse_z)?;
+        self.by_format.push((key, p));
         Ok(p)
     }
 
-    fn create(&self, dev: &Device, color_format: VkFormat) -> Result<VkPipeline, GpuError> {
+    fn create(&self, dev: &Device, color_format: VkFormat, reverse_z: bool) -> Result<VkPipeline, GpuError> {
         let entry = c"main";
         let stages = [
             VkPipelineShaderStageCreateInfo {
@@ -204,7 +206,7 @@ impl Pipelines {
             flags: 0,
             depth_test_enable: VK_TRUE,
             depth_write_enable: VK_TRUE,
-            depth_compare_op: VK_COMPARE_OP_LESS,
+            depth_compare_op: if reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS },
             depth_bounds_test_enable: VK_FALSE,
             stencil_test_enable: VK_FALSE,
             front: VkStencilOpState::default(),
@@ -358,8 +360,8 @@ pub fn record_scene(
         resolve_image_layout: VK_IMAGE_LAYOUT_UNDEFINED,
         load_op: VK_ATTACHMENT_LOAD_OP_CLEAR,
         store_op: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        // VkClearDepthStencilValue { depth: 1.0, stencil: 0 }
-        clear_value: VkClearValue { float32: [1.0, 0.0, 0.0, 0.0] },
+        // VkClearDepthStencilValue { depth, stencil: 0 }: the farthest depth of the mode.
+        clear_value: VkClearValue { float32: [if frame.reverse_z { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0] },
     };
     let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent: target.extent };
     let rendering = VkRenderingInfo {

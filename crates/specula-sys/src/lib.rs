@@ -29,6 +29,40 @@ pub mod kernel32 {
         pub fn GetProcAddress(module: *mut c_void, proc_name: *const u8) -> *mut c_void;
         pub fn FreeLibrary(module: *mut c_void) -> i32;
         pub fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+        pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
+        pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+        pub fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+}
+
+/// Whether a process with this id is currently running. Conservative: on platforms without an
+/// implementation, or when the answer can't be determined (e.g. access denied), returns `true`.
+pub fn process_is_running(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        const ERROR_INVALID_PARAMETER: u32 = 87;
+        // SAFETY: plain call; a null result is handled below.
+        let handle = unsafe { kernel32::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // ERROR_INVALID_PARAMETER means no such process; anything else (access denied) is unknown.
+            // SAFETY: reads the calling thread's last-error value; no preconditions.
+            return unsafe { kernel32::GetLastError() } != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0u32;
+        // SAFETY: `handle` is a live process handle with query rights; `code` is writable. The handle
+        // is closed exactly once.
+        unsafe {
+            let ok = kernel32::GetExitCodeProcess(handle, &mut code) != 0;
+            kernel32::CloseHandle(handle);
+            !ok || code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        true
     }
 }
 
@@ -234,6 +268,19 @@ pub mod dynlib {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn process_liveness() {
+        assert!(process_is_running(std::process::id()));
+        let mut child = std::process::Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child); // closes our handle so the process object can go away
+        // The pid may be reused in theory, but not within this instant in practice.
+        assert!(!process_is_running(pid));
+        assert!(!process_is_running(0xFFFF_FFF0));
+    }
 
     #[test]
     fn wide_is_nul_terminated_utf16() {
