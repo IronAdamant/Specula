@@ -456,6 +456,10 @@ mod tests {
             format!("run-50-{me}"),
             "run-5-important-results".to_string(),
         ];
+        if !cfg!(windows) {
+            // No process check there yet: liveness is unknown, so nothing may be deleted.
+            want.extend([format!("run-100-{dead}"), format!("run-200-{dead}")]);
+        }
         want.sort();
         assert_eq!(left, want);
         std::fs::remove_dir_all(&root).unwrap();
