@@ -22,6 +22,14 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod device;
+mod gpu;
+mod instance;
+mod loader;
+mod render;
+mod swapchain;
+mod vk;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Validation {
     Off,
@@ -108,6 +116,17 @@ impl fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
+impl GpuError {
+    pub(crate) fn new(message: impl Into<String>) -> GpuError {
+        GpuError { message: message.into(), vk_result: None }
+    }
+
+    /// `what` failed with `result`.
+    pub(crate) fn vk(what: &str, result: i32) -> GpuError {
+        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result) }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Vertex {
@@ -141,73 +160,96 @@ pub struct FrameDesc<'a> {
 
 /// True if the Vulkan loader can be loaded and an instance created.
 pub fn is_available() -> bool {
-    todo!("specula-gpu: is_available")
+    instance::Instance::new(Validation::Off, false).is_ok()
 }
 
 /// All physical devices, in Vulkan enumeration order (`index` matches [`AdapterPreference::Index`]).
 pub fn enumerate_adapters() -> Result<Vec<AdapterInfo>, GpuError> {
-    todo!("specula-gpu: enumerate_adapters")
+    let instance = instance::Instance::new(Validation::Off, false)?;
+    let devices = instance.physical_devices()?;
+    Ok(devices.iter().enumerate().map(|(i, &pd)| instance.adapter_info(i, pd)).collect())
 }
 
 /// Instance, device, queue and all GPU resources. Not `Send`; use from one thread.
+///
+/// Dropping it waits for the GPU to go idle, then releases every resource, the window swapchain
+/// and surface, the device and the instance, in that order.
 pub struct Gpu {
+    inner: gpu::GpuInner,
     _not_send: std::marker::PhantomData<*mut c_void>,
 }
 
 impl Gpu {
+    /// Create the instance (validation per `options`), pick an adapter that supports Vulkan 1.3
+    /// with dynamic rendering + synchronization2 and a graphics queue, and create the device.
+    ///
+    /// `Validation::On` fails if `VK_LAYER_KHRONOS_validation` (or `VK_EXT_debug_utils`) is
+    /// missing; `Validation::Auto` silently runs without it. Enabled validation includes
+    /// synchronization validation.
     pub fn new(options: &GpuOptions) -> Result<Gpu, GpuError> {
-        let _ = options;
-        todo!("specula-gpu: Gpu::new")
+        Ok(Gpu { inner: gpu::GpuInner::new(options)?, _not_send: std::marker::PhantomData })
     }
 
     pub fn adapter(&self) -> &AdapterInfo {
-        todo!("specula-gpu: Gpu::adapter")
+        self.inner.adapter()
     }
 
     pub fn validation_enabled(&self) -> bool {
-        todo!("specula-gpu: Gpu::validation_enabled")
+        self.inner.validation_enabled()
     }
 
-    /// Drain validation messages captured since the last call.
+    /// Drain validation messages captured since the last call (warnings and errors; at most the
+    /// newest 4096 are kept).
     pub fn take_validation_messages(&mut self) -> Vec<ValidationMessage> {
-        todo!("specula-gpu: Gpu::take_validation_messages")
+        self.inner.take_validation_messages()
+    }
+
+    /// Release everything (exactly like dropping the `Gpu`) and return the validation messages
+    /// not yet taken, including any produced while destroying resources, the device and the
+    /// instance. Use it to check that shutdown is clean.
+    pub fn close(self) -> Vec<ValidationMessage> {
+        self.inner.close()
     }
 
     /// Upload an indexed triangle list (device-local buffers).
+    ///
+    /// Errors if there are no vertices/indices, the index count is not a multiple of 3, or an
+    /// index is out of range.
     pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Result<MeshId, GpuError> {
-        let _ = (vertices, indices);
-        todo!("specula-gpu: Gpu::upload_mesh")
+        self.inner.upload_mesh(vertices, indices)
     }
 
+    /// Unknown ids are ignored. Waits for in-flight window frames that may still use the mesh.
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
-        let _ = mesh;
-        todo!("specula-gpu: Gpu::destroy_mesh")
+        self.inner.destroy_mesh(mesh)
     }
 
     /// Offscreen colour (`R8G8B8A8_SRGB`) + depth target.
     pub fn create_target(&mut self, width: u32, height: u32) -> Result<TargetId, GpuError> {
-        let _ = (width, height);
-        todo!("specula-gpu: Gpu::create_target")
+        self.inner.create_target(width, height)
     }
 
+    /// Unknown ids are ignored.
     pub fn destroy_target(&mut self, target: TargetId) {
-        let _ = target;
-        todo!("specula-gpu: Gpu::destroy_target")
+        self.inner.destroy_target(target)
     }
 
     /// Render a frame into an offscreen target. Completes before returning (M0: simple, synchronous).
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
-        let _ = (target, frame);
-        todo!("specula-gpu: Gpu::render")
+        self.inner.render(target, frame)
     }
 
     /// Read back the target as tightly packed sRGB RGBA8, top row first.
+    ///
+    /// Errors if the target has never been rendered.
     pub fn read_rgba8(&mut self, target: TargetId) -> Result<Vec<u8>, GpuError> {
-        let _ = target;
-        todo!("specula-gpu: Gpu::read_rgba8")
+        self.inner.read_rgba8(target)
     }
 
     /// Create a surface + swapchain for a native window (Windows: `HINSTANCE`, `HWND`).
+    ///
+    /// Replaces a previously attached window. Fails if the instance has no surface support or
+    /// the adapter's graphics queue cannot present to this window.
     pub fn attach_window(
         &mut self,
         hinstance: *mut c_void,
@@ -215,19 +257,19 @@ impl Gpu {
         width: u32,
         height: u32,
     ) -> Result<(), GpuError> {
-        let _ = (hinstance, hwnd, width, height);
-        todo!("specula-gpu: Gpu::attach_window")
+        self.inner.attach_window(hinstance, hwnd, width, height)
     }
 
     /// Recreate the swapchain for a new client size. 0×0 (minimized) is allowed; presenting is skipped.
     pub fn resize_window(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
-        let _ = (width, height);
-        todo!("specula-gpu: Gpu::resize_window")
+        self.inner.resize_window(width, height)
     }
 
     /// Render a frame to the window and present it. Recreates an out-of-date swapchain transparently.
+    ///
+    /// FIFO presentation: blocks for vsync when the swapchain is full. Up to two frames are in
+    /// flight; a frame that hits an out-of-date swapchain is skipped (the next one rebuilds it).
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
-        let _ = frame;
-        todo!("specula-gpu: Gpu::present")
+        self.inner.present(frame)
     }
 }
