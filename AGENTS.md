@@ -11,6 +11,8 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
    Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** (`LoadLibraryW`/`GetProcAddress`).
 3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
    Do not set other linkers or add build scripts that call external tools.
+   **Gotcha:** an environment `RUSTFLAGS` *replaces* config rustflags — to deny warnings locally use
+   `RUSTFLAGS="-Dwarnings -C link-self-contained=yes"`.
 4. **Every crate compiles on non-Windows.** Windows-only code lives behind `#[cfg(windows)]`; other platforms return
    a clear "unsupported on this platform" error at runtime.
 5. **Structured errors.** Error types carry machine-readable fields (codes, offsets, VkResult) — agents debug from data.
