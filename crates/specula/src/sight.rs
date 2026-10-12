@@ -119,6 +119,66 @@ fn screen_rect(points: &[(f32, f32, f32)], width: u32, height: u32) -> Option<[u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::{Shape, SpawnSpec};
+
+    fn spawn(world: &mut World, shape: Shape, name: &str, position: Vec3) {
+        let spec = SpawnSpec {
+            shape,
+            name: Some(name.into()),
+            position,
+            rotation_deg: Vec3::ZERO,
+            scale: Vec3::ONE,
+            color: [1.0, 0.0, 0.0],
+        };
+        world.spawn(spec, "test").unwrap();
+    }
+
+    fn rect(subject: &Json) -> [u64; 4] {
+        let a = subject.get("screen").and_then(Json::as_array).expect("on screen");
+        [0, 1, 2, 3].map(|i| a[i].as_u64().unwrap())
+    }
+
+    #[test]
+    fn auto_camera_frames_everything() {
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "left", Vec3::new(-3.0, 0.0, 0.0));
+        spawn(&mut world, Shape::Sphere, "right", Vec3::new(3.0, 1.0, -2.0));
+        spawn(&mut world, Shape::Quad, "floor", Vec3::new(0.0, -0.5, 0.0));
+        let cam = auto_camera(&world, 50.0);
+        let vp = cam.view_proj(960, 540);
+        for s in subjects(&world, &vp, 960, 540) {
+            let [x, y, w, h] = rect(&s);
+            assert!(x + w <= 960 && y + h <= 540, "{s}");
+            assert!(w > 4 && h > 0, "{s}");
+        }
+    }
+
+    #[test]
+    fn subject_rects_follow_world_layout() {
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "low", Vec3::new(0.0, 0.0, 0.0));
+        spawn(&mut world, Shape::Cube, "high", Vec3::new(0.0, 3.0, 0.0));
+        spawn(&mut world, Shape::Cube, "east", Vec3::new(3.0, 0.0, 0.0));
+        // Straight-on camera looking down −Z.
+        let cam = Camera { eye: Vec3::new(1.5, 1.5, 12.0), target: Vec3::new(1.5, 1.5, 0.0), fov_y_deg: 50.0 };
+        let vp = cam.view_proj(800, 600);
+        let s = subjects(&world, &vp, 800, 600);
+        let (low, high, east) = (rect(&s[0]), rect(&s[1]), rect(&s[2]));
+        assert!(high[1] < low[1], "+Y is up on screen: high {high:?} low {low:?}");
+        assert!(east[0] > low[0], "+X is right on screen: east {east:?} low {low:?}");
+        // Same-size cubes at the same depth project to the same size.
+        assert_eq!((low[2], low[3]), (high[2], high[3]));
+    }
+
+    #[test]
+    fn entities_behind_the_camera_are_off_screen() {
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "behind", Vec3::new(0.0, 0.0, 20.0));
+        let cam = Camera { eye: Vec3::new(0.0, 0.0, 10.0), target: Vec3::ZERO, fov_y_deg: 50.0 };
+        let s = subjects(&world, &cam.view_proj(640, 480), 640, 480);
+        assert_eq!(s[0].get("on_screen").and_then(Json::as_bool), Some(false));
+        assert!(s[0].get("screen").unwrap().is_null());
+    }
 
     #[test]
     fn screen_rect_clips_and_rejects() {
