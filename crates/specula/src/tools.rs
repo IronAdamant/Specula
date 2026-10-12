@@ -110,7 +110,8 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
 fn entity_key(args: &Json, tool: &str) -> Result<EntityKey, String> {
     let present = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
     if present("id") && present("name") {
-        return Err(format!("{tool}: give 'id' or 'name', not both (to rename an entity use 'rename')"));
+        let hint = if tool == "world_set" { " (to rename an entity use 'rename')" } else { "" };
+        return Err(format!("{tool}: give 'id' or 'name', not both{hint}"));
     }
     match (args.get("id"), args.get("name")) {
         (Some(id), _) if !id.is_null() => {

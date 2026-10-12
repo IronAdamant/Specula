@@ -131,6 +131,8 @@ Each milestone ends with something agents can use.
 - CI never built the windows-gnu dev toolchain → `windows-gnu` CI job with the self-contained linker
 - Disconnected agents listed forever → sessions idle > 30 min hidden from listings (still valid if the agent
   returns); non-finite JSON-RPC ids rejected
+- Session cap (1024) evicted the oldest-*created* session, so an active agent could be pushed out → evicts the
+  least recently used (round-3 finding)
 - A second engine on a taken port flashed a window → port bound before the window opens
 - `world_set` with both `id` and `name` silently ignored `name` → rejected, pointing to `rename`
 - `world_set` (change an entity in place, id kept) pulled forward from M1 for game work

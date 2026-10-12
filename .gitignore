@@ -17,6 +17,7 @@ Thumbs.db
 !.env.example
 
 # Scratch and logs
+__pycache__/
 *.log
 .scratch/
 tmp/

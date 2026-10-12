@@ -244,9 +244,11 @@ impl State {
         {
             let mut sessions = lock(&self.sessions);
             if sessions.map.len() >= MAX_SESSIONS {
-                let oldest = sessions.map.iter().min_by_key(|(_, (seq, _, _))| *seq).map(|(k, _)| k.clone());
-                if let Some(oldest) = oldest {
-                    sessions.map.remove(&oldest);
+                // Evict the least recently *used* session, so an active agent is never pushed out
+                // by clients that open sessions and never DELETE them.
+                let stalest = sessions.map.iter().min_by_key(|(_, (_, _, used))| *used).map(|(k, _)| k.clone());
+                if let Some(stalest) = stalest {
+                    sessions.map.remove(&stalest);
                 }
             }
             let seq = sessions.next_seq;
@@ -534,6 +536,41 @@ mod tests {
         }
         let Err(e) = classify(&parse(r#"{"jsonrpc":"1.0","id":7,"method":"ping"}"#)) else { panic!() };
         assert_eq!(e.id, Json::from(7));
+    }
+
+    #[test]
+    fn eviction_spares_an_active_session() {
+        struct NoTools;
+        impl ToolHandler for NoTools {
+            fn tools(&self) -> Vec<crate::ToolDef> {
+                Vec::new()
+            }
+            fn call(&self, _: &SessionInfo, _: &str, _: &Json) -> ToolOutput {
+                ToolOutput::text("")
+            }
+        }
+        let config = ServerConfig { bind: String::new(), server_name: "t".into(), server_version: "0".into(), instructions: None };
+        let state = State::new(config, Arc::new(NoTools));
+        let post = |session: Option<&str>, body: &str| {
+            let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+            if let Some(s) = session {
+                headers.push(("Mcp-Session-Id".to_string(), s.to_string()));
+            }
+            let head = crate::http::Head { method: "POST".into(), target: ENDPOINT.into(), minor_version: 1, headers };
+            state.handle(&Request { head, body: body.as_bytes().to_vec() })
+        };
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+        let ping = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+        let session_of = |r: &Response| r.headers.iter().find(|(k, _)| k == "Mcp-Session-Id").unwrap().1.clone();
+        let main = session_of(&post(None, init));
+        for i in 0..MAX_SESSIONS + 50 {
+            post(None, init); // never deleted
+            if i % 100 == 0 {
+                assert_eq!(post(Some(&main), ping).status, 200, "active session evicted after {i} others");
+            }
+        }
+        assert_eq!(post(Some(&main), ping).status, 200);
+        assert!(lock(&state.sessions).map.len() <= MAX_SESSIONS);
     }
 
     #[test]
