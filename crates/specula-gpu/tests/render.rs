@@ -88,7 +88,7 @@ fn render_cube_on(adapter: AdapterPreference, label: &str) {
 
     gpu.destroy_target(target);
     gpu.destroy_mesh(mesh);
-    let errors = validation_errors(&test, &mut gpu);
+    let errors = validation_errors(&test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
 
@@ -177,6 +177,6 @@ fn resource_churn_and_errors() {
         gpu.destroy_target(target);
         gpu.destroy_mesh(mesh);
     }
-    let errors = validation_errors(test, &mut gpu);
+    let errors = validation_errors(test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }

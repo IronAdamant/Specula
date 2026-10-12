@@ -123,6 +123,13 @@ impl GpuInner {
         self.instance.take_messages()
     }
 
+    /// Tear everything down, then return the messages still pending, including teardown ones.
+    pub fn close(self) -> Vec<ValidationMessage> {
+        let sink = self.instance.sink();
+        drop(self);
+        sink.map_or_else(Vec::new, |s| s.take())
+    }
+
     fn next_id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);

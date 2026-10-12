@@ -162,9 +162,9 @@ pub fn gpu_or_skip(test: &str, adapter: specula_gpu::AdapterPreference) -> Optio
     Some(gpu)
 }
 
-/// Print every captured message and return the errors.
-pub fn validation_errors(test: &str, gpu: &mut Gpu) -> Vec<ValidationMessage> {
-    let messages = gpu.take_validation_messages();
+/// Shut the GPU down, print every captured message (including teardown) and return the errors.
+pub fn validation_errors(test: &str, gpu: Gpu) -> Vec<ValidationMessage> {
+    let messages = gpu.close();
     for m in &messages {
         eprintln!("{test}: [{:?}] {} {}", m.severity, m.id_name, m.message);
     }

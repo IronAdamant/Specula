@@ -40,45 +40,47 @@ pub fn entry() -> Result<&'static Entry, GpuError> {
 
 #[cfg(windows)]
 const LIBRARY_NAME: &str = "vulkan-1.dll";
+#[cfg(not(windows))]
+const LIBRARY_NAME: &str = "libvulkan.so.1";
 
 fn load() -> Result<Entry, GpuError> {
-    #[cfg(not(windows))]
-    {
-        Err(GpuError::new("Vulkan is unsupported on this platform (specula-gpu only loads vulkan-1.dll on Windows so far)"))
-    }
-    #[cfg(windows)]
-    {
-        let library = Library::open(LIBRARY_NAME)
-            .map_err(|e| GpuError::new(format!("Vulkan loader not available: {e}")))?;
-        let raw = library
-            .symbol("vkGetInstanceProcAddr")
-            .ok_or_else(|| GpuError::new(format!("{LIBRARY_NAME} does not export vkGetInstanceProcAddr")))?;
-        // SAFETY: `raw` is the non-null address of `vkGetInstanceProcAddr` exported by the Vulkan
-        // loader, whose C prototype is `PFN_vkVoidFunction (VkInstance, const char*)`; `library`
-        // is stored in the returned `Entry` (and that in a process-lifetime static), so the code
-        // stays mapped.
-        let get_instance_proc_addr = unsafe { std::mem::transmute::<*mut std::ffi::c_void, PfnGetInstanceProcAddr>(raw) };
-        let global = |name: &CStr| {
-            // SAFETY: global commands are queried with a NULL instance, as the spec requires.
-            unsafe { get_instance_proc_addr(std::ptr::null_mut(), name.as_ptr()) }
-        };
-        let fns = EntryFns::load(global)
-            .map_err(|name| GpuError::new(format!("Vulkan loader is missing global command {name}")))?;
-        let instance_version = match global(c"vkEnumerateInstanceVersion") {
-            None => vk::make_api_version(1, 0, 0),
-            Some(f) => {
-                // SAFETY: the loader returned `vkEnumerateInstanceVersion`, prototype
-                // `VkResult (uint32_t*)`.
-                let f = unsafe { std::mem::transmute::<unsafe extern "system" fn(), vk::PfnEnumerateInstanceVersion>(f) };
-                let mut v = 0u32;
-                // SAFETY: `v` is a valid out-pointer for the duration of the call.
-                let r = unsafe { f(&mut v) };
-                if r != vk::VK_SUCCESS {
-                    return Err(GpuError::vk("vkEnumerateInstanceVersion", r));
-                }
-                v
+    // specula-sys only implements runtime loading on Windows so far; elsewhere `open` fails and
+    // we report the platform as unsupported.
+    let library = Library::open(LIBRARY_NAME).map_err(|e| {
+        if cfg!(windows) {
+            GpuError::new(format!("Vulkan loader not available: {e}"))
+        } else {
+            GpuError::new(format!("Vulkan is unsupported on this platform for now ({e})"))
+        }
+    })?;
+    let raw = library
+        .symbol("vkGetInstanceProcAddr")
+        .ok_or_else(|| GpuError::new(format!("{LIBRARY_NAME} does not export vkGetInstanceProcAddr")))?;
+    // SAFETY: `raw` is the non-null address of `vkGetInstanceProcAddr` exported by the Vulkan
+    // loader, whose C prototype is `PFN_vkVoidFunction (VkInstance, const char*)`; `library` is
+    // stored in the returned `Entry` (and that in a process-lifetime static), so the code stays
+    // mapped.
+    let get_instance_proc_addr = unsafe { std::mem::transmute::<*mut std::ffi::c_void, PfnGetInstanceProcAddr>(raw) };
+    let global = |name: &CStr| {
+        // SAFETY: global commands are queried with a NULL instance, as the spec requires.
+        unsafe { get_instance_proc_addr(std::ptr::null_mut(), name.as_ptr()) }
+    };
+    let fns = EntryFns::load(global)
+        .map_err(|name| GpuError::new(format!("Vulkan loader is missing global command {name}")))?;
+    let instance_version = match global(c"vkEnumerateInstanceVersion") {
+        None => vk::make_api_version(1, 0, 0), // a Vulkan 1.0 loader
+        Some(f) => {
+            // SAFETY: the loader returned `vkEnumerateInstanceVersion`, prototype
+            // `VkResult (uint32_t*)`.
+            let f = unsafe { std::mem::transmute::<unsafe extern "system" fn(), vk::PfnEnumerateInstanceVersion>(f) };
+            let mut v = 0u32;
+            // SAFETY: `v` is a valid out-pointer for the duration of the call.
+            let r = unsafe { f(&mut v) };
+            if r != vk::VK_SUCCESS {
+                return Err(GpuError::vk("vkEnumerateInstanceVersion", r));
             }
-        };
-        Ok(Entry { _library: library, get_instance_proc_addr, fns, instance_version })
-    }
+            v
+        }
+    };
+    Ok(Entry { _library: library, get_instance_proc_addr, fns, instance_version })
 }

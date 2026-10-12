@@ -6,7 +6,7 @@ use crate::{AdapterInfo, AdapterKind, GpuError, Severity, Validation, Validation
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 const EXT_DEBUG_UTILS: &CStr = c"VK_EXT_debug_utils";
@@ -17,8 +17,9 @@ const EXT_WIN32_SURFACE: &CStr = c"VK_KHR_win32_surface";
 /// Oldest messages are dropped beyond this many undrained ones.
 const MAX_MESSAGES: usize = 4096;
 
-/// Where the debug messenger callback stores messages. Boxed so its address is stable; it must
-/// outlive the instance (the callback can fire until `vkDestroyInstance` returns).
+/// Where the debug messenger callback stores messages. Shared (`Arc`) so its address is stable
+/// and it can outlive the instance: the callback can fire until `vkDestroyInstance` returns, and
+/// `Gpu::close` reads teardown messages afterwards.
 pub struct MessageSink {
     messages: Mutex<VecDeque<ValidationMessage>>,
 }
@@ -32,7 +33,7 @@ impl MessageSink {
         q.push_back(msg);
     }
 
-    fn take(&self) -> Vec<ValidationMessage> {
+    pub fn take(&self) -> Vec<ValidationMessage> {
         let mut q = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         q.drain(..).collect()
     }
@@ -50,7 +51,7 @@ unsafe extern "system" fn debug_callback(
     if data.is_null() || user_data.is_null() {
         return VK_FALSE;
     }
-    // SAFETY: `user_data` is the boxed `MessageSink` owned by the `Instance`, which outlives the
+    // SAFETY: `user_data` is the `Arc<MessageSink>` held by the `Instance`, which outlives the
     // messenger and the instance; `data` is valid for this call per the Vulkan spec.
     let (sink, data) = unsafe { (&*(user_data as *const MessageSink), &*data) };
     // SAFETY: both strings are NUL-terminated (or null) and valid for this call.
@@ -138,7 +139,7 @@ pub struct Instance {
     pub surface: Option<SurfaceFns>,
     messenger: Option<(DebugUtilsFns, VkDebugUtilsMessengerEXT)>,
     /// Declared after the handles: dropped after `Drop::drop` destroyed the instance.
-    sink: Option<Box<MessageSink>>,
+    sink: Option<Arc<MessageSink>>,
 }
 
 impl Instance {
@@ -183,8 +184,8 @@ impl Instance {
             }
         }
 
-        let sink = validate.then(|| Box::new(MessageSink { messages: Mutex::new(VecDeque::new()) }));
-        let sink_ptr = sink.as_deref().map_or(ptr::null_mut(), |s| s as *const MessageSink as *mut c_void);
+        let sink = validate.then(|| Arc::new(MessageSink { messages: Mutex::new(VecDeque::new()) }));
+        let sink_ptr = sink.as_ref().map_or(ptr::null_mut(), |s| Arc::as_ptr(s) as *mut c_void);
 
         let sync_features = [VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT];
         let validation_features = VkValidationFeaturesEXT {
@@ -271,6 +272,11 @@ impl Instance {
 
     pub fn validation_enabled(&self) -> bool {
         self.sink.is_some()
+    }
+
+    /// The message sink (None without validation); stays readable after the instance is gone.
+    pub fn sink(&self) -> Option<Arc<MessageSink>> {
+        self.sink.clone()
     }
 
     pub fn take_messages(&self) -> Vec<ValidationMessage> {

@@ -204,6 +204,13 @@ impl Gpu {
         self.inner.take_validation_messages()
     }
 
+    /// Release everything (exactly like dropping the `Gpu`) and return the validation messages
+    /// not yet taken, including any produced while destroying resources, the device and the
+    /// instance. Use it to check that shutdown is clean.
+    pub fn close(self) -> Vec<ValidationMessage> {
+        self.inner.close()
+    }
+
     /// Upload an indexed triangle list (device-local buffers).
     ///
     /// Errors if there are no vertices/indices, the index count is not a multiple of 3, or an
