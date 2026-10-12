@@ -1,5 +1,8 @@
 # Specula — plan
 
+> **Superseded 2026-10-12** by [ENGINE_PLAN.md](ENGINE_PLAN.md): Specula is now a zero-dependency, agent-native engine.
+> Phases 0–1 below were completed (commit `68c9d87`, tag `bevy-tooling-final`); Phases 2–5 (Bevy-based) are dropped.
+
 **Specula** (Latin: *watchtower, lookout*; the root of "speculate"). Formerly **Grok-Bevy**.
 Agent-native tooling for Bevy games: scaffold, live control over BRP, and **sight** — so any
 MCP-capable agent (Claude, Grok, …) can see a running game or an isolated asset and judge it.
