@@ -104,6 +104,8 @@ Each milestone ends with something agents can use.
 - Occlusion: `on_screen` ≠ visible (a crate hidden behind the tower still reports a full rect) → M2 ID buffer with
   per-entity visible-pixel counts.
 - MCP: revision 2026-07-28 drops `initialize`/sessions; we serve 2025-11-25 (+06-18, 03-26). Revisit when clients move.
+- Sphere rects are loose (projected from the bounding cube's corners: ~7 px padding on a 30 px orb) → shape-aware
+  bounds or ID-buffer extents in M2. Independent skeptic check: all six rects within 1–2 px of a fresh projection.
 - Auto-framing fits the bounding box diagonal, so flat wide scenes look small in frame; tighten in M2.
 
 ### M1 — World and multi-agent
