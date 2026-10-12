@@ -1,0 +1,169 @@
+# Handoff: read this first
+
+These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
+memory of the earlier ones. Last updated **2026-10-13**.
+
+- **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
+- **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+- **Hard rules:** [AGENTS.md](AGENTS.md).
+- **Design research:** [docs/design/](docs/design/) (determinism, physics, animation, procedural modelling, UI).
+- **Engine survey:** [docs/research/ENGINE_SURVEY.md](docs/research/ENGINE_SURVEY.md) compares Unreal, Unity and
+  Godot with Specula, lists the gaps (now in the roadmap, marked ➕), covers Unreal's stutter problems, and explains
+  where Specula can actually win.
+- **Rust at scale:** [docs/research/RUST_AT_SCALE.md](docs/research/RUST_AT_SCALE.md) covers how compile times,
+  unsafe code and the language's strictness become strengths (Rust track in the roadmap). Measured on 2026-10-13:
+  clean build 8.2 s, incremental 1.2–2 s.
+
+## The vision, in the owner's words
+
+> "AI agents are meant to work through this engine, building multiple parts of a world/game in the real time."
+>
+> "I'd like to enable myself, as well as smaller studios to compete with entire larger companies via AI agent swarms."
+>
+> "The swarm track is the primary. This is meant to allow games to be iterated rapidly via AI agent swarms."
+>
+> "For devs that just want AI agents such as yourself and your swarm to complete entire game... This is it."
+>
+> "I'd like it to make it easier to make games that are actually optimised to run on lower platforms, as too many games
+> are made through Unreal Engine and it's caused a lot of efficiency issues."
+>
+> "The reason you're working on this project is because unlike earlier generations, you have taste baked in and that's
+> valuable to this project."
+>
+> "Figure out how we can bring this engine to full production stage as soon as possible."
+>
+> "What they got were tacked on, and I think this will be difficult, even with AI agents to convert it from original
+> human tools that have a lot of issues in them, so getting there a-fresh from the slate is the key here. And Rust is
+> fundamentally as efficient as C++ and safer even for games to be made that way."
+>
+> "Nothing is left out. I accept how long it will take it to push to live production."
+
+Specula is a **zero-dependency, agent-native game engine and editor in Rust**. Agents are the primary users, and the
+human editor is built on the same protocol they use. The owner (GitHub **IronAdamant**) is building an original game on
+it with Claude, starting now.
+
+In practice that means five **foundations** that apply to every change from M1 onwards (details in ROADMAP.md):
+- **F1 Swarm-first.** The swarm track is the primary track.
+- **F2 Determinism.**
+- **F3 Low-end performance.** The Intel iGPU is the reference device.
+- **F4 Physics and animation designed in** from the start.
+- **F5 Humans optional, never locked out.** Devs can click, point, draw and drag in a Rust editor UI if they want to,
+  but agents must be able to build the whole game without it.
+
+## How we got here
+
+| When | What |
+|---|---|
+| Before 2026-10 | The owner built **Grok-Bevy**: Bevy-based tooling that gave AI agents "eyes" on 3D scenes. The many sight plans and findings from that era are in `docs/archive/bevy-era/`. |
+| 2026-10-12 | Claude assessed the repo. It was renamed **Specula** (Latin: *watchtower*). |
+| 2026-10-12 | **Pivot.** The owner wanted the engine fully native and zero-dependency, with no Bevy. The Bevy code is preserved at tag `bevy-tooling-final`. |
+| 2026-10-12 | Choices made: **Vulkan**, cross-platform with Windows first, **hot-reloaded Rust modules** for game logic, **2D and 3D** from the start, and the Specula repo becomes the engine. |
+| 2026-10-12 | **M0 built** by 4 parallel subagents (one per crate, in git worktrees), with Claude integrating. Then two full audits and three adversarial review rounds; every finding was fixed. |
+| 2026-10-12 | **M0 complete** at commit `badb857`. CI is green on windows-msvc, windows-gnu and ubuntu. |
+| 2026-10-13 | ROADMAP.md and this handoff written. |
+| 2026-10-13 | Engine survey and UI design written. The roadmap gained a **path to production**: v1.0 = a commercial PC game on Steam for Windows and Steam Deck; Phase A M1 → Phase B playable slice (lanes built in parallel by subagent swarms) → Phase C production → Phase D ship. |
+| 2026-10-13 | The owner accepted **every** Claude proposal: physics, skeletal animation, headless playtests, batch edits, procedural modelling, review queue, swarm track. The swarm track became primary, foundations F1–F5 were added, and Claude researched and wrote the four design docs in `docs/design/`. Next: the owner's game project, then M1. |
+
+## What works today
+
+- **Run it:** `cargo run -p specula`. It opens a window and serves MCP at `http://127.0.0.1:7471/mcp`. Claude Code
+  opened in this folder connects through `.mcp.json`.
+- **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`.
+- **Tools:**
+  - `world_spawn`: cube, sphere or quad, with position, rotation, scale, colour and name.
+  - `world_set`: change an entity in place, including `rename`.
+  - `world_list` and `world_delete`.
+  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. The full
+    packet is saved to `captures/run-*/`.
+  - `engine_info`.
+- **Size:** about 14k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
+  `specula`). 139 tests. **Zero third-party crates.**
+- **Linking:** the Rust toolchain's own linker. Vulkan is loaded at runtime.
+
+**What it can't do yet.** Plan game sessions around these limits:
+- **No save/load.** The world is gone when the engine closes. Persistence is the first item of M1, so pull it forward
+  if game work needs it.
+- **Visuals are basic.** Only coloured primitives with a single fixed light: no textures, materials, shadows, imported
+  models, or 2D sprites.
+- **Not playable yet.** There's no game logic, input, physics, audio, or text/UI, so nothing can be played until M3.
+- **Sight limits:** no occlusion, and sphere boxes are about 30% loose.
+
+**So for the game right now:** design documents, plus **greybox blockouts** built live through MCP (layout, scale,
+sightlines). Let the game decide which engine features come first.
+
+## How the owner likes to work
+
+- **Subagents:** they asked for subagents on milestone builds, with **adversarial review before advancing** a
+  milestone. They want nothing left open.
+- **Pushing:** push only when asked. They usually say "push please".
+- **Honesty:** they value directness and corrections. When they believed Bevy was "the first editor that works with
+  Rust", a gentle correction was welcome: Bevy is code-first, and Fyrox and Godot-rs exist.
+- **Their own builds:** they asked for things built by us rather than borrowed ("full control"), for example their own
+  linker. The agreed compromise: the toolchain linker plus raw-dylib already removes third parties, so the custom
+  linker is parked as a long-term option.
+- **crates.io:** publishing is for the owner to decide later.
+- **Naming:** Latin-style names.
+- **Test steps:** in-game test plans as `- [ ]` checklists (they use Obsidian).
+- **Other work:** Fallout 4 mods in `D:\Coding Projects\AgentCreationKit`. A peer Claude session there once committed
+  work by mistake, so check `git log` before committing.
+
+## Gotchas that cost time
+
+- **`RUSTFLAGS`:** an environment `RUSTFLAGS` *replaces* the config's flags. Use
+  `RUSTFLAGS="-Dwarnings -C link-self-contained=yes"`.
+- **One crate per DLL:** on windows-gnu, two crates importing the same DLL via raw-dylib → the second one's imports
+  silently vanish.
+- **Linker on PATH:** the LLVM-MinGW gcc first on PATH lacks libgcc (the bundled linker avoids it). In Git Bash, `link`
+  is coreutils, not MSVC.
+- **Shaders:** compile with `--target-env=vulkan1.3`, or you'll chase phantom shader mismatches. The SDK is at
+  `C:\VulkanSDK\1.4.363.0`, and `VULKAN_SDK` isn't in the shell environment.
+- **Python:** `-I` ignores `PYTHONIOENCODING`, so keep script output ASCII. Scripts that launch the engine must set its
+  working directory or pass `--captures`.
+- **Live check:** CI has no GPU. After GPU or window changes, run `python scripts/window_check.py` and **open the PNGs**.
+- **MCP tool names:** no dots, because Claude Code rejects them.
+
+## Open owner decisions
+
+These are listed in ROADMAP.md under "Path to production":
+- **First game's scope:** genre, art style, size and languages. This sets the depth of every lane.
+- **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service?
+- **v1.0 platforms:** Windows + Steam Deck, or macOS too?
+
+## Claude's opinions and thoughts
+
+**What's strong:**
+- **Zero-dep suits agents.** Every line is in this repo, so an agent can read and fix anything, with no version churn
+  and no hidden behaviour in dependencies.
+- **Sight from the engine's own data.** Agents check images against the engine's packets instead of trusting their
+  own perception. That carried over from the Grok-Bevy research and is the project's most distinctive idea.
+- **The M0 base is solid.** Validation-clean on two GPU vendors, with structured errors throughout.
+
+**What worries me (honestly):**
+- **Scope.** Zero-dep means writing a TrueType rasteriser, a Vorbis decoder, physics, skeletal animation, a UI toolkit
+  and three platform backends. Agents make that feasible, but it's still years of work. The owner knows and accepts
+  this. Keep every feature in the plan, but **let the game decide the order within each milestone**, and never break
+  a foundation (F1–F5) to go faster.
+- **Coordination is the real bottleneck for swarms, not rendering.** That's why M1 (claims, versions, journal) matters
+  more than pretty pixels, and why I added a swarm track to the roadmap.
+- **Content is where small studios lose.** The biggest leverage is M4: procedural modelling tools, `style.toml` hard
+  checks and contact sheets. These let agents produce on-style assets while the owner approves in batches.
+- **The human stays the director.** Swarms multiply output, not taste. The engine should make the owner's judgement
+  cheap to apply: style rules, review queues, and a journal showing which agent built what.
+- **Competition is real.** Unity and Unreal shipped MCP servers in 2026, so "agents can drive the engine" is no
+  longer unique. Specula wins only on what bolt-ons can't retrofit: swarm concurrency, verification as data,
+  deterministic headless playtests, an engine small enough for agents to read, and efficiency by default. Guard
+  those six advantages (engine survey §1).
+- **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
+
+**Recommendations for the next session:**
+1. Start the game conversation with design: genre, scope, art style and the core loop. Then greybox the first space
+   through MCP.
+2. If the greybox needs to survive restarts, build **M1 persistence (text save/load) first**. It's small and unblocks
+   everything.
+3. Then do the rest of M1. Its exit proof (4+ agents building separate districts at once) doubles as the first real
+   swarm test.
+4. Walk the owner through the five design docs in `docs/design/` and the engine survey. They're researched but not yet reviewed with the
+   owner, and their "reviewed" boxes in ROADMAP.md are unticked.
+5. At the start of the game, write its **style bible** with the owner (see design/PROCEDURAL_MODELLING.md). The owner
+   said Claude's taste is a reason Claude is on this project, so put it to work there: shape language, palette and
+   proportions.

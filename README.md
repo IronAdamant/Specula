@@ -11,7 +11,10 @@ in real time. The agent protocol is the engine's primary interface; the human ed
 - **2D and 3D**, hot-reloaded Rust game logic, text-first world files.
 
 **Status:** M0 complete (agents connect over MCP, build a world, and see it); M1 (world model + multi-agent claims) next.
-See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+
+The goal: let a solo developer or a small studio build games at the scale of a large company by running swarms of AI
+agents in one live engine.
 
 The previous Bevy-based tooling (formerly *Grok-Bevy*) is preserved at tag
 [`bevy-tooling-final`](https://github.com/IronAdamant/Specula/tree/bevy-tooling-final); its docs are in

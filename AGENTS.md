@@ -1,6 +1,8 @@
 # Specula — agent rules
 
-Specula is a **zero-dependency, agent-native game engine and editor in Rust**. Plan: [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+Specula is a **zero-dependency, agent-native game engine and editor in Rust**. Plan: [docs/ROADMAP.md](docs/ROADMAP.md)
+(checkboxes + reasoning) and [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md) (decisions, architecture). New to the project?
+Read [HANDOFF.md](HANDOFF.md) first.
 
 ## Hard rules
 
@@ -27,6 +29,9 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
    Vulkan / a desktop session is unavailable, so CI without a GPU stays green.
 8. **`unsafe`** only at FFI boundaries, each block with a `// SAFETY:` comment.
 9. **No warnings**: CI builds with `-Dwarnings`.
+10. **Foundations F1–F5** in [docs/ROADMAP.md](docs/ROADMAP.md) apply to every change from M1 on: swarm-first tools,
+    deterministic simulation ([docs/design/DETERMINISM.md](docs/design/DETERMINISM.md)), low-end performance (Intel
+    iGPU is the reference), physics/animation designed in, humans optional but never locked out.
 
 ## Layout
 

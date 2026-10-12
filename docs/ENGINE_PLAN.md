@@ -3,7 +3,7 @@
 **Specula** (Latin: *watchtower*) — a **zero-dependency, agent-native game engine and editor in Rust**.
 Multiple AI agents (and humans) connect to one live world and build different parts of it in real time.
 
-Supersedes [SPECULA_PLAN.md](SPECULA_PLAN.md) (Bevy-era plan). Bevy-era code is preserved at tag
+Supersedes [SPECULA_PLAN.md](archive/bevy-era/SPECULA_PLAN.md) (Bevy-era plan). Bevy-era code is preserved at tag
 **`bevy-tooling-final`** (`68c9d87`).
 
 ---
@@ -30,6 +30,12 @@ Supersedes [SPECULA_PLAN.md](SPECULA_PLAN.md) (Bevy-era plan). Bevy-era code is 
 6. **Text-first persistence**: worlds diff and merge in git; agents may also edit files directly.
 7. **Structured errors everywhere** (protocol, validation layers, shader compile, module build) — agents debug from data.
 8. **Zero third-party crates**, enforced by CI.
+9. **Swarm-first** (2026-10-13). The goal is for agent swarms to take a game from design doc to shipped build, letting
+   solo devs and small studios compete with large companies. Humans edit by hand only if they want to.
+10. **Deterministic simulation**: fixed tick, seeded RNG, own maths functions, state hashes
+    ([design/DETERMINISM.md](design/DETERMINISM.md)).
+11. **Efficient by default**: games must run well on integrated GPUs and handhelds. Performance is visible to agents
+    and budgeted; the Intel iGPU is the reference low-end device.
 
 ## Architecture
 
@@ -75,40 +81,11 @@ M0 may start with fewer crates and split as they grow.
 
 ## Milestones
 
-Each milestone ends with something agents can use.
+The checklist, with the reasoning for each step, is in **[ROADMAP.md](ROADMAP.md)**: M0 (done), M1 world and
+multi-agent (next), M2 rendering, M3 logic/physics/time, M4 asset studio, M5 audio/text/UI, M6 ship, plus platform
+and swarm tracks. This file keeps the decisions, architecture and the record of what was found along the way.
 
-### M0 — Loop end-to-end (Windows, Vulkan)
-
-- [x] Workspace reset: remove Bevy-era crates from `main` (preserved at `bevy-tooling-final`); CI zero-dep check
-      (`Cargo.lock` must contain only workspace packages)
-- [x] `.cargo/config.toml`: `[target.x86_64-pc-windows-gnu] rustflags = ["-C", "link-self-contained=yes"]` — link with the
-      Rust toolchain's own linker only (proven 2026-10-12; lands with the workspace reset because Bevy-era `tempfile` needs `ktmw32`)
-- [x] All OS/driver FFI via `#[link(name = "…", kind = "raw-dylib")]` — no import libraries from anyone
-      (proven: `vulkan-1` raw-dylib → `vkEnumerateInstanceVersion` = 1.4.341, no SDK)
-- [x] Crate contracts (public APIs as stubs) for core, platform, gpu, protocol; `specula-core::json` implemented
-- [x] `specula-core`: math, base64, CRC32/Adler32, DEFLATE (real compression) + inflate, PNG encode + decode
-- [x] Win32 window + message loop (raw FFI)
-- [x] Vulkan: instance, debug messenger (validation when SDK present), physical-device selection (list both GPUs),
-      device/queues, offscreen render target, Win32 surface + swapchain
-- [x] One pipeline: unlit coloured mesh; SPIR-V built with `glslc` at dev time, checked in
-- [x] Readback → PNG
-- [x] HTTP server + MCP subset: `initialize`, `tools/list`, `tools/call`
-- [x] Tools: `world_spawn` (cube/quad, transform, colour), `sight_frame` (PNG + subject list) — underscores: Claude Code
-      rejects dots in tool names
-- [x] Proof: two MCP sessions (Python client) built one scene in the live engine; and **Claude Code itself**
-      (`claude -p --mcp-config .mcp.json`, 2026-10-12) connected over HTTP, called engine_info / world_spawn /
-      sight_frame, saw the frame and confirmed the cube's rect within 1–2 px; 0 validation errors incl. shutdown
-- [x] `specula-sys`: single owner of kernel32 imports (windows-gnu drops a second crate's raw-dylib imports of the same DLL)
-
-**M0 findings to carry forward**
-- Occlusion: `on_screen` ≠ visible (a crate hidden behind the tower still reports a full rect) → M2 ID buffer with
-  per-entity visible-pixel counts.
-- MCP: revision 2026-07-28 drops `initialize`/sessions; we serve 2025-11-25 (+06-18, 03-26). Revisit when clients move.
-- Rectangles are projected **bounding boxes**: spheres come out up to ~30% wider than their pixels (a 40×38 px orb
-  reported as 52×47) → shape-aware bounds or ID-buffer extents in M2. Boxes are exact to 1–2 px.
-- Auto-framing fits the bounding box diagonal, so flat wide scenes look small in frame; tighten in M2.
-- Windowed tool throughput is paced by vsync (~60 calls/s from one agent; concurrent agents' calls batch per frame).
-- With 256 idle connections open, a new client gets a TCP reset rather than an HTTP 503.
+## M0 record (2026-10-12)
 
 **M0 adversarial review (2026-10-12) — fixed**
 - Top-down / bottom-up cameras rendered blank (`look_at_rh` degenerate) → fallback up axis (north up); `eye == target`
@@ -144,54 +121,13 @@ Each milestone ends with something agents can use.
   submit replaces the frame's fence + semaphore and rebuilds the swapchain
 - Echo example uses `specula_core::base64`
 
-### M1 — World and multi-agent
-
-- [ ] Entity store, components, command queue applied at frame boundary
-- [ ] Journal + undo/replay; sessions with agent ids
-- [ ] Claims, versions, conflict errors; subscriptions/notifications
-- [ ] Text persistence (load/save world)
-- [ ] Proof: two agents build disjoint parts of one world concurrently; a conflicting write is rejected cleanly
-
-### M2 — Rendering
-
-- [ ] Render graph; 3D meshes, PBR-lite materials, directional/point lights, shadow maps
-- [ ] 2D: sprites, tilemaps, vector shapes; ortho cameras
-- [x] PNG decode (inflate) — done early, in M0's `specula-core`
-- [ ] glTF import (meshes, materials, textures)
-- [ ] Per-agent offscreen cameras; `sight.subjects` exact screen rects; `sight.orbit`
-
-### M3 — Logic and time
-
-- [ ] Module host (C ABI), `specula-sdk`; build → reload without losing world state; structured build errors
-- [ ] Input (keyboard/mouse/gamepad via Win32/XInput); `time.pause/step/resume`; fixed-timestep simulation
-
-### M4 — Asset studio
-
-- [ ] Stage world (neutral backdrop, fixed lighting, scale refs); contact sheets; stats; lineup/before-after
-- [ ] `style.toml` hard checks (budget, scale, palette)
-
-### M5 — Audio, text, UI
-
-- [ ] WASAPI output + mixer; WAV (then OGG/Vorbis decode)
-- [ ] TrueType rasterizer + text rendering; immediate-mode UI (used by the human editor)
-
-### M6 — Ship
-
-- [ ] `specula export` → standalone game executable + assets, agent/editor layers stripped
-- [ ] Then: the original game
-
-### Platform track (after M2, in parallel)
-
-- [ ] Linux: X11 (then Wayland wire protocol), Vulkan surface
-- [ ] macOS: Cocoa via objc runtime FFI; Metal backend behind the render-hardware interface
-
 ## Dev environment
 
 - GPU: NVIDIA RTX 4090 Laptop + Intel UHD (two vendors to test device selection). `vulkan-1.dll` present.
-- **Needed:** LunarG Vulkan SDK (validation layers, `glslc`) — dev-time only.
+- LunarG Vulkan SDK 1.4.363.0 installed at `C:\VulkanSDK\1.4.363.0` (validation layers, `glslc`) — dev-time only.
 - Rust: toolchain `stable-x86_64-pc-windows-gnu`. **Linker = the one bundled in the Rust toolchain** (`-C link-self-contained=yes`),
   so LLVM-MinGW/WinLibs on PATH and MSVC are irrelevant. Own linker: optional long-term track, not before M0.
-- Vulkan loader on this machine reports 1.4.341; SDK to install: 1.4.363.0 (core only, no optional libraries).
+- Vulkan loader on this machine reports 1.4.341 (RTX 4090) / 1.3.271 (Intel).
 
 ## Risks
 
@@ -209,3 +145,8 @@ Each milestone ends with something agents can use.
 | 2026-10-12 | Engine direction decided; plan created |
 | 2026-10-12 | M0 built by 4 parallel subagents + integration; end-to-end MCP proof passed |
 | 2026-10-12 | M0 audit: full read of every crate; clippy clean; Claude Code proof; packets saved beside PNGs; GPU teardown checked |
+| 2026-10-12 | M0 complete after 3 adversarial review rounds (`badb857`) |
+| 2026-10-13 | Milestones moved to ROADMAP.md (checkboxes + reasoning, swarm track, Claude's **(new)** proposals); HANDOFF.md added |
+| 2026-10-13 | Owner accepted every proposal; swarm track made primary; foundations F1–F5 (swarm-first, determinism, low-end performance, physics/animation designed in, humans optional); design research in `docs/design/` |
+| 2026-10-13 | Engine survey (`docs/research/ENGINE_SURVEY.md`) + UI design; gaps added to the roadmap (➕); path to production (phases A–D, v1.0 = PC game on Steam for Windows + Steam Deck) |
+| 2026-10-13 | Rust track: `docs/research/RUST_AT_SCALE.md` (measured build baseline; forbid unsafe outside FFI crates; SAFETY and determinism as lints; compiler diagnostics as data; build service) |

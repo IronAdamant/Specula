@@ -1,4 +1,5 @@
 @AGENTS.md
+@HANDOFF.md
 
 ## Claude Code notes
 
