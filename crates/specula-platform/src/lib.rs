@@ -7,6 +7,12 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod decode;
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+use win32 as imp;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowDesc {
     pub title: String,
@@ -43,19 +49,40 @@ pub enum Event {
     /// User clicked close (or Alt+F4). The window stays open until dropped.
     CloseRequested,
     /// New client size in physical pixels (0×0 when minimized).
-    Resized { width: u32, height: u32 },
+    Resized {
+        width: u32,
+        height: u32,
+    },
     Focused(bool),
     /// `code` is the platform virtual-key code (Win32 `VK_*`); `repeat` for auto-repeat.
-    KeyDown { code: u32, repeat: bool },
-    KeyUp { code: u32 },
+    KeyDown {
+        code: u32,
+        repeat: bool,
+    },
+    KeyUp {
+        code: u32,
+    },
     /// Text input (one Unicode scalar), after keyboard layout processing.
     Char(char),
     /// Client-area pixels, origin top-left.
-    MouseMove { x: i32, y: i32 },
-    MouseDown { button: MouseButton, x: i32, y: i32 },
-    MouseUp { button: MouseButton, x: i32, y: i32 },
+    MouseMove {
+        x: i32,
+        y: i32,
+    },
+    MouseDown {
+        button: MouseButton,
+        x: i32,
+        y: i32,
+    },
+    MouseUp {
+        button: MouseButton,
+        x: i32,
+        y: i32,
+    },
     /// Wheel notches; positive = away from the user.
-    MouseWheel { delta: f32 },
+    MouseWheel {
+        delta: f32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,39 +104,85 @@ impl fmt::Display for PlatformError {
 impl std::error::Error for PlatformError {}
 
 /// A native top-level window. Not `Send`: create, pump and drop it on one thread.
+///
+/// Win32 notes: `Resized` is reported only when the size actually changes (the initial size may
+/// be reported once while the window is created); `Char` carries text only — control characters
+/// (Enter, Backspace, Tab, Esc, Ctrl+letter) are left to `KeyDown`. Alt or F10 alone does not
+/// enter the system-menu loop; Alt+F4 and Alt+Space keep their usual meaning.
 pub struct Window {
+    inner: imp::Window,
     _not_send: std::marker::PhantomData<*mut c_void>,
 }
 
 impl Window {
     /// Creates the window. The process is made per-monitor-DPI-aware (v2) on first use so sizes are
     /// physical pixels.
+    ///
+    /// Each side must be `1..=32767`; the OS may still enforce a minimum width for captioned
+    /// windows, so check [`Window::client_size`] for very small requests.
     pub fn new(desc: &WindowDesc) -> Result<Window, PlatformError> {
-        let _ = desc;
-        todo!("specula-platform: Window::new")
+        Ok(Window { inner: imp::Window::new(desc)?, _not_send: std::marker::PhantomData })
     }
 
     /// Non-blocking: drain pending OS messages and return the events they produced, in order.
     pub fn poll_events(&mut self) -> Vec<Event> {
-        todo!("specula-platform: Window::poll_events")
+        self.inner.poll_events()
     }
 
     pub fn raw(&self) -> RawWindow {
-        todo!("specula-platform: Window::raw")
+        self.inner.raw()
     }
 
     /// Current client-area size in physical pixels.
     pub fn client_size(&self) -> (u32, u32) {
-        todo!("specula-platform: Window::client_size")
+        self.inner.client_size()
     }
 
     pub fn set_title(&mut self, title: &str) {
-        let _ = title;
-        todo!("specula-platform: Window::set_title")
+        self.inner.set_title(title)
     }
 
     pub fn set_visible(&mut self, visible: bool) {
-        let _ = visible;
-        todo!("specula-platform: Window::set_visible")
+        self.inner.set_visible(visible)
+    }
+}
+
+/// Backend for platforms without a native implementation yet: `Window` is uninhabited.
+#[cfg(not(windows))]
+mod imp {
+    use crate::{Event, PlatformError, RawWindow, WindowDesc};
+
+    pub(crate) enum Window {}
+
+    impl Window {
+        pub(crate) fn new(_desc: &WindowDesc) -> Result<Window, PlatformError> {
+            Err(PlatformError {
+                message: format!(
+                    "specula-platform: native windows are unsupported on this platform ({}); only Windows (Win32) is implemented",
+                    std::env::consts::OS
+                ),
+                os_code: None,
+            })
+        }
+
+        pub(crate) fn poll_events(&mut self) -> Vec<Event> {
+            match *self {}
+        }
+
+        pub(crate) fn raw(&self) -> RawWindow {
+            match *self {}
+        }
+
+        pub(crate) fn client_size(&self) -> (u32, u32) {
+            match *self {}
+        }
+
+        pub(crate) fn set_title(&mut self, _title: &str) {
+            match *self {}
+        }
+
+        pub(crate) fn set_visible(&mut self, _visible: bool) {
+            match *self {}
+        }
     }
 }
