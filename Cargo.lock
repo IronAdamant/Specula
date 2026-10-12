@@ -19,10 +19,16 @@ version = "0.3.0"
 [[package]]
 name = "specula-gpu"
 version = "0.3.0"
+dependencies = [
+ "specula-sys",
+]
 
 [[package]]
 name = "specula-platform"
 version = "0.3.0"
+dependencies = [
+ "specula-sys",
+]
 
 [[package]]
 name = "specula-protocol"
@@ -30,3 +36,7 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
 ]
+
+[[package]]
+name = "specula-sys"
+version = "0.3.0"

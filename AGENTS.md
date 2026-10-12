@@ -8,7 +8,10 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
    packages only (`crates/specula/tests/zero_dep.rs` enforces it). Not even dev-dependencies.
 2. **OS/driver imports via raw-dylib.** Declare foreign functions with
    `#[link(name = "user32", kind = "raw-dylib")] extern "system" { … }` — never rely on import libraries.
-   Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** (`LoadLibraryW`/`GetProcAddress`).
+   Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** via `specula_sys::dynlib::Library`.
+   **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
+   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` → `specula-platform`.
+   Tests/examples must not re-declare imports of a DLL their dependencies already declare.
 3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
    Do not set other linkers or add build scripts that call external tools.
    **Gotcha:** an environment `RUSTFLAGS` *replaces* config rustflags — to deny warnings locally use
@@ -27,6 +30,7 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
 
 | Crate | Role |
 |---|---|
+| `specula-sys` | the only `kernel32` imports; runtime library loader (`dynlib`) |
 | `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG |
 | `specula-platform` | native windows + input (Win32 first) |
 | `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |

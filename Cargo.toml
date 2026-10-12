@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/specula-sys",
     "crates/specula-core",
     "crates/specula-platform",
     "crates/specula-gpu",
@@ -19,6 +20,7 @@ rust-version = "1.85"
 # Zero third-party crates: only path dependencies on workspace members are allowed.
 # Enforced by scripts/check_zero_dep.py (CI).
 [workspace.dependencies]
+specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }
 specula-platform = { path = "crates/specula-platform" }
 specula-gpu = { path = "crates/specula-gpu" }
