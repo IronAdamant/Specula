@@ -30,7 +30,7 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
 
 | Crate | Role |
 |---|---|
-| `specula-sys` | the only `kernel32` imports; runtime library loader (`dynlib`) |
+| `specula-sys` | the only `kernel32` imports; runtime library loader (`dynlib`); Ctrl+C / console-close handling (`interrupt`) |
 | `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG |
 | `specula-platform` | native windows + input (Win32 first) |
 | `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |

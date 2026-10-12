@@ -108,6 +108,13 @@ Each milestone ends with something agents can use.
   bounds or ID-buffer extents in M2. Independent skeptic check: all six rects within 1–2 px of a fresh projection.
 - Auto-framing fits the bounding box diagonal, so flat wide scenes look small in frame; tighten in M2.
 
+**M0 follow-ups (done 2026-10-12)**
+- `zlib_decompress`/`decompress` capped at `DEFAULT_MAX_OUTPUT` (256 MiB); `_with_limit` variants for other caps
+- Ctrl+C / Ctrl+Break / console close shut the engine down cleanly in both modes (`specula_sys::interrupt`)
+- GPU failure paths: `run_sync` drains the queue and resets its fence on any wait failure; a failed window
+  submit replaces the frame's fence + semaphore and rebuilds the swapchain
+- Echo example uses `specula_core::base64`
+
 ### M1 — World and multi-agent
 
 - [ ] Entity store, components, command queue applied at frame boundary

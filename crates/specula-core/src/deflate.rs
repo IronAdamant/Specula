@@ -28,10 +28,19 @@ pub fn compress(data: &[u8], level: Level) -> Vec<u8> {
     w.finish()
 }
 
+/// Output cap of [`decompress`] and [`zlib_decompress`]: a few kilobytes of hostile input can
+/// otherwise expand to gigabytes ("zip bomb"). Use the `_with_limit` variants to choose another.
+pub const DEFAULT_MAX_OUTPUT: usize = 256 * 1024 * 1024;
+
 /// Raw DEFLATE stream → bytes. Handles stored, fixed and dynamic Huffman blocks.
-/// Bytes after the final block are ignored.
+/// Bytes after the final block are ignored. Output over [`DEFAULT_MAX_OUTPUT`] is an error.
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, InflateError> {
-    inflate(data, usize::MAX).map(|(out, _)| out)
+    decompress_with_limit(data, DEFAULT_MAX_OUTPUT)
+}
+
+/// [`decompress`] with an explicit output cap in bytes (exceeding it is an error).
+pub fn decompress_with_limit(data: &[u8], max_out: usize) -> Result<Vec<u8>, InflateError> {
+    inflate(data, max_out).map(|(out, _)| out)
 }
 
 /// zlib stream: 2-byte header, DEFLATE data, Adler-32 trailer.
@@ -50,9 +59,14 @@ pub fn zlib_compress(data: &[u8], level: Level) -> Vec<u8> {
     out
 }
 
-/// Validates header and Adler-32.
+/// Validates header and Adler-32. Output over [`DEFAULT_MAX_OUTPUT`] is an error.
 pub fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, InflateError> {
-    zlib_decompress_limited(data, usize::MAX, false)
+    zlib_decompress_with_limit(data, DEFAULT_MAX_OUTPUT)
+}
+
+/// [`zlib_decompress`] with an explicit output cap in bytes (exceeding it is an error).
+pub fn zlib_decompress_with_limit(data: &[u8], max_out: usize) -> Result<Vec<u8>, InflateError> {
+    zlib_decompress_limited(data, max_out, false)
 }
 
 /// zlib decode with an output cap (exceeding it is an error) and optional tolerance for bytes
@@ -335,6 +349,10 @@ impl Decoder {
     }
 }
 
+fn too_large(max_out: usize) -> InflateError {
+    InflateError::new(format!("decompressed data exceeds the {max_out}-byte limit"))
+}
+
 /// Inflate a raw DEFLATE stream. Returns the output and the number of input bytes used.
 /// Output beyond `max_out` bytes is an error.
 fn inflate(data: &[u8], max_out: usize) -> Result<(Vec<u8>, usize), InflateError> {
@@ -358,7 +376,7 @@ fn inflate(data: &[u8], max_out: usize) -> Result<(Vec<u8>, usize), InflateError
                     .get(p + 4..p + 4 + len)
                     .ok_or_else(|| InflateError::new("stored block truncated"))?;
                 if out.len() + len > max_out {
-                    return Err(InflateError::new("decompressed data exceeds the expected size"));
+                    return Err(too_large(max_out));
                 }
                 out.extend_from_slice(body);
                 r.pos = p + 4 + len;
@@ -436,7 +454,7 @@ fn inflate_block(
         let sym = lit.decode(r)?;
         if sym < 256 {
             if out.len() >= max_out {
-                return Err(InflateError::new("decompressed data exceeds the expected size"));
+                return Err(too_large(max_out));
             }
             out.push(sym as u8);
             continue;
@@ -458,7 +476,7 @@ fn inflate_block(
             return Err(InflateError::new(format!("distance {d} reaches before the start of the output")));
         }
         if out.len() + len > max_out {
-            return Err(InflateError::new("decompressed data exceeds the expected size"));
+            return Err(too_large(max_out));
         }
         let start = out.len() - d;
         if d >= len {
@@ -1181,6 +1199,22 @@ mod tests {
         let z = zlib_compress(&[1u8; 1000], Level::Default);
         assert!(zlib_decompress_limited(&z, 999, false).is_err());
         assert_eq!(zlib_decompress_limited(&z, 1000, false).unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn public_limits_stop_expansion_bombs() {
+        // 4 MiB of zeros compresses to a few kilobytes: a miniature decompression bomb.
+        let bomb = vec![0u8; 4 << 20];
+        let z = zlib_compress(&bomb, Level::Best);
+        assert!(z.len() < 16 * 1024, "bomb is {} bytes", z.len());
+        let e = zlib_decompress_with_limit(&z, 1 << 20).unwrap_err();
+        assert!(e.message.contains("1048576-byte limit"), "{e}");
+        let raw = &z[2..z.len() - 4];
+        assert!(decompress_with_limit(raw, 1 << 20).is_err());
+        // Under the default cap it decodes.
+        assert_eq!(zlib_decompress(&z).unwrap().len(), bomb.len());
+        assert_eq!(decompress(raw).unwrap().len(), bomb.len());
+        const { assert!(DEFAULT_MAX_OUTPUT >= 64 << 20) };
     }
 
     #[test]

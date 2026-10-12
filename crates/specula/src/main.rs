@@ -14,6 +14,7 @@ use specula_core::{base64, png, Json};
 use specula_gpu::{AdapterPreference, FrameDesc, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{Event, Window, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
+use specula_sys::interrupt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -77,6 +78,9 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    if let Err(e) = interrupt::install() {
+        eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
+    }
     let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let mut engine = Engine::new(gpu)?;
@@ -109,7 +113,7 @@ fn run() -> Result<(), String> {
         Arc::new(tools::Tools::new(to_engine)),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
-    eprintln!("specula: MCP at http://{}/mcp", server.local_addr());
+    eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
 
     let result = match window.as_mut() {
         Some(window) => engine.run_windowed(window, &requests, &server),
@@ -126,6 +130,7 @@ fn run() -> Result<(), String> {
         eprintln!("specula: vulkan {:?} {}: {}", m.severity, m.id_name, m.message);
     }
     eprintln!("specula: shut down ({errors} validation errors)");
+    interrupt::finished();
     result
 }
 
@@ -149,6 +154,9 @@ impl Engine {
     fn run_windowed(&mut self, window: &mut Window, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
         let mut title = String::new();
         loop {
+            if interrupt::requested() {
+                return Ok(());
+            }
             for event in window.poll_events() {
                 match event {
                     Event::CloseRequested => return Ok(()),
@@ -186,13 +194,14 @@ impl Engine {
     }
 
     fn run_headless(&mut self, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
-        loop {
+        while !interrupt::requested() {
             match requests.recv_timeout(Duration::from_millis(100)) {
                 Ok(request) => self.handle(request, server),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
         }
+        Ok(())
     }
 
     fn handle(&mut self, request: Request, server: &Server) {

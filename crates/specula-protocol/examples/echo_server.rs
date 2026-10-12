@@ -23,24 +23,6 @@ const RED_SQUARE_PNG: [u8; 74] = [
     0x60, 0x82,
 ];
 
-/// Standard base64 with padding (RFC 4648 §4).
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let byte = |i: usize| chunk.get(i).copied().unwrap_or(0) as u32;
-        let n = (byte(0) << 16) | (byte(1) << 8) | byte(2);
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 struct EchoTools;
 
 impl ToolHandler for EchoTools {
@@ -80,7 +62,10 @@ impl ToolHandler for EchoTools {
                 None => ToolOutput::error("echo: argument 'text' (string) is required"),
             },
             "red_square" => ToolOutput {
-                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64(&RED_SQUARE_PNG) }],
+                content: vec![Content::Image {
+                    mime_type: "image/png".into(),
+                    data_base64: specula_core::base64::encode(&RED_SQUARE_PNG),
+                }],
                 is_error: false,
             },
             other => ToolOutput::error(format!("no tool named {other}")),
@@ -120,14 +105,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_matches_rfc4648_vectors() {
-        let cases = [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE=")];
-        for (input, expected) in cases {
-            assert_eq!(base64(input.as_bytes()), expected);
-        }
-        assert_eq!(
-            base64(&RED_SQUARE_PNG),
-            "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mP4z8CAFTEMLQkAKP8/wc53yE8AAAAASUVORK5CYII="
-        );
+    fn red_square_is_an_8x8_red_png() {
+        let image = specula_core::png::decode(&RED_SQUARE_PNG).expect("valid PNG");
+        assert_eq!((image.width, image.height), (8, 8));
+        assert!(image.rgba.chunks_exact(4).all(|px| px == [255, 0, 0, 255]));
     }
 }

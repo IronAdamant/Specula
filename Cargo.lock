@@ -10,6 +10,7 @@ dependencies = [
  "specula-gpu",
  "specula-platform",
  "specula-protocol",
+ "specula-sys",
 ]
 
 [[package]]

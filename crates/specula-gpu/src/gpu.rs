@@ -137,14 +137,24 @@ impl GpuInner {
     }
 
     /// Record with `record`, submit, and wait for completion.
+    ///
+    /// On return — success or error — nothing submitted here is still running, so callers may free
+    /// what the commands used, and the fence is unsignaled for the next call.
     fn run_sync(&self, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<(), GpuError> {
         let dev = &self.device;
         dev.begin(self.sync_cmd)?;
         record(dev, self.sync_cmd);
         dev.end(self.sync_cmd)?;
+        // A failed submit queues nothing and leaves the fence untouched.
         dev.submit(self.sync_cmd, None, None, self.sync_fence)?;
-        dev.wait_fence(self.sync_fence)?;
-        dev.reset_fence(self.sync_fence)
+        let waited = dev.wait_fence(self.sync_fence);
+        if waited.is_err() {
+            // Timed out (work may still be running) or the device was lost: drain the queue
+            // before anyone frees the resources this work touches.
+            dev.wait_idle();
+        }
+        let reset = dev.reset_fence(self.sync_fence);
+        waited.and(reset)
     }
 
     pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Result<MeshId, GpuError> {

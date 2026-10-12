@@ -263,7 +263,8 @@ impl Window {
 
     /// Wait until no frame in flight is using any resource.
     pub fn wait_frames(&self, dev: &Device) -> Result<(), GpuError> {
-        for f in &self.frames {
+        // Null fences come from a failed recovery; nothing can be pending on them.
+        for f in self.frames.iter().filter(|f| f.fence != VK_NULL_HANDLE) {
             dev.wait_fence(f.fence)?;
         }
         Ok(())
@@ -287,6 +288,11 @@ impl Window {
         let scfns = swapchain_fns(dev)?;
         let pipeline = pipelines.get(dev, self.format.format)?;
         let f = &self.frames[self.frame_index];
+        if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
+            return Err(GpuError::new(
+                "window frame resources were lost after a failed submit; attach the window again",
+            ));
+        }
         dev.wait_fence(f.fence)?;
 
         let mut index = 0u32;
@@ -348,12 +354,16 @@ impl Window {
         );
         dev.end(f.cmd)?;
         dev.reset_fence(f.fence)?;
-        dev.submit(
+        let submitted = dev.submit(
             f.cmd,
             Some((f.acquired, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)),
             Some((self.render_done[i], VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)),
             f.fence,
-        )?;
+        );
+        if let Err(e) = submitted {
+            self.recover_frame(dev, self.frame_index);
+            return Err(e);
+        }
 
         let present = VkPresentInfoKHR {
             s_type: ST_PRESENT_INFO_KHR,
@@ -376,6 +386,25 @@ impl Window {
             }
             _ => Err(GpuError::vk("vkQueuePresentKHR", r)),
         }
+    }
+
+    /// After a failed submit nothing was queued: the frame's fence (already reset) would never
+    /// signal, its acquire semaphore stays signaled, and the acquired image is never presented.
+    /// Replace the fence (signaled) and semaphore, and mark the swapchain stale so the next present
+    /// rebuilds it, which reclaims the image. If replacements can't be created, the handles stay
+    /// null and `present` reports that the window must be attached again.
+    fn recover_frame(&mut self, dev: &Device, index: usize) {
+        dev.wait_idle();
+        let frame = &mut self.frames[index];
+        // SAFETY: the device is idle; both objects belong to `dev` and are destroyed exactly once
+        // (their handles are replaced right below).
+        unsafe {
+            (dev.fns.destroy_fence)(dev.handle, frame.fence, ptr::null());
+            (dev.fns.destroy_semaphore)(dev.handle, frame.acquired, ptr::null());
+        }
+        frame.fence = dev.create_fence(true).unwrap_or(VK_NULL_HANDLE);
+        frame.acquired = dev.create_semaphore().unwrap_or(VK_NULL_HANDLE);
+        self.stale = true;
     }
 
     /// Destroy everything. The device must be idle.
