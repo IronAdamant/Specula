@@ -62,8 +62,8 @@ M0 may start with fewer crates and split as they grow.
 
 - Engine hosts MCP (Streamable HTTP subset) on `127.0.0.1`; each connection is a session with an agent id.
 - Claude Code: `claude mcp add --transport http specula http://127.0.0.1:<port>/mcp`.
-- Tool families: `world.*` (spawn, set, delete, query, claim, release, undo), `sight.*` (frame, subjects, orbit, camera),
-  `time.*` (pause, step, resume), `logic.*` (build, reload, errors), `asset.*` (import, studio).
+- Tool families: `world_*` (spawn, set, delete, query, claim, release, undo), `sight_*` (frame, subjects, orbit, camera),
+  `time_*` (pause, step, resume), `logic_*` (build, reload, errors), `asset_*` (import, studio). Port 7471.
 - Subscriptions via MCP notifications: entity changes inside an agent's watched subtree/region.
 
 ### Concurrency model
@@ -79,16 +79,22 @@ Each milestone ends with something agents can use.
 
 ### M0 — Loop end-to-end (Windows, Vulkan)
 
-- [ ] Workspace reset: remove Bevy-era crates from `main` (preserved at `bevy-tooling-final`); CI zero-dep check
+- [x] Workspace reset: remove Bevy-era crates from `main` (preserved at `bevy-tooling-final`); CI zero-dep check
       (`Cargo.lock` must contain only workspace packages)
-- [ ] `specula-core`: JSON parse/serialize; PNG encoder (stored deflate + CRC32 + Adler32)
+- [x] `.cargo/config.toml`: `[target.x86_64-pc-windows-gnu] rustflags = ["-C", "link-self-contained=yes"]` — link with the
+      Rust toolchain's own linker only (proven 2026-10-12; lands with the workspace reset because Bevy-era `tempfile` needs `ktmw32`)
+- [ ] All OS/driver FFI via `#[link(name = "…", kind = "raw-dylib")]` — no import libraries from anyone
+      (proven: `vulkan-1` raw-dylib → `vkEnumerateInstanceVersion` = 1.4.341, no SDK)
+- [x] Crate contracts (public APIs as stubs) for core, platform, gpu, protocol; `specula-core::json` implemented
+- [ ] `specula-core`: math, base64, CRC32/Adler32, DEFLATE (real compression) + inflate, PNG encode + decode
 - [ ] Win32 window + message loop (raw FFI)
 - [ ] Vulkan: instance, debug messenger (validation when SDK present), physical-device selection (list both GPUs),
       device/queues, offscreen render target, Win32 surface + swapchain
 - [ ] One pipeline: unlit coloured mesh; SPIR-V built with `glslc` at dev time, checked in
 - [ ] Readback → PNG
 - [ ] HTTP server + MCP subset: `initialize`, `tools/list`, `tools/call`
-- [ ] Tools: `world.spawn` (cube/quad, transform, colour), `sight.frame` (PNG + subject list)
+- [ ] Tools: `world_spawn` (cube/quad, transform, colour), `sight_frame` (PNG + subject list) — underscores: Claude Code
+      rejects dots in tool names
 - [ ] Proof: Claude Code connects over HTTP, spawns a cube, captures the frame, sees it
 
 ### M1 — World and multi-agent
@@ -135,8 +141,9 @@ Each milestone ends with something agents can use.
 
 - GPU: NVIDIA RTX 4090 Laptop + Intel UHD (two vendors to test device selection). `vulkan-1.dll` present.
 - **Needed:** LunarG Vulkan SDK (validation layers, `glslc`) — dev-time only.
-- Rust: default toolchain `windows-gnu`; LLVM-MinGW `gcc` first on PATH lacks libgcc, MSVC not installed. Until fixed,
-  set `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` to WinLibs `mingw64/bin/x86_64-w64-mingw32-gcc.exe`.
+- Rust: toolchain `stable-x86_64-pc-windows-gnu`. **Linker = the one bundled in the Rust toolchain** (`-C link-self-contained=yes`),
+  so LLVM-MinGW/WinLibs on PATH and MSVC are irrelevant. Own linker: optional long-term track, not before M0.
+- Vulkan loader on this machine reports 1.4.341; SDK to install: 1.4.363.0 (core only, no optional libraries).
 
 ## Risks
 

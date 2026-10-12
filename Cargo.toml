@@ -1,51 +1,31 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/specula-env",
-    "crates/specula-brp",
-    "crates/specula",
-    "templates/sample-app",
-    "games/demo-2d",
-    "games/demo-3d",
-]
-default-members = [
-    "crates/specula-env",
-    "crates/specula-brp",
+    "crates/specula-core",
+    "crates/specula-platform",
+    "crates/specula-gpu",
+    "crates/specula-protocol",
     "crates/specula",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/IronAdamant/Specula"
 authors = ["Specula contributors"]
 rust-version = "1.85"
 
+# Zero third-party crates: only path dependencies on workspace members are allowed.
+# Enforced by scripts/check_zero_dep.py (CI).
 [workspace.dependencies]
-anyhow = "1"
-base64 = "0.22"
-clap = { version = "4", features = ["derive"] }
-specula-brp = { path = "crates/specula-brp", version = "0.2.0" }
-specula-env = { path = "crates/specula-env", version = "0.2.0" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "process", "time", "fs"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-which = "7"
-
-# Pinned ecosystem versions (Bevy 0.19 track)
-bevy = { version = "0.19", default-features = true }
-bevy_brp_extras = "0.22.1"
+specula-core = { path = "crates/specula-core" }
+specula-platform = { path = "crates/specula-platform" }
+specula-gpu = { path = "crates/specula-gpu" }
+specula-protocol = { path = "crates/specula-protocol" }
 
 [profile.dev]
 opt-level = 1
-
-[profile.dev.package."*"]
-opt-level = 3
 
 [profile.release]
 lto = "thin"

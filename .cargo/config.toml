@@ -1,0 +1,5 @@
+# Link with the linker that ships inside the Rust toolchain (rust-mingw, self-contained),
+# never whatever gcc happens to be first on PATH. Only affects the windows-gnu target.
+# All OS/driver imports use `kind = "raw-dylib"`, so no import libraries are needed.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-self-contained=yes"]

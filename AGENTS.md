@@ -1,69 +1,45 @@
-# Specula — agent project rules
+# Specula — agent rules
 
-## Mission
+Specula is a **zero-dependency, agent-native game engine and editor in Rust**. Plan: [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 
-Help users build **production Bevy games** (playable, modular, shippable), not one-file demos. Use this repo’s skills, pins, and MCP tools.
+## Hard rules
 
-## Version pins (do not freestyle)
+1. **Zero third-party crates.** Only Rust `std` and workspace path dependencies. `Cargo.lock` must list workspace
+   packages only (`crates/specula/tests/zero_dep.rs` enforces it). Not even dev-dependencies.
+2. **OS/driver imports via raw-dylib.** Declare foreign functions with
+   `#[link(name = "user32", kind = "raw-dylib")] extern "system" { … }` — never rely on import libraries.
+   Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** (`LoadLibraryW`/`GetProcAddress`).
+3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
+   Do not set other linkers or add build scripts that call external tools.
+4. **Every crate compiles on non-Windows.** Windows-only code lives behind `#[cfg(windows)]`; other platforms return
+   a clear "unsupported on this platform" error at runtime.
+5. **Structured errors.** Error types carry machine-readable fields (codes, offsets, VkResult) — agents debug from data.
+6. **Conventions** (see `specula-core::math` docs): right-handed, +Y up, metres; column-major matrices;
+   Vulkan clip (y down, depth 0..1); screen pixels origin top-left; colours given to APIs are sRGB.
+7. **Tests.** Pure code gets unit tests. Tests needing a GPU or a window must **skip cleanly** (print why, pass) when
+   Vulkan / a desktop session is unavailable, so CI without a GPU stays green.
+8. **`unsafe`** only at FFI boundaries, each block with a `// SAFETY:` comment.
+9. **No warnings**: CI builds with `-Dwarnings`.
 
-| Component | Version |
-|-----------|---------|
-| Bevy | **0.19** |
-| bevy_brp_mcp / bevy_brp_extras | **0.22.1** |
-| Default BRP port | **15702** |
-| Features | `remote`, `capture` (`capture` implies `remote`) |
+## Layout
 
-## Skill routing (load these)
+| Crate | Role |
+|---|---|
+| `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG |
+| `specula-platform` | native windows + input (Win32 first) |
+| `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |
+| `specula-protocol` | HTTP/1.1 + MCP server for agents |
+| `specula` (bin) | world server: world, rendering, agent tools |
 
-| User intent | Load first |
-|-------------|------------|
-| Build / structure / ship a Bevy game | `bevy-production` |
-| Complete short **demo** (objective, win/lose) | `bevy-demo-game` + dimensional skill + `bevy-production` |
-| 2D (sprites, tiles, top-down, platformer) | `bevy-production` + `bevy-2d-game` (+ `bevy-demo-game` for full demos) |
-| 3D (meshes, glTF, lighting) | `bevy-production` + `bevy-3d-game` (+ `bevy-demo-game` for full demos) |
-| Live run, BRP, screenshot, MCP iterate | `bevy-agent-loop` |
-| Generate game art | Grok `game-asset-core` + matching specialist (`game-animation-frames`, `game-character-consistency`, `game-tilesets`, `game-ui-icons`) |
+## Tooling on this machine
 
-Skills live under `skills/` (canonical; mirrored to `.claude/skills/` and `.grok/skills/` by `scripts/sync_skills.py` — edit `skills/` only). See [docs/PRODUCTION_GAMES.md](docs/PRODUCTION_GAMES.md), [docs/GAME_DOD.md](docs/GAME_DOD.md), [docs/ROADMAP.md](docs/ROADMAP.md).
-## Layout contract for real games
+- Toolchain `stable-x86_64-pc-windows-gnu`. Vulkan SDK: `C:\VulkanSDK\1.4.363.0` (`Bin\glslc.exe`,
+  `Bin\spirv-val.exe`; validation layer registered system-wide). `VULKAN_SDK` may not be in the shell environment —
+  use the full path.
+- Shaders: GLSL sources in `crates/specula-gpu/shaders/`, compiled to `.spv` with `glslc` **by hand** and committed;
+  the crate embeds the `.spv` with `include_bytes!` (no build scripts).
 
-Prefer (or create) this structure over a single `main.rs` scene:
+## MCP
 
-- `src/main.rs` — thin entry only  
-- `src/lib.rs` + `plugins/`, `states.rs`, `systems/`, `components.rs`, `resources.rs`  
-- `assets/{sprites|models,ui,audio}/`  
-- App states: `Loading` → `MainMenu` → `Playing` (+ `Paused`, `Victory` / `GameOver` for demos)  
-- Short demos must meet **docs/GAME_DOD.md** (not movement-only)  
-- Feature-gated remote: `BrpExtrasPlugin` under `feature = "remote"`
-
-## Anti-demo rules
-
-For any request to **build a game** (not “smoke-test BRP”):
-
-- **Do not** stop at the static cube sample (`templates/sample-app`).  
-- **Do** implement input + `Update` systems and state transitions.  
-- **Do** use at least one disk asset under `assets/` when art exists.  
-- **Do** verify with capture when the MCP server is available (`bevy-agent-loop`).
-
-The sample app is an **integration fixture** for doctor/BRP/capture CI — not a product template.
-
-## MCP tools (this repo)
-
-`bevy_env_check`, `bevy_launch_app`, `bevy_brp_*`, `bevy_capture_viewport`. Prefer full **`bevy_brp_mcp`** for hierarchy, watches, and input injection when installed.
-
-## Docs
-
-- Production: [docs/PRODUCTION_GAMES.md](docs/PRODUCTION_GAMES.md)  
-- Fast start: [docs/FAST_START.md](docs/FAST_START.md)  
-- Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)  
-- Agent eyesight baseline (`/goal`): [docs/AGENT_EYESIGHT_PLAN.md](docs/AGENT_EYESIGHT_PLAN.md) — V0–V6 “eyes open”, **not** an editor  
-- Agent eyesight **20/20 acuity** (`/goal`): [docs/AGENT_EYESIGHT_20_20_PLAN.md](docs/AGENT_EYESIGHT_20_20_PLAN.md) — fovea, multi-view, subjects, motion; **taste/design human-owned**  
-- Agent sight **next** (`/goal`): [docs/AGENT_SIGHT_NEXT_PLAN.md](docs/AGENT_SIGHT_NEXT_PLAN.md) — MCP-first ranking/profiles; dogfood CD + IF; **no** video/editor/taste scorer  
-- Agent sight **2D + 3D** (shipped): [docs/AGENT_SIGHT_2D3D_PLAN.md](docs/AGENT_SIGHT_2D3D_PLAN.md) — dim-specific sight; packs `hud`/`env_2d`; IF height terrain; findings [docs/AGENT_SIGHT_2D3D_FINDINGS_2026-07-22.md](docs/AGENT_SIGHT_2D3D_FINDINGS_2026-07-22.md)  
-- Agent sight **debt** (shipped): [docs/AGENT_SIGHT_DEBT_PLAN.md](docs/AGENT_SIGHT_DEBT_PLAN.md) — residual acuity; CD+IF full asset/env improve; findings [docs/AGENT_SIGHT_DEBT_FINDINGS_2026-07-23.md](docs/AGENT_SIGHT_DEBT_FINDINGS_2026-07-23.md)  
-- Agent sight **hardening** (shipped): [docs/AGENT_SIGHT_HARDENING_PLAN.md](docs/AGENT_SIGHT_HARDENING_PLAN.md) — Tier 1–3 gates; CD PulseMine; IF LoadingBay + heightfield; findings [docs/AGENT_SIGHT_HARDENING_FINDINGS_2026-07-23.md](docs/AGENT_SIGHT_HARDENING_FINDINGS_2026-07-23.md)  
-- Agent sight **fidelity** (shipped): [docs/AGENT_SIGHT_FIDELITY_PLAN.md](docs/AGENT_SIGHT_FIDELITY_PLAN.md) — Tier 1–3; CD CargoPod; IF OreCrusher + heightfield; findings [docs/AGENT_SIGHT_FIDELITY_FINDINGS_2026-07-23.md](docs/AGENT_SIGHT_FIDELITY_FINDINGS_2026-07-23.md)  
-- Agent sight **trust** (shipped): [docs/AGENT_SIGHT_TRUST_PLAN.md](docs/AGENT_SIGHT_TRUST_PLAN.md) — structural demotion, pack restore, multi-view; findings [docs/AGENT_SIGHT_TRUST_FINDINGS_2026-07-25.md](docs/AGENT_SIGHT_TRUST_FINDINGS_2026-07-25.md)  
-- Agent sight **soft edges** (shipped): [docs/AGENT_SIGHT_SOFT_PLAN.md](docs/AGENT_SIGHT_SOFT_PLAN.md) — ChildOf merge, fovea_dark, env_2d retry, CI matrix; findings [docs/AGENT_SIGHT_SOFT_FINDINGS_2026-07-25.md](docs/AGENT_SIGHT_SOFT_FINDINGS_2026-07-25.md)  
-- Agent sight **still soft** (`/goal`): [docs/AGENT_SIGHT_STILL_SOFT_PLAN.md](docs/AGENT_SIGHT_STILL_SOFT_PLAN.md) — re-review hierarchy, multi-view, craft-in-fovea, CD env pack, non-silent CI; closeout **`/agent-sight-dogfood` mode=full** only  
-
+The running engine serves MCP at `http://127.0.0.1:7471/mcp` (see `.mcp.json`). Tool names use
+`^[a-zA-Z0-9_-]{1,64}$` (`world_spawn`, `sight_frame`).

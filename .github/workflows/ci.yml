@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 env:
@@ -16,54 +16,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows is the primary target. Linux checks the portable crates and that
+        # platform/GPU crates still compile (they report "unsupported" at runtime there).
+        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux Bevy deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libxkbcommon-dev
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Test core crates
-        run: cargo test -p specula-env -p specula-brp -p specula --all-targets
-      - name: Build CLI
-        run: cargo build -p specula
-      - name: Doctor (no compile probe)
-        run: cargo run -p specula -- doctor
-
-  sample-check:
-    name: sample-app check (ubuntu)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux Bevy deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@v2
-      - name: Skill mirrors match skills/
-        run: python3 scripts/sync_skills.py --check
-      - name: cargo check sample with remote+capture
-        run: cargo check -p specula_sample --features remote,capture
-      - name: cargo check headless BRP binary
-        run: cargo check -p specula_sample --bin brp_headless --features remote
-
-  demo-check:
-    name: dogfood demos check (ubuntu)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux Bevy deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo check demo_2d + demo_3d (remote,capture)
-        run: |
-          cargo check -p demo_2d --features remote,capture
-          cargo check -p demo_3d --features remote,capture
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test (GPU/window tests skip when unavailable)
+        run: cargo test --workspace
