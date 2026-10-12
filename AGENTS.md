@@ -45,6 +45,13 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. P
 - Shaders: GLSL sources in `crates/specula-gpu/shaders/`, compiled to `.spv` with `glslc` **by hand** and committed;
   the crate embeds the `.spv` with `include_bytes!` (no build scripts).
 
+## Live checks (GPU + desktop; CI can't run these)
+
+After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
+`cargo build -p specula && python scripts/window_check.py`. On every adapter it builds a scene over MCP, screenshots
+the real window, resizes / minimizes / restores it, and requires zero validation messages and a clean shutdown.
+Open the PNGs in `target/window-check/` and look at them before claiming the window path works.
+
 ## MCP
 
 The running engine serves MCP at `http://127.0.0.1:7471/mcp` (see `.mcp.json`). Tool names use
