@@ -1,0 +1,524 @@
+//! Logical device, queue, memory allocation and simple resource helpers.
+
+use crate::instance::Instance;
+use crate::vk::*;
+use crate::GpuError;
+use std::ffi::{c_char, c_void, CStr};
+use std::ptr;
+
+const EXT_SWAPCHAIN: &CStr = c"VK_KHR_swapchain";
+
+/// Upper bound for any synchronous GPU wait; a frame taking longer means something is wrong.
+pub const FENCE_TIMEOUT_NS: u64 = 10_000_000_000;
+
+pub struct Device {
+    pub physical: VkPhysicalDevice,
+    pub handle: VkDevice,
+    pub fns: DeviceFns,
+    /// Present when `VK_KHR_swapchain` was enabled.
+    pub swapchain: Option<SwapchainFns>,
+    pub queue: VkQueue,
+    pub queue_family: u32,
+    memory: VkPhysicalDeviceMemoryProperties,
+}
+
+impl Device {
+    pub fn new(instance: &Instance, physical: VkPhysicalDevice, queue_family: u32) -> Result<Device, GpuError> {
+        let available = instance.device_extensions(physical)?;
+        let want_swapchain =
+            instance.surface.is_some() && available.iter().any(|e| *e == EXT_SWAPCHAIN.to_string_lossy());
+        let ext_ptrs: Vec<*const c_char> = if want_swapchain { vec![EXT_SWAPCHAIN.as_ptr()] } else { Vec::new() };
+
+        let priority = 1.0f32;
+        let queue_info = VkDeviceQueueCreateInfo {
+            s_type: ST_DEVICE_QUEUE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            queue_family_index: queue_family,
+            queue_count: 1,
+            p_queue_priorities: &priority,
+        };
+        let mut v13 = VkPhysicalDeviceVulkan13Features::new();
+        v13.dynamic_rendering = VK_TRUE;
+        v13.synchronization2 = VK_TRUE;
+        let features2 = VkPhysicalDeviceFeatures2 {
+            s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
+            p_next: &mut v13 as *mut _ as *mut c_void,
+            features: VkPhysicalDeviceFeatures { flags: [0; 55] },
+        };
+        let info = VkDeviceCreateInfo {
+            s_type: ST_DEVICE_CREATE_INFO,
+            p_next: &features2 as *const _ as *const c_void,
+            flags: 0,
+            queue_create_info_count: 1,
+            p_queue_create_infos: &queue_info,
+            enabled_layer_count: 0,
+            pp_enabled_layer_names: ptr::null(),
+            enabled_extension_count: ext_ptrs.len() as u32,
+            pp_enabled_extension_names: ext_ptrs.as_ptr(),
+            p_enabled_features: ptr::null(),
+        };
+        let mut handle: VkDevice = ptr::null_mut();
+        // SAFETY: all pointers in `info` refer to locals alive for the call; `physical` belongs to
+        // `instance`.
+        let r = unsafe { (instance.fns.create_device)(physical, &info, ptr::null(), &mut handle) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateDevice", r));
+        }
+
+        let get = |name: &CStr| {
+            // SAFETY: `handle` is the live device just created; `name` is NUL-terminated.
+            unsafe { (instance.fns.get_device_proc_addr)(handle, name.as_ptr()) }
+        };
+        let fns = match DeviceFns::load(get) {
+            Ok(f) => f,
+            Err(name) => {
+                if let Some(f) = get(c"vkDestroyDevice") {
+                    // SAFETY: `f` is vkDestroyDevice; the device has no child objects yet.
+                    unsafe {
+                        let destroy = std::mem::transmute::<
+                            unsafe extern "system" fn(),
+                            unsafe extern "system" fn(VkDevice, *const c_void),
+                        >(f);
+                        destroy(handle, ptr::null());
+                    }
+                }
+                return Err(GpuError::new(format!("Vulkan device is missing command {name}")));
+            }
+        };
+        let mut device = Device {
+            physical,
+            handle,
+            fns,
+            swapchain: None,
+            queue: ptr::null_mut(),
+            queue_family,
+            memory: instance.memory_properties(physical),
+        };
+        if want_swapchain {
+            device.swapchain = Some(
+                SwapchainFns::load(get).map_err(|n| GpuError::new(format!("VK_KHR_swapchain enabled but {n} is missing")))?,
+            );
+        }
+        // SAFETY: queue 0 of `queue_family` was requested at device creation.
+        unsafe { (device.fns.get_device_queue)(handle, queue_family, 0, &mut device.queue) };
+        Ok(device)
+    }
+
+    pub fn wait_idle(&self) {
+        // SAFETY: live device. Errors (device lost) leave nothing further to wait for.
+        unsafe { (self.fns.device_wait_idle)(self.handle) };
+    }
+
+    /// Memory type satisfying `type_bits` and `required`, preferring ones that also have `preferred`.
+    pub fn memory_type(&self, type_bits: u32, required: VkFlags, preferred: VkFlags) -> Option<u32> {
+        let types = &self.memory.memory_types[..self.memory.memory_type_count as usize];
+        let fits = |i: usize, flags: VkFlags| type_bits & (1 << i) != 0 && types[i].property_flags & flags == flags;
+        (0..types.len())
+            .find(|&i| fits(i, required | preferred))
+            .or_else(|| (0..types.len()).find(|&i| fits(i, required)))
+            .map(|i| i as u32)
+    }
+
+    fn allocate(&self, req: &VkMemoryRequirements, required: VkFlags, preferred: VkFlags, what: &str) -> Result<VkDeviceMemory, GpuError> {
+        let type_index = self.memory_type(req.memory_type_bits, required, preferred).ok_or_else(|| {
+            GpuError::new(format!("no memory type for {what} (type bits {:#x}, flags {required:#x})", req.memory_type_bits))
+        })?;
+        let info = VkMemoryAllocateInfo {
+            s_type: ST_MEMORY_ALLOCATE_INFO,
+            p_next: ptr::null(),
+            allocation_size: req.size,
+            memory_type_index: type_index,
+        };
+        let mut memory = VK_NULL_HANDLE;
+        // SAFETY: valid device and allocate info; `memory` is a valid out-pointer.
+        let r = unsafe { (self.fns.allocate_memory)(self.handle, &info, ptr::null(), &mut memory) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk(&format!("vkAllocateMemory ({what}, {} bytes)", req.size), r));
+        }
+        Ok(memory)
+    }
+
+    /// A buffer with its own memory. Host-visible buffers are persistently mapped.
+    pub fn create_buffer(&self, size: u64, usage: VkFlags, required: VkFlags, preferred: VkFlags, what: &str) -> Result<Buffer, GpuError> {
+        let info = VkBufferCreateInfo {
+            s_type: ST_BUFFER_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            size,
+            usage,
+            sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: ptr::null(),
+        };
+        let mut handle = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_buffer)(self.handle, &info, ptr::null(), &mut handle) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk(&format!("vkCreateBuffer ({what}, {size} bytes)"), r));
+        }
+        let mut buffer = Buffer { handle, memory: VK_NULL_HANDLE, mapped: ptr::null_mut() };
+        let mut req = VkMemoryRequirements::default();
+        // SAFETY: `handle` is a live buffer of this device.
+        unsafe { (self.fns.get_buffer_memory_requirements)(self.handle, handle, &mut req) };
+        let result = (|| {
+            buffer.memory = self.allocate(&req, required, preferred, what)?;
+            // SAFETY: memory was allocated for this buffer's requirements; offset 0 is aligned.
+            let r = unsafe { (self.fns.bind_buffer_memory)(self.handle, handle, buffer.memory, 0) };
+            if r != VK_SUCCESS {
+                return Err(GpuError::vk("vkBindBufferMemory", r));
+            }
+            if required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0 {
+                // SAFETY: host-visible memory, mapped once for the buffer's lifetime.
+                let r = unsafe { (self.fns.map_memory)(self.handle, buffer.memory, 0, VK_WHOLE_SIZE, 0, &mut buffer.mapped) };
+                if r != VK_SUCCESS {
+                    return Err(GpuError::vk("vkMapMemory", r));
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(buffer),
+            Err(e) => {
+                self.destroy_buffer(&buffer);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn destroy_buffer(&self, buffer: &Buffer) {
+        // SAFETY: the buffer and memory belong to this device, are no longer used by the GPU
+        // (callers wait first), and are destroyed exactly once. Null handles are ignored by Vulkan.
+        unsafe {
+            if !buffer.mapped.is_null() {
+                (self.fns.unmap_memory)(self.handle, buffer.memory);
+            }
+            (self.fns.destroy_buffer)(self.handle, buffer.handle, ptr::null());
+            (self.fns.free_memory)(self.handle, buffer.memory, ptr::null());
+        }
+    }
+
+    /// A 2D optimal-tiling image in device-local memory, plus a full view.
+    pub fn create_image(&self, format: VkFormat, width: u32, height: u32, usage: VkFlags, aspect: VkFlags, what: &str) -> Result<Image, GpuError> {
+        let info = VkImageCreateInfo {
+            s_type: ST_IMAGE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            image_type: VK_IMAGE_TYPE_2D,
+            format,
+            extent: VkExtent3D { width, height, depth: 1 },
+            mip_levels: 1,
+            array_layers: 1,
+            samples: VK_SAMPLE_COUNT_1_BIT,
+            tiling: VK_IMAGE_TILING_OPTIMAL,
+            usage,
+            sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: ptr::null(),
+            initial_layout: VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        let mut handle = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_image)(self.handle, &info, ptr::null(), &mut handle) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk(&format!("vkCreateImage ({what}, {width}x{height})"), r));
+        }
+        let mut image = Image { handle, memory: VK_NULL_HANDLE, view: VK_NULL_HANDLE };
+        let mut req = VkMemoryRequirements::default();
+        // SAFETY: `handle` is a live image of this device.
+        unsafe { (self.fns.get_image_memory_requirements)(self.handle, handle, &mut req) };
+        let result = (|| {
+            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, what)?;
+            // SAFETY: memory matches the image's requirements; offset 0.
+            let r = unsafe { (self.fns.bind_image_memory)(self.handle, handle, image.memory, 0) };
+            if r != VK_SUCCESS {
+                return Err(GpuError::vk("vkBindImageMemory", r));
+            }
+            image.view = self.create_view(handle, format, aspect)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(image),
+            Err(e) => {
+                self.destroy_image(&image);
+                Err(e)
+            }
+        }
+    }
+
+    pub fn create_view(&self, image: VkImage, format: VkFormat, aspect: VkFlags) -> Result<VkImageView, GpuError> {
+        let info = VkImageViewCreateInfo {
+            s_type: ST_IMAGE_VIEW_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            image,
+            view_type: VK_IMAGE_VIEW_TYPE_2D,
+            format,
+            components: VkComponentMapping::default(), // identity swizzle
+            subresource_range: full_range(aspect),
+        };
+        let mut view = VK_NULL_HANDLE;
+        // SAFETY: valid device, `image` is a live image of it.
+        let r = unsafe { (self.fns.create_image_view)(self.handle, &info, ptr::null(), &mut view) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateImageView", r));
+        }
+        Ok(view)
+    }
+
+    pub fn destroy_image(&self, image: &Image) {
+        // SAFETY: owned by this device, idle on the GPU, destroyed once; null handles are ignored.
+        unsafe {
+            (self.fns.destroy_image_view)(self.handle, image.view, ptr::null());
+            (self.fns.destroy_image)(self.handle, image.handle, ptr::null());
+            (self.fns.free_memory)(self.handle, image.memory, ptr::null());
+        }
+    }
+
+    pub fn create_fence(&self, signaled: bool) -> Result<VkFence, GpuError> {
+        let info = VkFenceCreateInfo {
+            s_type: ST_FENCE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: if signaled { VK_FENCE_CREATE_SIGNALED_BIT } else { 0 },
+        };
+        let mut fence = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_fence)(self.handle, &info, ptr::null(), &mut fence) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateFence", r));
+        }
+        Ok(fence)
+    }
+
+    pub fn create_semaphore(&self) -> Result<VkSemaphore, GpuError> {
+        let info = VkSemaphoreCreateInfo { s_type: ST_SEMAPHORE_CREATE_INFO, p_next: ptr::null(), flags: 0 };
+        let mut semaphore = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_semaphore)(self.handle, &info, ptr::null(), &mut semaphore) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateSemaphore", r));
+        }
+        Ok(semaphore)
+    }
+
+    pub fn wait_fence(&self, fence: VkFence) -> Result<(), GpuError> {
+        // SAFETY: `fence` is a live fence of this device.
+        let r = unsafe { (self.fns.wait_for_fences)(self.handle, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NS) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkWaitForFences", r));
+        }
+        Ok(())
+    }
+
+    pub fn reset_fence(&self, fence: VkFence) -> Result<(), GpuError> {
+        // SAFETY: `fence` is a live fence not in use by a pending submission (callers waited).
+        let r = unsafe { (self.fns.reset_fences)(self.handle, 1, &fence) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkResetFences", r));
+        }
+        Ok(())
+    }
+
+    pub fn create_command_pool(&self) -> Result<VkCommandPool, GpuError> {
+        let info = VkCommandPoolCreateInfo {
+            s_type: ST_COMMAND_POOL_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            queue_family_index: self.queue_family,
+        };
+        let mut pool = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_command_pool)(self.handle, &info, ptr::null(), &mut pool) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateCommandPool", r));
+        }
+        Ok(pool)
+    }
+
+    pub fn allocate_command_buffer(&self, pool: VkCommandPool) -> Result<VkCommandBuffer, GpuError> {
+        let info = VkCommandBufferAllocateInfo {
+            s_type: ST_COMMAND_BUFFER_ALLOCATE_INFO,
+            p_next: ptr::null(),
+            command_pool: pool,
+            level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            command_buffer_count: 1,
+        };
+        let mut cmd: VkCommandBuffer = ptr::null_mut();
+        // SAFETY: valid device, `pool` belongs to it; one output slot.
+        let r = unsafe { (self.fns.allocate_command_buffers)(self.handle, &info, &mut cmd) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkAllocateCommandBuffers", r));
+        }
+        Ok(cmd)
+    }
+
+    /// Reset and begin a one-time-submit command buffer (its previous submission must be complete).
+    pub fn begin(&self, cmd: VkCommandBuffer) -> Result<(), GpuError> {
+        // SAFETY: `cmd` comes from a pool with RESET_COMMAND_BUFFER and is not pending.
+        let r = unsafe { (self.fns.reset_command_buffer)(cmd, 0) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkResetCommandBuffer", r));
+        }
+        let info = VkCommandBufferBeginInfo {
+            s_type: ST_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: ptr::null(),
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: ptr::null(),
+        };
+        // SAFETY: `cmd` is in the initial state after the reset.
+        let r = unsafe { (self.fns.begin_command_buffer)(cmd, &info) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkBeginCommandBuffer", r));
+        }
+        Ok(())
+    }
+
+    pub fn end(&self, cmd: VkCommandBuffer) -> Result<(), GpuError> {
+        // SAFETY: `cmd` is recording.
+        let r = unsafe { (self.fns.end_command_buffer)(cmd) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkEndCommandBuffer", r));
+        }
+        Ok(())
+    }
+
+    /// Submit one command buffer with optional wait/signal semaphores and fence.
+    pub fn submit(
+        &self,
+        cmd: VkCommandBuffer,
+        wait: Option<(VkSemaphore, VkFlags64)>,
+        signal: Option<(VkSemaphore, VkFlags64)>,
+        fence: VkFence,
+    ) -> Result<(), GpuError> {
+        let sem = |(semaphore, stage_mask): (VkSemaphore, VkFlags64)| VkSemaphoreSubmitInfo {
+            s_type: ST_SEMAPHORE_SUBMIT_INFO,
+            p_next: ptr::null(),
+            semaphore,
+            value: 0,
+            stage_mask,
+            device_index: 0,
+        };
+        let wait = wait.map(sem);
+        let signal = signal.map(sem);
+        let cmd_info = VkCommandBufferSubmitInfo {
+            s_type: ST_COMMAND_BUFFER_SUBMIT_INFO,
+            p_next: ptr::null(),
+            command_buffer: cmd,
+            device_mask: 0,
+        };
+        let submit = VkSubmitInfo2 {
+            s_type: ST_SUBMIT_INFO_2,
+            p_next: ptr::null(),
+            flags: 0,
+            wait_semaphore_info_count: wait.is_some() as u32,
+            p_wait_semaphore_infos: wait.as_ref().map_or(ptr::null(), |w| w),
+            command_buffer_info_count: 1,
+            p_command_buffer_infos: &cmd_info,
+            signal_semaphore_info_count: signal.is_some() as u32,
+            p_signal_semaphore_infos: signal.as_ref().map_or(ptr::null(), |s| s),
+        };
+        // SAFETY: all referenced structs live until the call returns; `cmd` is executable.
+        let r = unsafe { (self.fns.queue_submit2)(self.queue, 1, &submit, fence) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkQueueSubmit2", r));
+        }
+        Ok(())
+    }
+
+    pub fn barrier(&self, cmd: VkCommandBuffer, buffers: &[VkBufferMemoryBarrier2], images: &[VkImageMemoryBarrier2]) {
+        let info = VkDependencyInfo {
+            s_type: ST_DEPENDENCY_INFO,
+            p_next: ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 0,
+            p_memory_barriers: ptr::null(),
+            buffer_memory_barrier_count: buffers.len() as u32,
+            p_buffer_memory_barriers: buffers.as_ptr(),
+            image_memory_barrier_count: images.len() as u32,
+            p_image_memory_barriers: images.as_ptr(),
+        };
+        // SAFETY: `cmd` is recording; the slices outlive the call.
+        unsafe { (self.fns.cmd_pipeline_barrier2)(cmd, &info) };
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        // SAFETY: owners destroyed every child object before dropping the device; the device is
+        // idle (the `Gpu` waits) and destroyed exactly once.
+        unsafe { (self.fns.destroy_device)(self.handle, ptr::null()) };
+    }
+}
+
+pub struct Buffer {
+    pub handle: VkBuffer,
+    pub memory: VkDeviceMemory,
+    /// Non-null for host-visible buffers.
+    pub mapped: *mut c_void,
+}
+
+pub struct Image {
+    pub handle: VkImage,
+    pub memory: VkDeviceMemory,
+    pub view: VkImageView,
+}
+
+pub fn full_range(aspect: VkFlags) -> VkImageSubresourceRange {
+    VkImageSubresourceRange {
+        aspect_mask: aspect,
+        base_mip_level: 0,
+        level_count: VK_REMAINING_MIP_LEVELS,
+        base_array_layer: 0,
+        layer_count: VK_REMAINING_ARRAY_LAYERS,
+    }
+}
+
+/// Image layout transition / dependency on the whole image.
+#[allow(clippy::too_many_arguments)]
+pub fn image_barrier(
+    image: VkImage,
+    aspect: VkFlags,
+    src_stage: VkFlags64,
+    src_access: VkFlags64,
+    dst_stage: VkFlags64,
+    dst_access: VkFlags64,
+    old_layout: VkImageLayout,
+    new_layout: VkImageLayout,
+) -> VkImageMemoryBarrier2 {
+    VkImageMemoryBarrier2 {
+        s_type: ST_IMAGE_MEMORY_BARRIER_2,
+        p_next: ptr::null(),
+        src_stage_mask: src_stage,
+        src_access_mask: src_access,
+        dst_stage_mask: dst_stage,
+        dst_access_mask: dst_access,
+        old_layout,
+        new_layout,
+        src_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+        image,
+        subresource_range: full_range(aspect),
+    }
+}
+
+pub fn buffer_barrier(
+    buffer: VkBuffer,
+    src_stage: VkFlags64,
+    src_access: VkFlags64,
+    dst_stage: VkFlags64,
+    dst_access: VkFlags64,
+) -> VkBufferMemoryBarrier2 {
+    VkBufferMemoryBarrier2 {
+        s_type: ST_BUFFER_MEMORY_BARRIER_2,
+        p_next: ptr::null(),
+        src_stage_mask: src_stage,
+        src_access_mask: src_access,
+        dst_stage_mask: dst_stage,
+        dst_access_mask: dst_access,
+        src_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: VK_QUEUE_FAMILY_IGNORED,
+        buffer,
+        offset: 0,
+        size: VK_WHOLE_SIZE,
+    }
+}
