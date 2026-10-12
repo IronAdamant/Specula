@@ -1,7 +1,7 @@
 //! Specula GPU layer: hand-written Vulkan bindings and the render-hardware interface.
 //!
-//! - `vulkan-1` is loaded **at runtime** (Windows: `LoadLibraryW` + `GetProcAddress` from kernel32 via
-//!   raw-dylib; later `dlopen` on Linux/macOS). All other entry points come through
+//! - `vulkan-1` is loaded **at runtime** through `specula_sys::dynlib` (Windows: `LoadLibraryW` +
+//!   `GetProcAddress`; later `dlopen` on Linux/macOS). All other entry points come through
 //!   `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr`. A machine without Vulkan gets a clean
 //!   `GpuError`, never a failed process start.
 //! - Validation layers (`VK_LAYER_KHRONOS_validation`) are enabled when requested and present;

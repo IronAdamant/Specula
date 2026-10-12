@@ -5,7 +5,28 @@ All notable changes to Specula are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] — 0.3.0: native engine, M0
+
+Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driver FFI only).
+See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+
+### Added
+
+- `specula-core`: JSON, math (Vulkan conventions), base64, CRC-32/Adler-32, DEFLATE/zlib, PNG encode/decode
+- `specula-sys`: sole owner of `kernel32` imports; runtime library loader (`dynlib`)
+- `specula-platform`: Win32 windows and input events
+- `specula-gpu`: runtime-loaded Vulkan 1.3 renderer (dynamic rendering, synchronization2), headless targets +
+  readback, window swapchain, validation capture
+- `specula-protocol`: HTTP/1.1 server and MCP (Streamable HTTP, revision 2025-11-25) for agents
+- `specula` world server: tools `world_spawn`, `world_list`, `world_delete`, `sight_frame`, `engine_info`
+- CI on Windows and Linux; `Cargo.lock` must contain workspace crates only
+
+### Removed
+
+- All Bevy-era crates, templates, demo games and skills (preserved at tag `bevy-tooling-final`; docs in
+  `docs/archive/bevy-era/`)
+
+## [0.2.x] — Bevy era (as Grok-Bevy)
 
 ### Added
 

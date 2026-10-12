@@ -31,7 +31,7 @@ impl Camera {
         proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
     }
 
-    pub fn to_json(&self) -> Json {
+    pub fn to_json(self) -> Json {
         Json::obj([
             ("eye", vec3_json(self.eye)),
             ("target", vec3_json(self.target)),

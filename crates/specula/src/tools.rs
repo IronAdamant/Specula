@@ -173,9 +173,9 @@ fn color_arg(v: Option<&Json>) -> Result<[f32; 3], String> {
             let hex = s.strip_prefix('#').ok_or(ERR)?;
             let digits: Vec<u32> = hex.chars().map(|c| c.to_digit(16)).collect::<Option<_>>().ok_or(ERR)?;
             let channel = |hi: u32, lo: u32| (hi * 16 + lo) as f32 / 255.0;
-            match digits.as_slice() {
-                &[r, g, b] => Ok([channel(r, r), channel(g, g), channel(b, b)]),
-                &[r1, r2, g1, g2, b1, b2] => Ok([channel(r1, r2), channel(g1, g2), channel(b1, b2)]),
+            match *digits.as_slice() {
+                [r, g, b] => Ok([channel(r, r), channel(g, g), channel(b, b)]),
+                [r1, r2, g1, g2, b1, b2] => Ok([channel(r1, r2), channel(g1, g2), channel(b1, b2)]),
                 _ => Err(ERR.into()),
             }
         }

@@ -95,9 +95,9 @@ Each milestone ends with something agents can use.
 - [x] HTTP server + MCP subset: `initialize`, `tools/list`, `tools/call`
 - [x] Tools: `world_spawn` (cube/quad, transform, colour), `sight_frame` (PNG + subject list) — underscores: Claude Code
       rejects dots in tool names
-- [~] Proof: two MCP sessions (Python client, protocol 2025-11-25) built one scene in the live windowed engine;
-      `sight_frame` returned PNG + subject rects that match the image; duplicate name rejected; 0 validation warnings
-      (2026-10-12). **Remaining:** the same from Claude Code itself (open Claude Code in the repo so `.mcp.json` loads).
+- [x] Proof: two MCP sessions (Python client) built one scene in the live engine; and **Claude Code itself**
+      (`claude -p --mcp-config .mcp.json`, 2026-10-12) connected over HTTP, called engine_info / world_spawn /
+      sight_frame, saw the frame and confirmed the cube's rect within 1–2 px; 0 validation errors incl. shutdown
 - [x] `specula-sys`: single owner of kernel32 imports (windows-gnu drops a second crate's raw-dylib imports of the same DLL)
 
 **M0 findings to carry forward**
@@ -171,3 +171,4 @@ Each milestone ends with something agents can use.
 |---|---|
 | 2026-10-12 | Engine direction decided; plan created |
 | 2026-10-12 | M0 built by 4 parallel subagents + integration; end-to-end MCP proof passed |
+| 2026-10-12 | M0 audit: full read of every crate; clippy clean; Claude Code proof; packets saved beside PNGs; GPU teardown checked |

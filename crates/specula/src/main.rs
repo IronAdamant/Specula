@@ -119,6 +119,13 @@ fn run() -> Result<(), String> {
     // once instead of holding up shutdown until their 30 s timeout.
     drop(requests);
     server.shutdown();
+    // Tear the GPU down explicitly so validation messages raised during shutdown are reported.
+    let leftover = engine.gpu.close();
+    let errors = leftover.iter().filter(|m| m.severity == Severity::Error).count();
+    for m in leftover.iter().filter(|m| m.severity >= Severity::Warning) {
+        eprintln!("specula: vulkan {:?} {}: {}", m.severity, m.id_name, m.message);
+    }
+    eprintln!("specula: shut down ({errors} validation errors)");
     result
 }
 
@@ -225,7 +232,7 @@ impl Engine {
         };
         let png_bytes = png::encode_rgba8(w, h, &rgba, Level::Default);
         self.frames_captured += 1;
-        let path = self.save_capture(&png_bytes);
+        let png_path = self.save_capture("png", &png_bytes);
 
         let mut warnings = Vec::new();
         for m in self.gpu.take_validation_messages() {
@@ -233,24 +240,35 @@ impl Engine {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
             }
         }
-        if let Err(e) = &path {
+        if let Err(e) = &png_path {
             warnings.push(Json::from(format!("capture not saved to disk: {e}")));
         }
+        // The packet is saved next to its PNG so a verifier can re-check both later.
+        let png_file = png_path.as_ref().ok();
+        let packet_path = png_file.map(|p| p.with_extension("json"));
+        let show = |p: Option<&PathBuf>| -> Json { p.map(|p| p.display().to_string()).into() };
         let image = Json::obj([
             ("width", Json::from(w)),
             ("height", Json::from(h)),
             ("png_bytes", Json::from(png_bytes.len())),
-            ("path", path.ok().map(|p| p.display().to_string()).into()),
+            ("path", show(png_file)),
+            ("packet_path", show(packet_path.as_ref())),
         ]);
-        let packet = Json::obj([
+        let mut packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("frame", Json::from(self.frames_captured)),
             ("requested_by", Json::from(session.client_name.as_str())),
             ("image", image),
             ("camera", camera.to_json()),
             ("subjects", Json::arr(sight::subjects(&self.world, &view_proj, w, h))),
-            ("warnings", Json::Arr(warnings)),
+            ("warnings", Json::Arr(warnings.clone())),
         ]);
+        if let Some(path) = &packet_path {
+            if let Err(e) = std::fs::write(path, packet.to_pretty()) {
+                warnings.push(Json::from(format!("packet not saved to disk: {e}")));
+                packet.set("warnings", Json::Arr(warnings));
+            }
+        }
         ToolOutput {
             content: vec![
                 Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) },
@@ -273,10 +291,10 @@ impl Engine {
         self.gpu.read_rgba8(target).map_err(|e| format!("readback: {e}"))
     }
 
-    fn save_capture(&self, png_bytes: &[u8]) -> Result<PathBuf, String> {
+    fn save_capture(&self, extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         std::fs::create_dir_all(&self.capture_dir).map_err(|e| e.to_string())?;
-        let path = self.capture_dir.join(format!("frame_{:05}.png", self.frames_captured));
-        std::fs::write(&path, png_bytes).map_err(|e| e.to_string())?;
+        let path = self.capture_dir.join(format!("frame_{:05}.{extension}", self.frames_captured));
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(path)
     }
 

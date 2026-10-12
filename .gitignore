@@ -16,51 +16,18 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Scratch & local capture artifacts
-*.png
-!fixtures/**/*.png
-# Production template disk assets (required by scaffold --kind 2d|3d)
-!templates/**/*.png
-# Portfolio / README screenshots (tracked)
-!docs/images/
-!docs/images/**/*.png
+# Scratch and logs
 *.log
 .scratch/
 tmp/
-# Local Grok client config; keep versioned skills for the agent pack
-.grok/*
-!.grok/skills/
-!.grok/skills/**
-!.grok/workflows/
-# Local Claude Code settings (project .claude/agents and .claude/skills stay tracked)
+
+# Frames saved by `sight_frame` (engine working directory)
+/captures/
+
+# Local agent client settings (project .claude/agents stays tracked)
 .claude/settings.local.json
+.grok/
+
 # Tooling caches / local indexes (not product source)
 .wikifier_staging/
 .stele-context/
-
-# Wikifier generated artifacts (regenerate with update-maps)
-# Keep map_paths.txt + monitored_paths.txt tracked.
-file_health.md
-file_health.json
-library.md
-pending_updates.md
-journal/
-
-# Screenshots written by BRP extras during local demos
-/screenshots/
-/captures/
-# Accidental root capture (BRP PNG written without .png extension; keep on disk)
-/once
-# Local package output
-/dist/
-
-# Full external-game dogfood reports (session dumps; keep out of OSS for now)
-# Portfolio README may show sanitized screenshots under docs/images/ only.
-docs/AGENT_DOGFOOD_REPORT_*
-docs/*CRYSTAL*
-docs/*crystal_drift*
-*CRYSTAL_DRIFT*
-**/Crystal Drift/**
-**/crystal-drift/**/captures/**
-.local/dogfood/
-private/dogfood/

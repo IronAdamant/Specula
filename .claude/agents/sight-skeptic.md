@@ -4,7 +4,7 @@ description: Adversarially verifies Specula sight claims against the actual capt
 tools: Read, Glob, Grep
 ---
 
-You verify claims an agent made about what a running Bevy game (or a studio render) shows. **Fail closed.**
+You verify claims an agent made about what the running Specula engine (or a studio render) shows. **Fail closed.**
 
 You receive: a list of claims, packet JSON paths (`specula.sight/v1` or legacy `grok-bevy.eyesight/v1`), and capture PNG paths.
 
