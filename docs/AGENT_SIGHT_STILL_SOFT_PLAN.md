@@ -2,7 +2,7 @@
 
 **Status:** planned (not started)  
 **Audience:** implementing agent under `/goal`; human may be away for a long session  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** Soft plan E0–E7 **shipped**, but the five soft edges are **not closed forever**. Re-**review** and **investigate** each with fresh BRP/PNG evidence; fix platform-owned gaps (including the S3 skeptic hole on dark fovea); close only with **`/agent-sight-dogfood` `mode=full`**.
 
 ### Why this plan exists
@@ -22,7 +22,7 @@ Soft findings claimed E0–E7 complete and workflow green, yet residual honesty 
 - Take as long as needed; **correctness over speed**.  
 - **Investigate before bulk coding:** each soft edge gets written findings (cause, BRP/PNG evidence, options) then a minimal fix **or** explicit defer with reason.  
 - **No shortcuts:** no synthetic PNGs as sole pass proof for live claims; no string-only hierarchy pretence; no fake multi-view; no “warned” without a real packet field; no gates-only closeout.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force`) **before** final full-workflow evidence if platform code changed.  
+- Rebuild MCP (`cargo install --path crates/specula --force`) **before** final full-workflow evidence if platform code changed.  
 - Taste/design remain **human-owned** (fovea craft readability = **pixel/lighting honesty**, not beauty).  
 - Sequential BRP **15702** only.
 
@@ -56,7 +56,7 @@ Pins: Bevy **0.19**, BRP **15702**.
   "require_if_name": "OreCrusher",
   "cd_path": "/Users/aron/Documents/coding_projects/Crystal Drift",
   "if_path": "/Users/aron/Documents/coding_projects/Iron Feud",
-  "grok_bevy_root": "/Users/aron/Documents/coding_projects/Grok-Bevy"
+  "specula_root": "/Users/aron/Documents/coding_projects/Specula"
 }
 ```
 
@@ -109,7 +109,7 @@ Rebuild MCP before SS6 if SS1–SS5 changed platform code.
 
 ## 3. Phase SS0 — Baseline / re-open
 
-- [ ] `cargo test -p grok-bevy -p grok-bevy-brp` PASS → `{SCRATCH}/gbr-tests-ss0.log`  
+- [ ] `cargo test -p specula -p specula-brp` PASS → `{SCRATCH}/gbr-tests-ss0.log`  
 - [ ] Read soft findings residual + last workflow report; write `{SCRATCH}/still-soft-baseline.md` listing SS1–SS5 current symptoms (cite open PNGs / packets if available).  
 - [ ] Inventory uncommitted eyesight work (if any): craft-luma / mean `fovea_dark` WIP must be finished under **SS3**, not left half-landed.  
 - [ ] Confirm workflow defaults: `.grok/workflows/agent-sight-dogfood.rhai` has `let mode = "full";` (do not change default to gates).
@@ -229,7 +229,7 @@ Rebuild MCP before SS6 if SS1–SS5 changed platform code.
 
 | Layer | What | Where |
 |-------|------|--------|
-| **Always (headless)** | `cargo test -p grok-bevy -p grok-bevy-brp` (+ env) | Local + GitHub CI |
+| **Always (headless)** | `cargo test -p specula -p specula-brp` (+ env) | Local + GitHub CI |
 | **GPU / manual or scheduled** | `/agent-sight-dogfood` **mode=full** | **Required** for this plan closeout; **required** after eyesight platform changes before “sight green” claims |
 | **Not claimed** | Headless fake screenshot CI without Bevy window | Out of scope |
 
@@ -277,7 +277,7 @@ If red: fix platform (or CD env) and re-run **full** until green or residual is 
 - [ ] Write `docs/AGENT_SIGHT_STILL_SOFT_FINDINGS_YYYY-MM-DD.md` (SS1–SS5 investigation, fixes, residual).  
 - [ ] Update PROGRESS, ROADMAP, AGENTS, bevy-agent-loop skill, CI matrix if needed.  
 - [ ] Soft findings residual pointer: “superseded / extended by still-soft findings”.  
-- [ ] Commit Grok-Bevy (+ CD/IF only if trees changed). No force-push.
+- [ ] Commit Specula (+ CD/IF only if trees changed). No force-push.
 
 ---
 
@@ -290,7 +290,7 @@ If red: fix platform (or CD env) and re-run **full** until green or residual is 
 5. CD env_2d: env visible or honest dark with open PNGs.  
 6. CI matrix still enforced; unit tests always green; **no claim that GH CI alone = sight green**.  
 7. **`agent-sight-dogfood` mode=full PASS** (or env-only residual accepted in findings).  
-8. `cargo test -p grok-bevy -p grok-bevy-brp` PASS; MCP current if code changed.
+8. `cargo test -p specula -p specula-brp` PASS; MCP current if code changed.
 
 ---
 

@@ -4,7 +4,7 @@
 
 **D0–D5 complete.** Dimension-specific sight polish shipped; Crystal Drift and Iron Feud dogfooded with new Named features + assets; IF multi-band height terrain; MCP rebuilt before pass evidence; live `see verify` + packs reviewed with open PNG observations.
 
-## Features (Grok-Bevy D0)
+## Features (Specula D0)
 
 | Area | Change |
 |------|--------|
@@ -94,9 +94,9 @@ Scratch copies: goal implementer `{SCRATCH}/eyesight/cd|if`, logs `dogfood-see-2
 
 ## Tests / rebuild
 
-- `cargo test -p grok-bevy -p grok-bevy-brp` PASS  
-- `cargo build -p grok-bevy` PASS  
-- `cargo install --path crates/grok-bevy --force` before final IF re-verify  
+- `cargo test -p specula -p specula-brp` PASS  
+- `cargo build -p specula` PASS  
+- `cargo install --path crates/specula --force` before final IF re-verify  
 - CD/IF `cargo build --features remote,capture` PASS; IF height unit test PASS  
 
 ## Docs / skills

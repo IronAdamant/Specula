@@ -1,7 +1,7 @@
 //! Headless BRP smoke target: no window/GPU required for query/mutate tests.
 //!
 //! ```sh
-//! cargo run -p grok_bevy_sample --bin brp_headless --features remote
+//! cargo run -p specula_sample --bin brp_headless --features remote
 //! ```
 
 use bevy::prelude::*;
@@ -18,7 +18,7 @@ fn main() {
         .register_type::<AgentCube>()
         .register_type::<AgentMarker>()
         .insert_resource(AgentMarker {
-            label: "grok-bevy-headless".into(),
+            label: "specula-headless".into(),
             counter: 0,
         })
         .add_systems(Startup, setup)

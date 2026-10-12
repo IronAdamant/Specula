@@ -19,4 +19,4 @@
 ```bash
 cargo build --release
 ```
-See Grok-Bevy `docs/ASSET_CONVENTIONS.md` and `docs/SHIPPING.md` when available.
+See Specula `docs/ASSET_CONVENTIONS.md` and `docs/SHIPPING.md` when available.

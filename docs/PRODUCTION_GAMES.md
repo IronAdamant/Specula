@@ -1,6 +1,6 @@
-# Production games with Grok-Bevy
+# Production games with Specula
 
-Grok-Bevy is an **agent-native Bevy game companion**: skills teach how to build, scaffold defines where code and assets live, and MCP verifies what is running.
+Specula is an **agent-native Bevy game companion**: skills teach how to build, scaffold defines where code and assets live, and MCP verifies what is running.
 
 > **Not the production path:** `templates/sample-app` is a BRP **integration fixture** (static 3D cube for launch / query / capture smoke tests). Prefer production skills and (when available) `scaffold --kind 2d|3d`.
 
@@ -22,10 +22,10 @@ Skills (HOW)  →  Scaffold / layout (WHERE)  →  MCP capture (WHAT)
 
 | Skill | When to load |
 |-------|----------------|
-| [`bevy-production`](../.grok/skills/bevy-production/SKILL.md) | Any real Bevy game: architecture, assets, ship checklist |
-| [`bevy-2d-game`](../.grok/skills/bevy-2d-game/SKILL.md) | Sprites, tilemaps, orthographic camera, 2D input |
-| [`bevy-3d-game`](../.grok/skills/bevy-3d-game/SKILL.md) | glTF, lighting, 3D camera, meshes |
-| [`bevy-agent-loop`](../.grok/skills/bevy-agent-loop/SKILL.md) | Live BRP / MCP / screenshot iteration |
+| [`bevy-production`](../skills/bevy-production/SKILL.md) | Any real Bevy game: architecture, assets, ship checklist |
+| [`bevy-2d-game`](../skills/bevy-2d-game/SKILL.md) | Sprites, tilemaps, orthographic camera, 2D input |
+| [`bevy-3d-game`](../skills/bevy-3d-game/SKILL.md) | glTF, lighting, 3D camera, meshes |
+| [`bevy-agent-loop`](../skills/bevy-agent-loop/SKILL.md) | Live BRP / MCP / screenshot iteration |
 
 ### External art skills (Grok bundled)
 
@@ -103,9 +103,9 @@ For hierarchy, watches, and input injection, also register **`bevy_brp_mcp`**.
 ## Scaffold
 
 ```bash
-grok-bevy scaffold --kind 2d --path ./my-2d-game
-grok-bevy scaffold --kind 3d --path ./my-3d-game
-grok-bevy scaffold --kind demo --path ./brp-fixture   # integration fixture only
+specula scaffold --kind 2d --path ./my-2d-game
+specula scaffold --kind 3d --path ./my-3d-game
+specula scaffold --kind demo --path ./brp-fixture   # integration fixture only
 ```
 
 ## Phase-4 depth

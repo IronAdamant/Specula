@@ -1,6 +1,6 @@
 # __WINDOW_TITLE__
 
-**Short 3D Bevy demo** (Grok-Bevy GAME_DOD).
+**Short 3D Bevy demo** (Specula GAME_DOD).
 
 ## Objective
 

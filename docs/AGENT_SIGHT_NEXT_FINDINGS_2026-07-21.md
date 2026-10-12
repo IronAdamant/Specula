@@ -4,12 +4,12 @@
 
 **S0–S4 complete.** MCP/CLI rebuilt with profiles, ranking, collapse, `bevy_see_verify`. Dogfood Crystal Drift + Iron Feud Playing.
 
-## Features (Grok-Bevy S0)
+## Features (Specula S0)
 
 - **`rank_primary_subject`** — Player / WaterBody / cameras over Crystal / OreCrystal / Stars  
 - **`collapse_duplicate_names`** — `duplicate_count` on repeated Names  
 - **Profiles** — `crystal-drift`, `iron-feud` (projection, wait, require_playing)  
-- **`bevy_see_verify` / `grok-bevy see verify`** — full + primary fovea (+zoom)  
+- **`bevy_see_verify` / `specula see verify`** — full + primary fovea (+zoom)  
 - Baseline save/compare + `auto_baseline` path  
 - Motion optional `mutate_entity` / `mutate_translation` stimulus  
 - Pack **views_similar** warning when alt hash == game  
@@ -44,8 +44,8 @@ Live packet: `app_state=Playing`, `primary_subject=WaterBody`; Names include Rel
 
 ## Tests / logs
 
-- `cargo test -p grok-bevy -p grok-bevy-brp` PASS (ranking/collapse/profile unit tests)  
-- Scratch: `{SCRATCH}/grok-bevy-tests.log`, `dogfood-see-2d.log`, `dogfood-see-3d.log`, build logs  
+- `cargo test -p specula -p specula-brp` PASS (ranking/collapse/profile unit tests)  
+- Scratch: `{SCRATCH}/specula-tests.log`, `dogfood-see-2d.log`, `dogfood-see-3d.log`, build logs  
 
 ## Assessments
 

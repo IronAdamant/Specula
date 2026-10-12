@@ -30,7 +30,7 @@
 
 ## T4 — Regression
 
-- 53+ unit tests on `grok-bevy-brp`.
+- 53+ unit tests on `specula-brp`.
 - Workflow aligned: entity requires `--profile iron-feud`; restore is code-level.
 
 ## T5 — Live / workflow

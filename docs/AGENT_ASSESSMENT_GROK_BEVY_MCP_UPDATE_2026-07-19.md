@@ -1,7 +1,7 @@
-# Grok-Bevy MCP — Assessment of the Updated Surface (2026-07-19)
+# Specula MCP — Assessment of the Updated Surface (2026-07-19)
 
-**Scope:** Agent-facing evaluation of the **updated** Grok-Bevy MCP (post launch-path fix), informed by live Crystal Drift dogfood the same day, schema inspection of the reloaded server, and comparison with earlier Iron Feud notes.  
-**CLI pin observed:** `grok-bevy 0.2.0`  
+**Scope:** Agent-facing evaluation of the **updated** Specula MCP (post launch-path fix), informed by live Crystal Drift dogfood the same day, schema inspection of the reloaded server, and comparison with earlier Iron Feud notes.  
+**CLI pin observed:** `specula 0.2.0`  
 **Author:** Grok Build agent  
 **Status:** Durable assessment (not a single-project dogfood log). Related: `AGENT_DOGFOOD_REPORT_CRYSTAL_DRIFT.md`, `AGENT_DOGFOOD_REPORT_IRON_FEUD.md`.
 
@@ -66,7 +66,7 @@ Crystal Drift exercised the **pre-fix** launch path first, then continued with s
 
 ### 3.1 What worked extremely well
 
-1. **Scaffold (`grok-bevy scaffold --kind 2d`)**  
+1. **Scaffold (`specula scaffold --kind 2d`)**  
    Highest leverage tool in the product, even when invoked via CLI: Bevy 0.19, `remote`/`capture`, plugin layout, asset roots, AGENTS.md. Crystal Drift never re-solved project layout.
 
 2. **`bevy_env_check`**  
@@ -173,9 +173,9 @@ Aligned with `docs/ROADMAP.md` (agent-native game factory alpha):
 
 ---
 
-## 7. Comparison: Grok-Bevy MCP vs “just cargo + curl”
+## 7. Comparison: Specula MCP vs “just cargo + curl”
 
-| | Shell only | Updated Grok-Bevy MCP |
+| | Shell only | Updated Specula MCP |
 |--|------------|------------------------|
 | Scaffold kit | Manual | Excellent |
 | Env check | Ad hoc | Structured |
@@ -191,13 +191,13 @@ Aligned with `docs/ROADMAP.md` (agent-native game factory alpha):
 
 ## 8. Bottom line
 
-The **updated Grok-Bevy MCP correctly fixes the worst agent failure mode** (blocking launch until BRP under a short host timeout) by making launch **non-blocking** and readiness **explicit** (`bevy_wait_brp`). Combined with already-strong scaffold, query, mutate, and capture, the harness is **production-usable for 2D/3D Bevy 0.19 agent loops** on a warm machine.
+The **updated Specula MCP correctly fixes the worst agent failure mode** (blocking launch until BRP under a short host timeout) by making launch **non-blocking** and readiness **explicit** (`bevy_wait_brp`). Combined with already-strong scaffold, query, mutate, and capture, the harness is **production-usable for 2D/3D Bevy 0.19 agent loops** on a warm machine.
 
 Remaining work is polish and ergonomics (FQP names, install freshness, scaffold edge cases, honest capture/docs wording)—not a rethink of architecture.
 
 **Recommended one-line pitch for portfolio / AGENTS.md:**
 
-> Grok-Bevy MCP: scaffold Bevy 0.19 games, then **launch → wait BRP → query/mutate → screenshot** until the scene is true—without guessing from compile logs alone.
+> Specula MCP: scaffold Bevy 0.19 games, then **launch → wait BRP → query/mutate → screenshot** until the scene is true—without guessing from compile logs alone.
 
 ---
 

@@ -2,14 +2,14 @@
 
 **Status:** complete (T0–T6 shipped 2026-07-25)  
 **Audience:** implementing agent under `/goal`; human may be away for a long session  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** make agent sight **trustworthy for factory loops** — subject lists that survive multiparts without string-table sprawl; landscape packs that **always restore** the game camera; multi-view that is **useful or honestly similar**; durable **packet↔pixel** regression via unit tests + the project workflow.
 
 ### Long-session / no-shortcuts mandate
 
 - Take as long as needed; **correctness over speed**.  
 - **No shortcuts:** no stub demotion tables that only list today’s Names; no fake multi-view; no synthetic PNGs as pass proof; no skip of live verify when GPU/window is available.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force`) **before** treating dogfood captures as pass evidence whenever Grok-Bevy sight code changes.  
+- Rebuild MCP (`cargo install --path crates/specula --force`) **before** treating dogfood captures as pass evidence whenever Specula sight code changes.  
 - Taste/design remain **human-owned**; agent **sees and proves** gates.  
 - Sequential BRP **15702** only (one game at a time).
 
@@ -83,7 +83,7 @@ Workflow: `/agent-sight-dogfood` (`mode=full`, `skip_install` per policy after i
 
 ```text
 T0  Verify shipped fovea-profile fix + cargo test baseline
-    → cargo test -p grok-bevy -p grok-bevy-brp
+    → cargo test -p specula -p specula-brp
     → document T0 green
 
 T1  Hierarchy / local-space child demotion (structural ranking)
@@ -124,7 +124,7 @@ T6  Docs closeout: checkboxes, PROGRESS, findings, ROADMAP, AGENTS, skill; commi
 
 ### Requirements
 
-- [x] `cargo test -p grok-bevy -p grok-bevy-brp` PASS (include `topdown3d_projects_ore_crusher_off_center`, `match_subjects_prefers_exact_name`).  
+- [x] `cargo test -p specula -p specula-brp` PASS (include `topdown3d_projects_ore_crusher_off_center`, `match_subjects_prefers_exact_name`).  
 - [x] CLI: `see entity` supports `--profile iron-feud|crystal-drift`.  
 - [x] MCP: `bevy_see_entity` documents/accepts `profile`.  
 - [x] Skill `bevy-agent-loop` states profile is required for IF entity fovea.  
@@ -162,8 +162,8 @@ T6  Docs closeout: checkboxes, PROGRESS, findings, ROADMAP, AGENTS, skill; commi
   - [x] Top-level `SolarFlareBuoy` not demoted.  
   - [x] Exact dogfood stems still score >0.  
 - [x] Reduce dependence on over-broad prefixes (`starts_with("Solar")` class bugs).  
-- [x] `cargo test -p grok-bevy -p grok-bevy-brp` PASS.  
-- [x] `cargo install --path crates/grok-bevy --force`.
+- [x] `cargo test -p specula -p specula-brp` PASS.  
+- [x] `cargo install --path crates/specula --force`.
 
 **T1 exit:** Structural (or documented hybrid) demotion with unit tests; OreCrusher-class features survive multipart floods without only relying on +120 stem boost.
 
@@ -218,7 +218,7 @@ T6  Docs closeout: checkboxes, PROGRESS, findings, ROADMAP, AGENTS, skill; commi
 - [x] Align `.grok/workflows/agent-sight-dogfood.rhai`:  
   - [x] `see entity --profile iron-feud` mandatory (already).  
   - [x] Do not rely solely on agent memory for camera restore after T2.  
-  - [x] Gates phase still runs `cargo test -p grok-bevy -p grok-bevy-brp`.  
+  - [x] Gates phase still runs `cargo test -p specula -p specula-brp`.  
 - [x] Document how to run: `/agent-sight-dogfood` with `mode=gates|full`.  
 - [x] Evidence path convention: prefer game/repo `captures/`, not shared `/tmp`.
 
@@ -283,7 +283,7 @@ Log → {SCRATCH}/dogfood-see-3d.log; eyesight/if/
 - [x] Flip checkboxes in this file when truly done.  
 - [x] Write `docs/AGENT_SIGHT_TRUST_FINDINGS_YYYY-MM-DD.md` (T0–T5 results, packet paths, residual).  
 - [x] Update [PROGRESS.md](../PROGRESS.md), [ROADMAP.md](ROADMAP.md), [AGENTS.md](../AGENTS.md), `bevy-agent-loop` skill.  
-- [x] Commit Grok-Bevy (and CD/IF only if dogfood trees changed).  
+- [x] Commit Specula (and CD/IF only if dogfood trees changed).  
 - [x] No force-push.
 
 ---
@@ -298,7 +298,7 @@ Log → {SCRATCH}/dogfood-see-3d.log; eyesight/if/
 6. **T5** live CD+IF evidence; entity OreCrusher fovea aims correctly with profile; open PNGs.  
 7. **T6** findings + docs + commits.  
 8. **No exclusions** implemented.  
-9. `cargo test -p grok-bevy -p grok-bevy-brp` PASS; MCP install after platform edits.
+9. `cargo test -p specula -p specula-brp` PASS; MCP install after platform edits.
 
 ---
 

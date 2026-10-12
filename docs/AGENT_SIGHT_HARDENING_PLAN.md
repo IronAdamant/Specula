@@ -2,14 +2,14 @@
 
 **Status:** complete (H0–H6 shipped 2026-07-23)  
 **Audience:** implementing agent under `/goal`; human may be away for a long session  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** make sight **good enough for hands-off factory loops** (versioned dogfood, pixel gates, true multi-view honesty), then dogfood **Crystal Drift** and **Iron Feud** with **exactly one new feature each** and a **full improve-all-existing-features** pass that kills blocky/placeholder craft.
 
 ### Long-session / no-shortcuts mandate
 
 - Take as long as needed; **correctness over speed**.  
 - **No shortcuts:** no stub meshes, no magenta/purple square plates on 2D sprites, no “rename-only” improves, no synthetic PNGs as pass proof, no skip of live verify when GPU/window is available.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force`) **before** treating dogfood captures as pass evidence.  
+- Rebuild MCP (`cargo install --path crates/specula --force`) **before** treating dogfood captures as pass evidence.  
 - Taste/design remain **human-owned**; agent **sees and builds** to this plan’s quotas.  
 - **Version dogfood trees** (Tier 1) so CD/IF changes are durable — not disk-only ghosts.
 
@@ -69,10 +69,10 @@ Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`,
 ## 3. Execution order (hard)
 
 ```text
-H0  Grok-Bevy sight hardening (pixel helpers, side-view pack path, sprite audit hooks) + unit tests
-    → cargo test -p grok-bevy -p grok-bevy-brp
-    → cargo build -p grok-bevy
-    → cargo install --path crates/grok-bevy --force
+H0  Specula sight hardening (pixel helpers, side-view pack path, sprite audit hooks) + unit tests
+    → cargo test -p specula -p specula-brp
+    → cargo build -p specula
+    → cargo install --path crates/specula --force
     → log surface → {SCRATCH}/mcp-surface.log
 
 H1  Version dogfood trees (git init + initial commit OR document submodule layout)
@@ -95,7 +95,7 @@ H6  Docs: checkboxes, PROGRESS, findings+assessments; skill/ROADMAP
 
 ---
 
-## 4. Phase H0 — Grok-Bevy Tier 1–2 sight code (platform)
+## 4. Phase H0 — Specula Tier 1–2 sight code (platform)
 
 Implement pure, unit-tested helpers where possible.
 
@@ -131,7 +131,7 @@ Implement pure, unit-tested helpers where possible.
 
 - [x] `/Users/aron/Documents/coding_projects/Crystal Drift` has `.git` (init if missing) and at least one commit after H2 (or commit pre+post).  
 - [x] `/Users/aron/Documents/coding_projects/Iron Feud` same.  
-- [x] Grok-Bevy docs note how dogfood is versioned (sibling repos; not necessarily monorepo).  
+- [x] Specula docs note how dogfood is versioned (sibling repos; not necessarily monorepo).  
 - [x] Optional: `.gitignore` for `target/`, `captures/` (keep intentional eyesight samples if desired).  
 - [x] **Do not** force-push dogfood history unless human asks.
 
@@ -276,8 +276,8 @@ Sequential port **15702**.
 ```text
 1. killall crystal_drift iron_feud
 2. Launch CD (warm binary, remote,capture)
-3. grok-bevy brp wait --port 15702
-4. grok-bevy see verify --profile crystal-drift --out-dir <CD> --save-baseline ...
+3. specula brp wait --port 15702
+4. specula see verify --profile crystal-drift --out-dir <CD> --save-baseline ...
 5. pack env_2d | hud | landscape
 6. entity Player + new feature Name
 7. Sprite audit + full-frame nonblack / region luminance gates
@@ -330,7 +330,7 @@ Sequential port **15702**.
 - [x] Write `docs/AGENT_SIGHT_HARDENING_FINDINGS_YYYY-MM-DD.md` (Tier items, craft inventories, packet paths, height description, assessments).  
 - [x] Skill + eyesight-packs: transparent-BG law, complex-mesh dogfood, pixel gates, side-view behavior.  
 - [x] Link ROADMAP / AGENTS.  
-- [x] Commit Grok-Bevy; commit CD/IF in their own repos.  
+- [x] Commit Specula; commit CD/IF in their own repos.  
 
 ---
 
@@ -353,7 +353,7 @@ Craft dogfood (H2–H3) is **in addition** to tiers — it is the product proof 
 3. **CD:** 1 new feature; all sprites transparent-BG; no true-magenta plates; env+craft visible on full; verify pass.  
 4. **IF:** 1 new feature; machines/props non-blocky recognizable craft; randomized varying terrain height; start playable; Playing verify pass.  
 5. Live eyesight both games: non-empty PNGs, open/read observations, logs under `{SCRATCH}`.  
-6. Unit tests for new pure helpers PASS; `cargo test -p grok-bevy -p grok-bevy-brp` PASS.  
+6. Unit tests for new pure helpers PASS; `cargo test -p specula -p specula-brp` PASS.  
 7. **No exclusions** implemented.  
 8. Findings + assessments; plan checkboxes complete.  
 9. **No shortcuts** on complex shapes or transparent BG.  
@@ -380,7 +380,7 @@ Execute docs/AGENT_SIGHT_HARDENING_PLAN.md to completion (H0 → H6).
 I will be away — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
-Order: Grok-Bevy hardening first (rebuild install), version CD+IF git,
+Order: Specula hardening first (rebuild install), version CD+IF git,
 then dogfood craft:
   2D: /Users/aron/Documents/coding_projects/Crystal Drift
   3D: /Users/aron/Documents/coding_projects/Iron Feud

@@ -1,6 +1,6 @@
 # __WINDOW_TITLE__
 
-**Short 2D Bevy demo** (Grok-Bevy GAME_DOD) — not a movement sandbox.
+**Short 2D Bevy demo** (Specula GAME_DOD) — not a movement sandbox.
 
 ## Objective
 

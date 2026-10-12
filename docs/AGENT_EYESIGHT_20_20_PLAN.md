@@ -1,8 +1,8 @@
-# Agent Eyesight 20/20 Plan — acuity upgrade (Grok-Bevy)
+# Agent Eyesight 20/20 Plan — acuity upgrade (Specula)
 
 **Status:** implemented (A0–A8 shipped; dogfood Crystal Drift + Iron Feud Playing, 2026-07-21)  
-**Audience:** agents implementing Grok-Bevy; humans setting goals and reviewing MCP dogfood  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Audience:** agents implementing Specula; humans setting goals and reviewing MCP dogfood  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Parent plan (shipped baseline):** [AGENT_EYESIGHT_PLAN.md](AGENT_EYESIGHT_PLAN.md) (V0–V6 — “eyes open”)  
 **This plan’s job:** raise perception from **“can see”** to **observation-grade ~20/20 acuity** — focus, multi-view, time, clean subjects, reliable state — so agents and human MCP users **observe** what the game actually renders.
 
@@ -46,7 +46,7 @@ Related:
 
 ### Honest product claim (for README / marketing)
 
-**After this plan ships:** Grok-Bevy agents and MCP clients can **see at observation grade (≈20/20 acuity)** — composition, subject fovea, multi-view, motion, and diffs — on a running Bevy app.
+**After this plan ships:** Specula agents and MCP clients can **see at observation grade (≈20/20 acuity)** — composition, subject fovea, multi-view, motion, and diffs — on a running Bevy app.
 
 **Still human-owned:** style direction, fun, balance, narrative, “is this good design?” Agents execute and verify **visually** against what humans ask for; they do not own taste.
 
@@ -63,8 +63,8 @@ From [AGENT_EYESIGHT_PLAN.md](AGENT_EYESIGHT_PLAN.md) V0–V6:
 | E2 motion | `bevy_see_motion` | Temporal strip + montage |
 | E3 diff | `bevy_see_diff` | Before/after + abs-diff |
 | E4/E5 packs | `bevy_see_pack` | landscape / water / entity_craft / physics_jump / lighting |
-| Schema | `grok-bevy.eyesight/v1` | abs_path, subjects, warnings, style_intent |
-| Hardening | black-frame heuristic, short strips, CLI `grok-bevy see` | V6 |
+| Schema | `specula.sight/v1` | abs_path, subjects, warnings, style_intent |
+| Hardening | black-frame heuristic, short strips, CLI `specula see` | V6 |
 
 Pins unchanged unless a phase requires bump: Bevy **0.19**, BRP extras **0.22.1**, port **15702**, features **`remote,capture`**.
 
@@ -92,7 +92,7 @@ Pins unchanged unless a phase requires bump: Bevy **0.19**, BRP extras **0.22.1*
 4. **Skill↔tool contract** — extend `see_*` and packet schema; avoid tool sprawl.  
 5. **Dogfood external trees** — Crystal Drift + Iron Feud are required proof targets (see §8).  
 6. **Honest README** — claim 20/20 *sight*, not 20/20 *design sense*.  
-7. **Other MCP users** — same contract for human devs driving Grok-Bevy MCP (not Grok-only).  
+7. **Other MCP users** — same contract for human devs driving Specula MCP (not Grok-only).  
 8. **Reversible, testable** — pure helpers unit-tested; live BRP when GPU/window available.
 
 ---
@@ -112,11 +112,11 @@ Pins unchanged unless a phase requires bump: Bevy **0.19**, BRP extras **0.22.1*
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Schema remains `grok-bevy.eyesight/v1` with **additive** fields (backward compatible). Suggested additions:
+Schema remains `specula.sight/v1` with **additive** fields (backward compatible). Suggested additions:
 
 ```json
 {
-  "schema": "grok-bevy.eyesight/v1",
+  "schema": "specula.sight/v1",
   "acuity": "20/20-candidate",
   "primary_subject": "Player",
   "subjects": [
@@ -344,11 +344,11 @@ Update `.grok/skills/bevy-agent-loop/SKILL.md` and `references/eyesight-packs.md
 ```text
 1. cargo build --features remote,capture  (each game)
 2. Launch (Iron: IRON_FEUD_AUTO_PLAY=1)
-3. grok-bevy brp wait --port 15702
-4. grok-bevy see scene --out-dir <game>
-5. grok-bevy see entity --name <primary> --out-dir <game>
-6. grok-bevy see pack landscape|water --out-dir <game>
-7. grok-bevy see motion --frames 8 --out-dir <game>
+3. specula brp wait --port 15702
+4. specula see scene --out-dir <game>
+5. specula see entity --name <primary> --out-dir <game>
+6. specula see pack landscape|water --out-dir <game>
+7. specula see motion --frames 8 --out-dir <game>
 8. Assert: packet JSON schema, abs_path exists, bytes>0, subjects include env Names
 9. Open PNGs (agent image-read) — describe what was seen (observation, not taste lecture)
 10. Log to goal scratch; cite paths in findings
@@ -364,7 +364,7 @@ When implementing A7 (or earlier if desired), root README **must** include a sho
 
 ### Agent eyesight (honest scope)
 
-- Grok-Bevy gives coding agents **live eyes on a running Bevy window** via MCP: full scene, subject crops, motion strips, multi-view packs, and before/after diffs.  
+- Specula gives coding agents **live eyes on a running Bevy window** via MCP: full scene, subject crops, motion strips, multi-view packs, and before/after diffs.  
 - After the **20/20 acuity** work, agents can **observe** graphics and environments at high fidelity (composition + focus + time + change).  
 - **Taste, art direction, and design decisions remain human.** The agent is here to **see** what was built and **implement** what human developers need — not to own creative judgment.  
 - Human developers using the same MCP get the **same sensory tools** for their own workflows.  
@@ -374,7 +374,7 @@ Avoid phrases that imply “the AI decides if your game looks good.” Prefer �
 
 Also update:
 
-- “What you get” bullet: eyesight tools (`bevy_see_*` / `grok-bevy see`)  
+- “What you get” bullet: eyesight tools (`bevy_see_*` / `specula see`)  
 - Portfolio section: mention observation-grade capture when 20/20 ships  
 
 ---
@@ -402,7 +402,7 @@ All must hold:
 | 3D projection accuracy on strategy cam | Approximate top-down map; document error bounds |
 | Debug cameras pollute game | Feature-gate; despawn after capture |
 | send_keys unreliable | Mutate Transform as portfolio fallback |
-| External games out of Grok-Bevy git | Document paths; commit only Grok-Bevy unless user asks |
+| External games out of Specula git | Document paths; commit only Specula unless user asks |
 | Overclaiming “20/20” | Tie claim to §10 metrics, not marketing fluff |
 
 ---

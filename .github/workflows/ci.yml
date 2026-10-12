@@ -28,11 +28,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Test core crates
-        run: cargo test -p grok-bevy-env -p grok-bevy-brp -p grok-bevy --all-targets
+        run: cargo test -p specula-env -p specula-brp -p specula --all-targets
       - name: Build CLI
-        run: cargo build -p grok-bevy
+        run: cargo build -p specula
       - name: Doctor (no compile probe)
-        run: cargo run -p grok-bevy -- doctor
+        run: cargo run -p specula -- doctor
 
   sample-check:
     name: sample-app check (ubuntu)
@@ -45,10 +45,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libxkbcommon-dev
       - uses: Swatinem/rust-cache@v2
+      - name: Skill mirrors match skills/
+        run: python3 scripts/sync_skills.py --check
       - name: cargo check sample with remote+capture
-        run: cargo check -p grok_bevy_sample --features remote,capture
+        run: cargo check -p specula_sample --features remote,capture
       - name: cargo check headless BRP binary
-        run: cargo check -p grok_bevy_sample --bin brp_headless --features remote
+        run: cargo check -p specula_sample --bin brp_headless --features remote
 
   demo-check:
     name: dogfood demos check (ubuntu)

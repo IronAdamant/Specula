@@ -2,9 +2,9 @@
 
 ## Status
 
-**R0–R4 complete.** Residual filter/multi-view/fovea debts closed in Grok-Bevy; Crystal Drift and Iron Feud full asset+env improve pass with one new feature and one new env each; live `see verify` green on rebuilt MCP.
+**R0–R4 complete.** Residual filter/multi-view/fovea debts closed in Specula; Crystal Drift and Iron Feud full asset+env improve pass with one new feature and one new env each; live `see verify` green on rebuilt MCP.
 
-## R0 — Grok-Bevy residual sight
+## R0 — Specula residual sight
 
 | Item | Result |
 |------|--------|
@@ -14,7 +14,7 @@
 | **Tall fovea** | `crop_half_for_entity` inflates WatchPost/OreSilo/RadarDome/TerrainPeak/… |
 | **iron-feud half** | visible_half 22×22 (was 20) |
 | **Baseline** | MCP/skill: save_baseline after asset/env change |
-| **Tests** | `cargo test -p grok-bevy -p grok-bevy-brp` PASS; install `--force` before dogfood |
+| **Tests** | `cargo test -p specula -p specula-brp` PASS; install `--force` before dogfood |
 
 ### Exclusions not implemented
 
@@ -71,6 +71,6 @@ Scratch: `{SCRATCH}/dogfood-see-2d.log`, `dogfood-see-3d.log`, `eyesight/cd|if/`
 
 ## Tests / rebuild
 
-- grok-bevy-brp unit tests including dogfood stems, alt nudge, tall crop half  
+- specula-brp unit tests including dogfood stems, alt nudge, tall crop half  
 - CD/IF `cargo build --features remote,capture` PASS  
 - IF `height_terrain_has_three_distinct_bands` PASS  

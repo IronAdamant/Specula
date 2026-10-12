@@ -1,6 +1,6 @@
 # demo_3d (3D)
 
-**Short 3D Bevy demo** (Grok-Bevy GAME_DOD).
+**Short 3D Bevy demo** (Specula GAME_DOD).
 
 ## Objective
 
@@ -33,7 +33,7 @@ BRP port **15702**. Packaging: repo `scripts/package-demo.sh`, `docs/PACKAGING.m
 
 ## Monorepo dogfood
 
-From the Grok-Bevy workspace root:
+From the Specula workspace root:
 
 ```bash
 cargo run -p demo_3d --features remote,capture

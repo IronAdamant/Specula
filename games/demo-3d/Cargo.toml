@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Grok-Bevy 3D short demo (GAME_DOD: collect cubes, avoid hazard)"
+description = "Specula 3D short demo (GAME_DOD: collect cubes, avoid hazard)"
 
 [dependencies]
 bevy = { workspace = true, features = ["png"] }

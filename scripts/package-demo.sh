@@ -96,7 +96,7 @@ Run the binary from this folder so the game finds assets/.
   cd "$(basename "${DEST}")"
   ./${PKG}
 
-Built with Grok-Bevy package-demo (non-Steam).
+Built with Specula package-demo (non-Steam).
 EOF
 
 echo ">> packaged: ${DEST}"

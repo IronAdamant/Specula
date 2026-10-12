@@ -31,7 +31,7 @@ You are finishing a **playable short demo**, not a movement sandbox.
 | User intent | Location |
 |-------------|----------|
 | “The demo” / monorepo dogfood | `games/demo-2d` or `games/demo-3d` if present; else templates |
-| New external game | `grok-bevy scaffold --kind 2d\|3d --path <dir>` then implement DoD |
+| New external game | `specula scaffold --kind 2d\|3d --path <dir>` then implement DoD |
 | BRP smoke only | `scaffold --kind demo` — **never** call this the product game |
 
 ## Required loop (implement all)

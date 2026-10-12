@@ -9,7 +9,7 @@
 - Stems: `CargoPod`, `RepairDrone`, `OreCrusher`, `SignalRelay` (score >0 + unit tests)
 - `side_orbit_camera_translation`: high strategy Y drops altitude and widens lateral offset
 - Tall prefixes include OreCrusher / SignalRelay / LoadingBay
-- `cargo test -p grok-bevy -p grok-bevy-brp` PASS; MCP `cargo install --path crates/grok-bevy --force`
+- `cargo test -p specula -p specula-brp` PASS; MCP `cargo install --path crates/specula --force`
 - Surface plan pointer → `AGENT_SIGHT_FIDELITY_PLAN.md`
 
 ## F1 Crystal Drift

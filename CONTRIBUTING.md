@@ -1,4 +1,4 @@
-# Contributing to Grok-Bevy
+# Contributing to Specula
 
 Thanks for helping agents drive Bevy at runtime.
 
@@ -12,9 +12,9 @@ Thanks for helping agents drive Bevy at runtime.
 
 | Path | Role |
 |------|------|
-| `crates/grok-bevy-env` | OS / Rust / Bevy readiness detection |
-| `crates/grok-bevy-brp` | BRP HTTP client + image capture helpers |
-| `crates/grok-bevy` | CLI + MCP server |
+| `crates/specula-env` | OS / Rust / Bevy readiness detection |
+| `crates/specula-brp` | BRP HTTP client + image capture helpers |
+| `crates/specula` | CLI + MCP server |
 | `templates/sample-app` | Feature-gated RemotePlugin / capture sample |
 
 ## Development setup
@@ -24,24 +24,24 @@ Thanks for helping agents drive Bevy at runtime.
 rustup default stable
 
 # Library + CLI tests (fast)
-cargo test -p grok-bevy-env -p grok-bevy-brp -p grok-bevy
+cargo test -p specula-env -p specula-brp -p specula
 
 # Doctor
-cargo run -p grok-bevy -- doctor
+cargo run -p specula -- doctor
 
 # Sample with BRP (needs GPU/window for full scene + screenshots)
-cargo run -p grok_bevy_sample --features remote,capture
+cargo run -p specula_sample --features remote,capture
 ```
 
 ## Extending
 
-- **New OS detection signals** → `grok-bevy-env` (`CommandRunner` stays injectable).
-- **New BRP helpers** → `grok-bevy-brp` client methods; wire MCP tools in `crates/grok-bevy/src/mcp.rs`.
+- **New OS detection signals** → `specula-env` (`CommandRunner` stays injectable).
+- **New BRP helpers** → `specula-brp` client methods; wire MCP tools in `crates/specula/src/mcp.rs`.
 - **Richer agent tools** → prefer upstream `bevy_brp_mcp` PRs; wrap here only for Grok-specific UX (env, image return shaping, docs).
 
 ## Pull requests
 
-1. Run `cargo test -p grok-bevy-env -p grok-bevy-brp -p grok-bevy` and `cargo build -p grok-bevy`.
+1. Run `cargo test -p specula-env -p specula-brp -p specula` and `cargo build -p specula`.
 2. Update `CHANGELOG.md` under `[Unreleased]` or the next version section.
 3. Keep docs (README compatibility matrix) in sync when bumping Bevy / BRP crate versions.
 4. Dual-license all new source as MIT OR Apache-2.0.

@@ -1,14 +1,14 @@
-# Grok-Bevy
+# Specula
 
-**Build and control [Bevy](https://bevy.org) games with AI coding agents** — especially [Grok Build](https://x.ai), and any tool that speaks **MCP (Model Context Protocol)**.
+*Specula* — Latin for *watchtower*. Formerly **Grok-Bevy**.
 
-Grok-Bevy is an open-source companion for people who want help from an AI assistant while making **2D or 3D games in Rust** with the Bevy game engine. It checks that your computer is ready, can start a small playable game for you, and gives your AI agent **live eyes and hands** on a running game: launch the app, inspect the scene, change things, and take screenshots.
+**Agent-native tooling for building production [Bevy](https://bevy.org) games in Rust.** Bevy has no GUI editor — the game *is* code — which makes it the natural engine for AI agents to build in. Specula gives any agent that speaks **MCP (Model Context Protocol)** — [Claude Code](https://claude.com/claude-code), [Grok Build](https://x.ai), Cursor, and others — what it needs to work like a game developer rather than a code generator: scaffolds for real games, **live eyes and hands** on the running game, and (planned) an asset studio for judging 3D assets in isolation.
 
-> **Public demo.** This repo is a working demonstration of agent-native Bevy tooling. Use it to learn the workflow, dogfood it, and adapt it for your own projects.
+> **Status: alpha, being reworked.** See [docs/SPECULA_PLAN.md](docs/SPECULA_PLAN.md) — in-game sight plugin, asset studio, Claude Code support. The eyesight sections below describe the current implementation.
 
 ### Portfolio showcase (2D vertical slice)
 
-External dogfood: a standalone Bevy **0.19** mining-drone game (**Crystal Drift**) was scaffolded with `grok-bevy scaffold --kind 2d`, then iterated with the agent loop. Placeholder art is fine — the point is a **real playable loop** plus **live MCP control**.
+External dogfood: a standalone Bevy **0.19** mining-drone game (**Crystal Drift**) was scaffolded with `specula scaffold --kind 2d`, then iterated with the agent loop. Placeholder art is fine — the point is a **real playable loop** plus **live MCP control**.
 
 ![Crystal Drift gameplay — score, fuel, player, asteroids, mining laser](docs/images/crystal-drift-play.png)
 
@@ -24,7 +24,7 @@ This slice launches **straight into Playing** (no main menu) by design. In-repo 
 
 ## Who this is for
 
-| You might be… | Grok-Bevy helps you… |
+| You might be… | Specula helps you… |
 |---------------|----------------------|
 | New to Bevy, using **Grok Build** or another AI coding assistant | Get a ready machine + a real starter game without memorizing every setup step |
 | Building a game with an **LLM** (Grok, Claude, GPT, local models, etc.) | Give the agent tools so it can *see* and *control* the live game, not only edit code |
@@ -37,16 +37,16 @@ You do **not** need to be a Rust expert to start. You will need a normal develop
 
 ## What you get in plain English
 
-1. **“Is my PC ready for Bevy?”** — `grok-bevy doctor` checks Rust and your OS, then suggests fixes.  
+1. **“Is my PC ready for Bevy?”** — `specula doctor` checks Rust and your OS, then suggests fixes.  
 2. **“Start a game project for me.”** — Scaffold a **2D** or **3D** starter (or a simple demo cube for testing).  
 3. **“Let my AI play with the running game.”** — An **MCP server** so the agent can query the world, tweak values, and **see the viewport** (screenshots + structured eyesight packets).  
-4. **“How should the AI build a real game?”** — Built-in **Grok skills** (playbooks) for production structure, not one-file demos.
+4. **“How should the AI build a real game?”** — Built-in **skills** (playbooks for Claude Code and Grok Build) for production structure, not one-file demos.
 
 **Skills define how to build. Scaffold defines where files go. MCP verifies what is on screen.**
 
 ### Agent eyesight — what it is (and is not)
 
-Grok-Bevy gives agents (and any human using the same MCP tools) **live eyes on a running Bevy window**: full-scene capture, named subjects, true-fovea entity crops, motion strips, multi-view packs, baselines/diffs, and diagnostic bounds (`bevy_see_*` / `grok-bevy see`). **Observation-grade ~20/20 acuity** is implemented (state gate, world→screen fovea, subject filter, multi-view, temporal notes) — see [docs/AGENT_EYESIGHT_20_20_PLAN.md](docs/AGENT_EYESIGHT_20_20_PLAN.md) (baseline: [docs/AGENT_EYESIGHT_PLAN.md](docs/AGENT_EYESIGHT_PLAN.md)).
+Specula gives agents (and any human using the same MCP tools) **live eyes on a running Bevy window**: full-scene capture, named subjects, true-fovea entity crops, motion strips, multi-view packs, baselines/diffs, and diagnostic bounds (`bevy_see_*` / `specula see`). **Observation-grade ~20/20 acuity** is implemented (state gate, world→screen fovea, subject filter, multi-view, temporal notes) — see [docs/AGENT_EYESIGHT_20_20_PLAN.md](docs/AGENT_EYESIGHT_20_20_PLAN.md) (baseline: [docs/AGENT_EYESIGHT_PLAN.md](docs/AGENT_EYESIGHT_PLAN.md)).
 
 **Honest scope:**
 
@@ -55,9 +55,9 @@ Grok-Bevy gives agents (and any human using the same MCP tools) **live eyes on a
 | Let the agent **see** what the player sees | Own **taste**, art direction, or “is this good design?” |
 | Bind pixels to **named entities** and motion | Replace a human creative director |
 | Help the agent **build to your requirements** with evidence | Auto-beautify or score beauty |
-| Serve **human devs** who drive the same MCP | Turn Grok-Bevy into a Bevy **editor** |
+| Serve **human devs** who drive the same MCP | Turn Specula into a Bevy **editor** |
 
-**Taste and design stay with human developers.** The agent is here to **see** and **implement** what you need — not to decide what looks “right” for your game.
+**You own the creative direction.** The planned `style.toml` captures it (palette, budgets, scale, silhouette rules): Specula checks the hard rules automatically, the agent judges the soft ones against it, and you have the final say.
 
 ---
 
@@ -69,7 +69,7 @@ Most AI coding chats only see source files. Game work also needs:
 - What does the **player actually see**?  
 - Can the agent **change a transform** and re-check without guessing?
 
-Grok-Bevy wires that loop using the **Bevy Remote Protocol (BRP)** and optional [bevy_brp_mcp](https://github.com/natepiano/bevy_brp) / [bevy_brp_extras](https://crates.io/crates/bevy_brp_extras). Your agent (Grok Build or another MCP-compatible LLM client) can treat a live Bevy app like a controllable environment: **launch → wait BRP → see (scene/entity/motion/pack) → mutate → re-see → fix → repeat**.
+Specula wires that loop using the **Bevy Remote Protocol (BRP)** and optional [bevy_brp_mcp](https://github.com/natepiano/bevy_brp) / [bevy_brp_extras](https://crates.io/crates/bevy_brp_extras). Your agent (Grok Build or another MCP-compatible LLM client) can treat a live Bevy app like a controllable environment: **launch → wait BRP → see (scene/entity/motion/pack) → mutate → re-see → fix → repeat**.
 
 That makes this project useful if you are searching for phrases like:
 
@@ -92,15 +92,15 @@ That makes this project useful if you are searching for phrases like:
 ### 1. Install the CLI
 
 ```bash
-git clone https://github.com/IronAdamant/Grok-Bevy.git
-cd Grok-Bevy
-cargo install --path crates/grok-bevy
+git clone https://github.com/IronAdamant/Specula.git
+cd Specula
+cargo install --path crates/specula
 ```
 
 ### 2. Check your machine
 
 ```bash
-grok-bevy doctor
+specula doctor
 ```
 
 You want a **READY** report. If something is missing, follow the printed install tips for Windows, macOS, or Linux.
@@ -110,8 +110,8 @@ You want a **READY** report. If something is missing, follow the printed install
 **Grok Build** — add to `~/.grok/config.toml` (or run `grok mcp add …`):
 
 ```toml
-[mcp_servers.grok-bevy]
-command = "grok-bevy"   # or the full path from `which grok-bevy`
+[mcp_servers.specula]
+command = "specula"   # or the full path from `which specula`
 args = ["mcp"]
 enabled = true
 startup_timeout_sec = 30
@@ -133,10 +133,10 @@ enabled = true
 Print ready-made config:
 
 ```bash
-grok-bevy mcp-config
+specula mcp-config
 ```
 
-**Other MCP clients** (Cursor, Claude Code, Continue, Cline, etc.): register a stdio MCP server that runs `grok-bevy mcp` the same way you register any local MCP tool.
+**Other MCP clients** (Cursor, Claude Code, Continue, Cline, etc.): register a stdio MCP server that runs `specula mcp` the same way you register any local MCP tool.
 
 Restart or reload MCP so the agent sees tools like `bevy_env_check`, `bevy_launch_app`, `bevy_wait_brp`, `bevy_capture_viewport`, and `bevy_workflow`.
 
@@ -164,7 +164,7 @@ See [docs/GAME_DOD.md](docs/GAME_DOD.md), [docs/PACKAGING.md](docs/PACKAGING.md)
 ### 5. Or scaffold your own game
 
 ```bash
-grok-bevy scaffold --kind 2d --path ./my-first-game
+specula scaffold --kind 2d --path ./my-first-game
 cd my-first-game
 cargo run --features remote,capture
 ```
@@ -206,7 +206,7 @@ More detail: [docs/FAST_START.md](docs/FAST_START.md) · [docs/PRODUCTION_GAMES.
 
 ## Skills (playbooks for building real games)
 
-These live in `.grok/skills/` so Grok Build (and similar) can load them automatically:
+Canonical source is `skills/`; `python scripts/sync_skills.py` mirrors them to `.claude/skills/` (Claude Code) and `.grok/skills/` (Grok Build) so both load them automatically:
 
 | Skill | When it helps |
 |-------|----------------|
@@ -225,7 +225,7 @@ For **game art**, pair with Grok’s image skills (e.g. `game-asset-core`) and d
 |-------|---------|
 | Bevy game engine | **0.19** |
 | bevy_brp_mcp / bevy_brp_extras | **0.22.1** |
-| Grok-Bevy | **0.2.x** (game factory alpha continues on `main`) |
+| Specula | **0.2.x** (game factory alpha continues on `main`) |
 
 Bevy is a **Cargo** dependency of your game project—not a separate installer. “Ready” means this machine can **compile and run** Bevy apps.
 
@@ -237,7 +237,7 @@ Bevy is a **Cargo** dependency of your game project—not a separate installer. 
 Your AI (Grok Build / Claude / Cursor / …)
         │  MCP (stdio)
         ▼
-   grok-bevy mcp  (+ optional bevy_brp_mcp)
+   specula mcp  (+ optional bevy_brp_mcp)
         │  Bevy Remote Protocol (HTTP)
         ▼
    Your Bevy game (features: remote, capture)
@@ -245,23 +245,23 @@ Your AI (Grok Build / Claude / Cursor / …)
 
 | Piece | Role |
 |-------|------|
-| `grok-bevy` CLI | doctor, scaffold, BRP helpers, MCP entry |
+| `specula` CLI | doctor, scaffold, BRP helpers, MCP entry |
 | MCP server | agent tools + prompts + workflow router |
 | `templates/game-2d`, `game-3d` | playable starters |
 | `templates/sample-app` | remote-control test fixture (cube) |
-| `.grok/skills/` | production playbooks |
+| `skills/` | production playbooks (mirrored to `.claude/skills/`, `.grok/skills/`) |
 
 ---
 
 ## CLI cheat sheet
 
 ```text
-grok-bevy doctor [--compile-probe] [--json]
-grok-bevy mcp
-grok-bevy scaffold --kind 2d|3d|demo --path DIR [--name NAME]
-grok-bevy brp discover|query|mutate|call|screenshot|wait
-grok-bevy mcp-config
-grok-bevy compat
+specula doctor [--compile-probe] [--json]
+specula mcp
+specula scaffold --kind 2d|3d|demo --path DIR [--name NAME]
+specula brp discover|query|mutate|call|screenshot|wait
+specula mcp-config
+specula compat
 ```
 
 ---
@@ -300,6 +300,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). This public demo favors a **small, teste
 
 ### Keywords for discovery (humans and agents)
 
-Grok-Bevy · Grok Build · MCP server · Model Context Protocol · Bevy game engine · Bevy Remote Protocol · BRP · AI game development · LLM coding agent · Rust game engine · 2D game scaffold · 3D game scaffold · agent screenshots · viewport capture · open source Bevy tooling  
+Specula · Grok Build · MCP server · Model Context Protocol · Bevy game engine · Bevy Remote Protocol · BRP · AI game development · LLM coding agent · Rust game engine · 2D game scaffold · 3D game scaffold · agent screenshots · viewport capture · open source Bevy tooling  
 
-If you found this while looking for an **AI-friendly Bevy workflow**, start with `doctor` → register `grok-bevy mcp` → `scaffold --kind 2d` → ask your agent to capture the window.
+If you found this while looking for an **AI-friendly Bevy workflow**, start with `doctor` → register `specula mcp` → `scaffold --kind 2d` → ask your agent to capture the window.

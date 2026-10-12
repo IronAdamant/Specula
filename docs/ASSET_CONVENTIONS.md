@@ -1,6 +1,6 @@
 # Asset path conventions
 
-Bevy loads files **relative to the project `assets/` directory**. Grok-Bevy production templates and skills use these roots:
+Bevy loads files **relative to the project `assets/` directory**. Specula production templates and skills use these roots:
 
 | Directory | Purpose | Example `AssetServer` path |
 |-----------|---------|----------------------------|
@@ -33,7 +33,7 @@ Do not remove this when extending the scaffold unless you replace it with an equ
 
 ## Scaffolded layout
 
-`grok-bevy scaffold --kind 2d|3d` creates these directories (and ships at least one placeholder disk asset for the vertical slice).
+`specula scaffold --kind 2d|3d` creates these directories (and ships at least one placeholder disk asset for the vertical slice).
 
 ## Related
 

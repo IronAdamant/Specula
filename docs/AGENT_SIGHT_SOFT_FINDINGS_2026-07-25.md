@@ -44,7 +44,7 @@
 | | |
 |--|--|
 | **Doc** | [AGENT_SIGHT_CI_MATRIX.md](AGENT_SIGHT_CI_MATRIX.md) |
-| **Policy** | Headless: always `cargo test -p grok-bevy -p grok-bevy-brp`. Live bar: **`/agent-sight-dogfood` mode=full**. No fake headless screenshot CI. |
+| **Policy** | Headless: always `cargo test -p specula -p specula-brp`. Live bar: **`/agent-sight-dogfood` mode=full**. No fake headless screenshot CI. |
 
 ## E6 Full workflow
 

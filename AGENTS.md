@@ -1,4 +1,4 @@
-# Grok-Bevy — agent project rules
+# Specula — agent project rules
 
 ## Mission
 
@@ -24,7 +24,7 @@ Help users build **production Bevy games** (playable, modular, shippable), not o
 | Live run, BRP, screenshot, MCP iterate | `bevy-agent-loop` |
 | Generate game art | Grok `game-asset-core` + matching specialist (`game-animation-frames`, `game-character-consistency`, `game-tilesets`, `game-ui-icons`) |
 
-Skills live under `.grok/skills/`. See [docs/PRODUCTION_GAMES.md](docs/PRODUCTION_GAMES.md), [docs/GAME_DOD.md](docs/GAME_DOD.md), [docs/ROADMAP.md](docs/ROADMAP.md).
+Skills live under `skills/` (canonical; mirrored to `.claude/skills/` and `.grok/skills/` by `scripts/sync_skills.py` — edit `skills/` only). See [docs/PRODUCTION_GAMES.md](docs/PRODUCTION_GAMES.md), [docs/GAME_DOD.md](docs/GAME_DOD.md), [docs/ROADMAP.md](docs/ROADMAP.md).
 ## Layout contract for real games
 
 Prefer (or create) this structure over a single `main.rs` scene:

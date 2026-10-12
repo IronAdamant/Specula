@@ -1,33 +1,33 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/grok-bevy-env",
-    "crates/grok-bevy-brp",
-    "crates/grok-bevy",
+    "crates/specula-env",
+    "crates/specula-brp",
+    "crates/specula",
     "templates/sample-app",
     "games/demo-2d",
     "games/demo-3d",
 ]
 default-members = [
-    "crates/grok-bevy-env",
-    "crates/grok-bevy-brp",
-    "crates/grok-bevy",
+    "crates/specula-env",
+    "crates/specula-brp",
+    "crates/specula",
 ]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/IronAdamant/Grok-Bevy"
-authors = ["Grok-Bevy contributors"]
+repository = "https://github.com/IronAdamant/Specula"
+authors = ["Specula contributors"]
 rust-version = "1.85"
 
 [workspace.dependencies]
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-grok-bevy-brp = { path = "crates/grok-bevy-brp", version = "0.2.0" }
-grok-bevy-env = { path = "crates/grok-bevy-env", version = "0.2.0" }
+specula-brp = { path = "crates/specula-brp", version = "0.2.0" }
+specula-env = { path = "crates/specula-env", version = "0.2.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

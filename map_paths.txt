@@ -1,6 +1,6 @@
 # map_paths.txt — package roots for import-map collection (not bare ".")
 # Independent of monitored_paths.txt (wiki/health).
 
-crates/grok-bevy/src/
-crates/grok-bevy-env/src/
-crates/grok-bevy-brp/src/
+crates/specula/src/
+crates/specula-env/src/
+crates/specula-brp/src/

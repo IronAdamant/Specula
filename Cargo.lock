@@ -3278,58 +3278,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
-name = "grok-bevy"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "grok-bevy-brp",
- "grok-bevy-env",
- "include_dir",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "which",
-]
-
-[[package]]
-name = "grok-bevy-brp"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "base64",
- "png 0.17.16",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "grok-bevy-env"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "which",
-]
-
-[[package]]
-name = "grok_bevy_sample"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_brp_extras",
-]
-
-[[package]]
 name = "guillotiere"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5948,6 +5896,58 @@ dependencies = [
  "num-traits",
  "robust",
  "smallvec",
+]
+
+[[package]]
+name = "specula"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "include_dir",
+ "serde",
+ "serde_json",
+ "specula-brp",
+ "specula-env",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "which",
+]
+
+[[package]]
+name = "specula-brp"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "png 0.17.16",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "specula-env"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "which",
+]
+
+[[package]]
+name = "specula_sample"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_brp_extras",
 ]
 
 [[package]]

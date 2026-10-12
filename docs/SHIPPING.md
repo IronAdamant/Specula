@@ -1,6 +1,6 @@
-# Shipping a Bevy game (Grok-Bevy)
+# Shipping a Bevy game (Specula)
 
-Engineering-oriented release checklist for games scaffolded or structured with Grok-Bevy. This is **not** store certification.
+Engineering-oriented release checklist for games scaffolded or structured with Specula. This is **not** store certification.
 
 ## Build
 
@@ -27,7 +27,7 @@ codegen-units = 1
 
 ## Assets next to the binary
 
-Grok-Bevy **production templates** (2d/3d) set `AssetPlugin` as:
+Specula **production templates** (2d/3d) set `AssetPlugin` as:
 
 - **Debug:** crate-root `assets/` via `CARGO_MANIFEST_DIR` (agent-friendly when running `target/debug/*`)
 - **Release:** relative `"assets"` — ship the folder **beside the executable**
@@ -49,7 +49,7 @@ Never assume `cargo run` paths when double-clicking a binary from another direct
 - [ ] Disk assets under `assets/` load (no pink/missing textures in a release run)  
 - [ ] Window title and package name match the product  
 - [ ] README documents controls and feature flags  
-- [ ] Optional: live capture review via Grok-Bevy MCP (`bevy_capture_viewport`)  
+- [ ] Optional: live capture review via Specula MCP (`bevy_capture_viewport`)  
 
 ## Platforms
 
@@ -57,7 +57,7 @@ Never assume `cargo run` paths when double-clicking a binary from another direct
 |----------|--------|
 | macOS | May need app bundle / notarization for distribution outside cargo; GPU drivers via system |
 | Windows | MSVC toolchain for Bevy; ship runtime DLLs only if you link non-static deps |
-| Linux | Install distro graphics/audio packages; see `grok-bevy doctor` guidance |
+| Linux | Install distro graphics/audio packages; see `specula doctor` guidance |
 
 ## Agent skills
 

@@ -4,16 +4,16 @@ Concise report for Obsidian. Product: **agent eyesight** (not a Bevy editor).
 
 ## Features added (copy for Obsidian)
 
-- **`grok-bevy.eyesight/v1` packet schema** — captures + subjects + stimulus + style_intent + warnings + agent_must
-- **`bevy_see_scene` / CLI `grok-bevy see scene`** — E0 full frame + Name/Transform subjects + abs_path
+- **`specula.sight/v1` packet schema** — captures + subjects + stimulus + style_intent + warnings + agent_must
+- **`bevy_see_scene` / CLI `specula see scene`** — E0 full frame + Name/Transform subjects + abs_path
 - **`bevy_see_entity` / `see entity`** — E1 fovea crop around screen point for a named entity
 - **`bevy_see_region` / `see region`** — E1 pixel-rect crop (landscape / water / HUD patches)
 - **`bevy_see_motion` / `see motion`** — E2 multi-frame capture + horizontal montage strip (+ optional keys)
 - **`bevy_see_diff` / `see diff`** — E3 baseline vs after + abs-diff PNG + mean score
 - **`bevy_see_pack` / `see pack`** — multi-view presets: entity_craft, landscape, water, physics_jump, lighting
 - **Black-frame warning** — empty-window heuristic (mean + max luminance; dark space scenes not false-positive as empty)
-- **MCP + CLI + skill contract** — tools in Grok-Bevy MCP; `bevy-agent-loop` eyesight rules; `verify_scene` routes to see_scene
-- **Unit tests** — crop, montage, black-frame, packet schema, subject parse, diff score (shipped `grok-bevy-brp` paths)
+- **MCP + CLI + skill contract** — tools in Specula MCP; `bevy-agent-loop` eyesight rules; `verify_scene` routes to see_scene
+- **Unit tests** — crop, montage, black-frame, packet schema, subject parse, diff score (shipped `specula-brp` paths)
 
 ### Crystal Drift (2D dogfood)
 
@@ -38,7 +38,7 @@ Motion strip sizes grew across frames on Crystal Drift (entities moving) — tem
 
 ## Tests
 
-- `cargo test -p grok-bevy -p grok-bevy-brp` — **PASS**
+- `cargo test -p specula -p specula-brp` — **PASS**
 - Crystal Drift / Iron Feud `cargo build --features remote,capture` — **PASS**
 - Live CLI eyesight against both games on port 15702 — **PASS** (real PNGs, schema packets)
 
@@ -58,5 +58,5 @@ Motion strip sizes grew across frames on Crystal Drift (entities moving) — tem
 ## Paths
 
 - Plan: `docs/AGENT_EYESIGHT_PLAN.md`  
-- Code: `crates/grok-bevy-brp/src/eyesight.rs`, MCP tools in `crates/grok-bevy/src/mcp.rs`, CLI `see`  
+- Code: `crates/specula-brp/src/eyesight.rs`, MCP tools in `crates/specula/src/mcp.rs`, CLI `see`  
 - Skill: `.grok/skills/bevy-agent-loop/` + `references/eyesight-packs.md`  

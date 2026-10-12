@@ -5,7 +5,7 @@
 ## Always (headless, no GPU window required)
 
 ```bash
-cargo test -p grok-bevy -p grok-bevy-brp
+cargo test -p specula -p specula-brp
 ```
 
 Covers: ranking, structural demotion, fovea projection / **craft-dark gates**, pack restore helpers, multi-view placement pure math, magenta/nonblack gates.

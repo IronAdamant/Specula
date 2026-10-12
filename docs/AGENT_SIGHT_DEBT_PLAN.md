@@ -2,16 +2,16 @@
 
 **Status:** complete (R0–R4 shipped 2026-07-23)  
 **Audience:** implementing agent under `/goal`; human may be away for a long session  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** close **remaining sight debt** (filter, 3D multi-view, craft fidelity, dual-port honesty), then dogfood by **(1)** one new Named feature+asset per game, **(2)** one new environment element per game, and **(3)** **improving every existing asset and environment** on Crystal Drift and Iron Feud so live packets prove the upgrade.
 
 ### Long-session / no-shortcuts mandate
 
 - Take as long as needed; **correctness over speed**.  
 - **No shortcuts:** no stub assets, no synthetic screenshots, no “improved” renames without visible change, no skip of live verify when GPU/window available.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force`) **before** treating dogfood captures as pass evidence.  
+- Rebuild MCP (`cargo install --path crates/specula --force`) **before** treating dogfood captures as pass evidence.  
 - Taste/design remain **human-owned**; agent **sees and builds** to this plan’s quotas.  
-- External trees are **not** in Grok-Bevy git — edit them in place; commit Grok-Bevy docs/code separately.
+- External trees are **not** in Specula git — edit them in place; commit Specula docs/code separately.
 
 ### Parent / prior work (shipped)
 
@@ -68,7 +68,7 @@ Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`,
 ### Debt → phase map
 
 ```text
-R0  Grok-Bevy sight debt code (R1–R4, R7 surface) + unit tests + install --force
+R0  Specula sight debt code (R1–R4, R7 surface) + unit tests + install --force
 R1  Crystal Drift: 1 new feature+asset + 1 new env + improve ALL existing assets/env + live verify
 R2  Iron Feud: 1 new feature+asset + 1 new env + improve ALL existing assets/env/height + live verify
 R3  Sequential live review both games (new MCP); open PNGs; fix loop
@@ -79,9 +79,9 @@ R4  Docs: checkboxes, PROGRESS, findings+assessments; skill/ROADMAP
 
 ---
 
-## 3. Phase R0 — Grok-Bevy residual sight code
+## 3. Phase R0 — Specula residual sight code
 
-Implement in `crates/grok-bevy-brp` / `crates/grok-bevy`. Pure logic unit-tested.
+Implement in `crates/specula-brp` / `crates/specula`. Pure logic unit-tested.
 
 ### R0.1 Filter / ranking debt (R1, R2)
 
@@ -107,8 +107,8 @@ Implement in `crates/grok-bevy-brp` / `crates/grok-bevy`. Pure logic unit-tested
 
 - [x] Skill + MCP instructions: after asset/env change, `save_baseline` then `compare_baseline` once per game in R3.  
 - [x] CLI/MCP still expose baseline flags on scene/verify.  
-- [x] `cargo test -p grok-bevy -p grok-bevy-brp` PASS; `cargo build -p grok-bevy` PASS.  
-- [x] `cargo install --path crates/grok-bevy --force`; log `grok-bevy see --help` + pack list to `{SCRATCH}/mcp-surface.log`.
+- [x] `cargo test -p specula -p specula-brp` PASS; `cargo build -p specula` PASS.  
+- [x] `cargo install --path crates/specula --force`; log `specula see --help` + pack list to `{SCRATCH}/mcp-surface.log`.
 
 **R0 exit:** Tests green; binary rebuilt; no excluded features.
 
@@ -256,10 +256,10 @@ Sequential on port **15702**.
 ```text
 1. killall crystal_drift iron_feud
 2. Launch CD warm binary (remote,capture)
-3. grok-bevy brp wait --port 15702
-4. grok-bevy see verify --profile crystal-drift --out-dir <CD>
-5. grok-bevy see pack env_2d|hud|landscape --profile crystal-drift
-6. grok-bevy see entity --name Player (and new feature Name)
+3. specula brp wait --port 15702
+4. specula see verify --profile crystal-drift --out-dir <CD>
+5. specula see pack env_2d|hud|landscape --profile crystal-drift
+6. specula see entity --name Player (and new feature Name)
 7. save_baseline → small mutate or note → compare_baseline once
 8. Assert: primary=Player; new Names present; improved assets visible in fovea; PNG bytes>0
 9. OPEN full + fovea + env pack; write observations
@@ -319,7 +319,7 @@ Sequential on port **15702**.
 2. **Crystal Drift:** 1 new feature+asset, 1 new env, **all** listed sprites improved, env improved, live verify pass.  
 3. **Iron Feud:** 1 new feature+asset, 1 new env, **all** listed tints improved, env+height improved, Playing verify pass.  
 4. Live eyesight both games: non-empty PNGs, open/read notes, logs under `{SCRATCH}`.  
-5. Unit tests for new pure helpers PASS; `cargo test -p grok-bevy -p grok-bevy-brp` PASS.  
+5. Unit tests for new pure helpers PASS; `cargo test -p specula -p specula-brp` PASS.  
 6. Debt R1–R4 addressed in code or deferred with written reason in findings.  
 7. **No exclusions** implemented.  
 8. Findings + assessments written; plan checkboxes complete.  
@@ -346,7 +346,7 @@ Implementer may rename but **must** meet counts and the full improve inventory.
 | Height changes break placement | Keep start 0..10 flat; unit test reserved cells |
 | New Names filtered | R0 hints + tests before dogfood green |
 | Stale MCP | install --force before R3 pass |
-| CD/IF not in Grok-Bevy git | Edit external paths; commit only Grok-Bevy in this repo |
+| CD/IF not in Specula git | Edit external paths; commit only Specula in this repo |
 | Tiny procedural sprites history | Prefer real regenerated art (game-asset-core); never leave 100-byte placeholders |
 | Alt views still similar | Side nudge + honest views_similar; document residual |
 
@@ -359,7 +359,7 @@ Execute docs/AGENT_SIGHT_DEBT_PLAN.md to completion (R0 → R4).
 I will be away — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
-Order: Grok-Bevy residual sight debt first (rebuild install), then dogfood
+Order: Specula residual sight debt first (rebuild install), then dogfood
   2D: /Users/aron/Documents/coding_projects/Crystal Drift
   3D: /Users/aron/Documents/coding_projects/Iron Feud
 Each game: 1 new feature+asset; 1 new environment; improve ALL existing assets

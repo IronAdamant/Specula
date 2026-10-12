@@ -1,9 +1,9 @@
 # Roadmap — agent-native game factory (alpha)
 
 **Status:** alpha public demo.  
-**North star:** Grok-Bevy helps agents **create real short Bevy games**, package them for sharing, and later structure them for Steam—without Steam blocking the first demos.
+**North star:** Specula helps agents **create real short Bevy games**, package them for sharing, and later structure them for Steam—without Steam blocking the first demos.
 
-Design, art direction, and design iteration are **user-owned**. Grok-Bevy owns **structure, systems kit, agent skills, MCP verify, packaging**.
+Design, art direction, and design iteration are **user-owned**. Specula owns **structure, systems kit, agent skills, MCP verify, packaging**.
 
 ## Horizons
 
@@ -28,7 +28,7 @@ Design, art direction, and design iteration are **user-owned**. Grok-Bevy owns *
 | **G3** | In-repo dogfood | **Done** — `games/demo-2d`, `games/demo-3d` |
 | **G4** | Packaging | **Done** — `scripts/package-demo.sh` + docs/skill |
 | **G5** | Steam path | Docs/skill only until packaging works |
-| **G6** | Install ergonomics | **Done** — templates embedded in CLI; `GROK_BEVY_TEMPLATE_ROOT` optional override |
+| **G6** | Install ergonomics | **Done** — templates embedded in CLI; `SPECULA_TEMPLATE_ROOT` optional override |
 
 ```text
 G1 ──► G2a (2D kit) ──► G3a (demo-2d)

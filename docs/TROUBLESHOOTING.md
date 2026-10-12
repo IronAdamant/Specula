@@ -1,6 +1,6 @@
 # Troubleshooting
 
-## Environment / `grok-bevy doctor`
+## Environment / `specula doctor`
 
 ### `rustc` or `cargo` missing
 
@@ -22,11 +22,11 @@ Open a **new** shell after installing so `PATH` includes `~/.cargo/bin`.
 - Linux: missing X11/Wayland/ALSA/udev headers (see doctor’s install guidance)  
 - Network blocked from crates.io  
 
-You can still use Grok-Bevy without the probe if `rustc` and `cargo` report ready.
+You can still use Specula without the probe if `rustc` and `cargo` report ready.
 
 ### Bevy is not a global binary
 
-Grok-Bevy correctly does **not** search for a `bevy` executable. Bevy is pulled as a Cargo crate per project.
+Specula correctly does **not** search for a `bevy` executable. Bevy is pulled as a Cargo crate per project.
 
 ## BRP connection
 
@@ -34,12 +34,12 @@ Grok-Bevy correctly does **not** search for a `bevy` executable. Bevy is pulled 
 
 1. Run the app with BRP enabled:
    ```bash
-   cargo run -p grok_bevy_sample --features remote,capture
+   cargo run -p specula_sample --features remote,capture
    ```
 2. Confirm nothing else is bound: change port with `BrpExtrasPlugin::with_port(…)` or `BRP_EXTRAS_PORT`.
 3. Wait for first compile + window startup:
    ```bash
-   grok-bevy brp wait --port 15702 --timeout-secs 180
+   specula brp wait --port 15702 --timeout-secs 180
    ```
 
 ### Query returns empty / type not found
@@ -60,7 +60,7 @@ Or pass FQNs directly (any string containing `::` is left unchanged):
 bevy_transform::components::transform::Transform
 ```
 
-Discover methods with `grok-bevy brp discover` or MCP `bevy_brp_discover`. For schema help, prefer `bevy_brp_mcp`’s type guide tools.
+Discover methods with `specula brp discover` or MCP `bevy_brp_discover`. For schema help, prefer `bevy_brp_mcp`’s type guide tools.
 
 ### Optional movement smoke (`send_keys`)
 
@@ -82,7 +82,7 @@ Rich keyboard/mouse injection: install optional `bevy_brp_mcp`.
 
 ## Common BRP method names
 
-Use **exact** method strings (do not invent prefixes like `bevy_brp_extras/…`). Discover live with `bevy_brp_discover` / `grok-bevy brp discover`.
+Use **exact** method strings (do not invent prefixes like `bevy_brp_extras/…`). Discover live with `bevy_brp_discover` / `specula brp discover`.
 
 | Method | Purpose |
 |--------|---------|
@@ -121,10 +121,10 @@ Mitigations:
 
 ## MCP server
 
-### Grok Build cannot start `grok-bevy`
+### Grok Build cannot start `specula`
 
 - Use an absolute `command` path in `config.toml`  
-- Ensure the binary is built: `cargo build -p grok-bevy --release`  
+- Ensure the binary is built: `cargo build -p specula --release`  
 - Logs belong on stderr; do not redirect stdout  
 
 ### Want the full Bevy agent tool list
@@ -134,7 +134,7 @@ cargo install bevy_brp_mcp --locked
 grok mcp add bevy-brp -- bevy_brp_mcp
 ```
 
-Or: `grok-bevy mcp --delegate-brp-mcp` (requires `bevy_brp_mcp` on `PATH`).
+Or: `specula mcp --delegate-brp-mcp` (requires `bevy_brp_mcp` on `PATH`).
 
 ## Launch / agent loop
 
@@ -147,7 +147,7 @@ Or: `grok-bevy mcp --delegate-brp-mcp` (requires `bevy_brp_mcp` on `PATH`).
 3. For **cold first compiles**, prefer shell/background `cargo run --features remote,capture` so the host MCP `tool_timeout_sec` cannot kill a long compile.  
 4. Optional: `wait_secs` on launch is capped at **60** (warm restarts only). Do **not** use long wait on launch for cold builds.
 
-CLI equivalent: `grok-bevy brp wait --port 15702 --timeout-secs 180`.
+CLI equivalent: `specula brp wait --port 15702 --timeout-secs 180`.
 
 ### Two apps / dual launch on port 15702
 
@@ -158,7 +158,7 @@ Only one process can listen on the default BRP port. Dual launch for dogfood mea
 Scaffold **refuses** `--path .` (even with `--force`) so it never wipes the current directory. Use a subdirectory:
 
 ```bash
-grok-bevy scaffold --kind 2d --path ./my-game --name my-game
+specula scaffold --kind 2d --path ./my-game --name my-game
 ```
 
 ### Stuck on Loading / empty Name queries
@@ -176,20 +176,20 @@ Two systems with overlapping `Query<&mut T>` panic at runtime. Fix with marker c
 
 ### Scaffold: templates not found
 
-**G6:** `grok-bevy` embeds `templates/` in the binary. Scaffold resolves:
+**G6:** `specula` embeds `templates/` in the binary. Scaffold resolves:
 
-1. `GROK_BEVY_TEMPLATE_ROOT` (optional override)  
+1. `SPECULA_TEMPLATE_ROOT` (optional override)  
 2. Monorepo `templates/` (dev / `cargo install --path`)  
-3. Embedded extract to `~/.cache/grok-bevy/templates/<version>/`  
+3. Embedded extract to `~/.cache/specula/templates/<version>/`  
 
 You do **not** need a monorepo checkout for scaffold after a normal `cargo install --path` (or any install that compiled with templates present). Optional override:
 
 ```toml
-[mcp_servers.grok-bevy.env]
-GROK_BEVY_TEMPLATE_ROOT = "/path/to/custom/templates"
+[mcp_servers.specula.env]
+SPECULA_TEMPLATE_ROOT = "/path/to/custom/templates"
 ```
 
-`grok-bevy mcp-config` prints how templates were resolved.
+`specula mcp-config` prints how templates were resolved.
 
 ## Slow compiles
 

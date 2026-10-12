@@ -2,7 +2,7 @@
 
 **Status:** complete (D0–D5 shipped 2026-07-22)  
 **Audience:** implementing agent under `/goal`; human sets goal then may be away  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** improve **agent sight** for both **2D** and **3D** Bevy games so the current-generation model can observe layouts, assets, and environments reliably — then dogfood on real games with new content and env work.
 
 ### Long-session / no-shortcuts mandate (read first)
@@ -13,7 +13,7 @@ This plan is written for a session where the human may be **away for several hou
 - Prefer **correct, durable** code, tests, builds, live captures, and honest findings over speed.  
 - **No shortcuts:** no stub-only features, no fake/synthetic screenshots, no skipping live verify when a GPU/window is available, no “looks done” without packet + PNG proof.  
 - If blocked (compile, BRP, window), log honestly under `{SCRATCH}` and still prove structural + unit tests — then retry live when possible.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force` if host uses cargo bin) **before** treating dogfood captures as pass evidence.  
+- Rebuild MCP (`cargo install --path crates/specula --force` if host uses cargo bin) **before** treating dogfood captures as pass evidence.  
 - Taste and design direction remain **human-owned**; agent **sees and builds** to requirements.
 
 ### Parent / prior work (shipped)
@@ -64,11 +64,11 @@ Pins: Bevy **0.19**, BRP **15702**, `remote,capture`. Skills: `bevy-agent-loop`,
 ## 3. Execution order (hard)
 
 ```text
-D0  Grok-Bevy sight code (2D+3D shared + dim-specific helpers) + unit tests
-    → cargo test -p grok-bevy -p grok-bevy-brp
-    → cargo build -p grok-bevy
-    → cargo install --path crates/grok-bevy --force   # if MCP uses cargo bin
-    → confirm: grok-bevy see --help lists verify; instructions mention 2d/3d packs if added
+D0  Specula sight code (2D+3D shared + dim-specific helpers) + unit tests
+    → cargo test -p specula -p specula-brp
+    → cargo build -p specula
+    → cargo install --path crates/specula --force   # if MCP uses cargo bin
+    → confirm: specula see --help lists verify; instructions mention 2d/3d packs if added
 
 D1  Crystal Drift (2D): 2 new features+assets + env improve + live display
 D2  Iron Feud (3D): 2 new features+assets + height-varying terrain + env improve + live display
@@ -81,9 +81,9 @@ D5  Docs: checkboxes, PROGRESS, findings + assessments; skill touch-ups
 
 ---
 
-## 4. Phase D0 — Grok-Bevy agent-sight upgrades (both dimensions)
+## 4. Phase D0 — Specula agent-sight upgrades (both dimensions)
 
-Implement in `crates/grok-bevy-brp` / `crates/grok-bevy` (MCP + CLI). Unit-test pure logic.
+Implement in `crates/specula-brp` / `crates/specula` (MCP + CLI). Unit-test pure logic.
 
 ### D0.1 Shared polish
 
@@ -195,10 +195,10 @@ Sequential on port **15702** (stop one game before starting the other).
 ```text
 1. killall crystal_drift iron_feud (exact names; avoid pkill -f self-match)
 2. Launch CD binary (warm target/debug)
-3. grok-bevy brp wait --port 15702
-4. grok-bevy see verify --profile crystal-drift --out-dir <CD path>
-5. grok-bevy see entity --name Player (and one new feature Name)
-6. grok-bevy see pack landscape --profile crystal-drift  (or env_2d if added)
+3. specula brp wait --port 15702
+4. specula see verify --profile crystal-drift --out-dir <CD path>
+5. specula see entity --name Player (and one new feature Name)
+6. specula see pack landscape --profile crystal-drift  (or env_2d if added)
 7. Optional: baseline → small mutate → compare_baseline
 8. Assert: primary=Player; new Names in subjects; captures bytes>0; no false black_frame
 9. OPEN primary full + fovea images; note observation (not taste essay)
@@ -249,7 +249,7 @@ Sequential on port **15702** (stop one game before starting the other).
 - [x] Flip all checkboxes in this file to `[x]` when truly done.  
 - [x] Update [PROGRESS.md](../PROGRESS.md) with this plan section.  
 - [x] Write `docs/AGENT_SIGHT_2D3D_FINDINGS_YYYY-MM-DD.md`:  
-  - Features added (Grok-Bevy + each game)  
+  - Features added (Specula + each game)  
   - Asset paths  
   - Packet paths / primary_subject  
   - Height terrain description (IF)  
@@ -265,7 +265,7 @@ Sequential on port **15702** (stop one game before starting the other).
 2. **Crystal Drift:** ≥2 new features with assets **displayed** and Named in live packets; env improved; verify pass.  
 3. **Iron Feud:** ≥2 new features with assets displayed; **terrain height varies flat→hill→mountain**; env improved; Playing verify pass.  
 4. **Live eyesight** both games: non-empty PNGs, open/read observations, logs under `{SCRATCH}`.  
-5. **Unit tests** for new pure helpers PASS; `cargo test -p grok-bevy -p grok-bevy-brp` PASS.  
+5. **Unit tests** for new pure helpers PASS; `cargo test -p specula -p specula-brp` PASS.  
 6. **No exclusions** implemented.  
 7. **Findings + assessments** written; plan checkboxes complete.  
 8. **No shortcuts** — if time is long, finish correctly rather than stub.  
@@ -291,7 +291,7 @@ Implementer may rename but **must** meet counts and IF height range.
 | New Names filtered out | Update GAMEPLAY_NAME_HINTS / scores in D0 |
 | Stale MCP | install --force + session reload before D3 pass |
 | Port 15702 conflict | Sequential games only |
-| External trees not in Grok-Bevy git | Edit external paths; commit Grok-Bevy docs/code separately |
+| External trees not in Specula git | Edit external paths; commit Specula docs/code separately |
 | Context limits mid-goal | Prefer finishing D0 fully, then one game fully, then the other; use todos |
 
 ---
@@ -303,7 +303,7 @@ Execute docs/AGENT_SIGHT_2D3D_PLAN.md to completion (D0 → D5).
 I will be away for several hours — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
-Order mandatory: Grok-Bevy sight/MCP first (rebuild install), then dogfood
+Order mandatory: Specula sight/MCP first (rebuild install), then dogfood
   2D: /Users/aron/Documents/coding_projects/Crystal Drift
   3D: /Users/aron/Documents/coding_projects/Iron Feud
 Each game: 2 new features+assets displayed+tested; improve existing environments.

@@ -2,14 +2,14 @@
 
 **Status:** complete (F0–F6 shipped 2026-07-23)  
 **Audience:** implementing agent under `/goal`; human may be away for a long session  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** raise **craft fidelity** so agent sight judges **recognizable product features**, not block placeholders — dogfood **Crystal Drift** and **Iron Feud** with **exactly one new feature each** and a **full improve-all-existing-features** pass. Existing craft must leave “block soup”: drills read as drills, belts as belts; CD sprites have **true transparent backgrounds** (no purple/magenta square plates); IF terrain is **randomized varying height**, not a flat slab world.
 
 ### Long-session / no-shortcuts mandate
 
 - Take as long as needed; **correctness over speed**.  
 - **No shortcuts:** no stub meshes, no magenta/purple square plates on 2D sprites, no “rename-only” improves, no synthetic PNGs as pass proof, no skip of live verify when GPU/window is available.  
-- Rebuild MCP (`cargo install --path crates/grok-bevy --force`) **before** treating dogfood captures as pass evidence whenever Grok-Bevy sight code changes.  
+- Rebuild MCP (`cargo install --path crates/specula --force`) **before** treating dogfood captures as pass evidence whenever Specula sight code changes.  
 - Taste/design remain **human-owned**; agent **sees and builds** to this plan’s quotas.  
 - **Commit** CD/IF craft in their sibling git repos (already versioned under hardening H1).
 
@@ -83,11 +83,11 @@ Hardening shipped gates + first complex-craft pass. Residuals and human review s
 ## 3. Execution order (hard)
 
 ```text
-F0  Grok-Bevy residual fidelity (multi-view camera path polish if needed;
+F0  Specula residual fidelity (multi-view camera path polish if needed;
     Name stems for planned features; gate docs/tests still green)
-    → cargo test -p grok-bevy -p grok-bevy-brp
-    → cargo build -p grok-bevy
-    → cargo install --path crates/grok-bevy --force  (if platform code changed)
+    → cargo test -p specula -p specula-brp
+    → cargo build -p specula
+    → cargo install --path crates/specula --force  (if platform code changed)
     → log surface → {SCRATCH}/mcp-surface.log
 
 F1  Crystal Drift craft pass: 1 NEW feature + improve ALL existing features/sprites
@@ -101,7 +101,7 @@ F2  Iron Feud craft pass: 1 NEW feature + improve ALL existing machine/prop mesh
 F3  Sequential live review both games (current MCP); pixel gates green; open PNGs
 F4  Fix loop until green (no block drills, no purple sprite plates, no flat-only world)
 F5  Docs: checkboxes, PROGRESS, findings+assessments; skill/ROADMAP/AGENTS
-F6  Commit Grok-Bevy + CD + IF sibling repos
+F6  Commit Specula + CD + IF sibling repos
 ```
 
 **Never treat F1–F3 captures as pass evidence on a stale MCP if F0 changed sight code.**  
@@ -121,7 +121,7 @@ Craft dogfood (F1–F2) is **in addition** to tiers — it is the product proof 
 
 ---
 
-## 5. Phase F0 — Grok-Bevy Tier 1 residual (platform)
+## 5. Phase F0 — Specula Tier 1 residual (platform)
 
 Implement only what residual multi-view / gates still need. Prefer pure, unit-tested helpers.
 
@@ -145,7 +145,7 @@ Implement only what residual multi-view / gates still need. Prefer pure, unit-te
 ### F0.4 Surface
 
 - [x] MCP/CLI instructions still state transparent-BG law, complex-mesh dogfood, pixel gates.  
-- [x] `cargo test -p grok-bevy -p grok-bevy-brp` PASS; rebuild/install if code changed; `{SCRATCH}/mcp-surface.log`.
+- [x] `cargo test -p specula -p specula-brp` PASS; rebuild/install if code changed; `{SCRATCH}/mcp-surface.log`.
 
 **F0 exit:** Tests green; no exclusions; install current if platform changed.
 
@@ -300,8 +300,8 @@ Sequential port **15702**.
 ```text
 1. killall crystal_drift iron_feud
 2. Launch CD (warm binary, remote,capture)
-3. grok-bevy brp wait --port 15702
-4. grok-bevy see verify --profile crystal-drift --out-dir <CD> --save-baseline ...
+3. specula brp wait --port 15702
+4. specula see verify --profile crystal-drift --out-dir <CD> --save-baseline ...
 5. pack env_2d | hud | landscape
 6. entity Player + new feature Name
 7. Sprite audit + full-frame nonblack / magenta gates
@@ -359,7 +359,7 @@ Sequential port **15702**.
 
 ## 11. Phase F6 — Git
 
-- [x] Grok-Bevy: commit platform + docs (no force-push).  
+- [x] Specula: commit platform + docs (no force-push).  
 - [x] Crystal Drift: commit new feature + sprite inventory.  
 - [x] Iron Feud: commit new feature + mesh/terrain pass.  
 
@@ -371,7 +371,7 @@ Sequential port **15702**.
 2. **CD:** 1 new feature beyond PulseMine; **all** sprites transparent-BG; no true-magenta/purple plates; env+craft visible on full; verify pass.  
 3. **IF:** 1 new feature beyond LoadingBay; **all** machine/prop kinds non-blocky recognizable craft; randomized varying terrain height; start playable; Playing verify pass.  
 4. Live eyesight both games: non-empty PNGs, open/read observations, logs under `{SCRATCH}`.  
-5. Unit tests for pure helpers PASS; `cargo test -p grok-bevy -p grok-bevy-brp` PASS.  
+5. Unit tests for pure helpers PASS; `cargo test -p specula -p specula-brp` PASS.  
 6. **No exclusions** implemented.  
 7. Findings + assessments; plan checkboxes complete.  
 8. **No shortcuts** on complex shapes, transparent BG, or flat terrain.
@@ -399,7 +399,7 @@ Execute docs/AGENT_SIGHT_FIDELITY_PLAN.md to completion (F0 → F6).
 I will be away — take as long as needed; NO shortcuts;
 long-term correctness over speed. Prefer durable tests, live captures, honest logs.
 
-Order: Grok-Bevy residual platform first (rebuild install if code changed),
+Order: Specula residual platform first (rebuild install if code changed),
 then dogfood craft:
   2D: /Users/aron/Documents/coding_projects/Crystal Drift
   3D: /Users/aron/Documents/coding_projects/Iron Feud

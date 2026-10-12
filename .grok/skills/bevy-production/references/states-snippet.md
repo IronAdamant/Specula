@@ -1,6 +1,6 @@
 # AppState sketch (Bevy 0.19)
 
-Adapt names to the project; keep the four states stable for Grok-Bevy contracts.
+Adapt names to the project; keep the four states stable for Specula contracts.
 
 ```rust
 use bevy::prelude::*;

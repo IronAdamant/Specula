@@ -1,9 +1,9 @@
 # monitored_paths.txt — wiki/health watch list (not bare ".")
 # Prefer lean roots so check-changes does not thrash on target/ and large trees.
 
-crates/grok-bevy/src/
-crates/grok-bevy-env/src/
-crates/grok-bevy-brp/src/
+crates/specula/src/
+crates/specula-env/src/
+crates/specula-brp/src/
 templates/game-2d/src/
 templates/game-3d/src/
 templates/sample-app/src/

@@ -1,7 +1,7 @@
-//! Grok-Bevy sample: minimal 3D scene with optional BRP + capture.
+//! Specula sample: minimal 3D scene with optional BRP + capture.
 //!
 //! ```sh
-//! cargo run -p grok_bevy_sample --features remote,capture
+//! cargo run -p specula_sample --features remote,capture
 //! ```
 
 use bevy::prelude::*;
@@ -10,7 +10,7 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Grok-Bevy Sample".into(),
+            title: "Specula Sample".into(),
             resolution: (1280, 720).into(),
             ..default()
         }),

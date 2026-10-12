@@ -2,7 +2,7 @@
 
 ## Status
 
-**A0–A8 implemented** in Grok-Bevy. Observation-grade acuity (`acuity: "20/20-candidate"`) on live dogfood.
+**A0–A8 implemented** in Specula. Observation-grade acuity (`acuity: "20/20-candidate"`) on live dogfood.
 
 **Honest claim:** agents can **see** at high fidelity (composition, true fovea, multi-view, motion, diffs, filtered subjects). **Taste and design remain human-owned.**
 
@@ -23,7 +23,7 @@
 ## MCP / CLI (updated)
 
 - Tools: `bevy_see_scene|entity|region|motion|diff|pack` with acuity params  
-- CLI: `grok-bevy see scene|entity|region|motion|diff|pack`  
+- CLI: `specula see scene|entity|region|motion|diff|pack`  
 - Pack: `entity_craft|landscape|water|physics_jump|lighting|diagnostic`  
 - Initialize instructions mention 20/20 acuity + human-owned taste  
 
@@ -45,7 +45,7 @@
 
 ## Tests
 
-`cargo test -p grok-bevy -p grok-bevy-brp` — pass (incl. filter, projection, black-frame dark-space).
+`cargo test -p specula -p specula-brp` — pass (incl. filter, projection, black-frame dark-space).
 
 ## For human MCP users
 

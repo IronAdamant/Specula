@@ -31,6 +31,9 @@ tmp/
 .grok/*
 !.grok/skills/
 !.grok/skills/**
+!.grok/workflows/
+# Local Claude Code settings (project .claude/agents and .claude/skills stay tracked)
+.claude/settings.local.json
 # Tooling caches / local indexes (not product source)
 .wikifier_staging/
 .stele-context/

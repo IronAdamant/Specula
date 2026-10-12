@@ -1,8 +1,8 @@
 # Agent Sight Next Plan — current-gen observation quality
 
 **Status:** implemented (S0–S4; dogfood CD + IF, 2026-07-21)  
-**Audience:** agents implementing Grok-Bevy; humans setting goals  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Audience:** agents implementing Specula; humans setting goals  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **Focus:** make **agent sight** as good as current-generation models can use for Bevy game development — stills, names, framing, change, short motion strips.  
 **Not taste / not design ownership:** humans own style and creative direction; the agent **sees and builds to their needs**.
 
@@ -57,7 +57,7 @@ If a task would require any of the above, **stop and skip** — use stills, stri
 ## 3. Design principles
 
 1. **Agent sight only** — every feature improves what the model can observe.  
-2. **MCP first** — implement and **rebuild/reload** Grok-Bevy MCP before dogfood launches.  
+2. **MCP first** — implement and **rebuild/reload** Specula MCP before dogfood launches.  
 3. **Stills + short strips** — no video stream.  
 4. **Names bind pixels** — prefer Named gameplay entities.  
 5. **Fail loud on wrong state** — menu-only must not pass env verify.  
@@ -71,20 +71,20 @@ If a task would require any of the above, **stop and skip** — use stills, stri
 
 ```text
 S0  MCP/code eyesight improvements + unit tests + cargo build install path
-    → reload MCP (document: cargo install --path crates/grok-bevy --force / restart client)
+    → reload MCP (document: cargo install --path crates/specula --force / restart client)
 S1  Crystal Drift dogfood content (2 additions + 1 improvement + env mod/add)
 S2  Iron Feud dogfood content (2 additions + 1 improvement + env mod/add)
 S3  Live eyesight verify with NEW MCP only (both games)
 S4  Docs: mark checkboxes, findings file, PROGRESS/skill touch-ups
 ```
 
-**Do not dogfood with a stale MCP binary** that lacks S0 tool params. Verify `grok-bevy --version` / tool list includes new flags or instructions mention game profiles before S1–S3 captures.
+**Do not dogfood with a stale MCP binary** that lacks S0 tool params. Verify `specula --version` / tool list includes new flags or instructions mention game profiles before S1–S3 captures.
 
 ---
 
-## 5. Phase S0 — Grok-Bevy agent-sight upgrades (MCP first)
+## 5. Phase S0 — Specula agent-sight upgrades (MCP first)
 
-Implement in `crates/grok-bevy-brp` + `crates/grok-bevy` (MCP + CLI). Unit-test pure helpers. Rebuild CLI/MCP.
+Implement in `crates/specula-brp` + `crates/specula` (MCP + CLI). Unit-test pure helpers. Rebuild CLI/MCP.
 
 ### S0.1 Primary subject ranking
 
@@ -154,10 +154,10 @@ Implement in `crates/grok-bevy-brp` + `crates/grok-bevy` (MCP + CLI). Unit-test 
 
 - [x] Extend tool schemas: `profile`, ranking reflected in packets, `bevy_see_verify` if added  
 - [x] Update `mcp_instructions()` string with profiles + primary ranking + Playing gate  
-- [x] Update CLI `grok-bevy see` with `--profile`  
+- [x] Update CLI `specula see` with `--profile`  
 - [x] Update `verify_scene` workflow plan text  
-- [x] `cargo test -p grok-bevy -p grok-bevy-brp` green  
-- [x] `cargo build -p grok-bevy` (and install/reload path for MCP: `cargo install --path crates/grok-bevy --force` if that’s how the host runs MCP)  
+- [x] `cargo test -p specula -p specula-brp` green  
+- [x] `cargo build -p specula` (and install/reload path for MCP: `cargo install --path crates/specula --force` if that’s how the host runs MCP)  
 - [x] Confirm tool list includes new params before S1  
 
 **S0 exit criteria:** Unit tests for rank/collapse/profile apply; MCP instructions mention profiles; binary rebuilt.
@@ -235,10 +235,10 @@ Run **after S0 binary is the one on PATH / MCP**. Log under goal `{SCRATCH}` and
 1. pkill old games on 15702 if needed
 2. cargo build --features remote,capture  (Crystal Drift)
 3. Launch crystal_drift
-4. grok-bevy brp wait --port 15702
-5. grok-bevy see scene --profile crystal-drift --out-dir <Crystal Drift> --save-baseline …
-6. grok-bevy see entity --profile crystal-drift --name Player (or primary)
-7. grok-bevy see pack landscape --profile crystal-drift
+4. specula brp wait --port 15702
+5. specula see scene --profile crystal-drift --out-dir <Crystal Drift> --save-baseline …
+6. specula see entity --profile crystal-drift --name Player (or primary)
+7. specula see pack landscape --profile crystal-drift
 8. Optional: mutate Player; see motion with stimulus; see scene --compare-baseline
 9. Assert: app_state Playing; primary_subject Player (or documented rank); new Names present;
           abs_path PNGs bytes>0; black_frame_warning absent on play captures
@@ -314,7 +314,7 @@ All must hold:
 | Port 15702 conflict | Sequential dogfood; kill previous process |
 | Projection still wrong | Profiles + document retune; loud fallback warning |
 | Content bloat | Keep additions small Named props; no full rewrite |
-| External trees not in Grok-Bevy git | Document paths; commit Grok-Bevy separately; IF/CD commits if those repos exist |
+| External trees not in Specula git | Document paths; commit Specula separately; IF/CD commits if those repos exist |
 
 ---
 

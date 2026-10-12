@@ -1,4 +1,4 @@
-# Grok-Bevy progress checklist
+# Specula progress checklist
 
 ## v0.1 — public-ready runtime control (done)
 
@@ -9,7 +9,7 @@ Track first public-ready (v0.1) delivery. Check items as they land.
 - [x] Confirm BRP methods, screenshot path, MCP integration model
 
 ### Scaffold
-- [x] Workspace layout (`grok-bevy-env`, `grok-bevy-brp`, `grok-bevy`, `templates/sample-app`)
+- [x] Workspace layout (`specula-env`, `specula-brp`, `specula`, `templates/sample-app`)
 - [x] Dual MIT/Apache-2.0 licenses, gitignore, modular crates
 
 ### Environment readiness
@@ -113,7 +113,7 @@ Steam is **later** (G5); non-Steam package is G4.
 - [ ] Optional steam feature stub
 
 ### G6 — Install ergonomics
-- [x] Reliable templates after install / embedded templates (`include_dir` in `grok-bevy`; fallback extract to cache when monorepo path missing)
+- [x] Reliable templates after install / embedded templates (`include_dir` in `specula`; fallback extract to cache when monorepo path missing)
 - [x] Optional kit feature `physics` (avian2d/avian3d **0.7**); default kits stay transform-based
 
 ---
@@ -202,7 +202,7 @@ Plan: [docs/AGENT_SIGHT_2D3D_PLAN.md](docs/AGENT_SIGHT_2D3D_PLAN.md).
 
 | Phase | Name | Status |
 |-------|------|--------|
-| **D0** | Grok-Bevy 2D/3D sight + MCP rebuild | **done** |
+| **D0** | Specula 2D/3D sight + MCP rebuild | **done** |
 | **D1** | Crystal Drift: 2 features+assets, env improve, live | **done** |
 | **D2** | Iron Feud: 2 features+assets, height terrain, live | **done** |
 | **D3** | Live eyesight review both games | **done** |
@@ -224,7 +224,7 @@ Findings: [docs/AGENT_SIGHT_DEBT_FINDINGS_2026-07-23.md](docs/AGENT_SIGHT_DEBT_F
 
 | Phase | Name | Status |
 |-------|------|--------|
-| **R0** | Grok-Bevy residual sight + MCP rebuild | **done** |
+| **R0** | Specula residual sight + MCP rebuild | **done** |
 | **R1** | Crystal Drift: 1 new + 1 env + improve all assets/env | **done** |
 | **R2** | Iron Feud: 1 new + 1 env + improve all assets/env | **done** |
 | **R3** | Live review both + fix loop | **done** |
@@ -244,7 +244,7 @@ Plan: [docs/AGENT_SIGHT_HARDENING_PLAN.md](docs/AGENT_SIGHT_HARDENING_PLAN.md).
 
 | Phase | Name | Status |
 |-------|------|--------|
-| **H0** | Grok-Bevy gates + side-view + rebuild | **done** |
+| **H0** | Specula gates + side-view + rebuild | **done** |
 | **H1** | Version CD + IF as git projects | **done** |
 | **H2** | Crystal Drift: 1 new + improve all sprites | **done** |
 | **H3** | Iron Feud: 1 new + complex meshes + heightfield | **done** |
@@ -265,7 +265,7 @@ Plan: [docs/AGENT_SIGHT_FIDELITY_PLAN.md](docs/AGENT_SIGHT_FIDELITY_PLAN.md).
 
 | Phase | Name | Status |
 |-------|------|--------|
-| **F0** | Grok-Bevy residual platform (multi-view / gates / stems) | **done** |
+| **F0** | Specula residual platform (multi-view / gates / stems) | **done** |
 | **F1** | Crystal Drift: CargoPod + improve all sprites | **done** |
 | **F2** | Iron Feud: OreCrusher + complex meshes + heightfield | **done** |
 | **F3–F4** | Live review + fix | **done** |

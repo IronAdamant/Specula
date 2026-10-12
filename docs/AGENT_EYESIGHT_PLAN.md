@@ -1,8 +1,8 @@
-# Agent Eyesight Plan — long-horizon (Grok-Bevy)
+# Agent Eyesight Plan — long-horizon (Specula)
 
 **Status:** implemented (V0–V6 shipped; dogfood Crystal Drift + Iron Feud, 2026-07-21)  
-**Audience:** agents implementing Grok-Bevy infrastructure; humans setting goals  
-**Identity:** Grok-Bevy is **agent assistant infrastructure**, not a Bevy editor.  
+**Audience:** agents implementing Specula infrastructure; humans setting goals  
+**Identity:** Specula is **agent assistant infrastructure**, not a Bevy editor.  
 **This plan’s job:** give the **agent** reliable **eyesight** (baseline — eyes open).  
 **Next (acuity 20/20):** [AGENT_EYESIGHT_20_20_PLAN.md](AGENT_EYESIGHT_20_20_PLAN.md) — observation-grade focus/multi-view/subjects; **taste/design remain human-owned**.
 
@@ -244,7 +244,7 @@ Stable JSON (or MCP structured content) for `/goal` automation and skill checks.
 
 ```json
 {
-  "schema": "grok-bevy.eyesight/v1",
+  "schema": "specula.sight/v1",
   "subject_class": "entity|landscape|water|fx|lighting|ui|physics_motion|scene",
   "app_state": "Playing|MainMenu|null",
   "intent": "short human acceptance string",

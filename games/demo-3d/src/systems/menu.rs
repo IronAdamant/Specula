@@ -23,7 +23,7 @@ pub fn menu_setup(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Grok-Bevy 3D Demo\n\n\
+            "Specula 3D Demo\n\n\
              Objective: collect 3 cyan cubes — avoid the red hazard!\n\
              Stay on the platform (fall = game over).\n\n\
              Press Enter or Space to play",

@@ -1,6 +1,6 @@
 # demo_2d (2D)
 
-**Short 2D Bevy demo** (Grok-Bevy GAME_DOD) — not a movement sandbox.
+**Short 2D Bevy demo** (Specula GAME_DOD) — not a movement sandbox.
 
 ## Objective
 
@@ -47,7 +47,7 @@ cargo build --release
 
 ## Monorepo dogfood
 
-From the Grok-Bevy workspace root:
+From the Specula workspace root:
 
 ```bash
 cargo run -p demo_2d --features remote,capture

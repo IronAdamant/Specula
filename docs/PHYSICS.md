@@ -1,6 +1,6 @@
 # Physics (optional) — Bevy 0.19
 
-Grok-Bevy **default 2D/3D kits do not enable a physics crate**. Short demos use transform movement + simple distance checks, which is enough for GAME_DOD.
+Specula **default 2D/3D kits do not enable a physics crate**. Short demos use transform movement + simple distance checks, which is enough for GAME_DOD.
 
 Add physics only when the design needs solid colliders, gravity/jumps, rigid bodies, or continuous collision.
 
@@ -68,7 +68,7 @@ Version table source: [avianphysics/avian](https://github.com/avianphysics/avian
 
 - Skills document pins; kits stay transform-based by default (fast compile, simple DoD).  
 - Optional Cargo `physics` feature is wired on templates/demos; gameplay rewrite is agent-owned.  
-- Genre design (balance, factory graphs) remains user/agent-owned — not a Grok-Bevy physics concern.
+- Genre design (balance, factory graphs) remains user/agent-owned — not a Specula physics concern.
 
 ## Related
 

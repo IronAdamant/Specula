@@ -8,7 +8,7 @@ pub fn menu_setup(mut commands: Commands) {
 
     commands.spawn((
         Text::new(
-            "Grok-Bevy 2D Demo\n\n\
+            "Specula 2D Demo\n\n\
              Objective: collect 3 gold orbs — avoid the red hazard!\n\n\
              Press Enter or Space to play",
         ),

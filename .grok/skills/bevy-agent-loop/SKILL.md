@@ -1,7 +1,7 @@
 ---
 name: bevy-agent-loop
 description: >
-  Live Bevy iteration with Grok-Bevy MCP and BRP: doctor, launch, query, mutate,
+  Live Bevy iteration with Specula MCP and BRP: doctor, launch, query, mutate,
   viewport capture, and fix loops. Use when debugging a running Bevy app, taking
   screenshots, using BRP, MCP tools, bevy_capture_viewport, or /bevy-agent-loop.
 metadata:
@@ -13,7 +13,7 @@ metadata:
 You control a **running** Bevy app. Prefer evidence from **agent eyesight** (pixels you open and judge) over guessing.  
 This is **not a Bevy editor** — eyesight is a sensory channel for the agent brain.
 
-Plan: `docs/AGENT_EYESIGHT_PLAN.md` (schema `grok-bevy.eyesight/v1`).  
+Plan: `docs/AGENT_EYESIGHT_PLAN.md` (schema `specula.sight/v1`).  
 2D+3D sight: `docs/AGENT_SIGHT_2D3D_PLAN.md` + findings `docs/AGENT_SIGHT_2D3D_FINDINGS_2026-07-22.md`.  
 Hardening (shipped): `docs/AGENT_SIGHT_HARDENING_PLAN.md`.  
 Fidelity (shipped): `docs/AGENT_SIGHT_FIDELITY_PLAN.md` + findings `docs/AGENT_SIGHT_FIDELITY_FINDINGS_2026-07-23.md` — complex craft, transparent 2D BG, IF heightfield.  
@@ -41,9 +41,9 @@ Plan: `docs/AGENT_EYESIGHT_PLAN.md` + `docs/AGENT_EYESIGHT_20_20_PLAN.md` + `doc
 9. **Clean subjects (A4):** default `subject_filter=gameplay_prefer` (new Names need score >0; demote OreCrystal / child mesh parts).  
 10. **Diff (A5):** `save_baseline` / `compare_baseline` or `bevy_see_diff` after visual changes.  
 11. **Black-frame warning:** empty window — dark space with sprites is not empty.  
-12. **Default one-shot:** `bevy_see_verify` / `grok-bevy see verify --profile crystal-drift|iron-feud` first.  
+12. **Default one-shot:** `bevy_see_verify` / `specula see verify --profile crystal-drift|iron-feud` first.  
 13. **3D height:** landscape pack notes height_bands when TerrainFlat/Hill/Peak present; IF dogfood uses multi-band ground.  
-14. **No shortcuts:** rebuild MCP (`cargo install --path crates/grok-bevy --force`) before treating dogfood captures as pass evidence.  
+14. **No shortcuts:** rebuild MCP (`cargo install --path crates/specula --force`) before treating dogfood captures as pass evidence.  
 15. **Name onboarding:** every new dogfood Name must score `gameplay_subject_score > 0` (add stems to `GAMEPLAY_NAME_HINTS` / `DOGFOOD_NAME_STEMS` + unit test).  
 16. **Baseline after visual change:** `save_baseline` then `compare_baseline` once per game when iterating assets/env.  
 17. **Sequential BRP:** one game on port 15702 at a time.  
@@ -59,15 +59,15 @@ Plan: `docs/AGENT_EYESIGHT_PLAN.md` + `docs/AGENT_EYESIGHT_20_20_PLAN.md` + `doc
 
 ## Standard loop (hard requirements)
 
-1. **`bevy_env_check`** (or CLI `grok-bevy doctor`) if the host is unknown.  
+1. **`bevy_env_check`** (or CLI `specula doctor`) if the host is unknown.  
 2. **Launch — never block MCP on cold Bevy compile**  
    - **Cold first compile (no `target/debug/<package>`):** shell/background  
      `cargo run --features remote,capture` (or `cargo build` then run).  
    - **Warm binary exists:** MCP `bevy_launch_app` with `manifest_path` +  
      `features: "remote,capture"` and **`wait_secs: 0`** (default; returns immediately; may spawn the debug binary).  
    - **Always** next: step 3. Do **not** set high `wait_secs` on launch (host tool timeouts ~120s).  
-3. **Wait** with MCP **`bevy_wait_brp`** (`timeout_secs` **180** cold / **30** warm) or CLI `grok-bevy brp wait --timeout-secs 180`.  
-4. **`bevy_see_scene`** (or CLI `grok-bevy see scene --out-dir .`) — open packet captures + subjects.  
+3. **Wait** with MCP **`bevy_wait_brp`** (`timeout_secs` **180** cold / **30** warm) or CLI `specula brp wait --timeout-secs 180`.  
+4. **`bevy_see_scene`** (or CLI `specula see scene --out-dir .`) — open packet captures + subjects.  
 5. **Fovea / motion as needed:** `bevy_see_entity`, `bevy_see_region`, `bevy_see_motion`, `bevy_see_pack`.  
 6. **Mutate** if needed (`bevy_brp_mutate`) then **re-see** (`bevy_see_diff` with baseline).  
 7. **Fix code or assets** → rebuild/restart if needed → eyesight again.  
@@ -77,7 +77,7 @@ Plan: `docs/AGENT_EYESIGHT_PLAN.md` + `docs/AGENT_EYESIGHT_20_20_PLAN.md` + `doc
 
 Default BRP port is **15702**. Only **one** app should bind that port. Dual `cargo run` is fine for “start A, stop A, start B” smoke tests — not two simultaneous instances on the same port. For two live apps, register distinct ports/targets (`bevy_register_target`) and change `BrpExtrasPlugin` / env port on the second.
 
-## Tool map (grok-bevy MCP)
+## Tool map (specula MCP)
 
 | Tool | Use |
 |------|-----|
@@ -99,7 +99,7 @@ Default BRP port is **15702**. Only **one** app should bind that port. Dual `car
 | `bevy_see_pack` | Multi-view: entity_craft / landscape / water / physics_jump / lighting / diagnostic / **hud** / **env_2d** |
 | `bevy_brp_mcp_status` | Upstream MCP install help |
 
-CLI mirrors: `grok-bevy see scene|verify|entity|region|motion|diff|pack`.  
+CLI mirrors: `specula see scene|verify|entity|region|motion|diff|pack`.  
 Profiles: `--profile crystal-drift` (2D) | `iron-feud` (3D topdown, require_playing).
 
 ## Exact BRP method names (do not invent)
@@ -152,7 +152,7 @@ Install/register when you need:
 - Keyboard/mouse injection  
 - Advanced launch discovery  
 
-Same port; complementary to grok-bevy’s focused tools.
+Same port; complementary to specula’s focused tools.
 
 ## Failure playbook
 

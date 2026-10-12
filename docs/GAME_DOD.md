@@ -7,7 +7,7 @@ A **short demo** is complete only when a player (or agent reviewing captures) ca
 
 This applies to:
 
-- Scaffolded games (`grok-bevy scaffold --kind 2d|3d`)  
+- Scaffolded games (`specula scaffold --kind 2d|3d`)  
 - In-repo dogfood demos (`games/demo-2d`, `games/demo-3d` when present)  
 - Any “build a Bevy demo” agent task in this ecosystem  
 

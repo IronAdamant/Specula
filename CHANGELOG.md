@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Grok-Bevy are documented in this file.
+All notable changes to Specula are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **MCP query aliases:** `Name` / `Transform` / `GlobalTransform` → Bevy 0.19 FQNs (`component_paths`)
-- **`bevy_env_check`** stamps `grok_bevy_version`, `server_binary`, `reload_hint` (stale install detection)
+- **`bevy_env_check`** stamps `specula_version`, `server_binary`, `reload_hint` (stale install detection)
 - Launch spawn message includes **child `pid=`**
 - send_keys movement smoke recipe in agent-loop + TROUBLESHOOTING
 
@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Previously unreleased (prior)
 
-- **G6 install ergonomics:** templates embedded in `grok-bevy` via `include_dir`; scaffold falls back to cache extract without monorepo / `GROK_BEVY_TEMPLATE_ROOT`
+- **G6 install ergonomics:** templates embedded in `specula` via `include_dir`; scaffold falls back to cache extract without monorepo / `SPECULA_TEMPLATE_ROOT`
 - **Optional `physics` feature** on 2d/3d templates and demos (`avian2d` / `avian3d` **0.7**); default features unchanged
 
 ## [0.2.0] — 2026-07-19
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/PHYSICS.md` + skill pins: **avian2d/avian3d 0.7** for Bevy 0.19 (kits remain transform-based)
   - TROUBLESHOOTING: BRP method table, launch/wait, B0001, template root, Loading stuck
   - Scaffold/template `AGENTS.md`: asset root + B0001 notes
-  - `mcp-config` prints `GROK_BEVY_TEMPLATE_ROOT` when templates are discoverable
+  - `mcp-config` prints `SPECULA_TEMPLATE_ROOT` when templates are discoverable
 
 - **Game factory (v0.3 / alpha) G1–G4:**
   - `docs/GAME_DOD.md`, `docs/ROADMAP.md`, `docs/PACKAGING.md`
@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Production games (v0.2):** skill pack, templates, multi-kind scaffold, ship docs, MCP routing
   - `.grok/skills/bevy-production` / `bevy-2d-game` / `bevy-3d-game` / `bevy-agent-loop`
   - `templates/game-2d` and `templates/game-3d` playable vertical slices (states, movement, disk assets)
-  - `grok-bevy scaffold --kind 2d|3d|demo` copies templates (source of truth) + project `AGENTS.md`
+  - `specula scaffold --kind 2d|3d|demo` copies templates (source of truth) + project `AGENTS.md`
   - `docs/ASSET_CONVENTIONS.md`, `docs/SHIPPING.md`, `docs/PRODUCTION_GAMES.md`
   - MCP `initialize.instructions` covers production skills and scaffold kinds
 - MCP **prompts**: `start_2d_game`, `start_3d_game`, `iterate_scene`, `prepare_ship` (`prompts/list` + `prompts/get`)
@@ -65,15 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`grok-bevy` CLI** with:
+- **`specula` CLI** with:
   - `doctor` / `env-check` — cross-platform Bevy readiness (Rust/Cargo, OS guidance, optional compile probe)
   - `mcp` — stdio MCP server for Grok Build agents
   - `mcp --delegate-brp-mcp` — exec into installed `bevy_brp_mcp`
   - `scaffold` — generate a BRP-enabled Bevy sample
   - `brp` — discover / query / mutate / screenshot / wait helpers
   - `compat` and `mcp-config` — version matrix and Grok registration snippets
-- **`grok-bevy-env`** — injectable, unit-tested environment detection library
-- **`grok-bevy-brp`** — BRP HTTP client, named targets, PNG capture → MCP image adapter
+- **`specula-env`** — injectable, unit-tested environment detection library
+- **`specula-brp`** — BRP HTTP client, named targets, PNG capture → MCP image adapter
 - **`templates/sample-app`** — Bevy 0.19 scene with `remote` / `capture` features and headless BRP smoke binary
 - Docs: README fast-start, CONTRIBUTING, troubleshooting, multi-platform CI
 - Dual MIT / Apache-2.0 licensing (matching Bevy)

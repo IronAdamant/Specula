@@ -1,10 +1,10 @@
 [package]
-name = "grok_bevy_sample"
+name = "specula_sample"
 version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Grok-Bevy sample Bevy app with RemotePlugin / capture feature flags"
+description = "Specula sample Bevy app with RemotePlugin / capture feature flags"
 
 [dependencies]
 bevy = { workspace = true, features = ["png"] }
@@ -18,7 +18,7 @@ remote = ["dep:bevy_brp_extras", "bevy/bevy_remote"]
 capture = ["remote"]
 
 [[bin]]
-name = "grok_bevy_sample"
+name = "specula_sample"
 path = "src/main.rs"
 
 [[bin]]

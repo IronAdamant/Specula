@@ -1,15 +1,15 @@
 # Eyesight capture packs (20/20 + 2D/3D)
 
-Not an editor. Not taste. Schema: `grok-bevy.eyesight/v1` with `acuity: "20/20-candidate"`.
+Not an editor. Not taste. Schema: `specula.sight/v1` with `acuity: "20/20-candidate"`.
 
 ## Hard rules
 
 1. Open every PNG `abs_path` in the packet.  
 2. Observation claims cite paths. Design taste is human-owned.  
 3. Env claims need **Playing** (Iron Feud: `IRON_FEUD_AUTO_PLAY=1` + `require_playing`).  
-4. Prefer **`bevy_see_verify` / `grok-bevy see verify --profile …` first**, then packs.  
+4. Prefer **`bevy_see_verify` / `specula see verify --profile …` first**, then packs.  
 5. Rebuild MCP before dogfood pass evidence:  
-   `cargo install --path crates/grok-bevy --force`  
+   `cargo install --path crates/specula --force`  
 6. Stills + short strips only — **no** livestream / 60 FPS video.  
 7. New Named gameplay entities need GAMEPLAY_NAME_HINTS / DOGFOOD_NAME_STEMS score >0 so they survive `gameplay_prefer` (unit-tested onboarding table).  
 8. After asset/env change: `save_baseline` then `compare_baseline` once.  
@@ -19,13 +19,13 @@ Not an editor. Not taste. Schema: `grok-bevy.eyesight/v1` with `acuity: "20/20-c
 
 | Tool | CLI |
 |------|-----|
-| `bevy_see_scene` | `grok-bevy see scene` |
-| `bevy_see_verify` | `grok-bevy see verify --profile crystal-drift\|iron-feud` |
-| `bevy_see_entity` | `grok-bevy see entity --name …` |
-| `bevy_see_region` | `grok-bevy see region --x --y --w --h` |
-| `bevy_see_motion` | `grok-bevy see motion --frames 8` |
-| `bevy_see_diff` | `grok-bevy see diff --baseline …` |
-| `bevy_see_pack` | `grok-bevy see pack <pack>` |
+| `bevy_see_scene` | `specula see scene` |
+| `bevy_see_verify` | `specula see verify --profile crystal-drift\|iron-feud` |
+| `bevy_see_entity` | `specula see entity --name …` |
+| `bevy_see_region` | `specula see region --x --y --w --h` |
+| `bevy_see_motion` | `specula see motion --frames 8` |
+| `bevy_see_diff` | `specula see diff --baseline …` |
+| `bevy_see_pack` | `specula see pack <pack>` |
 
 ## Packs
 
@@ -77,19 +77,19 @@ Child mesh parts (WatchPostLegs, OreSiloBody, …) are demoted so they do not cr
 
 ```bash
 # Crystal Drift (2D)
-grok-bevy see verify --profile crystal-drift --out-dir . --save-baseline captures/eyesight/baseline_scene.png
-grok-bevy see pack env_2d --profile crystal-drift --out-dir .
-grok-bevy see pack hud --profile crystal-drift --out-dir .
-grok-bevy see pack landscape --profile crystal-drift --out-dir .
+specula see verify --profile crystal-drift --out-dir . --save-baseline captures/eyesight/baseline_scene.png
+specula see pack env_2d --profile crystal-drift --out-dir .
+specula see pack hud --profile crystal-drift --out-dir .
+specula see pack landscape --profile crystal-drift --out-dir .
 
 # Iron Feud Playing (3D)
 IRON_FEUD_AUTO_PLAY=1 cargo run --features remote,capture
-grok-bevy see verify --profile iron-feud --out-dir .
-grok-bevy see pack landscape --profile iron-feud --out-dir .
-grok-bevy see pack water --profile iron-feud --out-dir .
+specula see verify --profile iron-feud --out-dir .
+specula see pack landscape --profile iron-feud --out-dir .
+specula see pack water --profile iron-feud --out-dir .
 ```
 
-**MCP first:** rebuild/reload grok-bevy after sight code changes before dogfood captures.
+**MCP first:** rebuild/reload specula after sight code changes before dogfood captures.
 
 ## Dual instances
 
