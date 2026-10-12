@@ -86,6 +86,7 @@ Phase D  Ship                export, packaging, Steam (owner decision), Deck Ver
 
 **Owner decisions that affect speed:**
 - [ ] **First game's scope:** genre, art style, size and languages. This sets every lane's depth for Phase B.
+  Criteria, questions and scoring: [GAME_SELECTION.md](GAME_SELECTION.md).
 - [ ] **Steamworks** (`steam_api64.dll`, runtime-loaded like Vulkan): allowed as an optional platform service? It's
   needed for achievements, cloud saves and Steam Input glyphs.
 - [ ] **v1.0 platforms:** Windows + Steam Deck as proposed, or add macOS before v1.0?

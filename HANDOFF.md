@@ -3,6 +3,9 @@
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. Last updated **2026-10-13**.
 
+- **START HERE next session:** [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md). The owner is choosing the first
+  game from a few ideas and wants one that's fast to build on Specula. It has the criteria, a genre fit table, the
+  questions to ask about each idea, and how to score them.
 - **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - **Hard rules:** [AGENTS.md](AGENTS.md).
@@ -125,7 +128,8 @@ sightlines). Let the game decide which engine features come first.
 ## Open owner decisions
 
 These are listed in ROADMAP.md under "Path to production":
-- **First game's scope:** genre, art style, size and languages. This sets the depth of every lane.
+- **First game's scope:** genre, art style, size and languages. This sets the depth of every lane. Being worked out
+  now; see docs/GAME_SELECTION.md.
 - **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service?
 - **v1.0 platforms:** Windows + Steam Deck, or macOS too?
 
@@ -156,8 +160,10 @@ These are listed in ROADMAP.md under "Path to production":
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
 **Recommendations for the next session:**
-1. Start the game conversation with design: genre, scope, art style and the core loop. Then greybox the first space
-   through MCP.
+1. **Pick the game first** (2026-10-13: the owner paused to think through a few ideas). Ask for the ideas, rough is
+   fine. Ask the questions in docs/GAME_SELECTION.md, score each idea (fit, lanes pulled forward, risks, first-slice
+   sketch) and recommend one. **The owner decides.** Then write the game design doc and the style bible, and greybox
+   the first space through MCP.
 2. If the greybox needs to survive restarts, build **M1 persistence (text save/load) first**. It's small and unblocks
    everything.
 3. Then do the rest of M1. Its exit proof (4+ agents building separate districts at once) doubles as the first real
