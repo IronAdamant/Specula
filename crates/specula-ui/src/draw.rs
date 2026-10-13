@@ -12,6 +12,17 @@
 use crate::color::Rgba;
 pub use specula_text::GlyphQuad;
 
+/// Largest edge feather (soft shadow width), physical px: the GPU overlay's limit, applied
+/// here so the preview and the GPU agree.
+pub const MAX_FEATHER: f32 = specula_gpu::MAX_OVERLAY_FEATHER;
+
+/// The widget a draw command came from (screen index, node index), for error reports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Owner {
+    pub screen: u32,
+    pub node: u32,
+}
+
 /// An axis-aligned rectangle, physical px.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
@@ -101,7 +112,7 @@ pub struct Vertex {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawCmd {
     Rect(RectCmd),
-    Image { rect: Rect, uv: [f32; 4], texture: u32, color: Rgba },
+    Image { rect: Rect, uv: [f32; 4], texture: u32, color: Rgba, owner: Owner },
     /// `DrawList::glyphs[start..end]`, R8 coverage from atlas page `GlyphQuad::page`.
     Glyphs { start: u32, end: u32 },
     /// Triangles `DrawList::vertices[start..end]` (three vertices each).
@@ -128,7 +139,8 @@ impl DrawList {
         self.vertices.clear();
     }
 
-    pub fn rect(&mut self, cmd: RectCmd) {
+    pub fn rect(&mut self, mut cmd: RectCmd) {
+        cmd.feather = if cmd.feather.is_finite() { cmd.feather.clamp(1.0, MAX_FEATHER) } else { 1.0 };
         if cmd.rect.w > 0.0 && cmd.rect.h > 0.0 && (cmd.fill[0][3] > 0.0 || cmd.fill[1][3] > 0.0 || (cmd.border > 0.0 && cmd.border_color.iter().any(|c| c[3] > 0.0))) {
             self.cmds.push(DrawCmd::Rect(cmd));
         }

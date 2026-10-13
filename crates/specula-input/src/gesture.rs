@@ -57,6 +57,8 @@ pub(crate) struct Gestures {
     session: Option<Session>,
     two: Option<TwoRef>,
     pub out: GestureOut,
+    /// Ids of the contacts that ended abnormally this frame.
+    pub cancelled_ids: Vec<u32>,
 }
 
 fn sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
@@ -82,6 +84,7 @@ fn wrap(mut a: f32) -> f32 {
 impl Gestures {
     pub fn begin_frame(&mut self) {
         self.out = GestureOut::default();
+        self.cancelled_ids.clear();
     }
 
     pub fn contacts(&self) -> &[Contact] {
@@ -133,6 +136,9 @@ impl Gestures {
         let Some(i) = self.contacts.iter().position(|c| c.id == id) else { return };
         self.contacts.remove(i);
         self.out.cancelled |= cancelled;
+        if cancelled {
+            self.cancelled_ids.push(id);
+        }
         let Some(session) = self.session.as_mut() else { return };
         session.cancelled |= cancelled;
         if self.contacts.is_empty() {
@@ -164,6 +170,7 @@ impl Gestures {
     /// Forget every contact (focus lost): nothing fires.
     pub fn clear(&mut self) {
         self.out.cancelled |= !self.contacts.is_empty();
+        self.cancelled_ids.extend(self.contacts.iter().map(|c| c.id));
         self.contacts.clear();
         self.session = None;
         self.two = None;

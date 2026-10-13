@@ -91,6 +91,30 @@ fn a_cancelled_touch_never_activates() {
 }
 
 #[test]
+fn a_stray_cancelled_contact_does_not_drop_another_press() {
+    let mut ui = ui_with("hud", BTN);
+    let mut h = Harness::new();
+    let (s, v) = (StateMap::new(), view(800, 600));
+    h.frame(&mut ui, &[], &s, &v);
+    let (x, y) = go_centre(&ui, "s");
+    // Mouse press on the button; a stray touch elsewhere goes down and is cancelled.
+    h.frame(&mut ui, &[Event::MouseMove { x, y }, Event::MouseDown { button: MouseButton::Left, x, y }], &s, &v);
+    h.frame(&mut ui, &[Event::PointerDown { id: 7, kind: PointerKind::Touch, x: 10, y: 10 }], &s, &v);
+    h.frame(&mut ui, &[Event::PointerCancel { id: 7, kind: PointerKind::Touch }], &s, &v);
+    let e = h.frame(&mut ui, &[Event::MouseUp { button: MouseButton::Left, x, y }], &s, &v);
+    assert_eq!(acts(&e), vec!["go"], "the mouse press survives a stray cancel");
+    // Finger 1 presses the button, finger 2 lands and is cancelled, finger 1 lifts.
+    let mut ui = ui_with("hud", BTN);
+    let mut h = Harness::new();
+    h.frame(&mut ui, &[], &s, &v);
+    h.frame(&mut ui, &[touch(true, x, y)], &s, &v);
+    h.frame(&mut ui, &[Event::PointerDown { id: 2, kind: PointerKind::Touch, x: 10, y: 10 }], &s, &v);
+    h.frame(&mut ui, &[Event::PointerCancel { id: 2, kind: PointerKind::Touch }], &s, &v);
+    let e = h.frame(&mut ui, &[touch(false, x, y)], &s, &v);
+    assert_eq!(acts(&e), vec!["go"], "finger 1's press survives finger 2's cancel");
+}
+
+#[test]
 fn taps_and_clicks_within_one_frame_activate() {
     let mut ui = ui_with("hud", BTN);
     let mut h = Harness::new();

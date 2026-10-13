@@ -116,7 +116,7 @@ fn raster(mut c: Canvas, list: &DrawList, atlas: &GlyphAtlas, textures: &[Textur
                 }
             }
             DrawCmd::Rect(r) => rect(&mut c, &r),
-            DrawCmd::Image { rect, uv, texture, color } => {
+            DrawCmd::Image { rect, uv, texture, color, .. } => {
                 if let Some(t) = textures.iter().find(|t| t.id == texture) {
                     image(&mut c, rect, uv, t.image, color);
                 }
@@ -172,7 +172,8 @@ fn sd_round_box(p: [f32; 2], b: [f32; 2], r: f32) -> f32 {
 }
 
 fn rect(c: &mut Canvas, r: &RectCmd) {
-    let f = r.feather.max(1.0);
+    // Clamped like DrawList::rect and the GPU overlay, for hand-built lists too.
+    let f = if r.feather.is_finite() { r.feather.clamp(1.0, crate::draw::MAX_FEATHER) } else { 1.0 };
     let rr = r.rect;
     let Some(b) = c.bounds(rr.x - f, rr.y - f, rr.right() + f, rr.bottom() + f) else { return };
     let half = [rr.w * 0.5, rr.h * 0.5];
@@ -368,6 +369,32 @@ mod tests {
                 assert_eq!(px(&img, x, y), [188, 188, 188, 255], "{x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn feathers_are_capped_like_the_gpu() {
+        let shadow = |feather: f32| RectCmd {
+            rect: Rect::new(150.0, 150.0, 100.0, 100.0),
+            radius: 0.0,
+            fill: [[1.0; 4]; 2],
+            border: 0.0,
+            border_color: [[0.0; 4]; 2],
+            feather,
+        };
+        let atlas = GlyphAtlas::new(AtlasConfig::default());
+        let draw = |feather: f32, via_rect: bool| {
+            let mut d = list([400, 400]);
+            if via_rect {
+                d.rect(shadow(feather));
+            } else {
+                d.cmds.push(DrawCmd::Rect(shadow(feather)));
+            }
+            hash(&render(&d, &atlas, &[], [0.0, 0.0, 0.0, 1.0]))
+        };
+        let capped = draw(crate::draw::MAX_FEATHER, true);
+        assert_eq!(draw(200.0, true), capped, "DrawList::rect clamps");
+        assert_eq!(draw(200.0, false), capped, "the preview clamps hand-built lists too");
+        assert_ne!(draw(20.0, true), capped);
     }
 
     #[test]

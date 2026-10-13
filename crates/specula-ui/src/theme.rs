@@ -474,6 +474,24 @@ impl Theme {
             }
         }
         o.finish(TOP_FIELDS)?;
+        // Soft shadows are drawn with a feather of blur × scale; the GPU caps feathers.
+        for (name, b) in &theme.boxes {
+            if let Some(sh) = b.shadow {
+                let widest = sh.blur * theme.scale.max;
+                if widest > crate::draw::MAX_FEATHER {
+                    return Err(bad(
+                        &format!("boxes.{name}.shadow.blur"),
+                        format!(
+                            "blur {} at the largest scale {} is {widest} px; at most {} px (blur ≤ {:.1})",
+                            sh.blur,
+                            theme.scale.max,
+                            crate::draw::MAX_FEATHER,
+                            crate::draw::MAX_FEATHER / theme.scale.max
+                        ),
+                    ));
+                }
+            }
+        }
         Ok(theme)
     }
 
@@ -766,5 +784,10 @@ pub(crate) mod tests {
         assert_eq!((e.code, e.path.as_str()), (ErrorCode::BadValue, "scale.min"), "{e}");
         let e = Theme::from_json_str(&MINI.replace(r#""name": "mini","#, r#""name": "mini", "scale": {"min": 0},"#)).unwrap_err();
         assert_eq!(e.path, "scale.min");
+        // Shadow blur × the largest scale must fit the GPU's feather limit.
+        let e = Theme::from_json_str(&MINI.replace(r#""blur": 6"#, r#""blur": 40"#)).unwrap_err();
+        assert_eq!((e.code, e.path.as_str()), (ErrorCode::BadValue, "boxes.stone.shadow.blur"), "{e}");
+        Theme::from_json_str(&MINI.replace(r#""name": "mini","#, r#""name": "mini", "scale": {"max": 2},"#).replace(r#""blur": 6"#, r#""blur": 40"#))
+            .expect("40 × 2 = 80 fits");
     }
 }
