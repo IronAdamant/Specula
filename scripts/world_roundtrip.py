@@ -228,7 +228,17 @@ def main():
         info2 = m.call("engine_info")
         png2, packet2 = m.frame()
         total2, entities2 = m.everything()
-        reloaded = m.call("world_load", name="e2e")
+        # world_load must restore a world that has really changed. Save a copy first, so autosave
+        # now targets the copy and can never write the damage into e2e.
+        m.call("world_save", name="e2e_copy")
+        m.call("world_delete", path="/slab/lamp")
+        damaged, _ = m.frame()
+        if damaged == png1:
+            problems.append("deleting the lamp did not change the frame")
+        refused = m.fails("world_load", name="e2e")
+        if refused["error"] != "unsaved_changes":
+            problems.append(f"world_load over unsaved changes: {refused}")
+        reloaded = m.call("world_load", name="e2e", force=True)
         png3, _ = m.frame()
         if info2["world"]["state_hash"] != info1["world"]["state_hash"]:
             problems.append(f"state hash {info2['world']['state_hash']} != {info1['world']['state_hash']}")
