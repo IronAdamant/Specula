@@ -19,7 +19,7 @@
     },
     {
       "id": "colossus", "name": "Bone colossus", "glyph": "C",
-      "hp": 2200, "speed_mps": 0.4, "movement": "walker",
+      "hp": 1250, "speed_mps": 0.4, "movement": "walker",
       "dust": [150, 150], "tombstones": 5, "wall_dps": 150,
       "summon": { "enemy": "shambler", "every_s": 7, "count": 2 }
     }

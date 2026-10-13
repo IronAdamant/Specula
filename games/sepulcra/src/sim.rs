@@ -1328,3 +1328,82 @@ pub(crate) fn class_of(def: &EnemyDef) -> Class {
         Class::Walker
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enemy(state: &State, motion: Motion) -> Enemy {
+        let mut e = Enemy {
+            id: 1,
+            kind: EnemyKind(0),
+            wave: 1,
+            hp: 1000,
+            max_hp: 1000,
+            pos: Pos::default(),
+            motion,
+            slow: 0,
+            slow_until: 0,
+            attacking: None,
+            remaining: 0,
+            alive: true,
+            carry: 0,
+            next_summon: 0,
+        };
+        state.w.place(&state.content, &mut e);
+        e
+    }
+
+    #[test]
+    fn range_across_faces_needs_a_stone_near_the_rim() {
+        let state = State::new(Arc::new(Content::builtin()), 1);
+        let c = &*state.content;
+        let cell = |s: &str| *c.map.cell(c.map.cell_ref(s).unwrap());
+        let standing = |s: &str| {
+            let id = cell(s).id;
+            enemy(&state, Motion::Ground { from: id, to: id, progress: 0, len: 0, leap: true })
+        };
+        let in_range = |stone: &Cell, range: i32, e: &Enemy| state.w.in_range(c, stone, range, e);
+
+        let on_cliff = standing("north:4,1");
+        let near = cell("top:5,1"); // 3 m from the north rim: exactly edge_reach
+        let far = cell("top:5,2"); // 5 m from it
+        assert!(near.pos.dist(on_cliff.pos) <= 7_000 && far.pos.dist(on_cliff.pos) <= 7_000, "both within 7 m in 3D");
+        assert!(in_range(&near, 7_000, &on_cliff), "near the rim: sees down the cliff");
+        assert!(!in_range(&far, 7_000, &on_cliff), "too far from the rim to look over it");
+        assert!(!in_range(&near, 5_000, &on_cliff), "the range itself still applies");
+
+        let on_top = standing("top:4,3");
+        assert!(in_range(&far, 7_000, &on_top), "same face: range alone");
+
+        // A ledge mid-cliff covers its own face, but not the top: it is 6.25 m below the rim.
+        let ledge = cell("north:7,2");
+        assert!(in_range(&ledge, 7_000, &on_cliff));
+        let top_lane = standing("top:4,1");
+        assert!(ledge.pos.dist(top_lane.pos) <= 12_000 && !in_range(&ledge, 12_000, &top_lane));
+
+        // Flyers are in open sky: distance alone decides.
+        let ring = &c.map.air.ring;
+        let flyer = enemy(&state, Motion::Air { from: ring[4], to: ring[5], progress: 0, len: 1, ring: 5, dir: 1, hops_left: 3, diving: false });
+        assert!(in_range(&near, 12_000, &flyer) && !in_range(&near, 9_000, &flyer));
+        assert_eq!(flyer.face(c), None);
+        assert_eq!(on_cliff.face(c), Some(Face::North));
+    }
+
+    #[test]
+    fn remaining_distance_orders_targets() {
+        let state = State::new(Arc::new(Content::builtin()), 1);
+        let c = &*state.content;
+        let id = |s: &str| c.map.cell_ref(s).unwrap();
+        let walking = |from: &str, to: &str, progress: i32| {
+            enemy(&state, Motion::Ground { from: id(from), to: id(to), progress, len: 2_000, leap: false })
+        };
+        // A walker (kind 1 = runner) halfway up the central lane.
+        let mut e = walking("top:9,15", "top:9,14", 500);
+        e.kind = EnemyKind(1);
+        state.w.place(c, &mut e);
+        // 3 cells from top:9,14 to the graveyard, plus the 1.5 m left on this edge.
+        assert_eq!(e.remaining, 6_000 + 1_500);
+        assert_eq!(e.pos, Pos::new(-1_000, 0, 10_500));
+    }
+}

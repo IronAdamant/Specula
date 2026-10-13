@@ -12,39 +12,40 @@
       { "enemy": "shambler", "count": 8, "from": "ground", "start_s": 0, "every_s": 3 },
       { "enemy": "runner", "count": 6, "from": "gorges", "start_s": 10, "every_s": 2 }
     ]},
-    { "duration_s": 65, "income": 50, "groups": [
+    { "duration_s": 65, "income": 50, "hp": 1.1, "groups": [
       { "enemy": "shambler", "count": 10, "from": "cliffs", "start_s": 0, "every_s": 2.5 },
       { "enemy": "runner", "count": 8, "from": "gorges", "start_s": 5, "every_s": 2 }
     ]},
-    { "duration_s": 65, "income": 60, "groups": [
+    { "duration_s": 65, "income": 60, "hp": 1.2, "groups": [
       { "enemy": "shambler", "count": 8, "from": "ground", "start_s": 0, "every_s": 3 },
       { "enemy": "wraith", "count": 4, "from": "air", "start_s": 8, "every_s": 4 },
-      { "enemy": "runner", "count": 6, "from": "gorges", "start_s": 15, "every_s": 2 }
+      { "enemy": "runner", "count": 10, "from": "gorges", "start_s": 15, "every_s": 1.5 }
     ]},
-    { "duration_s": 70, "income": 70, "hp": 1.2, "groups": [
+    { "duration_s": 70, "income": 70, "hp": 1.35, "groups": [
       { "enemy": "shambler", "count": 14, "from": "ground", "start_s": 0, "every_s": 2.5 },
-      { "enemy": "runner", "count": 10, "from": "gorges", "start_s": 10, "every_s": 1.5 }
+      { "enemy": "runner", "count": 14, "from": "gorges", "start_s": 10, "every_s": 1.2 }
     ]},
-    { "duration_s": 70, "income": 80, "hp": 1.3, "groups": [
+    { "duration_s": 70, "income": 80, "hp": 1.5, "groups": [
       { "enemy": "wraith", "count": 8, "from": "air", "start_s": 0, "every_s": 3 },
-      { "enemy": "runner", "count": 12, "from": "gorges", "start_s": 5, "every_s": 1.5 },
+      { "enemy": "runner", "count": 16, "from": "gorges", "start_s": 5, "every_s": 1.2 },
       { "enemy": "shambler", "count": 10, "from": "cliffs", "start_s": 10, "every_s": 2.5 }
     ]},
-    { "duration_s": 75, "income": 90, "hp": 1.45, "groups": [
+    { "duration_s": 75, "income": 90, "hp": 1.7, "groups": [
       { "enemy": "shambler", "count": 16, "from": "ground", "start_s": 0, "every_s": 2 },
-      { "enemy": "runner", "count": 14, "from": "gorges", "start_s": 8, "every_s": 1.5 },
+      { "enemy": "runner", "count": 18, "from": "gorges", "start_s": 8, "every_s": 1.2 },
       { "enemy": "wraith", "count": 4, "from": "air", "start_s": 20, "every_s": 3 }
     ]},
-    { "duration_s": 75, "income": 100, "hp": 1.6, "groups": [
+    { "duration_s": 75, "income": 100, "hp": 1.95, "groups": [
       { "enemy": "shambler", "count": 20, "from": "ground", "start_s": 0, "every_s": 2 },
-      { "enemy": "wraith", "count": 10, "from": "air", "start_s": 10, "every_s": 2.5 }
+      { "enemy": "wraith", "count": 10, "from": "air", "start_s": 10, "every_s": 2.5 },
+      { "enemy": "runner", "count": 10, "from": "gorges", "start_s": 20, "every_s": 1.2 }
     ]},
-    { "duration_s": 80, "income": 110, "hp": 1.8, "groups": [
-      { "enemy": "runner", "count": 20, "from": "gorges", "start_s": 0, "every_s": 1.2 },
+    { "duration_s": 80, "income": 110, "hp": 2.2, "groups": [
+      { "enemy": "runner", "count": 26, "from": "gorges", "start_s": 0, "every_s": 1.0 },
       { "enemy": "shambler", "count": 16, "from": "cliffs", "start_s": 5, "every_s": 2 },
       { "enemy": "wraith", "count": 10, "from": "air", "start_s": 15, "every_s": 2.5 }
     ]},
-    { "duration_s": 120, "income": 120, "hp": 2.0, "groups": [
+    { "duration_s": 120, "income": 120, "hp": 2.4, "groups": [
       { "enemy": "colossus", "count": 1, "from": "gorge_mid", "start_s": 0 },
       { "enemy": "shambler", "count": 12, "from": "cliffs", "start_s": 5, "every_s": 2.5 },
       { "enemy": "runner", "count": 8, "from": "gorges", "start_s": 20, "every_s": 1.5 },

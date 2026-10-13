@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Flags: `--seed N` (default 1; the first seed of a sweep), `--layout NAME|FILE` (built-ins:
-//! centre, no_air, full_block, none; default centre), `--waves N` (stop before wave N+1),
+//! centre, no_air, full_block, none, or `all` for each built-in in turn; default centre), `--waves N` (stop before wave N+1),
 //! `--sweep N` (N seeds, outcome stats), `--data DIR` (custom content files), `--map` (print
 //! the slab), `--ascii` (print the final state), `--journal FILE` (write the replay journal).
 
@@ -80,18 +80,22 @@ fn real_main() -> Result<(), String> {
         Some(dir) => Content::load_dir(std::path::Path::new(dir)).map_err(|e| e.to_string())?,
         None => Content::builtin(),
     });
-    let (layout_text, layout_file) = match LAYOUTS.iter().find(|(n, _)| *n == args.layout) {
-        Some((n, t)) => (t.to_string(), format!("layouts/{n}.json")),
-        None => (std::fs::read_to_string(&args.layout).map_err(|e| format!("{}: {e}", args.layout))?, args.layout.clone()),
-    };
-    let script = Script::parse(&layout_text, &content, &layout_file).map_err(|e| e.to_string())?;
     if args.map {
         println!("{}", content.map.ascii());
     }
-    match args.sweep {
-        Some(n) => sweep(&content, &script, args.seed, n, args.waves),
-        None => single(&content, &script, &args),
+    let names: Vec<&str> = if args.layout == "all" { LAYOUTS.iter().map(|(n, _)| *n).collect() } else { vec![args.layout.as_str()] };
+    for name in names {
+        let (layout_text, layout_file) = match LAYOUTS.iter().find(|(n, _)| *n == name) {
+            Some((n, t)) => (t.to_string(), format!("layouts/{n}.json")),
+            None => (std::fs::read_to_string(name).map_err(|e| format!("{name}: {e}"))?, name.to_owned()),
+        };
+        let script = Script::parse(&layout_text, &content, &layout_file).map_err(|e| e.to_string())?;
+        match args.sweep {
+            Some(n) => sweep(&content, &script, args.seed, n, args.waves)?,
+            None => single(&content, &script, &args)?,
+        }
     }
+    Ok(())
 }
 
 fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), String> {

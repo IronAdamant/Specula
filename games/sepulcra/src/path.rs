@@ -139,3 +139,54 @@ fn field(map: &Map, class: Class, walls: &[bool], penalty: Option<i32>) -> Vec<i
     }
     dist
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::SLAB_01_JSON;
+
+    fn setup() -> (Map, Vec<bool>) {
+        let m = Map::parse(SLAB_01_JSON, "slab_01.json").unwrap();
+        let walls = vec![false; m.cells().len()];
+        (m, walls)
+    }
+
+    #[test]
+    fn distances_follow_the_lanes() {
+        let (m, walls) = setup();
+        let f = Fields::build(&m, &walls, 8_000);
+        let r = |s: &str| m.cell_ref(s).unwrap().index();
+        assert_eq!(f.open(Class::Walker)[r("top:9,9")], 0);
+        // gorge_mid walks straight up the central lane: 8 cells of 2 m.
+        assert_eq!(f.open(Class::Walker)[r("top:9,19")], 16_000);
+        // Walkers can't climb; climbers can (6 rows of 2.5 m + the rim step + the top route).
+        assert_eq!(f.open(Class::Walker)[r("north:4,5")], UNREACHABLE);
+        assert!(f.open(Class::Climber)[r("north:4,5")] > 15_000);
+        assert_eq!(f.open(Class::Walker), f.breach(Class::Walker), "no walls: breach == open");
+    }
+
+    #[test]
+    fn walls_reroute_and_full_blocks_fall_back_to_breaching() {
+        let (m, mut walls) = setup();
+        let c = |s: &str| m.cell_ref(s).unwrap();
+        let gorge = c("top:9,19");
+        walls[c("top:9,14").index()] = true;
+        let f = Fields::build(&m, &walls, 8_000);
+        let open = f.open(Class::Walker)[gorge.index()];
+        assert!(open > 16_000 && open != UNREACHABLE, "a longer open route: {open}");
+        assert_eq!(f.open(Class::Walker)[c("top:9,14").index()], UNREACHABLE, "the wall cell itself");
+        assert_eq!(f.route(&m, Class::Walker, &walls, gorge), Route::Step(c("top:9,18")));
+        assert_eq!(f.route(&m, Class::Walker, &walls, c("top:9,15")), Route::Step(c("top:9,16")), "turns back");
+
+        for gate in ["top:10,7", "top:12,10", "top:9,12", "top:7,9"] {
+            walls[c(gate).index()] = true;
+        }
+        walls[c("top:9,14").index()] = false;
+        let f = Fields::build(&m, &walls, 8_000);
+        assert_eq!(f.open(Class::Walker)[gorge.index()], UNREACHABLE);
+        assert_eq!(f.breach(Class::Walker)[gorge.index()], 16_000 + 8_000, "straight through the south gate, plus the penalty");
+        assert_eq!(f.route(&m, Class::Walker, &walls, c("top:9,13")), Route::Attack(c("top:9,12")));
+        assert_eq!(f.route(&m, Class::Walker, &walls, gorge), Route::Step(c("top:9,18")));
+        assert_eq!(f.remaining(Class::Walker, gorge), 24_000);
+    }
+}

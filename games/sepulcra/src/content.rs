@@ -239,7 +239,9 @@ impl Content {
         let wave_defs = parse_waves(waves, &map_v, &enemy_defs, &mut rules)?;
         let mut h = StableHasher::with_seed(0x5e9_c1a);
         for t in [map, stones, enemies, waves] {
-            h.write_str(t);
+            // Git may check the files out with CRLF on Windows and LF elsewhere; the hash must
+            // not care, or pinned replay hashes would differ by platform.
+            h.write_str(&t.replace("\r\n", "\n"));
         }
         Ok(Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, hash: h.finish() })
     }
@@ -563,4 +565,104 @@ fn spawn_points(go: &Obj, map: &Map, def: &EnemyDef) -> Result<Vec<SpawnPoint>, 
     });
     out.dedup();
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with(file: &str, from: &str, to: &str) -> Result<Content, DataError> {
+        let swap = |name: &str, text: &str| {
+            if name == file {
+                assert!(text.contains(from), "test fixture: {from:?} not in {file}");
+                text.replacen(from, to, 1)
+            } else {
+                text.to_owned()
+            }
+        };
+        Content::from_texts(
+            &swap("slab_01.json", SLAB_01_JSON),
+            &swap("stones.json", STONES_JSON),
+            &swap("enemies.json", ENEMIES_JSON),
+            &swap("waves.json", WAVES_JSON),
+        )
+    }
+
+    #[test]
+    fn builtin_content_converts_units_once() {
+        let c = Content::builtin();
+        let warding = c.stone(c.stone_kind("warding").unwrap());
+        assert_eq!((warding.tiers.len(), warding.glyph, warding.policy, warding.attack), (3, 'W', Policy::First, Attack::Bolt));
+        let t = warding.tiers[0];
+        assert_eq!((t.cost, t.range, t.cooldown, t.damage, t.projectile_speed), (50, 7_000, 24, 10_000, 666));
+        let pillar = c.stone(c.stone_kind("rune_pillar").unwrap());
+        assert_eq!((pillar.attack, pillar.tiers[0].slow, pillar.tiers[0].slow_ticks), (Attack::Pulse, 350, 45));
+        assert_eq!(c.stone(c.stone_kind("sky_obelisk").unwrap()).targets, Targets::Air);
+        let sh = c.enemy(c.enemy_kind("shambler").unwrap());
+        assert_eq!((sh.hp, sh.speed, sh.movement, sh.climb_speed, sh.wall_damage), (55_000, 800, Movement::Climber, 600, 400));
+        let runner = c.enemy(c.enemy_kind("runner").unwrap());
+        assert_eq!((runner.jump_chance, runner.jump_detour, runner.movement), (400, 4_000, Movement::Walker));
+        assert_eq!(c.enemy(c.enemy_kind("wraith").unwrap()).circle, (6, 14));
+        let boss = c.enemy(c.enemy_kind("colossus").unwrap());
+        assert_eq!(boss.summon, Some(Summon { enemy: c.enemy_kind("shambler").unwrap(), every: 210, count: 2 }));
+        let r = c.rules;
+        assert_eq!((r.start_dust, r.tombstones, r.build_ticks, r.early_call_milli_per_s), (150, 10, 900, 500));
+        assert_eq!((r.edge_reach, r.refund_percent, r.wall.cost, r.wall.hp, r.wall.breach_penalty), (3_000, 70, 15, 300_000, 8_000));
+        assert_eq!((r.nature.from_wave, r.nature.min_tier, r.nature.slow), (5, 1, 150));
+        assert_eq!(c.waves.len(), 10);
+        assert_eq!(c.waves[9].hp_scale, 2_400);
+        // About 12 minutes: build time and nine timed waves, then the boss wave until it's done.
+        let minutes = f64::from(c.scheduled_ticks()) / f64::from(TICK_HZ) / 60.0;
+        assert!((10.0..11.5).contains(&minutes), "{minutes}");
+    }
+
+    #[test]
+    fn content_errors_are_structured() {
+        let e = with("stones.json", "\"range_m\": 7.0", "\"rnage_m\": 7.0").unwrap_err();
+        assert_eq!((e.file.as_str(), e.field.as_str()), ("stones.json", "stones[0].tiers[0].rnage_m"));
+        assert!(e.reason.contains("unknown field"), "{e}");
+
+        let e = with("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"W\"").unwrap_err();
+        assert_eq!(e.field, "stones[1].glyph", "{e}");
+
+        let e = with("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"#\"").unwrap_err();
+        assert!(e.reason.contains("legend"), "{e}");
+
+        let e = with("stones.json", "\"splash_m\": 1.8", "\"splash_m\": 0").unwrap_err();
+        assert_eq!(e.field, "stones[2].tiers[0].splash_m", "{e}");
+
+        let e = with("enemies.json", "\"hp\": 55", "\"hp\": -1").unwrap_err();
+        assert_eq!((e.file.as_str(), e.field.as_str()), ("enemies.json", "enemies[0].hp"));
+
+        let e = with("enemies.json", "\"enemy\": \"shambler\", \"every_s\"", "\"enemy\": \"ghoul\", \"every_s\"").unwrap_err();
+        assert_eq!(e.field, "enemies[3].summon.enemy", "{e}");
+
+        let e = with("waves.json", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"gorges\"", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"cliffs\"")
+            .unwrap_err();
+        assert_eq!((e.file.as_str(), e.field.as_str()), ("waves.json", "waves[1].groups[1].from"));
+        assert!(e.reason.contains("can't climb"), "{e}");
+
+        let e = with("waves.json", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"air\"", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"gorges\"")
+            .unwrap_err();
+        assert!(e.reason.contains("use \"air\""), "{e}");
+
+        let e = with("waves.json", "\"from\": \"gorge_mid\"", "\"from\": \"gorge_nowhere\"").unwrap_err();
+        assert!(e.reason.contains("no spawn named"), "{e}");
+
+        let e = with("waves.json", "\"enemy\": \"colossus\"", "\"enemy\": \"dragon\"").unwrap_err();
+        assert!(e.reason.contains("no enemy \"dragon\""), "{e}");
+
+        let e = with("waves.json", "\"tombstones\": 10", "\"tombstones\": 10,").unwrap_err();
+        assert!(e.field.starts_with("byte "), "{e}");
+    }
+
+    #[test]
+    fn content_hash_ignores_line_endings_but_not_content() {
+        let a = Content::builtin();
+        let crlf = |t: &str| t.replace("\r\n", "\n").replace('\n', "\r\n");
+        let b = Content::from_texts(&crlf(SLAB_01_JSON), &crlf(STONES_JSON), &crlf(ENEMIES_JSON), &crlf(WAVES_JSON)).unwrap();
+        assert_eq!(a.hash, b.hash);
+        let c = with("waves.json", "\"start_dust\": 150", "\"start_dust\": 151").unwrap();
+        assert_ne!(a.hash, c.hash);
+    }
 }

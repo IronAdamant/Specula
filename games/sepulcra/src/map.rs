@@ -648,3 +648,136 @@ fn grid(obj: &Obj, key: &str, min: usize, max: usize) -> Result<Vec<Vec<char>>, 
     }
     Ok(rows)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::SLAB_01_JSON;
+
+    fn slab() -> Map {
+        Map::parse(SLAB_01_JSON, "slab_01.json").expect("built-in map")
+    }
+
+    fn bad(from: &str, to: &str) -> DataError {
+        assert!(SLAB_01_JSON.contains(from), "test fixture: {from:?} not in the map");
+        Map::parse(&SLAB_01_JSON.replacen(from, to, 1), "slab_01.json").expect_err("should be rejected")
+    }
+
+    #[test]
+    fn builtin_slab_shape() {
+        let m = slab();
+        let r = |s: &str| m.cell_ref(s).unwrap_or_else(|| panic!("{s}"));
+        assert_eq!(m.faces().len(), 4, "top + north, east, west cliffs");
+        assert_eq!(m.cells().len(), 400 + 3 * 120);
+        assert_eq!((m.half_x, m.half_z), (20_000, 20_000));
+        assert_eq!(m.graveyard.len(), 16);
+        assert_eq!(m.graveyard_centre, Pos::new(0, 0, 0));
+        assert_eq!(m.spawns.len(), 7);
+        assert_eq!(m.spawns.iter().filter(|s| s.climbers_only).count(), 4);
+        assert_eq!(m.jump_pairs(), vec![(r("top:4,11"), r("top:4,13")), (r("top:15,12"), r("top:15,14"))]);
+        assert_eq!(m.cell(r("top:0,0")).pos, Pos::new(-19_000, 0, -19_000));
+        assert_eq!(m.cell(r("north:4,0")).pos, Pos::new(-11_000, -1_250, -20_000));
+        assert_eq!(m.cell(r("east:10,5")).pos, Pos::new(20_000, -13_750, 1_000));
+        assert_eq!(m.cell(r("west:11,5")).pos, Pos::new(-20_000, -13_750, 3_000));
+        // Rim links join each cliff lane to the top face: sqrt(1.25² + 1²) m.
+        for (cliff, top) in [("north:4,0", "top:4,0"), ("north:15,0", "top:15,0"), ("east:12,0", "top:19,12"), ("west:11,0", "top:0,11")] {
+            assert!(m.links(r(cliff)).iter().any(|l| l.to == r(top) && l.cost == 1600), "{cliff} -> {top}");
+        }
+        assert_eq!(m.air.ring.len(), 32);
+        assert_eq!(m.air.ring[0], Pos::new(-23_000, 4_000, -23_000));
+        assert_eq!(m.air.ring[4], Pos::new(0, 4_000, -23_000));
+        assert_eq!(m.air.ring[8], Pos::new(23_000, 4_000, -23_000));
+        assert_eq!(m.air.ring[24], Pos::new(-23_000, 4_000, 23_000));
+        assert_eq!(m.air.dive_target, Pos::new(0, 1_500, 0));
+    }
+
+    #[test]
+    fn cell_refs_round_trip() {
+        let m = slab();
+        for c in m.cells() {
+            assert_eq!(m.cell_ref(&m.cell_name(c.id)), Some(c.id));
+        }
+        for bad in ["top:20,0", "top:0", "sky:1,1", "north:4,6", "south:0,0", ""] {
+            assert_eq!(m.cell_ref(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn rim_distance_defines_near_an_edge() {
+        let m = slab();
+        let d = |s: &str, other: Face| {
+            let c = *m.cell(m.cell_ref(s).unwrap());
+            m.rim_distance(c.pos, c.face, other)
+        };
+        assert_eq!(d("top:5,1", Face::North), Some(3_000));
+        assert_eq!(d("top:5,2", Face::North), Some(5_000));
+        assert_eq!(d("top:18,9", Face::East), Some(3_000));
+        assert_eq!(d("top:1,9", Face::West), Some(3_000));
+        assert_eq!(d("top:9,19", Face::South), Some(1_000));
+        assert_eq!(d("north:7,2", Face::Top), Some(6_250));
+        assert_eq!(d("north:4,0", Face::Top), Some(1_250));
+        assert_eq!(d("north:4,0", Face::East), None, "two cliffs share no rim");
+        assert_eq!(d("top:5,1", Face::Top), None);
+    }
+
+    #[test]
+    fn walkability_by_class() {
+        let m = slab();
+        let k = |s: &str| m.cell(m.cell_ref(s).unwrap()).kind;
+        assert_eq!(k("top:9,19"), CellKind::Gorge);
+        assert!(k("north:4,3").walkable(true) && !k("north:4,3").walkable(false));
+        assert!(k("top:9,14").wallable() && !k("top:9,19").wallable() && !k("top:9,9").wallable());
+        assert!(k("top:12,9").buildable() && k("north:7,2").buildable() && !k("top:9,14").buildable());
+    }
+
+    #[test]
+    fn ascii_dump_shows_every_face() {
+        let a = slab().ascii();
+        for line in [
+            "N5         ----B----------B----",
+            " 0  ------ xx##.##########.###x ------",
+            "11  B||||| ....j..#GGGG#.###### ---|--",
+            "12  ------ ######.##.###..j.... ||||--",
+            "19  ------ x###S####S#####S##xx ------",
+        ] {
+            assert!(a.lines().any(|l| l == line), "missing {line:?} in\n{a}");
+        }
+    }
+
+    #[test]
+    fn validation_errors_name_file_field_and_reason() {
+        let e = bad("xx##.##########.###x", "xq##.##########.###x");
+        assert_eq!((e.file.as_str(), e.field.as_str()), ("slab_01.json", "top[0][1]"));
+        assert!(e.reason.contains("unknown cell 'q'"), "{e}");
+
+        let e = bad("xx##.##########.###x", "xx##.##########.###");
+        assert_eq!(e.field, "top[1]", "{e}");
+
+        let e = bad("....j..#GGGG#.######", ".......#GGGG#.######");
+        assert_eq!(e.field, "top[13][4]", "{e}");
+        assert!(e.reason.contains("partner"), "{e}");
+
+        let e = bad("\"gorge_mid\": \"top:9,19\",", "");
+        assert!(e.reason.contains("top:9,19 has no name"), "{e}");
+
+        let e = bad("\"gorge_mid\": \"top:9,19\"", "\"gorge_mid\": \"top:9,18\"");
+        assert_eq!(e.field, "spawns.gorge_mid");
+        assert!(e.reason.contains("not a spawn"), "{e}");
+
+        let e = bad("####.####.#####.###x", "#########.#####.###x");
+        assert_eq!(e.field, "spawns.gorge_west");
+        assert!(e.reason.contains("no path"), "{e}");
+
+        let e = bad("xx##.##########.###x", "xx######.######.###x");
+        assert_eq!(e.field, "cliffs.north[0][4]", "{e}");
+
+        let e = bad("\"cell_m\"", "\"cel_m\"");
+        assert!(e.reason.contains("unknown field"), "{e}");
+
+        let e = bad("\"points\": 32", "\"points\": 30");
+        assert_eq!(e.field, "air.points");
+
+        let e = bad("{", "[");
+        assert!(e.field.starts_with("byte "), "{e}");
+    }
+}
