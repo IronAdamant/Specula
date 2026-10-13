@@ -4,8 +4,9 @@
 //! [`Swarm::agent_name`]), claims ([`crate::claims`]) and the journal ([`crate::journal`]). It
 //! holds no GPU or window state, so all of it is tested headless.
 //!
-//! **Identity rules.** An agent's name is what `agent_hello` set, unique among live sessions (a
-//! name another live session uses is refused with `name_taken` and a free suggestion). Without
+//! **Identity rules.** An agent's name is what `agent_hello` set, unique among open sessions
+//! (idle ones included: a name another open session uses is refused with `name_taken` and a free
+//! suggestion). The hosted game's name (and other in-process names) are reserved. Without
 //! `agent_hello` a session is `<MCP client name>-<first 6 characters of its session id>`, so two
 //! unnamed Claude Code sessions never share an identity. Claims and "your own changes" (undo) go
 //! by name *and* session: a name taken again after its session ended adopts nothing (undoing the
@@ -34,6 +35,8 @@ pub struct Swarm {
     pub claims: Claims,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
+    /// Names agents may not take: the hosted game's, in-process writers'.
+    reserved: BTreeSet<String>,
 }
 
 /// A session's name before (or without) agent_hello.
@@ -61,9 +64,21 @@ impl Swarm {
         self.agents.contains_key(session_id)
     }
 
-    /// Names `session` (see the module docs); `live` are the protocol's live sessions.
+    /// Keeps agents from calling themselves `name` (the hosted game's name, say).
+    pub fn reserve(&mut self, name: &str) {
+        self.reserved.insert(name.to_owned());
+    }
+
+    /// Names `session` (see the module docs); `live` are the protocol's open sessions.
     pub fn hello(&mut self, session: &SessionInfo, name: String, role: String, live: &[SessionInfo]) -> Result<Json, WorldError> {
-        let taken = |n: &str| live.iter().any(|s| s.id != session.id && self.agent_name(s) == n);
+        if self.reserved.contains(&name) {
+            return Err(WorldError::new(
+                "name_reserved",
+                format!("'{name}' is reserved (the hosted game or the engine writes under it); pick another name"),
+            )
+            .with("name", name.as_str()));
+        }
+        let taken = |n: &str| self.reserved.contains(n) || live.iter().any(|s| s.id != session.id && self.agent_name(s) == n);
         if taken(&name) {
             let free = (2..).map(|i| format!("{name}-{i}")).find(|n| !taken(n)).expect("some suffix is free");
             return Err(WorldError::new(
@@ -119,7 +134,7 @@ impl Swarm {
     ) -> Result<(T, Option<u64>), WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, changes: &[Change]| claims.check(world, changes, w, now);
+        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let result = journal::commit(world, &mut self.journal, tick, w, kind, &mut check, command);
         if let Err(e) = &result {
             self.count_rejection(e);
@@ -131,7 +146,7 @@ impl Swarm {
     pub fn undo(&mut self, world: &mut World, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, changes: &[Change]| claims.check(world, changes, w, now);
+        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let result = self.journal.undo(world, tick, w, req, &mut check);
         if let Err(e) = &result {
             self.count_rejection(e);
@@ -139,11 +154,13 @@ impl Swarm {
         result
     }
 
-    /// Runs a game tool agent `w` called: the game's changes are checked against claims as `w`'s
-    /// (rolled back when rejected) and journaled under the game's name, `via` the agent.
+    /// Runs a game tool agent `w` called: the game's changes are checked against claims as `w`'s,
+    /// step by step, and journaled under the game's name, `via` the agent.
     ///
-    /// A rejected tool has still run inside the game: only its world changes are undone, so the
-    /// game's own state may need to catch up (games read the world back each tick).
+    /// On rejection only the **world** is rolled back (ids it used are never handed out again).
+    /// The tool has still run inside the game, so the caller must roll the game back too:
+    /// [`crate::game::Game::restore`] from a checkpoint taken before the call, or
+    /// [`crate::game::Game::world_rolled_back`] for games without checkpoints.
     pub fn game_tool<T>(
         &mut self,
         world: &mut World,
@@ -155,9 +172,10 @@ impl Swarm {
         let mark = world.mark();
         let out = call(world);
         let now = Instant::now();
-        let pending = &world.pending_changes()[world.mark_changes(mark)..];
-        if let Err(e) = self.claims.check(world, pending, w, now) {
-            world.rollback_to(mark);
+        let claims = &self.claims;
+        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+        if let Err(e) = world.recheck_steps(mark, &mut check) {
+            self.journal.note_next_id(world.next_id());
             self.count_rejection(&e);
             return Err(e.with("game", game));
         }
@@ -378,7 +396,8 @@ mod tests {
         sw.take_claim(&w, &s1, claim("/q")).unwrap();
         let ann = Writer::new("ann", Some("aaaaaa11"));
         sw.commit(&mut w, 0, ann, Kind::Spawn, |w| w.spawn(spec("/q"), "ann").map(|_| ())).unwrap();
-        let before = w.state_hash();
+        let shape = |w: &World| w.entities().map(|e| (e.id, e.version, w.path_of(e.id))).collect::<Vec<_>>();
+        let before = shape(&w);
         let bob = Writer::new("bob", Some("bbbbbb22"));
         let tool = |w: &mut World| {
             w.spawn(spec("/tower"), "game").unwrap();
@@ -387,7 +406,7 @@ mod tests {
         };
         let err = sw.game_tool(&mut w, 1, "sepulcra", bob, tool).unwrap_err();
         assert_eq!((err.code, err.detail("game")), ("claimed", Some(&Json::from("sepulcra"))));
-        assert_eq!(w.state_hash(), before, "the game's changes were rolled back");
+        assert_eq!(shape(&w), before, "the game's changes were rolled back");
         assert!(w.pending_changes().is_empty());
         let ok = sw.game_tool(&mut w, 1, "sepulcra", bob, |w| w.spawn(spec("/tower"), "game").map(|_| "ok").unwrap());
         assert_eq!(ok.unwrap(), "ok");

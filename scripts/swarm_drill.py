@@ -286,6 +286,22 @@ def attacks(url):
     bob.ok("world_set", path="/lane", rename="road")
     ann.ok("claim_take", path="/lane/c", lease_s=300)
     expect(bob, "claimed", "undo a rename into a claim", "world_undo", force=True)
+    # 1d. Multi-op commands: a later op must not hide what an earlier one did (review round 2).
+    expect(bob, "claimed", "P1 batch: rename ancestor, then delete it", "world_batch",
+           ops=[{"op": "set", "path": "/siege", "rename": "z1"}, {"op": "delete", "path": "/z1"}])
+    expect(bob, "claimed", "P2 batch: rename ancestor, then move the claimed child out", "world_batch",
+           ops=[{"op": "set", "path": "/siege", "rename": "z2"},
+                {"op": "set", "path": "/z2/keep", "parent": None, "rename": "stolen"}])
+    bob.ok("world_batch", ops=[spawn("/x3"), spawn("/x3/b")])
+    bob.ok("world_set", path="/x3", rename="y3")
+    ann.ok("claim_take", path="/y3/b", lease_s=300)
+    expect(bob, "claimed", "P3 undo of two entries (rename, spawn)", "world_undo", count=2)
+    bob.ok("world_batch", ops=[spawn("/gg", position=[6990, 0, 0]), spawn("/gg/kid", position=[11, 0, 0])])
+    ann.ok("claim_take", region={"min": [7000, -1, -1], "max": [7005, 1, 1]}, lease_s=300)
+    move = lambda x: {"op": "set", "path": "/gg", "position": [x, 0, 0]}
+    expect(bob, "claimed", "P4 batch: two moves hide where the child started", "world_batch", ops=[move(-100), move(-200)])
+    expect(bob, "claimed", "P5 batch: move, then reparent the child", "world_batch",
+           ops=[move(-100), {"op": "set", "path": "/gg/kid", "parent": None}])
     # 2. Identity: names are unique; another session adopts nothing.
     expect(carl, "name_taken", "hello as a live agent's name", "agent_hello", name="attack_ann")
     claim_id = ann.ok("claim_list", mine=True)["claims"][0]["id"]

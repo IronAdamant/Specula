@@ -31,8 +31,9 @@ use specula_core::Json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-/// Vets the changes a command just made (the engine checks claims); an error rolls them back.
-pub type Check<'a> = dyn FnMut(&World, &[Change]) -> Result<(), WorldError> + 'a;
+/// Vets each change a command made, against the world as it was right after that change (the
+/// engine checks claims there); an error rolls the whole command back.
+pub type Check<'a> = dyn FnMut(&World, &Change) -> Result<(), WorldError> + 'a;
 
 /// Agents' entries kept in memory, and their approximate memory.
 pub const MAX_ENTRIES: usize = 65_536;
@@ -184,7 +185,7 @@ impl Entry {
         self.changes.iter().any(|c| change_under(c, prefix))
     }
 
-    /// A compact summary; `detail` adds up to [`DETAIL_CHANGES`] changes.
+    /// A compact summary; `detail` adds up to 50 changes.
     pub fn to_json(&self, detail: bool, path_prefix: Option<&str>) -> Json {
         let mut f = vec![
             ("id", Json::from(self.seq)),
@@ -421,6 +422,9 @@ pub struct Journal {
     game_touch: BTreeMap<u64, GameTouch>,
     /// The next entry's id.
     next_seq: u64,
+    /// The world's id counter as last seen: rejected commands use up ids without an entry, and
+    /// ids are never handed out twice, so replay ends at this counter.
+    next_id_seen: u64,
     /// The world the entries apply to, and its hash.
     base: World,
     base_hash: u64,
@@ -452,6 +456,7 @@ impl Journal {
             game: Ring::new(max_entries, max_bytes),
             game_touch: BTreeMap::new(),
             next_seq: 1,
+            next_id_seen: 0,
             base: World::default(),
             base_hash: 0,
             base_label: String::new(),
@@ -475,6 +480,7 @@ impl Journal {
         copy.set_recording(Recording::Off);
         copy.take_changes();
         self.base_hash = copy.state_hash();
+        self.next_id_seen = copy.next_id();
         self.base = copy;
         self.base_label = label.to_owned();
     }
@@ -504,6 +510,7 @@ impl Journal {
         next_id: u64,
     ) -> u64 {
         let w: Writer = by.into();
+        self.note_next_id(next_id);
         let seq = self.next_seq;
         self.next_seq += 1;
         let mut ids: Vec<u64> = changes.iter().map(Change::id).collect();
@@ -577,8 +584,7 @@ impl Journal {
         changes: Vec<Change>,
         next_id: u64,
     ) -> Option<u64> {
-        let previous = self.entries_rev().next().map_or(self.base.next_id(), |e| e.next_id);
-        if changes.is_empty() && previous == next_id {
+        if changes.is_empty() && self.next_id_seen >= next_id {
             return None;
         }
         Some(self.append(tick, game, via, kind, changes, next_id))
@@ -598,11 +604,6 @@ impl Journal {
     /// Every entry kept, oldest first.
     pub fn entries(&self) -> impl Iterator<Item = &Entry> + '_ {
         merged(self.agents.entries.iter(), self.game.entries.iter(), false)
-    }
-
-    /// Every entry kept, newest first.
-    fn entries_rev(&self) -> impl Iterator<Item = &Entry> + '_ {
-        merged(self.agents.entries.iter().rev(), self.game.entries.iter().rev(), true)
     }
 
     pub fn len(&self) -> usize {
@@ -635,7 +636,17 @@ impl Journal {
 
     /// The world rebuilt by applying every entry to the base (`None` once entries were evicted).
     pub fn replay(&self) -> Option<World> {
-        self.replayable().then(|| replay(self.base.clone(), self.entries()))
+        self.replayable().then(|| {
+            let mut w = replay(self.base.clone(), self.entries());
+            w.replay_next_id(self.next_id_seen);
+            w
+        })
+    }
+
+    /// Notes the world's id counter after something that used ids without an entry (a rejected
+    /// command): replay must end past them too.
+    pub fn note_next_id(&mut self, next_id: u64) {
+        self.next_id_seen = self.next_id_seen.max(next_id);
     }
 
     /// Sizes and bounds, for engine_info and world_hash.
@@ -793,11 +804,14 @@ impl Journal {
             }
         }
         if result.is_ok() {
-            result = check(world, &world.pending_changes()[world.mark_changes(mark)..]);
+            // Step by step: an undo of several changes must not hide what an earlier one did.
+            result = world.recheck_steps(mark, check);
+        } else {
+            world.rollback_to(mark);
         }
         if let Err(e) = result {
-            world.rollback_to(mark);
             world.set_recording(previous);
+            self.note_next_id(world.next_id());
             return Err(e);
         }
         world.set_recording(previous);
@@ -1060,14 +1074,7 @@ pub fn replay<'a>(mut base: World, entries: impl IntoIterator<Item = &'a Entry>)
     base.set_recording(Recording::Off);
     for e in entries {
         for c in &e.changes {
-            match c {
-                Change::Spawn { after, .. } | Change::Set { after, .. } => base.put_raw((**after).clone()),
-                Change::Delete { before, .. } => {
-                    base.remove_raw(before.id);
-                }
-                Change::Env { after, .. } => base.replace_env(*after),
-                Change::Pose { pose, .. } => base.apply_pose(pose, &e.by),
-            }
+            base.apply_after(c, &e.by);
         }
         base.replay_next_id(e.next_id);
     }
@@ -1091,25 +1098,18 @@ pub fn commit<'w, T>(
     command: impl FnOnce(&mut World) -> Result<T, WorldError>,
 ) -> Result<(T, Option<u64>), WorldError> {
     let mark = world.mark();
-    let out = command(world);
-    let out = match out {
-        Ok(v) => {
-            let pending = &world.pending_changes()[world.mark_changes(mark)..];
-            match check(world, pending) {
-                Ok(()) => Ok(v),
-                Err(e) => {
-                    world.rollback_to(mark);
-                    Err(e)
-                }
-            }
-        }
+    let out = match command(world) {
+        // Each change against the world as it was at that step: a later op can hide what an
+        // earlier one did (a rename then a delete, two moves).
+        Ok(v) => world.recheck_steps(mark, check).map(|()| v),
         Err(e) => {
             // Commands change nothing when they fail (batches roll themselves back); this is a
             // safety net.
             world.rollback_to(mark);
             Err(e)
         }
-    }?;
+    };
+    let out = out.inspect_err(|_| journal.note_next_id(world.next_id()))?;
     let changes = world.take_changes();
     let seq = (!changes.is_empty()).then(|| journal.append(tick, by, None, kind, changes, world.next_id()));
     Ok((out, seq))
@@ -1121,7 +1121,7 @@ mod tests {
     use crate::world::{EntityKey, EnvPatch, Op, Shape, SpawnSpec, UpdateSpec};
     use specula_core::math::Vec3;
 
-    fn no_check(_: &World, _: &[Change]) -> Result<(), WorldError> {
+    fn no_check(_: &World, _: &Change) -> Result<(), WorldError> {
         Ok(())
     }
 
@@ -1327,8 +1327,9 @@ mod tests {
     fn a_rejecting_check_rolls_the_command_back() {
         let (mut w, mut j) = live();
         spawn(&mut w, &mut j, "ann", "/a");
-        let before = (w.state_hash(), w.revision(), w.next_id());
-        let mut refuse = |_: &World, _: &[Change]| Err(WorldError::new("claimed", "no"));
+        let shape = |w: &World| w.entities().map(|e| (e.id, e.version, w.path_of(e.id), e.position.x)).collect::<Vec<_>>();
+        let before = (shape(&w), w.revision(), w.next_id());
+        let mut refuse = |_: &World, _: &Change| Err(WorldError::new("claimed", "no"));
         let ops = vec![
             Op::Spawn(spec("/b")),
             Op::Set(EntityKey::Path("/a".into()), moved(1.0)),
@@ -1336,7 +1337,8 @@ mod tests {
         ];
         let err = commit(&mut w, &mut j, 0, "bob", Kind::Batch, &mut refuse, |w| w.apply_batch(ops, "bob").map_err(|(_, e)| e));
         assert_eq!(err.unwrap_err().code, "claimed");
-        assert_eq!((w.state_hash(), w.revision(), w.next_id()), before);
+        assert_eq!((shape(&w), w.revision()), (before.0, before.1));
+        assert!(w.next_id() >= before.2, "ids are never handed out twice");
         assert_eq!(w.get(1).unwrap().version, 1);
         assert_eq!(w.find_path("/a"), Ok(1));
         assert_eq!(j.len(), 1, "nothing journaled");

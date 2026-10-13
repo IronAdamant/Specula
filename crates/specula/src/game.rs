@@ -13,6 +13,7 @@ use crate::world::World;
 use specula_core::Json;
 use specula_platform::Event;
 use specula_protocol::{ToolDef, ToolOutput};
+use std::any::Any;
 use std::time::Duration;
 
 /// A game hosted by the engine. Every method runs on the engine thread.
@@ -50,6 +51,24 @@ pub trait Game {
     fn status(&self) -> Json {
         Json::Null
     }
+
+    /// A copy of everything the game keeps (simulation, presentation, cached entity ids), taken
+    /// before an agent's game tool runs while agents hold claims. If a claim rejects the tool's
+    /// world changes, the engine rolls the world back and hands this to [`Game::restore`], so game
+    /// and world stay consistent. `None` (the default): no checkpoints; the engine calls
+    /// [`Game::world_rolled_back`] instead.
+    fn checkpoint(&self) -> Option<Box<dyn Any>> {
+        None
+    }
+
+    /// Goes back to a [`Game::checkpoint`] (the world has already been rolled back to match).
+    fn restore(&mut self, _checkpoint: Box<dyn Any>) {}
+
+    /// The engine undid the world changes of a rejected game tool and the game had no checkpoint:
+    /// make the world show the game's own state again. The entities those changes created are
+    /// gone and their ids are **never reused**, so the game must drop every id it cached from the
+    /// tool call (look entities up again rather than trusting stale ids).
+    fn world_rolled_back(&mut self, _ctx: &mut Ctx) {}
 }
 
 /// What a game can touch.

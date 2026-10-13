@@ -22,6 +22,7 @@ use specula::world::{EnvPatch, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,6 +67,25 @@ pub struct SepulcraGame {
     label_for: Option<Option<u8>>,
     /// Recent messages with their tick, for agents (`play_state`).
     pub(crate) log: VecDeque<(u32, String)>,
+}
+
+/// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
+/// the scene with its cached entity ids, and what the player sees.
+struct Checkpoint {
+    state: State,
+    journal: Journal,
+    autoplay: Option<(String, Player)>,
+    scene: Option<Scene>,
+    selected: Option<u8>,
+    paused: bool,
+    speed: u32,
+    events: Vec<Event>,
+    pending: Vec<Event>,
+    now: f32,
+    pres_ticks: u64,
+    message_until: f32,
+    hud: Hud,
+    log: VecDeque<(u32, String)>,
 }
 
 impl SepulcraGame {
@@ -483,5 +503,47 @@ impl Game for SepulcraGame {
 
     fn status(&self) -> Json {
         self.status_json()
+    }
+
+    fn checkpoint(&self) -> Option<Box<dyn Any>> {
+        Some(Box::new(Checkpoint {
+            state: self.state.clone(),
+            journal: self.journal.clone(),
+            autoplay: self.autoplay.clone(),
+            scene: self.scene.clone(),
+            selected: self.selected,
+            paused: self.paused,
+            speed: self.speed,
+            events: self.events.clone(),
+            pending: self.pending.clone(),
+            now: self.now,
+            pres_ticks: self.pres_ticks,
+            message_until: self.message_until,
+            hud: self.hud.clone(),
+            log: self.log.clone(),
+        }))
+    }
+
+    fn restore(&mut self, checkpoint: Box<dyn Any>) {
+        let Ok(c) = checkpoint.downcast::<Checkpoint>() else { return };
+        let c = *c;
+        self.state = c.state;
+        self.journal = c.journal;
+        self.autoplay = c.autoplay;
+        self.scene = c.scene;
+        self.selected = c.selected;
+        self.paused = c.paused;
+        self.speed = c.speed;
+        self.events = c.events;
+        self.pending = c.pending;
+        self.now = c.now;
+        self.pres_ticks = c.pres_ticks;
+        self.message_until = c.message_until;
+        self.hud = c.hud;
+        self.log = c.log;
+        // Presentation caches are rebuilt on the next frame.
+        self.shown_hud = None;
+        self.hover_key = None;
+        self.label_for = None;
     }
 }

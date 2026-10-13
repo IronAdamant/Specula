@@ -16,6 +16,11 @@
 //!   out of its claim, or carry foreign entities into one) and the descendants' origins before
 //!   and after a move. A delete touches every entity it removes, so deleting `/a` is rejected
 //!   while someone holds `/a/b`. Undo and game tools an agent calls are checked the same way.
+//!   Commands of several steps (a batch, an undo of several entries, a game tool) are checked
+//!   **step by step**, each change against the world as it was right after it (see
+//!   `World::recheck_steps`): a later step can't hide what an earlier one did, such as a rename
+//!   followed by a delete, or two moves in a row. A rejected command is rolled back whole; the
+//!   ids it used are never handed out again.
 //! - **Claims don't overlap** between different owners (even co-claimed ones), so an owner is
 //!   never locked out of its own claim. *Limitation:* a path claim and a region claim are
 //!   compared through the entities that exist when the second is taken; if they meet later (the

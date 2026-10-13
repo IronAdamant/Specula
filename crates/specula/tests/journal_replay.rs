@@ -16,9 +16,9 @@ use specula_core::math::Vec3;
 use std::time::{Duration, Instant};
 
 /// The scenario's final state hash.
-const EXPECTED_HASH: u64 = 0xf05c_235b_4c0c_404f;
+const EXPECTED_HASH: u64 = 0xfab1_be53_5836_6b94;
 
-fn no_check(_: &World, _: &[Change]) -> Result<(), WorldError> {
+fn no_check(_: &World, _: &Change) -> Result<(), WorldError> {
     Ok(())
 }
 
@@ -46,8 +46,8 @@ impl Live {
 
     fn agent<T>(&mut self, by: &str, kind: Kind, f: impl FnOnce(&mut World) -> Result<T, WorldError>) -> Result<T, WorldError> {
         // A stand-in for the engine's claims: only "owner" may write under /claimed.
-        let mut check = |_: &World, changes: &[Change]| {
-            if by != "owner" && changes.iter().any(|c| c.path().starts_with("/claimed")) {
+        let mut check = |_: &World, change: &Change| {
+            if by != "owner" && change.path().starts_with("/claimed") {
                 Err(WorldError::new("claimed", "inside owner's claim"))
             } else {
                 Ok(())

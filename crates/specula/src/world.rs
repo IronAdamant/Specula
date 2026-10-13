@@ -1235,7 +1235,7 @@ fn json_heap(v: &Json) -> usize {
     }
 }
 
-/// A point to roll the world back to (see [`World::rollback_to`]).
+/// A point to roll the world back to (see `World::rollback_to`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark {
     next_id: u64,
@@ -2019,28 +2019,94 @@ impl World {
     }
 
     /// Undoes every change recorded since `mark` exactly (versions and attribution included) and
-    /// forgets them, as if they never happened.
+    /// forgets them. The id counter is **not** rewound: ids handed out in between (which game code
+    /// may have kept) are never handed out again.
     pub(crate) fn rollback_to(&mut self, mark: Mark) {
         let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
-        for change in undo.into_iter().rev() {
-            match change {
-                Change::Spawn { after, .. } => {
-                    self.remove_raw(after.id);
-                }
-                Change::Set { before: Some(before), .. } | Change::Delete { before, .. } => self.put_raw(*before),
-                Change::Set { before: None, after, .. } => {
-                    debug_assert!(false, "rollback over an after-only change of entity {}", after.id);
-                }
-                Change::Pose { pose, .. } => {
-                    debug_assert!(false, "rollback over a pose of entity {}", pose.id);
-                }
-                Change::Env { before, .. } => self.env = before,
-            }
+        for change in undo.iter().rev() {
+            self.apply_before(change);
         }
         self.recording = recording;
-        self.next_id = mark.next_id;
         self.revision = mark.revision;
+    }
+
+    /// Re-checks the changes recorded since `mark` one step at a time, each against the world as
+    /// it was right after that step (a later step can hide what an earlier one did: a rename
+    /// followed by a delete, two moves). On the first rejection everything since `mark` is rolled
+    /// back and the error returned; otherwise the world and its recorded changes are as before.
+    pub(crate) fn recheck_steps(
+        &mut self,
+        mark: Mark,
+        check: &mut dyn FnMut(&World, &Change) -> Result<(), WorldError>,
+    ) -> Result<(), WorldError> {
+        let start = self.mark_changes(mark);
+        if start == self.changes.len() {
+            return Ok(());
+        }
+        let steps: Vec<Change> = self.changes.drain(start..).collect();
+        let (next_id, revision) = (self.next_id, self.revision);
+        let recording = std::mem::replace(&mut self.recording, Recording::Off);
+        // Back to the start, then forward one change at a time.
+        for change in steps.iter().rev() {
+            self.apply_before(change);
+        }
+        let mut failed = None;
+        for (done, change) in steps.iter().enumerate() {
+            // Agents' and game tools' changes are full states (no poses), so no author is needed.
+            self.apply_after(change, "");
+            if let Err(e) = check(self, change) {
+                failed = Some((done, e));
+                break;
+            }
+        }
+        match failed {
+            None => {
+                self.recording = recording;
+                self.changes.extend(steps);
+                self.next_id = self.next_id.max(next_id);
+                self.revision = revision.max(self.revision);
+                Ok(())
+            }
+            Some((done, e)) => {
+                for change in steps[..=done].iter().rev() {
+                    self.apply_before(change);
+                }
+                self.recording = recording;
+                self.next_id = self.next_id.max(next_id);
+                self.revision = mark.revision;
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts the state a change left (its `after`; removes what it deleted).
+    pub(crate) fn apply_after(&mut self, change: &Change, by: &str) {
+        match change {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => self.put_raw((**after).clone()),
+            Change::Delete { before, .. } => {
+                self.remove_raw(before.id);
+            }
+            Change::Env { after, .. } => self.replace_env(*after),
+            Change::Pose { pose, .. } => self.apply_pose(pose, by),
+        }
+    }
+
+    /// Puts back the state before a change (needs its `before`).
+    fn apply_before(&mut self, change: &Change) {
+        match change {
+            Change::Spawn { after, .. } => {
+                self.remove_raw(after.id);
+            }
+            Change::Set { before: Some(before), .. } | Change::Delete { before, .. } => self.put_raw((**before).clone()),
+            Change::Set { before: None, after, .. } => {
+                debug_assert!(false, "rollback over an after-only change of entity {}", after.id);
+            }
+            Change::Pose { pose, .. } => {
+                debug_assert!(false, "rollback over a pose of entity {}", pose.id);
+            }
+            Change::Env { before, .. } => self.replace_env(*before),
+        }
     }
 
     /// Puts `e` into the world exactly as given, inserting it or replacing the entity with its id

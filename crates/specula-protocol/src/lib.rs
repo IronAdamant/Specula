@@ -159,6 +159,12 @@ impl Server {
         self.shared.state.sessions()
     }
 
+    /// Every open session, idle ones included (an idle session can still make calls), oldest
+    /// first. Identity and claims go by these.
+    pub fn all_sessions(&self) -> Vec<SessionInfo> {
+        self.shared.state.all_sessions()
+    }
+
     /// Stop accepting, close connections, join threads.
     ///
     /// Waits for tool calls already running to return (their responses are dropped).

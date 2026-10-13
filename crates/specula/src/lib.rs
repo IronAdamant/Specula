@@ -184,6 +184,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     if let Some(g) = &game {
         engine.clock = Clock::new(g.tick_hz());
         engine.game_name = g.name().to_owned();
+        // Its changes are attributed to this name: no agent may take it.
+        engine.swarm.reserve(g.name());
     }
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
@@ -401,7 +403,7 @@ impl Engine {
             return;
         }
         self.last_claim_sweep = Instant::now();
-        self.swarm.sweep(&server.sessions(), Instant::now());
+        self.swarm.sweep(&server.all_sessions(), Instant::now());
     }
 
     /// Calls the game's `start` once the engine is ready.
@@ -717,7 +719,7 @@ impl Engine {
                 Ok(()) => self.load(name, force),
                 Err(e) => world_error(&e),
             },
-            Command::Hello { name, role } => match self.swarm.hello(&request.session, name, role, &server.sessions()) {
+            Command::Hello { name, role } => match self.swarm.hello(&request.session, name, role, &server.all_sessions()) {
                 Ok(reply) => ToolOutput::text(reply.to_pretty()),
                 Err(e) => world_error(&e),
             },
@@ -756,11 +758,25 @@ impl Engine {
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
+                    // A claim can only reject the tool when claims exist: checkpoint only then.
+                    let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
                     let (clock, agent) = (&self.clock, self.game_name.as_str());
                     let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent }, &name, &args);
                     match self.swarm.game_tool(&mut self.world, tick, agent, w, call) {
                         Ok(out) => out,
-                        Err(e) => world_error(&e),
+                        Err(e) => {
+                            // The world was rolled back; the game goes back with it.
+                            match checkpoint {
+                                Some(c) => game.restore(c),
+                                None => {
+                                    self.world.set_recording(Recording::Snapshot);
+                                    game.world_rolled_back(&mut Ctx { world: &mut self.world, clock, agent });
+                                    self.world.set_recording(Recording::Full);
+                                    self.swarm.game_changes(&mut self.world, tick, agent, Kind::GameTool);
+                                }
+                            }
+                            world_error(&e)
+                        }
                     }
                 }
                 None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
@@ -791,7 +807,7 @@ impl Engine {
                 Ok(out) => ToolOutput::text(out.to_string()),
                 Err(e) => world_error(&e),
             },
-            Command::ClaimShare { id, with, revoke } => match self.swarm.share(w, id, &with, revoke, &server.sessions()) {
+            Command::ClaimShare { id, with, revoke } => match self.swarm.share(w, id, &with, revoke, &server.all_sessions()) {
                 Ok(c) => ToolOutput::text(c.to_string()),
                 Err(e) => world_error(&e),
             },
