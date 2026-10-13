@@ -186,9 +186,16 @@ fn a_leap_that_is_the_only_open_route_is_always_taken() {
         assert_eq!(leaked(&ev), 1, "seed {seed}");
         assert!(s.walls().all(|(_, w)| w.hp == w.max_hp));
     }
-    // The same runner without the ability to leap has no open route: it breaks a wall.
-    let never = ENEMIES_JSON.replace("\"chance\": 0.4", "\"chance\": 0.0");
-    let (_, _, ev) = sealed(&never, 1);
+    // Leaping is a capability (the `jump` object), not the roll: a runner that never takes a
+    // ledge by chance still leaps when the ledge is its only open route.
+    let no_roll = ENEMIES_JSON.replace("\"chance\": 0.4", "\"chance\": 0.0");
+    let (_, _, ev) = sealed(&no_roll, 1);
+    assert_eq!(ev.iter().filter(|e| matches!(e, Event::Jumped { .. })).count(), 1);
+    assert!(!ev.iter().any(|e| matches!(e, Event::AttackingWall { .. })));
+    // A runner that can't leap at all has no open route: it breaks a wall.
+    let cant = ENEMIES_JSON.replace("\"jump\": { \"chance\": 0.4, \"max_detour_m\": 4.0 },", "");
+    assert_ne!(cant, ENEMIES_JSON);
+    let (_, _, ev) = sealed(&cant, 1);
     assert!(ev.iter().any(|e| matches!(e, Event::AttackingWall { .. })));
     assert!(!ev.iter().any(|e| matches!(e, Event::Jumped { .. })));
 }

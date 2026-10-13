@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use sepulcra::content::Content;
-use sepulcra::script::{replay, run, Player, Recording, RunEnd, RunReport, Script};
-use sepulcra::sim::{Event, Outcome, State};
+use sepulcra::script::{replay, run, Player, Recording, ReplayError, ReplayStatus, RunReport, Script};
+use sepulcra::sim::{Command, Event, Outcome, Rejection, State};
 use sepulcra::{EnemyKind, ErrorCode, TICK_HZ};
 
 const CENTRE: &str = include_str!("../data/layouts/centre.json");
@@ -134,19 +134,69 @@ fn a_recording_replays_bit_for_bit_and_checks_itself() {
         let text = rec.to_json(&c).to_pretty();
         let back = Recording::from_json(&text, &c, "rec.json").expect("recording parses");
         assert_eq!(back, rec, "seed {seed}");
-        let state = back.verify(c.clone()).expect("replay matches");
-        assert_eq!((state.tick(), state.hash()), (r.ticks, r.hash));
+        let done = back.verify(c.clone()).expect("replay matches");
+        assert_eq!(done.status, ReplayStatus::Verified);
+        assert_eq!((done.state.tick(), done.state.hash()), (r.ticks, r.hash));
         let replayed = replay(c.clone(), seed, &rec.journal, r.ticks, |_, _| {});
         assert_eq!(replayed.hash(), r.hash);
     }
 }
 
 #[test]
-fn a_recording_refuses_other_content_and_reports_mismatches() {
+fn a_tampered_recording_does_not_verify() {
     let c = content();
     let r = run(c.clone(), 3, &script(&c, CENTRE), Some(2), |_, _| {});
     let rec = r.recording(&c);
-    let text = rec.to_json(&c).to_pretty();
+
+    // A dropped command changes the run.
+    let mut t = rec.clone();
+    t.journal.pop();
+    assert!(matches!(t.verify(c.clone()), Err(ReplayError::Mismatch { .. })));
+
+    // A command that the rules refuse (a second stone on an occupied cell) is caught.
+    let mut t = rec.clone();
+    let (tick, cmd) = t.journal[0];
+    t.journal.insert(1, (tick, cmd));
+    match t.verify(c.clone()) {
+        Err(ReplayError::Rejected { tick: at, command, reason }) => assert_eq!((at, command, reason), (tick, cmd, Rejection::Occupied)),
+        other => panic!("{other:?}"),
+    }
+
+    // A command stamped at or after the end never ran.
+    let mut t = rec.clone();
+    t.journal.push((r.ticks, Command::CallWave));
+    assert_eq!(t.verify(c.clone()).unwrap_err(), ReplayError::NotApplied { tick: r.ticks, ended_at: r.ticks });
+
+    // Without an end there is nothing to compare: say so instead of claiming success.
+    let mut t = rec.clone();
+    t.end = None;
+    let done = t.verify(c.clone()).expect("replays");
+    assert_eq!(done.status, ReplayStatus::Unverified);
+    let back = Recording::from_json(&t.to_json(&c).to_pretty(), &c, "rec.json").unwrap();
+    assert_eq!(back.end, None);
+}
+
+#[test]
+fn recordings_parse_strictly_and_refuse_other_content() {
+    let c = content();
+    let r = run(c.clone(), 3, &script(&c, CENTRE), Some(2), |_, _| {});
+    let text = r.recording(&c).to_json(&c).to_pretty();
+    let hash = format!("{:016x}", c.hash);
+    let bad = |from: &str, to: &str| {
+        assert!(text.contains(from), "fixture {from:?}");
+        Recording::from_json(&text.replacen(from, to, 1), &c, "rec.json").unwrap_err()
+    };
+    // One spelling per value: decimal seeds without sign or leading zeros...
+    for seed in ["\"03\"", "\"+3\"", "\"\"", "\"3.0\"", "3", "\"18446744073709551616\""] {
+        let e = bad("\"seed\": \"3\"", &format!("\"seed\": {seed}"));
+        assert_eq!(e.field, "seed", "{seed}");
+        assert!(matches!(e.code, ErrorCode::BadType | ErrorCode::OutOfRange), "{seed}: {e}");
+    }
+    // ...and exactly 16 lowercase hex digits for hashes.
+    for h in [format!("0x{hash}"), hash.to_uppercase(), hash[1..].to_owned(), format!("{hash}0")] {
+        let e = bad(&format!("\"content_hash\": \"{hash}\""), &format!("\"content_hash\": \"{h}\""));
+        assert_eq!((e.code, e.field.as_str()), (ErrorCode::BadType, "content_hash"), "{h}");
+    }
 
     let other = Content::from_texts(
         sepulcra::content::SLAB_01_JSON,
@@ -157,15 +207,26 @@ fn a_recording_refuses_other_content_and_reports_mismatches() {
     .unwrap();
     let e = Recording::from_json(&text, &other, "rec.json").unwrap_err();
     assert_eq!((e.code, e.field.as_str()), (ErrorCode::ContentMismatch, "content_hash"));
+}
 
-    let e = Recording::from_json(&text.replacen("\"seed\": \"3\"", "\"seed\": 9007199254740993", 1), &c, "rec.json").unwrap_err();
-    assert_eq!((e.code, e.field.as_str()), (ErrorCode::BadType, "seed"), "a double can't hold 2^53 + 1");
-
-    let mut tampered = rec.clone();
-    tampered.journal.pop();
-    let m = tampered.verify(c.clone()).unwrap_err();
-    assert_eq!(m.expected, RunEnd { tick: r.ticks, hash: r.hash });
-    assert_ne!(m.got.hash, m.expected.hash);
+/// Cosmetic edits (notes, display names, whitespace, key order) keep the content hash, so they
+/// don't invalidate recordings; a rule change doesn't.
+#[test]
+fn the_content_hash_covers_rules_not_cosmetics() {
+    use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
+    let base = Content::builtin().hash;
+    let with = |stones: &str, waves: &str| Content::from_texts(SLAB_01_JSON, stones, ENEMIES_JSON, waves).unwrap().hash;
+    let stones = STONES_JSON
+        .replace("\"name\": \"Warding stone\"", "\"name\": \"Ward\"")
+        .replace("\"glyph\": \"W\"", "\"glyph\": \"V\"")
+        .replace("\"notes\": \"", "\"notes\": \"edited. ")
+        .replace("\"cost\": 15, \"hp\": 300", "\"hp\": 300,    \"cost\": 15")
+        .replace("\r\n", "\n")
+        .replace('\n', "\r\n");
+    assert_ne!(stones, STONES_JSON);
+    assert_eq!(with(&stones, WAVES_JSON), base);
+    assert_ne!(with(STONES_JSON, &WAVES_JSON.replace("\"start_dust\": 150", "\"start_dust\": 151")), base);
+    assert_ne!(with(&STONES_JSON.replace("\"id\": \"warding\"", "\"id\": \"ward\""), WAVES_JSON), base, "ids are what recordings name");
 }
 
 #[test]
@@ -207,9 +268,9 @@ fn layouts_round_trip_as_json() {
 fn pinned_runs() {
     let c = content();
     let cases: [(&str, &str, u64, Outcome, u32, i32, u64); 3] = [
-        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0x1061_f78a_7bb1_17db),
-        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0x6ae4_2ac9_add7_0fde),
-        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0x2b89_1f15_0a89_44b0),
+        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0xbc6f_1a62_65b2_c02f),
+        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0xa727_45eb_2850_e931),
+        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0x17db_88f1_5dde_765e),
     ];
     let mut report = String::new();
     let mut ok = true;

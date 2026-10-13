@@ -12,7 +12,7 @@ use specula_core::Json;
 
 use crate::error::{DataError, ErrorCode, Obj};
 use crate::fixed::{milli, mm, permille, ticks, TICK_HZ};
-use crate::map::Map;
+use crate::map::{CellId, Map};
 
 pub const SLAB_01_JSON: &str = include_str!("../data/slab_01.json");
 pub const STONES_JSON: &str = include_str!("../data/stones.json");
@@ -124,7 +124,10 @@ pub struct EnemyDef {
     pub movement: Movement,
     /// Speed on cliff lanes, permille of `speed`.
     pub climb_speed: i32,
-    /// Lane-jump chance per jump point reached, permille (0 = never jumps).
+    /// Can leap cracked ledges (the `jump` object is present). A leaper always treats a ledge
+    /// as an open route, whatever its chance.
+    pub leaps: bool,
+    /// Chance, permille, to take a ledge as a shortcut while a walking route exists.
     pub jump_chance: i32,
     /// A jump is only taken when it lands no more than this much farther from the graveyard.
     pub jump_detour: i32,
@@ -220,8 +223,8 @@ pub struct Content {
     pub enemies: Vec<EnemyDef>,
     pub waves: Vec<WaveDef>,
     pub rules: Rules,
-    /// Stable hash of the four source files: part of every state hash, so a replay can tell
-    /// when it is run against different content.
+    /// Stable hash of the parsed content (see [`content_hash`]): part of every state hash, so a
+    /// replay can tell when it is run against different content.
     pub hash: u64,
 }
 
@@ -236,14 +239,11 @@ impl Content {
         let map_v = Map::parse(map, "slab_01.json")?;
         let (stone_defs, mut rules) = parse_stones(stones)?;
         let enemy_defs = parse_enemies(enemies)?;
+        check_summons(&map_v, &enemy_defs)?;
         let wave_defs = parse_waves(waves, &map_v, &enemy_defs, &mut rules)?;
-        let mut h = StableHasher::with_seed(0x5e9_c1a);
-        for t in [map, stones, enemies, waves] {
-            // Git may check the files out with CRLF on Windows and LF elsewhere; the hash must
-            // not care, or pinned replay hashes would differ by platform.
-            h.write_str(&t.replace("\r\n", "\n"));
-        }
-        Ok(Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, hash: h.finish() })
+        let mut c = Content { map: map_v, stones: stone_defs, enemies: enemy_defs, waves: wave_defs, rules, hash: 0 };
+        c.hash = content_hash(&c);
+        Ok(c)
     }
 
     /// Reads `slab_01.json`, `stones.json`, `enemies.json` and `waves.json` from `dir`.
@@ -416,15 +416,19 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
             "flyer" => Movement::Flyer,
             _ => return Err(o.err("movement", ErrorCode::BadChoice, "expected \"walker\", \"climber\" or \"flyer\"")),
         };
-        let (jump_chance, jump_detour) = match o.get("jump") {
-            None => (0, 0),
+        let (leaps, jump_chance, jump_detour) = match o.get("jump") {
+            None => (false, 0, 0),
             Some(j) => {
                 let jo = Obj::new(j, F, o.path("jump"))?;
                 jo.only(&["chance", "max_detour_m"])?;
                 if movement == Movement::Flyer {
                     return Err(o.err("jump", ErrorCode::Invalid, "flyers don't lane-jump"));
                 }
-                (permille(jo.num("chance", 0.0, 1.0)?), mm(jo.num_or("max_detour_m", 0.0, 0.0, 1000.0)?))
+                let chance = jo.num("chance", 0.0, 1.0)?;
+                if chance > 0.0 && permille(chance) == 0 {
+                    return Err(jo.err("chance", ErrorCode::OutOfRange, format!("{chance} rounds to 0 per mille: use 0 or at least 0.001")));
+                }
+                (true, permille(chance), mm(jo.num_or("max_detour_m", 0.0, 0.0, 1000.0)?))
             }
         };
         let pair = |key: &str, min: i64, max: i64| -> Result<(i64, i64), DataError> {
@@ -474,6 +478,7 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
             speed: mm(o.num("speed_mps", 0.01, 100.0)?),
             movement,
             climb_speed: permille(o.num_or("climb_speed", 1.0, 0.05, 2.0)?),
+            leaps,
             jump_chance,
             jump_detour,
             circle,
@@ -544,6 +549,149 @@ fn parse_waves(text: &str, map: &Map, enemies: &[EnemyDef], rules: &mut Rules) -
         });
     }
     Ok(waves)
+}
+
+/// Every cell a summoner can stand on must let its summons reach the graveyard (by walking,
+/// climbing or leaping, as they can; walls ignored, since breaking them is always an option).
+/// Otherwise a summon could be born somewhere it can never leave: a leaping summoner on a
+/// ledge-only island summoning walkers, say. Ordinary spawns are covered by the map's own check.
+fn check_summons(map: &Map, enemies: &[EnemyDef]) -> Result<(), DataError> {
+    for (i, e) in enemies.iter().enumerate() {
+        let Some(s) = e.summon else { continue };
+        let child = &enemies[usize::from(s.enemy.0)];
+        let starts: Vec<CellId> = map.spawns.iter().filter(|sp| e.climbs() || !sp.climbers_only).map(|sp| sp.cell).collect();
+        let stands = map.component(&starts, e.climbs(), e.leaps);
+        let ok = map.component(&map.graveyard, child.climbs(), child.leaps);
+        if let Some(c) = map.cells().iter().find(|c| stands[c.id.index()] && !ok[c.id.index()]) {
+            return Err(DataError::new(
+                "enemies.json",
+                format!("enemies[{i}].summon.enemy"),
+                ErrorCode::Unreachable,
+                format!("{} can stand on {}, but a {} summoned there can't reach the graveyard", e.id, map.cell_name(c.id), child.id),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The content hash: everything that changes the simulation or what a recording's commands
+/// mean, in a fixed order. Display names, glyphs, `notes`, whitespace and key order are left
+/// out, so editing them doesn't invalidate recordings or pinned hashes.
+pub fn content_hash(c: &Content) -> u64 {
+    let mut h = StableHasher::with_seed(0x5e9_c1a);
+    let i = |h: &mut StableHasher, v: i64| h.write_i64(v);
+    let pos = |h: &mut StableHasher, p: crate::fixed::Pos| {
+        for v in [p.x, p.y, p.z] {
+            h.write_i64(i64::from(v));
+        }
+    };
+    let m = &c.map;
+    for v in [m.cell_mm, m.cliff_row_mm, m.half_x, m.half_z] {
+        i(&mut h, i64::from(v));
+    }
+    h.write_u64(m.faces().len() as u64);
+    for g in m.faces() {
+        for v in [g.face as u8, g.cols, g.rows] {
+            h.write_u8(v);
+        }
+    }
+    h.write_u64(m.cells().len() as u64);
+    for cell in m.cells() {
+        h.write_u8(cell.kind as u8);
+        pos(&mut h, cell.pos);
+    }
+    h.write_u64(m.spawns.len() as u64);
+    for s in &m.spawns {
+        h.write_u32(u32::from(s.cell.0));
+        h.write_bool(s.climbers_only);
+    }
+    i(&mut h, i64::from(m.air.altitude));
+    i(&mut h, i64::from(m.air.ring_half));
+    pos(&mut h, m.air.dive_target);
+    h.write_u64(m.air.ring.len() as u64);
+    for &p in &m.air.ring {
+        pos(&mut h, p);
+    }
+    h.write_u64(m.air.entries.len() as u64);
+    for &e in &m.air.entries {
+        h.write_u32(u32::from(e));
+    }
+    h.write_u64(c.stones.len() as u64);
+    for s in &c.stones {
+        h.write_str(&s.id);
+        for v in [s.targets as u8, s.policy as u8, s.attack as u8, s.tiers.len() as u8] {
+            h.write_u8(v);
+        }
+        for t in &s.tiers {
+            for v in [t.cost, t.range, t.damage, t.projectile_speed, t.splash, t.slow] {
+                i(&mut h, i64::from(v));
+            }
+            h.write_u32(t.cooldown);
+            h.write_u32(t.slow_ticks);
+        }
+    }
+    h.write_u64(c.enemies.len() as u64);
+    for e in &c.enemies {
+        h.write_str(&e.id);
+        h.write_u8(e.movement as u8);
+        h.write_bool(e.leaps);
+        for v in [e.hp, e.speed, e.climb_speed, e.jump_chance, e.jump_detour, e.dust.0, e.dust.1, e.tombstones, e.wall_damage] {
+            i(&mut h, i64::from(v));
+        }
+        h.write_u32(u32::from(e.circle.0));
+        h.write_u32(u32::from(e.circle.1));
+        h.write_bool(e.summon.is_some());
+        if let Some(s) = e.summon {
+            h.write_u8(s.enemy.0);
+            h.write_u32(s.every);
+            h.write_u32(u32::from(s.count));
+        }
+    }
+    h.write_u64(c.waves.len() as u64);
+    for w in &c.waves {
+        h.write_u32(w.duration);
+        i(&mut h, i64::from(w.income));
+        i(&mut h, i64::from(w.hp_scale));
+        h.write_u64(w.groups.len() as u64);
+        for g in &w.groups {
+            h.write_u8(g.enemy.0);
+            h.write_u32(u32::from(g.count));
+            h.write_u32(g.start);
+            h.write_u32(g.every);
+            h.write_u64(g.from.len() as u64);
+            for p in &g.from {
+                match *p {
+                    SpawnPoint::Ground(k) => {
+                        h.write_u8(0);
+                        h.write_u32(u32::from(k));
+                    }
+                    SpawnPoint::Air(k) => {
+                        h.write_u8(1);
+                        h.write_u32(u32::from(k));
+                    }
+                }
+            }
+        }
+    }
+    let r = &c.rules;
+    for v in [
+        r.start_dust,
+        r.tombstones,
+        r.early_call_milli_per_s,
+        r.edge_reach,
+        r.refund_percent,
+        r.wall.cost,
+        r.wall.hp,
+        r.wall.breach_penalty,
+        r.nature.radius,
+        r.nature.slow,
+    ] {
+        i(&mut h, i64::from(v));
+    }
+    h.write_u32(r.build_ticks);
+    h.write_u32(u32::from(r.nature.from_wave));
+    h.write_u8(r.nature.min_tier);
+    h.finish()
 }
 
 /// `"from"`: `"gorges"`, `"cliffs"`, `"ground"` (both), `"air"`, a spawn name, or a list of names.
@@ -692,6 +840,43 @@ mod tests {
         // The largest legal enemy at the largest legal wave scale still loads.
         let big = with("enemies.json", "\"hp\": 1250", "\"hp\": 100000").unwrap();
         assert_eq!(big.enemies[3].hp, 100_000_000);
+    }
+
+    #[test]
+    fn leaping_is_a_capability_and_tiny_chances_are_refused() {
+        let c = Content::builtin();
+        let runner = c.enemy(c.enemy_kind("runner").unwrap());
+        assert!(runner.leaps && runner.jump_chance == 400);
+        assert!(!c.enemy(c.enemy_kind("shambler").unwrap()).leaps);
+        let zero = with("enemies.json", "\"chance\": 0.4", "\"chance\": 0").unwrap();
+        let r = zero.enemy(zero.enemy_kind("runner").unwrap());
+        assert!(r.leaps && r.jump_chance == 0, "chance 0 still leaps when a ledge is the only way");
+        let e = with("enemies.json", "\"chance\": 0.4", "\"chance\": 0.0004").unwrap_err();
+        assert_eq!((e.code, e.field.as_str()), (ErrorCode::OutOfRange, "enemies[1].jump.chance"), "{e}");
+    }
+
+    /// Review finding: a leaping summoner can reach a ledge-only island; a summon that can't
+    /// leap would be born there with no way out. Validation must catch it.
+    #[test]
+    fn summons_must_be_able_to_leave_every_cell_their_summoner_reaches() {
+        let lf = |t: &str| t.replace("\r\n", "\n");
+        // Cut the west lane (row 11) off from the ring, so only the ledge from top:4,13 reaches it,
+        // and drop the west cliff's spawn so the map itself stays valid.
+        let map = lf(SLAB_01_JSON)
+            .replacen("\"....j..#GGGG#.######\"", "\"....j#.#GGGG#.######\"", 1)
+            .replacen("\"-----------B--------\"", "\"-----------|--------\"", 1)
+            .replacen(",\n    \"cliff_west\": \"west:11,5\"", "", 1);
+        assert!(!map.contains("cliff_west") && map.contains("....j#.#"));
+        let leaping_boss = lf(ENEMIES_JSON).replacen("\"movement\": \"walker\",\n      \"dust\": [150", "\"movement\": \"walker\", \"jump\": { \"chance\": 0 },\n      \"dust\": [150", 1);
+        assert_ne!(leaping_boss, lf(ENEMIES_JSON));
+
+        Content::from_texts(&map, STONES_JSON, ENEMIES_JSON, WAVES_JSON).expect("a walking boss never reaches the island");
+        let e = Content::from_texts(&map, STONES_JSON, &leaping_boss, WAVES_JSON).unwrap_err();
+        assert_eq!((e.file.as_str(), e.field.as_str(), e.code), ("enemies.json", "enemies[3].summon.enemy", ErrorCode::Unreachable), "{e}");
+        assert!(e.reason.contains("top:"), "names the cell: {e}");
+        // Summons that can leap too are fine.
+        let leaping_summons = leaping_boss.replacen("\"enemy\": \"shambler\", \"every_s\"", "\"enemy\": \"runner\", \"every_s\"", 1);
+        Content::from_texts(&map, STONES_JSON, &leaping_summons, WAVES_JSON).expect("runners leap back out");
     }
 
     #[test]

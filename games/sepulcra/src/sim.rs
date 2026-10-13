@@ -153,8 +153,9 @@ pub enum Event {
     WallBroken { cell: CellId },
     TombstonesLost { enemy: EnemyId, kind: EnemyKind, lost: i32, remaining: i32 },
     /// An enemy with no route at all, even through walls, for [`STRANDED_TICKS`] was removed
-    /// (no dust, no tombstone), so it can't hold its wave open forever. Validated content never
-    /// strands anyone; this is the safety net for hand-edited maps.
+    /// (no dust, no tombstone), so it can't hold its wave open forever. Content validation rules
+    /// this out (every spawn reaches the graveyard for whoever spawns there, and every cell a
+    /// summoner can stand on does for its summons), so this is only a safety net.
     Stranded { enemy: EnemyId, kind: EnemyKind, pos: Pos },
     Won,
     Lost,
@@ -806,7 +807,7 @@ impl World {
             Motion::Ground { from, to, progress, len, .. } => {
                 e.pos = Pos::lerp(map.cell(from).pos, map.cell(to).pos, progress, len);
                 let class = class_of(content.enemy(e.kind));
-                let rest = self.fields.remaining(class, content.enemy(e.kind).jump_chance > 0, to);
+                let rest = self.fields.remaining(class, content.enemy(e.kind).leaps, to);
                 e.remaining = if rest == UNREACHABLE { UNREACHABLE } else { rest.saturating_add(len - progress) };
             }
             Motion::Air { from, to, progress, len, hops_left, diving, .. } => {
@@ -886,10 +887,10 @@ impl World {
                 self.leak(e, def, ev);
                 return;
             }
-            let jumper = def.jump_chance > 0;
+            let jumper = def.leaps;
             // The seeded roll: an optional shortcut while a walking route exists. (When a leap
             // is the only open route, `route` below leaps without rolling.)
-            if !leap && kind == CellKind::Jump && jumper {
+            if !leap && kind == CellKind::Jump && jumper && def.jump_chance > 0 {
                 if let Some(p) = self.jump_target(content, class, at, def) {
                     if self.rng_jump.chance_permille(def.jump_chance as u32) {
                         e.motion = Motion::Ground { from: at, to: p, progress: 0, len: map.jump_cost(at, p), leap: true };

@@ -531,6 +531,27 @@ impl Map {
         &self.jumps[id.index()]
     }
 
+    /// Cells connected to `seeds` (walls ignored): over walkable cells for walkers or
+    /// `climber`s, plus cracked ledges when `leaps`. Links and ledges are symmetric, so this is
+    /// also "can reach a seed".
+    pub fn component(&self, seeds: &[CellId], climber: bool, leaps: bool) -> Vec<bool> {
+        let mut seen = vec![false; self.cells.len()];
+        let mut stack: Vec<CellId> = seeds.to_vec();
+        for s in seeds {
+            seen[s.index()] = true;
+        }
+        while let Some(c) = stack.pop() {
+            let ledges: &[CellId] = if leaps { self.jump_partners(c) } else { &[] };
+            for n in self.links(c).iter().map(|l| l.to).chain(ledges.iter().copied()) {
+                if !seen[n.index()] && self.cell(n).kind.walkable(climber) {
+                    seen[n.index()] = true;
+                    stack.push(n);
+                }
+            }
+        }
+        seen
+    }
+
     /// The length of the leap between two jump points, in mm.
     pub fn jump_cost(&self, a: CellId, b: CellId) -> i32 {
         self.cell(a).pos.dist(self.cell(b).pos)

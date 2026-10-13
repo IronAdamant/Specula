@@ -29,7 +29,9 @@
 //! ```
 //!
 //! The seed and hashes are strings because JSON numbers are doubles: a seed above 2^53 would
-//! silently change.
+//! silently change. The forms are strict, so every value has one spelling: the seed is a
+//! decimal `u64` without sign or leading zeros (`0|[1-9][0-9]*`), and hashes are exactly 16
+//! lowercase hex digits with no `0x`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -199,28 +201,67 @@ pub struct RunEnd {
     pub hash: u64,
 }
 
-/// A replay that didn't reproduce its recording.
+/// Why a recording failed to replay. Every variant means the recording was edited, truncated,
+/// or made by different rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReplayMismatch {
-    pub expected: RunEnd,
-    pub got: RunEnd,
+pub enum ReplayError {
+    /// A recorded command was refused on replay (a recorder only journals accepted commands).
+    Rejected { tick: u32, command: Command, reason: Rejection },
+    /// A command is stamped at or after the point where the run ended, so it never ran.
+    NotApplied { tick: u32, ended_at: u32 },
+    /// The replay ended at a different tick or with a different state hash.
+    Mismatch { expected: RunEnd, got: RunEnd },
 }
 
-impl fmt::Display for ReplayMismatch {
+impl fmt::Display for ReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "replay mismatch: recorded tick {} hash {:016x}, replayed tick {} hash {:016x}",
-            self.expected.tick, self.expected.hash, self.got.tick, self.got.hash
-        )
+        match self {
+            ReplayError::Rejected { tick, command, reason } => write!(f, "replay_rejected: {command:?} at tick {tick} was refused ({reason})"),
+            ReplayError::NotApplied { tick, ended_at } => write!(f, "replay_not_applied: a command at tick {tick} never ran (the run ended at tick {ended_at})"),
+            ReplayError::Mismatch { expected, got } => write!(
+                f,
+                "replay_mismatch: recorded tick {} hash {:016x}, replayed tick {} hash {:016x}",
+                expected.tick, expected.hash, got.tick, got.hash
+            ),
+        }
     }
 }
 
-impl std::error::Error for ReplayMismatch {}
+impl std::error::Error for ReplayError {}
+
+/// Whether a replay could be checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayStatus {
+    /// It reached the recorded end tick with the recorded state hash.
+    Verified,
+    /// The recording has no `end`, so there was nothing to compare against.
+    Unverified,
+}
+
+#[derive(Clone, Debug)]
+pub struct Replayed {
+    pub state: State,
+    pub status: ReplayStatus,
+}
 
 fn hex_u64(o: &Obj, key: &str) -> Result<u64, DataError> {
     let s = o.str(key)?;
-    u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| o.err(key, ErrorCode::BadType, format!("expected 16 hex digits, got {s:?}")))
+    let canonical = s.len() == 16 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    match u64::from_str_radix(s, 16) {
+        Ok(v) if canonical => Ok(v),
+        _ => Err(o.err(key, ErrorCode::BadType, format!("expected exactly 16 lowercase hex digits (no 0x), got {s:?}"))),
+    }
+}
+
+fn seed_u64(o: &Obj, key: &str) -> Result<u64, DataError> {
+    let Some(s) = o.req(key)?.as_str() else {
+        return Err(o.err(key, ErrorCode::BadType, "expected the seed as a decimal string, e.g. \"42\""));
+    };
+    let canonical = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
+    if !canonical {
+        return Err(o.err(key, ErrorCode::BadType, format!("expected a decimal u64 without sign or leading zeros, got {s:?}")));
+    }
+    s.parse::<u64>().map_err(|_| o.err(key, ErrorCode::OutOfRange, format!("{s} is larger than a u64")))
 }
 
 impl Recording {
@@ -247,15 +288,7 @@ impl Recording {
         let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), ErrorCode::Syntax, e.message))?;
         let root = Obj::new(&json, file, "")?;
         root.only(&["seed", "content_hash", "end", "commands"])?;
-        let seed = match root.req("seed")? {
-            Json::Str(s) => s.parse::<u64>().map_err(|_| root.err("seed", ErrorCode::BadType, format!("expected a decimal u64, got {s:?}")))?,
-            // Integers only strictly below 2^53: anything larger, 2^53 + 1 included, parses to a
-            // double >= 2^53, so a value of 2^53 or more may already have been changed.
-            v => v
-                .as_u64()
-                .filter(|&n| n < 1 << 53)
-                .ok_or_else(|| root.err("seed", ErrorCode::BadType, "expected a decimal string (or an integer below 2^53)"))?,
-        };
+        let seed = seed_u64(&root, "seed")?;
         let content_hash = hex_u64(&root, "content_hash")?;
         if content_hash != content.hash {
             return Err(root.err(
@@ -284,22 +317,42 @@ impl Recording {
         Ok(Recording { seed, content_hash, journal, end })
     }
 
-    /// Replays the recording to its end (or until the game ends, if no end was recorded) and
-    /// checks that the tick and state hash match.
-    pub fn verify(&self, content: Arc<Content>) -> Result<State, ReplayMismatch> {
+    /// Replays the recording and checks it: every command must be accepted, none may be stamped
+    /// at or after the end, and the run must reach the recorded end tick with the recorded
+    /// state hash. Without a recorded `end` the replay runs until the game ends and comes back
+    /// [`ReplayStatus::Unverified`].
+    pub fn verify(&self, content: Arc<Content>) -> Result<Replayed, ReplayError> {
         let until = self.end.map_or(u32::MAX, |e| e.tick);
-        let state = replay(content, self.seed, &self.journal, until, |_, _| {});
-        match self.end {
-            Some(expected) => {
-                let got = RunEnd { tick: state.tick(), hash: state.hash() };
-                if got == expected {
-                    Ok(state)
-                } else {
-                    Err(ReplayMismatch { expected, got })
-                }
-            }
-            None => Ok(state),
+        if let Some(&(tick, _)) = self.journal.iter().find(|(t, _)| *t >= until) {
+            return Err(ReplayError::NotApplied { tick, ended_at: until });
         }
+        let mut state = State::new(content, self.seed);
+        let mut k = 0;
+        let (mut cmds, mut ev) = (Vec::new(), Vec::new());
+        while state.tick() < until && state.outcome() == Outcome::Running {
+            let tick = state.tick();
+            cmds.clear();
+            ev.clear();
+            while k < self.journal.len() && self.journal[k].0 <= tick {
+                cmds.push(self.journal[k].1);
+                k += 1;
+            }
+            state.step_into(&cmds, &mut ev);
+            if let Some(&Event::Rejected { index, reason }) = ev.iter().find(|e| matches!(e, Event::Rejected { .. })) {
+                return Err(ReplayError::Rejected { tick, command: cmds[usize::from(index)], reason });
+            }
+        }
+        if let Some(&(tick, _)) = self.journal.get(k) {
+            return Err(ReplayError::NotApplied { tick, ended_at: state.tick() });
+        }
+        let Some(expected) = self.end else {
+            return Ok(Replayed { state, status: ReplayStatus::Unverified });
+        };
+        let got = RunEnd { tick: state.tick(), hash: state.hash() };
+        if got != expected {
+            return Err(ReplayError::Mismatch { expected, got });
+        }
+        Ok(Replayed { state, status: ReplayStatus::Verified })
     }
 }
 
@@ -344,6 +397,11 @@ impl RunReport {
 
     pub fn kills(&self) -> u32 {
         self.waves.iter().map(|w| w.killed).sum()
+    }
+
+    /// Enemies removed with no route at all: always 0 on validated content.
+    pub fn stranded(&self) -> u32 {
+        self.waves.iter().map(|w| w.stranded).sum()
     }
 
     /// The run as a self-checking [`Recording`].

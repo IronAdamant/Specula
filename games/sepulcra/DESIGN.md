@@ -192,8 +192,10 @@ alone decides.
 - **Wall damage per second:** shambler 12, runner 6, colossus 150. Flyers ignore walls. Every ground enemy must
   deal some wall damage (at least 0.1 HP/s), or a full block would stall the game.
 - **Safety net:** an enemy with no route at all, even through walls, is removed after 5 s (a `Stranded` event; no
-  dust, no tombstone), so it can't hold its wave open forever. Validated content can't cause this: every spawn
-  reaches the graveyard, and summons must be able to move wherever their summoner stands.
+  dust, no tombstone), so it can't hold its wave open forever. Content validation rules this out. Every spawn must
+  reach the graveyard. And every cell a summoner can get to (by walking, climbing or leaping, as it can) must let its
+  summons reach the graveyard too, so a leaping boss can't strand non-leaping summons on a ledge-only island. The
+  headless sweep fails if any run strands an enemy.
 
 ### Stones
 
@@ -224,6 +226,9 @@ alone decides.
 - **Lane jumps.** While a runner can still walk to the graveyard, it takes a ledge by a seeded 40 % chance, and only
   if the landing is at most 4 m farther from the graveyard. A ledge always counts as an open route, though: a runner
   walled into a lane walks to the ledge and leaps (no roll) instead of breaking a wall.
+- **Who can leap:** any enemy whose data has a `jump` object, even with a chance of 0. A chance of 0 means it never
+  takes a ledge as a shortcut, but still leaps when the ledge is its only way out. A chance that rounds to 0 per
+  mille (below 0.0005) is refused, so it can't silently turn the shortcut off.
 - **Enemy HP** scales with the wave, from × 1.0 to × 2.4 in wave 10.
 
 ### Economy and waves
@@ -272,8 +277,9 @@ How it got there:
 
 ### Testing (built)
 
-- **49 tests:**
-  - map and content validation (errors carry a machine-readable code)
+- **53 tests:**
+  - map and content validation (errors carry a machine-readable code), including summon islands
+  - the content hash, which ignores cosmetic edits
   - flow fields and rerouting
   - the wall rule
   - lane jumps, including a runner sealed in a lane, which must leap on every seed
@@ -288,11 +294,53 @@ How it got there:
   - roots
   - win and lose
 - **The replay suite above** passes: per-tick hash equality, divergence across seeds, and three pinned full runs.
-- **Recordings check themselves.** A recording (`--journal FILE`) stores the seed as a decimal string, the content
-  hash, every command with its tick, and the final tick and state hash. `--replay FILE` refuses other content and
-  reports any mismatch.
-- **Speed:** a full 12-minute run simulates in about 17 ms on one core (release build). A 1000-seed sweep of the
+- **Recordings check themselves**; see the next section.
+- **Speed:** a full 12-minute run simulates in about 15 ms on one core (release build). A 1000-seed sweep of the
   reference layout takes about 2 s on 32 threads.
+
+### How agents play it headless
+
+Everything runs without a window, through `games/sepulcra/examples/headless.rs`. Always use `--release`.
+
+- **One run:**
+
+  ```text
+  cargo run -p sepulcra --example headless --release -- --seed 7 --layout centre
+  ```
+
+  This prints a table per wave (spawned, killed, leaked, stranded, tombstones lost, dust) and the final state hash.
+  - `--ascii` adds the final board as text, and `--map` prints the slab.
+  - `--waves N` stops before wave N + 1.
+  - `--data DIR` runs a modified copy of `data/`.
+- **Layouts** are build orders in JSON (`data/layouts/*.json`, format in `src/script.rs`): commands keyed to a wave
+  or a tick, such as `{ "wave": 3, "upgrade": "top:12,8" }`. Name a built-in layout (`centre`, `no_air`,
+  `full_block`, `none`) or pass a file.
+- **Balance sweeps:** `--sweep N` plays N seeds on every core and prints:
+  - win rate
+  - tombstones left
+  - losses by wave
+  - mean leaks per wave
+  - stranded enemies
+
+  `--layout all` sweeps every built-in layout. The command exits non-zero if any run strands an enemy.
+- **Recordings:** `--journal FILE` writes the run as a recording. It holds:
+  - the seed, as a decimal string
+  - the content hash, as 16 lowercase hex digits
+  - every applied command with its tick
+  - the end tick and state hash
+
+  `--replay FILE` replays a recording and checks it. It fails, with a structured reason, if:
+  - the content differs
+  - any command is refused
+  - a command is stamped at or after the end
+  - the end tick or hash differ
+
+  A recording without an end replays as "unverified", never as verified. Edits to notes, display names, glyphs,
+  whitespace or key order don't change the content hash, so they keep old recordings valid.
+- **From code:**
+  - `sepulcra::run(content, seed, &script, max_waves, |state, events| ..)` gives a `RunReport`.
+  - `State::step` and `State::step_into` drive a game one tick at a time.
+  - `State::hash()` lets a run check its determinism tick by tick.
 
 ### Questions for the owner
 
@@ -330,6 +378,7 @@ presets. It must suit procedural modelling (stone, bevels, runes, roots) and int
   - The replay suite is `games/sepulcra/tests/replay.rs`.
   - The first balance tool is `examples/headless.rs` (`--sweep N`).
   - Details are in [Simulation: rules and numbers](#simulation-rules-and-numbers-proposal).
+  - How to drive it is in [How agents play it headless](#how-agents-play-it-headless).
 
 ## What it needs from the engine (Phase B)
 

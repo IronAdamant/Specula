@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sepulcra::content::Content;
-use sepulcra::script::{run, Recording, RunReport, Script};
+use sepulcra::script::{run, Recording, ReplayStatus, RunReport, Script};
 use sepulcra::sim::{Event, Outcome};
 use sepulcra::TICK_HZ;
 
@@ -90,9 +90,13 @@ fn real_main() -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         let rec = Recording::from_json(&text, &content, path).map_err(|e| e.to_string())?;
         let t0 = Instant::now();
-        let state = rec.verify(Arc::clone(&content)).map_err(|e| e.to_string())?;
+        let done = rec.verify(Arc::clone(&content)).map_err(|e| e.to_string())?;
+        let (state, verdict) = match done.status {
+            ReplayStatus::Verified => (done.state, "replay verified"),
+            ReplayStatus::Unverified => (done.state, "replayed (unverified: the recording has no end tick and hash)"),
+        };
         println!(
-            "replay verified: seed {}, {} commands, {:?} at tick {}, hash {:016x} ({:.1} ms)",
+            "{verdict}: seed {}, {} commands, {:?} at tick {}, hash {:016x} ({:.1} ms)",
             rec.seed,
             rec.journal.len(),
             state.outcome(),
@@ -103,6 +107,7 @@ fn real_main() -> Result<(), String> {
         return Ok(());
     }
     let names: Vec<&str> = if args.layout == "all" { LAYOUTS.iter().map(|(n, _)| *n).collect() } else { vec![args.layout.as_str()] };
+    let mut stranded_runs = 0;
     for name in names {
         let (layout_text, layout_file) = match LAYOUTS.iter().find(|(n, _)| *n == name) {
             Some((n, t)) => (t.to_string(), format!("layouts/{n}.json")),
@@ -110,9 +115,13 @@ fn real_main() -> Result<(), String> {
         };
         let script = Script::parse(&layout_text, &content, &layout_file).map_err(|e| e.to_string())?;
         match args.sweep {
-            Some(n) => sweep(&content, &script, args.seed, n, args.waves)?,
+            Some(n) => stranded_runs += sweep(&content, &script, args.seed, n, args.waves)?,
             None => single(&content, &script, &args)?,
         }
+    }
+    // Validated content never strands an enemy, so any stranding is a bug worth failing on.
+    if stranded_runs > 0 {
+        return Err(format!("{stranded_runs} runs stranded enemies (no route at all): check the content"));
     }
     Ok(())
 }
@@ -139,18 +148,19 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
     });
     let elapsed = t0.elapsed();
     println!("Sepulcra headless: layout {:?}, seed {}", script.name, args.seed);
-    println!("wave  start  cleared  spawned  killed  leaked  lost  dust@start  tombs@start  kill-dust");
+    println!("wave  start  cleared  spawned  killed  leaked  stranded  lost  dust@start  tombs@start  kill-dust");
     for (i, w) in report.waves.iter().enumerate() {
         let Some((t, dust, tombs)) = starts.get(i) else { break };
         let cleared = w.cleared_at.map_or("-".to_owned(), clock);
         println!(
-            "{:>4}  {:>5}  {:>7}  {:>7}  {:>6}  {:>6}  {:>4}  {:>10}  {:>11}  {:>9}",
+            "{:>4}  {:>5}  {:>7}  {:>7}  {:>6}  {:>6}  {:>8}  {:>4}  {:>10}  {:>11}  {:>9}",
             i + 1,
             clock(*t),
             cleared,
             w.spawned,
             w.killed,
             w.leaked,
+            w.stranded,
             w.tombstones_lost,
             dust,
             tombs,
@@ -185,7 +195,8 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
     Ok(())
 }
 
-fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Option<u16>) -> Result<(), String> {
+/// Returns how many runs stranded an enemy.
+fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Option<u16>) -> Result<u64, String> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(n.max(1) as usize);
     let t0 = Instant::now();
     let mut reports: Vec<RunReport> = std::thread::scope(|s| {
@@ -235,6 +246,9 @@ fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Opt
         .map(|w| format!("{:.1}", mean(&reports.iter().filter_map(|r| r.waves.get(w)).map(|s| f64::from(s.leaked)).collect::<Vec<_>>())))
         .collect();
     println!("mean leaks per wave: {}", leaks_by_wave.join(" "));
+    let stranded: Vec<u32> = reports.iter().map(RunReport::stranded).collect();
+    let stranded_runs = stranded.iter().filter(|&&s| s > 0).count() as u64;
+    println!("stranded enemies: {} in {} runs", stranded.iter().sum::<u32>(), stranded_runs);
     let ticks: u64 = reports.iter().map(|r| u64::from(r.ticks)).sum();
     println!(
         "{} runs, {} game-minutes in {:.2} s wall ({:.1} ms per run per thread)",
@@ -243,5 +257,5 @@ fn sweep(content: &Arc<Content>, script: &Script, first: u64, n: u64, waves: Opt
         elapsed.as_secs_f64(),
         elapsed.as_secs_f64() * 1000.0 * threads as f64 / reports.len().max(1) as f64
     );
-    Ok(())
+    Ok(stranded_runs)
 }
