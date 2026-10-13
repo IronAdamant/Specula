@@ -347,7 +347,7 @@ pub fn night(world: &mut World) {
         sun_color: Some(palette::MOON),
         sun_intensity: Some(1.3),
         ambient_color: Some(palette::MIST),
-        ambient_intensity: Some(1.2),
+        ambient_intensity: Some(2.2),
         exposure: Some(1.1),
         tonemap: Some(true),
         background: Some(palette::SKY),

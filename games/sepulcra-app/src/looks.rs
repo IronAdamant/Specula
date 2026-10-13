@@ -154,7 +154,7 @@ pub fn stone_model(kind: &str, tier: u8) -> Vec<Part> {
                 m.push(Part::cube("rune_2", v(0.0, 0.88, 0.0), v(1.08, 0.08, 1.08), RUNE_GLOW).rot(0.0, -14.0, 0.0).glow(2.5));
             }
             m.push(Part::sphere("bowl", v(0.0, top + 0.12, 0.0), v(1.3, 0.5, 1.3), IRON).metal(0.9).rough(0.45));
-            m.push(Part::sphere("flame", v(0.0, top + 0.38, 0.0), v(0.8, 0.62, 0.8), FIRE_FLAME).glow(3.0).light(9.0, 9.0, FIRE_FLAME));
+            m.push(Part::sphere("flame", v(0.0, top + 0.38, 0.0), v(0.8, 0.62, 0.8), FIRE_FLAME).glow(3.0).light(4.0, 6.0, FIRE_FLAME));
             m.push(Part::sphere("flame_core", v(0.0, top + 0.5, 0.0), v(0.42, 0.5, 0.42), FIRE_CORE).glow(4.0));
             top += 0.8;
         }

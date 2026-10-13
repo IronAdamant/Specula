@@ -127,7 +127,7 @@ def main():
         mcp.call("time_control", action="pause")
         mcp.json("play_new", seed=args.seed)
         run.drive()
-        overview = dict(eye=[27, 30, 37], target=[0, -2, 1])
+        overview = dict(eye=[30, 27, 41], target=[0, -5, 1])
         run.capture("build_overview", **overview)
         run.capture("build_closeup", eye=[16, 14, 20], target=[1, 0, 1], fov=40)
 
@@ -146,6 +146,8 @@ def main():
             if not wave3_done and st["wave"] == 3 and st["enemies"] >= 8:
                 run.capture("wave3_overview", **overview)
                 run.capture("wave3_east_cliff", eye=[40, 2, 6], target=[16, -6, 2], fov=50)
+                # The north and west cliffs, where this wave's shamblers climb.
+                run.capture("wave3_north_west", eye=[-34, 14, -34], target=[-6, -6, -6], fov=50)
                 wave3_done = True
             if not busy_done and st["wave"] >= 6 and st["enemies"] >= 18:
                 # A busy wave in real time: let the window run, then read perf.

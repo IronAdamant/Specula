@@ -375,9 +375,22 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
             ("post_nw", lo.x, lo.z), ("post_ne", hi.x, lo.z), ("post_sw", lo.x, hi.z), ("post_se", hi.x, hi.z),
             ("post_n", centre.x, lo.z), ("post_s", centre.x, hi.z), ("post_w", lo.x, centre.z), ("post_e", hi.x, centre.z),
         ];
+        // Wrought iron, but mostly matte so it reads against the dark lanes at night.
+        let iron = shade(IRON, 1.5);
         for (name, x, z) in posts {
-            ents::part(world, agent, gy, &Part::cube(name, Vec3::new(x, 0.45, z), Vec3::new(0.14, 0.9, 0.14), IRON).metal(0.8).rough(0.5));
-            ents::part_named(world, agent, gy, &format!("{name}_cap"), &Part::sphere("", Vec3::new(x, 0.95, z), Vec3::new(0.2, 0.2, 0.2), IRON).metal(0.8).rough(0.5));
+            ents::part(world, agent, gy, &Part::cube(name, Vec3::new(x, 0.45, z), Vec3::new(0.14, 0.9, 0.14), iron).metal(0.3).rough(0.55));
+            ents::part_named(world, agent, gy, &format!("{name}_cap"), &Part::sphere("", Vec3::new(x, 0.95, z), Vec3::new(0.2, 0.2, 0.2), iron).metal(0.3).rough(0.55));
+        }
+        // A low rail between the posts (the dead step through it: it marks the ground, not a wall).
+        let (w, d) = (hi.x - lo.x, hi.z - lo.z);
+        let rails = [
+            ("rail_n", Vec3::new(centre.x, 0.7, lo.z), Vec3::new(w, 0.06, 0.06)),
+            ("rail_s", Vec3::new(centre.x, 0.7, hi.z), Vec3::new(w, 0.06, 0.06)),
+            ("rail_w", Vec3::new(lo.x, 0.7, centre.z), Vec3::new(0.06, 0.06, d)),
+            ("rail_e", Vec3::new(hi.x, 0.7, centre.z), Vec3::new(0.06, 0.06, d)),
+        ];
+        for (name, pos, scale) in rails {
+            ents::part(world, agent, gy, &Part::cube(name, pos, scale, iron).metal(0.3).rough(0.55));
         }
     }
 

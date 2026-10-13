@@ -329,7 +329,8 @@ impl Scene {
             ents::update(world, &self.agent, *id, UpdateSpec { add_tags: tags, remove_tags: untag, ..UpdateSpec::default() });
             // The dead rose here: the stone glows with necromancy once it falls.
             for child in world.children_of(Some(*id)).collect::<Vec<_>>() {
-                let (c, e) = if should { (GRAVE_DEEP, 0.7) } else { (GRAVE_STONE, 0.0) };
+                // Enemy green on purpose: the dead rose here (a necromantic mark), but kept dim.
+                let (c, e) = if should { (GRAVE_DEEP, 0.25) } else { (GRAVE_STONE, 0.0) };
                 ents::recolor(world, &self.agent, child, c, LookPatch { emissive: Some(e), ..LookPatch::default() });
             }
         }
@@ -435,7 +436,8 @@ impl Scene {
     fn sync_bolts(&mut self, world: &mut World, state: &State) {
         let content = state.content();
         self.seen.clear();
-        let live: &[Projectile] = state.projectiles();
+        // After the end the simulation stops, so its last projectiles would hang in the air: hide them.
+        let live: &[Projectile] = if state.outcome() == sepulcra::Outcome::Running { state.projectiles() } else { &[] };
         let alive = |id: ProjectileId| live.iter().any(|p| p.id == id);
         self.seen.extend(self.bolts.keys().copied().filter(|id| !alive(*id)));
         for k in 0..self.seen.len() {
