@@ -19,8 +19,9 @@ pub fn joints_at(set: &AnimSet, id: ClipId, t: f32) -> Vec<V3> {
 
 /// Foot sliding of a locomotion clip, as the clip would look moving over the ground at its
 /// natural speed (`distance / duration` along +Z): for each named foot, the fastest ground-
-/// relative horizontal speed (m/s) while the foot is planted (within `planted_m` of its lowest
-/// height). 0 means perfectly planted feet. `steps` samples per cycle.
+/// relative horizontal speed (m/s) during sustained contact (the foot within `planted_m` of its
+/// lowest height for two samples either side of the step, so lift-off and touch-down moments
+/// don't count). 0 means perfectly planted feet. `steps` samples per cycle.
 pub fn foot_slide(set: &AnimSet, id: ClipId, feet: &[usize], planted_m: f32, steps: usize) -> f32 {
     let clip = set.clip(id);
     let v = clip.speed();
@@ -30,9 +31,16 @@ pub fn foot_slide(set: &AnimSet, id: ClipId, feet: &[usize], planted_m: f32, ste
     let mut worst = 0.0f32;
     for &f in feet {
         let low = track.iter().map(|j| j[f][1]).fold(f32::MAX, f32::min);
+        // Looping clips wrap; others clamp at the ends.
+        let looping = clip.looping == LoopMode::Loop;
+        let planted = |k: isize| -> bool {
+            let i = if looping { k.rem_euclid(steps as isize) } else { k.clamp(0, steps as isize) } as usize;
+            track[i][f][1] <= low + planted_m
+        };
         for k in 0..steps {
             let (a, b) = (track[k][f], track[k + 1][f]);
-            if a[1] <= low + planted_m && b[1] <= low + planted_m {
+            let ki = k as isize;
+            if (ki - 2..=ki + 3).all(planted) {
                 // World position = model position + root travel.
                 let dx = b[0] - a[0];
                 let dz = (b[2] - a[2]) + v * dt;

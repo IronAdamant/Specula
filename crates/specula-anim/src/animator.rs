@@ -209,8 +209,8 @@ impl Animator {
             w_base = smoothstep(*elapsed / *dur);
             if self.root_mode != RootMotion::Off {
                 let d = root_offset(set, from.clip, from.time, self.root_mode, f0);
-                for k in 0..3 {
-                    self.root_delta[k] += d[k] * (1.0 - w_base);
+                for (r, d) in self.root_delta.iter_mut().zip(d) {
+                    *r += d * (1.0 - w_base);
                 }
             }
             if *elapsed >= *dur {
@@ -219,8 +219,8 @@ impl Animator {
         }
         if self.root_mode != RootMotion::Off {
             let d = root_offset(set, self.base.clip, u1, self.root_mode, u0);
-            for k in 0..3 {
-                self.root_delta[k] += d[k] * w_base;
+            for (r, d) in self.root_delta.iter_mut().zip(d) {
+                *r += d * w_base;
             }
         }
         self.base.time = u1;

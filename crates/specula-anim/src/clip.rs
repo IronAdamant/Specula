@@ -168,8 +168,25 @@ impl Keys {
                 let al = |q: [f32; 4]| if rotation { qalign(a, q) } else { q };
                 let b = al(v[i]);
                 let dt = t1 - t0;
-                let m0 = self.tangent(i - 1, wrap, &al);
-                let m1 = self.tangent(i, wrap, &al);
+                // Neighbours for the finite-difference tangents (wrapping closed loops).
+                let closed = wrap.filter(|d| n >= 3 && self.times[0] == 0.0 && self.times[n - 1] == *d);
+                let (tp, vp) = if i >= 2 {
+                    (self.times[i - 2], al(v[i - 2]))
+                } else if let Some(d) = closed {
+                    (self.times[n - 2] - d, al(v[n - 2]))
+                } else {
+                    (t0, a)
+                };
+                let (tn, vn) = if i + 1 < n {
+                    (self.times[i + 1], al(v[i + 1]))
+                } else if let Some(d) = closed {
+                    (self.times[1] + d, al(v[1]))
+                } else {
+                    (t1, b)
+                };
+                let (i0, i1) = (1.0 / (t1 - tp), 1.0 / (tn - t0));
+                let m0 = [(b[0] - vp[0]) * i0, (b[1] - vp[1]) * i0, (b[2] - vp[2]) * i0, (b[3] - vp[3]) * i0];
+                let m1 = [(vn[0] - a[0]) * i1, (vn[1] - a[1]) * i1, (vn[2] - a[2]) * i1, (vn[3] - a[3]) * i1];
                 let (u2, u3) = (u * u, u * u * u);
                 let h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
                 let h10 = u3 - 2.0 * u2 + u;
@@ -186,32 +203,6 @@ impl Keys {
                 }
             }
         }
-    }
-
-    /// Finite-difference tangent at key `k` (values aligned by `al`).
-    fn tangent(&self, k: usize, wrap: Option<f32>, al: &dyn Fn([f32; 4]) -> [f32; 4]) -> [f32; 4] {
-        let n = self.times.len();
-        let closed = wrap.filter(|d| n >= 3 && self.times[0] == 0.0 && self.times[n - 1] == *d);
-        let key = |j: usize, shift: f32| (self.times[j] + shift, al(self.values[j]));
-        let prev = if k > 0 {
-            Some(key(k - 1, 0.0))
-        } else {
-            closed.map(|d| key(n - 2, -d))
-        };
-        let next = if k + 1 < n {
-            Some(key(k + 1, 0.0))
-        } else {
-            closed.map(|d| key(1, d))
-        };
-        let here = key(k, 0.0);
-        let ((ta, va), (tb, vb)) = match (prev, next) {
-            (Some(p), Some(q)) => (p, q),
-            (None, Some(q)) => (here, q),
-            (Some(p), None) => (p, here),
-            (None, None) => return [0.0; 4],
-        };
-        let inv = 1.0 / (tb - ta);
-        [(vb[0] - va[0]) * inv, (vb[1] - va[1]) * inv, (vb[2] - va[2]) * inv, (vb[3] - va[3]) * inv]
     }
 }
 
