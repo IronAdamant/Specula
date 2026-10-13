@@ -1499,6 +1499,9 @@ pub fn record_scene(
         for batch in &plan.batches {
             if sky_pending && batch.material.blended() {
                 draw_sky(cmd);
+                // The sky pipeline's depth compare is static, so binding it invalidated the
+                // dynamic compare op the mesh pipelines use: set it again before their draws.
+                (dev.fns.cmd_set_depth_compare_op)(cmd, if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS });
                 sky_pending = false;
                 bound = pipelines.sky;
                 stats.pipeline_binds += 1;

@@ -306,6 +306,26 @@ fn sky_gradient_and_moon_disc() {
     });
 }
 
+/// The sky is drawn between the opaque and the blended batches with its own static depth compare;
+/// the glass after it must still get the dynamic compare op (validation VUID-07845 caught it
+/// missing in a real game scene).
+#[test]
+fn sky_then_glass_keeps_depth_state() {
+    every_adapter("sky_glass", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let mut env = scene.environment();
+        env.sky.enabled = true;
+        let mut draws = scene.draws();
+        let mut glass = DrawItem::new(scene.cube, scale3([1.5, 1.5, 1.5], [-3.0, 0.75, 2.0]), [0.6, 0.9, 0.85, 0.4]);
+        glass.material = Material::Glass;
+        draws.push(glass);
+        scene.render_draws(&mut gpu, env, "sky_glass", &draws);
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
 #[test]
 fn fog_thickens_with_distance_and_depth() {
     every_adapter("fog", |test, adapter| {

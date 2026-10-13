@@ -18,6 +18,7 @@ use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Outcome, Rejection, State, TICK_HZ};
 use specula::game::{Ctx, Frame, Game};
+use specula::effects::{BloomPatch, FogPatch, ShadowPatch, SkyPatch};
 use specula::world::{EnvPatch, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -372,6 +373,25 @@ pub fn night(world: &mut World) {
         exposure: Some(1.1),
         tonemap: Some(true),
         background: Some(palette::SKY),
+        // The moon casts one fitted shadow map (cheapest on the iGPU for this top-down view).
+        shadow: Some(ShadowPatch { enabled: Some(true), distance: Some(120.0), softness: Some(1.5), ..Default::default() }),
+        // Runes, eyes and fire glow; nothing else is bright enough to bloom.
+        bloom: Some(BloomPatch { enabled: Some(true), threshold: Some(1.0), intensity: Some(0.6), ..Default::default() }),
+        fxaa: Some(true),
+        // A moonlit gradient with the moon's disc in the light's direction; below the horizon the
+        // void stays near-black so the slab floats.
+        sky: Some(SkyPatch { enabled: Some(true), ground: Some(palette::VOID), ..Default::default() }),
+        // The slab floats over mist: thick below the cliffs, almost none on the top face. The mist
+        // is darker than the moonlit stone so the slab's silhouette stays crisp.
+        fog: Some(FogPatch {
+            enabled: Some(true),
+            color: Some(palette::DEEP_MIST),
+            density: Some(0.08),
+            falloff: Some(0.35),
+            height: Some(-14.0),
+            sun_scatter: Some(0.15),
+            ..Default::default()
+        }),
     };
     if let Err(e) = world.set_env(&patch) {
         eprintln!("sepulcra: lighting: {e}");

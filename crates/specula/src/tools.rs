@@ -60,7 +60,7 @@ const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape",
 const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
-    "background",
+    "background", "shadow", "bloom", "fxaa", "sky", "fog",
 ];
 
 /// Rejects keys of `args` (an object, or null for none) that are in none of `allowed`.
@@ -642,9 +642,22 @@ pub(crate) fn parse_env(args: &Json) -> Result<EnvPatch, String> {
         exposure: num_arg(args, "exposure")?,
         tonemap: bool_arg(args, "tonemap")?,
         background: color_arg(args, "background")?,
+        shadow: effect_arg(args, "shadow", crate::effects::ShadowPatch::parse)?,
+        bloom: effect_arg(args, "bloom", crate::effects::BloomPatch::parse)?,
+        fxaa: bool_arg(args, "fxaa")?,
+        sky: effect_arg(args, "sky", crate::effects::SkyPatch::parse)?,
+        fog: effect_arg(args, "fog", crate::effects::FogPatch::parse)?,
     };
     world::check_env(&patch).map_err(value_error)?;
     Ok(patch)
+}
+
+/// An optional effect object (`"bloom": {"enabled": true}`).
+fn effect_arg<T>(args: &Json, key: &str, parse: fn(&Json) -> Result<T, String>) -> Result<Option<T>, String> {
+    match args.get(key) {
+        None | Some(Json::Null) => Ok(None),
+        Some(v) => parse(v).map(Some),
+    }
 }
 
 fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
@@ -1266,7 +1279,12 @@ fn definitions() -> Vec<ToolDef> {
             description: "Scene lighting: give any field to change it; returns the whole environment. Defaults: \
                           white sun 0.75 from [0.4,0.8,0.45], white ambient 0.25, exposure 1, no tone mapping, \
                           background #1c1d21. For night scenes lit by lamps: sun_intensity 0, ambient ~0.02, \
-                          tonemap true."
+                          tonemap true. Effects (all off by default; give only the settings to change): shadow \
+                          {enabled, resolution, cascades, distance, softness, bias} from the sun; bloom {enabled, \
+                          threshold, knee, intensity, levels} glow on bright/emissive light; fxaa (edge smoothing); \
+                          sky {enabled, zenith, horizon, ground, intensity, horizon_sharpness, disc_size_deg, \
+                          disc_intensity, glow} gradient with a sun/moon disc; fog {enabled, color, density, falloff, \
+                          height, start_distance, sun_scatter} height fog. Each costs GPU time: check perf_frame."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1278,6 +1296,11 @@ fn definitions() -> Vec<ToolDef> {
                     ("exposure", number("Multiplies all light before display, 0..1000")),
                     ("tonemap", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Filmic tone mapping + dithering; true suits bright lights and glow"))])),
                     ("background", described(&format!("Background {color}"))),
+                    ("shadow", object("Sun/moon shadows: {enabled, resolution 256..8192, cascades 1..4, distance m, softness 0..8, bias 0..10}")),
+                    ("bloom", object("Glow: {enabled, threshold 0..100, knee 0..10, intensity 0..10, levels 1..8}")),
+                    ("fxaa", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Anti-aliasing post pass"))])),
+                    ("sky", object("Analytic sky: {enabled, zenith, horizon, ground (colours), intensity, horizon_sharpness, disc_size_deg, disc_intensity, glow}")),
+                    ("fog", object("Height fog: {enabled, color, density, falloff, height, start_distance, sun_scatter}")),
                 ],
                 &[],
             ),

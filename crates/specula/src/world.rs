@@ -240,6 +240,15 @@ pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
     for (field, v) in [("sun_intensity", p.sun_intensity), ("ambient_intensity", p.ambient_intensity), ("exposure", p.exposure)] {
         v.map_or(Ok(()), |v| check_num(field, v, &ENV_LEVEL))?;
     }
+    let effects = [
+        p.shadow.map(|e| e.check()),
+        p.bloom.map(|e| e.check()),
+        p.sky.map(|e| e.check()),
+        p.fog.map(|e| e.check()),
+    ];
+    for result in effects.into_iter().flatten() {
+        result.map_err(|(field, message)| invalid(&field, message))?;
+    }
     Ok(())
 }
 
@@ -566,6 +575,11 @@ impl Env {
             ("exposure", Json::from(l.exposure)),
             ("tonemap", Json::from(l.tonemap)),
             ("background", Json::from(color_hex(self.background))),
+            ("shadow", crate::effects::ShadowPatch::to_json(&l.shadow, false)),
+            ("bloom", crate::effects::BloomPatch::to_json(&l.bloom, false)),
+            ("fxaa", Json::from(l.fxaa)),
+            ("sky", crate::effects::SkyPatch::to_json(&l.sky, false)),
+            ("fog", crate::effects::FogPatch::to_json(&l.fog, false)),
         ])
     }
 
@@ -582,6 +596,11 @@ impl Env {
             ("exposure", Json::from(l.exposure)),
             ("tonemap", Json::from(l.tonemap)),
             ("background", color_json_exact(self.background)),
+            ("shadow", crate::effects::ShadowPatch::to_json(&l.shadow, true)),
+            ("bloom", crate::effects::BloomPatch::to_json(&l.bloom, true)),
+            ("fxaa", Json::from(l.fxaa)),
+            ("sky", crate::effects::SkyPatch::to_json(&l.sky, true)),
+            ("fog", crate::effects::FogPatch::to_json(&l.fog, true)),
         ])
     }
 }
@@ -597,6 +616,11 @@ pub struct EnvPatch {
     pub exposure: Option<f32>,
     pub tonemap: Option<bool>,
     pub background: Option<[f32; 3]>,
+    pub shadow: Option<crate::effects::ShadowPatch>,
+    pub bloom: Option<crate::effects::BloomPatch>,
+    pub fxaa: Option<bool>,
+    pub sky: Option<crate::effects::SkyPatch>,
+    pub fog: Option<crate::effects::FogPatch>,
 }
 
 impl EnvPatch {
@@ -625,6 +649,22 @@ impl EnvPatch {
         }
         if let Some(c) = self.background {
             env.background = c;
+        }
+        let l = &mut env.light;
+        if let Some(p) = &self.shadow {
+            p.apply(&mut l.shadow);
+        }
+        if let Some(p) = &self.bloom {
+            p.apply(&mut l.bloom);
+        }
+        if let Some(v) = self.fxaa {
+            l.fxaa = v;
+        }
+        if let Some(p) = &self.sky {
+            p.apply(&mut l.sky);
+        }
+        if let Some(p) = &self.fog {
+            p.apply(&mut l.fog);
         }
     }
 }
@@ -1743,6 +1783,12 @@ impl World {
             h.write_f32(v);
         }
         h.write_bool(l.tonemap);
+        // Effects change what is drawn, so they are part of the state.
+        crate::effects::ShadowPatch::hash(&l.shadow, &mut h);
+        crate::effects::BloomPatch::hash(&l.bloom, &mut h);
+        h.write_bool(l.fxaa);
+        crate::effects::SkyPatch::hash(&l.sky, &mut h);
+        crate::effects::FogPatch::hash(&l.fog, &mut h);
         h.write_u64(self.entities.len() as u64);
         for e in self.entities.values() {
             e.hash_into(&mut h);
