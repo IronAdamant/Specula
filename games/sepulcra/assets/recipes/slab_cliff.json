@@ -1,0 +1,28 @@
+{
+  "recipe": 1,
+  "name": "slab_cliff",
+  "category": "slab",
+  "description": "A chunk of the floating slab, about 10 x 10 m and 15 m tall (STYLE.md: thick, layered stone; flat top; vertical cliffs with horizontal strata; jagged underside that fades into the mist). Flat top at y = 15 in slab-top colour with a moss rim; strata bands below; darker, narrowing underside. Change the seed for another chunk.",
+  "seed": 1212,
+  "params": { "height": { "default": 15, "min": 6, "max": 30 } },
+  "budget": { "max_triangles": 3000 },
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 35,
+  "parts": [
+    { "name": "rock", "material": "slab_stone",
+      "shape": { "op": "loft", "outline": { "sides": 13, "radius": 5.2, "resample": 2, "jitter": 0.45 },
+                 "stations": [[0.12, 0, 1.4, -0.9], [0.3, "height * 0.07", -0.9, 0.6], [0.5, "height * 0.15", 0.8, -0.2],
+                              [0.66, "height * 0.24", -0.4, 0.5], [0.84, "height * 0.36"], [0.95, "height * 0.5"],
+                              [1.0, "height * 0.62"], [0.975, "height * 0.63"], [1.0, "height * 0.76"], [0.98, "height * 0.77"],
+                              [1.0, "height * 0.9"], [0.985, "height * 0.91"], [1.0, "height"]] },
+      "ops": [ { "op": "subdivide", "levels": 1 },
+               { "op": "displace", "amount": 0.45, "scale": 2.2, "octaves": 3, "axes": [1, 0, 1] },
+               { "op": "bands", "colors": ["strata_dark", "strata_light", "strata_dark", "#434953"], "width": 0.85, "wobble": 0.35 },
+               { "op": "noise_tint", "amount": 0.1, "scale": 1.5 },
+               { "op": "gradient", "from": "fissure", "to": "strata_dark", "range": [0, "height * 0.45"], "absolute": true, "strength": 0.75, "keep_outside": true },
+               { "op": "gradient", "from": "strata_light", "to": "moss", "range": ["height - 0.9", "height - 0.05"], "absolute": true, "strength": 0.7, "keep_outside": true },
+               { "op": "gradient", "from": "slab_top", "to": "slab_top", "range": ["height - 0.01", "height + 1"], "absolute": true, "keep_outside": true },
+               { "op": "noise_tint", "amount": 0.06, "scale": 3.0 } ] }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "recipe": 1,
+  "name": "rune_glyph",
+  "category": "component",
+  "description": "One carved rune, 0.45 m tall, strokes 0.07 m wide, facing +Z, centred on z = 0 (half sunk when placed on a face). Four glyph shapes.",
+  "params": {
+    "glyph": { "default": 0, "min": 0, "max": 3, "integer": true, "description": "0 fehu, 1 algiz, 2 tiwaz, 3 naudiz" }
+  },
+  "let": { "w": "0.07", "d": "0.024" },
+  "parts": [
+    { "name": "stave", "material": "rune_glow", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.45, "d"] } },
+    { "name": "fehu_a", "material": "rune_glow", "when": "glyph == 0", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.2, "d"] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, -55] }, { "op": "move", "by": [0, 0.27, 0] } ] },
+    { "name": "fehu_b", "material": "rune_glow", "when": "glyph == 0", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.2, "d"] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, -55] }, { "op": "move", "by": [0, 0.13, 0] } ] },
+    { "name": "algiz", "material": "rune_glow", "when": "glyph == 1", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.2, "d"] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, -38] }, { "op": "move", "by": [0, 0.24, 0] }, { "op": "mirror", "axis": "x" } ] },
+    { "name": "tiwaz", "material": "rune_glow", "when": "glyph == 2", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.2, "d"] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, 140] }, { "op": "move", "by": [0, 0.45, 0] }, { "op": "mirror", "axis": "x" } ] },
+    { "name": "naudiz", "material": "rune_glow", "when": "glyph == 3", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["w", 0.24, "d"] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, -62] }, { "op": "move", "by": [-0.1, 0.17, 0] } ] }
+  ]
+}
