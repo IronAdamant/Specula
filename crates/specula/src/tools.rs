@@ -5,20 +5,29 @@
 //! ever touched by the main thread, between frames.
 
 use crate::sight::Camera;
-use crate::world::{parse_material, EntityKey, EnvPatch, LightSpec, LookPatch, Profile, Shape, SpawnSpec, UpdateSpec, MATERIAL_NAMES};
+use crate::world::{
+    self, parse_material, Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
+    Profile, Query, Shape, SpawnSpec, UpdateSpec, MATERIAL_NAMES,
+};
 use specula_core::math::Vec3;
-use specula_core::Json;
+use specula_core::{base64, Json};
 use specula_protocol::{SessionInfo, ToolDef, ToolHandler, ToolOutput};
+use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
-pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. Add things with world_spawn, \
-change them with world_set, inspect with world_list, and LOOK with sight_frame: it returns the rendered image \
-plus a subject list giving each entity's on-screen rectangle (its projected bounding box, computed by the \
-engine). Entities can be matte, metal, glowing, glass or a ray-marched lava lamp, and can carry point lights; \
-world_env sets the sun, ambient light, background and tone mapping; window_view points the human's window. \
-Coordinates: metres, right-handed, +Y up; a top-down view puts north (-Z) at the top. Other agents may be \
-building in the same world at the same time; each entity records who created it.";
+pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. The world is a tree of entities: \
+each has a name unique among its siblings and a path like /slab/stones/ward_03; transforms are local to the \
+parent, and 'group' entities hold children without drawing anything. Add things with world_spawn (or many at \
+once, all-or-nothing, with world_batch), change them with world_set, remove subtrees with world_delete, and find \
+them with world_query (filters, paged) or world_list. Address an entity by id, path, or a bare name that is \
+unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
+Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
+newer change. LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
+on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
+background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
+text files. Say who you are with agent_hello. Coordinates: metres, right-handed, +Y up; a top-down view puts \
+north (-Z) at the top. Other agents may be building in the same world at the same time.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -30,19 +39,41 @@ const APPLY_DEADLINE: Duration = Duration::from_secs(25);
 const MAX_COORD: f32 = 1.0e6;
 const MIN_SCALE: f32 = 1.0e-3;
 const MAX_SCALE: f32 = 1.0e5;
-const MAX_NAME_CHARS: usize = 128;
 const MAX_PROFILE_POINTS: usize = 256;
+/// Operations per world_batch call.
+pub const MAX_BATCH_OPS: usize = 1000;
+/// Default and largest page sizes: world_list returns whole entities, world_query compact ones.
+const LIST_LIMITS: (u32, u32) = (50, 200);
+const QUERY_LIMITS: (u32, u32) = (50, 500);
+/// world_query's fields when none are asked for.
+pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags", "version"];
 
 pub enum Command {
     Spawn(SpawnSpec),
     Set(EntityKey, UpdateSpec),
-    List,
-    Delete(EntityKey),
+    /// Entity and `expect_version`.
+    Delete(EntityKey, Option<u64>),
+    Query(QuerySpec),
+    Batch(Vec<Op>),
+    /// `None` = the current world name.
+    Save(Option<String>),
+    /// Replace the world with a saved one; `force` discards unsaved changes.
+    Load { name: String, force: bool },
+    Hello { name: String, role: String },
     Frame(FrameSpec),
     Env(EnvPatch),
     /// `None` returns the window to auto-framing.
     View(Option<Camera>),
     Info,
+}
+
+/// world_list and world_query.
+pub struct QuerySpec {
+    pub query: Query,
+    /// `None` = whole entities (world_list).
+    pub fields: Option<Vec<String>>,
+    /// Response key for the items.
+    pub key: &'static str,
 }
 
 pub struct FrameSpec {
@@ -84,7 +115,7 @@ impl ToolHandler for Tools {
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
         let command = match parse(name, arguments) {
             Ok(c) => c,
-            Err(e) => return ToolOutput::error(e),
+            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
         let (reply, answer) = mpsc::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
@@ -106,9 +137,17 @@ impl ToolHandler for Tools {
 fn parse(name: &str, args: &Json) -> Result<Command, String> {
     match name {
         "world_spawn" => parse_spawn(args).map(Command::Spawn),
-        "world_set" => parse_set(args),
-        "world_list" => Ok(Command::List),
-        "world_delete" => entity_key(args, "world_delete").map(Command::Delete),
+        "world_set" => parse_set(args).map(|(key, change)| Command::Set(key, change)),
+        "world_list" => parse_query(args, true).map(Command::Query),
+        "world_query" => parse_query(args, false).map(Command::Query),
+        "world_delete" => parse_delete(args).map(|(key, v)| Command::Delete(key, v)),
+        "world_batch" => parse_batch(args).map(Command::Batch),
+        "world_save" => Ok(Command::Save(world_name_arg(args, false)?)),
+        "world_load" => Ok(Command::Load {
+            name: world_name_arg(args, true)?.expect("required"),
+            force: bool_arg(args, "force")?.unwrap_or(false),
+        }),
+        "agent_hello" => parse_hello(args),
         "sight_frame" => parse_frame(args).map(Command::Frame),
         "world_env" => parse_env(args).map(Command::Env),
         "window_view" => parse_view(args).map(Command::View),
@@ -117,37 +156,112 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
     }
 }
 
-/// `id` (integer) or `name` (string) identifying an existing entity.
+/// A rejected argument as structured data. `field` is the first quoted name in the message: every
+/// argument message names its key that way (`'scale' must be ...`).
+pub fn argument_error(message: &str) -> Json {
+    let field = message.split('\'').nth(1).filter(|f| !f.is_empty() && !f.contains(' '));
+    let mut out = vec![("error", Json::from("invalid_argument")), ("message", Json::from(message))];
+    if let Some(f) = field {
+        out.push(("field", Json::from(f)));
+    }
+    Json::obj(out)
+}
+
+/// `id` (integer), `path` ("/a/b") or `name` (unique in the world) identifying an existing entity.
 fn entity_key(args: &Json, tool: &str) -> Result<EntityKey, String> {
     let present = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
-    if present("id") && present("name") {
+    if ["id", "path", "name"].iter().filter(|k| present(k)).count() > 1 {
         let hint = if tool == "world_set" { " (to rename an entity use 'rename')" } else { "" };
-        return Err(format!("{tool}: give 'id' or 'name', not both{hint}"));
+        return Err(format!("{tool}: give one of 'id', 'path' or 'name', not both{hint}"));
     }
-    match (args.get("id"), args.get("name")) {
-        (Some(id), _) if !id.is_null() => {
+    match (args.get("id"), args.get("path"), args.get("name")) {
+        (Some(id), _, _) if !id.is_null() => {
             id.as_u64().map(EntityKey::Id).ok_or_else(|| "'id' must be a non-negative integer".into())
         }
-        (_, Some(Json::Str(n))) => Ok(EntityKey::Name(n.clone())),
-        (_, Some(n)) if !n.is_null() => Err("'name' must be a string".into()),
-        _ => Err(format!("{tool} needs 'id' (integer) or 'name' (string)")),
+        (_, Some(Json::Str(p)), _) => Ok(EntityKey::Path(p.clone())),
+        (_, Some(p), _) if !p.is_null() => Err("'path' must be a string like \"/slab/stones\"".into()),
+        (_, _, Some(Json::Str(n))) => Ok(EntityKey::Name(n.clone())),
+        (_, _, Some(n)) if !n.is_null() => Err("'name' must be a string".into()),
+        _ => Err(format!("{tool} needs 'id' (integer), 'path' (\"/a/b\") or 'name' (unique in the world)")),
     }
 }
 
-fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
+/// An entity reference given as a value: integer id, "/path" or a unique bare name.
+fn key_value(v: &Json, key: &str) -> Result<EntityKey, String> {
+    match v {
+        Json::Str(s) if s.starts_with('/') => Ok(EntityKey::Path(s.clone())),
+        Json::Str(s) => Ok(EntityKey::Name(s.clone())),
+        v => v
+            .as_u64()
+            .map(EntityKey::Id)
+            .ok_or_else(|| format!("'{key}' must be an entity id, a path like \"/slab\" or a unique name")),
+    }
+}
+
+/// `parent`: absent -> `None`; `null` -> top level; otherwise the parent entity.
+fn parent_arg(args: &Json) -> Result<Option<Option<EntityKey>>, String> {
+    match args.get("parent") {
+        None => Ok(None),
+        Some(Json::Null) => Ok(Some(None)),
+        Some(v) => key_value(v, "parent").map(|k| Some(Some(k))),
+    }
+}
+
+fn parse_delete(args: &Json) -> Result<(EntityKey, Option<u64>), String> {
+    Ok((entity_key(args, "world_delete")?, version_arg(args)?))
+}
+
+fn version_arg(args: &Json) -> Result<Option<u64>, String> {
+    match args.get("expect_version") {
+        None | Some(Json::Null) => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) if n >= 1 => Ok(Some(n)),
+            _ => Err("'expect_version' must be an integer >= 1 (the version you last read)".into()),
+        },
+    }
+}
+
+fn bool_arg(args: &Json, key: &str) -> Result<Option<bool>, String> {
+    match args.get(key) {
+        None | Some(Json::Null) => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| format!("'{key}' must be true or false")),
+    }
+}
+
+fn string_arg<'a>(args: &'a Json, key: &str) -> Result<Option<&'a str>, String> {
+    match args.get(key) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Str(s)) => Ok(Some(s)),
+        Some(_) => Err(format!("'{key}' must be a string")),
+    }
+}
+
+pub(crate) fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
     let shape_name = match args.get("shape") {
         None | Some(Json::Null) => return Err("'shape' is required".into()),
         Some(Json::Str(s)) => s,
-        Some(_) => return Err("'shape' must be a string: cube, quad, sphere or lathe".into()),
+        Some(_) => return Err("'shape' must be a string: group, cube, quad, sphere or lathe".into()),
     };
     let shape = Shape::parse(shape_name)
-        .ok_or_else(|| format!("unknown shape '{shape_name}' (cube, quad, sphere or lathe)"))?;
+        .ok_or_else(|| format!("'shape' must be group, cube, quad, sphere or lathe, not '{shape_name}'"))?;
     let profile = profile_arg(args)?;
     if (shape == Shape::Lathe) != profile.is_some() {
         return Err("'profile' is required for shape 'lathe' and only allowed for it".into());
     }
     let mut spec = SpawnSpec::new(shape);
     spec.name = name_arg(args.get("name"))?;
+    spec.parent = parent_arg(args)?.flatten();
+    if let Some(path) = string_arg(args, "path")? {
+        if spec.name.is_some() || spec.parent.is_some() {
+            return Err("give 'path', or 'name' and 'parent', not both".into());
+        }
+        let (parent, name) = path
+            .strip_prefix('/')
+            .and_then(|_| path.rsplit_once('/'))
+            .ok_or("'path' must look like \"/parent/name\" (the new entity's full path)")?;
+        spec.name = name_arg(Some(&Json::from(name))).map_err(|e| format!("'path': {e}"))?;
+        spec.parent = (!parent.is_empty()).then(|| EntityKey::Path(parent.to_owned()));
+    }
     spec.position = position_arg(args, "position")?.unwrap_or(Vec3::ZERO);
     spec.rotation_deg = vec3_arg(args, "rotation_deg")?.unwrap_or(Vec3::ZERO);
     spec.scale = scale_arg(args)?.unwrap_or(Vec3::ONE);
@@ -162,7 +276,98 @@ fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
     }
     spec.light = light_arg(args)?.flatten();
     spec.profile = profile;
+    spec.tags = tags_arg(args, "tags")?.map(BTreeSet::from_iter).unwrap_or_default();
+    spec.props = props_arg(args)?.unwrap_or(Json::Null);
+    spec.collider = collider_arg(args)?.flatten();
+    spec.body = body_arg(args)?.flatten();
     Ok(spec)
+}
+
+/// An array of tags (see [`world::validate_tag`]), at most [`world::MAX_TAGS`].
+fn tags_arg(args: &Json, key: &str) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = args.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    let err = || format!("'{key}' must be an array of up to {} tags (A-Z a-z 0-9 _ - . :)", world::MAX_TAGS);
+    let items = v.as_array().ok_or_else(err)?;
+    if items.len() > world::MAX_TAGS {
+        return Err(err());
+    }
+    let mut tags = Vec::with_capacity(items.len());
+    for item in items {
+        let t = item.as_str().ok_or_else(err)?;
+        world::validate_tag(t).map_err(|e| format!("'{key}': {}", e.message))?;
+        tags.push(t.to_owned());
+    }
+    Ok(Some(tags))
+}
+
+fn props_arg(args: &Json) -> Result<Option<Json>, String> {
+    match args.get("props") {
+        None | Some(Json::Null) => Ok(None),
+        Some(v @ Json::Obj(_)) => Ok(Some(v.clone())),
+        Some(_) => Err("'props' must be a JSON object".into()),
+    }
+}
+
+/// A positive size within the world's limits.
+fn size_arg(args: &Json, key: &str, default: Option<f32>) -> Result<f32, String> {
+    match num_arg(args, key, 1.0e-4..=MAX_SCALE)? {
+        Some(v) => Ok(v),
+        None => default.ok_or_else(|| format!("'{key}' is required (metres, 0.0001..100000)")),
+    }
+}
+
+/// `collider`: `{shape: box|sphere|capsule, size | radius (+ height), offset?, is_trigger?, layer?}`
+/// or `false` to remove it.
+fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
+    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule, size?|radius?, height?, offset?, \
+                       is_trigger?, layer?}";
+    let c = match args.get("collider") {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Bool(false)) => return Ok(Some(None)),
+        Some(c @ Json::Obj(_)) => c,
+        Some(_) => return Err(ERR.into()),
+    };
+    let shape = match c.get("shape").and_then(Json::as_str) {
+        Some("box") => ColliderShape::Box {
+            size: match vec3_arg(c, "size")? {
+                Some(s) if [s.x, s.y, s.z].iter().all(|v| (1.0e-4..=MAX_SCALE).contains(v)) => s,
+                Some(_) => return Err("'collider.size' components must be 0.0001..100000".into()),
+                None => Vec3::ONE,
+            },
+        },
+        Some("sphere") => ColliderShape::Sphere { radius: size_arg(c, "radius", Some(0.5))? },
+        Some("capsule") => {
+            let radius = size_arg(c, "radius", None)?;
+            let height = size_arg(c, "height", None)?;
+            if height < 2.0 * radius {
+                return Err("'collider.height' is the total height and must be at least 2 x radius".into());
+            }
+            ColliderShape::Capsule { radius, height }
+        }
+        _ => return Err(ERR.into()),
+    };
+    let layer = string_arg(c, "layer")?.unwrap_or("default").to_owned();
+    world::validate_tag(&layer).map_err(|e| format!("'collider.layer': {}", e.message))?;
+    Ok(Some(Some(Collider {
+        shape,
+        offset: position_arg(c, "offset")?.unwrap_or(Vec3::ZERO),
+        is_trigger: bool_arg(c, "is_trigger")?.unwrap_or(false),
+        layer,
+    })))
+}
+
+/// `body`: `"static"|"kinematic"|"dynamic"`, `{kind, mass?}`, or `false` to remove it.
+fn body_arg(args: &Json) -> Result<Option<Option<Body>>, String> {
+    const ERR: &str = "'body' must be false, \"static\", \"kinematic\", \"dynamic\" or {kind, mass? (kg)}";
+    let (kind, mass) = match args.get("body") {
+        None | Some(Json::Null) => return Ok(None),
+        Some(Json::Bool(false)) => return Ok(Some(None)),
+        Some(Json::Str(k)) => (k.as_str(), None),
+        Some(b @ Json::Obj(_)) => (b.get("kind").and_then(Json::as_str).ok_or(ERR)?, num_arg(b, "mass", 1.0e-6..=1.0e9)?),
+        Some(_) => return Err(ERR.into()),
+    };
+    let kind = BodyKind::parse(kind).ok_or(ERR)?;
+    Ok(Some(Some(Body { kind, mass: mass.unwrap_or(1.0) })))
 }
 
 /// Optional number within `range`.
@@ -181,7 +386,7 @@ fn look_arg(args: &Json) -> Result<LookPatch, String> {
     let material = match args.get("material") {
         None | Some(Json::Null) => None,
         Some(Json::Str(m)) => Some(
-            parse_material(m).ok_or_else(|| format!("unknown material '{m}' ({})", MATERIAL_NAMES.join(", ")))?,
+            parse_material(m).ok_or_else(|| format!("'material' must be one of {}, not '{m}'", MATERIAL_NAMES.join(", ")))?,
         ),
         Some(_) => return Err(format!("'material' must be a string: {}", MATERIAL_NAMES.join(", "))),
     };
@@ -252,7 +457,7 @@ fn profile_arg(args: &Json) -> Result<Option<Profile>, String> {
     Ok(Some(Profile { points, segments }))
 }
 
-fn parse_env(args: &Json) -> Result<EnvPatch, String> {
+pub(crate) fn parse_env(args: &Json) -> Result<EnvPatch, String> {
     let sun_direction = vec3_arg(args, "sun_direction")?;
     if sun_direction.is_some_and(|d| d.length() < 1e-6) {
         return Err("'sun_direction' must not be zero".into());
@@ -285,10 +490,11 @@ fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
     }
 }
 
-fn parse_set(args: &Json) -> Result<Command, String> {
+fn parse_set(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     let key = entity_key(args, "world_set")?;
     let change = UpdateSpec {
         name: name_arg(args.get("rename"))?,
+        parent: parent_arg(args)?,
         position: position_arg(args, "position")?,
         rotation_deg: vec3_arg(args, "rotation_deg")?,
         scale: scale_arg(args)?,
@@ -296,21 +502,132 @@ fn parse_set(args: &Json) -> Result<Command, String> {
         look: look_arg(args)?,
         light: light_arg(args)?,
         profile: profile_arg(args)?,
+        tags: tags_arg(args, "tags")?.map(BTreeSet::from_iter),
+        add_tags: tags_arg(args, "add_tags")?.unwrap_or_default(),
+        remove_tags: tags_arg(args, "remove_tags")?.unwrap_or_default(),
+        props: props_arg(args)?,
+        collider: collider_arg(args)?,
+        body: body_arg(args)?,
+        expect_version: version_arg(args)?,
     };
-    let nothing = change.name.is_none()
-        && change.position.is_none()
-        && change.rotation_deg.is_none()
-        && change.scale.is_none()
-        && change.color.is_none()
-        && change.look.is_empty()
-        && change.light.is_none()
-        && change.profile.is_none();
-    if nothing {
-        return Err("world_set needs at least one change: rename, position, rotation_deg, scale, color, a look field \
-                    (material, opacity, emissive, metallic, roughness, specular, color2, seed), light or profile"
+    if change.is_empty() {
+        return Err("world_set needs at least one change: rename, parent, position, rotation_deg, scale, color, a \
+                    look field (material, opacity, emissive, metallic, roughness, specular, color2, seed), light, \
+                    profile, tags, add_tags, remove_tags, props, collider or body"
             .into());
     }
-    Ok(Command::Set(key, change))
+    Ok((key, change))
+}
+
+fn parse_batch(args: &Json) -> Result<Vec<Op>, String> {
+    let ops = args.get("ops").and_then(Json::as_array).ok_or("'ops' must be an array of {op: spawn|set|delete, ...}")?;
+    if ops.is_empty() || ops.len() > MAX_BATCH_OPS {
+        return Err(format!("'ops' must hold 1..{MAX_BATCH_OPS} operations (got {}); split larger edits", ops.len()));
+    }
+    ops.iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let kind = op.get("op").and_then(Json::as_str).unwrap_or("");
+            let parsed = match kind {
+                "spawn" => parse_spawn(op).map(Op::Spawn),
+                "set" => parse_set(op).map(|(key, change)| Op::Set(key, change)),
+                "delete" => parse_delete(op).map(|(key, v)| Op::Delete(key, v)),
+                _ => Err("'op' must be \"spawn\", \"set\" or \"delete\"".into()),
+            };
+            parsed.map_err(|e| format!("ops[{i}] ({kind}): {e}"))
+        })
+        .collect()
+}
+
+/// world_list (`list`: whole entities) and world_query (compact fields by default).
+fn parse_query(args: &Json, list: bool) -> Result<QuerySpec, String> {
+    let (default, max) = if list { LIST_LIMITS } else { QUERY_LIMITS };
+    let limit = match args.get("limit") {
+        None | Some(Json::Null) => default,
+        Some(v) => match v.as_u64() {
+            Some(n) if (1..=u64::from(max)).contains(&n) => n as u32,
+            _ => return Err(format!("'limit' must be an integer from 1 to {max}")),
+        },
+    };
+    let after = match string_arg(args, "cursor")? {
+        None => None,
+        Some(c) => {
+            let path = base64::decode(c).ok().and_then(|b| String::from_utf8(b).ok()).filter(|p| p.starts_with('/'));
+            Some(path.ok_or("'cursor' is not a cursor from this tool; pass next_cursor back unchanged")?)
+        }
+    };
+    let path_prefix = string_arg(args, "path_prefix")?.map(str::to_owned);
+    if path_prefix.as_ref().is_some_and(|p| !p.starts_with('/')) {
+        return Err("'path_prefix' must be a path like \"/slab\"".into());
+    }
+    let shape = match string_arg(args, "shape")? {
+        None => None,
+        Some(s) => Some(Shape::parse(s).ok_or_else(|| format!("'shape' must be group, cube, quad, sphere or lathe, not '{s}'"))?),
+    };
+    let material = match string_arg(args, "material")? {
+        None => None,
+        Some(m) => Some(parse_material(m).ok_or_else(|| format!("'material' must be one of {}, not '{m}'", MATERIAL_NAMES.join(", ")))?),
+    };
+    let region = match args.get("region").filter(|r| !r.is_null()) {
+        None => None,
+        Some(r) => match (vec3_arg(r, "min")?, vec3_arg(r, "max")?) {
+            (Some(lo), Some(hi)) if lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z => Some((lo, hi)),
+            _ => return Err("'region' must be {min: [x,y,z], max: [x,y,z]} with min <= max".into()),
+        },
+    };
+    let fields = match args.get("fields").filter(|f| !f.is_null()) {
+        None => (!list).then(|| DEFAULT_FIELDS.map(String::from).to_vec()),
+        Some(f) => {
+            let names: Option<Vec<&str>> = f.as_array().and_then(|a| a.iter().map(Json::as_str).collect());
+            let names = names.ok_or("'fields' must be an array of field names")?;
+            if names == ["all"] {
+                None
+            } else {
+                if let Some(bad) = names.iter().find(|n| !world::FIELDS.contains(n)) {
+                    return Err(format!("'fields': unknown field '{bad}' (\"all\" or: {})", world::FIELDS.join(", ")));
+                }
+                if names.is_empty() {
+                    return Err("'fields' must name at least one field".into());
+                }
+                Some(names.into_iter().map(String::from).collect())
+            }
+        }
+    };
+    let query = Query {
+        path_prefix,
+        tags: tags_arg(args, "tags")?.unwrap_or_default(),
+        shape,
+        material,
+        created_by: string_arg(args, "created_by")?.map(str::to_owned),
+        region,
+        after,
+        limit: limit as usize,
+    };
+    Ok(QuerySpec { query, fields, key: if list { "entities" } else { "items" } })
+}
+
+/// The opaque `next_cursor` for a page ending at `path`.
+pub fn cursor_for(path: &str) -> String {
+    base64::encode(path.as_bytes())
+}
+
+/// `name` of a world under the worlds directory (see [`crate::persist::validate_world_name`]).
+fn world_name_arg(args: &Json, required: bool) -> Result<Option<String>, String> {
+    match string_arg(args, "name")? {
+        Some(n) => crate::persist::validate_world_name(n).map(|()| Some(n.to_owned())),
+        None if required => Err("'name' is required: the world's folder name under the worlds directory".into()),
+        None => Ok(None),
+    }
+}
+
+fn parse_hello(args: &Json) -> Result<Command, String> {
+    let name = name_arg(args.get("name"))?.ok_or("'name' is required: how this agent appears in attribution")?;
+    if name.chars().count() > 64 {
+        return Err("'name' must be at most 64 characters".into());
+    }
+    let role = string_arg(args, "role")?.unwrap_or("builder").to_owned();
+    world::validate_tag(&role).map_err(|_| "'role' must be a short word like builder, reviewer or playtester".to_string())?;
+    Ok(Command::Hello { name, role })
 }
 
 fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
@@ -352,20 +669,20 @@ fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
     })
 }
 
+/// A name, trimmed; see [`world::validate_name`].
 fn name_arg(v: Option<&Json>) -> Result<Option<String>, String> {
     match v {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Str(s)) => {
             let n = s.trim();
-            if n.is_empty() {
-                Err("names must not be empty".into())
-            } else if n.chars().count() > MAX_NAME_CHARS {
-                Err(format!("names must be at most {MAX_NAME_CHARS} characters"))
-            } else if n.chars().any(char::is_control) {
-                Err("names must not contain control characters".into())
-            } else {
-                Ok(Some(n.to_owned()))
-            }
+            world::validate_name(n).map_err(|e| {
+                if n.contains('/') {
+                    format!("{} (to place an entity under a parent use 'parent' or 'path')", e.message)
+                } else {
+                    e.message
+                }
+            })?;
+            Ok(Some(n.to_owned()))
         }
         Some(_) => Err("names must be strings".into()),
     }
@@ -417,16 +734,7 @@ fn color_arg(v: Option<&Json>) -> Result<Option<[f32; 3]>, String> {
     const ERR: &str = "'color' must be \"#rrggbb\", \"#rgb\" or [r, g, b] with components 0..1";
     match v {
         None | Some(Json::Null) => Ok(None),
-        Some(Json::Str(s)) => {
-            let hex = s.strip_prefix('#').ok_or(ERR)?;
-            let digits: Vec<u32> = hex.chars().map(|c| c.to_digit(16)).collect::<Option<_>>().ok_or(ERR)?;
-            let channel = |hi: u32, lo: u32| (hi * 16 + lo) as f32 / 255.0;
-            match *digits.as_slice() {
-                [r, g, b] => Ok(Some([channel(r, r), channel(g, g), channel(b, b)])),
-                [r1, r2, g1, g2, b1, b2] => Ok(Some([channel(r1, r2), channel(g1, g2), channel(b1, b2)])),
-                _ => Err(ERR.into()),
-            }
-        }
+        Some(Json::Str(s)) => world::color_from_hex(s).map(Some).ok_or_else(|| ERR.into()),
         Some(Json::Arr(a)) => match a.iter().map(Json::as_f64).collect::<Option<Vec<_>>>().as_deref() {
             Some(&[r, g, b]) if [r, g, b].iter().all(|c| (0.0..=1.0).contains(c)) => {
                 Ok(Some([r as f32, g as f32, b as f32]))
@@ -498,11 +806,67 @@ fn definitions() -> Vec<ToolDef> {
             ),
         ]);
     };
+    let boolean = |desc: &str| Json::obj([("type", Json::from("boolean")), ("description", Json::from(desc))]);
+    let string_array = |desc: &str| {
+        Json::obj([
+            ("type", Json::from("array")),
+            ("items", Json::obj([("type", Json::from("string"))])),
+            ("description", Json::from(desc)),
+        ])
+    };
+    let object = |desc: &str| Json::obj([("type", Json::from("object")), ("description", Json::from(desc))]);
+    // How every tool that changes or removes one entity names it.
+    let target = |props: &mut Vec<(&str, Json)>| {
+        props.extend([
+            ("id", integer("Entity id")),
+            ("path", string("Entity path, e.g. \"/slab/stones/ward_03\"")),
+            ("name", string("Bare entity name; must be unique in the whole world (otherwise give path or id)")),
+            (
+                "expect_version",
+                integer("Only apply if the entity is still at this version (from your last read); a stale write is \
+                         rejected with the current state"),
+            ),
+        ]);
+    };
+    let tag_rule = "tags are 1..64 characters of A-Z a-z 0-9 _ - . :";
+    let components = |props: &mut Vec<(&str, Json)>| {
+        props.extend([
+            ("tags", string_array(&format!("Labels for queries, e.g. [\"door\", \"spawn_point\"]; at most 32; {tag_rule}"))),
+            ("props", object("Free-form game data (a JSON object, at most 16 KiB)")),
+            (
+                "collider",
+                described(
+                    "Reserved for physics (stored, not simulated yet): {shape: box (size [x,y,z], default 1) | sphere \
+                     (radius, default 0.5) | capsule (radius, height = total height along local +Y), offset?, \
+                     is_trigger?, layer?}, in local units; false removes it",
+                ),
+            ),
+            (
+                "body",
+                described(
+                    "Reserved for physics (stored, not simulated yet): \"static\", \"kinematic\", \"dynamic\" or \
+                     {kind, mass (kg, default 1)}; false removes it",
+                ),
+            ),
+        ]);
+    };
+    let filters = |props: &mut Vec<(&str, Json)>| {
+        props.extend([
+            ("path_prefix", string("Only this entity and everything below it, e.g. \"/slab\"")),
+            ("tags", string_array("Only entities carrying all of these tags")),
+            ("shape", string("Only this shape")),
+            ("material", string("Only this material (groups have none)")),
+            ("created_by", string("Only entities this agent created")),
+            ("region", object("Only entities whose world bounds touch this box: {min: [x,y,z], max: [x,y,z]}")),
+            ("cursor", string("next_cursor from the previous page (opaque); omit for the first page")),
+        ]);
+    };
     vec![
         ToolDef {
             name: "world_spawn".into(),
-            description: "Add a shape to the live world, with an optional material and point light. Returns the new \
-                          entity (id, name, transform, look)."
+            description: "Add an entity to the live world: a shape with an optional parent, material, point light, \
+                          tags, props and reserved physics components. Returns the new entity (id, path, transform, \
+                          look, version)."
                 .into(),
             input_schema: schema(
                 {
@@ -515,15 +879,21 @@ fn definitions() -> Vec<ToolDef> {
                                 (
                                     "description",
                                     Json::from(
-                                        "cube and sphere are 1 m across; quad is a 1×1 m floor tile in XZ facing up; \
+                                        "group draws nothing and holds children (districts, rooms, an object's parts); \
+                                         cube and sphere are 1 m across; quad is a 1×1 m floor tile in XZ facing up; \
                                          lathe spins 'profile' around +Y (vases, bottles, lamp bases)",
                                     ),
                                 ),
                             ]),
                         ),
-                        ("name", string("Unique name, up to 128 characters (default: <shape>_<id>)")),
-                        ("position", vec3(&format!("{position}. Default [0,0,0]"))),
-                        ("rotation_deg", vec3(&format!("{rotation}. Default [0,0,0]"))),
+                        (
+                            "name",
+                            string("Name unique among its siblings, up to 128 characters, no '/' (default: <shape>_<id>)"),
+                        ),
+                        ("parent", described("Parent entity: path (\"/slab\"), id, or unique name. Default: top level")),
+                        ("path", string("Alternative to name + parent: the new entity's full path, e.g. \"/slab/stones/ward_03\"")),
+                        ("position", vec3(&format!("Relative to the parent. {position}. Default [0,0,0]"))),
+                        ("rotation_deg", vec3(&format!("{rotation}, relative to the parent. Default [0,0,0]"))),
                         ("scale", described(&format!("{scale}. Default 1"))),
                         ("color", described(&format!("{color}. Default light grey"))),
                         (
@@ -536,6 +906,7 @@ fn definitions() -> Vec<ToolDef> {
                         ("segments", integer("lathe only: steps around the axis, 3..256 (default 32)")),
                     ];
                     look(&mut props);
+                    components(&mut props);
                     props
                 },
                 &["shape"],
@@ -543,24 +914,44 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "world_set".into(),
-            description: "Change an existing entity (by id or name) in place; its id stays the same. Give any of: \
-                          rename, position, rotation_deg, scale, color, the look fields (material, opacity, emissive, \
-                          metallic, roughness, specular, color2, seed), light, or a lathe's profile/segments."
+            description: "Change an existing entity (by id, path or unique name) in place; its id stays the same and \
+                          its version goes up by one. Give any of: rename, parent (null = top level; the local \
+                          transform is kept, so it moves with its new parent), position, rotation_deg, scale, color, \
+                          the look fields, light, a lathe's profile/segments, tags / add_tags / remove_tags, props \
+                          (merged key by key; a null value removes a key), collider, body."
                 .into(),
             input_schema: schema(
                 {
-                    let mut props = vec![
-                        ("id", integer("Entity id")),
-                        ("name", string("Entity name (used when id is not given)")),
-                        ("rename", string("New unique name")),
-                        ("position", vec3(position)),
+                    let mut props = Vec::new();
+                    target(&mut props);
+                    props.extend([
+                        ("rename", string("New name, unique among its siblings")),
+                        ("parent", described("New parent: path, id or unique name; null moves it to the top level")),
+                        ("position", vec3(&format!("Relative to the parent. {position}"))),
                         ("rotation_deg", vec3(rotation)),
                         ("scale", described(scale)),
                         ("color", described(color)),
                         ("profile", described("lathe only: new [radius, height] points, bottom to top")),
                         ("segments", integer("lathe only, with profile: steps around the axis, 3..256")),
-                    ];
+                        ("add_tags", string_array("Tags to add")),
+                        ("remove_tags", string_array("Tags to remove")),
+                    ]);
                     look(&mut props);
+                    components(&mut props);
+                    props
+                },
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_delete".into(),
+            description: "Remove an entity (by id, path or unique name) and everything below it. Returns how many \
+                          entities were removed."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut props = Vec::new();
+                    target(&mut props);
                     props
                 },
                 &[],
@@ -568,13 +959,100 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "world_list".into(),
-            description: "List every entity in the world with its transform, colour and creator.".into(),
-            input_schema: schema(vec![], &[]),
+            description: "Whole entities in path order (parents first, siblings by name), one page at a time: \
+                          returns total, entities and next_cursor (null on the last page). Takes the same filters as \
+                          world_query; prefer world_query for big worlds."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut props = vec![("limit", integer("Entities per page, 1..200 (default 50)"))];
+                    filters(&mut props);
+                    props
+                },
+                &[],
+            ),
         },
         ToolDef {
-            name: "world_delete".into(),
-            description: "Remove an entity by id or name.".into(),
-            input_schema: schema(vec![("id", integer("Entity id")), ("name", string("Entity name"))], &[]),
+            name: "world_query".into(),
+            description: "Find entities: every given filter must match. Results come in path order, one page at a \
+                          time: returns total (all matches), items and next_cursor (null on the last page). Items \
+                          carry id, path, shape, position, tags and version unless 'fields' asks for others."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut props = vec![
+                        ("limit", integer("Items per page, 1..500 (default 50)")),
+                        (
+                            "fields",
+                            string_array(&format!(
+                                "Fields per item (default {}), or [\"all\"]. Available: {}",
+                                DEFAULT_FIELDS.join(", "),
+                                world::FIELDS.join(", ")
+                            )),
+                        ),
+                    ];
+                    filters(&mut props);
+                    props
+                },
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_batch".into(),
+            description: "Apply up to 1000 spawn / set / delete operations atomically: either all of them apply or \
+                          none does (the failing op's index and error are returned). Later ops can refer to entities \
+                          created earlier in the batch by path. Each op is {op: \"spawn\"|\"set\"|\"delete\", ...the \
+                          same arguments as world_spawn / world_set / world_delete}. Returns one short result per op."
+                .into(),
+            input_schema: schema(
+                vec![(
+                    "ops",
+                    Json::obj([
+                        ("type", Json::from("array")),
+                        ("items", Json::obj([("type", Json::from("object"))])),
+                        ("description", Json::from("Operations, applied in order: [{op: \"spawn\", shape: ...}, ...]")),
+                    ]),
+                )],
+                &["ops"],
+            ),
+        },
+        ToolDef {
+            name: "world_save".into(),
+            description: "Save the world as text files in <worlds dir>/<name>/: world.json (environment, top-level \
+                          entities without children) plus one file per top-level subtree, so diffs stay small. The \
+                          engine then autosaves there every 10 s while there are changes, and on shutdown."
+                .into(),
+            input_schema: schema(
+                vec![("name", string("World name: letters, digits, _ - . (default: the current world)"))],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_load".into(),
+            description: "Replace the whole live world (every agent's work) with a saved one and make it the current \
+                          world. Refuses while there are unsaved changes unless force is true."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("name", string("World name (a folder in the worlds directory)")),
+                    ("force", boolean("Discard unsaved changes (default false)")),
+                ],
+                &["name"],
+            ),
+        },
+        ToolDef {
+            name: "agent_hello".into(),
+            description: "Say who you are: the name is recorded as created_by / modified_by on everything you \
+                          change, and engine_info lists you with your role. Default: your MCP client name, role \
+                          builder."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("name", string("Your agent name, up to 64 characters")),
+                    ("role", string(&format!("builder (default), reviewer, playtester, director, ...; {tag_rule}"))),
+                ],
+                &["name"],
+            ),
         },
         ToolDef {
             name: "sight_frame".into(),
@@ -638,7 +1116,9 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "engine_info".into(),
-            description: "Engine status: GPU, validation layer state, entity count, connected agents.".into(),
+            description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
+                          changes, state hash) and the connected agents with their roles."
+                .into(),
             input_schema: schema(vec![], &[]),
         },
     ]
@@ -685,7 +1165,7 @@ mod tests {
         ] {
             assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: cube, quad, sphere or lathe");
+        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere or lathe");
     }
 
     #[test]
@@ -735,16 +1215,135 @@ mod tests {
 
     #[test]
     fn set_needs_a_key_and_a_change() {
-        assert!(matches!(parse_set(&args(r#"{"id":3,"position":[1,2,3]}"#)), Ok(Command::Set(EntityKey::Id(3), _))));
-        assert!(matches!(parse_set(&args(r#"{"name":"a","rename":"b"}"#)), Ok(Command::Set(EntityKey::Name(_), _))));
+        assert!(matches!(parse_set(&args(r#"{"id":3,"position":[1,2,3]}"#)), Ok((EntityKey::Id(3), _))));
+        assert!(matches!(parse_set(&args(r#"{"name":"a","rename":"b"}"#)), Ok((EntityKey::Name(_), _))));
+        assert!(matches!(parse_set(&args(r#"{"path":"/a/b","rename":"c"}"#)), Ok((EntityKey::Path(_), _))));
         assert!(parse_set(&args(r#"{"id":3}"#)).is_err(), "no change");
+        assert!(parse_set(&args(r#"{"id":3,"expect_version":2}"#)).is_err(), "a version alone is no change");
         let both = parse_set(&args(r#"{"id":1,"name":"b2","position":[0,0,0]}"#)).err().unwrap();
         assert!(both.contains("not both") && both.contains("rename"), "{both}");
+        assert!(parse_set(&args(r#"{"path":"/a","name":"b","position":[0,0,0]}"#)).is_err());
         assert!(parse_set(&args(r#"{"position":[0,0,0]}"#)).is_err(), "no key");
         assert!(parse_set(&args(r##"{"id":-1,"color":"#fff"}"##)).is_err());
         assert!(parse_set(&args(r#"{"id":1,"scale":0}"#)).is_err());
-        assert!(matches!(parse_set(&args(r#"{"id":1,"emissive":2}"#)), Ok(Command::Set(..))));
-        assert!(matches!(parse_set(&args(r#"{"id":1,"light":false}"#)), Ok(Command::Set(_, UpdateSpec { light: Some(None), .. }))));
+        assert!(parse_set(&args(r#"{"id":1,"rename":"a/b"}"#)).is_err(), "names have no '/'");
+        assert!(parse_set(&args(r#"{"id":1,"emissive":2}"#)).is_ok());
+        assert!(matches!(parse_set(&args(r#"{"id":1,"light":false}"#)), Ok((_, UpdateSpec { light: Some(None), .. }))));
+        let (_, c) = parse_set(&args(r#"{"id":1,"parent":null,"expect_version":4}"#)).unwrap();
+        assert_eq!((c.parent, c.expect_version), (Some(None), Some(4)));
+        let (_, c) = parse_set(&args(r#"{"id":1,"parent":"/slab","add_tags":["a"],"props":{"k":null}}"#)).unwrap();
+        assert_eq!(c.parent, Some(Some(EntityKey::Path("/slab".into()))));
+        assert_eq!((c.add_tags, c.props), (vec!["a".to_string()], Some(args(r#"{"k":null}"#))));
+        let (_, c) = parse_set(&args(r#"{"id":1,"parent":7,"collider":false,"body":"dynamic"}"#)).unwrap();
+        assert_eq!((c.parent, c.collider), (Some(Some(EntityKey::Id(7))), Some(None)));
+        assert_eq!(c.body, Some(Some(Body { kind: BodyKind::Dynamic, mass: 1.0 })));
+        assert!(parse_set(&args(r##"{"id":1,"expect_version":0,"color":"#fff"}"##)).is_err());
+    }
+
+    #[test]
+    fn spawn_hierarchy_and_components() {
+        let s = parse_spawn(&args(r#"{"shape":"group","path":"/slab/stones"}"#)).unwrap();
+        assert_eq!((s.name.as_deref(), s.parent), (Some("stones"), Some(EntityKey::Path("/slab".into()))));
+        let s = parse_spawn(&args(r#"{"shape":"group","path":"/slab"}"#)).unwrap();
+        assert_eq!((s.name.as_deref(), s.parent), (Some("slab"), None));
+        let s = parse_spawn(&args(r#"{"shape":"cube","name":"w","parent":"gate"}"#)).unwrap();
+        assert_eq!(s.parent, Some(EntityKey::Name("gate".into())));
+        let s = parse_spawn(&args(
+            r#"{"shape":"cube","tags":["b","a","a"],"props":{"hp":3},
+                "collider":{"shape":"capsule","radius":0.3,"height":1.8,"is_trigger":true,"layer":"player"},
+                "body":{"kind":"kinematic","mass":70}}"#,
+        ))
+        .unwrap();
+        assert_eq!(s.tags.iter().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(s.props, args(r#"{"hp":3}"#));
+        let c = s.collider.unwrap();
+        assert_eq!((c.shape, c.is_trigger, c.layer.as_str()), (ColliderShape::Capsule { radius: 0.3, height: 1.8 }, true, "player"));
+        assert_eq!(s.body, Some(Body { kind: BodyKind::Kinematic, mass: 70.0 }));
+        let s = parse_spawn(&args(r#"{"shape":"cube","collider":{"shape":"box"}}"#)).unwrap();
+        assert_eq!(s.collider.unwrap().shape, ColliderShape::Box { size: Vec3::ONE });
+        for bad in [
+            r#"{"shape":"cube","name":"a/b"}"#,
+            r#"{"shape":"cube","path":"slab/x"}"#,
+            r#"{"shape":"cube","path":"/"}"#,
+            r#"{"shape":"cube","path":"/a/b","name":"c"}"#,
+            r#"{"shape":"cube","parent":-2}"#,
+            r#"{"shape":"cube","tags":"door"}"#,
+            r#"{"shape":"cube","tags":["no spaces"]}"#,
+            r#"{"shape":"cube","props":[1]}"#,
+            r#"{"shape":"cube","collider":{"shape":"capsule","radius":1,"height":1}}"#,
+            r#"{"shape":"cube","collider":{"shape":"cone"}}"#,
+            r#"{"shape":"cube","collider":{"shape":"sphere","radius":0}}"#,
+            r#"{"shape":"cube","body":"floaty"}"#,
+            r#"{"shape":"cube","body":{"kind":"dynamic","mass":0}}"#,
+        ] {
+            assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn query_list_and_batch_arguments() {
+        let q = parse_query(&args("{}"), false).unwrap();
+        assert_eq!((q.query.limit, q.key, q.fields.as_ref().unwrap().len()), (50, "items", DEFAULT_FIELDS.len()));
+        let l = parse_query(&args("{}"), true).unwrap();
+        assert_eq!((l.query.limit, l.key, l.fields), (50, "entities", None));
+        assert!(parse_query(&args(r#"{"limit":201}"#), true).is_err());
+        assert!(parse_query(&args(r#"{"limit":500}"#), false).is_ok());
+        let cursor = cursor_for("/a/b");
+        let q = parse_query(
+            &args(&format!(
+                r#"{{"cursor":"{cursor}","path_prefix":"/a","tags":["x"],"shape":"cube","material":"glass",
+                    "created_by":"bob","region":{{"min":[0,0,0],"max":[1,1,1]}},"fields":["path","bounds"]}}"#
+            )),
+            false,
+        )
+        .unwrap();
+        assert_eq!(q.query.after.as_deref(), Some("/a/b"));
+        assert_eq!((q.query.shape, q.query.material), (Some(Shape::Cube), Some(specula_gpu::Material::Glass)));
+        assert_eq!(q.fields.unwrap(), ["path", "bounds"]);
+        assert_eq!(parse_query(&args(r#"{"fields":["all"]}"#), false).unwrap().fields, None);
+        for bad in [
+            r#"{"cursor":"!!"}"#,
+            r#"{"path_prefix":"a"}"#,
+            r#"{"fields":["nope"]}"#,
+            r#"{"region":{"min":[1,1,1],"max":[0,0,0]}}"#,
+            r#"{"shape":"cone"}"#,
+        ] {
+            assert!(parse_query(&args(bad), false).is_err(), "{bad}");
+        }
+
+        let ops = parse_batch(&args(
+            r#"{"ops":[{"op":"spawn","shape":"group","path":"/g"},{"op":"set","path":"/g","position":[1,0,0]},
+                {"op":"delete","path":"/g","expect_version":2}]}"#,
+        ))
+        .unwrap();
+        assert!(matches!(ops.as_slice(), [Op::Spawn(_), Op::Set(..), Op::Delete(_, Some(2))]));
+        let e = parse_batch(&args(r#"{"ops":[{"op":"spawn","shape":"cube"},{"op":"set","id":1}]}"#)).err().unwrap();
+        assert!(e.starts_with("ops[1] (set): "), "{e}");
+        assert!(parse_batch(&args(r#"{"ops":[{"op":"move"}]}"#)).is_err());
+        assert!(parse_batch(&args(r#"{"ops":[]}"#)).is_err());
+        let many = format!(r#"{{"ops":[{}]}}"#, vec![r#"{"op":"spawn","shape":"cube"}"#; MAX_BATCH_OPS + 1].join(","));
+        assert!(parse_batch(&args(&many)).err().unwrap().contains("1000"));
+    }
+
+    #[test]
+    fn persistence_and_identity_arguments() {
+        assert!(matches!(parse("world_save", &args("{}")), Ok(Command::Save(None))));
+        assert!(matches!(parse("world_load", &args(r#"{"name":"grey","force":true}"#)), Ok(Command::Load { force: true, .. })));
+        assert!(parse("world_load", &args("{}")).is_err());
+        assert!(parse("world_save", &args(r#"{"name":"../escape"}"#)).is_err());
+        assert!(matches!(parse("agent_hello", &args(r#"{"name":"mason"}"#)), Ok(Command::Hello { role, .. }) if role == "builder"));
+        assert!(parse("agent_hello", &args(r#"{"name":"mason","role":"chief builder"}"#)).is_err());
+        assert!(parse("agent_hello", &args("{}")).is_err());
+    }
+
+    #[test]
+    fn argument_errors_name_their_field() {
+        let e = argument_error("'scale' components must be between 0.001 and 100000");
+        assert_eq!(e.get("field"), Some(&Json::from("scale")));
+        assert_eq!(e.get("error"), Some(&Json::from("invalid_argument")));
+        assert_eq!(argument_error("names must not be empty").get("field"), None);
+        let shape = parse_spawn(&args(r#"{"shape":"cone"}"#)).err().unwrap();
+        assert_eq!(argument_error(&shape).get("field"), Some(&Json::from("shape")), "{shape}");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Specula world server: owns the world, renders it, and serves agents over MCP.
 //!
 //! A library so game binaries can link the engine; `main.rs` is the stock `specula` binary.
+//! [`world`] is public: games running in-process call [`world::World`] directly every tick.
 //!
 //! Threads: protocol threads parse tool calls and hand them to the engine (main) thread over a
 //! channel; the engine thread owns the world and GPU, applies commands between frames, renders,
@@ -8,10 +9,11 @@
 //! stalls agents.
 
 mod meshes;
+pub mod persist;
 mod sight;
 mod tools;
 mod ui;
-mod world;
+pub mod world;
 
 use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
@@ -21,13 +23,14 @@ use sight::{Camera, LatheMeshes};
 use specula_platform::{client_size_of, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tools::{Command, FrameSpec, Request};
+use tools::{Command, FrameSpec, QuerySpec, Request};
 use ui::UiThread;
-use world::World;
+use world::{World, WorldError};
 
 const DEFAULT_PORT: u16 = 7471;
 
@@ -35,9 +38,16 @@ const DEFAULT_PORT: u16 = 7471;
 const MAX_CACHED_TARGETS: usize = 4;
 /// Capture runs kept in the captures directory (older `run-*` folders are deleted at start-up).
 const MAX_CAPTURE_RUNS: usize = 20;
+/// How often a changed world is written to its world files.
+const AUTOSAVE_EVERY: Duration = Duration::from_secs(10);
+/// Listings stop adding items past this many bytes (compact JSON) and hand back a cursor, so a
+/// page of huge entities still fits in an agent's context.
+const MAX_LISTING_BYTES: usize = 128 * 1024;
+/// Agent identities remembered (sessions are capped at 1024 by the protocol).
+const MAX_AGENTS: usize = 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR]";
+[--captures DIR] [--worlds DIR] [--world NAME]";
 
 struct Args {
     port: u16,
@@ -45,6 +55,8 @@ struct Args {
     adapter: AdapterPreference,
     window_size: (u32, u32),
     captures: Option<PathBuf>,
+    worlds: Option<PathBuf>,
+    world: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -54,6 +66,8 @@ fn parse_args() -> Result<Args, String> {
         adapter: AdapterPreference::HighPerformance,
         window_size: (1280, 720),
         captures: None,
+        worlds: None,
+        world: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -74,6 +88,12 @@ fn parse_args() -> Result<Args, String> {
                 args.window_size = parsed.ok_or_else(|| format!("bad size '{v}'\n{USAGE}"))?;
             }
             "--captures" => args.captures = Some(PathBuf::from(value()?)),
+            "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
+            "--world" => {
+                let name = value()?;
+                persist::validate_world_name(&name).map_err(|e| format!("--world: {e}\n{USAGE}"))?;
+                args.world = Some(name);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -92,11 +112,22 @@ pub fn run() -> Result<(), String> {
     }
     let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter })
         .map_err(|e| format!("GPU init failed: {e}"))?;
-    let captures_root = match args.captures {
-        Some(dir) => dir,
-        None => std::env::current_dir().map_err(|e| e.to_string())?.join("captures"),
-    };
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
     let mut engine = Engine::new(gpu, &captures_root)?;
+    engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
+    if let Some(name) = args.world {
+        // A world that exists but can't be read stops the engine: autosave would overwrite it.
+        let dir = engine.worlds_dir.join(&name);
+        if dir.join("world.json").exists() {
+            engine.world = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
+        } else {
+            eprintln!("specula: new world '{name}'; autosaving to {}", dir.display());
+        }
+        engine.saved_revision = engine.world.revision();
+        engine.world_name = Some(name);
+    }
     eprintln!(
         "specula: GPU {} (validation {})",
         engine.gpu.adapter().name,
@@ -136,6 +167,7 @@ pub fn run() -> Result<(), String> {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
     };
+    engine.autosave();
     // Queued calls get "shutting down" as soon as their reply channels close; give them a moment
     // to write that response before the server closes every connection.
     drop(requests);
@@ -171,6 +203,20 @@ struct Engine {
     frames_captured: u64,
     /// This run's folder: `<captures root>/run-<unix seconds>-<pid>`.
     capture_dir: PathBuf,
+    /// Where world files live (`--worlds`, default `./worlds`).
+    worlds_dir: PathBuf,
+    /// The world autosave writes to: `--world`, or the last world_save / world_load.
+    world_name: Option<String>,
+    /// `world.revision()` as last saved or loaded.
+    saved_revision: u64,
+    last_autosave: Instant,
+    /// Session id → identity given with agent_hello.
+    agents: BTreeMap<String, Agent>,
+}
+
+struct Agent {
+    name: String,
+    role: String,
 }
 
 impl Engine {
@@ -188,9 +234,46 @@ impl Engine {
             targets: Vec::new(),
             frames_captured: 0,
             capture_dir,
+            worlds_dir: PathBuf::from("worlds"),
+            world_name: None,
+            saved_revision: 0,
+            last_autosave: Instant::now(),
+            agents: BTreeMap::new(),
         })
     }
 
+    /// Whether the world changed since it was last saved or loaded.
+    fn dirty(&self) -> bool {
+        self.world.revision() != self.saved_revision
+    }
+
+    /// Saves to the current world, if there is one and it changed.
+    fn autosave(&mut self) {
+        self.last_autosave = Instant::now();
+        let Some(name) = self.world_name.clone() else { return };
+        if !self.dirty() {
+            return;
+        }
+        match persist::save(&self.world, &self.worlds_dir.join(&name)) {
+            Ok(_) => self.saved_revision = self.world.revision(),
+            Err(e) => eprintln!("specula: autosave of world '{name}' failed: {e}"),
+        }
+    }
+
+    fn autosave_if_due(&mut self) {
+        if self.last_autosave.elapsed() >= AUTOSAVE_EVERY {
+            self.autosave();
+        }
+    }
+
+    /// Who a session is in attribution: its agent_hello name, else its MCP client name.
+    fn agent_name(&self, session: &SessionInfo) -> String {
+        match self.agents.get(&session.id) {
+            Some(a) => a.name.clone(),
+            None if session.client_name.is_empty() => "anonymous".into(),
+            None => session.client_name.clone(),
+        }
+    }
     fn time_s(&self) -> f32 {
         self.started.elapsed().as_secs_f32()
     }
@@ -217,8 +300,8 @@ impl Engine {
                 Err(err) => errors.push(format!("lathe '{}' not drawn: {err}", e.name)),
             }
         }
-        let live: std::collections::HashSet<u64> =
-            self.world.entities().iter().filter(|e| e.profile.is_some()).map(|e| e.id).collect();
+        let live: std::collections::BTreeSet<u64> =
+            self.world.entities().filter(|e| e.profile.is_some()).map(|e| e.id).collect();
         let stale: Vec<u64> = self.lathes.keys().copied().filter(|id| !live.contains(id)).collect();
         for id in stale {
             if let Some((_, mesh)) = self.lathes.remove(&id) {
@@ -252,6 +335,7 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
+            self.autosave_if_due();
             for e in self.sync_lathes() {
                 eprintln!("specula: {e}");
             }
@@ -273,6 +357,7 @@ impl Engine {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
+            self.autosave_if_due();
         }
         Ok(())
     }
@@ -283,28 +368,63 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
-        let creator = &request.session.client_name;
+        let by = self.agent_name(&request.session);
         let output = match request.command {
-            Command::Spawn(spec) => match self.world.spawn(spec, creator) {
-                Ok(entity) => ToolOutput::text(entity.to_json().to_pretty()),
-                Err(e) => ToolOutput::error(e),
+            Command::Spawn(spec) => match self.world.spawn(spec, &by).map(|e| e.id) {
+                Ok(id) => self.entity_output(id),
+                Err(e) => world_error(&e),
             },
-            Command::Set(key, change) => match self.world.update(&key, change) {
-                Ok(entity) => ToolOutput::text(entity.to_json().to_pretty()),
-                Err(e) => ToolOutput::error(e),
+            Command::Set(key, change) => match self.world.update(&key, change, &by).map(|e| e.id) {
+                Ok(id) => self.entity_output(id),
+                Err(e) => world_error(&e),
             },
-            Command::List => {
-                let list = Json::arr(self.world.entities().iter().map(|e| e.to_json()));
-                ToolOutput::text(Json::obj([("entities", list)]).to_pretty())
+            Command::Delete(key, expect) => match self.world.delete(&key, expect) {
+                Ok(d) => ToolOutput::text(
+                    Json::obj([("deleted", Json::from(d.removed.len())), ("id", Json::from(d.id)), ("path", Json::from(d.path))])
+                        .to_pretty(),
+                ),
+                Err(e) => world_error(&e),
+            },
+            Command::Query(spec) => self.query(&spec),
+            Command::Batch(ops) => {
+                let count = ops.len();
+                match self.world.apply_batch(ops, &by) {
+                    Ok(results) => ToolOutput::text(
+                        Json::obj([
+                            ("applied", Json::from(results.len())),
+                            ("results", Json::arr(results.iter().map(|r| r.to_json()))),
+                        ])
+                        .to_string(),
+                    ),
+                    Err((index, e)) => ToolOutput::error(
+                        Json::obj([
+                            ("error", Json::from("batch_failed")),
+                            (
+                                "message",
+                                Json::from(format!("ops[{index}] failed, so none of the {count} ops were applied: {}", e.message)),
+                            ),
+                            ("op_index", Json::from(index)),
+                            ("cause", e.to_json()),
+                        ])
+                        .to_pretty(),
+                    ),
+                }
             }
-            Command::Delete(key) => match self.world.delete(&key) {
-                Some(e) => ToolOutput::text(format!("deleted {} (id {})", e.name, e.id)),
-                None => ToolOutput::error("no such entity"),
-            },
+            Command::Save(name) => self.save(name),
+            Command::Load { name, force } => self.load(name, force),
+            Command::Hello { name, role } => {
+                if self.agents.len() >= MAX_AGENTS && !self.agents.contains_key(&request.session.id) {
+                    let live: Vec<String> = server.sessions().into_iter().map(|s| s.id).collect();
+                    self.agents.retain(|id, _| live.contains(id));
+                }
+                let reply = Json::obj([("agent", Json::from(name.as_str())), ("role", Json::from(role.as_str()))]);
+                self.agents.insert(request.session.id.clone(), Agent { name, role });
+                ToolOutput::text(reply.to_pretty())
+            }
             Command::Frame(spec) => self.capture(&spec, &request.session),
             Command::Env(patch) => {
-                patch.apply(&mut self.world.env);
-                ToolOutput::text(self.world.env.to_json().to_pretty())
+                self.world.set_env(&patch);
+                ToolOutput::text(self.world.env().to_json().to_pretty())
             }
             Command::View(camera) => {
                 self.window_camera = camera;
@@ -317,6 +437,108 @@ impl Engine {
         };
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
+    }
+
+    fn entity_output(&self, id: u64) -> ToolOutput {
+        let e = self.world.get(id).expect("just written");
+        ToolOutput::text(e.to_json(&self.world.path_of(id)).to_pretty())
+    }
+
+    /// One page of world_list / world_query, cut short at [`MAX_LISTING_BYTES`].
+    fn query(&self, spec: &QuerySpec) -> ToolOutput {
+        let page = match self.world.query(&spec.query) {
+            Ok(page) => page,
+            Err(e) => return world_error(&e),
+        };
+        let (mut items, mut bytes, mut cut, mut last) = (Vec::new(), 0, false, None);
+        for (e, path) in &page.items {
+            let item = match &spec.fields {
+                None => e.to_json(path),
+                Some(fields) => self.world.fields_json(e, path, fields),
+            };
+            let size = item.to_string().len();
+            if !items.is_empty() && bytes + size > MAX_LISTING_BYTES {
+                cut = true;
+                break;
+            }
+            bytes += size;
+            items.push(item);
+            last = Some(path.as_str());
+        }
+        let next = if cut || page.more { last.map(tools::cursor_for) } else { None };
+        // Compact: listings are the biggest responses, and indentation costs agents tokens.
+        let out = Json::obj([("total", Json::from(page.total)), (spec.key, Json::Arr(items)), ("next_cursor", Json::from(next))]);
+        ToolOutput::text(out.to_string())
+    }
+
+    fn save(&mut self, name: Option<String>) -> ToolOutput {
+        let Some(name) = name.or_else(|| self.world_name.clone()) else {
+            return ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("no_world_name")),
+                    ("message", Json::from("give 'name': there is no current world (start with --world NAME or save once with a name)")),
+                ])
+                .to_pretty(),
+            );
+        };
+        let dir = self.worlds_dir.join(&name);
+        match persist::save(&self.world, &dir) {
+            Ok(report) => {
+                self.world_name = Some(name.clone());
+                self.saved_revision = self.world.revision();
+                self.last_autosave = Instant::now();
+                ToolOutput::text(
+                    Json::obj([
+                        ("saved", Json::from(name)),
+                        ("dir", Json::from(report.dir.display().to_string())),
+                        ("files", Json::from(report.files)),
+                        ("files_written", Json::from(report.written)),
+                        ("files_removed", Json::from(report.removed)),
+                        ("entities", Json::from(self.world.len())),
+                        ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
+                    ])
+                    .to_pretty(),
+                )
+            }
+            Err(e) => ToolOutput::error(e.to_json().to_pretty()),
+        }
+    }
+
+    fn load(&mut self, name: String, force: bool) -> ToolOutput {
+        if self.dirty() && !force {
+            let current = self.world_name.as_deref().map_or(Json::Null, Json::from);
+            return ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("unsaved_changes")),
+                    (
+                        "message",
+                        Json::from("the live world has unsaved changes; world_save first, or pass force: true to discard them"),
+                    ),
+                    ("current_world", current),
+                    ("entities", Json::from(self.world.len())),
+                ])
+                .to_pretty(),
+            );
+        }
+        let dir = self.worlds_dir.join(&name);
+        match persist::load(&dir) {
+            Ok(world) => {
+                self.world = world;
+                self.world_name = Some(name.clone());
+                self.saved_revision = self.world.revision();
+                self.last_autosave = Instant::now();
+                ToolOutput::text(
+                    Json::obj([
+                        ("loaded", Json::from(name)),
+                        ("dir", Json::from(dir.display().to_string())),
+                        ("entities", Json::from(self.world.len())),
+                        ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
+                    ])
+                    .to_pretty(),
+                )
+            }
+            Err(e) => ToolOutput::error(e.to_json().to_pretty()),
+        }
     }
 
     fn capture(&mut self, spec: &FrameSpec, session: &SessionInfo) -> ToolOutput {
@@ -371,7 +593,7 @@ impl Engine {
         let mut packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(session.client_name.as_str())),
+            ("requested_by", Json::from(self.agent_name(session))),
             ("image", image),
             ("camera", camera.to_json()),
             ("time_s", Json::from(time_s)),
@@ -435,19 +657,37 @@ impl Engine {
             ("vulkan", Json::from(format!("{}.{}.{}", a.api_version.0, a.api_version.1, a.api_version.2))),
         ]);
         let agents = sessions.iter().map(|s| {
-            Json::obj([("client", Json::from(s.client_name.as_str())), ("version", Json::from(s.client_version.as_str()))])
+            let role = self.agents.get(&s.id).map_or("builder", |a| a.role.as_str());
+            Json::obj([
+                ("name", Json::from(self.agent_name(s))),
+                ("role", Json::from(role)),
+                ("client", Json::from(s.client_name.as_str())),
+                ("version", Json::from(s.client_version.as_str())),
+            ])
         });
+        let world = Json::obj([
+            ("name", self.world_name.as_deref().map_or(Json::Null, Json::from)),
+            ("worlds_dir", Json::from(self.worlds_dir.display().to_string())),
+            ("entities", Json::from(self.world.len())),
+            ("unsaved_changes", Json::from(self.dirty())),
+            ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
+        ]);
         let info = Json::obj([
             ("engine", Json::from(format!("specula {}", env!("CARGO_PKG_VERSION")))),
             ("gpu", gpu),
             ("validation", Json::from(self.gpu.validation_enabled())),
             ("entities", Json::from(self.world.len())),
+            ("world", world),
             ("frames_captured", Json::from(self.frames_captured)),
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
         ]);
         ToolOutput::text(info.to_pretty())
     }
+}
+
+fn world_error(e: &WorldError) -> ToolOutput {
+    ToolOutput::error(e.to_json().to_pretty())
 }
 
 /// `run-<unix seconds>-<pid>` → `(seconds, pid)`; anything else → `None`.
