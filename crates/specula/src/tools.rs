@@ -4,6 +4,8 @@
 //! thread as a [`Command`], and answered with the main thread's [`ToolOutput`]. The world is only
 //! ever touched by the main thread, between frames.
 
+use crate::claims::{self, ClaimSpec, Scope};
+use crate::journal::{self, ChangesQuery, Cursor, HistoryQuery, Kind, UndoRequest};
 use crate::sight::Camera;
 use crate::world::{
     self, parse_material, Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
@@ -29,7 +31,12 @@ background and tone mapping; window_view points the human's window. world_save /
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
-north (-Z) at the top. Other agents may be building in the same world at the same time.";
+north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
+agent_hello (a unique name), claim_take the subtree or region you will build in (writes inside another agent's \
+live claim are rejected with error 'claimed'), and renew it while you work. Every change is journaled with its \
+author and tick: world_history shows who did what, world_undo undoes your own recent changes (refusing to \
+overwrite someone else's later work unless forced), world_changes is a feed to poll for other agents' changes, \
+and world_hash gives the state hash per tick.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -131,6 +138,18 @@ pub enum Command {
     Time(TimeOp),
     /// A tool the hosted game added.
     Game { name: String, args: Json },
+    History(HistoryQuery),
+    Undo(UndoRequest),
+    Changes(ChangesQuery),
+    /// world_hash: the last `recent` per-tick hashes, the hash at `tick`, and a replay check.
+    Hash { recent: usize, tick: Option<u64>, verify: bool },
+    ClaimTake(ClaimSpec),
+    /// `id: None` = all the caller's claims.
+    ClaimRenew { id: Option<u64>, lease: Duration },
+    /// `id: None` = all the caller's claims.
+    ClaimRelease { id: Option<u64> },
+    ClaimShare { id: u64, with: String, revoke: bool },
+    ClaimList { owner: Option<String>, mine: bool, path_prefix: Option<String>, after: Option<u64>, limit: usize },
 }
 
 /// time_control's actions on the simulation clock.
@@ -281,8 +300,172 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             check_keys(args, name, &[&["action", "ticks", "scale"]])?;
             parse_time(args).map(Command::Time)
         }
+        "world_history" => parse_history(args).map(Command::History),
+        "world_undo" => parse_undo(args).map(Command::Undo),
+        "world_changes" => parse_changes(args).map(Command::Changes),
+        "world_hash" => {
+            check_keys(args, name, &[&["recent", "tick", "verify"]])?;
+            Ok(Command::Hash {
+                recent: int_arg(args, "recent", 0, MAX_HASH_RECENT)?.unwrap_or(8) as usize,
+                tick: int_arg(args, "tick", 0, u64::MAX >> 11)?,
+                verify: bool_arg(args, "verify")?.unwrap_or(false),
+            })
+        }
+        "claim_take" => parse_claim_take(args).map(Command::ClaimTake),
+        "claim_renew" => {
+            check_keys(args, name, &[&["id", "all", "lease_s"]])?;
+            Ok(Command::ClaimRenew { id: claim_target(args, name)?, lease: lease_arg(args)? })
+        }
+        "claim_release" => {
+            check_keys(args, name, &[&["id", "all"]])?;
+            Ok(Command::ClaimRelease { id: claim_target(args, name)? })
+        }
+        "claim_share" => {
+            check_keys(args, name, &[&["id", "with", "revoke"]])?;
+            let id = int_arg(args, "id", 1, u64::MAX >> 11)?.ok_or("'id' is required: the claim to share")?;
+            let with = name_arg(args.get("with"))?.ok_or("'with' is required: the agent name to share the claim with")?;
+            Ok(Command::ClaimShare { id, with, revoke: bool_arg(args, "revoke")?.unwrap_or(false) })
+        }
+        "claim_list" => {
+            check_keys(args, name, &[&["owner", "mine", "path_prefix", "cursor", "limit"]])?;
+            let path_prefix = string_arg(args, "path_prefix")?.map(str::to_owned);
+            if path_prefix.as_ref().is_some_and(|p| !p.starts_with('/')) {
+                return Err("'path_prefix' must be a path like \"/slab\"".into());
+            }
+            Ok(Command::ClaimList {
+                owner: string_arg(args, "owner")?.map(str::to_owned),
+                mine: bool_arg(args, "mine")?.unwrap_or(false),
+                path_prefix,
+                after: int_arg(args, "cursor", 0, u64::MAX >> 11)?,
+                limit: int_arg(args, "limit", 1, 200)?.unwrap_or(50) as usize,
+            })
+        }
         other => Err(format!("unknown tool '{other}'")),
     }
+}
+
+/// Recent per-tick hashes world_hash may return.
+pub const MAX_HASH_RECENT: u64 = 256;
+
+/// An optional integer within `lo..=hi`.
+fn int_arg(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
+    match args.get(key) {
+        None | Some(Json::Null) => Ok(None),
+        Some(v) => match v.as_u64() {
+            Some(n) if (lo..=hi).contains(&n) => Ok(Some(n)),
+            _ => Err(format!("'{key}' must be an integer from {lo} to {hi}")),
+        },
+    }
+}
+
+fn parse_history(args: &Json) -> Result<HistoryQuery, String> {
+    check_keys(
+        args,
+        "world_history",
+        &[&["agent", "path_prefix", "entity", "tick_from", "tick_to", "kinds", "cursor", "limit", "detail"]],
+    )?;
+    let path_prefix = string_arg(args, "path_prefix")?.map(str::to_owned);
+    if path_prefix.as_ref().is_some_and(|p| !p.starts_with('/')) {
+        return Err("'path_prefix' must be a path like \"/slab\"".into());
+    }
+    let kinds = match args.get("kinds").filter(|k| !k.is_null()) {
+        None => Vec::new(),
+        Some(k) => {
+            let names: Option<Vec<&str>> = k.as_array().and_then(|a| a.iter().map(Json::as_str).collect());
+            let all = || Kind::ALL.map(Kind::name).join(", ");
+            let names = names.ok_or_else(|| format!("'kinds' must be an array of: {}", all()))?;
+            names
+                .into_iter()
+                .map(|n| Kind::parse(n).ok_or_else(|| format!("'kinds': unknown kind '{n}' (one of: {})", all())))
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let max = u64::MAX >> 11;
+    Ok(HistoryQuery {
+        agent: string_arg(args, "agent")?.map(str::to_owned),
+        path_prefix,
+        entity: int_arg(args, "entity", 1, max)?,
+        tick_from: int_arg(args, "tick_from", 0, max)?,
+        tick_to: int_arg(args, "tick_to", 0, max)?,
+        kinds,
+        before: int_arg(args, "cursor", 1, max)?,
+        limit: int_arg(args, "limit", 1, 200)?.unwrap_or(20) as usize,
+        detail: bool_arg(args, "detail")?.unwrap_or(false),
+    })
+}
+
+fn parse_undo(args: &Json) -> Result<UndoRequest, String> {
+    check_keys(args, "world_undo", &[&["count", "ids", "force"]])?;
+    let count = int_arg(args, "count", 1, journal::MAX_UNDO as u64)?;
+    let ids = match args.get("ids").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => {
+            let err = || format!("'ids' must be an array of 1..{} journal ids", journal::MAX_UNDO);
+            let ids: Option<Vec<u64>> = v.as_array().and_then(|a| a.iter().map(Json::as_u64).collect());
+            let ids = ids.filter(|i| (1..=journal::MAX_UNDO).contains(&i.len())).ok_or_else(err)?;
+            Some(ids)
+        }
+    };
+    if ids.is_some() && count.is_some() {
+        return Err("give 'count' (your most recent changes) or 'ids' (specific journal entries), not both".into());
+    }
+    Ok(UndoRequest { ids, count: count.unwrap_or(1) as usize, force: bool_arg(args, "force")?.unwrap_or(false) })
+}
+
+fn parse_changes(args: &Json) -> Result<ChangesQuery, String> {
+    check_keys(args, "world_changes", &[&["since", "limit", "path_prefix", "game"]])?;
+    const ERR: &str = "'since' must be a cursor: 0 for the start, or 'next' from the previous call";
+    let since = match args.get("since") {
+        None | Some(Json::Null) => Cursor { seq: 1, index: 0 },
+        Some(Json::Str(s)) => Cursor::parse(s).ok_or(ERR)?,
+        Some(v) => v.as_u64().and_then(|n| Cursor::parse(&n.to_string())).ok_or(ERR)?,
+    };
+    let path_prefix = string_arg(args, "path_prefix")?.map(str::to_owned);
+    if path_prefix.as_ref().is_some_and(|p| !p.starts_with('/')) {
+        return Err("'path_prefix' must be a path like \"/slab\"".into());
+    }
+    Ok(ChangesQuery {
+        since,
+        limit: int_arg(args, "limit", 1, 1000)?.unwrap_or(200) as usize,
+        path_prefix,
+        game: bool_arg(args, "game")?.unwrap_or(true),
+    })
+}
+
+fn lease_arg(args: &Json) -> Result<Duration, String> {
+    Ok(int_arg(args, "lease_s", claims::MIN_LEASE_S, claims::MAX_LEASE_S)?
+        .map_or(claims::DEFAULT_LEASE, Duration::from_secs))
+}
+
+/// `id` of one claim, or `all: true`.
+fn claim_target(args: &Json, tool: &str) -> Result<Option<u64>, String> {
+    let id = int_arg(args, "id", 1, u64::MAX >> 11)?;
+    match (id, bool_arg(args, "all")?.unwrap_or(false)) {
+        (Some(_), true) => Err(format!("{tool}: give 'id' or 'all', not both")),
+        (None, false) => Err(format!("{tool} needs 'id' (a claim) or 'all': true (every claim you hold)")),
+        (id, _) => Ok(id),
+    }
+}
+
+fn parse_claim_take(args: &Json) -> Result<ClaimSpec, String> {
+    check_keys(args, "claim_take", &[&["path", "region", "lease_s", "note"]])?;
+    let scope = match (string_arg(args, "path")?, args.get("region").filter(|r| !r.is_null())) {
+        (Some(_), Some(_)) => return Err("claim_take: give 'path' or 'region', not both".into()),
+        (Some(p), None) => Scope::path(p)?,
+        (None, Some(r)) => {
+            check_keys(r, "region", &[&["min", "max"]])?;
+            match (vec3_arg(r, "min")?, vec3_arg(r, "max")?) {
+                (Some(lo), Some(hi)) => Scope::region(lo, hi)?,
+                _ => return Err("'region' must be {min: [x,y,z], max: [x,y,z]} with min < max on every axis".into()),
+            }
+        }
+        (None, None) => return Err("claim_take needs 'path' (a subtree, e.g. \"/district_3\") or 'region' ({min, max})".into()),
+    };
+    let note = string_arg(args, "note")?.unwrap_or("").to_owned();
+    if note.chars().count() > 200 {
+        return Err("'note' must be at most 200 characters".into());
+    }
+    Ok(ClaimSpec { scope, lease: lease_arg(args)?, note })
 }
 
 fn parse_time(args: &Json) -> Result<TimeOp, String> {
@@ -1327,6 +1510,151 @@ fn definitions() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "world_history".into(),
+            description: "The journal: who changed what, when (simulation tick), newest first, one page at a time. \
+                          Every given filter must match. Each entry: id, tick, by, kind, changes (count), the first \
+                          paths (or with detail: the changes), undone_by / undoes. Returns entries and next_cursor."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("agent", string("Only entries by this agent (or made by the game on its behalf)")),
+                    ("path_prefix", string("Only entries that changed this entity or something below it, e.g. \"/slab\"")),
+                    ("entity", integer("Only entries that changed this entity id")),
+                    ("tick_from", integer("Only entries at or after this tick")),
+                    ("tick_to", integer("Only entries at or before this tick")),
+                    (
+                        "kinds",
+                        string_array(&format!("Only these kinds: {}", Kind::ALL.map(Kind::name).join(", "))),
+                    ),
+                    ("cursor", integer("next_cursor from the previous page: entries older than this id")),
+                    ("limit", integer("Entries per page, 1..200 (default 20)")),
+                    ("detail", boolean("List each entry's changes (up to 50 each: op, id, path, version)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_undo".into(),
+            description: "Undo journal entries: by default your own most recent change (count for more), or specific \
+                          entries by id. A batch undoes as a unit; several entries undo newest first, all or nothing. \
+                          Refused (error undo_conflict, naming who and which entry) when another agent changed the same \
+                          entities later, unless force. The undo is itself journaled: undo its id to redo. Game \
+                          updates are replay-only and can't be undone."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("count", integer("How many of your most recent changes to undo, 1..100 (default 1)")),
+                    ("ids", Json::obj([
+                        ("type", Json::from("array")),
+                        ("items", Json::obj([("type", Json::from("integer"))])),
+                        ("description", Json::from("Specific journal entry ids (from world_history); others' entries need force")),
+                    ])),
+                    ("force", boolean("Undo even over other agents' later changes, or their entries (default false)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_changes".into(),
+            description: "Change feed: every change after a cursor, oldest first, one item per change \
+                          {seq, tick, by, op, id, path, version, from (old path when moved)}. Pass 'next' back as \
+                          'since' to poll; more: true means call again now. gap: true means changes were dropped \
+                          (journal limit or a world_load): re-read what you need with world_query."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("since", described("Cursor: 0 = from the start (default), or 'next' from the previous call")),
+                    ("limit", integer("Changes per call, 1..1000 (default 200)")),
+                    ("path_prefix", string("Only changes at or below this path")),
+                    ("game", boolean("Include the hosted game's changes (default true)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "world_hash".into(),
+            description: "The world's state hash (everything that defines it, by exact bits; versions and authors \
+                          left out) and the simulation tick, plus the hashes the engine recorded at recent ticks \
+                          ([tick, hash] pairs, recorded as each tick begins). verify: replay the journal from its base \
+                          and confirm it reproduces the current hash."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("recent", integer(&format!("Recent [tick, hash] pairs to return, 0..{MAX_HASH_RECENT} (default 8)"))),
+                    ("tick", integer("Also look up the hash recorded at this tick (kept for the last 1024 ticks)")),
+                    ("verify", boolean("Replay the journal and compare (costs time proportional to the journal)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "claim_take".into(),
+            description: "Claim part of the world so other agents can't write there while you work: a subtree path \
+                          (it and everything below; \"/\" is the whole world and the environment) or a world-space \
+                          region (entities whose origin is inside, min <= p < max). Writes by others inside it are \
+                          rejected with error 'claimed' (owner, claim, expiry) unless you claim_share it. Claims of \
+                          different agents can't overlap. The lease expires unless renewed, and the claim ends when \
+                          your session does. Needs agent_hello first. Claims are not saved with the world."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("path", string("Subtree to claim, e.g. \"/district_3\" (it need not exist yet)")),
+                    ("region", object("World box {min: [x,y,z], max: [x,y,z]}, min < max on every axis")),
+                    ("lease_s", integer("Seconds until it expires unless renewed, 5..3600 (default 300)")),
+                    ("note", string("What you're doing there (shown to others), up to 200 characters")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "claim_renew".into(),
+            description: "Extend your claim's lease (or all your claims') to lease_s from now.".into(),
+            input_schema: schema(
+                vec![
+                    ("id", integer("Claim id")),
+                    ("all", boolean("Renew every claim you hold")),
+                    ("lease_s", integer("Seconds from now, 5..3600 (default 300)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "claim_release".into(),
+            description: "Release your claim (or all your claims) so others may write there.".into(),
+            input_schema: schema(
+                vec![("id", integer("Claim id")), ("all", boolean("Release every claim you hold"))],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "claim_share".into(),
+            description: "Let another agent write inside your claim too (co-claim), or stop letting it (revoke).".into(),
+            input_schema: schema(
+                vec![
+                    ("id", integer("Your claim's id")),
+                    ("with", string("The other agent's name (its agent_hello name)")),
+                    ("revoke", boolean("Remove that agent instead (default false)")),
+                ],
+                &["id", "with"],
+            ),
+        },
+        ToolDef {
+            name: "claim_list".into(),
+            description: "Live claims in id order, one page at a time: id, owner, path or region, expires_in_s, \
+                          shared, note. Returns total, claims and next_cursor."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("owner", string("Only this agent's claims")),
+                    ("mine", boolean("Only your own claims")),
+                    ("path_prefix", string("Only path claims at, above or below this path")),
+                    ("cursor", integer("next_cursor from the previous page")),
+                    ("limit", integer("Claims per page, 1..200 (default 50)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
             name: "engine_info".into(),
             description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
                           changes, state hash) and the connected agents with their roles."
@@ -1645,6 +1973,52 @@ mod tests {
         assert_eq!((f.eye, f.max_subjects), (Some(Vec3::new(0.0, 10.0, 0.0)), 5));
         assert_eq!(parse_frame(&args(r#"{"time_s":12.5}"#)).unwrap().time_s, Some(12.5));
         assert!(parse_frame(&args(r#"{"time_s":-1}"#)).is_err());
+    }
+
+    #[test]
+    fn journal_and_claim_arguments() {
+        let p = |tool: &str, a: &str| parse(tool, &args(a));
+        match p("world_history", r#"{"agent":"ann","kinds":["set","batch"],"cursor":9,"limit":5}"#) {
+            Ok(Command::History(q)) => {
+                assert_eq!((q.agent.as_deref(), q.kinds, q.before, q.limit), (Some("ann"), vec![Kind::Set, Kind::Batch], Some(9), 5))
+            }
+            _ => panic!("history"),
+        }
+        assert!(matches!(p("world_undo", "{}"), Ok(Command::Undo(UndoRequest { ids: None, count: 1, force: false }))));
+        assert!(matches!(p("world_undo", r#"{"ids":[3,4],"force":true}"#), Ok(Command::Undo(UndoRequest { ids: Some(_), force: true, .. }))));
+        assert!(matches!(p("world_changes", r#"{"since":"12:3"}"#), Ok(Command::Changes(ChangesQuery { since: Cursor { seq: 12, index: 3 }, .. }))));
+        assert!(matches!(p("world_changes", r#"{"since":0}"#), Ok(Command::Changes(ChangesQuery { since: Cursor { seq: 1, index: 0 }, .. }))));
+        assert!(matches!(p("world_hash", "{}"), Ok(Command::Hash { recent: 8, tick: None, verify: false })));
+        match p("claim_take", r#"{"region":{"min":[0,0,0],"max":[1,2,3]},"lease_s":60,"note":"walls"}"#) {
+            Ok(Command::ClaimTake(c)) => assert_eq!((c.lease, c.note.as_str()), (Duration::from_secs(60), "walls")),
+            _ => panic!("claim_take"),
+        }
+        assert!(matches!(p("claim_take", r#"{"path":"/d1"}"#), Ok(Command::ClaimTake(ClaimSpec { scope: Scope::Path(_), .. }))));
+        assert!(matches!(p("claim_renew", r#"{"all":true}"#), Ok(Command::ClaimRenew { id: None, .. })));
+        assert!(matches!(p("claim_release", r#"{"id":4}"#), Ok(Command::ClaimRelease { id: Some(4) })));
+        assert!(matches!(p("claim_share", r#"{"id":4,"with":"bob"}"#), Ok(Command::ClaimShare { revoke: false, .. })));
+        assert!(matches!(p("claim_list", r#"{"mine":true}"#), Ok(Command::ClaimList { mine: true, limit: 50, .. })));
+        for (tool, bad) in [
+            ("world_history", r#"{"kinds":["move"]}"#),
+            ("world_history", r#"{"limit":0}"#),
+            ("world_history", r#"{"path_prefix":"x"}"#),
+            ("world_undo", r#"{"count":0}"#),
+            ("world_undo", r#"{"count":2,"ids":[1]}"#),
+            ("world_undo", r#"{"ids":[]}"#),
+            ("world_changes", r#"{"since":"abc"}"#),
+            ("world_changes", r#"{"limit":5000}"#),
+            ("world_hash", r#"{"recent":100000}"#),
+            ("claim_take", "{}"),
+            ("claim_take", r#"{"path":"d1"}"#),
+            ("claim_take", r#"{"path":"/a","region":{"min":[0,0,0],"max":[1,1,1]}}"#),
+            ("claim_take", r#"{"region":{"min":[0,0,0],"max":[0,1,1]}}"#),
+            ("claim_take", r#"{"path":"/a","lease_s":1}"#),
+            ("claim_renew", "{}"),
+            ("claim_release", r#"{"id":1,"all":true}"#),
+            ("claim_share", r#"{"id":1}"#),
+        ] {
+            assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
+        }
     }
 
     #[test]

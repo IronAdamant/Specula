@@ -14,13 +14,17 @@
 //!   surgically: by default the caller's own most recent changes, refused when a later change by
 //!   someone else touched the same entities (unless forced). A batch undoes as a unit. Undo is
 //!   itself journaled, and undoing an undo redoes it.
-//! - **Bounded (F1/F3).** The journal is a ring in memory, capped by entries and by bytes; the
-//!   oldest entries are evicted first. Once anything has been evicted the journal can no longer
-//!   replay from its base (`replayable: false`), and changes that old can't be undone. There is
-//!   no spill to disk yet: world files are the durable record, and M3's input journal (commands
-//!   plus seeds, replayed through a deterministic game) is the long-run replay log.
+//! - **Bounded (F1/F3).** Entries live in memory in two rings, capped by entries and by bytes:
+//!   agents' (48 MiB) and the hosted game's (16 MiB), so a busy game never pushes agents' history
+//!   and undo out. The oldest entries are evicted first. Once anything has been evicted the
+//!   journal can no longer replay from its base (`replayable: false`), and changes that old can't
+//!   be undone. There is no spill to disk yet: world files are the durable record, and M3's input
+//!   journal (commands plus seeds, replayed through a deterministic game) is the long-run replay
+//!   log — with a busy game, state-based replay covers a short window only.
 //! - **Game updates are cheap (F3).** The game's changes are recorded *after-only* (replayable,
 //!   not undoable) and coalesced per tick: one entry per tick with at most one change per entity.
+//!   The game's newest change to each entity is remembered past eviction, so undo still refuses
+//!   to overwrite it.
 
 use crate::world::{Change, Entity, Recording, World, WorldError};
 use specula_core::Json;
@@ -30,10 +34,12 @@ use std::sync::Arc;
 /// Vets the changes a command just made (the engine checks claims); an error rolls them back.
 pub type Check<'a> = dyn FnMut(&World, &[Change]) -> Result<(), WorldError> + 'a;
 
-/// Entries kept in memory.
+/// Agents' entries kept in memory, and their approximate memory.
 pub const MAX_ENTRIES: usize = 65_536;
-/// Approximate memory kept for entries.
-pub const MAX_BYTES: usize = 64 << 20;
+pub const MAX_BYTES: usize = 48 << 20;
+/// The hosted game's entries (one per tick or frame) kept, and their approximate memory.
+pub const MAX_GAME_ENTRIES: usize = 65_536;
+pub const MAX_GAME_BYTES: usize = 16 << 20;
 /// Entries one world_undo call may undo.
 pub const MAX_UNDO: usize = 100;
 /// Entries a history call examines before handing back a cursor (bounds its cost).
@@ -290,22 +296,105 @@ pub struct Undone {
     pub changes: usize,
 }
 
-/// See the module docs.
-pub struct Journal {
+/// Entries of one class (agents' or the game's), oldest first, bounded.
+struct Ring {
     entries: VecDeque<Entry>,
-    /// The next entry's id.
-    next_seq: u64,
     bytes: usize,
     max_entries: usize,
     max_bytes: usize,
-    /// Entries dropped from the ring since the base.
+    /// Entries evicted since the base.
     evicted: u64,
+    /// The newest id lost from this ring (evicted, or dropped by a rebase); 0 = none.
+    lost_upto: u64,
+}
+
+impl Ring {
+    fn new(max_entries: usize, max_bytes: usize) -> Ring {
+        Ring { entries: VecDeque::new(), bytes: 0, max_entries: max_entries.max(1), max_bytes, evicted: 0, lost_upto: 0 }
+    }
+
+    fn push(&mut self, entry: Entry) {
+        self.bytes += entry.bytes;
+        self.entries.push_back(entry);
+        while self.entries.len() > 1 && (self.entries.len() > self.max_entries || self.bytes > self.max_bytes) {
+            let old = self.entries.pop_front().expect("more than one entry");
+            self.bytes -= old.bytes;
+            self.evicted += 1;
+            self.lost_upto = old.seq;
+        }
+    }
+
+    fn get(&self, seq: u64) -> Option<&Entry> {
+        self.entries.binary_search_by_key(&seq, |e| e.seq).ok().map(|i| &self.entries[i])
+    }
+
+    fn get_mut(&mut self, seq: u64) -> Option<&mut Entry> {
+        let i = self.entries.binary_search_by_key(&seq, |e| e.seq).ok()?;
+        self.entries.get_mut(i)
+    }
+
+    /// Entries with ids at or after `seq`, oldest first.
+    fn from(&self, seq: u64) -> std::collections::vec_deque::Iter<'_, Entry> {
+        let i = self.entries.partition_point(|e| e.seq < seq);
+        self.entries.range(i..)
+    }
+
+    /// Entries with ids at or before `seq`, newest first.
+    fn upto_rev(&self, seq: u64) -> std::iter::Rev<std::collections::vec_deque::Iter<'_, Entry>> {
+        let i = self.entries.partition_point(|e| e.seq <= seq);
+        self.entries.range(..i).rev()
+    }
+}
+
+/// Two id-ordered entry streams as one (ascending, or descending with `newest_first`).
+fn merged<'a>(
+    a: impl Iterator<Item = &'a Entry>,
+    b: impl Iterator<Item = &'a Entry>,
+    newest_first: bool,
+) -> impl Iterator<Item = &'a Entry> {
+    let (mut a, mut b) = (a.peekable(), b.peekable());
+    std::iter::from_fn(move || {
+        let take_a = match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) => (x.seq < y.seq) != newest_first,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => return None,
+        };
+        if take_a {
+            a.next()
+        } else {
+            b.next()
+        }
+    })
+}
+
+/// The newest game change to an entity (kept after the entry itself is evicted, so undo still
+/// sees the conflict).
+#[derive(Clone, Debug)]
+struct GameTouch {
+    seq: u64,
+    tick: u64,
+    by: Arc<str>,
+    path: String,
+}
+
+/// See the module docs.
+///
+/// Agents' entries and the game's live in separate rings with their own bounds, so a busy game
+/// (hundreds of updates every tick) never pushes agents' history — and their undo — out.
+pub struct Journal {
+    agents: Ring,
+    game: Ring,
+    /// Entity id → the game's newest change to it.
+    game_touch: BTreeMap<u64, GameTouch>,
+    /// The next entry's id.
+    next_seq: u64,
     /// The world the entries apply to, and its hash.
     base: World,
     base_hash: u64,
     /// What the base is: `"empty"` or `"world:<name>"`.
     base_label: String,
-    agents: BTreeSet<Arc<str>>,
+    names: BTreeSet<Arc<str>>,
 }
 
 impl Default for Journal {
@@ -317,21 +406,22 @@ impl Default for Journal {
 impl Journal {
     /// A journal of changes made to `base` from now on.
     pub fn new(base: &World, label: &str) -> Journal {
-        Journal::with_limits(base, label, MAX_ENTRIES, MAX_BYTES)
+        let mut j = Journal::with_limits(base, label, MAX_ENTRIES, MAX_BYTES);
+        j.game = Ring::new(MAX_GAME_ENTRIES, MAX_GAME_BYTES);
+        j
     }
 
+    /// Like [`Journal::new`], with the same bounds for both rings.
     pub fn with_limits(base: &World, label: &str, max_entries: usize, max_bytes: usize) -> Journal {
         let mut j = Journal {
-            entries: VecDeque::new(),
+            agents: Ring::new(max_entries, max_bytes),
+            game: Ring::new(max_entries, max_bytes),
+            game_touch: BTreeMap::new(),
             next_seq: 1,
-            bytes: 0,
-            max_entries: max_entries.max(1),
-            max_bytes,
-            evicted: 0,
             base: World::default(),
             base_hash: 0,
             base_label: String::new(),
-            agents: BTreeSet::new(),
+            names: BTreeSet::new(),
         };
         j.rebase(base, label);
         j
@@ -340,9 +430,11 @@ impl Journal {
     /// Starts over from `base` (after `world_load`): entries are dropped, ids keep counting, so
     /// older feed cursors are reported as a gap.
     pub fn rebase(&mut self, base: &World, label: &str) {
-        self.entries.clear();
-        self.bytes = 0;
-        self.evicted = 0;
+        let last = self.last_seq();
+        for ring in [&mut self.agents, &mut self.game] {
+            *ring = Ring { lost_upto: last, ..Ring::new(ring.max_entries, ring.max_bytes) };
+        }
+        self.game_touch.clear();
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
@@ -352,11 +444,11 @@ impl Journal {
     }
 
     fn intern(&mut self, name: &str) -> Arc<str> {
-        if let Some(a) = self.agents.get(name) {
+        if let Some(a) = self.names.get(name) {
             return Arc::clone(a);
         }
         let a: Arc<str> = Arc::from(name);
-        self.agents.insert(Arc::clone(&a));
+        self.names.insert(Arc::clone(&a));
         a
     }
 
@@ -368,10 +460,21 @@ impl Journal {
         ids.sort_unstable();
         ids.dedup();
         let bytes = std::mem::size_of::<Entry>() + ids.len() * 8 + changes.iter().map(Change::approx_bytes).sum::<usize>();
+        let by = self.intern(by);
+        if kind.is_game() {
+            for c in &changes {
+                if let Change::Delete { .. } = c {
+                    self.game_touch.remove(&c.id());
+                } else {
+                    let touch = GameTouch { seq, tick, by: Arc::clone(&by), path: c.path().to_owned() };
+                    self.game_touch.insert(c.id(), touch);
+                }
+            }
+        }
         let entry = Entry {
             seq,
             tick,
-            by: self.intern(by),
+            by,
             via: via.map(|v| self.intern(v)),
             kind,
             changes,
@@ -381,12 +484,10 @@ impl Journal {
             ids,
             bytes,
         };
-        self.bytes += bytes;
-        self.entries.push_back(entry);
-        while self.entries.len() > 1 && (self.entries.len() > self.max_entries || self.bytes > self.max_bytes) {
-            let old = self.entries.pop_front().expect("more than one entry");
-            self.bytes -= old.bytes;
-            self.evicted += 1;
+        if kind.is_game() {
+            self.game.push(entry);
+        } else {
+            self.agents.push(entry);
         }
         seq
     }
@@ -406,33 +507,40 @@ impl Journal {
             return None;
         }
         let changes = coalesce(changes);
-        let id_moved = self.entries.back().map_or(self.base.next_id(), |e| e.next_id) != next_id;
-        if changes.is_empty() && !id_moved {
+        let previous = self.entries_rev().next().map_or(self.base.next_id(), |e| e.next_id);
+        if changes.is_empty() && previous == next_id {
             return None;
         }
         Some(self.append(tick, game, via, kind, changes, next_id))
     }
 
     pub fn get(&self, seq: u64) -> Option<&Entry> {
-        let first = self.entries.front()?.seq;
-        self.entries.get(usize::try_from(seq.checked_sub(first)?).ok()?)
+        self.agents.get(seq).or_else(|| self.game.get(seq))
     }
 
     fn get_mut(&mut self, seq: u64) -> Option<&mut Entry> {
-        let first = self.entries.front()?.seq;
-        self.entries.get_mut(usize::try_from(seq.checked_sub(first)?).ok()?)
+        match self.agents.get_mut(seq) {
+            Some(e) => Some(e),
+            None => self.game.get_mut(seq),
+        }
     }
 
-    pub fn entries(&self) -> impl DoubleEndedIterator<Item = &Entry> + '_ {
-        self.entries.iter()
+    /// Every entry kept, oldest first.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> + '_ {
+        merged(self.agents.entries.iter(), self.game.entries.iter(), false)
+    }
+
+    /// Every entry kept, newest first.
+    fn entries_rev(&self) -> impl Iterator<Item = &Entry> + '_ {
+        merged(self.agents.entries.iter().rev(), self.game.entries.iter().rev(), true)
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.agents.entries.len() + self.game.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
     /// The newest entry's id (0 before the first).
@@ -440,10 +548,15 @@ impl Journal {
         self.next_seq - 1
     }
 
+    /// The oldest entry kept.
+    fn oldest_kept(&self) -> Option<u64> {
+        self.entries().next().map(|e| e.seq)
+    }
+
     /// Whether every entry since the base is still here, so [`Journal::replay`] can rebuild the
     /// world from the base.
     pub fn replayable(&self) -> bool {
-        self.evicted == 0
+        self.agents.evicted == 0 && self.game.evicted == 0
     }
 
     pub fn base_hash(&self) -> u64 {
@@ -452,17 +565,18 @@ impl Journal {
 
     /// The world rebuilt by applying every entry to the base (`None` once entries were evicted).
     pub fn replay(&self) -> Option<World> {
-        self.replayable().then(|| replay(self.base.clone(), self.entries.iter()))
+        self.replayable().then(|| replay(self.base.clone(), self.entries()))
     }
 
     /// Sizes and bounds, for engine_info and world_hash.
     pub fn stats_json(&self) -> Json {
         Json::obj([
-            ("first_id", Json::from(self.entries.front().map(|e| e.seq))),
+            ("first_id", Json::from(self.oldest_kept())),
             ("last_id", Json::from(self.last_seq())),
-            ("entries", Json::from(self.entries.len())),
-            ("approx_bytes", Json::from(self.bytes)),
-            ("evicted", Json::from(self.evicted)),
+            ("agent_entries", Json::from(self.agents.entries.len())),
+            ("game_entries", Json::from(self.game.entries.len())),
+            ("approx_bytes", Json::from(self.agents.bytes + self.game.bytes)),
+            ("evicted", Json::from(self.agents.evicted + self.game.evicted)),
             ("replayable", Json::from(self.replayable())),
             ("base", Json::from(self.base_label.as_str())),
             ("base_hash", Json::from(hex(self.base_hash))),
@@ -474,12 +588,16 @@ impl Journal {
         let mut items = Vec::new();
         let (mut bytes, mut scanned, mut next, mut more) = (0, 0, None, false);
         let newest = q.before.map_or(u64::MAX, |b| b.saturating_sub(1));
+        let only_game = !q.kinds.is_empty() && q.kinds.iter().all(|k| k.is_game());
+        let no_game = !q.kinds.is_empty() && q.kinds.iter().all(|k| !k.is_game());
+        let agents = self.agents.upto_rev(newest).take(if only_game { 0 } else { usize::MAX });
+        let game = self.game.upto_rev(newest).take(if no_game { 0 } else { usize::MAX });
         let mut last = None;
-        for e in self.entries.iter().rev().skip_while(|e| e.seq > newest) {
+        for e in merged(agents, game, true) {
             if scanned == MAX_SCAN {
                 // Stop examining; resume from here next time.
                 more = true;
-                next = last.or(Some(e.seq + 1));
+                next = last;
                 break;
             }
             scanned += 1;
@@ -493,16 +611,17 @@ impl Journal {
             if !matches {
                 continue;
             }
+            let shown = items.last().and_then(|i: &Json| i.get("id")).and_then(Json::as_u64);
             if items.len() == q.limit {
                 more = true;
-                next = items.last().and_then(|i: &Json| i.get("id")).and_then(Json::as_u64);
+                next = shown;
                 break;
             }
             let item = e.to_json(q.detail, q.path_prefix.as_deref());
             let size = item.to_string().len();
             if !items.is_empty() && bytes + size > MAX_RESPONSE_BYTES {
                 more = true;
-                next = items.last().and_then(|i: &Json| i.get("id")).and_then(Json::as_u64);
+                next = shown;
                 break;
             }
             bytes += size;
@@ -511,68 +630,74 @@ impl Journal {
         Json::obj([
             ("entries", Json::Arr(items)),
             ("next_cursor", Json::from(if more { next } else { None })),
-            ("oldest_kept", Json::from(self.entries.front().map(|e| e.seq))),
-            ("evicted", Json::from(self.evicted)),
+            ("oldest_kept", Json::from(self.oldest_kept())),
+            ("evicted", Json::from(self.agents.evicted + self.game.evicted)),
         ])
     }
 
     /// Changes after `q.since`, oldest first, flattened (one item per change), with the cursor to
-    /// pass next time. A cursor older than what the journal still holds reports `gap: true`:
-    /// re-read the world (world_query) and carry on from `next`.
+    /// pass next time. When changes after the cursor were dropped (journal bounds, or a
+    /// world_load) the answer says `gap: true`: re-read the world (world_query) and carry on.
     pub fn changes(&self, q: &ChangesQuery) -> Json {
-        let first = self.entries.front().map_or(self.next_seq, |e| e.seq);
+        Json::parse(&self.changes_text(q)).expect("valid JSON")
+    }
+
+    /// [`Journal::changes`] as compact JSON text, written directly: agents poll the feed often,
+    /// so each item is serialized once.
+    pub fn changes_text(&self, q: &ChangesQuery) -> String {
         let mut at = q.since;
-        // Entries between the cursor and the oldest one kept were evicted (or dropped by a load).
-        let gap = at.seq < first;
-        if gap {
-            at = Cursor { seq: first, index: 0 };
-        }
+        let gap = at.seq <= self.agents.lost_upto || (q.game && at.seq <= self.game.lost_upto);
         if at.seq > self.next_seq {
             at = Cursor { seq: self.next_seq, index: 0 };
         }
-        let mut items = Vec::new();
-        let mut bytes = 0;
+        let mut out = String::from("{\"changes\":[");
+        let mut count = 0;
         let mut more = false;
-        'outer: while let Some(e) = self.get(at.seq) {
-            let skip = !q.game && e.kind.is_game();
-            if !skip {
-                while let Some(c) = e.changes.get(at.index) {
-                    if items.len() == q.limit {
+        let game = self.game.from(at.seq).take(if q.game { usize::MAX } else { 0 });
+        'outer: for e in merged(self.agents.from(at.seq), game, false) {
+            if e.seq > at.seq {
+                at = Cursor { seq: e.seq, index: 0 };
+            }
+            // The entry's shared fields, written once.
+            let tail = format!(",\"seq\":{},\"tick\":{},\"by\":{}}}", e.seq, e.tick, Json::from(&*e.by));
+            while let Some(c) = e.changes.get(at.index) {
+                if count == q.limit {
+                    more = true;
+                    break 'outer;
+                }
+                if q.path_prefix.as_deref().is_none_or(|p| change_under(c, p)) {
+                    let item = change_json(c).to_string();
+                    if count > 0 && out.len() + item.len() + tail.len() > MAX_RESPONSE_BYTES {
                         more = true;
                         break 'outer;
                     }
-                    if q.path_prefix.as_deref().is_none_or(|p| change_under(c, p)) {
-                        let mut item = change_json(c);
-                        item.set("seq", Json::from(e.seq));
-                        item.set("tick", Json::from(e.tick));
-                        item.set("by", Json::from(&*e.by));
-                        let size = item.to_string().len();
-                        if !items.is_empty() && bytes + size > MAX_RESPONSE_BYTES {
-                            more = true;
-                            break 'outer;
-                        }
-                        bytes += size;
-                        items.push(item);
+                    if count > 0 {
+                        out.push(',');
                     }
-                    at.index += 1;
+                    out.push_str(&item[..item.len() - 1]); // without its closing brace
+                    out.push_str(&tail);
+                    count += 1;
                 }
+                at.index += 1;
             }
             at = Cursor { seq: e.seq + 1, index: 0 };
         }
-        Json::obj([
-            ("changes", Json::Arr(items)),
-            ("next", Json::from(at.token())),
-            ("more", Json::from(more)),
-            ("gap", Json::from(gap)),
-            ("last_id", Json::from(self.last_seq())),
-        ])
+        if !more {
+            at = Cursor { seq: self.next_seq.max(at.seq), index: 0 };
+        }
+        out.push_str(&format!(
+            "],\"next\":{},\"more\":{more},\"gap\":{gap},\"last_id\":{}}}",
+            Json::from(at.token()),
+            self.last_seq()
+        ));
+        out
     }
 
     /// Undoes entries (see [`UndoRequest`]) on `world`, newest first and all or nothing; the
     /// undo is journaled as one entry by `by` at `tick`. `check` vets the resulting changes
     /// before they are kept (the engine checks claims there); an error rolls everything back.
     ///
-    /// `world` must be recording with [`Recording::Full`] and have no changes pending.
+    /// `world` must have no changes pending.
     pub fn undo(
         &mut self,
         world: &mut World,
@@ -607,10 +732,8 @@ impl Journal {
         world.set_recording(previous);
         let changes = world.take_changes();
         let count = changes.len();
-        let seq = self.append(tick, by, None, Kind::Undo, changes, world.next_id());
-        if let Some(e) = self.get_mut(seq) {
-            e.undoes = targets.clone();
-        }
+        // Mark the targets first: appending may evict old entries.
+        let seq = self.next_seq;
         for &t in &targets {
             let redone = self.get(t).map(|e| e.undoes.clone()).unwrap_or_default();
             if let Some(e) = self.get_mut(t) {
@@ -623,6 +746,11 @@ impl Journal {
                 }
             }
         }
+        let appended = self.append(tick, by, None, Kind::Undo, changes, world.next_id());
+        debug_assert_eq!(appended, seq);
+        if let Some(e) = self.get_mut(seq) {
+            e.undoes = targets.clone();
+        }
         Ok(Undone { seq, undone: targets, changes: count })
     }
 
@@ -633,7 +761,6 @@ impl Journal {
             Some(ids) => {
                 for &seq in ids {
                     let Some(e) = self.get(seq) else {
-                        let first = self.entries.front().map(|e| e.seq);
                         let err = if seq > self.last_seq() || seq == 0 {
                             WorldError::new("not_found", format!("there is no journal entry {seq}"))
                         } else {
@@ -642,7 +769,7 @@ impl Journal {
                                 format!("journal entry {seq} is no longer kept (the journal keeps the newest entries only)"),
                             )
                         };
-                        return Err(err.with("entry", seq).with("oldest_kept", Json::from(first)));
+                        return Err(err.with("entry", seq).with("oldest_kept", Json::from(self.oldest_kept())));
                     };
                     if &*e.by != by && !req.force {
                         return Err(WorldError::new(
@@ -672,6 +799,7 @@ impl Journal {
             }
             None => {
                 targets = self
+                    .agents
                     .entries
                     .iter()
                     .rev()
@@ -688,9 +816,25 @@ impl Journal {
         Ok(targets)
     }
 
-    /// Refuses when someone else changed what an entry touched after it (or something now
-    /// below an entity it spawned).
+    /// Refuses when someone else (another agent, or the game) changed what an entry touched
+    /// after it, or something now below an entity it spawned.
     fn check_conflicts(&self, world: &World, by: &str, targets: &[u64]) -> Result<(), WorldError> {
+        let conflict = |seq: u64, id: u64, path: &str, later: u64, later_by: &str, later_tick: u64| {
+            WorldError::new(
+                "undo_conflict",
+                format!(
+                    "{later_by} changed {} later (journal entry {later}, tick {later_tick}); undoing entry {seq} would \
+                     overwrite it. Pass force: true to undo anyway",
+                    if id == 0 { "the environment" } else { path },
+                ),
+            )
+            .with("entry", seq)
+            .with("entity", id)
+            .with("path", path)
+            .with("later_entry", later)
+            .with("later_by", later_by)
+            .with("later_tick", later_tick)
+        };
         for &seq in targets {
             let e = self.get(seq).expect("selected");
             let mut ids: BTreeSet<u64> = e.ids.iter().copied().collect();
@@ -699,7 +843,12 @@ impl Journal {
                     ids.extend(world.subtree_children_first(after.id));
                 }
             }
-            for later in self.entries.iter().skip_while(|l| l.seq <= seq) {
+            for &id in &ids {
+                if let Some(g) = self.game_touch.get(&id).filter(|g| g.seq > seq && &*g.by != by) {
+                    return Err(conflict(seq, id, &g.path, g.seq, &g.by, g.tick));
+                }
+            }
+            for later in self.agents.from(seq + 1) {
                 if &*later.by == by || targets.contains(&later.seq) {
                     continue;
                 }
@@ -709,24 +858,8 @@ impl Journal {
                     ids.iter().find(|id| later.touches(**id)).copied()
                 };
                 if let Some(id) = hit {
-                    let path = later.changes.iter().find(|c| c.id() == id).map_or(String::new(), |c| c.path().to_owned());
-                    return Err(WorldError::new(
-                        "undo_conflict",
-                        format!(
-                            "{} changed {} later (journal entry {}, tick {}); undoing entry {seq} would overwrite it. \
-                             Pass force: true to undo anyway",
-                            later.by,
-                            if id == 0 { "the environment" } else { &path },
-                            later.seq,
-                            later.tick
-                        ),
-                    )
-                    .with("entry", seq)
-                    .with("entity", id)
-                    .with("path", path)
-                    .with("later_entry", later.seq)
-                    .with("later_by", &*later.by)
-                    .with("later_tick", later.tick));
+                    let path = later.changes.iter().find(|c| c.id() == id).map_or("", |c| c.path());
+                    return Err(conflict(seq, id, path, later.seq, &later.by, later.tick));
                 }
             }
         }
@@ -1138,6 +1271,41 @@ mod tests {
         let mut j = Journal::with_limits(&w, "empty", 1000, 1);
         spawn(&mut w, &mut j, "ann", "/x");
         assert_eq!(j.len(), 1, "the newest entry is always kept");
+    }
+
+    #[test]
+    fn a_busy_game_never_pushes_agents_history_out() {
+        let (mut w, _) = live();
+        let mut j = Journal::with_limits(&w, "empty", 8, usize::MAX);
+        spawn(&mut w, &mut j, "ann", "/a");
+        set(&mut w, &mut j, "ann", "/a", moved(1.0));
+        for t in 0..50 {
+            w.set_recording(Recording::AfterOnly);
+            w.update(&EntityKey::Path("/a".into()), moved(t as f32), "game").unwrap();
+            w.set_recording(Recording::Full);
+            let changes = w.take_changes();
+            j.append_game(t, "game", None, Kind::GameTick, changes, w.next_id());
+        }
+        assert_eq!(j.get(1).map(|e| e.kind), Some(Kind::Spawn), "agents' entries stay");
+        assert!(!j.replayable(), "game entries were evicted");
+        // The game's evicted change still blocks an unforced undo.
+        let err = undo(&mut w, &mut j, "ann", last(1)).unwrap_err();
+        assert_eq!((err.code, err.detail("later_by")), ("undo_conflict", Some(&Json::from("game"))));
+        // History can skip the game; the feed reports the game's gap only to those following it.
+        let h = j.history(&HistoryQuery { limit: 10, kinds: vec![Kind::Spawn, Kind::Set], ..Default::default() });
+        assert_eq!(h.get("entries").unwrap().as_array().unwrap().len(), 2);
+        let feed = |game| j.changes(&ChangesQuery { since: Cursor::parse("0").unwrap(), limit: 100, path_prefix: None, game });
+        assert_eq!(feed(false).get("gap"), Some(&Json::from(false)));
+        assert_eq!(feed(false).get("changes").unwrap().as_array().unwrap().len(), 2);
+        assert_eq!(feed(true).get("gap"), Some(&Json::from(true)));
+        assert_eq!(feed(false).get("next"), Some(&Json::from(j.last_seq().to_string())));
+        // A load starts over: cursors from before it see a gap.
+        let mut rebased = j;
+        rebased.rebase(&w, "world:test");
+        assert_eq!(rebased.len(), 0);
+        let after = rebased.changes(&ChangesQuery { since: Cursor::parse("2").unwrap(), limit: 10, path_prefix: None, game: false });
+        assert_eq!(after.get("gap"), Some(&Json::from(true)));
+        assert_eq!(rebased.replay().unwrap().state_hash(), w.state_hash(), "replays from the loaded base");
     }
 
     #[test]

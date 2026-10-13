@@ -285,6 +285,11 @@ impl Claims {
         Ok(())
     }
 
+    /// Ids of `owner`'s claims.
+    pub fn owned_by(&self, owner: &str) -> Vec<u64> {
+        self.claims.values().filter(|c| c.owner == owner).map(|c| c.id).collect()
+    }
+
     /// Releases every claim `owner` holds; returns their ids.
     pub fn release_all(&mut self, owner: &str) -> Vec<u64> {
         let ids: Vec<u64> = self.claims.values().filter(|c| c.owner == owner).map(|c| c.id).collect();

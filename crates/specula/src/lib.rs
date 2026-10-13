@@ -21,7 +21,9 @@ mod tools;
 mod ui;
 pub mod world;
 
+use claims::Claims;
 use game::{Clock, Ctx, Game};
+use journal::{Journal, Kind};
 use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
@@ -30,14 +32,14 @@ use sight::{Camera, LatheMeshes};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tools::{Command, FrameSpec, QuerySpec, Request, TimeOp};
 use ui::UiThread;
-use world::{World, WorldError};
+use world::{Change, Recording, World, WorldError};
 
 const DEFAULT_PORT: u16 = 7471;
 
@@ -60,6 +62,10 @@ const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|
 
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
+/// Per-tick state hashes kept for world_hash.
+const TICK_HASHES: usize = 1024;
+/// How often claims of vanished sessions are dropped.
+const CLAIM_SWEEP_EVERY: Duration = Duration::from_secs(1);
 
 struct Args {
     port: u16,
@@ -156,7 +162,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         let dir = engine.worlds_dir.join(&name);
         if dir.join("world.json").exists() {
             let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
-            engine.world = world;
+            engine.replace_world(world, &name);
             engine.saved = Some(saved);
             eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
         } else {
@@ -292,6 +298,18 @@ struct Engine {
     input: Vec<Event>,
     /// A window title set by the game (its HUD until the engine draws text).
     game_title: Option<String>,
+    /// Every world change, attributed and tick-stamped (see [`journal`]).
+    journal: Journal,
+    /// Agents' leases on parts of the world (see [`claims`]).
+    claims: Claims,
+    /// `(tick, state hash)` recorded as each tick begins, newest last; at most [`TICK_HASHES`].
+    tick_hashes: VecDeque<(u64, u64)>,
+    /// `(world generation, revision, hash)` of the last hash taken: unchanged worlds aren't
+    /// hashed again.
+    hash_cache: Option<(u64, u64, u64)>,
+    /// Bumped whenever the world is replaced (a revision number alone could repeat).
+    world_generation: u64,
+    last_claim_sweep: Instant,
 }
 
 struct AutosaveJob {
@@ -310,11 +328,13 @@ impl Engine {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
         Ok(Engine {
             gpu,
             meshes,
             lathes: LatheMeshes::new(),
-            world: World::default(),
+            world,
             started: Instant::now(),
             window_camera: None,
             targets: Vec::new(),
@@ -336,13 +356,86 @@ impl Engine {
             last_advance: Instant::now(),
             input: Vec::new(),
             game_title: None,
+            journal: Journal::default(),
+            claims: Claims::default(),
+            tick_hashes: VecDeque::new(),
+            hash_cache: None,
+            world_generation: 0,
+            last_claim_sweep: Instant::now(),
         })
+    }
+
+    /// Makes a loaded world the live one: it records changes, and the journal starts over from it.
+    fn replace_world(&mut self, mut world: World, name: &str) {
+        world.set_recording(Recording::Full);
+        self.journal.rebase(&world, &format!("world:{name}"));
+        self.world = world;
+        self.world_generation += 1;
+        self.hash_cache = None;
+        self.tick_hashes.clear();
+    }
+
+    /// Journals what the game just changed (attributed to the game; `via` = the agent that asked).
+    fn journal_game(&mut self, kind: Kind, via: Option<&str>) {
+        let changes = self.world.take_changes();
+        self.journal.append_game(self.clock.tick(), &self.game_name, via, kind, changes, self.world.next_id());
+    }
+
+    /// The world's state hash, reusing the last one while nothing changed.
+    fn state_hash(&mut self) -> u64 {
+        let (generation, revision) = (self.world_generation, self.world.revision());
+        match self.hash_cache {
+            Some((g, r, h)) if (g, r) == (generation, revision) => h,
+            _ => {
+                let h = self.world.state_hash();
+                self.hash_cache = Some((generation, revision, h));
+                h
+            }
+        }
+    }
+
+    /// Records the hash as a tick begins.
+    fn record_tick_hash(&mut self) {
+        let h = self.state_hash();
+        if self.tick_hashes.len() == TICK_HASHES {
+            self.tick_hashes.pop_front();
+        }
+        self.tick_hashes.push_back((self.clock.tick(), h));
+    }
+
+    /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
+    fn sweep_claims(&mut self, server: &Server) {
+        if self.claims.is_empty() || self.last_claim_sweep.elapsed() < CLAIM_SWEEP_EVERY {
+            return;
+        }
+        self.last_claim_sweep = Instant::now();
+        let live: BTreeSet<String> = server.sessions().into_iter().map(|s| s.id).collect();
+        self.claims.expire(Instant::now(), Some(&live));
+    }
+
+    /// Applies an agent's world command: rejected (and rolled back) when it wrote inside another
+    /// agent's claim, journaled otherwise. Returns the result and the journal id.
+    fn commit<T>(
+        &mut self,
+        by: &str,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        let now = Instant::now();
+        let claims = &self.claims;
+        let mut check = |w: &World, changes: &[Change]| claims.check(w, changes, by, now);
+        let result = journal::commit(&mut self.world, &mut self.journal, self.clock.tick(), by, kind, &mut check, command);
+        if matches!(&result, Err(e) if e.code == "claimed") {
+            self.claims.rejected += 1;
+        }
+        result
     }
 
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
         game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+        self.journal_game(Kind::GameStart, None);
         self.last_advance = Instant::now();
     }
 
@@ -354,10 +447,15 @@ impl Engine {
         for _ in 0..ticks {
             if let Some(game) = self.game.as_mut() {
                 let start = Instant::now();
+                // Game updates are journaled replay-only and coalesced per tick (F3).
+                self.world.set_recording(Recording::AfterOnly);
                 game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+                self.world.set_recording(Recording::Full);
+                self.journal_game(Kind::GameTick, None);
                 self.pacing.tick.push(start.elapsed());
             }
             self.clock.finish_tick();
+            self.record_tick_hash();
         }
     }
 
@@ -375,7 +473,10 @@ impl Engine {
             camera: &mut self.window_camera,
             title: &mut self.game_title,
         };
+        self.world.set_recording(Recording::AfterOnly);
         game.frame(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name }, &mut frame);
+        self.world.set_recording(Recording::Full);
+        self.journal_game(Kind::GameFrame, None);
         self.pacing.game_frame.push(start.elapsed());
     }
 
@@ -523,6 +624,7 @@ impl Engine {
                 self.handle(request, server);
             }
             self.autosave_if_due();
+            self.sweep_claims(server);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -574,6 +676,7 @@ impl Engine {
             }
             self.advance_clock();
             self.autosave_if_due();
+            self.sweep_claims(server);
         }
         Ok(())
     }
@@ -586,38 +689,57 @@ impl Engine {
         }
         let by = self.agent_name(&request.session);
         let output = match request.command {
-            Command::Spawn(spec) => match self.world.spawn(spec, &by).map(|e| e.id) {
-                Ok(id) => self.entity_output(id),
+            Command::Spawn(spec) => match self.commit(&by, Kind::Spawn, |w| w.spawn(spec, &by).map(|e| e.id)) {
+                Ok((id, seq)) => self.entity_output(id, seq),
                 Err(e) => world_error(&e),
             },
-            Command::Set(key, change) => match self.world.update(&key, change, &by).map(|e| e.id) {
-                Ok(id) => self.entity_output(id),
+            Command::Set(key, change) => match self.commit(&by, Kind::Set, |w| w.update(&key, change, &by).map(|e| e.id)) {
+                Ok((id, seq)) => self.entity_output(id, seq),
                 Err(e) => world_error(&e),
             },
-            Command::Delete(key, expect) => match self.world.delete(&key, expect) {
-                Ok(d) => ToolOutput::text(
-                    Json::obj([("deleted", Json::from(d.removed.len())), ("id", Json::from(d.id)), ("path", Json::from(d.path))])
-                        .to_pretty(),
+            Command::Delete(key, expect) => match self.commit(&by, Kind::Delete, |w| w.delete(&key, expect)) {
+                Ok((d, seq)) => ToolOutput::text(
+                    Json::obj([
+                        ("deleted", Json::from(d.removed.len())),
+                        ("id", Json::from(d.id)),
+                        ("path", Json::from(d.path)),
+                        ("journal", Json::from(seq)),
+                    ])
+                    .to_pretty(),
                 ),
                 Err(e) => world_error(&e),
             },
             Command::Query(spec) => self.query(&spec),
             Command::Batch(ops) => {
                 let count = ops.len();
-                match self.world.apply_batch(ops, &by) {
-                    Ok(results) => ToolOutput::text(batch_summary(&results).to_string()),
-                    Err((index, e)) => ToolOutput::error(
-                        Json::obj([
-                            ("error", Json::from("batch_failed")),
-                            (
-                                "message",
-                                Json::from(format!("ops[{index}] failed, so none of the {count} ops were applied: {}", e.message)),
-                            ),
-                            ("op_index", Json::from(index)),
-                            ("cause", e.to_json()),
-                        ])
-                        .to_pretty(),
-                    ),
+                let apply = |w: &mut World| w.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
+                match self.commit(&by, Kind::Batch, apply) {
+                    Ok((results, seq)) => {
+                        let mut summary = batch_summary(&results);
+                        summary.set("journal", Json::from(seq));
+                        ToolOutput::text(summary.to_string())
+                    }
+                    // A claim rejects the batch as a whole (no single op is at fault).
+                    Err(e) if e.code == "claimed" => world_error(&e),
+                    Err(mut e) => {
+                        let index = e.detail("op_index").and_then(Json::as_u64).unwrap_or(0);
+                        e.details.retain(|(k, _)| *k != "op_index");
+                        ToolOutput::error(
+                            Json::obj([
+                                ("error", Json::from("batch_failed")),
+                                (
+                                    "message",
+                                    Json::from(format!(
+                                        "ops[{index}] failed, so none of the {count} ops were applied: {}",
+                                        e.message
+                                    )),
+                                ),
+                                ("op_index", Json::from(index)),
+                                ("cause", e.to_json()),
+                            ])
+                            .to_pretty(),
+                        )
+                    }
                 }
             }
             Command::Save { name, overwrite } => self.save(name, overwrite),
@@ -632,8 +754,12 @@ impl Engine {
                 ToolOutput::text(reply.to_pretty())
             }
             Command::Frame(spec) => self.capture(&spec, &request.session),
-            Command::Env(patch) => match self.world.set_env(&patch) {
-                Ok(()) => ToolOutput::text(self.world.env().to_json().to_pretty()),
+            Command::Env(patch) => match self.commit(&by, Kind::Env, |w| w.set_env(&patch)) {
+                Ok(((), seq)) => {
+                    let mut env = self.world.env().to_json();
+                    env.set("journal", Json::from(seq));
+                    ToolOutput::text(env.to_pretty())
+                }
                 Err(e) => world_error(&e),
             },
             Command::View(camera) => {
@@ -663,18 +789,147 @@ impl Engine {
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
                     let mut ctx = Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name };
-                    game.call_tool(&mut ctx, &name, &args)
+                    let out = game.call_tool(&mut ctx, &name, &args);
+                    self.journal_game(Kind::GameTool, Some(&by));
+                    out
                 }
                 None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
             },
+            Command::History(q) => ToolOutput::text(self.journal.history(&q).to_string()),
+            Command::Changes(q) => ToolOutput::text(self.journal.changes_text(&q)),
+            Command::Undo(req) => {
+                let now = Instant::now();
+                let claims = &self.claims;
+                let mut check = |w: &World, changes: &[Change]| claims.check(w, changes, &by, now);
+                match self.journal.undo(&mut self.world, self.clock.tick(), &by, &req, &mut check) {
+                    Ok(u) => ToolOutput::text(
+                        Json::obj([
+                            ("journal", Json::from(u.seq)),
+                            ("undone", Json::arr(u.undone.iter().map(|s| Json::from(*s)))),
+                            ("changes", Json::from(u.changes)),
+                        ])
+                        .to_string(),
+                    ),
+                    Err(e) => {
+                        if e.code == "claimed" {
+                            self.claims.rejected += 1;
+                        }
+                        world_error(&e)
+                    }
+                }
+            }
+            Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
+            Command::ClaimTake(spec) => {
+                if !self.agents.contains_key(&request.session.id) {
+                    ToolOutput::error(
+                        Json::obj([
+                            ("error", Json::from("hello_required")),
+                            (
+                                "message",
+                                Json::from("claims belong to agent names: call agent_hello with a unique name first"),
+                            ),
+                        ])
+                        .to_pretty(),
+                    )
+                } else {
+                    let now = Instant::now();
+                    match self.claims.take(&self.world, &by, &request.session.id, spec, now) {
+                        Ok(c) => ToolOutput::text(c.to_json(now).to_string()),
+                        Err(e) => world_error(&e),
+                    }
+                }
+            }
+            Command::ClaimRenew { id, lease } => {
+                let now = Instant::now();
+                let ids = id.map_or_else(|| self.claims.owned_by(&by), |id| vec![id]);
+                let mut renewed = Vec::new();
+                let mut failed = None;
+                for id in ids {
+                    match self.claims.renew(id, &by, &request.session.id, lease, now) {
+                        Ok(c) => renewed.push(c.to_json(now)),
+                        Err(e) => failed = Some(e),
+                    }
+                }
+                match failed {
+                    Some(e) if renewed.is_empty() => world_error(&e),
+                    _ => ToolOutput::text(Json::obj([("renewed", Json::Arr(renewed))]).to_string()),
+                }
+            }
+            Command::ClaimRelease { id } => {
+                let released = match id {
+                    Some(id) => self.claims.release(id, &by, Instant::now()).map(|()| vec![id]),
+                    None => Ok(self.claims.release_all(&by)),
+                };
+                match released {
+                    Ok(ids) => ToolOutput::text(
+                        Json::obj([("released", Json::arr(ids.into_iter().map(Json::from)))]).to_string(),
+                    ),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::ClaimShare { id, with, revoke } => {
+                let now = Instant::now();
+                match self.claims.share(id, &by, &with, revoke, now) {
+                    Ok(c) => ToolOutput::text(c.to_json(now).to_string()),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::ClaimList { owner, mine, path_prefix, after, limit } => {
+                let owner = if mine { Some(by.clone()) } else { owner };
+                let list = self.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
+                ToolOutput::text(list.to_string())
+            }
         };
+        debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
     }
 
-    fn entity_output(&self, id: u64) -> ToolOutput {
+    fn entity_output(&self, id: u64, journal: Option<u64>) -> ToolOutput {
         let e = self.world.get(id).expect("just written");
-        ToolOutput::text(e.to_json(&self.world.path_of(id)).to_pretty())
+        let mut out = e.to_json(&self.world.path_of(id));
+        out.set("journal", Json::from(journal));
+        ToolOutput::text(out.to_pretty())
+    }
+
+    /// world_hash's answer.
+    fn hash_report(&mut self, recent: usize, tick: Option<u64>, verify: bool) -> ToolOutput {
+        let hash = self.state_hash();
+        let pair = |(t, h): &(u64, u64)| Json::arr([Json::from(*t), Json::from(journal::hex(*h))]);
+        let start = self.tick_hashes.len().saturating_sub(recent);
+        let mut out = Json::obj([
+            ("tick", Json::from(self.clock.tick())),
+            ("state_hash", Json::from(journal::hex(hash))),
+            ("entities", Json::from(self.world.len())),
+            ("journal_last_id", Json::from(self.journal.last_seq())),
+            ("recent", Json::arr(self.tick_hashes.range(start..).map(pair))),
+        ]);
+        if let Some(t) = tick {
+            let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
+            let oldest = self.tick_hashes.front().map(|(t, _)| *t);
+            out.set("at_tick", Json::obj([("tick", Json::from(t)), ("hash", Json::from(found)), ("oldest_kept", Json::from(oldest))]));
+        }
+        if verify {
+            let started = Instant::now();
+            let report = match self.journal.replay() {
+                Some(w) => {
+                    let replayed = w.state_hash();
+                    Json::obj([
+                        ("replayable", Json::from(true)),
+                        ("entries", Json::from(self.journal.len())),
+                        ("replay_hash", Json::from(journal::hex(replayed))),
+                        ("matches", Json::from(replayed == hash)),
+                        ("ms", Json::from(started.elapsed().as_secs_f64() * 1000.0)),
+                    ])
+                }
+                None => Json::obj([
+                    ("replayable", Json::from(false)),
+                    ("message", Json::from("older journal entries were dropped (memory limit), so it can't replay from its base")),
+                ]),
+            };
+            out.set("verify", report);
+        }
+        ToolOutput::text(out.to_string())
     }
 
     /// One page of world_list / world_query, cut short at [`MAX_LISTING_BYTES`].
@@ -791,7 +1046,7 @@ impl Engine {
         let dir = self.worlds_dir.join(&name);
         match persist::load(&dir) {
             Ok((world, saved)) => {
-                self.world = world;
+                self.replace_world(world, &name);
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -977,6 +1232,14 @@ impl Engine {
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
             ("clock", self.clock.to_json()),
+            (
+                "swarm",
+                Json::obj([
+                    ("journal", self.journal.stats_json()),
+                    ("claims", Json::from(self.claims.len())),
+                    ("claim_rejections", Json::from(self.claims.rejected)),
+                ]),
+            ),
         ]);
         let mut info = info;
         if let Some(game) = &self.game {

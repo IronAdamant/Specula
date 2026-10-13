@@ -21,6 +21,7 @@ use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::Json;
 use specula_gpu::{Environment, Material, Surface};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -700,6 +701,8 @@ pub struct Entity {
     pub modified_by: Arc<str>,
     /// Cached world transform: parent's world × local. Kept current by [`World`].
     world: Mat4,
+    /// Cached [`Entity::content_hash`]; cleared by every change to what it covers.
+    hash: Cell<Option<u64>>,
 }
 
 impl Entity {
@@ -809,6 +812,19 @@ impl Entity {
     /// Feeds everything that defines what the entity is and does, by exact bits. Versions and
     /// attribution are left out: two worlds that look and behave the same hash the same,
     /// whoever built them and however many edits it took.
+    /// A hash of everything [`World::state_hash`] covers about this entity, computed once per
+    /// change: hashing the world each tick only re-hashes what changed (foundation F3).
+    pub fn content_hash(&self) -> u64 {
+        if let Some(h) = self.hash.get() {
+            return h;
+        }
+        let mut h = StableHasher::with_seed(0x456e_7469_7479_0001);
+        self.hash_into(&mut h);
+        let v = h.finish();
+        self.hash.set(Some(v));
+        v
+    }
+
     fn hash_into(&self, h: &mut StableHasher) {
         h.write_u64(self.id);
         h.write_u64(self.parent.unwrap_or(ROOT));
@@ -1097,7 +1113,7 @@ impl Change {
                 + e.name.len()
                 + e.tags.iter().map(|t| t.len() + 32).sum::<usize>()
                 + e.profile.as_ref().map_or(0, |p| p.points.len() * 8)
-                + if e.props.as_object().is_some_and(|o| !o.is_empty()) { e.props.to_string().len() * 2 } else { 0 }
+                + json_bytes(&e.props)
         };
         std::mem::size_of::<Change>()
             + match self {
@@ -1108,6 +1124,17 @@ impl Change {
                 Change::Delete { path, before } => path.len() + entity(before),
                 Change::Env { .. } => 0,
             }
+    }
+}
+
+/// Rough memory held by a JSON value (no allocation: it runs for every journaled change).
+fn json_bytes(v: &Json) -> usize {
+    const NODE: usize = std::mem::size_of::<Json>();
+    match v {
+        Json::Obj(pairs) => NODE + pairs.iter().map(|(k, v)| k.len() + 24 + json_bytes(v)).sum::<usize>(),
+        Json::Arr(items) => NODE + items.iter().map(json_bytes).sum::<usize>(),
+        Json::Str(s) => NODE + s.len(),
+        _ => NODE,
     }
 }
 
@@ -1498,6 +1525,7 @@ impl World {
             created_by,
             modified_by,
             world: Mat4::IDENTITY,
+            hash: Cell::new(None),
         });
         self.refresh(id);
         self.touch(id);
@@ -1640,6 +1668,7 @@ impl World {
             e.body = b;
         }
         e.version += 1;
+        e.hash.set(None);
         e.modified_by = by;
         if let Some((old_parent, old_name)) = old {
             let new_key = (e.parent.unwrap_or(ROOT), e.name.clone());
@@ -2047,7 +2076,7 @@ impl World {
         h.write_bool(l.tonemap);
         h.write_u64(self.entities.len() as u64);
         for e in self.entities.values() {
-            e.hash_into(&mut h);
+            h.write_u64(e.content_hash());
         }
         h.finish()
     }
