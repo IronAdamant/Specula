@@ -187,9 +187,10 @@
   "focus": { "color": "rune", "width": 2, "gap": 2 },
   "bar": { "track": "track", "fill": "rune", "low": "flame", "low_below": 0.3, "height": 10 },
   "radial": {
-    "wedge": "#262b33eb",
-    "wedge_hot": "#1d6f79f2",
-    "wedge_disabled": "#1a1d22d9",
+    "base": "#121418",
+    "wedge": "#262b33",
+    "wedge_hot": "#1d6f79",
+    "wedge_disabled": "#1b1e23",
     "edge": "#4f5866",
     "edge_hot": "rune_pale",
     "text": "text",

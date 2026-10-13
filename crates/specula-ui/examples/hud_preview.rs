@@ -188,11 +188,8 @@ fn main() {
                 let y = centre[1] - (150.0 + 62.0) * 0.5 * scale;
                 events.push(Event::MouseMove { x: centre[0] as i32, y: y as i32 });
             } else {
-                let r = ui.widget("pause", "settings").and_then(|w| ui.rect(w));
-                // Lay out once to find the button, then hover it.
-                if r.is_none() {
-                    let _ = ui.frame(&input, &st, &view);
-                }
+                // Lay out once at this size to find the button, then hover it.
+                let _ = ui.frame(&input, &st, &view);
                 let r = ui.widget("pause", "settings").and_then(|w| ui.rect(w)).unwrap();
                 events.push(Event::MouseMove { x: r.center()[0] as i32, y: r.center()[1] as i32 });
             }
@@ -241,7 +238,13 @@ fn main() {
             for n in set {
                 ui.show(n).unwrap();
             }
-            let input = Input::new(map.clone());
+            let mut input = Input::new(map.clone());
+            if ppi.is_some() {
+                // A phone: the last input was a touch (on the world, away from the UI).
+                let (x, y) = (size[0] as i32 / 2, size[1] as i32 / 3);
+                input.update(0.0, &[Event::PointerDown { id: 1, kind: specula_platform::PointerKind::Touch, x, y }], &[]);
+                input.update(0.05, &[Event::PointerUp { id: 1, kind: specula_platform::PointerKind::Touch, x, y }], &[]);
+            }
             ui.set_time(Some(0.0));
             let _ = ui.frame(&input, &st, &view);
             let img = render_onto(&base, ui.draw_list(), ui.atlas(), &[]);

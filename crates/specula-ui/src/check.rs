@@ -199,6 +199,29 @@ fn per_target(ui: &Ui, ids: &[usize], t: &Target, view: &Viewport, out: &mut Vec
     let rules = ui.theme.check;
     let density = t.ppi.map_or(1.0, |p| (p / ui.theme.scale.reference_ppi).max(1.0));
     let min_cap = rules.min_cap_px * density;
+    // Text the widgets draw themselves (tooltips, toasts, threat labels, keycaps): per target.
+    {
+        let th = &ui.theme;
+        for (what, role) in [("tooltip text", th.tooltip.role), ("toast text", th.toast.role), ("threat label", th.threat.label), ("keycap", th.keycap.role)] {
+            let role = th.role(role);
+            let Some(fi) = ui.fonts.index(&role.font) else { continue };
+            let font = ui.fonts.font(fi);
+            let cap_units = font.cap_height().map_or(0.7 * font.units_per_em() as f32, f32::from);
+            let cap = cap_units / font.units_per_em() as f32 * role.size * scale;
+            if cap + 1e-3 < min_cap {
+                out.push(Finding {
+                    rule: "legibility",
+                    severity: Severity::Error,
+                    target: t.name.clone(),
+                    screen: "(theme)".into(),
+                    widget: what.into(),
+                    message: format!("{what}: cap height {cap:.1} px < {min_cap:.1} px ({} px, scale {scale:.2})", role.size),
+                    measured: f64::from(cap),
+                    required: f64::from(min_cap),
+                });
+            }
+        }
+    }
     let mut push = |rule: &'static str, sev: Severity, sr: &ScreenRt, i: usize, message: String, measured: f32, required: f32| {
         out.push(Finding {
             rule,

@@ -342,6 +342,21 @@ fn agents_can_activate_by_id_and_tooltips_appear_after_a_delay() {
 }
 
 #[test]
+fn threat_labels_follow_the_scale() {
+    // Regression: the label layout was cached by text only, so it kept its first scale.
+    let mut ui = ui_with("hud", r#"{"type": "box", "children": [{"type": "threats", "source": "threats"}]}"#);
+    let mut h = Harness::new();
+    let mut s = StateMap::new();
+    s.list_mut("threats").push().set_num("x", 5000.0).set_num("y", 300.0).set_str("label", "East");
+    let glyph_h = |ui: &Ui| ui.draw_list().glyphs.iter().map(|g| g.rect[3] - g.rect[1]).fold(0.0f32, f32::max);
+    h.frame(&mut ui, &[], &s, &view(800, 600));
+    let one = glyph_h(&ui);
+    h.frame(&mut ui, &[], &s, &specula_ui::Viewport::new([800, 600], 2.0));
+    let two = glyph_h(&ui);
+    assert!(one > 0.0 && (two / one - 2.0).abs() < 0.2, "{one} -> {two}");
+}
+
+#[test]
 fn hit_testing_matches_layout() {
     let mut ui = menu_ui();
     let mut h = Harness::new();

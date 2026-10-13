@@ -25,6 +25,7 @@
       {
         "type": "panel",
         "id": "radial_hints",
+        "visible": "!ui.touch",
         "anchor": "center",
         "offset": [0, 196],
         "layout": "row",

@@ -119,6 +119,8 @@ pub struct BarStyle {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RadialStyle {
+    /// The disc under the wedges (shows in the gaps between them).
+    pub base: Rgba,
     pub wedge: Rgba,
     pub wedge_hot: Rgba,
     pub wedge_disabled: Rgba,
@@ -270,6 +272,7 @@ impl Theme {
             focus: FocusRing { color: [0.25, 0.88, 0.82, 1.0], width: 2.0, gap: 2.0 },
             bar: BarStyle { track: 0, fill: [0.25, 0.88, 0.82, 1.0], low: [1.0, 0.48, 0.12, 1.0], low_below: 0.0, height: 10.0 },
             radial: RadialStyle {
+                base: [0.08, 0.09, 0.11, 1.0],
                 wedge: [0.17, 0.19, 0.22, 0.92],
                 wedge_hot: [0.1, 0.56, 0.62, 0.95],
                 wedge_disabled: [0.12, 0.13, 0.15, 0.8],
@@ -361,6 +364,7 @@ impl Theme {
         if let Some(j) = o.get("radial") {
             let mut f = Obj::new(j, "radial")?;
             let r = &mut theme.radial.clone();
+            r.base = theme.color_field(&mut f, "base")?.unwrap_or(r.base);
             r.wedge = theme.color_field(&mut f, "wedge")?.unwrap_or(r.wedge);
             r.wedge_hot = theme.color_field(&mut f, "wedge_hot")?.unwrap_or(r.wedge_hot);
             r.wedge_disabled = theme.color_field(&mut f, "wedge_disabled")?.unwrap_or(r.wedge_disabled);
@@ -372,7 +376,7 @@ impl Theme {
                 r.centre = theme.box_ref(n, &f.field_path("centre"))?;
             }
             r.gap = f.num("gap")?.unwrap_or(r.gap);
-            f.finish(&["wedge", "wedge_hot", "wedge_disabled", "edge", "edge_hot", "text", "text_disabled", "centre", "gap"])?;
+            f.finish(&["base", "wedge", "wedge_hot", "wedge_disabled", "edge", "edge_hot", "text", "text_disabled", "centre", "gap"])?;
             theme.radial = r.clone();
         }
         if let Some(j) = o.get("threat") {

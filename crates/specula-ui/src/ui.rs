@@ -323,7 +323,8 @@ pub struct Ui {
     tip_since: f64,
     tip_text: String,
     tip_laid: TextLayout,
-    threat_text: Vec<(String, TextLayout)>,
+    /// Threat-arrow labels: text, layout, and the scale it was laid out at.
+    threat_text: Vec<(String, TextLayout, f32)>,
     pub(crate) last_view: Option<Viewport>,
     /// The `ui.*` keys conditions and templates can read.
     pub(crate) env: StateMap,
@@ -1193,7 +1194,23 @@ impl Ui {
             Shallow::Radial(radius, inner) => self.draw_radial(s, i, rect, radius * scale, inner * scale, scale),
             Shallow::Threats => self.draw_threats(s, i, rect, state, scale),
             Shallow::Toasts => self.draw_toasts(rect, scale, self.screens[s].screen.nodes[i].anchor.0[1] > 0.5),
-            Shallow::List | Shallow::None => {}
+            Shallow::List => {
+                let c = &self.screens[s].comp[i];
+                let (extent, content, scroll) = (c.extent, c.content, c.scroll);
+                if extent > content.h + 0.5 && content.h > 0.0 {
+                    // A scroll bar at the right edge of the list (the list's right padding is its gutter).
+                    let ink = self.theme.role(self.theme.role_index("body").unwrap_or(0)).color;
+                    let w = 4.0 * scale;
+                    let track = Rect::new(rect.right() - w, content.y, w, content.h);
+                    let thumb_h = (content.h * content.h / extent).max(16.0 * scale).min(content.h);
+                    let t = scroll / (extent - content.h);
+                    let thumb = Rect::new(track.x, track.y + (track.h - thumb_h) * t, w, thumb_h);
+                    for (r, a) in [(track, 0.12), (thumb, 0.55)] {
+                        self.draw.rect(RectCmd { rect: r, radius: w * 0.5, fill: [with_alpha(ink, a); 2], border: 0.0, border_color: [TRANSPARENT; 2], feather: 1.0 });
+                    }
+                }
+            }
+            Shallow::None => {}
             Shallow::RadialItem => {}
         }
     }
@@ -1267,6 +1284,15 @@ impl Ui {
             border_color: [TRANSPARENT; 2],
             feather: 10.0 * scale,
         });
+        // An opaque base so the world never shows through the gaps between wedges and the hub.
+        self.draw.rect(RectCmd {
+            rect: Rect::new(centre[0] - radius, centre[1] - radius, radius * 2.0, radius * 2.0),
+            radius,
+            fill: [st.base; 2],
+            border: 0.0,
+            border_color: [TRANSPARENT; 2],
+            feather: 1.0,
+        });
         let start = self.draw.begin_mesh();
         for (k, &c) in children.iter().take(count).enumerate() {
             let sr = &self.screens[s];
@@ -1310,7 +1336,7 @@ impl Ui {
         let phase = (self.time * f64::from(t.pulse_hz)).fract() as f32;
         let pulse = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
         while self.threat_text.len() < list.len() {
-            self.threat_text.push((String::new(), TextLayout::default()));
+            self.threat_text.push((String::new(), TextLayout::default(), 0.0));
         }
         for (k, row) in list.rows().iter().enumerate() {
             let num = |name: &str| match row.get(name) {
@@ -1334,16 +1360,20 @@ impl Ui {
                 let role = self.role_look(t.label);
                 let Some(fi) = role.font else { continue };
                 let font = self.fonts.font(fi);
-                let (text, laid) = &mut self.threat_text[k];
-                if text != label || laid.glyphs.is_empty() {
+                let (text, laid, laid_scale) = &mut self.threat_text[k];
+                if text != label || laid.glyphs.is_empty() || *laid_scale != scale {
                     text.clear();
                     text.push_str(label);
                     layout_into(font, text, &TextStyle::new(role.size).with_scale(scale), laid);
+                    *laid_scale = scale;
                 }
                 let tw = laid.lines.iter().map(|l| l.width).fold(0.0f32, f32::max);
                 let th = laid.height;
                 let back = [-angle.cos(), -angle.sin()];
-                let reach = size * 0.5 + 6.0 * scale + (tw * back[0].abs() + th * back[1].abs()) * 0.5;
+                let pad_l = self.theme.boxed(t.label_box).padding;
+                let (bw, bh) = (tw + (pad_l[1] + pad_l[3]) * scale, th + (pad_l[0] + pad_l[2]) * scale);
+                // Clear of the arrow's halo (size × 0.62) plus a gap, along the way back in.
+                let reach = size * 0.62 * grow + 6.0 * scale + (bw * back[0].abs() + bh * back[1].abs()) * 0.5;
                 let c = [pos[0] + back[0] * reach, pos[1] + back[1] * reach];
                 let lb = self.theme.boxed(t.label_box).clone();
                 let pad = lb.padding.map(|v| v * scale);

@@ -157,7 +157,7 @@
             "type": "box", "layout": "row", "gap": 8,
             "children": [
               { "type": "button", "id": "stones_narrow", "text": "Stones", "action": "open_build_menu", "shortcut": "build_menu", "width": "fill" },
-              { "type": "button", "id": "call_wave_narrow", "style": "primary", "text": "Call wave +{early_bonus}", "action": "call_wave", "shortcut": "call_wave", "width": "fill", "visible": "next_wave_s" }
+              { "type": "button", "id": "call_wave_narrow", "text": "Call wave +{early_bonus}", "action": "call_wave", "shortcut": "call_wave", "width": "fill", "visible": "next_wave_s" }
             ]
           }
         ]
