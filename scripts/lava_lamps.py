@@ -53,10 +53,17 @@ def clear_world(m):
         m.call("world_batch", ops=[{"op": "delete", "id": e["id"]} for e in top[:1000]])
 
 
-def build(m):
+# Renderer effects for the lamps (M2): real bloom spreads the glowing wax and bulbs, FXAA smooths
+# the lathe silhouettes. Off with --plain, which reproduces the original 2026-10-13 benchmark
+# frames exactly (a pixel regression check for the renderer).
+EFFECTS = dict(bloom={"enabled": True, "threshold": 1.2, "knee": 0.6, "intensity": 0.55, "levels": 6}, fxaa=True)
+
+
+def build(m, plain=False):
     clear_world(m)
     m.call("world_env", sun_direction=[-0.3, 0.8, 0.5], sun_color="#9fb4ff", sun_intensity=0.06,
-           ambient_color="#6d7a99", ambient_intensity=0.035, exposure=1.3, tonemap=True, background="#050608")
+           ambient_color="#6d7a99", ambient_intensity=0.035, exposure=1.3, tonemap=True, background="#050608",
+           **({} if plain else EFFECTS))
 
     # Room: varnished walnut table and a dark wall.
     m.call("world_spawn", shape="quad", name="table", scale=[1.8, 1, 0.9], color="#4a3122",
@@ -126,10 +133,11 @@ def main():
     ap.add_argument("--port", type=int, default=7471)
     ap.add_argument("--out", default=None, help="copy the captures here as <shot>.png")
     ap.add_argument("--no-build", action="store_true", help="capture the current world only")
+    ap.add_argument("--plain", action="store_true", help="no renderer effects: the original benchmark frames")
     args = ap.parse_args()
     m = Mcp(f"http://127.0.0.1:{args.port}/mcp", "lava-lamps")
     if not args.no_build:
-        build(m)
+        build(m, args.plain)
     m.call("window_view", eye=[0, 0.36, 1.05], target=[0, 0.19, 0], fov_y_deg=38)
     for name, shot in SHOTS:
         packet = m.frame(max_subjects=1, **shot)
