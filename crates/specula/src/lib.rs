@@ -10,7 +10,9 @@
 //! and replies. The human's window is pumped by its own thread (see `ui`), so dragging it never
 //! stalls agents.
 
+pub mod claims;
 pub mod game;
+pub mod journal;
 mod meshes;
 mod perf;
 pub mod persist;

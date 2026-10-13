@@ -1023,6 +1023,102 @@ enum Undo {
     Deleted(Vec<Entity>),
 }
 
+/// What the world records about its own changes, for the journal (see [`World::set_recording`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recording {
+    /// Nothing (the default: world files, tests and replays pay nothing).
+    #[default]
+    Off,
+    /// Every change with the state before and after: enough to undo it and to replay it.
+    Full,
+    /// Like `Full`, but a change's previous state is left out of `Set` changes: replayable, not
+    /// undoable. For high-rate game updates (foundation F3).
+    AfterOnly,
+}
+
+/// One recorded change to the world. Entities are whole copies (exact bits), so replaying the
+/// `after` states in order rebuilds the world bit for bit, and the `before` states undo it.
+#[derive(Clone, Debug)]
+pub enum Change {
+    Spawn { path: String, after: Box<Entity> },
+    Set {
+        path: String,
+        /// The path before the change, when it was renamed or moved to another parent.
+        prev_path: Option<String>,
+        /// `None` when recorded with [`Recording::AfterOnly`].
+        before: Option<Box<Entity>>,
+        after: Box<Entity>,
+    },
+    /// One per removed entity: deleting a subtree records its entities children first.
+    Delete { path: String, before: Box<Entity> },
+    Env { before: Env, after: Env },
+}
+
+impl Change {
+    /// The entity's id; 0 for the environment.
+    pub fn id(&self) -> u64 {
+        match self {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => after.id,
+            Change::Delete { before, .. } => before.id,
+            Change::Env { .. } => ROOT,
+        }
+    }
+
+    pub fn op(&self) -> &'static str {
+        match self {
+            Change::Spawn { .. } => "spawn",
+            Change::Set { .. } => "set",
+            Change::Delete { .. } => "delete",
+            Change::Env { .. } => "env",
+        }
+    }
+
+    /// Where it happened: the entity's path afterwards (before, for a delete); `/` for the
+    /// environment.
+    pub fn path(&self) -> &str {
+        match self {
+            Change::Spawn { path, .. } | Change::Set { path, .. } | Change::Delete { path, .. } => path,
+            Change::Env { .. } => "/",
+        }
+    }
+
+    /// The entity's version afterwards (`None` for deletes and the environment).
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => Some(after.version),
+            _ => None,
+        }
+    }
+
+    /// Rough heap and inline size, for the journal's memory bound.
+    pub fn approx_bytes(&self) -> usize {
+        let entity = |e: &Entity| {
+            std::mem::size_of::<Entity>()
+                + e.name.len()
+                + e.tags.iter().map(|t| t.len() + 32).sum::<usize>()
+                + e.profile.as_ref().map_or(0, |p| p.points.len() * 8)
+                + if e.props.as_object().is_some_and(|o| !o.is_empty()) { e.props.to_string().len() * 2 } else { 0 }
+        };
+        std::mem::size_of::<Change>()
+            + match self {
+                Change::Spawn { path, after } => path.len() + entity(after),
+                Change::Set { path, prev_path, before, after } => {
+                    path.len() + prev_path.as_ref().map_or(0, String::len) + before.as_deref().map_or(0, entity) + entity(after)
+                }
+                Change::Delete { path, before } => path.len() + entity(before),
+                Change::Env { .. } => 0,
+            }
+    }
+}
+
+/// A point to roll the world back to (see [`World::rollback_to`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    next_id: u64,
+    revision: u64,
+    changes: usize,
+}
+
 /// Filters for [`World::query`]; every given filter must match.
 #[derive(Clone, Debug, Default)]
 pub struct Query {
@@ -1076,6 +1172,11 @@ pub struct World {
     /// Top-level id → stamp of the latest change anywhere in its subtree. Lets world files rewrite
     /// only the subtrees that changed.
     touched: BTreeMap<u64, u64>,
+    /// What changes are recorded for the journal (off by default: world files, tests and replays
+    /// pay nothing).
+    recording: Recording,
+    /// Changes recorded since the last [`World::take_changes`], in the order they happened.
+    changes: Vec<Change>,
 }
 
 impl World {
@@ -1146,8 +1247,12 @@ impl World {
 
     pub fn set_env(&mut self, patch: &EnvPatch) -> Result<(), WorldError> {
         check_env(patch)?;
+        let before = self.env;
         patch.apply(&mut self.env);
         self.revision += 1;
+        if self.recording != Recording::Off {
+            self.changes.push(Change::Env { before, after: self.env });
+        }
         Ok(())
     }
 
@@ -1397,6 +1502,10 @@ impl World {
         self.refresh(id);
         self.touch(id);
         self.revision += 1;
+        if self.recording != Recording::Off {
+            let path = self.path_of(id);
+            self.changes.push(Change::Spawn { path, after: Box::new(self.entities[&id].clone()) });
+        }
         Ok(())
     }
 
@@ -1486,6 +1595,8 @@ impl World {
             Some(patch) => Some(merge_props(&e.props, patch)?),
         };
 
+        let before = (self.recording == Recording::Full).then(|| Box::new(e.clone()));
+        let prev_path = (self.recording != Recording::Off && relink).then(|| self.path_of(id));
         let old = relink.then(|| (e.parent.unwrap_or(ROOT), e.name.clone()));
         if reparent {
             self.touch(id); // the subtree it leaves
@@ -1542,6 +1653,10 @@ impl World {
         }
         self.touch(id);
         self.revision += 1;
+        if self.recording != Recording::Off {
+            let after = Box::new(self.entities[&id].clone());
+            self.changes.push(Change::Set { path: self.path_of(id), prev_path, before, after });
+        }
         Ok(&self.entities[&id])
     }
 
@@ -1559,8 +1674,14 @@ impl World {
             stack.extend(self.child_range(at).map(|(_, &c)| c));
             stack[first..].reverse();
         }
-        let removed = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
+        let paths: Vec<String> =
+            if self.recording == Recording::Off { Vec::new() } else { order.iter().map(|&i| self.path_of(i)).collect() };
+        let removed: Vec<Entity> = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
         self.revision += 1;
+        // Children first, so undoing the changes in reverse puts parents back before children.
+        for (e, p) in removed.iter().zip(paths).rev() {
+            self.changes.push(Change::Delete { path: p, before: Box::new(e.clone()) });
+        }
         Ok(Deleted { id, path, removed })
     }
 
@@ -1569,7 +1690,7 @@ impl World {
     /// returned.
     /// Later ops can address entities spawned earlier in the batch by path.
     pub fn apply_batch(&mut self, ops: Vec<Op>, by: &str) -> Result<Vec<OpResult>, (usize, WorldError)> {
-        let (next_id, revision) = (self.next_id, self.revision);
+        let (next_id, revision, recorded) = (self.next_id, self.revision, self.changes.len());
         let mut undo = Vec::with_capacity(ops.len());
         let mut results = Vec::with_capacity(ops.len());
         for (index, op) in ops.into_iter().enumerate() {
@@ -1596,6 +1717,7 @@ impl World {
                     self.rollback(undo);
                     self.next_id = next_id;
                     self.revision = revision;
+                    self.changes.truncate(recorded);
                     return Err((index, error));
                 }
             }
@@ -1661,6 +1783,186 @@ impl World {
             e.world = parent_world.map_or(local, |pw| pw * local);
             stack.extend(self.child_range(at).map(|(_, &c)| c));
         }
+    }
+
+    /// What the world records about its changes from now on.
+    pub fn set_recording(&mut self, recording: Recording) {
+        self.recording = recording;
+    }
+
+    pub fn recording(&self) -> Recording {
+        self.recording
+    }
+
+    /// The changes recorded since the last call, oldest first.
+    pub fn take_changes(&mut self) -> Vec<Change> {
+        std::mem::take(&mut self.changes)
+    }
+
+    /// Recorded changes not taken yet.
+    pub fn pending_changes(&self) -> &[Change] {
+        &self.changes
+    }
+
+    /// Remembers the current state, so [`World::rollback_to`] can return to it. Needs
+    /// [`Recording::Full`] for every change in between.
+    pub(crate) fn mark(&self) -> Mark {
+        Mark { next_id: self.next_id, revision: self.revision, changes: self.changes.len() }
+    }
+
+    /// How many changes were pending at `mark`: `pending_changes()[mark_changes(m)..]` are the
+    /// ones since.
+    pub(crate) fn mark_changes(&self, mark: Mark) -> usize {
+        mark.changes.min(self.changes.len())
+    }
+
+    /// Undoes every change recorded since `mark` exactly (versions and attribution included) and
+    /// forgets them, as if they never happened.
+    pub(crate) fn rollback_to(&mut self, mark: Mark) {
+        let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
+        let recording = std::mem::replace(&mut self.recording, Recording::Off);
+        for change in undo.into_iter().rev() {
+            match change {
+                Change::Spawn { after, .. } => {
+                    self.remove_raw(after.id);
+                }
+                Change::Set { before: Some(before), .. } | Change::Delete { before, .. } => self.put_raw(*before),
+                Change::Set { before: None, after, .. } => {
+                    debug_assert!(false, "rollback over an after-only change of entity {}", after.id);
+                }
+                Change::Env { before, .. } => self.env = before,
+            }
+        }
+        self.recording = recording;
+        self.next_id = mark.next_id;
+        self.revision = mark.revision;
+    }
+
+    /// Puts `e` into the world exactly as given, inserting it or replacing the entity with its id
+    /// (re-indexed, world transforms refreshed for its subtree). No checks: the journal uses it to
+    /// replay and undo states the world held before. Recorded like any change.
+    pub(crate) fn put_raw(&mut self, mut e: Entity) {
+        e.created_by = self.intern(&e.created_by);
+        e.modified_by = self.intern(&e.modified_by);
+        let id = e.id;
+        let recording = self.recording;
+        let old = self.entities.get(&id);
+        let existed = old.is_some();
+        let before = match (recording, old) {
+            (Recording::Full, Some(o)) => Some(Box::new(o.clone())),
+            _ => None,
+        };
+        let prev_path = (recording != Recording::Off && existed).then(|| self.path_of(id));
+        if existed {
+            self.touch(id);
+            self.unlink_exact(id);
+        }
+        self.link(e);
+        self.refresh(id);
+        self.touch(id);
+        self.next_id = self.next_id.max(id);
+        self.revision += 1;
+        if recording != Recording::Off {
+            let path = self.path_of(id);
+            let after = Box::new(self.entities[&id].clone());
+            self.changes.push(match prev_path {
+                None => Change::Spawn { path, after },
+                Some(prev) => {
+                    let prev_path = (prev != path).then_some(prev);
+                    Change::Set { path, prev_path, before, after }
+                }
+            });
+        }
+    }
+
+    /// Removes one entity (its children, if any, are left in place: callers remove subtrees
+    /// children first). Recorded like any change.
+    pub(crate) fn remove_raw(&mut self, id: u64) -> Option<Entity> {
+        let path = (self.recording != Recording::Off && self.entities.contains_key(&id)).then(|| self.path_of(id));
+        self.touch_removal(id);
+        let e = self.unlink_exact(id)?;
+        self.revision += 1;
+        if let Some(path) = path {
+            self.changes.push(Change::Delete { path, before: Box::new(e.clone()) });
+        }
+        Some(e)
+    }
+
+    /// Replaces the whole environment. Recorded like any change.
+    pub(crate) fn replace_env(&mut self, env: Env) {
+        let before = self.env;
+        self.env = env;
+        self.revision += 1;
+        if self.recording != Recording::Off {
+            self.changes.push(Change::Env { before, after: env });
+        }
+    }
+
+    /// Restores the id counter as a replayed change left it (never below an existing id).
+    pub(crate) fn replay_next_id(&mut self, next_id: u64) {
+        self.set_next_id(next_id);
+    }
+
+    /// Like [`World::unlink`], but only drops index entries that still point at `id` (a replayed
+    /// rename may already have given its old name to another entity).
+    fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
+        let e = self.entities.remove(&id)?;
+        let key = (e.parent.unwrap_or(ROOT), e.name.clone());
+        if self.children.get(&key) == Some(&id) {
+            self.children.remove(&key);
+        }
+        self.names.remove(&(e.name.clone(), id));
+        Some(e)
+    }
+
+    /// Whether [`World::put_raw`] may put `e` back where it was: its parent exists and isn't
+    /// inside it, its name is free among its siblings, and the depth limit holds.
+    pub(crate) fn check_put(&self, e: &Entity) -> Result<(), WorldError> {
+        let existing = self.entities.contains_key(&e.id);
+        if let Some(p) = e.parent {
+            if !self.entities.contains_key(&p) {
+                return Err(WorldError::new(
+                    "parent_gone",
+                    format!("'{}' can't go back under entity {p}: that parent no longer exists", e.name),
+                )
+                .with("id", e.id)
+                .with("parent", p));
+            }
+            if existing && self.is_ancestor_or_self(e.id, p) {
+                let (me, there) = (self.path_of(e.id), self.path_of(p));
+                return Err(WorldError::new("cycle", format!("{me} cannot move under {there}: that is itself or inside it"))
+                    .with("path", me)
+                    .with("parent", there));
+            }
+            let height = if existing { self.height_of(e.id) } else { 1 };
+            if self.depth_of(p) + height > MAX_DEPTH {
+                return Err(too_deep(&self.path_of(p)));
+            }
+        }
+        match self.children.get(&(e.parent.unwrap_or(ROOT), e.name.clone())) {
+            Some(&other) if other != e.id => Err(self.name_taken(&e.name, other)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ids of `id` and everything below it, children before their parents.
+    pub(crate) fn subtree_children_first(&self, id: u64) -> Vec<u64> {
+        let mut order = Vec::new();
+        let mut stack = vec![id];
+        while let Some(at) = stack.pop() {
+            if !self.entities.contains_key(&at) {
+                continue;
+            }
+            order.push(at);
+            stack.extend(self.child_range(at).map(|(_, &c)| c));
+        }
+        order.reverse();
+        order
+    }
+
+    /// Whether the entity has children.
+    pub fn has_children(&self, id: u64) -> bool {
+        self.child_range(id).next().is_some()
     }
 
     /// Matching entities in path order, paged.
