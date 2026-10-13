@@ -19,7 +19,7 @@
 
 use specula_core::Json;
 
-use crate::error::{DataError, Obj};
+use crate::error::{DataError, ErrorCode, Obj};
 use crate::fixed::{mm, Pos};
 
 /// Index into [`Map::cells`]. Ids are assigned face by face (top, north, east, south, west),
@@ -226,7 +226,7 @@ const MAP_KEYS: [&str; 8] = ["name", "notes", "cell_m", "cliff_row_m", "top", "c
 impl Map {
     /// Parses and validates a map file. `file` names it in errors.
     pub fn parse(text: &str, file: &str) -> Result<Map, DataError> {
-        let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), e.message))?;
+        let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), ErrorCode::Syntax, e.message))?;
         let root = Obj::new(&json, file, "")?;
         root.only(&MAP_KEYS)?;
         let name = root.str("name")?.to_owned();
@@ -249,7 +249,7 @@ impl Map {
                     let kind = if face == Face::Top { CellKind::from_top(ch) } else { CellKind::from_cliff(ch) };
                     let kind = kind.ok_or_else(|| {
                         let legend = if face == Face::Top { "# . j G S x" } else { "- | # B x" };
-                        DataError::new(file, format!("{path}[{r}][{c}]"), format!("unknown cell '{ch}' (legend: {legend})"))
+                        DataError::new(file, format!("{path}[{r}][{c}]"), ErrorCode::BadGrid, format!("unknown cell '{ch}' (legend: {legend})"))
                     })?;
                     let y = -(r as i32 * cliff_row_mm + cliff_row_mm / 2);
                     let pos = match face {
@@ -260,7 +260,7 @@ impl Map {
                         Face::West => Pos::new(-half_x, y, row_z(c)),
                     };
                     if cells.len() >= usize::from(u16::MAX) {
-                        return Err(DataError::new(file, path, "too many cells"));
+                        return Err(DataError::new(file, path, ErrorCode::OutOfRange, "too many cells"));
                     }
                     let id = CellId(cells.len() as u16);
                     cells.push(Cell { id, face, col: c as u8, row: r as u8, pos, kind });
@@ -280,7 +280,7 @@ impl Map {
                 let g = grid(&cliffs, face.name(), 1, 32)?;
                 let along = if matches!(face, Face::North | Face::South) { top_cols } else { top_rows };
                 if g[0].len() != along {
-                    return Err(cliffs.err(face.name(), format!("must be {along} columns wide (the length of its rim)")));
+                    return Err(cliffs.err(face.name(), ErrorCode::BadGrid, format!("must be {along} columns wide (the length of its rim)")));
                 }
                 add_face(face, &g, &cliffs.path(face.name()))?;
             }
@@ -306,7 +306,7 @@ impl Map {
         map.read_spawns(&root)?;
         map.graveyard = map.cells.iter().filter(|c| c.kind == CellKind::Graveyard).map(|c| c.id).collect();
         if map.graveyard.is_empty() {
-            return Err(root.err("top", "no graveyard cells ('G')"));
+            return Err(root.err("top", ErrorCode::Missing, "no graveyard cells ('G')"));
         }
         let n = map.graveyard.len() as i64;
         let sum = map.graveyard.iter().fold([0i64; 3], |s, &g| {
@@ -358,6 +358,7 @@ impl Map {
                     return Err(DataError::new(
                         file,
                         format!("cliffs.{}[0][{c}]", g.face.name()),
+                        ErrorCode::Invalid,
                         format!("cliff lane meets the rim at {}, which is not a walkable top cell", self.cell_name(b)),
                     ));
                 }
@@ -398,6 +399,7 @@ impl Map {
                         return Err(DataError::new(
                             file,
                             format!("{}[{r}][{c}]", g.face.name()),
+                            ErrorCode::Invalid,
                             "jump point 'j' needs a partner 'j' two cells away across one unwalkable cell",
                         ));
                     }
@@ -411,20 +413,20 @@ impl Map {
     fn read_spawns(&mut self, root: &Obj) -> Result<(), DataError> {
         let spawns = root.obj("spawns")?;
         for (name, v) in spawns.json.as_object().unwrap_or(&[]) {
-            let r = v.as_str().ok_or_else(|| spawns.err(name, "expected a cell like \"top:4,19\""))?;
-            let cell = self.cell_ref(r).ok_or_else(|| spawns.err(name, format!("no cell {r:?}")))?;
+            let r = v.as_str().ok_or_else(|| spawns.err(name, ErrorCode::BadType, "expected a cell like \"top:4,19\""))?;
+            let cell = self.cell_ref(r).ok_or_else(|| spawns.err(name, ErrorCode::UnknownRef, format!("no cell {r:?}")))?;
             let kind = self.cell(cell).kind;
             if !matches!(kind, CellKind::Gorge | CellKind::Base) {
-                return Err(spawns.err(name, format!("{r} is '{}', not a spawn ('S' or 'B')", kind.glyph())));
+                return Err(spawns.err(name, ErrorCode::Invalid, format!("{r} is '{}', not a spawn ('S' or 'B')", kind.glyph())));
             }
             if self.spawns.iter().any(|s| s.cell == cell) {
-                return Err(spawns.err(name, format!("{r} already has a name")));
+                return Err(spawns.err(name, ErrorCode::Duplicate, format!("{r} already has a name")));
             }
             self.spawns.push(Spawn { name: name.clone(), cell, climbers_only: kind == CellKind::Base });
         }
         for c in &self.cells {
             if matches!(c.kind, CellKind::Gorge | CellKind::Base) && !self.spawns.iter().any(|s| s.cell == c.id) {
-                return Err(spawns.err("", format!("spawn cell {} has no name", self.cell_name(c.id))));
+                return Err(spawns.err("", ErrorCode::Missing, format!("spawn cell {} has no name", self.cell_name(c.id))));
             }
         }
         Ok(())
@@ -437,7 +439,7 @@ impl Map {
         let half = self.half_x.max(self.half_z) + mm(air.num("margin_m", 0.0, 100.0)?);
         let n = air.int("points", 4, 1024)?;
         if n % 4 != 0 {
-            return Err(air.err("points", "must be a multiple of 4 (a point on every corner)"));
+            return Err(air.err("points", ErrorCode::Invalid, "must be a multiple of 4 (a point on every corner)"));
         }
         let side = 2 * i64::from(half);
         let ring = (0..n)
@@ -456,11 +458,11 @@ impl Map {
         for (i, e) in air.arr("entries")?.iter().enumerate() {
             match e.as_i64() {
                 Some(v) if (0..n).contains(&v) => entries.push(v as u16),
-                _ => return Err(air.err(&format!("entries[{i}]"), format!("expected a ring index in 0..{n}"))),
+                _ => return Err(air.err(&format!("entries[{i}]"), ErrorCode::OutOfRange, format!("expected a ring index in 0..{n}"))),
             }
         }
         if entries.is_empty() {
-            return Err(air.err("entries", "needs at least one entry point"));
+            return Err(air.err("entries", ErrorCode::Missing, "needs at least one entry point"));
         }
         let dive = mm(air.num_or("dive_height_m", 1.5, 0.0, 100.0)?);
         self.air = Air { altitude, ring, entries, dive_target: self.graveyard_centre.up(dive), ring_half: half };
@@ -486,7 +488,7 @@ impl Map {
             }
             for s in &self.spawns {
                 if s.climbers_only == climber && !seen[s.cell.index()] {
-                    return Err(root.err(&format!("spawns.{}", s.name), "no path to the graveyard"));
+                    return Err(root.err(&format!("spawns.{}", s.name), ErrorCode::Unreachable, "no path to the graveyard"));
                 }
             }
         }
@@ -527,6 +529,11 @@ impl Map {
     /// The other end of each cracked ledge at a jump point.
     pub fn jump_partners(&self, id: CellId) -> &[CellId] {
         &self.jumps[id.index()]
+    }
+
+    /// The length of the leap between two jump points, in mm.
+    pub fn jump_cost(&self, a: CellId, b: CellId) -> i32 {
+        self.cell(a).pos.dist(self.cell(b).pos)
     }
 
     /// Every lane-jump pair once, lowest id first.
@@ -589,7 +596,7 @@ impl Map {
         let glyph = |id: CellId| overlay(id).unwrap_or(self.cell(id).kind.glyph());
         let mut out = String::new();
         let pad = " ".repeat(4 + wr + usize::from(wr > 0));
-        out.push_str(&format!("{} ({} m cells, cliffs {} m per row)\n", self.name, self.cell_mm / 1000, self.cliff_row_mm as f32 / 1000.0));
+        out.push_str(&format!("{} ({} m cells, cliffs {} m per row)\n", self.name, metres(self.cell_mm), metres(self.cliff_row_mm)));
         for digit in [10, 1] {
             out.push_str(&pad);
             out.extend((0..top.cols).map(|c| char::from(b'0' + (c / digit % 10))));
@@ -628,23 +635,29 @@ impl Map {
     }
 }
 
+/// Millimetres as exact metres: 2000 → "2", 2500 → "2.5", 1250 → "1.25".
+fn metres(mm: i32) -> String {
+    let s = format!("{}.{:03}", mm / 1000, (mm % 1000).abs());
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
 /// Reads an array of equal-length strings as a character grid.
 fn grid(obj: &Obj, key: &str, min: usize, max: usize) -> Result<Vec<Vec<char>>, DataError> {
     let arr = obj.arr(key)?;
     let rows: Vec<Vec<char>> = arr
         .iter()
         .enumerate()
-        .map(|(i, v)| v.as_str().map(|s| s.chars().collect()).ok_or_else(|| obj.err(&format!("{key}[{i}]"), "expected a string")))
+        .map(|(i, v)| v.as_str().map(|s| s.chars().collect()).ok_or_else(|| obj.err(&format!("{key}[{i}]"), ErrorCode::BadType, "expected a string")))
         .collect::<Result<_, _>>()?;
     if !(min..=max).contains(&rows.len()) {
-        return Err(obj.err(key, format!("needs {min}..={max} rows, got {}", rows.len())));
+        return Err(obj.err(key, ErrorCode::OutOfRange, format!("needs {min}..={max} rows, got {}", rows.len())));
     }
     let w = rows[0].len();
     if !(1..=64).contains(&w) {
-        return Err(obj.err(&format!("{key}[0]"), "rows must be 1..=64 cells wide"));
+        return Err(obj.err(&format!("{key}[0]"), ErrorCode::OutOfRange, "rows must be 1..=64 cells wide"));
     }
     if let Some(i) = rows.iter().position(|r| r.len() != w) {
-        return Err(obj.err(&format!("{key}[{i}]"), format!("is {} cells wide, row 0 is {w}", rows[i].len())));
+        return Err(obj.err(&format!("{key}[{i}]"), ErrorCode::BadGrid, format!("is {} cells wide, row 0 is {w}", rows[i].len())));
     }
     Ok(rows)
 }
@@ -745,39 +758,31 @@ mod tests {
     }
 
     #[test]
-    fn validation_errors_name_file_field_and_reason() {
-        let e = bad("xx##.##########.###x", "xq##.##########.###x");
-        assert_eq!((e.file.as_str(), e.field.as_str()), ("slab_01.json", "top[0][1]"));
-        assert!(e.reason.contains("unknown cell 'q'"), "{e}");
-
-        let e = bad("xx##.##########.###x", "xx##.##########.###");
-        assert_eq!(e.field, "top[1]", "{e}");
-
-        let e = bad("....j..#GGGG#.######", ".......#GGGG#.######");
-        assert_eq!(e.field, "top[13][4]", "{e}");
-        assert!(e.reason.contains("partner"), "{e}");
-
-        let e = bad("\"gorge_mid\": \"top:9,19\",", "");
-        assert!(e.reason.contains("top:9,19 has no name"), "{e}");
-
-        let e = bad("\"gorge_mid\": \"top:9,19\"", "\"gorge_mid\": \"top:9,18\"");
-        assert_eq!(e.field, "spawns.gorge_mid");
-        assert!(e.reason.contains("not a spawn"), "{e}");
-
-        let e = bad("####.####.#####.###x", "#########.#####.###x");
-        assert_eq!(e.field, "spawns.gorge_west");
-        assert!(e.reason.contains("no path"), "{e}");
-
-        let e = bad("xx##.##########.###x", "xx######.######.###x");
-        assert_eq!(e.field, "cliffs.north[0][4]", "{e}");
-
-        let e = bad("\"cell_m\"", "\"cel_m\"");
-        assert!(e.reason.contains("unknown field"), "{e}");
-
-        let e = bad("\"points\": 32", "\"points\": 30");
-        assert_eq!(e.field, "air.points");
-
+    fn validation_errors_name_file_field_and_code() {
+        use ErrorCode::*;
+        let cases: [(&str, &str, &str, ErrorCode); 10] = [
+            ("xx##.##########.###x", "xq##.##########.###x", "top[0][1]", BadGrid),
+            ("xx##.##########.###x", "xx##.##########.###", "top[1]", BadGrid),
+            ("....j..#GGGG#.######", ".......#GGGG#.######", "top[13][4]", Invalid),
+            ("\"gorge_mid\": \"top:9,19\",", "", "spawns", Missing),
+            ("\"gorge_mid\": \"top:9,19\"", "\"gorge_mid\": \"top:9,18\"", "spawns.gorge_mid", Invalid),
+            ("####.####.#####.###x", "#########.#####.###x", "spawns.gorge_west", Unreachable),
+            ("xx##.##########.###x", "xx######.######.###x", "cliffs.north[0][4]", Invalid),
+            ("\"cell_m\"", "\"cel_m\"", "cel_m", UnknownField),
+            ("\"points\": 32", "\"points\": 30", "air.points", Invalid),
+            ("\"gorge_mid\": \"top:9,19\"", "\"gorge_mid\": \"top:99,19\"", "spawns.gorge_mid", UnknownRef),
+        ];
+        for (from, to, field, code) in cases {
+            let e = bad(from, to);
+            assert_eq!((e.file.as_str(), e.field.as_str(), e.code), ("slab_01.json", field, code), "{from:?} -> {to:?}: {e}");
+        }
         let e = bad("{", "[");
-        assert!(e.field.starts_with("byte "), "{e}");
+        assert!(e.field.starts_with("byte ") && e.code == Syntax, "{e}");
+    }
+
+    #[test]
+    fn metres_print_exactly() {
+        assert_eq!((metres(2000), metres(2500), metres(1250), metres(20_000)), ("2".into(), "2.5".into(), "1.25".into(), "20".into()));
+        assert!(Map::parse(SLAB_01_JSON, "slab_01.json").unwrap().ascii().starts_with("Shattered Slab I (2 m cells, cliffs 2.5 m per row)"));
     }
 }

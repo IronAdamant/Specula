@@ -5,9 +5,9 @@
 use std::sync::Arc;
 
 use sepulcra::content::Content;
-use sepulcra::script::{journal_from_json, journal_to_json, replay, run, Player, RunReport, Script};
+use sepulcra::script::{replay, run, Player, Recording, RunEnd, RunReport, Script};
 use sepulcra::sim::{Event, Outcome, State};
-use sepulcra::{EnemyKind, TICK_HZ};
+use sepulcra::{EnemyKind, ErrorCode, TICK_HZ};
 
 const CENTRE: &str = include_str!("../data/layouts/centre.json");
 const NO_AIR: &str = include_str!("../data/layouts/no_air.json");
@@ -49,6 +49,11 @@ fn no_anti_air_loses_to_wraiths_by_wave_6() {
                 if let Event::TombstonesLost { kind: EnemyKind(k), lost, .. } = e {
                     lost_to[usize::from(*k)] += lost;
                 }
+            }
+            // Once the run is lost, nothing else happens in that tick.
+            if let Some(i) = ev.iter().position(|e| *e == Event::Lost) {
+                let after = &ev[i + 1..];
+                assert!(after.iter().all(|e| matches!(e, Event::TombstonesLost { .. })), "seed {seed}: events after Lost: {after:?}");
             }
         });
         assert_eq!(r.outcome, Outcome::Lost, "seed {seed}");
@@ -119,15 +124,48 @@ fn different_seeds_give_different_runs() {
 }
 
 #[test]
-fn a_journal_replays_bit_for_bit_and_round_trips_as_json() {
+fn a_recording_replays_bit_for_bit_and_checks_itself() {
     let c = content();
-    let r = run(c.clone(), 5, &script(&c, CENTRE), None, |_, _| {});
-    assert!(!r.journal.is_empty());
-    let text = journal_to_json(5, &r.journal, &c).to_pretty();
-    let (seed, journal) = journal_from_json(&text, &c, "journal.json").expect("journal parses");
-    assert_eq!((seed, &journal), (5, &r.journal));
-    let replayed = replay(c.clone(), seed, &journal, u32::MAX, |_, _| {});
-    assert_eq!((replayed.tick(), replayed.outcome(), replayed.hash()), (r.ticks, r.outcome, r.hash));
+    // A seed above 2^53 must survive JSON (it is written as a decimal string).
+    for seed in [5, u64::MAX, (1 << 53) + 1] {
+        let r = run(c.clone(), seed, &script(&c, CENTRE), Some(4), |_, _| {});
+        assert!(!r.journal.is_empty());
+        let rec = r.recording(&c);
+        let text = rec.to_json(&c).to_pretty();
+        let back = Recording::from_json(&text, &c, "rec.json").expect("recording parses");
+        assert_eq!(back, rec, "seed {seed}");
+        let state = back.verify(c.clone()).expect("replay matches");
+        assert_eq!((state.tick(), state.hash()), (r.ticks, r.hash));
+        let replayed = replay(c.clone(), seed, &rec.journal, r.ticks, |_, _| {});
+        assert_eq!(replayed.hash(), r.hash);
+    }
+}
+
+#[test]
+fn a_recording_refuses_other_content_and_reports_mismatches() {
+    let c = content();
+    let r = run(c.clone(), 3, &script(&c, CENTRE), Some(2), |_, _| {});
+    let rec = r.recording(&c);
+    let text = rec.to_json(&c).to_pretty();
+
+    let other = Content::from_texts(
+        sepulcra::content::SLAB_01_JSON,
+        sepulcra::content::STONES_JSON,
+        sepulcra::content::ENEMIES_JSON,
+        &sepulcra::content::WAVES_JSON.replace("\"start_dust\": 150", "\"start_dust\": 151"),
+    )
+    .unwrap();
+    let e = Recording::from_json(&text, &other, "rec.json").unwrap_err();
+    assert_eq!((e.code, e.field.as_str()), (ErrorCode::ContentMismatch, "content_hash"));
+
+    let e = Recording::from_json(&text.replacen("\"seed\": \"3\"", "\"seed\": 9007199254740993", 1), &c, "rec.json").unwrap_err();
+    assert_eq!((e.code, e.field.as_str()), (ErrorCode::BadType, "seed"), "a double can't hold 2^53 + 1");
+
+    let mut tampered = rec.clone();
+    tampered.journal.pop();
+    let m = tampered.verify(c.clone()).unwrap_err();
+    assert_eq!(m.expected, RunEnd { tick: r.ticks, hash: r.hash });
+    assert_ne!(m.got.hash, m.expected.hash);
 }
 
 #[test]
@@ -169,9 +207,9 @@ fn layouts_round_trip_as_json() {
 fn pinned_runs() {
     let c = content();
     let cases: [(&str, &str, u64, Outcome, u32, i32, u64); 3] = [
-        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0x89c5_7734_ef69_4a1b),
-        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0x81b8_7196_f52b_7fa3),
-        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0xe40b_2742_4131_463f),
+        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0x1061_f78a_7bb1_17db),
+        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0x6ae4_2ac9_add7_0fde),
+        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0x2b89_1f15_0a89_44b0),
     ];
     let mut report = String::new();
     let mut ok = true;

@@ -18,15 +18,26 @@
 //! entry refused for lack of dust waits (and so does everything after it); an entry refused for
 //! any other reason is skipped and reported.
 //!
-//! A **journal** is what actually happened: every applied command with its tick. Replaying a
-//! journal with the same seed and content reproduces the run bit for bit.
+//! A **journal** is what actually happened: every applied command with its tick. A
+//! [`Recording`] adds the seed, the content hash and the final tick and state hash, so a replay
+//! checks itself:
+//!
+//! ```text
+//! { "seed": "18446744073709551615", "content_hash": "073b05285342fa20",
+//!   "end": { "tick": 21838, "hash": "89c57734ef694a1b" },
+//!   "commands": [ { "tick": 0, "place": "warding", "at": "top:8,12" }, ... ] }
+//! ```
+//!
+//! The seed and hashes are strings because JSON numbers are doubles: a seed above 2^53 would
+//! silently change.
 
+use std::fmt;
 use std::sync::Arc;
 
 use specula_core::Json;
 
 use crate::content::Content;
-use crate::error::{DataError, Obj};
+use crate::error::{DataError, ErrorCode, Obj};
 use crate::sim::{Command, Event, Outcome, Rejection, State, WaveStats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,18 +82,18 @@ fn command_from_obj(o: &Obj, content: &Content, extra: &[&str]) -> Result<Comman
     o.only(&allowed)?;
     let present: Vec<&str> = COMMAND_KEYS.iter().copied().filter(|k| o.get(k).is_some()).collect();
     if present.len() != 1 {
-        return Err(o.err("", format!("needs exactly one of: {}", COMMAND_KEYS.join(", "))));
+        return Err(o.err("", ErrorCode::Invalid, format!("needs exactly one of: {}", COMMAND_KEYS.join(", "))));
     }
     let cell = |key: &str| {
         let s = o.str(key)?;
-        content.map.cell_ref(s).ok_or_else(|| o.err(key, format!("no cell {s:?} (expected \"face:col,row\", e.g. \"top:12,9\")")))
+        content.map.cell_ref(s).ok_or_else(|| o.err(key, ErrorCode::UnknownRef, format!("no cell {s:?} (expected \"face:col,row\", e.g. \"top:12,9\")")))
     };
     Ok(match present[0] {
         "place" => {
             let id = o.str("place")?;
             let stone = content.stone_kind(id).ok_or_else(|| {
                 let ids: Vec<&str> = content.stones.iter().map(|s| s.id.as_str()).collect();
-                o.err("place", format!("no stone {id:?} (stones: {})", ids.join(", ")))
+                o.err("place", ErrorCode::UnknownRef, format!("no stone {id:?} (stones: {})", ids.join(", ")))
             })?;
             Command::PlaceStone { cell: cell("at")?, stone }
         }
@@ -97,14 +108,14 @@ fn command_from_obj(o: &Obj, content: &Content, extra: &[&str]) -> Result<Comman
 impl Script {
     /// Parses a layout file. `file` names it in errors.
     pub fn parse(text: &str, content: &Content, file: &str) -> Result<Script, DataError> {
-        let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), e.message))?;
+        let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), ErrorCode::Syntax, e.message))?;
         let root = Obj::new(&json, file, "")?;
         root.only(&["name", "notes", "commands"])?;
         let mut entries = Vec::new();
         for (i, c) in root.arr("commands")?.iter().enumerate() {
             let o = Obj::new(c, file, format!("commands[{i}]"))?;
             let when = match (o.get("tick"), o.get("wave")) {
-                (Some(_), Some(_)) => return Err(o.err("tick", "use either \"tick\" or \"wave\", not both")),
+                (Some(_), Some(_)) => return Err(o.err("tick", ErrorCode::Invalid, "use either \"tick\" or \"wave\", not both")),
                 (Some(_), None) => When::Tick(o.int("tick", 0, i64::from(u32::MAX))? as u32),
                 (None, Some(_)) => When::Wave(o.int("wave", 0, 1000)? as u16),
                 (None, None) => When::Wave(0),
@@ -172,35 +183,124 @@ impl Player {
 /// One applied command and the tick it was applied at (before that tick advanced).
 pub type Journal = Vec<(u32, Command)>;
 
-pub fn journal_to_json(seed: u64, journal: &Journal, content: &Content) -> Json {
-    let cmds = journal.iter().map(|(t, c)| {
-        let mut j = command_to_json(c, content);
-        j.set("tick", Json::from(*t));
-        j
-    });
-    Json::obj([
-        ("seed", Json::from(seed)),
-        ("content_hash", Json::from(format!("{:016x}", content.hash))),
-        ("commands", Json::arr(cmds)),
-    ])
+/// A replayable run: seed, content, commands, and (when the run is finished) where it ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recording {
+    pub seed: u64,
+    pub content_hash: u64,
+    pub journal: Journal,
+    pub end: Option<RunEnd>,
 }
 
-/// Parses a journal; returns `(seed, journal)`.
-pub fn journal_from_json(text: &str, content: &Content, file: &str) -> Result<(u64, Journal), DataError> {
-    let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), e.message))?;
-    let root = Obj::new(&json, file, "")?;
-    root.only(&["seed", "content_hash", "commands"])?;
-    let seed = root.req("seed")?.as_u64().ok_or_else(|| root.err("seed", "expected an integer"))?;
-    let mut journal = Vec::new();
-    for (i, c) in root.arr("commands")?.iter().enumerate() {
-        let o = Obj::new(c, file, format!("commands[{i}]"))?;
-        let tick = o.int("tick", 0, i64::from(u32::MAX))? as u32;
-        if journal.last().is_some_and(|(t, _)| *t > tick) {
-            return Err(o.err("tick", "ticks must not decrease"));
-        }
-        journal.push((tick, command_from_obj(&o, content, &["tick"])?));
+/// Where a recorded run stopped: the tick and the state hash there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunEnd {
+    pub tick: u32,
+    pub hash: u64,
+}
+
+/// A replay that didn't reproduce its recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplayMismatch {
+    pub expected: RunEnd,
+    pub got: RunEnd,
+}
+
+impl fmt::Display for ReplayMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "replay mismatch: recorded tick {} hash {:016x}, replayed tick {} hash {:016x}",
+            self.expected.tick, self.expected.hash, self.got.tick, self.got.hash
+        )
     }
-    Ok((seed, journal))
+}
+
+impl std::error::Error for ReplayMismatch {}
+
+fn hex_u64(o: &Obj, key: &str) -> Result<u64, DataError> {
+    let s = o.str(key)?;
+    u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| o.err(key, ErrorCode::BadType, format!("expected 16 hex digits, got {s:?}")))
+}
+
+impl Recording {
+    pub fn to_json(&self, content: &Content) -> Json {
+        let cmds = self.journal.iter().map(|(t, c)| {
+            let mut j = command_to_json(c, content);
+            j.set("tick", Json::from(*t));
+            j
+        });
+        let mut pairs = vec![
+            ("seed", Json::from(self.seed.to_string())),
+            ("content_hash", Json::from(format!("{:016x}", self.content_hash))),
+        ];
+        if let Some(end) = self.end {
+            pairs.push(("end", Json::obj([("tick", Json::from(end.tick)), ("hash", Json::from(format!("{:016x}", end.hash)))])));
+        }
+        pairs.push(("commands", Json::arr(cmds)));
+        Json::obj(pairs)
+    }
+
+    /// Parses a recording made against `content`. A different content hash is refused
+    /// ([`ErrorCode::ContentMismatch`]): its commands would mean something else.
+    pub fn from_json(text: &str, content: &Content, file: &str) -> Result<Recording, DataError> {
+        let json = Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), ErrorCode::Syntax, e.message))?;
+        let root = Obj::new(&json, file, "")?;
+        root.only(&["seed", "content_hash", "end", "commands"])?;
+        let seed = match root.req("seed")? {
+            Json::Str(s) => s.parse::<u64>().map_err(|_| root.err("seed", ErrorCode::BadType, format!("expected a decimal u64, got {s:?}")))?,
+            // Integers only strictly below 2^53: anything larger, 2^53 + 1 included, parses to a
+            // double >= 2^53, so a value of 2^53 or more may already have been changed.
+            v => v
+                .as_u64()
+                .filter(|&n| n < 1 << 53)
+                .ok_or_else(|| root.err("seed", ErrorCode::BadType, "expected a decimal string (or an integer below 2^53)"))?,
+        };
+        let content_hash = hex_u64(&root, "content_hash")?;
+        if content_hash != content.hash {
+            return Err(root.err(
+                "content_hash",
+                ErrorCode::ContentMismatch,
+                format!("recorded against content {content_hash:016x}, loaded content is {:016x}", content.hash),
+            ));
+        }
+        let end = match root.get("end") {
+            None => None,
+            Some(_) => {
+                let e = root.obj("end")?;
+                e.only(&["tick", "hash"])?;
+                Some(RunEnd { tick: e.int("tick", 0, i64::from(u32::MAX))? as u32, hash: hex_u64(&e, "hash")? })
+            }
+        };
+        let mut journal = Vec::new();
+        for (i, c) in root.arr("commands")?.iter().enumerate() {
+            let o = Obj::new(c, file, format!("commands[{i}]"))?;
+            let tick = o.int("tick", 0, i64::from(u32::MAX))? as u32;
+            if journal.last().is_some_and(|(t, _)| *t > tick) {
+                return Err(o.err("tick", ErrorCode::Invalid, "ticks must not decrease"));
+            }
+            journal.push((tick, command_from_obj(&o, content, &["tick"])?));
+        }
+        Ok(Recording { seed, content_hash, journal, end })
+    }
+
+    /// Replays the recording to its end (or until the game ends, if no end was recorded) and
+    /// checks that the tick and state hash match.
+    pub fn verify(&self, content: Arc<Content>) -> Result<State, ReplayMismatch> {
+        let until = self.end.map_or(u32::MAX, |e| e.tick);
+        let state = replay(content, self.seed, &self.journal, until, |_, _| {});
+        match self.end {
+            Some(expected) => {
+                let got = RunEnd { tick: state.tick(), hash: state.hash() };
+                if got == expected {
+                    Ok(state)
+                } else {
+                    Err(ReplayMismatch { expected, got })
+                }
+            }
+            None => Ok(state),
+        }
+    }
 }
 
 /// Replays a journal from a fresh state up to (not including) tick `until`, or until the game
@@ -208,13 +308,15 @@ pub fn journal_from_json(text: &str, content: &Content, file: &str) -> Result<(u
 pub fn replay(content: Arc<Content>, seed: u64, journal: &Journal, until: u32, mut on_tick: impl FnMut(&State, &[Event])) -> State {
     let mut state = State::new(content, seed);
     let mut k = 0;
+    let (mut cmds, mut ev) = (Vec::new(), Vec::new());
     while state.tick() < until && state.outcome() == Outcome::Running {
-        let start = k;
+        cmds.clear();
+        ev.clear();
         while k < journal.len() && journal[k].0 <= state.tick() {
+            cmds.push(journal[k].1);
             k += 1;
         }
-        let cmds: Vec<Command> = journal[start..k].iter().map(|(_, c)| *c).collect();
-        let ev = state.step(&cmds);
+        state.step_into(&cmds, &mut ev);
         on_tick(&state, &ev);
     }
     state
@@ -243,6 +345,16 @@ impl RunReport {
     pub fn kills(&self) -> u32 {
         self.waves.iter().map(|w| w.killed).sum()
     }
+
+    /// The run as a self-checking [`Recording`].
+    pub fn recording(&self, content: &Content) -> Recording {
+        Recording {
+            seed: self.seed,
+            content_hash: content.hash,
+            journal: self.journal.clone(),
+            end: Some(RunEnd { tick: self.ticks, hash: self.hash }),
+        }
+    }
 }
 
 /// Plays `script` from a fresh state until the game ends, or until `max_waves` waves have been
@@ -253,6 +365,7 @@ pub fn run(content: Arc<Content>, seed: u64, script: &Script, max_waves: Option<
     let mut state = State::new(content, seed);
     let mut player = Player::new(script.clone());
     let mut journal = Journal::new();
+    let mut ev = Vec::new();
     while state.outcome() == Outcome::Running && state.tick() < cap {
         if let Some(n) = max_waves {
             let w = state.wave();
@@ -262,12 +375,12 @@ pub fn run(content: Arc<Content>, seed: u64, script: &Script, max_waves: Option<
                 break;
             }
         }
-        let mut ev = Vec::new();
+        ev.clear();
         let tick = state.tick();
         for c in player.drive(&mut state, &mut ev) {
             journal.push((tick, c));
         }
-        ev.extend(state.step(&[]));
+        state.step_into(&[], &mut ev);
         on_tick(&state, &ev);
     }
     RunReport {

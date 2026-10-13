@@ -5,24 +5,76 @@ use std::fmt;
 
 use specula_core::Json;
 
+/// What kind of problem a [`DataError`] is, for agents to branch on (the `reason` is prose).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ErrorCode {
+    /// The file isn't valid JSON (`field` is `byte N`).
+    Syntax,
+    /// The file couldn't be read.
+    Io,
+    Missing,
+    /// Wrong JSON type (a string where a number belongs, ...).
+    BadType,
+    /// A number or count outside its allowed range.
+    OutOfRange,
+    /// A key the format doesn't know (usually a typo).
+    UnknownField,
+    /// A string that isn't one of the allowed choices (`"policy": "fastest"`).
+    BadChoice,
+    /// A name that refers to nothing (an enemy id, a spawn, a cell, a stone).
+    UnknownRef,
+    Duplicate,
+    /// A map grid with an unknown character or the wrong shape.
+    BadGrid,
+    /// A spawn that can't reach the graveyard.
+    Unreachable,
+    /// A replay recorded against different content.
+    ContentMismatch,
+    /// Well-formed but against a game rule (a lob without splash, a walker from a cliff...).
+    Invalid,
+}
+
+impl ErrorCode {
+    /// A stable snake_case name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::Syntax => "syntax",
+            ErrorCode::Io => "io",
+            ErrorCode::Missing => "missing",
+            ErrorCode::BadType => "bad_type",
+            ErrorCode::OutOfRange => "out_of_range",
+            ErrorCode::UnknownField => "unknown_field",
+            ErrorCode::BadChoice => "bad_choice",
+            ErrorCode::UnknownRef => "unknown_ref",
+            ErrorCode::Duplicate => "duplicate",
+            ErrorCode::BadGrid => "bad_grid",
+            ErrorCode::Unreachable => "unreachable",
+            ErrorCode::ContentMismatch => "content_mismatch",
+            ErrorCode::Invalid => "invalid",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataError {
     /// The content file, e.g. `stones.json`.
     pub file: String,
     /// Path to the offending value, e.g. `stones[2].tiers[0].range_m` or `top[3][7]`.
     pub field: String,
+    pub code: ErrorCode,
+    /// For humans; match on `code`.
     pub reason: String,
 }
 
 impl DataError {
-    pub fn new(file: &str, field: impl Into<String>, reason: impl Into<String>) -> DataError {
-        DataError { file: file.to_owned(), field: field.into(), reason: reason.into() }
+    pub fn new(file: &str, field: impl Into<String>, code: ErrorCode, reason: impl Into<String>) -> DataError {
+        DataError { file: file.to_owned(), field: field.into(), code, reason: reason.into() }
     }
 }
 
 impl fmt::Display for DataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}: {}", self.file, self.field, self.reason)
+        write!(f, "{}: {}: {} ({})", self.file, self.field, self.reason, self.code.as_str())
     }
 }
 
@@ -38,9 +90,7 @@ pub(crate) struct Obj<'a> {
 
 /// `a.b` / `a[3]`.
 pub(crate) fn join(path: &str, key: &str) -> String {
-    if path.is_empty() {
-        key.to_owned()
-    } else if key.starts_with('[') {
+    if path.is_empty() || key.is_empty() || key.starts_with('[') {
         format!("{path}{key}")
     } else {
         format!("{path}.{key}")
@@ -52,7 +102,7 @@ impl<'a> Obj<'a> {
         let path = path.into();
         if json.as_object().is_none() {
             let shown = if path.is_empty() { "(root)".to_owned() } else { path };
-            return Err(DataError::new(file, shown, "expected a JSON object"));
+            return Err(DataError::new(file, shown, ErrorCode::BadType, "expected a JSON object"));
         }
         Ok(Obj { json, file, path })
     }
@@ -62,8 +112,8 @@ impl<'a> Obj<'a> {
         Obj::new(self.req(key)?, self.file, self.path(key))
     }
 
-    pub fn err(&self, key: &str, reason: impl Into<String>) -> DataError {
-        DataError::new(self.file, join(&self.path, key), reason)
+    pub fn err(&self, key: &str, code: ErrorCode, reason: impl Into<String>) -> DataError {
+        DataError::new(self.file, join(&self.path, key), code, reason)
     }
 
     pub fn path(&self, key: &str) -> String {
@@ -75,7 +125,7 @@ impl<'a> Obj<'a> {
     pub fn only(&self, allowed: &[&str]) -> Result<(), DataError> {
         for (k, _) in self.json.as_object().unwrap_or(&[]) {
             if !allowed.contains(&k.as_str()) {
-                return Err(self.err(k, format!("unknown field (expected one of: {})", allowed.join(", "))));
+                return Err(self.err(k, ErrorCode::UnknownField, format!("unknown field (expected one of: {})", allowed.join(", "))));
             }
         }
         Ok(())
@@ -86,13 +136,13 @@ impl<'a> Obj<'a> {
     }
 
     pub fn req(&self, key: &str) -> Result<&'a Json, DataError> {
-        self.get(key).ok_or_else(|| self.err(key, "missing"))
+        self.get(key).ok_or_else(|| self.err(key, ErrorCode::Missing, "missing"))
     }
 
     pub fn num(&self, key: &str, min: f64, max: f64) -> Result<f64, DataError> {
-        let v = self.req(key)?.as_f64().ok_or_else(|| self.err(key, "expected a number"))?;
+        let v = self.req(key)?.as_f64().ok_or_else(|| self.err(key, ErrorCode::BadType, "expected a number"))?;
         if !(min..=max).contains(&v) {
-            return Err(self.err(key, format!("{v} is outside {min}..={max}")));
+            return Err(self.err(key, ErrorCode::OutOfRange, format!("{v} is outside {min}..={max}")));
         }
         Ok(v)
     }
@@ -105,9 +155,9 @@ impl<'a> Obj<'a> {
     }
 
     pub fn int(&self, key: &str, min: i64, max: i64) -> Result<i64, DataError> {
-        let v = self.req(key)?.as_i64().ok_or_else(|| self.err(key, "expected an integer"))?;
+        let v = self.req(key)?.as_i64().ok_or_else(|| self.err(key, ErrorCode::BadType, "expected an integer"))?;
         if !(min..=max).contains(&v) {
-            return Err(self.err(key, format!("{v} is outside {min}..={max}")));
+            return Err(self.err(key, ErrorCode::OutOfRange, format!("{v} is outside {min}..={max}")));
         }
         Ok(v)
     }
@@ -120,10 +170,10 @@ impl<'a> Obj<'a> {
     }
 
     pub fn str(&self, key: &str) -> Result<&'a str, DataError> {
-        self.req(key)?.as_str().ok_or_else(|| self.err(key, "expected a string"))
+        self.req(key)?.as_str().ok_or_else(|| self.err(key, ErrorCode::BadType, "expected a string"))
     }
 
     pub fn arr(&self, key: &str) -> Result<&'a [Json], DataError> {
-        self.req(key)?.as_array().ok_or_else(|| self.err(key, "expected an array"))
+        self.req(key)?.as_array().ok_or_else(|| self.err(key, ErrorCode::BadType, "expected an array"))
     }
 }

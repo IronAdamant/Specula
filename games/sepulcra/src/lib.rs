@@ -31,7 +31,7 @@ pub mod script;
 pub mod sim;
 
 pub use content::{Content, EnemyKind, StoneKind};
-pub use error::DataError;
+pub use error::{DataError, ErrorCode};
 pub use fixed::{Pos, TICK_HZ};
 pub use map::{CellId, CellKind, Face, Map};
 pub use script::{run, Player, RunReport, Script};

@@ -10,7 +10,7 @@ use std::path::Path;
 use specula_core::hash::StableHasher;
 use specula_core::Json;
 
-use crate::error::{DataError, Obj};
+use crate::error::{DataError, ErrorCode, Obj};
 use crate::fixed::{milli, mm, permille, ticks, TICK_HZ};
 use crate::map::Map;
 
@@ -249,7 +249,7 @@ impl Content {
     /// Reads `slab_01.json`, `stones.json`, `enemies.json` and `waves.json` from `dir`.
     pub fn load_dir(dir: &Path) -> Result<Content, DataError> {
         let read = |name: &str| {
-            std::fs::read_to_string(dir.join(name)).map_err(|e| DataError::new(name, "", format!("cannot read {}: {e}", dir.join(name).display())))
+            std::fs::read_to_string(dir.join(name)).map_err(|e| DataError::new(name, "", ErrorCode::Io, format!("cannot read {}: {e}", dir.join(name).display())))
         };
         Content::from_texts(&read("slab_01.json")?, &read("stones.json")?, &read("enemies.json")?, &read("waves.json")?)
     }
@@ -281,7 +281,7 @@ fn parse_root<'a>(json: &'a Json, file: &'a str) -> Result<Obj<'a>, DataError> {
 }
 
 fn parse_json(text: &str, file: &str) -> Result<Json, DataError> {
-    Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), e.message))
+    Json::parse(text).map_err(|e| DataError::new(file, format!("byte {}", e.offset), ErrorCode::Syntax, e.message))
 }
 
 fn glyph(o: &Obj, key: &str) -> Result<char, DataError> {
@@ -289,7 +289,7 @@ fn glyph(o: &Obj, key: &str) -> Result<char, DataError> {
     let mut it = s.chars();
     match (it.next(), it.next()) {
         (Some(c), None) if c.is_ascii_graphic() && !"#.jGSx-|B=".contains(c) => Ok(c),
-        _ => Err(o.err(key, "expected one printable ASCII character not used by the map legend (# . j G S x - | B =)")),
+        _ => Err(o.err(key, ErrorCode::Invalid, "expected one printable ASCII character not used by the map legend (# . j G S x - | B =)")),
     }
 }
 
@@ -327,35 +327,35 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
         o.only(&["id", "name", "glyph", "targets", "policy", "attack", "tiers", "notes"])?;
         let id = o.str("id")?.to_owned();
         if stones.iter().any(|s| s.id == id) {
-            return Err(o.err("id", format!("duplicate stone id {id:?}")));
+            return Err(o.err("id", ErrorCode::Duplicate, format!("duplicate stone id {id:?}")));
         }
         let g = glyph(&o, "glyph")?;
         if stones.iter().any(|s| s.glyph == g) {
-            return Err(o.err("glyph", format!("glyph '{g}' is already used")));
+            return Err(o.err("glyph", ErrorCode::Duplicate, format!("glyph '{g}' is already used")));
         }
         let targets = match o.str("targets")? {
             "ground" => Targets::Ground,
             "air" => Targets::Air,
             "both" => Targets::Both,
-            _ => return Err(o.err("targets", "expected \"ground\", \"air\" or \"both\"")),
+            _ => return Err(o.err("targets", ErrorCode::BadChoice, "expected \"ground\", \"air\" or \"both\"")),
         };
         let policy = match o.str("policy")? {
             "first" => Policy::First,
             "last" => Policy::Last,
             "strongest" => Policy::Strongest,
             "closest" => Policy::Closest,
-            _ => return Err(o.err("policy", "expected \"first\", \"last\", \"strongest\" or \"closest\"")),
+            _ => return Err(o.err("policy", ErrorCode::BadChoice, "expected \"first\", \"last\", \"strongest\" or \"closest\"")),
         };
         let attack = match o.str("attack")? {
             "bolt" => Attack::Bolt,
             "lob" => Attack::Lob,
             "pulse" => Attack::Pulse,
-            _ => return Err(o.err("attack", "expected \"bolt\", \"lob\" or \"pulse\"")),
+            _ => return Err(o.err("attack", ErrorCode::BadChoice, "expected \"bolt\", \"lob\" or \"pulse\"")),
         };
         let mut tiers = Vec::new();
         let tiers_json = o.arr("tiers")?;
         if !(1..=5).contains(&tiers_json.len()) {
-            return Err(o.err("tiers", "needs 1..=5 tiers"));
+            return Err(o.err("tiers", ErrorCode::OutOfRange, "needs 1..=5 tiers"));
         }
         for (t, tj) in tiers_json.iter().enumerate() {
             let to = Obj::new(tj, F, o.path(&format!("tiers[{t}]")))?;
@@ -371,20 +371,20 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
                 slow_ticks: ticks(to.num_or("slow_s", 0.0, 0.0, 600.0)?),
             };
             if attack != Attack::Pulse && tier.projectile_speed <= 0 {
-                return Err(to.err("projectile_mps", "bolts and lobs need a projectile speed of at least 0.03 m/s"));
+                return Err(to.err("projectile_mps", ErrorCode::Invalid, "bolts and lobs need a projectile speed of at least 0.03 m/s"));
             }
             if attack == Attack::Lob && tier.splash <= 0 {
-                return Err(to.err("splash_m", "a lob needs a splash radius"));
+                return Err(to.err("splash_m", ErrorCode::Invalid, "a lob needs a splash radius"));
             }
             if tier.damage == 0 && tier.slow == 0 {
-                return Err(to.err("damage", "a tier must deal damage or slow"));
+                return Err(to.err("damage", ErrorCode::Invalid, "a tier must deal damage or slow"));
             }
             tiers.push(tier);
         }
         stones.push(StoneDef { id, name: o.str("name")?.to_owned(), glyph: g, targets, policy, attack, tiers });
     }
     if stones.is_empty() || stones.len() > 64 {
-        return Err(root.err("stones", "needs 1..=64 stones"));
+        return Err(root.err("stones", ErrorCode::OutOfRange, "needs 1..=64 stones"));
     }
     Ok((stones, rules))
 }
@@ -396,7 +396,7 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
     root.only(&["notes", "enemies"])?;
     let list = root.arr("enemies")?;
     if list.is_empty() || list.len() > 64 {
-        return Err(root.err("enemies", "needs 1..=64 enemies"));
+        return Err(root.err("enemies", ErrorCode::OutOfRange, "needs 1..=64 enemies"));
     }
     let ids: Vec<&str> = list.iter().map(|e| e.get("id").and_then(Json::as_str).unwrap_or("")).collect();
     let mut out: Vec<EnemyDef> = Vec::new();
@@ -408,13 +408,13 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
         ])?;
         let id = o.str("id")?.to_owned();
         if out.iter().any(|d| d.id == id) {
-            return Err(o.err("id", format!("duplicate enemy id {id:?}")));
+            return Err(o.err("id", ErrorCode::Duplicate, format!("duplicate enemy id {id:?}")));
         }
         let movement = match o.str("movement")? {
             "walker" => Movement::Walker,
             "climber" => Movement::Climber,
             "flyer" => Movement::Flyer,
-            _ => return Err(o.err("movement", "expected \"walker\", \"climber\" or \"flyer\"")),
+            _ => return Err(o.err("movement", ErrorCode::BadChoice, "expected \"walker\", \"climber\" or \"flyer\"")),
         };
         let (jump_chance, jump_detour) = match o.get("jump") {
             None => (0, 0),
@@ -422,16 +422,18 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
                 let jo = Obj::new(j, F, o.path("jump"))?;
                 jo.only(&["chance", "max_detour_m"])?;
                 if movement == Movement::Flyer {
-                    return Err(o.err("jump", "flyers don't lane-jump"));
+                    return Err(o.err("jump", ErrorCode::Invalid, "flyers don't lane-jump"));
                 }
                 (permille(jo.num("chance", 0.0, 1.0)?), mm(jo.num_or("max_detour_m", 0.0, 0.0, 1000.0)?))
             }
         };
         let pair = |key: &str, min: i64, max: i64| -> Result<(i64, i64), DataError> {
             let a = o.arr(key)?;
+            let want = format!("expected [min, max] integers with {min} <= min <= max <= {max}");
             match (a.first().and_then(Json::as_i64), a.get(1).and_then(Json::as_i64), a.len()) {
                 (Some(lo), Some(hi), 2) if min <= lo && lo <= hi && hi <= max => Ok((lo, hi)),
-                _ => Err(o.err(key, format!("expected [min, max] integers with {min} <= min <= max <= {max}"))),
+                (Some(_), Some(_), 2) => Err(o.err(key, ErrorCode::OutOfRange, want)),
+                _ => Err(o.err(key, ErrorCode::BadType, want)),
             }
         };
         let circle = if movement == Movement::Flyer {
@@ -440,16 +442,26 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
         } else {
             (0, 0)
         };
-        let (dlo, dhi) = pair("dust", 0, 100_000)?;
+        let (dlo, dhi) = pair("dust", 0, 10_000)?;
+        // Ground enemies must be able to break a wall: at least one milli-HP per tick, or a full
+        // block would stall the game. Flyers never touch walls.
+        let wall_damage = if movement == Movement::Flyer {
+            if o.get("wall_dps").is_some() {
+                return Err(o.err("wall_dps", ErrorCode::Invalid, "flyers ignore walls; remove wall_dps"));
+            }
+            0
+        } else {
+            milli(o.num("wall_dps", 0.1, 30_000.0)?) / TICK_HZ as i32
+        };
         let summon = match o.get("summon") {
             None => None,
             Some(s) => {
                 let so = Obj::new(s, F, o.path("summon"))?;
                 so.only(&["enemy", "every_s", "count"])?;
                 let target = so.str("enemy")?;
-                let k = ids.iter().position(|&x| x == target).ok_or_else(|| so.err("enemy", format!("no enemy {target:?}")))?;
+                let k = ids.iter().position(|&x| x == target).ok_or_else(|| so.err("enemy", ErrorCode::UnknownRef, format!("no enemy {target:?}")))?;
                 if k == i {
-                    return Err(so.err("enemy", "an enemy can't summon itself"));
+                    return Err(so.err("enemy", ErrorCode::Invalid, "an enemy can't summon itself"));
                 }
                 Some(Summon { enemy: EnemyKind(k as u8), every: ticks(so.num("every_s", 0.1, 600.0)?), count: so.int("count", 1, 100)? as u16 })
             }
@@ -458,7 +470,7 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
             id,
             name: o.str("name")?.to_owned(),
             glyph: glyph(&o, "glyph")?,
-            hp: milli(o.num("hp", 0.001, 1_000_000.0)?),
+            hp: milli(o.num("hp", 0.001, 100_000.0)?),
             speed: mm(o.num("speed_mps", 0.01, 100.0)?),
             movement,
             climb_speed: permille(o.num_or("climb_speed", 1.0, 0.05, 2.0)?),
@@ -467,15 +479,24 @@ fn parse_enemies(text: &str) -> Result<Vec<EnemyDef>, DataError> {
             circle,
             dust: (dlo as i32, dhi as i32),
             tombstones: o.int("tombstones", 0, 1000)? as i32,
-            wall_damage: milli(o.num_or("wall_dps", 0.0, 0.0, 1_000_000.0)?) / TICK_HZ as i32,
+            wall_damage,
             summon,
         });
     }
-    // A summoned enemy that flies would need an air entry; keep summons on the ground.
+    // Summons appear on the summoner's cell, so they must be able to stand and route there: a
+    // flyer would need an air entry, and a walker summoned on a cliff could never move.
     for (i, e) in out.iter().enumerate() {
         if let Some(s) = e.summon {
-            if out[usize::from(s.enemy.0)].flies() || e.flies() {
-                return Err(DataError::new(F, format!("enemies[{i}].summon"), "summoner and summoned must both walk or climb"));
+            let child = &out[usize::from(s.enemy.0)];
+            let reason = if child.flies() || e.flies() {
+                Some("summoner and summoned must both walk or climb")
+            } else if e.climbs() && !child.climbs() {
+                Some("a climber can only summon climbers (a walker summoned on a cliff can't move)")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(DataError::new(F, format!("enemies[{i}].summon.enemy"), ErrorCode::Invalid, reason));
             }
         }
     }
@@ -493,7 +514,7 @@ fn parse_waves(text: &str, map: &Map, enemies: &[EnemyDef], rules: &mut Rules) -
     rules.early_call_milli_per_s = milli(root.num_or("early_call_dust_per_s", 0.0, 0.0, 1000.0)?);
     let list = root.arr("waves")?;
     if list.is_empty() || list.len() > 1000 {
-        return Err(root.err("waves", "needs 1..=1000 waves"));
+        return Err(root.err("waves", ErrorCode::OutOfRange, "needs 1..=1000 waves"));
     }
     let mut waves = Vec::new();
     for (wi, w) in list.iter().enumerate() {
@@ -504,7 +525,7 @@ fn parse_waves(text: &str, map: &Map, enemies: &[EnemyDef], rules: &mut Rules) -
             let go = Obj::new(g, F, o.path(&format!("groups[{gi}]")))?;
             go.only(&["enemy", "count", "from", "start_s", "every_s"])?;
             let eid = go.str("enemy")?;
-            let k = enemies.iter().position(|e| e.id == eid).ok_or_else(|| go.err("enemy", format!("no enemy {eid:?}")))?;
+            let k = enemies.iter().position(|e| e.id == eid).ok_or_else(|| go.err("enemy", ErrorCode::UnknownRef, format!("no enemy {eid:?}")))?;
             let def = &enemies[k];
             let from = spawn_points(&go, map, def)?;
             groups.push(Group {
@@ -517,8 +538,8 @@ fn parse_waves(text: &str, map: &Map, enemies: &[EnemyDef], rules: &mut Rules) -
         }
         waves.push(WaveDef {
             duration: ticks(o.num("duration_s", 1.0, 3600.0)?),
-            income: o.int_or("income", 0, 0, 1_000_000)? as i32,
-            hp_scale: permille(o.num_or("hp", 1.0, 0.01, 100.0)?),
+            income: o.int_or("income", 0, 0, 100_000)? as i32,
+            hp_scale: permille(o.num_or("hp", 1.0, 0.01, 20.0)?),
             groups,
         });
     }
@@ -529,12 +550,12 @@ fn parse_waves(text: &str, map: &Map, enemies: &[EnemyDef], rules: &mut Rules) -
 fn spawn_points(go: &Obj, map: &Map, def: &EnemyDef) -> Result<Vec<SpawnPoint>, DataError> {
     let names: Vec<&str> = match go.req("from")? {
         Json::Str(s) => vec![s.as_str()],
-        Json::Arr(a) => a.iter().map(|v| v.as_str().ok_or_else(|| go.err("from", "expected spawn names"))).collect::<Result<_, _>>()?,
-        _ => return Err(go.err("from", "expected a spawn name, a list of names, \"gorges\", \"cliffs\", \"ground\" or \"air\"")),
+        Json::Arr(a) => a.iter().map(|v| v.as_str().ok_or_else(|| go.err("from", ErrorCode::BadType, "expected spawn names"))).collect::<Result<_, _>>()?,
+        _ => return Err(go.err("from", ErrorCode::BadType, "expected a spawn name, a list of names, \"gorges\", \"cliffs\", \"ground\" or \"air\"")),
     };
     if def.flies() {
         if names != ["air"] {
-            return Err(go.err("from", format!("{} flies: use \"air\"", def.id)));
+            return Err(go.err("from", ErrorCode::Invalid, format!("{} flies: use \"air\"", def.id)));
         }
         return Ok((0..map.air.entries.len() as u16).map(SpawnPoint::Air).collect());
     }
@@ -545,20 +566,20 @@ fn spawn_points(go: &Obj, map: &Map, def: &EnemyDef) -> Result<Vec<SpawnPoint>, 
             "gorges" => out.extend(pick(&|c| !c)),
             "cliffs" => out.extend(pick(&|c| c)),
             "ground" => out.extend(pick(&|_| true)),
-            "air" => return Err(go.err("from", format!("{} doesn't fly", def.id))),
+            "air" => return Err(go.err("from", ErrorCode::Invalid, format!("{} doesn't fly", def.id))),
             name => {
-                let i = map.spawns.iter().position(|s| s.name == name).ok_or_else(|| go.err("from", format!("no spawn named {name:?}")))?;
+                let i = map.spawns.iter().position(|s| s.name == name).ok_or_else(|| go.err("from", ErrorCode::UnknownRef, format!("no spawn named {name:?}")))?;
                 out.push(SpawnPoint::Ground(i as u16));
             }
         }
     }
     if !def.climbs() {
         if let Some(SpawnPoint::Ground(i)) = out.iter().find(|p| matches!(p, SpawnPoint::Ground(i) if map.spawns[usize::from(*i)].climbers_only)) {
-            return Err(go.err("from", format!("{} can't climb, but {} is a cliff base", def.id, map.spawns[usize::from(*i)].name)));
+            return Err(go.err("from", ErrorCode::Invalid, format!("{} can't climb, but {} is a cliff base", def.id, map.spawns[usize::from(*i)].name)));
         }
     }
     if out.is_empty() {
-        return Err(go.err("from", "no spawn points"));
+        return Err(go.err("from", ErrorCode::Invalid, "no spawn points"));
     }
     out.sort_by_key(|p| match p {
         SpawnPoint::Ground(i) | SpawnPoint::Air(i) => *i,
@@ -573,6 +594,8 @@ mod tests {
 
     fn with(file: &str, from: &str, to: &str) -> Result<Content, DataError> {
         let swap = |name: &str, text: &str| {
+            // Git may have checked the data out with CRLF; the fixtures are written with LF.
+            let text = text.replace("\r\n", "\n");
             if name == file {
                 assert!(text.contains(from), "test fixture: {from:?} not in {file}");
                 text.replacen(from, to, 1)
@@ -618,42 +641,57 @@ mod tests {
 
     #[test]
     fn content_errors_are_structured() {
-        let e = with("stones.json", "\"range_m\": 7.0", "\"rnage_m\": 7.0").unwrap_err();
-        assert_eq!((e.file.as_str(), e.field.as_str()), ("stones.json", "stones[0].tiers[0].rnage_m"));
-        assert!(e.reason.contains("unknown field"), "{e}");
-
-        let e = with("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"W\"").unwrap_err();
-        assert_eq!(e.field, "stones[1].glyph", "{e}");
-
-        let e = with("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"#\"").unwrap_err();
-        assert!(e.reason.contains("legend"), "{e}");
-
-        let e = with("stones.json", "\"splash_m\": 1.8", "\"splash_m\": 0").unwrap_err();
-        assert_eq!(e.field, "stones[2].tiers[0].splash_m", "{e}");
-
-        let e = with("enemies.json", "\"hp\": 55", "\"hp\": -1").unwrap_err();
-        assert_eq!((e.file.as_str(), e.field.as_str()), ("enemies.json", "enemies[0].hp"));
-
-        let e = with("enemies.json", "\"enemy\": \"shambler\", \"every_s\"", "\"enemy\": \"ghoul\", \"every_s\"").unwrap_err();
-        assert_eq!(e.field, "enemies[3].summon.enemy", "{e}");
-
-        let e = with("waves.json", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"gorges\"", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"cliffs\"")
-            .unwrap_err();
-        assert_eq!((e.file.as_str(), e.field.as_str()), ("waves.json", "waves[1].groups[1].from"));
-        assert!(e.reason.contains("can't climb"), "{e}");
-
-        let e = with("waves.json", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"air\"", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"gorges\"")
-            .unwrap_err();
-        assert!(e.reason.contains("use \"air\""), "{e}");
-
-        let e = with("waves.json", "\"from\": \"gorge_mid\"", "\"from\": \"gorge_nowhere\"").unwrap_err();
-        assert!(e.reason.contains("no spawn named"), "{e}");
-
-        let e = with("waves.json", "\"enemy\": \"colossus\"", "\"enemy\": \"dragon\"").unwrap_err();
-        assert!(e.reason.contains("no enemy \"dragon\""), "{e}");
-
-        let e = with("waves.json", "\"tombstones\": 10", "\"tombstones\": 10,").unwrap_err();
-        assert!(e.field.starts_with("byte "), "{e}");
+        use ErrorCode::*;
+        let cases: [(&str, &str, &str, &str, ErrorCode); 22] = [
+            ("stones.json", "\"range_m\": 7.0", "\"rnage_m\": 7.0", "stones[0].tiers[0].rnage_m", UnknownField),
+            ("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"W\"", "stones[1].glyph", Duplicate),
+            ("stones.json", "\"glyph\": \"P\"", "\"glyph\": \"#\"", "stones[1].glyph", Invalid),
+            ("stones.json", "\"splash_m\": 1.8", "\"splash_m\": 0", "stones[2].tiers[0].splash_m", Invalid),
+            ("stones.json", "\"policy\": \"first\"", "\"policy\": \"fastest\"", "stones[0].policy", BadChoice),
+            ("stones.json", "\"range_m\": 7.0", "\"range_m\": \"far\"", "stones[0].tiers[0].range_m", BadType),
+            ("stones.json", "\"range_m\": 7.0, ", "", "stones[0].tiers[0].range_m", Missing),
+            ("enemies.json", "\"hp\": 55", "\"hp\": -1", "enemies[0].hp", OutOfRange),
+            // Bounds that keep milli-HP in i32 even at the largest wave scale (100 000 HP x 20).
+            ("enemies.json", "\"hp\": 55", "\"hp\": 100001", "enemies[0].hp", OutOfRange),
+            ("enemies.json", "\"dust\": [3, 5]", "\"dust\": [3, 10001]", "enemies[0].dust", OutOfRange),
+            ("enemies.json", "\"dust\": [3, 5]", "\"dust\": [3]", "enemies[0].dust", BadType),
+            ("enemies.json", "\"enemy\": \"shambler\", \"every_s\"", "\"enemy\": \"ghoul\", \"every_s\"", "enemies[3].summon.enemy", UnknownRef),
+            // Ground enemies must be able to break walls, or a full block stalls the game.
+            ("enemies.json", ", \"wall_dps\": 12", "", "enemies[0].wall_dps", Missing),
+            ("enemies.json", "\"wall_dps\": 12", "\"wall_dps\": 0", "enemies[0].wall_dps", OutOfRange),
+            ("enemies.json", "\"tombstones\": 1
+", "\"tombstones\": 1, \"wall_dps\": 5
+", "enemies[2].wall_dps", Invalid),
+            // A walker summoned onto a cliff could never move.
+            (
+                "enemies.json",
+                "\"movement\": \"walker\",
+      \"dust\": [150, 150], \"tombstones\": 5, \"wall_dps\": 150,
+      \"summon\": { \"enemy\": \"shambler\"",
+                "\"movement\": \"climber\",
+      \"dust\": [150, 150], \"tombstones\": 5, \"wall_dps\": 150,
+      \"summon\": { \"enemy\": \"runner\"",
+                "enemies[3].summon.enemy",
+                Invalid,
+            ),
+            ("waves.json", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"gorges\"", "\"enemy\": \"runner\", \"count\": 6, \"from\": \"cliffs\"", "waves[1].groups[1].from", Invalid),
+            ("waves.json", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"air\"", "\"enemy\": \"wraith\", \"count\": 4, \"from\": \"gorges\"", "waves[3].groups[1].from", Invalid),
+            ("waves.json", "\"from\": \"gorge_mid\"", "\"from\": \"gorge_nowhere\"", "waves[9].groups[0].from", UnknownRef),
+            ("waves.json", "\"enemy\": \"colossus\"", "\"enemy\": \"dragon\"", "waves[9].groups[0].enemy", UnknownRef),
+            ("waves.json", "\"hp\": 2.4", "\"hp\": 21", "waves[9].hp", OutOfRange),
+            ("waves.json", "\"tombstones\": 10", "\"tombstones\": 10,", "", Syntax),
+        ];
+        for (file, from, to, field, code) in cases {
+            let e = with(file, from, to).err().unwrap_or_else(|| panic!("{from:?} -> {to:?} was accepted"));
+            assert_eq!(e.file, file);
+            assert_eq!(e.code, code, "{from:?} -> {to:?}: {e}");
+            if !field.is_empty() {
+                assert_eq!(e.field, field, "{e}");
+            }
+        }
+        // The largest legal enemy at the largest legal wave scale still loads.
+        let big = with("enemies.json", "\"hp\": 1250", "\"hp\": 100000").unwrap();
+        assert_eq!(big.enemies[3].hp, 100_000_000);
     }
 
     #[test]

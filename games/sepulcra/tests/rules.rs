@@ -161,6 +161,38 @@ fn runners_leap_cracked_ledges_by_seeded_chance() {
     assert_eq!(n, jumps(ENEMIES_JSON, 30, 7).1.len(), "same seed, same leaps");
 }
 
+/// Review finding: a runner sealed in a lane whose only way out is a cracked ledge has an open
+/// route (the leap), so the owner's rule says it must take it, on every seed, without
+/// attacking a wall. Walkers that can't leap must break a wall instead.
+#[test]
+fn a_leap_that_is_the_only_open_route_is_always_taken() {
+    let sealed = |enemies: &str, seed: u64| {
+        let c = one_wave(r#"{"enemy": "runner", "count": 1, "from": "gorge_west"}"#, enemies);
+        let mut s = State::new(c.clone(), seed);
+        apply(&mut s, Command::PlaceWall { cell: cell(&c, "top:5,17") });
+        apply(&mut s, Command::PlaceWall { cell: cell(&c, "top:5,13") });
+        let ev = run_for(&mut s, 5000, |s, ev| {
+            no_enemy_on_a_wall(s);
+            leaked(ev) > 0
+        });
+        (c, s, ev)
+    };
+    for seed in 1..=50 {
+        let (c, s, ev) = sealed(ENEMIES_JSON, seed);
+        let leaps: Vec<&Event> = ev.iter().filter(|e| matches!(e, Event::Jumped { .. })).collect();
+        assert_eq!(leaps.len(), 1, "seed {seed}");
+        assert!(matches!(leaps[0], Event::Jumped { from, to, .. } if *from == cell(&c, "top:4,13") && *to == cell(&c, "top:4,11")));
+        assert!(!ev.iter().any(|e| matches!(e, Event::AttackingWall { .. })), "seed {seed}: attacked a wall with a leap open");
+        assert_eq!(leaked(&ev), 1, "seed {seed}");
+        assert!(s.walls().all(|(_, w)| w.hp == w.max_hp));
+    }
+    // The same runner without the ability to leap has no open route: it breaks a wall.
+    let never = ENEMIES_JSON.replace("\"chance\": 0.4", "\"chance\": 0.0");
+    let (_, _, ev) = sealed(&never, 1);
+    assert!(ev.iter().any(|e| matches!(e, Event::AttackingWall { .. })));
+    assert!(!ev.iter().any(|e| matches!(e, Event::Jumped { .. })));
+}
+
 #[test]
 fn flyers_ignore_walls_and_only_sky_obelisks_hit_them() {
     let c = one_wave(r#"{"enemy": "wraith", "count": 3, "from": "air", "every_s": 2}"#, ENEMIES_JSON);

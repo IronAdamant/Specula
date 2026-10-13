@@ -189,7 +189,11 @@ alone decides.
 - **Where walls go:** top-face lanes only, not gorges, cliffs or the graveyard. A wall can't be placed on a cell an
   enemy stands on or is stepping into.
 - **Wall cost:** 15 dust for 300 HP. Removing a wall refunds 70 % of its cost, scaled by the HP it has left.
-- **Wall damage per second:** shambler 12, runner 6, colossus 150. Flyers ignore walls.
+- **Wall damage per second:** shambler 12, runner 6, colossus 150. Flyers ignore walls. Every ground enemy must
+  deal some wall damage (at least 0.1 HP/s), or a full block would stall the game.
+- **Safety net:** an enemy with no route at all, even through walls, is removed after 5 s (a `Stranded` event; no
+  dust, no tombstone), so it can't hold its wave open forever. Validated content can't cause this: every spawn
+  reaches the graveyard, and summons must be able to move wherever their summoner stands.
 
 ### Stones
 
@@ -217,8 +221,9 @@ alone decides.
 | Wraith | 40 | 2.4 m/s | Flyer: appears on the ring, circles 6–14 waypoints in a seeded direction, then dives | 5–7 | 1 |
 | Bone colossus | 1250 | 0.4 m/s | Walker from the middle gorge; summons 2 shamblers every 7 s | 150 | 5 |
 
-- **Lane jumps.** A runner leaps only if the landing is at most 4 m farther from the graveyard, or if the leap is its
-  only open route.
+- **Lane jumps.** While a runner can still walk to the graveyard, it takes a ledge by a seeded 40 % chance, and only
+  if the landing is at most 4 m farther from the graveyard. A ledge always counts as an open route, though: a runner
+  walled into a lane walks to the ledge and leaps (no roll) instead of breaking a wall.
 - **Enemy HP** scales with the wave, from × 1.0 to × 2.4 in wave 10.
 
 ### Economy and waves
@@ -267,11 +272,11 @@ How it got there:
 
 ### Testing (built)
 
-- **43 tests:**
-  - map and content validation
+- **49 tests:**
+  - map and content validation (errors carry a machine-readable code)
   - flow fields and rerouting
   - the wall rule
-  - lane jumps
+  - lane jumps, including a runner sealed in a lane, which must leap on every seed
   - flyers against walls and obelisks
   - climbing
   - range across faces
@@ -282,8 +287,10 @@ How it got there:
   - slows and splash
   - roots
   - win and lose
-- **The replay suite above** passes: per-tick hash equality, divergence across seeds, journal replay with a JSON round
-  trip, and three pinned full runs.
+- **The replay suite above** passes: per-tick hash equality, divergence across seeds, and three pinned full runs.
+- **Recordings check themselves.** A recording (`--journal FILE`) stores the seed as a decimal string, the content
+  hash, every command with its tick, and the final tick and state hash. `--replay FILE` refuses other content and
+  reports any mismatch.
 - **Speed:** a full 12-minute run simulates in about 17 ms on one core (release build). A 1000-seed sweep of the
   reference layout takes about 2 s on 32 threads.
 

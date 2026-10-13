@@ -10,14 +10,15 @@
 //! Flags: `--seed N` (default 1; the first seed of a sweep), `--layout NAME|FILE` (built-ins:
 //! centre, no_air, full_block, none, or `all` for each built-in in turn; default centre), `--waves N` (stop before wave N+1),
 //! `--sweep N` (N seeds, outcome stats), `--data DIR` (custom content files), `--map` (print
-//! the slab), `--ascii` (print the final state), `--journal FILE` (write the replay journal).
+//! the slab), `--ascii` (print the final state), `--journal FILE` (write a self-checking replay
+//! recording), `--replay FILE` (replay a recording and verify its final tick and hash).
 
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
 use sepulcra::content::Content;
-use sepulcra::script::{journal_to_json, run, RunReport, Script};
+use sepulcra::script::{run, Recording, RunReport, Script};
 use sepulcra::sim::{Event, Outcome};
 use sepulcra::TICK_HZ;
 
@@ -37,10 +38,11 @@ struct Args {
     map: bool,
     ascii: bool,
     journal: Option<String>,
+    replay: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut a = Args { seed: 1, layout: "centre".into(), waves: None, sweep: None, data: None, map: false, ascii: false, journal: None };
+    let mut a = Args { seed: 1, layout: "centre".into(), waves: None, sweep: None, data: None, map: false, ascii: false, journal: None, replay: None };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut val = |name: &str| it.next().ok_or(format!("{name} needs a value"));
@@ -51,6 +53,7 @@ fn parse_args() -> Result<Args, String> {
             "--sweep" => a.sweep = Some(val("--sweep")?.parse().map_err(|e| format!("--sweep: {e}"))?),
             "--data" => a.data = Some(val("--data")?),
             "--journal" => a.journal = Some(val("--journal")?),
+            "--replay" => a.replay = Some(val("--replay")?),
             "--map" => a.map = true,
             "--ascii" => a.ascii = true,
             other => return Err(format!("unknown flag {other} (see the doc comment in examples/headless.rs)")),
@@ -82,6 +85,22 @@ fn real_main() -> Result<(), String> {
     });
     if args.map {
         println!("{}", content.map.ascii());
+    }
+    if let Some(path) = &args.replay {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let rec = Recording::from_json(&text, &content, path).map_err(|e| e.to_string())?;
+        let t0 = Instant::now();
+        let state = rec.verify(Arc::clone(&content)).map_err(|e| e.to_string())?;
+        println!(
+            "replay verified: seed {}, {} commands, {:?} at tick {}, hash {:016x} ({:.1} ms)",
+            rec.seed,
+            rec.journal.len(),
+            state.outcome(),
+            state.tick(),
+            state.hash(),
+            t0.elapsed().as_secs_f64() * 1000.0
+        );
+        return Ok(());
     }
     let names: Vec<&str> = if args.layout == "all" { LAYOUTS.iter().map(|(n, _)| *n).collect() } else { vec![args.layout.as_str()] };
     for name in names {
@@ -160,8 +179,8 @@ fn single(content: &Arc<Content>, script: &Script, args: &Args) -> Result<(), St
         println!("{last_ascii}");
     }
     if let Some(path) = &args.journal {
-        std::fs::write(path, journal_to_json(args.seed, &report.journal, content).to_pretty()).map_err(|e| format!("{path}: {e}"))?;
-        println!("journal written to {path}");
+        std::fs::write(path, report.recording(content).to_json(content).to_pretty()).map_err(|e| format!("{path}: {e}"))?;
+        println!("recording written to {path} (check it with --replay {path})");
     }
     Ok(())
 }

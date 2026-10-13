@@ -16,7 +16,9 @@
 //! Everything in [`State`] is integers, ordered containers and seeded RNG streams, so the same
 //! seed and the same commands give the same [`State::hash`] on every machine.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::fmt;
 use std::sync::Arc;
 
@@ -33,6 +35,9 @@ pub type ProjectileId = u32;
 
 /// Height of a stone's muzzle above its cell, where projectiles start.
 const MUZZLE: i32 = 1500;
+
+/// How long an enemy may stand with no route at all before it is removed ([`Event::Stranded`]).
+pub const STRANDED_TICKS: u32 = 5 * TICK_HZ;
 
 /// Player input. Commands address cells (one stone per cell), so agents, replays and the UI all
 /// speak the same language. Recorded with their tick, they replay a run exactly.
@@ -147,6 +152,10 @@ pub enum Event {
     WallDamaged { cell: CellId, hp: i32, max_hp: i32 },
     WallBroken { cell: CellId },
     TombstonesLost { enemy: EnemyId, kind: EnemyKind, lost: i32, remaining: i32 },
+    /// An enemy with no route at all, even through walls, for [`STRANDED_TICKS`] was removed
+    /// (no dust, no tombstone), so it can't hold its wave open forever. Validated content never
+    /// strands anyone; this is the safety net for hand-edited maps.
+    Stranded { enemy: EnemyId, kind: EnemyKind, pos: Pos },
     Won,
     Lost,
     /// Command `index` of this step was refused.
@@ -200,6 +209,8 @@ pub struct Enemy {
     pub alive: bool,
     carry: i64,
     next_summon: u32,
+    /// Ticks spent with no route at all.
+    stuck: u32,
 }
 
 impl Enemy {
@@ -258,6 +269,8 @@ pub struct WaveStats {
     pub killed: u32,
     pub leaked: u32,
     pub tombstones_lost: i32,
+    /// Removed after [`STRANDED_TICKS`] with no route (never on validated content).
+    pub stranded: u32,
     pub dust_from_kills: i32,
     /// Enemies of this wave not yet spawned.
     pub pending: u32,
@@ -463,7 +476,15 @@ impl State {
     /// Applies `commands` (refused ones become [`Event::Rejected`]), then advances one tick.
     /// After the game is won or lost, time stops and every command is refused.
     pub fn step(&mut self, commands: &[Command]) -> Vec<Event> {
-        self.w.step(&self.content, commands)
+        let mut ev = Vec::new();
+        self.w.step(&self.content, commands, &mut ev);
+        ev
+    }
+
+    /// [`State::step`] appending to a caller-owned buffer, so a long run allocates no event
+    /// vector per tick (clear it between ticks if you only want this tick's events).
+    pub fn step_into(&mut self, commands: &[Command], events: &mut Vec<Event>) {
+        self.w.step(&self.content, commands, events);
     }
 
     /// A 64-bit hash of the entire simulation state (content included), in a fixed order.
@@ -604,7 +625,7 @@ impl World {
 
     fn gain(&mut self, amount: i32, source: DustSource, ev: &mut Vec<Event>) {
         if amount > 0 {
-            self.dust += amount;
+            self.dust = self.dust.saturating_add(amount);
             ev.push(Event::DustGained { amount, source });
         }
     }
@@ -638,26 +659,28 @@ impl World {
 
     /// Applies `commands` (refused ones become [`Event::Rejected`]), then advances one tick.
     /// After the game is won or lost, time stops and every command is refused.
-    fn step(&mut self, content: &Content, commands: &[Command]) -> Vec<Event> {
-        let mut ev = Vec::new();
+    fn step(&mut self, content: &Content, commands: &[Command], ev: &mut Vec<Event>) {
         for (i, c) in commands.iter().enumerate() {
-            if let Err(reason) = self.apply(content, c, &mut ev) {
+            if let Err(reason) = self.apply(content, c, ev) {
                 ev.push(Event::Rejected { index: i as u16, reason });
             }
         }
-        if self.outcome == Outcome::Running {
-            if self.next_wave_tick.is_some_and(|t| self.tick >= t) {
-                self.start_wave(content, false, &mut ev);
-            }
-            self.spawn_due(content, &mut ev);
-            self.summon(content, &mut ev);
-            self.move_enemies(content, &mut ev);
-            self.fire_stones(content, &mut ev);
-            self.move_projectiles(content, &mut ev);
-            self.finish_tick(&mut ev);
-            self.tick += 1;
+        if self.outcome != Outcome::Running {
+            return;
         }
-        ev
+        if self.next_wave_tick.is_some_and(|t| self.tick >= t) {
+            self.start_wave(content, false, ev);
+        }
+        self.spawn_due(content, ev);
+        self.summon(content, ev);
+        self.move_enemies(content, ev);
+        if self.outcome == Outcome::Running {
+            self.fire_stones(content, ev);
+            self.move_projectiles(content, ev);
+        }
+        // After a loss nothing else happens this tick: no shots or kills after `Lost`.
+        self.finish_tick(ev);
+        self.tick += 1;
     }
 
     fn start_wave(&mut self, content: &Content, early: bool, ev: &mut Vec<Event>) {
@@ -667,7 +690,7 @@ impl World {
             if let Some(t) = self.next_wave_tick {
                 let left = i64::from(t.saturating_sub(self.tick));
                 let bonus = left * i64::from(content.rules.early_call_milli_per_s) / (i64::from(TICK_HZ) * 1000);
-                self.gain(bonus as i32, DustSource::EarlyCall, ev);
+                self.gain(bonus.min(i64::from(i32::MAX)) as i32, DustSource::EarlyCall, ev);
             }
         }
         self.wave += 1;
@@ -686,12 +709,14 @@ impl World {
                         SpawnAt::Air { entry, dir, hops }
                     }
                 };
-                self.pending.push(Pending { tick: self.tick + g.start + k * g.every, seq: self.next_seq, enemy: g.enemy, wave: self.wave, at });
+                let tick = self.tick.saturating_add(g.start).saturating_add(k.saturating_mul(g.every));
+                self.pending.push(Pending { tick, seq: self.next_seq, enemy: g.enemy, wave: self.wave, at });
                 self.next_seq += 1;
                 self.wave_stats[w].pending += 1;
             }
         }
-        self.pending.sort_by_key(|p| (p.tick, p.seq));
+        // Latest first, so the next spawn is always at the back.
+        self.pending.sort_by_key(|p| Reverse((p.tick, p.seq)));
         self.next_wave_tick = (usize::from(self.wave) < content.waves.len()).then(|| self.tick + def.duration);
         if self.wave == content.rules.nature.from_wave {
             self.refresh_roots(content);
@@ -699,9 +724,8 @@ impl World {
     }
 
     fn spawn_due(&mut self, content: &Content, ev: &mut Vec<Event>) {
-        let n = self.pending.iter().take_while(|p| p.tick <= self.tick).count();
-        let due: Vec<Pending> = self.pending.drain(..n).collect();
-        for p in due {
+        while self.pending.last().is_some_and(|p| p.tick <= self.tick) {
+            let p = self.pending.pop().expect("checked");
             self.wave_stats[usize::from(p.wave) - 1].pending -= 1;
             self.spawn(content, p.enemy, p.wave, p.at, ev);
         }
@@ -709,7 +733,8 @@ impl World {
 
     fn spawn(&mut self, content: &Content, kind: EnemyKind, wave: u16, at: SpawnAt, ev: &mut Vec<Event>) {
         let def = content.enemy(kind);
-        let hp = (i64::from(def.hp) * i64::from(content.waves[usize::from(wave) - 1].hp_scale) / 1000).max(1) as i32;
+        // Content bounds keep this within i32 (100 000 HP x 20); the clamp is belt and braces.
+        let hp = (i64::from(def.hp) * i64::from(content.waves[usize::from(wave) - 1].hp_scale) / 1000).clamp(1, i64::from(i32::MAX)) as i32;
         let motion = match at {
             SpawnAt::Ground(c) => Motion::Ground { from: c, to: c, progress: 0, len: 0, leap: true },
             SpawnAt::Air { entry, dir, hops } => {
@@ -734,6 +759,7 @@ impl World {
             alive: true,
             carry: 0,
             next_summon: self.tick + def.summon.map_or(0, |s| s.every),
+            stuck: 0,
         };
         self.place(content, &mut e);
         ev.push(Event::Spawned { enemy: id, kind, pos: e.pos });
@@ -780,7 +806,7 @@ impl World {
             Motion::Ground { from, to, progress, len, .. } => {
                 e.pos = Pos::lerp(map.cell(from).pos, map.cell(to).pos, progress, len);
                 let class = class_of(content.enemy(e.kind));
-                let rest = self.fields.remaining(class, to);
+                let rest = self.fields.remaining(class, content.enemy(e.kind).jump_chance > 0, to);
                 e.remaining = if rest == UNREACHABLE { UNREACHABLE } else { rest.saturating_add(len - progress) };
             }
             Motion::Air { from, to, progress, len, hops_left, diving, .. } => {
@@ -860,17 +886,23 @@ impl World {
                 self.leak(e, def, ev);
                 return;
             }
-            if !leap && kind == CellKind::Jump && def.jump_chance > 0 {
+            let jumper = def.jump_chance > 0;
+            // The seeded roll: an optional shortcut while a walking route exists. (When a leap
+            // is the only open route, `route` below leaps without rolling.)
+            if !leap && kind == CellKind::Jump && jumper {
                 if let Some(p) = self.jump_target(content, class, at, def) {
-                    if (self.rng_jump.below(1000) as i32) < def.jump_chance {
-                        let len = map.cell(at).pos.dist(map.cell(p).pos);
-                        e.motion = Motion::Ground { from: at, to: p, progress: 0, len, leap: true };
+                    if self.rng_jump.chance_permille(def.jump_chance as u32) {
+                        e.motion = Motion::Ground { from: at, to: p, progress: 0, len: map.jump_cost(at, p), leap: true };
                         ev.push(Event::Jumped { enemy: e.id, from: at, to: p });
                         continue;
                     }
                 }
             }
-            match self.fields.route(map, class, &self.blocked, at) {
+            let route = self.fields.route(map, class, jumper, &self.blocked, at);
+            if route != Route::Stuck {
+                e.stuck = 0;
+            }
+            match route {
                 Route::Step(n) => {
                     let len = map.links(at).iter().find(|l| l.to == n).map_or(0, |l| l.cost);
                     e.motion = Motion::Ground { from: at, to: n, progress: 0, len, leap: false };
@@ -888,27 +920,40 @@ impl World {
                     self.damage_wall(content, w, def.wall_damage, ev);
                     return;
                 }
+                Route::Leap(p) => {
+                    e.motion = Motion::Ground { from: at, to: p, progress: 0, len: map.jump_cost(at, p), leap: true };
+                    ev.push(Event::Jumped { enemy: e.id, from: at, to: p });
+                }
                 Route::Stuck => {
                     e.motion = Motion::Ground { from: at, to: at, progress: 0, len: 0, leap: true };
                     e.carry = 0;
+                    e.stuck += 1;
+                    if e.stuck >= STRANDED_TICKS {
+                        e.alive = false;
+                        let s = &mut self.wave_stats[usize::from(e.wave) - 1];
+                        s.stranded += 1;
+                        s.alive -= 1;
+                        ev.push(Event::Stranded { enemy: e.id, kind: e.kind, pos: map.cell(at).pos });
+                    }
                     return;
                 }
             }
         }
     }
 
-    /// The partner a runner may leap to from jump point `at`: open, reaching the graveyard, and
-    /// not more than the enemy's `jump_detour` farther away (any open route beats none).
+    /// The partner a runner may leap to by chance from jump point `at` while it still has a
+    /// walking route: open, reaching the graveyard on foot, and at most `jump_detour` farther
+    /// from it than `at` is.
     fn jump_target(&self, content: &Content, class: Class, at: CellId, def: &EnemyDef) -> Option<CellId> {
         let open = self.fields.open(class);
         let here = open[at.index()];
+        if here == UNREACHABLE {
+            return None;
+        }
         let mut best: Option<CellId> = None;
         for &p in content.map.jump_partners(at) {
             let d = open[p.index()];
-            if self.blocked[p.index()] || d == UNREACHABLE {
-                continue;
-            }
-            if here != UNREACHABLE && i64::from(d) > i64::from(here) + i64::from(def.jump_detour) {
+            if self.blocked[p.index()] || d == UNREACHABLE || i64::from(d) > i64::from(here) + i64::from(def.jump_detour) {
                 continue;
             }
             if best.is_none_or(|b| d < open[b.index()]) {
@@ -1016,8 +1061,19 @@ impl World {
     }
 
     fn fire_stones(&mut self, content: &Content, ev: &mut Vec<Event>) {
-        let ready: Vec<(CellId, Stone)> = self.stones.iter().filter(|(_, s)| self.tick >= s.ready_at).map(|(c, s)| (*c, *s)).collect();
-        for (cell, s) in ready {
+        // Walk the stones in cell order by key, so firing can borrow `self` mutably without
+        // collecting them into a per-tick vector.
+        let mut cursor: Option<CellId> = None;
+        loop {
+            let next = match cursor {
+                None => self.stones.iter().next(),
+                Some(c) => self.stones.range((Excluded(c), Unbounded)).next(),
+            };
+            let Some((&cell, &s)) = next else { break };
+            cursor = Some(cell);
+            if self.tick < s.ready_at {
+                continue;
+            }
             let def = content.stone(s.kind);
             let t = def.tiers[usize::from(s.tier)];
             let c = content.map.cell(cell);
@@ -1026,7 +1082,7 @@ impl World {
                     let mut n = 0u16;
                     for i in 0..self.enemies.len() {
                         if self.eligible(content, c, def, &t, &self.enemies[i]) {
-                            n += 1;
+                            n = n.saturating_add(1);
                             self.slow_enemy(i, t.slow, t.slow_ticks);
                             self.hurt(content, i, t.damage, ev);
                         }
@@ -1093,7 +1149,7 @@ impl World {
         let s = &mut self.wave_stats[usize::from(wave) - 1];
         s.killed += 1;
         s.alive -= 1;
-        s.dust_from_kills += dust;
+        s.dust_from_kills = s.dust_from_kills.saturating_add(dust);
         ev.push(Event::Died { enemy: id, kind, pos });
         self.gain(dust, DustSource::Kill, ev);
     }
@@ -1148,6 +1204,9 @@ impl World {
 
     fn finish_tick(&mut self, ev: &mut Vec<Event>) {
         self.enemies.retain(|e| e.alive);
+        if self.outcome != Outcome::Running {
+            return;
+        }
         for (i, s) in self.wave_stats.iter_mut().enumerate() {
             if s.started_at.is_some() && s.cleared_at.is_none() && s.pending == 0 && s.alive == 0 {
                 s.cleared_at = Some(self.tick);
@@ -1225,6 +1284,7 @@ impl World {
             h.write_bool(e.alive);
             h.write_i64(e.carry);
             w32(&mut h, e.next_summon);
+            w32(&mut h, e.stuck);
             match e.motion {
                 Motion::Ground { from, to, progress, len, leap } => {
                     h.write_u8(0);
@@ -1278,6 +1338,7 @@ impl World {
                 w32(&mut h, v);
             }
             wi(&mut h, s.tombstones_lost);
+            w32(&mut h, s.stranded);
             wi(&mut h, s.dust_from_kills);
         }
         h.finish()
@@ -1353,6 +1414,7 @@ mod tests {
             alive: true,
             carry: 0,
             next_summon: 0,
+            stuck: 0,
         };
         state.w.place(&state.content, &mut e);
         e
@@ -1421,6 +1483,39 @@ mod tests {
         }
         def.targets = crate::content::Targets::Air;
         assert_eq!(pick(&def), None, "no flyers in range");
+    }
+
+    #[test]
+    fn an_enemy_with_no_route_at_all_is_stranded_not_kept_forever() {
+        // Validated content can't produce this; plant a walker on a cliff lane by hand.
+        let mut state = State::new(Arc::new(Content::builtin()), 1);
+        let at = state.content.map.cell_ref("north:4,3").unwrap();
+        let mut e = enemy(&state, Motion::Ground { from: at, to: at, progress: 0, len: 0, leap: true });
+        e.kind = state.content.enemy_kind("runner").unwrap();
+        state.w.enemies.push(e);
+        state.w.wave_stats[0].alive = 1;
+        let mut ev = Vec::new();
+        for _ in 0..STRANDED_TICKS - 1 {
+            state.step_into(&[], &mut ev);
+        }
+        assert_eq!(state.enemies().len(), 1, "still waiting");
+        state.step_into(&[], &mut ev);
+        assert!(state.enemies().is_empty());
+        assert!(matches!(ev.last(), Some(Event::Stranded { enemy: 1, .. })), "{:?}", ev.last());
+        assert_eq!((state.wave_stats()[0].stranded, state.wave_stats()[0].alive), (1, 0));
+    }
+
+    #[test]
+    fn step_into_matches_step() {
+        let content = Arc::new(Content::builtin());
+        let (mut a, mut b) = (State::new(content.clone(), 4), State::new(content, 4));
+        let mut buf = Vec::new();
+        for _ in 0..3000 {
+            buf.clear();
+            b.step_into(&[Command::CallWave], &mut buf);
+            assert_eq!(a.step(&[Command::CallWave]), buf);
+        }
+        assert_eq!(a.hash(), b.hash());
     }
 
     #[test]
