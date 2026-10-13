@@ -6,8 +6,8 @@ use crate::device::{image_barrier, Buffer, Device};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
-    CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Material, MemoryKind, PipelineCacheLoad, PipelineStats, Vertex,
-    MAX_POINT_LIGHTS, PASS_SCENE,
+    CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Limit, Material, MemoryKind, PipelineCacheLoad, PipelineStats,
+    Vertex, MAX_POINT_LIGHTS, PASS_SCENE,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -165,7 +165,7 @@ pub fn camera_position(view_proj: &[f32; 16]) -> [f32; 3] {
             }
         }
     }
-    let p: Vec<f64> = (0..4).map(|r| a[r][4] / a[r][r]).collect();
+    let p: [f64; 4] = std::array::from_fn(|r| a[r][4] / a[r][r]);
     if p[3].abs() < 1e-12 || !p.iter().all(|v| v.is_finite()) {
         return [0.0; 3];
     }
@@ -256,59 +256,133 @@ pub fn build_records(frame: &FrameDesc, plan: &Plan, cache: &mut LinearCache, ou
     }
 }
 
-/// Reusable CPU-side scratch for preparing frames.
+/// Reusable CPU-side scratch for preparing frames: once warm, preparing a frame allocates nothing.
 #[derive(Default)]
 pub struct FrameScratch {
+    pub plan: Plan,
     pub records: Vec<DrawRecord>,
     pub linear: LinearCache,
 }
 
+/// Most draw records one frame may hold: instance indices are `u32`.
+pub const MAX_DRAW_RECORDS: u64 = u32::MAX as u64;
+
+/// How an upload buffer's capacity (in records) follows demand: grow at once (at least doubling),
+/// shrink only after [`UploadSizing::SHRINK_AFTER`] consecutive uses needing at most a quarter of
+/// it, to twice the largest need seen meanwhile (never below the initial size). So a one-off spike
+/// doesn't pin memory forever, and a steady load never reallocates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadSizing {
+    pub capacity: u32,
+    quiet_uses: u32,
+    quiet_peak: u32,
+}
+
+impl UploadSizing {
+    pub const SHRINK_AFTER: u32 = 300;
+
+    pub fn new(capacity: u32) -> UploadSizing {
+        UploadSizing { capacity, quiet_uses: 0, quiet_peak: 0 }
+    }
+
+    /// Account one use needing `records`; the capacity to reallocate to, if it should change.
+    /// Errors (structured) beyond [`MAX_DRAW_RECORDS`].
+    pub fn next(&mut self, records: usize) -> Result<Option<u32>, GpuError> {
+        if records as u64 > MAX_DRAW_RECORDS {
+            return Err(GpuError::limit(Limit::DrawRecords, records as u64, MAX_DRAW_RECORDS));
+        }
+        let records = records as u32;
+        if records > self.capacity {
+            self.quiet_uses = 0;
+            self.quiet_peak = 0;
+            return Ok(Some(records.max(self.capacity.saturating_mul(2))));
+        }
+        if self.capacity <= INITIAL_RECORDS || records > self.capacity / 4 {
+            self.quiet_uses = 0;
+            self.quiet_peak = 0;
+            return Ok(None);
+        }
+        self.quiet_uses += 1;
+        self.quiet_peak = self.quiet_peak.max(records);
+        if self.quiet_uses < Self::SHRINK_AFTER {
+            return Ok(None);
+        }
+        let target = self.quiet_peak.saturating_mul(2).max(INITIAL_RECORDS);
+        self.quiet_uses = 0;
+        self.quiet_peak = 0;
+        Ok((target < self.capacity).then_some(target))
+    }
+}
+
+/// Create with `preferred` memory flags (device-local: fast GPU reads on ReBAR and integrated
+/// GPUs), retrying with none if that fails, e.g. when a 256 MB BAR heap is exhausted.
+fn with_device_local_fallback<T>(mut create: impl FnMut(VkFlags) -> Result<T, GpuError>) -> Result<T, GpuError> {
+    create(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT).or_else(|_| create(0))
+}
+
 /// A frame's upload buffer: [`FrameData`] at offset 0, [`DrawRecord`]s at [`RECORDS_OFFSET`].
-/// Host-visible (device-local when the device offers it), persistently mapped, read by the
-/// shaders through its device address. Grows as needed.
+/// Host-visible (device-local when possible), persistently mapped, read by the shaders through
+/// its device address. Sized by [`UploadSizing`].
 pub struct FrameUpload {
     buffer: Buffer,
     address: u64,
-    /// Records it has room for.
-    capacity: u32,
+    sizing: UploadSizing,
 }
 
 impl FrameUpload {
     pub fn new(dev: &Device) -> Result<FrameUpload, GpuError> {
-        Self::with_capacity(dev, INITIAL_RECORDS)
+        let (buffer, address) = Self::create(dev, INITIAL_RECORDS)?;
+        Ok(FrameUpload { buffer, address, sizing: UploadSizing::new(INITIAL_RECORDS) })
     }
 
-    fn with_capacity(dev: &Device, capacity: u32) -> Result<FrameUpload, GpuError> {
-        let buffer = dev.create_buffer(
-            RECORDS_OFFSET + capacity as u64 * RECORD_SIZE,
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            MemoryKind::PerFrame,
-            "frame upload",
-        )?;
+    fn create(dev: &Device, capacity: u32) -> Result<(Buffer, u64), GpuError> {
+        let buffer = with_device_local_fallback(|preferred| {
+            dev.create_buffer(
+                RECORDS_OFFSET + capacity as u64 * RECORD_SIZE,
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                preferred,
+                MemoryKind::PerFrame,
+                "frame upload",
+            )
+        })?;
         let address = dev.buffer_address(&buffer);
-        Ok(FrameUpload { buffer, address, capacity })
+        Ok((buffer, address))
     }
 
-    /// Make room for `records`, replacing the buffer (at least doubling) when it is too small.
-    /// The GPU must not be reading this buffer (callers waited for the frame that last used it).
+    /// Make room for `records` this frame, growing or (after a long quiet spell) shrinking the
+    /// buffer. The GPU must not be reading this buffer (callers waited for the frame that last
+    /// used it). A failed shrink keeps the current buffer; a failed doubling retries at exactly
+    /// the size needed.
     pub fn reserve(&mut self, dev: &Device, records: usize) -> Result<(), GpuError> {
-        if records <= self.capacity as usize {
-            return Ok(());
+        let Some(capacity) = self.sizing.next(records)? else { return Ok(()) };
+        let shrinking = capacity < self.sizing.capacity;
+        let created = Self::create(dev, capacity).map(|b| (b, capacity)).or_else(|e| {
+            let exact = records as u32; // ≤ MAX_DRAW_RECORDS, checked by `next`
+            if shrinking {
+                Err(e)
+            } else if exact < capacity {
+                Self::create(dev, exact).map(|b| (b, exact))
+            } else {
+                Err(e)
+            }
+        });
+        match created {
+            Ok(((buffer, address), capacity)) => {
+                dev.destroy_buffer(&self.buffer);
+                self.buffer = buffer;
+                self.address = address;
+                self.sizing.capacity = capacity;
+                Ok(())
+            }
+            Err(_) if shrinking => Ok(()), // the current buffer is still big enough
+            Err(e) => Err(e),
         }
-        let wanted = records.max(2 * self.capacity as usize);
-        let capacity = u32::try_from(wanted)
-            .map_err(|_| GpuError::new(format!("{records} draw records in one frame; at most {} fit", u32::MAX)))?;
-        let grown = Self::with_capacity(dev, capacity)?;
-        dev.destroy_buffer(&self.buffer);
-        *self = grown;
-        Ok(())
     }
 
     /// Write the frame's data and records (`records.len()` ≤ the reserved capacity).
     pub fn write(&self, data: &FrameData, records: &[DrawRecord]) {
-        assert!(records.len() <= self.capacity as usize, "reserve() before write()");
+        assert!(records.len() <= self.sizing.capacity as usize, "reserve() before write()");
         // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE bytes
         // that the GPU no longer reads (see `reserve`); both copies stay in bounds and the types
         // are plain `repr(C)` data.
@@ -792,7 +866,7 @@ impl Pipelines {
 /// many lights.
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, frame: &FrameDesc) -> Result<(), GpuError> {
     if frame.lights.len() > MAX_POINT_LIGHTS {
-        return Err(GpuError::new(format!("{} point lights given; at most {MAX_POINT_LIGHTS} per frame", frame.lights.len())));
+        return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
     match frame.draws.iter().find(|d| !meshes.contains_key(&d.mesh.0)) {
         Some(d) => Err(GpuError::new(format!("unknown mesh id {} in draw list", d.mesh.0))),
@@ -801,7 +875,8 @@ pub fn check_frame(meshes: &HashMap<u32, Mesh>, frame: &FrameDesc) -> Result<(),
 }
 
 /// Cull and batch `frame` against `meshes`, then write its frame data and draw records into
-/// `upload` (growing it). The GPU must not be reading `upload`.
+/// `upload` (resizing it). The GPU must not be reading `upload`. The plan is left in
+/// `scratch.plan` for [`record_scene`].
 pub fn prepare_frame(
     dev: &Device,
     meshes: &HashMap<u32, Mesh>,
@@ -809,12 +884,12 @@ pub fn prepare_frame(
     extent: VkExtent2D,
     upload: &mut FrameUpload,
     scratch: &mut FrameScratch,
-) -> Result<Plan, GpuError> {
-    let plan = crate::batch::plan(frame, |m| meshes.get(&m.0).map(|mesh| mesh.bounds));
-    build_records(frame, &plan, &mut scratch.linear, &mut scratch.records);
+) -> Result<(), GpuError> {
+    crate::batch::plan_into(frame, |m| meshes.get(&m.0).map(|mesh| mesh.bounds), &mut scratch.plan);
+    build_records(frame, &scratch.plan, &mut scratch.linear, &mut scratch.records);
     upload.reserve(dev, scratch.records.len())?;
     upload.write(&frame_data(frame, extent), &scratch.records);
-    Ok(plan)
+    Ok(())
 }
 
 /// Where a frame is drawn: colour + depth views of `extent`.
@@ -1053,7 +1128,8 @@ mod tests {
         let c = DrawItem::new(MeshId(1), model, [0.0, 0.0, 0.0, 1.0]);
         let draws = [a, b, c];
         let frame = FrameDesc { draws: &draws, ..Default::default() };
-        let plan = Plan { entries: vec![(2, 0), (1, 0), (0, 0), (0, 1)], ..Default::default() };
+        let mut plan = Plan::default();
+        plan.entries = vec![(2, 0), (1, 0), (0, 0), (0, 1)];
         let mut out = Vec::new();
         build_records(&frame, &plan, &mut LinearCache::default(), &mut out);
         assert_eq!(out.len(), 4);
@@ -1067,6 +1143,79 @@ mod tests {
         assert_eq!(r.color[3], 0.3, "opacity passes through");
         assert_eq!(r.color2[3], 7.0, "seed");
         assert!((r.color[0] - 0.214_041).abs() < 1e-5, "linear");
+    }
+
+    #[test]
+    fn upload_sizing_grows_at_once_and_shrinks_with_hysteresis() {
+        let mut s = UploadSizing::new(INITIAL_RECORDS);
+        assert_eq!(s.next(100).unwrap(), None);
+        assert_eq!(s.next(300).unwrap(), Some(512), "at least doubling");
+        s.capacity = 512;
+        assert_eq!(s.next(5000).unwrap(), Some(5000), "or exactly the need");
+        s.capacity = 5000;
+        // A spike is over: small frames for a while, but not long enough.
+        for _ in 0..UploadSizing::SHRINK_AFTER - 1 {
+            assert_eq!(s.next(40).unwrap(), None);
+        }
+        // One busy frame (over a quarter) resets the count.
+        assert_eq!(s.next(1300).unwrap(), None);
+        for _ in 0..UploadSizing::SHRINK_AFTER - 1 {
+            assert_eq!(s.next(300).unwrap(), None);
+        }
+        assert_eq!(s.next(600).unwrap(), Some(1200), "twice the quiet peak");
+        s.capacity = 1200;
+        // The initial size never shrinks.
+        let mut small = UploadSizing::new(INITIAL_RECORDS);
+        for _ in 0..2 * UploadSizing::SHRINK_AFTER {
+            assert_eq!(small.next(0).unwrap(), None);
+        }
+        // Structured overflow error.
+        let err = s.next(MAX_DRAW_RECORDS as usize + 1).unwrap_err();
+        assert_eq!(
+            err.limit,
+            Some(crate::LimitExceeded { what: Limit::DrawRecords, requested: MAX_DRAW_RECORDS + 1, max: MAX_DRAW_RECORDS })
+        );
+    }
+
+    #[test]
+    fn shrink_target_respects_initial_size() {
+        let mut s = UploadSizing::new(4096);
+        for _ in 0..UploadSizing::SHRINK_AFTER - 1 {
+            s.next(10).unwrap();
+        }
+        assert_eq!(s.next(10).unwrap(), Some(INITIAL_RECORDS));
+    }
+
+    #[test]
+    fn device_local_falls_back_to_any_host_memory() {
+        let mut tried = Vec::new();
+        let r: Result<u32, GpuError> = with_device_local_fallback(|flags| {
+            tried.push(flags);
+            if flags == 0 {
+                Ok(7)
+            } else {
+                Err(GpuError::vk("vkAllocateMemory", VK_ERROR_OUT_OF_DEVICE_MEMORY))
+            }
+        });
+        assert_eq!((r.unwrap(), tried), (7, vec![VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0]));
+        let mut calls = 0;
+        let ok: Result<u32, GpuError> = with_device_local_fallback(|_| {
+            calls += 1;
+            Ok(1)
+        });
+        assert_eq!((ok.unwrap(), calls), (1, 1), "no retry when the first try works");
+    }
+
+    #[test]
+    fn too_many_lights_is_a_structured_error() {
+        let lights = [crate::PointLight { position: [0.0; 3], color: [1.0; 3], intensity: 1.0, range: 1.0 }; MAX_POINT_LIGHTS + 1];
+        let frame = FrameDesc { lights: &lights, ..Default::default() };
+        let err = check_frame(&HashMap::new(), &frame).unwrap_err();
+        assert_eq!(
+            err.limit,
+            Some(crate::LimitExceeded { what: Limit::PointLights, requested: 17, max: MAX_POINT_LIGHTS as u64 })
+        );
+        assert!(err.message.contains("17"), "{err}");
     }
 
     #[test]

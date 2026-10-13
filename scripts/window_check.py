@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Window-path regression check for the Specula engine (Windows, needs a GPU and a desktop).
 
-For every Vulkan adapter: start `specula` windowed, build a small scene over MCP, screenshot the
+For every Vulkan adapter: start `specula` windowed, build a small scene over MCP (plus 400 studs, so
+per-frame GPU buffers must grow while another frame is in flight), screenshot the
 real window, resize / minimize / restore it, screenshot again, collect validation messages through
 `sight_frame`, close it the way a user does (WM_CLOSE), and require a clean shutdown.
 
@@ -184,6 +185,13 @@ def check_adapter(exe, adapter, out, port):
         mcp.call("world_spawn", shape="cube", name="tower", position=[0, 0.75, 0], scale=[1.2, 1.5, 1.2], color="#8a8f99")
         mcp.call("world_spawn", shape="sphere", name="orb", position=[0, 2.0, 0], scale=0.8, color="#ffb02e")
         mcp.call("world_spawn", shape="cube", name="crate", position=[2.2, 0.3, 1.2], rotation_deg=[0, 30, 0], scale=0.6, color="#a0522d")
+        # A 20 x 20 field of small studs, every fifth one glass (drawn twice): well over the 256
+        # draw records a window frame slot starts with, so each slot's upload buffer must grow
+        # while the other slot is still in flight, under validation.
+        for i in range(400):
+            x, z = (i % 20) * 0.3 - 2.85, (i // 20) * 0.3 - 2.85
+            look = {"material": "glass", "opacity": 0.3, "color": "#9fd8ff"} if i % 5 == 0 else {"color": "#c8b070"}
+            mcp.call("world_spawn", shape="cube", name=f"stud_{i}", position=[x, 0.06, z], scale=0.12, **look)
         warnings = mcp.frame_warnings()
 
         time.sleep(1.0)  # let the window present a few frames

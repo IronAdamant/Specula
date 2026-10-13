@@ -155,6 +155,40 @@ fn instanced_grid_on_every_adapter() {
     }
 }
 
+/// A one-off spike grows the record buffer; a long run of small frames shrinks it again.
+#[test]
+fn upload_buffer_shrinks_after_a_spike() {
+    let test = "upload_buffer_shrinks_after_a_spike";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let (vertices, indices) = cube();
+    let mesh = gpu.upload_mesh(&vertices, &indices).unwrap();
+    let target = gpu.create_target(16, 16).unwrap();
+    let view_proj = mul(&perspective_vk_reverse_z(90f32.to_radians(), 1.0, 0.05), &look_at_rh([0.0, 0.0, 5.0], [0.0; 3], [0.0, 1.0, 0.0]));
+    let spike: Vec<DrawItem> = (0..5000).map(|i| DrawItem::new(mesh, scale_translation(0.01, [(i % 70) as f32 * 0.01, 0.0, 0.0]), [1.0; 4])).collect();
+    let frame = |draws| FrameDesc { view_proj, draws, reverse_z: true, ..Default::default() };
+    gpu.render(target, &frame(&spike)).unwrap();
+    let big = gpu.last_frame_stats();
+    assert_eq!(big.draws.instances, 5000);
+    assert!(big.draw_buffer_bytes >= 768 + 5000 * 112, "{}", big.draw_buffer_bytes);
+
+    let one = [DrawItem::new(mesh, IDENTITY, [1.0; 4])];
+    for _ in 0..299 {
+        gpu.render(target, &frame(&one)).unwrap();
+    }
+    assert_eq!(gpu.last_frame_stats().draw_buffer_bytes, big.draw_buffer_bytes, "no shrink before the quiet spell ends");
+    gpu.render(target, &frame(&one)).unwrap();
+    let small = gpu.last_frame_stats();
+    assert!(small.draw_buffer_bytes < 768 + 1000 * 112, "shrunk to {}", small.draw_buffer_bytes);
+    assert!(small.memory.bytes(MemoryKind::PerFrame) < big.memory.bytes(MemoryKind::PerFrame));
+    let rgba = gpu.read_rgba8(target).unwrap();
+    assert_ne!(pixel(&rgba, 16, 8, 8), [0, 0, 0, 255], "the cube still renders after the shrink");
+
+    gpu.destroy_target(target);
+    gpu.destroy_mesh(mesh);
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+}
+
 #[test]
 fn stats_before_any_frame() {
     let Some(gpu) = gpu_or_skip("stats_before_any_frame", AdapterPreference::HighPerformance) else { return };

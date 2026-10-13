@@ -5,7 +5,7 @@ use crate::instance::{enumerate, Instance};
 use crate::render::{check_frame, prepare_frame, record_scene, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{CpuTiming, DrawStats, FrameDesc, GpuError, GpuTiming, MemoryKind};
+use crate::{CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, MemoryKind};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
@@ -25,16 +25,6 @@ struct Frame {
     timer: Option<PassTimer>,
 }
 
-/// What one presented frame did.
-pub struct FrameReport {
-    pub cpu: CpuTiming,
-    pub draws: DrawStats,
-    /// Latest completed GPU timings (an earlier frame's).
-    pub gpu: Option<GpuTiming>,
-    pub extent: VkExtent2D,
-    pub upload_bytes: u64,
-}
-
 fn ms(from: Instant, to: Instant) -> f64 {
     (to - from).as_secs_f64() * 1e3
 }
@@ -52,8 +42,6 @@ pub struct Window {
     depth: Option<Image>,
     frames: Vec<Frame>,
     frame_index: usize,
-    /// Latest GPU timings read back from a completed frame.
-    last_gpu: Option<GpuTiming>,
     /// Client size requested by the application.
     wanted: (u32, u32),
     /// Swapchain must be (re)built before the next present.
@@ -109,7 +97,6 @@ impl Window {
             depth: None,
             frames: Vec::new(),
             frame_index: 0,
-            last_gpu: None,
             wanted: (width, height),
             stale: true,
         };
@@ -297,8 +284,10 @@ impl Window {
         Ok(())
     }
 
-    /// Render and present `frame` (number `frame_no`). `Ok(None)`: nothing was presented
-    /// (minimized, or the swapchain was out of date). `scratch` is reusable CPU-side space.
+    /// Render and present `frame` (number `frame_no`), updating the window's `stats` in place:
+    /// GPU timings whenever a completed frame's are read, everything else when a frame is
+    /// presented. `Ok(false)`: nothing was presented (minimized, or the swapchain was out of
+    /// date). `scratch` is reusable CPU-side space.
     #[allow(clippy::too_many_arguments)]
     pub fn present(
         &mut self,
@@ -309,13 +298,14 @@ impl Window {
         frame: &FrameDesc,
         frame_no: u64,
         scratch: &mut FrameScratch,
-    ) -> Result<Option<FrameReport>, GpuError> {
+        stats: &mut FrameStats,
+    ) -> Result<bool, GpuError> {
         check_frame(meshes, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
-            return Ok(None); // minimized: nothing to present
+            return Ok(false); // minimized: nothing to present
         }
         if (self.stale || self.swapchain == VK_NULL_HANDLE) && !self.rebuild(inst, dev)? {
-            return Ok(None);
+            return Ok(false);
         }
         let scfns = swapchain_fns(dev)?;
         let pipelines = pipelines.get(dev, self.format.format, frame.reverse_z)?;
@@ -329,12 +319,16 @@ impl Window {
         dev.wait_fence(f.fence)?;
         // The fence shows the GPU finished the frame that last used this slot: its timestamps are
         // ready and its upload buffer is free.
-        if let Some(gpu) = f.timer.as_mut().and_then(|t| t.read(dev)) {
-            self.last_gpu = Some(gpu);
+        if let Some(t) = f.timer.as_mut() {
+            match t.read_into(dev, &mut stats.gpu) {
+                Ok(true) => stats.timestamp_error = None,
+                Ok(false) => {}
+                Err(r) => stats.timestamp_error = Some(r),
+            }
         }
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
-        let plan = prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
+        prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
         let t2 = Instant::now();
 
         let mut index = 0u32;
@@ -348,7 +342,7 @@ impl Window {
             VK_SUBOPTIMAL_KHR => self.stale = true, // still usable this frame; rebuild next time
             VK_ERROR_OUT_OF_DATE_KHR => {
                 self.stale = true; // nothing acquired, semaphore untouched: skip this frame
-                return Ok(None);
+                return Ok(false);
             }
             _ => return Err(GpuError::vk("vkAcquireNextImageKHR", r)),
         }
@@ -384,7 +378,7 @@ impl Window {
             )],
         );
         let upload = f.upload.as_ref().expect("created in init");
-        let draws = record_scene(dev, f.cmd, pipelines, meshes, &target, frame, &plan, upload, f.timer.as_mut());
+        let draws = record_scene(dev, f.cmd, pipelines, meshes, &target, frame, &scratch.plan, upload, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.barrier(
             f.cmd,
@@ -436,13 +430,15 @@ impl Window {
             VK_SUBOPTIMAL_KHR | VK_ERROR_OUT_OF_DATE_KHR => self.stale = true,
             _ => return Err(GpuError::vk("vkQueuePresentKHR", r)),
         }
-        Ok(Some(FrameReport {
-            cpu: CpuTiming { wait_ms: ms(t0, t1) + ms(t2, t3), record_ms: ms(t1, t2) + ms(t3, t4), submit_ms: ms(t4, t5) },
-            draws,
-            gpu: self.last_gpu.clone(),
-            extent: self.extent,
-            upload_bytes,
-        }))
+        stats.frame = frame_no;
+        stats.path = FramePath::Window;
+        stats.width = self.extent.width;
+        stats.height = self.extent.height;
+        stats.cpu = CpuTiming { wait_ms: ms(t0, t1) + ms(t2, t3), record_ms: ms(t1, t2) + ms(t3, t4), submit_ms: ms(t4, t5) };
+        stats.timestamps_supported = self.frames.iter().all(|f| f.timer.is_some());
+        stats.draws = draws;
+        stats.draw_buffer_bytes = upload_bytes;
+        Ok(true)
     }
 
     /// After a failed submit nothing was queued: the frame's fence (already reset) would never

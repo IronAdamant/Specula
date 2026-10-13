@@ -59,9 +59,10 @@ pub struct GpuInner {
     window: Option<Window>,
     /// Frames rendered or presented so far (shared counter).
     frame_no: u64,
-    /// Latest frame stats per path (pipelines and memory are filled in when asked).
-    last_offscreen: Option<FrameStats>,
-    last_window: Option<FrameStats>,
+    /// Latest frame stats per path (`frame` 0 = none yet), updated in place each frame;
+    /// pipelines and memory are filled in when asked.
+    last_offscreen: FrameStats,
+    last_window: FrameStats,
     // Dropped after `Drop::drop` released everything above, device before instance.
     device: Device,
     instance: Instance,
@@ -133,8 +134,8 @@ impl GpuInner {
             next_id: 1,
             window: None,
             frame_no: 0,
-            last_offscreen: None,
-            last_window: None,
+            last_offscreen: FrameStats::default(),
+            last_window: FrameStats::default(),
             device,
             instance,
         };
@@ -355,7 +356,8 @@ impl GpuInner {
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
-        let plan = prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
+        prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
+        let plan = &self.scratch.plan;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -389,7 +391,7 @@ impl GpuInner {
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 )],
             );
-            draws = record_scene(dev, cmd, pipelines, meshes, &rt, frame, &plan, upload, timer.as_mut());
+            draws = record_scene(dev, cmd, pipelines, meshes, &rt, frame, plan, upload, timer.as_mut());
             dev.barrier(
                 cmd,
                 &[],
@@ -406,31 +408,31 @@ impl GpuInner {
             );
         });
         // The render completed (or failed with nothing pending): its timestamps are readable.
-        let gpu = match (&ran, timer.as_mut()) {
-            (Ok(_), Some(t)) => {
-                t.submitted();
-                t.read(&self.device)
+        // Stats are updated in place, reusing their storage.
+        let stats = &mut self.last_offscreen;
+        if let (Ok(_), Some(t)) = (&ran, timer.as_mut()) {
+            t.submitted();
+            match t.read_into(&self.device, &mut stats.gpu) {
+                Ok(true) => stats.timestamp_error = None,
+                Ok(false) => {}
+                Err(r) => stats.timestamp_error = Some(r),
             }
-            _ => None,
-        };
+        }
         self.timer = timer;
         let times = ran?;
         if let Some(t) = self.targets.get_mut(&target.0) {
             t.rendered = true;
         }
         self.frame_no = frame_no;
-        self.last_offscreen = Some(FrameStats {
-            frame: frame_no,
-            path: FramePath::Offscreen,
-            width: extent.width,
-            height: extent.height,
-            cpu: CpuTiming { wait_ms: times.wait_ms, record_ms: prepare_ms + times.record_ms, submit_ms: times.submit_ms },
-            gpu,
-            timestamps_supported: self.timer.is_some(),
-            draws,
-            draw_buffer_bytes: self.upload.as_ref().map_or(0, |u| u.bytes()),
-            ..Default::default()
-        });
+        let stats = &mut self.last_offscreen;
+        stats.frame = frame_no;
+        stats.path = FramePath::Offscreen;
+        stats.width = extent.width;
+        stats.height = extent.height;
+        stats.cpu = CpuTiming { wait_ms: times.wait_ms, record_ms: prepare_ms + times.record_ms, submit_ms: times.submit_ms };
+        stats.timestamps_supported = self.timer.is_some();
+        stats.draws = draws;
+        stats.draw_buffer_bytes = self.upload.as_ref().map_or(0, |u| u.bytes());
         Ok(())
     }
 
@@ -503,22 +505,18 @@ impl GpuInner {
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
         let window = self.window.as_mut().ok_or_else(|| GpuError::new("present: no window attached"))?;
         let frame_no = self.frame_no + 1;
-        let report =
-            window.present(&self.instance, &self.device, &mut self.pipelines, &self.meshes, frame, frame_no, &mut self.scratch)?;
-        if let Some(r) = report {
+        let presented = window.present(
+            &self.instance,
+            &self.device,
+            &mut self.pipelines,
+            &self.meshes,
+            frame,
+            frame_no,
+            &mut self.scratch,
+            &mut self.last_window,
+        )?;
+        if presented {
             self.frame_no = frame_no;
-            self.last_window = Some(FrameStats {
-                frame: frame_no,
-                path: FramePath::Window,
-                width: r.extent.width,
-                height: r.extent.height,
-                cpu: r.cpu,
-                gpu: r.gpu,
-                timestamps_supported: self.timer.is_some(),
-                draws: r.draws,
-                draw_buffer_bytes: r.upload_bytes,
-                ..Default::default()
-            });
         }
         Ok(())
     }
@@ -526,11 +524,12 @@ impl GpuInner {
     /// The latest frame of `path` (or of either path), with current pipeline and memory state.
     pub fn last_frame_stats(&self, path: Option<FramePath>) -> FrameStats {
         let latest = match path {
-            Some(FramePath::Offscreen) => self.last_offscreen.as_ref(),
-            Some(FramePath::Window) => self.last_window.as_ref(),
-            None => [self.last_offscreen.as_ref(), self.last_window.as_ref()].into_iter().flatten().max_by_key(|s| s.frame),
+            Some(FramePath::Offscreen) => &self.last_offscreen,
+            Some(FramePath::Window) => &self.last_window,
+            None if self.last_window.frame > self.last_offscreen.frame => &self.last_window,
+            None => &self.last_offscreen,
         };
-        let mut stats = latest.cloned().unwrap_or_default();
+        let mut stats = latest.clone();
         stats.timestamps_supported = self.timer.is_some();
         stats.pipelines = self.pipelines.stats();
         stats.memory = self.device.memory_stats(&self.instance);

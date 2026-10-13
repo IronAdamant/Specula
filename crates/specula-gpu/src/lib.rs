@@ -132,6 +132,25 @@ pub struct GpuError {
     pub message: String,
     /// The failing `VkResult`, when a Vulkan call failed.
     pub vk_result: Option<i32>,
+    /// Set when a request exceeded a fixed limit.
+    pub limit: Option<LimitExceeded>,
+}
+
+/// A limit of the GPU layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// Point lights per frame ([`MAX_POINT_LIGHTS`]).
+    PointLights,
+    /// Visible draw records per frame (instance indices are `u32`).
+    DrawRecords,
+}
+
+/// What was asked for and what is allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitExceeded {
+    pub what: Limit,
+    pub requested: u64,
+    pub max: u64,
 }
 
 impl fmt::Display for GpuError {
@@ -147,12 +166,25 @@ impl std::error::Error for GpuError {}
 
 impl GpuError {
     pub(crate) fn new(message: impl Into<String>) -> GpuError {
-        GpuError { message: message.into(), vk_result: None }
+        GpuError { message: message.into(), vk_result: None, limit: None }
     }
 
     /// `what` failed with `result`.
     pub(crate) fn vk(what: &str, result: i32) -> GpuError {
-        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result) }
+        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None }
+    }
+
+    /// `requested` exceeds the limit `what` (at most `max`).
+    pub(crate) fn limit(what: Limit, requested: u64, max: u64) -> GpuError {
+        let name = match what {
+            Limit::PointLights => "point lights per frame",
+            Limit::DrawRecords => "visible draw records per frame",
+        };
+        GpuError {
+            message: format!("{requested} {name} requested; at most {max}"),
+            vk_result: None,
+            limit: Some(LimitExceeded { what, requested, max }),
+        }
     }
 }
 

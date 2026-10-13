@@ -79,18 +79,20 @@ impl PassTimer {
         self.pending = !self.passes.is_empty();
     }
 
-    /// Results of the last submitted frame, if it has completed (the caller waited for its
-    /// fence). Never waits; each frame's results are returned once.
-    pub fn read(&mut self, dev: &Device) -> Option<GpuTiming> {
+    /// Write the results of the last submitted frame into `out` (reusing its storage), if it has
+    /// completed (the caller waited for its fence). Never waits; each frame is read once.
+    /// `Ok(true)`: `out` holds new timings. `Ok(false)`: nothing new (`out` untouched).
+    /// `Err(VkResult)`: `vkGetQueryPoolResults` failed (e.g. `VK_ERROR_DEVICE_LOST`).
+    pub fn read_into(&mut self, dev: &Device, out: &mut Option<GpuTiming>) -> Result<bool, VkResult> {
         if !self.pending {
-            return None;
+            return Ok(false);
         }
         self.pending = false;
         let n = 2 * self.passes.len();
         // (value, availability) pairs.
-        let mut raw = vec![[0u64; 2]; n];
+        let mut raw = [[0u64; 2]; QUERIES as usize];
         // SAFETY: the queries were reset and written by a submitted command buffer; `raw` holds
-        // `n` 16-byte (value, availability) results.
+        // at least `n` 16-byte (value, availability) results.
         let r = unsafe {
             (dev.fns.get_query_pool_results)(
                 dev.handle,
@@ -104,9 +106,9 @@ impl PassTimer {
             )
         };
         if r != VK_SUCCESS && r != VK_NOT_READY {
-            return None;
+            return Err(r);
         }
-        timing_from_raw(self.frame, &self.passes, &raw, dev.timestamp_valid_bits, dev.timestamp_period)
+        Ok(fill_timing(out, self.frame, &self.passes, &raw[..n], dev.timestamp_valid_bits, dev.timestamp_period))
     }
 
     pub fn destroy(&mut self, dev: &Device) {
@@ -116,26 +118,50 @@ impl PassTimer {
     }
 }
 
-/// Turn (value, availability) pairs — begin and end per pass — into milliseconds. `None` if any
-/// result is unavailable. Timestamps wrap at `valid_bits`.
-pub fn timing_from_raw(frame: u64, passes: &[&'static str], raw: &[[u64; 2]], valid_bits: u32, period_ns: f32) -> Option<GpuTiming> {
+/// Turn (value, availability) pairs — begin and end per pass — into milliseconds in `out`,
+/// reusing its pass list. False (and `out` untouched) if any result is unavailable. Timestamps
+/// wrap at `valid_bits`.
+pub fn fill_timing(
+    out: &mut Option<GpuTiming>,
+    frame: u64,
+    passes: &[&'static str],
+    raw: &[[u64; 2]],
+    valid_bits: u32,
+    period_ns: f32,
+) -> bool {
     if passes.is_empty() || raw.len() < 2 * passes.len() || raw.iter().any(|q| q[1] == 0) {
-        return None;
+        return false;
     }
     let mask = if valid_bits >= 64 { u64::MAX } else { (1u64 << valid_bits) - 1 };
     let ms = |a: u64, b: u64| ((b & mask).wrapping_sub(a & mask) & mask) as f64 * period_ns as f64 / 1e6;
-    let timings = passes
-        .iter()
-        .enumerate()
-        .map(|(i, &name)| PassTiming { name, gpu_ms: ms(raw[2 * i][0], raw[2 * i + 1][0]) })
-        .collect();
-    let total_ms = ms(raw[0][0], raw[2 * passes.len() - 1][0]);
-    Some(GpuTiming { frame, total_ms, passes: timings })
+    let t = out.get_or_insert_with(|| GpuTiming { frame, total_ms: 0.0, passes: Vec::with_capacity(MAX_PASSES) });
+    t.frame = frame;
+    t.total_ms = ms(raw[0][0], raw[2 * passes.len() - 1][0]);
+    t.passes.clear();
+    t.passes.extend(passes.iter().enumerate().map(|(i, &name)| PassTiming { name, gpu_ms: ms(raw[2 * i][0], raw[2 * i + 1][0]) }));
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn timing_from_raw(frame: u64, passes: &[&'static str], raw: &[[u64; 2]], valid_bits: u32, period_ns: f32) -> Option<GpuTiming> {
+        let mut out = None;
+        fill_timing(&mut out, frame, passes, raw, valid_bits, period_ns).then(|| out.expect("filled"))
+    }
+
+    #[test]
+    fn filling_reuses_storage_and_leaves_old_timings_when_unavailable() {
+        let mut out = None;
+        assert!(fill_timing(&mut out, 1, &["scene", "post"], &[[0, 1], [10, 1], [10, 1], [30, 1]], 64, 1e6));
+        let ptr = out.as_ref().unwrap().passes.as_ptr();
+        assert!(fill_timing(&mut out, 2, &["scene"], &[[0, 1], [5, 1]], 64, 1e6));
+        let t = out.as_ref().unwrap();
+        assert_eq!((t.frame, t.passes.len(), t.passes.as_ptr()), (2, 1, ptr), "same allocation");
+        assert!(!fill_timing(&mut out, 3, &["scene"], &[[0, 1], [5, 0]], 64, 1e6));
+        assert_eq!(out.unwrap().frame, 2, "unavailable results keep the last timings");
+    }
 
     #[test]
     fn timing_converts_ticks_and_wraps() {

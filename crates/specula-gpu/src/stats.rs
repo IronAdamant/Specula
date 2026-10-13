@@ -181,6 +181,9 @@ pub struct FrameStats {
     /// timestamp support (`timestamps_supported`).
     pub gpu: Option<GpuTiming>,
     pub timestamps_supported: bool,
+    /// `VkResult` of the last failed timestamp read on this path (e.g. `VK_ERROR_DEVICE_LOST`
+    /// = −4); `None` while reads succeed. `gpu` then keeps the last good timings.
+    pub timestamp_error: Option<i32>,
     pub draws: DrawStats,
     /// Size of the per-frame buffer holding frame data and per-draw records; it grows as needed.
     pub draw_buffer_bytes: u64,

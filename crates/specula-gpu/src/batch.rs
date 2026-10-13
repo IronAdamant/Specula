@@ -62,10 +62,11 @@ pub fn world_sphere(model: &[f32; 16], bounds: Bounds) -> ([f32; 3], f32) {
 /// The planes of a view frustum, from a `view_proj` in Vulkan clip conventions (−w ≤ x, y ≤ w,
 /// 0 ≤ z ≤ w). Works for standard and reversed Z, finite or infinite far planes: degenerate
 /// planes (an infinite far plane) are dropped.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frustum {
-    /// `(n, d)` with |n| = 1: a point p is inside when n·p + d ≥ 0.
-    planes: Vec<[f32; 4]>,
+    /// `(n, d)` with |n| = 1: a point p is inside when n·p + d ≥ 0. The first `count` are used.
+    planes: [[f32; 4]; 6],
+    count: usize,
 }
 
 impl Frustum {
@@ -74,23 +75,23 @@ impl Frustum {
         let (x, y, z, w) = (row(0), row(1), row(2), row(3));
         let add = |a: [f64; 4], b: [f64; 4], s: f64| [a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2], a[3] + s * b[3]];
         let candidates = [add(w, x, 1.0), add(w, x, -1.0), add(w, y, 1.0), add(w, y, -1.0), z, add(w, z, -1.0)];
-        let planes = candidates
-            .iter()
-            .filter_map(|p| {
-                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-                // A zero normal is a plane at infinity (or a degenerate matrix): it bounds nothing.
-                (len > 1e-12 && p.iter().all(|v| v.is_finite()))
-                    .then(|| [(p[0] / len) as f32, (p[1] / len) as f32, (p[2] / len) as f32, (p[3] / len) as f32])
-            })
-            .collect();
-        Frustum { planes }
+        let mut f = Frustum { planes: [[0.0; 4]; 6], count: 0 };
+        for p in candidates {
+            let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            // A zero normal is a plane at infinity (or a degenerate matrix): it bounds nothing.
+            if len > 1e-12 && p.iter().all(|v| v.is_finite()) {
+                f.planes[f.count] = [(p[0] / len) as f32, (p[1] / len) as f32, (p[2] / len) as f32, (p[3] / len) as f32];
+                f.count += 1;
+            }
+        }
+        f
     }
 
     /// False only when the sphere is certainly outside one plane. NaN inputs count as visible.
     pub fn sphere_visible(&self, center: [f32; 3], radius: f32) -> bool {
         // A small margin keeps rounding from ever culling something that touches the view.
         let margin = radius * 1e-3 + 1e-4;
-        !self.planes.iter().any(|p| {
+        !self.planes[..self.count].iter().any(|p| {
             let dist = p[0] * center[0] + p[1] * center[1] + p[2] * center[2] + p[3];
             dist < -(radius + margin)
         })
@@ -108,7 +109,8 @@ pub struct Batch {
     pub count: u32,
 }
 
-/// What to draw this frame.
+/// What to draw this frame. Reuse one `Plan` across frames ([`plan_into`]): its vectors keep
+/// their capacity, so planning allocates nothing once warm.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     /// (draw index, pass) in record order.
@@ -116,6 +118,9 @@ pub struct Plan {
     pub batches: Vec<Batch>,
     /// Draws skipped by frustum culling.
     pub culled: u32,
+    /// Sort scratch: visible opaque draws as keys, visible blended draws as (distance², index).
+    opaque_keys: Vec<(u32, u32, u32, usize)>,
+    blended_keys: Vec<(f32, usize)>,
 }
 
 /// Sort key for opaque draws: material (and so pipeline), mesh, then near to far (early depth
@@ -135,13 +140,23 @@ fn opaque_key(material: Material, mesh: MeshId, dist2: f32, index: usize) -> (u3
 /// Blended draws sharing an origin are nested shells listed outermost first: all their back faces
 /// in list order, then their front faces in reverse, so an inner liquid sits inside its glass.
 /// Blended entries keep this order exactly and batch only when adjacent.
+#[cfg(test)]
 pub fn plan(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>) -> Plan {
+    let mut out = Plan::default();
+    plan_into(frame, bounds, &mut out);
+    out
+}
+
+/// [`plan`] into `out`, reusing its storage (no allocation once its vectors are large enough).
+pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, out: &mut Plan) {
     let frustum = Frustum::from_view_proj(&frame.view_proj);
     let c = camera_position(&frame.view_proj);
     let mut culled = 0u32;
-    let mut blended = Vec::new();
-    // Visible opaque draws as sort keys.
-    let mut opaque = Vec::with_capacity(frame.draws.len());
+    let Plan { entries, batches, opaque_keys: opaque, blended_keys: blended, .. } = out;
+    entries.clear();
+    batches.clear();
+    opaque.clear();
+    blended.clear();
     for (i, d) in frame.draws.iter().enumerate() {
         let (center, keep) = match bounds(d.mesh) {
             Some(b) => {
@@ -153,7 +168,10 @@ pub fn plan(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>) -> Pla
         if !keep {
             culled += 1;
         } else if d.material.blended() {
-            blended.push(i);
+            // Blended order uses the model origin (where the object is), not the bounds' centre.
+            let m = &d.model;
+            let v = [m[12] - c[0], m[13] - c[1], m[14] - c[2]];
+            blended.push((v[0] * v[0] + v[1] * v[1] + v[2] * v[2], i));
         } else {
             let v = [center[0] - c[0], center[1] - c[1], center[2] - c[2]];
             // `abs` only clears the sign of a NaN, so every NaN sorts last.
@@ -162,22 +180,17 @@ pub fn plan(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>) -> Pla
         }
     }
 
-    opaque.sort_unstable(); // keys are unique (they end in the index): deterministic
-    let mut entries: Vec<(usize, u32)> = opaque.into_iter().map(|k| (k.3, 0)).collect();
-
-    let dist2 = |i: usize| {
-        let m = &frame.draws[i].model;
-        let d = [m[12] - c[0], m[13] - c[1], m[14] - c[2]];
-        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-    };
-    blended.sort_by(|&a, &b| dist2(b).total_cmp(&dist2(a))); // stable: ties keep list order
-    for group in blended.chunk_by(|&a, &b| dist2(a) == dist2(b)) {
-        entries.extend(group.iter().map(|&i| (i, 0)));
-        let glass = group.iter().rev().filter(|&&i| frame.draws[i].material == Material::Glass);
-        entries.extend(glass.map(|&i| (i, 1)));
+    // Both sorts are in place (no allocation) and total: keys end in the list index, so equal
+    // distances keep list order exactly as a stable sort would.
+    opaque.sort_unstable();
+    entries.extend(opaque.iter().map(|k| (k.3, 0)));
+    blended.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))); // far to near
+    for group in blended.chunk_by(|a, b| a.0 == b.0) {
+        entries.extend(group.iter().map(|&(_, i)| (i, 0)));
+        let glass = group.iter().rev().filter(|&&(_, i)| frame.draws[i].material == Material::Glass);
+        entries.extend(glass.map(|&(_, i)| (i, 1)));
     }
 
-    let mut batches: Vec<Batch> = Vec::new();
     for (n, &(i, pass)) in entries.iter().enumerate() {
         let d = &frame.draws[i];
         match batches.last_mut() {
@@ -185,7 +198,7 @@ pub fn plan(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>) -> Pla
             _ => batches.push(Batch { mesh: d.mesh, material: d.material, pass, first: n as u32, count: 1 }),
         }
     }
-    Plan { entries, batches, culled }
+    out.culled = culled;
 }
 
 #[cfg(test)]
@@ -268,7 +281,7 @@ mod tests {
             assert_eq!(vis(0.0, 0.0, -1000.0), reverse_z, "beyond the far plane only with a finite far");
         }
         // Infinite far plane: dropped, so 5 planes remain.
-        assert_eq!(Frustum::from_view_proj(&camera(0.0, true)).planes.len(), 5);
+        assert_eq!(Frustum::from_view_proj(&camera(0.0, true)).count, 5);
         // A zero matrix bounds nothing.
         assert!(Frustum::from_view_proj(&[0.0; 16]).sphere_visible([1e9, 0.0, 0.0], 0.0));
     }
@@ -364,6 +377,30 @@ mod tests {
         assert_eq!(p.entries, vec![(3, 0), (2, 0), (1, 0), (1, 1), (0, 0)]);
         let shape: Vec<_> = p.batches.iter().map(|b| (b.mesh.0, b.pass, b.count)).collect();
         assert_eq!(shape, vec![(7, 0, 2), (8, 0, 1), (8, 1, 1), (7, 0, 1)]);
+    }
+
+    #[test]
+    fn reused_plan_matches_fresh_and_keeps_its_storage() {
+        let mixed: Vec<DrawItem> = (0..300)
+            .map(|i| {
+                let material = [Material::Lit, Material::Glass, Material::BlobShadow][i % 3];
+                draw((i % 4) as u32, at((i % 17) as f32 - 8.0, 0.0, -((i % 23) as f32) - 2.0), material)
+            })
+            .collect();
+        let few = [draw(1, at(0.0, 0.0, -3.0), Material::Glass), draw(2, at(0.0, 0.0, 9.0), Material::Lit)];
+        let vp = camera(0.0, true);
+        let mut reused = Plan::default();
+        for draws in [&mixed[..], &few[..], &mixed[..]] {
+            let frame = FrameDesc { draws, view_proj: vp, ..Default::default() };
+            plan_into(&frame, |_| Some(UNIT), &mut reused);
+            let fresh = plan(&frame, |_| Some(UNIT));
+            assert_eq!((&reused.entries, &reused.batches, reused.culled), (&fresh.entries, &fresh.batches, fresh.culled));
+        }
+        // Warm: planning the big frame again does not grow any vector.
+        let caps = |p: &Plan| [p.entries.capacity(), p.batches.capacity(), p.opaque_keys.capacity(), p.blended_keys.capacity()];
+        let before = caps(&reused);
+        plan_into(&FrameDesc { draws: &mixed, view_proj: vp, ..Default::default() }, |_| Some(UNIT), &mut reused);
+        assert_eq!(caps(&reused), before);
     }
 
     #[test]
