@@ -34,6 +34,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-anim"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-gpu",
+ "specula-model",
+]
+
+[[package]]
 name = "specula-core"
 version = "0.3.0"
 
