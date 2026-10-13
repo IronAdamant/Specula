@@ -397,7 +397,8 @@ impl Game for SepulcraGame {
         self.messages(&events);
         let headless = self.last_frame.is_none_or(|t| t.elapsed() > HEADLESS_AFTER);
         if headless && !self.paused {
-            self.now += stepped as f32 / TICK_HZ as f32;
+            // Flashes keep fading after the run ends (no more steps, but time still passes).
+            self.now += stepped.max(1) as f32 / TICK_HZ as f32;
         }
         if let Some(scene) = &mut self.scene {
             scene.sync(ctx.world, &self.state, &events, self.now);
@@ -410,7 +411,7 @@ impl Game for SepulcraGame {
 
     fn frame(&mut self, ctx: &mut Ctx, frame: &mut Frame) {
         self.last_frame = Some(Instant::now());
-        if !self.paused && self.state.outcome() == Outcome::Running {
+        if !self.paused {
             self.now += frame.dt_s.min(0.25) * self.speed as f32;
         }
         let Some(scene) = &self.scene else { return };
