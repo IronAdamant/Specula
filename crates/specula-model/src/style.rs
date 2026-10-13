@@ -66,12 +66,13 @@ fn style_err(path: &str, msg: impl Into<String>) -> RecipeError {
 impl Style {
     pub fn parse(text: &str) -> Result<Style, RecipeError> {
         let json = Json::parse(text).map_err(|e| RecipeError::new("", ErrorCode::Json, e.message.clone()).with_offset(e.offset))?;
+        crate::error::check_duplicate_keys(&json, "")?;
         let obj = json.as_object().ok_or_else(|| style_err("", "style must be a JSON object"))?;
         let mut style = Style::default();
         for (k, v) in obj {
             match k.as_str() {
                 "style" => style.name = v.as_str().ok_or_else(|| style_err("style", "must be a string"))?.to_string(),
-                "description" => {}
+                "description" | "proposals" => {}
                 "palette" => {
                     for (name, c) in v.as_object().ok_or_else(|| style_err("palette", "must be an object"))? {
                         let path = format!("palette.{name}");
@@ -85,7 +86,7 @@ impl Style {
                         style.materials.insert(name.clone(), parse_material(&path, m)?);
                     }
                 }
-                other => return Err(RecipeError::new(other, ErrorCode::UnknownField, "style accepts style, description, palette, materials")),
+                other => return Err(RecipeError::new(other, ErrorCode::UnknownField, "style accepts style, description, proposals, palette, materials")),
             }
         }
         Ok(style)
@@ -113,7 +114,12 @@ fn parse_material(path: &str, m: &Json) -> Result<MaterialPreset, RecipeError> {
     };
     for (k, v) in obj {
         let fpath = format!("{path}.{k}");
-        let num = || v.as_f64().map(|x| x as f32).ok_or_else(|| style_err(&fpath, "must be a number"));
+        let num = |lo: f32, hi: f32| {
+            v.as_f64()
+                .map(|x| x as f32)
+                .filter(|x| *x >= lo && *x <= hi)
+                .ok_or_else(|| RecipeError::new(fpath.as_str(), ErrorCode::OutOfRange, format!("must be a number in {lo}..={hi}")))
+        };
         match k.as_str() {
             "kind" => {
                 p.kind = match v.as_str() {
@@ -123,11 +129,11 @@ fn parse_material(path: &str, m: &Json) -> Result<MaterialPreset, RecipeError> {
                 }
             }
             "color" => p.color = v.as_str().and_then(parse_hex).ok_or_else(|| style_err(&fpath, "must be \"#rrggbb\""))?,
-            "roughness" => p.roughness = num()?,
-            "metallic" => p.metallic = num()?,
-            "emissive" => p.emissive = num()?,
-            "specular" => p.specular = num()?,
-            "opacity" => p.opacity = num()?,
+            "roughness" => p.roughness = num(0.0, 1.0)?,
+            "metallic" => p.metallic = num(0.0, 1.0)?,
+            "emissive" => p.emissive = num(0.0, 100.0)?,
+            "specular" => p.specular = num(0.0, 1.0)?,
+            "opacity" => p.opacity = num(0.0, 1.0)?,
             "notes" => {}
             _ => return Err(RecipeError::new(fpath, ErrorCode::UnknownField, "material fields: kind, color, roughness, metallic, emissive, specular, opacity, notes")),
         }

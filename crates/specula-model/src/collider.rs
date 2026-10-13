@@ -40,23 +40,65 @@ pub enum Collider {
 /// Most vertices a hull keeps (physics cost grows with it).
 pub const MAX_HULL_POINTS: usize = 48;
 
-/// Fits `kind` to `points`.
-pub fn fit(kind: ColliderKind, points: &[V3]) -> Collider {
+/// Directions sampled when reducing a point cloud to its extreme points before hulling.
+pub const HULL_DIRECTIONS: usize = 192;
+/// Most input points [`convex_hull`] accepts (callers reduce first); bounds its O(n·faces) cost.
+pub const MAX_HULL_INPUT: usize = 512;
+
+/// Fits `kind` to `points`. The note says why a hull fell back to a box, if it did.
+pub fn fit(kind: ColliderKind, points: &[V3]) -> (Collider, Option<String>) {
+    let aabb = || {
+        let b = Bounds::of(points);
+        Collider::Aabb { min: b.min, max: b.max }
+    };
     match kind {
-        ColliderKind::None => Collider::None,
-        ColliderKind::Aabb => {
-            let b = Bounds::of(points);
-            Collider::Aabb { min: b.min, max: b.max }
-        }
-        ColliderKind::Capsule => capsule(points),
-        ColliderKind::ConvexHull => match hull_limited(points, MAX_HULL_POINTS) {
-            Some((p, i)) => Collider::ConvexHull { points: p, indices: i },
-            None => {
-                let b = Bounds::of(points);
-                Collider::Aabb { min: b.min, max: b.max }
+        ColliderKind::None => (Collider::None, None),
+        ColliderKind::Aabb => (aabb(), None),
+        ColliderKind::Capsule => (capsule(points), None),
+        ColliderKind::ConvexHull => {
+            // Hull the extreme points only: bounded work whatever the mesh size.
+            let extreme = extreme_points(points, HULL_DIRECTIONS);
+            match hull_limited(&extreme, MAX_HULL_POINTS) {
+                Some((p, i)) => (Collider::ConvexHull { points: p, indices: i }, None),
+                None => (aabb(), Some("convex hull failed (flat or degenerate points); fell back to an AABB".to_string())),
             }
-        },
+        }
     }
+}
+
+/// The points that are furthest along `directions` evenly spread directions (a Fibonacci
+/// sphere) plus the six axes, deduplicated, in first-found order. At most `directions + 6`
+/// points, so hulling them is cheap; they lie on the true hull, so the result is a slightly
+/// conservative inner hull.
+pub fn extreme_points(points: &[V3], directions: usize) -> Vec<V3> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let mut dirs: Vec<V3> = vec![[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+    let golden = crate::dmath::PI * (3.0 - 5.0f64.sqrt());
+    for i in 0..directions {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / directions as f64;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let (s, c) = crate::dmath::sin_cos_f64(golden * i as f64);
+        dirs.push([(r * c) as f32, z as f32, (r * s) as f32]);
+    }
+    let mut out: Vec<V3> = Vec::new();
+    for d in dirs {
+        let mut best = 0;
+        let mut best_v = f32::MIN;
+        for (i, p) in points.iter().enumerate() {
+            let v = math3::dot(*p, d);
+            if v > best_v {
+                best_v = v;
+                best = i;
+            }
+        }
+        let p = crate::shape::canon(points[best]);
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// Capsule along the longest bounds axis through the bounds centre, just containing every point.
@@ -89,10 +131,11 @@ pub fn convex_hull(points: &[V3]) -> Option<(Vec<V3>, Vec<u32>)> {
     let mut seen: HashMap<[u32; 3], ()> = HashMap::new();
     let pts: Vec<[f64; 3]> = points
         .iter()
+        .map(|p| crate::shape::canon(*p))
         .filter(|p| seen.insert([p[0].to_bits(), p[1].to_bits(), p[2].to_bits()], ()).is_none())
         .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
         .collect();
-    if pts.len() < 4 {
+    if pts.len() < 4 || pts.len() > MAX_HULL_INPUT {
         return None;
     }
     let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -167,6 +210,9 @@ pub fn convex_hull(points: &[V3]) -> Option<(Vec<V3>, Vec<u32>)> {
             next.push([a, b, pi]);
         }
         faces = next;
+        if faces.len() > 8 * MAX_HULL_INPUT {
+            return None; // numerically confused: give up rather than grow without bound
+        }
     }
     // Compact the used points.
     let mut map: HashMap<usize, u32> = HashMap::new();
@@ -228,7 +274,7 @@ mod tests {
 
     #[test]
     fn hull_of_box_and_sphere() {
-        let s = Shape::cuboid([1.0, 2.0, 1.0], 0.0);
+        let s = Shape::cuboid([1.0, 2.0, 1.0], 0.0).unwrap();
         let (p, i) = convex_hull(&s.positions).unwrap();
         assert_eq!(p.len(), 8);
         assert_eq!(i.len() / 3, 12);
@@ -253,7 +299,7 @@ mod tests {
     #[test]
     fn limited_hull_and_flat_input() {
         let sp = Shape::sphere(1.0, 3);
-        let (p, i) = hull_limited(&sp.positions, 40).unwrap();
+        let (p, i) = hull_limited(&extreme_points(&sp.positions, HULL_DIRECTIONS), 40).unwrap();
         assert!(p.len() <= 40 && p.len() >= 8, "{}", p.len());
         // Still roughly contains the sphere.
         for q in &sp.positions {
@@ -261,7 +307,33 @@ mod tests {
         }
         let flat = Shape::plane([1.0, 1.0], [3, 3]);
         assert!(convex_hull(&flat.positions).is_none());
-        assert!(matches!(fit(ColliderKind::ConvexHull, &flat.positions), Collider::Aabb { .. }));
+        let (c, note) = fit(ColliderKind::ConvexHull, &flat.positions);
+        assert!(matches!(c, Collider::Aabb { .. }));
+        assert!(note.unwrap().contains("AABB"));
+        // Too many raw points: refused (callers reduce first), never a huge allocation.
+        assert!(convex_hull(&Shape::sphere(1.0, 3).positions).is_none());
+    }
+
+    #[test]
+    fn huge_meshes_hull_in_bounded_work() {
+        // Review regression: sphere 5 + subdivide 1 (81,920 triangles) made a 13 GB allocation.
+        let mut s = Shape::sphere(1.0, 5);
+        s.subdivide(1);
+        let t = std::time::Instant::now();
+        let (c, note) = fit(ColliderKind::ConvexHull, &s.positions);
+        assert!(note.is_none());
+        let Collider::ConvexHull { points, indices } = c else { panic!("expected a hull") };
+        assert!(points.len() <= MAX_HULL_POINTS);
+        for q in s.positions.iter().step_by(97) {
+            assert!(inside_hull(*q, &points, &indices, 0.3));
+        }
+        assert!(t.elapsed().as_secs_f32() < 5.0, "took {:?}", t.elapsed());
+        // Coplanar points on a subdivided box don't bloat the hull: just the 8 corners.
+        let mut b = Shape::cuboid([1.0, 1.0, 1.0], 0.0).unwrap();
+        b.subdivide(4);
+        let (c, _) = fit(ColliderKind::ConvexHull, &b.positions);
+        let Collider::ConvexHull { points, .. } = c else { panic!() };
+        assert_eq!(points.len(), 8);
     }
 
     #[test]
@@ -270,7 +342,7 @@ mod tests {
         let Collider::Capsule { a, b, radius } = capsule(&s.positions) else { panic!() };
         assert!((radius - 0.3).abs() < 0.01);
         assert!((a[1] - 0.3).abs() < 0.02 && (b[1] - 1.5).abs() < 0.02, "{a:?} {b:?}");
-        let box_ = Shape::cuboid([0.4, 2.0, 0.4], 0.0);
+        let box_ = Shape::cuboid([0.4, 2.0, 0.4], 0.0).unwrap();
         let Collider::Capsule { a, b, radius } = capsule(&box_.positions) else { panic!() };
         for p in &box_.positions {
             let ab = math3::sub(b, a);

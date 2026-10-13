@@ -43,6 +43,32 @@ pub struct Shape {
 
 /// A ring of a ring stack: several points, or one point (an apex).
 type Ring = Vec<V3>;
+/// Why a generator couldn't build its shape (the recipe layer adds the path).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeomError(pub String);
+
+impl std::fmt::Display for GeomError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for GeomError {}
+
+/// `-0.0` → `+0.0` (adding `+0.0` does exactly that), so equal points have equal bits: welding
+/// keys, bounds and hashes don't depend on the sign of zero.
+#[inline]
+pub fn canon(p: V3) -> V3 {
+    [p[0] + 0.0, p[1] + 0.0, p[2] + 0.0]
+}
+
+/// Bit key of a canonical position.
+#[inline]
+fn key(p: V3) -> [u32; 3] {
+    let c = canon(p);
+    [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()]
+}
+
 /// A cap triangulation over a ring's points, if the end is capped.
 type CapTris<'a> = Option<&'a [[u32; 3]]>;
 
@@ -151,14 +177,38 @@ impl Shape {
 
     /// Lofts 2D outlines (all the same point count, or a single point) stacked at heights:
     /// `rings[k] = (outline in [a, b] counter-clockwise, y)`, placed at `(a, y, -b)`.
-    fn loft_ab(rings: &[(Vec<V2>, f32)], caps: (bool, bool), band_tags: &[u8]) -> Shape {
+    fn loft_ab(rings: &[(Vec<V2>, f32)], band_tags: &[u8]) -> Result<Shape, GeomError> {
         let rings3: Vec<Ring> = rings.iter().map(|(o, y)| o.iter().map(|q| [q[0], *y, -q[1]]).collect()).collect();
-        let tri = |o: &Vec<V2>| if o.len() > 2 { poly::triangulate(o) } else { None };
-        let first = if caps.0 { tri(&rings[0].0) } else { None };
-        let last = if caps.1 { tri(&rings[rings.len() - 1].0) } else { None };
+        let cap = |o: &Vec<V2>, which: &str| -> Result<Option<Vec<[u32; 3]>>, GeomError> {
+            if o.len() < 3 {
+                return Ok(None); // an apex point needs no cap
+            }
+            poly::triangulate(o).map(Some).ok_or_else(|| GeomError(format!("the {which} cap can't be triangulated (outline too thin, self-touching or inset past itself)")))
+        };
+        let first = cap(&rings[0].0, "bottom")?;
+        let last = cap(&rings[rings.len() - 1].0, "top")?;
         let mut s = Shape::ring_stack(&rings3, (first.as_deref(), last.as_deref()), false, band_tags);
         s.orient_outward_if_closed();
-        s
+        Ok(s)
+    }
+
+    /// Flips every triangle if, on balance, faces point towards their vertices' `centres`
+    /// (the axis of a lathe, the path of a sweep) instead of away: orients open surfaces.
+    fn orient_away_from(&mut self, centres: &[V3]) {
+        let mut sum = 0.0f64;
+        for t in &self.tris {
+            let p = |k: usize| self.positions[t[k] as usize];
+            let c = |k: usize| centres[t[k] as usize];
+            let n = math3::tri_normal(p(0), p(1), p(2));
+            let mid = math3::scale(math3::add(math3::add(p(0), p(1)), p(2)), 1.0 / 3.0);
+            let axis = math3::scale(math3::add(math3::add(c(0), c(1)), c(2)), 1.0 / 3.0);
+            sum += math3::dot(n, math3::sub(mid, axis)) as f64;
+        }
+        if sum < 0.0 {
+            for t in &mut self.tris {
+                t.swap(1, 2);
+            }
+        }
     }
 
     /// Flips every triangle if the shell encloses negative volume (a profile traversed top to
@@ -191,7 +241,7 @@ impl Shape {
     /// - `segments`: side bands (≥ 1), for later deformation.
     /// - `cap_inset`: `(inset, depth)` adds a panel on the top cap: inset by `inset`, raised
     ///   (`depth` > 0) or recessed (`depth` < 0).
-    pub fn extrude(outline_xz: &[V2], height: f32, taper: f32, bevel: f32, corner_bevel: f32, segments: u32, cap_inset: Option<(f32, f32)>) -> Shape {
+    pub fn extrude(outline_xz: &[V2], height: f32, taper: f32, bevel: f32, corner_bevel: f32, segments: u32, cap_inset: Option<(f32, f32)>) -> Result<Shape, GeomError> {
         let ab: Vec<V2> = outline_xz.iter().map(|q| [q[0], -q[1]]).collect();
         let mut base = poly::canonical(&ab);
         if corner_bevel > 0.0 {
@@ -236,12 +286,12 @@ impl Shape {
                 rings.push((inner, height + depth));
             }
         }
-        Shape::loft_ab(&rings, (true, true), &tags)
+        Shape::loft_ab(&rings, &tags)
     }
 
     /// Lofts one `[x, z]` outline through `(scale, y, dx, dz)` stations (scale 0 = apex point).
     /// Bands between stations whose scale changes by more than their height are tagged as bevels.
-    pub fn loft(outline_xz: &[V2], stations: &[[f32; 4]], corner_bevel: f32) -> Shape {
+    pub fn loft(outline_xz: &[V2], stations: &[[f32; 4]], corner_bevel: f32) -> Result<Shape, GeomError> {
         let ab: Vec<V2> = outline_xz.iter().map(|q| [q[0], -q[1]]).collect();
         let mut base = poly::canonical(&ab);
         if corner_bevel > 0.0 {
@@ -262,7 +312,7 @@ impl Shape {
             .windows(2)
             .map(|w| if ((w[1][0] - w[0][0]) * radius).abs() > 0.7 * (w[1][1] - w[0][1]).abs() { TAG_BEVEL } else { TAG_FACE })
             .collect();
-        Shape::loft_ab(&rings, (true, true), &tags)
+        Shape::loft_ab(&rings, &tags)
     }
 
     /// Spins an `[r, y]` profile around +Y with `segments` sides. r = 0 points close the shape;
@@ -279,18 +329,22 @@ impl Shape {
         let closed = caps || (profile.first().is_some_and(|p| p[0] <= 1e-5) && profile.last().is_some_and(|p| p[0] <= 1e-5));
         if closed {
             s.orient_outward_if_closed();
+        } else {
+            // An open surface of revolution faces away from its axis.
+            let centres: Vec<V3> = s.positions.iter().map(|p| [0.0, p[1], 0.0]).collect();
+            s.orient_away_from(&centres);
         }
         s
     }
 
     /// A `size` box resting on y = 0 with every edge chamfered by `bevel`.
-    pub fn cuboid(size: V3, bevel: f32) -> Shape {
+    pub fn cuboid(size: V3, bevel: f32) -> Result<Shape, GeomError> {
         let b = bevel.max(0.0).min(0.45 * size[0].min(size[1]).min(size[2]));
         Shape::extrude(&poly::rect(size[0], size[2]), size[1], 1.0, b, b, 1, None)
     }
 
     /// A prism with `sides` (≥ 3), radii at the bottom and top, rims chamfered by `bevel`.
-    pub fn cylinder(radius: f32, radius_top: f32, height: f32, sides: u32, bevel: f32) -> Shape {
+    pub fn cylinder(radius: f32, radius_top: f32, height: f32, sides: u32, bevel: f32) -> Result<Shape, GeomError> {
         let ngon = poly::regular(sides.max(3), radius, 90.0 + 180.0 / sides.max(3) as f64);
         let xz: Vec<V2> = ngon.iter().map(|q| [q[0], -q[1]]).collect();
         Shape::extrude(&xz, height, radius_top / radius, bevel, 0.0, 1, None)
@@ -440,7 +494,7 @@ impl Shape {
     /// reflection, Wang et al. 2008). `scales[i]` sizes the profile at path point i (0 = a point);
     /// `twist_deg` turns it gradually along the path. Corners are mitred so tubes keep their
     /// thickness. Closed paths make rings (frames from the loop's plane, so they meet seamlessly).
-    pub fn sweep(profile_ab: &[V2], path: &[V3], scales: &[f32], twist_deg: f32, closed: bool, caps: bool, up: Option<V3>) -> Shape {
+    pub fn sweep(profile_ab: &[V2], path: &[V3], scales: &[f32], twist_deg: f32, closed: bool, caps: bool, up: Option<V3>) -> Result<Shape, GeomError> {
         let prof = poly::canonical(profile_ab);
         let n = path.len();
         let seg = |i: usize, j: usize| math3::normalize(math3::sub(path[j], path[i]));
@@ -535,13 +589,20 @@ impl Shape {
                     .collect()
             })
             .collect();
-        let tri = if caps && !closed { poly::triangulate(&prof) } else { None };
+        let tri = if caps && !closed {
+            Some(poly::triangulate(&prof).ok_or_else(|| GeomError("the sweep profile can't be triangulated for its end caps".into()))?)
+        } else {
+            None
+        };
+        let centres: Vec<V3> = rings.iter().zip(path).flat_map(|(r, c)| std::iter::repeat_n(*c, r.len())).collect();
         let mut s = Shape::ring_stack(&rings, (tri.as_deref(), tri.as_deref()), closed, &[]);
         let ends_closed = closed || (caps || scales.first().is_some_and(|&v| v <= 1e-5)) && (caps || scales.last().is_some_and(|&v| v <= 1e-5));
         if ends_closed {
             s.orient_outward_if_closed();
+        } else {
+            s.orient_away_from(&centres);
         }
-        s
+        Ok(s)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -576,6 +637,15 @@ impl Shape {
     pub fn mirror(&mut self, axis: usize, keep_original: bool) {
         let mut s = [1.0; 3];
         s[axis] = -1.0;
+        if keep_original {
+            // Faces lying on the mirror plane would end up back to back inside the solid.
+            let on_plane = |t: &[u32; 3], pos: &[V3]| t.iter().all(|&v| pos[v as usize][axis].abs() <= 1e-5);
+            let keep: Vec<bool> = self.tris.iter().map(|t| !on_plane(t, &self.positions)).collect();
+            let mut k = keep.iter();
+            self.tris.retain(|_| *k.next().unwrap());
+            let mut k = keep.iter();
+            self.tags.retain(|_| *k.next().unwrap());
+        }
         let mut copy = self.clone();
         copy.transform(&Affine::scale(s));
         if keep_original {
@@ -626,7 +696,7 @@ impl Shape {
                 dmath::floor_f64((p[2] * inv) as f64 + 0.5) as i64,
             ];
             let id = *ids.entry(key).or_insert_with(|| {
-                pos.push(*p);
+                pos.push(canon(*p));
                 col.push(self.colors[i]);
                 pos.len() as u32 - 1
             });
@@ -688,7 +758,6 @@ impl Shape {
     /// Area-weighted vertex normals, shared by every vertex at the same position (so seams
     /// between coincident vertices move together).
     pub fn smooth_normals(&self) -> Vec<V3> {
-        let key = |p: V3| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
         let mut group: HashMap<[u32; 3], usize> = HashMap::new();
         let gid: Vec<usize> = self
             .positions
@@ -760,14 +829,17 @@ impl Shape {
         if deg_per_m == 0.0 {
             return;
         }
-        let k = (deg_per_m * dmath::PI / 180.0) as f32; // curvature (1/m)
-        let r = 1.0 / k;
+        let k = deg_per_m * dmath::PI / 180.0; // curvature (1/m), f64 so tiny bends stay exact
         for p in &mut self.positions {
-            let (s, c) = dmath::sin_cos(k * p[1]);
-            let x = p[0];
-            // Point at height y on the bent centreline, offset by x along the rotated normal.
-            p[0] = r - (r - x) * c;
-            p[1] = (r - x) * s;
+            let theta = k * p[1] as f64;
+            let (s, c) = dmath::sin_cos_f64(theta);
+            let (sh, _) = dmath::sin_cos_f64(0.5 * theta);
+            let one_minus_c = 2.0 * sh * sh; // 1 - cos θ without cancellation
+            let x = p[0] as f64;
+            // Point at height y on the bent centreline (radius 1/k), offset by x along the
+            // rotated normal: x' = r(1 - cos θ) + x cos θ, y' = (r - x) sin θ.
+            p[0] = (one_minus_c / k + x * c) as f32;
+            p[1] = (s / k - x * s) as f32;
         }
     }
 
@@ -826,7 +898,6 @@ impl Shape {
     pub fn concavity_shade(&mut self, amount: f32) {
         // Per edge (welded by position): if the far corner of one face lies above the other
         // face's plane, the edge is a valley; its strength grows with the fold angle (90° = 1).
-        let key = |p: V3| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
         let mut group: HashMap<[u32; 3], u32> = HashMap::new();
         let gid: Vec<u32> = self
             .positions
@@ -890,7 +961,8 @@ impl Shape {
     /// the bevel tint and quantises colours to sRGB8.
     pub fn finalize(&self, smooth_angle_deg: f32, material: &str) -> MeshData {
         let mut s = self.clone();
-        s.weld_exact();
+        // Weld points closer than 10 µm (a taper to almost 0, float noise) so no seam opens.
+        s.weld(1e-5);
         let face_n: Vec<V3> = s
             .tris
             .iter()
@@ -961,9 +1033,8 @@ impl Shape {
         let mut col = Vec::new();
         let mut remap = Vec::with_capacity(self.positions.len());
         for (i, p) in self.positions.iter().enumerate() {
-            let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
-            let id = *ids.entry(key).or_insert_with(|| {
-                pos.push(*p);
+            let id = *ids.entry(key(*p)).or_insert_with(|| {
+                pos.push(canon(*p));
                 col.push(self.colors[i]);
                 pos.len() as u32 - 1
             });

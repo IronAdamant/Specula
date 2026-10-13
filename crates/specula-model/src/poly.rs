@@ -47,18 +47,36 @@ fn segments_cross(p1: V2, p2: V2, q1: V2, q2: V2) -> bool {
     ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0)) && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
 }
 
-/// True if no two non-adjacent edges cross. O(n²); outlines are small.
+/// `q` lies on the closed segment `a`–`b` (collinear and within its box).
+fn on_segment(a: V2, b: V2, q: V2) -> bool {
+    cross2(a, b, q) == 0.0 && q[0] >= a[0].min(b[0]) && q[0] <= a[0].max(b[0]) && q[1] >= a[1].min(b[1]) && q[1] <= a[1].max(b[1])
+}
+
+/// Whether two closed segments share any point (crossing, touching or overlapping).
+fn segments_touch(p1: V2, p2: V2, q1: V2, q2: V2) -> bool {
+    segments_cross(p1, p2, q1, q2) || on_segment(q1, q2, p1) || on_segment(q1, q2, p2) || on_segment(p1, p2, q1) || on_segment(p1, p2, q2)
+}
+
+/// True if the outline is a simple polygon: non-adjacent edges share no point (no crossing,
+/// touching or repeated vertex) and no edge folds back onto its neighbour. O(n²); callers cap
+/// the point count first.
 pub fn is_simple(p: &[V2]) -> bool {
     let n = p.len();
     if n < 3 {
         return false;
     }
     for i in 0..n {
-        for j in i + 1..n {
-            if j == i + 1 || (i == 0 && j == n - 1) {
-                continue;
+        let (a, b, c) = (p[i], p[(i + 1) % n], p[(i + 2) % n]);
+        // A fold: the next edge runs straight back along this one.
+        let (d0, d1) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+        if cross2(a, b, c) == 0.0 && d0[0] * d1[0] + d0[1] * d1[1] < 0.0 {
+            return false;
+        }
+        for j in i + 2..n {
+            if i == 0 && j == n - 1 {
+                continue; // adjacent through the wrap-around
             }
-            if segments_cross(p[i], p[(i + 1) % n], p[j], p[(j + 1) % n]) {
+            if segments_touch(a, b, p[j], p[(j + 1) % n]) {
                 return false;
             }
         }
@@ -66,80 +84,70 @@ pub fn is_simple(p: &[V2]) -> bool {
     true
 }
 
-/// Ear-clipping triangulation of a simple counter-clockwise polygon. Triangles are
-/// counter-clockwise. `None` if the polygon is degenerate.
+/// Ear-clipping triangulation of a simple counter-clockwise polygon (a doubly linked list and a
+/// moving cursor, so no full rescans; the inside test only visits reflex vertices). Triangles
+/// are counter-clockwise. `None` if no valid triangulation is found (a degenerate or
+/// self-touching outline).
 pub fn triangulate(p: &[V2]) -> Option<Vec<[u32; 3]>> {
     let n = p.len();
     if n < 3 {
         return None;
     }
-    let mut idx: Vec<usize> = (0..n).collect();
+    let mut prev: Vec<usize> = (0..n).map(|i| (i + n - 1) % n).collect();
+    let mut next: Vec<usize> = (0..n).map(|i| (i + 1) % n).collect();
+    let mut alive = vec![true; n];
     let mut tris = Vec::with_capacity(n - 2);
-    let mut guard = 0;
-    while idx.len() > 3 {
-        let m = idx.len();
-        let mut found = false;
-        // Prefer the ear with the best (largest smallest-angle proxy) shape for nicer caps:
-        // deterministic scan, first ear wins among equals.
-        let mut best: Option<(usize, f32)> = None;
-        for k in 0..m {
-            let (ia, ib, ic) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
-            let (a, b, c) = (p[ia], p[ib], p[ic]);
-            if cross2(a, b, c) <= 0.0 {
-                continue; // reflex or flat
-            }
-            let mut inside = false;
-            for &j in &idx {
-                if j == ia || j == ib || j == ic {
-                    continue;
-                }
+    let mut remaining = n;
+    let mut cur = 0;
+    let mut stall = 0;
+    let reflex = |i: usize, prev: &[usize], next: &[usize]| cross2(p[prev[i]], p[i], p[next[i]]) < 0.0;
+    while remaining > 3 {
+        let (a, b, c) = (prev[cur], cur, next[cur]);
+        let convex = cross2(p[a], p[b], p[c]) > 0.0;
+        let mut ear = convex;
+        if convex {
+            // Only reflex vertices can lie inside a convex ear.
+            let mut j = next[c];
+            while j != a {
                 let q = p[j];
-                if q == a || q == b || q == c {
-                    continue; // a duplicate of a corner (collapsed edge) never blocks an ear
-                }
-                if cross2(a, b, q) >= 0.0 && cross2(b, c, q) >= 0.0 && cross2(c, a, q) >= 0.0 {
-                    inside = true;
+                let candidate = alive[j] && reflex(j, &prev, &next) && q != p[a] && q != p[b] && q != p[c];
+                if candidate && cross2(p[a], p[b], q) >= 0.0 && cross2(p[b], p[c], q) >= 0.0 && cross2(p[c], p[a], q) >= 0.0 {
+                    ear = false;
                     break;
                 }
-            }
-            if inside {
-                continue;
-            }
-            let quality = ear_quality(a, b, c);
-            if best.is_none_or(|(_, q)| quality > q) {
-                best = Some((k, quality));
+                j = next[j];
             }
         }
-        if let Some((k, _)) = best {
-            let (ia, ib, ic) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
-            tris.push([ia as u32, ib as u32, ic as u32]);
-            idx.remove(k);
-            found = true;
-        }
-        if !found {
-            // Collinear leftovers: drop a flat vertex if there is one.
-            let flat = (0..m).find(|&k| cross2(p[idx[(k + m - 1) % m]], p[idx[k]], p[idx[(k + 1) % m]]) == 0.0);
-            idx.remove(flat?);
-        }
-        guard += 1;
-        if guard > 4 * n {
-            return None;
+        let flat = !convex && cross2(p[a], p[b], p[c]) == 0.0;
+        if ear || (flat && stall > remaining) {
+            if ear {
+                tris.push([a as u32, b as u32, c as u32]);
+            }
+            // Unlink b (a flat vertex is dropped without a triangle only as a last resort).
+            next[a] = c;
+            prev[c] = a;
+            alive[b] = false;
+            remaining -= 1;
+            cur = a;
+            stall = 0;
+        } else {
+            cur = c;
+            stall += 1;
+            if stall > 2 * remaining + 2 {
+                return None;
+            }
         }
     }
-    if cross2(p[idx[0]], p[idx[1]], p[idx[2]]) > 0.0 {
-        tris.push([idx[0] as u32, idx[1] as u32, idx[2] as u32]);
+    let (a, b) = (cur, next[cur]);
+    let c = next[b];
+    if cross2(p[a], p[b], p[c]) > 0.0 {
+        tris.push([a as u32, b as u32, c as u32]);
     }
     if tris.is_empty() {
         None
     } else {
         Some(tris)
     }
-}
-
-/// Smallest-angle proxy: area over the sum of squared edge lengths (larger = rounder).
-fn ear_quality(a: V2, b: V2, c: V2) -> f32 {
-    let l = |p: V2, q: V2| (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]);
-    cross2(a, b, c) / (l(a, b) + l(b, c) + l(c, a))
 }
 
 fn norm2(v: V2) -> V2 {

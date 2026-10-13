@@ -44,8 +44,9 @@ fn builds_tiers_with_lods_and_collider() {
     let mut prev = 0;
     for tier in 1..=3 {
         let m = build_with(PILLAR, &[("tier", tier as f64)]).unwrap();
-        assert_eq!(m.lods.len(), 3);
-        assert_eq!(m.lod_ratios, vec![1.0, 0.5, 0.25]);
+        assert!((2..=3).contains(&m.lods.len()), "{:?}", m.notes);
+        assert_eq!(m.lod_ratios[..2], [1.0, 0.5]);
+        assert_eq!(m.lods.len() == 3, m.notes.is_empty(), "a skipped LOD is noted: {:?}", m.notes);
         let n0 = m.lods[0].triangle_count();
         assert!(n0 > prev, "higher tiers add parts");
         prev = n0;
@@ -84,7 +85,7 @@ fn hash_is_pinned() {
     assert_eq!(format!("{:016x}", m.hash), PINNED_PILLAR_HASH, "LOD0 hash {:016x}", m.lods[0].content_hash());
 }
 
-const PINNED_PILLAR_HASH: &str = "6eccac42f301749d";
+const PINNED_PILLAR_HASH: &str = "3123160fe8d87729";
 
 #[test]
 fn parameter_errors() {

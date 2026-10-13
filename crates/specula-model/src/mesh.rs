@@ -48,6 +48,8 @@ impl Bounds {
     pub fn of(points: &[V3]) -> Bounds {
         let mut b = Bounds::EMPTY;
         for &p in points {
+            // Canonical zeros: min/max of ±0.0 is unspecified across platforms.
+            let p = crate::shape::canon(p);
             b.min = math3::vmin(b.min, p);
             b.max = math3::vmax(b.max, p);
         }
@@ -254,7 +256,8 @@ impl MeshData {
             .positions
             .iter()
             .map(|p| {
-                let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+                let c = crate::shape::canon(*p);
+                let key = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
                 let next = ids.len() as u32;
                 *ids.entry(key).or_insert(next)
             })

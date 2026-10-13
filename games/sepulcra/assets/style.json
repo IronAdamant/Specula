@@ -1,6 +1,14 @@
 {
   "style": "sepulcra",
   "description": "Palette and material presets from games/sepulcra/STYLE.md (sRGB). Recipes refer to these names only.",
+  "proposals": [
+    "OWNER DECISIONS PENDING (procedural modelling lane, 2026-10-13). Not in STYLE.md yet; approve, rename or replace:",
+    "palette.carved_shadow #6b7480: darker carved stone for plinths, rune fields and the foot of stones (gradient start).",
+    "palette.iron_dark #3e4248: shadowed iron for the brazier bowl and fence gradients.",
+    "materials.graveyard_stone: tombstone preset (#a7a39a, roughness 0.85) built from STYLE.md's Graveyard neutral, which has no preset.",
+    "specular per preset: STYLE.md gives colour, roughness, metallic and emissive only; the values here (0.0-0.6) are proposals.",
+    "Triangle budgets STYLE.md doesn't set, used in the recipes: wall_segment 1000, tombstone 400, graveyard_fence 700, brazier_fire 700, bone_colossus 2500 (one on screen), slab_cliff 3000."
+  ],
   "palette": {
     "rune_glow": "#3fe0d0",
     "rune_deep": "#1a8f9e",

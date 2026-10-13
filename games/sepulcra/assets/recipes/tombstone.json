@@ -22,11 +22,11 @@
                { "op": "bevel_tint", "color": "#c4c0b6", "amount": 0.6 },
                { "op": "noise_tint", "amount": 0.08, "scale": 0.12 } ] },
     { "name": "cross", "material": "graveyard_stone", "color": "#8f8b82",
-      "shape": { "op": "box", "size": [0.05, 0.26, 0.012] },
+      "shape": { "op": "box", "size": [0.05, 0.26, 0.012], "bevel": 0.004 },
       "ops": [ { "op": "move", "by": [0, 0.4, 0.079] },
                { "op": "rotate", "deg": ["-4 * tilt", 0, "3 * tilt"], "pivot": [0, 0.05, 0] } ] },
     { "name": "cross_bar", "material": "graveyard_stone", "color": "#8f8b82",
-      "shape": { "op": "box", "size": [0.17, 0.05, 0.012] },
+      "shape": { "op": "box", "size": [0.17, 0.05, 0.012], "bevel": 0.004 },
       "ops": [ { "op": "move", "by": [0, 0.56, 0.079] },
                { "op": "rotate", "deg": ["-4 * tilt", 0, "3 * tilt"], "pivot": [0, 0.05, 0] } ] }
   ],

@@ -23,12 +23,32 @@ use crate::style::{MaterialPreset, Style};
 
 /// The recipe format version this crate reads.
 pub const FORMAT_VERSION: u32 = 1;
-/// Safety limit on triangles in one part while building.
-pub const MAX_PART_TRIANGLES: usize = 100_000;
-/// Safety limit on triangles in a whole model (LOD 0).
-pub const MAX_MODEL_TRIANGLES: usize = 200_000;
+// Safety limits. Recipes are agent-written input: every size that drives allocation or time is
+// bounded, and counts are *predicted* before a shape or op is generated, so a hostile recipe
+// gets a structured `Limit` error instead of exhausting memory.
+
+/// Triangles in one part (any shape, any op).
+pub const MAX_PART_TRIANGLES: usize = 65_536;
+/// Triangles in a whole model (LOD 0), counted across parts and includes as they are built.
+pub const MAX_MODEL_TRIANGLES: usize = 131_072;
 /// Deepest include nesting.
 pub const MAX_INCLUDE_DEPTH: usize = 4;
+/// Include expansions in one build (all levels together).
+pub const MAX_INCLUDES: usize = 64;
+/// Parts in one recipe.
+pub const MAX_PARTS: usize = 256;
+/// Ops in one part's `ops` or in `finish`.
+pub const MAX_OPS: usize = 64;
+/// Rows in a lathe profile, loft stations or a sweep path (before smoothing).
+pub const MAX_ROWS: usize = 512;
+/// Points in an outline after resampling and bevelling.
+pub const MAX_OUTLINE_POINTS: usize = 1024;
+/// Points in a sweep profile.
+pub const MAX_PROFILE_POINTS: usize = 256;
+/// Rings in a sweep after smoothing.
+pub const MAX_SWEEP_RINGS: usize = 4096;
+/// Largest coordinate (metres) any vertex may reach.
+pub const MAX_EXTENT_M: f32 = 10_000.0;
 
 // ---------------------------------------------------------------------------------------------
 // Schema
@@ -398,6 +418,9 @@ impl Parser<'_> {
     fn ops(&self, path: &str, v: Option<&Json>) -> Result<Vec<Node>, RecipeError> {
         let Some(v) = v else { return Ok(Vec::new()) };
         let items = v.as_array().ok_or_else(|| type_err(path, "a list of ops"))?;
+        if items.len() > MAX_OPS {
+            return Err(e(path, ErrorCode::Limit, format!("{} ops; at most {MAX_OPS}", items.len())).with_numbers(items.len() as f64, MAX_OPS as f64));
+        }
         items.iter().enumerate().map(|(i, x)| self.op_node(&format!("{path}[{i}]"), x, OPS, "op")).collect()
     }
 }
@@ -416,6 +439,7 @@ impl Recipe {
     /// Parses and validates `text` against `style` (materials and colours must exist).
     pub fn parse(text: &str, style: &Style) -> Result<Recipe, RecipeError> {
         let json = Json::parse(text).map_err(|er| e("", ErrorCode::Json, er.message.clone()).with_offset(er.offset))?;
+        crate::error::check_duplicate_keys(&json, "")?;
         let obj = json.as_object().ok_or_else(|| type_err("", "a recipe object"))?;
         const TOP: &[&str] =
             &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "parts", "finish"];
@@ -470,8 +494,14 @@ impl Recipe {
                 if !has_default {
                     return Err(e(&format!("{path}.default"), ErrorCode::MissingField, "parameters need a default"));
                 }
+                if pd.min > pd.max {
+                    return Err(e(&format!("{path}.min"), ErrorCode::OutOfRange, "min is above max").with_numbers(pd.min, pd.max));
+                }
                 if pd.default < pd.min || pd.default > pd.max {
                     return Err(e(&format!("{path}.default"), ErrorCode::OutOfRange, "default outside min..max").with_numbers(pd.default, pd.max));
+                }
+                if pd.integer && dmath::trunc_f64(pd.default) != pd.default {
+                    return Err(e(&format!("{path}.default"), ErrorCode::OutOfRange, format!("'{pname}' is an integer parameter; default {} is not", pd.default)));
                 }
                 p.known.insert(pname.clone());
                 params.push(pd);
@@ -535,6 +565,9 @@ impl Recipe {
         let items = parts_json.as_array().ok_or_else(|| type_err("parts", "a list of parts"))?;
         if items.is_empty() {
             return Err(e("parts", ErrorCode::MissingField, "a recipe needs at least one part"));
+        }
+        if items.len() > MAX_PARTS {
+            return Err(e("parts", ErrorCode::Limit, format!("{} parts; at most {MAX_PARTS}", items.len())).with_numbers(items.len() as f64, MAX_PARTS as f64));
         }
         let mut parts: Vec<PartDef> = Vec::new();
         for (i, pj) in items.iter().enumerate() {
@@ -642,6 +675,8 @@ pub struct Model {
     pub seed: u64,
     /// Triangle budget the recipe declared, if any: (min, max).
     pub budget: (Option<u32>, Option<u32>),
+    /// What the build changed or gave up on (skipped LODs, a hull that fell back to a box).
+    pub notes: Vec<String>,
 }
 
 impl Model {
@@ -677,6 +712,7 @@ impl Model {
                     },
                 ),
             ),
+            ("notes", Json::arr(self.notes.iter().map(|n| Json::Str(n.clone())))),
         ])
     }
 }
@@ -696,11 +732,9 @@ pub fn build(recipe_json: &str, params: &BuildParams) -> Result<Model, RecipeErr
 pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, RecipeError> {
     let seed = params.seed.unwrap_or(recipe.seed);
     let mut stack = vec![recipe.name.clone()];
-    let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack)?;
-    let total: usize = built.iter().map(|b| b.shape.triangle_count()).sum();
-    if total > MAX_MODEL_TRIANGLES {
-        return Err(e("parts", ErrorCode::Limit, "model has too many triangles").with_numbers(total as f64, MAX_MODEL_TRIANGLES as f64));
-    }
+    let tally = Tally::default();
+    let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally)?;
+    let mut notes = Vec::new();
     let lod0 = assemble(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>());
     lod0.validate().map_err(|er| e("parts", ErrorCode::InvalidMesh, er.to_string()))?;
     if lod0.triangle_count() == 0 {
@@ -741,20 +775,25 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let mut ratios = vec![1.0f32];
     for (i, &ratio) in recipe.lod_ratios.iter().enumerate() {
         let inputs: Vec<LodInput> = built.iter().map(|b| LodInput { shape: &b.shape, cell_scale: b.lod_detail }).collect();
-        let (shapes, _cell) = lod::simplify(&inputs, ratio, bounds.min, extent);
+        let Some((shapes, _cell)) = lod::simplify(&inputs, ratio, bounds.min, extent) else {
+            notes.push(format!("lods[{i}] ({ratio}) skipped: no simplification keeps every part within tolerance"));
+            continue;
+        };
         let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
         let mesh = assemble(&pairs);
         mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
         // An LOD that saves under 10% over the previous one is dropped: it would cost memory and
         // a switch for nothing (parts kept with lod_detail 0 can make a model irreducible).
         let prev = lods.last().map_or(0, |m| m.triangle_count());
-        if mesh.triangle_count() as f32 > 0.9 * prev as f32 {
+        if mesh.triangle_count() == 0 || mesh.triangle_count() as f32 > 0.9 * prev as f32 {
+            notes.push(format!("lods[{i}] ({ratio}) skipped: saves under 10% over the previous LOD"));
             continue;
         }
         lods.push(mesh);
         ratios.push(ratio);
     }
-    let collider = collider::fit(recipe.collider, &lods[0].positions);
+    let (collider, note) = collider::fit(recipe.collider, &lods[0].positions);
+    notes.extend(note);
     let mut materials = Vec::new();
     for p in &lods[0].parts {
         if !materials.iter().any(|(n, _): &(String, MaterialPreset)| n == &p.material) {
@@ -779,7 +818,49 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         params: used,
         seed,
         budget: (min_t, max_t),
+        notes,
     })
+}
+
+/// Running totals for one build, shared by every part and include, so limits hold across the
+/// whole model and are checked *before* allocating.
+#[derive(Default)]
+struct Tally {
+    /// Triangles of every piece built so far (the current one included once generated).
+    triangles: std::cell::Cell<usize>,
+    includes: std::cell::Cell<usize>,
+}
+
+impl Tally {
+    /// A piece of `old` triangles is about to become `new`: fail before allocating if that
+    /// breaks the part or model limit, else record it.
+    fn grow(&self, path: &str, old: usize, new: usize) -> Result<(), RecipeError> {
+        if new > MAX_PART_TRIANGLES {
+            return Err(e(path, ErrorCode::Limit, format!("this would make a part of {new} triangles; at most {MAX_PART_TRIANGLES}"))
+                .with_numbers(new as f64, MAX_PART_TRIANGLES as f64));
+        }
+        let total = self.triangles.get() - old.min(self.triangles.get()) + new;
+        if total > MAX_MODEL_TRIANGLES {
+            return Err(e(path, ErrorCode::Limit, format!("this would make the model {total} triangles; at most {MAX_MODEL_TRIANGLES}"))
+                .with_numbers(total as f64, MAX_MODEL_TRIANGLES as f64));
+        }
+        self.triangles.set(total);
+        Ok(())
+    }
+
+    /// Replaces a prediction with the count actually built (never more than predicted).
+    fn settle(&self, predicted: usize, actual: usize) {
+        self.triangles.set(self.triangles.get() - predicted.min(self.triangles.get()) + actual);
+    }
+
+    fn include(&self, path: &str) -> Result<(), RecipeError> {
+        let n = self.includes.get() + 1;
+        if n > MAX_INCLUDES {
+            return Err(e(path, ErrorCode::Limit, format!("more than {MAX_INCLUDES} include expansions in one build")).with_numbers(n as f64, MAX_INCLUDES as f64));
+        }
+        self.includes.set(n);
+        Ok(())
+    }
 }
 
 fn hash_collider(h: &mut StableHasher, c: &Collider) {
@@ -837,6 +918,7 @@ fn build_parts(
     seed: u64,
     params: &BuildParams,
     stack: &mut Vec<String>,
+    tally: &Tally,
 ) -> Result<(Vec<BuiltPart>, BTreeMap<String, f64>), RecipeError> {
     let mut vars: BTreeMap<String, f64> = BTreeMap::new();
     for (k, v) in values {
@@ -862,9 +944,16 @@ fn build_parts(
         }
         vars.insert(name.clone(), v);
     }
-    let ctx = Ctx { vars: &vars, style: params.style, seed };
+    let ctx = Ctx { vars: &vars, style: params.style, seed, tally };
+    let smooth_of = |x: &Expr, path: &str| -> Result<f32, RecipeError> {
+        let v = ctx.eval(x, path)?;
+        if !(0.0..=180.0).contains(&v) {
+            return Err(e(path, ErrorCode::OutOfRange, format!("smooth_angle {v} is outside 0..180 degrees")).with_numbers(v, 180.0));
+        }
+        Ok(v as f32)
+    };
     let default_smooth = match &recipe.smooth_angle {
-        Some(x) => ctx.eval(x, "smooth_angle")? as f32,
+        Some(x) => smooth_of(x, "smooth_angle")?,
         None => 30.0,
     };
     let mut out: Vec<BuiltPart> = Vec::new();
@@ -885,7 +974,7 @@ fn build_parts(
                 };
                 shape.set_color(col);
                 let smooth = match &part.smooth_angle {
-                    Some(x) => ctx.eval(x, &format!("{}.smooth_angle", part.path))? as f32,
+                    Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
                 };
                 vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0 }]
@@ -898,6 +987,7 @@ fn build_parts(
                 if stack.contains(asset) {
                     return Err(e(&path, ErrorCode::IncludeCycle, format!("include cycle: {} > {asset}", stack.join(" > "))));
                 }
+                tally.include(&path)?;
                 let text = params
                     .library
                     .and_then(|l| l.get(asset))
@@ -909,7 +999,7 @@ fn build_parts(
                 }
                 let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
                 stack.push(asset.clone());
-                let res = build_parts(&child, &refs, pseed, params, stack);
+                let res = build_parts(&child, &refs, pseed, params, stack, tally);
                 stack.pop();
                 res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0
             }
@@ -940,6 +1030,7 @@ struct Ctx<'a> {
     vars: &'a BTreeMap<String, f64>,
     style: &'a Style,
     seed: u64,
+    tally: &'a Tally,
 }
 
 fn axis_index(s: &str) -> usize {
@@ -1018,11 +1109,27 @@ impl Ctx<'_> {
         }
     }
 
-    fn rows(&self, v: &Val, path: &str) -> Result<Vec<Vec<f32>>, RecipeError> {
-        match v {
-            Val::List(rows) => rows.iter().enumerate().map(|(i, r)| self.list(r, &format!("{path}[{i}]"))).collect(),
-            _ => Err(type_err(path, "a list of points")),
+    /// A list of points, each `widths.0..=widths.1` numbers, at most `max_rows` of them, every
+    /// value finite and within ±[`MAX_EXTENT_M`]. Counted before evaluating anything.
+    fn rows(&self, v: &Val, path: &str, widths: (usize, usize), max_rows: usize) -> Result<Vec<Vec<f32>>, RecipeError> {
+        let Val::List(rows) = v else { return Err(type_err(path, "a list of points")) };
+        if rows.len() > max_rows {
+            return Err(e(path, ErrorCode::Limit, format!("{} points; at most {max_rows}", rows.len())).with_numbers(rows.len() as f64, max_rows as f64));
         }
+        let mut out = Vec::with_capacity(rows.len());
+        for (i, r) in rows.iter().enumerate() {
+            let p = format!("{path}[{i}]");
+            let row = self.list(r, &p)?;
+            if row.len() < widths.0 || row.len() > widths.1 {
+                let want = if widths.0 == widths.1 { format!("{}", widths.0) } else { format!("{} to {}", widths.0, widths.1) };
+                return Err(type_err(&p, &format!("a point of {want} numbers (got {})", row.len())));
+            }
+            if let Some(bad) = row.iter().find(|x| !fits(**x, MAX_EXTENT_M)) {
+                return Err(e(&p, ErrorCode::OutOfRange, format!("{bad} is outside ±{MAX_EXTENT_M} m")).with_numbers(*bad as f64, MAX_EXTENT_M as f64));
+            }
+            out.push(row);
+        }
+        Ok(out)
     }
 
     fn bool(&self, n: &Node, name: &str, default: bool) -> bool {
@@ -1047,31 +1154,37 @@ impl Ctx<'_> {
         self.ranged(n, name, default, 1e-4, 1e4)
     }
 
-    /// An outline as `[x, z]` points (or `[a, b]` for sweep profiles).
-    fn outline(&self, v: &Val, path: &str) -> Result<Vec<V2>, RecipeError> {
+    /// An outline as `[x, z]` points (or `[a, b]` for sweep profiles). The point count is
+    /// checked before every step that multiplies it (resample, bevel) and against `later`, the
+    /// factor a caller's own corner bevel will apply, so nothing large is generated or tested.
+    fn outline(&self, v: &Val, path: &str, max_points: usize, later: usize) -> Result<Vec<V2>, RecipeError> {
+        let too_many = |n: usize| {
+            e(path, ErrorCode::Limit, format!("the outline would have {n} points; at most {max_points}")).with_numbers(n as f64, max_points as f64)
+        };
         let pts = match v {
             Val::List(_) => {
-                let rows = self.rows(v, path)?;
+                let rows = self.rows(v, path, (2, 2), max_points)?;
                 rows.iter().map(|r| [r[0], r[1]]).collect::<Vec<V2>>()
             }
             Val::Obj(n) => {
-                let rot = self.num(n, "rotate", 0.0)?;
-                let mut p: Vec<V2> = if let Some(pv) = n.get("points") {
-                    self.rows(pv, &n.at("points"))?.iter().map(|r| [r[0], r[1]]).collect()
-                } else if n.get("rect").is_some() {
-                    let s = self.vec2(n, "rect", [1.0, 1.0])?;
-                    if s[0] <= 0.0 || s[1] <= 0.0 {
-                        return Err(e(&n.at("rect"), ErrorCode::OutOfRange, "rect sizes must be positive"));
+                let rot = self.ranged(n, "rotate", 0.0, -3600.0, 3600.0)? as f64;
+                let size2 = |name: &str| -> Result<V2, RecipeError> {
+                    let s = self.vec2(n, name, [1.0, 1.0])?;
+                    if !(s[0] > 0.0 && s[1] > 0.0 && s[0] <= MAX_EXTENT_M && s[1] <= MAX_EXTENT_M) {
+                        return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("sizes must be in (0, {MAX_EXTENT_M}] m")));
                     }
+                    Ok(s)
+                };
+                let mut p: Vec<V2> = if let Some(pv) = n.get("points") {
+                    self.rows(pv, &n.at("points"), (2, 2), max_points)?.iter().map(|r| [r[0], r[1]]).collect()
+                } else if n.get("rect").is_some() {
+                    let s = size2("rect")?;
                     poly::rect(s[0], s[1])
                 } else if n.get("sides").is_some() {
                     let sides = self.int(n, "sides", 6, 3, 256)?;
                     poly::regular(sides, self.positive(n, "radius", 1.0)?, 90.0 + rot)
                 } else if n.get("arch").is_some() {
-                    let s = self.vec2(n, "arch", [1.0, 1.0])?;
-                    if s[0] <= 0.0 || s[1] <= 0.0 {
-                        return Err(e(&n.at("arch"), ErrorCode::OutOfRange, "arch sizes must be positive"));
-                    }
+                    let s = size2("arch")?;
                     poly::arch(s[0], s[1], self.int(n, "segments", 6, 2, 64)?)
                 } else {
                     let pts = self.int(n, "star", 5, 3, 64)?;
@@ -1086,13 +1199,20 @@ impl Ctx<'_> {
                 }
                 let sc = self.vec2(n, "scale", [1.0, 1.0])?;
                 let off = self.vec2(n, "offset", [0.0, 0.0])?;
+                if sc.iter().chain(off.iter()).any(|v| !fits(*v, MAX_EXTENT_M)) {
+                    return Err(e(path, ErrorCode::OutOfRange, format!("scale and offset must be within ±{MAX_EXTENT_M}")));
+                }
                 p = p.iter().map(|q| [q[0] * sc[0] + off[0], q[1] * sc[1] + off[1]]).collect();
                 let bevel = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
+                let rs = self.int(n, "resample", 1, 1, 64)? as usize;
+                let final_count = p.len() * if bevel > 0.0 { 2 } else { 1 } * rs * later;
+                if final_count > max_points {
+                    return Err(too_many(final_count));
+                }
                 if bevel > 0.0 {
                     p = poly::bevel_corners(&poly::canonical(&p), bevel);
                 }
-                let rs = self.int(n, "resample", 1, 1, 64)?;
-                p = poly::resample(&p, rs);
+                p = poly::resample(&p, rs as u32);
                 let j = self.ranged(n, "jitter", 0.0, 0.0, 100.0)?;
                 if j > 0.0 {
                     p = poly::jitter(&p, j, stream_seed(self.seed, path));
@@ -1101,104 +1221,116 @@ impl Ctx<'_> {
             }
             _ => return Err(type_err(path, "an outline")),
         };
+        if pts.len() * later > max_points {
+            return Err(too_many(pts.len() * later));
+        }
+        if pts.iter().any(|q| !(q[0].abs() <= MAX_EXTENT_M && q[1].abs() <= MAX_EXTENT_M)) {
+            return Err(e(path, ErrorCode::OutOfRange, format!("outline points must be within ±{MAX_EXTENT_M} m")));
+        }
         let c = poly::canonical(&pts);
         if c.len() < 3 || poly::signed_area(&c).abs() < 1e-8 {
             return Err(e(path, ErrorCode::Geometry, "an outline needs at least 3 points enclosing an area"));
         }
         if !poly::is_simple(&c) {
-            return Err(e(path, ErrorCode::Geometry, "the outline crosses itself"));
-        }
-        if c.len() > 1024 {
-            return Err(e(path, ErrorCode::Limit, "outline has more than 1024 points"));
+            return Err(e(path, ErrorCode::Geometry, "the outline crosses or touches itself"));
         }
         Ok(pts)
     }
 
+    /// Builds a shape: its triangle count is predicted (an upper bound) and checked against the
+    /// part and model limits before any geometry is generated.
     fn shape(&self, n: &Node) -> Result<Shape, RecipeError> {
-        let s = match n.op.as_str() {
+        let geom = |r: Result<Shape, crate::shape::GeomError>| r.map_err(|g| e(&n.path, ErrorCode::Geometry, g.0));
+        let (predicted, build): (usize, Box<dyn FnOnce() -> Result<Shape, RecipeError> + '_>) = match n.op.as_str() {
             "box" => {
                 let size = self.vec3(n, "size", [1.0; 3])?;
-                if size.iter().any(|v| *v <= 0.0) {
-                    return Err(e(&n.at("size"), ErrorCode::OutOfRange, "box sizes must be positive"));
+                if size.iter().any(|v| !(*v > 0.0 && *v <= MAX_EXTENT_M)) {
+                    return Err(e(&n.at("size"), ErrorCode::OutOfRange, format!("box sizes must be in (0, {MAX_EXTENT_M}] m")));
                 }
-                Shape::cuboid(size, self.ranged(n, "bevel", 0.0, 0.0, 100.0)?)
+                let bevel = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
+                (60, Box::new(move || geom(Shape::cuboid(size, bevel))))
             }
-            "cylinder" => {
+            "cylinder" | "cone" => {
                 let radius = self.positive(n, "radius", 1.0)?;
-                Shape::cylinder(
-                    radius,
-                    self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)?,
-                    self.positive(n, "height", 1.0)?,
-                    self.int(n, "sides", 12, 3, 256)?,
-                    self.ranged(n, "bevel", 0.0, 0.0, 100.0)?,
-                )
+                let top = if n.op == "cone" { 0.0 } else { self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)? };
+                let height = self.positive(n, "height", 1.0)?;
+                let sides = self.int(n, "sides", 12, 3, 256)?;
+                let bevel = if n.op == "cone" { 0.0 } else { self.ranged(n, "bevel", 0.0, 0.0, 100.0)? };
+                (8 * sides as usize, Box::new(move || geom(Shape::cylinder(radius, top, height, sides, bevel))))
             }
-            "cone" => Shape::cylinder(self.positive(n, "radius", 1.0)?, 0.0, self.positive(n, "height", 1.0)?, self.int(n, "sides", 12, 3, 256)?, 0.0),
-            "sphere" => Shape::sphere(self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, 0, 5)?),
+            "sphere" => {
+                let (r, sub) = (self.positive(n, "radius", 1.0)?, self.int(n, "subdivisions", 1, 0, 5)?);
+                (20 * 4usize.pow(sub), Box::new(move || Ok(Shape::sphere(r, sub))))
+            }
             "torus" => {
                 let radius = self.positive(n, "radius", 1.0)?;
                 let tube = self.positive(n, "tube", 0.1)?;
                 if tube >= radius {
                     return Err(e(&n.at("tube"), ErrorCode::OutOfRange, "tube must be smaller than radius").with_numbers(tube as f64, radius as f64));
                 }
-                Shape::torus(radius, tube, self.int(n, "segments", 24, 3, 512)?, self.int(n, "sides", 8, 3, 64)?)
+                let (segs, sides) = (self.int(n, "segments", 24, 3, 512)?, self.int(n, "sides", 8, 3, 64)?);
+                (2 * segs as usize * sides as usize, Box::new(move || Ok(Shape::torus(radius, tube, segs, sides))))
             }
-            "capsule" => Shape::capsule(
-                self.positive(n, "radius", 0.5)?,
-                self.positive(n, "height", 2.0)?,
-                self.int(n, "segments", 12, 3, 256)?,
-                self.int(n, "rings", 3, 1, 32)?,
-            ),
+            "capsule" => {
+                let (r, h) = (self.positive(n, "radius", 0.5)?, self.positive(n, "height", 2.0)?);
+                let (segs, rings) = (self.int(n, "segments", 12, 3, 256)?, self.int(n, "rings", 3, 1, 32)?);
+                (2 * segs as usize * (2 * rings as usize + 1), Box::new(move || Ok(Shape::capsule(r, h, segs, rings))))
+            }
             "plane" => {
                 let size = self.vec2(n, "size", [1.0, 1.0])?;
-                if size.iter().any(|v| *v <= 0.0) {
-                    return Err(e(&n.at("size"), ErrorCode::OutOfRange, "plane sizes must be positive"));
+                if size.iter().any(|v| !(*v > 0.0 && *v <= MAX_EXTENT_M)) {
+                    return Err(e(&n.at("size"), ErrorCode::OutOfRange, format!("plane sizes must be in (0, {MAX_EXTENT_M}] m")));
                 }
                 let d = self.vec2(n, "divisions", [1.0, 1.0])?;
-                if d.iter().any(|v| *v < 1.0 || *v > 256.0) {
+                if d.iter().any(|v| !(*v >= 1.0 && *v <= 256.0)) {
                     return Err(e(&n.at("divisions"), ErrorCode::OutOfRange, "divisions must be 1..256"));
                 }
-                Shape::plane(size, [d[0] as u32, d[1] as u32])
+                let div = [d[0] as u32, d[1] as u32];
+                (2 * div[0] as usize * div[1] as usize, Box::new(move || Ok(Shape::plane(size, div))))
             }
             "extrude" => {
-                let outline = self.outline(n.get("outline").unwrap(), &n.at("outline"))?;
+                let corner = self.ranged(n, "corner_bevel", 0.0, 0.0, 100.0)?;
+                let outline = self.outline(n.get("outline").unwrap(), &n.at("outline"), MAX_OUTLINE_POINTS, if corner > 0.0 { 2 } else { 1 })?;
                 let cap = match n.get("cap_inset") {
                     Some(_) => {
                         let c = self.vec2(n, "cap_inset", [0.0, 0.0])?;
-                        if c[0] <= 0.0 {
-                            return Err(e(&n.at("cap_inset"), ErrorCode::OutOfRange, "cap_inset needs a positive inset"));
+                        if !(c[0] > 0.0 && c[0] <= 100.0 && c[1].abs() <= 100.0) {
+                            return Err(e(&n.at("cap_inset"), ErrorCode::OutOfRange, "cap_inset needs an inset in (0, 100] and a depth within ±100"));
                         }
                         Some((c[0], c[1]))
                     }
                     None => None,
                 };
-                Shape::extrude(
-                    &outline,
-                    self.positive(n, "height", 1.0)?,
-                    self.ranged(n, "taper", 1.0, 0.0, 100.0)?,
-                    self.ranged(n, "bevel", 0.0, 0.0, 100.0)?,
-                    self.ranged(n, "corner_bevel", 0.0, 0.0, 100.0)?,
-                    self.int(n, "segments", 1, 1, 256)?,
-                    cap,
-                )
+                let height = self.positive(n, "height", 1.0)?;
+                let taper = self.ranged(n, "taper", 1.0, 0.0, 100.0)?;
+                let bevel = self.ranged(n, "bevel", 0.0, 0.0, 100.0)?;
+                let segments = self.int(n, "segments", 1, 1, 256)?;
+                let m = outline.len() * if corner > 0.0 { 2 } else { 1 };
+                let rings = segments as usize + 1 + if bevel > 0.0 { 2 } else { 0 } + if cap.is_some() { 2 } else { 0 };
+                (2 * m * rings, Box::new(move || geom(Shape::extrude(&outline, height, taper, bevel, corner, segments, cap))))
             }
             "loft" => {
-                let outline = self.outline(n.get("outline").unwrap(), &n.at("outline"))?;
-                let rows = self.rows(n.get("stations").unwrap(), &n.at("stations"))?;
+                let corner = self.ranged(n, "corner_bevel", 0.0, 0.0, 100.0)?;
+                let outline = self.outline(n.get("outline").unwrap(), &n.at("outline"), MAX_OUTLINE_POINTS, if corner > 0.0 { 2 } else { 1 })?;
+                let rows = self.rows(n.get("stations").unwrap(), &n.at("stations"), (2, 4), MAX_ROWS)?;
                 if rows.len() < 2 {
                     return Err(e(&n.at("stations"), ErrorCode::Geometry, "a loft needs at least 2 stations"));
                 }
+                if rows.iter().any(|r| r.len() == 3) {
+                    return Err(type_err(&n.at("stations"), "stations of [scale, y] or [scale, y, dx, dz]"));
+                }
                 let mut st = Vec::with_capacity(rows.len());
                 for (i, r) in rows.iter().enumerate() {
-                    if r[0] < 0.0 {
-                        return Err(e(&format!("{}[{i}][0]", n.at("stations")), ErrorCode::OutOfRange, "station scale must be ≥ 0"));
+                    if !(r[0] >= 0.0 && r[0] <= 100.0) {
+                        return Err(e(&format!("{}[{i}][0]", n.at("stations")), ErrorCode::OutOfRange, "station scale must be 0..100"));
                     }
                     st.push([r[0], r[1], r.get(2).copied().unwrap_or(0.0), r.get(3).copied().unwrap_or(0.0)]);
                 }
-                Shape::loft(&outline, &st, self.ranged(n, "corner_bevel", 0.0, 0.0, 100.0)?)
+                let m = outline.len() * if corner > 0.0 { 2 } else { 1 };
+                (2 * m * (st.len() + 1), Box::new(move || geom(Shape::loft(&outline, &st, corner))))
             }
             "lathe" => {
-                let rows = self.rows(n.get("profile").unwrap(), &n.at("profile"))?;
+                let rows = self.rows(n.get("profile").unwrap(), &n.at("profile"), (2, 2), MAX_ROWS)?;
                 if rows.len() < 2 {
                     return Err(e(&n.at("profile"), ErrorCode::Geometry, "a lathe profile needs at least 2 points"));
                 }
@@ -1206,14 +1338,13 @@ impl Ctx<'_> {
                     return Err(e(&format!("{}[{i}][0]", n.at("profile")), ErrorCode::OutOfRange, "lathe radius must be ≥ 0"));
                 }
                 let prof: Vec<V2> = rows.iter().map(|r| [r[0], r[1]]).collect();
-                Shape::lathe(&prof, self.int(n, "segments", 16, 3, 256)?, self.bool(n, "caps", true))
+                let segs = self.int(n, "segments", 16, 3, 256)?;
+                let caps = self.bool(n, "caps", true);
+                (2 * segs as usize * (prof.len() + 1), Box::new(move || Ok(Shape::lathe(&prof, segs, caps))))
             }
             "sweep" => {
-                let profile = self.outline(n.get("profile").unwrap(), &n.at("profile"))?;
-                let rows = self.rows(n.get("path").unwrap(), &n.at("path"))?;
-                if let Some(i) = rows.iter().position(|r| r.len() != 3) {
-                    return Err(type_err(&format!("{}[{i}]", n.at("path")), "a 3D point [x, y, z]"));
-                }
+                let profile = self.outline(n.get("profile").unwrap(), &n.at("profile"), MAX_PROFILE_POINTS, 1)?;
+                let rows = self.rows(n.get("path").unwrap(), &n.at("path"), (3, 3), MAX_ROWS)?;
                 let closed = self.bool(n, "closed", false);
                 if rows.len() < if closed { 3 } else { 2 } {
                     return Err(e(&n.at("path"), ErrorCode::Geometry, "a sweep path needs at least 2 points (3 if closed)"));
@@ -1226,26 +1357,39 @@ impl Ctx<'_> {
                     Some(v) => self.list(v, &n.at("scales"))?,
                     None => vec![1.0, 1.0],
                 };
-                if scales.iter().any(|s| *s < 0.0) {
-                    return Err(e(&n.at("scales"), ErrorCode::OutOfRange, "scales must be ≥ 0"));
+                if scales.iter().any(|s| !(*s >= 0.0 && *s <= 100.0)) {
+                    return Err(e(&n.at("scales"), ErrorCode::OutOfRange, "scales must be 0..100"));
                 }
                 if !(scales.len() == 2 || scales.len() == path.len()) {
                     return Err(e(&n.at("scales"), ErrorCode::WrongType, format!("scales needs 2 values (start, end) or one per path point ({})", path.len())));
                 }
-                let smooth = self.int(n, "smooth", 1, 1, 16)?;
-                let (path, scales) = smooth_path(&path, &scales, smooth, closed);
+                let smooth = self.int(n, "smooth", 1, 1, 16)? as usize;
+                let rings = if closed { path.len() * smooth } else { (path.len() - 1) * smooth + 1 };
+                if rings > MAX_SWEEP_RINGS {
+                    return Err(e(&n.at("smooth"), ErrorCode::Limit, format!("the sweep would have {rings} rings; at most {MAX_SWEEP_RINGS}"))
+                        .with_numbers(rings as f64, MAX_SWEEP_RINGS as f64));
+                }
                 let up = match n.get("up") {
                     Some(_) => Some(self.vec3(n, "up", [0.0, 1.0, 0.0])?),
                     None => None,
                 };
-                let profile_ab: Vec<V2> = profile;
-                Shape::sweep(&profile_ab, &path, &scales, self.num(n, "twist", 0.0)? as f32, closed, self.bool(n, "caps", true), up)
+                let twist = self.ranged(n, "twist", 0.0, -36_000.0, 36_000.0)?;
+                let caps = self.bool(n, "caps", true);
+                let m = profile.len();
+                (
+                    2 * m * (rings + 1),
+                    Box::new(move || {
+                        let (path, scales) = smooth_path(&path, &scales, smooth as u32, closed);
+                        geom(Shape::sweep(&profile, &path, &scales, twist, closed, caps, up))
+                    }),
+                )
             }
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
-        if s.triangle_count() > MAX_PART_TRIANGLES {
-            return Err(e(&n.path, ErrorCode::Limit, "shape has too many triangles").with_numbers(s.triangle_count() as f64, MAX_PART_TRIANGLES as f64));
-        }
+        self.tally.grow(&n.path, 0, predicted)?;
+        let s = build()?;
+        self.tally.settle(predicted, s.triangle_count());
+        check_extent(&s, &n.path)?;
         Ok(s)
     }
 
@@ -1263,12 +1407,28 @@ impl Ctx<'_> {
             }
         }
         let pivoted = |t: Affine, pivot: V3| Affine::translate(pivot).then_after(&t.then_after(&Affine::translate(math3::scale(pivot, -1.0))));
+        let within = |name: &str, v: V3, max: f32| -> Result<V3, RecipeError> {
+            if v.iter().any(|x| !fits(*x, max)) {
+                return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("values must be within ±{max}")).with_numbers(v.iter().fold(0.0f32, |a, x| a.max(x.abs())) as f64, max as f64));
+            }
+            Ok(v)
+        };
+        // Ops that multiply the triangle count are checked against the limits first.
+        let before = s.triangle_count();
+        let predicted = match n.op.as_str() {
+            "array" => before * self.int(n, "count", 2, 1, 256)? as usize,
+            "radial" => before * self.int(n, "count", 6, 1, 256)? as usize,
+            "mirror" if self.bool(n, "keep", true) => before * 2,
+            "subdivide" => before * 4usize.pow(self.int(n, "levels", 1, 0, 4)?),
+            _ => before,
+        };
+        self.tally.grow(&n.path, before, predicted)?;
         match n.op.as_str() {
-            "move" => s.transform(&Affine::translate(self.vec3(n, "by", [0.0; 3])?)),
+            "move" => s.transform(&Affine::translate(within("by", self.vec3(n, "by", [0.0; 3])?, MAX_EXTENT_M)?)),
             "rotate" => {
-                let d = self.vec3(n, "deg", [0.0; 3])?;
+                let d = within("deg", self.vec3(n, "deg", [0.0; 3])?, 36_000.0)?;
                 let t = Affine::rotate_euler_deg([d[0] as f64, d[1] as f64, d[2] as f64]);
-                s.transform(&pivoted(t, self.vec3(n, "pivot", [0.0; 3])?));
+                s.transform(&pivoted(t, within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?));
             }
             "scale" => {
                 let by = match n.get("by") {
@@ -1278,47 +1438,43 @@ impl Ctx<'_> {
                     }
                     _ => self.vec3(n, "by", [1.0; 3])?,
                 };
-                if by.iter().any(|v| v.abs() < 1e-4) {
-                    return Err(e(&n.at("by"), ErrorCode::OutOfRange, "scale factors must not be (near) zero"));
+                if by.iter().any(|v| !(v.abs() >= 1e-4 && v.abs() <= 1e4)) {
+                    return Err(e(&n.at("by"), ErrorCode::OutOfRange, "scale factors must be 1e-4..1e4 in size"));
                 }
-                s.transform(&pivoted(Affine::scale(by), self.vec3(n, "pivot", [0.0; 3])?));
+                s.transform(&pivoted(Affine::scale(by), within("pivot", self.vec3(n, "pivot", [0.0; 3])?, MAX_EXTENT_M)?));
             }
             "mirror" => s.mirror(axis_index(self.str(n, "axis", "x")), self.bool(n, "keep", true)),
             "array" => {
                 let mut rng = Rng::new(seed, 1);
-                s.array_linear(self.int(n, "count", 2, 1, 256)?, self.vec3(n, "offset", [0.0; 3])?, &mut rng, &self.jitter(n)?);
+                let jitter = self.jitter(n)?;
+                s.array_linear(self.int(n, "count", 2, 1, 256)?, within("offset", self.vec3(n, "offset", [0.0; 3])?, MAX_EXTENT_M)?, &mut rng, &jitter);
             }
             "radial" => {
                 let mut rng = Rng::new(seed, 2);
                 let axis = self.vec3(n, "axis", [0.0, 1.0, 0.0])?;
-                if math3::length(axis) < 1e-6 {
+                if math3::length(axis).is_nan() || math3::length(axis) < 1e-6 {
                     return Err(e(&n.at("axis"), ErrorCode::OutOfRange, "axis must not be zero"));
                 }
-                s.array_radial(self.int(n, "count", 6, 1, 256)?, axis, self.num(n, "angle", 360.0)?, &mut rng, &self.jitter(n)?);
+                let angle = self.ranged(n, "angle", 360.0, -3600.0, 3600.0)?;
+                let jitter = self.jitter(n)?;
+                s.array_radial(self.int(n, "count", 6, 1, 256)?, axis, angle as f64, &mut rng, &jitter);
             }
-            "subdivide" => {
-                let levels = self.int(n, "levels", 1, 0, 4)?;
-                let after = s.triangle_count() * 4usize.pow(levels);
-                if after > MAX_PART_TRIANGLES {
-                    return Err(e(&n.at("levels"), ErrorCode::Limit, "subdivision would exceed the part triangle limit").with_numbers(after as f64, MAX_PART_TRIANGLES as f64));
-                }
-                s.subdivide(levels);
-            }
+            "subdivide" => s.subdivide(self.int(n, "levels", 1, 0, 4)?),
             "displace" => {
                 let amount = self.ranged(n, "amount", 0.0, -100.0, 100.0)?;
-                s.displace(amount, self.positive(n, "scale", 0.5)?, self.int(n, "octaves", 2, 1, 6)?, seed, self.vec3(n, "axes", [1.0; 3])?);
+                s.displace(amount, self.positive(n, "scale", 0.5)?, self.int(n, "octaves", 2, 1, 6)?, seed, within("axes", self.vec3(n, "axes", [1.0; 3])?, 10.0)?);
             }
             "taper" => s.taper(axis_index(self.str(n, "axis", "y")), self.ranged(n, "from", 1.0, 0.0, 100.0)?, self.ranged(n, "to", 1.0, 0.0, 100.0)?),
-            "twist" => s.twist(self.num(n, "deg_per_m", 0.0)?),
-            "lean" => s.lean([self.num(n, "x", 0.0)? as f32, self.num(n, "z", 0.0)? as f32]),
-            "bend" => {
-                let d = self.ranged(n, "deg_per_m", 0.0, -720.0, 720.0)?;
-                s.bend(d as f64);
-            }
+            "twist" => s.twist(self.ranged(n, "deg_per_m", 0.0, -36_000.0, 36_000.0)? as f64),
+            "lean" => s.lean([self.ranged(n, "x", 0.0, -100.0, 100.0)?, self.ranged(n, "z", 0.0, -100.0, 100.0)?]),
+            "bend" => s.bend(self.ranged(n, "deg_per_m", 0.0, -720.0, 720.0)? as f64),
             "weld" => s.weld(self.ranged(n, "eps", 1e-4, 1e-7, 1.0)?),
             "color" => s.set_color(self.color(n, "color")),
             "gradient" => {
                 let range = self.vec2(n, "range", [0.0, 1.0])?;
+                if range.iter().any(|v| !fits(*v, MAX_EXTENT_M)) {
+                    return Err(e(&n.at("range"), ErrorCode::OutOfRange, format!("range must be within ±{MAX_EXTENT_M}")));
+                }
                 s.gradient(&Gradient {
                     axis: axis_index(self.str(n, "axis", "y")),
                     from: self.color(n, "from"),
@@ -1342,14 +1498,24 @@ impl Ctx<'_> {
             "bevel_tint" => s.bevel_tint = Some((self.color(n, "color"), self.ranged(n, "amount", 1.0, 0.0, 1.0)?)),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown op '{other}'"))),
         }
-        if s.triangle_count() > MAX_PART_TRIANGLES {
-            return Err(e(&n.path, ErrorCode::Limit, "part has too many triangles").with_numbers(s.triangle_count() as f64, MAX_PART_TRIANGLES as f64));
-        }
-        if s.positions.iter().any(|p| !(p[0].is_finite() && p[1].is_finite() && p[2].is_finite())) {
-            return Err(e(&n.path, ErrorCode::InvalidMesh, "the op produced non-finite positions"));
-        }
-        Ok(())
+        self.tally.settle(predicted, s.triangle_count());
+        check_extent(s, &n.path)
     }
+}
+
+/// Every vertex finite and within ±[`MAX_EXTENT_M`].
+/// `|v| ≤ max`, and false for NaN.
+fn fits(v: f32, max: f32) -> bool {
+    v.abs() <= max
+}
+
+fn check_extent(s: &Shape, path: &str) -> Result<(), RecipeError> {
+    if let Some(p) = s.positions.iter().find(|p| !p.iter().all(|v| v.abs() <= MAX_EXTENT_M)) {
+        let worst = p.iter().fold(0.0f32, |a, v| if v.is_finite() { a.max(v.abs()) } else { f32::INFINITY });
+        return Err(e(path, ErrorCode::Limit, format!("a vertex reached {p:?}; coordinates must stay within ±{MAX_EXTENT_M} m"))
+            .with_numbers(worst as f64, MAX_EXTENT_M as f64));
+    }
+    Ok(())
 }
 
 /// Uniform Catmull–Rom resampling: `smooth` segments per span (1 = unchanged). Scales are

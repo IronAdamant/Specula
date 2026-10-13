@@ -28,7 +28,7 @@ fn close(a: V3, b: V3, eps: f32) -> bool {
 
 #[test]
 fn cuboid_counts_bounds_and_bevel() {
-    let s = Shape::cuboid([1.0, 2.4, 0.8], 0.06);
+    let s = Shape::cuboid([1.0, 2.4, 0.8], 0.06).unwrap();
     // 8-gon outline, 4 rings: 3 bands × 8 quads + 2 caps × 6.
     assert_eq!(s.triangle_count(), 3 * 8 * 2 + 2 * 6);
     let m = solid(&s);
@@ -47,7 +47,7 @@ fn cuboid_counts_bounds_and_bevel() {
 
 #[test]
 fn unbevelled_box_is_twelve_triangles() {
-    let s = Shape::cuboid([2.0, 1.0, 2.0], 0.0);
+    let s = Shape::cuboid([2.0, 1.0, 2.0], 0.0).unwrap();
     assert_eq!(s.triangle_count(), 12);
     let m = solid(&s);
     assert_eq!(m.vertex_count(), 24);
@@ -56,16 +56,16 @@ fn unbevelled_box_is_twelve_triangles() {
 
 #[test]
 fn cylinder_cone_and_taper() {
-    let c = Shape::cylinder(0.5, 0.5, 2.0, 12, 0.0);
+    let c = Shape::cylinder(0.5, 0.5, 2.0, 12, 0.0).unwrap();
     assert_eq!(c.triangle_count(), 12 * 2 + 2 * 10);
     let m = solid(&c);
     let ideal = 0.5 * 12.0 * 0.25 * dmath::sin_cos_deg(30.0).0 as f32 * 2.0; // n/2 r² sin(2π/n) h
     assert!((m.signed_volume() - ideal).abs() < 1e-4);
-    let cone = Shape::cylinder(0.5, 0.0, 1.0, 8, 0.0);
+    let cone = Shape::cylinder(0.5, 0.0, 1.0, 8, 0.0).unwrap();
     assert_eq!(cone.triangle_count(), 8 + 6);
     let m = solid(&cone);
     assert!(close(m.bounds().max, [m.bounds().max[0], 1.0, m.bounds().max[2]], 1e-6));
-    let bev = Shape::cylinder(0.5, 0.4, 1.0, 16, 0.05);
+    let bev = Shape::cylinder(0.5, 0.4, 1.0, 16, 0.05).unwrap();
     solid(&bev);
 }
 
@@ -101,20 +101,20 @@ fn torus_and_capsule() {
 #[test]
 fn extrude_concave_with_taper_bevel_and_inset_cap() {
     let l = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]];
-    let s = Shape::extrude(&l, 1.0, 1.0, 0.0, 0.0, 1, None);
+    let s = Shape::extrude(&l, 1.0, 1.0, 0.0, 0.0, 1, None).unwrap();
     let m = solid(&s);
     assert!((m.signed_volume() - 3.0).abs() < 1e-5);
-    let s = Shape::extrude(&l, 1.0, 0.8, 0.05, 0.05, 3, Some((0.1, -0.05)));
+    let s = Shape::extrude(&l, 1.0, 0.8, 0.05, 0.05, 3, Some((0.1, -0.05))).unwrap();
     solid(&s);
     // Pyramid: taper 0.
-    let s = Shape::extrude(&poly::rect(1.0, 1.0), 1.0, 0.0, 0.0, 0.0, 1, None);
+    let s = Shape::extrude(&poly::rect(1.0, 1.0), 1.0, 0.0, 0.0, 0.0, 1, None).unwrap();
     let m = solid(&s);
     assert!((m.signed_volume() - 1.0 / 3.0).abs() < 1e-5);
 }
 
 #[test]
 fn loft_with_apex_and_offsets() {
-    let s = Shape::loft(&poly::rect(1.0, 1.0), &[[0.9, 0.0, 0.0, 0.0], [1.0, 0.1, 0.0, 0.0], [1.0, 2.0, 0.0, 0.0], [0.0, 2.6, 0.0, 0.0]], 0.05);
+    let s = Shape::loft(&poly::rect(1.0, 1.0), &[[0.9, 0.0, 0.0, 0.0], [1.0, 0.1, 0.0, 0.0], [1.0, 2.0, 0.0, 0.0], [0.0, 2.6, 0.0, 0.0]], 0.05).unwrap();
     let m = solid(&s);
     assert!((m.bounds().max[1] - 2.6).abs() < 1e-6);
     assert!(s.tags.contains(&TAG_BEVEL));
@@ -145,13 +145,13 @@ fn plane_grid() {
 fn sweep_tube_rmf_and_closed_ring() {
     let prof = poly::regular(6, 0.05, 0.0);
     let path = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 1.5, 0.0], [1.0, 1.5, 0.5]];
-    let s = Shape::sweep(&prof, &path, &[1.0; 4], 0.0, false, true, None);
+    let s = Shape::sweep(&prof, &path, &[1.0; 4], 0.0, false, true, None).unwrap();
     assert_eq!(s.triangle_count(), 3 * 6 * 2 + 2 * 4);
     let m = solid(&s);
     // Thickness kept at the corner: every ring point at least the radius from the path line.
     assert!(m.bounds().min[1] >= -1e-6);
     // Tapered to a point: no caps needed, still closed.
-    solid(&Shape::sweep(&prof, &path, &[1.0, 0.8, 0.5, 0.0], 30.0, false, true, None));
+    solid(&Shape::sweep(&prof, &path, &[1.0, 0.8, 0.5, 0.0], 30.0, false, true, None).unwrap());
     // Closed loop (a ring of rope).
     let loop_: Vec<V3> = (0..12)
         .map(|i| {
@@ -159,7 +159,7 @@ fn sweep_tube_rmf_and_closed_ring() {
             [c as f32, 0.0, s as f32]
         })
         .collect();
-    let r = Shape::sweep(&prof, &loop_, &[], 0.0, true, false, None);
+    let r = Shape::sweep(&prof, &loop_, &[], 0.0, true, false, None).unwrap();
     assert_eq!(r.triangle_count(), 12 * 6 * 2);
     solid(&r);
 }
@@ -174,7 +174,7 @@ fn rmf_frames_do_not_twist_on_a_planar_path() {
         })
         .collect();
     let prof = vec![[0.1, 0.0], [0.0, 0.1], [-0.1, 0.0], [0.0, -0.1]];
-    let s = Shape::sweep(&prof, &path, &[], 0.0, false, true, Some([0.0, 0.0, 1.0]));
+    let s = Shape::sweep(&prof, &path, &[], 0.0, false, true, Some([0.0, 0.0, 1.0])).unwrap();
     // The `up` hint is the frame normal: profile points with a = ±0.1 lie on z = ±0.1 (out of
     // the curve's plane) at every ring.
     for i in 0..20 {
@@ -185,7 +185,7 @@ fn rmf_frames_do_not_twist_on_a_planar_path() {
 
 #[test]
 fn transforms_mirror_and_arrays() {
-    let mut s = Shape::cuboid([0.2, 0.2, 0.2], 0.0);
+    let mut s = Shape::cuboid([0.2, 0.2, 0.2], 0.0).unwrap();
     s.transform(&Affine::translate([0.1, 0.0, 0.0]));
     let mut m = s.clone();
     m.mirror(0, true);
@@ -193,13 +193,13 @@ fn transforms_mirror_and_arrays() {
     // valid mesh, bounds symmetric.
     let b = m.bounds();
     assert!(close(b.min, [-0.2, 0.0, -0.1], 1e-6) && close(b.max, [0.2, 0.2, 0.1], 1e-6));
-    let mut a = Shape::cuboid([0.1, 0.1, 0.1], 0.01);
+    let mut a = Shape::cuboid([0.1, 0.1, 0.1], 0.01).unwrap();
     let mut rng = Rng::new(1, 2);
     a.array_linear(5, [0.2, 0.0, 0.0], &mut rng, &Jitter::default());
     assert_eq!(a.triangle_count(), 5 * 60);
     assert!((a.bounds().max[0] - 0.85).abs() < 1e-5);
     solid(&a);
-    let mut r = Shape::cuboid([0.1, 0.1, 0.1], 0.0);
+    let mut r = Shape::cuboid([0.1, 0.1, 0.1], 0.0).unwrap();
     r.transform(&Affine::translate([1.0, 0.0, 0.0]));
     let jit = Jitter { offset: [0.01, 0.0, 0.01], rotate_deg: [0.0, 10.0, 0.0], scale: 0.1 };
     r.array_radial(8, [0.0, 1.0, 0.0], 360.0, &mut rng, &jit);
@@ -213,7 +213,7 @@ fn transforms_mirror_and_arrays() {
 fn mirror_of_half_shape_closes_it() {
     // Half a lathe-like wedge mirrored back becomes a closed solid when the cut faces coincide:
     // simplest check, a box cut at x = 0 rebuilt by mirroring its outline.
-    let half = Shape::extrude(&[[0.0, -0.5], [0.5, -0.5], [0.5, 0.5], [0.0, 0.5]], 1.0, 1.0, 0.0, 0.0, 1, None);
+    let half = Shape::extrude(&[[0.0, -0.5], [0.5, -0.5], [0.5, 0.5], [0.0, 0.5]], 1.0, 1.0, 0.0, 0.0, 1, None).unwrap();
     let mut m = half.clone();
     m.mirror(0, false);
     assert!(m.signed_volume() > 0.0, "mirror keeps outward winding");
@@ -221,7 +221,7 @@ fn mirror_of_half_shape_closes_it() {
 
 #[test]
 fn subdivide_keeps_closed_and_shape() {
-    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.1);
+    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.1).unwrap();
     let v0 = s.signed_volume();
     s.subdivide(2);
     assert_eq!(s.triangle_count(), 60 * 16);
@@ -231,7 +231,7 @@ fn subdivide_keeps_closed_and_shape() {
 
 #[test]
 fn displace_is_seeded_and_keeps_closed() {
-    let mut a = Shape::cuboid([1.0, 1.0, 1.0], 0.1);
+    let mut a = Shape::cuboid([1.0, 1.0, 1.0], 0.1).unwrap();
     a.subdivide(1);
     let mut b = a.clone();
     let mut c = a.clone();
@@ -243,7 +243,7 @@ fn displace_is_seeded_and_keeps_closed() {
     solid(&a);
     // Displacement stays within the amount.
     let ref_ = {
-        let mut r = Shape::cuboid([1.0, 1.0, 1.0], 0.1);
+        let mut r = Shape::cuboid([1.0, 1.0, 1.0], 0.1).unwrap();
         r.subdivide(1);
         r
     };
@@ -254,20 +254,20 @@ fn displace_is_seeded_and_keeps_closed() {
 
 #[test]
 fn deformers() {
-    let mut s = Shape::cuboid([1.0, 2.0, 1.0], 0.0);
+    let mut s = Shape::cuboid([1.0, 2.0, 1.0], 0.0).unwrap();
     s.taper(1, 1.0, 0.5);
     let b = s.bounds();
     assert!((b.max[0] - 0.5).abs() < 1e-6);
     let top: Vec<_> = s.positions.iter().filter(|p| p[1] == 2.0).collect();
     assert!(top.iter().all(|p| (p[0].abs() - 0.25).abs() < 1e-6));
-    let mut t = Shape::cuboid([1.0, 1.0, 1.0], 0.0);
+    let mut t = Shape::cuboid([1.0, 1.0, 1.0], 0.0).unwrap();
     t.twist(90.0);
     let top: Vec<_> = t.positions.iter().filter(|p| p[1] == 1.0).collect();
     assert!(top.iter().all(|p| (p[0].abs() - 0.5).abs() < 1e-6 && (p[2].abs() - 0.5).abs() < 1e-6));
-    let mut l = Shape::cuboid([1.0, 1.0, 1.0], 0.0);
+    let mut l = Shape::cuboid([1.0, 1.0, 1.0], 0.0).unwrap();
     l.lean([0.5, 0.0]);
     assert!((l.bounds().max[0] - 1.0).abs() < 1e-6);
-    let mut c = Shape::cylinder(0.1, 0.1, 2.0, 6, 0.0);
+    let mut c = Shape::cylinder(0.1, 0.1, 2.0, 6, 0.0).unwrap();
     c.bend(45.0);
     assert!(c.bounds().max[0] > 0.5, "bent towards +X");
     solid(&c);
@@ -275,7 +275,7 @@ fn deformers() {
 
 #[test]
 fn colour_ops() {
-    let mut s = Shape::cuboid([1.0, 2.0, 1.0], 0.0);
+    let mut s = Shape::cuboid([1.0, 2.0, 1.0], 0.0).unwrap();
     s.gradient(&Gradient { axis: 1, from: [0.0, 0.0, 0.0, 1.0], to: [1.0; 4], range: [0.0, 1.0], absolute: false, strength: 1.0, keep_outside: false });
     for (p, c) in s.positions.iter().zip(&s.colors) {
         assert!((c[0] - p[1] / 2.0).abs() < 1e-6);
@@ -300,7 +300,7 @@ fn colour_ops() {
 fn concavity_darkens_inner_corners_only() {
     // An L-shaped prism has one concave vertical edge.
     let l = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]];
-    let mut s = Shape::extrude(&l, 1.0, 1.0, 0.0, 0.0, 1, None);
+    let mut s = Shape::extrude(&l, 1.0, 1.0, 0.0, 0.0, 1, None).unwrap();
     s.concavity_shade(0.5);
     for (p, c) in s.positions.iter().zip(&s.colors) {
         let inner = p[0] == 1.0 && p[2] == 1.0;
@@ -310,7 +310,7 @@ fn concavity_darkens_inner_corners_only() {
 
 #[test]
 fn bevel_tint_colours_chamfers() {
-    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.1);
+    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.1).unwrap();
     s.set_color([0.5, 0.5, 0.5, 1.0]);
     s.bevel_tint = Some(([1.0, 1.0, 1.0, 1.0], 1.0));
     let m = s.finalize(30.0, "m");
@@ -327,7 +327,7 @@ fn bevel_tint_colours_chamfers() {
 
 #[test]
 fn smooth_angle_controls_vertex_split() {
-    let s = Shape::cylinder(0.5, 0.5, 1.0, 16, 0.0);
+    let s = Shape::cylinder(0.5, 0.5, 1.0, 16, 0.0).unwrap();
     let flat = s.finalize(0.0, "m");
     let smooth = s.finalize(30.0, "m");
     // Flat: every side quad has its own 4 vertices; smooth: sides share one ring per height.
@@ -339,7 +339,7 @@ fn smooth_angle_controls_vertex_split() {
 
 #[test]
 fn weld_merges_close_vertices() {
-    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.0);
+    let mut s = Shape::cuboid([1.0, 1.0, 1.0], 0.0).unwrap();
     let mut t = s.clone();
     t.transform(&Affine::translate([1.0 + 1e-7, 0.0, 0.0]));
     s.merge(&t);

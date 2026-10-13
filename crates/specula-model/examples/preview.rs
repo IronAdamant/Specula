@@ -18,7 +18,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use specula_gpu::{DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, PointLight, Surface, Vertex};
+use specula_gpu::{DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, PointLight, Severity, Surface, Validation, Vertex};
+use specula_core::math::{Mat4, Vec3};
 use specula_model::math3::{self, Affine, V3};
 use specula_model::{build, BuildParams, MaterialKind, MeshData, Model, Shape, Style};
 
@@ -116,7 +117,8 @@ fn main() {
         println!("preview: SKIPPED rendering - Vulkan is not available");
         return;
     }
-    let mut gpu = match Gpu::new(&GpuOptions::default()) {
+    // Validation on when the layer is installed (Auto), so the run fails on any message.
+    let mut gpu = match Gpu::new(&GpuOptions { validation: Validation::Auto, ..GpuOptions::default() }) {
         Ok(g) => g,
         Err(e) => {
             println!("preview: SKIPPED rendering - {e}");
@@ -166,7 +168,9 @@ fn main() {
             let el = if *floating { el + 20.0 } else { el };
             let (se, ce) = (el.to_radians().sin(), el.to_radians().cos());
             let eye = [centre[0] + dist * ce * sa, centre[1] + dist * se, centre[2] + dist * ce * ca];
-            let view_proj = mul(&perspective(fov_t.to_radians(), 1.0, 0.1, 500.0), &look_at(eye, centre, [0.0, 1.0, 0.0]));
+            let v3 = |a: V3| Vec3::new(a[0], a[1], a[2]);
+            // The engine renders with reversed Z (AGENTS.md rule 6): depth 1 at the 0.05 m near plane.
+            let view_proj = (Mat4::perspective_vk_reverse_z(fov_t.to_radians(), 1.0, 0.05) * Mat4::look_at_rh(v3(eye), v3(centre), Vec3::new(0.0, 1.0, 0.0))).to_cols_array();
             let mut draws = Vec::new();
             if !silhouette && !floating {
                 let mut g = DrawItem::new(ground, Affine::IDENTITY.to_cols_array(), srgb(0x5b, 0x64, 0x70));
@@ -195,7 +199,7 @@ fn main() {
                 view_proj,
                 clear_color: if silhouette { [1.0, 1.0, 1.0, 1.0] } else { srgb(0x0b, 0x10, 0x20) },
                 draws: &draws,
-                reverse_z: false,
+                reverse_z: true,
                 environment: if silhouette { Environment { sun_intensity: 0.0, ambient_intensity: 0.0, ..env } } else { env },
                 lights: if silhouette { &[] } else { &lights },
                 time_s: 0.0,
@@ -213,6 +217,7 @@ fn main() {
             }
         }
     }
+    let validation = gpu.validation_enabled();
     let msgs = gpu.close();
     for m in &msgs {
         eprintln!("[{:?}] {} {}", m.severity, m.id_name, m.message);
@@ -222,7 +227,12 @@ fn main() {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(&a.out, &png).expect("write png");
-    println!("wrote {} ({} x {}, {} KB)", a.out.display(), sw, sh, png.len() / 1024);
+    println!("wrote {} ({} x {}, {} KB), validation {}", a.out.display(), sw, sh, png.len() / 1024, if validation { "on" } else { "unavailable" });
+    let bad = msgs.iter().filter(|m| m.severity >= Severity::Warning).count();
+    if bad > 0 {
+        eprintln!("preview: FAILED - {bad} validation warnings/errors");
+        std::process::exit(1);
+    }
 }
 
 /// STYLE.md: moon key `#c9d6ff` about 30° up, blue-violet ambient `#2a3448`, ACES, exposure 1.1.
@@ -332,39 +342,6 @@ fn blit(dst: &mut [u8], dw: u32, src: &[u8], s: u32, x0: u32, y0: u32) {
         let o = (y * s * 4) as usize;
         dst[d..d + (s * 4) as usize].copy_from_slice(&src[o..o + (s * 4) as usize]);
     }
-}
-
-// ---- tiny camera maths (column-major, Vulkan clip) ----
-
-fn look_at(eye: V3, target: V3, up: V3) -> [f32; 16] {
-    let f = math3::normalize(math3::sub(target, eye));
-    let s = math3::normalize(math3::cross(f, up));
-    let u = math3::cross(s, f);
-    [
-        s[0], u[0], -f[0], 0.0, s[1], u[1], -f[1], 0.0, s[2], u[2], -f[2], 0.0,
-        -math3::dot(s, eye), -math3::dot(u, eye), math3::dot(f, eye), 1.0,
-    ]
-}
-
-fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
-    let f = 1.0 / (fov_y * 0.5).tan();
-    let mut m = [0.0; 16];
-    m[0] = f / aspect;
-    m[5] = -f;
-    m[10] = far / (near - far);
-    m[11] = -1.0;
-    m[14] = near * far / (near - far);
-    m
-}
-
-fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
-    let mut r = [0.0; 16];
-    for c in 0..4 {
-        for row in 0..4 {
-            r[c * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[c * 4 + k]).sum();
-        }
-    }
-    r
 }
 
 // ---- 5x7 bitmap font for labels ----

@@ -19,6 +19,11 @@
 
 use crate::dmath;
 
+/// Longest expression text accepted.
+pub const MAX_EXPR_BYTES: usize = 1024;
+/// Most nodes in one expression (numbers, names, operators, calls).
+pub const MAX_EXPR_NODES: usize = 256;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Num(f64),
@@ -273,14 +278,35 @@ impl<'a> Parser<'a> {
 }
 
 impl Expr {
+    /// Parses `text`. Expressions are capped at [`MAX_EXPR_BYTES`] bytes and [`MAX_EXPR_NODES`]
+    /// nodes, which also bounds the tree depth, so evaluating or dropping a hostile expression
+    /// can't overflow the stack.
     pub fn parse(text: &str) -> Result<Expr, ExprError> {
+        if text.len() > MAX_EXPR_BYTES {
+            return Err(ExprError { offset: MAX_EXPR_BYTES, message: format!("expression longer than {MAX_EXPR_BYTES} bytes") });
+        }
         let mut p = Parser { s: text.as_bytes(), i: 0 };
         let e = p.expr(0)?;
         p.ws();
         if p.i != p.s.len() {
             return p.err("unexpected trailing characters");
         }
+        let n = e.node_count();
+        if n > MAX_EXPR_NODES {
+            return Err(ExprError { offset: 0, message: format!("expression has {n} nodes; at most {MAX_EXPR_NODES}") });
+        }
         Ok(e)
+    }
+
+    /// Number of nodes in the tree.
+    pub fn node_count(&self) -> usize {
+        1 + match self {
+            Expr::Num(_) | Expr::Var(_) => 0,
+            Expr::Neg(a) | Expr::Not(a) => a.node_count(),
+            Expr::Bin(_, a, b) => a.node_count() + b.node_count(),
+            Expr::If(c, a, b) => c.node_count() + a.node_count() + b.node_count(),
+            Expr::Call(_, args) => args.iter().map(Expr::node_count).sum(),
+        }
     }
 
     /// Every variable name used.
@@ -403,6 +429,15 @@ mod tests {
         assert!(Expr::parse("(1 + 2").is_err());
         assert!(Expr::parse("1 2").is_err());
         assert!(Expr::parse("").is_err());
+        // Hostile sizes are structured errors, not stack overflows.
+        let chain = format!("1{}", "+1".repeat(20_000));
+        assert!(Expr::parse(&chain).unwrap_err().message.contains("longer than"));
+        let chain = format!("1{}", "+1".repeat(300));
+        assert!(Expr::parse(&chain).unwrap_err().message.contains("nodes"));
+        let ok = format!("1{}", "+1".repeat(120));
+        assert_eq!(ev(&ok), 121.0);
+        let deep = format!("{}1{}", "(".repeat(200), ")".repeat(200));
+        assert!(Expr::parse(&deep).is_err());
         let mut v = Vec::new();
         Expr::parse("a + b * c(1)").map(|e| e.vars(&mut v)).unwrap_err();
         Expr::parse("a + max(b, 2)").unwrap().vars(&mut v);

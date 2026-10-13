@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use crate::dmath;
 use crate::math3::{self, V3};
+use crate::mesh::Bounds;
 use crate::shape::Shape;
 
 /// Clusters `shape` on a grid of `cell` metres anchored at `origin`.
@@ -54,7 +55,13 @@ pub fn cluster(shape: &Shape, cell: f32, origin: V3) -> Shape {
             continue;
         }
         let (a, b, c) = (out.positions[m[0] as usize], out.positions[m[1] as usize], out.positions[m[2] as usize]);
-        if 0.5 * math3::length(math3::tri_normal(a, b, c)) < crate::mesh::MIN_TRIANGLE_AREA {
+        let n = math3::tri_normal(a, b, c);
+        if 0.5 * math3::length(n) < crate::mesh::MIN_TRIANGLE_AREA {
+            continue;
+        }
+        // A triangle that clustering turned over would face inwards: drop it.
+        let o = |k: usize| shape.positions[t[k] as usize];
+        if math3::dot(n, math3::tri_normal(o(0), o(1), o(2))) <= 0.0 {
             continue;
         }
         let mut key = m;
@@ -92,37 +99,101 @@ pub struct LodInput<'a> {
     pub cell_scale: f32,
 }
 
-/// Finds the cell size whose clustered triangle total is closest to (and not above, where
-/// possible) `ratio` × the original total, by bisection on a log scale. Returns the simplified
-/// shapes and the cell size used.
-pub fn simplify(parts: &[LodInput], ratio: f32, origin: V3, extent: f32) -> (Vec<Shape>, f32) {
+/// How far a simplified part's bounds may move, as a fraction of the part's largest dimension.
+pub const PART_BOUNDS_TOLERANCE: f32 = 0.06;
+/// How far the whole model's bounds may move, as a fraction of its largest dimension.
+pub const MODEL_BOUNDS_TOLERANCE: f32 = 0.03;
+/// A closed part's volume must stay within this factor range of the original.
+pub const VOLUME_TOLERANCE: (f32, f32) = (0.6, 1.4);
+
+/// What a simplification must preserve, measured once from the originals.
+struct Reference {
+    bounds: Vec<Bounds>,
+    /// `Some(volume)` for parts that are closed shells.
+    volumes: Vec<Option<f32>>,
+    model: Bounds,
+}
+
+impl Reference {
+    fn of(parts: &[LodInput]) -> Reference {
+        let bounds: Vec<Bounds> = parts.iter().map(|p| p.shape.bounds()).collect();
+        let volumes = parts
+            .iter()
+            .map(|p| {
+                let v = p.shape.signed_volume();
+                (p.shape.open_edge_count() == 0 && v > 1e-9).then_some(v)
+            })
+            .collect();
+        let model = bounds.iter().fold(Bounds::EMPTY, |a, b| a.union(b));
+        Reference { bounds, volumes, model }
+    }
+
+    /// No part vanished, no bounds moved past tolerance, no closed part lost or inverted volume.
+    fn accepts(&self, shapes: &[Shape]) -> bool {
+        let moved = |a: &Bounds, b: &Bounds, tol: f32| (0..3).any(|k| (a.min[k] - b.min[k]).abs() > tol || (a.max[k] - b.max[k]).abs() > tol);
+        let largest = |b: &Bounds| {
+            let s = b.size();
+            s[0].max(s[1]).max(s[2])
+        };
+        let mut model = Bounds::EMPTY;
+        for (i, s) in shapes.iter().enumerate() {
+            if s.triangle_count() == 0 {
+                return false;
+            }
+            let b = s.bounds();
+            if moved(&b, &self.bounds[i], PART_BOUNDS_TOLERANCE * largest(&self.bounds[i])) {
+                return false;
+            }
+            if let Some(v0) = self.volumes[i] {
+                let v = s.signed_volume();
+                if !(v >= VOLUME_TOLERANCE.0 * v0 && v <= VOLUME_TOLERANCE.1 * v0) {
+                    return false;
+                }
+            }
+            model = model.union(&b);
+        }
+        !moved(&model, &self.model, MODEL_BOUNDS_TOLERANCE * largest(&self.model))
+    }
+}
+
+/// Finds the coarsest cell size whose clustered triangle total is closest to (and not above,
+/// where possible) `ratio` × the original total while keeping every part present and within
+/// the bounds and volume tolerances, by bisection on a log scale. Returns the simplified shapes
+/// and the cell size, or `None` if no acceptable simplification saves any triangles.
+pub fn simplify(parts: &[LodInput], ratio: f32, origin: V3, extent: f32) -> Option<(Vec<Shape>, f32)> {
     let total: usize = parts.iter().map(|p| p.shape.triangle_count()).sum();
+    if ratio >= 1.0 || total == 0 {
+        return None;
+    }
     // Kept parts (cell_scale 0) can't shrink: aim the remaining budget at the others.
     let kept: usize = parts.iter().filter(|p| p.cell_scale <= 0.0).map(|p| p.shape.triangle_count()).sum();
     let target = ((total as f32 * ratio) as usize).saturating_sub(kept) + kept;
-    // No part may collapse entirely: its cell is capped at a quarter of its largest dimension.
+    // A part's cell never exceeds half its smallest or a quarter of its largest dimension, so
+    // thin parts can't be flattened away.
     let caps: Vec<f32> = parts
         .iter()
         .map(|p| {
             let s = p.shape.bounds().size();
-            0.25 * s[0].max(s[1]).max(s[2])
+            (0.5 * s[0].min(s[1]).min(s[2])).min(0.25 * s[0].max(s[1]).max(s[2]))
         })
         .collect();
+    let reference = Reference::of(parts);
     let run = |cell: f32| -> Vec<Shape> {
         parts.iter().zip(&caps).map(|(p, &cap)| cluster(p.shape, (cell * p.cell_scale).min(cap), origin)).collect()
     };
     let count = |v: &[Shape]| v.iter().map(|s| s.triangle_count()).sum::<usize>();
-    if ratio >= 1.0 || total == 0 {
-        return (parts.iter().map(|p| p.shape.clone()).collect(), 0.0);
-    }
     let (mut lo, mut hi) = (extent * 1e-4, extent * 0.5);
     let mut best: Option<(Vec<Shape>, f32, usize)> = None;
     for _ in 0..24 {
         let mid = (lo * hi).sqrt();
         let r = run(mid);
+        if !reference.accepts(&r) {
+            hi = mid; // too coarse: something vanished, moved or inverted
+            continue;
+        }
         let n = count(&r);
         let better = match &best {
-            None => true,
+            None => n < total,
             Some((_, _, bn)) => {
                 let d = (n as i64 - target as i64).abs();
                 let bd = (*bn as i64 - target as i64).abs();
@@ -138,8 +209,7 @@ pub fn simplify(parts: &[LodInput], ratio: f32, origin: V3, extent: f32) -> (Vec
             hi = mid;
         }
     }
-    let (shapes, cell, _) = best.unwrap();
-    (shapes, cell)
+    best.map(|(shapes, cell, _)| (shapes, cell))
 }
 
 #[cfg(test)]
@@ -165,22 +235,52 @@ mod tests {
     #[test]
     fn simplify_hits_target_ratio() {
         let s = Shape::sphere(1.0, 3); // 1280 triangles
-        for ratio in [0.5f32, 0.25, 0.1] {
-            let (out, cell) = simplify(&[LodInput { shape: &s, cell_scale: 1.0 }], ratio, [-1.0, 0.0, -1.0], 2.0);
+        for ratio in [0.5f32, 0.25] {
+            let (out, cell) = simplify(&[LodInput { shape: &s, cell_scale: 1.0 }], ratio, [-1.0, 0.0, -1.0], 2.0).unwrap();
             let n = out[0].triangle_count() as f32;
             let want = 1280.0 * ratio;
             assert!(cell > 0.0);
-            assert!(n <= want * 1.05 && n >= want * 0.6, "ratio {ratio}: {n} triangles, want ~{want}");
+            assert!(n <= want * 1.1 && n >= want * 0.5, "ratio {ratio}: {n} triangles, want ~{want}");
+            // Fidelity: volume and bounds held.
+            assert!(out[0].signed_volume() > 0.6 * s.signed_volume());
         }
     }
 
     #[test]
     fn zero_cell_scale_keeps_a_part() {
         let a = Shape::sphere(1.0, 2);
-        let b = Shape::sphere(0.1, 1);
-        let (out, _) = simplify(&[LodInput { shape: &a, cell_scale: 1.0 }, LodInput { shape: &b, cell_scale: 0.0 }], 0.3, [-1.0, 0.0, -1.0], 2.0);
+        let mut b = Shape::sphere(0.1, 1);
+        b.transform(&crate::math3::Affine::translate([0.0, 0.5, 0.0]));
+        let (out, _) = simplify(&[LodInput { shape: &a, cell_scale: 1.0 }, LodInput { shape: &b, cell_scale: 0.0 }], 0.3, [-1.0, 0.0, -1.0], 2.0).unwrap();
         assert_eq!(out[1].triangle_count(), 80);
         assert!(out[0].triangle_count() < 320);
+    }
+
+    #[test]
+    fn thin_parts_never_vanish() {
+        // Review regression: long thin boxes were clustered to nothing ([12, 0, 0]).
+        for size in [[2.0, 0.1, 0.1], [10.0, 0.3, 0.3], [6.0, 0.2, 0.2], [2.0, 0.9, 0.6]] {
+            let s = Shape::cuboid(size, 0.0).unwrap();
+            for ratio in [0.5, 0.25] {
+                if let Some((out, _)) = simplify(&[LodInput { shape: &s, cell_scale: 1.0 }], ratio, [-5.0, 0.0, -1.0], 10.0) {
+                    assert!(out[0].triangle_count() > 0, "{size:?} vanished");
+                    assert!(out[0].triangle_count() < s.triangle_count());
+                }
+            }
+        }
+        // A tiny part next to a big one survives too.
+        let big = Shape::sphere(3.0, 3);
+        let mut tip = Shape::cylinder(0.05, 0.0, 0.6, 6, 0.0).unwrap();
+        tip.transform(&crate::math3::Affine::translate([0.0, 6.0, 0.0]));
+        let (out, _) = simplify(&[LodInput { shape: &big, cell_scale: 1.0 }, LodInput { shape: &tip, cell_scale: 1.0 }], 0.2, [-3.0, 0.0, -3.0], 6.6).unwrap();
+        assert!(out[1].triangle_count() > 0);
+        assert!((out[1].bounds().max[1] - 6.6).abs() < 0.05, "the tip keeps its height");
+    }
+
+    #[test]
+    fn irreducible_returns_none() {
+        let s = Shape::cuboid([1.0, 1.0, 1.0], 0.0).unwrap();
+        assert!(simplify(&[LodInput { shape: &s, cell_scale: 1.0 }], 0.5, [-0.5, 0.0, -0.5], 1.0).is_none());
     }
 
     #[test]

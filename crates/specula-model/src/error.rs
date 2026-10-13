@@ -106,3 +106,24 @@ impl fmt::Display for RecipeError {
 }
 
 impl std::error::Error for RecipeError {}
+
+/// Rejects objects that repeat a key anywhere in `j` (JSON allows it; a recipe that says two
+/// different things must not silently keep one). The JSON parser bounds nesting depth.
+pub(crate) fn check_duplicate_keys(j: &specula_core::Json, path: &str) -> Result<(), RecipeError> {
+    use specula_core::Json;
+    match j {
+        Json::Obj(pairs) => {
+            let mut seen = std::collections::BTreeSet::new();
+            for (k, v) in pairs {
+                let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                if !seen.insert(k.as_str()) {
+                    return Err(RecipeError::new(p, ErrorCode::WrongType, format!("duplicate key '{k}'")));
+                }
+                check_duplicate_keys(v, &p)?;
+            }
+            Ok(())
+        }
+        Json::Arr(items) => items.iter().enumerate().try_for_each(|(i, v)| check_duplicate_keys(v, &format!("{path}[{i}]"))),
+        _ => Ok(()),
+    }
+}
