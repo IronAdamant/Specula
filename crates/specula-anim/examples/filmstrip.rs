@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! cargo run -p specula-anim --example filmstrip --release -- \
-//!     [--only shambler,wraith] [--frames 8] [--tile 128] [--out docs/fidelity/sepulcra_anim_filmstrip.png]
+//!     [--only shambler,wraith] [--clips walk,sprint] [--frames 8] [--tile 128] [--out docs/fidelity/sepulcra_anim_filmstrip.png]
 //! ```
 //!
 //! Each row's label lists the clip, its duration, its events and (for locomotion) the measured
@@ -28,13 +28,14 @@ const CREATURES: [&str; 5] = ["shambler", "skeleton_runner", "wraith", "bone_col
 struct Args {
     out: PathBuf,
     only: Vec<String>,
+    clips: Vec<String>,
     frames: u32,
     tile: u32,
 }
 
 fn args() -> Args {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut a = Args { out: root.join("docs/fidelity/sepulcra_anim_filmstrip.png"), only: Vec::new(), frames: 8, tile: 128 };
+    let mut a = Args { out: root.join("docs/fidelity/sepulcra_anim_filmstrip.png"), only: Vec::new(), clips: Vec::new(), frames: 8, tile: 128 };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < v.len() {
@@ -42,6 +43,7 @@ fn args() -> Args {
         match v[i].as_str() {
             "--out" => a.out = val.into(),
             "--only" => a.only = val.split(',').map(str::to_string).collect(),
+            "--clips" => a.clips = val.split(',').map(str::to_string).collect(),
             "--frames" => a.frames = val.parse().expect("--frames N"),
             "--tile" => a.tile = val.parse().expect("--tile N"),
             other => panic!("unknown argument {other}"),
@@ -89,13 +91,13 @@ fn main() {
     // Metrics first (CPU only), so they print even without Vulkan.
     let mut rows: Vec<(usize, ClipId, String)> = Vec::new();
     for (ci, c) in creatures.iter().enumerate() {
-        for (id, clip) in c.set.clips() {
+        for (id, clip) in c.set.clips().filter(|(_, k)| a.clips.is_empty() || a.clips.contains(&k.name)) {
             let events: Vec<String> = clip.events.iter().map(|e| format!("{} {:.2}", e.name, e.time)).collect();
             let feet = foot_bones(c, id);
             let mut label = format!("{} {} {:.2}S", c.name, clip.name, clip.duration);
             if clip.distance > 0.0 && clip.looping == specula_anim::LoopMode::Loop && !feet.is_empty() {
-                let slide = measure::foot_slide(&c.set, id, &feet, 0.001, 480);
-                label.push_str(&format!(" {:.1}M/S SLIDE {:.1}CM/S", clip.speed(), slide * 100.0));
+                let m = measure::foot_contact(&c.set, id, &feet, 0.001, 480);
+                label.push_str(&format!(" {:.1}M/S SLIDE {:.1}CM/S CONTACT {:.0}PCT", clip.speed(), m.max_slide * 100.0, m.contact * 100.0));
             }
             if let Some(seam) = measure::loop_seam(&c.set, id) {
                 label.push_str(&format!(" SEAM {:.1}MM", seam * 1000.0));

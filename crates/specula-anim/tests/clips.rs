@@ -289,8 +289,10 @@ fn gait_generator_plants_feet_and_loops() {
     assert_eq!(c.distance, 1.2);
     assert_eq!(c.events.iter().filter(|e| e.name == "footstep").count(), 2);
     let feet = [set.skeleton.find("foot_l").unwrap(), set.skeleton.find("foot_r").unwrap()];
-    let slide = measure::foot_slide(&set, id, &feet, 0.001, 480);
-    assert!(slide < 0.05, "foot slide {slide} m/s");
+    let m = measure::foot_contact(&set, id, &feet, 0.001, 480);
+    assert!(m.contact > 0.5, "contact {} of the cycle (stance 0.6)", m.contact);
+    let slide = m.max_slide;
+    assert!(slide < 0.1, "foot slide {slide} m/s");
     assert!(measure::loop_seam(&set, id).unwrap() < 1e-6);
     // Feet never go below the rest ankle height by more than a few mm.
     for k in 0..=100 {

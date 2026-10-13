@@ -19,28 +19,49 @@ pub fn joints_at(set: &AnimSet, id: ClipId, t: f32) -> Vec<V3> {
 
 /// Foot sliding of a locomotion clip, as the clip would look moving over the ground at its
 /// natural speed (`distance / duration` along +Z): for each named foot, the fastest ground-
-/// relative horizontal speed (m/s) during sustained contact (the foot within `planted_m` of its
-/// lowest height for two samples either side of the step, so lift-off and touch-down moments
+/// relative horizontal speed (m/s) during sustained contact (the foot within `planted_m` of the
+/// ground, its 15th-percentile height, for two samples either side of the step, so lift-off and touch-down moments
 /// don't count). 0 means perfectly planted feet. `steps` samples per cycle.
 pub fn foot_slide(set: &AnimSet, id: ClipId, feet: &[usize], planted_m: f32, steps: usize) -> f32 {
+    foot_contact(set, id, feet, planted_m, steps).max_slide
+}
+
+/// What [`foot_contact`] measured.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FootContact {
+    /// Fastest ground-relative horizontal foot speed (m/s) during sustained contact.
+    pub max_slide: f32,
+    /// Fraction of the clip each foot spends in sustained contact, averaged over the feet: a
+    /// slide of 0 only means something when this is well above 0.
+    pub contact: f32,
+}
+
+/// [`foot_slide`] plus how much sustained contact it found.
+pub fn foot_contact(set: &AnimSet, id: ClipId, feet: &[usize], planted_m: f32, steps: usize) -> FootContact {
     let clip = set.clip(id);
     let v = clip.speed();
     let steps = steps.max(8);
     let dt = clip.duration / steps as f32;
     let track: Vec<Vec<V3>> = (0..=steps).map(|k| joints_at(set, id, (k as f32 * dt).min(clip.duration))).collect();
     let mut worst = 0.0f32;
+    let mut contact_steps = 0usize;
     for &f in feet {
-        let low = track.iter().map(|j| j[f][1]).fold(f32::MAX, f32::min);
+        // Ground height: the 15th-percentile foot height (robust against brief dips below the
+        // stance height at touch-down, which the minimum would latch onto).
+        let mut ys: Vec<f32> = track.iter().map(|j| j[f][1]).collect();
+        ys.sort_by(f32::total_cmp);
+        let ground = ys[ys.len() * 15 / 100];
         // Looping clips wrap; others clamp at the ends.
         let looping = clip.looping == LoopMode::Loop;
         let planted = |k: isize| -> bool {
             let i = if looping { k.rem_euclid(steps as isize) } else { k.clamp(0, steps as isize) } as usize;
-            track[i][f][1] <= low + planted_m
+            (track[i][f][1] - ground).abs() <= planted_m
         };
         for k in 0..steps {
             let (a, b) = (track[k][f], track[k + 1][f]);
             let ki = k as isize;
             if (ki - 2..=ki + 3).all(planted) {
+                contact_steps += 1;
                 // World position = model position + root travel.
                 let dx = b[0] - a[0];
                 let dz = (b[2] - a[2]) + v * dt;
@@ -48,7 +69,7 @@ pub fn foot_slide(set: &AnimSet, id: ClipId, feet: &[usize], planted_m: f32, ste
             }
         }
     }
-    worst
+    FootContact { max_slide: worst, contact: contact_steps as f32 / (steps * feet.len().max(1)) as f32 }
 }
 
 /// Largest joint distance (m) between the first and last frame of a looping clip (0 = a

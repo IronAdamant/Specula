@@ -77,12 +77,15 @@ fn creature_clips_are_complete() {
 
 #[test]
 fn locomotion_keeps_feet_planted() {
-    for (name, clip, max) in [("shambler", "walk", 0.06), ("skeleton_runner", "sprint", 0.08), ("bone_colossus", "walk", 0.06)] {
+    // (creature, clip, max slide m/s, gait duty): contact must be found for most of the stance,
+    // so a slide of ~0 is a real measurement, not an empty one.
+    for (name, clip, max, duty) in [("shambler", "walk", 0.06, 0.65), ("skeleton_runner", "sprint", 0.12, 0.38), ("bone_colossus", "walk", 0.06, 0.7)] {
         let (_, set) = creature(name);
         let id = set.id(clip).unwrap();
         let feet = [set.skeleton.find("foot_l").unwrap(), set.skeleton.find("foot_r").unwrap()];
-        let slide = measure::foot_slide(&set, id, &feet, 0.001, 480);
-        assert!(slide < max, "{name}/{clip}: feet slide {slide} m/s during contact");
+        let m = measure::foot_contact(&set, id, &feet, 0.001, 480);
+        assert!(m.max_slide < max, "{name}/{clip}: feet slide {} m/s during contact", m.max_slide);
+        assert!(m.contact > 0.8 * duty && m.contact <= duty + 0.01, "{name}/{clip}: contact {} of the cycle, stance {duty}", m.contact);
         assert!(set.clip(id).distance > 0.0);
     }
 }
