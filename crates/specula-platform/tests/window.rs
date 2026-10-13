@@ -70,6 +70,9 @@ fn set_title_and_hide_keep_the_window_usable() {
 }
 
 #[test]
+// `Window` only implements Drop where a backend exists; elsewhere it is uninhabited and these
+// explicit drops (which document the order) are no-ops.
+#[cfg_attr(not(windows), allow(clippy::drop_non_drop))]
 fn several_windows_and_clean_drop() {
     let Some(a) = try_window(&hidden(160, 100)) else { return };
     let Some(mut b) = try_window(&hidden(150, 120)) else { return };

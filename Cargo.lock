@@ -44,6 +44,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-input"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-platform",
+]
+
+[[package]]
 name = "specula-platform"
 version = "0.3.0"
 dependencies = [
@@ -60,3 +68,10 @@ dependencies = [
 [[package]]
 name = "specula-sys"
 version = "0.3.0"
+
+[[package]]
+name = "specula-text"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
