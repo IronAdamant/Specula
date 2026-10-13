@@ -251,13 +251,14 @@ fn main() {
         }
     }
 
-    // ---- frame build time: the HUD with radial, threats and toasts, warm ----
-    {
+    // ---- frame build time, warm: the median of 9 batches of 300 frames ----
+    for set in [&["hud"][..], &["hud", "radial"][..]] {
         for n in SCREENS {
             ui.hide(n).unwrap();
         }
-        ui.show("hud").unwrap();
-        ui.show("radial").unwrap();
+        for n in set {
+            ui.show(n).unwrap();
+        }
         ui.set_time(None);
         let mut input = Input::new(map.clone());
         let mut st = state(1280.0, 800.0);
@@ -266,16 +267,26 @@ fn main() {
             input.update(f64::from(k) / 60.0, &[], &[]);
             let _ = ui.frame(&input, &st, &view);
         }
-        let n: i32 = 2000;
-        let t0 = Instant::now();
-        for k in 0..n {
-            // Change a bound value every frame, as a live game does.
-            st.set_int("dust", i64::from(100 + k % 50));
-            input.update(1.0 + f64::from(k) / 60.0, &[], &[]);
-            let _ = ui.frame(&input, &st, &view);
+        let n: i32 = 300;
+        let mut batches = Vec::new();
+        for b in 0..9 {
+            let t0 = Instant::now();
+            for k in 0..n {
+                // Change a bound value every frame, as a live game does.
+                st.set_int("dust", i64::from(100 + k % 50));
+                input.update(1.0 + f64::from(b * n + k) / 60.0, &[], &[]);
+                let _ = ui.frame(&input, &st, &view);
+            }
+            batches.push(t0.elapsed().as_secs_f64() / f64::from(n) * 1e6);
         }
-        let per = t0.elapsed().as_secs_f64() / f64::from(n) * 1e6;
-        println!("frame build (HUD + radial + 2 threats + toasts, 1280x800): {per:.1} us/frame over {n} frames");
+        batches.sort_by(f64::total_cmp);
+        println!(
+            "frame build ({} + 2 threats, 1280x800): median {:.1} us/frame (fastest batch {:.1}, slowest {:.1})",
+            set.join(" + "),
+            batches[4],
+            batches[0],
+            batches[8]
+        );
     }
 
     // ---- ui_check on every screen ----
