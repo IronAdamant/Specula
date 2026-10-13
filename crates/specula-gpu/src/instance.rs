@@ -399,6 +399,29 @@ impl Instance {
         if v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] == 0 {
             return Err("device lacks bufferDeviceAddress".into());
         }
+        // Required up front, even when a game never turns the features on: descriptor indexing
+        // (textures, overlay, post), RGBA16F render + filter (bloom) and D16 render + sample
+        // (shadows). Every desktop GPU with Vulkan 1.3 and the Steam Deck have them; many Android
+        // devices lack descriptor indexing (or update-after-bind for sampled images), so the
+        // mobile port will need a fallback (fixed-size descriptor arrays) instead of rejecting
+        // the adapter (F6).
+        if VkPhysicalDeviceVulkan12Features::BINDLESS.iter().any(|&i| v12.flags[i] == 0) {
+            return Err("device lacks descriptor indexing (runtime arrays, partially bound, update-after-bind, \
+                        non-uniform sampled-image indexing)"
+                .into());
+        }
+        let sampled = |format| self.format_features(pd, format).optimal_tiling_features;
+        let need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        if sampled(VK_FORMAT_R16G16B16A16_SFLOAT) & (need | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT)
+            != need | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+        {
+            return Err("device cannot render to and filter R16G16B16A16_SFLOAT".into());
+        }
+        if sampled(VK_FORMAT_D16_UNORM) & (VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+            != VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+        {
+            return Err("device cannot render to and sample D16_UNORM (shadow maps)".into());
+        }
         if self.format_features(pd, VK_FORMAT_D32_SFLOAT).optimal_tiling_features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT == 0 {
             return Err("device cannot use D32_SFLOAT as a depth attachment".into());
         }

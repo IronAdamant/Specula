@@ -203,6 +203,7 @@ fn main() {
                 environment: if silhouette { Environment { sun_intensity: 0.0, ambient_intensity: 0.0, ..env } } else { env },
                 lights: if silhouette { &[] } else { &lights },
                 time_s: 0.0,
+            ..Default::default()
             };
             gpu.render(target, &frame).expect("render");
             let px = gpu.read_rgba8(target).expect("read");
@@ -246,6 +247,7 @@ fn moonlight() -> Environment {
         ambient_intensity: 3.0,
         exposure: 1.1,
         tonemap: true,
+        ..Environment::default()
     }
 }
 
@@ -279,7 +281,7 @@ struct Bucket {
 
 fn upload_shape(gpu: &mut Gpu, s: &Shape) -> MeshId {
     let m = s.finalize(0.0, "ground");
-    let v: Vec<Vertex> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vertex { position: *p, normal: *n }).collect();
+    let v: Vec<Vertex> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vertex::new(*p, *n)).collect();
     gpu.upload_mesh(&v, &m.indices).expect("upload")
 }
 
@@ -302,7 +304,7 @@ fn upload_buckets(gpu: &mut Gpu, m: &MeshData, presets: &[(String, specula_model
                 let col = |i: usize| [0, 1, 2].map(|k| m.colors[i][k] as f32 / 255.0);
                 let p = mix3(m.positions[i0], m.positions[i1], m.positions[i2]);
                 let n = math3::normalize(mix3(m.normals[i0], m.normals[i1], m.normals[i2]));
-                (Vertex { position: p, normal: n }, mix3(col(i0), col(i1), col(i2)))
+                (Vertex::new(p, n), mix3(col(i0), col(i1), col(i2)))
             };
             for u in 0..N {
                 for v in 0..N - u {

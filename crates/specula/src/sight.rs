@@ -109,6 +109,7 @@ pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights:
         environment: world.env().light,
         lights,
         time_s,
+        ..Default::default()
     }
 }
 

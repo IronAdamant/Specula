@@ -21,6 +21,7 @@ use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::Json;
 use specula_gpu::{Environment, Material, Surface};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -239,6 +240,15 @@ pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
     }
     for (field, v) in [("sun_intensity", p.sun_intensity), ("ambient_intensity", p.ambient_intensity), ("exposure", p.exposure)] {
         v.map_or(Ok(()), |v| check_num(field, v, &ENV_LEVEL))?;
+    }
+    let effects = [
+        p.shadow.map(|e| e.check()),
+        p.bloom.map(|e| e.check()),
+        p.sky.map(|e| e.check()),
+        p.fog.map(|e| e.check()),
+    ];
+    for result in effects.into_iter().flatten() {
+        result.map_err(|(field, message)| invalid(&field, message))?;
     }
     Ok(())
 }
@@ -566,6 +576,11 @@ impl Env {
             ("exposure", Json::from(l.exposure)),
             ("tonemap", Json::from(l.tonemap)),
             ("background", Json::from(color_hex(self.background))),
+            ("shadow", crate::effects::ShadowPatch::to_json(&l.shadow, false)),
+            ("bloom", crate::effects::BloomPatch::to_json(&l.bloom, false)),
+            ("fxaa", Json::from(l.fxaa)),
+            ("sky", crate::effects::SkyPatch::to_json(&l.sky, false)),
+            ("fog", crate::effects::FogPatch::to_json(&l.fog, false)),
         ])
     }
 
@@ -582,6 +597,11 @@ impl Env {
             ("exposure", Json::from(l.exposure)),
             ("tonemap", Json::from(l.tonemap)),
             ("background", color_json_exact(self.background)),
+            ("shadow", crate::effects::ShadowPatch::to_json(&l.shadow, true)),
+            ("bloom", crate::effects::BloomPatch::to_json(&l.bloom, true)),
+            ("fxaa", Json::from(l.fxaa)),
+            ("sky", crate::effects::SkyPatch::to_json(&l.sky, true)),
+            ("fog", crate::effects::FogPatch::to_json(&l.fog, true)),
         ])
     }
 }
@@ -597,6 +617,11 @@ pub struct EnvPatch {
     pub exposure: Option<f32>,
     pub tonemap: Option<bool>,
     pub background: Option<[f32; 3]>,
+    pub shadow: Option<crate::effects::ShadowPatch>,
+    pub bloom: Option<crate::effects::BloomPatch>,
+    pub fxaa: Option<bool>,
+    pub sky: Option<crate::effects::SkyPatch>,
+    pub fog: Option<crate::effects::FogPatch>,
 }
 
 impl EnvPatch {
@@ -625,6 +650,22 @@ impl EnvPatch {
         }
         if let Some(c) = self.background {
             env.background = c;
+        }
+        let l = &mut env.light;
+        if let Some(p) = &self.shadow {
+            p.apply(&mut l.shadow);
+        }
+        if let Some(p) = &self.bloom {
+            p.apply(&mut l.bloom);
+        }
+        if let Some(v) = self.fxaa {
+            l.fxaa = v;
+        }
+        if let Some(p) = &self.sky {
+            p.apply(&mut l.sky);
+        }
+        if let Some(p) = &self.fog {
+            p.apply(&mut l.fog);
         }
     }
 }
@@ -700,6 +741,19 @@ pub struct Entity {
     pub modified_by: Arc<str>,
     /// Cached world transform: parent's world × local. Kept current by [`World`].
     world: Mat4,
+    /// Cached [`Entity::content_hash`]; cleared by every change to what it covers.
+    hash: HashCache,
+}
+
+/// [`Entity::content_hash`]'s cache. Clones start empty, so a copy (a journal snapshot, a
+/// replayed or restored entity) is always hashed afresh from its own fields.
+#[derive(Debug, Default)]
+struct HashCache(Cell<Option<u64>>);
+
+impl Clone for HashCache {
+    fn clone(&self) -> Self {
+        HashCache::default()
+    }
 }
 
 impl Entity {
@@ -809,6 +863,19 @@ impl Entity {
     /// Feeds everything that defines what the entity is and does, by exact bits. Versions and
     /// attribution are left out: two worlds that look and behave the same hash the same,
     /// whoever built them and however many edits it took.
+    /// A hash of everything [`World::state_hash`] covers about this entity, computed once per
+    /// change: hashing the world each tick only re-hashes what changed (foundation F3).
+    pub fn content_hash(&self) -> u64 {
+        if let Some(h) = self.hash.0.get() {
+            return h;
+        }
+        let mut h = StableHasher::with_seed(0x456e_7469_7479_0001);
+        self.hash_into(&mut h);
+        let v = h.finish();
+        self.hash.0.set(Some(v));
+        v
+    }
+
     fn hash_into(&self, h: &mut StableHasher) {
         h.write_u64(self.id);
         h.write_u64(self.parent.unwrap_or(ROOT));
@@ -953,6 +1020,21 @@ pub struct UpdateSpec {
 }
 
 impl UpdateSpec {
+    /// Only the transform and colour change (what a game moves every tick).
+    pub fn pose_only(&self) -> bool {
+        self.name.is_none()
+            && self.parent.is_none()
+            && self.look.is_empty()
+            && self.light.is_none()
+            && self.profile.is_none()
+            && self.tags.is_none()
+            && self.add_tags.is_empty()
+            && self.remove_tags.is_empty()
+            && self.props.is_none()
+            && self.collider.is_none()
+            && self.body.is_none()
+    }
+
     /// No field would change (`expect_version` alone is not a change).
     pub fn is_empty(&self) -> bool {
         self.name.is_none()
@@ -1023,6 +1105,185 @@ enum Undo {
     Deleted(Vec<Entity>),
 }
 
+/// What the world records about its own changes, for the journal (see [`World::set_recording`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recording {
+    /// Nothing (the default: world files, tests and replays pay nothing).
+    #[default]
+    Off,
+    /// Every change with the state before and after: enough to undo it and to replay it.
+    Full,
+    /// Only *which* entities changed; [`World::take_changes`] then snapshots each once, as it is
+    /// now: one after-only change per entity (replayable, not undoable). For high-rate game
+    /// updates (foundation F3): a change costs a map insert, not a copy of the entity.
+    Snapshot,
+}
+
+/// One recorded change to the world. Entities are whole copies (exact bits), so replaying the
+/// `after` states in order rebuilds the world bit for bit, and the `before` states undo it.
+#[derive(Clone, Debug)]
+pub enum Change {
+    Spawn { path: String, after: Box<Entity> },
+    Set {
+        path: String,
+        /// The path before the change, when it was renamed or moved to another parent.
+        prev_path: Option<String>,
+        /// `None` when recorded with [`Recording::Snapshot`].
+        before: Option<Box<Entity>>,
+        after: Box<Entity>,
+    },
+    /// One per removed entity: deleting a subtree records its entities children first.
+    Delete { path: String, before: Box<Entity> },
+    /// Boxed: environments are large (lighting, fog, shadows) and environment changes rare.
+    Env { before: Box<Env>, after: Box<Env> },
+    /// An entity whose transform or colour alone changed, recorded by [`Recording::Snapshot`]
+    /// without copying the entity (replayable, not undoable).
+    Pose { path: String, pose: Pose },
+}
+
+/// The fields a game moves every tick: transform and colour (plus the version they reached).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose {
+    pub id: u64,
+    pub version: u64,
+    pub position: Vec3,
+    pub rotation_deg: Vec3,
+    pub scale: Vec3,
+    pub color: [f32; 3],
+}
+
+impl Pose {
+    pub fn of(e: &Entity) -> Pose {
+        Pose { id: e.id, version: e.version, position: e.position, rotation_deg: e.rotation_deg, scale: e.scale, color: e.color }
+    }
+
+    /// Puts the pose on `e` (a copy of the same entity).
+    pub fn apply_to(&self, e: &mut Entity) {
+        e.position = self.position;
+        e.rotation_deg = self.rotation_deg;
+        e.scale = self.scale;
+        e.color = self.color;
+        e.version = self.version;
+        e.hash.0.set(None);
+    }
+}
+
+/// What [`Recording::Snapshot`] knows about an entity changed since the last take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dirty {
+    /// Spawned since (didn't exist before).
+    Spawned,
+    /// Only its transform or colour changed.
+    Pose,
+    /// Anything else changed.
+    Changed,
+}
+
+impl Change {
+    /// The entity's id; 0 for the environment.
+    pub fn id(&self) -> u64 {
+        match self {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => after.id,
+            Change::Delete { before, .. } => before.id,
+            Change::Env { .. } => ROOT,
+            Change::Pose { pose, .. } => pose.id,
+        }
+    }
+
+    pub fn op(&self) -> &'static str {
+        match self {
+            Change::Spawn { .. } => "spawn",
+            Change::Set { .. } | Change::Pose { .. } => "set",
+            Change::Delete { .. } => "delete",
+            Change::Env { .. } => "env",
+        }
+    }
+
+    /// Where it happened: the entity's path afterwards (before, for a delete); `/` for the
+    /// environment.
+    pub fn path(&self) -> &str {
+        match self {
+            Change::Spawn { path, .. } | Change::Set { path, .. } | Change::Delete { path, .. } | Change::Pose { path, .. } => path,
+            Change::Env { .. } => "/",
+        }
+    }
+
+    /// The entity's version afterwards (`None` for deletes and the environment).
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => Some(after.version),
+            Change::Pose { pose, .. } => Some(pose.version),
+            _ => None,
+        }
+    }
+
+    /// Heap and inline size, for the journal's memory bound: every allocation counted with the
+    /// allocator's overhead, B-tree nodes at their real size.
+    pub fn approx_bytes(&self) -> usize {
+        let entity = |e: &Entity| {
+            std::mem::size_of::<Entity>()
+                + ALLOC
+                + heap(&e.name)
+                + tags_bytes(&e.tags)
+                + e.profile.as_ref().map_or(0, |p| ALLOC + p.points.len() * 8)
+                + json_heap(&e.props)
+                + e.collider.as_ref().map_or(0, |c| heap(&c.layer))
+        };
+        std::mem::size_of::<Change>()
+            + match self {
+                Change::Spawn { path, after } => heap(path) + entity(after),
+                Change::Set { path, prev_path, before, after } => {
+                    heap(path) + prev_path.as_deref().map_or(0, heap) + before.as_deref().map_or(0, entity) + entity(after)
+                }
+                Change::Delete { path, before } => heap(path) + entity(before),
+                Change::Pose { path, .. } => heap(path),
+                Change::Env { .. } => 2 * (std::mem::size_of::<Env>() + ALLOC),
+            }
+    }
+}
+
+/// Bookkeeping per heap allocation (allocator header and rounding), roughly.
+const ALLOC: usize = 16;
+/// A B-tree node of `String` keys (11 keys + header), as `BTreeSet<String>` allocates them.
+const BTREE_NODE: usize = 11 * std::mem::size_of::<String>() + 24 + ALLOC;
+
+fn heap(s: &str) -> usize {
+    if s.is_empty() {
+        0
+    } else {
+        s.len() + ALLOC
+    }
+}
+
+fn tags_bytes(tags: &BTreeSet<String>) -> usize {
+    if tags.is_empty() {
+        0
+    } else {
+        tags.len().div_ceil(11) * BTREE_NODE + tags.iter().map(|t| heap(t)).sum::<usize>()
+    }
+}
+
+/// Heap memory held by a JSON value (no allocation: it runs for every journaled change).
+fn json_heap(v: &Json) -> usize {
+    const NODE: usize = std::mem::size_of::<Json>();
+    match v {
+        Json::Obj(pairs) if !pairs.is_empty() => {
+            ALLOC + pairs.iter().map(|(k, v)| std::mem::size_of::<String>() + NODE + heap(k) + json_heap(v)).sum::<usize>()
+        }
+        Json::Arr(items) if !items.is_empty() => ALLOC + items.iter().map(|v| NODE + json_heap(v)).sum::<usize>(),
+        Json::Str(s) => heap(s),
+        _ => 0,
+    }
+}
+
+/// A point to roll the world back to (see `World::rollback_to`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    next_id: u64,
+    revision: u64,
+    changes: usize,
+}
+
 /// Filters for [`World::query`]; every given filter must match.
 #[derive(Clone, Debug, Default)]
 pub struct Query {
@@ -1076,6 +1337,18 @@ pub struct World {
     /// Top-level id → stamp of the latest change anywhere in its subtree. Lets world files rewrite
     /// only the subtrees that changed.
     touched: BTreeMap<u64, u64>,
+    /// What changes are recorded for the journal (off by default: world files, tests and replays
+    /// pay nothing).
+    recording: Recording,
+    /// Changes recorded since the last [`World::take_changes`], in the order they happened.
+    changes: Vec<Change>,
+    /// [`Recording::Snapshot`]: entities changed since the last take → whether each existed
+    /// before its first change.
+    dirty: BTreeMap<u64, Dirty>,
+    /// [`Recording::Snapshot`]: removed entities that existed before, children first.
+    dirty_removed: Vec<(String, Entity)>,
+    /// [`Recording::Snapshot`]: the environment before its first change.
+    dirty_env: Option<Env>,
 }
 
 impl World {
@@ -1146,8 +1419,10 @@ impl World {
 
     pub fn set_env(&mut self, patch: &EnvPatch) -> Result<(), WorldError> {
         check_env(patch)?;
+        let before = self.env;
         patch.apply(&mut self.env);
         self.revision += 1;
+        self.record_env(before);
         Ok(())
     }
 
@@ -1393,10 +1668,21 @@ impl World {
             created_by,
             modified_by,
             world: Mat4::IDENTITY,
+            hash: HashCache::default(),
         });
         self.refresh(id);
         self.touch(id);
         self.revision += 1;
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot => {
+                self.dirty.entry(id).or_insert(Dirty::Spawned);
+            }
+            Recording::Full => {
+                let path = self.path_of(id);
+                self.changes.push(Change::Spawn { path, after: Box::new(self.entities[&id].clone()) });
+            }
+        }
         Ok(())
     }
 
@@ -1486,6 +1772,9 @@ impl World {
             Some(patch) => Some(merge_props(&e.props, patch)?),
         };
 
+        let before = (self.recording == Recording::Full).then(|| Box::new(e.clone()));
+        let pose_only = change.pose_only();
+        let prev_path = (self.recording == Recording::Full && relink).then(|| self.path_of(id));
         let old = relink.then(|| (e.parent.unwrap_or(ROOT), e.name.clone()));
         if reparent {
             self.touch(id); // the subtree it leaves
@@ -1529,6 +1818,7 @@ impl World {
             e.body = b;
         }
         e.version += 1;
+        e.hash.0.set(None);
         e.modified_by = by;
         if let Some((old_parent, old_name)) = old {
             let new_key = (e.parent.unwrap_or(ROOT), e.name.clone());
@@ -1542,6 +1832,20 @@ impl World {
         }
         self.touch(id);
         self.revision += 1;
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot => {
+                let mark = if pose_only { Dirty::Pose } else { Dirty::Changed };
+                let slot = self.dirty.entry(id).or_insert(mark);
+                if *slot == Dirty::Pose {
+                    *slot = mark;
+                }
+            }
+            Recording::Full => {
+                let after = Box::new(self.entities[&id].clone());
+                self.changes.push(Change::Set { path: self.path_of(id), prev_path, before, after });
+            }
+        }
         Ok(&self.entities[&id])
     }
 
@@ -1559,8 +1863,14 @@ impl World {
             stack.extend(self.child_range(at).map(|(_, &c)| c));
             stack[first..].reverse();
         }
-        let removed = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
+        let paths: Vec<String> =
+            if self.recording == Recording::Off { Vec::new() } else { order.iter().map(|&i| self.path_of(i)).collect() };
+        let removed: Vec<Entity> = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
         self.revision += 1;
+        // Children first, so undoing the changes in reverse puts parents back before children.
+        for (e, p) in removed.iter().zip(paths).rev() {
+            self.record_removal(p, e);
+        }
         Ok(Deleted { id, path, removed })
     }
 
@@ -1569,7 +1879,7 @@ impl World {
     /// returned.
     /// Later ops can address entities spawned earlier in the batch by path.
     pub fn apply_batch(&mut self, ops: Vec<Op>, by: &str) -> Result<Vec<OpResult>, (usize, WorldError)> {
-        let (next_id, revision) = (self.next_id, self.revision);
+        let (next_id, revision, recorded) = (self.next_id, self.revision, self.changes.len());
         let mut undo = Vec::with_capacity(ops.len());
         let mut results = Vec::with_capacity(ops.len());
         for (index, op) in ops.into_iter().enumerate() {
@@ -1596,6 +1906,7 @@ impl World {
                     self.rollback(undo);
                     self.next_id = next_id;
                     self.revision = revision;
+                    self.changes.truncate(recorded);
                     return Err((index, error));
                 }
             }
@@ -1661,6 +1972,349 @@ impl World {
             e.world = parent_world.map_or(local, |pw| pw * local);
             stack.extend(self.child_range(at).map(|(_, &c)| c));
         }
+    }
+
+    /// What the world records about its changes from now on.
+    pub fn set_recording(&mut self, recording: Recording) {
+        self.recording = recording;
+    }
+
+    pub fn recording(&self) -> Recording {
+        self.recording
+    }
+
+    /// The changes recorded since the last call, oldest first. With [`Recording::Snapshot`]:
+    /// one change per entity that changed, as it is now (spawns and sets by id, then removals
+    /// children first, then the environment).
+    pub fn take_changes(&mut self) -> Vec<Change> {
+        let mut out = std::mem::take(&mut self.changes);
+        if self.dirty.is_empty() && self.dirty_env.is_none() && self.dirty_removed.is_empty() {
+            return out;
+        }
+        let dirty = std::mem::take(&mut self.dirty);
+        out.reserve(dirty.len());
+        for (&id, &how) in &dirty {
+            if let Some(e) = self.entities.get(&id) {
+                let path = self.path_of(id);
+                out.push(match how {
+                    Dirty::Pose => Change::Pose { path, pose: Pose::of(e) },
+                    Dirty::Changed => Change::Set { path, prev_path: None, before: None, after: Box::new(e.clone()) },
+                    Dirty::Spawned => Change::Spawn { path, after: Box::new(e.clone()) },
+                });
+            }
+        }
+        let mut gone = BTreeSet::new();
+        for (path, e) in std::mem::take(&mut self.dirty_removed) {
+            // Still gone (a rolled-back batch may have restored it), and listed once.
+            if !self.entities.contains_key(&e.id) && gone.insert(e.id) {
+                out.push(Change::Delete { path, before: Box::new(e) });
+            }
+        }
+        if let Some(before) = self.dirty_env.take() {
+            if before != self.env {
+                out.push(Change::Env { before: Box::new(before), after: Box::new(self.env) });
+            }
+        }
+        out
+    }
+
+    /// Records that `e` (at `path`) was removed.
+    fn record_removal(&mut self, path: String, e: &Entity) {
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot => {
+                if *self.dirty.entry(e.id).or_insert(Dirty::Changed) != Dirty::Spawned {
+                    self.dirty_removed.push((path, e.clone()));
+                }
+            }
+            Recording::Full => self.changes.push(Change::Delete { path, before: Box::new(e.clone()) }),
+        }
+    }
+
+    /// Records an environment change from `before`.
+    fn record_env(&mut self, before: Env) {
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot => {
+                self.dirty_env.get_or_insert(before);
+            }
+            Recording::Full => self.changes.push(Change::Env { before: Box::new(before), after: Box::new(self.env) }),
+        }
+    }
+
+    /// Recorded changes not taken yet.
+    pub fn pending_changes(&self) -> &[Change] {
+        &self.changes
+    }
+
+    /// Remembers the current state, so [`World::rollback_to`] can return to it. Needs
+    /// [`Recording::Full`] for every change in between.
+    pub(crate) fn mark(&self) -> Mark {
+        Mark { next_id: self.next_id, revision: self.revision, changes: self.changes.len() }
+    }
+
+    /// How many changes were pending at `mark`: `pending_changes()[mark_changes(m)..]` are the
+    /// ones since.
+    pub(crate) fn mark_changes(&self, mark: Mark) -> usize {
+        mark.changes.min(self.changes.len())
+    }
+
+    /// Undoes every change recorded since `mark` exactly (versions and attribution included) and
+    /// forgets them. The id counter is **not** rewound: ids handed out in between (which game code
+    /// may have kept) are never handed out again.
+    ///
+    /// The revision never goes back either: it moves past every state the world has been in, so
+    /// whatever is keyed on it (the engine's cached state hash, autosave) sees the rollback, and
+    /// the id counter that moved on.
+    pub(crate) fn rollback_to(&mut self, mark: Mark) {
+        let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
+        let recording = std::mem::replace(&mut self.recording, Recording::Off);
+        let revision = self.revision;
+        for change in undo.iter().rev() {
+            self.apply_before(change);
+        }
+        self.recording = recording;
+        if !undo.is_empty() || self.next_id != mark.next_id || revision != mark.revision {
+            self.revision = self.revision.max(revision) + 1;
+        }
+    }
+
+    /// Re-checks the changes recorded since `mark` one step at a time, each against the world as
+    /// it was right after that step (a later step can hide what an earlier one did: a rename
+    /// followed by a delete, two moves). On the first rejection everything since `mark` is rolled
+    /// back and the error returned; otherwise the world and its recorded changes are as before.
+    pub(crate) fn recheck_steps(
+        &mut self,
+        mark: Mark,
+        check: &mut dyn FnMut(&World, &Change) -> Result<(), WorldError>,
+    ) -> Result<(), WorldError> {
+        let start = self.mark_changes(mark);
+        if start == self.changes.len() {
+            return Ok(());
+        }
+        let steps: Vec<Change> = self.changes.drain(start..).collect();
+        let (next_id, revision) = (self.next_id, self.revision);
+        let recording = std::mem::replace(&mut self.recording, Recording::Off);
+        // Back to the start, then forward one change at a time.
+        for change in steps.iter().rev() {
+            self.apply_before(change);
+        }
+        let mut failed = None;
+        for (done, change) in steps.iter().enumerate() {
+            // Agents' and game tools' changes are full states (no poses), so no author is needed.
+            self.apply_after(change, "");
+            if let Err(e) = check(self, change) {
+                failed = Some((done, e));
+                break;
+            }
+        }
+        match failed {
+            None => {
+                self.recording = recording;
+                self.changes.extend(steps);
+                self.next_id = self.next_id.max(next_id);
+                self.revision = revision.max(self.revision);
+                Ok(())
+            }
+            Some((done, e)) => {
+                for change in steps[..=done].iter().rev() {
+                    self.apply_before(change);
+                }
+                self.recording = recording;
+                self.next_id = self.next_id.max(next_id);
+                // Forward only (see `rollback_to`).
+                self.revision = self.revision.max(revision) + 1;
+                Err(e)
+            }
+        }
+    }
+
+    /// Puts the state a change left (its `after`; removes what it deleted).
+    pub(crate) fn apply_after(&mut self, change: &Change, by: &str) {
+        match change {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => self.put_raw((**after).clone()),
+            Change::Delete { before, .. } => {
+                self.remove_raw(before.id);
+            }
+            Change::Env { after, .. } => self.replace_env(**after),
+            Change::Pose { pose, .. } => self.apply_pose(pose, by),
+        }
+    }
+
+    /// Puts back the state before a change (needs its `before`).
+    fn apply_before(&mut self, change: &Change) {
+        match change {
+            Change::Spawn { after, .. } => {
+                self.remove_raw(after.id);
+            }
+            Change::Set { before: Some(before), .. } | Change::Delete { before, .. } => self.put_raw((**before).clone()),
+            Change::Set { before: None, after, .. } => {
+                debug_assert!(false, "rollback over an after-only change of entity {}", after.id);
+            }
+            Change::Pose { pose, .. } => {
+                debug_assert!(false, "rollback over a pose of entity {}", pose.id);
+            }
+            Change::Env { before, .. } => self.replace_env(**before),
+        }
+    }
+
+    /// Puts `e` into the world exactly as given, inserting it or replacing the entity with its id
+    /// (re-indexed, world transforms refreshed for its subtree). No checks: the journal uses it to
+    /// replay and undo states the world held before. Recorded like any change.
+    pub(crate) fn put_raw(&mut self, mut e: Entity) {
+        e.created_by = self.intern(&e.created_by);
+        e.modified_by = self.intern(&e.modified_by);
+        let id = e.id;
+        let recording = self.recording;
+        let old = self.entities.get(&id);
+        let existed = old.is_some();
+        // Same parent and local transform: its world transform (and its subtree's) stand as they
+        // are. Recomputing a big subtree for a colour change is what made long batches slow.
+        let unmoved = old.filter(|o| {
+            let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            o.parent == e.parent
+                && bits(o.position) == bits(e.position)
+                && bits(o.rotation_deg) == bits(e.rotation_deg)
+                && bits(o.scale) == bits(e.scale)
+        });
+        if let Some(o) = unmoved {
+            e.world = o.world;
+        }
+        let unmoved = unmoved.is_some();
+        let before = match (recording, old) {
+            (Recording::Full, Some(o)) => Some(Box::new(o.clone())),
+            _ => None,
+        };
+        let prev_path = (recording == Recording::Full && existed).then(|| self.path_of(id));
+        if existed {
+            self.touch(id);
+            self.unlink_exact(id);
+        }
+        self.link(e);
+        if !unmoved {
+            self.refresh(id);
+        }
+        self.touch(id);
+        self.next_id = self.next_id.max(id);
+        self.revision += 1;
+        if recording == Recording::Snapshot {
+            let mark = if existed { Dirty::Changed } else { Dirty::Spawned };
+            let slot = self.dirty.entry(id).or_insert(mark);
+            if *slot == Dirty::Pose {
+                *slot = mark;
+            }
+        }
+        if recording == Recording::Full {
+            let path = self.path_of(id);
+            let after = Box::new(self.entities[&id].clone());
+            self.changes.push(match prev_path {
+                None => Change::Spawn { path, after },
+                Some(prev) => {
+                    let prev_path = (prev != path).then_some(prev);
+                    Change::Set { path, prev_path, before, after }
+                }
+            });
+        }
+    }
+
+    /// Removes one entity (its children, if any, are left in place: callers remove subtrees
+    /// children first). Recorded like any change.
+    pub(crate) fn remove_raw(&mut self, id: u64) -> Option<Entity> {
+        let path = (self.recording != Recording::Off && self.entities.contains_key(&id)).then(|| self.path_of(id));
+        self.touch_removal(id);
+        let e = self.unlink_exact(id)?;
+        self.revision += 1;
+        if let Some(path) = path {
+            self.record_removal(path, &e);
+        }
+        Some(e)
+    }
+
+    /// Replaces the whole environment. Recorded like any change.
+    pub(crate) fn replace_env(&mut self, env: Env) {
+        let before = self.env;
+        self.env = env;
+        self.revision += 1;
+        self.record_env(before);
+    }
+
+    /// Replays a [`Change::Pose`]: the entity takes the pose, attributed to `by`. Unknown ids
+    /// are ignored (the change's entity was replayed away).
+    pub(crate) fn apply_pose(&mut self, pose: &Pose, by: &str) {
+        let by = self.intern(by);
+        let Some(e) = self.entities.get_mut(&pose.id) else { return };
+        pose.apply_to(e);
+        e.modified_by = by;
+        self.refresh(pose.id);
+        self.touch(pose.id);
+        self.revision += 1;
+    }
+
+    /// Restores the id counter as a replayed change left it (never below an existing id).
+    pub(crate) fn replay_next_id(&mut self, next_id: u64) {
+        self.set_next_id(next_id);
+    }
+
+    /// Like [`World::unlink`], but only drops index entries that still point at `id` (a replayed
+    /// rename may already have given its old name to another entity).
+    fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
+        let e = self.entities.remove(&id)?;
+        let key = (e.parent.unwrap_or(ROOT), e.name.clone());
+        if self.children.get(&key) == Some(&id) {
+            self.children.remove(&key);
+        }
+        self.names.remove(&(e.name.clone(), id));
+        Some(e)
+    }
+
+    /// Whether [`World::put_raw`] may put `e` back where it was: its parent exists and isn't
+    /// inside it, its name is free among its siblings, and the depth limit holds.
+    pub(crate) fn check_put(&self, e: &Entity) -> Result<(), WorldError> {
+        let existing = self.entities.contains_key(&e.id);
+        if let Some(p) = e.parent {
+            if !self.entities.contains_key(&p) {
+                return Err(WorldError::new(
+                    "parent_gone",
+                    format!("'{}' can't go back under entity {p}: that parent no longer exists", e.name),
+                )
+                .with("id", e.id)
+                .with("parent", p));
+            }
+            if existing && self.is_ancestor_or_self(e.id, p) {
+                let (me, there) = (self.path_of(e.id), self.path_of(p));
+                return Err(WorldError::new("cycle", format!("{me} cannot move under {there}: that is itself or inside it"))
+                    .with("path", me)
+                    .with("parent", there));
+            }
+            let height = if existing { self.height_of(e.id) } else { 1 };
+            if self.depth_of(p) + height > MAX_DEPTH {
+                return Err(too_deep(&self.path_of(p)));
+            }
+        }
+        match self.children.get(&(e.parent.unwrap_or(ROOT), e.name.clone())) {
+            Some(&other) if other != e.id => Err(self.name_taken(&e.name, other)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ids of `id` and everything below it, children before their parents.
+    pub(crate) fn subtree_children_first(&self, id: u64) -> Vec<u64> {
+        let mut order = Vec::new();
+        let mut stack = vec![id];
+        while let Some(at) = stack.pop() {
+            if !self.entities.contains_key(&at) {
+                continue;
+            }
+            order.push(at);
+            stack.extend(self.child_range(at).map(|(_, &c)| c));
+        }
+        order.reverse();
+        order
+    }
+
+    /// Whether the entity has children.
+    pub fn has_children(&self, id: u64) -> bool {
+        self.child_range(id).next().is_some()
     }
 
     /// Matching entities in path order, paged.
@@ -1743,9 +2397,15 @@ impl World {
             h.write_f32(v);
         }
         h.write_bool(l.tonemap);
+        // Effects change what is drawn, so they are part of the state.
+        crate::effects::ShadowPatch::hash(&l.shadow, &mut h);
+        crate::effects::BloomPatch::hash(&l.bloom, &mut h);
+        h.write_bool(l.fxaa);
+        crate::effects::SkyPatch::hash(&l.sky, &mut h);
+        crate::effects::FogPatch::hash(&l.fog, &mut h);
         h.write_u64(self.entities.len() as u64);
         for e in self.entities.values() {
-            e.hash_into(&mut h);
+            h.write_u64(e.content_hash());
         }
         h.finish()
     }
@@ -1903,6 +2563,64 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-5
+    }
+
+    /// Reviewer finding: a clone carried its cached content hash, so a copy changed through its
+    /// public fields (or a replay check) could report the original's hash.
+    #[test]
+    fn clones_hash_their_own_fields() {
+        let mut w = World::default();
+        let id = put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
+        let e = w.get(id).unwrap();
+        let original = e.content_hash();
+        let mut copy = e.clone();
+        assert_eq!(copy.content_hash(), original);
+        let mut moved = e.clone();
+        moved.position = Vec3::new(1.0, 0.0, 0.0);
+        assert_ne!(moved.content_hash(), original, "a clone is hashed afresh");
+        copy.version += 7;
+        assert_eq!(copy.content_hash(), original, "versions aren't content");
+    }
+
+    /// Snapshot recording (game ticks): one after-only change per entity, deletes of entities
+    /// that existed, nothing for spawn-then-delete; replaying them rebuilds the world.
+    #[test]
+    fn snapshot_recording_keeps_one_change_per_entity() {
+        let mut w = World::default();
+        let keep = put(&mut w, Shape::Group, "keep", None, Vec3::ZERO);
+        put(&mut w, Shape::Cube, "kid", Some("/keep"), Vec3::ZERO);
+        let doomed = put(&mut w, Shape::Cube, "doomed", None, Vec3::ZERO);
+        let base = w.clone();
+        w.set_recording(Recording::Snapshot);
+        for x in 0..5 {
+            w.update(&EntityKey::Id(keep), UpdateSpec { position: Some(Vec3::new(x as f32, 0.0, 0.0)), ..Default::default() }, "g")
+                .unwrap();
+        }
+        let tmp = put(&mut w, Shape::Sphere, "tmp", None, Vec3::ZERO);
+        w.delete(&EntityKey::Id(tmp), None).unwrap();
+        put(&mut w, Shape::Sphere, "new", Some("/keep"), Vec3::ZERO);
+        w.delete(&EntityKey::Id(doomed), None).unwrap();
+        w.set_env(&EnvPatch { exposure: Some(3.0), ..Default::default() }).unwrap();
+        w.set_env(&EnvPatch { exposure: Some(4.0), ..Default::default() }).unwrap();
+        assert!(w.pending_changes().is_empty(), "nothing copied while the tick runs");
+        let changes = w.take_changes();
+        let ops: Vec<&str> = changes.iter().map(Change::op).collect();
+        assert_eq!(ops, ["set", "spawn", "delete", "env"]);
+        assert!(matches!(&changes[0], Change::Pose { .. }), "a moved entity is recorded as a pose, not copied");
+        let mut replayed = base;
+        for c in &changes {
+            match c {
+                Change::Spawn { after, .. } | Change::Set { after, .. } => replayed.put_raw((**after).clone()),
+                Change::Delete { before, .. } => {
+                    replayed.remove_raw(before.id);
+                }
+                Change::Env { after, .. } => replayed.replace_env(**after),
+                Change::Pose { pose, .. } => replayed.apply_pose(pose, "g"),
+            }
+        }
+        replayed.replay_next_id(w.next_id());
+        assert_eq!(replayed.state_hash(), w.state_hash());
+        assert!(w.take_changes().is_empty());
     }
 
     #[test]

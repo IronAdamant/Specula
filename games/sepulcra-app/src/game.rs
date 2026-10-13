@@ -18,10 +18,12 @@ use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Outcome, Rejection, State, TICK_HZ};
 use specula::game::{Ctx, Frame, Game};
+use specula::effects::{BloomPatch, FogPatch, ShadowPatch, SkyPatch};
 use specula::world::{EnvPatch, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -66,6 +68,25 @@ pub struct SepulcraGame {
     label_for: Option<Option<u8>>,
     /// Recent messages with their tick, for agents (`play_state`).
     pub(crate) log: VecDeque<(u32, String)>,
+}
+
+/// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
+/// the scene with its cached entity ids, and what the player sees.
+struct Checkpoint {
+    state: State,
+    journal: Journal,
+    autoplay: Option<(String, Player)>,
+    scene: Option<Scene>,
+    selected: Option<u8>,
+    paused: bool,
+    speed: u32,
+    events: Vec<Event>,
+    pending: Vec<Event>,
+    now: f32,
+    pres_ticks: u64,
+    message_until: f32,
+    hud: Hud,
+    log: VecDeque<(u32, String)>,
 }
 
 impl SepulcraGame {
@@ -372,6 +393,25 @@ pub fn night(world: &mut World) {
         exposure: Some(1.1),
         tonemap: Some(true),
         background: Some(palette::SKY),
+        // The moon casts one fitted shadow map (cheapest on the iGPU for this top-down view).
+        shadow: Some(ShadowPatch { enabled: Some(true), distance: Some(120.0), softness: Some(1.5), ..Default::default() }),
+        // Runes, eyes and fire glow; nothing else is bright enough to bloom.
+        bloom: Some(BloomPatch { enabled: Some(true), threshold: Some(1.0), intensity: Some(0.6), ..Default::default() }),
+        fxaa: Some(true),
+        // A moonlit gradient with the moon's disc in the light's direction; below the horizon the
+        // void stays near-black so the slab floats.
+        sky: Some(SkyPatch { enabled: Some(true), ground: Some(palette::VOID), ..Default::default() }),
+        // The slab floats over mist: thick below the cliffs, almost none on the top face. The mist
+        // is darker than the moonlit stone so the slab's silhouette stays crisp.
+        fog: Some(FogPatch {
+            enabled: Some(true),
+            color: Some(palette::DEEP_MIST),
+            density: Some(0.08),
+            falloff: Some(0.35),
+            height: Some(-14.0),
+            sun_scatter: Some(0.15),
+            ..Default::default()
+        }),
     };
     if let Err(e) = world.set_env(&patch) {
         eprintln!("sepulcra: lighting: {e}");
@@ -483,5 +523,47 @@ impl Game for SepulcraGame {
 
     fn status(&self) -> Json {
         self.status_json()
+    }
+
+    fn checkpoint(&self) -> Option<Box<dyn Any>> {
+        Some(Box::new(Checkpoint {
+            state: self.state.clone(),
+            journal: self.journal.clone(),
+            autoplay: self.autoplay.clone(),
+            scene: self.scene.clone(),
+            selected: self.selected,
+            paused: self.paused,
+            speed: self.speed,
+            events: self.events.clone(),
+            pending: self.pending.clone(),
+            now: self.now,
+            pres_ticks: self.pres_ticks,
+            message_until: self.message_until,
+            hud: self.hud.clone(),
+            log: self.log.clone(),
+        }))
+    }
+
+    fn restore(&mut self, checkpoint: Box<dyn Any>) {
+        let Ok(c) = checkpoint.downcast::<Checkpoint>() else { return };
+        let c = *c;
+        self.state = c.state;
+        self.journal = c.journal;
+        self.autoplay = c.autoplay;
+        self.scene = c.scene;
+        self.selected = c.selected;
+        self.paused = c.paused;
+        self.speed = c.speed;
+        self.events = c.events;
+        self.pending = c.pending;
+        self.now = c.now;
+        self.pres_ticks = c.pres_ticks;
+        self.message_until = c.message_until;
+        self.hud = c.hud;
+        self.log = c.log;
+        // Presentation caches are rebuilt on the next frame.
+        self.shown_hud = None;
+        self.hover_key = None;
+        self.label_for = None;
     }
 }

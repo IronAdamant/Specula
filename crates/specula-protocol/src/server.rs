@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -26,6 +27,10 @@ const LINGER: Duration = Duration::from_secs(2);
 const LINGER_STEP: Duration = Duration::from_millis(250);
 /// Concurrent connections beyond this are answered 503 and closed.
 const MAX_CONNECTIONS: usize = 256;
+/// Rejected connections waiting for their 503 (beyond this they are closed outright).
+const REJECT_QUEUE: usize = 64;
+/// How long a rejected connection's close lingers while the client finishes sending.
+const REJECT_LINGER: Duration = Duration::from_millis(500);
 
 pub(crate) struct Shared {
     pub state: State,
@@ -65,6 +70,18 @@ pub(crate) fn stop(shared: &Shared, addr: SocketAddr, accept: JoinHandle<()>) {
 fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     let mut workers: Vec<JoinHandle<()>> = Vec::new();
     let mut next_id: u64 = 0;
+    // Over the limit, connections get their 503 on a separate thread: answering properly means
+    // reading what the client already sent (or closing resets the connection and the client sees
+    // an error instead of the 503), and that must not hold up accepting.
+    let (reject, rejected) = mpsc::sync_channel::<TcpStream>(REJECT_QUEUE);
+    let rejecter = thread::Builder::new()
+        .name("specula-mcp-reject".into())
+        .spawn({
+            let shared = Arc::clone(&shared);
+            // Shutting down: queued connections are just closed.
+            move || rejected.into_iter().for_each(|stream| answer_busy(&shared.stopping, stream))
+        })
+        .ok();
     for incoming in listener.incoming() {
         if shared.stopping.load(Ordering::SeqCst) {
             break;
@@ -80,8 +97,10 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
         };
         workers.retain(|h| !h.is_finished());
         if workers.len() >= MAX_CONNECTIONS {
-            let resp = mcp::error_response(503, -32000, "Service Unavailable: too many connections");
-            let _ = (&stream).write_all(&resp.to_bytes(false));
+            if let Err(TrySendError::Full(stream) | TrySendError::Disconnected(stream)) = reject.try_send(stream) {
+                // Swamped: answer without lingering.
+                let _ = (&stream).write_all(&busy_response().to_bytes(false));
+            }
             continue;
         }
         let Ok(handle) = stream.try_clone() else { continue };
@@ -101,6 +120,10 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
             }
         }
     }
+    drop(reject);
+    if let Some(r) = rejecter {
+        let _ = r.join();
+    }
     // Stopping: unblock every connection thread, then wait for them.
     let open: Vec<TcpStream> = shared.conns().drain().map(|(_, s)| s).collect();
     for s in open {
@@ -109,6 +132,26 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     for h in workers {
         let _ = h.join();
     }
+}
+
+fn busy_response() -> Response {
+    mcp::error_response(503, -32000, "Service Unavailable: too many connections; retry shortly").header("Retry-After", "1")
+}
+
+/// Answers a connection over the limit with 503, then closes it gently (see [`send_http_error`]).
+fn answer_busy(stopping: &AtomicBool, stream: TcpStream) {
+    if stopping.load(Ordering::SeqCst) {
+        return;
+    }
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    // Give the request a moment to arrive, so the response follows it rather than racing it.
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let mut head = [0u8; 16 * 1024];
+    let _ = (&stream).read(&mut head);
+    if !send(&stream, &busy_response(), false) {
+        return;
+    }
+    linger(&stream, REJECT_LINGER, Some(stopping));
 }
 
 /// Deregisters a connection when its thread ends, even by panic.
@@ -195,19 +238,26 @@ fn send(mut stream: &TcpStream, response: &Response, keep_alive: bool) -> bool {
 /// The close "lingers": after the response we half-close and discard what the client is still
 /// sending (e.g. the rest of an oversized body) for a moment. Closing a socket with unread input
 /// makes the OS send RST, which can destroy the response before the client reads it.
-fn send_http_error(mut stream: &TcpStream, e: http::HttpError) {
+fn send_http_error(stream: &TcpStream, e: http::HttpError) {
     let resp = mcp::error_response(e.status, -32000, format!("{}: {}", http::reason(e.status), e.message));
     if !send(stream, &resp, false) {
         return;
     }
+    linger(stream, LINGER, None);
+}
+
+/// Half-closes `stream` and discards what the client still sends for up to `how_long`, so the
+/// final close doesn't reset the connection before the client has read the response.
+fn linger(mut stream: &TcpStream, how_long: Duration, stopping: Option<&AtomicBool>) {
     let _ = stream.shutdown(Shutdown::Write);
     let _ = stream.set_read_timeout(Some(LINGER_STEP));
-    let deadline = Instant::now() + LINGER;
+    let deadline = Instant::now() + how_long;
     let mut sink = [0u8; 16 * 1024];
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !stopping.is_some_and(|s| s.load(Ordering::SeqCst)) {
         match stream.read(&mut sink) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+            Ok(0) => break,
+            Err(e) if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => break,
+            _ => {}
         }
     }
 }

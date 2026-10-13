@@ -3,34 +3,24 @@
 // Recompile by hand (no build scripts):
 //   glslc -O --target-env=vulkan1.3 mesh.frag -o mesh.frag.spv
 //   spirv-val --target-env vulkan1.3 mesh.frag.spv
-#extension GL_EXT_buffer_reference : require
 
-// Per-frame data; must match `FrameData` in src/render.rs (and mesh.vert).
-struct PointLight {
-    vec4 pos_range; // xyz world position, w range (m)
-    vec4 color;     // linear RGB x intensity
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Frame {
-    mat4 view_proj;
-    vec4 camera_time; // xyz camera, w time (s)
-    vec4 sun_dir;     // xyz towards the sun
-    vec4 sun_color;   // linear RGB x intensity
-    vec4 ambient;     // linear RGB x intensity, w exposure
-    vec4 sky;         // linear clear colour, w tone mapping on
-    vec4 viewport;    // width, height, light count
-    PointLight lights[16];
-};
+#include "frame.glsl"
 
-// Per-draw records; must match `DrawRecord` in src/render.rs (and mesh.vert).
-struct Draw {
-    mat4 model;  // object -> world
-    vec4 color;  // linear RGB, a opacity
-    vec4 color2; // linear RGB, a seed
-    vec4 params; // emissive, metallic, roughness, specular
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
-    Draw items[];
-};
+// Features (src/render.rs FEAT_*), specialized per pipeline: a pipeline without a feature runs
+// exactly the code it ran before the feature existed.
+layout(constant_id = 0) const uint FEATURES = 0u;
+const bool SHADOWS = (FEATURES & 1u) != 0u;
+const bool FOG = (FEATURES & 2u) != 0u;
+const bool HDR = (FEATURES & 4u) != 0u;
+// The opaque pipeline only ever draws Lit: leaving the other materials out keeps its register
+// use (and so the GPU's occupancy) that of the Lit path alone.
+const bool OPAQUE = (FEATURES & 8u) != 0u;
+// The blended pipeline never draws Lit: leaving the Lit path out means nothing there reads the
+// vertex colour (see `tint`).
+const bool BLENDED = (FEATURES & 16u) != 0u;
+
+// The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
+layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 
 // Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
@@ -44,6 +34,7 @@ layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec3 v_local;
 layout(location = 3) flat in uint v_draw;
+layout(location = 4) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -61,6 +52,36 @@ const float PI = 3.14159265;
 // ---------------------------------------------------------------------------------------------
 
 vec3 camera_pos() { return pc.frame.camera_time.xyz; }
+
+// Height fog between this fragment and the camera over premultiplied light `c` of opacity
+// `alpha`: the light dims and the fog's own colour shows through in proportion.
+vec3 fogged(vec3 c, float alpha) {
+    vec3 d = v_world - camera_pos();
+    float dist = length(d);
+    vec3 dir = d / max(dist, 1e-6);
+    float t = fog_transmittance(pc.frame, dir, dist, false);
+    return c * t + fog_radiance(pc.frame, dir) * ((1.0 - t) * alpha);
+}
+
+// How much of a blended layer's darkening survives the fog in front of it.
+float fog_keep() {
+    vec3 d = v_world - camera_pos();
+    float dist = length(d);
+    return fog_transmittance(pc.frame, d / max(dist, 1e-6), dist, false);
+}
+
+// The vertex colour, snapped to exactly 1 near white so interpolation never alters an untinted draw.
+// Read by the Lit path only, and the blended pipeline is specialized (BLENDED) so it contains no
+// Lit path: reading v_tint in the blended pipeline hangs the Intel Windows driver 101.5187
+// (RaptorLake iGPU) - VK_ERROR_DEVICE_LOST after 60-100 frames. Reading other varyings there does
+// not; sync and GPU-assisted validation are clean; likely an Intel compiler bug.
+// Reproducer: in shade_glass use `DRAW.color.a * tint().a` for `body` and
+// `DRAW.color.rgb * tint().rgb` in `body_light`, and `DRAW.color.a * tint().a` for the blob
+// shadow's alpha; rebuild the shaders (shaders/build.sh), then
+//   cargo run --release -p specula-gpu --example bench -- --adapter integrated --frames 120 --scenes mixed_1000
+// fails with VK_ERROR_DEVICE_LOST (it runs 1000 frames without the change). Revisit with newer
+// drivers.
+vec4 tint() { return mix(v_tint, vec4(1.0), greaterThan(v_tint, vec4(0.99999))); }
 
 // Integer hashes (PCG): bit-exact on every GPU, so a seed gives the same lamp everywhere.
 uint pcg(uint v) {
@@ -95,9 +116,12 @@ vec3 aces(vec3 x) {
 }
 
 // Linear scene light -> value written to the sRGB target. Without tone mapping this is the M0
-// path (exposure 1, clamp on write).
+// path (exposure 1, clamp on write). HDR targets get exposed linear light; post tone maps it.
 vec3 display(vec3 c) {
     c *= pc.frame.ambient.w;
+    if (HDR) {
+        return clamp(c, vec3(0.0), vec3(60000.0));
+    }
     if (pc.frame.sky.w > 0.5) {
         c = aces(c);
         // Dither by about one sRGB step so dark gradients don't band.
@@ -128,12 +152,50 @@ float ggx(vec3 n, vec3 v, vec3 l, float rough) {
     return a2 / (PI * den * den) * 0.25 / ((ndv * (1.0 - k) + k) * (ndl * (1.0 - k) + k));
 }
 
+// A 12-tap Poisson disc (unit radius).
+const vec2 POISSON[12] = vec2[](
+    vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
+    vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+    vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
+
+// How much sun reaches p (1 = fully lit): the nearest cascade whose square holds p (with room
+// for the filter), sampled with a Poisson disc of hardware-filtered comparisons. The lookup
+// point moves along the normal by a few texels so surfaces don't shadow themselves.
+float sun_shadow(vec3 p, vec3 n) {
+    float depth = dot(pc.frame.shadow_axis.xyz, p) + pc.frame.shadow_axis.w;
+    float fade = smoothstep(pc.frame.shadow_fade.x, pc.frame.shadow_fade.y, depth);
+    if (fade >= 1.0) {
+        return 1.0;
+    }
+    float size = float(textureSize(shadow_map, 0).x);
+    int count = int(pc.frame.shadow_params.x);
+    for (int k = 0; k < count; k++) {
+        float texel = pc.frame.shadow_texel[k];
+        // The same penumbra width in metres in every cascade (at least one texel).
+        float radius = max(pc.frame.shadow_params.y * pc.frame.shadow_texel.x / texel, 1.0);
+        vec4 s = pc.frame.shadow_mats[k] * vec4(p + n * (texel * pc.frame.shadow_params.z), 1.0);
+        vec2 uv = s.xy * 0.5 + 0.5;
+        float margin = (radius + 1.5) / size;
+        if (all(greaterThan(uv, vec2(margin))) && all(lessThan(uv, vec2(1.0 - margin))) && s.z <= 1.0) {
+            float lit = 0.0;
+            for (int i = 0; i < 12; i++) {
+                lit += texture(shadow_map, vec4(uv + POISSON[i] * (radius / size), float(k), s.z));
+            }
+            return mix(lit / 12.0, 1.0, fade);
+        }
+    }
+    return 1.0;
+}
+
 // Diffuse irradiance (ambient + sun + point lights) and specular radiance at a surface.
 void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec3 specular) {
     diffuse = pc.frame.ambient.rgb;
     specular = vec3(0.0);
     vec3 l = pc.frame.sun_dir.xyz;
     float ndl = max(dot(n, l), 0.0);
+    if (SHADOWS && ndl > 0.0) {
+        ndl *= sun_shadow(p, n);
+    }
     diffuse += pc.frame.sun_color.rgb * ndl;
     specular += pc.frame.sun_color.rgb * ndl * ggx(n, v, l, rough);
     int count = int(pc.frame.viewport.z);
@@ -156,7 +218,7 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec
 // ---------------------------------------------------------------------------------------------
 
 vec4 shade_lit() {
-    vec3 albedo = DRAW.color.rgb;
+    vec3 albedo = DRAW.color.rgb * tint().rgb;
     float emissive = DRAW.params.x;
     float metallic = DRAW.params.y;
     float rough = clamp(DRAW.params.z, 0.02, 1.0);
@@ -176,6 +238,9 @@ vec4 shade_lit() {
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
     }
     c += albedo * emissive;
+    if (FOG) {
+        c = fogged(c, 1.0);
+    }
     return vec4(display(c), 1.0);
 }
 
@@ -205,6 +270,9 @@ vec4 shade_glass() {
     vec3 body_light = DRAW.color.rgb * (0.5 * diffuse + DRAW.params.x);
     float alpha = path + fresnel * (1.0 - path);
     vec3 c = body_light * path * (1.0 - fresnel) + reflected * fresnel;
+    if (FOG) {
+        c = fogged(c, alpha);
+    }
     return vec4(display(c), alpha);
 }
 
@@ -215,6 +283,9 @@ vec4 shade_glass() {
 vec4 shade_blob_shadow() {
     float r = length(v_local.xz) * 2.0;
     float a = clamp(DRAW.color.a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
+    if (FOG) {
+        a *= fog_keep();
+    }
     return vec4(0.0, 0.0, 0.0, a);
 }
 
@@ -351,6 +422,9 @@ vec4 shade_lava_lamp() {
         }
     }
     if (!hit) {
+        if (FOG) {
+            halo = fogged(halo, 0.0);
+        }
         return vec4(display(halo), 0.0);
     }
 
@@ -419,17 +493,22 @@ vec4 shade_lava_lamp() {
     inside *= mix(0.55, 1.0, smoothstep(0.0, 0.35, cos_i));
     vec3 c = reflected * fresnel + inside * (1.0 - fresnel) + halo;
     float alpha = fresnel + (1.0 - fresnel) * (1.0 - (transmit.r + transmit.g + transmit.b) / 3.0);
+    if (FOG) {
+        c = fogged(c, alpha);
+    }
     return vec4(display(c), alpha);
 }
 
 void main() {
-    if (pc.material == MAT_GLASS) {
+    if (OPAQUE) {
+        out_color = shade_lit();
+    } else if (pc.material == MAT_GLASS) {
         out_color = shade_glass();
     } else if (pc.material == MAT_BLOB_SHADOW) {
         out_color = shade_blob_shadow();
-    } else if (pc.material == MAT_LAVA_LAMP) {
+    } else if (BLENDED || pc.material == MAT_LAVA_LAMP) {
         out_color = shade_lava_lamp();
     } else {
-        out_color = shade_lit();
+        out_color = shade_lit(); // only in an unspecialized pipeline (none is built)
     }
 }
