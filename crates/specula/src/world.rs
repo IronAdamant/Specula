@@ -13,6 +13,17 @@
 //! - **Components.** Besides the look, entities carry `tags`, free-form `props` (game data until
 //!   game modules define real components) and the reserved physics components `collider` and
 //!   `body` (F4): stored, validated and saved, not simulated yet.
+//! - **Models.** [`Shape::Model`] entities name a recipe file ([`ModelSpec`]); the world asks its
+//!   [`ModelSource`] (the engine's model library) to build it on spawn and on change, so broken
+//!   recipes are refused up front, and keeps the built model's handle and bounds on the entity
+//!   (derived: not saved or hashed).
+//! - **Presentation.** `visible: false` hides an entity and its subtree (not drawn, not a sight
+//!   subject, not in [`World::bounds`]); [`Layer::Ui`] marks a game's interface, which captures
+//!   leave out. **Transient** entities ([`Entity::transient`]) are game presentation derived from
+//!   the game's own state: they take ids from [`TRANSIENT_ID_BASE`] up, are never saved,
+//!   journaled or hashed, and never move the revision (so they never trigger an autosave). They
+//!   are recorded while a command runs, so a rejected command still rolls them back, and nothing
+//!   persistent may sit below one.
 //!
 //! Game code running in-process calls [`World::spawn`], [`World::update`], [`World::delete`],
 //! [`World::get`] and [`World::query`] directly; the MCP tools are thin parsers over the same calls.
@@ -982,6 +993,12 @@ impl Entity {
 
     pub fn world_position(&self) -> Vec3 {
         self.world.transform_point(Vec3::ZERO)
+    }
+
+    /// Draws with a mesh of its own making (a lathe's profile, a model's build) that the engine
+    /// uploads and frees.
+    pub fn owns_mesh(&self) -> bool {
+        matches!(self.shape, Shape::Lathe | Shape::Model)
     }
 
     /// Drawn: visible, and every ancestor visible.
@@ -2342,7 +2359,9 @@ impl World {
         let removed: Vec<Entity> = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
         // A transient root has only transient descendants.
         self.bump(removed[0].transient);
-        self.mesh_epoch += 1;
+        if removed.iter().any(Entity::owns_mesh) {
+            self.mesh_epoch += 1;
+        }
         // Children first, so undoing the changes in reverse puts parents back before children.
         for (e, p) in removed.iter().zip(paths).rev() {
             self.record_removal(p, e);
@@ -2699,6 +2718,7 @@ impl World {
             }
         }
         let transient = e.transient;
+        let remeshed = e.owns_mesh() || old.is_some_and(Entity::owns_mesh);
         let unmoved = unmoved.is_some();
         let before = match (recording, old) {
             (Recording::Full, Some(o)) => Some(Box::new(o.clone())),
@@ -2720,7 +2740,9 @@ impl World {
             self.next_id = self.next_id.max(id);
         }
         self.bump(transient);
-        self.mesh_epoch += 1;
+        if remeshed {
+            self.mesh_epoch += 1;
+        }
         if recording == Recording::Snapshot && !transient {
             let mark = if existed { Dirty::Changed } else { Dirty::Spawned };
             let slot = self.dirty.entry(id).or_insert(mark);
@@ -2748,7 +2770,9 @@ impl World {
         self.touch_removal(id);
         let e = self.unlink_exact(id)?;
         self.bump(e.transient);
-        self.mesh_epoch += 1;
+        if e.owns_mesh() {
+            self.mesh_epoch += 1;
+        }
         if let Some(path) = path {
             self.record_removal(path, &e);
         }
