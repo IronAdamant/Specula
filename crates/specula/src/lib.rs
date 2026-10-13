@@ -318,6 +318,7 @@ impl Engine {
             while let Ok(request) = requests.try_recv() {
                 self.handle(request, server);
             }
+            self.autosave_if_due();
             let next = format!("Specula — {} entities — {} agents", self.world.len(), server.sessions().len());
             if next != title {
                 ui.set_title(&next);
@@ -335,7 +336,6 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            self.autosave_if_due();
             for e in self.sync_lathes() {
                 eprintln!("specula: {e}");
             }
