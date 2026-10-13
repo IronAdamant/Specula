@@ -485,7 +485,8 @@ fn place(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize) {
                     let a = radial_angle(k, items);
                     k += 1;
                     let rm = (radius + inner) * 0.5;
-                    [centre[0] + rm * a.cos(), centre[1] + rm * a.sin()]
+                    let (s, c) = specula_core::dmath::sin_cos(a);
+                    [centre[0] + rm * c, centre[1] + rm * s]
                 } else {
                     centre
                 };

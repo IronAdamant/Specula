@@ -67,5 +67,5 @@ fn a_menu_preview_is_pinned() {
     h.frame(&mut ui, &[kd("Down")], &StateMap::new(), &view(320, 200));
     let img = render(ui.draw_list(), ui.atlas(), &[], [0.0, 0.0, 0.0, 1.0]);
     assert_eq!(hash(&img), hash(&render(ui.draw_list(), ui.atlas(), &[], [0.0, 0.0, 0.0, 1.0])));
-    assert_eq!(hash(&img), 6394361685778343501, "pinned hash changed");
+    assert_eq!(hash(&img), 2559094404734436147, "pinned hash changed");
 }

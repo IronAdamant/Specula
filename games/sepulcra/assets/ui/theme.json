@@ -150,7 +150,13 @@
       "radius": 3,
       "padding": 2
     },
-    "divider": { "fill": "#4f586680" }
+    "divider": { "fill": "#4f586680" },
+    "veil": {
+      "fill": ["#070b16e0", "#070b16c8"],
+      "radius": 14,
+      "shadow": { "offset": [0, 0], "blur": 24, "color": "#070b16a0" },
+      "padding": [14, 36]
+    }
   },
   "buttons": {
     "default": {

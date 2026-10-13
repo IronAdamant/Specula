@@ -1,6 +1,11 @@
 //! Colours: sRGB, straight alpha, `[r, g, b, a]` in `0..=1` (the same convention as
 //! `specula_text::GlyphQuad`). Parsing from `#rgb` / `#rrggbb` / `#rrggbbaa`, WCAG luminance and
 //! contrast, and "over" compositing.
+//!
+//! **Blending happens in linear light**, as on the GPU (the overlay converts sRGB inputs to
+//! linear and blends into `*_SRGB` targets). [`over`], the software preview and `ui_check` all
+//! do the same, so measured contrast is what players see. Conversions use
+//! `specula_core::dmath::pow`, so results are bit-identical on every platform.
 
 /// sRGB, straight (non-premultiplied) alpha.
 pub type Rgba = [f32; 4];
@@ -31,12 +36,26 @@ pub fn to_hex(c: Rgba) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", b[0], b[1], b[2], b[3])
 }
 
-fn srgb_to_linear(c: f32) -> f32 {
+/// sRGB-encoded channel → linear light.
+pub fn to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        specula_core::dmath::pow((c + 0.055) / 1.055, 2.4)
     }
+}
+
+/// Linear light → sRGB-encoded channel.
+pub fn to_srgb(l: f32) -> f32 {
+    if l <= 0.003_130_8 {
+        l * 12.92
+    } else {
+        1.055 * specula_core::dmath::pow(l, 1.0 / 2.4) - 0.055
+    }
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    to_linear(c)
 }
 
 /// WCAG 2 relative luminance of an opaque sRGB colour (alpha ignored).
@@ -51,15 +70,17 @@ pub fn contrast_ratio(a: Rgba, b: Rgba) -> f32 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// `top` composited over an opaque `bottom` (sRGB-space blending, as the overlay does).
+/// `top` composited over an opaque `bottom`, blended in linear light (as the GPU overlay does).
 pub fn over(top: Rgba, bottom: Rgba) -> Rgba {
     let a = top[3].clamp(0.0, 1.0);
-    [
-        top[0] * a + bottom[0] * (1.0 - a),
-        top[1] * a + bottom[1] * (1.0 - a),
-        top[2] * a + bottom[2] * (1.0 - a),
-        1.0,
-    ]
+    let ch = |t: f32, b: f32| to_srgb(to_linear(t) * a + to_linear(b) * (1.0 - a));
+    [ch(top[0], bottom[0]), ch(top[1], bottom[1]), ch(top[2], bottom[2]), 1.0]
+}
+
+/// Interpolate two sRGB colours in linear light (how GPU gradients between sRGB endpoints look).
+pub fn mix_linear(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let ch = |x: f32, y: f32| to_srgb(to_linear(x) + (to_linear(y) - to_linear(x)) * t);
+    [ch(a[0], b[0]), ch(a[1], b[1]), ch(a[2], b[2]), a[3] + (b[3] - a[3]) * t]
 }
 
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -96,8 +117,15 @@ mod tests {
     }
 
     #[test]
-    fn over_blends_by_alpha() {
+    fn over_blends_by_alpha_in_linear_light() {
         let c = over([1.0, 0.0, 0.0, 0.5], [0.0, 0.0, 1.0, 1.0]);
-        assert_eq!(c, [0.5, 0.0, 0.5, 1.0]);
+        // Half of linear 1.0 is 0.5 linear, which is 0.735 in sRGB (not 0.5).
+        assert!((c[0] - 0.7354).abs() < 1e-3 && (c[2] - 0.7354).abs() < 1e-3 && c[1] == 0.0, "{c:?}");
+        let o = over([0.2, 0.4, 0.6, 1.0], [1.0; 4]);
+        assert_eq!(&o[..3], &[0.2f32, 0.4, 0.6].map(|v| to_srgb(to_linear(v)))[..]);
+        for k in 0..=255 {
+            let v = k as f32 / 255.0;
+            assert!((to_srgb(to_linear(v)) - v).abs() < 1e-5, "{k}");
+        }
     }
 }

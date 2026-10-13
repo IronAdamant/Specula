@@ -294,6 +294,9 @@ enum Seg {
     Bound { key: Key, fmt: Fmt },
 }
 
+/// Longest rendered template text, in bytes.
+pub const MAX_TEXT: usize = 512;
+
 /// Text with `{key}` bindings (`{{` and `}}` are literal braces).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Template {
@@ -370,7 +373,21 @@ impl Template {
     }
 
     /// Render into `out` (cleared first). Missing keys print as `{key}` so they show in previews.
+    /// Output is capped at [`MAX_TEXT`] bytes (ending in `…`), so hostile state can't make a
+    /// label arbitrarily expensive.
     pub fn render(&self, scope: &Scope<'_>, out: &mut String) {
+        self.render_uncapped(scope, out);
+        if out.len() > MAX_TEXT {
+            let mut cut = MAX_TEXT;
+            while !out.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.truncate(cut);
+            out.push('…');
+        }
+    }
+
+    fn render_uncapped(&self, scope: &Scope<'_>, out: &mut String) {
         out.clear();
         for s in &self.segs {
             match s {
@@ -430,6 +447,9 @@ fn write_value(v: &Value, fmt: Fmt, out: &mut String) {
                     _ if n.fract() == 0.0 && n.abs() < 1e15 => {
                         let _ = write!(out, "{}", n as i64);
                     }
+                    _ if !n.is_finite() || n.abs() >= 1e15 => {
+                        let _ = write!(out, "{n:.3e}");
+                    }
                     _ => {
                         let start = out.len();
                         let _ = write!(out, "{n:.2}");
@@ -441,6 +461,9 @@ fn write_value(v: &Value, fmt: Fmt, out: &mut String) {
                         }
                     }
                 },
+                Fmt::Fixed(_) if !n.is_finite() || n.abs() >= 1e15 => {
+                    let _ = write!(out, "{n:.3e}");
+                }
                 Fmt::Fixed(d) => {
                     let _ = write!(out, "{n:.*}", usize::from(d));
                 }
@@ -490,47 +513,16 @@ pub enum Cond {
 impl Cond {
     pub fn parse(text: &str, path: &str) -> Result<Cond, UiError> {
         let err = |m: String| UiError::new(ErrorCode::BadCondition, path, m);
-        let text = text.trim();
-        if text.is_empty() {
+        let toks = tokenize(text).map_err(err)?;
+        if toks.is_empty() {
             return Err(err("empty condition".into()));
         }
-        if text.contains("||") {
-            let parts = text.split("||").map(|p| Cond::parse(p, path)).collect::<Result<Vec<_>, _>>()?;
-            return Ok(Cond::Any(parts));
+        let mut p = CondParser { toks: &toks, i: 0 };
+        let c = p.or().map_err(err)?;
+        if p.i != toks.len() {
+            return Err(err(format!("unexpected {} in \"{}\"", toks[p.i].describe(), text.trim())));
         }
-        if text.contains("&&") {
-            let parts = text.split("&&").map(|p| Cond::parse(p, path)).collect::<Result<Vec<_>, _>>()?;
-            return Ok(Cond::All(parts));
-        }
-        for (sym, op) in [("==", Op::Eq), ("!=", Op::Ne), ("<=", Op::Le), (">=", Op::Ge), ("<", Op::Lt), (">", Op::Gt)] {
-            if let Some((l, r)) = text.split_once(sym) {
-                let key = Key::parse(l.trim()).ok_or_else(|| err(format!("bad key \"{}\"", l.trim())))?;
-                let r = r.trim();
-                let lit = if let Some(q) = r.strip_prefix('\'').and_then(|q| q.strip_suffix('\'')) {
-                    Lit::Str(q.to_owned())
-                } else if r == "true" {
-                    Lit::Num(1.0)
-                } else if r == "false" {
-                    Lit::Num(0.0)
-                } else if let Ok(n) = r.parse::<f64>() {
-                    Lit::Num(n)
-                } else if !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
-                    Lit::Str(r.to_owned())
-                } else {
-                    return Err(err(format!("bad literal \"{r}\" (number, true/false, 'text' or a word)")));
-                };
-                if matches!(lit, Lit::Str(_)) && !matches!(op, Op::Eq | Op::Ne) {
-                    return Err(err(format!("text can only be compared with == or != (\"{text}\")")));
-                }
-                return Ok(Cond::Cmp { key, op, lit });
-            }
-        }
-        let (negate, name) = match text.strip_prefix('!') {
-            Some(n) => (true, n.trim()),
-            None => (false, text),
-        };
-        let key = Key::parse(name).ok_or_else(|| err(format!("bad key \"{name}\"")))?;
-        Ok(Cond::Truthy { key, negate })
+        Ok(c)
     }
 
     pub fn eval(&self, scope: &Scope<'_>) -> bool {
@@ -565,6 +557,167 @@ impl Cond {
             Cond::Truthy { key, .. } | Cond::Cmp { key, .. } => out.push(key.clone()),
             Cond::All(c) | Cond::Any(c) => c.iter().for_each(|c| c.keys(out)),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Tok {
+    /// A key or a bare word (`dust`, `item.name`, `won`).
+    Word(String),
+    Num(f64),
+    Str(String),
+    Op(Op),
+    Not,
+    And,
+    Or,
+}
+
+impl Tok {
+    fn describe(&self) -> String {
+        match self {
+            Tok::Word(w) => format!("\"{w}\""),
+            Tok::Num(n) => format!("{n}"),
+            Tok::Str(s) => format!("'{s}'"),
+            Tok::Op(_) => "an operator".into(),
+            Tok::Not => "\"!\"".into(),
+            Tok::And => "\"&&\"".into(),
+            Tok::Or => "\"||\"".into(),
+        }
+    }
+}
+
+/// Split a condition into tokens; quoted text may contain anything except `'`.
+fn tokenize(text: &str) -> Result<Vec<Tok>, String> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        let two = |x: u8| b.get(i + 1) == Some(&x);
+        match c {
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            b'\'' => {
+                let end = text[i + 1..].find('\'').ok_or_else(|| format!("unclosed quote at character {i}"))?;
+                out.push(Tok::Str(text[i + 1..i + 1 + end].to_owned()));
+                i += end + 2;
+            }
+            b'&' if two(b'&') => {
+                out.push(Tok::And);
+                i += 2;
+            }
+            b'|' if two(b'|') => {
+                out.push(Tok::Or);
+                i += 2;
+            }
+            b'=' if two(b'=') => {
+                out.push(Tok::Op(Op::Eq));
+                i += 2;
+            }
+            b'!' if two(b'=') => {
+                out.push(Tok::Op(Op::Ne));
+                i += 2;
+            }
+            b'<' | b'>' => {
+                let eq = two(b'=');
+                out.push(Tok::Op(match (c, eq) {
+                    (b'<', true) => Op::Le,
+                    (b'<', false) => Op::Lt,
+                    (_, true) => Op::Ge,
+                    _ => Op::Gt,
+                }));
+                i += 1 + usize::from(eq);
+            }
+            b'!' => {
+                out.push(Tok::Not);
+                i += 1;
+            }
+            c if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.' || c == b'+' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || matches!(b[i], b'_' | b'-' | b'.' | b'+')) {
+                    i += 1;
+                }
+                let w = &text[start..i];
+                let numeric = w.as_bytes()[0].is_ascii_digit() || (w.len() > 1 && matches!(w.as_bytes()[0], b'-' | b'+' | b'.'));
+                match w.parse::<f64>() {
+                    Ok(n) if n.is_finite() && numeric => out.push(Tok::Num(n)),
+                    Ok(_) if numeric || matches!(w.to_ascii_lowercase().as_str(), "nan" | "inf" | "infinity" | "-inf" | "+inf") => {
+                        return Err(format!("\"{w}\" is not a finite number"))
+                    }
+                    _ if numeric => return Err(format!("bad number \"{w}\"")),
+                    _ => out.push(Tok::Word(w.to_owned())),
+                }
+            }
+            _ => {
+                let ch = text[i..].chars().next().unwrap_or('?');
+                return Err(format!("unexpected '{ch}' at character {i} (operators: == != < <= > >= ! && ||)"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+struct CondParser<'t> {
+    toks: &'t [Tok],
+    i: usize,
+}
+
+impl CondParser<'_> {
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.i)
+    }
+
+    fn or(&mut self) -> Result<Cond, String> {
+        let mut parts = vec![self.and()?];
+        while self.peek() == Some(&Tok::Or) {
+            self.i += 1;
+            parts.push(self.and()?);
+        }
+        Ok(if parts.len() == 1 { parts.pop().unwrap_or(Cond::Always) } else { Cond::Any(parts) })
+    }
+
+    fn and(&mut self) -> Result<Cond, String> {
+        let mut parts = vec![self.term()?];
+        while self.peek() == Some(&Tok::And) {
+            self.i += 1;
+            parts.push(self.term()?);
+        }
+        Ok(if parts.len() == 1 { parts.pop().unwrap_or(Cond::Always) } else { Cond::All(parts) })
+    }
+
+    fn key(&mut self) -> Result<Key, String> {
+        match self.toks.get(self.i) {
+            Some(Tok::Word(w)) => {
+                self.i += 1;
+                Key::parse(w).ok_or_else(|| format!("bad key \"{w}\""))
+            }
+            Some(t) => Err(format!("expected a key, found {}", t.describe())),
+            None => Err("expected a key at the end".into()),
+        }
+    }
+
+    fn term(&mut self) -> Result<Cond, String> {
+        if self.peek() == Some(&Tok::Not) {
+            self.i += 1;
+            let key = self.key()?;
+            return Ok(Cond::Truthy { key, negate: true });
+        }
+        let key = self.key()?;
+        let Some(Tok::Op(op)) = self.peek().cloned() else { return Ok(Cond::Truthy { key, negate: false }) };
+        self.i += 1;
+        let lit = match self.toks.get(self.i) {
+            Some(Tok::Num(n)) => Lit::Num(*n),
+            Some(Tok::Str(s)) => Lit::Str(s.clone()),
+            Some(Tok::Word(w)) if w == "true" => Lit::Num(1.0),
+            Some(Tok::Word(w)) if w == "false" => Lit::Num(0.0),
+            Some(Tok::Word(w)) if w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') => Lit::Str(w.clone()),
+            Some(t) => return Err(format!("bad literal {} (number, true/false, 'text' or a word)", t.describe())),
+            None => return Err("missing a value after the comparison".into()),
+        };
+        self.i += 1;
+        if matches!(lit, Lit::Str(_)) && !matches!(op, Op::Eq | Op::Ne) {
+            return Err("text can only be compared with == or !=".into());
+        }
+        Ok(Cond::Cmp { key, op, lit })
     }
 }
 
@@ -637,8 +790,28 @@ mod tests {
     }
 
     #[test]
+    fn quoted_text_may_contain_operators() {
+        let mut s = StateMap::new();
+        s.set_str("who", "a || b");
+        let c = Cond::parse("who == 'a || b'", "c").unwrap();
+        assert!(c.eval(&Scope::new(&s)));
+        assert!(!Cond::parse("who == 'a' || who == 'b'", "c").unwrap().eval(&Scope::new(&s)));
+        assert_eq!(Cond::parse("x >= -2.5", "c").unwrap(), Cond::Cmp { key: Key::Global("x".into()), op: Op::Ge, lit: Lit::Num(-2.5) });
+    }
+
+    #[test]
+    fn huge_values_are_capped() {
+        let mut s = StateMap::new();
+        s.set_num("w", 1e300).set_str("long", &"x".repeat(5000));
+        assert_eq!(render("{w:.6}", &s), "1.000e300");
+        assert_eq!(render("{w}", &s), "1.000e300");
+        let long = render("{long}", &s);
+        assert!(long.len() <= MAX_TEXT + 3 && long.ends_with('…'));
+    }
+
+    #[test]
     fn condition_errors() {
-        for bad in ["", "dust >= ", "a b c", "name < word", "!"] {
+        for bad in ["", "dust >= ", "a b c", "name < word", "!", "x == NaN", "x > inf", "a && && b", "a ||", "x = 5", "x == 'open", "(a)"] {
             let e = Cond::parse(bad, "root.visible").unwrap_err();
             assert_eq!(e.code, ErrorCode::BadCondition, "{bad:?}");
         }

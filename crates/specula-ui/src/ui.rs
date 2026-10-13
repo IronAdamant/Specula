@@ -203,8 +203,8 @@ struct Toast {
     laid: TextLayout,
 }
 
-#[derive(Default)]
-struct PointerSt {
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PointerSt {
     pos: Option<[f32; 2]>,
     down: bool,
     press: Option<WidgetRef>,
@@ -407,6 +407,7 @@ impl Ui {
         let id = match self.screens.iter().position(|s| s.screen.name == rt.screen.name) {
             Some(i) => {
                 let visible = self.screens[i].visible;
+                self.forget_screen(i);
                 self.screens[i] = rt;
                 self.screens[i].visible = visible;
                 i
@@ -448,7 +449,45 @@ impl Ui {
     pub fn hide(&mut self, name: &str) -> Result<(), UiError> {
         let i = self.need(name)?;
         self.screens[i].visible = false;
+        // Nothing of a hidden screen is laid out, hit, pressed or hovered.
+        for c in &mut self.screens[i].comp {
+            c.visible = false;
+        }
+        self.forget_screen(i);
         self.reorder();
+        Ok(())
+    }
+
+    /// Drop every reference to widgets of screen `i` (it was reloaded or hidden): a press in
+    /// progress must not activate a different widget that now has the same index.
+    fn forget_screen(&mut self, i: usize) {
+        let of = |w: Option<WidgetRef>| w.filter(|w| w.screen != i);
+        self.pointer.press = of(self.pointer.press);
+        self.pointer.hover = of(self.pointer.hover);
+        self.pointer.dragging_list = of(self.pointer.dragging_list);
+        self.tip = of(self.tip);
+        self.events.hovered = of(self.events.hovered);
+        self.events.focused = of(self.events.focused);
+        self.pending.retain(|(w, _)| w.screen != i);
+        self.hits.retain(|h| h.w.screen != i);
+    }
+
+    /// Can input reach widget `w` now? (exists, its screen is shown, no modal screen above it)
+    pub fn reachable(&self, w: WidgetRef) -> Result<(), UiError> {
+        let Some(sr) = self.screens.get(w.screen) else {
+            return Err(UiError::new(ErrorCode::UnknownWidget, "", format!("no screen #{}", w.screen)));
+        };
+        if w.node as usize >= sr.screen.nodes.len() {
+            return Err(UiError::new(ErrorCode::UnknownWidget, "", format!("screen \"{}\" has no widget #{}", sr.screen.name, w.node)));
+        }
+        if !sr.visible {
+            return Err(UiError::new(ErrorCode::NotVisible, "", format!("screen \"{}\" is hidden", sr.screen.name)));
+        }
+        let pos = self.order.iter().position(|&s| s == w.screen).unwrap_or(0);
+        if let Some(m) = self.order[pos + 1..].iter().find(|&&s| self.screens[s].screen.modal) {
+            let name = &self.screens[*m].screen.name;
+            return Err(UiError::new(ErrorCode::ModalBlocks, "", format!("modal screen \"{name}\" is open above \"{}\"", sr.screen.name)));
+        }
         Ok(())
     }
 
@@ -489,14 +528,21 @@ impl Ui {
         c.visible.then_some(c.rect)
     }
 
-    /// Focus a widget (agents, tests, or game logic). Applied at the next frame.
-    pub fn focus(&mut self, w: WidgetRef) {
+    /// Focus a widget (agents, tests, or game logic), applied at the next frame. Refused with a
+    /// structured error (`unknown_widget`, `not_visible`, `modal_blocks` naming the modal) when
+    /// input couldn't reach it, so agents can't do what a player couldn't.
+    pub fn focus(&mut self, w: WidgetRef) -> Result<(), UiError> {
+        self.reachable(w)?;
         self.pending.push((w, false));
+        Ok(())
     }
 
-    /// Activate a widget as if clicked (agents and headless tests). Applied at the next frame.
-    pub fn activate(&mut self, w: WidgetRef) {
+    /// Activate a widget as if clicked (agents and headless tests), at the next frame. Refused
+    /// like [`Ui::focus`].
+    pub fn activate(&mut self, w: WidgetRef) -> Result<(), UiError> {
+        self.reachable(w)?;
         self.pending.push((w, true));
+        Ok(())
     }
 
     /// Show a toast message.
@@ -773,7 +819,7 @@ impl Ui {
         // ---- agent requests ----
         let pending = std::mem::take(&mut self.pending);
         for &(w, activate) in &pending {
-            if w.screen < self.screens.len() && (w.node as usize) < self.screens[w.screen].screen.nodes.len() {
+            if self.reachable(w).is_ok() {
                 if self.screens[w.screen].screen.nodes[w.node as usize].kind.interactive() {
                     self.screens[w.screen].focus = Some(w.node);
                     relayout |= 1u64 << w.screen.min(63);
@@ -791,8 +837,16 @@ impl Ui {
         let touch_down = !input.touches().is_empty();
         let mouse_down = input.source_held(Source::Mouse(MouseButton::Left));
         let down = touch_down || mouse_down;
-        let pressed = (down && !self.pointer.down) || input.source_pressed(Source::Mouse(MouseButton::Left));
-        let released = !down && self.pointer.down;
+        // A touch that went down and up within one frame shows only as the tap gesture.
+        let quick_tap = !down && !self.pointer.down && input.source_pressed(Source::Tap);
+        let pressed = (down && !self.pointer.down) || input.source_pressed(Source::Mouse(MouseButton::Left)) || quick_tap;
+        let released = (!down && self.pointer.down) || quick_tap;
+        // An OS-cancelled touch abandons the press: never an activation.
+        let cancelled = input.touch_cancelled();
+        // A finger that isn't touching doesn't hover: a touch pointer only counts while in
+        // contact (and in the frame it lifts).
+        let is_touch = input.pointer().is_some_and(|p| p.kind != specula_platform::PointerKind::Mouse && p.kind != specula_platform::PointerKind::Pen);
+        let pos = if is_touch && !down && !released && !cancelled { None } else { pos };
         let moved = pos.is_some() && pos != self.pointer.pos;
         self.pointer.pos = pos;
         let in_scope = |order: &[usize], s: usize| order[lowest..].contains(&s);
@@ -800,8 +854,10 @@ impl Ui {
         let hot = pos.and_then(|p| {
             self.hits.iter().rev().find(|h| h.rect.contains(p) && in_scope(&self.order, h.w.screen)).filter(|h| h.interactive).map(|h| h.w)
         });
-        // Radial menus: the pointer picks by angle anywhere outside the dead zone.
+        // Radial menus: the pointer picks by angle anywhere outside the dead zone, so that whole
+        // area is the UI's (clicks there must not also reach the game).
         let mut hot = hot;
+        let mut over_radial = false;
         if let Some(p) = pos {
             for &s in self.order[lowest..].iter().rev() {
                 let sr = &self.screens[s];
@@ -809,6 +865,7 @@ impl Ui {
                     continue;
                 }
                 if let Some((_, item)) = radial_under(sr, p) {
+                    over_radial = true;
                     // The whole sector (inside and around the ring) is the item's target; the
                     // dead zone in the middle picks nothing. Focus follows only when the pointer
                     // moves, so a resting mouse doesn't fight the stick.
@@ -823,10 +880,11 @@ impl Ui {
         if matches!(input.last_device(), Some(specula_input::Device::Gamepad(_))) {
             self.focus_visible = true;
         }
+        let on_ui = hit_any.is_some() || over_radial;
         if pressed {
             self.pointer.press = hot;
             self.pointer.press_pos = pos.unwrap_or([0.0; 2]);
-            self.pointer.captured = hit_any.is_some();
+            self.pointer.captured = on_ui;
             self.pointer.dragging_list = None;
         }
         // Touch-drag scrolling of lists.
@@ -845,21 +903,22 @@ impl Ui {
         if let (Some(l), Some(p)) = (self.pointer.dragging_list, pos) {
             if moved {
                 let prev = self.pointer.press_pos;
-                let c = &mut self.screens[l.screen].comp[l.node as usize];
-                c.scroll -= p[1] - prev[1];
+                if let Some(c) = self.screens.get_mut(l.screen).and_then(|s| s.comp.get_mut(l.node as usize)) {
+                    c.scroll -= p[1] - prev[1];
+                    relayout |= 1u64 << l.screen.min(63);
+                }
                 self.pointer.press_pos = p;
-                relayout |= 1u64 << l.screen.min(63);
             }
         }
-        if released {
-            if let (Some(pw), Some(h)) = (self.pointer.press, hot) {
+        if released || cancelled {
+            if let (Some(pw), Some(h), false) = (self.pointer.press, hot, cancelled) {
                 if pw == h {
                     self.activate_now(h);
                 }
             }
             self.pointer.press = None;
         }
-        self.events.consumed.pointer = hit_any.is_some() || (self.pointer.captured && (down || released));
+        self.events.consumed.pointer = on_ui || (self.pointer.captured && (down || released || cancelled));
         if !down && !released {
             self.pointer.captured = false;
             self.pointer.dragging_list = None;
@@ -1012,9 +1071,9 @@ impl Ui {
     }
 
     fn activate_now(&mut self, w: WidgetRef) {
-        let sr = &self.screens[w.screen];
+        let Some(sr) = self.screens.get(w.screen) else { return };
         let Some(node) = sr.screen.nodes.get(w.node as usize) else { return };
-        if !sr.comp[w.node as usize].visible {
+        if !sr.visible || !sr.comp[w.node as usize].visible {
             return;
         }
         let action = match &node.kind {
@@ -1057,6 +1116,10 @@ impl Ui {
                     continue;
                 }
                 let want = self.screens[s].comp[i].clip;
+                // Rows scrolled out of a list cost nothing to draw.
+                if want.is_some_and(|c| c.intersect(&self.screens[s].comp[i].rect).is_empty()) {
+                    continue;
+                }
                 if want != clip {
                     clip = want;
                     self.draw.clip(clip);
@@ -1334,7 +1397,7 @@ impl Ui {
         let size = t.size * scale;
         let margin = t.inset * scale + size * 0.5;
         let phase = (self.time * f64::from(t.pulse_hz)).fract() as f32;
-        let pulse = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
+        let pulse = 0.5 + 0.5 * specula_core::dmath::cos(phase * std::f32::consts::TAU);
         while self.threat_text.len() < list.len() {
             self.threat_text.push((String::new(), TextLayout::default(), 0.0));
         }
@@ -1369,7 +1432,8 @@ impl Ui {
                 }
                 let tw = laid.lines.iter().map(|l| l.width).fold(0.0f32, f32::max);
                 let th = laid.height;
-                let back = [-angle.cos(), -angle.sin()];
+                let (sa, ca) = specula_core::dmath::sin_cos(angle);
+                let back = [-ca, -sa];
                 let pad_l = self.theme.boxed(t.label_box).padding;
                 let (bw, bh) = (tw + (pad_l[1] + pad_l[3]) * scale, th + (pad_l[0] + pad_l[2]) * scale);
                 // Clear of the arrow's halo (size × 0.62) plus a gap, along the way back in.
@@ -1507,6 +1571,50 @@ impl Ui {
         self.draw.glyph_run(start);
     }
 
+    /// Everything a `ui_check` run disturbs, so it can be put back: interaction state, the last
+    /// layout, draw list, hit map and events.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            pointer: self.pointer,
+            focus_visible: self.focus_visible,
+            nav_held: self.nav_held,
+            tip: self.tip,
+            tip_since: self.tip_since,
+            time: self.time,
+            last_view: self.last_view,
+            screens: self.screens.iter().map(|s| (s.comp.clone(), s.rt.iter().map(|r| r.text.clone()).collect(), s.focus)).collect(),
+            draw: self.draw.clone(),
+            hits: self.hits.clone(),
+            events: self.events.clone(),
+            prompt_key: self.prompt_key,
+            prompts: self.prompts.clone(),
+        }
+    }
+
+    pub(crate) fn restore(&mut self, s: Snapshot) {
+        self.pointer = s.pointer;
+        self.focus_visible = s.focus_visible;
+        self.nav_held = s.nav_held;
+        self.tip = s.tip;
+        self.tip_since = s.tip_since;
+        self.time = s.time;
+        self.last_view = s.last_view;
+        for (sr, (comp, texts, focus)) in self.screens.iter_mut().zip(s.screens) {
+            if sr.comp.len() == comp.len() {
+                sr.comp = comp;
+                for (r, t) in sr.rt.iter_mut().zip(texts) {
+                    r.text = t;
+                }
+            }
+            sr.focus = focus;
+        }
+        self.draw = s.draw;
+        self.hits = s.hits;
+        self.events = s.events;
+        self.prompt_key = s.prompt_key;
+        self.prompts = s.prompts;
+    }
+
     /// The UI tree as JSON (`ui_tree`): every visible widget with id, type, rect, text and state.
     pub fn tree(&self) -> Json {
         let mut screens = Vec::new();
@@ -1548,6 +1656,23 @@ impl Ui {
         }
         Json::obj([("screens", Json::Arr(screens))])
     }
+}
+
+/// See [`Ui::snapshot`].
+pub(crate) struct Snapshot {
+    pointer: PointerSt,
+    focus_visible: bool,
+    nav_held: [f32; 4],
+    tip: Option<WidgetRef>,
+    tip_since: f64,
+    time: f64,
+    last_view: Option<Viewport>,
+    screens: Vec<(Vec<Computed>, Vec<String>, Option<u32>)>,
+    draw: DrawList,
+    hits: Vec<Hit>,
+    events: UiEvents,
+    prompt_key: Option<(Option<DeviceFamily>, PadStyle)>,
+    prompts: Vec<(String, Option<String>)>,
 }
 
 /// Draw a box style into `r` (physical px).

@@ -31,6 +31,12 @@ pub enum ErrorCode {
     TooLarge,
     /// A screen name not loaded in this [`crate::Ui`].
     UnknownScreen,
+    /// A widget reference that doesn't exist (stale after a reload, or out of range).
+    UnknownWidget,
+    /// The widget's screen is hidden.
+    NotVisible,
+    /// A modal screen above the widget's screen takes all input.
+    ModalBlocks,
 }
 
 impl ErrorCode {
@@ -48,6 +54,9 @@ impl ErrorCode {
             ErrorCode::BadCondition => "bad_condition",
             ErrorCode::TooLarge => "too_large",
             ErrorCode::UnknownScreen => "unknown_screen",
+            ErrorCode::UnknownWidget => "unknown_widget",
+            ErrorCode::NotVisible => "not_visible",
+            ErrorCode::ModalBlocks => "modal_blocks",
         }
     }
 }
@@ -210,10 +219,14 @@ impl<'a> Obj<'a> {
 
     /// Fail on any field never read. `allowed` lists every field name the format has, for hints.
     pub fn finish(self, allowed: &[&str]) -> Result<(), UiError> {
+        // Duplicates: sort the names (O(n log n), so huge hostile objects stay cheap).
+        let mut names: Vec<&str> = self.pairs.iter().map(|(k, _)| k.as_str()).collect();
+        names.sort_unstable();
+        if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
+            let k = w[0];
+            return Err(UiError::new(ErrorCode::UnknownField, self.field_path(k), format!("field \"{k}\" appears twice")));
+        }
         for (i, (k, _)) in self.pairs.iter().enumerate() {
-            if self.pairs[..i].iter().any(|(p, _)| p == k) {
-                return Err(UiError::new(ErrorCode::UnknownField, self.field_path(k), format!("field \"{k}\" appears twice")));
-            }
             if !self.seen[i] {
                 let hint = suggest(k, allowed.iter().copied());
                 let known = if hint.is_empty() { format!("; known fields: {}", allowed.join(", ")) } else { hint };

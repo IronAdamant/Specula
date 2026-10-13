@@ -70,7 +70,7 @@ impl BoxStyle {
 
     /// The colour text inside this box sits on (the fill at mid-height), for contrast checks.
     pub fn mid_fill(&self) -> Rgba {
-        crate::color::mix(self.fill[0], self.fill[1], 0.5)
+        crate::color::mix_linear(self.fill[0], self.fill[1], 0.5)
     }
 
     pub fn is_visible(&self) -> bool {
@@ -449,8 +449,12 @@ impl Theme {
             theme.scale.min = f.num("min")?.unwrap_or(theme.scale.min);
             theme.scale.max = f.num("max")?.unwrap_or(theme.scale.max);
             f.finish(&["reference", "reference_ppi", "min", "max"])?;
-            if theme.scale.reference[0] <= 0.0 || theme.scale.reference[1] <= 0.0 || theme.scale.reference_ppi <= 0.0 {
+            let s = theme.scale;
+            if !(s.reference[0] > 0.0 && s.reference[1] > 0.0 && s.reference_ppi > 0.0) {
                 return Err(bad("scale", "reference size and ppi must be positive"));
+            }
+            if !(s.min > 0.0 && s.min <= s.max) {
+                return Err(bad("scale.min", format!("need 0 < min <= max (min {}, max {})", s.min, s.max)));
             }
         }
         if let Some(j) = o.get("check") {
@@ -757,5 +761,10 @@ pub(crate) mod tests {
         assert!((phone - 420.0 / 215.0).abs() < 1e-5);
         assert_eq!(s.scale([1280, 800], None, 1.25), 1.25);
         assert_eq!(s.scale([1280, 800], None, f32::NAN), 1.0);
+        // min > max would make clamp panic: rejected at load.
+        let e = Theme::from_json_str(&MINI.replace(r#""name": "mini","#, r#""name": "mini", "scale": {"min": 3, "max": 1},"#)).unwrap_err();
+        assert_eq!((e.code, e.path.as_str()), (ErrorCode::BadValue, "scale.min"), "{e}");
+        let e = Theme::from_json_str(&MINI.replace(r#""name": "mini","#, r#""name": "mini", "scale": {"min": 0},"#)).unwrap_err();
+        assert_eq!(e.path, "scale.min");
     }
 }

@@ -1,10 +1,14 @@
 //! A software renderer for [`DrawList`]s: the reference for what the GPU overlay must draw, and
-//! eyes for agents and CI with no GPU. Single-threaded and deterministic (pure `f32` maths, no
-//! transcendental functions), so the same draw list gives the same pixels, and the same hash.
+//! eyes for agents and CI with no GPU. Single-threaded and deterministic (IEEE basic operations
+//! plus `specula_core::dmath`), so the same draw list gives the same pixels, and the same hash,
+//! on every platform.
 //!
-//! Blending is "over" in sRGB space with straight-alpha inputs, as the overlay does.
+//! Like the GPU overlay, inputs are sRGB with straight alpha, converted to **linear** light;
+//! blending ("over") and interpolation (gradients, vertex colours, glyph coverage) happen in
+//! linear, and the result is encoded back to sRGB.
 
-use crate::color::Rgba;
+use crate::color::{to_linear, Rgba};
+use std::sync::OnceLock;
 use crate::draw::{DrawCmd, DrawList, Rect, RectCmd, Vertex};
 use specula_core::deflate::Level;
 use specula_core::hash::StableHasher;
@@ -46,9 +50,28 @@ impl Canvas {
     }
 }
 
+/// Premultiply a **linear** colour by its alpha × coverage.
 fn premul(c: Rgba, cov: f32) -> [f32; 4] {
     let a = (c[3] * cov).clamp(0.0, 1.0);
     [c[0] * a, c[1] * a, c[2] * a, a]
+}
+
+/// sRGB colour → linear (alpha unchanged).
+fn lin(c: Rgba) -> Rgba {
+    [to_linear(c[0]), to_linear(c[1]), to_linear(c[2]), c[3]]
+}
+
+/// sRGB byte → linear, as a table.
+fn lin8(v: u8) -> f32 {
+    static T: OnceLock<[f32; 256]> = OnceLock::new();
+    T.get_or_init(|| std::array::from_fn(|i| to_linear(i as f32 / 255.0)))[v as usize]
+}
+
+/// Linear → sRGB byte, rounded exactly: the largest code whose lower midpoint is ≤ `l`.
+fn srgb8(l: f32) -> u8 {
+    static MID: OnceLock<[f32; 255]> = OnceLock::new();
+    let mid = MID.get_or_init(|| std::array::from_fn(|k| to_linear((k as f32 + 0.5) / 255.0)));
+    mid.partition_point(|&m| m <= l) as u8
 }
 
 fn lerp4(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -58,7 +81,7 @@ fn lerp4(a: Rgba, b: Rgba, t: f32) -> Rgba {
 /// Rasterise `list` over `background` (sRGB straight alpha). Glyph quads sample `atlas`.
 pub fn render(list: &DrawList, atlas: &GlyphAtlas, textures: &[Texture<'_>], background: Rgba) -> Image {
     let (w, h) = (list.size[0] as usize, list.size[1] as usize);
-    let bg = premul(background, 1.0);
+    let bg = premul(lin(background), 1.0);
     let c = Canvas { w, px: vec![bg; w * h], clip: [0, 0, w as i32, h as i32] };
     finish(raster(c, list, atlas, textures))
 }
@@ -71,7 +94,7 @@ pub fn render_onto(base: &Image, list: &DrawList, atlas: &GlyphAtlas, textures: 
     let px = base
         .rgba
         .chunks_exact(4)
-        .map(|p| premul([f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0, f32::from(p[3]) / 255.0], 1.0))
+        .map(|p| premul([lin8(p[0]), lin8(p[1]), lin8(p[2]), f32::from(p[3]) / 255.0], 1.0))
         .collect();
     let c = Canvas { w, px, clip: [0, 0, w as i32, h as i32] };
     finish(raster(c, list, atlas, textures))
@@ -103,8 +126,9 @@ fn raster(mut c: Canvas, list: &DrawList, atlas: &GlyphAtlas, textures: &[Textur
                     let Some(page) = atlas.page_pixels(q.page as usize) else { continue };
                     let ps = atlas.page_size() as usize;
                     let Some(b) = c.bounds(q.rect[0], q.rect[1], q.rect[2], q.rect[3]) else { continue };
-                    let tx0 = (q.uv[0] * ps as f32).round() as i64 - q.rect[0] as i64;
-                    let ty0 = (q.uv[1] * ps as f32).round() as i64 - q.rect[1] as i64;
+                    let tx0 = (q.uv[0] * ps as f32).round() as i64 - q.rect[0].floor() as i64;
+                    let ty0 = (q.uv[1] * ps as f32).round() as i64 - q.rect[1].floor() as i64;
+                    let color = lin(q.color);
                     for y in b[1]..b[3] {
                         for x in b[0]..b[2] {
                             let (tx, ty) = (x as i64 + tx0, y as i64 + ty0);
@@ -113,7 +137,7 @@ fn raster(mut c: Canvas, list: &DrawList, atlas: &GlyphAtlas, textures: &[Textur
                             }
                             let cov = f32::from(page[ty as usize * ps + tx as usize]) / 255.0;
                             if cov > 0.0 {
-                                c.blend(x, y, premul(q.color, cov));
+                                c.blend(x, y, premul(color, cov));
                             }
                         }
                     }
@@ -134,13 +158,8 @@ fn finish((c, h): (Canvas, usize)) -> Image {
     let mut rgba = Vec::with_capacity(w * h * 4);
     for p in &c.px {
         let a = p[3];
-        let un = |v: f32| if a > 0.0 { (v / a).clamp(0.0, 1.0) } else { 0.0 };
-        rgba.extend_from_slice(&[
-            (un(p[0]) * 255.0 + 0.5) as u8,
-            (un(p[1]) * 255.0 + 0.5) as u8,
-            (un(p[2]) * 255.0 + 0.5) as u8,
-            (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
-        ]);
+        let un = |v: f32| if a > 0.0 { srgb8((v / a).clamp(0.0, 1.0)) } else { 0 };
+        rgba.extend_from_slice(&[un(p[0]), un(p[1]), un(p[2]), (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8]);
     }
     Image { width: w as u32, height: h as u32, rgba }
 }
@@ -160,11 +179,13 @@ fn rect(c: &mut Canvas, r: &RectCmd) {
     let centre = rr.center();
     let radius = r.radius.clamp(0.0, half[0].min(half[1]));
     let has_border = r.border > 0.0;
+    let (f0, f1) = (lin(r.fill[0]), lin(r.fill[1]));
+    let (b0, b1) = (lin(r.border_color[0]), lin(r.border_color[1]));
     for y in b[1]..b[3] {
         let py = y as f32 + 0.5;
         let t = ((py - rr.y) / rr.h.max(1e-6)).clamp(0.0, 1.0);
-        let fill = lerp4(r.fill[0], r.fill[1], t);
-        let border = lerp4(r.border_color[0], r.border_color[1], t);
+        let fill = lerp4(f0, f1, t);
+        let border = lerp4(b0, b1, t);
         for x in b[0]..b[2] {
             let px = x as f32 + 0.5;
             let d = sd_round_box([px - centre[0], py - centre[1]], half, radius);
@@ -188,6 +209,7 @@ fn rect(c: &mut Canvas, r: &RectCmd) {
 }
 
 fn image(c: &mut Canvas, r: Rect, uv: [f32; 4], img: &Image, tint: Rgba) {
+    let tint = lin(tint);
     let Some(b) = c.bounds(r.x, r.y, r.right(), r.bottom()) else { return };
     if img.width == 0 || img.height == 0 || r.w <= 0.0 || r.h <= 0.0 {
         return;
@@ -199,12 +221,8 @@ fn image(c: &mut Canvas, r: Rect, uv: [f32; 4], img: &Image, tint: Rgba) {
             let u = uv[0] + (uv[2] - uv[0]) * ((x as f32 + 0.5 - r.x) / r.w);
             let tx = ((u * img.width as f32) as i64).clamp(0, img.width as i64 - 1) as usize;
             let p = &img.rgba[(ty * img.width as usize + tx) * 4..][..4];
-            let s = [
-                f32::from(p[0]) / 255.0 * tint[0],
-                f32::from(p[1]) / 255.0 * tint[1],
-                f32::from(p[2]) / 255.0 * tint[2],
-                f32::from(p[3]) / 255.0 * tint[3],
-            ];
+            // An sRGB texture is sampled as linear (as from a *_SRGB image view), times the tint.
+            let s = [lin8(p[0]) * tint[0], lin8(p[1]) * tint[1], lin8(p[2]) * tint[2], f32::from(p[3]) / 255.0 * tint[3]];
             c.blend(x, y, premul(s, 1.0));
         }
     }
@@ -221,7 +239,9 @@ fn top_left(a: [f32; 2], b: [f32; 2]) -> bool {
 }
 
 fn triangle(c: &mut Canvas, a: Vertex, b: Vertex, cc: Vertex) {
-    let (mut v0, mut v1, v2) = (a, b, cc);
+    // Vertex colours are sRGB: convert each to linear, then interpolate (as the GPU does).
+    let to_lin = |v: Vertex| Vertex { pos: v.pos, color: lin(v.color) };
+    let (mut v0, mut v1, v2) = (to_lin(a), to_lin(b), to_lin(cc));
     let area = edge(v0.pos, v1.pos, v2.pos);
     if area == 0.0 || !area.is_finite() {
         return;
@@ -325,13 +345,16 @@ mod tests {
         let atlas = GlyphAtlas::new(AtlasConfig::default());
         let img = render(&d, &atlas, &[], [0.0, 0.0, 1.0, 1.0]);
         assert!(px(&img, 5, 0)[0] > 240);
-        assert!(px(&img, 5, 9)[0] < 140 && px(&img, 5, 9)[0] > 100);
+        // Row 9 is 47.5 % down a white-to-black gradient: interpolated in linear light, 0.525
+        // linear encodes as sRGB 193 (not the 134 of an sRGB-space lerp).
+        assert!((190..=196).contains(&px(&img, 5, 9)[0]), "{:?}", px(&img, 5, 9));
         assert_eq!(px(&img, 5, 15), [0, 0, 255, 255]); // clipped away
     }
 
     #[test]
     fn mesh_triangles_cover_without_seams() {
         // Two triangles sharing a diagonal: every pixel of the square is covered exactly once.
+        // Half-transparent white over black is 0.5 linear = sRGB 188.
         let mut d = list([8, 8]);
         let c = [1.0, 1.0, 1.0, 0.5];
         let v = |x: f32, y: f32| Vertex { pos: [x, y], color: c };
@@ -342,7 +365,7 @@ mod tests {
         let img = render(&d, &atlas, &[], [0.0, 0.0, 0.0, 1.0]);
         for y in 0..8 {
             for x in 0..8 {
-                assert_eq!(px(&img, x, y), [128, 128, 128, 255], "{x},{y}");
+                assert_eq!(px(&img, x, y), [188, 188, 188, 255], "{x},{y}");
             }
         }
     }
@@ -370,7 +393,7 @@ mod tests {
         let a = render(&d, &atlas, &[], [0.04, 0.06, 0.12, 1.0]);
         let b = render(&d, &atlas, &[], [0.04, 0.06, 0.12, 1.0]);
         assert_eq!(hash(&a), hash(&b));
-        // Pinned: rects use only + − × ÷ and sqrt, which IEEE 754 makes exact on every platform.
-        assert_eq!(hash(&a), 0xe9a1e702e0f9d9ae);
+        // Pinned: IEEE basic operations plus specula_core::dmath give the same bits everywhere.
+        assert_eq!(hash(&a), 1565204969093717806);
     }
 }

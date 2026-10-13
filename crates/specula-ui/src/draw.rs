@@ -298,7 +298,8 @@ pub fn arc_points(out: &mut Vec<P>, c: P, r: f32, a0: f32, a1: f32, segments: us
     let segments = segments.max(1);
     for k in 0..=segments {
         let t = a0 + (a1 - a0) * k as f32 / segments as f32;
-        out.push([c[0] + r * t.cos(), c[1] + r * t.sin()]);
+        let (s, co) = specula_core::dmath::sin_cos(t);
+        out.push([c[0] + r * co, c[1] + r * s]);
     }
 }
 

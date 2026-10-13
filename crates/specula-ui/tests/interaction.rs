@@ -326,7 +326,7 @@ fn agents_can_activate_by_id_and_tooltips_appear_after_a_delay() {
     let s = StateMap::new();
     let v = view(800, 600);
     h.frame(&mut ui, &[], &s, &v);
-    ui.activate(ui.widget("s", "quit").unwrap());
+    ui.activate(ui.widget("s", "quit").unwrap()).unwrap();
     let e = h.frame(&mut ui, &[], &s, &v);
     assert_eq!(actions(&e), vec!["quit"]);
     // "quit" (which has a tooltip) is focused now; a key press makes keyboard focus visible, and

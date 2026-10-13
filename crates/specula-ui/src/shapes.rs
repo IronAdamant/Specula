@@ -23,7 +23,6 @@ struct Pen<'a> {
     rect: Rect,
     /// Unit square size in px (the icon is fitted into a square).
     unit: f32,
-    origin: P,
     cos: f32,
     sin: f32,
     color: Rgba,
@@ -34,7 +33,6 @@ impl Pen<'_> {
         let x = (p[0] - 0.5) * self.unit;
         let y = (p[1] - 0.5) * self.unit;
         let c = self.rect.center();
-        let _ = self.origin;
         [c[0] + x * self.cos - y * self.sin, c[1] + x * self.sin + y * self.cos]
     }
 
@@ -59,7 +57,7 @@ impl Pen<'_> {
         self.s.pts.clear();
         let mut pts = std::mem::take(&mut self.s.pts);
         let cm = self.map(c);
-        let rot = self.sin.atan2(self.cos);
+        let rot = specula_core::dmath::atan2(self.sin, self.cos);
         let full = (a1 - a0) >= TAU - 1e-4;
         arc_points(&mut pts, cm, r * self.unit, a0 + rot, a1 + rot, segs);
         if full {
@@ -72,7 +70,7 @@ impl Pen<'_> {
     /// An annulus band between radii `r0 < r1`, from `a0` to `a1`.
     fn band(&mut self, c: P, r0: f32, r1: f32, a0: f32, a1: f32) {
         let cm = self.map(c);
-        let rot = self.sin.atan2(self.cos);
+        let rot = specula_core::dmath::atan2(self.sin, self.cos);
         band(self.out, self.s, cm, r0 * self.unit, r1 * self.unit, a0 + rot, a1 + rot, self.color);
     }
 
@@ -108,7 +106,8 @@ pub fn draw_shape(out: &mut Vec<Vertex>, s: &mut Scratch, shape: Shape, rect: Re
     if unit <= 0.0 || color[3] <= 0.0 {
         return;
     }
-    let mut p = Pen { out, s, rect, unit, origin: [rect.x, rect.y], cos: rotation.cos(), sin: rotation.sin(), color };
+    let (sin, cos) = specula_core::dmath::sin_cos(rotation);
+    let mut p = Pen { out, s, rect, unit, cos, sin, color };
     match shape {
         Shape::Circle => p.disc([0.5, 0.5], 0.42, 0.0, TAU),
         Shape::Ring => p.band([0.5, 0.5], 0.3, 0.44, 0.0, TAU),

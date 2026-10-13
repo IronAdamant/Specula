@@ -777,6 +777,12 @@ impl Input {
         &self.touches
     }
 
+    /// A touch or pen contact ended abnormally this frame (`PointerCancel`, or focus lost while
+    /// touching). UIs treat it as "abandon the press", not as a release that activates.
+    pub fn touch_cancelled(&self) -> bool {
+        self.gestures.out.cancelled
+    }
+
     /// Seconds since the previous update (capped by `settings.max_dt_s`).
     pub fn dt(&self) -> f32 {
         self.dt

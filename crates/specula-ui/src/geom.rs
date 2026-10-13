@@ -78,7 +78,7 @@ pub fn radial_pick(v: [f32; 2], n: usize, dead: f32) -> Option<usize> {
         return None;
     }
     // Angle from straight up, clockwise, in 0..TAU.
-    let a = v[0].atan2(-v[1]).rem_euclid(TAU);
+    let a = specula_core::dmath::atan2(v[0], -v[1]).rem_euclid(TAU);
     let sector = TAU / n as f32;
     Some((((a + sector * 0.5) / sector) as usize) % n)
 }
@@ -114,7 +114,7 @@ pub fn threat_arrow(bounds: Rect, margin: f32, p: [f32; 2], behind: bool) -> Opt
     let ty = if d[1].abs() > 1e-6 { hh / d[1].abs() } else { f32::INFINITY };
     let t = tx.min(ty);
     let pos = [c[0] + d[0] * t, c[1] + d[1] * t];
-    let angle = d[1].atan2(d[0]);
+    let angle = specula_core::dmath::atan2(d[1], d[0]);
     Some((pos, angle))
 }
 

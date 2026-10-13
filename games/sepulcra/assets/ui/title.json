@@ -16,9 +16,15 @@
         "align": "center",
         "gap": 12,
         "children": [
-          { "type": "icon", "shape": "warding", "size": "3.2em", "color": "rune" },
-          { "type": "label", "text": "SEPULCRA", "role": "title" },
-          { "type": "label", "text": "Guard the graves of the shattered slab", "role": "subtitle" },
+          {
+            "type": "panel", "style": "veil", "layout": "column", "align": "center", "gap": 10,
+            "notes": "A veil behind the title keeps it readable over a bright sky (ui_check contrast, blended in linear light).",
+            "children": [
+              { "type": "icon", "shape": "warding", "size": "3.2em", "color": "rune" },
+              { "type": "label", "text": "SEPULCRA", "role": "title" },
+              { "type": "label", "text": "Guard the graves of the shattered slab", "role": "subtitle" }
+            ]
+          },
           {
             "type": "panel", "style": "menu", "width": "16em", "layout": "column", "align": "stretch", "gap": 10, "margin": [14, 0, 0, 0],
             "children": [

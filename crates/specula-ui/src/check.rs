@@ -157,6 +157,8 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
     for s in screens {
         ids.push(ui.screen_id(s).ok_or_else(|| UiError::new(crate::error::ErrorCode::UnknownScreen, "", format!("no screen \"{s}\"")))?.0);
     }
+    // check() lays the screens out at other sizes with a blank input: put the UI back after.
+    let snap = ui.snapshot();
     let saved: Vec<(bool, Option<u32>)> = ui.screens.iter().map(|s| (s.visible, s.focus)).collect();
     for (i, s) in ui.screens.iter_mut().enumerate() {
         s.visible = ids.contains(&i);
@@ -177,19 +179,38 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
             required: 1.0,
         });
     }
-    for (k, t) in targets.iter().enumerate() {
+    // Resolution-independent rules still depend on what is visible at each size (ui.narrow
+    // widgets exist only on phones): evaluate them per target and merge identical findings.
+    let mut global: Vec<Finding> = Vec::new();
+    for t in targets {
         let view = t.viewport(ui);
         let _ = ui.frame(&input, state, &view);
         per_target(ui, &ids, t, &view, &mut out);
-        if k == 0 {
-            global_rules(ui, &ids, state, input_map, &mut out);
+        let mut here = Vec::new();
+        global_rules(ui, &ids, state, input_map, &mut here);
+        for f in here {
+            match global.iter_mut().find(|g| g.rule == f.rule && g.screen == f.screen && g.widget == f.widget && g.message == f.message) {
+                Some(g) => {
+                    g.target.push(',');
+                    g.target.push_str(&t.name);
+                }
+                None => global.push(Finding { target: t.name.clone(), ..f }),
+            }
         }
+    }
+    let every = targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(",");
+    for mut g in global {
+        if g.target == every {
+            g.target = "all".into();
+        }
+        out.push(g);
     }
     for (s, (v, f)) in ui.screens.iter_mut().zip(saved) {
         s.visible = v;
         s.focus = f;
     }
     ui.reorder();
+    ui.restore(snap);
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.rule.cmp(b.rule)));
     Ok(out)
 }

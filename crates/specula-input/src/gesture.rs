@@ -47,6 +47,8 @@ pub(crate) struct GestureOut {
     pub two_finger_drag: [f32; 2],
     pub pinch: f32,
     pub rotate: f32,
+    /// A touch ended abnormally this frame (OS cancel, focus lost): not a release.
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,6 +132,7 @@ impl Gestures {
         }
         let Some(i) = self.contacts.iter().position(|c| c.id == id) else { return };
         self.contacts.remove(i);
+        self.out.cancelled |= cancelled;
         let Some(session) = self.session.as_mut() else { return };
         session.cancelled |= cancelled;
         if self.contacts.is_empty() {
@@ -160,6 +163,7 @@ impl Gestures {
 
     /// Forget every contact (focus lost): nothing fires.
     pub fn clear(&mut self) {
+        self.out.cancelled |= !self.contacts.is_empty();
         self.contacts.clear();
         self.session = None;
         self.two = None;
