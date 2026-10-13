@@ -69,7 +69,8 @@ pub struct Ctx<'a> {
 pub struct Frame<'a> {
     /// Window input since the last frame, oldest first (mouse in client pixels, origin top-left).
     pub input: &'a [Event],
-    /// Window client size in physical pixels.
+    /// Window client size in physical pixels. **0×0 while the window is minimized**: `frame` still
+    /// runs then (input such as gamepads keeps arriving), so guard divisions and clamps on it.
     pub size: (u32, u32),
     /// How far between the last tick and the next one (0..1), for smooth motion.
     pub alpha: f32,

@@ -1,0 +1,25 @@
+{
+  "recipe": 1,
+  "name": "rune_column",
+  "category": "component",
+  "description": "A vertical run of 1-4 glowing runes on a darker carved field. Top of the column at y = 0, running down (count x size x 1.2 m long); faces +Z; place it 8 mm proud of a stone face.",
+  "params": {
+    "count": { "default": 2, "min": 1, "max": 4, "integer": true },
+    "first": { "default": 0, "min": 0, "max": 3, "integer": true, "description": "glyph of the top rune; the rest follow in order" },
+    "size": { "default": 0.4, "min": 0.15, "max": 1.0, "description": "rune height (m)" }
+  },
+  "let": { "k": "size / 0.45", "step": "size * 1.18" },
+  "parts": [
+    { "name": "field", "material": "carved_stone", "color": "carved_shadow", "lod_detail": 0,
+      "shape": { "op": "box", "size": ["0.36 * k", "count * step + 0.02", 0.012], "bevel": 0.004 },
+      "ops": [ { "op": "move", "by": [0, "-(count * step) - 0.01", -0.006] } ] },
+    { "name": "r0", "include": "rune_glyph", "params": { "glyph": "first % 4" },
+      "ops": [ { "op": "scale", "by": ["k", "k", 1] }, { "op": "move", "by": [0, "-step + 0.6 * (step - size)", 0] } ] },
+    { "name": "r1", "include": "rune_glyph", "when": "count >= 2", "params": { "glyph": "(first + 1) % 4" },
+      "ops": [ { "op": "scale", "by": ["k", "k", 1] }, { "op": "move", "by": [0, "-2 * step + 0.6 * (step - size)", 0] } ] },
+    { "name": "r2", "include": "rune_glyph", "when": "count >= 3", "params": { "glyph": "(first + 2) % 4" },
+      "ops": [ { "op": "scale", "by": ["k", "k", 1] }, { "op": "move", "by": [0, "-3 * step + 0.6 * (step - size)", 0] } ] },
+    { "name": "r3", "include": "rune_glyph", "when": "count >= 4", "params": { "glyph": "(first + 3) % 4" },
+      "ops": [ { "op": "scale", "by": ["k", "k", 1] }, { "op": "move", "by": [0, "-4 * step + 0.6 * (step - size)", 0] } ] }
+  ]
+}

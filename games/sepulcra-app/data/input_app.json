@@ -1,0 +1,30 @@
+{
+  "format": "specula.input.v1",
+  "notes": "Actions the windowed app adds to games/sepulcra/data/input.json (merged at start-up; names must not clash). Gamepad: left stick moves the cursor, South builds, North cycles the selection (until the radial menu exists), West upgrades, View sells, R3 removes a wall, L3 calls the next wave.",
+  "actions": [
+    { "name": "select_1", "kind": "button", "group": "build", "description": "Select the first stone (Warding stone).", "bindings": ["Key.1", "Key.Numpad1"] },
+    { "name": "select_2", "kind": "button", "group": "build", "description": "Select the second stone (Rune pillar).", "bindings": ["Key.2", "Key.Numpad2"] },
+    { "name": "select_3", "kind": "button", "group": "build", "description": "Select the third stone (Brazier cairn).", "bindings": ["Key.3", "Key.Numpad3"] },
+    { "name": "select_4", "kind": "button", "group": "build", "description": "Select the fourth stone (Sky obelisk).", "bindings": ["Key.4", "Key.Numpad4"] },
+    { "name": "select_wall", "kind": "button", "group": "build", "description": "Select the wall.", "bindings": ["Key.5", "Key.Numpad5"] },
+    { "name": "upgrade", "kind": "button", "group": "build", "description": "Carve the next tier into the stone under the cursor.", "bindings": ["Key.U", "Pad.West"] },
+    { "name": "sell", "kind": "button", "group": "build", "description": "Sell the stone under the cursor (70% back).", "bindings": ["Key.X", "Pad.Back"] },
+    { "name": "unwall", "kind": "button", "group": "build", "description": "Remove the wall under the cursor.", "bindings": ["Key.R", "Pad.RightStickClick"] },
+    { "name": "call_wave", "kind": "button", "group": "play", "description": "Start the next wave now (bonus dust).", "bindings": ["Key.Space", "Pad.LeftStickClick"] },
+    { "name": "speed", "kind": "button", "group": "play", "description": "Cycle the game speed (x1, x2, x4).", "bindings": ["Key.F"] },
+    { "name": "help", "kind": "button", "group": "play", "description": "Show the controls.", "bindings": ["Key.F1"] },
+    { "name": "new_game", "kind": "button", "group": "play", "description": "Start a new run after the end.", "bindings": ["Key.N"] },
+    {
+      "name": "pan",
+      "kind": "axis2",
+      "output": "delta",
+      "group": "play",
+      "description": "Pan the camera this frame, in screen widths: +x = right, +y = into the screen.",
+      "bindings": [
+        { "composite": { "up": "Key.W", "down": "Key.S", "left": "Key.A", "right": "Key.D" }, "scale": [0.7, 0.7] },
+        { "source": "Mouse.Middle+Mouse.Motion", "scale": [-0.0016, 0.0016] },
+        { "source": "Touch.TwoFingerDrag", "scale": [-0.0016, 0.0016] }
+      ]
+    }
+  ]
+}

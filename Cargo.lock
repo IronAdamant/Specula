@@ -10,6 +10,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sepulcra-app"
+version = "0.1.0"
+dependencies = [
+ "sepulcra",
+ "specula",
+ "specula-core",
+ "specula-gpu",
+ "specula-input",
+ "specula-platform",
+ "specula-protocol",
+]
+
+[[package]]
 name = "specula"
 version = "0.3.0"
 dependencies = [
@@ -37,6 +50,14 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-platform",
+]
+
+[[package]]
+name = "specula-model"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-gpu",
 ]
 
 [[package]]

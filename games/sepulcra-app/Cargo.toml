@@ -1,0 +1,27 @@
+[package]
+name = "sepulcra-app"
+description = "Sepulcra in a window: the tower defence hosted by the Specula engine, playable by people and agents"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "sepulcra_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sepulcra"
+path = "src/main.rs"
+
+[dependencies]
+sepulcra = { path = "../sepulcra" }
+specula = { path = "../../crates/specula" }
+specula-core = { workspace = true }
+specula-gpu = { workspace = true }
+specula-input = { workspace = true }
+specula-platform = { workspace = true }
+specula-protocol = { workspace = true }

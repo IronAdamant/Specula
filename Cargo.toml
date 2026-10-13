@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/specula-sys",
     "crates/specula-core",
+    "crates/specula-model",
     "crates/specula-platform",
     "crates/specula-input",
     "crates/specula-gpu",
@@ -10,6 +11,7 @@ members = [
     "crates/specula-text",
     "crates/specula",
     "games/sepulcra",
+    "games/sepulcra-app",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }
+specula-model = { path = "crates/specula-model" }
 specula-platform = { path = "crates/specula-platform" }
 specula-input = { path = "crates/specula-input" }
 specula-gpu = { path = "crates/specula-gpu" }

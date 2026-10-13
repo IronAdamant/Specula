@@ -1,0 +1,32 @@
+{
+  "recipe": 1,
+  "name": "brazier_fire",
+  "category": "vfx_placeholder",
+  "description": "Static flame placeholder for the brazier cairn until particles exist (STYLE.md fire family: core #ffd27a, flame #ff7a1f, ember #c2410c). A bed of coals, a ring of curling tongues and a bright core; about 0.9 m tall at size 1.",
+  "seed": 77,
+  "params": { "size": { "default": 1.0, "min": 0.3, "max": 3.0 } },
+  "budget": { "max_triangles": 700 },
+  "lods": [0.5, 0.25],
+  "collider": "none",
+  "smooth_angle": 50,
+  "parts": [
+    { "name": "coals", "material": "fire", "color": "fire_ember",
+      "shape": { "op": "sphere", "radius": 0.3, "subdivisions": 1 },
+      "ops": [ { "op": "scale", "by": [1.0, 0.3, 1.0] },
+               { "op": "displace", "amount": 0.04, "scale": 0.12 },
+               { "op": "gradient", "from": "fire_ember", "to": "fire_flame", "range": [0, 1] } ] },
+    { "name": "tongues", "material": "fire",
+      "shape": { "op": "sweep", "profile": { "star": 3, "radius": 0.1, "inner": 0.06 },
+                 "path": [[0.17, 0.05, 0], [0.2, 0.25, 0.04], [0.14, 0.45, -0.04], [0.16, 0.66, 0.02]],
+                 "scales": [1.0, 0.95, 0.6, 0.0], "twist": 70, "smooth": 2 },
+      "ops": [ { "op": "radial", "count": 5, "jitter": { "rotate": [6, 0, 6], "scale": 0.22 } },
+               { "op": "gradient", "from": "fire_core", "to": "fire_flame", "range": [0, 0.55] },
+               { "op": "gradient", "from": "fire_flame", "to": "fire_ember", "range": [0.6, 1.0], "keep_outside": true } ] },
+    { "name": "core", "material": "fire", "color": "fire_core",
+      "shape": { "op": "sweep", "profile": { "sides": 5, "radius": 0.13 },
+                 "path": [[0, 0.04, 0], [0.02, 0.35, 0.01], [-0.03, 0.62, 0], [0.02, 0.9, 0.0]],
+                 "scales": [1.0, 0.9, 0.55, 0.0], "twist": -50, "smooth": 3 },
+      "ops": [ { "op": "gradient", "from": "fire_core", "to": "fire_flame", "range": [0.45, 1.0] } ] }
+  ],
+  "finish": [ { "op": "scale", "by": "size" } ]
+}
