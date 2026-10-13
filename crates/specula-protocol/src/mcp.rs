@@ -96,6 +96,14 @@ impl State {
         list.into_iter().map(|(_, info, _)| info.clone()).collect()
     }
 
+    /// Every open session, idle ones included (they stay usable), oldest first.
+    pub fn all_sessions(&self) -> Vec<SessionInfo> {
+        let sessions = lock(&self.sessions);
+        let mut list: Vec<&(u64, SessionInfo, Instant)> = sessions.map.values().collect();
+        list.sort_by_key(|(seq, _, _)| *seq);
+        list.into_iter().map(|(_, info, _)| info.clone()).collect()
+    }
+
     pub fn clear_sessions(&self) {
         lock(&self.sessions).map.clear();
     }
@@ -571,6 +579,42 @@ mod tests {
         }
         assert_eq!(post(Some(&main), ping).status, 200);
         assert!(lock(&state.sessions).map.len() <= MAX_SESSIONS);
+    }
+
+    /// Review finding: idle sessions stay usable, so identity checks must see them
+    /// (`all_sessions`), while listings leave them out (`sessions`).
+    #[test]
+    fn idle_sessions_are_open_but_not_listed() {
+        struct NoTools;
+        impl ToolHandler for NoTools {
+            fn tools(&self) -> Vec<crate::ToolDef> {
+                Vec::new()
+            }
+            fn call(&self, _: &SessionInfo, _: &str, _: &Json) -> ToolOutput {
+                ToolOutput::text("")
+            }
+        }
+        let config = ServerConfig { bind: String::new(), server_name: "t".into(), server_version: "0".into(), instructions: None };
+        let state = State::new(config, Arc::new(NoTools));
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+        let head = crate::http::Head {
+            method: "POST".into(),
+            target: ENDPOINT.into(),
+            minor_version: 1,
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+        };
+        for _ in 0..2 {
+            state.handle(&Request { head: head.clone(), body: init.as_bytes().to_vec() });
+        }
+        let old = Instant::now().checked_sub(SESSION_IDLE_TIMEOUT + Duration::from_secs(1));
+        if let Some(old) = old {
+            let mut sessions = lock(&state.sessions);
+            let first = sessions.map.values().map(|(seq, _, _)| *seq).min().unwrap();
+            sessions.map.values_mut().filter(|(seq, _, _)| *seq == first).for_each(|entry| entry.2 = old);
+            drop(sessions);
+            assert_eq!(state.sessions().len(), 1, "the idle one isn't listed");
+        }
+        assert_eq!(state.all_sessions().len(), 2, "but it is still open");
     }
 
     #[test]

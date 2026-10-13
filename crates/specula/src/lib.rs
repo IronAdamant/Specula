@@ -10,17 +10,22 @@
 //! and replies. The human's window is pumped by its own thread (see `ui`), so dragging it never
 //! stalls agents.
 
+pub mod claims;
 pub mod effects;
 pub mod game;
+pub mod journal;
 mod meshes;
 mod perf;
 pub mod persist;
 pub mod sight;
+pub mod swarm;
 mod tools;
 mod ui;
 pub mod world;
 
 use game::{Clock, Ctx, Game};
+use journal::{Kind, Writer};
+use swarm::Swarm;
 use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
@@ -29,14 +34,14 @@ use sight::{Camera, LatheMeshes};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tools::{Command, FrameSpec, QuerySpec, Request, TimeOp};
 use ui::UiThread;
-use world::{World, WorldError};
+use world::{Recording, World, WorldError};
 
 const DEFAULT_PORT: u16 = 7471;
 
@@ -49,8 +54,6 @@ const AUTOSAVE_EVERY: Duration = Duration::from_secs(10);
 /// Listings stop adding items past this many bytes (compact JSON) and hand back a cursor, so a
 /// page of huge entities still fits in an agent's context.
 const MAX_LISTING_BYTES: usize = 128 * 1024;
-/// Agent identities remembered (sessions are capped at 1024 by the protocol).
-const MAX_AGENTS: usize = 1024;
 /// world_batch lists per-op results up to this many bytes, then summarises the rest.
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
@@ -59,6 +62,10 @@ const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|
 
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
+/// Per-tick state hashes kept for world_hash.
+const TICK_HASHES: usize = 1024;
+/// How often claims of vanished sessions are dropped.
+const CLAIM_SWEEP_EVERY: Duration = Duration::from_secs(1);
 
 struct Args {
     port: u16,
@@ -157,7 +164,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
             let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
-            engine.world = world;
+            engine.replace_world(world, &name);
             engine.saved = Some(saved);
             eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
         } else {
@@ -178,6 +185,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     if let Some(g) = &game {
         engine.clock = Clock::new(g.tick_hz());
         engine.game_name = g.name().to_owned();
+        // Its changes are attributed to this name: no agent may take it.
+        engine.swarm.reserve(g.name());
     }
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
@@ -280,8 +289,6 @@ struct Engine {
     autosave_error: Option<Json>,
     /// Old world files the last save committed past but couldn't remove.
     leftovers: Vec<String>,
-    /// Session id → identity given with agent_hello.
-    agents: BTreeMap<String, Agent>,
     /// Simulation time: the hosted game's fixed tick (or the default rate without a game).
     clock: Clock,
     game: Option<Box<dyn Game>>,
@@ -295,6 +302,16 @@ struct Engine {
     input: Vec<Event>,
     /// A window title set by the game (its HUD until the engine draws text).
     game_title: Option<String>,
+    /// Identities, claims and the journal of every world change (see [`swarm`]).
+    swarm: Swarm,
+    /// `(tick, state hash)` recorded as each tick begins, newest last; at most [`TICK_HASHES`].
+    tick_hashes: VecDeque<(u64, u64)>,
+    /// `(world generation, revision, hash)` of the last hash taken: unchanged worlds aren't
+    /// hashed again.
+    hash_cache: Option<(u64, u64, u64)>,
+    /// Bumped whenever the world is replaced (a revision number alone could repeat).
+    world_generation: u64,
+    last_claim_sweep: Instant,
 }
 
 struct AutosaveJob {
@@ -303,21 +320,18 @@ struct AutosaveJob {
     done: Receiver<Result<(persist::Saved, persist::SaveReport), persist::PersistError>>,
 }
 
-struct Agent {
-    name: String,
-    role: String,
-}
-
 impl Engine {
     fn new(mut gpu: Gpu, captures_root: &Path) -> Result<Engine, String> {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
         Ok(Engine {
             gpu,
             meshes,
             lathes: LatheMeshes::new(),
-            world: World::default(),
+            world,
             started: Instant::now(),
             window_camera: None,
             targets: Vec::new(),
@@ -332,7 +346,6 @@ impl Engine {
             autosave_job: None,
             autosave_error: None,
             leftovers: Vec::new(),
-            agents: BTreeMap::new(),
             clock: Clock::new(DEFAULT_TICK_HZ),
             game: None,
             game_name: String::new(),
@@ -340,13 +353,65 @@ impl Engine {
             last_advance: Instant::now(),
             input: Vec::new(),
             game_title: None,
+            swarm: Swarm::default(),
+            tick_hashes: VecDeque::new(),
+            hash_cache: None,
+            world_generation: 0,
+            last_claim_sweep: Instant::now(),
         })
+    }
+
+    /// Makes a loaded world the live one: it records changes, and the journal starts over from it.
+    fn replace_world(&mut self, mut world: World, name: &str) {
+        world.set_recording(Recording::Full);
+        self.swarm.journal.rebase(&world, &format!("world:{name}"));
+        self.world = world;
+        self.world_generation += 1;
+        self.hash_cache = None;
+        self.tick_hashes.clear();
+    }
+
+    /// Journals what the hosted game just changed on its own (exempt from claims).
+    fn journal_game(&mut self, kind: Kind) {
+        self.swarm.game_changes(&mut self.world, self.clock.tick(), &self.game_name, kind);
+    }
+
+    /// The world's state hash, reusing the last one while nothing changed.
+    fn state_hash(&mut self) -> u64 {
+        let (generation, revision) = (self.world_generation, self.world.revision());
+        match self.hash_cache {
+            Some((g, r, h)) if (g, r) == (generation, revision) => h,
+            _ => {
+                let h = self.world.state_hash();
+                self.hash_cache = Some((generation, revision, h));
+                h
+            }
+        }
+    }
+
+    /// Records the hash as a tick begins.
+    fn record_tick_hash(&mut self) {
+        let h = self.state_hash();
+        if self.tick_hashes.len() == TICK_HASHES {
+            self.tick_hashes.pop_front();
+        }
+        self.tick_hashes.push_back((self.clock.tick(), h));
+    }
+
+    /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
+    fn sweep_claims(&mut self, server: &Server) {
+        if self.swarm.claims.is_empty() || self.last_claim_sweep.elapsed() < CLAIM_SWEEP_EVERY {
+            return;
+        }
+        self.last_claim_sweep = Instant::now();
+        self.swarm.sweep(&server.all_sessions(), Instant::now());
     }
 
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
         game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+        self.journal_game(Kind::GameStart);
         self.last_advance = Instant::now();
     }
 
@@ -358,10 +423,15 @@ impl Engine {
         for _ in 0..ticks {
             if let Some(game) = self.game.as_mut() {
                 let start = Instant::now();
+                // Game updates are journaled replay-only and coalesced per tick (F3).
+                self.world.set_recording(Recording::Snapshot);
                 game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+                self.world.set_recording(Recording::Full);
+                self.journal_game(Kind::GameTick);
                 self.pacing.tick.push(start.elapsed());
             }
             self.clock.finish_tick();
+            self.record_tick_hash();
         }
     }
 
@@ -379,7 +449,10 @@ impl Engine {
             camera: &mut self.window_camera,
             title: &mut self.game_title,
         };
+        self.world.set_recording(Recording::Snapshot);
         game.frame(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name }, &mut frame);
+        self.world.set_recording(Recording::Full);
+        self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
     }
 
@@ -473,14 +546,6 @@ impl Engine {
         self.leftovers = report.leftovers.clone();
     }
 
-    /// Who a session is in attribution: its agent_hello name, else its MCP client name.
-    fn agent_name(&self, session: &SessionInfo) -> String {
-        match self.agents.get(&session.id) {
-            Some(a) => a.name.clone(),
-            None if session.client_name.is_empty() => "anonymous".into(),
-            None => session.client_name.clone(),
-        }
-    }
     fn time_s(&self) -> f32 {
         self.started.elapsed().as_secs_f32()
     }
@@ -527,6 +592,7 @@ impl Engine {
                 self.handle(request, server);
             }
             self.autosave_if_due();
+            self.sweep_claims(server);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -578,6 +644,7 @@ impl Engine {
             }
             self.advance_clock();
             self.autosave_if_due();
+            self.sweep_claims(server);
         }
         Ok(())
     }
@@ -588,56 +655,82 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
-        let by = self.agent_name(&request.session);
+        let by = self.swarm.agent_name(&request.session);
+        let session = request.session.id.clone();
+        let w = Writer::new(&by, Some(&session));
+        let tick = self.clock.tick();
         let output = match request.command {
-            Command::Spawn(spec) => match self.world.spawn(spec, &by).map(|e| e.id) {
-                Ok(id) => self.entity_output(id),
+            Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
+                Ok((id, seq)) => self.entity_output(id, seq),
                 Err(e) => world_error(&e),
             },
-            Command::Set(key, change) => match self.world.update(&key, change, &by).map(|e| e.id) {
-                Ok(id) => self.entity_output(id),
-                Err(e) => world_error(&e),
-            },
-            Command::Delete(key, expect) => match self.world.delete(&key, expect) {
-                Ok(d) => ToolOutput::text(
-                    Json::obj([("deleted", Json::from(d.removed.len())), ("id", Json::from(d.id)), ("path", Json::from(d.path))])
-                        .to_pretty(),
+            Command::Set(key, change) => {
+                match self.swarm.commit(&mut self.world, tick, w, Kind::Set, |wd| wd.update(&key, change, &by).map(|e| e.id)) {
+                    Ok((id, seq)) => self.entity_output(id, seq),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::Delete(key, expect) => match self.swarm.commit(&mut self.world, tick, w, Kind::Delete, |wd| wd.delete(&key, expect)) {
+                Ok((d, seq)) => ToolOutput::text(
+                    Json::obj([
+                        ("deleted", Json::from(d.removed.len())),
+                        ("id", Json::from(d.id)),
+                        ("path", Json::from(d.path)),
+                        ("journal", Json::from(seq)),
+                    ])
+                    .to_pretty(),
                 ),
                 Err(e) => world_error(&e),
             },
             Command::Query(spec) => self.query(&spec),
             Command::Batch(ops) => {
                 let count = ops.len();
-                match self.world.apply_batch(ops, &by) {
-                    Ok(results) => ToolOutput::text(batch_summary(&results).to_string()),
-                    Err((index, e)) => ToolOutput::error(
-                        Json::obj([
-                            ("error", Json::from("batch_failed")),
-                            (
-                                "message",
-                                Json::from(format!("ops[{index}] failed, so none of the {count} ops were applied: {}", e.message)),
-                            ),
-                            ("op_index", Json::from(index)),
-                            ("cause", e.to_json()),
-                        ])
-                        .to_pretty(),
-                    ),
+                let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
+                match self.swarm.commit(&mut self.world, tick, w, Kind::Batch, apply) {
+                    Ok((results, seq)) => {
+                        let mut summary = batch_summary(&results);
+                        summary.set("journal", Json::from(seq));
+                        ToolOutput::text(summary.to_string())
+                    }
+                    // A claim rejects the batch as a whole (no single op is at fault).
+                    Err(e) if e.detail("op_index").is_none() => world_error(&e),
+                    Err(mut e) => {
+                        let index = e.detail("op_index").and_then(Json::as_u64).unwrap_or(0);
+                        e.details.retain(|(k, _)| *k != "op_index");
+                        ToolOutput::error(
+                            Json::obj([
+                                ("error", Json::from("batch_failed")),
+                                (
+                                    "message",
+                                    Json::from(format!(
+                                        "ops[{index}] failed, so none of the {count} ops were applied: {}",
+                                        e.message
+                                    )),
+                                ),
+                                ("op_index", Json::from(index)),
+                                ("cause", e.to_json()),
+                            ])
+                            .to_pretty(),
+                        )
+                    }
                 }
             }
             Command::Save { name, overwrite } => self.save(name, overwrite),
-            Command::Load { name, force } => self.load(name, force),
-            Command::Hello { name, role } => {
-                if self.agents.len() >= MAX_AGENTS && !self.agents.contains_key(&request.session.id) {
-                    let live: Vec<String> = server.sessions().into_iter().map(|s| s.id).collect();
-                    self.agents.retain(|id, _| live.contains(id));
-                }
-                let reply = Json::obj([("agent", Json::from(name.as_str())), ("role", Json::from(role.as_str()))]);
-                self.agents.insert(request.session.id.clone(), Agent { name, role });
-                ToolOutput::text(reply.to_pretty())
-            }
+            Command::Load { name, force } => match self.swarm.check_replace_world(w) {
+                Ok(()) => self.load(name, force),
+                Err(e) => world_error(&e),
+            },
+            Command::Hello { name, role } => match self.swarm.hello(&request.session, name, role, &server.all_sessions()) {
+                Ok(reply) => ToolOutput::text(reply.to_pretty()),
+                Err(e) => world_error(&e),
+            },
             Command::Frame(spec) => self.capture(&spec, &request.session),
-            Command::Env(patch) => match self.world.set_env(&patch) {
-                Ok(()) => ToolOutput::text(self.world.env().to_json().to_pretty()),
+            Command::Env(patch) => match self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)) {
+                Ok(((), seq)) => {
+                    let mut env = self.world.env().to_json();
+                    env.set("journal", Json::from(seq));
+                    ToolOutput::text(env.to_pretty())
+                }
                 Err(e) => world_error(&e),
             },
             Command::View(camera) => {
@@ -666,19 +759,115 @@ impl Engine {
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
-                    let mut ctx = Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name };
-                    game.call_tool(&mut ctx, &name, &args)
+                    // A claim can only reject the tool when claims exist: checkpoint only then.
+                    let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
+                    let (clock, agent) = (&self.clock, self.game_name.as_str());
+                    let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent }, &name, &args);
+                    match self.swarm.game_tool(&mut self.world, tick, agent, w, call) {
+                        Ok(out) => out,
+                        Err(e) => {
+                            // The world was rolled back; the game goes back with it.
+                            match checkpoint {
+                                Some(c) => game.restore(c),
+                                None => {
+                                    self.world.set_recording(Recording::Snapshot);
+                                    game.world_rolled_back(&mut Ctx { world: &mut self.world, clock, agent });
+                                    self.world.set_recording(Recording::Full);
+                                    self.swarm.game_changes(&mut self.world, tick, agent, Kind::GameTool);
+                                }
+                            }
+                            world_error(&e)
+                        }
+                    }
                 }
                 None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
             },
+            Command::History(q) => ToolOutput::text(self.swarm.journal.history(&q).to_string()),
+            Command::Changes(q) => ToolOutput::text(self.swarm.journal.changes_text(&q)),
+            Command::Undo(req) => match self.swarm.undo(&mut self.world, tick, w, &req) {
+                Ok(u) => ToolOutput::text(
+                    Json::obj([
+                        ("journal", Json::from(u.seq)),
+                        ("undone", Json::arr(u.undone.iter().map(|s| Json::from(*s)))),
+                        ("changes", Json::from(u.changes)),
+                    ])
+                    .to_string(),
+                ),
+                Err(e) => world_error(&e),
+            },
+            Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
+            Command::ClaimTake(spec) => match self.swarm.take_claim(&self.world, &request.session, spec) {
+                Ok(c) => ToolOutput::text(c.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimRenew { id, lease } => match self.swarm.renew(w, id, lease) {
+                Ok(out) => ToolOutput::text(out.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimRelease { id } => match self.swarm.release(w, id) {
+                Ok(out) => ToolOutput::text(out.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimShare { id, with, revoke } => match self.swarm.share(w, id, &with, revoke, &server.all_sessions()) {
+                Ok(c) => ToolOutput::text(c.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimList { owner, mine, path_prefix, after, limit } => {
+                let owner = if mine { Some(by.clone()) } else { owner };
+                let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
+                ToolOutput::text(list.to_string())
+            }
         };
+        debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
     }
 
-    fn entity_output(&self, id: u64) -> ToolOutput {
+    fn entity_output(&self, id: u64, journal: Option<u64>) -> ToolOutput {
         let e = self.world.get(id).expect("just written");
-        ToolOutput::text(e.to_json(&self.world.path_of(id)).to_pretty())
+        let mut out = e.to_json(&self.world.path_of(id));
+        out.set("journal", Json::from(journal));
+        ToolOutput::text(out.to_pretty())
+    }
+
+    /// world_hash's answer.
+    fn hash_report(&mut self, recent: usize, tick: Option<u64>, verify: bool) -> ToolOutput {
+        let hash = self.state_hash();
+        let pair = |(t, h): &(u64, u64)| Json::arr([Json::from(*t), Json::from(journal::hex(*h))]);
+        let start = self.tick_hashes.len().saturating_sub(recent);
+        let mut out = Json::obj([
+            ("tick", Json::from(self.clock.tick())),
+            ("state_hash", Json::from(journal::hex(hash))),
+            ("entities", Json::from(self.world.len())),
+            ("journal_last_id", Json::from(self.swarm.journal.last_seq())),
+            ("recent", Json::arr(self.tick_hashes.range(start..).map(pair))),
+        ]);
+        if let Some(t) = tick {
+            let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
+            let oldest = self.tick_hashes.front().map(|(t, _)| *t);
+            out.set("at_tick", Json::obj([("tick", Json::from(t)), ("hash", Json::from(found)), ("oldest_kept", Json::from(oldest))]));
+        }
+        if verify {
+            let started = Instant::now();
+            let report = match self.swarm.journal.replay() {
+                Some(w) => {
+                    let replayed = w.state_hash();
+                    Json::obj([
+                        ("replayable", Json::from(true)),
+                        ("entries", Json::from(self.swarm.journal.len())),
+                        ("replay_hash", Json::from(journal::hex(replayed))),
+                        ("matches", Json::from(replayed == hash)),
+                        ("ms", Json::from(started.elapsed().as_secs_f64() * 1000.0)),
+                    ])
+                }
+                None => Json::obj([
+                    ("replayable", Json::from(false)),
+                    ("message", Json::from("older journal entries were dropped (memory limit), so it can't replay from its base")),
+                ]),
+            };
+            out.set("verify", report);
+        }
+        ToolOutput::text(out.to_string())
     }
 
     /// One page of world_list / world_query, cut short at [`MAX_LISTING_BYTES`].
@@ -819,7 +1008,7 @@ impl Engine {
                 if lock.is_some() {
                     self.world_lock = lock;
                 }
-                self.world = world;
+                self.replace_world(world, &name);
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -890,7 +1079,7 @@ impl Engine {
         let mut packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(self.agent_name(session))),
+            ("requested_by", Json::from(self.swarm.agent_name(session))),
             ("image", image),
             ("camera", camera.to_json()),
             ("time_s", Json::from(time_s)),
@@ -978,9 +1167,9 @@ impl Engine {
             ("vulkan", Json::from(format!("{}.{}.{}", a.api_version.0, a.api_version.1, a.api_version.2))),
         ]);
         let agents = sessions.iter().map(|s| {
-            let role = self.agents.get(&s.id).map_or("builder", |a| a.role.as_str());
+            let role = self.swarm.role(&s.id);
             Json::obj([
-                ("name", Json::from(self.agent_name(s))),
+                ("name", Json::from(self.swarm.agent_name(s))),
                 ("role", Json::from(role)),
                 ("client", Json::from(s.client_name.as_str())),
                 ("version", Json::from(s.client_version.as_str())),
@@ -1005,6 +1194,7 @@ impl Engine {
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
             ("clock", self.clock.to_json()),
+            ("swarm", self.swarm.stats_json()),
         ]);
         let mut info = info;
         if let Some(game) = &self.game {

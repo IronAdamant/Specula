@@ -175,6 +175,18 @@ versions), `powi` (compiler-rt; LLVM may fold it differently), `mul_add`, `cbrt`
 
 - **`world_hash`**: a 64-bit hash of all simulation state, taken in a fixed order every tick (cheap to compute) and
   exposed as a tool.
+  - **What it covers.** The entities' content by id, the environment and the **id counter**. The id counter is
+    included because it decides the ids of future spawns, and so the future of the run.
+  - **Rejected calls count.** Ids are never handed out twice: a command rejected by a claim (or any rolled-back
+    command) still uses up the ids it handed out, so it moves the id counter, and with it the hash.
+  - **What to compare.**
+    - A world hash always matches the **replay of its own journal** (`world_hash verify`, and the CI replay test):
+      the journal notes the counter after rejections too.
+    - Two runs' hashes match only when they received the same calls, *rejected ones included*, at the same ticks.
+      Runs that differ only in rejected calls diverge in the counter (and in the ids of later spawns), not in what
+      was built.
+    - To compare such runs, compare entities by path and content, or the game's own simulation hash (Sepulcra's
+      `State::hash`), which never sees engine ids.
 - **Replay test in CI**: record a scenario journal, then replay it on the msvc, gnu and ubuntu jobs. All must reach the
   same final hash. This checks D2 on every push.
 - **Twin-run test**: run the same scenario in two separate processes, so `HashMap` seeds differ, and compare hashes
