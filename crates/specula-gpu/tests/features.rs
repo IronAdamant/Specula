@@ -416,3 +416,69 @@ fn overlay_quads_draw_on_top_in_every_path() {
         assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
     });
 }
+
+/// Everything at once, for people and agents to look at: cubes on a ground plane under a low moon
+/// that is in view, shadows towards the camera, bloom on the glowing cube and the moon, ground
+/// mist, the sky, FXAA and an overlay panel with a glyph and a bar. Writes
+/// `features_all_<adapter>.png` (1280×720).
+#[test]
+fn everything_together() {
+    use specula_gpu::{OverlayKind, OverlayQuad, TextureFormat};
+    every_adapter("all", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let (w, h) = (1280u32, 720u32);
+        let moon = normalize([-0.45, 0.28, -0.85]);
+        let view = look_at_rh([0.0, 5.0, 16.0], [0.0, 3.0, -10.0], [0.0, 1.0, 0.0]);
+        let view_proj = mul(&perspective_vk_reverse_z(50f32.to_radians(), w as f32 / h as f32, 0.05), &view);
+        let mut env = scene.environment();
+        env.sun_direction = moon;
+        env.shadow.enabled = true;
+        env.bloom.enabled = true;
+        env.fog.enabled = true;
+        env.fog.height = 0.3;
+        env.fog.falloff = 1.2;
+        env.fog.density = 0.08;
+        env.sky.enabled = true;
+        env.fxaa = true;
+        let glyph = gpu.upload_texture(8, 8, TextureFormat::R8, &glyph()).unwrap();
+        let overlay = [
+            OverlayQuad { radius: 10.0, ..OverlayQuad::solid([956.0, 24.0, 300.0, 96.0], [0.17, 0.19, 0.22, 0.85]) },
+            OverlayQuad::textured([976.0, 40.0, 32.0, 32.0], [0.0, 0.0, 0.5, 0.5], glyph, OverlayKind::AlphaMask, [0.925, 0.902, 0.839, 1.0]),
+            OverlayQuad { radius: 4.0, ..OverlayQuad::solid([976.0, 88.0, 200.0, 12.0], [0.247, 0.878, 0.816, 1.0]) },
+        ];
+        let mut draws = scene.draws();
+        draws[0].model = scale3([400.0, 1.0, 400.0], [0.0; 3]); // the ground reaches into the mist
+        let target = gpu.create_target(w, h).unwrap();
+        let frame = FrameDesc {
+            view_proj,
+            clear_color: [0.04, 0.06, 0.13, 1.0],
+            draws: &draws,
+            reverse_z: true,
+            environment: env,
+            overlay: &overlay,
+            ..Default::default()
+        };
+        gpu.render(target, &frame).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        let path = write_png(&format!("features_all_{}.png", gpu.adapter().index), &rgba, w, h);
+        eprintln!("{test}: wrote {}", path.display());
+        let s = gpu.last_frame_stats();
+        eprintln!("{test}: {:?}", s.draws);
+        if let Some(t) = &s.gpu {
+            let names: Vec<_> = t.passes.iter().map(|p| p.name).collect();
+            eprintln!("{test}: passes {names:?}");
+            assert_eq!(names, ["shadow", "scene", "post_bloom", "post_tonemap", "post_fxaa", "overlay"]);
+        }
+        // The moon is where its direction projects, bright.
+        let far_moon = [moon[0] * 1000.0, 5.0 + moon[1] * 1000.0, 16.0 + moon[2] * 1000.0];
+        let (mx, my) = project(&view_proj, far_moon, w, h);
+        let disc = pixel(&rgba, w, mx as u32, my as u32);
+        eprintln!("{test}: moon at ({mx:.0}, {my:.0}): {disc:?}");
+        assert!(luma(disc) > 600, "moon disc: {disc:?}");
+        gpu.destroy_target(target);
+        gpu.destroy_texture(glyph);
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}

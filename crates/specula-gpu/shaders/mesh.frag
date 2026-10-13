@@ -12,6 +12,9 @@ layout(constant_id = 0) const uint FEATURES = 0u;
 const bool SHADOWS = (FEATURES & 1u) != 0u;
 const bool FOG = (FEATURES & 2u) != 0u;
 const bool HDR = (FEATURES & 4u) != 0u;
+// The opaque pipeline only ever draws Lit: leaving the other materials out keeps its register
+// use (and so the GPU's occupancy) that of the Lit path alone.
+const bool OPAQUE = (FEATURES & 8u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
@@ -65,6 +68,9 @@ float fog_keep() {
 }
 
 // The vertex colour, snapped to exactly 1 near white so interpolation never alters an untinted draw.
+// Read by the Lit path only: reading it in the blended pipeline (glass, blob shadows) hung the
+// Intel Windows driver (101.5187) after ~70 frames of the mixed_1000 bench, with sync validation
+// clean; reading other varyings there does not. Revisit with newer drivers.
 vec4 tint() { return mix(v_tint, vec4(1.0), greaterThan(v_tint, vec4(0.99999))); }
 
 // Integer hashes (PCG): bit-exact on every GPU, so a seed gives the same lamp everywhere.
@@ -249,10 +255,9 @@ vec4 shade_glass() {
     gather_light(v_world, n, v, 0.05, diffuse, specular);
     vec3 reflected = env_radiance(reflect(-v, n)) + specular;
     // A tinted body: the path through a thin shell grows at grazing angles.
-    vec4 t = tint();
-    float body = clamp(DRAW.color.a * t.a, 0.0, 1.0);
+    float body = clamp(DRAW.color.a, 0.0, 1.0);
     float path = 1.0 - pow(1.0 - body, 1.0 / max(ndv, 0.2));
-    vec3 body_light = DRAW.color.rgb * t.rgb * (0.5 * diffuse + DRAW.params.x);
+    vec3 body_light = DRAW.color.rgb * (0.5 * diffuse + DRAW.params.x);
     float alpha = path + fresnel * (1.0 - path);
     vec3 c = body_light * path * (1.0 - fresnel) + reflected * fresnel;
     if (FOG) {
@@ -267,7 +272,7 @@ vec4 shade_glass() {
 
 vec4 shade_blob_shadow() {
     float r = length(v_local.xz) * 2.0;
-    float a = clamp(DRAW.color.a * tint().a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
+    float a = clamp(DRAW.color.a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
     if (FOG) {
         a *= fog_keep();
     }
@@ -485,7 +490,9 @@ vec4 shade_lava_lamp() {
 }
 
 void main() {
-    if (pc.material == MAT_GLASS) {
+    if (OPAQUE) {
+        out_color = shade_lit();
+    } else if (pc.material == MAT_GLASS) {
         out_color = shade_glass();
     } else if (pc.material == MAT_BLOB_SHADOW) {
         out_color = shade_blob_shadow();

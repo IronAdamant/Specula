@@ -10,13 +10,21 @@
 //!   (blended, two passes each), blob shadows and a ground plane; 4 point lights, tone mapping.
 //! - `lights_16`: a ground and back wall filling the frame plus 64 glossy spheres under 16 point
 //!   lights, tone mapping: fragment-bound.
+//! - `game`: the Sepulcra look at full quality: 2,000 instanced lit objects on a 40 m slab under
+//!   a low moon, a 2048² shadow map fitted to the view, bloom (5 levels), height fog, the sky, FXAA and 200
+//!   overlay quads (panels and alpha-masked glyphs). Budget: under ~8 ms GPU on the Intel iGPU
+//!   at 1600×900.
+//! - `game_low`: the same scene with the cheaper settings (a 1024² shadow map, 3 bloom levels,
+//!   no FXAA): the fallback when `game` is over budget.
+//!
+//! Each line has `passes`: median and p95 GPU ms per pass (shadow, scene, post_bloom, …).
 //!
 //! Without Vulkan it prints `{"skipped": …}` and exits 0. Validation is off by default (it skews
 //! CPU timings); `--validation` turns it on and reports the error count.
 
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, PointLight, Severity, Surface, Validation,
-    Vertex,
+    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, OverlayKind, OverlayQuad, PointLight,
+    Severity, Surface, TextureFormat, TextureId, Validation, Vertex,
 };
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
@@ -160,6 +168,7 @@ struct Meshes {
 struct Scene {
     name: &'static str,
     draws: Vec<DrawItem>,
+    overlay: Vec<OverlayQuad>,
     lights: Vec<PointLight>,
     environment: Environment,
     clear: [f32; 4],
@@ -185,6 +194,7 @@ fn cubes_10k(m: &Meshes) -> Scene {
     Scene {
         name: "cubes_10k",
         draws,
+        overlay: Vec::new(),
         lights: Vec::new(),
         environment: Environment::default(),
         clear: [0.55, 0.65, 0.8, 1.0],
@@ -243,6 +253,7 @@ fn mixed_1000(m: &Meshes) -> Scene {
     Scene {
         name: "mixed_1000",
         draws,
+        overlay: Vec::new(),
         lights,
         environment,
         clear: [0.1, 0.12, 0.16, 1.0],
@@ -250,6 +261,110 @@ fn mixed_1000(m: &Meshes) -> Scene {
         target: [0.0, 0.0, 0.0],
         fov_y_deg: 55.0,
     }
+}
+
+/// Hex sRGB colour.
+fn hex(rgb: u32) -> [f32; 4] {
+    [((rgb >> 16) & 255) as f32 / 255.0, ((rgb >> 8) & 255) as f32 / 255.0, (rgb & 255) as f32 / 255.0, 1.0]
+}
+
+fn game(m: &Meshes, atlas: TextureId, low: bool) -> Scene {
+    let mut rng = Rng(4);
+    let mut draws = Vec::with_capacity(2001);
+    // The slab: a 40 × 40 m top and 15 m cliffs.
+    draws.push(DrawItem::new(m.cube, trs([0.0, -7.5, 0.0], 0.0, [40.0, 15.0, 40.0]), hex(0x5b6470)));
+    let stone = Surface { roughness: 0.8, specular: 0.3, ..Default::default() };
+    for i in 0..2000 {
+        let p = [rng.range(-19.0, 19.0), 0.0, rng.range(-19.0, 19.0)];
+        let d = match i % 10 {
+            // Glowing runes and grave lights: emissive (they bloom).
+            0 => {
+                let c = if i % 20 == 0 { hex(0x3fe0d0) } else { hex(0x9cff4f) };
+                with(DrawItem::new(m.sphere, trs([p[0], 0.4, p[2]], 0.0, [0.3; 3]), c), Material::Lit, Surface { emissive: 2.5, ..stone })
+            }
+            // Stones and tombstones.
+            1..=5 => {
+                let h = rng.range(0.6, 2.4);
+                let s = [rng.range(0.4, 1.0), h, rng.range(0.15, 1.0)];
+                with(DrawItem::new(m.cube, trs([p[0], h / 2.0, p[2]], rng.range(0.0, TAU), s), hex(0x8c96a3)), Material::Lit, stone)
+            }
+            // Undead: bone-coloured spheres.
+            _ => {
+                let s = rng.range(0.5, 1.0);
+                with(DrawItem::new(m.sphere, trs([p[0], s / 2.0, p[2]], 0.0, [s, s * 1.7, s]), hex(0xd8cfb8)), Material::Lit, stone)
+            }
+        };
+        draws.push(d);
+    }
+    // HUD: two panels, 196 glyphs (alpha-masked from the atlas) and two bars.
+    let mut overlay = vec![
+        OverlayQuad { radius: 10.0, ..OverlayQuad::solid([24.0, 24.0, 520.0, 120.0], [0.17, 0.19, 0.22, 0.85]) },
+        OverlayQuad { radius: 10.0, ..OverlayQuad::solid([1056.0, 756.0, 520.0, 120.0], [0.17, 0.19, 0.22, 0.85]) },
+    ];
+    for k in 0..196 {
+        let (col, row) = (k % 49, k / 49);
+        let (gx, gy) = ((k * 7) % 16, (k * 3) % 16);
+        let uv = [gx as f32 / 16.0, gy as f32 / 16.0, (gx + 1) as f32 / 16.0, (gy + 1) as f32 / 16.0];
+        let (x, y) = if row < 2 { (40.0 + col as f32 * 10.0, 40.0 + row as f32 * 22.0) } else { (1072.0 + col as f32 * 10.0, 772.0 + (row - 2) as f32 * 22.0) };
+        overlay.push(OverlayQuad::textured([x, y, 10.0, 18.0], uv, atlas, OverlayKind::AlphaMask, hex(0xece6d6)));
+    }
+    overlay.push(OverlayQuad { radius: 4.0, ..OverlayQuad::solid([40.0, 100.0, 300.0, 12.0], hex(0x3fe0d0)) });
+    overlay.push(OverlayQuad { radius: 4.0, ..OverlayQuad::solid([1072.0, 832.0, 220.0, 12.0], hex(0x9cff4f)) });
+    debug_assert_eq!(overlay.len(), 200);
+
+    let mut environment = Environment {
+        sun_direction: [-0.6, 0.5, 0.35],
+        sun_color: [0.79, 0.84, 1.0],
+        sun_intensity: 0.9,
+        ambient_color: [0.165, 0.204, 0.282],
+        ambient_intensity: 1.0,
+        exposure: 1.1,
+        tonemap: true,
+        ..Default::default()
+    };
+    environment.shadow.enabled = true;
+    environment.bloom.enabled = true;
+    environment.fog.enabled = true;
+    environment.fog.height = -4.0;
+    environment.fog.density = 0.04;
+    environment.fog.falloff = 0.3;
+    environment.sky.enabled = true;
+    environment.fxaa = !low;
+    if low {
+        environment.shadow.cascades = 1;
+        environment.shadow.resolution = 1024;
+        environment.bloom.levels = 3;
+    }
+    Scene {
+        name: if low { "game_low" } else { "game" },
+        draws,
+        overlay,
+        lights: Vec::new(),
+        environment,
+        clear: [0.04, 0.06, 0.13, 1.0],
+        eye: [0.0, 32.0, 42.0],
+        target: [0.0, 0.0, 2.0],
+        fov_y_deg: 50.0,
+    }
+}
+
+/// A 256 × 256 R8 "glyph atlas": 16 × 16 cells of blocky shapes.
+fn atlas() -> Vec<u8> {
+    let mut rng = Rng(5);
+    let mut px = vec![0u8; 256 * 256];
+    for cell in 0..256 {
+        let (cx, cy) = ((cell % 16) * 16, (cell / 16) * 16);
+        for _ in 0..3 {
+            let (x0, y0) = (cx + 2 + (rng.next() * 6.0) as usize, cy + 2 + (rng.next() * 6.0) as usize);
+            let (w, h) = (2 + (rng.next() * 6.0) as usize, 2 + (rng.next() * 6.0) as usize);
+            for y in y0..(y0 + h).min(cy + 15) {
+                for x in x0..(x0 + w).min(cx + 15) {
+                    px[y * 256 + x] = 255;
+                }
+            }
+        }
+    }
+    px
 }
 
 fn lights_16(m: &Meshes) -> Scene {
@@ -277,6 +392,7 @@ fn lights_16(m: &Meshes) -> Scene {
     Scene {
         name: "lights_16",
         draws,
+        overlay: Vec::new(),
         lights,
         environment,
         clear: [0.02, 0.02, 0.03, 1.0],
@@ -297,13 +413,31 @@ struct Args {
     validation: bool,
     /// Write each scene's last frame here as `<scene>.png`.
     png: Option<std::path::PathBuf>,
+    /// Only these scenes (comma-separated names).
+    scenes: Option<Vec<String>>,
+    /// Features to switch off in every scene: shadow, bloom, fog, sky, fxaa, overlay.
+    without: Vec<String>,
+    /// Shadow overrides for scenes with shadows: cascades, resolution, softness.
+    cascades: Option<u32>,
+    shadow_res: Option<u32>,
+    softness: Option<f32>,
+    bloom_levels: Option<u32>,
 }
 
 const USAGE: &str =
-    "usage: bench [--adapter discrete|integrated|<index>] [--frames N] [--size WxH] [--validation] [--png DIR]";
+    "usage: bench [--adapter discrete|integrated|<index>] [--frames N] [--size WxH] [--validation] [--png DIR] [--scenes a,b] [--without shadow,bloom,fog,sky,fxaa,overlay]\n\
+     [--cascades N] [--shadow-res N] [--softness F] [--bloom-levels N]";
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args { adapter: AdapterPreference::HighPerformance, frames: 120, size: (1600, 900), validation: false, png: None };
+    let mut args =
+        Args { adapter: AdapterPreference::HighPerformance, frames: 120, size: (1600, 900), validation: false, png: None,
+        scenes: None,
+        without: Vec::new(),
+        cascades: None,
+        shadow_res: None,
+        softness: None,
+        bloom_levels: None,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
@@ -325,6 +459,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "--validation" => args.validation = true,
             "--png" => args.png = Some(value()?.into()),
+            "--scenes" => args.scenes = Some(value()?.split(',').map(str::to_string).collect()),
+            "--without" => args.without = value()?.split(',').map(str::to_string).collect(),
+            "--cascades" => args.cascades = Some(value()?.parse().map_err(|_| format!("bad cascades\n{USAGE}"))?),
+            "--shadow-res" => args.shadow_res = Some(value()?.parse().map_err(|_| format!("bad resolution\n{USAGE}"))?),
+            "--softness" => args.softness = Some(value()?.parse().map_err(|_| format!("bad softness\n{USAGE}"))?),
+            "--bloom-levels" => args.bloom_levels = Some(value()?.parse().map_err(|_| format!("bad levels\n{USAGE}"))?),
             "--help" | "-h" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
         }
@@ -419,17 +559,32 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
     let target = gpu.create_target(w, h)?;
     let view_proj = mul(&perspective_reverse_z(scene.fov_y_deg, w as f32 / h as f32), &look_at_rh(scene.eye, scene.target));
     let (mut gpu_ms, mut record_ms, mut wall_ms) = (Vec::new(), Vec::new(), Vec::new());
+    // Per pass name, in first-seen order.
+    let mut passes: Vec<(&'static str, Vec<f64>)> = Vec::new();
     let mut last = None;
+    let off = |f: &str| args.without.iter().any(|w| w == f);
+    let mut environment = scene.environment;
+    environment.shadow.enabled &= !off("shadow");
+    environment.bloom.enabled &= !off("bloom");
+    environment.fog.enabled &= !off("fog");
+    environment.sky.enabled &= !off("sky");
+    environment.fxaa &= !off("fxaa");
+    let s = &mut environment.shadow;
+    s.cascades = args.cascades.unwrap_or(s.cascades);
+    s.resolution = args.shadow_res.unwrap_or(s.resolution);
+    s.softness = args.softness.unwrap_or(s.softness);
+    environment.bloom.levels = args.bloom_levels.unwrap_or(environment.bloom.levels);
+    let overlay: &[OverlayQuad] = if off("overlay") { &[] } else { &scene.overlay };
     for i in 0..WARMUP_FRAMES + args.frames {
         let frame = FrameDesc {
             view_proj,
             clear_color: scene.clear,
             draws: &scene.draws,
             reverse_z: true,
-            environment: scene.environment,
+            environment,
             lights: &scene.lights,
             time_s: 1.0,
-            overlay: &[],
+            overlay,
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;
@@ -440,6 +595,12 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
         let s = gpu.last_frame_stats();
         if let Some(g) = &s.gpu {
             gpu_ms.push(g.total_ms);
+            for p in &g.passes {
+                match passes.iter_mut().find(|(n, _)| *n == p.name) {
+                    Some((_, v)) => v.push(p.gpu_ms),
+                    None => passes.push((p.name, vec![p.gpu_ms])),
+                }
+            }
         }
         record_ms.push(s.cpu.record_ms);
         wall_ms.push(wall);
@@ -459,13 +620,21 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
     let (rec_med, _) = median_p95(&mut record_ms);
     let (wall_med, wall_p95) = median_p95(&mut wall_ms);
     let d = &s.draws;
+    let pass_json: Vec<String> = passes
+        .iter_mut()
+        .map(|(name, v)| {
+            let (m, p) = median_p95(v);
+            format!("{}:{{\"median\":{},\"p95\":{}}}", json_str(name), num(m), num(p))
+        })
+        .collect();
     Ok(format!(
         concat!(
             "{{\"scene\":{},\"adapter\":{},\"kind\":\"{:?}\",\"width\":{},\"height\":{},\"frames\":{},\"validation\":{},",
             "\"items\":{},\"lights\":{},\"culled\":{},\"draw_calls\":{},\"draw_calls_before_instancing\":{},",
             "\"draw_calls_unbatched_visible\":{},\"instances\":{},\"triangles\":{},\"pipeline_binds\":{},",
             "\"gpu_ms_median\":{},\"gpu_ms_p95\":{},\"cpu_record_ms_median\":{},\"wall_ms_median\":{},\"wall_ms_p95\":{},",
-            "\"draw_buffer_bytes\":{},\"gpu_memory_bytes\":{},\"pipelines_created\":{},\"pipelines_created_after_warm\":{}}}"
+            "\"draw_buffer_bytes\":{},\"gpu_memory_bytes\":{},\"pipelines_created\":{},\"pipelines_created_after_warm\":{},",
+            "\"pipeline_create_ms\":{},\"shadow_draw_calls\":{},\"shadow_instances\":{},\"overlay_quads\":{},\"passes\":{{{}}}}}"
         ),
         json_str(scene.name),
         json_str(&gpu.adapter().name),
@@ -492,6 +661,11 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
         s.memory.total_bytes,
         s.pipelines.created,
         s.pipelines.created_after_warm,
+        num(s.pipelines.create_ms),
+        d.shadow_draw_calls,
+        d.shadow_instances,
+        d.overlay_quads,
+        pass_json.join(","),
     ))
 }
 
@@ -519,8 +693,10 @@ fn main() {
         let upload = |gpu: &mut Gpu, (v, i): (Vec<Vertex>, Vec<u32>)| gpu.upload_mesh(&v, &i);
         let meshes = Meshes { cube: upload(&mut gpu, cube())?, sphere: upload(&mut gpu, sphere(32, 16))?, quad: upload(&mut gpu, quad())? };
         gpu.mark_warm();
-        for scene in [cubes_10k(&meshes), mixed_1000(&meshes), lights_16(&meshes)] {
-            println!("{}", run_scene(&mut gpu, &args, &scene)?);
+        let atlas = gpu.upload_texture(256, 256, TextureFormat::R8, &atlas())?;
+        let scenes = [cubes_10k(&meshes), mixed_1000(&meshes), lights_16(&meshes), game(&meshes, atlas, false), game(&meshes, atlas, true)];
+        for scene in scenes.iter().filter(|s| args.scenes.as_ref().is_none_or(|only| only.iter().any(|n| n == s.name))) {
+            println!("{}", run_scene(&mut gpu, &args, scene)?);
         }
         Ok::<(), specula_gpu::GpuError>(())
     })();

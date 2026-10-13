@@ -12,16 +12,28 @@
 //!
 //! - Matrices are column-major `[f32; 16]` in Vulkan clip conventions (y down, depth 0..1) — build
 //!   them with `specula_core::math` (`perspective_vk`, `look_at_rh`, `from_trs`).
-//! - Triangle lists of [`Vertex`] (position, normal, sRGB vertex colour multiplied with the draw
-//!   colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0 when
-//!   [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
-//! - Opaque draws ([`Material::Lit`]) come first, with no face culling. Blended draws (every other
-//!   material) follow, sorted far to near, with depth test on and depth writes off.
+//! - Triangle lists of [`Vertex`] (position, normal, sRGB vertex colour multiplied with a `Lit`
+//!   draw's colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0
+//!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
+//! - Opaque draws ([`Material::Lit`]) come first, with no face culling; then the sky (if on);
+//!   then blended draws (every other material), sorted far to near, with depth test on and depth
+//!   writes off; then the overlay, last, over everything, after post-processing.
 //! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
-//! - Per-frame data (camera, environment, lights, time) and one record per draw (model, colours,
-//!   surface) reach the shaders through buffer device addresses; push constants carry only the
-//!   two addresses, the material and the glass pass.
+//! - Per-frame data (camera, environment, lights, time, shadow cascades, fog, sky) and one record
+//!   per draw (model, colours, surface) reach the shaders through buffer device addresses; push
+//!   constants carry only the two addresses, the material and the glass pass. One global
+//!   descriptor set holds the shadow map and the bindless texture array.
+//!
+//! # Frame passes
+//!
+//! `shadow` (sun shadow map, [`ShadowSettings`]) → `scene` (forward, all materials, the sky
+//! [`SkySettings`], height fog [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`])
+//! → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
+//! **off by default**, and each one off is specialized out of the shaders (or its pass skipped),
+//! so a frame without it renders exactly — bit for bit — what it rendered before the feature
+//! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
+//! straight to the target (no intermediate images: cheapest, and tile-GPU friendly).
 //!
 //! # Performance
 //!
@@ -35,8 +47,16 @@
 //!   persisted ([`Gpu::pipeline_cache_data`]) and fed back ([`GpuOptions::pipeline_cache`]).
 //!   Call [`Gpu::mark_warm`] after loading; a pipeline created later is counted as a budget error
 //!   ([`PipelineStats::created_after_warm`]).
+//! - **Specialization:** the scene shaders are one source; each pipeline specializes it by
+//!   feature (shadows, fog, HDR output) and the opaque pipeline to the `Lit` path alone, so a
+//!   frame pays only for what it uses (on the Intel iGPU this cut the game scene's main pass from
+//!   6.9 to 4.4 ms).
+//! - **Budget** (`examples/bench.rs`, scene `game`: 2,000 instanced objects, shadows, bloom, fog,
+//!   sky, FXAA, 200 overlay quads at 1600×900): about 7.5 ms GPU on the Intel RaptorLake iGPU
+//!   with one fitted 2048² shadow map; each extra cascade adds about 1.2 ms.
 //! - **Statistics:** [`Gpu::last_frame_stats`] — GPU time per pass (timestamp queries, read without
-//!   stalling), CPU time, draw calls, instances, triangles, culled draws, pipelines and memory.
+//!   stalling), CPU time, draw calls, instances, triangles, culled draws, shadow casters, overlay
+//!   quads, pipelines and memory.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are
 //!   `R8G8B8A8_SRGB`; the swapchain prefers `B8G8R8A8_SRGB`. Readback bytes are therefore sRGB RGBA8,
 //!   ready to write as PNG.
@@ -205,9 +225,10 @@ impl GpuError {
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    /// sRGB colour and alpha (0–255), multiplied with the draw's colour (and, for blended
-    /// materials, its opacity). White ([`Vertex::WHITE`]) leaves the draw colour unchanged, bit
-    /// for bit. The ray-marched `LavaLamp` ignores it.
+    /// sRGB colour (0–255), multiplied with the draw's colour by `Lit` (the stylised
+    /// vertex-colour path). White ([`Vertex::WHITE`]) leaves the draw colour unchanged, bit for
+    /// bit. Blended materials ignore it for now (reading it there hung the Intel driver); alpha is
+    /// reserved.
     pub color: [u8; 4],
 }
 
@@ -404,7 +425,9 @@ pub struct ShadowSettings {
     pub enabled: bool,
     /// Texels per side of each cascade (clamped to 256..=8192).
     pub resolution: u32,
-    /// 1..=[`MAX_SHADOW_CASCADES`]. More cascades keep near shadows sharp over a long distance.
+    /// 1..=[`MAX_SHADOW_CASCADES`]. One map fitted to what is visible suits compact, top-down
+    /// views (and is cheapest: on the Intel iGPU each cascade costs about 1.2 ms in the game
+    /// bench); more cascades keep near shadows sharp over long views.
     pub cascades: u32,
     /// View depth (m) where shadows end; they fade out over the last 10%.
     pub distance: f32,
@@ -417,7 +440,7 @@ pub struct ShadowSettings {
 
 impl Default for ShadowSettings {
     fn default() -> Self {
-        ShadowSettings { enabled: false, resolution: 2048, cascades: 3, distance: 80.0, softness: 1.5, bias: 1.0 }
+        ShadowSettings { enabled: false, resolution: 2048, cascades: 1, distance: 80.0, softness: 1.5, bias: 1.0 }
     }
 }
 

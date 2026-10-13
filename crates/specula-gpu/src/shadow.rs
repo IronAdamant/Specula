@@ -172,7 +172,7 @@ impl LightBasis {
         LightBasis { right, up, forward }
     }
 
-    pub fn to_light(&self, p: [f32; 3]) -> [f32; 3] {
+    pub fn project(&self, p: [f32; 3]) -> [f32; 3] {
         [dot(self.right, p), dot(self.up, p), dot(self.forward, p)]
     }
 }
@@ -216,7 +216,7 @@ impl Cascade {
 /// `x` rounded down (`up` false) or up to a quarter octave (…, 1, 1.19, 1.41, 1.68, 2, …), so
 /// small changes in what is visible don't resize the cascades every frame.
 fn quantize(x: f32, up: bool) -> f32 {
-    if !(x > 0.0) || !x.is_finite() {
+    if x.is_nan() || x <= 0.0 || !x.is_finite() {
         return x;
     }
     let steps = x.log2() * 4.0;
@@ -261,7 +261,7 @@ pub fn fit_cascades(rays: &ViewRays, basis: &LightBasis, range: (f32, f32), coun
         // Rounded up to 1/64 m: corners move rigidly with the camera, so this is constant while
         // the slice is; rounding absorbs float noise.
         let radius = (r2.fold(0.0f32, f32::max).sqrt() * 64.0).ceil().max(1.0) / 64.0;
-        let l = basis.to_light(centre);
+        let l = basis.project(centre);
         let texel = 2.0 * radius / resolution as f32;
         let snap = |v: f32| (v / texel).round() * texel;
         *c = Cascade {
@@ -351,7 +351,7 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
     }
     let near = quantize(lo.max(rays.near).max(1e-3), false).max(rays.near);
     let far = quantize(hi, true).min(distance);
-    if !(far > near) {
+    if far.is_nan() || near.is_nan() || far <= near {
         return;
     }
     let basis = LightBasis::new(frame.environment.sun_direction);
@@ -367,7 +367,7 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
             Some(b) => world_sphere(&d.model, b),
             None => ([d.model[12], d.model[13], d.model[14]], f32::INFINITY),
         };
-        let l = basis.to_light(c);
+        let l = basis.project(c);
         (l.iter().all(|v| v.is_finite()) && !r.is_nan()).then_some((l, r))
     }));
     for k in 0..count {
@@ -718,8 +718,7 @@ mod tests {
             DrawItem::new(MeshId(1), at(1.0, 0.0, 1.0), [1.0, 1.0, 1.0, 0.5]), // glass: never casts
         ];
         draws[3].material = Material::Glass;
-        let mut environment = Environment::default();
-        environment.sun_direction = [0.0, 1.0, 0.0];
+        let mut environment = Environment { sun_direction: [0.0, 1.0, 0.0], ..Default::default() };
         environment.shadow.enabled = true;
         environment.shadow.cascades = 2;
         let frame = FrameDesc {
@@ -741,7 +740,7 @@ mod tests {
         assert!(!all.contains(&2) && !all.contains(&3), "{all:?}");
         // The cascade holding the high caster reaches up to it.
         let k = (0..2).find(|&k| in_cascade(k).contains(&1)).unwrap() as usize;
-        let l = LightBasis::new([0.0, 1.0, 0.0]).to_light([0.0, 40.0, 0.0]);
+        let l = LightBasis::new([0.0, 1.0, 0.0]).project([0.0, 40.0, 0.0]);
         assert!(s.cascades[k].z_near <= l[2] - 0.87 + 1e-3, "{:?}", s.cascades[k]);
         // Reusing the plan for a frame with shadows off empties it.
         let mut off = frame;

@@ -227,6 +227,6 @@ mod tests {
     #[test]
     fn slot_ids_fit_the_shader_encoding() {
         // Overlay quads store `slot + 1` (0 = no texture) in a u32: plenty of room.
-        assert!(super::MAX_TEXTURE_SLOTS < u32::MAX);
+        const { assert!(super::MAX_TEXTURE_SLOTS < u32::MAX) };
     }
 }
