@@ -26,7 +26,9 @@ Every entity has a version: pass expect_version to world_set/world_delete so you
 newer change. LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
-text files. Say who you are with agent_hello. Coordinates: metres, right-handed, +Y up; a top-down view puts \
+text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
+frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
+the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time.";
 
 /// How long a tool call waits for the main thread before giving up.
@@ -124,7 +126,26 @@ pub enum Command {
     /// `None` returns the window to auto-framing.
     View(Option<Camera>),
     Info,
+    /// perf_frame; `None` = the default budget.
+    Perf { budget_ms: Option<f64> },
+    Time(TimeOp),
+    /// A tool the hosted game added.
+    Game { name: String, args: Json },
 }
+
+/// time_control's actions on the simulation clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TimeOp {
+    Pause,
+    Resume,
+    /// Pause, then run exactly this many ticks.
+    Step(u64),
+    Scale(f32),
+    Info,
+}
+
+/// Most ticks one time_control step may run (about 10 minutes of game time at 30 Hz).
+const MAX_STEP_TICKS: u64 = 18_000;
 
 /// world_list and world_query.
 pub struct QuerySpec {
@@ -158,21 +179,37 @@ pub struct Request {
 
 pub struct Tools {
     to_engine: Sender<Request>,
+    /// Tools the hosted game added (answered by the game on the engine thread).
+    game_tools: Vec<ToolDef>,
 }
 
 impl Tools {
-    pub fn new(to_engine: Sender<Request>) -> Tools {
-        Tools { to_engine }
+    /// Game tools whose names clash with an engine tool are dropped, with a message.
+    pub fn new(to_engine: Sender<Request>, game_tools: Vec<ToolDef>) -> Tools {
+        let engine: Vec<String> = definitions().into_iter().map(|t| t.name).collect();
+        let (game_tools, clashes): (Vec<ToolDef>, Vec<ToolDef>) =
+            game_tools.into_iter().partition(|t| !engine.contains(&t.name));
+        for t in clashes {
+            eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
+        }
+        Tools { to_engine, game_tools }
     }
 }
 
 impl ToolHandler for Tools {
     fn tools(&self) -> Vec<ToolDef> {
-        definitions()
+        let mut all = definitions();
+        all.extend(self.game_tools.iter().cloned());
+        all
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
-        let command = match parse(name, arguments) {
+        let parsed = if self.game_tools.iter().any(|t| t.name == name) {
+            Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
+        } else {
+            parse(name, arguments)
+        };
+        let command = match parsed {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
@@ -229,7 +266,57 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             parse_view(args).map(Command::View)
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
+        "perf_frame" => {
+            check_keys(args, name, &[&["budget_ms"]])?;
+            let budget_ms = match args.get("budget_ms") {
+                None | Some(Json::Null) => None,
+                Some(v) => match v.as_f64() {
+                    Some(ms) if (0.1..=10_000.0).contains(&ms) => Some(ms),
+                    _ => return Err("'budget_ms' must be a number of milliseconds, 0.1..10000".into()),
+                },
+            };
+            Ok(Command::Perf { budget_ms })
+        }
+        "time_control" => {
+            check_keys(args, name, &[&["action", "ticks", "scale"]])?;
+            parse_time(args).map(Command::Time)
+        }
         other => Err(format!("unknown tool '{other}'")),
+    }
+}
+
+fn parse_time(args: &Json) -> Result<TimeOp, String> {
+    let action = string_arg(args, "action")?.unwrap_or("info");
+    let only = |allowed: &str| -> Result<(), String> {
+        for key in ["ticks", "scale"] {
+            if key != allowed && args.get(key).is_some_and(|v| *v != Json::Null) {
+                return Err(format!("'{key}' does not apply to action '{action}'"));
+            }
+        }
+        Ok(())
+    };
+    match action {
+        "pause" => only("").map(|()| TimeOp::Pause),
+        "resume" => only("").map(|()| TimeOp::Resume),
+        "info" => only("").map(|()| TimeOp::Info),
+        "step" => {
+            only("ticks")?;
+            let ticks = match args.get("ticks") {
+                None | Some(Json::Null) => 1,
+                Some(v) => v.as_u64().filter(|n| (1..=MAX_STEP_TICKS).contains(n)).ok_or_else(|| {
+                    format!("'ticks' must be an integer 1..{MAX_STEP_TICKS}")
+                })?,
+            };
+            Ok(TimeOp::Step(ticks))
+        }
+        "scale" => {
+            only("scale")?;
+            match args.get("scale").and_then(Json::as_f64) {
+                Some(x) if (0.05..=64.0).contains(&x) => Ok(TimeOp::Scale(x as f32)),
+                _ => Err("'scale' must be a number 0.05..64 (1 = real time)".into()),
+            }
+        }
+        other => Err(format!("'action' must be pause, resume, step, scale or info, not '{other}'")),
     }
 }
 
@@ -1211,6 +1298,35 @@ fn definitions() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "perf_frame".into(),
+            description: "Performance of the last frames (foundation F3): GPU ms per pass, CPU record/submit, draw \
+                          calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
+                          heap budgets, frame pacing (mean/p95/max), simulation tick cost, and `errors` listing \
+                          budget misses. The window and the last capture are reported separately."
+                .into(),
+            input_schema: schema(vec![("budget_ms", number("Frame budget to check against (default 16.67 = 60 fps)"))], &[]),
+        },
+        ToolDef {
+            name: "time_control".into(),
+            description: "The simulation clock (fixed ticks): action pause, resume, step (run `ticks` then stay \
+                          paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock."
+                .into(),
+            input_schema: schema(
+                vec![
+                    (
+                        "action",
+                        Json::obj([
+                            ("type", Json::from("string")),
+                            ("enum", Json::arr(["pause", "resume", "step", "scale", "info"].map(Json::from))),
+                        ]),
+                    ),
+                    ("ticks", integer("Ticks to run for action 'step' (1..18000)")),
+                    ("scale", number("Speed for action 'scale' (1 = real time)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
             name: "engine_info".into(),
             description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
                           changes, state hash) and the connected agents with their roles."
@@ -1456,6 +1572,12 @@ mod tests {
             ("world_env", r#"{"fog":1}"#),
             ("world_save", r#"{"name":"a","force":true}"#),
             ("engine_info", r#"{"verbose":true}"#),
+            ("perf_frame", r#"{"budget":16}"#),
+            ("perf_frame", r#"{"budget_ms":0}"#),
+            ("time_control", r#"{"action":"rewind"}"#),
+            ("time_control", r#"{"action":"pause","ticks":3}"#),
+            ("time_control", r#"{"action":"step","ticks":0}"#),
+            ("time_control", r#"{"action":"scale","scale":100}"#),
             ("world_query", r#"{"region":{"min":[0,0,0],"max":[1,1,1],"mid":[0,0,0]}}"#),
         ] {
             assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
@@ -1486,6 +1608,28 @@ mod tests {
         assert_eq!(argument_error("names must not be empty").get("field"), None);
         let shape = parse_spawn(&args(r#"{"shape":"cone"}"#)).err().unwrap();
         assert_eq!(argument_error(&shape).get("field"), Some(&Json::from("shape")), "{shape}");
+    }
+
+    #[test]
+    fn time_and_perf_arguments() {
+        let t = |a: &str| parse("time_control", &args(a));
+        assert!(matches!(t("{}"), Ok(Command::Time(TimeOp::Info))));
+        assert!(matches!(t(r#"{"action":"pause"}"#), Ok(Command::Time(TimeOp::Pause))));
+        assert!(matches!(t(r#"{"action":"step"}"#), Ok(Command::Time(TimeOp::Step(1)))));
+        assert!(matches!(t(r#"{"action":"step","ticks":300}"#), Ok(Command::Time(TimeOp::Step(300)))));
+        assert!(matches!(t(r#"{"action":"scale","scale":4}"#), Ok(Command::Time(TimeOp::Scale(x))) if x == 4.0));
+        assert!(matches!(parse("perf_frame", &args("{}")), Ok(Command::Perf { budget_ms: None })));
+        assert!(matches!(parse("perf_frame", &args(r#"{"budget_ms":33.3}"#)), Ok(Command::Perf { budget_ms: Some(_) })));
+    }
+
+    #[test]
+    fn game_tools_cannot_shadow_engine_tools() {
+        let (tx, _rx) = mpsc::channel();
+        let def = |name: &str| ToolDef { name: name.into(), description: String::new(), input_schema: Json::obj::<&str>([]) };
+        let tools = Tools::new(tx, vec![def("play_state"), def("world_spawn")]);
+        let names: Vec<String> = tools.tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(names.iter().filter(|n| *n == "world_spawn").count(), 1);
+        assert!(names.contains(&"play_state".to_string()));
     }
 
     #[test]

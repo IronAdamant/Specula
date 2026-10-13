@@ -35,3 +35,6 @@ tmp/
 
 # Subagent worktrees (Claude Code)
 .claude/worktrees/
+
+# Pipeline cache written by the engine
+.specula-cache/

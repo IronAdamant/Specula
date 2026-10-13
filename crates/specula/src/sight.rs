@@ -32,6 +32,21 @@ impl Camera {
         proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
     }
 
+    /// The ray from the eye through window pixel `(x, y)` (origin top-left) of a `width` x `height`
+    /// view: `(origin, unit direction)`. For mouse picking.
+    pub fn ray(&self, x: f32, y: f32, width: u32, height: u32) -> (Vec3, Vec3) {
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        let forward = (self.target - self.eye).normalize();
+        // Looking straight up or down: any horizontal right vector will do.
+        let side = forward.cross(Vec3::Y);
+        let right = if side.length() > 1e-6 { side.normalize() } else { Vec3::X };
+        let up = right.cross(forward);
+        let tan = (self.fov_y_deg.to_radians() * 0.5).tan();
+        let nx = (2.0 * (x + 0.5) / w - 1.0) * tan * (w / h);
+        let ny = (1.0 - 2.0 * (y + 0.5) / h) * tan;
+        (self.eye, (forward + right * nx + up * ny).normalize())
+    }
+
     pub fn to_json(self) -> Json {
         Json::obj([
             ("eye", vec3_json(self.eye)),
@@ -215,6 +230,26 @@ fn screen_rect(points: &[Vec4], width: u32, height: u32) -> Option<[u32; 4]> {
 mod tests {
     use super::*;
     use crate::world::{EntityKey, SpawnSpec};
+
+    #[test]
+    fn camera_rays_hit_what_the_pixel_shows() {
+        let cam = Camera { eye: Vec3::new(3.0, 8.0, 10.0), target: Vec3::new(1.0, 0.0, -2.0), fov_y_deg: 50.0 };
+        let (w, h) = (1280u32, 720u32);
+        let vp = cam.view_proj(w, h);
+        for p in [Vec3::new(1.0, 0.0, -2.0), Vec3::new(4.0, 1.0, 0.0), Vec3::new(-3.0, 0.5, -6.0)] {
+            // Project p to a pixel, cast a ray back through it, and check it passes through p.
+            let (sx, sy, _) = specula_core::math::project_to_screen(&vp, p, w, h).unwrap();
+            // `ray` takes pixel indices (it aims at the pixel centre).
+            let (o, d) = cam.ray(sx - 0.5, sy - 0.5, w, h);
+            let to_p = p - o;
+            let miss = (to_p - d * to_p.dot(d)).length();
+            assert!(miss < 1e-3 * to_p.length(), "{p:?} missed by {miss}");
+            assert!((d.length() - 1.0).abs() < 1e-5);
+        }
+        let down = Camera { eye: Vec3::new(0.0, 10.0, 0.0), target: Vec3::ZERO, fov_y_deg: 60.0 };
+        let (_, d) = down.ray(639.5, 359.5, w, h);
+        assert!(d.y < -0.999, "straight down still works: {d:?}");
+    }
 
     fn spawn_scaled(world: &mut World, shape: Shape, name: &str, position: Vec3, scale: Vec3) {
         let mut spec = SpawnSpec::new(shape);

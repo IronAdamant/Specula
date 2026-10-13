@@ -2,25 +2,30 @@
 //!
 //! A library so game binaries can link the engine; `main.rs` is the stock `specula` binary.
 //! [`world`] is public: games running in-process call [`world::World`] directly every tick.
+//! A game binary implements [`game::Game`] and calls [`run_game`]; the engine then runs it on a
+//! fixed-tick clock, feeds it window input, and serves its extra tools to agents.
 //!
 //! Threads: protocol threads parse tool calls and hand them to the engine (main) thread over a
 //! channel; the engine thread owns the world and GPU, applies commands between frames, renders,
 //! and replies. The human's window is pumped by its own thread (see `ui`), so dragging it never
 //! stalls agents.
 
+pub mod game;
 mod meshes;
+mod perf;
 pub mod persist;
-mod sight;
+pub mod sight;
 mod tools;
 mod ui;
 pub mod world;
 
+use game::{Clock, Ctx, Game};
 use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
-use specula_gpu::{AdapterPreference, FrameDesc, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use sight::{Camera, LatheMeshes};
-use specula_platform::{client_size_of, WindowDesc};
+use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
 use std::collections::BTreeMap;
@@ -28,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tools::{Command, FrameSpec, QuerySpec, Request};
+use tools::{Command, FrameSpec, QuerySpec, Request, TimeOp};
 use ui::UiThread;
 use world::{World, WorldError};
 
@@ -49,7 +54,10 @@ const MAX_AGENTS: usize = 1024;
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR] [--worlds DIR] [--world NAME]";
+[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR]";
+
+/// Simulation rate when no game is hosted (the clock still keeps time for agents).
+const DEFAULT_TICK_HZ: u32 = 30;
 
 struct Args {
     port: u16,
@@ -59,6 +67,10 @@ struct Args {
     captures: Option<PathBuf>,
     worlds: Option<PathBuf>,
     world: Option<String>,
+    /// Pipeline cache directory (`--cache`, default `./.specula-cache`).
+    cache: Option<PathBuf>,
+    /// How `--adapter` was given, to name the pipeline cache file.
+    adapter_label: String,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -70,6 +82,8 @@ fn parse_args() -> Result<Args, String> {
         captures: None,
         worlds: None,
         world: None,
+        cache: None,
+        adapter_label: "discrete".into(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -78,7 +92,9 @@ fn parse_args() -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--adapter" => {
-                args.adapter = match value()?.as_str() {
+                let v = value()?;
+                args.adapter_label = v.clone();
+                args.adapter = match v.as_str() {
                     "discrete" => AdapterPreference::HighPerformance,
                     "integrated" => AdapterPreference::LowPower,
                     n => AdapterPreference::Index(n.parse().map_err(|_| format!("bad adapter\n{USAGE}"))?),
@@ -90,6 +106,7 @@ fn parse_args() -> Result<Args, String> {
                 args.window_size = parsed.ok_or_else(|| format!("bad size '{v}'\n{USAGE}"))?;
             }
             "--captures" => args.captures = Some(PathBuf::from(value()?)),
+            "--cache" => args.cache = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
             "--world" => {
                 let name = value()?;
@@ -108,13 +125,27 @@ fn parse_args() -> Result<Args, String> {
 
 /// Runs the engine with the command-line arguments until it is closed or interrupted.
 pub fn run() -> Result<(), String> {
+    run_with(None)
+}
+
+/// Runs the engine hosting `game` (see [`game::Game`]).
+pub fn run_game(game: Box<dyn Game>) -> Result<(), String> {
+    run_with(Some(game))
+}
+
+fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let args = parse_args()?;
     if let Err(e) = interrupt::install() {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
-    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, ..Default::default() })
-        .map_err(|e| format!("GPU init failed: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    // A cached pipeline blob skips shader compilation at start-up. The GPU crate rejects one made
+    // by another GPU or driver, so a stale file only costs a cache miss.
+    let cache_dir = args.cache.clone().unwrap_or_else(|| cwd.join(".specula-cache"));
+    let cache_path = perf::pipeline_cache_path(&cache_dir, &args.adapter_label);
+    let pipeline_cache = std::fs::read(&cache_path).ok();
+    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache })
+        .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
     let mut engine = Engine::new(gpu, &captures_root)?;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
@@ -141,6 +172,11 @@ pub fn run() -> Result<(), String> {
     );
     eprintln!("specula: captures in {}", engine.capture_dir.display());
 
+    if let Some(g) = &game {
+        engine.clock = Clock::new(g.tick_hz());
+        engine.game_name = g.name().to_owned();
+    }
+    let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
     let server = Server::start(
         ServerConfig {
@@ -149,7 +185,7 @@ pub fn run() -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine)),
+        Arc::new(tools::Tools::new(to_engine, game_tools)),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -168,6 +204,10 @@ pub fn run() -> Result<(), String> {
         engine.gpu.attach_window(ui.raw.hinstance, ui.raw.hwnd, w, h).map_err(|e| format!("swapchain: {e}"))?;
         Some(ui)
     };
+    // Loading is done: from here on, building a pipeline is a visible hitch and a budget error.
+    engine.gpu.mark_warm();
+    engine.game = game.take();
+    engine.start_game();
 
     let result = match &window {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
@@ -182,6 +222,15 @@ pub fn run() -> Result<(), String> {
     server.shutdown();
     // Tear the GPU down (window surface included) before the window itself, and report any
     // validation messages raised during shutdown.
+    match engine.gpu.pipeline_cache_data() {
+        Ok(blob) => {
+            let saved = std::fs::create_dir_all(&cache_dir).and_then(|()| std::fs::write(&cache_path, blob));
+            if let Err(e) = saved {
+                eprintln!("specula: pipeline cache not saved to {}: {e}", cache_path.display());
+            }
+        }
+        Err(e) => eprintln!("specula: pipeline cache not saved: {e}"),
+    }
     let leftover = engine.gpu.close();
     if let Some(ui) = window {
         ui.close();
@@ -228,6 +277,19 @@ struct Engine {
     leftovers: Vec<String>,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
+    /// Simulation time: the hosted game's fixed tick (or the default rate without a game).
+    clock: Clock,
+    game: Option<Box<dyn Game>>,
+    /// The game's name, also its agent name in attribution.
+    game_name: String,
+    /// Frame pacing and simulation cost, for perf_frame.
+    pacing: perf::Pacing,
+    /// When the clock was last advanced.
+    last_advance: Instant,
+    /// Window input gathered for the game each frame (reused).
+    input: Vec<Event>,
+    /// A window title set by the game (its HUD until the engine draws text).
+    game_title: Option<String>,
 }
 
 struct AutosaveJob {
@@ -265,7 +327,54 @@ impl Engine {
             autosave_error: None,
             leftovers: Vec::new(),
             agents: BTreeMap::new(),
+            clock: Clock::new(DEFAULT_TICK_HZ),
+            game: None,
+            game_name: String::new(),
+            pacing: perf::Pacing::default(),
+            last_advance: Instant::now(),
+            input: Vec::new(),
+            game_title: None,
         })
+    }
+
+    /// Calls the game's `start` once the engine is ready.
+    fn start_game(&mut self) {
+        let Some(game) = self.game.as_mut() else { return };
+        game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+        self.last_advance = Instant::now();
+    }
+
+    /// Turns the real time since the last call into whole ticks and runs them.
+    fn advance_clock(&mut self) {
+        let now = Instant::now();
+        let ticks = self.clock.advance(now - self.last_advance);
+        self.last_advance = now;
+        for _ in 0..ticks {
+            if let Some(game) = self.game.as_mut() {
+                let start = Instant::now();
+                game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+                self.pacing.tick.push(start.elapsed());
+            }
+            self.clock.finish_tick();
+        }
+    }
+
+    /// The game's per-frame update: input, camera, title.
+    fn game_frame(&mut self, ui: &UiThread, size: (u32, u32), dt: Duration) {
+        self.input.clear();
+        ui.drain_events(&mut self.input);
+        let Some(game) = self.game.as_mut() else { return };
+        let start = Instant::now();
+        let mut frame = game::Frame {
+            input: &self.input,
+            size,
+            alpha: self.clock.alpha(),
+            dt_s: dt.as_secs_f32(),
+            camera: &mut self.window_camera,
+            title: &mut self.game_title,
+        };
+        game.frame(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name }, &mut frame);
+        self.pacing.game_frame.push(start.elapsed());
     }
 
     /// Whether the world changed since it was last saved or loaded.
@@ -406,12 +515,21 @@ impl Engine {
     fn run_windowed(&mut self, ui: &UiThread, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
         let mut title = String::new();
         let mut size = client_size_of(ui.raw);
+        let mut last_frame = Instant::now();
         while !interrupt::requested() && !ui.close_requested() {
             while let Ok(request) = requests.try_recv() {
                 self.handle(request, server);
             }
             self.autosave_if_due();
-            let next = format!("Specula — {} entities — {} agents", self.world.len(), server.sessions().len());
+            self.advance_clock();
+            let now = Instant::now();
+            let dt = now - last_frame;
+            last_frame = now;
+            self.game_frame(ui, size, dt);
+            let next = match &self.game_title {
+                Some(t) => t.clone(),
+                None => format!("Specula — {} entities — {} agents", self.world.len(), server.sessions().len()),
+            };
             if next != title {
                 ui.set_title(&next);
                 title = next;
@@ -438,17 +556,21 @@ impl Engine {
             let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
             // FIFO present paces the loop to the display refresh.
             self.gpu.present(&frame).map_err(|e| format!("present: {e}"))?;
+            self.pacing.frame.push(dt);
         }
         Ok(())
     }
 
     fn run_headless(&mut self, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
         while !interrupt::requested() {
-            match requests.recv_timeout(Duration::from_millis(100)) {
+            // Wake for the next tick at the latest, so a hosted game keeps real time headless too.
+            let wait = self.clock.until_next().min(Duration::from_millis(100));
+            match requests.recv_timeout(wait) {
                 Ok(request) => self.handle(request, server),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
+            self.advance_clock();
             self.autosave_if_due();
         }
         Ok(())
@@ -520,6 +642,29 @@ impl Engine {
                 })
             }
             Command::Info => self.info(&server.sessions()),
+            Command::Perf { budget_ms } => self.perf(budget_ms),
+            Command::Time(op) => {
+                match op {
+                    TimeOp::Pause => self.clock.set_paused(true),
+                    TimeOp::Resume => self.clock.set_paused(false),
+                    TimeOp::Step(n) => {
+                        self.clock.set_paused(true);
+                        self.clock.step(n);
+                        // Run them now, so the reply shows the result.
+                        self.advance_clock();
+                    }
+                    TimeOp::Scale(x) => self.clock.set_scale(x),
+                    TimeOp::Info => {}
+                }
+                ToolOutput::text(self.clock.to_json().to_pretty())
+            }
+            Command::Game { name, args } => match self.game.as_mut() {
+                Some(game) => {
+                    let mut ctx = Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name };
+                    game.call_tool(&mut ctx, &name, &args)
+                }
+                None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
+            },
         };
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
@@ -686,7 +831,7 @@ impl Engine {
             Ok(rgba) => rgba,
             Err(e) => return ToolOutput::error(e),
         };
-        let png_bytes = png::encode_rgba8(w, h, &rgba, Level::Default);
+        let png_bytes = png::encode_rgba8(w, h, &rgba, Level::Fastest);
         self.frames_captured += 1;
         let png_path = self.save_capture("png", &png_bytes);
 
@@ -771,6 +916,30 @@ impl Engine {
         Ok(path)
     }
 
+    fn perf(&self, budget_ms: Option<f64>) -> ToolOutput {
+        let budget = budget_ms.unwrap_or(perf::DEFAULT_BUDGET_MS);
+        let window = self.gpu.last_frame_stats_of(FramePath::Window);
+        let offscreen = self.gpu.last_frame_stats_of(FramePath::Offscreen);
+        let pacing = &self.pacing;
+        let p95 = pacing.frame.to_json().get("p95_ms").and_then(Json::as_f64);
+        let errors = match window.as_ref().or(offscreen.as_ref()) {
+            Some(s) => perf::budget_errors(s, budget, p95),
+            None => Vec::new(),
+        };
+        let out = Json::obj([
+            ("budget_ms", Json::from(budget)),
+            ("errors", Json::Arr(errors)),
+            ("window", window.as_ref().map_or(Json::Null, perf::stats_json)),
+            ("offscreen", offscreen.as_ref().map_or(Json::Null, perf::stats_json)),
+            ("frame_pacing", pacing.frame.to_json()),
+            ("sim_tick", pacing.tick.to_json()),
+            ("game_frame", pacing.game_frame.to_json()),
+            ("clock", self.clock.to_json()),
+            ("entities", Json::from(self.world.len())),
+        ]);
+        ToolOutput::text(out.to_pretty())
+    }
+
     fn info(&mut self, sessions: &[SessionInfo]) -> ToolOutput {
         let a = self.gpu.adapter();
         let gpu = Json::obj([
@@ -805,7 +974,12 @@ impl Engine {
             ("frames_captured", Json::from(self.frames_captured)),
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
+            ("clock", self.clock.to_json()),
         ]);
+        let mut info = info;
+        if let Some(game) = &self.game {
+            info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));
+        }
         ToolOutput::text(info.to_pretty())
     }
 }
