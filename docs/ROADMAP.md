@@ -235,24 +235,28 @@ deterministic from day one.
 claims and versions more agents just means more collisions.
 
 **Persistence first:**
-- [ ] **Text world files: save and load** (`world_save`, `world_load`, autosave). Deterministic ordering; one file per
+- [x] **Text world files: save and load** (`world_save`, `world_load`, autosave). Deterministic ordering; one file per
   top-level subtree so git diffs stay small and different agents' areas don't merge-conflict.
   *Why first:* the game project starts now, and greybox work must not vanish on exit.
-- [ ] **Hierarchy and paths**: parent/child entities, readable paths (`/world/village/house_03`), local transforms.
+  *Done 2026-10-13:* `world.json` is the single commit point (generation files, fsync, crash-tested at every step); autosave on a worker thread; bit-exact floats.
+- [x] **Hierarchy and paths**: parent/child entities, readable paths (`/world/village/house_03`), local transforms.
   *Why:* claims, persistence, skeletons (F4) and agents' mental models all work on trees.
 
 **Entity model:**
-- [ ] **Components**: transform, mesh, material/colour, name, tags, and free-form `props` (JSON) for game data until M3
+- [x] **Components**: transform, mesh, material/colour, name, tags, and free-form `props` (JSON) for game data until M3
   modules define real components. Collider and body components are reserved (F4).
   *Why:* agents need to attach meaning ("door", "spawn_point") before logic exists.
+  *Done 2026-10-13:* tags, props, reserved collider and body; values validated by the world itself.
 - [ ] **Commands applied at tick boundaries**, separately from present, so throughput isn't vsync-paced.
-- [ ] **`world_batch`**: many commands in one call, applied atomically.
-- [ ] **`world_query`**: filter by path prefix, tag, region (AABB) or creator; paged results.
+- [x] **`world_batch`**: many commands in one call, applied atomically.
+- [x] **`world_query`**: filter by path prefix, tag, region (AABB) or creator; paged results.
   *Why:* `world_list` returns everything, and at 10k entities that overflows an agent's context.
 
 **Determinism groundwork (F2):**
-- [ ] **Fixed-tick simulation clock**: the tick number is the only time the simulation knows. Rendering interpolates.
-- [ ] **Seeded engine RNG** in `specula-core`, with a separate stream per system.
+- [x] **Fixed-tick simulation clock**: the tick number is the only time the simulation knows. Rendering interpolates.
+  *Done 2026-10-13:* `game::Clock` (pause, step, scale; `time_control`). Hosted games tick on it; rendering gets `alpha`.
+- [x] **Seeded engine RNG** in `specula-core`, with a separate stream per system.
+  *Done 2026-10-13:* `specula_core::rng` (PCG32, named streams, integer chances).
 - [x] **Deterministic maths** in `specula-core`: our own `sin`, `cos`, `atan2`, `exp`, `ln`, and no reliance on the
   platform maths library.
   *Why:* Rust's `f32::sin` and similar call the platform maths library. The msvc and gnu builds link different ones,
@@ -262,25 +266,28 @@ claims and versions more agents just means more collisions.
   - atan2, pow and hypot: random samples checked by the same oracle.
 
   The `f64` ones are within 1–2 ulp. Golden bits are pinned by the tests. `math.rs` uses it for its trig.
-- [ ] **Ordered containers in simulation code.** No dependence on `HashMap` iteration order, which Rust randomises
+- [x] **Ordered containers in simulation code.** No dependence on `HashMap` iteration order, which Rust randomises
   per process.
+  *Done 2026-10-13:* the world uses ordered maps; Sepulcra's sim bans `HashMap`/`HashSet` with clippy.
 - [ ] **`world_hash`**: a hash of simulation state per tick.
 - [ ] **Journal-replay test**: replaying a journal reproduces the same hash, in CI.
 
 **Safe concurrency:**
-- [ ] **Agent identity**: session → agent id, name and role (from MCP `clientInfo` or `agent_hello`).
+- [x] **Agent identity**: session → agent id, name and role (from MCP `clientInfo` or `agent_hello`).
+  *Done 2026-10-13:* `agent_hello`; attribution is `created_by`/`modified_by`.
 - [ ] **Journal**: append-only, agent-attributed, and tick-stamped. `world_history`, and `world_undo` scoped to your
   own changes by default.
   *Why:* swarms make mistakes at volume, so undo has to be surgical. Tick stamps make the journal a replay log (F2).
-- [ ] **Versions**: per-entity versions with an optional `expect_version`. A stale write is rejected with the current
+- [x] **Versions**: per-entity versions with an optional `expect_version`. A stale write is rejected with the current
   state.
 - [ ] **Claims**: on a subtree path or a region, as leases with a time limit that expire if the agent disappears.
   Writes outside your claim are rejected unless co-claimed.
 - [ ] **Change feed**: `world_changes(since)` for polling, plus MCP notifications where clients support them.
 
 **Performance from the start (F3):**
-- [ ] **`perf_frame`**: CPU tick time, GPU time per pass (timestamp queries), draw count, triangle count, GPU memory.
+- [x] **`perf_frame`**: CPU tick time, GPU time per pass (timestamp queries), draw count, triangle count, GPU memory.
   *Why:* agents can only optimise what they can see.
+  *Done 2026-10-13:* per-pass GPU timestamps, CPU record/submit, draws, triangles, culled, pipelines after warm-up, memory and heap budgets, frame pacing, sim tick cost, structured budget errors.
 - [ ] **Reference run on the Intel integrated GPU** in the exit proof.
 
 **Scale:**
@@ -312,8 +319,9 @@ shapes?"
 
   Still to do: shadow maps, textures, the vertex-colour path, and a real bloom pass (the lamp's halo is analytic).
   *Why the stylised path:* it's cheap on low-end GPUs (F3) and suits agent-made content.
-- [ ] **GPU instancing, frustum culling, and LOD selection.**
+- [x] **GPU instancing, frustum culling, and LOD selection.**
   *Why:* swarms build big worlds, and low-end hardware must stay at frame rate.
+  *Done 2026-10-13:* instancing (10k cubes in 1 draw call; 2.7 ms GPU on the Intel iGPU) and CPU frustum culling. LOD selection still to do.
 - [ ] **2D**: sprites, tilemaps, vector shapes, orthographic cameras.
 - [x] PNG decode (done early, in M0).
 - [ ] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
