@@ -1,0 +1,21 @@
+{
+  "anims": 1,
+  "rig": "brazier_fire",
+  "description": "Flicker: each tongue sways and stretches at its own rate; the core pulses.",
+  "clips": [
+    { "name": "flicker", "kind": "wobble", "duration": 1.2, "rate": 40,
+      "wobble": [
+        { "bone": "core", "axis": "y", "scale": 0.14, "cycles": 4 },
+        { "bone": "core", "axis": "z", "deg": 5, "cycles": 3, "phase": 0.2 },
+        { "bone": "tongue_0", "axis": "z", "deg": 9, "cycles": 3 },
+        { "bone": "tongue_0", "axis": "y", "scale": 0.18, "cycles": 5, "phase": 0.1 },
+        { "bone": "tongue_1", "axis": "x", "deg": -8, "cycles": 4, "phase": 0.35 },
+        { "bone": "tongue_1", "axis": "y", "scale": 0.15, "cycles": 3, "phase": 0.6 },
+        { "bone": "tongue_2", "axis": "z", "deg": -10, "cycles": 2, "phase": 0.5 },
+        { "bone": "tongue_2", "axis": "y", "scale": 0.2, "cycles": 4, "phase": 0.25 },
+        { "bone": "tongue_3", "axis": "z", "deg": 8, "cycles": 5, "phase": 0.7 },
+        { "bone": "tongue_3", "axis": "y", "scale": 0.16, "cycles": 3, "phase": 0.9 },
+        { "bone": "tongue_4", "axis": "x", "deg": 9, "cycles": 3, "phase": 0.15 },
+        { "bone": "tongue_4", "axis": "y", "scale": 0.18, "cycles": 4, "phase": 0.45 } ] }
+  ]
+}

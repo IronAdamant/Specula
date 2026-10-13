@@ -42,6 +42,10 @@ pub enum ErrorCode {
     UnderBudget,
     /// The style file is malformed.
     Style,
+    /// A name used twice where names must be unique (rig bones, a part's bone list).
+    Duplicate,
+    /// The rig is unusable (bad parent order, a mirrored bone not named `_l`, non-finite pivots).
+    InvalidRig,
 }
 
 /// A recipe or build error. `path` points into the recipe, e.g. `parts[2].ops[0].amount`.

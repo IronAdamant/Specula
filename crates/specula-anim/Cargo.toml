@@ -1,0 +1,15 @@
+[package]
+name = "specula-anim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-model = { workspace = true }
+
+[dev-dependencies]
+specula-gpu = { workspace = true }
