@@ -1,0 +1,93 @@
+{
+  "format": "specula.input.v1",
+  "settings": {
+    "press_threshold": 0.5,
+    "tap_max_s": 0.3,
+    "tap_slop_px": 12,
+    "long_press_s": 0.5,
+    "max_dt_s": 0.1
+  },
+  "actions": [
+    {
+      "name": "place",
+      "kind": "button",
+      "group": "play",
+      "description": "Place the selected stone at the cursor cell (read the pointer position in the same frame).",
+      "bindings": ["Mouse.Left", "Pad.South", "Touch.Tap"]
+    },
+    {
+      "name": "cancel",
+      "kind": "button",
+      "group": "play",
+      "description": "Deselect / close the radial menu; with nothing to cancel the game opens the pause menu.",
+      "text_mode": true,
+      "bindings": ["Key.Escape", "Pad.East", "Touch.TwoFingerTap"]
+    },
+    {
+      "name": "next_face",
+      "kind": "button",
+      "group": "play",
+      "description": "Snap the camera to the next face of the slab.",
+      "bindings": ["Pad.RightBumper", "Key.E"]
+    },
+    {
+      "name": "prev_face",
+      "kind": "button",
+      "group": "play",
+      "description": "Snap the camera to the previous face of the slab.",
+      "bindings": ["Pad.LeftBumper", "Key.Q"]
+    },
+    {
+      "name": "build_menu",
+      "kind": "button",
+      "group": "play",
+      "description": "Open the radial build menu at the cursor.",
+      "bindings": ["Pad.North", "Key.B", "Touch.LongPress"]
+    },
+    {
+      "name": "pause",
+      "kind": "button",
+      "group": "play",
+      "description": "Pause menu.",
+      "bindings": ["Pad.Start", "Key.P"]
+    },
+    {
+      "name": "orbit",
+      "kind": "axis2",
+      "output": "delta",
+      "group": "play",
+      "description": "Orbit the camera this frame, in drag pixels: +x = drag right, +y = drag down.",
+      "bindings": [
+        "Mouse.Right+Mouse.Motion",
+        "Touch.Drag",
+        { "source": "Pad.RightStick", "scale": [600, -600] },
+        { "composite": { "up": "Key.Up", "down": "Key.Down", "left": "Key.Left", "right": "Key.Right" }, "scale": [400, -400] }
+      ]
+    },
+    {
+      "name": "zoom",
+      "kind": "axis",
+      "output": "delta",
+      "group": "play",
+      "description": "Zoom this frame, in wheel notches: + = closer.",
+      "bindings": [
+        "Mouse.Wheel",
+        { "source": "Touch.Pinch", "scale": 4 },
+        { "source": "Pad.RightTrigger", "scale": 4 },
+        { "source": "Pad.LeftTrigger", "scale": -4 },
+        { "composite": { "negative": "Key.Minus", "positive": "Key.Equals" }, "scale": 4 }
+      ]
+    },
+    {
+      "name": "cursor_move",
+      "kind": "axis2",
+      "output": "delta",
+      "group": "play",
+      "description": "Move the gamepad cursor this frame, in screen pixels (+y down); the game snaps it to placement cells. Mouse and touch place the cursor directly via the pointer.",
+      "bindings": [
+        { "source": "Pad.LeftStick", "scale": [700, -700] },
+        { "source": "Pad.Dpad", "scale": [350, -350] }
+      ]
+    }
+  ]
+}

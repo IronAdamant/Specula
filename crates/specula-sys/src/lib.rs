@@ -12,6 +12,7 @@
 //! | `kernel32` | this crate (`kernel32` module + [`dynlib`]) |
 //! | `user32` | `specula-platform` |
 //! | `vulkan-1` | never linked — loaded at runtime via [`dynlib::Library`] |
+//! | `xinput1_4` / `xinput9_1_0` | never linked — loaded at runtime by `specula-platform` (gamepads) |
 //!
 //! Tests and examples must not declare imports from a DLL their dependencies already declare;
 //! add the function here (or to the owning crate) instead.
