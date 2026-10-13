@@ -18,7 +18,7 @@
       "ops": [ { "op": "rotate", "deg": [-90, 0, 0] },
                { "op": "move", "by": [0, 0.05, 0.075] },
                { "op": "rotate", "deg": ["-4 * tilt", 0, "3 * tilt"], "pivot": [0, 0.05, 0] },
-               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.4] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.4], "strength": 0.6 },
                { "op": "bevel_tint", "color": "#c4c0b6", "amount": 0.6 },
                { "op": "noise_tint", "amount": 0.08, "scale": 0.12 } ] },
     { "name": "cross", "material": "graveyard_stone", "color": "#8f8b82",

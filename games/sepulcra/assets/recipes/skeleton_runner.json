@@ -16,7 +16,7 @@
       "shape": { "op": "box", "size": [0.15, 0.06, 0.13], "bevel": 0.015 },
       "ops": [ { "op": "move", "by": [0, 1.58, 0.1] } ] },
     { "name": "eyes", "material": "grave_glow", "lod_detail": 0,
-      "shape": { "op": "sphere", "radius": 0.028, "subdivisions": 0 },
+      "shape": { "op": "sphere", "radius": 0.038, "subdivisions": 0 },
       "ops": [ { "op": "move", "by": [0.045, 1.69, 0.17] }, { "op": "mirror", "axis": "x" } ] },
     { "name": "spine", "material": "bone",
       "shape": { "op": "sweep", "profile": { "sides": 5, "radius": 0.035 },

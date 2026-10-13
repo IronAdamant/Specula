@@ -69,14 +69,16 @@ fn budgets_validity_and_lods() {
     for (name, m, min, max) in all(&style, &lib) {
         let n0 = m.lods[0].triangle_count();
         assert!(n0 >= min && n0 <= max, "{name}: {n0} triangles, budget {min}..={max}");
-        assert_eq!(m.lods.len(), 3, "{name}");
+        assert!((2..=3).contains(&m.lods.len()), "{name}: {} LODs", m.lods.len());
+        assert_eq!(m.lods.len(), m.lod_ratios.len());
         for (i, l) in m.lods.iter().enumerate() {
             l.validate().unwrap_or_else(|e| panic!("{name} LOD{i}: {e}"));
         }
-        let (n1, n2) = (m.lods[1].triangle_count(), m.lods[2].triangle_count());
-        assert!(n1 < n0 && n2 <= n1, "{name}: LODs {n0}/{n1}/{n2} must shrink");
-        assert!((n1 as f32) <= 0.75 * n0 as f32, "{name}: LOD1 {n1} of {n0} is not a real reduction");
-        println!("{name:<20} {n0:>5} / {n1:>5} / {n2:>5}");
+        let counts: Vec<usize> = m.lods.iter().map(|l| l.triangle_count()).collect();
+        // Every LOD saves at least 10% over the one before (no useless duplicates).
+        assert!(counts.windows(2).all(|w| (w[1] as f32) <= 0.9 * w[0] as f32), "{name}: LODs {counts:?} must shrink");
+        assert!((counts[1] as f32) <= 0.75 * n0 as f32, "{name}: LOD1 {} of {n0} is not a real reduction", counts[1]);
+        println!("{name:<20} {counts:?}");
     }
 }
 
@@ -146,4 +148,4 @@ fn builds_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra asset hash changed");
 }
 
-const PINNED: &str = "5559d9d582c452b1";
+const PINNED: &str = "76650a02e3809c66";

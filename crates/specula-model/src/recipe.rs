@@ -625,7 +625,8 @@ impl<'a> BuildParams<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub name: String,
-    /// `lods[0]` is full detail; later entries follow the recipe's `lods` ratios.
+    /// `lods[0]` is full detail; later entries follow the recipe's `lods` ratios. A ratio whose
+    /// mesh saves under 10% over the previous LOD is skipped, so there may be fewer entries.
     pub lods: Vec<MeshData>,
     /// Requested triangle ratio of each LOD (1.0 first).
     pub lod_ratios: Vec<f32>,
@@ -744,6 +745,12 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
         let mesh = assemble(&pairs);
         mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
+        // An LOD that saves under 10% over the previous one is dropped: it would cost memory and
+        // a switch for nothing (parts kept with lod_detail 0 can make a model irreducible).
+        let prev = lods.last().map_or(0, |m| m.triangle_count());
+        if mesh.triangle_count() as f32 > 0.9 * prev as f32 {
+            continue;
+        }
         lods.push(mesh);
         ratios.push(ratio);
     }
