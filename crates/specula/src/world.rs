@@ -1094,7 +1094,8 @@ pub enum Change {
     },
     /// One per removed entity: deleting a subtree records its entities children first.
     Delete { path: String, before: Box<Entity> },
-    Env { before: Env, after: Env },
+    /// Boxed: environments are large (lighting, fog, shadows) and environment changes rare.
+    Env { before: Box<Env>, after: Box<Env> },
     /// An entity whose transform or colour alone changed, recorded by [`Recording::Snapshot`]
     /// without copying the entity (replayable, not undoable).
     Pose { path: String, pose: Pose },
@@ -1196,7 +1197,7 @@ impl Change {
                 }
                 Change::Delete { path, before } => heap(path) + entity(before),
                 Change::Pose { path, .. } => heap(path),
-                Change::Env { .. } => 0,
+                Change::Env { .. } => 2 * (std::mem::size_of::<Env>() + ALLOC),
             }
     }
 }
@@ -1971,7 +1972,7 @@ impl World {
         }
         if let Some(before) = self.dirty_env.take() {
             if before != self.env {
-                out.push(Change::Env { before, after: self.env });
+                out.push(Change::Env { before: Box::new(before), after: Box::new(self.env) });
             }
         }
         out
@@ -1997,7 +1998,7 @@ impl World {
             Recording::Snapshot => {
                 self.dirty_env.get_or_insert(before);
             }
-            Recording::Full => self.changes.push(Change::Env { before, after: self.env }),
+            Recording::Full => self.changes.push(Change::Env { before: Box::new(before), after: Box::new(self.env) }),
         }
     }
 
@@ -2021,14 +2022,21 @@ impl World {
     /// Undoes every change recorded since `mark` exactly (versions and attribution included) and
     /// forgets them. The id counter is **not** rewound: ids handed out in between (which game code
     /// may have kept) are never handed out again.
+    ///
+    /// The revision never goes back either: it moves past every state the world has been in, so
+    /// whatever is keyed on it (the engine's cached state hash, autosave) sees the rollback, and
+    /// the id counter that moved on.
     pub(crate) fn rollback_to(&mut self, mark: Mark) {
         let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
+        let revision = self.revision;
         for change in undo.iter().rev() {
             self.apply_before(change);
         }
         self.recording = recording;
-        self.revision = mark.revision;
+        if !undo.is_empty() || self.next_id != mark.next_id || revision != mark.revision {
+            self.revision = self.revision.max(revision) + 1;
+        }
     }
 
     /// Re-checks the changes recorded since `mark` one step at a time, each against the world as
@@ -2074,7 +2082,8 @@ impl World {
                 }
                 self.recording = recording;
                 self.next_id = self.next_id.max(next_id);
-                self.revision = mark.revision;
+                // Forward only (see `rollback_to`).
+                self.revision = self.revision.max(revision) + 1;
                 Err(e)
             }
         }
@@ -2087,7 +2096,7 @@ impl World {
             Change::Delete { before, .. } => {
                 self.remove_raw(before.id);
             }
-            Change::Env { after, .. } => self.replace_env(*after),
+            Change::Env { after, .. } => self.replace_env(**after),
             Change::Pose { pose, .. } => self.apply_pose(pose, by),
         }
     }
@@ -2105,7 +2114,7 @@ impl World {
             Change::Pose { pose, .. } => {
                 debug_assert!(false, "rollback over a pose of entity {}", pose.id);
             }
-            Change::Env { before, .. } => self.replace_env(*before),
+            Change::Env { before, .. } => self.replace_env(**before),
         }
     }
 
@@ -2119,6 +2128,19 @@ impl World {
         let recording = self.recording;
         let old = self.entities.get(&id);
         let existed = old.is_some();
+        // Same parent and local transform: its world transform (and its subtree's) stand as they
+        // are. Recomputing a big subtree for a colour change is what made long batches slow.
+        let unmoved = old.filter(|o| {
+            let bits = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            o.parent == e.parent
+                && bits(o.position) == bits(e.position)
+                && bits(o.rotation_deg) == bits(e.rotation_deg)
+                && bits(o.scale) == bits(e.scale)
+        });
+        if let Some(o) = unmoved {
+            e.world = o.world;
+        }
+        let unmoved = unmoved.is_some();
         let before = match (recording, old) {
             (Recording::Full, Some(o)) => Some(Box::new(o.clone())),
             _ => None,
@@ -2129,7 +2151,9 @@ impl World {
             self.unlink_exact(id);
         }
         self.link(e);
-        self.refresh(id);
+        if !unmoved {
+            self.refresh(id);
+        }
         self.touch(id);
         self.next_id = self.next_id.max(id);
         self.revision += 1;
@@ -2544,7 +2568,7 @@ mod tests {
                 Change::Delete { before, .. } => {
                     replayed.remove_raw(before.id);
                 }
-                Change::Env { after, .. } => replayed.replace_env(*after),
+                Change::Env { after, .. } => replayed.replace_env(**after),
                 Change::Pose { pose, .. } => replayed.apply_pose(pose, "g"),
             }
         }

@@ -32,13 +32,13 @@ text files. Say who you are with agent_hello. perf_frame reports GPU time per pa
 frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
-agent_hello. Names are unique among open sessions (a taken name is refused with a free suggestion, and the \
-hosted game's name is reserved); \
+agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
+suggestion; the hosted game's name is reserved: name_reserved); \
 without agent_hello you are '<client name>-<6 characters of your session id>'. Your claims and 'your own changes' \
 belong to your name in this session: a later session using the same name adopts none of them. claim_take the \
 subtree or region you will build in and renew it while you work: writes inside another agent's live claim are \
-rejected with error 'claimed' (also when renaming or moving something would carry entities into or out of a \
-claim), and 'claims_overlap' means a path claim and a region claim meet there (claim_share or release one). \
+rejected with error 'claimed' (also when renaming, moving, rotating or scaling something would carry \
+entities into or out of a claim), and 'claims_overlap' means a path claim and a region claim meet there (claim_share or release one). \
 world_load is refused while other agents hold claims. Every change is journaled with its author and tick: \
 world_history shows who did what, world_undo undoes your own recent changes (refusing to overwrite someone \
 else's later work unless forced; claims always apply), world_changes is a feed to poll for other agents' \
@@ -1417,9 +1417,10 @@ fn definitions() -> Vec<ToolDef> {
             name: "agent_hello".into(),
             description: "Say who you are: the name is recorded as created_by / modified_by on everything you \
                           change, owns your claims and scopes your undo, and engine_info lists you with your role. \
-                          Names are unique among connected sessions (error name_taken with a suggestion). Default: \
+                          Names are unique among open sessions, idle ones included (error name_taken with a \
+                          suggestion), and the hosted game's name is reserved (error name_reserved). Default: \
                           '<MCP client name>-<6 characters of your session id>', role builder. A session holding \
-                          claims can't change its name. The hosted game's name is reserved."
+                          claims can't change its name."
                 .into(),
             input_schema: schema(
                 vec![

@@ -233,3 +233,169 @@ fn p8_snapshot_edge_cases_replay() {
     assert_eq!(replayed.find_path("/p").ok(), s.w.find_path("/p").ok());
     assert_eq!(replayed.find_path("/q2").ok(), s.w.find_path("/q2").ok());
 }
+
+fn color(c: f32) -> UpdateSpec {
+    UpdateSpec { color: Some([c, c, c]), ..Default::default() }
+}
+
+/// Claims elsewhere that could block bob, so commands take the step-by-step path.
+fn claims_elsewhere(s: &mut Setup) {
+    s.claim(pclaim("/elsewhere"));
+    s.claim(region(Vec3::new(100.0, 0.0, 0.0), Vec3::new(101.0, 1.0, 1.0)));
+}
+
+/// R1: a rejected command left the revision where it was while the id counter moved on, so a
+/// state hash cached by revision went stale (world_hash verify said "no match"; autosave missed
+/// it). The revision only moves forward now.
+#[test]
+fn r1_a_rejection_moves_the_revision_forward() {
+    let mut s = setup();
+    s.spawn(BOB, "/c", Vec3::ZERO);
+    s.claim(pclaim("/c"));
+    let (revision, hash) = (s.w.revision(), s.w.state_hash());
+    let r = s.batch(BOB, vec![Op::Spawn(spec("/free", Vec3::ZERO)), Op::Spawn(spec("/c/x", Vec3::ZERO))]);
+    assert_eq!(r, Err("claimed".into()));
+    assert_ne!(s.w.state_hash(), hash, "the ids it used stay used");
+    assert!(s.w.revision() > revision, "a new state needs a new revision");
+    s.replays();
+}
+
+/// R2: a committed command leaves exactly what applying it raw leaves, with or without claims
+/// (the step-by-step check replays it), and journals the same changes.
+#[test]
+fn r2_committing_matches_raw_application() {
+    let ops = || {
+        let mv = |x: f32| UpdateSpec { position: Some(Vec3::new(x, 0.0, 0.0)), ..Default::default() };
+        vec![
+            Op::Spawn(spec("/a", Vec3::ZERO)),
+            Op::Spawn(spec("/a/b", Vec3::new(1.0, 0.0, 0.0))),
+            Op::Set(key("/a"), rename("tmp")),
+            Op::Spawn(spec("/a", Vec3::new(2.0, 0.0, 0.0))),
+            Op::Set(key("/tmp/b"), UpdateSpec { parent: Some(Some(key("/a"))), ..Default::default() }),
+            Op::Delete(key("/tmp"), None),
+            Op::Set(key("/a"), rename("tmp")),
+            Op::Spawn(spec("/a", Vec3::ZERO)),
+            Op::Set(key("/tmp/b"), mv(5.0)),
+            Op::Set(key("/tmp"), UpdateSpec { parent: Some(Some(key("/a"))), ..Default::default() }),
+            Op::Delete(key("/a/tmp/b"), None),
+            Op::Spawn(spec("/a/tmp/b", Vec3::new(3.0, 0.0, 0.0))),
+        ]
+    };
+    let shape = |w: &World| {
+        w.entities()
+            .map(|e| (e.id, e.version, w.path_of(e.id), e.world_position().x.to_bits(), e.modified_by.to_string()))
+            .collect::<Vec<_>>()
+    };
+    for claims in [false, true] {
+        let mut raw = World::default();
+        raw.set_recording(Recording::Full);
+        raw.apply_batch(ops(), "bob").unwrap();
+        let raw_changes = raw.take_changes();
+        let mut s = setup();
+        if claims {
+            claims_elsewhere(&mut s);
+        }
+        s.batch(BOB, ops()).unwrap();
+        let entry = s.sw.journal.entries().last().unwrap();
+        assert_eq!(shape(&raw), shape(&s.w), "claims={claims}");
+        assert_eq!((raw.state_hash(), raw.next_id()), (s.w.state_hash(), s.w.next_id()));
+        assert_eq!(raw_changes.len(), entry.changes.len());
+        for (a, b) in raw_changes.iter().zip(&entry.changes) {
+            assert_eq!((a.op(), a.path(), a.id(), a.version()), (b.op(), b.path(), b.id(), b.version()));
+        }
+        s.replays();
+    }
+}
+
+/// R4: moving and shrinking an unclaimed ancestor moved a path-claimed subtree away.
+#[test]
+fn r4_transforming_an_ancestor_is_refused() {
+    let mut s = setup();
+    s.spawn(BOB, "/a", Vec3::ZERO);
+    s.spawn(BOB, "/a/b", Vec3::ZERO);
+    s.claim(pclaim("/a/b"));
+    s.spawn(ANN, "/a/b/wall", Vec3::new(1.0, 0.0, 0.0));
+    let shrink = UpdateSpec { position: Some(Vec3::new(-9999.0, 0.0, 0.0)), scale: Some(Vec3::new(0.001, 0.001, 0.001)), ..Default::default() };
+    assert_eq!(s.batch(BOB, vec![Op::Set(key("/a"), shrink)]), Err("claimed".into()));
+    let wall = s.w.get(s.w.find_path("/a/b/wall").unwrap()).unwrap().world_position();
+    assert_eq!(wall, Vec3::new(1.0, 0.0, 0.0), "the claimed wall didn't move");
+    assert_eq!(s.batch(BOB, vec![Op::Set(key("/a"), color(0.5))]), Ok(()), "recolouring moves nothing");
+    s.replays();
+}
+
+/// R5: three-step chains and a redo into a claim are refused.
+#[test]
+fn r5_chains_and_redo_into_a_claim() {
+    let mut s = setup();
+    s.spawn(BOB, "/a", Vec3::ZERO);
+    s.spawn(BOB, "/a/b", Vec3::ZERO);
+    s.claim(pclaim("/a/b"));
+    s.spawn(ANN, "/a/b/wall", Vec3::ZERO);
+    let chains: Vec<(&str, Vec<Op>)> = vec![
+        (
+            "swap parents",
+            vec![
+                Op::Set(key("/a"), rename("t")),
+                Op::Spawn(spec("/a", Vec3::ZERO)),
+                Op::Spawn(spec("/a/b", Vec3::ZERO)),
+                Op::Delete(key("/t"), None),
+            ],
+        ),
+        (
+            "respawn then delete",
+            vec![
+                Op::Spawn(spec("/x", Vec3::ZERO)),
+                Op::Set(key("/a/b/wall"), UpdateSpec { parent: Some(Some(key("/x"))), ..Default::default() }),
+                Op::Delete(key("/x"), None),
+            ],
+        ),
+        (
+            "spawn into the claim then move out",
+            vec![
+                Op::Spawn(spec("/q", Vec3::ZERO)),
+                Op::Set(key("/q"), UpdateSpec { parent: Some(Some(key("/a/b"))), ..Default::default() }),
+                Op::Set(key("/a/b/q"), UpdateSpec { parent: Some(None), ..Default::default() }),
+            ],
+        ),
+        ("rename the claimed slot", vec![Op::Set(key("/a/b"), rename("c"))]),
+    ];
+    for (name, ops) in chains {
+        assert_eq!(s.batch(BOB, ops), Err("claimed".into()), "{name}");
+        assert!(s.w.find_path("/a/b/wall").is_ok());
+    }
+    let mut s = setup();
+    s.spawn(BOB, "/u", Vec3::ZERO);
+    s.sw.undo(&mut s.w, 0, BOB, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
+    s.claim(pclaim("/u"));
+    let last = s.sw.journal.last_seq();
+    let redo = s.sw.undo(&mut s.w, 0, BOB, &UndoRequest { ids: Some(vec![last]), count: 1, force: true });
+    assert_eq!(redo.unwrap_err().code, "claimed", "a redo can't bring an entity back into someone's claim");
+    s.replays();
+}
+
+/// R3: a 1000-op colour batch on the root of a 10,000-entity subtree. Committing must cost about
+/// what applying it costs: no step-by-step replay without claims that could block the writer, and
+/// no subtree transform refresh for changes that move nothing. Release builds only.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing; runs in release builds")]
+fn r3_long_batches_on_big_subtrees_stay_fast() {
+    for (claims, budget_ms) in [(false, 50u128), (true, 500)] {
+        let mut s = setup();
+        if claims {
+            claims_elsewhere(&mut s);
+        }
+        let mut build = vec![Op::Spawn(spec("/root", Vec3::ZERO))];
+        build.extend((0..999).map(|i| Op::Spawn(spec(&format!("/root/k{i}"), Vec3::ZERO))));
+        s.batch(BOB, build).unwrap();
+        for j in 0..9 {
+            s.batch(BOB, (0..999).map(|i| Op::Spawn(spec(&format!("/root/k{i}/g{j}"), Vec3::ZERO))).collect()).unwrap();
+        }
+        assert!(s.w.len() > 9_990);
+        let ops: Vec<Op> = (0..1000).map(|i| Op::Set(key("/root"), color((i % 7) as f32 / 7.0))).collect();
+        let start = std::time::Instant::now();
+        s.batch(BOB, ops).unwrap();
+        let ms = start.elapsed().as_millis();
+        println!("1000 colour sets on a root of {} entities, claims={claims}: {ms} ms", s.w.len());
+        assert!(ms < budget_ms, "claims={claims}: {ms} ms (budget {budget_ms} ms)");
+    }
+}

@@ -45,7 +45,11 @@ struct Host {
 
 impl Host {
     fn new() -> Host {
-        let mut game = SepulcraGame::new(Arc::new(Content::builtin()), 1);
+        Host::new_with_seed(1)
+    }
+
+    fn new_with_seed(seed: u64) -> Host {
+        let mut game = SepulcraGame::new(Arc::new(Content::builtin()), seed);
         let mut world = World::default();
         world.set_recording(Recording::Full);
         let clock = Clock::new(game.tick_hz());
@@ -164,4 +168,47 @@ fn agents_cannot_take_the_games_name() {
     let s = session("cccccc33");
     let err = h.swarm.hello(&s, "sepulcra".into(), "builder".into(), std::slice::from_ref(&s)).unwrap_err();
     assert_eq!(err.code, "name_reserved");
+}
+
+/// Review round 3 (R7): rejected tools leave `play_state` byte-identical, and the run goes on
+/// exactly as a run that never made those calls (simulation and everything the game shows).
+#[test]
+fn rejected_tools_leave_no_trace_in_the_game() {
+    let new_host = || {
+        let mut h = Host::new_with_seed(7);
+        for _ in 0..300 {
+            h.tick();
+        }
+        h.claim("/units/stones");
+        h
+    };
+    let (mut a, mut b) = (new_host(), new_host());
+    let all = || Json::obj([("include", Json::arr(["enemies", "stones", "walls", "waves", "log"].map(Json::from)))]);
+    let text = |o: ToolOutput| format!("{:?}", o.content);
+    let before = text(a.tool(BOB, "play_state", all()).unwrap());
+    let place = || Json::obj([("action", Json::from("place")), ("stone", Json::from("warding")), ("cell", Json::from("top:12,9"))]);
+    assert_eq!(a.tool(BOB, "play_command", place()).unwrap_err().code, "claimed");
+    let multi = Json::obj([("commands", Json::arr([Json::obj([("action", Json::from("call_wave"))]), place()]))]);
+    assert!(a.tool(BOB, "play_command", multi).is_err());
+    assert!(a.tool(BOB, "play_new", Json::obj([("seed", Json::from(3))])).is_err());
+    assert_eq!(text(a.tool(BOB, "play_state", all()).unwrap()), before, "play_state is unchanged");
+    for _ in 0..2000 {
+        a.tick();
+        b.tick();
+    }
+    assert_eq!(a.game.state().hash(), b.game.state().hash(), "the simulation didn't diverge");
+    let view = |h: &Host| {
+        let mut v: Vec<_> = h
+            .world
+            .entities()
+            .filter(|e| &*e.created_by == "sepulcra")
+            .map(|e| {
+                let p = e.world_position();
+                (h.world.path_of(e.id), e.version, [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(view(&a), view(&b), "nor did what it shows");
 }

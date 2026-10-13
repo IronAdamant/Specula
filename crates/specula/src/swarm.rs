@@ -135,7 +135,8 @@ impl Swarm {
         let now = Instant::now();
         let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
-        let result = journal::commit(world, &mut self.journal, tick, w, kind, &mut check, command);
+        let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
+        let result = journal::commit(world, &mut self.journal, tick, w, kind, check, command);
         if let Err(e) = &result {
             self.count_rejection(e);
         }
@@ -147,7 +148,8 @@ impl Swarm {
         let now = Instant::now();
         let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
-        let result = self.journal.undo(world, tick, w, req, &mut check);
+        let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
+        let result = self.journal.undo(world, tick, w, req, check);
         if let Err(e) = &result {
             self.count_rejection(e);
         }
@@ -174,7 +176,8 @@ impl Swarm {
         let now = Instant::now();
         let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
-        if let Err(e) = world.recheck_steps(mark, &mut check) {
+        let checked = if claims.could_block(w, now) { world.recheck_steps(mark, &mut check) } else { Ok(()) };
+        if let Err(e) = checked {
             self.journal.note_next_id(world.next_id());
             self.count_rejection(&e);
             return Err(e.with("game", game));

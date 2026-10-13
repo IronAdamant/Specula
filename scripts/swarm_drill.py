@@ -302,6 +302,11 @@ def attacks(url):
     expect(bob, "claimed", "P4 batch: two moves hide where the child started", "world_batch", ops=[move(-100), move(-200)])
     expect(bob, "claimed", "P5 batch: move, then reparent the child", "world_batch",
            ops=[move(-100), {"op": "set", "path": "/gg/kid", "parent": None}])
+    # 1e. Moving, rotating or scaling an unclaimed ancestor moves a claimed subtree (round 3, R4).
+    expect(bob, "claimed", "R4 move and shrink an ancestor", "world_set", path="/siege", position=[-9999, 0, 0],
+           scale=0.001)
+    expect(bob, "claimed", "R4 rotate an ancestor in a batch", "world_batch",
+           ops=[{"op": "set", "path": "/siege", "rotation_deg": [0, 90, 0]}])
     # 2. Identity: names are unique; another session adopts nothing.
     expect(carl, "name_taken", "hello as a live agent's name", "agent_hello", name="attack_ann")
     claim_id = ann.ok("claim_list", mine=True)["claims"][0]["id"]

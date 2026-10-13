@@ -785,7 +785,7 @@ impl Journal {
         tick: u64,
         by: impl Into<Writer<'w>>,
         req: &UndoRequest,
-        check: &mut Check,
+        check: Option<&mut Check>,
     ) -> Result<Undone, WorldError> {
         let by: Writer = by.into();
         let targets = self.select(by, req)?;
@@ -803,11 +803,11 @@ impl Journal {
                 break;
             }
         }
-        if result.is_ok() {
+        match (&result, check) {
             // Step by step: an undo of several changes must not hide what an earlier one did.
-            result = world.recheck_steps(mark, check);
-        } else {
-            world.rollback_to(mark);
+            (Ok(()), Some(check)) => result = world.recheck_steps(mark, check),
+            (Ok(()), None) => {}
+            (Err(_), _) => world.rollback_to(mark),
         }
         if let Err(e) = result {
             world.set_recording(previous);
@@ -1013,7 +1013,7 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 world.check_put(&e).map_err(|err| err.with("restoring", path.as_str()))?;
                 world.put_raw(e);
             }
-            Change::Env { before, .. } => world.replace_env(*before),
+            Change::Env { before, .. } => world.replace_env(**before),
         }
     }
     Ok(())
@@ -1094,14 +1094,17 @@ pub fn commit<'w, T>(
     tick: u64,
     by: impl Into<Writer<'w>>,
     kind: Kind,
-    check: &mut Check,
+    check: Option<&mut Check>,
     command: impl FnOnce(&mut World) -> Result<T, WorldError>,
 ) -> Result<(T, Option<u64>), WorldError> {
     let mark = world.mark();
     let out = match command(world) {
         // Each change against the world as it was at that step: a later op can hide what an
         // earlier one did (a rename then a delete, two moves).
-        Ok(v) => world.recheck_steps(mark, check).map(|()| v),
+        Ok(v) => match check {
+            Some(check) => world.recheck_steps(mark, check).map(|()| v),
+            None => Ok(v),
+        },
         Err(e) => {
             // Commands change nothing when they fail (batches roll themselves back); this is a
             // safety net.
@@ -1140,11 +1143,11 @@ mod tests {
     }
 
     fn spawn(w: &mut World, j: &mut Journal, by: &str, path: &str) -> u64 {
-        commit(w, j, 0, by, Kind::Spawn, &mut no_check, |w| w.spawn(spec(path), by).map(|e| e.id)).unwrap().0
+        commit(w, j, 0, by, Kind::Spawn, Some(&mut no_check), |w| w.spawn(spec(path), by).map(|e| e.id)).unwrap().0
     }
 
     fn set(w: &mut World, j: &mut Journal, by: &str, path: &str, change: UpdateSpec) -> Option<u64> {
-        commit(w, j, 0, by, Kind::Set, &mut no_check, |w| w.update(&EntityKey::Path(path.into()), change, by).map(|_| ()))
+        commit(w, j, 0, by, Kind::Set, Some(&mut no_check), |w| w.update(&EntityKey::Path(path.into()), change, by).map(|_| ()))
             .unwrap()
             .1
     }
@@ -1154,7 +1157,7 @@ mod tests {
     }
 
     fn undo(w: &mut World, j: &mut Journal, by: &str, req: UndoRequest) -> Result<Undone, WorldError> {
-        j.undo(w, 0, by, &req, &mut no_check)
+        j.undo(w, 0, by, &req, Some(&mut no_check))
     }
 
     fn last(n: usize) -> UndoRequest {
@@ -1162,7 +1165,7 @@ mod tests {
     }
 
     fn batch(w: &mut World, j: &mut Journal, by: &str, ops: Vec<Op>) -> Result<Option<u64>, WorldError> {
-        commit(w, j, 1, by, Kind::Batch, &mut no_check, |w| w.apply_batch(ops, by).map_err(|(_, e)| e)).map(|(_, s)| s)
+        commit(w, j, 1, by, Kind::Batch, Some(&mut no_check), |w| w.apply_batch(ops, by).map_err(|(_, e)| e)).map(|(_, s)| s)
     }
 
     /// A tiny deterministic generator for the scripted scenarios.
@@ -1189,9 +1192,9 @@ mod tests {
         let bad = vec![Op::Spawn(spec("/d4")), Op::Delete(EntityKey::Path("/nope".into()), None)];
         assert!(batch(&mut w, &mut j, "carl", bad).is_err());
         let env = EnvPatch { exposure: Some(2.0), ..Default::default() };
-        commit(&mut w, &mut j, 2, "ann", Kind::Env, &mut no_check, |w| w.set_env(&env)).unwrap();
+        commit(&mut w, &mut j, 2, "ann", Kind::Env, Some(&mut no_check), |w| w.set_env(&env)).unwrap();
         let del = |w: &mut World| w.delete(&EntityKey::Path("/d3".into()), None).map(|_| ());
-        commit(&mut w, &mut j, 2, "ann", Kind::Delete, &mut no_check, del).unwrap();
+        commit(&mut w, &mut j, 2, "ann", Kind::Delete, Some(&mut no_check), del).unwrap();
         undo(&mut w, &mut j, "ann", last(1)).unwrap(); // the delete comes back
         assert!(w.find_path("/d3/x").is_ok());
         let replayed = j.replay().unwrap();
@@ -1307,7 +1310,7 @@ mod tests {
         let ops = vec![Op::Spawn(spec("/g")), Op::Spawn(spec("/g/a")), Op::Spawn(spec("/g/b"))];
         batch(&mut w, &mut j, "ann", ops).unwrap();
         let del = |w: &mut World| w.delete(&EntityKey::Path("/g".into()), None).map(|_| ());
-        commit(&mut w, &mut j, 0, "ann", Kind::Delete, &mut no_check, del).unwrap();
+        commit(&mut w, &mut j, 0, "ann", Kind::Delete, Some(&mut no_check), del).unwrap();
         // Something else takes the name /g meanwhile: bringing the deleted /g back must fail cleanly.
         spawn(&mut w, &mut j, "ann", "/g");
         let before = w.state_hash();
@@ -1335,9 +1338,10 @@ mod tests {
             Op::Set(EntityKey::Path("/a".into()), moved(1.0)),
             Op::Delete(EntityKey::Path("/a".into()), None),
         ];
-        let err = commit(&mut w, &mut j, 0, "bob", Kind::Batch, &mut refuse, |w| w.apply_batch(ops, "bob").map_err(|(_, e)| e));
+        let err = commit(&mut w, &mut j, 0, "bob", Kind::Batch, Some(&mut refuse), |w| w.apply_batch(ops, "bob").map_err(|(_, e)| e));
         assert_eq!(err.unwrap_err().code, "claimed");
-        assert_eq!((shape(&w), w.revision()), (before.0, before.1));
+        assert_eq!(shape(&w), before.0);
+        assert!(w.revision() > before.1, "the revision only moves forward (cached hashes must see the rollback)");
         assert!(w.next_id() >= before.2, "ids are never handed out twice");
         assert_eq!(w.get(1).unwrap().version, 1);
         assert_eq!(w.find_path("/a"), Ok(1));

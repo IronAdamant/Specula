@@ -15,7 +15,8 @@
 //!   claim *below* its old and new path (renaming or moving `/a` would carry the claimed `/a/b`
 //!   out of its claim, or carry foreign entities into one) and the descendants' origins before
 //!   and after a move. A delete touches every entity it removes, so deleting `/a` is rejected
-//!   while someone holds `/a/b`. Undo and game tools an agent calls are checked the same way.
+//!   while someone holds `/a/b`, and so is moving, rotating or scaling `/a` (it would move or
+//!   shrink away what `/a/b` holds). Undo and game tools an agent calls are checked the same way.
 //!   Commands of several steps (a batch, an undo of several entries, a game tool) are checked
 //!   **step by step**, each change against the world as it was right after it (see
 //!   `World::recheck_steps`): a later step can't hide what an earlier one did, such as a rename
@@ -404,6 +405,12 @@ impl Claims {
         dead.len()
     }
 
+    /// Whether any live claim could reject a write by `w` (when none can, commands skip the
+    /// step-by-step check entirely).
+    pub fn could_block(&self, w: Writer, now: Instant) -> bool {
+        self.claims.values().any(|c| !c.lets(w, now))
+    }
+
     /// Live claims held by anyone but `w`.
     pub fn others(&self, w: Writer, now: Instant) -> Vec<&Claim> {
         self.claims.values().filter(|c| c.expires > now && !c.held_by(w)).collect()
@@ -494,6 +501,23 @@ impl Claims {
                             );
                             return Err(claim_error("claimed", c, now, message).with("entity_path", p).with("op", change.op()));
                         }
+                    }
+                }
+            }
+            // Moving, rotating or scaling an entity moves (or shrinks away) everything below it,
+            // claimed subtrees included.
+            if let Change::Set { before: Some(before), after, .. } = change {
+                if before.model() != after.model() && world.has_children(after.id) {
+                    let p = change.path();
+                    if let Some(c) = self.below(p).find(blocked) {
+                        let message = format!(
+                            "moving, rotating or scaling {p} would move entities inside {}'s claim {} on {}; nothing was \
+                             changed",
+                            c.owner,
+                            c.id,
+                            c.scope.describe()
+                        );
+                        return Err(claim_error("claimed", c, now, message).with("entity_path", p).with("op", change.op()));
                     }
                 }
             }
@@ -716,6 +740,30 @@ mod tests {
         // Moving /g to x = 0 puts its child at x = 1: inside.
         let moved = set(&mut w, "/g", UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() });
         assert_eq!(c.check(&w, &moved, BOB, now).unwrap_err().code, "claimed");
+    }
+
+    /// Review round 3 (R4): moving, rotating or scaling an unclaimed ancestor moved (or shrank
+    /// away) a path-claimed subtree.
+    #[test]
+    fn transforming_an_ancestor_cannot_move_a_claimed_subtree() {
+        let now = Instant::now();
+        let mut w = world();
+        spawn(&mut w, "/a", Vec3::ZERO, "x");
+        spawn(&mut w, "/a/b", Vec3::ZERO, "x");
+        spawn(&mut w, "/a/b/wall", Vec3::new(1.0, 0.0, 0.0), "x");
+        spawn(&mut w, "/lone", Vec3::ZERO, "x");
+        let mut c = Claims::default();
+        take(&mut c, &w, ANN, Scope::path("/a/b").unwrap(), now).unwrap();
+        let shrink = UpdateSpec { position: Some(Vec3::new(-9999.0, 0.0, 0.0)), scale: Some(Vec3::new(0.001, 0.001, 0.001)), ..Default::default() };
+        let moved = set(&mut w, "/a", shrink);
+        assert_eq!(c.check(&w, &moved, BOB, now).unwrap_err().code, "claimed");
+        assert!(c.check(&w, &moved, ANN, now).is_ok(), "the owner may");
+        let turned = set(&mut w, "/a", UpdateSpec { rotation_deg: Some(Vec3::new(0.0, 90.0, 0.0)), ..Default::default() });
+        assert_eq!(c.check(&w, &turned, BOB, now).unwrap_err().code, "claimed");
+        let recoloured = set(&mut w, "/a", UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..Default::default() });
+        assert!(c.check(&w, &recoloured, BOB, now).is_ok(), "a colour change moves nothing");
+        let leaf = set(&mut w, "/lone", UpdateSpec { position: Some(Vec3::ONE), ..Default::default() });
+        assert!(c.check(&w, &leaf, BOB, now).is_ok());
     }
 
     /// Reviewer finding: a path claim and a region claim that meet later lock each other out;

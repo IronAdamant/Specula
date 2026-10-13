@@ -53,7 +53,7 @@ impl Live {
                 Ok(())
             }
         };
-        journal::commit(&mut self.world, &mut self.journal, self.tick, by, kind, &mut check, f).map(|(v, _)| v)
+        journal::commit(&mut self.world, &mut self.journal, self.tick, by, kind, Some(&mut check), f).map(|(v, _)| v)
     }
 
     fn batch(&mut self, by: &str, ops: Vec<Op>) -> Result<(), WorldError> {
@@ -71,7 +71,7 @@ impl Live {
     }
 
     fn undo(&mut self, by: &str, req: UndoRequest) -> Result<(), WorldError> {
-        self.journal.undo(&mut self.world, self.tick, by, &req, &mut no_check).map(|_| ())
+        self.journal.undo(&mut self.world, self.tick, by, &req, Some(&mut no_check)).map(|_| ())
     }
 }
 
