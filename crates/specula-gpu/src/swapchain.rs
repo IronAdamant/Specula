@@ -2,7 +2,12 @@
 
 use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
-use crate::render::{check_frame, prepare_frame, record_scene, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::descriptors::Descriptors;
+use crate::render::{
+    check_frame, frame_features, prepare_frame, record_frame, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget,
+    DEPTH_FORMAT,
+};
+use crate::shadow::ShadowMap;
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, MemoryKind};
@@ -294,6 +299,8 @@ impl Window {
         inst: &Instance,
         dev: &Device,
         pipelines: &mut Pipelines,
+        descriptors: &Descriptors,
+        shadow_map: Option<&ShadowMap>,
         meshes: &HashMap<u32, Mesh>,
         frame: &FrameDesc,
         frame_no: u64,
@@ -308,7 +315,6 @@ impl Window {
             return Ok(false);
         }
         let scfns = swapchain_fns(dev)?;
-        let pipelines = pipelines.get(dev, self.format.format, frame.reverse_z)?;
         let t0 = Instant::now();
         let f = &mut self.frames[self.frame_index];
         if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
@@ -329,6 +335,8 @@ impl Window {
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
         prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
+        let features = frame_features(frame, scratch, shadow_map.is_some());
+        let pipelines = pipelines.scene(dev, self.format.format, features)?;
         let t2 = Instant::now();
 
         let mut index = 0u32;
@@ -378,7 +386,8 @@ impl Window {
             )],
         );
         let upload = f.upload.as_ref().expect("created in init");
-        let draws = record_scene(dev, f.cmd, pipelines, meshes, &target, frame, &scratch.plan, upload, f.timer.as_mut());
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, shadow_map, frame, scratch, upload };
+        let draws = record_frame(&ctx, f.cmd, &target, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.barrier(
             f.cmd,

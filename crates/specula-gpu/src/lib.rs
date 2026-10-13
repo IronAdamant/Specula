@@ -45,11 +45,13 @@ use std::ffi::c_void;
 use std::fmt;
 
 mod batch;
+mod descriptors;
 mod device;
 mod gpu;
 mod instance;
 mod loader;
 mod render;
+mod shadow;
 mod stats;
 mod swapchain;
 mod timing;
@@ -144,6 +146,10 @@ pub enum Limit {
     PointLights,
     /// Visible draw records per frame (instance indices are `u32`).
     DrawRecords,
+    /// Live textures plus post-chain images (slots in the bindless array).
+    Textures,
+    /// Overlay quads per frame ([`MAX_OVERLAY_QUADS`]).
+    OverlayQuads,
 }
 
 /// What was asked for and what is allowed.
@@ -180,6 +186,8 @@ impl GpuError {
         let name = match what {
             Limit::PointLights => "point lights per frame",
             Limit::DrawRecords => "visible draw records per frame",
+            Limit::Textures => "textures (and post-chain images) alive at once",
+            Limit::OverlayQuads => "overlay quads per frame",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
@@ -308,6 +316,40 @@ pub struct PointLight {
 /// At most this many point lights per frame.
 pub const MAX_POINT_LIGHTS: usize = 16;
 
+/// At most this many overlay quads per frame.
+pub const MAX_OVERLAY_QUADS: usize = 65_536;
+
+/// Most shadow cascades.
+pub const MAX_SHADOW_CASCADES: u32 = 4;
+
+/// The sun's (or moon's) shadow: a cascaded shadow map fitted to the view. Off by default.
+///
+/// Only opaque (`Lit`) draws cast; every material receives (the lava lamp's glass included).
+/// Cascades split the visible depth range (from the nearest visible draw to `distance`, or the
+/// farthest visible draw if nearer); each is a square fitted around its slice, snapped to whole
+/// texels so it does not shimmer as the camera moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowSettings {
+    pub enabled: bool,
+    /// Texels per side of each cascade (clamped to 256..=8192).
+    pub resolution: u32,
+    /// 1..=[`MAX_SHADOW_CASCADES`]. More cascades keep near shadows sharp over a long distance.
+    pub cascades: u32,
+    /// View depth (m) where shadows end; they fade out over the last 10%.
+    pub distance: f32,
+    /// Penumbra radius in texels of the nearest cascade (0 = hard, hardware 2×2 filtering only).
+    pub softness: f32,
+    /// Scales the depth bias (constant and slope) and the receiver's offset along its normal.
+    /// Raise it if surfaces shadow themselves ("acne"); lower it if shadows detach.
+    pub bias: f32,
+}
+
+impl Default for ShadowSettings {
+    fn default() -> Self {
+        ShadowSettings { enabled: false, resolution: 2048, cascades: 3, distance: 80.0, softness: 1.5, bias: 1.0 }
+    }
+}
+
 /// Scene-wide lighting. The default reproduces M0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Environment {
@@ -323,6 +365,8 @@ pub struct Environment {
     pub exposure: f32,
     /// Filmic (ACES) tone mapping plus dithering; off = plain clamp, as in M0.
     pub tonemap: bool,
+    /// Directional shadows from the sun (off by default).
+    pub shadow: ShadowSettings,
 }
 
 impl Default for Environment {
@@ -335,6 +379,7 @@ impl Default for Environment {
             ambient_intensity: 0.25,
             exposure: 1.0,
             tonemap: false,
+            shadow: ShadowSettings::default(),
         }
     }
 }

@@ -65,6 +65,10 @@ impl Device {
         // Per-frame data (camera, lights, time) is read through buffer device addresses.
         let mut v12 = VkPhysicalDeviceVulkan12Features::new(&mut v13 as *mut _ as *mut c_void);
         v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] = VK_TRUE;
+        // The bindless texture array (descriptor indexing; checked by `check_suitable`).
+        for i in VkPhysicalDeviceVulkan12Features::BINDLESS {
+            v12.flags[i] = VK_TRUE;
+        }
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
             p_next: &mut v12 as *mut _ as *mut c_void,
@@ -317,6 +321,24 @@ impl Device {
         kind: MemoryKind,
         what: &str,
     ) -> Result<Image, GpuError> {
+        self.create_image_with(format, width, height, 1, 1, usage, aspect, kind, what)
+    }
+
+    /// Like [`Device::create_image`], with `mips` levels and `layers` array layers. The view
+    /// covers everything: `2D` for one layer, `2D_ARRAY` for more.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_image_with(
+        &self,
+        format: VkFormat,
+        width: u32,
+        height: u32,
+        mips: u32,
+        layers: u32,
+        usage: VkFlags,
+        aspect: VkFlags,
+        kind: MemoryKind,
+        what: &str,
+    ) -> Result<Image, GpuError> {
         let info = VkImageCreateInfo {
             s_type: ST_IMAGE_CREATE_INFO,
             p_next: ptr::null(),
@@ -324,8 +346,8 @@ impl Device {
             image_type: VK_IMAGE_TYPE_2D,
             format,
             extent: VkExtent3D { width, height, depth: 1 },
-            mip_levels: 1,
-            array_layers: 1,
+            mip_levels: mips,
+            array_layers: layers,
             samples: VK_SAMPLE_COUNT_1_BIT,
             tiling: VK_IMAGE_TILING_OPTIMAL,
             usage,
@@ -352,7 +374,8 @@ impl Device {
             if r != VK_SUCCESS {
                 return Err(GpuError::vk("vkBindImageMemory", r));
             }
-            image.view = self.create_view(handle, format, aspect)?;
+            let view_type = if layers > 1 { VK_IMAGE_VIEW_TYPE_2D_ARRAY } else { VK_IMAGE_VIEW_TYPE_2D };
+            image.view = self.create_view_range(handle, format, aspect, view_type, (0, mips), (0, layers))?;
             Ok(())
         })();
         match result {
@@ -365,15 +388,34 @@ impl Device {
     }
 
     pub fn create_view(&self, image: VkImage, format: VkFormat, aspect: VkFlags) -> Result<VkImageView, GpuError> {
+        self.create_view_range(image, format, aspect, VK_IMAGE_VIEW_TYPE_2D, (0, 1), (0, 1))
+    }
+
+    /// A view of `mips` = (first, count) levels and `layers` = (first, count) array layers.
+    pub fn create_view_range(
+        &self,
+        image: VkImage,
+        format: VkFormat,
+        aspect: VkFlags,
+        view_type: i32,
+        mips: (u32, u32),
+        layers: (u32, u32),
+    ) -> Result<VkImageView, GpuError> {
         let info = VkImageViewCreateInfo {
             s_type: ST_IMAGE_VIEW_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
             image,
-            view_type: VK_IMAGE_VIEW_TYPE_2D,
+            view_type,
             format,
             components: VkComponentMapping::default(), // identity swizzle
-            subresource_range: full_range(aspect),
+            subresource_range: VkImageSubresourceRange {
+                aspect_mask: aspect,
+                base_mip_level: mips.0,
+                level_count: mips.1,
+                base_array_layer: layers.0,
+                layer_count: layers.1,
+            },
         };
         let mut view = VK_NULL_HANDLE;
         // SAFETY: valid device, `image` is a live image of it.
@@ -625,6 +667,24 @@ pub fn image_barrier(
         image,
         subresource_range: full_range(aspect),
     }
+}
+
+/// Like [`image_barrier`], for one mip level (all layers).
+#[allow(clippy::too_many_arguments)]
+pub fn mip_barrier(
+    image: VkImage,
+    mip: u32,
+    src_stage: VkFlags64,
+    src_access: VkFlags64,
+    dst_stage: VkFlags64,
+    dst_access: VkFlags64,
+    old_layout: VkImageLayout,
+    new_layout: VkImageLayout,
+) -> VkImageMemoryBarrier2 {
+    let mut b = image_barrier(image, VK_IMAGE_ASPECT_COLOR_BIT, src_stage, src_access, dst_stage, dst_access, old_layout, new_layout);
+    b.subresource_range.base_mip_level = mip;
+    b.subresource_range.level_count = 1;
+    b
 }
 
 pub fn buffer_barrier(

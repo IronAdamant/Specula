@@ -3,9 +3,12 @@
 use crate::batch::mesh_bounds;
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
+use crate::descriptors::Descriptors;
 use crate::render::{
-    check_frame, prepare_frame, record_scene, CacheIdentity, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT,
+    check_frame, frame_features, prepare_frame, record_frame, CacheIdentity, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines,
+    RenderTarget, DEPTH_FORMAT,
 };
+use crate::shadow::{clamp_resolution, ShadowMap};
 use crate::swapchain::Window;
 use crate::timing::PassTimer;
 use crate::vk::*;
@@ -53,6 +56,10 @@ pub struct GpuInner {
     /// Draw-record scratch and the sRGB conversion cache, shared by both paths.
     scratch: FrameScratch,
     pipelines: Pipelines,
+    /// The global descriptor set (shadow map, bindless textures).
+    descriptors: Descriptors,
+    /// The sun's shadow map, created when a frame first enables shadows.
+    shadow_map: Option<ShadowMap>,
     meshes: HashMap<u32, Mesh>,
     targets: HashMap<u32, Target>,
     next_id: u32,
@@ -118,7 +125,14 @@ impl GpuInner {
         let max_image_dimension_2d = props.limits.max_image_dimension_2d;
         let device = Device::new(&instance, physical, family)?;
         let id = CacheIdentity { vendor_id: props.vendor_id, device_id: props.device_id, uuid: props.pipeline_cache_uuid };
-        let pipelines = Pipelines::new(&device, options.pipeline_cache.as_deref(), &id)?;
+        let mut descriptors = Descriptors::new(&device)?;
+        let pipelines = match Pipelines::new(&device, descriptors.layout, options.pipeline_cache.as_deref(), &id) {
+            Ok(p) => p,
+            Err(e) => {
+                descriptors.destroy(&device);
+                return Err(e);
+            }
+        };
         let mut gpu = GpuInner {
             adapter,
             max_image_dimension_2d,
@@ -129,6 +143,8 @@ impl GpuInner {
             timer: None,
             scratch: FrameScratch::default(),
             pipelines,
+            descriptors,
+            shadow_map: None,
             meshes: HashMap::new(),
             targets: HashMap::new(),
             next_id: 1,
@@ -147,6 +163,7 @@ impl GpuInner {
         gpu.timer = PassTimer::new(&gpu.device)?;
         // Every offscreen pipeline variant now, so no frame ever waits for one.
         gpu.pipelines.prebuild(&gpu.device, TARGET_FORMAT)?;
+        gpu.pipelines.prebuild_common(&gpu.device)?;
         Ok(gpu)
     }
 
@@ -349,15 +366,42 @@ impl GpuInner {
         self.device.destroy_image(&t.color);
     }
 
+    /// Make sure the shadow map matches `frame`'s settings (created on first use; recreated,
+    /// after the GPU goes idle, when its resolution or cascade count changes).
+    fn ensure_frame_resources(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
+        let s = &frame.environment.shadow;
+        if !s.enabled {
+            return Ok(());
+        }
+        let (resolution, layers) = (clamp_resolution(s.resolution), s.cascades.clamp(1, crate::MAX_SHADOW_CASCADES));
+        if let Some(map) = &self.shadow_map {
+            if map.resolution == resolution && map.layer_count() == layers {
+                return Ok(());
+            }
+            // In-flight frames may still sample it.
+            self.device.wait_idle();
+            let mut old = self.shadow_map.take().expect("checked");
+            old.destroy(&self.device);
+        }
+        let map = ShadowMap::new(&self.device, resolution, layers)?;
+        self.descriptors.write_shadow(&self.device, map.image.view);
+        self.shadow_map = Some(map);
+        Ok(())
+    }
+
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_frame(&self.meshes, frame)?;
-        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::new(format!("unknown target id {}", target.0)))?;
-        let pipelines = self.pipelines.get(&self.device, TARGET_FORMAT, frame.reverse_z)?;
+        if !self.targets.contains_key(&target.0) {
+            return Err(GpuError::new(format!("unknown target id {}", target.0)));
+        }
+        self.ensure_frame_resources(frame)?;
+        let t = &self.targets[&target.0];
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
         prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
-        let plan = &self.scratch.plan;
+        let features = frame_features(frame, &self.scratch, self.shadow_map.is_some());
+        let pipelines = self.pipelines.scene(&self.device, TARGET_FORMAT, features)?;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -371,7 +415,16 @@ impl GpuInner {
         };
         let extent = t.extent;
         let color = t.color.handle;
-        let meshes = &self.meshes;
+        let ctx = FrameContext {
+            dev: &self.device,
+            pipelines,
+            descriptors: &self.descriptors,
+            meshes: &self.meshes,
+            shadow_map: self.shadow_map.as_ref(),
+            frame,
+            scratch: &self.scratch,
+            upload,
+        };
         let ran = self.run_sync(|dev, cmd| {
             if let Some(t) = timer.as_mut() {
                 t.begin_frame(dev, cmd, frame_no);
@@ -391,7 +444,7 @@ impl GpuInner {
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 )],
             );
-            draws = record_scene(dev, cmd, pipelines, meshes, &rt, frame, plan, upload, timer.as_mut());
+            draws = record_frame(&ctx, cmd, &rt, timer.as_mut());
             dev.barrier(
                 cmd,
                 &[],
@@ -503,12 +556,19 @@ impl GpuInner {
     }
 
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
-        let window = self.window.as_mut().ok_or_else(|| GpuError::new("present: no window attached"))?;
+        if self.window.is_none() {
+            return Err(GpuError::new("present: no window attached"));
+        }
+        check_frame(&self.meshes, frame)?;
+        self.ensure_frame_resources(frame)?;
+        let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(
             &self.instance,
             &self.device,
             &mut self.pipelines,
+            &self.descriptors,
+            self.shadow_map.as_ref(),
             &self.meshes,
             frame,
             frame_no,
@@ -566,7 +626,11 @@ impl Drop for GpuInner {
         if let Some(mut t) = self.timer.take() {
             t.destroy(dev);
         }
+        if let Some(mut m) = self.shadow_map.take() {
+            m.destroy(dev);
+        }
         self.pipelines.destroy(dev);
+        self.descriptors.destroy(dev);
         // SAFETY: device idle; objects belong to `dev` and are destroyed once (null is ignored).
         unsafe {
             (dev.fns.destroy_fence)(dev.handle, self.sync_fence, ptr::null());

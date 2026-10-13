@@ -3,34 +3,18 @@
 // Recompile by hand (no build scripts):
 //   glslc -O --target-env=vulkan1.3 mesh.frag -o mesh.frag.spv
 //   spirv-val --target-env vulkan1.3 mesh.frag.spv
-#extension GL_EXT_buffer_reference : require
 
-// Per-frame data; must match `FrameData` in src/render.rs (and mesh.vert).
-struct PointLight {
-    vec4 pos_range; // xyz world position, w range (m)
-    vec4 color;     // linear RGB x intensity
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Frame {
-    mat4 view_proj;
-    vec4 camera_time; // xyz camera, w time (s)
-    vec4 sun_dir;     // xyz towards the sun
-    vec4 sun_color;   // linear RGB x intensity
-    vec4 ambient;     // linear RGB x intensity, w exposure
-    vec4 sky;         // linear clear colour, w tone mapping on
-    vec4 viewport;    // width, height, light count
-    PointLight lights[16];
-};
+#include "frame.glsl"
 
-// Per-draw records; must match `DrawRecord` in src/render.rs (and mesh.vert).
-struct Draw {
-    mat4 model;  // object -> world
-    vec4 color;  // linear RGB, a opacity
-    vec4 color2; // linear RGB, a seed
-    vec4 params; // emissive, metallic, roughness, specular
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
-    Draw items[];
-};
+// Features (src/render.rs FEAT_*), specialized per pipeline: a pipeline without a feature runs
+// exactly the code it ran before the feature existed.
+layout(constant_id = 0) const uint FEATURES = 0u;
+const bool SHADOWS = (FEATURES & 1u) != 0u;
+const bool FOG = (FEATURES & 2u) != 0u;
+const bool HDR = (FEATURES & 4u) != 0u;
+
+// The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
+layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 
 // Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
@@ -99,9 +83,12 @@ vec3 aces(vec3 x) {
 }
 
 // Linear scene light -> value written to the sRGB target. Without tone mapping this is the M0
-// path (exposure 1, clamp on write).
+// path (exposure 1, clamp on write). HDR targets get exposed linear light; post tone maps it.
 vec3 display(vec3 c) {
     c *= pc.frame.ambient.w;
+    if (HDR) {
+        return clamp(c, vec3(0.0), vec3(60000.0));
+    }
     if (pc.frame.sky.w > 0.5) {
         c = aces(c);
         // Dither by about one sRGB step so dark gradients don't band.
@@ -132,12 +119,50 @@ float ggx(vec3 n, vec3 v, vec3 l, float rough) {
     return a2 / (PI * den * den) * 0.25 / ((ndv * (1.0 - k) + k) * (ndl * (1.0 - k) + k));
 }
 
+// A 12-tap Poisson disc (unit radius).
+const vec2 POISSON[12] = vec2[](
+    vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
+    vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+    vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
+
+// How much sun reaches p (1 = fully lit): the nearest cascade whose square holds p (with room
+// for the filter), sampled with a Poisson disc of hardware-filtered comparisons. The lookup
+// point moves along the normal by a few texels so surfaces don't shadow themselves.
+float sun_shadow(vec3 p, vec3 n) {
+    float depth = dot(pc.frame.shadow_axis.xyz, p) + pc.frame.shadow_axis.w;
+    float fade = smoothstep(pc.frame.shadow_fade.x, pc.frame.shadow_fade.y, depth);
+    if (fade >= 1.0) {
+        return 1.0;
+    }
+    float size = float(textureSize(shadow_map, 0).x);
+    int count = int(pc.frame.shadow_params.x);
+    for (int k = 0; k < count; k++) {
+        float texel = pc.frame.shadow_texel[k];
+        // The same penumbra width in metres in every cascade (at least one texel).
+        float radius = max(pc.frame.shadow_params.y * pc.frame.shadow_texel.x / texel, 1.0);
+        vec4 s = pc.frame.shadow_mats[k] * vec4(p + n * (texel * pc.frame.shadow_params.z), 1.0);
+        vec2 uv = s.xy * 0.5 + 0.5;
+        float margin = (radius + 1.5) / size;
+        if (all(greaterThan(uv, vec2(margin))) && all(lessThan(uv, vec2(1.0 - margin))) && s.z <= 1.0) {
+            float lit = 0.0;
+            for (int i = 0; i < 12; i++) {
+                lit += texture(shadow_map, vec4(uv + POISSON[i] * (radius / size), float(k), s.z));
+            }
+            return mix(lit / 12.0, 1.0, fade);
+        }
+    }
+    return 1.0;
+}
+
 // Diffuse irradiance (ambient + sun + point lights) and specular radiance at a surface.
 void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec3 specular) {
     diffuse = pc.frame.ambient.rgb;
     specular = vec3(0.0);
     vec3 l = pc.frame.sun_dir.xyz;
     float ndl = max(dot(n, l), 0.0);
+    if (SHADOWS && ndl > 0.0) {
+        ndl *= sun_shadow(p, n);
+    }
     diffuse += pc.frame.sun_color.rgb * ndl;
     specular += pc.frame.sun_color.rgb * ndl * ggx(n, v, l, rough);
     int count = int(pc.frame.viewport.z);

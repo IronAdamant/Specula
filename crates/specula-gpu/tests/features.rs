@@ -1,0 +1,183 @@
+//! M2 rendering features on real GPUs: shadows, post, sky and fog, overlay. Every test skips
+//! cleanly (prints why, passes) without Vulkan. Captures go to `$SPECULA_TEST_OUT` (or cargo's
+//! per-target temp dir) as `features_*.png`, for people and agents to look at.
+
+mod common;
+
+use common::*;
+use specula_gpu::{AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, Material, MeshId, Surface, Vertex};
+
+const W: u32 = 480;
+const H: u32 = 270;
+
+/// Towards a low moon, about 30° up, from the left and slightly behind the camera.
+fn moon() -> V3 {
+    normalize([-0.75, 0.55, 0.35])
+}
+
+fn quad() -> (Vec<Vertex>, Vec<u32>) {
+    let n = [0.0, 1.0, 0.0];
+    let v = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|p| Vertex::new(p, n));
+    (v.to_vec(), vec![0, 1, 2, 0, 2, 3])
+}
+
+fn scale3(s: V3, t: V3) -> [f32; 16] {
+    let mut m = IDENTITY;
+    m[0] = s[0];
+    m[5] = s[1];
+    m[10] = s[2];
+    m[12] = t[0];
+    m[13] = t[1];
+    m[14] = t[2];
+    m
+}
+
+struct Scene {
+    cube: MeshId,
+    ground: MeshId,
+    view_proj: [f32; 16],
+}
+
+impl Scene {
+    fn new(gpu: &mut Gpu) -> Scene {
+        let (v, i) = cube();
+        let cube = gpu.upload_mesh(&v, &i).unwrap();
+        let (v, i) = quad();
+        let ground = gpu.upload_mesh(&v, &i).unwrap();
+        let view = look_at_rh([0.0, 9.0, 18.0], [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]);
+        let view_proj = mul(&perspective_vk_reverse_z(50f32.to_radians(), W as f32 / H as f32, 0.05), &view);
+        Scene { cube, ground, view_proj }
+    }
+
+    /// A ground plane, a 2 m cube in the middle, a row of smaller cubes, and one glowing cube.
+    fn draws(&self) -> Vec<DrawItem> {
+        let mut d = vec![
+            DrawItem::new(self.ground, scale3([60.0, 1.0, 60.0], [0.0, 0.0, 0.0]), [0.36, 0.39, 0.44, 1.0]),
+            DrawItem::new(self.cube, scale3([2.0, 2.0, 2.0], [0.0, 1.0, 0.0]), [0.55, 0.59, 0.64, 1.0]),
+        ];
+        for k in 0..5 {
+            let x = -6.0 + 3.0 * k as f32;
+            d.push(DrawItem::new(self.cube, scale3([0.8, 1.6, 0.8], [x, 0.8, -5.0]), [0.66, 0.62, 0.55, 1.0]));
+        }
+        let mut glow = DrawItem::new(self.cube, scale3([0.6, 0.6, 0.6], [4.0, 0.3, 3.0]), [0.25, 0.88, 0.82, 1.0]);
+        glow.surface = Surface { emissive: 4.0, ..Default::default() };
+        d.push(glow);
+        d
+    }
+
+    fn environment(&self) -> Environment {
+        Environment {
+            sun_direction: moon(),
+            sun_color: [0.79, 0.84, 1.0],
+            sun_intensity: 1.0,
+            ambient_color: [0.42, 0.47, 0.6],
+            ambient_intensity: 0.35,
+            exposure: 1.1,
+            tonemap: true,
+            ..Default::default()
+        }
+    }
+
+    fn render(&self, gpu: &mut Gpu, env: Environment, name: &str) -> Vec<u8> {
+        let target = gpu.create_target(W, H).unwrap();
+        let draws = self.draws();
+        let frame = FrameDesc {
+            view_proj: self.view_proj,
+            clear_color: [0.04, 0.06, 0.13, 1.0],
+            draws: &draws,
+            reverse_z: true,
+            environment: env,
+            ..Default::default()
+        };
+        gpu.render(target, &frame).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        gpu.destroy_target(target);
+        let label: String = gpu.adapter().name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        let path = write_png(&format!("features_{name}_{label}.png"), &rgba, W, H);
+        eprintln!("wrote {}", path.display());
+        rgba
+    }
+
+    fn px(&self, rgba: &[u8], p: V3) -> [u8; 4] {
+        let (x, y) = project(&self.view_proj, p, W, H);
+        pixel(rgba, W, x as u32, y as u32)
+    }
+}
+
+fn luma(p: [u8; 4]) -> i32 {
+    p[0] as i32 + p[1] as i32 + p[2] as i32
+}
+
+fn every_adapter(test: &str, f: impl Fn(&str, AdapterPreference)) {
+    if !specula_gpu::is_available() {
+        eprintln!("{test}: SKIPPED — Vulkan is not available");
+        return;
+    }
+    for a in specula_gpu::enumerate_adapters().unwrap() {
+        f(&format!("{test}[{}]", a.index), AdapterPreference::Index(a.index));
+    }
+}
+
+#[test]
+fn shadows_fall_away_from_the_moon() {
+    every_adapter("shadows", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let env = scene.environment();
+        let plain = scene.render(&mut gpu, env, "no_shadows");
+        let mut shadowed_env = env;
+        shadowed_env.shadow.enabled = true;
+        let shadowed = scene.render(&mut gpu, shadowed_env, "shadows");
+        let stats = gpu.last_frame_stats();
+        eprintln!("{test}: {:?}", stats.draws);
+        assert!(stats.draws.shadow_cascades >= 1 && stats.draws.shadow_draw_calls >= 1);
+        if let Some(t) = &stats.gpu {
+            assert!(t.passes.iter().any(|p| p.name == specula_gpu::PASS_SHADOW), "{t:?}");
+        }
+
+        // Ground just beyond the big cube, away from the moon: in its shadow.
+        let m = moon();
+        let away = normalize([-m[0], 0.0, -m[2]]);
+        let behind = [away[0] * 1.8, 0.01, away[2] * 1.8];
+        let (a, b) = (scene.px(&plain, behind), scene.px(&shadowed, behind));
+        eprintln!("{test}: ground behind the cube {a:?} -> {b:?}");
+        assert!(luma(b) * 10 < luma(a) * 8, "shadowed ground is darker: {a:?} -> {b:?}");
+        // On the moon's side of the cube the ground stays lit (the shadow falls away from the light).
+        let front = [-away[0] * 2.5, 0.01, -away[2] * 2.5];
+        let (a, b) = (scene.px(&plain, front), scene.px(&shadowed, front));
+        assert!(luma(a).abs_diff(luma(b)) <= 6, "lit ground unchanged: {a:?} -> {b:?}");
+        // No acne: open ground, the cube's top and its moon-facing side keep their light.
+        for p in [[5.0, 0.01, 6.0], [0.3, 2.0, 0.3], [-1.0, 1.0, 0.2]] {
+            let (a, b) = (scene.px(&plain, p), scene.px(&shadowed, p));
+            assert!(luma(a).abs_diff(luma(b)) <= 6, "{p:?} stays lit: {a:?} -> {b:?}");
+        }
+        // No peter-panning: right at the cube's foot on the shadow side, it is already dark.
+        let foot = [away[0] * 1.25, 0.01, away[2] * 1.25];
+        let (a, b) = (scene.px(&plain, foot), scene.px(&shadowed, foot));
+        assert!(luma(b) * 10 < luma(a) * 8, "shadow touches the cube's foot: {a:?} -> {b:?}");
+
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
+#[test]
+fn blended_materials_do_not_cast() {
+    let test = "blended_do_not_cast";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let scene = Scene::new(&mut gpu);
+    let mut env = scene.environment();
+    env.shadow.enabled = true;
+    let target = gpu.create_target(64, 64).unwrap();
+    let mut glass = DrawItem::new(scene.cube, scale3([2.0, 2.0, 2.0], [0.0, 1.0, 0.0]), [1.0, 1.0, 1.0, 0.3]);
+    glass.material = Material::Glass;
+    let ground = DrawItem::new(scene.ground, scale3([60.0, 1.0, 60.0], [0.0; 3]), [0.5; 4]);
+    let draws = [ground, glass];
+    let frame = FrameDesc { view_proj: scene.view_proj, draws: &draws, reverse_z: true, environment: env, ..Default::default() };
+    gpu.render(target, &frame).unwrap();
+    let s = gpu.last_frame_stats();
+    assert_eq!(s.draws.shadow_instances, s.draws.shadow_cascades, "only the ground casts (once per cascade), not the glass: {:?}", s.draws);
+    gpu.destroy_target(target);
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+}

@@ -3,38 +3,12 @@
 // Recompile by hand (no build scripts):
 //   glslc -O --target-env=vulkan1.3 mesh.vert -o mesh.vert.spv
 //   spirv-val --target-env vulkan1.3 mesh.vert.spv
-#extension GL_EXT_buffer_reference : require
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color; // sRGB-encoded RGBA (unorm8)
 
-// Per-frame data; must match `FrameData` in src/render.rs (and mesh.frag).
-struct PointLight {
-    vec4 pos_range; // xyz world position, w range (m)
-    vec4 color;     // linear RGB x intensity
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Frame {
-    mat4 view_proj;
-    vec4 camera_time; // xyz camera, w time (s)
-    vec4 sun_dir;     // xyz towards the sun
-    vec4 sun_color;   // linear RGB x intensity
-    vec4 ambient;     // linear RGB x intensity, w exposure
-    vec4 sky;         // linear clear colour, w tone mapping on
-    vec4 viewport;    // width, height, light count
-    PointLight lights[16];
-};
-
-// Per-draw records; must match `DrawRecord` in src/render.rs (and mesh.frag).
-struct Draw {
-    mat4 model;  // object -> world
-    vec4 color;  // linear RGB, a opacity
-    vec4 color2; // linear RGB, a seed
-    vec4 params; // emissive, metallic, roughness, specular
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
-    Draw items[];
-};
+#include "frame.glsl"
 
 // Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
