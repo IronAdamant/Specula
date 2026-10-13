@@ -26,6 +26,9 @@ pub struct Part {
 ///   the GPU decodes sRGB → linear for free with an `R8G8B8A8_SRGB` attribute (or in the shader).
 /// - Triangles are counter-clockwise seen from outside.
 /// - `parts` cover `indices` exactly, in order, one per material.
+/// - `joints`/`weights`: skinning data for rigged models (see [`crate::rig`]), one entry per
+///   vertex, or both empty. Up to 4 bone indices into the model's rig, and unorm8 weights that
+///   sum to exactly 255 (a GPU reads them as `R8G8B8A8_UINT` + `R8G8B8A8_UNORM`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshData {
     pub positions: Vec<V3>,
@@ -33,6 +36,8 @@ pub struct MeshData {
     pub colors: Vec<[u8; 4]>,
     pub indices: Vec<u32>,
     pub parts: Vec<Part>,
+    pub joints: Vec<[u8; 4]>,
+    pub weights: Vec<[u8; 4]>,
 }
 
 /// Axis-aligned bounds.
@@ -88,6 +93,8 @@ pub enum MeshErrorCode {
     BadNormal,
     /// Parts don't cover the index buffer exactly, in order.
     BadParts,
+    /// Skinning data has the wrong length, or weights that don't sum to 255.
+    BadSkin,
 }
 
 /// A failed mesh check: which rule, which element, and why.
@@ -148,6 +155,12 @@ impl MeshData {
                 ),
             ));
         }
+        if self.joints.len() != self.weights.len() || !(self.joints.is_empty() || self.joints.len() == n) {
+            return Err(err(MeshErrorCode::BadSkin, None, format!("{n} positions, {} joints, {} weights", self.joints.len(), self.weights.len())));
+        }
+        if let Some(i) = self.weights.iter().position(|w| w.iter().map(|x| *x as u32).sum::<u32>() != 255) {
+            return Err(err(MeshErrorCode::BadSkin, Some(i), format!("vertex {i}: weights {:?} don't sum to 255", self.weights[i])));
+        }
         for (i, (p, nn)) in self.positions.iter().zip(&self.normals).enumerate() {
             if p.iter().chain(nn.iter()).any(|v| !v.is_finite()) {
                 return Err(err(MeshErrorCode::NonFinite, Some(i), format!("vertex {i}: {p:?} normal {nn:?}")));
@@ -199,10 +212,30 @@ impl MeshData {
         }
     }
 
+    /// True if the mesh carries skinning data.
+    pub fn is_skinned(&self) -> bool {
+        !self.joints.is_empty()
+    }
+
     /// Appends `other` (its parts follow ours). Call [`MeshData::group_by_material`] to merge
-    /// parts that share a material.
+    /// parts that share a material. If only one side is skinned, the other side's vertices are
+    /// bound to bone 0 so the buffers stay aligned.
     pub fn merge(&mut self, other: &MeshData) {
         let base = self.positions.len() as u32;
+        if self.is_skinned() || other.is_skinned() {
+            let rigid = ([0u8; 4], [255u8, 0, 0, 0]);
+            if !self.is_skinned() {
+                self.joints = vec![rigid.0; self.positions.len()];
+                self.weights = vec![rigid.1; self.positions.len()];
+            }
+            if other.is_skinned() {
+                self.joints.extend_from_slice(&other.joints);
+                self.weights.extend_from_slice(&other.weights);
+            } else {
+                self.joints.extend(std::iter::repeat_n(rigid.0, other.positions.len()));
+                self.weights.extend(std::iter::repeat_n(rigid.1, other.positions.len()));
+            }
+        }
         let ibase = self.indices.len() as u32;
         self.positions.extend_from_slice(&other.positions);
         self.normals.extend_from_slice(&other.normals);
@@ -307,6 +340,14 @@ impl MeshData {
             h.write_u32(p.first_index);
             h.write_u32(p.index_count);
         }
+        // Unskinned meshes hash exactly as they did before skinning existed.
+        if self.is_skinned() {
+            h.write_u64(self.joints.len() as u64);
+            for (j, w) in self.joints.iter().zip(&self.weights) {
+                h.write_bytes(j);
+                h.write_bytes(w);
+            }
+        }
         h.finish()
     }
 
@@ -331,6 +372,7 @@ mod tests {
             positions,
             indices,
             parts: vec![Part { material: "a".into(), first_index: 0, index_count: 12 }],
+            ..MeshData::default()
         }
     }
 
@@ -383,5 +425,28 @@ mod tests {
         assert_eq!(a.parts[0].index_count, 24);
         a.validate().unwrap();
         assert_ne!(a.content_hash(), tetra().content_hash());
+    }
+
+    #[test]
+    fn merge_keeps_skin_aligned() {
+        let plain = tetra();
+        let mut skinned = tetra();
+        skinned.joints = vec![[3, 1, 0, 0]; 4];
+        skinned.weights = vec![[200, 55, 0, 0]; 4];
+        skinned.validate().unwrap();
+        let mut a = plain.clone();
+        a.merge(&skinned);
+        a.merge(&plain);
+        a.group_by_material();
+        a.validate().unwrap();
+        assert_eq!(a.joints.len(), 12);
+        assert_eq!(a.joints[0], [0, 0, 0, 0]);
+        assert_eq!(a.joints[4], [3, 1, 0, 0]);
+        assert_eq!(a.weights[8], [255, 0, 0, 0]);
+        assert_ne!(skinned.content_hash(), plain.content_hash());
+        skinned.weights[2] = [200, 0, 0, 0];
+        assert_eq!(skinned.validate().unwrap_err().code, MeshErrorCode::BadSkin);
+        skinned.weights.pop();
+        assert_eq!(skinned.validate().unwrap_err().code, MeshErrorCode::BadSkin);
     }
 }

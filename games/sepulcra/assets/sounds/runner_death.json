@@ -1,0 +1,25 @@
+{
+  "sound": 1,
+  "name": "runner_death",
+  "notes": "A skeleton runner falls apart: a rattle, then bones scatter as hollow woody knocks and clicks.",
+  "bus": "sfx",
+  "seed": 114,
+  "duration": 0.85,
+  "loudness": -21,
+  "vary": { "pitch": [-2, 2], "gain_db": [-1.5, 0] },
+  "layers": [
+    { "name": "rattle", "gain_db": -8,
+      "source": { "wave": "noise", "freq": 900 },
+      "env": { "attack": 0.002, "decay": 0.12, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": 1200, "q": 1.5 } ] },
+    { "name": "clicks", "length": 0.005,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0003, "decay": { "rand": [0.01, 0.03] }, "sustain": 0, "release": 0.003 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [1800, 3200] }, "q": 8 } ],
+      "repeat": { "count": 16, "interval": 0.035, "jitter": 0.02, "gain_db_step": -0.7 } },
+    { "name": "knocks", "at": 0.01, "gain_db": -4,
+      "source": { "wave": "sine", "freq": { "rand": [700, 1300] }, "partials": [[1, 1, 0.02], [2.7, 0.5, 0.01]] },
+      "env": { "attack": 0.0005, "decay": 0.06, "sustain": 0 },
+      "repeat": { "count": 10, "interval": 0.055, "jitter": 0.025, "gain_db_step": -0.8 } }
+  ]
+}

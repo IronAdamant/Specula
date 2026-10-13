@@ -319,12 +319,13 @@ claims and versions more agents just means more collisions.
 shapes?"
 
 - [ ] **Render graph** that owns barriers and transitions.
-- [ ] **Materials** (PBR-lite plus a stylised/vertex-colour path), **directional and point lights**, **shadow maps**.
+- [x] **Materials** (PBR-lite plus a stylised/vertex-colour path), **directional and point lights**, **shadow maps**.
   *Started 2026-10-13 for the lava-lamp benchmark:*
   - per-frame data through a buffer device address
   - a `standard` material (GGX highlights, metal, emission) and up to 16 point lights
   - blended `glass` and `blob_shadow`, sorted far to near (nested shells handled)
   - ACES tone mapping with dithering, and an adjustable sun and ambient light
+  *Done 2026-10-13:* standard/glass/blob materials, vertex colours, 16 point lights, a fitted or cascaded directional shadow map with PCF (render lane).
 
   Still to do: shadow maps, textures, the vertex-colour path, and a real bloom pass (the lamp's halo is analytic).
   *Why the stylised path:* it's cheap on low-end GPUs (F3) and suits agent-made content.
@@ -336,11 +337,13 @@ shapes?"
 - [ ] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
 - [ ] **Skeletal animation, stages A1–A2** ([design/ANIMATION.md](design/ANIMATION.md)): GPU skinning, clip playback,
   crossfades, filmstrip sight.
-- [ ] **Procedural modelling, tier 1** ([design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md)):
+  *Progress 2026-10-13:* rigs in recipes, `specula-anim` clips/blending/generators/IK, CPU skinning with GPU-ready matrices, filmstrip sight. GPU skinning still to do.
+- [x] **Procedural modelling, tier 1** ([design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md)):
   - recipes and primitives
   - extrude, lathe, sweep
   - bevel, array and mirror
   - auto-LOD and auto-collider
+  *Done 2026-10-13:* `specula-model` recipes with hard limits and fidelity-checked auto-LOD; 21 Sepulcra assets (contact sheet in docs/fidelity).
 
   *Why pulled forward from M4:* the game needs real shapes early, and tier 1 is small.
 - [ ] **ID buffer**: per-entity visible-pixel counts and exact screen extents. Fixes occlusion and loose boxes.
@@ -348,10 +351,13 @@ shapes?"
 - [ ] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
 - [ ] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
 - [ ] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
-- [ ] ➕ **Analytic sky and height fog.**
-- [ ] ➕ **Fixed pipeline set**: materials are parameters into a few uber-shaders, all pipelines are built at load
+  *Progress 2026-10-13:* HDR bloom, ACES tonemap, FXAA (colour grading and SSAO still to do).
+- [x] ➕ **Analytic sky and height fog.**
+  *Done 2026-10-13:* analytic sky with a moon disc, exponential height fog.
+- [x] ➕ **Fixed pipeline set**: materials are parameters into a few uber-shaders, all pipelines are built at load
   with an on-disk Vulkan pipeline cache, and a pipeline created mid-game is a `perf_frame` error.
   *Why:* this avoids Unreal-style shader stutter by design (survey §3).
+  *Done 2026-10-13:* all pipelines built at load with a validated on-disk pipeline cache; `pipelines.created_after_warm` is a perf_frame error.
 - [ ] ➕ **Profiling tools**: CPU zones, frame capture and memory tracker, exposed as tools.
 
 **Exit proof:**
@@ -370,8 +376,10 @@ shapes?"
   losing the world; structured build errors.
 - [ ] **`specula-sdk`**: the one crate game modules depend on. It exposes only deterministic APIs (tick, engine RNG),
   enforcing F2.
-- [ ] **Input**: keyboard and mouse (Win32), gamepads (XInput, runtime-loaded). Input is recorded into the journal.
-- [ ] **Time**: `time_pause`, `time_step`, `time_resume`, and `time_scale` for fast-forward headless runs.
+- [x] **Input**: keyboard and mouse (Win32), gamepads (XInput, runtime-loaded). Input is recorded into the journal.
+  *Done 2026-10-13:* Win32 keyboard/mouse/pointer + XInput (runtime-loaded); per-tick action recordings in `specula-input`.
+- [x] **Time**: `time_pause`, `time_step`, `time_resume`, and `time_scale` for fast-forward headless runs.
+  *Done 2026-10-13:* `time_control` pause/resume/step/scale.
 - [ ] **Physics, stages P1–P3** ([design/PHYSICS.md](design/PHYSICS.md)):
   - P1: queries and triggers
   - P2: kinematic character controller
@@ -379,8 +387,10 @@ shapes?"
 - [ ] **Animation, stage A3**: state machines and blend trees as text data, events, root motion, two-bone IK.
 - [ ] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
+  *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.
 - [ ] **Desync detector**: when two runs' hashes diverge, report the first tick and the component that differs.
-- [ ] ➕ **Input actions with rebinding** ("jump", not "Space"), with device-correct glyphs.
+- [x] ➕ **Input actions with rebinding** ("jump", not "Space"), with device-correct glyphs.
+  *Done 2026-10-13:* `specula-input`: actions as JSON, rebinding with conflicts, pad/touch cancel, device glyphs.
 - [ ] ➕ **Navigation and AI**: navmesh generation from world geometry, pathfinding, crowd avoidance; behaviour trees
   and utility AI as data.
   *Why:* nearly every game with NPCs needs this, and the original plan had no navigation at all.
@@ -430,12 +440,18 @@ shapes?"
 ## M5: audio, text, UI and the human editor
 
 - [ ] **Audio**: WASAPI output and a mixer; WAV, then OGG/Vorbis decode (hand-written); 3D positional sound.
+  *Progress 2026-10-13:* `specula-audio`: WASAPI, mixer, 3D, recipe synthesiser, WAV (OGG/Vorbis still to do).
 - [ ] **Text, stages T1–T4** ([design/UI.md](design/UI.md)): TrueType parser, CPU atlas for small text, Slug-style
   GPU text for scalable and in-world text, layout and input, then scripts.
-- [ ] **Immediate-mode UI with flexbox-style layout**, used for game UI and the editor. UI screens and themes are data.
-- [ ] ➕ **Gamepad-first focus navigation**, device-correct glyphs, legibility checks (Steam Deck rules).
+  *Progress 2026-10-13:* T1–T2: `specula-text` TrueType parser, rasteriser, SDF, glyph atlas, layout.
+- [x] **Immediate-mode UI with flexbox-style layout**, used for game UI and the editor. UI screens and themes are data.
+  *Done 2026-10-13:* `specula-ui`: screens and themes as JSON, GPU overlay path matching the software preview.
+- [x] ➕ **Gamepad-first focus navigation**, device-correct glyphs, legibility checks (Steam Deck rules).
+  *Done 2026-10-13:* gamepad/keyboard spatial focus, prompt glyphs, Deck legibility in `ui_check`.
 - [ ] ➕ **UI sight tools**: `ui_tree`, `ui_frame`, `ui_act`, `ui_check`.
+  *Progress 2026-10-13:* `ui_check` and `ui_tree` exist in the crate; MCP tools come with engine integration.
 - [ ] ➕ **Audio buses and effects** (reverb, low-pass), spatialisation, streaming music.
+  *Progress 2026-10-13:* buses, ducking, reverb and low-pass in recipes, 3D spatialisation.
 - [ ] ➕ **Timeline/sequencer and camera rails** as data, for cutscenes.
 - [ ] ➕ **Localisation**: string tables, plural rules, per-locale fonts; agents translate and `ui_check` catches
   overflow.

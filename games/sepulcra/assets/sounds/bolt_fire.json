@@ -1,0 +1,26 @@
+{
+  "sound": 1,
+  "name": "bolt_fire",
+  "notes": "Warding stone fires a cyan bolt: a bright FM zap falling in pitch, a shimmer on top and an air whoosh.",
+  "bus": "sfx",
+  "seed": 101,
+  "duration": 0.45,
+  "loudness": -21,
+  "vary": { "pitch": [-1, 1], "gain_db": [-1.5, 0] },
+  "layers": [
+    { "name": "zap",
+      "source": { "wave": "sine", "freq": { "points": [[0, 1800], [0.18, 620]], "curve": "exp" },
+                  "fm": { "ratio": 2.01, "index": { "points": [[0, 3], [0.2, 0.4]] } } },
+      "env": { "attack": 0.002, "decay": 0.2, "sustain": 0, "release": 0.05 },
+      "filters": [ { "type": "lowpass", "cutoff": 6500, "q": 0.7 } ] },
+    { "name": "shimmer", "gain_db": -11,
+      "source": { "wave": "triangle", "freq": { "points": [[0, 2600], [0.15, 1300]], "curve": "exp" } },
+      "vibrato": { "rate": 30, "depth": 0.5 },
+      "env": { "attack": 0.004, "decay": 0.13, "sustain": 0, "release": 0.03 } },
+    { "name": "whoosh", "gain_db": -11,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.012, "decay": 0.16, "sustain": 0, "release": 0.04 },
+      "filters": [ { "type": "bandpass", "cutoff": { "points": [[0, 6000], [0.2, 1500]], "curve": "exp" }, "q": 1.5 } ] }
+  ],
+  "fx": [ { "type": "delay", "time": 0.07, "feedback": 0.25, "mix": 0.18, "damp": 0.4 } ]
+}

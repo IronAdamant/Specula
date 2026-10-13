@@ -1,0 +1,23 @@
+{
+  "sound": 1,
+  "name": "bolt_hit",
+  "notes": "A bolt strikes an undead: low thump, a bright crack, and a short magical sparkle as the rune energy disperses.",
+  "bus": "sfx",
+  "seed": 102,
+  "duration": 0.35,
+  "loudness": -21,
+  "vary": { "pitch": [-2, 2], "gain_db": [-2, 0] },
+  "layers": [
+    { "name": "thump", "gain_db": -2,
+      "source": { "wave": "sine", "freq": { "points": [[0, 220], [0.08, 60]], "curve": "exp" } },
+      "env": { "attack": 0.001, "decay": 0.1, "sustain": 0, "release": 0.02 } },
+    { "name": "crack", "gain_db": -6,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.04, "sustain": 0, "release": 0.01 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [2800, 3800] }, "q": 1.2 } ] },
+    { "name": "sparkle", "at": 0.005, "gain_db": -13,
+      "source": { "wave": "sine", "freq": 2600, "partials": [[1, 1, 0.08], [1.5, 0.6, 0.06], [2.3, 0.4, 0.04]] },
+      "env": { "attack": 0.002, "decay": 0.15, "sustain": 0, "release": 0.02 } }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.3, "damp": 0.6, "mix": 0.12 } ]
+}

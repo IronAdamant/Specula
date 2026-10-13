@@ -57,6 +57,25 @@
 //!   are errors with a path (`parts[2].ops[0].amount`), an [`ErrorCode`] and a reason; budgets
 //!   report measured vs limit.
 //!
+//! # Rigs (optional)
+//!
+//! ```text
+//! "rig": { "blend": 0.08,                                 // joint blend band, metres (0 = rigid)
+//!   "bones": [ { "name": "root", "head": [0, 0, 0] },     // bone 0: the only root
+//!              { "name": "hips", "parent": "root", "head": [0, 0.9, 0], "tail": [0, 1.2, 0.1] },
+//!              { "name": "thigh_l", "parent": "hips", "head": [0.2, 0.9, 0], "mirror": true },
+//!              { "name": "shin_l", "parent": "thigh_l", "head": [0.27, 0.46, 0.12], "mirror": true } ] },
+//! "parts": [ { "name": "legs", "bones": ["thigh_l", "shin_l", "thigh_r", "shin_r"], "blend": 0.1, ... } ]
+//! ```
+//!
+//! - Bones are listed parents-first; `head` is the pivot in recipe space (numbers or
+//!   expressions), `tail` defaults to the only child's head (else a point). `"mirror": true` on
+//!   an `_l` bone (left = +X; the model faces +Z) adds an `_r` twin at −X right after it.
+//! - The rig follows the recipe's rigid `finish` ops (move, rotate, scale, mirror without keep).
+//! - A part's vertices bind to the nearest segment among its `bones` (none = the root), blending
+//!   with an adjacent bone within `blend` metres. See [`rig`].
+//! - [`Model::rig`] holds the bones; every LOD's [`MeshData`] carries `joints`/`weights`.
+//!
 //! # Mesh data
 //!
 //! [`MeshData`]: positions (m), unit normals (split at hard edges), **sRGB8 colours** (`[u8; 4]`,
@@ -73,6 +92,7 @@ pub mod mesh;
 pub mod noise;
 pub mod poly;
 pub mod recipe;
+pub mod rig;
 pub mod shape;
 pub mod style;
 
@@ -80,5 +100,6 @@ pub use collider::{Collider, ColliderKind};
 pub use error::{ErrorCode, RecipeError};
 pub use mesh::{Bounds, MeshData, MeshError, MeshErrorCode, Part};
 pub use recipe::{build, build_recipe, BuildParams, Model, Recipe};
+pub use rig::{Bone, Rig, RigError};
 pub use shape::Shape;
 pub use style::{MaterialKind, MaterialPreset, Style};

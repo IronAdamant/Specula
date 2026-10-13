@@ -1,0 +1,24 @@
+{
+  "sound": 1,
+  "name": "tombstone_lost",
+  "notes": "A necromancer raises a tombstone's dead: one deep church-bell toll (hum, prime, minor tierce, quint, nominal and upper partials, each decaying at its own rate) over a sub swell.",
+  "bus": "sfx",
+  "seed": 117,
+  "duration": 4.8,
+  "loudness": -18,
+  "layers": [
+    { "name": "bell", "length": 4.4,
+      "source": { "wave": "sine", "freq": 98,
+                  "partials": [[0.5, 0.6, 2.4], [1, 1, 1.8], [1.2, 0.5, 1.2], [1.5, 0.35, 1.0], [2, 0.7, 0.9],
+                               [2.5, 0.25, 0.5], [3, 0.2, 0.4], [4.2, 0.12, 0.25], [5.4, 0.08, 0.18]] },
+      "env": { "attack": 0.004, "decay": 0, "sustain": 1, "release": 0.4 } },
+    { "name": "strike", "gain_db": -16,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.03, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": 1800, "q": 1 } ] },
+    { "name": "doom", "gain_db": -6,
+      "source": { "wave": "sine", "freq": 49 },
+      "env": { "attack": 0.2, "decay": 3.5, "sustain": 0 } }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.85, "damp": 0.5, "mix": 0.35 } ]
+}

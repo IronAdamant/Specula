@@ -777,6 +777,18 @@ impl Input {
         &self.touches
     }
 
+    /// A touch or pen contact ended abnormally this frame (`PointerCancel`, or focus lost while
+    /// touching). UIs treat it as "abandon the press", not as a release that activates.
+    pub fn touch_cancelled(&self) -> bool {
+        self.gestures.out.cancelled
+    }
+
+    /// Ids (as in `Event::PointerDown::id` / [`Touch::id`]) of the touch / pen contacts that
+    /// ended abnormally this frame. A UI abandons only the press made by one of these.
+    pub fn cancelled_contacts(&self) -> &[u32] {
+        &self.gestures.cancelled_ids
+    }
+
     /// Seconds since the previous update (capped by `settings.max_dt_s`).
     pub fn dt(&self) -> f32 {
         self.dt

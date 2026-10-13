@@ -249,3 +249,110 @@ fn lod_ratios_are_close_to_requested() {
         assert!(got <= r * 1.1 && got >= r * 0.5, "ratio {r}: got {got}");
     }
 }
+
+/// A legged test creature: one mirrored leg part, a body, a head; leaned forward by `finish`.
+const WALKER: &str = r##"{ "recipe": 1, "name": "walker",
+  "params": { "lean": { "default": 0, "min": -30, "max": 30 } },
+  "rig": { "blend": 0.06, "bones": [
+    { "name": "root", "head": [0, 0, 0] },
+    { "name": "hips", "parent": "root", "head": [0, 1, 0], "tail": [0, 1.5, 0] },
+    { "name": "head", "parent": "hips", "head": [0, 1.5, 0], "tail": [0, 1.9, 0] },
+    { "name": "thigh_l", "parent": "hips", "head": [0.2, 1, 0], "mirror": true },
+    { "name": "shin_l", "parent": "thigh_l", "head": [0.2, 0.5, 0.05], "tail": [0.2, 0.05, 0], "mirror": true } ] },
+  "parts": [
+    { "name": "body", "material": "stone", "bones": "hips",
+      "shape": { "op": "box", "size": [0.5, 0.5, 0.3] }, "ops": [ { "op": "move", "by": [0, 1, 0] } ] },
+    { "name": "skull", "material": "stone", "bones": ["head"],
+      "shape": { "op": "sphere", "radius": 0.18, "subdivisions": 1 }, "ops": [ { "op": "move", "by": [0, 1.5, 0] } ] },
+    { "name": "legs", "material": "stone", "bones": ["thigh_l", "shin_l", "thigh_r", "shin_r"],
+      "shape": { "op": "sweep", "profile": { "sides": 6, "radius": 0.06 },
+                 "path": [[0.2, 1, 0], [0.2, 0.5, 0.05], [0.2, 0.05, 0]] },
+      "ops": [ { "op": "mirror", "axis": "x" } ] } ],
+  "finish": [ { "op": "rotate", "deg": ["lean", 0, 0], "pivot": [0, 0, 0] } ] }"##;
+
+#[test]
+fn rigs_bind_mirrored_parts_and_follow_the_finish() {
+    let m = build_with(WALKER, &[]).unwrap();
+    let rig = m.rig.as_ref().unwrap();
+    let names: Vec<&str> = rig.bones.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, ["root", "hips", "head", "thigh_l", "thigh_r", "shin_l", "shin_r"]);
+    // Twins are mirrored and hang from the parent's twin; default tail = the only child's head.
+    let (tr, sr) = (&rig.bones[4], &rig.bones[6]);
+    assert_eq!(tr.head, [-0.2, 1.0, 0.0]);
+    assert_eq!(tr.tail, [-0.2, 0.5, 0.05]);
+    assert_eq!(sr.parent, Some(4));
+    assert_eq!(rig.bones[0].tail, [0.0, 1.0, 0.0], "the root's only child is the hips");
+    assert_eq!(rig.bones[2].tail, [0.0, 1.9, 0.0]);
+    assert_eq!(rig.bones[6].tail, [-0.2, 0.05, 0.0]);
+    for (i, l) in m.lods.iter().enumerate() {
+        l.validate().unwrap_or_else(|e| panic!("LOD{i}: {e}"));
+        assert_eq!(l.joints.len(), l.vertex_count(), "LOD{i} is skinned");
+    }
+    // Every leg vertex binds to its own side; the skull only to the head.
+    let l0 = &m.lods[0];
+    for (p, (j, w)) in l0.positions.iter().zip(l0.joints.iter().zip(&l0.weights)) {
+        let bones: Vec<&str> = (0..4).filter(|k| w[*k] > 0).map(|k| rig.bones[j[k] as usize].name.as_str()).collect();
+        if p[1] < 0.75 {
+            let side = if p[0] > 0.0 { "_l" } else { "_r" };
+            assert!(bones.iter().all(|b| b.ends_with(side)), "{p:?} bound to {bones:?}");
+        }
+        if p[1] > 1.6 {
+            assert_eq!(bones, ["head"]);
+        }
+    }
+    // Knee vertices blend thigh and shin.
+    assert!(l0.weights.iter().any(|w| w[1] > 0), "some vertices blend between two bones");
+    // A leaning finish moves the rig with the mesh.
+    let leaned = build_with(WALKER, &[("lean", 20.0)]).unwrap();
+    let head = leaned.rig.as_ref().unwrap().bones[2].head;
+    assert!(head[2] > 0.45 && (head[1] - 1.5 * 20f32.to_radians().cos()).abs() < 1e-4, "{head:?}");
+    assert_ne!(leaned.hash, m.hash);
+    assert_eq!(build_with(WALKER, &[]).unwrap().hash, m.hash);
+}
+
+#[test]
+fn rig_errors_have_paths_and_codes() {
+    let cases: &[(&str, &str, ErrorCode, &str)] = &[
+        ("\"bones\": [\"thigh_l\", \"shin_l\", \"thigh_r\", \"shin_r\"]", "\"bones\": [\"thigh_l\", \"knee\"]", ErrorCode::UnknownName, "parts[2].bones[1]"),
+        ("\"bones\": \"hips\"", "\"bones\": []", ErrorCode::WrongType, "parts[0].bones"),
+        ("\"bones\": \"hips\"", "\"bones\": \"hips\", \"blend\": 20", ErrorCode::OutOfRange, "parts[0].blend"),
+        ("{ \"name\": \"head\", \"parent\": \"hips\"", "{ \"name\": \"head\", \"parent\": \"neck\"", ErrorCode::UnknownName, "rig.bones[2].parent"),
+        ("{ \"name\": \"hips\", \"parent\": \"root\",", "{ \"name\": \"hips\",", ErrorCode::MissingField, "rig.bones[1].parent"),
+        ("{ \"name\": \"root\", \"head\"", "{ \"name\": \"root\", \"parent\": \"hips\", \"head\"", ErrorCode::InvalidRig, "rig.bones[0].parent"),
+        ("{ \"name\": \"head\", \"parent\"", "{ \"name\": \"hips\", \"parent\"", ErrorCode::Duplicate, "rig.bones[2].name"),
+        ("\"name\": \"thigh_l\"", "\"name\": \"thigh\"", ErrorCode::InvalidRig, "rig.bones[3].mirror"),
+        ("\"bones\": [\"head\"]", "\"bones\": [\"head\", \"head\"]", ErrorCode::Duplicate, "parts[1].bones[1]"),
+        ("\"head\": [0, 1.5, 0], \"tail\"", "\"head\": [0, 1.5], \"tail\"", ErrorCode::WrongType, "rig.bones[2].head"),
+        ("\"blend\": 0.06", "\"blend\": 0.06, \"scale\": 2", ErrorCode::UnknownField, "rig.scale"),
+        ("[0, 1.5, 0], \"tail\": [0, 1.9, 0] }", "[0, 1.5, 0], \"tail\": [0, 1.9, 0], \"roll\": 3 }", ErrorCode::UnknownField, "rig.bones[2].roll"),
+        ("\"pivot\": [0, 0, 0] }", "\"pivot\": [0, 0, 0] }, { \"op\": \"mirror\", \"axis\": \"z\" }", ErrorCode::WrongType, "finish[1]"),
+    ];
+    for (from, to, code, path) in cases {
+        assert!(WALKER.contains(from), "case text {from}");
+        let er = err(&WALKER.replacen(from, to, 1));
+        assert_eq!((er.code, er.path.as_str()), (*code, *path), "{to}: {er}");
+    }
+    // Bones without a rig.
+    let no_rig = one_part(r#"{ "op": "box", "size": [1, 1, 1] }"#, "").replacen("\"material\"", "\"bones\": \"hips\", \"material\"", 1);
+    assert_eq!(err(&no_rig).code, ErrorCode::MissingField);
+    // A rigid mirror (no keep) is followed: the twin bones swap sides.
+    let flipped = WALKER.replacen("\"pivot\": [0, 0, 0] }", "\"pivot\": [0, 0, 0] }, { \"op\": \"mirror\", \"axis\": \"x\", \"keep\": false }", 1);
+    let m = build_with(&flipped, &[]).unwrap();
+    assert_eq!(m.rig.unwrap().bones[3].head, [-0.2, 1.0, 0.0]);
+}
+
+#[test]
+fn includes_bind_to_the_including_parts_bones() {
+    let parent = r##"{ "name": "rider", "rig": { "bones": [ { "name": "root", "head": [0, 0, 0] }, { "name": "saddle", "parent": "root", "head": [0, 1, 0] } ] },
+      "parts": [ { "name": "mount", "include": "walker", "bones": "saddle" } ] }"##;
+    let mut lib = BTreeMap::new();
+    lib.insert("walker".to_string(), WALKER.to_string());
+    let s = style();
+    let m = build(parent, &BuildParams { library: Some(&lib), ..BuildParams::new(&s) }).unwrap();
+    assert_eq!(m.rig.as_ref().unwrap().len(), 2);
+    assert!(m.lods[0].joints.iter().all(|j| j[0] == 1), "every included vertex binds to the saddle");
+    // Without a rig, an included rigged recipe gives an unskinned mesh.
+    let plain = r##"{ "name": "statue", "parts": [ { "name": "mount", "include": "walker" } ] }"##;
+    let m = build(plain, &BuildParams { library: Some(&lib), ..BuildParams::new(&s) }).unwrap();
+    assert!(m.rig.is_none() && !m.lods[0].is_skinned());
+}

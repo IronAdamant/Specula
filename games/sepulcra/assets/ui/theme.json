@@ -1,0 +1,224 @@
+{
+  "format": "specula.ui.theme.v1",
+  "name": "sepulcra",
+  "notes": "From games/sepulcra/STYLE.md: carved-stone panels (#2b3038, bevelled), ivory text (#ece6d6), rune cyan for highlights and selection, grave green only for threats, fire only as the warm accent. Font slots: ui (Segoe UI or the shipped sans), ui_bold, title (a serif for titles only). Sizes are logical px at the Steam Deck (1280x800 = scale 1); 13 px is the smallest role (9.1 px cap height).",
+  "colors": {
+    "stone": "#2b3038",
+    "stone_hi": "#363c46",
+    "stone_lo": "#22262d",
+    "stone_edge": "#4f5866",
+    "stone_dark": "#14171c",
+    "recess": "#1b1e24",
+    "text": "#ece6d6",
+    "text_dim": "#b9b2a1",
+    "text_faint": "#8e897d",
+    "rune": "#3fe0d0",
+    "rune_deep": "#1a8f9e",
+    "rune_pale": "#b8fff6",
+    "grave": "#9cff4f",
+    "grave_deep": "#3e7a1f",
+    "fire": "#ffd27a",
+    "flame": "#ff7a1f",
+    "bone": "#d8cfb8",
+    "night": "#0b1020",
+    "mist": "#2a3448"
+  },
+  "spacing": { "xs": 4, "s": 8, "m": 12, "l": 20, "xl": 32 },
+  "roles": {
+    "body": { "font": "ui", "size": 15, "color": "text", "line_height": 1.15 },
+    "small": { "font": "ui", "size": 13, "color": "text_dim" },
+    "value": { "font": "ui_bold", "size": 19, "color": "text" },
+    "heading": { "font": "ui_bold", "size": 17, "color": "text" },
+    "button": { "font": "ui_bold", "size": 16, "color": "text" },
+    "keycap": { "font": "ui_bold", "size": 13, "color": "text" },
+    "threat": { "font": "ui_bold", "size": 13, "color": "grave" },
+    "title": { "font": "title", "size": 46, "color": "text", "shadow": "#000000b0" },
+    "subtitle": { "font": "title", "size": 20, "color": "text_dim" }
+  },
+  "boxes": {
+    "panel": {
+      "fill": ["stone_hi", "stone_lo"],
+      "border": 1,
+      "border_color": ["stone_edge", "stone_dark"],
+      "radius": 6,
+      "bevel": { "width": 1, "light": "#ffffff1a", "dark": "#00000038" },
+      "shadow": { "offset": [0, 3], "blur": 9, "color": "#000000a0" },
+      "padding": [8, 14]
+    },
+    "menu": {
+      "fill": ["#323843f5", "#23272ef5"],
+      "border": 1.5,
+      "border_color": ["#5b6472", "stone_dark"],
+      "radius": 10,
+      "bevel": { "width": 1.5, "light": "#ffffff1c", "dark": "#00000040" },
+      "shadow": { "offset": [0, 8], "blur": 24, "color": "#000000c0" },
+      "padding": [22, 28]
+    },
+    "inset": {
+      "fill": ["recess", "#23272e"],
+      "border": 1,
+      "border_color": ["stone_dark", "#3a414c"],
+      "radius": 4,
+      "padding": [6, 10]
+    },
+    "keycap": {
+      "fill": ["#525b68", "#3a414c"],
+      "border": 1,
+      "border_color": ["#7a8392", "stone_dark"],
+      "radius": 4,
+      "bevel": { "width": 1, "light": "#ffffff26", "dark": "#00000040" },
+      "shadow": { "offset": [0, 1.5], "blur": 2, "color": "#00000090" },
+      "padding": [1, 6]
+    },
+    "button": {
+      "fill": ["#3d444f", "#2c3139"],
+      "border": 1,
+      "border_color": ["#5f6876", "stone_dark"],
+      "radius": 5,
+      "bevel": { "width": 1, "light": "#ffffff1f", "dark": "#00000038" },
+      "shadow": { "offset": [0, 2], "blur": 4, "color": "#00000090" }
+    },
+    "button_hot": {
+      "fill": ["#44505a", "#2f3a41"],
+      "border": 1.5,
+      "border_color": ["rune", "rune_deep"],
+      "radius": 5,
+      "bevel": { "width": 1, "light": "#b8fff626", "dark": "#00000038" },
+      "shadow": { "offset": [0, 2], "blur": 8, "color": "#1a8f9e55" }
+    },
+    "button_down": {
+      "fill": ["#22272e", "#2c3139"],
+      "border": 1,
+      "border_color": ["stone_dark", "rune_deep"],
+      "radius": 5
+    },
+    "button_off": {
+      "fill": ["#2a2e35", "#24282e"],
+      "border": 1,
+      "border_color": ["#3a404a", "#1a1d22"],
+      "radius": 5
+    },
+    "primary": {
+      "fill": ["#1f5e66", "#164a52"],
+      "border": 1,
+      "border_color": ["#3fe0d0", "#0e3338"],
+      "radius": 5,
+      "bevel": { "width": 1, "light": "#b8fff633", "dark": "#00000040" },
+      "shadow": { "offset": [0, 2], "blur": 6, "color": "#000000a0" }
+    },
+    "primary_hot": {
+      "fill": ["#26737c", "#1a5a63"],
+      "border": 2,
+      "border_color": ["#b8fff6", "#3fe0d0"],
+      "radius": 5,
+      "bevel": { "width": 1, "light": "#ffffff33", "dark": "#00000040" },
+      "shadow": { "offset": [0, 2], "blur": 10, "color": "#3fe0d055" }
+    },
+    "tooltip": {
+      "fill": "#15181df2",
+      "border": 1,
+      "border_color": "#4f5866",
+      "radius": 4,
+      "shadow": { "offset": [0, 2], "blur": 6, "color": "#000000a0" },
+      "padding": [6, 10]
+    },
+    "toast": {
+      "fill": ["#2b3038f0", "#20242af0"],
+      "border": 1,
+      "border_color": ["stone_edge", "stone_dark"],
+      "radius": 6,
+      "shadow": { "offset": [0, 3], "blur": 10, "color": "#000000a0" },
+      "padding": [7, 14]
+    },
+    "threat_label": {
+      "fill": "#0c140ae6",
+      "border": 1,
+      "border_color": "grave_deep",
+      "radius": 4,
+      "padding": [2, 6]
+    },
+    "radial_centre": {
+      "fill": ["#2f3540", "#1d2127"],
+      "border": 1.5,
+      "border_color": ["stone_edge", "stone_dark"],
+      "bevel": { "width": 1, "light": "#ffffff1a", "dark": "#00000040" }
+    },
+    "track": {
+      "fill": ["#15181d", "#1f2329"],
+      "border": 1,
+      "border_color": ["stone_dark", "#3a414c"],
+      "radius": 3,
+      "padding": 2
+    },
+    "divider": { "fill": "#4f586680" },
+    "veil": {
+      "fill": ["#070b16e0", "#070b16c8"],
+      "radius": 14,
+      "shadow": { "offset": [0, 0], "blur": 24, "color": "#070b16a0" },
+      "padding": [14, 36]
+    }
+  },
+  "buttons": {
+    "default": {
+      "normal": { "box": "button", "text": "text" },
+      "hover": { "box": "button_hot", "text": "rune_pale" },
+      "focused": { "box": "button_hot", "text": "rune_pale" },
+      "pressed": { "box": "button_down", "text": "rune" },
+      "disabled": { "box": "button_off", "text": "text_faint" },
+      "role": "button",
+      "padding": [9, 18],
+      "min_height": 44
+    },
+    "primary": {
+      "normal": { "box": "primary", "text": "#f4fffd" },
+      "hover": { "box": "primary_hot", "text": "#ffffff" },
+      "focused": { "box": "primary_hot", "text": "#ffffff" },
+      "pressed": { "box": "button_down", "text": "rune" },
+      "disabled": { "box": "button_off", "text": "text_faint" },
+      "role": "button",
+      "padding": [9, 18],
+      "min_height": 44
+    },
+    "compact": {
+      "normal": { "box": "button", "text": "text" },
+      "hover": { "box": "button_hot", "text": "rune_pale" },
+      "focused": { "box": "button_hot", "text": "rune_pale" },
+      "pressed": { "box": "button_down", "text": "rune" },
+      "disabled": { "box": "button_off", "text": "text_faint" },
+      "role": "button",
+      "padding": [6, 12],
+      "min_height": 44
+    }
+  },
+  "focus": { "color": "rune", "width": 2, "gap": 2 },
+  "bar": { "track": "track", "fill": "rune", "low": "flame", "low_below": 0.3, "height": 10 },
+  "radial": {
+    "base": "#121418",
+    "wedge": "#262b33",
+    "wedge_hot": "#1d6f79",
+    "wedge_disabled": "#1b1e23",
+    "edge": "#4f5866",
+    "edge_hot": "rune_pale",
+    "text": "text",
+    "text_disabled": "#a29c8f",
+    "centre": "radial_centre",
+    "gap": 4
+  },
+  "threat": { "color": "grave", "size": 30, "inset": 10, "pulse_hz": 1.4, "label": "threat", "label_box": "threat_label" },
+  "toast": {
+    "box": "toast",
+    "role": "body",
+    "info": "text_dim",
+    "good": "rune",
+    "warn": "fire",
+    "threat": "grave",
+    "duration_s": 3.5,
+    "fade_s": 0.5
+  },
+  "tooltip": { "box": "tooltip", "role": "small", "delay_s": 0.45, "max_width": 260 },
+  "keycap": { "box": "keycap", "role": "keycap", "min_width": 24 },
+  "dim": "#05080fc4",
+  "scale": { "reference": [1280, 800], "reference_ppi": 215, "min": 0.75, "max": 4 },
+  "check": { "min_cap_px": 9, "min_touch_px": 44, "contrast_body": 4.5, "contrast_large": 3, "large_text_px": 24 },
+  "scene": ["#0b1020", "#2a3448", "#5b6470", "#a7a39a", "#c9d6ff"]
+}

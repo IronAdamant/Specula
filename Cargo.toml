@@ -4,11 +4,14 @@ members = [
     "crates/specula-sys",
     "crates/specula-core",
     "crates/specula-model",
+    "crates/specula-anim",
     "crates/specula-platform",
     "crates/specula-input",
     "crates/specula-gpu",
     "crates/specula-protocol",
     "crates/specula-text",
+    "crates/specula-audio",
+    "crates/specula-ui",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -28,11 +31,14 @@ rust-version = "1.85"
 specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }
 specula-model = { path = "crates/specula-model" }
+specula-anim = { path = "crates/specula-anim" }
 specula-platform = { path = "crates/specula-platform" }
 specula-input = { path = "crates/specula-input" }
 specula-gpu = { path = "crates/specula-gpu" }
 specula-protocol = { path = "crates/specula-protocol" }
 specula-text = { path = "crates/specula-text" }
+specula-audio = { path = "crates/specula-audio" }
+specula-ui = { path = "crates/specula-ui" }
 
 [profile.dev]
 opt-level = 1

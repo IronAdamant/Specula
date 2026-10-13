@@ -35,6 +35,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-anim"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-gpu",
+ "specula-model",
+]
+
+[[package]]
+name = "specula-audio"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-sys",
+]
+
+[[package]]
 name = "specula-core"
 version = "0.3.0"
 
@@ -84,4 +101,15 @@ name = "specula-text"
 version = "0.3.0"
 dependencies = [
  "specula-core",
+]
+
+[[package]]
+name = "specula-ui"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-gpu",
+ "specula-input",
+ "specula-platform",
+ "specula-text",
 ]

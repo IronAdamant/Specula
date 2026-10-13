@@ -291,6 +291,7 @@ mod tests {
             positions: p.clone(),
             indices: i.clone(),
             parts: vec![crate::mesh::Part { material: "h".into(), first_index: 0, index_count: i.len() as u32 }],
+            ..Default::default()
         };
         assert!(m.is_watertight());
         assert!(m.signed_volume() > 0.0);

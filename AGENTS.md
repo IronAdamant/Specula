@@ -12,7 +12,9 @@ Read [HANDOFF.md](HANDOFF.md) first.
    `#[link(name = "user32", kind = "raw-dylib")] extern "system" { … }` — never rely on import libraries.
    Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** via `specula_sys::dynlib::Library`.
    **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
-   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` → `specula-platform`.
+   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` → `specula-platform`;
+   `ole32` → `specula-audio`. Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
+   `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio).
    Tests/examples must not re-declare imports of a DLL their dependencies already declare.
 3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
    Do not set other linkers or add build scripts that call external tools.
