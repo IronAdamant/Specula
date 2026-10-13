@@ -107,8 +107,9 @@ def main():
             if x > 0 and x + w > row_width:
                 x, z, row_depth = 0.0, z - row_depth - gap * 2, 0.0
                 rows.append([])
-            # Centre the model's footprint at (x + w/2, z - d/2).
-            e["pos"] = [x + w / 2 - (e["lo"][0] + w / 2), 0.0, z - d / 2 - (e["lo"][2] + d / 2)]
+            # Centre the model's footprint at (x + w/2, z - d/2), its lowest point on the ground
+            # (components such as rune_column hang down from y = 0).
+            e["pos"] = [x + w / 2 - (e["lo"][0] + w / 2), max(0.0, -e["lo"][1]), z - d / 2 - (e["lo"][2] + d / 2)]
             rows[-1].append(e)
             x += w + gap
             row_depth = max(row_depth, d)
