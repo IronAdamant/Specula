@@ -90,7 +90,7 @@ pub fn run() -> Result<(), String> {
     if let Err(e) = interrupt::install() {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
-    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter })
+    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, ..Default::default() })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = match args.captures {
         Some(dir) => dir,

@@ -1,18 +1,34 @@
 //! `Gpu` internals: adapter selection, meshes, offscreen targets, readback, window plumbing.
 
+use crate::batch::mesh_bounds;
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
-use crate::render::{check_frame, create_frame_buffer, record_scene, write_frame_data, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::render::{
+    check_frame, prepare_frame, record_scene, CacheIdentity, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT,
+};
 use crate::swapchain::Window;
+use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{AdapterInfo, AdapterKind, AdapterPreference, FrameDesc, GpuError, GpuOptions, MeshId, TargetId, ValidationMessage, Vertex};
+use crate::{
+    AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions, MemoryKind, MeshId,
+    TargetId, ValidationMessage, Vertex,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
+use std::time::Instant;
 
 /// Offscreen colour format (readback bytes are sRGB RGBA8).
 pub const TARGET_FORMAT: VkFormat = VK_FORMAT_R8G8B8A8_SRGB;
+
+/// Where `run_sync` spent its time, in milliseconds.
+#[derive(Clone, Copy, Debug, Default)]
+struct SyncTimes {
+    record_ms: f64,
+    submit_ms: f64,
+    wait_ms: f64,
+}
 
 struct Target {
     color: Image,
@@ -30,13 +46,23 @@ pub struct GpuInner {
     /// Command buffer + fence for synchronous work (uploads, offscreen renders, readback).
     sync_cmd: VkCommandBuffer,
     sync_fence: VkFence,
-    /// Frame data for offscreen renders (synchronous, so one buffer suffices) and its address.
-    frame_buffer: Option<(Buffer, u64)>,
+    /// Frame data and draw records for offscreen renders (synchronous, so one buffer suffices).
+    upload: Option<FrameUpload>,
+    /// Timestamps for offscreen renders (`None` without timestamp support).
+    timer: Option<PassTimer>,
+    /// Draw-record scratch and the sRGB conversion cache, shared by both paths.
+    scratch: FrameScratch,
     pipelines: Pipelines,
     meshes: HashMap<u32, Mesh>,
     targets: HashMap<u32, Target>,
     next_id: u32,
     window: Option<Window>,
+    /// Frames rendered or presented so far (shared counter).
+    frame_no: u64,
+    /// Latest frame stats per path (`frame` 0 = none yet), updated in place each frame;
+    /// pipelines and memory are filled in when asked.
+    last_offscreen: FrameStats,
+    last_window: FrameStats,
     // Dropped after `Drop::drop` released everything above, device before instance.
     device: Device,
     instance: Instance,
@@ -88,21 +114,28 @@ impl GpuInner {
         let instance = Instance::new(options.validation, true)?;
         let (index, physical, family) = select_adapter(&instance, options.adapter)?;
         let adapter = instance.adapter_info(index, physical);
-        let max_image_dimension_2d = instance.properties(physical).limits.max_image_dimension_2d;
+        let props = instance.properties(physical);
+        let max_image_dimension_2d = props.limits.max_image_dimension_2d;
         let device = Device::new(&instance, physical, family)?;
-        let pipelines = Pipelines::new(&device)?;
+        let id = CacheIdentity { vendor_id: props.vendor_id, device_id: props.device_id, uuid: props.pipeline_cache_uuid };
+        let pipelines = Pipelines::new(&device, options.pipeline_cache.as_deref(), &id)?;
         let mut gpu = GpuInner {
             adapter,
             max_image_dimension_2d,
             pool: VK_NULL_HANDLE,
             sync_cmd: ptr::null_mut(),
             sync_fence: VK_NULL_HANDLE,
-            frame_buffer: None,
+            upload: None,
+            timer: None,
+            scratch: FrameScratch::default(),
             pipelines,
             meshes: HashMap::new(),
             targets: HashMap::new(),
             next_id: 1,
             window: None,
+            frame_no: 0,
+            last_offscreen: FrameStats::default(),
+            last_window: FrameStats::default(),
             device,
             instance,
         };
@@ -110,8 +143,10 @@ impl GpuInner {
         gpu.pool = gpu.device.create_command_pool()?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
-        gpu.frame_buffer = Some(create_frame_buffer(&gpu.device)?);
-        gpu.pipelines.get(&gpu.device, TARGET_FORMAT, false)?;
+        gpu.upload = Some(FrameUpload::new(&gpu.device)?);
+        gpu.timer = PassTimer::new(&gpu.device)?;
+        // Every offscreen pipeline variant now, so no frame ever waits for one.
+        gpu.pipelines.prebuild(&gpu.device, TARGET_FORMAT)?;
         Ok(gpu)
     }
 
@@ -144,21 +179,26 @@ impl GpuInner {
     ///
     /// On return — success or error — nothing submitted here is still running, so callers may free
     /// what the commands used, and the fence is unsignaled for the next call.
-    fn run_sync(&self, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<(), GpuError> {
+    fn run_sync(&self, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<SyncTimes, GpuError> {
         let dev = &self.device;
+        let t0 = Instant::now();
         dev.begin(self.sync_cmd)?;
         record(dev, self.sync_cmd);
         dev.end(self.sync_cmd)?;
+        let t1 = Instant::now();
         // A failed submit queues nothing and leaves the fence untouched.
         dev.submit(self.sync_cmd, None, None, self.sync_fence)?;
+        let t2 = Instant::now();
         let waited = dev.wait_fence(self.sync_fence);
         if waited.is_err() {
             // Timed out (work may still be running) or the device was lost: drain the queue
             // before anyone frees the resources this work touches.
             dev.wait_idle();
         }
+        let t3 = Instant::now();
         let reset = dev.reset_fence(self.sync_fence);
-        waited.and(reset)
+        let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+        waited.and(reset).map(|()| SyncTimes { record_ms: ms(t0, t1), submit_ms: ms(t1, t2), wait_ms: ms(t2, t3) })
     }
 
     pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Result<MeshId, GpuError> {
@@ -188,6 +228,7 @@ impl GpuInner {
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             0,
+            MemoryKind::Staging,
             "mesh staging",
         )?;
         // SAFETY: `staging.mapped` points to at least `total` bytes of coherent host memory;
@@ -202,6 +243,7 @@ impl GpuInner {
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             0,
+            MemoryKind::Meshes,
             "mesh",
         ) {
             Ok(b) => b,
@@ -232,7 +274,8 @@ impl GpuInner {
             return Err(e);
         }
         let id = self.next_id();
-        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32 });
+        let bounds = mesh_bounds(vertices);
+        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds });
         Ok(MeshId(id))
     }
 
@@ -259,6 +302,7 @@ impl GpuInner {
             height,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
+            MemoryKind::RenderTargets,
             "target colour",
         )?;
         let depth = match dev.create_image(
@@ -267,6 +311,7 @@ impl GpuInner {
             height,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT,
+            MemoryKind::RenderTargets,
             "target depth",
         ) {
             Ok(d) => d,
@@ -280,6 +325,7 @@ impl GpuInner {
             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            MemoryKind::Readback,
             "target readback",
         ) {
             Ok(b) => b,
@@ -307,19 +353,29 @@ impl GpuInner {
         check_frame(&self.meshes, frame)?;
         let t = self.targets.get(&target.0).ok_or_else(|| GpuError::new(format!("unknown target id {}", target.0)))?;
         let pipelines = self.pipelines.get(&self.device, TARGET_FORMAT, frame.reverse_z)?;
-        let (frame_buffer, frame_address) = self.frame_buffer.as_ref().expect("created in new");
+        let start = Instant::now();
+        let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
-        write_frame_data(frame_buffer, frame, t.extent);
-        let frame_address = *frame_address;
+        prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
+        let plan = &self.scratch.plan;
+        let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
+        let frame_no = self.frame_no + 1;
+        let upload = self.upload.as_ref().expect("created in new");
+        let mut timer = self.timer.take();
+        let mut draws = Default::default();
         let rt = RenderTarget {
             color_view: t.color.view,
             depth_view: t.depth.view,
             depth_image: t.depth.handle,
             extent: t.extent,
         };
+        let extent = t.extent;
         let color = t.color.handle;
         let meshes = &self.meshes;
-        self.run_sync(|dev, cmd| {
+        let ran = self.run_sync(|dev, cmd| {
+            if let Some(t) = timer.as_mut() {
+                t.begin_frame(dev, cmd, frame_no);
+            }
             // Previous contents are discarded; order after any earlier copy-out of this image.
             dev.barrier(
                 cmd,
@@ -335,7 +391,7 @@ impl GpuInner {
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 )],
             );
-            record_scene(dev, cmd, pipelines, meshes, &rt, frame, frame_address);
+            draws = record_scene(dev, cmd, pipelines, meshes, &rt, frame, plan, upload, timer.as_mut());
             dev.barrier(
                 cmd,
                 &[],
@@ -350,10 +406,33 @@ impl GpuInner {
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 )],
             );
-        })?;
+        });
+        // The render completed (or failed with nothing pending): its timestamps are readable.
+        // Stats are updated in place, reusing their storage.
+        let stats = &mut self.last_offscreen;
+        if let (Ok(_), Some(t)) = (&ran, timer.as_mut()) {
+            t.submitted();
+            match t.read_into(&self.device, &mut stats.gpu) {
+                Ok(true) => stats.timestamp_error = None,
+                Ok(false) => {}
+                Err(r) => stats.timestamp_error = Some(r),
+            }
+        }
+        self.timer = timer;
+        let times = ran?;
         if let Some(t) = self.targets.get_mut(&target.0) {
             t.rendered = true;
         }
+        self.frame_no = frame_no;
+        let stats = &mut self.last_offscreen;
+        stats.frame = frame_no;
+        stats.path = FramePath::Offscreen;
+        stats.width = extent.width;
+        stats.height = extent.height;
+        stats.cpu = CpuTiming { wait_ms: times.wait_ms, record_ms: prepare_ms + times.record_ms, submit_ms: times.submit_ms };
+        stats.timestamps_supported = self.timer.is_some();
+        stats.draws = draws;
+        stats.draw_buffer_bytes = self.upload.as_ref().map_or(0, |u| u.bytes());
         Ok(())
     }
 
@@ -408,7 +487,12 @@ impl GpuInner {
             old.destroy(&self.instance, &self.device, self.pool);
         }
         let window = Window::new(&self.instance, &self.device, self.pool, hinstance, hwnd, width, height)?;
-        self.pipelines.get(&self.device, window.format(), false)?;
+        // Every variant for the window's format now, so presenting never waits for a pipeline.
+        if let Err(e) = self.pipelines.prebuild(&self.device, window.format()) {
+            let mut window = window;
+            window.destroy(&self.instance, &self.device, self.pool);
+            return Err(e);
+        }
         self.window = Some(window);
         Ok(())
     }
@@ -420,7 +504,44 @@ impl GpuInner {
 
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
         let window = self.window.as_mut().ok_or_else(|| GpuError::new("present: no window attached"))?;
-        window.present(&self.instance, &self.device, &mut self.pipelines, &self.meshes, frame)
+        let frame_no = self.frame_no + 1;
+        let presented = window.present(
+            &self.instance,
+            &self.device,
+            &mut self.pipelines,
+            &self.meshes,
+            frame,
+            frame_no,
+            &mut self.scratch,
+            &mut self.last_window,
+        )?;
+        if presented {
+            self.frame_no = frame_no;
+        }
+        Ok(())
+    }
+
+    /// The latest frame of `path` (or of either path), with current pipeline and memory state.
+    pub fn last_frame_stats(&self, path: Option<FramePath>) -> FrameStats {
+        let latest = match path {
+            Some(FramePath::Offscreen) => &self.last_offscreen,
+            Some(FramePath::Window) => &self.last_window,
+            None if self.last_window.frame > self.last_offscreen.frame => &self.last_window,
+            None => &self.last_offscreen,
+        };
+        let mut stats = latest.clone();
+        stats.timestamps_supported = self.timer.is_some();
+        stats.pipelines = self.pipelines.stats();
+        stats.memory = self.device.memory_stats(&self.instance);
+        stats
+    }
+
+    pub fn mark_warm(&mut self) {
+        self.pipelines.mark_warm();
+    }
+
+    pub fn pipeline_cache_data(&self) -> Result<Vec<u8>, GpuError> {
+        self.pipelines.cache_data(&self.device)
     }
 }
 
@@ -439,8 +560,11 @@ impl Drop for GpuInner {
             dev.destroy_image(&t.depth);
             dev.destroy_image(&t.color);
         }
-        if let Some((b, _)) = self.frame_buffer.take() {
-            dev.destroy_buffer(&b);
+        if let Some(u) = self.upload.take() {
+            u.destroy(dev);
+        }
+        if let Some(mut t) = self.timer.take() {
+            t.destroy(dev);
         }
         self.pipelines.destroy(dev);
         // SAFETY: device idle; objects belong to `dev` and are destroyed once (null is ignored).
@@ -459,6 +583,26 @@ mod tests {
     use super::*;
     use crate::{Severity, Validation};
 
+    /// The hand-transcribed limit offsets read sane values from every real driver: members with
+    /// spec-guaranteed minimums around the one we use (`timestampPeriod`).
+    #[test]
+    fn device_limits_read_at_header_offsets() {
+        let Ok(instance) = Instance::new(Validation::Off, false) else {
+            eprintln!("device_limits_read_at_header_offsets: SKIPPED — Vulkan is not available");
+            return;
+        };
+        for (i, pd) in instance.physical_devices().unwrap().into_iter().enumerate() {
+            let limits = instance.properties(pd).limits;
+            let push = limits.word(VkPhysicalDeviceLimits::MAX_PUSH_CONSTANTS_SIZE);
+            let max_index = limits.word(VkPhysicalDeviceLimits::MAX_DRAW_INDEXED_INDEX_VALUE);
+            let period = limits.timestamp_period();
+            eprintln!("adapter {i}: maxPushConstantsSize {push}, maxDrawIndexedIndexValue {max_index:#x}, timestampPeriod {period} ns");
+            assert!((128..=65536).contains(&push), "maxPushConstantsSize {push}");
+            assert!(max_index >= (1 << 24) - 1, "maxDrawIndexedIndexValue {max_index}");
+            assert!(period.is_finite() && period > 0.0 && period < 1e6, "timestampPeriod {period}");
+        }
+    }
+
     /// Proves the debug messenger really delivers errors (so "zero errors" elsewhere means something).
     #[test]
     fn validation_errors_are_captured() {
@@ -466,7 +610,7 @@ mod tests {
             eprintln!("validation_errors_are_captured: SKIPPED — Vulkan is not available");
             return;
         }
-        let options = GpuOptions { validation: Validation::On, adapter: AdapterPreference::HighPerformance };
+        let options = GpuOptions { validation: Validation::On, ..Default::default() };
         let mut gpu = match GpuInner::new(&options) {
             Ok(g) => g,
             Err(e) => {
@@ -498,8 +642,8 @@ mod tests {
         // Synchronization validation is on: two copies into one buffer with no barrier between
         // them are a write-after-write hazard.
         let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        let src = gpu.device.create_buffer(64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, 0, "src").unwrap();
-        let dst = gpu.device.create_buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, 0, "dst").unwrap();
+        let src = gpu.device.create_buffer(64, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, 0, MemoryKind::Staging, "src").unwrap();
+        let dst = gpu.device.create_buffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, 0, MemoryKind::Staging, "dst").unwrap();
         gpu.run_sync(|dev, cmd| {
             let region = VkBufferCopy { src_offset: 0, dst_offset: 0, size: 64 };
             // SAFETY: recording; both buffers are live and 64 bytes.
