@@ -10,6 +10,19 @@ memory of the earlier ones. Last updated **2026-10-13**.
   where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
   [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
   How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
+- **Paused 2026-10-13 (owner: "I'll look into M2 tomorrow").** State at the pause:
+  - **M1 done** (exit proof with four Claude subagents; only the msvc replay check is left to CI).
+  - **Merged:** capture speed, GPU stats/instancing, world + persistence, dmath, journal/claims/identity
+    (resume tokens), render (shadows, bloom, FXAA, sky, fog, overlay), text, input, procedural modelling,
+    animation, audio, UI (GPU overlay), engine effects in `world_env`, Sepulcra sim + app (playable greybox).
+  - **Last lane:** Engine-for-games (`model` entities with shared GPU meshes and LOD, visibility, transient
+    entities, UI layer, game hooks): check `git log` for its merge; if it isn't merged, its worktree under
+    `.claude/worktrees/` and the latest lane-reviewer verdict say what's left.
+  - **Next, in order:** (1) the Sepulcra integration lane: real procedural models, `specula-anim` creatures,
+    the `specula-ui` HUD through `GpuOverlay`, `specula-audio` sound, `--seed` via `Game::configure`;
+    (2) the M2 exit proof; (3) M3 pieces the game needs: save games, module host (hot reload), desync detector.
+  - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
+    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages.
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).
