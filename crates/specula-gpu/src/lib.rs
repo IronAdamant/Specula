@@ -32,7 +32,8 @@
 //! - **Pipelines** are all built up front: every variant for the offscreen format at
 //!   [`Gpu::new`] and for the window's format at [`Gpu::attach_window`]. A `VkPipelineCache` can be
 //!   persisted ([`Gpu::pipeline_cache_data`]) and fed back ([`GpuOptions::pipeline_cache`]).
-//!   Call [`Gpu::mark_warm`] after loading; later pipeline creation is reported as an error budget.
+//!   Call [`Gpu::mark_warm`] after loading; a pipeline created later is counted as a budget error
+//!   ([`PipelineStats::created_after_warm`]).
 //! - **Statistics:** [`Gpu::last_frame_stats`] — GPU time per pass (timestamp queries, read without
 //!   stalling), CPU time, draw calls, instances, triangles, culled draws, pipelines and memory.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are

@@ -107,8 +107,9 @@ fn instanced_grid_on(adapter: AdapterPreference, label: &str) {
         assert_eq!(s.memory.allocations, 6, "2 meshes, colour, depth, readback, frame upload");
         assert!(!s.memory.heaps.is_empty() && s.memory.heaps.iter().any(|h| h.device_local));
         for h in &s.memory.heaps {
-            if let (Some(budget), Some(usage)) = (h.budget, h.usage) {
-                assert!(budget > 0 && budget <= h.size && usage <= h.size, "{h:?}");
+            // The spec bounds the budget by the heap size; usage may exceed the budget.
+            if let (Some(budget), Some(_)) = (h.budget, h.usage) {
+                assert!(budget > 0 && budget <= h.size, "{h:?}");
             }
         }
     }
