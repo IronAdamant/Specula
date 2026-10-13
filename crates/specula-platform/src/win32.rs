@@ -18,7 +18,7 @@ use specula_sys::kernel32::{GetLastError, GetModuleHandleW};
 use specula_sys::wide;
 
 use crate::decode::{self, Utf16Assembler};
-use crate::{Event, MouseButton, PlatformError, RawWindow, WindowDesc};
+use crate::{Event, MouseButton, PlatformError, PointerKind, RawWindow, WindowDesc};
 
 type Hwnd = *mut c_void;
 type Handle = *mut c_void;
@@ -118,6 +118,8 @@ extern "system" {
     fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn SetCapture(hwnd: Hwnd) -> Hwnd;
     fn ReleaseCapture() -> i32;
+    fn ScreenToClient(hwnd: Hwnd, point: *mut Point) -> i32;
+    fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> i32;
     // Test-only imports live here too: each DLL is declared by exactly one crate (AGENTS.md
     // rule 2), so integration tests and examples cannot declare their own `user32` imports.
     #[cfg(test)]
@@ -177,6 +179,13 @@ const WM_MBUTTONUP: u32 = 0x0208;
 const WM_MOUSEWHEEL: u32 = 0x020A;
 const WM_CAPTURECHANGED: u32 = 0x0215;
 const WM_DPICHANGED: u32 = 0x02E0;
+const WM_POINTERUPDATE: u32 = 0x0245;
+const WM_POINTERDOWN: u32 = 0x0246;
+const WM_POINTERUP: u32 = 0x0247;
+const WM_POINTERCAPTURECHANGED: u32 = 0x024C;
+
+const PT_TOUCH: u32 = 2;
+const PT_PEN: u32 = 3;
 
 /// Largest client dimension accepted: `WM_SIZE` reports sizes as 16-bit words, and Win32
 /// coordinates are effectively limited to 16 bits anyway.
@@ -196,6 +205,8 @@ struct State {
     last_size: Cell<Option<(u32, u32)>>,
     /// Mouse buttons currently held (bit per `MouseButton`), for mouse capture.
     buttons: Cell<u8>,
+    /// Touch/pen contacts currently down: `(pointer id, kind)`.
+    pointers: RefCell<Vec<(u32, PointerKind)>>,
 }
 
 impl State {
@@ -314,6 +325,7 @@ impl Window {
             utf16: Cell::new(Utf16Assembler::default()),
             last_size: Cell::new(None),
             buttons: Cell::new(0),
+            pointers: RefCell::new(Vec::new()),
         }));
         let title = wide(&desc.title);
         // SAFETY: class name and title are NUL-terminated and outlive the call; the class was
@@ -572,6 +584,12 @@ fn handle(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> 
             state.push(Event::MouseWheel { delta: decode::wheel_notches(wparam) });
             Some(0)
         }
+        WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
+            // Mouse and touchpad pointers (and ids the OS no longer knows) go to DefWindowProc,
+            // which turns them into the usual mouse messages.
+            let kind = pointer_kind(state, decode::pointer_id(wparam))?;
+            Some(handle_pointer(state, hwnd, msg, wparam, lparam, kind))
+        }
         WM_DPICHANGED => {
             // SAFETY: for WM_DPICHANGED, lParam points to the suggested window RECT.
             let r = unsafe { *(lparam as *const Rect) };
@@ -591,6 +609,79 @@ fn handle(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> 
         }
         _ => None,
     }
+}
+
+/// Kind of a touch or pen pointer: remembered for contacts that are down, else asked of the OS.
+/// `None` for mouse/touchpad pointers and unknown ids.
+fn pointer_kind(state: &State, id: u32) -> Option<PointerKind> {
+    if let Some(&(_, kind)) = state.pointers.borrow().iter().find(|(p, _)| *p == id) {
+        return Some(kind);
+    }
+    let mut pointer_type = 0u32;
+    // SAFETY: `pointer_type` is writable; an unknown id makes the call fail (handled).
+    if unsafe { GetPointerType(id, &mut pointer_type) } == 0 {
+        return None;
+    }
+    match pointer_type {
+        PT_TOUCH => Some(PointerKind::Touch),
+        PT_PEN => Some(PointerKind::Pen),
+        _ => None,
+    }
+}
+
+/// Turns a touch/pen `WM_POINTER*` message into pointer events. Always handled (returns 0), so
+/// the OS doesn't also synthesise mouse messages for the same contact.
+fn handle_pointer(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize, kind: PointerKind) -> isize {
+    let id = decode::pointer_id(wparam);
+    let flags = decode::pointer_flags(wparam);
+    let client = || {
+        // Pointer messages carry screen coordinates.
+        let (x, y) = decode::lparam_point(lparam);
+        let mut p = Point { x, y };
+        // SAFETY: `hwnd` is the live window this message was sent to; `p` is writable.
+        unsafe { ScreenToClient(hwnd, &mut p) };
+        (p.x, p.y)
+    };
+    let was_down = {
+        let mut pointers = state.pointers.borrow_mut();
+        let index = pointers.iter().position(|(p, _)| *p == id);
+        match msg {
+            WM_POINTERDOWN => {
+                if index.is_none() {
+                    pointers.push((id, kind));
+                }
+                index.is_some()
+            }
+            WM_POINTERUP | WM_POINTERCAPTURECHANGED => index.map(|i| pointers.remove(i)).is_some(),
+            _ => index.is_some(),
+        }
+    };
+    match msg {
+        WM_POINTERDOWN => {
+            let (x, y) = client();
+            if was_down {
+                // A down for a contact we think is already down: its up was lost. Restart it.
+                state.push(Event::PointerCancel { id, kind });
+            }
+            state.push(Event::PointerDown { id, kind, x, y });
+        }
+        WM_POINTERUPDATE if was_down && flags & decode::POINTER_FLAG_INCONTACT != 0 => {
+            let (x, y) = client();
+            state.push(Event::PointerMove { id, kind, x, y });
+        }
+        WM_POINTERUP if was_down => {
+            if flags & decode::POINTER_FLAG_CANCELED != 0 {
+                state.push(Event::PointerCancel { id, kind });
+            } else {
+                let (x, y) = client();
+                state.push(Event::PointerUp { id, kind, x, y });
+            }
+        }
+        WM_POINTERCAPTURECHANGED if was_down => state.push(Event::PointerCancel { id, kind }),
+        // Hover updates, and messages for contacts that never went down in this window.
+        _ => {}
+    }
+    0
 }
 
 /// Win32-specific window tests that inject messages or query the HWND directly. They skip
@@ -726,6 +817,57 @@ mod tests {
                 Event::MouseUp { button: MouseButton::Middle, x: 12, y: 22 },
                 Event::MouseUp { button: MouseButton::Left, x: 13, y: 23 },
                 Event::MouseWheel { delta: -2.0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn pointer_messages_become_pointer_events() {
+        let Some(mut window) = try_window(&hidden(300, 200)) else { return };
+        let _ = window.poll_events();
+        let hwnd = window.raw().hwnd;
+        let state = window.inner.state();
+        let screen = (40i16, 50i16);
+        let mut expected = Point { x: screen.0.into(), y: screen.1.into() };
+        // SAFETY: live window; `expected` is writable.
+        unsafe { ScreenToClient(hwnd, &mut expected) };
+        let (cx, cy) = (expected.x, expected.y);
+        let wp = |id: usize, flags: u32| ((flags as usize) << 16) | id;
+        let at = point(screen.0, screen.1);
+        let contact = decode::POINTER_FLAG_INCONTACT;
+        let canceled = decode::POINTER_FLAG_CANCELED;
+        let touch = PointerKind::Touch;
+        let pen = PointerKind::Pen;
+
+        assert_eq!(handle_pointer(state, hwnd, WM_POINTERDOWN, wp(7, contact), at, touch), 0);
+        handle_pointer(state, hwnd, WM_POINTERUPDATE, wp(7, contact), at, touch);
+        handle_pointer(state, hwnd, WM_POINTERUPDATE, wp(9, 0), at, pen); // pen hover: ignored
+        handle_pointer(state, hwnd, WM_POINTERDOWN, wp(8, contact), at, touch);
+        handle_pointer(state, hwnd, WM_POINTERUP, wp(7, 0), at, touch);
+        handle_pointer(state, hwnd, WM_POINTERUP, wp(7, 0), at, touch); // already up: ignored
+        handle_pointer(state, hwnd, WM_POINTERUP, wp(8, canceled), at, touch);
+        handle_pointer(state, hwnd, WM_POINTERDOWN, wp(3, contact), at, pen);
+        // The remembered kind wins over the OS lookup for contacts that are down.
+        assert_eq!(pointer_kind(state, 3), Some(pen));
+        handle_pointer(state, hwnd, WM_POINTERDOWN, wp(3, contact), at, pen); // lost up: restart
+        handle_pointer(state, hwnd, WM_POINTERCAPTURECHANGED, wp(3, 0), 0, pen);
+        // An id the OS has never seen is not ours to handle.
+        assert_eq!(pointer_kind(state, 0xFFF0), None);
+        assert!(state.pointers.borrow().is_empty());
+
+        let events: Vec<Event> = window.poll_events().into_iter().filter(|e| !matches!(e, Event::Focused(_))).collect();
+        assert_eq!(
+            events,
+            vec![
+                Event::PointerDown { id: 7, kind: touch, x: cx, y: cy },
+                Event::PointerMove { id: 7, kind: touch, x: cx, y: cy },
+                Event::PointerDown { id: 8, kind: touch, x: cx, y: cy },
+                Event::PointerUp { id: 7, kind: touch, x: cx, y: cy },
+                Event::PointerCancel { id: 8, kind: touch },
+                Event::PointerDown { id: 3, kind: pen, x: cx, y: cy },
+                Event::PointerCancel { id: 3, kind: pen },
+                Event::PointerDown { id: 3, kind: pen, x: cx, y: cy },
+                Event::PointerCancel { id: 3, kind: pen },
             ]
         );
     }
