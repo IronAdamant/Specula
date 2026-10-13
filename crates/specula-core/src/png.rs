@@ -2,6 +2,7 @@
 
 use crate::checksum::{crc32, crc32_update};
 use crate::deflate::{self, Level};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
@@ -22,13 +23,31 @@ const MAX_PIXELS: u64 = 1 << 28;
 
 /// Encode RGBA8 pixels (top row first). Panics if `rgba.len() != width * height * 4`.
 /// Uses adaptive per-row filtering (pick the filter with smallest sum of abs values) and zlib.
+/// Large images are filtered and compressed on [`deflate::available_threads`] threads; the
+/// bytes are the same for any thread count (see [`encode_rgba8_threads`]).
+///
+/// For agent captures, [`Level::Fastest`] is about 4x as fast as [`Level::Default`] at about the
+/// same size (often smaller), because rendered frames are dithered and LZ77 finds little in them.
 pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8], level: Level) -> Vec<u8> {
-    encode_with_filter(width, height, rgba, level, None)
+    encode_rgba8_threads(width, height, rgba, level, deflate::available_threads())
+}
+
+/// [`encode_rgba8`] with at most `threads` threads (0 or 1 = the calling thread only). The
+/// output is byte-identical for every thread count.
+pub fn encode_rgba8_threads(width: u32, height: u32, rgba: &[u8], level: Level, threads: usize) -> Vec<u8> {
+    encode_with_filter(width, height, rgba, level, None, threads)
 }
 
 /// Encoder core; `force_filter` pins every row to one filter type (tests use it to exercise
 /// each unfilter path).
-fn encode_with_filter(width: u32, height: u32, rgba: &[u8], level: Level, force_filter: Option<u8>) -> Vec<u8> {
+fn encode_with_filter(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    level: Level,
+    force_filter: Option<u8>,
+    threads: usize,
+) -> Vec<u8> {
     let stride = width as usize * 4;
     assert_eq!(
         rgba.len(),
@@ -36,8 +55,9 @@ fn encode_with_filter(width: u32, height: u32, rgba: &[u8], level: Level, force_
         "encode_rgba8: rgba has {} bytes, expected {width}×{height}×4",
         rgba.len()
     );
-    let filtered = filter_rows(rgba, stride, height as usize, force_filter);
-    let z = deflate::zlib_compress(&filtered, level);
+    // Rows are filtered inside the compression workers, band by band.
+    let rows = FilteredRows::new(rgba, stride, height as usize, force_filter);
+    let z = deflate::zlib_compress_source(&rows, level, threads);
 
     let mut out = Vec::with_capacity(z.len() + 64);
     out.extend_from_slice(&SIGNATURE);
@@ -65,75 +85,227 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 /// Paeth predictor (PNG spec §9.4).
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let p = a as i16 + b as i16 - c as i16;
-    let pa = (p - a as i16).abs();
-    let pb = (p - b as i16).abs();
-    let pc = (p - c as i16).abs();
+    // With p = a + b - c: |p - a| = |b - c|, |p - b| = |a - c|, |p - c| = |a + b - 2c|.
+    // Written as selects so the encoder's filter loops vectorise.
+    let (a16, b16, c16) = (i16::from(a), i16::from(b), i16::from(c));
+    let pa = (b16 - c16).abs();
+    let pb = (a16 - c16).abs();
+    let pc = (a16 + b16 - 2 * c16).abs();
+    let bc = if pb <= pc { b } else { c };
     if pa <= pb && pa <= pc {
         a
-    } else if pb <= pc {
-        b
     } else {
-        c
+        bc
     }
 }
 
 /// Bytes per complete pixel for the filters (8-bit RGBA).
 const BPP: usize = 4;
 
-/// Prefix each row with its filter type byte and the filtered bytes. Adaptive selection uses the
-/// "minimum sum of absolute differences" heuristic (bytes read as signed).
-fn filter_rows(rgba: &[u8], stride: usize, height: usize, force: Option<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity((stride + 1) * height);
-    let zero_row = vec![0u8; stride];
-    let mut candidates: [Vec<u8>; 5] = std::array::from_fn(|_| vec![0u8; stride]);
-    for y in 0..height {
-        let row = &rgba[y * stride..(y + 1) * stride];
-        let up = if y == 0 { &zero_row[..] } else { &rgba[(y - 1) * stride..y * stride] };
+/// The filtered image stream (per line: a filter-type byte, then the filtered row), computed on
+/// demand for the byte range each compression band needs. Each line depends only on the
+/// unfiltered input, so bands can be filtered on any thread, in any order, with the same result.
+///
+/// A line wholly inside the range is filtered adaptively in one pass. For a line the range only
+/// partly covers, the filter type (which depends on the whole row) is chosen once and cached in
+/// `types`, and only the covered bytes are filtered, so a row wider than a band costs O(width)
+/// in total rather than O(width) per band.
+struct FilteredRows<'a> {
+    rgba: &'a [u8],
+    stride: usize,
+    height: usize,
+    force: Option<u8>,
+    types: Vec<OnceLock<u8>>,
+}
+
+impl<'a> FilteredRows<'a> {
+    fn new(rgba: &'a [u8], stride: usize, height: usize, force: Option<u8>) -> Self {
+        FilteredRows { rgba, stride, height, force, types: (0..height).map(|_| OnceLock::new()).collect() }
+    }
+
+    /// Row `y` and the row above it (`None` for the first row, which predicts from zeros).
+    fn rows(&self, y: usize) -> (&'a [u8], Option<&'a [u8]>) {
+        let s = self.stride;
+        let up = if y == 0 { None } else { Some(&self.rgba[(y - 1) * s..y * s]) };
+        (&self.rgba[y * s..(y + 1) * s], up)
+    }
+
+    /// Filter type of row `y`, computed once by whichever band needs it first.
+    fn row_type(&self, y: usize) -> u8 {
+        *self.types[y].get_or_init(|| {
+            self.force.unwrap_or_else(|| {
+                let (row, up) = self.rows(y);
+                choose_filter(row, up)
+            })
+        })
+    }
+}
+
+impl deflate::Source for FilteredRows<'_> {
+    fn total_len(&self) -> usize {
+        (self.stride + 1) * self.height
+    }
+
+    fn bytes<'s>(&'s self, range: std::ops::Range<usize>, scratch: &'s mut Vec<u8>) -> &'s [u8] {
+        let line = self.stride + 1;
+        scratch.clear();
+        scratch.resize(range.len(), 0);
+        // Whole-line filtering state, allocated only if some line fits wholly in the range.
+        let mut whole: Option<LineFilter> = None;
+        let mut span = Vec::new();
+        let mut pos = range.start;
+        while pos < range.end {
+            let y = pos / line;
+            let (a, b) = (pos - y * line, (range.end - y * line).min(line));
+            let out = &mut scratch[pos - range.start..pos - range.start + (b - a)];
+            let (row, up) = self.rows(y);
+            if a == 0 && b == line {
+                whole.get_or_insert_with(|| LineFilter::new(self.stride)).filter(row, up, self.force, out);
+            } else {
+                // Line byte 0 is the filter type; line byte `i > 0` is row byte `i - 1`.
+                let t = self.row_type(y);
+                let (out, from) = if a == 0 {
+                    out[0] = t;
+                    (&mut out[1..], 0)
+                } else {
+                    (out, a - 1)
+                };
+                out.copy_from_slice(filter_span(t, row, up, from, b - 1, &mut span));
+            }
+            pos += b - a;
+        }
+        scratch
+    }
+}
+
+/// Adaptive filtering of whole lines: every filter type is tried and the cheapest kept.
+struct LineFilter {
+    zero_row: Vec<u8>,
+    candidates: [Vec<u8>; 5],
+}
+
+impl LineFilter {
+    fn new(stride: usize) -> Self {
+        LineFilter { zero_row: vec![0; stride], candidates: std::array::from_fn(|_| vec![0; stride]) }
+    }
+
+    /// Write `row`'s line (filter type byte, then the filtered bytes) to `out`. Adaptive selection
+    /// uses the "minimum sum of absolute differences" heuristic (bytes read as signed); ties go to
+    /// the lowest filter type, exactly as in [`choose_filter`].
+    fn filter(&mut self, row: &[u8], up: Option<&[u8]>, force: Option<u8>, out: &mut [u8]) {
+        let up = up.unwrap_or(&self.zero_row);
         let types: &[u8] = match force {
             Some(t) => &[t][..],
             None => &[0, 1, 2, 3, 4][..],
         };
         let mut best = (u64::MAX, 0u8);
         for &t in types {
-            let buf = &mut candidates[t as usize];
+            let buf = &mut self.candidates[t as usize];
             apply_filter(t, row, up, buf);
-            let cost: u64 = buf.iter().map(|&b| (b as i8).unsigned_abs() as u64).sum();
+            let cost = filter_cost(buf);
             if cost < best.0 {
                 best = (cost, t);
             }
         }
-        out.push(best.1);
-        out.extend_from_slice(&candidates[best.1 as usize]);
+        out[0] = best.1;
+        out[1..].copy_from_slice(&self.candidates[best.1 as usize]);
     }
-    out
 }
 
+/// The adaptive filter type for `row`, computed in cache-sized chunks so a very wide row needs no
+/// row-sized buffers. Same choice as [`LineFilter::filter`].
+fn choose_filter(row: &[u8], up: Option<&[u8]>) -> u8 {
+    const CHUNK: usize = 16 * 1024;
+    let mut costs = [0u64; 5];
+    let mut span = Vec::new();
+    let mut a = 0;
+    while a < row.len() {
+        let b = (a + CHUNK).min(row.len());
+        for (t, cost) in costs.iter_mut().enumerate() {
+            *cost += filter_cost(filter_span(t as u8, row, up, a, b, &mut span));
+        }
+        a = b;
+    }
+    let mut best = (u64::MAX, 0u8);
+    for (t, &cost) in costs.iter().enumerate() {
+        if cost < best.0 {
+            best = (cost, t as u8);
+        }
+    }
+    best.1
+}
+
+/// Filter type `t` applied to `row[a..b]` only (with `up` the row above, `None` for zeros),
+/// computed in `buf`. Starts up to one pixel early so every byte has its left neighbour.
+fn filter_span<'b>(t: u8, row: &[u8], up: Option<&[u8]>, a: usize, b: usize, buf: &'b mut Vec<u8>) -> &'b [u8] {
+    let s = a.saturating_sub(BPP);
+    let zeros;
+    let up = match up {
+        Some(u) => &u[s..b],
+        None => {
+            zeros = vec![0u8; b - s];
+            &zeros[..]
+        }
+    };
+    buf.clear();
+    buf.resize(b - s, 0);
+    // The first `a - s` outputs lack left neighbours unless `s == 0` (the true row start);
+    // they are dropped.
+    apply_filter(t, &row[s..b], up, buf);
+    &buf[a - s..]
+}
+
+/// Sum of the filtered bytes read as signed magnitudes (the adaptive filter's cost).
+fn filter_cost(buf: &[u8]) -> u64 {
+    // u32 lanes vectorise; 64 Ki bytes of at most 128 each cannot overflow them.
+    buf.chunks(1 << 16).map(|c| u64::from(c.iter().map(|&b| u32::from((b as i8).unsigned_abs())).sum::<u32>())).sum()
+}
+
+/// Apply filter `t` to `row` (with `up` the unfiltered row above, zeros for the first row).
+/// The first pixel has no left neighbour; the rest run as bounds-check-free loops over equal-
+/// length slices so they vectorise.
 fn apply_filter(t: u8, row: &[u8], up: &[u8], out: &mut [u8]) {
     let n = row.len();
+    let k = BPP.min(n);
+    let (out_head, out) = out.split_at_mut(k);
+    let (cur, left) = (&row[k..], &row[..n - k]);
+    let (up_head, up_rest, up_left) = (&up[..k], &up[k..n], &up[..n - k]);
+    let m = out.len();
+    let (cur, left, up_rest, up_left) = (&cur[..m], &left[..m], &up_rest[..m], &up_left[..m]);
     match t {
-        0 => out.copy_from_slice(row),
+        0 => {
+            out_head.copy_from_slice(&row[..k]);
+            out.copy_from_slice(cur);
+        }
         1 => {
-            out[..BPP.min(n)].copy_from_slice(&row[..BPP.min(n)]);
-            for i in BPP..n {
-                out[i] = row[i].wrapping_sub(row[i - BPP]);
+            out_head.copy_from_slice(&row[..k]);
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(left[i]);
             }
         }
         2 => {
-            for i in 0..n {
-                out[i] = row[i].wrapping_sub(up[i]);
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i]);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(up_rest[i]);
             }
         }
         3 => {
-            for i in 0..n {
-                let left = if i >= BPP { row[i - BPP] as u16 } else { 0 };
-                out[i] = row[i].wrapping_sub(((left + up[i] as u16) / 2) as u8);
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i] / 2);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(((u16::from(left[i]) + u16::from(up_rest[i])) / 2) as u8);
             }
         }
         _ => {
-            for i in 0..n {
-                let (a, c) = if i >= BPP { (row[i - BPP], up[i - BPP]) } else { (0, 0) };
-                out[i] = row[i].wrapping_sub(paeth(a, up[i], c));
+            // Paeth with no left neighbours predicts the byte above.
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i]);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(paeth(left[i], up_rest[i], up_left[i]));
             }
         }
     }
@@ -456,7 +628,7 @@ mod tests {
             })
             .collect();
         for force in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
-            let png = encode_with_filter(w, h, &px, Level::Default, force);
+            let png = encode_with_filter(w, h, &px, Level::Default, force, 1);
             let img = decode(&png).unwrap();
             assert_eq!((img.width, img.height), (w, h));
             assert_eq!(img.rgba, px, "filter {force:?}");
@@ -464,6 +636,102 @@ mod tests {
         // A 1×1 image is valid too.
         let one = decode(&encode_rgba8(1, 1, &[1, 2, 3, 4], Level::Fast)).unwrap();
         assert_eq!(one.rgba, [1, 2, 3, 4]);
+    }
+
+    /// Noisy RGBA test pixels with flat patches, so every filter type and both literals and runs
+    /// occur.
+    fn noisy_pixels(w: u32, h: u32, seed: u32) -> Vec<u8> {
+        let mut state = seed | 1;
+        (0..w as usize * h as usize * 4)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let (x, y) = (i / 4 % w as usize, i / 4 / w as usize);
+                if (x / 16 + y / 8) % 3 == 0 { 40 } else { ((x + 2 * y) as u32 + (state & 3)) as u8 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn output_is_identical_for_every_thread_count() {
+        // Sizes chosen so compression bands start mid-row (rows of 3109 and 2253 bytes), one
+        // image has a single row longer than a band (filtered twice, by both bands), and one is
+        // a 1-pixel-wide column.
+        let line = |w: u32| w as usize * 4 + 1;
+        assert!(line(40_000) > deflate::BAND_SIZE);
+        let sizes = [(777u32, 301u32), (563, 467), (40_000, 1), (40_000, 2), (1, 70_001), (2, 1), (1, 1)];
+        let levels = [Level::Fastest, Level::Fast, Level::Default, Level::Best];
+        for (w, h) in sizes {
+            let px = noisy_pixels(w, h, w ^ h);
+            for level in levels {
+                let one = encode_rgba8_threads(w, h, &px, level, 1);
+                let img = decode(&one).unwrap_or_else(|e| panic!("{w}x{h} {level:?}: {e}"));
+                assert_eq!((img.width, img.height), (w, h));
+                assert!(img.rgba == px, "{w}x{h} {level:?}: pixels differ");
+                for threads in [2, 3, 7, deflate::available_threads()] {
+                    let many = encode_rgba8_threads(w, h, &px, level, threads);
+                    assert!(one == many, "{w}x{h} {level:?}: {threads} threads differ from 1");
+                }
+            }
+        }
+        // Forced filters through the band path, too.
+        let (w, h) = (777, 301);
+        let px = noisy_pixels(w, h, 7);
+        for force in [Some(0), Some(1), Some(2), Some(3), Some(4)] {
+            let png = encode_with_filter(w, h, &px, Level::Fastest, force, 4);
+            assert_eq!(png, encode_with_filter(w, h, &px, Level::Fastest, force, 1), "filter {force:?}");
+            assert!(decode(&png).unwrap().rgba == px, "filter {force:?}");
+        }
+    }
+
+    #[test]
+    fn rows_wider_than_a_band_are_filtered_in_pieces() {
+        // Each 1.2 MB row spans ~10 bands: bands filter only their slice, using a filter type
+        // chosen once per row from the whole row.
+        let (w, h) = (300_000u32, 3u32);
+        assert!(w as usize * 4 > 8 * deflate::BAND_SIZE);
+        let px = noisy_pixels(w, h, 11);
+        for level in [Level::Fastest, Level::Default] {
+            let one = encode_rgba8_threads(w, h, &px, level, 1);
+            assert!(decode(&one).unwrap().rgba == px, "{level:?}");
+            assert!(one == encode_rgba8_threads(w, h, &px, level, 4), "{level:?}: thread count changed the bytes");
+        }
+        // The chunked type choice matches whole-row adaptive filtering, rows longer than a
+        // chunk included.
+        for (w, seed) in [(3u32, 1u32), (100, 2), (5000, 3), (20_000, 4)] {
+            let px = noisy_pixels(w, 3, seed);
+            let stride = w as usize * 4;
+            let mut line = vec![0u8; stride + 1];
+            let mut whole = LineFilter::new(stride);
+            for y in 0..3 {
+                let row = &px[y * stride..(y + 1) * stride];
+                let up = (y > 0).then(|| &px[(y - 1) * stride..y * stride]);
+                whole.filter(row, up, None, &mut line);
+                assert_eq!(choose_filter(row, up), line[0], "width {w}, row {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn huge_image_round_trips() {
+        let (w, h) = (3840, 2160);
+        let px = synthetic_frame(w, h);
+        let png = encode_rgba8(w, h, &px, Level::Fastest);
+        assert!(png.len() < px.len() / 10, "{} bytes", png.len());
+        assert!(decode(&png).unwrap().rgba == px);
+        assert_eq!(png, encode_rgba8_threads(w, h, &px, Level::Fastest, 1));
+    }
+
+    #[test]
+    fn fastest_is_close_to_default_on_frames() {
+        let (w, h) = (1280, 720);
+        let px = synthetic_frame(w, h);
+        let fastest = encode_rgba8(w, h, &px, Level::Fastest).len();
+        let default = encode_rgba8(w, h, &px, Level::Default).len();
+        println!("1280x720 frame: Fastest {fastest} bytes, Default {default} bytes");
+        // Flat shapes favour LZ77 a little; dithered renders favour Fastest (see png_bench).
+        assert!(fastest < default * 2 && fastest < px.len() / 20, "fastest {fastest}, default {default}");
     }
 
     #[test]
@@ -555,5 +823,5 @@ mod tests {
         // Ancillary chunks are skipped.
         assert!(decode(&png_from_parts(ihdr(1, 1, 8, 0, 0), &[(b"tEXt", b"k\0v")], &z)).is_ok());
     }
-}
 
+}

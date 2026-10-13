@@ -92,9 +92,21 @@ impl Rng {
         lo + (hi - lo) * self.f32()
     }
 
-    /// `true` with probability `p` (clamped to 0..1).
+    /// `true` with probability `p` (clamped to 0..1). Presentation code only: simulation state
+    /// stays float-free, so simulations use [`Rng::chance_ratio`] / [`Rng::chance_permille`].
     pub fn chance(&mut self, p: f32) -> bool {
         self.f32() < p
+    }
+
+    /// `true` with probability `num / den`, in integers (`num >= den` is always true).
+    pub fn chance_ratio(&mut self, num: u32, den: u32) -> bool {
+        assert!(den > 0, "Rng::chance_ratio with den 0");
+        num >= den || self.below(den) < num
+    }
+
+    /// `true` with probability `permille / 1000`.
+    pub fn chance_permille(&mut self, permille: u32) -> bool {
+        self.chance_ratio(permille, 1000)
     }
 
     /// A uniformly chosen element, or `None` when empty.
@@ -184,6 +196,14 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, (0..50).collect::<Vec<_>>());
         assert_ne!(a, (0..50).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn integer_chances() {
+        let mut r = Rng::new(5, 5);
+        assert!((0..100).all(|_| r.chance_ratio(3, 3) && !r.chance_ratio(0, 3)));
+        let hits = (0..10_000).filter(|_| r.chance_permille(250)).count();
+        assert!((2300..2700).contains(&hits), "{hits}");
     }
 
     #[test]
