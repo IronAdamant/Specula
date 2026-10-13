@@ -4,12 +4,12 @@
 //! never guess where something is. Rectangles are the projected **bounding box** of each entity
 //! (clipped to the camera's near/far planes and the image); occlusion is not considered yet.
 
-use crate::meshes::ShapeMeshes;
+use crate::meshes::{LatheMeshes, ShapeMeshes};
+use crate::models::{GpuModels, LodChoice, LodStats};
 use crate::world::{color_hex, material_name, vec3_json, Entity, Shape, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
-use specula_gpu::{DrawItem, FrameDesc, MeshId, PointLight, MAX_POINT_LIGHTS};
-use std::collections::HashMap;
+use specula_gpu::{DrawItem, FrameDesc, PointLight, MAX_POINT_LIGHTS};
 
 pub const SCHEMA: &str = "specula.sight/v1";
 
@@ -68,31 +68,64 @@ pub fn auto_camera(world: &World, fov_y_deg: f32) -> Camera {
     Camera { eye: center + dir * distance, target: center, fov_y_deg }
 }
 
-/// Uploaded lathe meshes by entity id: `(profile key, mesh)`.
-pub type LatheMeshes = HashMap<u64, (u64, MeshId)>;
-
-/// One draw per entity that has a mesh (groups, and a lathe whose upload failed, are skipped).
-pub fn draw_list(world: &World, meshes: &ShapeMeshes, lathes: &LatheMeshes) -> Vec<DrawItem> {
-    world
-        .entities()
-        .filter_map(|e| {
-            let mesh = meshes.get(e.shape).or_else(|| lathes.get(&e.id).map(|&(_, m)| m))?;
-            let c = e.color;
-            Some(DrawItem {
-                mesh,
-                model: e.model().to_cols_array(),
-                color: [c[0], c[1], c[2], e.look.opacity],
-                material: e.look.material,
-                surface: e.look.surface,
-            })
-        })
-        .collect()
+/// Everything uploaded that entities draw with.
+pub struct Meshes<'a> {
+    pub shapes: &'a ShapeMeshes,
+    pub lathes: &'a LatheMeshes,
+    pub models: &'a GpuModels,
 }
 
-/// The world's point lights (entity id order), at most [`MAX_POINT_LIGHTS`], and how many were
-/// left out.
-pub fn lights(world: &World) -> (Vec<PointLight>, usize) {
-    let mut all: Vec<PointLight> = world.entities().filter_map(|e| e.world_light()).collect();
+/// Who a frame is for: the camera (for model LODs) and which entities it includes.
+pub struct View<'a> {
+    pub camera: Camera,
+    pub viewport_h: u32,
+    /// Draw `ui`-layer entities (the window does; captures don't unless asked).
+    pub include_ui: bool,
+    pub lod: LodChoice<'a>,
+}
+
+/// Whether `e` is in a frame that does (or doesn't) include the `ui` layer.
+pub fn in_frame(e: &Entity, include_ui: bool) -> bool {
+    e.shown() && (include_ui || !e.in_ui())
+}
+
+/// One draw per shown entity with a mesh (one per material part for models), appended to
+/// `out` (cleared first). Groups, hidden entities, `ui` entities when the view leaves them out,
+/// and meshes that failed to upload are skipped. Returns how models were drawn.
+pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
+    out.clear();
+    let mut stats = LodStats::default();
+    for e in world.entities() {
+        if !in_frame(e, view.include_ui) {
+            continue;
+        }
+        let mesh = match e.shape {
+            Shape::Group => continue,
+            Shape::Model => {
+                let fov = view.camera.fov_y_deg;
+                meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, &mut stats, out);
+                continue;
+            }
+            Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
+            shape => meshes.shapes.get(shape),
+        };
+        let Some(mesh) = mesh else { continue };
+        let c = e.color;
+        out.push(DrawItem {
+            mesh,
+            model: e.model().to_cols_array(),
+            color: [c[0], c[1], c[2], e.look.opacity],
+            material: e.look.material,
+            surface: e.look.surface,
+        });
+    }
+    stats
+}
+
+/// The point lights of shown entities in the frame (entity id order), at most
+/// [`MAX_POINT_LIGHTS`], and how many were left out.
+pub fn lights(world: &World, include_ui: bool) -> (Vec<PointLight>, usize) {
+    let mut all: Vec<PointLight> = world.entities().filter(|e| in_frame(e, include_ui)).filter_map(|e| e.world_light()).collect();
     let dropped = all.len().saturating_sub(MAX_POINT_LIGHTS);
     all.truncate(MAX_POINT_LIGHTS);
     (all, dropped)
@@ -121,26 +154,32 @@ pub struct Subject {
     pub area: u64,
 }
 
-/// One entry per entity with geometry (groups draw nothing and are left out), in id order.
+/// One entry per entity with geometry in the frame, in id order: groups draw nothing, hidden
+/// entities aren't drawn, and `ui` entities only count when the frame includes them.
 ///
 /// `screen` is the pixel rectangle `[x, y, w, h]` (origin top-left) of the entity's bounding box
 /// after clipping to the near plane and the image, or null when none of it is in view.
 /// `distance_m` is the distance along the view axis to the nearest visible part of the box.
-/// `position` is the world position.
-pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec<Subject> {
+/// `position` is the world position. Models carry their `recipe`; transient entities say so.
+pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
     world
         .entities()
-        .filter(|e| e.shape != Shape::Group)
+        .filter(|e| e.local_bounds().is_some() && in_frame(e, include_ui))
         .map(|e| {
             let clip = clip_box(e, view_proj);
             let screen = screen_rect(&clip, width, height);
             let distance = clip.iter().map(|p| p.w).fold(f32::INFINITY, f32::min);
-            let json = Json::obj([
+            let mut fields = vec![
                 ("id", Json::from(e.id)),
                 ("name", Json::from(e.name.as_str())),
                 ("path", Json::from(world.path_of(e.id))),
                 ("shape", Json::from(e.shape.name())),
-                ("material", Json::from(material_name(e.look.material))),
+            ];
+            match &e.model {
+                Some(m) => fields.push(("recipe", Json::from(m.recipe.as_str()))),
+                None => fields.push(("material", Json::from(material_name(e.look.material)))),
+            }
+            fields.extend([
                 ("color", Json::from(color_hex(e.color))),
                 ("position", vec3_json(e.world_position())),
                 ("created_by", Json::from(&*e.created_by)),
@@ -148,6 +187,13 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec
                 ("screen", screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
                 ("distance_m", if screen.is_some() { Json::from(distance) } else { Json::Null }),
             ]);
+            if e.transient {
+                fields.push(("transient", Json::from(true)));
+            }
+            if e.in_ui() {
+                fields.push(("layer", Json::from("ui")));
+            }
+            let json = Json::obj(fields);
             let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
             Subject { json, on_screen: screen.is_some(), area }
         })
@@ -275,7 +321,7 @@ mod tests {
     }
 
     fn frame(world: &World, cam: Camera, w: u32, h: u32) -> Vec<Subject> {
-        subjects(world, &cam.view_proj(w, h), w, h)
+        subjects(world, &cam.view_proj(w, h), w, h, false)
     }
 
     #[test]
@@ -397,6 +443,33 @@ mod tests {
         assert_eq!(s[0].json.get("path").and_then(Json::as_str), Some("/tower/top"));
         assert_eq!(s[0].json.get("position"), Some(&vec3_json(Vec3::new(3.0, 2.0, 0.0))));
         assert_eq!(rect(&s[0]), rect(&s[1]), "a child lands where the same box at its world position would");
+    }
+
+    #[test]
+    fn hidden_and_ui_entities_are_not_subjects_unless_asked() {
+        use crate::world::{Layer, UpdateSpec};
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "stone", Vec3::ZERO);
+        let mut cursor = SpawnSpec::new(Shape::Cube);
+        cursor.name = Some("cursor".into());
+        cursor.layer = Layer::Ui;
+        world.spawn(cursor, "game").unwrap();
+        spawn(&mut world, Shape::Sphere, "ghost", Vec3::new(1.0, 0.0, 0.0));
+        let hide = UpdateSpec { visible: Some(false), ..Default::default() };
+        world.update(&EntityKey::Path("/ghost".into()), hide, "t").unwrap();
+        let cam = cam(Vec3::new(0.0, 2.0, 8.0), Vec3::ZERO, 50.0);
+        let names = |include_ui: bool| -> Vec<String> {
+            subjects(&world, &cam.view_proj(640, 480), 640, 480, include_ui)
+                .iter()
+                .map(|s| s.json.get("name").and_then(Json::as_str).unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(names(false), ["stone"]);
+        assert_eq!(names(true), ["stone", "cursor"], "hidden stays hidden even with include_ui");
+        let ui = subjects(&world, &cam.view_proj(640, 480), 640, 480, true);
+        assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
+        assert_eq!(lights(&world, false).0.len(), 0);
+        assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
     }
 
     #[test]

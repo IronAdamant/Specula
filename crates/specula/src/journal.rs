@@ -479,6 +479,8 @@ impl Journal {
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
+        // Replays only rebuild state; they never draw, so they never build models.
+        copy.set_model_source(None);
         self.base_hash = copy.state_hash();
         self.next_id_seen = copy.next_id();
         self.base = copy;
@@ -1202,6 +1204,35 @@ mod tests {
         assert_eq!(replayed.len(), w.len());
         assert_eq!(replayed.next_id(), w.next_id());
         assert_eq!(replayed.find_path("/d2/b"), w.find_path("/d2/b"));
+    }
+
+    /// Transient entities (game presentation) never reach the journal, whoever writes them, and
+    /// replay still reproduces the persistent world's hash.
+    #[test]
+    fn transient_changes_are_never_journaled() {
+        let (mut w, mut j) = live();
+        spawn(&mut w, &mut j, "ann", "/enemies");
+        let transient = |path: &str| SpawnSpec { transient: true, ..spec(path) };
+        let s = transient("/enemies/e1");
+        let (id, seq) = commit(&mut w, &mut j, 0, "ann", Kind::Spawn, Some(&mut no_check), |w| w.spawn(s, "ann").map(|e| e.id)).unwrap();
+        assert_eq!(seq, None, "an agent's transient spawn makes no entry");
+        assert_eq!(set(&mut w, &mut j, "ann", "/enemies/e1", moved(4.0)), None);
+        // The game's ticks: hundreds of moves, no entry at all.
+        for tick in 0..50 {
+            w.set_recording(Recording::Snapshot);
+            w.update(&EntityKey::Id(id), moved(tick as f32), "game").unwrap();
+            w.spawn(transient(&format!("/enemies/fx{tick}")), "game").unwrap();
+            w.set_recording(Recording::Full);
+            assert_eq!(j.append_snapshot(tick, "game", None, Kind::GameTick, w.take_changes(), w.next_id()), None);
+        }
+        assert_eq!(j.len(), 1);
+        assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
+        // A command mixing both journals only the persistent part.
+        let ops = vec![Op::Spawn(spec("/enemies/boss")), Op::Delete(EntityKey::Id(id), None)];
+        batch(&mut w, &mut j, "ann", ops).unwrap();
+        let last = j.entries().last().unwrap();
+        assert_eq!(last.changes.len(), 1);
+        assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
     }
 
     #[test]

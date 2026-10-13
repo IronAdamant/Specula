@@ -29,7 +29,7 @@
 //! and writes it.
 
 use crate::tools::{check_keys, parse_env, parse_spawn_fields, ENV_KEYS};
-use crate::world::{color_json_exact, material_name, vec3_json, Entity, Look, World, WorldError};
+use crate::world::{color_json_exact, material_name, vec3_json, Entity, Layer, Look, World, WorldError};
 use specula_core::hash::hash_str;
 use specula_core::Json;
 use specula_gpu::Material;
@@ -42,10 +42,10 @@ pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 25] = [
+const RECORD_KEYS: [&str; 29] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
-    "collider", "body", "version", "created_by", "modified_by",
+    "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "env", "subtrees", "entities"];
 const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
@@ -200,10 +200,15 @@ pub struct Plan {
 
 /// Takes what [`execute`] needs from `world`. `previous` is what was saved into `dir` before (by
 /// this engine); subtrees whose stamp hasn't moved since are kept, not copied.
+///
+/// Transient entities (game presentation) are never saved; they are always leaves of the saved
+/// tree (nothing persistent sits below a transient entity), so leaving them out drops nothing.
 pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
     let previous = previous.filter(|p| p.dir == dir).cloned();
-    let tops: Vec<u64> = world.children_of(None).collect();
-    let (subtrees, loose): (Vec<u64>, Vec<u64>) = tops.into_iter().partition(|&id| world.children_of(Some(id)).next().is_some());
+    let persistent = |id: &u64| world.get(*id).is_some_and(|e| !e.transient);
+    let tops: Vec<u64> = world.children_of(None).filter(persistent).collect();
+    let (subtrees, loose): (Vec<u64>, Vec<u64>) =
+        tops.into_iter().partition(|&id| world.children_of(Some(id)).any(|c| persistent(&c)));
     let loose_key: Vec<(u64, u64)> = loose.iter().map(|&id| (id, world.subtree_stamp(id))).collect();
     let loose = match previous.as_ref().and_then(|p| p.loose.as_ref()).filter(|(key, _)| *key == loose_key) {
         Some((_, records)) => Loose::Keep(Arc::clone(records)),
@@ -228,13 +233,17 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
             None => new_stem(&world.get(id).expect("listed").name, &mut taken),
         };
         let mut entities = Vec::new();
-        world.walk(Some(id), |e, path| entities.push((e.clone(), path.to_owned())));
+        world.walk(Some(id), |e, path| {
+            if !e.transient {
+                entities.push((e.clone(), path.to_owned()));
+            }
+        });
         parts.push(Part::Write { id, stamp, root, stem, entities });
     }
     Plan {
         dir: dir.to_owned(),
         next_id: world.next_id(),
-        entity_count: world.len(),
+        entity_count: world.persistent_len(),
         env: world.env().to_json_exact(),
         loose,
         loose_key,
@@ -359,6 +368,23 @@ fn record(e: &Entity, path: &str) -> Json {
     if let Some(p) = &e.profile {
         f.push(("profile", Json::arr(p.points.iter().map(|p| Json::arr([Json::from(p[0]), Json::from(p[1])])))));
         f.push(("segments", Json::from(p.segments)));
+    }
+    if let Some(m) = &e.model {
+        // A model's surface seed is always 0 (checked on spawn), so `seed` is free for its model
+        // seed, as in world_spawn.
+        f.push(("recipe", Json::from(m.recipe.as_str())));
+        if !m.params.is_empty() {
+            f.push(("params", m.params_json()));
+        }
+        if let Some(s) = m.seed {
+            f.push(("seed", Json::from(s)));
+        }
+    }
+    if !e.visible {
+        f.push(("visible", Json::from(false)));
+    }
+    if e.layer != Layer::World {
+        f.push(("layer", Json::from(e.layer.name())));
     }
     if !e.tags.is_empty() {
         f.push(("tags", Json::arr(e.tags.iter().map(|t| Json::from(t.as_str())))));
@@ -996,6 +1022,45 @@ mod tests {
             assert_eq!(b.model().to_cols_array().map(f32::to_bits), e.model().to_cols_array().map(f32::to_bits));
         }
         assert_eq!(files(&back), saved, "saving the loaded world gives the same bytes");
+    }
+
+    #[test]
+    fn models_visibility_and_layers_save_and_transient_entities_do_not() {
+        use crate::world::{Layer, ModelSpec};
+        let mut w = sample();
+        let mut stone = SpawnSpec::model(ModelSpec::new("recipes/warding_stone.json").with_param("tier", 2.0).with_seed(41));
+        stone.name = Some("ward_model".into());
+        stone.parent = Some(EntityKey::Path("/slab".into()));
+        stone.color = [0.9, 1.0, 0.95];
+        stone.visible = false;
+        w.spawn(stone, "erin").unwrap();
+        let mut ui = SpawnSpec::new(Shape::Group);
+        ui.name = Some("ui".into());
+        ui.layer = Layer::Ui;
+        w.spawn(ui, "game").unwrap();
+        let before = files(&w);
+        let hash = w.state_hash();
+        // Game presentation: a transient top-level entity and transient children of saved ones.
+        let mut fx = SpawnSpec::new(Shape::Sphere);
+        fx.name = Some("flash".into());
+        fx.transient = true;
+        w.spawn(fx, "game").unwrap();
+        for parent in ["/slab", "/sun", "/ui"] {
+            let mut enemy = SpawnSpec::new(Shape::Cube);
+            enemy.name = Some("enemy".into());
+            enemy.parent = Some(EntityKey::Path(parent.into()));
+            enemy.transient = true;
+            w.spawn(enemy, "game").unwrap();
+        }
+        assert_eq!(files(&w), before, "transient entities change no file, not even the layout");
+        assert_eq!(w.state_hash(), hash);
+        let back = reload(&before).unwrap();
+        assert_eq!((back.len(), back.state_hash()), (w.persistent_len(), hash));
+        let m = back.get(back.find_path("/slab/ward_model").unwrap()).unwrap();
+        assert_eq!(m.model, Some(ModelSpec::new("recipes/warding_stone.json").with_param("tier", 2.0).with_seed(41)));
+        assert!(!m.visible && m.look.surface.seed == 0.0);
+        assert_eq!(back.get(back.find_path("/ui").unwrap()).unwrap().layer, Layer::Ui);
+        assert!(before["world.json"].contains(r#""entity_count": 9,"#), "{}", before["world.json"]);
     }
 
     #[test]

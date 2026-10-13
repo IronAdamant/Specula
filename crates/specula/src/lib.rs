@@ -15,6 +15,7 @@ pub mod effects;
 pub mod game;
 pub mod journal;
 mod meshes;
+pub mod models;
 mod perf;
 pub mod persist;
 pub mod sight;
@@ -25,16 +26,17 @@ pub mod world;
 
 use game::{Clock, Ctx, Game};
 use journal::{Kind, Writer};
-use swarm::Swarm;
-use meshes::ShapeMeshes;
+use meshes::{LatheMeshes, ShapeMeshes};
+use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
+use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
-use specula_gpu::{AdapterPreference, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
-use sight::{Camera, LatheMeshes};
+use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use swarm::Swarm;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
@@ -58,7 +60,7 @@ const MAX_LISTING_BYTES: usize = 128 * 1024;
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR]";
+[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [-- GAME ARGS...]";
 
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
@@ -79,9 +81,19 @@ struct Args {
     cache: Option<PathBuf>,
     /// How `--adapter` was given, to name the pipeline cache file.
     adapter_label: String,
+    /// Where model recipes live (`--assets`, default the working directory).
+    assets: Option<PathBuf>,
+    /// One style for every recipe (`--style`; default: the `style.json` next to each recipe).
+    style: Option<PathBuf>,
+    /// Everything after `--` (or `--game-args`): the hosted game's own arguments.
+    game_args: Vec<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         port: DEFAULT_PORT,
         headless: false,
@@ -92,11 +104,20 @@ fn parse_args() -> Result<Args, String> {
         world: None,
         cache: None,
         adapter_label: "discrete".into(),
+        assets: None,
+        style: None,
+        game_args: Vec::new(),
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = argv;
     while let Some(flag) = it.next() {
+        if flag == "--" || flag == "--game-args" {
+            args.game_args = it.by_ref().collect();
+            break;
+        }
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value\n{USAGE}"));
         match flag.as_str() {
+            "--assets" => args.assets = Some(PathBuf::from(value()?)),
+            "--style" => args.style = Some(PathBuf::from(value()?)),
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--adapter" => {
@@ -125,7 +146,9 @@ fn parse_args() -> Result<Args, String> {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
-            other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
+            other => {
+                return Err(format!("unknown argument '{other}' (a hosted game's own arguments go after --)\n{USAGE}"))
+            }
         }
     }
     Ok(args)
@@ -143,6 +166,13 @@ pub fn run_game(game: Box<dyn Game>) -> Result<(), String> {
 
 fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let args = parse_args()?;
+    match game.as_mut() {
+        Some(g) => g.configure(&args.game_args).map_err(|e| format!("{}: {e}", g.name()))?,
+        None if !args.game_args.is_empty() => {
+            return Err(format!("no game is hosted, so the arguments after -- ({}) have no taker\n{USAGE}", args.game_args.join(" ")));
+        }
+        None => {}
+    }
     if let Err(e) = interrupt::install() {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
@@ -155,7 +185,10 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
-    let mut engine = Engine::new(gpu, &captures_root)?;
+    let assets = args.assets.unwrap_or_else(|| cwd.clone());
+    let library = Library::new(&assets, args.style.as_deref());
+    let mut engine = Engine::new(gpu, &captures_root, library)?;
+    engine.windowed = !args.headless;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
@@ -164,7 +197,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
             let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
-            engine.replace_world(world, &name);
+            for problem in engine.replace_world(world, &name) {
+                eprintln!("specula: {problem}");
+            }
             engine.saved = Some(saved);
             eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
         } else {
@@ -181,6 +216,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         if engine.gpu.validation_enabled() { "on" } else { "off" }
     );
     eprintln!("specula: captures in {}", engine.capture_dir.display());
+    eprintln!("specula: model recipes under {}", assets.display());
 
     if let Some(g) = &game {
         engine.clock = Clock::new(g.tick_hz());
@@ -259,8 +295,23 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
 struct Engine {
     gpu: Gpu,
     meshes: ShapeMeshes,
-    /// Meshes built from lathe profiles, by entity id.
+    /// Meshes built from lathe profiles, shared by profile.
     lathes: LatheMeshes,
+    /// Model recipes and builds (also the world's model source).
+    library: Arc<SharedLibrary>,
+    /// Uploaded model builds.
+    models: GpuModels,
+    /// The window's LOD per model entity (kept for hysteresis).
+    lod_levels: BTreeMap<u64, u8>,
+    /// How models were drawn in the last window frame and the last capture.
+    lod_window: LodStats,
+    lod_capture: LodStats,
+    /// The window frame's draw list (reused: no allocation per frame once warm).
+    draws: Vec<DrawItem>,
+    /// A human's window is open.
+    windowed: bool,
+    /// The world mesh epoch `lod_levels` was last pruned at.
+    lod_epoch: u64,
     world: World,
     /// Animation time zero.
     started: Instant,
@@ -321,16 +372,26 @@ struct AutosaveJob {
 }
 
 impl Engine {
-    fn new(mut gpu: Gpu, captures_root: &Path) -> Result<Engine, String> {
+    fn new(mut gpu: Gpu, captures_root: &Path, library: Library) -> Result<Engine, String> {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
+        let library = Arc::new(SharedLibrary::new(library));
         let mut world = World::default();
         world.set_recording(Recording::Full);
+        world.set_model_source(Some(Arc::clone(&library) as Arc<dyn world::ModelSource>));
         Ok(Engine {
             gpu,
             meshes,
-            lathes: LatheMeshes::new(),
+            lathes: LatheMeshes::default(),
+            library,
+            models: GpuModels::default(),
+            lod_levels: BTreeMap::new(),
+            lod_window: LodStats::default(),
+            lod_capture: LodStats::default(),
+            draws: Vec::new(),
+            windowed: false,
+            lod_epoch: 0,
             world,
             started: Instant::now(),
             window_camera: None,
@@ -361,14 +422,21 @@ impl Engine {
         })
     }
 
-    /// Makes a loaded world the live one: it records changes, and the journal starts over from it.
-    fn replace_world(&mut self, mut world: World, name: &str) {
+    /// Makes a loaded world the live one: it records changes, builds its models with the
+    /// engine's library, and the journal starts over from it. Returns a message per model entity
+    /// whose recipe failed (it loads anyway and draws nothing until fixed).
+    fn replace_world(&mut self, mut world: World, name: &str) -> Vec<String> {
         world.set_recording(Recording::Full);
+        let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
+        let problems =
+            failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", world.path_of(*id))).collect();
         self.swarm.journal.rebase(&world, &format!("world:{name}"));
         self.world = world;
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
+        self.lod_levels.clear();
+        problems
     }
 
     /// Journals what the hosted game just changed on its own (exempt from claims).
@@ -410,7 +478,7 @@ impl Engine {
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
-        game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+        game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed });
         self.journal_game(Kind::GameStart);
         self.last_advance = Instant::now();
     }
@@ -425,7 +493,7 @@ impl Engine {
                 let start = Instant::now();
                 // Game updates are journaled replay-only and coalesced per tick (F3).
                 self.world.set_recording(Recording::Snapshot);
-                game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
+                game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed });
                 self.world.set_recording(Recording::Full);
                 self.journal_game(Kind::GameTick);
                 self.pacing.tick.push(start.elapsed());
@@ -450,7 +518,8 @@ impl Engine {
             title: &mut self.game_title,
         };
         self.world.set_recording(Recording::Snapshot);
-        game.frame(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name }, &mut frame);
+        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
+        game.frame(ctx, &mut frame);
         self.world.set_recording(Recording::Full);
         self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
@@ -550,37 +619,52 @@ impl Engine {
         self.started.elapsed().as_secs_f32()
     }
 
-    /// Build meshes for new or changed lathe profiles and free those of deleted entities.
-    /// Returns a message per failed upload (that entity is not drawn).
-    fn sync_lathes(&mut self) -> Vec<String> {
-        let mut errors = Vec::new();
-        let gpu = &mut self.gpu;
-        for e in self.world.entities() {
-            let Some(profile) = &e.profile else { continue };
-            let key = profile.key();
-            if self.lathes.get(&e.id).is_some_and(|&(k, _)| k == key) {
-                continue;
-            }
-            if let Some((_, old)) = self.lathes.remove(&e.id) {
-                gpu.destroy_mesh(old);
-            }
-            let (vertices, indices) = meshes::lathe(&profile.points, profile.segments);
-            match gpu.upload_mesh(&vertices, &indices) {
-                Ok(mesh) => {
-                    self.lathes.insert(e.id, (key, mesh));
-                }
-                Err(err) => errors.push(format!("lathe '{}' not drawn: {err}", e.name)),
-            }
-        }
-        let live: std::collections::BTreeSet<u64> =
-            self.world.entities().filter(|e| e.profile.is_some()).map(|e| e.id).collect();
-        let stale: Vec<u64> = self.lathes.keys().copied().filter(|id| !live.contains(id)).collect();
-        for id in stale {
-            if let Some((_, mesh)) = self.lathes.remove(&id) {
-                gpu.destroy_mesh(mesh);
-            }
+    /// Builds meshes for new or changed lathe profiles and models and frees unused ones — only
+    /// when the world's meshes or the model library changed since the last call. Returns a
+    /// message per failed upload (those entities aren't drawn).
+    fn sync_meshes(&mut self) -> Vec<String> {
+        let generation = self.world_generation;
+        let mut errors = self.lathes.sync(&mut self.gpu, &self.world, generation);
+        errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
+        if self.world.mesh_epoch() != self.lod_epoch {
+            // Forget the LOD of entities that are gone.
+            self.lod_epoch = self.world.mesh_epoch();
+            let world = &self.world;
+            self.lod_levels.retain(|id, _| world.get(*id).is_some());
         }
         errors
+    }
+
+    /// Rebuilds models whose recipe or style files changed (checked at most once a second;
+    /// `force`: now). Returns the reload report when something was checked and changed.
+    fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
+        let reload = self.library.lock().poll(force)?;
+        for (id, e) in self.world.refresh_models() {
+            eprintln!("specula: model {} ({id}) not rebuilt: {e}", self.world.path_of(id));
+        }
+        if !reload.rebuilt.is_empty() || !reload.errors.is_empty() {
+            eprintln!(
+                "specula: recipes changed: {} model(s) rebuilt, {} error(s)",
+                reload.rebuilt.len(),
+                reload.errors.len()
+            );
+        }
+        Some(reload)
+    }
+
+    /// The draws for a frame through `camera` at `size`, into `out`: meshes synced first.
+    #[allow(clippy::too_many_arguments)]
+    fn build_draws(&mut self, camera: Camera, viewport_h: u32, include_ui: bool, lod: Option<usize>, window: bool, out: &mut Vec<DrawItem>) -> (LodStats, Vec<String>) {
+        let errors = self.sync_meshes();
+        let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
+        let lod = match (lod, window) {
+            (Some(l), _) => LodChoice::Fixed(l),
+            (None, true) => LodChoice::Remembered(&mut self.lod_levels),
+            (None, false) => LodChoice::Fresh,
+        };
+        let mut view = View { camera, viewport_h, include_ui, lod };
+        let stats = sight::draw_list(&self.world, &meshes, &mut view, out);
+        (stats, errors)
     }
 
     fn run_windowed(&mut self, ui: &UiThread, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
@@ -593,6 +677,7 @@ impl Engine {
             }
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.poll_assets(false);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -618,16 +703,22 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            for e in self.sync_lathes() {
+            let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
+            let mut draws = std::mem::take(&mut self.draws);
+            let started = Instant::now();
+            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, &mut draws);
+            self.pacing.draw_list.push(started.elapsed());
+            for e in errors {
                 eprintln!("specula: {e}");
             }
-            let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
-            let draws = sight::draw_list(&self.world, &self.meshes, &self.lathes);
-            let (lights, _) = sight::lights(&self.world);
+            self.lod_window = stats;
+            let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
             let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
             // FIFO present paces the loop to the display refresh.
-            self.gpu.present(&frame).map_err(|e| format!("present: {e}"))?;
+            let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            self.draws = draws;
+            presented?;
             self.pacing.frame.push(dt);
         }
         Ok(())
@@ -645,6 +736,7 @@ impl Engine {
             self.advance_clock();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.poll_assets(false);
         }
         Ok(())
     }
@@ -761,8 +853,8 @@ impl Engine {
                 Some(game) => {
                     // A claim can only reject the tool when claims exist: checkpoint only then.
                     let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
-                    let (clock, agent) = (&self.clock, self.game_name.as_str());
-                    let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent }, &name, &args);
+                    let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
+                    let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent, windowed }, &name, &args);
                     match self.swarm.game_tool(&mut self.world, tick, agent, w, call) {
                         Ok(out) => out,
                         Err(e) => {
@@ -771,7 +863,7 @@ impl Engine {
                                 Some(c) => game.restore(c),
                                 None => {
                                     self.world.set_recording(Recording::Snapshot);
-                                    game.world_rolled_back(&mut Ctx { world: &mut self.world, clock, agent });
+                                    game.world_rolled_back(&mut Ctx { world: &mut self.world, clock, agent, windowed });
                                     self.world.set_recording(Recording::Full);
                                     self.swarm.game_changes(&mut self.world, tick, agent, Kind::GameTool);
                                 }
@@ -816,6 +908,21 @@ impl Engine {
                 let owner = if mine { Some(by.clone()) } else { owner };
                 let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
                 ToolOutput::text(list.to_string())
+            }
+            Command::ModelBuild(spec) => {
+                // Fresh from disk: an agent iterating on a recipe just saved it.
+                self.poll_assets(true);
+                let built = self.library.lock().build(&spec);
+                match built {
+                    Ok((b, cached)) => ToolOutput::text(models::report(&spec, &b, cached).to_pretty()),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::ModelReload => {
+                let reload = self.poll_assets(true).unwrap_or_default();
+                let mut out = reload.to_json();
+                out.set("library", self.library.lock().stats_json());
+                ToolOutput::text(out.to_pretty())
             }
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
@@ -1008,7 +1115,7 @@ impl Engine {
                 if lock.is_some() {
                     self.world_lock = lock;
                 }
-                self.replace_world(world, &name);
+                let problems = self.replace_world(world, &name);
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -1019,6 +1126,7 @@ impl Engine {
                         ("dir", Json::from(dir.display().to_string())),
                         ("entities", Json::from(self.world.len())),
                         ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
+                        ("warnings", Json::arr(problems.into_iter().take(20).map(Json::from))),
                     ])
                     .to_pretty(),
                 )
@@ -1028,15 +1136,33 @@ impl Engine {
     }
 
     fn capture(&mut self, spec: &FrameSpec, session: &SessionInfo) -> ToolOutput {
+        // The game brings its presentation up to the current tick first (headless engines never
+        // run its per-frame update).
+        if let Some(game) = self.game.as_mut() {
+            self.world.set_recording(Recording::Snapshot);
+            let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
+            game.before_capture(ctx);
+            self.world.set_recording(Recording::Full);
+            self.journal_game(Kind::GameFrame);
+        }
         let camera = match (spec.eye, spec.target) {
             (Some(eye), Some(target)) => sight::Camera { eye, target, fov_y_deg: spec.fov_y_deg },
             _ => sight::auto_camera(&self.world, spec.fov_y_deg),
         };
         let (w, h) = (spec.width, spec.height);
         let view_proj = camera.view_proj(w, h);
-        let mut warnings: Vec<Json> = self.sync_lathes().into_iter().map(Json::from).collect();
-        let draws = sight::draw_list(&self.world, &self.meshes, &self.lathes);
-        let (lights, dropped) = sight::lights(&self.world);
+        let mut draws = Vec::new();
+        let (stats, _) = self.build_draws(camera, h, spec.include_ui, spec.lod, false, &mut draws);
+        self.lod_capture = stats;
+        let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
+        if stats.missing > 0 {
+            warnings.push(Json::from(format!(
+                "{} model entit{} not drawn: no build (see engine_info models.broken, or world_query fields recipe)",
+                stats.missing,
+                if stats.missing == 1 { "y" } else { "ies" }
+            )));
+        }
+        let (lights, dropped) = sight::lights(&self.world, spec.include_ui);
         if dropped > 0 {
             warnings.push(Json::from(format!(
                 "{dropped} point light(s) not rendered: at most {} per frame",
@@ -1073,7 +1199,7 @@ impl Engine {
             ("path", show(png_file)),
             ("packet_path", show(packet_path.as_ref())),
         ]);
-        let subjects = sight::subjects(&self.world, &view_proj, w, h);
+        let subjects = sight::subjects(&self.world, &view_proj, w, h, spec.include_ui);
         let on_screen = subjects.iter().filter(|s| s.on_screen).count();
         let (chosen, omitted) = sight::most_relevant(&subjects, spec.max_subjects);
         let mut packet = Json::obj([
@@ -1083,6 +1209,8 @@ impl Engine {
             ("image", image),
             ("camera", camera.to_json()),
             ("time_s", Json::from(time_s)),
+            ("include_ui", Json::from(spec.include_ui)),
+            ("models", stats.to_json()),
             ("lights", Json::from(lights.len())),
             ("subjects_total", Json::from(subjects.len())),
             ("subjects_on_screen", Json::from(on_screen)),
@@ -1153,10 +1281,26 @@ impl Engine {
             ("frame_pacing", pacing.frame.to_json()),
             ("sim_tick", pacing.tick.to_json()),
             ("game_frame", pacing.game_frame.to_json()),
+            ("draw_list", pacing.draw_list.to_json()),
             ("clock", self.clock.to_json()),
             ("entities", Json::from(self.world.len())),
+            ("transient_entities", Json::from(self.world.transient_len())),
+            ("models", self.models_json()),
         ]);
         ToolOutput::text(out.to_pretty())
+    }
+
+    /// Model drawing and caching, for perf_frame and engine_info.
+    fn models_json(&self) -> Json {
+        let mut gpu = self.models.stats_json();
+        gpu.set("lathe_meshes", Json::from(self.lathes.count()));
+        Json::obj([
+            ("window", self.lod_window.to_json()),
+            ("last_capture", self.lod_capture.to_json()),
+            ("lod_pixels", Json::arr(models::LOD_PIXELS.map(Json::from))),
+            ("gpu", gpu),
+            ("library", self.library.lock().stats_json()),
+        ])
     }
 
     fn info(&mut self, sessions: &[SessionInfo]) -> ToolOutput {
@@ -1179,6 +1323,7 @@ impl Engine {
             ("name", self.world_name.as_deref().map_or(Json::Null, Json::from)),
             ("worlds_dir", Json::from(self.worlds_dir.display().to_string())),
             ("entities", Json::from(self.world.len())),
+            ("transient_entities", Json::from(self.world.transient_len())),
             ("unsaved_changes", Json::from(self.dirty())),
             ("last_autosave_error", self.autosave_error.clone().unwrap_or(Json::Null)),
             ("leftover_files", Json::arr(self.leftovers.iter().map(|f| Json::from(f.as_str())))),
@@ -1195,6 +1340,7 @@ impl Engine {
             ("agents", Json::arr(agents)),
             ("clock", self.clock.to_json()),
             ("swarm", self.swarm.stats_json()),
+            ("models", self.models_json()),
         ]);
         let mut info = info;
         if let Some(game) = &self.game {
@@ -1302,6 +1448,20 @@ mod tests {
         assert_eq!((ids.get("first"), ids.get("last")), (Some(&Json::from(shown as u64 + 1)), Some(&Json::from(1000))));
         let small = batch_summary(&results[..3]);
         assert_eq!((small.get("results").and_then(Json::as_array).unwrap().len(), small.get("results_omitted")), (3, None));
+    }
+
+    #[test]
+    fn game_arguments_follow_a_double_dash() {
+        let parse = |s: &str| parse_args_from(s.split_whitespace().map(String::from));
+        let a = parse("--headless --assets games/sepulcra/assets -- --seed 7 --fast").unwrap();
+        assert!(a.headless);
+        assert_eq!(a.assets.as_deref(), Some(Path::new("games/sepulcra/assets")));
+        assert_eq!(a.game_args, ["--seed", "7", "--fast"]);
+        assert_eq!(parse("--game-args --seed 7").unwrap().game_args, ["--seed", "7"]);
+        assert!(parse("--port 7490").unwrap().game_args.is_empty());
+        let e = parse("--seed 7").err().unwrap();
+        assert!(e.contains("unknown argument '--seed'") && e.contains("after --"), "{e}");
+        assert_eq!(parse("--style s.json").unwrap().style.as_deref(), Some(Path::new("s.json")));
     }
 
     #[test]

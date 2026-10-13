@@ -56,6 +56,8 @@ pub struct Pacing {
     pub tick: Series,
     /// The game's per-frame presentation update.
     pub game_frame: Series,
+    /// Building the window frame's draw list (mesh sync, model LOD choice).
+    pub draw_list: Series,
 }
 
 fn ms(v: f64) -> Json {
