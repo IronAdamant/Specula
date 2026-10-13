@@ -429,6 +429,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             environment: scene.environment,
             lights: &scene.lights,
             time_s: 1.0,
+            overlay: &[],
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;

@@ -50,6 +50,7 @@ mod device;
 mod gpu;
 mod instance;
 mod loader;
+mod overlay;
 mod post;
 mod render;
 mod shadow;
@@ -237,6 +238,75 @@ pub struct MeshId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TargetId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureId(pub u32);
+
+/// Pixel format of an uploaded texture (tightly packed rows, top row first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureFormat {
+    /// One byte per pixel, e.g. a font atlas's coverage (sampled as red).
+    R8,
+    /// sRGB colour + linear alpha (pictures, UI art): sampled as linear colour.
+    Rgba8Srgb,
+    /// Raw data in 0..1 (masks, data textures).
+    Rgba8Unorm,
+}
+
+impl TextureFormat {
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            TextureFormat::R8 => 1,
+            TextureFormat::Rgba8Srgb | TextureFormat::Rgba8Unorm => 4,
+        }
+    }
+}
+
+/// How an overlay quad uses its texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OverlayKind {
+    /// colour × texel (straight alpha).
+    #[default]
+    Rgba,
+    /// The texture's red channel is coverage (a font atlas): colour with alpha × coverage.
+    AlphaMask,
+}
+
+/// A rectangle drawn over the finished frame (HUD, text, UI panels), after post-processing, in
+/// list order. Pixel coordinates with the origin at the top left; blended with premultiplied
+/// alpha. Shows in offscreen captures as on the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayQuad {
+    /// x, y, width, height in pixels.
+    pub rect: [f32; 4],
+    /// Texture coordinates of the rect's top-left and bottom-right corners: u0, v0, u1, v1.
+    pub uv: [f32; 4],
+    /// sRGB colour and straight (non-premultiplied) alpha; multiplies the texture.
+    pub color: [f32; 4],
+    /// `None` = a solid fill of `color`.
+    pub texture: Option<TextureId>,
+    pub kind: OverlayKind,
+    /// Corner radius in pixels (0 = square). Edges are anti-aliased.
+    pub radius: f32,
+}
+
+impl Default for OverlayQuad {
+    fn default() -> Self {
+        OverlayQuad { rect: [0.0; 4], uv: [0.0, 0.0, 1.0, 1.0], color: [1.0; 4], texture: None, kind: OverlayKind::Rgba, radius: 0.0 }
+    }
+}
+
+impl OverlayQuad {
+    /// A solid rectangle.
+    pub fn solid(rect: [f32; 4], color: [f32; 4]) -> OverlayQuad {
+        OverlayQuad { rect, color, ..Default::default() }
+    }
+
+    /// A textured rectangle showing `uv` of `texture`, tinted by `color`.
+    pub fn textured(rect: [f32; 4], uv: [f32; 4], texture: TextureId, kind: OverlayKind, color: [f32; 4]) -> OverlayQuad {
+        OverlayQuad { rect, uv, color, texture: Some(texture), kind, radius: 0.0 }
+    }
+}
 
 /// How a draw is shaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -515,6 +585,8 @@ pub struct FrameDesc<'a> {
     pub lights: &'a [PointLight],
     /// Seconds of animation time. Captures pass it explicitly, so a frame is reproducible.
     pub time_s: f32,
+    /// Drawn last, over everything, in list order (at most [`MAX_OVERLAY_QUADS`]).
+    pub overlay: &'a [OverlayQuad],
 }
 
 impl Default for FrameDesc<'_> {
@@ -527,6 +599,7 @@ impl Default for FrameDesc<'_> {
             environment: Environment::default(),
             lights: &[],
             time_s: 0.0,
+            overlay: &[],
         }
     }
 }
@@ -610,6 +683,24 @@ impl Gpu {
     /// Render a frame into an offscreen target. Completes before returning (M0: simple, synchronous).
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         self.inner.render(target, frame)
+    }
+
+    /// Upload a texture for overlay quads (and, later, materials). `pixels` holds
+    /// `width × height × format.bytes_per_pixel()` bytes, top row first. Errors (structured) when
+    /// a size is 0 or too large, the data has the wrong length, or every texture slot is taken.
+    pub fn upload_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        self.inner.upload_texture(width, height, format, pixels)
+    }
+
+    /// Replace the `width × height` region at (`x`, `y`) of a texture (glyph atlases grow this
+    /// way). Frames already submitted see the old or new contents, never a mix within a draw.
+    pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
+        self.inner.update_texture(texture, x, y, width, height, pixels)
+    }
+
+    /// Unknown ids are ignored. Waits for in-flight window frames that may still use it.
+    pub fn destroy_texture(&mut self, texture: TextureId) {
+        self.inner.destroy_texture(texture)
     }
 
     /// Read back the target as tightly packed sRGB RGBA8, top row first.

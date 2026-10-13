@@ -215,7 +215,6 @@ pub const VK_COMPARE_OP_LESS: i32 = 1;
 pub const VK_COMPARE_OP_EQUAL: i32 = 2;
 pub const VK_COMPARE_OP_LESS_OR_EQUAL: i32 = 3;
 pub const VK_COMPARE_OP_GREATER: i32 = 4;
-pub const VK_BLEND_FACTOR_ZERO: i32 = 0;
 pub const VK_BLEND_FACTOR_ONE: i32 = 1;
 pub const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: i32 = 7;
 pub const VK_BLEND_OP_ADD: i32 = 0;

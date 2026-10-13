@@ -336,3 +336,83 @@ fn fog_thickens_with_distance_and_depth() {
         assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
     });
 }
+
+/// An 8×8 R8 "glyph": a filled 4×4 square in the top-left quarter.
+fn glyph() -> Vec<u8> {
+    (0..64).map(|i| if i % 8 < 4 && i / 8 < 4 { 255 } else { 0 }).collect()
+}
+
+#[test]
+fn overlay_quads_draw_on_top_in_every_path() {
+    use specula_gpu::{OverlayKind, OverlayQuad, TextureFormat};
+    every_adapter("overlay", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let mask = gpu.upload_texture(8, 8, TextureFormat::R8, &glyph()).unwrap();
+        // 2×1 RGBA: red, then green.
+        let rgba = gpu.upload_texture(2, 1, TextureFormat::Rgba8Srgb, &[255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        assert!(gpu.upload_texture(2, 2, TextureFormat::R8, &[0; 3]).is_err(), "wrong data length");
+        assert!(gpu.update_texture(mask, 6, 6, 4, 4, &[0; 16]).is_err(), "region outside the texture");
+        let quads = [
+            // A dark rounded panel, partly transparent.
+            OverlayQuad { radius: 12.0, ..OverlayQuad::solid([20.0, 20.0, 200.0, 80.0], [0.17, 0.19, 0.22, 0.85]) },
+            // An opaque square.
+            OverlayQuad::solid([40.0, 40.0, 20.0, 20.0], [0.8, 0.2, 0.1, 1.0]),
+            // The glyph texture as a mask in ivory, 4× scaled.
+            OverlayQuad::textured([80.0, 40.0, 32.0, 32.0], [0.0, 0.0, 1.0, 1.0], mask, OverlayKind::AlphaMask, [0.925, 0.902, 0.839, 1.0]),
+            // The RGBA texture, nearest-ish: each texel 20 px wide.
+            OverlayQuad::textured([130.0, 40.0, 40.0, 20.0], [0.0, 0.0, 1.0, 1.0], rgba, OverlayKind::Rgba, [1.0; 4]),
+        ];
+        let target = gpu.create_target(W, H).unwrap();
+        let mut env = scene.environment();
+        for (path, bloom, fxaa) in [("direct", false, false), ("bloom", true, false), ("fxaa", false, true), ("bloom_fxaa", true, true)] {
+            env.bloom.enabled = bloom;
+            env.fxaa = fxaa;
+            let draws = scene.draws();
+            let frame = FrameDesc {
+                view_proj: scene.view_proj,
+                clear_color: [0.04, 0.06, 0.13, 1.0],
+                draws: &draws,
+                reverse_z: true,
+                environment: env,
+                overlay: &quads,
+                ..Default::default()
+            };
+            gpu.render(target, &frame).unwrap();
+            let img = gpu.read_rgba8(target).unwrap();
+            write_png(&format!("features_overlay_{path}_{}.png", gpu.adapter().index), &img, W, H);
+            let s = gpu.last_frame_stats();
+            assert_eq!(s.draws.overlay_quads, 4);
+            if let Some(t) = &s.gpu {
+                assert!(t.passes.iter().any(|p| p.name == specula_gpu::PASS_OVERLAY), "{path}: {t:?}");
+            }
+            let close = |got: [u8; 4], want: [u8; 3], tol: u8| (0..3).all(|k| got[k].abs_diff(want[k]) <= tol);
+            let opaque = pixel(&img, W, 50, 50);
+            assert!(close(opaque, [204, 51, 26], 1), "{path}: opaque quad shows its sRGB colour: {opaque:?}");
+            let ink = pixel(&img, W, 85, 45);
+            assert!(close(ink, [236, 230, 214], 2), "{path}: glyph ink: {ink:?}");
+            let paper = pixel(&img, W, 105, 65);
+            assert!(paper[0] < 80, "{path}: outside the glyph shows the panel: {paper:?}");
+            let (red, green) = (pixel(&img, W, 135, 50), pixel(&img, W, 165, 50));
+            assert!(red[0] > 200 && red[1] < 40 && green[1] > 200 && green[0] < 40, "{path}: texels: {red:?} {green:?}");
+            // The panel's rounded corner leaves the scene visible; inside, the panel dims it.
+            let corner = pixel(&img, W, 21, 21);
+            let inside = pixel(&img, W, 30, 90);
+            assert!(luma(corner) < luma([255; 4]) && close(inside, [45, 50, 60], 20), "{path}: corner {corner:?}, inside {inside:?}");
+        }
+        // Partial update: clear the glyph's ink.
+        gpu.update_texture(mask, 0, 0, 4, 4, &[0; 16]).unwrap();
+        let frame = FrameDesc { view_proj: scene.view_proj, reverse_z: true, overlay: &quads, ..Default::default() };
+        gpu.render(target, &frame).unwrap();
+        let img = gpu.read_rgba8(target).unwrap();
+        assert!(pixel(&img, W, 85, 45)[0] < 80, "updated texels show at once");
+        // Unknown textures are a structured error; destroyed textures become unknown.
+        gpu.destroy_texture(rgba);
+        let err = gpu.render(target, &frame).unwrap_err();
+        assert!(err.message.contains("texture"), "{err}");
+        gpu.destroy_texture(mask);
+        gpu.destroy_target(target);
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}

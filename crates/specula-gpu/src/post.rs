@@ -10,6 +10,7 @@
 
 use crate::descriptors::Descriptors;
 use crate::device::{image_barrier, Device, Image};
+use crate::overlay::{record_overlay, OverlayDraw};
 use crate::render::{FramePipelines, LDR_FORMAT, HDR_FORMAT, PUSH_STAGES};
 use crate::timing::PassTimer;
 use crate::vk::*;
@@ -328,7 +329,7 @@ pub fn record_post(
     mode: PostMode,
     out: &FinalImage,
     timer: Option<&mut PassTimer>,
-    last_pass: &mut dyn FnMut(VkCommandBuffer),
+    overlay: &OverlayDraw,
 ) {
     let mut timer = timer;
     let layout = pipelines.layout;
@@ -377,7 +378,10 @@ pub fn record_post(
                 color_barrier(dev, cmd, ldr.image.handle, false);
                 fullscreen(dev, cmd, pipelines.composite, layout, ldr.image.view, post.extent, false, &p, none);
             }
-            _ => fullscreen(dev, cmd, pipelines.composite, layout, out.view, out.extent, false, &p, last_pass),
+            _ => {
+                final_pass(dev, cmd, pipelines.composite, layout, out, &p, pass, overlay, timer.as_deref_mut());
+                return;
+            }
         }
         if let Some(t) = timer.as_mut() {
             t.end_pass(dev, cmd, pass);
@@ -387,10 +391,36 @@ pub fn record_post(
         let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_FXAA));
         color_barrier(dev, cmd, ldr.image.handle, true);
         let p = push(ldr.slot, NO_TEXTURE, post.extent, 0, [0.0; 4]);
-        fullscreen(dev, cmd, pipelines.fxaa, layout, out.view, out.extent, false, &p, last_pass);
-        if let Some(t) = timer {
-            t.end_pass(dev, cmd, pass);
+        final_pass(dev, cmd, pipelines.fxaa, layout, out, &p, pass, overlay, timer);
+    }
+}
+
+/// The pass that writes the final image (timing already begun as `pass`), with the overlay drawn
+/// in the same rendering instance and timed on its own.
+#[allow(clippy::too_many_arguments)]
+fn final_pass(
+    dev: &Device,
+    cmd: VkCommandBuffer,
+    pipeline: VkPipeline,
+    layout: VkPipelineLayout,
+    out: &FinalImage,
+    push: &PostPush,
+    pass: Option<usize>,
+    overlay: &OverlayDraw,
+    timer: Option<&mut PassTimer>,
+) {
+    let mut timer = timer;
+    let mut pass = pass;
+    fullscreen(dev, cmd, pipeline, layout, out.view, out.extent, false, push, &mut |cmd| {
+        if overlay.count > 0 {
+            if let Some(t) = timer.as_mut() {
+                t.end_pass(dev, cmd, pass.take());
+            }
+            record_overlay(dev, cmd, overlay, timer.as_deref_mut());
         }
+    });
+    if let Some(t) = timer {
+        t.end_pass(dev, cmd, pass);
     }
 }
 

@@ -13,6 +13,8 @@ pub const PASS_BLOOM: &str = "post_bloom";
 pub const PASS_TONEMAP: &str = "post_tonemap";
 /// FXAA anti-aliasing.
 pub const PASS_FXAA: &str = "post_fxaa";
+/// Overlay quads. Drawn inside the last pass's rendering, so that pass's time includes it.
+pub const PASS_OVERLAY: &str = "overlay";
 
 /// Which entry point produced a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,6 +83,8 @@ pub struct DrawStats {
     pub shadow_instances: u32,
     /// Triangles drawn into the shadow map.
     pub shadow_triangles: u64,
+    /// Overlay quads drawn (one instanced draw call, not counted in `draw_calls`).
+    pub overlay_quads: u32,
 }
 
 /// Why a pipeline cache blob given in [`crate::GpuOptions::pipeline_cache`] was not used.

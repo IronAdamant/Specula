@@ -7,6 +7,7 @@ use crate::render::{
     check_frame, frame_features, prepare_frame, record_frame, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget,
     DEPTH_FORMAT,
 };
+use crate::overlay::Textures;
 use crate::post::{PostMode, PostTargets};
 use crate::shadow::ShadowMap;
 use crate::timing::PassTimer;
@@ -306,12 +307,13 @@ impl Window {
         descriptors: &mut Descriptors,
         shadow_map: Option<&ShadowMap>,
         meshes: &HashMap<u32, Mesh>,
+        textures: &Textures,
         frame: &FrameDesc,
         frame_no: u64,
         scratch: &mut FrameScratch,
         stats: &mut FrameStats,
     ) -> Result<bool, GpuError> {
-        check_frame(meshes, frame)?;
+        check_frame(meshes, textures, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
             return Ok(false); // minimized: nothing to present
         }
@@ -338,10 +340,11 @@ impl Window {
         }
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
-        prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
+        prepare_frame(dev, meshes, textures, frame, self.extent, upload, scratch)?;
         let features = frame_features(frame, scratch, shadow_map.is_some());
         let mode = PostMode::of(&frame.environment).fit(self.extent);
-        let pipelines = pipelines.frame(dev, self.format.format, features, mode, frame.environment.sky.enabled)?;
+        let pipelines =
+            pipelines.frame(dev, self.format.format, features, mode, frame.environment.sky.enabled, !frame.overlay.is_empty())?;
         // Resized or re-configured images may still be used by frames in flight: wait for them.
         self.post.ensure(dev, descriptors, self.extent, mode, || dev.wait_idle())?;
         let descriptors = &*descriptors;

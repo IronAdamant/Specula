@@ -8,6 +8,7 @@ use crate::render::{
     check_frame, frame_features, prepare_frame, record_frame, CacheIdentity, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines,
     RenderTarget, DEPTH_FORMAT,
 };
+use crate::overlay::{check_pixels, vk_format, Texture, Textures};
 use crate::post::{PostMode, PostTargets};
 use crate::shadow::{clamp_resolution, ShadowMap};
 use crate::swapchain::Window;
@@ -15,7 +16,7 @@ use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
     AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions, MemoryKind, MeshId,
-    TargetId, ValidationMessage, Vertex,
+    TargetId, TextureFormat, TextureId, ValidationMessage, Vertex,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -64,6 +65,7 @@ pub struct GpuInner {
     /// The sun's shadow map, created when a frame first enables shadows.
     shadow_map: Option<ShadowMap>,
     meshes: HashMap<u32, Mesh>,
+    textures: Textures,
     targets: HashMap<u32, Target>,
     next_id: u32,
     window: Option<Window>,
@@ -149,6 +151,7 @@ impl GpuInner {
             descriptors,
             shadow_map: None,
             meshes: HashMap::new(),
+            textures: Textures::default(),
             targets: HashMap::new(),
             next_id: 1,
             window: None,
@@ -310,6 +313,150 @@ impl GpuInner {
         self.device.destroy_buffer(&m.buffer);
     }
 
+    /// Wait until no window frame in flight can still read a resource about to be freed.
+    fn wait_window_frames(&self) {
+        if let Some(w) = &self.window {
+            if w.wait_frames(&self.device).is_err() {
+                self.device.wait_idle();
+            }
+        }
+    }
+
+    /// Copy `pixels` (tightly packed) into the `width × height` region at (`x`, `y`) of `image`,
+    /// which is in `SHADER_READ_ONLY_OPTIMAL` (or `UNDEFINED` when `fresh`) and ends there.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_to_image(
+        &self,
+        image: VkImage,
+        fresh: bool,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<(), GpuError> {
+        let dev = &self.device;
+        let staging = dev.create_buffer(
+            pixels.len() as u64,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            0,
+            MemoryKind::Staging,
+            "texture staging",
+        )?;
+        // SAFETY: `staging.mapped` points to at least `pixels.len()` bytes of coherent host memory.
+        unsafe { ptr::copy_nonoverlapping(pixels.as_ptr(), staging.mapped as *mut u8, pixels.len()) };
+        let copied = self.run_sync(|dev, cmd| {
+            // Frames submitted earlier (same queue) finish reading before the copy writes.
+            let (old, src_stage, src_access) = if fresh {
+                (VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE)
+            } else {
+                (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_NONE)
+            };
+            dev.barrier(
+                cmd,
+                &[],
+                &[image_barrier(
+                    image,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    src_stage,
+                    src_access,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    old,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                )],
+            );
+            let region = VkBufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: VkImageSubresourceLayers {
+                    aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: VkOffset3D { x: x as i32, y: y as i32, z: 0 },
+                image_extent: VkExtent3D { width, height, depth: 1 },
+            };
+            // SAFETY: recording; the buffer holds the tightly packed region, which lies inside
+            // the image (checked by the callers); the image is in TRANSFER_DST_OPTIMAL.
+            unsafe {
+                (dev.fns.cmd_copy_buffer_to_image)(cmd, staging.handle, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region)
+            };
+            dev.barrier(
+                cmd,
+                &[],
+                &[image_barrier(
+                    image,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                )],
+            );
+        });
+        self.device.destroy_buffer(&staging);
+        copied.map(|_| ())
+    }
+
+    pub fn upload_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        check_pixels("upload_texture", width, height, format, pixels)?;
+        let max = self.max_image_dimension_2d;
+        if width > max || height > max {
+            return Err(GpuError::new(format!("upload_texture: size {width}x{height} exceeds {max} in a dimension")));
+        }
+        let slot = self.descriptors.alloc_slot()?;
+        let image = match self.device.create_image(
+            vk_format(format),
+            width,
+            height,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            MemoryKind::Textures,
+            "texture",
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                self.descriptors.free_slot(slot);
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.copy_to_image(image.handle, true, 0, 0, width, height, pixels) {
+            self.device.destroy_image(&image);
+            self.descriptors.free_slot(slot);
+            return Err(e);
+        }
+        // A fresh slot: no pending frame reads it.
+        self.descriptors.write_texture(&self.device, slot, image.view);
+        let id = self.next_id();
+        self.textures.map.insert(id, Texture { image, slot, format, width, height });
+        Ok(TextureId(id))
+    }
+
+    pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
+        let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::new(format!("unknown texture id {}", texture.0)))?;
+        check_pixels("update_texture", width, height, t.format, pixels)?;
+        if x as u64 + width as u64 > t.width as u64 || y as u64 + height as u64 > t.height as u64 {
+            return Err(GpuError::new(format!(
+                "update_texture: region {width}x{height} at ({x}, {y}) leaves the {}x{} texture",
+                t.width, t.height
+            )));
+        }
+        self.copy_to_image(t.image.handle, false, x, y, width, height, pixels)
+    }
+
+    pub fn destroy_texture(&mut self, texture: TextureId) {
+        let Some(t) = self.textures.map.remove(&texture.0) else { return };
+        self.wait_window_frames();
+        self.device.destroy_image(&t.image);
+        self.descriptors.free_slot(t.slot);
+    }
+
     pub fn create_target(&mut self, width: u32, height: u32) -> Result<TargetId, GpuError> {
         let max = self.max_image_dimension_2d;
         if width == 0 || height == 0 || width > max || height > max {
@@ -394,7 +541,7 @@ impl GpuInner {
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
-        check_frame(&self.meshes, frame)?;
+        check_frame(&self.meshes, &self.textures, frame)?;
         if !self.targets.contains_key(&target.0) {
             return Err(GpuError::new(format!("unknown target id {}", target.0)));
         }
@@ -407,9 +554,10 @@ impl GpuInner {
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
-        prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
+        prepare_frame(&self.device, &self.meshes, &self.textures, frame, t.extent, upload, &mut self.scratch)?;
         let features = frame_features(frame, &self.scratch, self.shadow_map.is_some());
-        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, frame.environment.sky.enabled)?;
+        let pipelines =
+            self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, frame.environment.sky.enabled, !frame.overlay.is_empty())?;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -570,7 +718,7 @@ impl GpuInner {
         if self.window.is_none() {
             return Err(GpuError::new("present: no window attached"));
         }
-        check_frame(&self.meshes, frame)?;
+        check_frame(&self.meshes, &self.textures, frame)?;
         self.ensure_frame_resources(frame)?;
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
@@ -581,6 +729,7 @@ impl GpuInner {
             &mut self.descriptors,
             self.shadow_map.as_ref(),
             &self.meshes,
+            &self.textures,
             frame,
             frame_no,
             &mut self.scratch,
@@ -626,6 +775,9 @@ impl Drop for GpuInner {
         }
         for (_, m) in self.meshes.drain() {
             dev.destroy_buffer(&m.buffer);
+        }
+        for (_, t) in self.textures.map.drain() {
+            dev.destroy_image(&t.image);
         }
         for (_, mut t) in self.targets.drain() {
             t.post.destroy(dev, &mut self.descriptors);
