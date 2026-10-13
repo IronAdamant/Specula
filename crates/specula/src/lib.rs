@@ -224,6 +224,8 @@ struct Engine {
     autosave_job: Option<AutosaveJob>,
     /// The last autosave failure (cleared by the next success), shown in engine_info.
     autosave_error: Option<Json>,
+    /// Old world files the last save committed past but couldn't remove.
+    leftovers: Vec<String>,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
 }
@@ -261,6 +263,7 @@ impl Engine {
             saved: None,
             autosave_job: None,
             autosave_error: None,
+            leftovers: Vec::new(),
             agents: BTreeMap::new(),
         })
     }
@@ -322,16 +325,20 @@ impl Engine {
         let revision = job.revision;
         self.autosave_job = None;
         match result {
-            Ok((saved, _)) => {
+            Ok((saved, report)) => {
                 self.saved = Some(saved);
                 self.saved_revision = revision;
                 self.autosave_error = None;
+                self.note_leftovers(&report);
             }
             Err(e) => {
                 eprintln!("specula: autosave failed: {e}");
                 let mut j = e.to_json();
                 j.set("at_revision", Json::from(revision));
                 self.autosave_error = Some(j);
+                // Nothing was committed, but whatever went wrong may have touched files the cache
+                // relies on: the next save writes everything afresh.
+                self.saved = None;
             }
         }
     }
@@ -341,6 +348,14 @@ impl Engine {
         if self.last_autosave.elapsed() >= AUTOSAVE_EVERY {
             self.autosave(false);
         }
+    }
+
+    /// Remembers old files a successful save couldn't remove (shown by engine_info).
+    fn note_leftovers(&mut self, report: &persist::SaveReport) {
+        if !report.leftovers.is_empty() {
+            eprintln!("specula: saved, but could not remove old files {:?}; the next save retries", report.leftovers);
+        }
+        self.leftovers = report.leftovers.clone();
     }
 
     /// Who a session is in attribution: its agent_hello name, else its MCP client name.
@@ -556,9 +571,10 @@ impl Engine {
         let dir = self.worlds_dir.join(&name);
         let current = self.world_name.as_deref() == Some(name.as_str());
         if !current && !overwrite && dir.join("world.json").exists() {
-            // Another world lives there: never replace it by accident.
-            let (entities, problem) = match persist::load(&dir) {
-                Ok((w, _)) => (Json::from(w.len()), Json::Null),
+            // Another world lives there: never replace it by accident. (Its world.json records its
+            // entity count, so this costs one small read, not a load.)
+            let (entities, problem) = match persist::peek_entity_count(&dir) {
+                Ok(n) => (Json::from(n), Json::Null),
                 Err(e) => (Json::Null, e.to_json()),
             };
             return ToolOutput::error(
@@ -585,6 +601,7 @@ impl Engine {
                 self.saved_revision = self.world.revision();
                 self.last_autosave = Instant::now();
                 self.autosave_error = None;
+                self.note_leftovers(&report);
                 ToolOutput::text(
                     Json::obj([
                         ("saved", Json::from(name)),
@@ -593,13 +610,17 @@ impl Engine {
                         ("files", Json::from(report.files)),
                         ("files_written", Json::from(report.written)),
                         ("files_removed", Json::from(report.removed)),
+                        ("leftover_files", Json::arr(report.leftovers.iter().map(|f| Json::from(f.as_str())))),
                         ("entities", Json::from(self.world.len())),
                         ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
                     ])
                     .to_pretty(),
                 )
             }
-            Err(e) => ToolOutput::error(e.to_json().to_pretty()),
+            Err(e) => {
+                self.saved = None;
+                ToolOutput::error(e.to_json().to_pretty())
+            }
         }
     }
 
@@ -772,6 +793,7 @@ impl Engine {
             ("entities", Json::from(self.world.len())),
             ("unsaved_changes", Json::from(self.dirty())),
             ("last_autosave_error", self.autosave_error.clone().unwrap_or(Json::Null)),
+            ("leftover_files", Json::arr(self.leftovers.iter().map(|f| Json::from(f.as_str())))),
             ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
         ]);
         let info = Json::obj([
@@ -788,9 +810,12 @@ impl Engine {
     }
 }
 
-/// world_batch's answer: every op's result while they fit in [`MAX_BATCH_RESULT_BYTES`], then a
-/// summary of the rest (spawned ids are consecutive, so first and last describe them).
+/// world_batch's answer: counts per kind, every op's result while they fit in
+/// [`MAX_BATCH_RESULT_BYTES`], then how many were left out. `omitted_spawned_ids` gives the first
+/// and last id of left-out spawns (a batch's spawns take consecutive ids, so that's all of them).
 fn batch_summary(results: &[world::OpResult]) -> Json {
+    use world::OpResult::{Deleted, Spawned, Updated};
+    let count = |rs: &[world::OpResult], f: fn(&world::OpResult) -> bool| rs.iter().filter(|r| f(r)).count();
     let mut shown = Vec::new();
     let mut bytes = 0;
     for r in results {
@@ -801,18 +826,25 @@ fn batch_summary(results: &[world::OpResult]) -> Json {
         }
         shown.push(j);
     }
-    let mut out = vec![("applied", Json::from(results.len())), ("results", Json::Arr(Vec::new()))];
     let rest = &results[shown.len()..];
-    out[1].1 = Json::Arr(shown);
+    let mut out = vec![
+        ("applied", Json::from(results.len())),
+        (
+            "counts",
+            Json::obj([
+                ("spawned", Json::from(count(results, |r| matches!(r, Spawned { .. })))),
+                ("set", Json::from(count(results, |r| matches!(r, Updated { .. })))),
+                ("deleted", Json::from(count(results, |r| matches!(r, Deleted { .. })))),
+            ]),
+        ),
+        ("results", Json::Arr(shown)),
+    ];
     if !rest.is_empty() {
-        let id = |r: &world::OpResult| match r {
-            world::OpResult::Spawned { id, .. } | world::OpResult::Updated { id, .. } | world::OpResult::Deleted { id, .. } => *id,
-        };
-        out.extend([
-            ("results_omitted", Json::from(rest.len())),
-            ("first_id", Json::from(id(&rest[0]))),
-            ("last_id", Json::from(id(&rest[rest.len() - 1]))),
-        ]);
+        out.push(("results_omitted", Json::from(rest.len())));
+        let spawned: Vec<u64> = rest.iter().filter_map(|r| if let Spawned { id, .. } = r { Some(*id) } else { None }).collect();
+        if let (Some(first), Some(last)) = (spawned.first(), spawned.last()) {
+            out.push(("omitted_spawned_ids", Json::obj([("first", Json::from(*first)), ("last", Json::from(*last))])));
+        }
     }
     Json::obj(out)
 }
@@ -864,13 +896,16 @@ mod tests {
         let results: Vec<world::OpResult> = (1..=1000)
             .map(|id| world::OpResult::Spawned { id, path: format!("/district_with_a_long_name/house_{id:04}") })
             .collect();
+        let mut results = results;
+        results.push(world::OpResult::Deleted { id: 7, path: "/old".into(), count: 3 });
         let out = batch_summary(&results);
-        assert!(out.to_string().len() <= MAX_BATCH_RESULT_BYTES + 200, "{} bytes", out.to_string().len());
+        assert!(out.to_string().len() <= MAX_BATCH_RESULT_BYTES + 300, "{} bytes", out.to_string().len());
         let shown = out.get("results").and_then(Json::as_array).unwrap().len();
-        assert_eq!(out.get("applied"), Some(&Json::from(1000)));
-        assert_eq!(out.get("results_omitted"), Some(&Json::from(1000 - shown)));
-        assert_eq!(out.get("first_id"), Some(&Json::from(shown as u64 + 1)));
-        assert_eq!(out.get("last_id"), Some(&Json::from(1000)));
+        assert_eq!(out.get("applied"), Some(&Json::from(1001)));
+        assert_eq!(out.get("counts").unwrap().to_string(), r#"{"spawned":1000,"set":0,"deleted":1}"#);
+        assert_eq!(out.get("results_omitted"), Some(&Json::from(1001 - shown)));
+        let ids = out.get("omitted_spawned_ids").unwrap();
+        assert_eq!((ids.get("first"), ids.get("last")), (Some(&Json::from(shown as u64 + 1)), Some(&Json::from(1000))));
         let small = batch_summary(&results[..3]);
         assert_eq!((small.get("results").and_then(Json::as_array).unwrap().len(), small.get("results_omitted")), (3, None));
     }

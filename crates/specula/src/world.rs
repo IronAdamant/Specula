@@ -1106,6 +1106,18 @@ impl World {
         }
     }
 
+    /// Records that `id` is about to be removed: its top-level subtree changed, or, when `id` is
+    /// itself top-level, the subtree is gone and its stamp is forgotten.
+    fn touch_removal(&mut self, id: u64) {
+        match self.entities.get(&id) {
+            Some(e) if e.parent.is_none() => {
+                self.touched.remove(&id);
+            }
+            Some(_) => self.touch(id),
+            None => {}
+        }
+    }
+
     /// Changes so far in the subtree under top-level entity `top`, as an opaque stamp: equal stamps
     /// mean nothing in that subtree changed in between (0 = never changed since the world began).
     pub fn subtree_stamp(&self, top: u64) -> u64 {
@@ -1538,7 +1550,7 @@ impl World {
         let id = self.resolve(key)?;
         self.check_version(id, expect_version)?;
         let path = self.path_of(id);
-        self.touch(id);
+        self.touch_removal(id);
         let mut order = Vec::new();
         let mut stack = vec![id];
         while let Some(at) = stack.pop() {
@@ -1596,7 +1608,7 @@ impl World {
         for step in undo.into_iter().rev() {
             match step {
                 Undo::Spawned(id) => {
-                    self.touch(id);
+                    self.touch_removal(id);
                     self.unlink(id);
                 }
                 Undo::Updated(before) => {
@@ -2328,6 +2340,14 @@ mod tests {
         assert!(w.subtree_stamp(b) > sb, "stamps never go back, even when a batch does");
         let (one, two) = (Arc::as_ptr(&w.get(a).unwrap().created_by), Arc::as_ptr(&w.get(b).unwrap().created_by));
         assert_eq!(one, two, "agent names are interned");
+        // Removed top-level subtrees leave no stamp behind (also when a batch spawn is undone).
+        w.delete(&EntityKey::Id(a), None).unwrap();
+        let ops = vec![
+            Op::Spawn(SpawnSpec::new(Shape::Group)),
+            Op::Delete(EntityKey::Path("/nope".into()), None),
+        ];
+        assert!(w.apply_batch(ops, "t").is_err());
+        assert_eq!(w.touched.keys().copied().collect::<Vec<_>>(), [b]);
     }
 
     #[test]

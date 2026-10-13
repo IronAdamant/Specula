@@ -33,6 +33,7 @@ use specula_gpu::Material;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
@@ -43,7 +44,7 @@ const RECORD_KEYS: [&str; 25] = [
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by",
 ];
-const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "env", "subtrees", "entities"];
+const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "env", "subtrees", "entities"];
 const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
 
 /// What went wrong reading or writing a world, with where: the file, the entity path and the
@@ -146,7 +147,13 @@ pub struct Saved {
     pub generation: u64,
     /// Top-level entity id → its file.
     pub subtrees: BTreeMap<u64, SavedSubtree>,
+    /// The rendered top-level entities without children, and the `(id, stamp)` list they were
+    /// rendered from: a flat world doesn't re-copy every entity on each autosave.
+    pub loose: Option<LooseCache>,
 }
+
+/// `(id, subtree stamp)` of each loose top-level entity, and their rendered records.
+pub type LooseCache = (Vec<(u64, u64)>, Arc<Vec<Json>>);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SavedSubtree {
@@ -162,14 +169,21 @@ enum Part {
     Write { id: u64, stamp: u64, root: String, stem: String, entities: Vec<(Entity, String)> },
 }
 
+enum Loose {
+    Keep(Arc<Vec<Json>>),
+    Write(Vec<(Entity, String)>),
+}
+
 /// A world save detached from the live world: owned copies of what changed, ready for
 /// [`execute`] on any thread.
 pub struct Plan {
     dir: PathBuf,
     next_id: u64,
+    entity_count: usize,
     env: Json,
-    /// Top-level entities without children (they live in `world.json`).
-    loose: Vec<(Entity, String)>,
+    /// Top-level entities without children (they live in `world.json`), and their `(id, stamp)`.
+    loose: Loose,
+    loose_key: Vec<(u64, u64)>,
     parts: Vec<Part>,
     previous: Option<Saved>,
 }
@@ -180,7 +194,11 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
     let previous = previous.filter(|p| p.dir == dir).cloned();
     let tops: Vec<u64> = world.children_of(None).collect();
     let (subtrees, loose): (Vec<u64>, Vec<u64>) = tops.into_iter().partition(|&id| world.children_of(Some(id)).next().is_some());
-    let loose = loose.into_iter().map(|id| (world.get(id).expect("listed").clone(), world.path_of(id))).collect();
+    let loose_key: Vec<(u64, u64)> = loose.iter().map(|&id| (id, world.subtree_stamp(id))).collect();
+    let loose = match previous.as_ref().and_then(|p| p.loose.as_ref()).filter(|(key, _)| *key == loose_key) {
+        Some((_, records)) => Loose::Keep(Arc::clone(records)),
+        None => Loose::Write(loose.into_iter().map(|id| (world.get(id).expect("listed").clone(), world.path_of(id))).collect()),
+    };
     // Stems stay with their subtree (by path) so files don't churn; newcomers take what's free.
     let old_stems: BTreeMap<&str, &str> =
         previous.iter().flat_map(|p| p.subtrees.values()).map(|s| (s.root.as_str(), stem_of(&s.file))).collect();
@@ -203,7 +221,16 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
         world.walk(Some(id), |e, path| entities.push((e.clone(), path.to_owned())));
         parts.push(Part::Write { id, stamp, root, stem, entities });
     }
-    Plan { dir: dir.to_owned(), next_id: world.next_id(), env: world.env().to_json_exact(), loose, parts, previous }
+    Plan {
+        dir: dir.to_owned(),
+        next_id: world.next_id(),
+        entity_count: world.len(),
+        env: world.env().to_json_exact(),
+        loose,
+        loose_key,
+        parts,
+        previous,
+    }
 }
 
 /// A file stem for a new subtree: the name with anything outside `A-Z a-z 0-9 _ -` replaced by
@@ -230,7 +257,7 @@ impl Plan {
     /// they leave behind. Pure.
     fn render(&self, generation: u64) -> (Vec<(String, String)>, Saved) {
         let mut files = Vec::new();
-        let mut saved = Saved { dir: self.dir.clone(), generation, subtrees: BTreeMap::new() };
+        let mut saved = Saved { dir: self.dir.clone(), generation, subtrees: BTreeMap::new(), loose: None };
         for part in &self.parts {
             match part {
                 Part::Keep { id, saved: s } => {
@@ -251,15 +278,20 @@ impl Plan {
         let subtrees = Json::arr(listed.iter().map(|s| {
             Json::obj([("root", Json::from(s.root.as_str())), ("file", Json::from(s.file.as_str()))])
         }));
-        let loose: Vec<Json> = self.loose.iter().map(|(e, path)| record(e, path)).collect();
+        let loose = match &self.loose {
+            Loose::Keep(records) => Arc::clone(records),
+            Loose::Write(entities) => Arc::new(entities.iter().map(|(e, path)| record(e, path)).collect()),
+        };
         let header = vec![
             ("format", Json::from(FORMAT)),
             ("generation", Json::from(generation)),
             ("next_id", Json::from(self.next_id)),
+            ("entity_count", Json::from(self.entity_count)),
             ("env", self.env.clone()),
             ("subtrees", subtrees),
         ];
         files.push((INDEX.to_owned(), document(header, &loose)));
+        saved.loose = Some((self.loose_key.clone(), loose));
         (files, saved)
     }
 }
@@ -358,78 +390,185 @@ pub struct SaveReport {
     pub files: usize,
     /// Files written by this save (`world.json` included).
     pub written: usize,
-    /// Files of the previous generation that are no longer part of the world.
+    /// Old files of ours swept after the commit.
     pub removed: usize,
+    /// Old files of ours that could not be removed (in use, say). The save itself succeeded; the
+    /// next save sweeps them again.
+    pub leftovers: Vec<String>,
 }
 
-/// The generation and files of the world already in `dir`: `None` for a missing or empty folder.
-/// A non-empty folder without `world.json` is refused rather than adopted: it isn't ours.
-fn on_disk(dir: &Path) -> Result<Option<(u64, Vec<String>)>, PersistError> {
-    let index = dir.join(INDEX);
-    if !index.exists() {
-        let occupied = std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
-        if occupied {
-            return Err(PersistError::new(
-                "not_a_world",
-                format!("{} has files but no world.json; refusing to save a world into it", dir.display()),
-            ));
+/// What a world folder holds.
+struct Folder {
+    /// The committed `world.json`'s generation and the subtree files it lists, if there is one.
+    committed: Option<(u64, BTreeSet<String>)>,
+    /// Every file named like ours (`<stem>.<gen>.json`, `world.json.tmp`), listed or not.
+    ours: Vec<String>,
+    /// The highest generation suffix of any subtree-pattern file.
+    highest: u64,
+}
+
+/// Reads `dir`. A folder that has files but neither `world.json` nor only files named like ours
+/// is refused: it isn't a world, and saving would mix ours into someone else's. (Only our own
+/// names there means a first save crashed before committing: the folder is adopted and swept.)
+fn scan(dir: &Path) -> Result<Folder, PersistError> {
+    let mut folder = Folder { committed: None, ours: Vec::new(), highest: 0 };
+    let mut foreign = None;
+    let mut has_index = false;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == INDEX {
+                has_index = true;
+            } else if name == INDEX_TMP || is_subtree_file(&name) {
+                if let Some(generation) = generation_of(&name) {
+                    folder.highest = folder.highest.max(generation);
+                }
+                folder.ours.push(name);
+            } else {
+                foreign.get_or_insert(name);
+            }
         }
+    }
+    folder.ours.sort();
+    if has_index {
+        let text = std::fs::read_to_string(dir.join(INDEX)).map_err(|e| PersistError::io(INDEX, e))?;
+        let doc = parse_doc(INDEX, &text)?;
+        let generation = doc.get("generation").and_then(Json::as_u64).unwrap_or(0);
+        let listed = doc
+            .get("subtrees")
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| s.get("file").and_then(Json::as_str))
+            .map(str::to_owned)
+            .collect();
+        folder.committed = Some((generation, listed));
+    } else if let Some(other) = foreign {
+        return Err(PersistError::new(
+            "not_a_world",
+            format!("{} has files (such as {other}) but no world.json; refusing to save a world into it", dir.display()),
+        )
+        .in_file(&other));
+    }
+    Ok(folder)
+}
+
+fn generation_of(file: &str) -> Option<u64> {
+    file.strip_suffix(".json")?.rsplit_once('.')?.1.parse().ok()
+}
+
+/// Whether a world may be created in `dir` (missing, empty, already a world, or the remains of
+/// a first save that never committed).
+pub fn check_adoptable(dir: &Path) -> Result<(), PersistError> {
+    scan(dir).map(|_| ())
+}
+
+/// The entity count `world.json` in `dir` records, without loading the world. `None` when there
+/// is no world there.
+pub fn peek_entity_count(dir: &Path) -> Result<Option<u64>, PersistError> {
+    let path = dir.join(INDEX);
+    if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&index).map_err(|e| PersistError::io(INDEX, e))?;
-    let doc = parse_doc(INDEX, &text)?;
-    let generation = doc.get("generation").and_then(Json::as_u64).unwrap_or(0);
-    let files = doc
-        .get("subtrees")
-        .and_then(Json::as_array)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|s| s.get("file").and_then(Json::as_str))
-        .filter(|f| is_subtree_file(f))
-        .map(str::to_owned)
-        .collect();
-    Ok(Some((generation, files)))
+    let text = std::fs::read_to_string(&path).map_err(|e| PersistError::io(INDEX, e))?;
+    Ok(parse_doc(INDEX, &text)?.get("entity_count").and_then(Json::as_u64))
 }
 
-/// Whether a world may be created in `dir` (missing, empty, or already a world).
-pub fn check_adoptable(dir: &Path) -> Result<(), PersistError> {
-    on_disk(dir).map(|_| ())
+/// A filesystem step of [`execute`], for tests that cut a save short.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Step<'a> {
+    Write(&'a str),
+    WriteIndex,
+    Commit,
+    Remove(&'a str),
 }
 
-fn write_synced(path: &Path, name: &str, content: &str) -> Result<(), PersistError> {
-    let mut f = std::fs::File::create(path).map_err(|e| PersistError::io(name, e))?;
+/// What a test hook does at a [`Step`]: go on, fail that step (an I/O error), or crash (stop
+/// right there, as if the process died).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // only tests cut saves short
+pub(crate) enum Hook {
+    Go,
+    Fail,
+    Crash,
+}
+
+fn injected(step: &Step) -> PersistError {
+    PersistError::new("io", format!("injected failure at {step:?}"))
+}
+
+/// Writes a file that must not exist yet: a save never opens an existing file for writing, so
+/// it can't damage one a committed `world.json` lists.
+fn create_synced(path: &Path, name: &str, content: &str) -> Result<(), PersistError> {
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| PersistError::io(name, e))?;
     f.write_all(content.as_bytes()).map_err(|e| PersistError::io(name, e))?;
     f.sync_all().map_err(|e| PersistError::io(name, e))
 }
 
 /// Writes `plan` (see the module docs for the commit order) and returns what is now on disk.
 pub fn execute(plan: Plan) -> Result<(Saved, SaveReport), PersistError> {
+    execute_with(plan, &mut |_| Hook::Go)
+}
+
+pub(crate) fn execute_with(plan: Plan, hook: &mut dyn FnMut(Step) -> Hook) -> Result<(Saved, SaveReport), PersistError> {
     let dir = &plan.dir;
     let shown = dir.display().to_string();
-    let (generation, old_files) = match &plan.previous {
-        Some(p) => (p.generation, p.subtrees.values().map(|s| s.file.clone()).collect()),
-        None => on_disk(dir)?.unwrap_or_default(),
-    };
+    let folder = scan(dir)?;
+    // Above every generation anyone has written here (memory may be stale after a failure), so
+    // new file names never collide with a listed one.
+    let previous = plan.previous.as_ref().map_or(0, |p| p.generation);
+    let committed = folder.committed.as_ref().map_or(0, |(g, _)| *g);
+    let generation = previous.max(committed).max(folder.highest) + 1;
     std::fs::create_dir_all(dir).map_err(|e| PersistError::io(&shown, e))?;
-    let (files, saved) = plan.render(generation + 1);
-    let (index, subtrees) = files.split_last().expect("world.json is always rendered");
-    for (name, content) in subtrees {
-        write_synced(&dir.join(name), name, content)?;
-    }
-    write_synced(&dir.join(INDEX_TMP), INDEX, &index.1)?;
-    std::fs::rename(dir.join(INDEX_TMP), dir.join(INDEX)).map_err(|e| PersistError::io(INDEX, e))?;
-    // Committed. What the previous generation listed and this one doesn't is garbage now.
-    let keep: BTreeSet<&str> = saved.subtrees.values().map(|s| s.file.as_str()).collect();
-    let mut removed = 0;
-    for old in old_files.iter().filter(|f| !keep.contains(f.as_str())) {
-        match std::fs::remove_file(dir.join(old)) {
-            Ok(()) => removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(PersistError::io(old, e)),
+    let (files, saved) = plan.render(generation);
+    for kept in saved.subtrees.values().filter(|s| !files.iter().any(|(f, _)| *f == s.file)) {
+        if !folder.ours.contains(&kept.file) {
+            return Err(PersistError::new("missing_file", format!("{} is gone; the next save rewrites everything", kept.file))
+                .in_file(&kept.file));
         }
     }
-    let report =
-        SaveReport { dir: dir.clone(), generation: saved.generation, files: keep.len() + 1, written: files.len(), removed };
+    let (index, subtrees) = files.split_last().expect("world.json is always rendered");
+    for (name, content) in subtrees {
+        let step = Step::Write(name);
+        if hook(step) != Hook::Go {
+            return Err(injected(&step));
+        }
+        create_synced(&dir.join(name), name, content)?;
+    }
+    if hook(Step::WriteIndex) != Hook::Go {
+        return Err(injected(&Step::WriteIndex));
+    }
+    let _ = std::fs::remove_file(dir.join(INDEX_TMP)); // a crashed save's, never listed
+    create_synced(&dir.join(INDEX_TMP), INDEX, &index.1)?;
+    if hook(Step::Commit) != Hook::Go {
+        return Err(injected(&Step::Commit));
+    }
+    std::fs::rename(dir.join(INDEX_TMP), dir.join(INDEX)).map_err(|e| PersistError::io(INDEX, e))?;
+
+    // Committed. Sweep every file of ours the new world.json doesn't list: the previous
+    // generation's, and anything a crashed save left. Failures are only leftovers now.
+    let keep: BTreeSet<&str> = saved.subtrees.values().map(|s| s.file.as_str()).collect();
+    let (mut removed, mut leftovers) = (0, Vec::new());
+    for old in folder.ours.iter().filter(|f| !keep.contains(f.as_str())) {
+        let step = Step::Remove(old);
+        match hook(step) {
+            Hook::Crash => return Err(injected(&step)),
+            Hook::Fail => leftovers.push(old.clone()),
+            Hook::Go => match std::fs::remove_file(dir.join(old)) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => leftovers.push(old.clone()),
+            },
+        }
+    }
+    let report = SaveReport {
+        dir: dir.clone(),
+        generation: saved.generation,
+        files: keep.len() + 1,
+        written: files.len(),
+        removed,
+        leftovers,
+    };
     Ok((saved, report))
 }
 
@@ -478,10 +617,37 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
         None => return Err(bad("subtrees", "'subtrees' must be an array")),
     };
 
+    // Only layouts the writer produces are accepted, so the next save can never drop anything:
+    // each subtree root is a distinct top-level path, isn't also a loose record, and its file
+    // starts with the root's own record; loose records have no children.
+    let mut roots = BTreeSet::new();
+    for (root, _) in &listed {
+        if root.matches('/').count() != 1 || !root.starts_with('/') {
+            return Err(bad("subtrees", &format!("subtree root '{root}' must be a top-level path like /name")));
+        }
+        if !roots.insert(root.as_str()) {
+            return Err(bad("subtrees", &format!("subtree root '{root}' is listed twice")));
+        }
+    }
+    let loose_paths: Vec<&str> = index
+        .get("entities")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.get("path").and_then(Json::as_str))
+        .collect();
+    if let Some(dup) = loose_paths.iter().find(|p| roots.contains(*p)) {
+        let mut e = PersistError::new("invalid_world", format!("{dup} is both a loose entity and a listed subtree root"))
+            .in_file(INDEX)
+            .field("path");
+        e.entity = Some((*dup).to_owned());
+        return Err(e);
+    }
+
     let mut world = World::default();
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
-    let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new() };
+    let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new(), loose: None };
     for (root, file) in &listed {
         let doc = parse_doc(file, &read(file)?)?;
         check_keys(&doc, file, &[SUBTREE_KEYS])
@@ -491,9 +657,28 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
                 .in_file(file)
                 .field("root"));
         }
+        let first = doc.get("entities").and_then(Json::as_array).and_then(|e| e.first()).and_then(|r| r.get("path"));
+        if first.and_then(Json::as_str) != Some(root.as_str()) {
+            return Err(PersistError::new("invalid_world", format!("the first entity must be the root {root} itself"))
+                .in_file(file)
+                .field("entities"));
+        }
         load_entities(&mut world, file, &doc, Some(root))?;
         let id = world.find_path(root).map_err(|e| from_world(e, file, Some(root)))?;
         saved.subtrees.insert(id, SavedSubtree { stamp: 0, root: root.clone(), file: file.clone() });
+    }
+    for path in loose_paths {
+        let id = world.find_path(path).map_err(|e| from_world(e, INDEX, Some(path)))?;
+        if world.children_of(Some(id)).next().is_some() {
+            let mut e = PersistError::new(
+                "invalid_world",
+                format!("{path} is stored as a loose entity in world.json but has children in a subtree file"),
+            )
+            .in_file(INDEX)
+            .field("path");
+            e.entity = Some(path.to_owned());
+            return Err(e);
+        }
     }
     world.set_next_id(next_id);
     for (&id, s) in saved.subtrees.iter_mut() {
@@ -788,13 +973,13 @@ mod tests {
         assert_eq!(listing(&dir), ["culvert.2.json", "slab.1.json", "world.json"]);
         assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
 
-        // A crash after the subtree files but before world.json leaves the old world loadable:
-        // the new generation's files are simply not listed.
+        // A crashed save's stray file is never listed: the world still loads as committed, the
+        // next save picks a generation above it, and sweeps it.
         std::fs::write(dir.join("slab.3.json"), "half a file").unwrap();
         assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
 
-        // Files the world never listed are never deleted; a new top-level name that clashes takes
-        // the hash and leaves the existing file's name alone.
+        // Files that aren't named like ours are never deleted; a new top-level name that clashes
+        // takes the hash and leaves the existing file's name alone.
         std::fs::write(dir.join("notes.json"), "{}").unwrap();
         let mut rival = SpawnSpec::new(Shape::Group);
         rival.name = Some("Slab".into());
@@ -804,19 +989,21 @@ mod tests {
         w.spawn(kid, "t").unwrap();
         w.delete(&EntityKey::Path("/culvert".into()), None).unwrap();
         let (_, third) = save(&w, &dir, Some(&saved)).unwrap();
+        assert_eq!((third.generation, third.removed), (4, 2), "culvert.2.json and the stray slab.3.json");
         let names = listing(&dir);
         assert!(names.contains(&"notes.json".to_string()) && names.contains(&"slab.1.json".to_string()), "{names:?}");
-        assert!(names.iter().any(|n| n.starts_with("Slab-") && n.ends_with(".3.json")), "{names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("culvert")), "{names:?}");
-        assert_eq!(third.removed, 1);
+        assert!(names.iter().any(|n| n.starts_with("Slab-") && n.ends_with(".4.json")), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("culvert") || n == "slab.3.json"), "{names:?}");
         let (back, reread) = load(&dir).unwrap();
         assert_eq!(back.state_hash(), w.state_hash());
 
         // Saving the loaded world without changes writes only world.json.
         let (_, fourth) = save(&back, &dir, Some(&reread)).unwrap();
         assert_eq!((fourth.written, fourth.removed), (1, 0));
+        assert_eq!(peek_entity_count(&dir).unwrap(), Some(back.len() as u64));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(load(&dir).err().unwrap().code, "not_found");
+        assert_eq!(peek_entity_count(&dir).unwrap(), None);
     }
 
     #[test]
@@ -828,6 +1015,185 @@ mod tests {
         assert_eq!(save(&sample(), &dir, None).err().unwrap().code, "not_a_world");
         assert_eq!(check_adoptable(&dir).err().unwrap().code, "not_a_world");
         assert_eq!(listing(&dir), ["notes.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reviewer finding: a first save that crashed before committing left only our own files, and
+    /// the folder was refused forever.
+    #[test]
+    fn a_first_save_that_never_committed_is_adopted_and_swept() {
+        let dir = temp_dir("first-crash");
+        let w = sample();
+        assert!(execute_with(plan(&w, &dir, None), &mut |s| if s == Step::Commit { Hook::Crash } else { Hook::Go }).is_err());
+        assert_eq!(listing(&dir), ["slab.1.json", "world.json.tmp"]);
+        assert!(check_adoptable(&dir).is_ok());
+        let (_, report) = save(&w, &dir, None).unwrap();
+        assert_eq!((report.generation, report.removed), (2, 1), "slab.1.json (the stale .tmp was replaced)");
+        assert_eq!(listing(&dir), ["slab.2.json", "world.json"]);
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Every way a save can be cut short leaves a world that loads as either the old or the new
+    /// state; the save after it succeeds, never opens a committed file for writing, and sweeps
+    /// what the cut left behind.
+    #[test]
+    fn saves_survive_being_cut_at_every_step() {
+        let old = {
+            let mut w = sample();
+            let mut g = SpawnSpec::new(Shape::Group);
+            g.name = Some("dock".into());
+            w.spawn(g, "t").unwrap();
+            let mut c = SpawnSpec::new(Shape::Cube);
+            c.parent = Some(EntityKey::Path("/dock".into()));
+            w.spawn(c, "t").unwrap();
+            w
+        };
+        let new = {
+            let mut w = old.clone();
+            let edit = UpdateSpec { color: Some([0.0, 1.0, 0.0]), ..Default::default() };
+            w.update(&EntityKey::Path("/slab/stones/ward_00".into()), edit, "t").unwrap();
+            w.delete(&EntityKey::Path("/dock".into()), None).unwrap();
+            w.set_env(&EnvPatch { exposure: Some(1.5), ..Default::default() }).unwrap();
+            w
+        };
+        // The steps of the old → new save: write slab, write world.json.tmp, commit, remove the
+        // old slab and dock files.
+        let mut case = 0;
+        loop {
+            let dir = temp_dir(&format!("cut-{case}"));
+            let (old_saved, _) = save(&old, &dir, None).unwrap();
+            let mut steps = 0;
+            let mut fail_removals = false;
+            let cut = execute_with(plan(&new, &dir, Some(&old_saved)), &mut |step| {
+                steps += 1;
+                // Cases 0..n crash at step n; the last case fails every removal instead.
+                match (steps == case + 1, step) {
+                    (true, _) if case < 5 => Hook::Crash,
+                    (_, Step::Remove(_)) if case == 5 => {
+                        fail_removals = true;
+                        Hook::Fail
+                    }
+                    _ => Hook::Go,
+                }
+            });
+            let (on_disk, _) = load(&dir).unwrap();
+            let hash = on_disk.state_hash();
+            assert!(hash == old.state_hash() || hash == new.state_hash(), "case {case}: a mix of old and new");
+            if case == 5 {
+                let (_, report) = cut.as_ref().unwrap();
+                assert!(fail_removals && report.leftovers.len() == 2, "case 5: removal failures are only leftovers");
+                assert_eq!(hash, new.state_hash());
+            }
+            // The committed files must survive the next save untouched (or be swept, unlisted).
+            let committed: Vec<(String, String)> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| is_subtree_file(n))
+                .filter(|n| std::fs::read_to_string(dir.join(INDEX)).unwrap().contains(n.as_str()))
+                .map(|n| (n.clone(), std::fs::read_to_string(dir.join(&n)).unwrap()))
+                .collect();
+            // The engine keeps its old cache when a save fails (or, at worst, a stale one).
+            let previous = cut.as_ref().map(|(s, _)| s.clone()).unwrap_or(old_saved);
+            let (_, next) = save(&new, &dir, Some(&previous)).unwrap();
+            assert!(next.leftovers.is_empty(), "case {case}: {:?}", next.leftovers);
+            let (back, _) = load(&dir).unwrap();
+            assert_eq!(back.state_hash(), new.state_hash(), "case {case}");
+            for (name, content) in committed {
+                if let Ok(now) = std::fs::read_to_string(dir.join(&name)) {
+                    assert_eq!(now, content, "case {case}: {name} was rewritten");
+                }
+            }
+            let names = listing(&dir);
+            assert!(names.iter().all(|n| n == INDEX || n.starts_with("slab.")), "case {case}: not swept: {names:?}");
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(case == 5 || steps == case + 1, "case {case}: the cut never happened ({steps} steps)");
+            case += 1;
+            if case > 5 {
+                break;
+            }
+        }
+    }
+
+    /// Reviewer repro: an old file held open (can't be deleted) failed the save after it had
+    /// committed, and the next save reused the generation and rewrote a committed file.
+    #[test]
+    fn a_stale_cache_never_reuses_a_committed_generation() {
+        let dir = temp_dir("stale");
+        let mut w = sample();
+        let (first, _) = save(&w, &dir, None).unwrap();
+        let edit = UpdateSpec { color: Some([0.0, 0.0, 1.0]), ..Default::default() };
+        w.update(&EntityKey::Path("/slab/stones/ward_02".into()), edit.clone(), "t").unwrap();
+        let fail = &mut |s: Step| if matches!(s, Step::Remove(_)) { Hook::Fail } else { Hook::Go };
+        let (_, report) = execute_with(plan(&w, &dir, Some(&first)), fail).unwrap();
+        assert_eq!((report.generation, report.leftovers.as_slice()), (2, ["slab.1.json".to_string()].as_slice()));
+        let committed = std::fs::read_to_string(dir.join("slab.2.json")).unwrap();
+        // Even an engine that kept the old cache (generation 1) must write generation 3.
+        w.update(&EntityKey::Path("/slab/stones/ward_02".into()), edit, "t").unwrap();
+        let (_, next) = save(&w, &dir, Some(&first)).unwrap();
+        assert_eq!(next.generation, 3);
+        assert_eq!(listing(&dir), ["slab.3.json", "world.json"], "slab.2.json was swept, never rewritten");
+        assert_ne!(std::fs::read_to_string(dir.join("slab.3.json")).unwrap(), committed);
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reviewer repro: layouts the writer never produces loaded fine and the next save dropped
+    /// entities. They are refused now.
+    #[test]
+    fn layouts_the_writer_cannot_keep_are_refused() {
+        let index = |loose: &str, subtrees: &str| {
+            format!(
+                "{{\"format\":\"{FORMAT}\",\"generation\":2,\"next_id\":9,\"env\":{{}},\"subtrees\":[{subtrees}],\"entities\":[{loose}]}}"
+            )
+        };
+        let rec = |path: &str, id: u64| {
+            format!(r#"{{"path":"{path}","id":{id},"shape":"group","version":1,"created_by":"t","modified_by":"t"}}"#)
+        };
+        let file = |root: &str, recs: &[String]| format!("{{\"format\":\"{FORMAT}\",\"root\":\"{root}\",\"entities\":[{}]}}", recs.join(","));
+        let try_load = |files: &[(&str, String)]| {
+            let map: BTreeMap<String, String> = files.iter().map(|(n, c)| (n.to_string(), c.clone())).collect();
+            reload(&map)
+        };
+        let a = file("/slab", &[rec("/slab", 1), rec("/slab/a", 2)]);
+        let b = file("/slab", &[rec("/slab/b", 3)]);
+        let twice = r#"{"root":"/slab","file":"slab.1.json"},{"root":"/slab","file":"slab.2.json"}"#;
+        // The reviewer's case: /slab loose and listed twice, the second file without its root.
+        let e = try_load(&[("world.json", index(&rec("/slab", 1), twice)), ("slab.1.json", a.clone()), ("slab.2.json", b.clone())]);
+        assert_eq!(e.err().unwrap().code, "invalid_world");
+        let e = try_load(&[("world.json", index("", twice)), ("slab.1.json", a.clone()), ("slab.2.json", b)]).err().unwrap();
+        assert!(e.message.contains("listed twice"), "{e}");
+        let one = r#"{"root":"/slab","file":"slab.1.json"}"#;
+        let e = try_load(&[("world.json", index(&rec("/slab", 1), one)), ("slab.1.json", a.clone())]).err().unwrap();
+        assert!(e.message.contains("both a loose entity"), "{e}");
+        let rootless = file("/slab", &[rec("/slab/a", 2)]);
+        let e = try_load(&[("world.json", index("", one)), ("slab.1.json", rootless)]).err().unwrap();
+        assert_eq!(e.field.as_deref(), Some("entities"), "{e}");
+        let kid_elsewhere = file("/dock", &[rec("/dock", 4), rec("/dock/x", 5)]);
+        let one_dock = r#"{"root":"/dock","file":"dock.1.json"}"#;
+        let e = try_load(&[("world.json", index(&rec("/slab", 1), one_dock)), ("dock.1.json", kid_elsewhere.replace("/dock/x", "/slab/x"))]);
+        assert_eq!(e.err().unwrap().field.as_deref(), Some("path"), "a subtree file holds only its own subtree");
+        let deep = r#"{"root":"/slab/a","file":"slab.1.json"}"#;
+        let e = try_load(&[("world.json", index("", deep)), ("slab.1.json", a.clone())]).err().unwrap();
+        assert_eq!(e.field.as_deref(), Some("subtrees"), "{e}");
+        // The writer's own layout still loads.
+        assert_eq!(try_load(&[("world.json", index("", one)), ("slab.1.json", a)]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unchanged_loose_entities_are_not_copied_again() {
+        let dir = temp_dir("loose");
+        let mut w = sample();
+        let (first, _) = save(&w, &dir, None).unwrap();
+        let edit = UpdateSpec { color: Some([0.0, 0.0, 1.0]), ..Default::default() };
+        w.update(&EntityKey::Path("/slab/stones/ward_02".into()), edit, "t").unwrap();
+        let p = plan(&w, &dir, Some(&first));
+        assert!(matches!(p.loose, Loose::Keep(_)), "the loose section is reused");
+        let (second, _) = execute(p).unwrap();
+        assert!(Arc::ptr_eq(&first.loose.as_ref().unwrap().1, &second.loose.as_ref().unwrap().1));
+        w.update(&EntityKey::Path("/sun".into()), UpdateSpec { scale: Some(Vec3::ONE * 2.0), ..Default::default() }, "t").unwrap();
+        assert!(matches!(plan(&w, &dir, Some(&second)).loose, Loose::Write(_)), "a loose change re-renders it");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
