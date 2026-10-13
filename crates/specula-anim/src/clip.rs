@@ -36,8 +36,10 @@ pub const MAX_EVENTS: usize = 1024;
 pub const MAX_CURVES: usize = 64;
 /// Largest translation offset (m) a key may hold.
 pub const MAX_OFFSET_M: f32 = 1000.0;
-/// At most this many loop cycles are scanned for events in one advance.
+/// At most this many loop cycles are scanned for events in one step.
 pub const MAX_EVENT_CYCLES: i64 = 1024;
+/// At most this many event occurrences are reported per step (see `Clip::events_between`).
+pub const MAX_EVENTS_PER_STEP: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Interp {
@@ -377,50 +379,74 @@ impl Clip {
     }
 
     /// Indices of the events the playhead crosses moving from `u0` to `u1` (unwrapped seconds,
-    /// `u1 ≥ u0`): an event at clip time `e` fires when its occurrence lies in `[u0, u1)`. Each
-    /// occurrence fires exactly once however the movement is split into steps. `out` receives
-    /// `(event index, cycle)` in time order.
-    pub fn events_between(&self, u0: f64, u1: f64, out: &mut Vec<(u16, u32)>) {
-        if self.events.is_empty() || u1 <= u0 {
-            return;
+    /// `u1 ≥ u0`), appended to `out` as `(event index, cycle)` in time order, without allocating
+    /// beyond `out`'s growth.
+    ///
+    /// - An occurrence at unwrapped time `a` fires when `u0 ≤ a < u1`, so each fires exactly once
+    ///   however the movement is split into steps.
+    /// - `once` clips: events at exactly `duration` fire in the step that **reaches** the end
+    ///   (`u0 < duration ≤ u1`), so they arrive together with `finished()`.
+    /// - `loop` clips: an event at `duration` fires at the end of each cycle (not at its start).
+    /// - `ping_pong` clips: an event at 0 or `duration` fires once per turnaround.
+    ///
+    /// At most [`MAX_EVENTS_PER_STEP`] occurrences are reported per call; returns `true` if more
+    /// were crossed and dropped (a huge step or an event flood).
+    pub fn events_between(&self, u0: f64, u1: f64, out: &mut Vec<(u16, u32)>) -> bool {
+        if self.events.is_empty() || u1.is_nan() || u0.is_nan() || u1 <= u0 {
+            return false;
         }
         let d = self.duration as f64;
-        let fire =|at: f64, i: usize, c: i64, buf: &mut Vec<(f64, u16, u32)>| {
-            if at >= u0 && at < u1 {
-                buf.push((at, i as u16, c.max(0) as u32));
+        let mut n = 0usize;
+        // Pushes one occurrence; false once the cap is hit.
+        let mut push = |i: usize, c: i64, out: &mut Vec<(u16, u32)>| -> bool {
+            if n == MAX_EVENTS_PER_STEP {
+                return false;
             }
+            n += 1;
+            out.push((i as u16, c.max(0) as u32));
+            true
         };
-        let mut buf: Vec<(f64, u16, u32)> = Vec::new();
         match self.looping {
             LoopMode::Once => {
                 for (i, e) in self.events.iter().enumerate() {
-                    fire(e.time as f64, i, 0, &mut buf);
-                }
-            }
-            LoopMode::Loop | LoopMode::PingPong => {
-                let c0 = specula_core::dmath::floor_f64(u0 / d) as i64;
-                let c1 = (specula_core::dmath::floor_f64(u1 / d) as i64).min(c0 + MAX_EVENT_CYCLES);
-                for c in c0.max(0)..=c1 {
-                    for (i, e) in self.events.iter().enumerate() {
-                        let e = e.time as f64;
-                        let local = match self.looping {
-                            LoopMode::Loop => {
-                                if e >= d {
-                                    0.0
-                                } else {
-                                    e
-                                }
-                            }
-                            _ if c % 2 == 0 => e,
-                            _ => d - e,
-                        };
-                        fire(c as f64 * d + local, i, c, &mut buf);
+                    let a = e.time as f64;
+                    let hit = if a >= d { u0 < d && d <= u1 } else { a >= u0 && a < u1 };
+                    if hit && !push(i, 0, out) {
+                        return true;
                     }
                 }
             }
+            LoopMode::Loop | LoopMode::PingPong => {
+                // Start one cycle early: an end-of-cycle occurrence of cycle c0−1 sits at c0·d.
+                let c0 = (specula_core::dmath::floor_f64(u0 / d) as i64 - 1).max(0);
+                let c_last = specula_core::dmath::floor_f64(u1 / d) as i64;
+                let c1 = c_last.min(c0 + MAX_EVENT_CYCLES);
+                for c in c0..=c1 {
+                    let base = c as f64 * d;
+                    let backward = self.looping == LoopMode::PingPong && c % 2 == 1;
+                    let count = self.events.len();
+                    for k in 0..count {
+                        // Backward ping-pong cycles meet events in reverse clip order.
+                        let i = if backward { count - 1 - k } else { k };
+                        let e = self.events[i].time as f64;
+                        if self.looping == LoopMode::PingPong {
+                            // Turnarounds: the end of one cycle is the start of the next.
+                            if (backward && e >= d) || (!backward && c > 0 && e <= 0.0) {
+                                continue;
+                            }
+                        }
+                        let a = base + if backward { d - e } else { e };
+                        if a >= u0 && a < u1 && !push(i, c, out) {
+                            return true;
+                        }
+                    }
+                }
+                if c1 < c_last {
+                    return true;
+                }
+            }
         }
-        buf.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        out.extend(buf.iter().map(|(_, i, c)| (*i, *c)));
+        false
     }
 
     /// The clip as JSON (rotations as quaternions); `Clip::from_json` reads it back identically.

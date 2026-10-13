@@ -41,6 +41,12 @@ pub const KINDS: &[&str] = &["gait", "idle", "hover", "swing", "leap", "collapse
 
 /// Most a leg may stretch, as a fraction of its full length, before the pelvis is lowered.
 pub const MAX_REACH: f32 = 0.97;
+/// Most legs or arms a generator spec may list.
+pub const MAX_LIMBS: usize = 8;
+/// Most `wobble` layers in one spec.
+pub const MAX_WOBBLES: usize = 64;
+
+use specula_model::rig::MAX_BONES;
 
 /// Generates the clip a spec describes, for `skel`. Errors carry paths under `path`.
 pub fn generate(spec: &Json, path: &str, skel: &Skeleton) -> Result<Clip, AnimError> {
@@ -138,9 +144,20 @@ fn req_bone(o: &mut Obj, k: &str, skel: &Skeleton) -> Result<usize, AnimError> {
     bone_of(skel, o.req_str(k)?, &p)
 }
 
+/// Fails with `Limit` (before any work) if a list has more than `max` entries.
+fn capped<'a>(o: &mut Obj<'a>, k: &str, max: usize) -> Result<Option<&'a [Json]>, AnimError> {
+    let p = o.at(k);
+    match o.arr(k)? {
+        Some(items) if items.len() > max => {
+            Err(err(&p, AnimErrorCode::Limit, format!("{} entries; at most {max}", items.len())).with_numbers(items.len() as f64, max as f64))
+        }
+        other => Ok(other),
+    }
+}
+
 fn bone_list(o: &mut Obj, k: &str, skel: &Skeleton) -> Result<Vec<usize>, AnimError> {
     let p = o.at(k);
-    let Some(items) = o.arr(k)? else { return Ok(Vec::new()) };
+    let Some(items) = capped(o, k, MAX_BONES)? else { return Ok(Vec::new()) };
     items
         .iter()
         .enumerate()
@@ -160,7 +177,7 @@ fn child_of(skel: &Skeleton, child: usize, parent: usize, path: &str) -> Result<
 
 fn parse_body(o: &mut Obj, skel: &Skeleton, looping: bool) -> Result<Body, AnimError> {
     let mut body = Body { pelvis: opt_bone(o, "pelvis", skel)?, spine: bone_list(o, "spine", skel)?, head: opt_bone(o, "head", skel)?, ..Body::default() };
-    if let Some(items) = o.arr("legs")? {
+    if let Some(items) = capped(o, "legs", MAX_LIMBS)? {
         let base = o.at("legs");
         let mut explicit_y = Vec::new();
         for (i, v) in items.iter().enumerate() {
@@ -182,6 +199,11 @@ fn parse_body(o: &mut Obj, skel: &Skeleton, looping: bool) -> Result<Body, AnimE
                 None => None,
             });
             lo.finish("thigh, shin, foot, phase, lift, foot_pitch, z, ankle_y")?;
+            // Two legs can't drive the same bone (the second solve would overwrite the first).
+            let mine = [Some(thigh), Some(shin), foot];
+            if let Some(other) = body.legs.iter().position(|l| [Some(l.thigh), Some(l.shin), l.foot].iter().flatten().any(|b| mine.contains(&Some(*b)))) {
+                return Err(err(&p, AnimErrorCode::Duplicate, format!("this leg shares a bone with legs[{other}]")));
+            }
             let hip = skel.heads[thigh];
             let knee = skel.heads[shin];
             let ankle = foot.map_or(skel.tails[shin], |f| skel.heads[f]);
@@ -211,7 +233,7 @@ fn parse_body(o: &mut Obj, skel: &Skeleton, looping: bool) -> Result<Body, AnimE
             l.plant[1] = y.unwrap_or(ground);
         }
     }
-    if let Some(items) = o.arr("arms")? {
+    if let Some(items) = capped(o, "arms", MAX_LIMBS)? {
         let base = o.at("arms");
         for (i, v) in items.iter().enumerate() {
             let p = format!("{base}[{i}]");
@@ -234,7 +256,7 @@ fn parse_body(o: &mut Obj, skel: &Skeleton, looping: bool) -> Result<Body, AnimE
             body.arms.push(arm);
         }
     }
-    if let Some(items) = o.arr("wobble")? {
+    if let Some(items) = capped(o, "wobble", MAX_WOBBLES)? {
         let base = o.at("wobble");
         for (i, v) in items.iter().enumerate() {
             let p = format!("{base}[{i}]");
@@ -505,23 +527,45 @@ fn bake(skel: &Skeleton, times: &[f32], frames: &[Frame]) -> Vec<Track> {
     tracks
 }
 
-/// Lowers the pelvis until no leg needs to stretch past [`MAX_REACH`] over the whole clip.
-fn solve_all(skel: &Skeleton, body: &Body, make: &dyn Fn(f32, f32) -> Frame, times: &[f32], auto_crouch: bool) -> (Vec<Frame>, f32) {
+/// The most the pelvis may be lowered: 60% of its height above the planted ankles.
+fn max_crouch(skel: &Skeleton, body: &Body) -> f32 {
+    let ground = body.legs.iter().map(|l| l.plant[1]).fold(f32::MAX, f32::min);
+    body.pelvis.map_or(0.0, |p| 0.6 * (skel.heads[p][1] - ground).max(0.0))
+}
+
+/// Solves every key; with `auto_crouch`, lowers the pelvis until no leg needs to stretch past
+/// [`MAX_REACH`] over the whole clip. When that can't work (the crouch would pass
+/// [`max_crouch`], or lowering stops helping), fails with `OutOfRange` at `path`, giving the
+/// reach the motion needs against the reach the legs have.
+fn solve_all(skel: &Skeleton, body: &Body, make: &dyn Fn(f32, f32) -> Frame, times: &[f32], auto_crouch: bool, path: &str) -> Result<(Vec<Frame>, f32), AnimError> {
     let mut crouch = 0.0f32;
     let total: f32 = body.legs.iter().map(|l| math3::length(l.a) + math3::length(l.b)).fold(0.0, f32::max);
-    for _ in 0..12 {
+    let limit = max_crouch(skel, body);
+    let mut prev = f32::MAX;
+    for _ in 0..16 {
         let mut frames: Vec<Frame> = times.iter().map(|&t| make(t, crouch)).collect();
         let worst = frames.iter_mut().map(|f| solve(skel, body, f)).fold(0.0f32, f32::max);
         if !auto_crouch || body.pelvis.is_none() || worst <= MAX_REACH + 1e-4 {
-            return (frames, crouch);
+            return Ok((frames, crouch));
         }
-        crouch += (worst - MAX_REACH) * total * 1.15 + 1e-3;
+        let next = crouch + (worst - MAX_REACH) * total * 1.15 + 1e-3;
+        if next > limit || worst >= prev - 1e-5 {
+            return Err(err(
+                path,
+                AnimErrorCode::OutOfRange,
+                format!(
+                    "the legs would need to reach {:.2} m but are {:.2} m long, even with the hips lowered {:.2} m: shorten the stride (or raise the duty / lower the lift)",
+                    worst * total,
+                    total,
+                    crouch
+                ),
+            )
+            .with_numbers((worst * total) as f64, (MAX_REACH * total) as f64));
+        }
+        prev = worst;
+        crouch = next;
     }
-    let mut frames: Vec<Frame> = times.iter().map(|&t| make(t, crouch)).collect();
-    frames.iter_mut().for_each(|f| {
-        solve(skel, body, f);
-    });
-    (frames, crouch)
+    Err(err(path, AnimErrorCode::OutOfRange, "the legs can't reach the foot targets").with_numbers(prev as f64 * total as f64, (MAX_REACH * total) as f64))
 }
 
 fn footstep_events(body: &Body, skel: &Skeleton, duration: f32, name: &str, phase_offset: f32) -> Vec<Event> {
@@ -547,7 +591,7 @@ fn gait(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32,
     let breaths = o.num("breaths", 1.0, 0.0, 32.0)?;
     let look = o.num("look", 0.0, -90.0, 90.0)?;
     let fixed_crouch = match o.get("crouch") {
-        Some(v) => Some(num(v, &o.at("crouch"), 0.0, 10.0)?),
+        Some(v) => Some(num(v, &o.at("crouch"), 0.0, max_crouch(skel, body))?),
         None => None,
     };
     let step_name = match o.get("footstep") {
@@ -616,8 +660,8 @@ fn gait(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32,
         f
     };
     let (frames, _crouch) = match fixed_crouch {
-        Some(c) => solve_all(skel, body, &|t, _| make(t, c), times, false),
-        None => solve_all(skel, body, &make, times, true),
+        Some(c) => solve_all(skel, body, &|t, _| make(t, c), times, false, "crouch")?,
+        None => solve_all(skel, body, &make, times, true, "stride")?,
     };
     let events = match step_name {
         Some(nm) => footstep_events(body, skel, duration, &nm, 0.0),
@@ -769,7 +813,7 @@ fn swing(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32
         apply_wobbles(&mut f, body, q);
         f
     };
-    let (frames, _) = solve_all(skel, body, &frames_make, times, true);
+    let (frames, _) = solve_all(skel, body, &frames_make, times, true, "strike_pose")?;
     let events = vec![Event { name: event, time: (wu + st) * duration, data: String::new() }];
     Ok(Out { looping: LoopMode::Once, distance: 0.0, events, curves: Vec::new(), frames })
 }
@@ -825,7 +869,7 @@ fn leap(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32)
         apply_wobbles(&mut f, body, q);
         f
     };
-    let (frames, _) = solve_all(skel, body, &make, times, true);
+    let (frames, _) = solve_all(skel, body, &make, times, true, "distance")?;
     let mut events = vec![Event { name: "takeoff".into(), time: ant * duration, data: String::new() }, Event { name: "land".into(), time: (ant + fl) * duration, data: String::new() }];
     events.extend(body.legs.iter().map(|l| Event { name: "footstep".into(), time: (ant + fl) * duration, data: skel.names[l.foot.unwrap_or(l.shin)].clone() }));
     Ok(Out { looping: LoopMode::Once, distance, events, curves: Vec::new(), frames })
@@ -847,7 +891,7 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
         other => return Err(err(&o.at("direction"), AnimErrorCode::UnknownName, format!("direction '{other}' (forward, back, left, right)"))),
     };
     let sink = o.num("sink", 0.5, 0.0, 100.0)?;
-    let shrink = o.num("shrink", 0.35, 0.0, 1.0)?;
+    let shrink = o.num("shrink", 0.35, 0.02, 1.0)?;
     let rise = o.num("rise", 1.0, -100.0, 100.0)?;
     let spin = o.num("spin", 270.0, -3600.0, 3600.0)?;
     let spread = o.num("spread", 2.5, 0.0, 50.0)?;
@@ -904,7 +948,7 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
             if crumble {
                 events.push(Event { name: "crumble".into(), time: fall_end * duration, data: String::new() });
             }
-            solve_all(skel, body, &make, times, false).0
+            solve_all(skel, body, &make, times, false, "drop")?.0
         }
         "scatter" => {
             let stagger = 0.15f32;

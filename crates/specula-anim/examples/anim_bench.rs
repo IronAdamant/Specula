@@ -3,7 +3,7 @@
 //! layer), local → model transforms and skinning matrices.
 //!
 //! ```text
-//! cargo run -p specula-anim --example bench --release
+//! cargo run -p specula-anim --example anim_bench --release
 //! ```
 
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ fn main() {
             let mut a = Animator::new(set, clips[1 % clips.len()]);
             a.advance(set, i as f32 * 0.013);
             match i % 3 {
-                0 => a.crossfade(clips[0], 10.0),
+                0 => a.crossfade(set, clips[0], 10.0),
                 1 => a.set_layer(0, clips[0], LayerMode::Additive, 0.5, set.mask_id("upper"), 0.0),
                 _ => {}
             }

@@ -116,12 +116,11 @@ pub(crate) struct Obj<'a> {
 impl<'a> Obj<'a> {
     pub fn new(v: &'a Json, path: &str, what: &str) -> Result<Obj<'a>, AnimError> {
         let fields = v.as_object().ok_or_else(|| err(path, AnimErrorCode::WrongType, format!("expected {what} (an object)")))?;
-        let mut seen: Vec<&str> = Vec::with_capacity(fields.len());
-        for (k, _) in fields {
-            if seen.contains(&k.as_str()) {
-                return Err(err(&self_path(path, k), AnimErrorCode::Duplicate, format!("duplicate key '{k}'")));
-            }
-            seen.push(k);
+        // Duplicate keys, found by sorting (O(n log n) for hostile objects with many keys).
+        let mut keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+            return Err(err(&self_path(path, w[0]), AnimErrorCode::Duplicate, format!("duplicate key '{}'", w[0])));
         }
         Ok(Obj { path: path.to_string(), fields, used: vec![false; fields.len()] })
     }

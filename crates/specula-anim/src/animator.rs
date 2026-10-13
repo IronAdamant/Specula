@@ -77,17 +77,29 @@ pub struct FiredEvent {
 #[derive(Clone, Debug)]
 pub struct Animator {
     base: Playback,
-    /// The outgoing clip of a crossfade: (playback, elapsed s, duration s).
-    fade_from: Option<(Playback, f32, f32)>,
+    /// The source of a running crossfade: (source, elapsed s, duration s).
+    fade_from: Option<(FadeSource, f32, f32)>,
     layers: [Option<Layer>; MAX_LAYERS],
     layer_age: [f64; MAX_LAYERS],
     root_mode: RootMotion,
     root_delta: V3,
     events: Vec<FiredEvent>,
+    events_truncated: bool,
     pose: Pose,
     scratch: Pose,
     scratch2: Pose,
+    /// The blended pose a crossfade interrupted mid-way fades out from.
+    frozen: Pose,
     scan: Vec<(u16, u32)>,
+}
+
+/// What a crossfade fades out from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FadeSource {
+    /// The previous base clip, still playing.
+    Clip(Playback),
+    /// A snapshot of the pose when a crossfade interrupted another one (`Animator::frozen`).
+    Frozen,
 }
 
 impl Animator {
@@ -100,11 +112,13 @@ impl Animator {
             layer_age: [0.0; MAX_LAYERS],
             root_mode: RootMotion::Off,
             root_delta: [0.0; 3],
-            events: Vec::new(),
+            events: Vec::with_capacity(16),
+            events_truncated: false,
             pose: rest.clone(),
             scratch: rest.clone(),
-            scratch2: rest,
-            scan: Vec::new(),
+            scratch2: rest.clone(),
+            frozen: rest,
+            scan: Vec::with_capacity(16),
         }
     }
 
@@ -114,12 +128,21 @@ impl Animator {
         self.fade_from = None;
     }
 
-    /// Blends from the current pose to `clip` (from its start) over `seconds` (smoothstep).
-    pub fn crossfade(&mut self, clip: ClipId, seconds: f32) {
-        if seconds <= 0.0 {
+    /// Blends from the current pose to `clip` (from its start) over `seconds` (smoothstep). The
+    /// outgoing clip keeps playing during the fade; if another crossfade is still running, its
+    /// current blended pose is frozen and faded out from instead, so nothing pops.
+    pub fn crossfade(&mut self, set: &AnimSet, clip: ClipId, seconds: f32) {
+        if seconds <= 0.0 || !seconds.is_finite() {
             return self.set_clip(clip);
         }
-        self.fade_from = Some((self.base, 0.0, seconds));
+        let source = if self.fade_from.is_some() {
+            self.sample_base(set);
+            std::mem::swap(&mut self.frozen, &mut self.pose);
+            FadeSource::Frozen
+        } else {
+            FadeSource::Clip(self.base)
+        };
+        self.fade_from = Some((source, 0.0, seconds));
         self.base = Playback { clip, time: 0.0, rate: self.base.rate };
     }
 
@@ -192,25 +215,28 @@ impl Animator {
 
     fn advance_f64(&mut self, set: &AnimSet, dt: f64) {
         self.events.clear();
+        self.events_truncated = false;
         self.root_delta = [0.0; 3];
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         // Base clip.
         let u0 = self.base.time;
         let u1 = u0 + dt * self.base.rate as f64;
         self.scan.clear();
-        set.clip(self.base.clip).events_between(u0, u1, &mut self.scan);
+        self.events_truncated |= set.clip(self.base.clip).events_between(u0, u1, &mut self.scan);
         self.events.extend(self.scan.iter().map(|&(event, cycle)| FiredEvent { clip: self.base.clip, event, layer: None, cycle }));
         let mut w_base = 1.0f32;
         // Crossfade: the outgoing clip keeps moving (its events are dropped).
-        if let Some((from, elapsed, dur)) = &mut self.fade_from {
-            let f0 = from.time;
-            from.time += dt * from.rate as f64;
+        if let Some((source, elapsed, dur)) = &mut self.fade_from {
             *elapsed += dt as f32;
             w_base = smoothstep(*elapsed / *dur);
-            if self.root_mode != RootMotion::Off {
-                let d = root_offset(set, from.clip, from.time, self.root_mode, f0);
-                for (r, d) in self.root_delta.iter_mut().zip(d) {
-                    *r += d * (1.0 - w_base);
+            if let FadeSource::Clip(from) = source {
+                let f0 = from.time;
+                from.time += dt * from.rate as f64;
+                if self.root_mode != RootMotion::Off {
+                    let d = root_offset(set, from.clip, from.time, self.root_mode, f0);
+                    for (r, d) in self.root_delta.iter_mut().zip(d) {
+                        *r += d * (1.0 - w_base);
+                    }
                 }
             }
             if *elapsed >= *dur {
@@ -232,7 +258,8 @@ impl Animator {
             self.layer_age[slot] += dt;
             self.scan.clear();
             let clip = set.clip(l.play.clip);
-            clip.events_between(l0, l.play.time, &mut self.scan);
+            // Events first (an event at the very end fires in this step), then retire the layer.
+            self.events_truncated |= clip.events_between(l0, l.play.time, &mut self.scan);
             let id = l.play.clip;
             self.events.extend(self.scan.iter().map(|&(event, cycle)| FiredEvent { clip: id, event, layer: Some(slot as u8), cycle }));
             if clip.looping == LoopMode::Once && l.play.time >= clip.duration as f64 {
@@ -246,23 +273,41 @@ impl Animator {
         &self.events
     }
 
+    /// True if the last advance crossed more events than are reported per step
+    /// ([`crate::clip::MAX_EVENTS_PER_STEP`] per playback) and some were dropped.
+    pub fn events_truncated(&self) -> bool {
+        self.events_truncated
+    }
+
     /// Root translation (model space, metres) the clips moved during the last advance, when
     /// root motion is on. The pose keeps the root at rest in the extracted components.
     pub fn root_motion(&self) -> V3 {
         self.root_delta
     }
 
-    /// Samples and blends everything into the current local pose.
-    pub fn evaluate(&mut self, set: &AnimSet) -> &Pose {
+    /// The base clip crossfaded with its source, into `self.pose` (no layers).
+    fn sample_base(&mut self, set: &AnimSet) {
         let skel = &set.skeleton;
         let b = set.bound(self.base.clip);
         blend::sample(skel, &b.clip, &b.bones, b.clip.local_time(self.base.time), Base::Rest, &mut self.pose);
-        if let Some((from, elapsed, dur)) = &self.fade_from {
-            let f = set.bound(from.clip);
-            blend::sample(skel, &f.clip, &f.bones, f.clip.local_time(from.time), Base::Rest, &mut self.scratch);
+        if let Some((source, elapsed, dur)) = &self.fade_from {
+            match source {
+                FadeSource::Clip(from) => {
+                    let f = set.bound(from.clip);
+                    blend::sample(skel, &f.clip, &f.bones, f.clip.local_time(from.time), Base::Rest, &mut self.scratch);
+                }
+                // Reuses the buffer's capacity: no allocation.
+                FadeSource::Frozen => self.scratch.local.clone_from(&self.frozen.local),
+            }
             blend::blend(&mut self.scratch, &self.pose, smoothstep(*elapsed / *dur), None);
             std::mem::swap(&mut self.pose, &mut self.scratch);
         }
+    }
+
+    /// Samples and blends everything into the current local pose.
+    pub fn evaluate(&mut self, set: &AnimSet) -> &Pose {
+        let skel = &set.skeleton;
+        self.sample_base(set);
         match self.root_mode {
             RootMotion::Off => {}
             RootMotion::Horizontal => {
@@ -319,9 +364,13 @@ impl Animator {
         };
         let now = value(&self.base);
         match &self.fade_from {
-            Some((from, elapsed, dur)) => {
+            Some((source, elapsed, dur)) => {
                 let w = smoothstep(*elapsed / *dur);
-                match (value(from), now) {
+                let from = match source {
+                    FadeSource::Clip(p) => value(p),
+                    FadeSource::Frozen => None,
+                };
+                match (from, now) {
                     (Some(a), Some(b)) => Some(a + (b - a) * w),
                     (a, b) => b.or(a),
                 }
@@ -341,9 +390,19 @@ impl Animator {
         };
         pb(&mut h, &self.base);
         match &self.fade_from {
-            Some((p, e, d)) => {
-                h.write_u8(1);
-                pb(&mut h, p);
+            Some((source, e, d)) => {
+                match source {
+                    FadeSource::Clip(p) => {
+                        h.write_u8(1);
+                        pb(&mut h, p);
+                    }
+                    FadeSource::Frozen => {
+                        h.write_u8(2);
+                        for t in &self.frozen.local {
+                            t.t.iter().chain(t.r.iter()).chain(t.s.iter()).for_each(|v| h.write_f32(*v));
+                        }
+                    }
+                }
                 h.write_f32(*e);
                 h.write_f32(*d);
             }

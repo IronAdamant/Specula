@@ -491,7 +491,7 @@ impl Parser<'_> {
             let parent = match parent {
                 None if bones.is_empty() => None,
                 None => return Err(e(&format!("{path}.parent"), ErrorCode::MissingField, "every bone after the first needs a parent (bone 0 is the root)")),
-                Some(_) if bones.is_empty() => return Err(e(&format!("{path}.parent"), ErrorCode::WrongType, "the first bone is the root and has no parent")),
+                Some(_) if bones.is_empty() => return Err(e(&format!("{path}.parent"), ErrorCode::InvalidRig, "the first bone is the root and has no parent")),
                 Some(pn) => Some(bones.iter().position(|q| q.name == pn).ok_or_else(|| {
                     let known: Vec<&str> = bones.iter().map(|q| q.name.as_str()).collect();
                     e(&format!("{path}.parent"), ErrorCode::UnknownName, format!("parent '{pn}' is not an earlier bone (known: {})", known.join(", ")))
@@ -499,7 +499,7 @@ impl Parser<'_> {
             };
             let dup = |n: &str, bones: &[BoneDef]| -> Result<(), RecipeError> {
                 if bones.iter().any(|q| q.name == n) {
-                    return Err(e(&format!("{path}.name"), ErrorCode::WrongType, format!("duplicate bone name '{n}'")));
+                    return Err(e(&format!("{path}.name"), ErrorCode::Duplicate, format!("duplicate bone name '{n}'")));
                 }
                 Ok(())
             };
@@ -507,7 +507,7 @@ impl Parser<'_> {
             bones.push(BoneDef { path: path.clone(), name: name.clone(), parent, head: head.clone(), tail: tail.clone(), mirror_x: false });
             if mirror {
                 let Some(stem) = name.strip_suffix("_l") else {
-                    return Err(e(&format!("{path}.mirror"), ErrorCode::WrongType, "a mirrored bone is named *_l (left, +X); its twin is *_r"));
+                    return Err(e(&format!("{path}.mirror"), ErrorCode::InvalidRig, "a mirrored bone is named *_l (left, +X); its twin is *_r"));
                 };
                 let twin = format!("{stem}_r");
                 dup(&twin, &bones)?;
@@ -746,7 +746,7 @@ impl Recipe {
                         return Err(e(&np, ErrorCode::UnknownName, format!("no bone '{n}' in the rig (bones: {})", known.join(", "))));
                     }
                     if bones.iter().any(|b| b == n) {
-                        return Err(e(&np, ErrorCode::WrongType, format!("bone '{n}' listed twice")));
+                        return Err(e(&np, ErrorCode::Duplicate, format!("bone '{n}' listed twice")));
                     }
                     bones.push(n.to_string());
                 }
@@ -1036,7 +1036,10 @@ fn build_rig(recipe: &Recipe, def: &RigDef, ctx: &Ctx) -> Result<(Rig, f32), Rec
             }
         }
     }
-    rig.validate().map_err(|er| e("rig", ErrorCode::Geometry, er.to_string()))?;
+    rig.validate().map_err(|er| {
+        let path = er.bone.map_or_else(|| "rig".to_string(), |b| def.bones[b].path.clone());
+        e(&path, ErrorCode::InvalidRig, er.to_string())
+    })?;
     let blend = match &def.blend {
         Some(x) => blend_value(ctx, x, "rig.blend")?,
         None => 0.0,

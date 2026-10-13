@@ -135,8 +135,8 @@ fn sampled_poses_are_bit_identical_pinned() {
         let (_, set) = creature(name);
         let (_, again) = creature(name);
         for (id, c) in set.clips() {
-            let a = measure::pose_hash(&set, id, 0.01);
-            assert_eq!(a, measure::pose_hash(&again, id, 0.01), "{name}/{}: two loads differ", c.name);
+            let a = measure::pose_hash(&set, id, 0.01).unwrap();
+            assert_eq!(a, measure::pose_hash(&again, id, 0.01).unwrap(), "{name}/{}: two loads differ", c.name);
             h.write_str(&c.name);
             h.write_u64(a);
         }
@@ -144,4 +144,4 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "2cd7925bf052373b";
+const PINNED: &str = "c222c9a29c6bbb9c";

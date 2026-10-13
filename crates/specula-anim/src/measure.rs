@@ -5,6 +5,7 @@ use specula_core::hash::StableHasher;
 
 use crate::blend::{self, Base};
 use crate::clip::LoopMode;
+use crate::error::{AnimError, AnimErrorCode};
 use crate::math::{math3, Affine, V3};
 use crate::set::{AnimSet, ClipId};
 
@@ -85,18 +86,29 @@ pub fn loop_seam(set: &AnimSet, id: ClipId) -> Option<f32> {
     Some(a.iter().zip(&b).map(|(p, q)| math3::length(math3::sub(*p, *q))).fold(0.0, f32::max))
 }
 
+/// Most samples [`pose_hash`] takes.
+pub const MAX_HASH_SAMPLES: usize = 1_000_000;
+
 /// A stable hash of the local pose sampled every `step` seconds over the clip (exact float
-/// bits): the same clip must hash the same on every platform (F2).
-pub fn pose_hash(set: &AnimSet, id: ClipId, step: f32) -> u64 {
+/// bits): the same clip must hash the same on every platform (F2). `step` must be positive and
+/// finite, and give at most [`MAX_HASH_SAMPLES`] samples.
+pub fn pose_hash(set: &AnimSet, id: ClipId, step: f32) -> Result<u64, AnimError> {
     let clip = set.clip(id);
+    if !(step.is_finite() && step > 0.0) {
+        return Err(AnimError::new("step", AnimErrorCode::OutOfRange, format!("step {step} must be a positive number of seconds")));
+    }
+    let samples = (clip.duration as f64 / step as f64).floor();
+    if samples >= MAX_HASH_SAMPLES as f64 {
+        return Err(AnimError::new("step", AnimErrorCode::Limit, format!("{samples} samples; at most {MAX_HASH_SAMPLES}")).with_numbers(samples, MAX_HASH_SAMPLES as f64));
+    }
     let mut h = StableHasher::new();
     let mut pose = set.skeleton.rest_pose();
-    let n = (clip.duration / step) as usize;
+    let n = samples as usize;
     for k in 0..=n {
         blend::sample(&set.skeleton, clip, set.track_bones(id), k as f32 * step, Base::Rest, &mut pose);
         for t in &pose.local {
             t.t.iter().chain(t.r.iter()).chain(t.s.iter()).for_each(|v| h.write_f32(*v));
         }
     }
-    h.finish()
+    Ok(h.finish())
 }

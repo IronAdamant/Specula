@@ -10,8 +10,9 @@
 //! ```
 //!
 //! Each row's label lists the clip, its duration, its events and (for locomotion) the measured
-//! foot sliding at the matched speed. Trail dot colours: red = left foot, blue = right foot,
-//! yellow = hands, white = head.
+//! foot sliding at the matched speed. Trail dots trace bone ends: red = left foot, blue = right
+//! foot, yellow = hands, white = head, green = tail or flame tip. Opaque parts use the recipes'
+//! vertex colours; the moon casts shadows.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ use specula_anim::blend::{self, Base};
 use specula_anim::math::{math3, Affine, V3};
 use specula_anim::{measure, skin, AnimSet, ClipId, Skeleton};
 use specula_core::math::{Mat4, Vec3};
-use specula_gpu::{DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, Severity, Surface, Validation, Vertex};
+use specula_gpu::{DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, Severity, ShadowSettings, Surface, Validation, Vertex};
 use specula_model::{build, BuildParams, MaterialKind, MaterialPreset, MeshData, Model, Shape, Style};
 
 const CREATURES: [&str; 5] = ["shambler", "skeleton_runner", "wraith", "bone_colossus", "brazier_fire"];
@@ -120,7 +121,7 @@ fn main() {
     println!("rendering on {}", gpu.adapter().name);
     let tile = a.tile;
     let n = a.frames.max(2);
-    let label_h = 12u32;
+    let label_h = 14u32;
     let cols = n + 2;
     let (sw, sh) = (cols * tile + 6, rows.len() as u32 * (tile + label_h));
     let mut sheet = vec![0u8; (sw * sh * 4) as usize];
@@ -148,8 +149,8 @@ fn main() {
         for (k, (pos, nor)) in skinned.iter().enumerate() {
             let meshes = upload_pose(&mut gpu, mesh, &buckets, pos, nor);
             let cam = camera(centre, radius, 58.0, 12.0, 30.0);
-            let draws = draw_list(&meshes, &buckets, ground, None, 1.0);
-            render_tile(&mut gpu, target, cam, &draws, &mut sheet, sw, 3 + k as u32 * tile, y0, tile);
+            let draws = draw_list(&meshes, &buckets, ground, 1.0);
+            render_tile(&mut gpu, target, cam, &draws, &mut sheet, sw, 3 + k as u32 * tile, y0, tile, true);
             meshes.into_iter().for_each(|m| gpu.destroy_mesh(m));
         }
         // Motion trails: onion skins moving at the clip's speed, plus joint dots.
@@ -161,7 +162,7 @@ fn main() {
         let mut dots: Vec<(V3, [f32; 4])> = Vec::new();
         for s in 0..=samples {
             let t = clip.duration * s as f32 / samples as f32;
-            let j = measure::joints_at(&c.set, *id, t);
+            let j = bone_tips(c, *id, t);
             for (bone, col) in &marks {
                 let p = math3::add(j[*bone], [0.0, 0.0, v * t]);
                 dots.push((p, *col));
@@ -189,7 +190,7 @@ fn main() {
                 let meshes = upload_pose(&mut gpu, mesh, &buckets, p, nn);
                 let last = gi + 1 == ghost_poses.len();
                 let fade = 0.35 + 0.65 * gi as f32 / (ghosts - 1) as f32;
-                draws.extend(draw_list(&meshes, &buckets, ground, Some(()), fade).into_iter().skip(1).map(|mut d| {
+                draws.extend(draw_list(&meshes, &buckets, ground, fade).into_iter().skip(1).map(|mut d| {
                     if !last {
                         d.material = Material::Glass;
                         d.color[3] = 0.45;
@@ -206,7 +207,7 @@ fn main() {
                 draws.push(d);
             }
             let cam = camera(tc, tr, az, el, 20.0);
-            render_tile(&mut gpu, target, cam, &draws, &mut sheet, sw, 3 + (n + view as u32) * tile, y0, tile);
+            render_tile(&mut gpu, target, cam, &draws, &mut sheet, sw, 3 + (n + view as u32) * tile, y0, tile, false);
             all_meshes.into_iter().for_each(|m| gpu.destroy_mesh(m));
         }
         draw_text(&mut sheet, sw, 5, y0 + tile + 3, label, [230, 226, 214]);
@@ -261,11 +262,21 @@ fn trail_joints(c: &Creature) -> Vec<(usize, [f32; 4])> {
         (&["tail_1", "tongue_0"][..], [0.7, 1.0, 0.4, 1.0]),
     ] {
         if let Some(b) = names.iter().find_map(|n| pick(n)) {
-            // A tail end is more telling than its head: use the tail via the child-less bone's head.
             out.push((b, col));
         }
     }
     out
+}
+
+/// Model-space end point (tail) of every bone at clip time `t`: a foot's toe, a tail's tip.
+fn bone_tips(c: &Creature, id: ClipId, t: f32) -> Vec<V3> {
+    let s = &c.set.skeleton;
+    let mut pose = s.rest_pose();
+    blend::sample(s, c.set.clip(id), c.set.track_bones(id), t, Base::Rest, &mut pose);
+    let mut model = Vec::new();
+    s.model_space(&pose, &mut model);
+    // Rest frames are model-aligned: the tail sits at (tail − head) in the bone's own frame.
+    model.iter().enumerate().map(|(b, m)| m.apply_point(math3::sub(s.tails[b], s.heads[b]))).collect()
 }
 
 fn skin_at(c: &Creature, id: ClipId, t: f32, mesh: &MeshData) -> (Vec<V3>, Vec<V3>) {
@@ -279,9 +290,11 @@ fn skin_at(c: &Creature, id: ClipId, t: f32, mesh: &MeshData) -> (Vec<V3>, Vec<V
     (p, n)
 }
 
-/// Triangles grouped by part and quantised average colour (the GPU vertex has no colour).
+/// One draw per material part. Opaque parts carry the recipe's real vertex colours (the GPU's
+/// vertex-colour path) under a white draw colour; blended parts (wraith glass) ignore vertex
+/// colour, so they get the part's average colour.
 struct Bucket {
-    corners: Vec<u32>,
+    indices: Vec<u32>,
     color: [f32; 4],
     preset: MaterialPreset,
 }
@@ -290,38 +303,30 @@ fn buckets(m: &MeshData, presets: &[(String, MaterialPreset)]) -> Vec<Bucket> {
     let mut out: Vec<Bucket> = Vec::new();
     for (pi, part) in m.parts.iter().enumerate() {
         let preset = presets.iter().find(|(n, _)| n == &part.material).map(|(_, p)| p.clone()).expect("preset");
-        let mut groups: BTreeMap<[u8; 3], (Vec<u32>, [f32; 3])> = BTreeMap::new();
-        for t in m.part_indices(pi).chunks_exact(3) {
-            let c = [0, 1, 2].map(|k| t.iter().map(|&i| m.colors[i as usize][k] as f32).sum::<f32>() / (3.0 * 255.0));
-            let key = c.map(|x| ((x * 255.0) as u8) & 0xf0);
-            let g = groups.entry(key).or_insert((Vec::new(), c));
-            g.0.extend_from_slice(t);
-        }
-        for (corners, c) in groups.into_values() {
-            out.push(Bucket { corners, color: [c[0], c[1], c[2], preset.opacity], preset: preset.clone() });
-        }
+        let idx = m.part_indices(pi);
+        let color = if preset.kind == MaterialKind::Glass {
+            let avg = [0, 1, 2].map(|k| idx.iter().map(|&i| m.colors[i as usize][k] as f32).sum::<f32>() / (idx.len() as f32 * 255.0));
+            [avg[0], avg[1], avg[2], preset.opacity]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        };
+        out.push(Bucket { indices: idx.to_vec(), color, preset });
     }
     out
 }
 
-fn upload_pose(gpu: &mut Gpu, _m: &MeshData, buckets: &[Bucket], pos: &[V3], nor: &[V3]) -> Vec<MeshId> {
-    buckets
-        .iter()
-        .map(|b| {
-            let v: Vec<Vertex> = b.corners.iter().map(|&i| Vertex { position: pos[i as usize], normal: nor[i as usize] }).collect();
-            let idx: Vec<u32> = (0..v.len() as u32).collect();
-            gpu.upload_mesh(&v, &idx).expect("upload")
-        })
-        .collect()
+fn upload_pose(gpu: &mut Gpu, m: &MeshData, buckets: &[Bucket], pos: &[V3], nor: &[V3]) -> Vec<MeshId> {
+    let v: Vec<Vertex> = (0..pos.len()).map(|i| Vertex::with_color(pos[i], nor[i], m.colors[i])).collect();
+    buckets.iter().map(|b| gpu.upload_mesh(&v, &b.indices).expect("upload")).collect()
 }
 
 fn upload_static(gpu: &mut Gpu, m: &MeshData) -> MeshId {
-    let v: Vec<Vertex> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vertex { position: *p, normal: *n }).collect();
+    let v: Vec<Vertex> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vertex::new(*p, *n)).collect();
     gpu.upload_mesh(&v, &m.indices).expect("upload")
 }
 
-/// Ground first, then one draw per bucket. `ghost` skips nothing here; callers restyle.
-fn draw_list(meshes: &[MeshId], buckets: &[Bucket], ground: MeshId, _ghost: Option<()>, fade: f32) -> Vec<DrawItem> {
+/// Ground first, then one draw per bucket, darkened by `fade` (onion skins).
+fn draw_list(meshes: &[MeshId], buckets: &[Bucket], ground: MeshId, fade: f32) -> Vec<DrawItem> {
     let mut draws = Vec::with_capacity(meshes.len() + 1);
     let g = DrawItem::new(ground, Affine::IDENTITY.to_cols_array(), srgb(0x30, 0x35, 0x3d));
     draws.push(DrawItem { surface: Surface { roughness: 0.9, specular: 0.05, ..Surface::default() }, ..g });
@@ -349,15 +354,16 @@ fn camera(centre: V3, radius: f32, az: f32, el: f32, fov: f32) -> [f32; 16] {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16], draws: &[DrawItem], sheet: &mut [u8], sw: u32, x0: u32, y0: u32, tile: u32) {
+fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16], draws: &[DrawItem], sheet: &mut [u8], sw: u32, x0: u32, y0: u32, tile: u32, shadows: bool) {
     let frame = FrameDesc {
         view_proj,
         clear_color: srgb(0x0b, 0x10, 0x20),
         draws,
         reverse_z: true,
-        environment: moonlight(),
+        environment: moonlight(shadows),
         lights: &[],
         time_s: 0.0,
+        overlay: &[],
     };
     gpu.render(target, &frame).expect("render");
     let px = gpu.read_rgba8(target).expect("read");
@@ -368,17 +374,20 @@ fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16
     }
 }
 
-/// STYLE.md moonlight, a little brighter so motion reads in small tiles.
-fn moonlight() -> Environment {
+/// STYLE.md moonlight, a little brighter so motion reads in small tiles, with the moon's
+/// shadow on so feet visibly meet the ground.
+fn moonlight(shadows: bool) -> Environment {
     let (el, az) = (35.0f32.to_radians(), 50.0f32.to_radians());
     Environment {
         sun_direction: [el.cos() * az.sin(), el.sin(), el.cos() * az.cos()],
         sun_color: rgb3(0xc9, 0xd6, 0xff),
         sun_intensity: 1.8,
         ambient_color: rgb3(0x2a, 0x34, 0x48),
-        ambient_intensity: 3.5,
+        ambient_intensity: 3.0,
         exposure: 1.2,
         tonemap: true,
+        shadow: ShadowSettings { enabled: shadows, resolution: 2048, cascades: 1, distance: 120.0, softness: 1.5, bias: 1.0 },
+        ..Environment::default()
     }
 }
 

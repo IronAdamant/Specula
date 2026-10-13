@@ -121,12 +121,13 @@ fn events_fire_once_per_loop_across_any_tick_split() {
         }
         assert_eq!(counts, [10, 10, 10], "steps {steps:?}");
     }
-    // Once: the event at the very end fires once, then never again.
+    // Once: the event at the very end fires in the step that reaches the end, then never again.
     let once = clip(r#"{ "name": "o", "duration": 1, "events": [ { "name": "end", "time": 1 } ] }"#);
     let mut out = Vec::new();
     once.events_between(0.0, 0.6, &mut out);
-    once.events_between(0.6, 1.0, &mut out);
     assert!(out.is_empty());
+    once.events_between(0.6, 1.0, &mut out);
+    assert_eq!(out.len(), 1);
     once.events_between(1.0, 1.2, &mut out);
     once.events_between(1.2, 3.0, &mut out);
     assert_eq!(out.len(), 1);
@@ -227,7 +228,7 @@ fn animator_crossfades_layers_and_matches_speed() {
     a.set_rate(1.0);
     a.advance(&set, 0.25);
     let walk_pose = a.evaluate(&set).clone();
-    a.crossfade(idle, 0.5);
+    a.crossfade(&set, idle, 0.5);
     a.advance(&set, 0.0);
     assert_eq!(a.evaluate(&set), &walk_pose, "a crossfade starts from the current pose");
     a.advance(&set, 0.6);
@@ -251,7 +252,7 @@ fn animator_crossfades_layers_and_matches_speed() {
         for k in 0..100 {
             b.advance_ticks(&set, 1, 60);
             if k == 30 {
-                b.crossfade(idle, 0.3);
+                b.crossfade(&set, idle, 0.3);
             }
         }
         (b.state_hash(), b.evaluate(&set).clone())

@@ -26,6 +26,8 @@ pub struct MaskId(pub u16);
 /// The anim-set file format version.
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_CLIPS: usize = 1024;
+/// Most masks in one set.
+pub const MAX_MASKS: usize = 64;
 
 /// A clip resolved against the skeleton.
 #[derive(Clone, Debug)]
@@ -66,6 +68,9 @@ impl AnimSet {
         set.rig = o.str("rig")?.map(str::to_string);
         if let Some(m) = o.get("masks") {
             let pairs = m.as_object().ok_or_else(|| err("masks", AnimErrorCode::WrongType, "expected {\"name\": [bone, ...]}"))?;
+            if pairs.len() > MAX_MASKS {
+                return Err(err("masks", AnimErrorCode::Limit, format!("{} masks; at most {MAX_MASKS}", pairs.len())).with_numbers(pairs.len() as f64, MAX_MASKS as f64));
+            }
             for (name, bones) in pairs {
                 let p = format!("masks.{name}");
                 let list = bones.as_array().ok_or_else(|| err(&p, AnimErrorCode::WrongType, "expected a list of bone names"))?;
@@ -113,6 +118,12 @@ impl AnimSet {
 
     /// Adds a mask covering `roots` and their descendants.
     pub fn add_mask(&mut self, name: &str, roots: &[&str]) -> Result<MaskId, AnimError> {
+        if self.masks.len() >= MAX_MASKS {
+            return Err(err("", AnimErrorCode::Limit, format!("at most {MAX_MASKS} masks")));
+        }
+        if roots.len() > specula_model::rig::MAX_BONES {
+            return Err(err("", AnimErrorCode::Limit, format!("{} bones; a mask lists at most {}", roots.len(), specula_model::rig::MAX_BONES)));
+        }
         if self.masks.iter().any(|(n, _)| n == name) {
             return Err(err("", AnimErrorCode::Duplicate, format!("a second mask '{name}'")));
         }
