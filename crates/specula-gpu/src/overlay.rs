@@ -5,7 +5,10 @@ use crate::device::{Device, Image};
 use crate::render::{FrameUpload, LinearCache, PushConstants, PUSH_STAGES};
 use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{ErrorReason, GpuError, IdKind, Limit, OverlayKind, OverlayQuad, TextureFormat, TextureId, MAX_OVERLAY_QUADS, PASS_OVERLAY};
+use crate::{
+    ErrorReason, GpuError, IdKind, Limit, OverlayKind, OverlayQuad, TextureFormat, TextureId, MAX_OVERLAY_FEATHER, MAX_OVERLAY_QUADS,
+    PASS_OVERLAY,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -53,21 +56,40 @@ pub fn check_pixels(what: &str, width: u32, height: u32, format: TextureFormat, 
     Ok(())
 }
 
-/// One quad as the overlay shaders read it; must match `Quad` in `shaders/overlay.glsl`.
+/// One quad or triangle as the overlay shaders read it; must match `Quad` in
+/// `shaders/overlay.glsl`. Colours are linear RGB with straight alpha.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct OverlayRecord {
+    /// Quad: x, y, width, height. Triangle: p0.xy, p1.xy.
     pub rect: [f32; 4],
+    /// Quad: u0, v0, u1, v1. Triangle: p2.xy, 0, 0.
     pub uv: [f32; 4],
-    /// Linear RGB, straight alpha.
+    /// Quad: fill at the top. Triangle: colour of p0.
     pub color: [f32; 4],
-    /// Corner radius, unused ×3.
+    /// Quad: fill at the bottom. Triangle: colour of p1.
+    pub color2: [f32; 4],
+    /// Quad: border at the top. Triangle: colour of p2.
+    pub border0: [f32; 4],
+    /// Quad: border at the bottom.
+    pub border1: [f32; 4],
+    /// Corner radius, border width, feather, unused.
     pub params: [f32; 4],
-    /// Texture slot + 1 (0 = none), kind (1 = alpha mask), unused ×2.
+    /// Clip x0, y0, x1, y1 (whole pixels).
+    pub clip: [f32; 4],
+    /// Texture slot + 1 (0 = none), kind (`KIND_*`), unused ×2.
     pub info: [u32; 4],
 }
 
 pub const OVERLAY_RECORD_SIZE: usize = size_of::<OverlayRecord>();
+
+/// `OverlayRecord::info[1]`.
+pub const KIND_RGBA: u32 = 0;
+pub const KIND_ALPHA_MASK: u32 = 1;
+pub const KIND_TRIANGLE: u32 = 2;
+
+/// "No clip": far beyond any target.
+const NO_CLIP: [f32; 4] = [-1.0e9, -1.0e9, 1.0e9, 1.0e9];
 
 /// Fail early: too many quads, or a quad names a texture that does not exist.
 pub fn check_overlay(overlay: &[OverlayQuad], textures: &Textures) -> Result<(), GpuError> {
@@ -84,16 +106,46 @@ pub fn check_overlay(overlay: &[OverlayQuad], textures: &Textures) -> Result<(),
 pub fn build_overlay(overlay: &[OverlayQuad], textures: &Textures, cache: &mut LinearCache, out: &mut Vec<OverlayRecord>) {
     out.clear();
     out.extend(overlay.iter().map(|q| {
-        let c = cache.get([q.color[0], q.color[1], q.color[2]]);
         let finite = |v: [f32; 4]| v.map(|x| if x.is_finite() { x } else { 0.0 });
+        let num = |x: f32, lo: f32, hi: f32| if x.is_finite() { x.clamp(lo, hi) } else { lo };
+        let mut lin = |c: [f32; 4]| {
+            let l = cache.get([c[0], c[1], c[2]]);
+            [l[0], l[1], l[2], if c[3].is_nan() { 0.0 } else { c[3].clamp(0.0, 1.0) }]
+        };
+        // Clip edges snap to whole pixels, as the software preview does.
+        let clip = match q.clip {
+            Some(c) if c.iter().all(|v| v.is_finite()) => [c[0].round(), c[1].round(), (c[0] + c[2]).round(), (c[1] + c[3]).round()],
+            Some(_) => [0.0; 4],
+            None => NO_CLIP,
+        };
+        if let Some(t) = q.triangle {
+            let p = t.points.map(|p| p.map(|v| if v.is_finite() { v } else { 0.0 }));
+            return OverlayRecord {
+                rect: [p[0][0], p[0][1], p[1][0], p[1][1]],
+                uv: [p[2][0], p[2][1], 0.0, 0.0],
+                color: lin(t.colors[0]),
+                color2: lin(t.colors[1]),
+                border0: lin(t.colors[2]),
+                border1: [0.0; 4],
+                params: [0.0; 4],
+                clip,
+                info: [0, KIND_TRIANGLE, 0, 0],
+            };
+        }
+        let top = lin(q.color);
+        let bottom = q.color_bottom.map_or(top, &mut lin);
         OverlayRecord {
             rect: finite(q.rect),
             uv: finite(q.uv),
-            color: [c[0], c[1], c[2], if q.color[3].is_nan() { 0.0 } else { q.color[3].clamp(0.0, 1.0) }],
-            params: [if q.radius.is_finite() { q.radius.max(0.0) } else { 0.0 }, 0.0, 0.0, 0.0],
+            color: top,
+            color2: bottom,
+            border0: lin(q.border_color[0]),
+            border1: lin(q.border_color[1]),
+            params: [num(q.radius, 0.0, 1.0e6), num(q.border, 0.0, 1.0e6), num(q.feather, 1.0, MAX_OVERLAY_FEATHER), 0.0],
+            clip,
             info: [
                 q.texture.and_then(|t| textures.slot(t)).map_or(0, |s| s + 1),
-                (q.kind == OverlayKind::AlphaMask) as u32,
+                if q.kind == OverlayKind::AlphaMask { KIND_ALPHA_MASK } else { KIND_RGBA },
                 0,
                 0,
             ],
@@ -159,10 +211,12 @@ mod tests {
     #[test]
     fn record_matches_shader_layout() {
         assert_eq!(offset_of!(OverlayRecord, color), 32);
-        assert_eq!(offset_of!(OverlayRecord, info), 64);
-        assert_eq!(OVERLAY_RECORD_SIZE, 80);
+        assert_eq!(offset_of!(OverlayRecord, params), 96);
+        assert_eq!(offset_of!(OverlayRecord, clip), 112);
+        assert_eq!(offset_of!(OverlayRecord, info), 128);
+        assert_eq!(OVERLAY_RECORD_SIZE, 144);
         assert_eq!(overlay_units(0, 112), 0);
-        assert_eq!(overlay_units(7, 112), 5);
+        assert_eq!(overlay_units(7, 112), 9);
     }
 
     #[test]
@@ -174,8 +228,27 @@ mod tests {
         assert_eq!(out[0].rect, [1.0, 2.0, 3.0, 0.0], "non-finite becomes 0");
         assert_eq!(out[0].color[3], 1.0, "alpha clamped");
         assert!((out[0].color[1] - 0.214_041).abs() < 1e-5, "linear");
-        assert_eq!(out[0].params[0], 0.0);
+        assert_eq!(out[0].params, [0.0, 0.0, 1.0, 0.0], "radius clamped, feather at least 1");
         assert_eq!(out[0].info, [0, 0, 0, 0]);
+        assert_eq!(out[0].color2, out[0].color, "flat fill");
+        // Gradient, border, feather, clip, triangle.
+        let q = OverlayQuad {
+            color_bottom: Some([0.0, 0.0, 0.0, 1.0]),
+            border: 2.0,
+            border_color: [[1.0; 4], [0.0, 0.0, 0.0, 0.5]],
+            feather: 1.0e9,
+            clip: Some([10.4, 20.6, 30.0, 40.0]),
+            ..OverlayQuad::solid([0.0, 0.0, 10.0, 10.0], [1.0; 4])
+        };
+        let t = OverlayQuad::triangle([[1.0, 2.0], [3.0, 4.0], [5.0, f32::NAN]], [[1.0; 4], [0.5; 4], [0.0; 4]]);
+        build_overlay(&[q, t], &textures, &mut LinearCache::default(), &mut out);
+        assert_eq!(out[0].color2, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(out[0].border1[3], 0.5);
+        assert_eq!(out[0].params[1..3], [2.0, MAX_OVERLAY_FEATHER]);
+        assert_eq!(out[0].clip, [10.0, 21.0, 40.0, 61.0]);
+        assert_eq!(out[1].info[1], KIND_TRIANGLE);
+        assert_eq!((out[1].rect, out[1].uv), ([1.0, 2.0, 3.0, 4.0], [5.0, 0.0, 0.0, 0.0]));
+        assert!((out[1].color2[0] - 0.214_041).abs() < 1e-5, "vertex colours linear");
         let bad = [OverlayQuad { texture: Some(TextureId(42)), ..Default::default() }];
         let err = check_overlay(&bad, &textures).unwrap_err();
         assert_eq!(err.reason, Some(ErrorReason::UnknownId { kind: IdKind::Texture, id: 42 }));

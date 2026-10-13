@@ -1,0 +1,167 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "hud",
+  "input": "hud",
+  "layer": 0,
+  "notes": "State the game supplies each frame: wave, waves, next_wave_s (absent while a wave runs), early_bonus, dust, tombstones, tombstones_max, paused, speed, selected (warding|pillar|brazier|obelisk|wall, absent when nothing is selected), selected_name, selected_role, selected_detail, selected_cost, affordable, hover (text about the cell under the cursor), threats (rows: x, y in physical px from the camera projection, behind, label). Layout adapts with ui.narrow (phones in portrait).",
+  "root": {
+    "type": "box",
+    "children": [
+      { "type": "threats", "source": "threats" },
+      {
+        "type": "panel",
+        "id": "top_bar",
+        "anchor": "top",
+        "margin": [8, 8, 0, 8],
+        "layout": "row",
+        "align": "center",
+        "gap": "$l",
+        "children": [
+          {
+            "type": "box", "id": "wave_group", "layout": "row", "align": "center", "gap": 7,
+            "tooltip": "Waves survived and the next wave's timer.",
+            "children": [
+              { "type": "icon", "shape": "wave", "color": "rune_pale" },
+              { "type": "label", "id": "wave", "text": "Wave {wave}/{waves}", "role": "value" },
+              { "type": "label", "id": "next_wave", "text": "next {next_wave_s:time}", "role": "small", "visible": "next_wave_s" }
+            ]
+          },
+          { "type": "panel", "style": "divider", "width": 1, "height": "1.5em", "padding": 0 },
+          {
+            "type": "box", "id": "dust_group", "layout": "row", "align": "center", "gap": 7,
+            "children": [
+              { "type": "icon", "shape": "dust", "color": "bone" },
+              { "type": "label", "id": "dust", "text": "{dust}", "role": "value" },
+              { "type": "label", "text": "dust", "role": "small", "visible": "!ui.narrow" }
+            ]
+          },
+          { "type": "panel", "style": "divider", "width": 1, "height": "1.5em", "padding": 0 },
+          {
+            "type": "box", "id": "tomb_group", "layout": "row", "align": "center", "gap": 7,
+            "children": [
+              { "type": "icon", "shape": "tombstone", "color": "bone" },
+              { "type": "label", "id": "tombstones", "text": "{tombstones}/{tombstones_max}", "role": "value" },
+              { "type": "bar", "id": "tomb_bar", "value": "tombstones", "max": "tombstones_max", "width": "4.5em", "visible": "!ui.narrow" }
+            ]
+          },
+          { "type": "label", "id": "paused", "text": "PAUSED", "role": "heading", "color": "fire", "visible": "paused" },
+          { "type": "label", "id": "speed", "text": "x{speed}", "role": "heading", "color": "rune", "visible": "speed > 1" }
+        ]
+      },
+      { "type": "toasts", "anchor": "top", "margin": [72, 0, 0, 0], "width": "24em", "max": 4 },
+      {
+        "type": "panel",
+        "id": "selected",
+        "anchor": "bottom_left",
+        "margin": 12,
+        "width": "19em",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 8,
+        "visible": "selected && !ui.narrow",
+        "children": [
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 12,
+            "children": [
+              {
+                "type": "panel", "style": "inset", "padding": 5,
+                "children": [
+                  { "type": "icon", "shape": "warding", "size": "2.3em", "color": "#aab4c0", "visible": "selected == warding" },
+                  { "type": "icon", "shape": "pillar", "size": "2.3em", "color": "#aab4c0", "visible": "selected == pillar" },
+                  { "type": "icon", "shape": "brazier", "size": "2.3em", "color": "#aab4c0", "visible": "selected == brazier" },
+                  { "type": "icon", "shape": "obelisk", "size": "2.3em", "color": "#aab4c0", "visible": "selected == obelisk" },
+                  { "type": "icon", "shape": "wall", "size": "2.3em", "color": "#aab4c0", "visible": "selected == wall" }
+                ]
+              },
+              {
+                "type": "box", "layout": "column", "gap": 1, "width": "fill",
+                "children": [
+                  { "type": "label", "id": "selected_name", "text": "{selected_name}", "role": "heading" },
+                  { "type": "label", "id": "selected_role", "text": "{selected_role}", "role": "small" }
+                ]
+              }
+            ]
+          },
+          { "type": "label", "id": "selected_detail", "text": "{selected_detail}", "role": "small", "wrap": true },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 7,
+            "children": [
+              { "type": "icon", "shape": "dust", "color": "bone", "size": "1.1em" },
+              { "type": "label", "id": "selected_cost", "text": "{selected_cost}", "role": "value" },
+              { "type": "label", "text": "Not enough dust", "role": "small", "color": "fire", "visible": "!affordable" }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 16,
+            "children": [
+              { "type": "prompt", "action": "place", "text": "Carve" },
+              { "type": "prompt", "action": "build_menu", "text": "Stones" },
+              { "type": "prompt", "action": "upgrade", "text": "Upgrade" }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "button",
+        "id": "call_wave",
+        "anchor": "bottom_right",
+        "margin": 12,
+        "text": "Call wave +{early_bonus}",
+        "action": "call_wave",
+        "shortcut": "call_wave",
+        "visible": "next_wave_s && !ui.narrow",
+        "tooltip": "Start the next wave now for bonus dust.",
+        "children": [ { "type": "prompt", "action": "call_wave" } ]
+      },
+      {
+        "type": "panel",
+        "id": "hover",
+        "anchor": "bottom",
+        "margin": [0, 0, 14, 0],
+        "padding": [5, 12],
+        "visible": "hover && !ui.narrow",
+        "children": [ { "type": "label", "id": "hover_text", "text": "{hover}", "role": "small" } ]
+      },
+      {
+        "type": "panel",
+        "id": "selected_narrow",
+        "anchor": "bottom",
+        "margin": 8,
+        "width": "fill",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 8,
+        "visible": "ui.narrow",
+        "children": [
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 10, "visible": "selected",
+            "children": [
+              { "type": "icon", "shape": "warding", "size": "2em", "color": "#aab4c0", "visible": "selected == warding" },
+              { "type": "icon", "shape": "pillar", "size": "2em", "color": "#aab4c0", "visible": "selected == pillar" },
+              { "type": "icon", "shape": "brazier", "size": "2em", "color": "#aab4c0", "visible": "selected == brazier" },
+              { "type": "icon", "shape": "obelisk", "size": "2em", "color": "#aab4c0", "visible": "selected == obelisk" },
+              { "type": "icon", "shape": "wall", "size": "2em", "color": "#aab4c0", "visible": "selected == wall" },
+              {
+                "type": "box", "layout": "column", "width": "fill",
+                "children": [
+                  { "type": "label", "text": "{selected_name}", "role": "heading" },
+                  { "type": "label", "text": "{selected_role}", "role": "small" }
+                ]
+              },
+              { "type": "icon", "shape": "dust", "color": "bone", "size": "1.1em" },
+              { "type": "label", "text": "{selected_cost}", "role": "value" }
+            ]
+          },
+          { "type": "label", "text": "Not enough dust", "role": "small", "color": "fire", "visible": "selected && !affordable" },
+          {
+            "type": "box", "layout": "row", "gap": 8,
+            "children": [
+              { "type": "button", "id": "stones_narrow", "text": "Stones", "action": "open_build_menu", "shortcut": "build_menu", "width": "fill" },
+              { "type": "button", "id": "call_wave_narrow", "text": "Call wave +{early_bonus}", "action": "call_wave", "shortcut": "call_wave", "width": "fill", "visible": "next_wave_s" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

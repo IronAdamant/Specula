@@ -1,0 +1,36 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "confirm",
+  "input": "menu",
+  "layer": 50,
+  "modal": true,
+  "focus": "confirm_no",
+  "back": "confirm_no",
+  "notes": "A yes / no dialog. State: confirm_title, confirm_body. Actions: confirm_yes, confirm_no (default focus is the safe choice).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "menu",
+        "anchor": "center",
+        "width": "22em",
+        "max_width": "96%",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 12,
+        "children": [
+          { "type": "label", "text": "{confirm_title}", "role": "heading", "text_align": "center" },
+          { "type": "label", "text": "{confirm_body}", "role": "body", "wrap": true },
+          {
+            "type": "box", "layout": "row", "gap": 10,
+            "children": [
+              { "type": "button", "id": "confirm_yes", "text": "Yes", "action": "confirm_yes", "width": "fill" },
+              { "type": "button", "id": "confirm_no", "style": "primary", "text": "No", "action": "confirm_no", "width": "fill" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

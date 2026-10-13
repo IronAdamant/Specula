@@ -101,3 +101,14 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
 ]
+
+[[package]]
+name = "specula-ui"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-gpu",
+ "specula-input",
+ "specula-platform",
+ "specula-text",
+]

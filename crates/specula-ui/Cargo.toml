@@ -1,0 +1,16 @@
+[package]
+name = "specula-ui"
+description = "Specula UI: screens as data, widgets, themes, focus navigation, draw lists, ui_check and a software preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-text = { workspace = true }
+specula-input = { workspace = true }
+specula-platform = { workspace = true }
+specula-gpu = { workspace = true }
