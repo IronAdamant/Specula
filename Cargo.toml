@@ -8,6 +8,7 @@ members = [
     "crates/specula-protocol",
     "crates/specula-text",
     "crates/specula",
+    "games/sepulcra",
 ]
 
 [workspace.package]

@@ -1,0 +1,23 @@
+{
+  "name": "no anti-air",
+  "notes": "The centre-heavy layout with every sky obelisk replaced by ground stones. Expected: holds the ground but loses to wraiths by wave 6.",
+  "commands": [
+    { "wave": 0, "place": "warding", "at": "top:8,12" },
+    { "wave": 0, "place": "warding", "at": "top:12,8" },
+    { "wave": 1, "place": "warding", "at": "top:7,8" },
+    { "wave": 2, "place": "rune_pillar", "at": "top:7,12" },
+    { "wave": 2, "place": "brazier", "at": "top:10,12" },
+    { "wave": 3, "place": "warding", "at": "top:12,11" },
+    { "wave": 3, "place": "warding", "at": "top:7,7" },
+    { "wave": 4, "upgrade": "top:8,12" },
+    { "wave": 4, "upgrade": "top:12,8" },
+    { "wave": 5, "place": "brazier", "at": "top:11,7" },
+    { "wave": 5, "upgrade": "top:12,11" },
+    { "wave": 5, "upgrade": "top:7,7" },
+    { "wave": 6, "upgrade": "top:10,12" },
+    { "wave": 6, "upgrade": "top:7,8" },
+    { "wave": 7, "place": "brazier", "at": "top:12,12" },
+    { "wave": 7, "upgrade": "top:8,12" },
+    { "wave": 7, "upgrade": "top:12,8" }
+  ]
+}

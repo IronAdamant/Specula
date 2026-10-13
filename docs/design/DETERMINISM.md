@@ -1,6 +1,6 @@
 # Design: determinism
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
+Status: researched 2026-10-13. Deterministic maths (`dmath`) is implemented; the rest is not yet. Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
 
 **The rule:** the same starting world, the same seed and the same inputs give the same simulation, bit for bit, on
 every run.
@@ -64,7 +64,7 @@ boundary and journaled with that tick number. The journal is therefore a complet
    separate processes and compares hashes.
 4. **Our own transcendental functions.** `f32::sin`, `cos`, `atan2`, `exp`, `ln` and `powf` call the platform maths
    library. It differs between the msvc and gnu builds and between OSes, and can differ in the last bit. Box2D found
-   `atan2f` differs across platforms and wrote its own. We implement these in `specula-core::math` (polynomial
+   `atan2f` differs across platforms and wrote its own. We implement these in `specula_core::dmath` (polynomial
    approximations with fixed coefficients), and simulation code uses only those. `sqrt` is correctly rounded under IEEE
    754, so it is safe to use directly. So are `+ - * /`.
 5. **No fused or reordered floating point.** Rust doesn't fuse `a*b+c` into FMA or reorder float operations on its
@@ -81,6 +81,95 @@ boundary and journaled with that tick number. The journal is therefore a complet
    treated as failures.
 9. **Floats are serialised exactly.** World files and the journal store floats so they round-trip bit-exactly
    (shortest round-trip decimal, or hex bits where needed). Otherwise saving and loading changes the simulation.
+
+## Deterministic maths: `specula_core::dmath`
+
+Built 2026-10-13 (rule 4). Simulation code calls `dmath::sin(x)` instead of `x.sin()`.
+
+**API.** For `f32` (what the engine uses): `sin`, `cos`, `sin_cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`exp`, `exp2`, `ln`, `log2`, `pow`, `hypot`, and `floor`, `ceil`, `round`, `round_ties_even`, `trunc`, `fract`.
+The same set exists for `f64` with a `_f64` suffix, except `pow`. `dmath::VERSION` goes into replay headers.
+
+**How.** The functions use only IEEE basic operations (`+ - * /`, `sqrt`), conversions and integer bit operations.
+Those are correctly rounded, so every platform gets the same bits. The `f32` functions compute in `f64` or
+double-double (see below).
+- **Polynomials:** truncated Taylor and `atanh` series with exact rational coefficients, on arguments reduced far
+  enough that truncation is below 2⁻⁶⁰.
+- **Tables:** π, 2/π, ln 2 and `atan(k/8)`, generated with exact integer arithmetic.
+- **sin, cos and tan:** reduced by π/2 with a 4-part Cody–Waite split kept as a double-double. Above 1.6·10⁶ they use
+  Payne–Hanek with 1216 bits of 2/π, so accuracy holds up to `f64::MAX`. There is no cliff for huge arguments.
+- **Special values:** follow C99 Annex F, like `std`: NaN, ±0, ±inf, and the `atan2` and `pow` grids.
+
+**Rounding `f32` results.** A plain `f(x as f64) as f32` rounds twice. When the `f64` result lands exactly on an `f32`
+midpoint, ties-to-even decides the result instead of the true value. An exhaustive review scan found 17 such inputs in
+the first version: ln ×5, cos ×4, and sin, atan, exp2 and acos ×2 each. So the `f32` functions now work in two steps
+(Ziv's strategy):
+- **Fast path:** they use the fast `f64` result unless it lies within 32 `f64` ulp of an `f32` midpoint, which is about
+  1 input in 2²³.
+- **Accurate path:** otherwise they compute a double-double result, with relative error ≲ 2⁻⁶², and round it with the
+  tie decided by the sign of its low part.
+- **pow:** the trust radius grows with |y·ln x|, because ln's error is amplified by exp.
+
+`pow` computes exact results exactly:
+- `pow(x, 2) == x * x`, `pow(x, 0.5) == sqrt(x)` and `pow(x, -1) == 1 / x`.
+- Integer powers up to 64 use double-double binary powering.
+- Half-integer powers of perfect squares are computed through exact square roots.
+- Powers of two are computed as `2^(j·y)`.
+
+So an exact midpoint such as `4097² = 16785409` ties to even, as IEEE requires.
+
+**Accuracy.** The `f32` functions are **correctly rounded**, checked in two ways:
+- **One-argument functions:** an exhaustive scan (`dmath::tests::exhaustive`) checks every input. The scan also requires
+  the fast and accurate paths to agree on every input. Each input whose exact value lies within 2⁻²⁴ `f32` ulp of a
+  midpoint was then checked against an independent 120-digit decimal oracle (`scripts/dmath_oracle.py`). No other input
+  is close enough to a midpoint for the double-double error to matter.
+- **atan2, pow and hypot:** 20,000 random samples each, with integer and half-integer exponents for pow, all agreeing
+  with the oracle.
+
+The first version's tests compared against mingw-w64's `f64` libm rounded to `f32`. That reference double-rounds as
+well, so it could not see these cases. The tests now pin them against oracle values.
+
+The `f64` functions (`*_f64`) are not correctly rounded. Measured against `std` and the exact references:
+- sin, cos, exp, exp2, ln, log2 and hypot are within 1 ulp.
+- tan is within 2 ulp.
+- atan, atan2, asin and acos are within 1 ulp.
+- sin and cos at 1e22, 1e300 and `f64::MAX` are within 1 ulp of 1600-bit references.
+
+**Speed.** Release build on windows-gnu, compared with mingw-w64's libm. The machine was noisy, so these are rough:
+- **Faster:** sin, cos and exp are about 0.5×, ln and pow 0.6×, hypot 0.7×.
+- **About the same:** atan and atan2 at 1.0×.
+- **Slower:** asin is 1.3× and tan 2.5×.
+
+Correct rounding costs about 10–40% over casting the `f64` result, which is mostly the midpoint check. The double-double
+path runs for about 1 input in 2²³.
+
+A faster libm such as glibc or UCRT would narrow the gap. To measure:
+`cargo test -p specula-core --release dmath::tests::bench -- --ignored --nocapture`.
+
+**Why `std` can't be used.** Two problems were measured on this machine while building dmath:
+- **`f32::round(0.49999997)` returns `1.0` on windows-gnu.** mingw-w64's `roundf` computes `floor(x + 0.5)`. Even
+  rounding goes through libm.
+- **`f64::sin` is far off on windows-gnu.** mingw-w64 uses x87 `fsin`, which reduces with a 66-bit π:
+  - `sin(-6.2832)` is 5 ulp off.
+  - `sin(-946140.89…)` is 11,000 ulp off.
+
+**What is safe from `std` in simulation code:**
+- `+ - * /`
+- `sqrt`
+- `abs`, `copysign` and negation
+- `min`, `max` and `clamp`
+- `to_radians` and `to_degrees` (a multiply)
+- `recip`
+- `as` casts
+- `to_bits` and `from_bits`
+- comparisons and `total_cmp`
+
+**What isn't:** every transcendental function, plus `floor`, `ceil`, `round`, `trunc` and `fract` (use the dmath
+versions), `powi` (compiler-rt; LLVM may fold it differently), `mul_add`, `cbrt`, `exp_m1`, `ln_1p`, `log10`, and
+`sinh`, `cosh`, `tanh` and their inverses. Add those to dmath first if the simulation needs them.
+
+**Golden values.** `golden_bits_f32` and `golden_hash_f64` pin the output bits. If one ever has to change, bump
+`dmath::VERSION`, because old replays won't match any more.
 
 ## Verification
 
@@ -106,7 +195,7 @@ boundary and journaled with that tick number. The journal is therefore a complet
 - **M1:**
   - fixed tick clock
   - seeded RNG
-  - `specula-core` deterministic maths
+  - `specula-core` deterministic maths (done: `dmath`)
   - ordered containers in world code
   - exact float serialisation
   - tick-stamped journal

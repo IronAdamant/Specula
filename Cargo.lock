@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "sepulcra"
+version = "0.1.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula"
 version = "0.3.0"
 dependencies = [
