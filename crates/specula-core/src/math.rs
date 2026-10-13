@@ -10,7 +10,10 @@
 //! - **Screen space:** pixels, origin top-left, +x right, +y down.
 //! - **Rotations:** quaternions; Euler helpers take degrees and apply X, then Y, then Z (extrinsic,
 //!   i.e. `q = qz * qy * qx`).
+//! - **Determinism:** trigonometry goes through [`crate::dmath`], never `f32::sin`/`tan` (platform
+//!   libm), so the same inputs give bit-identical transforms on every platform.
 
+use crate::dmath;
 use std::ops::{Add, Mul, Neg, Sub};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -155,7 +158,7 @@ impl Quat {
         if len <= NORMALIZE_EPSILON {
             return Quat::IDENTITY;
         }
-        let (s, c) = (radians * 0.5).sin_cos();
+        let (s, c) = dmath::sin_cos(radians * 0.5);
         let v = axis * (s / len);
         Quat { x: v.x, y: v.y, z: v.z, w: c }
     }
@@ -256,7 +259,7 @@ impl Mat4 {
     /// Right-handed perspective for Vulkan: view space looks down −Z; output clip has y down,
     /// depth 0 at `near`, 1 at `far`.
     pub fn perspective_vk(fov_y_radians: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
-        let f = 1.0 / (fov_y_radians * 0.5).tan();
+        let f = 1.0 / dmath::tan(fov_y_radians * 0.5);
         let range = near - far;
         Mat4 {
             cols: [
@@ -273,7 +276,7 @@ impl Mat4 {
     /// With a float depth buffer this keeps precision roughly uniform from centimetres to
     /// thousands of kilometres, so nothing far away ever pushes the near plane out. Clip y is down.
     pub fn perspective_vk_reverse_z(fov_y_radians: f32, aspect: f32, near: f32) -> Mat4 {
-        let f = 1.0 / (fov_y_radians * 0.5).tan();
+        let f = 1.0 / dmath::tan(fov_y_radians * 0.5);
         Mat4 {
             cols: [
                 [f / aspect, 0.0, 0.0, 0.0],

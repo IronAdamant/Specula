@@ -1,0 +1,13 @@
+[package]
+name = "specula-input"
+description = "Specula input: actions as data, bindings, rebinding, glyphs, touch gestures, recording"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-platform = { workspace = true }

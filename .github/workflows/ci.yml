@@ -28,6 +28,22 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  android-check:
+    # F6 (portable by design): every crate must at least type-check for a mobile ARM target, so
+    # nothing quietly assumes Windows, x86 or a desktop. `cargo check` needs only the target's
+    # std, not the Android NDK (nothing is linked).
+    name: check (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Check
+        run: cargo check --workspace --all-targets --target aarch64-linux-android
+
   windows-gnu:
     # The toolchain development uses: windows-gnu with the Rust toolchain's own linker and raw-dylib
     # imports (AGENTS.md rules 2–3). An env RUSTFLAGS replaces .cargo/config.toml rustflags, so the
