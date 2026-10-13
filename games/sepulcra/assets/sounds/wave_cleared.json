@@ -1,0 +1,24 @@
+{
+  "sound": 1,
+  "name": "wave_cleared",
+  "notes": "A wave is defeated: a gentle rising G-major bell arpeggio over a soft warm pad.",
+  "bus": "sfx",
+  "seed": 119,
+  "duration": 2.0,
+  "loudness": -18,
+  "layers": [
+    { "name": "g4", "gain_db": -2, "source": { "wave": "sine", "freq": 392, "partials": [[1, 1, 1.0], [2, 0.3, 0.5], [3.01, 0.12, 0.25]] },
+      "env": { "attack": 0.003, "decay": 1.4, "sustain": 0 } },
+    { "name": "b4", "at": 0.12, "gain_db": -2, "source": { "wave": "sine", "freq": 493.88, "partials": [[1, 1, 1.0], [2, 0.3, 0.5], [3.01, 0.12, 0.25]] },
+      "env": { "attack": 0.003, "decay": 1.4, "sustain": 0 } },
+    { "name": "d5", "at": 0.24, "gain_db": -2, "source": { "wave": "sine", "freq": 587.33, "partials": [[1, 1, 1.0], [2, 0.3, 0.5], [3.01, 0.12, 0.25]] },
+      "env": { "attack": 0.003, "decay": 1.4, "sustain": 0 } },
+    { "name": "g5", "at": 0.36, "gain_db": -2, "source": { "wave": "sine", "freq": 783.99, "partials": [[1, 1, 1.2], [2, 0.3, 0.6], [3.01, 0.12, 0.3]] },
+      "env": { "attack": 0.003, "decay": 1.5, "sustain": 0 } },
+    { "name": "pad", "gain_db": -14,
+      "source": { "wave": "triangle", "freq": 196, "unison": { "voices": 3, "cents": 10 } },
+      "env": { "attack": 0.3, "decay": 1.3, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 1500 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.7, "damp": 0.4, "mix": 0.3 } ]
+}

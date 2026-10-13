@@ -1,0 +1,33 @@
+{
+  "sound": 1,
+  "name": "wall_broken",
+  "notes": "A wall segment gives way: crack, a low boom, a crumble of tumbling chunks and settling dust.",
+  "bus": "sfx",
+  "seed": 112,
+  "duration": 1.4,
+  "loudness": -21,
+  "vary": { "pitch": [-1, 1] },
+  "layers": [
+    { "name": "crack", "gain_db": -10,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.08, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": 1500, "q": 1 } ] },
+    { "name": "boom", "gain_db": -8,
+      "source": { "wave": "sine", "freq": { "points": [[0, 80], [0.3, 35]], "curve": "exp" } },
+      "env": { "attack": 0.002, "decay": 0.4, "sustain": 0 } },
+    { "name": "rumble", "gain_db": -8,
+      "source": { "wave": "noise", "color": "brown" },
+      "env": { "attack": 0.01, "decay": 0.6, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 300 } ] },
+    { "name": "chunks", "at": 0.05, "length": 0.008, "gain_db": 3,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": { "rand": [0.02, 0.06] }, "sustain": 0, "release": 0.005 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [400, 1600] }, "q": 3 } ],
+      "repeat": { "count": 28, "interval": 0.035, "jitter": 0.02, "gain_db_step": -0.5 } },
+    { "name": "dust", "gain_db": -18,
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.1, "decay": 0.9, "sustain": 0 },
+      "filters": [ { "type": "highpass", "cutoff": 2000 } ] }
+  ],
+  "fx": [ { "type": "distort", "drive": 1.5 }, { "type": "reverb", "room": 0.4, "damp": 0.6, "mix": 0.15 } ]
+}

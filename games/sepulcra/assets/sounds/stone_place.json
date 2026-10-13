@@ -1,0 +1,33 @@
+{
+  "sound": 1,
+  "name": "stone_place",
+  "notes": "Carving a new stone: three ringing chisel taps, then the stone settles with a thunk and a little grit.",
+  "bus": "sfx",
+  "seed": 107,
+  "duration": 0.75,
+  "loudness": -20,
+  "vary": { "pitch": [-1, 1] },
+  "layers": [
+    { "name": "taps", "length": 0.005,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.03, "sustain": 0, "release": 0.005 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [3000, 4200] }, "q": 6 } ],
+      "repeat": { "count": 3, "interval": 0.12, "jitter": 0.01, "gain_db_step": -1 } },
+    { "name": "ring", "gain_db": -10,
+      "source": { "wave": "sine", "freq": 2900, "partials": [[1, 1, 0.05], [2.4, 0.5, 0.03]] },
+      "env": { "attack": 0.0005, "decay": 0.1, "sustain": 0 },
+      "repeat": { "count": 3, "interval": 0.12, "jitter": 0.01, "pitch_jitter": 0.6 } },
+    { "name": "thunk", "at": 0.38,
+      "source": { "wave": "sine", "freq": { "points": [[0, 140], [0.1, 70]], "curve": "exp" } },
+      "env": { "attack": 0.001, "decay": 0.15, "sustain": 0 } },
+    { "name": "body", "at": 0.38, "gain_db": -4,
+      "source": { "wave": "noise", "color": "brown" },
+      "env": { "attack": 0.002, "decay": 0.12, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 600 } ] },
+    { "name": "grit", "at": 0.38, "gain_db": -14,
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.002, "decay": 0.2, "sustain": 0 },
+      "filters": [ { "type": "highpass", "cutoff": 800 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.3, "damp": 0.6, "mix": 0.1 } ]
+}

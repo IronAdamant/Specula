@@ -1,0 +1,13 @@
+[package]
+name = "specula-audio"
+description = "Audio: WASAPI/null output, a lock-free mixer with 3D voices and buses, a deterministic recipe synthesiser, WAV, and sound analysis images for agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-sys = { workspace = true }

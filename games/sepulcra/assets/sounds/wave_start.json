@@ -1,0 +1,25 @@
+{
+  "sound": 1,
+  "name": "wave_start",
+  "notes": "A wave begins: a low war horn that scoops up into G2, swells (filter opens), wavers, and fades into the night.",
+  "bus": "sfx",
+  "seed": 118,
+  "duration": 3.0,
+  "loudness": -18,
+  "layers": [
+    { "name": "horn", "length": 2.2,
+      "source": { "wave": "saw", "freq": { "points": [[0, 92], [0.25, 98]], "curve": "exp" }, "unison": { "voices": 3, "cents": 8 } },
+      "vibrato": { "rate": 4.5, "depth": 0.08, "delay": 0.6 },
+      "env": { "attack": 0.25, "decay": 0.3, "sustain": 0.8, "release": 0.5 },
+      "filters": [ { "type": "lowpass", "cutoff": { "points": [[0, 300], [0.4, 1400], [2.0, 900], [2.6, 300]], "curve": "exp" }, "q": 1.2 } ] },
+    { "name": "octave_below", "length": 2.2, "gain_db": -8,
+      "source": { "wave": "saw", "freq": { "points": [[0, 46], [0.25, 49]], "curve": "exp" } },
+      "env": { "attack": 0.3, "decay": 0.3, "sustain": 0.8, "release": 0.5 },
+      "filters": [ { "type": "lowpass", "cutoff": 500 } ] },
+    { "name": "breath", "length": 2.2, "gain_db": -22,
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.2, "decay": 0.6, "sustain": 0.2, "release": 0.4 },
+      "filters": [ { "type": "bandpass", "cutoff": 700, "q": 0.8 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.8, "damp": 0.5, "mix": 0.3 } ]
+}

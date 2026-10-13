@@ -1,0 +1,28 @@
+{
+  "sound": 1,
+  "name": "wraith_death",
+  "notes": "A wraith is banished: a detuned shriek that rises then sinks and fades into a long, airy reverb.",
+  "bus": "sfx",
+  "seed": 115,
+  "duration": 1.8,
+  "loudness": -21,
+  "vary": { "pitch": [-2, 2], "gain_db": [-1.5, 0] },
+  "layers": [
+    { "name": "shriek", "length": 0.3,
+      "source": { "wave": "saw", "freq": { "points": [[0, 900], [0.15, 1500], [1.2, 400]], "curve": "exp" }, "unison": { "voices": 4, "cents": 30 } },
+      "vibrato": { "rate": 9, "depth": 1.2 },
+      "env": { "attack": 0.03, "hold": 0.1, "decay": 0.3, "sustain": 0.6, "release": 0.9 },
+      "filters": [ { "type": "bandpass", "cutoff": { "points": [[0, 2500], [1.2, 900]], "curve": "exp" }, "q": 3 },
+                   { "type": "highpass", "cutoff": 400 } ] },
+    { "name": "breath", "gain_db": -10,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.05, "decay": 1.0, "sustain": 0 },
+      "filters": [ { "type": "highpass", "cutoff": 3000 } ],
+      "fx": [ { "type": "tremolo", "rate": 13, "depth": 0.6 } ] },
+    { "name": "ghost", "gain_db": -12,
+      "source": { "wave": "sine", "freq": { "points": [[0, 1760], [1.0, 440]], "curve": "exp" }, "fm": { "ratio": 1.5, "index": 2 } },
+      "env": { "attack": 0.02, "decay": 1.0, "sustain": 0 } }
+  ],
+  "fx": [ { "type": "delay", "time": 0.18, "feedback": 0.35, "mix": 0.2, "damp": 0.5 },
+          { "type": "reverb", "room": 0.85, "damp": 0.3, "mix": 0.45 } ]
+}

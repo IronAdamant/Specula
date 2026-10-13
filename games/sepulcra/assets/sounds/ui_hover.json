@@ -1,0 +1,14 @@
+{
+  "sound": 1,
+  "name": "ui_hover",
+  "notes": "Focus moves onto a control: a tiny, soft, high glint (quieter than a click).",
+  "bus": "ui",
+  "seed": 123,
+  "duration": 0.05,
+  "loudness": -30,
+  "layers": [
+    { "name": "glint",
+      "source": { "wave": "sine", "freq": 2400, "partials": [[1, 1], [2, 0.2]] },
+      "env": { "attack": 0.002, "decay": 0.03, "sustain": 0, "release": 0.005 } }
+  ]
+}

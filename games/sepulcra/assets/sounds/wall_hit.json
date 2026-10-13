@@ -1,0 +1,25 @@
+{
+  "sound": 1,
+  "name": "wall_hit",
+  "notes": "An undead strikes a wall: a hard low knock, a crack and a few chips falling.",
+  "bus": "sfx",
+  "seed": 111,
+  "duration": 0.45,
+  "loudness": -21,
+  "vary": { "pitch": [-2, 2], "gain_db": [-2, 0] },
+  "layers": [
+    { "name": "knock",
+      "source": { "wave": "sine", "freq": { "points": [[0, 95], [0.06, 50]], "curve": "exp" } },
+      "env": { "attack": 0.001, "decay": 0.12, "sustain": 0 },
+      "fx": [ { "type": "distort", "drive": 3 } ] },
+    { "name": "crack", "gain_db": -5,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.06, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [1200, 1800] }, "q": 1.5 } ] },
+    { "name": "chips", "at": 0.03, "length": 0.004, "gain_db": -12,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0003, "decay": 0.01, "sustain": 0, "release": 0.002 },
+      "filters": [ { "type": "highpass", "cutoff": 3000 } ],
+      "repeat": { "count": 6, "interval": 0.03, "jitter": 0.015, "gain_db_step": -1.5 } }
+  ]
+}

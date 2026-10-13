@@ -1,0 +1,22 @@
+{
+  "sound": 1,
+  "name": "ui_click",
+  "notes": "Button press: a short, dry stone tick with a soft body.",
+  "bus": "ui",
+  "seed": 122,
+  "duration": 0.06,
+  "loudness": -26,
+  "vary": { "pitch": [-0.5, 0.5] },
+  "layers": [
+    { "name": "tick",
+      "source": { "wave": "sine", "freq": { "points": [[0, 1800], [0.015, 1200]], "curve": "exp" } },
+      "env": { "attack": 0.0005, "decay": 0.02, "sustain": 0, "release": 0.005 } },
+    { "name": "snap", "gain_db": -8,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0002, "decay": 0.008, "sustain": 0, "release": 0.002 },
+      "filters": [ { "type": "bandpass", "cutoff": 4000, "q": 2 } ] },
+    { "name": "body", "gain_db": -10,
+      "source": { "wave": "sine", "freq": 600 },
+      "env": { "attack": 0.0005, "decay": 0.02, "sustain": 0, "release": 0.005 } }
+  ]
+}
