@@ -20,6 +20,9 @@ You receive: the worktree path or branch, the lane's brief, and the lane's repor
    - `RUSTFLAGS="-Dwarnings -C link-self-contained=yes" cargo clippy --workspace --all-targets -- -D warnings`
    - If GPU or window code changed: `cargo build -p specula && python scripts/window_check.py`, and open its PNGs.
    Use your own ports (7497–7499), never 7471.
+   Put probes and scratch crates in a **new directory named after the lane and commit**
+   (e.g. `<scratchpad>/review-<lane>-<commit>/`). Never write into an existing directory: several reviewers
+   run at once and share the scratchpad.
 3. Hunt for, at least:
    - **Hard-rule breaks:** a third-party crate; a DLL imported from two crates; `unsafe` without a `// SAFETY:`
      comment or with a wrong one; non-Windows builds broken; strings where structured errors are expected.
