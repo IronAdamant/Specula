@@ -214,3 +214,32 @@ fn resource_churn_and_errors() {
     let errors = validation_errors(test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
+
+/// Vertex colours multiply the draw colour: a quad red on the left, blue on the right.
+#[test]
+fn vertex_colours_tint_the_draw() {
+    let test = "vertex_colours";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let n = [0.0, 0.0, 1.0];
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    let vertices = [
+        specula_gpu::Vertex::with_color([-1.0, -1.0, 0.0], n, red),
+        specula_gpu::Vertex::with_color([1.0, -1.0, 0.0], n, blue),
+        specula_gpu::Vertex::with_color([1.0, 1.0, 0.0], n, blue),
+        specula_gpu::Vertex::with_color([-1.0, 1.0, 0.0], n, red),
+    ];
+    let mesh = gpu.upload_mesh(&vertices, &[0, 1, 2, 0, 2, 3]).unwrap();
+    let target = gpu.create_target(64, 64).unwrap();
+    let view_proj = mul(&perspective_vk(60f32.to_radians(), 1.0, 0.1, 10.0), &look_at_rh([0.0, 0.0, 1.5], [0.0; 3], [0.0, 1.0, 0.0]));
+    let draws = [DrawItem::new(mesh, IDENTITY, [1.0, 1.0, 1.0, 1.0])];
+    gpu.render(target, &FrameDesc { view_proj, draws: &draws, ..Default::default() }).unwrap();
+    let rgba = gpu.read_rgba8(target).unwrap();
+    let [r, g, b, _] = pixel(&rgba, 64, 3, 32);
+    assert!(r > 100 && g == 0 && b < r / 2, "left is red: {r},{g},{b}");
+    let [r, g, b, _] = pixel(&rgba, 64, 60, 32);
+    assert!(b > 100 && g == 0 && r < b / 2, "right is blue: {r},{g},{b}");
+    let [r, _, b, _] = pixel(&rgba, 64, 32, 32);
+    assert!(r > 20 && b > 20, "the middle blends both: {r},{b}");
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+}

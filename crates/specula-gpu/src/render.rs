@@ -2,12 +2,16 @@
 //! and scene recording (instanced batches).
 
 use crate::batch::{Bounds, Plan};
+use crate::descriptors::Descriptors;
 use crate::device::{image_barrier, Buffer, Device};
+use crate::overlay::{build_overlay, check_overlay, overlay_units, record_overlay, OverlayDraw, OverlayRecord, Textures};
+use crate::post::{color_barrier, hdr_clear, record_post, FinalImage, PostMode, PostTargets};
+use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
     CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Limit, Material, MemoryKind, PipelineCacheLoad, PipelineStats,
-    Vertex, MAX_POINT_LIGHTS, PASS_SCENE,
+    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_SCENE,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -15,10 +19,60 @@ use std::mem::{offset_of, size_of};
 use std::ptr;
 use std::time::Instant;
 
-static VERT_SPV: &[u8] = include_bytes!("../shaders/mesh.vert.spv");
-static FRAG_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
+/// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
+static SHADERS: [(&str, &[u8]); 12] = [
+    ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
+    ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
+    ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
+    ("fullscreen.vert", include_bytes!("../shaders/fullscreen.vert.spv")),
+    ("bloom_down.frag", include_bytes!("../shaders/bloom_down.frag.spv")),
+    ("bloom_up.frag", include_bytes!("../shaders/bloom_up.frag.spv")),
+    ("composite.frag", include_bytes!("../shaders/composite.frag.spv")),
+    ("fxaa.frag", include_bytes!("../shaders/fxaa.frag.spv")),
+    ("sky.vert", include_bytes!("../shaders/sky.vert.spv")),
+    ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
+    ("overlay.vert", include_bytes!("../shaders/overlay.vert.spv")),
+    ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shader {
+    MeshVert = 0,
+    MeshFrag = 1,
+    ShadowVert = 2,
+    FullscreenVert = 3,
+    BloomDownFrag = 4,
+    BloomUpFrag = 5,
+    CompositeFrag = 6,
+    FxaaFrag = 7,
+    SkyVert = 8,
+    SkyFrag = 9,
+    OverlayVert = 10,
+    OverlayFrag = 11,
+}
+
+/// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
+pub const LDR_FORMAT: VkFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 pub const DEPTH_FORMAT: VkFormat = VK_FORMAT_D32_SFLOAT;
+
+/// Bits of the scene shaders' specialization constant 0 (`FEATURES` in `shaders/mesh.frag`).
+/// Specialized away when off, so a frame without the feature runs exactly the code it ran before
+/// the feature existed (bit-identical output, no cost).
+pub const FEAT_SHADOWS: u32 = 1;
+pub const FEAT_FOG: u32 = 2;
+/// Output linear, exposed HDR for the post chain instead of tone mapped display values. Implied by
+/// rendering into [`HDR_FORMAT`].
+pub const FEAT_HDR: u32 = 4;
+/// The opaque pipeline: Lit only (the other materials' code is specialized away).
+pub const FEAT_OPAQUE: u32 = 8;
+/// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh.frag`).
+pub const FEAT_BLENDED: u32 = 16;
+/// Feature combinations built for every colour format.
+const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
+
+/// Push constant bytes every pipeline layout reserves (the minimum every device supports).
+const PUSH_BYTES: u32 = 128;
 
 /// Push constants shared by both stages, set once per batch; must match the `Push` block in
 /// `shaders/mesh.*`. Far below the 128 bytes every device guarantees.
@@ -78,6 +132,30 @@ pub struct FrameData {
     /// Width, height (pixels), point light count, unused.
     pub viewport: [f32; 4],
     pub lights: [GpuPointLight; MAX_POINT_LIGHTS],
+    /// Inverse of `view_proj` (identity if singular).
+    pub inv_view_proj: [f32; 16],
+    /// World → shadow clip per cascade.
+    pub shadow_mats: [[f32; 16]; MAX_SHADOW_CASCADES as usize],
+    /// Cascades in use, filter radius (texels of cascade 0), normal offset (texels), unused.
+    pub shadow_params: [f32; 4],
+    /// World size of a texel per cascade.
+    pub shadow_texel: [f32; 4],
+    /// View depth = xyz·p + w.
+    pub shadow_axis: [f32; 4],
+    /// View depths where shadows start and finish fading out; unused.
+    pub shadow_fade: [f32; 4],
+    /// Linear RGB; w density per metre at the reference height.
+    pub fog_color: [f32; 4],
+    /// Falloff per metre, reference height, start distance, sun scatter.
+    pub fog_params: [f32; 4],
+    /// Linear RGB × intensity; w disc radius (radians, 0 = none).
+    pub sky_zenith: [f32; 4],
+    /// Linear RGB × intensity; w disc intensity.
+    pub sky_horizon: [f32; 4],
+    /// Linear RGB × intensity; w glow strength.
+    pub sky_ground: [f32; 4],
+    /// Horizon sharpness, unused ×3.
+    pub sky_params: [f32; 4],
 }
 
 pub const FRAME_DATA_SIZE: u64 = size_of::<FrameData>() as u64;
@@ -106,8 +184,8 @@ fn material_id(m: Material) -> u32 {
     }
 }
 
-/// Pack `frame` for the shaders.
-pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D) -> FrameData {
+/// Pack `frame` (and its shadow cascades) for the shaders.
+pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) -> FrameData {
     let env = &frame.environment;
     let lin = |c: [f32; 3], k: f32| {
         let l = srgb_to_linear_rgba([c[0], c[1], c[2], 1.0]);
@@ -126,6 +204,9 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D) -> FrameData {
         *slot = GpuPointLight { pos_range: [p[0], p[1], p[2], l.range.max(1e-3)], color: lin(l.color, l.intensity.max(0.0)) };
     }
     let c = camera_position(&frame.view_proj);
+    let (fog, sky_s) = (&env.fog, &env.sky);
+    let sky_k = sky_s.intensity.max(0.0);
+    const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
     FrameData {
         view_proj: frame.view_proj,
         camera_time: [c[0], c[1], c[2], frame.time_s],
@@ -135,6 +216,34 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D) -> FrameData {
         sky,
         viewport: [extent.width as f32, extent.height as f32, frame.lights.len().min(MAX_POINT_LIGHTS) as f32, 0.0],
         lights,
+        inv_view_proj: crate::shadow::invert(&frame.view_proj).unwrap_or(IDENTITY),
+        shadow_mats: shadow.matrices,
+        shadow_params: [shadow.count as f32, shadow.softness, shadow.normal_offset, 0.0],
+        shadow_texel: shadow.texel,
+        shadow_axis: shadow.axis,
+        shadow_fade: [shadow.fade[0], shadow.fade[1], 0.0, 0.0],
+        fog_color: {
+            let mut c = lin(fog.color, 1.0);
+            c[3] = fog.density.max(0.0);
+            c
+        },
+        fog_params: [fog.falloff.max(0.0), fog.height, fog.start_distance.max(0.0), fog.sun_scatter.max(0.0)],
+        sky_zenith: {
+            let mut c = lin(sky_s.zenith, sky_k);
+            c[3] = sky_s.disc_size_deg.clamp(0.0, 45.0).to_radians();
+            c
+        },
+        sky_horizon: {
+            let mut c = lin(sky_s.horizon, sky_k);
+            c[3] = sky_s.disc_intensity.max(0.0);
+            c
+        },
+        sky_ground: {
+            let mut c = lin(sky_s.ground, sky_k);
+            c[3] = sky_s.glow.max(0.0);
+            c
+        },
+        sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), 0.0, 0.0, 0.0],
     }
 }
 
@@ -256,12 +365,32 @@ pub fn build_records(frame: &FrameDesc, plan: &Plan, cache: &mut LinearCache, ou
     }
 }
 
+/// Append one record per shadow caster entry (only the model matters to the shadow pass).
+pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, out: &mut Vec<DrawRecord>) {
+    out.reserve(shadow.entries.len());
+    out.extend(shadow.entries.iter().map(|&i| DrawRecord {
+        model: frame.draws[i].model,
+        color: [0.0; 4],
+        color2: [0.0; 4],
+        params: [0.0; 4],
+    }));
+}
+
 /// Reusable CPU-side scratch for preparing frames: once warm, preparing a frame allocates nothing.
 #[derive(Default)]
 pub struct FrameScratch {
     pub plan: Plan,
+    pub shadow: ShadowPlan,
     pub records: Vec<DrawRecord>,
+    pub overlay: Vec<OverlayRecord>,
     pub linear: LinearCache,
+}
+
+impl FrameScratch {
+    /// Index of the first shadow caster record (they follow the camera's records).
+    pub fn shadow_first_record(&self) -> u32 {
+        self.plan.entries.len() as u32
+    }
 }
 
 /// Most draw records one frame may hold: instance indices are `u32`.
@@ -380,9 +509,11 @@ impl FrameUpload {
         }
     }
 
-    /// Write the frame's data and records (`records.len()` ≤ the reserved capacity).
-    pub fn write(&self, data: &FrameData, records: &[DrawRecord]) {
-        assert!(records.len() <= self.sizing.capacity as usize, "reserve() before write()");
+    /// Write the frame's data, records and overlay quads (after the records), all within the
+    /// reserved capacity.
+    pub fn write(&self, data: &FrameData, records: &[DrawRecord], overlay: &[OverlayRecord]) {
+        let units = records.len() + overlay_units(overlay.len(), RECORD_SIZE as usize);
+        assert!(units <= self.sizing.capacity as usize, "reserve() before write()");
         // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE bytes
         // that the GPU no longer reads (see `reserve`); both copies stay in bounds and the types
         // are plain `repr(C)` data.
@@ -393,6 +524,11 @@ impl FrameUpload {
                 records.as_ptr() as *const u8,
                 base.add(RECORDS_OFFSET as usize),
                 std::mem::size_of_val(records),
+            );
+            ptr::copy_nonoverlapping(
+                overlay.as_ptr() as *const u8,
+                base.add(RECORDS_OFFSET as usize + std::mem::size_of_val(records)),
+                std::mem::size_of_val(overlay),
             );
         }
     }
@@ -414,7 +550,7 @@ impl FrameUpload {
     }
 }
 
-const PUSH_STAGES: VkFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+pub const PUSH_STAGES: VkFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 /// An uploaded mesh: vertices at offset 0, `u32` indices at `index_offset`, one device-local buffer.
 pub struct Mesh {
@@ -456,16 +592,156 @@ pub fn check_cache_header(blob: &[u8], id: &CacheIdentity) -> Result<(), CacheRe
     Ok(())
 }
 
-/// Every pipeline variant per colour format: (reverse_z, blended).
-const VARIANTS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+/// One graphics pipeline. All of them are built up front ([`Pipelines::prebuild`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineKey {
+    /// Scene draws into `format` (+ D32 depth, compare op dynamic): opaque or blended, with the
+    /// specialization constant `features` (`FEAT_*`).
+    Mesh { format: VkFormat, blended: bool, features: u32 },
+    /// Depth-only shadow casters into a D16 layer.
+    Shadow,
+    /// Bloom downsample (and bright pass) into an HDR level.
+    BloomDown,
+    /// Bloom upsample: the blur below, tent-filtered, plus this level.
+    BloomUp,
+    /// HDR (+ bloom) → display values in `format`.
+    Composite { format: VkFormat },
+    /// FXAA into `format`.
+    Fxaa { format: VkFormat },
+    /// The sky behind the scene in `format` (+ D32 depth, EQUAL far plane), with or without fog.
+    Sky { format: VkFormat, fog: bool },
+    /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
+    /// or the last post pass (no depth).
+    Overlay { format: VkFormat, depth: bool },
+}
 
-/// Shader modules, layout, the pipeline cache and every pipeline variant per colour format.
+/// What vertex data a pipeline reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VertexInput {
+    /// None (full-screen triangles, overlay quads).
+    None,
+    /// [`Vertex`]: position, normal, colour.
+    Mesh,
+    /// [`Vertex`]'s position only.
+    Position,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blend {
+    Off,
+    /// dst = src + dst × (1 − src.a).
+    Premultiplied,
+}
+
+/// How a pipeline is built.
+#[derive(Clone, Copy, Debug)]
+struct PipelineDesc {
+    vert: Shader,
+    frag: Option<Shader>,
+    /// Specialization constant 0.
+    spec: u32,
+    vertex: VertexInput,
+    color: Option<VkFormat>,
+    depth: Option<VkFormat>,
+    depth_test: bool,
+    depth_write: bool,
+    /// `None` = dynamic (`vkCmdSetDepthCompareOp`).
+    compare: Option<i32>,
+    blend: Blend,
+    depth_bias: bool,
+}
+
+impl PipelineKey {
+    fn desc(self) -> PipelineDesc {
+        match self {
+            PipelineKey::Mesh { format, blended, features } => PipelineDesc {
+                vert: Shader::MeshVert,
+                frag: Some(Shader::MeshFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if blended { FEAT_BLENDED } else { FEAT_OPAQUE },
+                vertex: VertexInput::Mesh,
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                // Blended surfaces never hide what is behind them.
+                depth_write: !blended,
+                compare: None,
+                blend: if blended { Blend::Premultiplied } else { Blend::Off },
+                depth_bias: false,
+            },
+            PipelineKey::Shadow => PipelineDesc {
+                vert: Shader::ShadowVert,
+                frag: None,
+                spec: 0,
+                vertex: VertexInput::Position,
+                color: None,
+                depth: Some(SHADOW_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: Blend::Off,
+                depth_bias: true,
+            },
+            PipelineKey::BloomDown => fullscreen(Shader::BloomDownFrag, HDR_FORMAT, Blend::Off),
+            PipelineKey::BloomUp => fullscreen(Shader::BloomUpFrag, HDR_FORMAT, Blend::Off),
+            PipelineKey::Composite { format } => fullscreen(Shader::CompositeFrag, format, Blend::Off),
+            PipelineKey::Fxaa { format } => fullscreen(Shader::FxaaFrag, format, Blend::Off),
+            PipelineKey::Sky { format, fog } => PipelineDesc {
+                vert: Shader::SkyVert,
+                frag: Some(Shader::SkyFrag),
+                spec: if fog { FEAT_FOG } else { 0 } | if format == HDR_FORMAT { FEAT_HDR } else { 0 },
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_EQUAL),
+                blend: Blend::Off,
+                depth_bias: false,
+            },
+            PipelineKey::Overlay { format, depth } => PipelineDesc {
+                vert: Shader::OverlayVert,
+                frag: Some(Shader::OverlayFrag),
+                spec: 0,
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: depth.then_some(DEPTH_FORMAT),
+                depth_test: false,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: Blend::Premultiplied,
+                depth_bias: false,
+            },
+        }
+    }
+}
+
+/// A full-screen triangle pass into one colour attachment, no depth.
+fn fullscreen(frag: Shader, format: VkFormat, blend: Blend) -> PipelineDesc {
+    PipelineDesc {
+        vert: Shader::FullscreenVert,
+        frag: Some(frag),
+        spec: 0,
+        vertex: VertexInput::None,
+        color: Some(format),
+        depth: None,
+        depth_test: false,
+        depth_write: false,
+        compare: Some(VK_COMPARE_OP_LESS),
+        blend,
+        depth_bias: false,
+    }
+}
+
+/// The colour format of HDR scene targets (bloom input).
+pub const HDR_FORMAT: VkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+/// Shader modules, the pipeline layout (global descriptor set + push constants), the pipeline
+/// cache and every pipeline.
 pub struct Pipelines {
-    vert: VkShaderModule,
-    frag: VkShaderModule,
+    modules: Vec<VkShaderModule>,
     pub layout: VkPipelineLayout,
     cache: VkPipelineCache,
-    by_format: Vec<((VkFormat, bool, bool), VkPipeline)>,
+    by_key: Vec<(PipelineKey, VkPipeline)>,
     created: u32,
     /// `created` when `mark_warm` was called.
     warm_at: Option<u32>,
@@ -473,12 +749,19 @@ pub struct Pipelines {
     cache_load: PipelineCacheLoad,
 }
 
-/// The opaque and blended pipelines for one target.
+/// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
 #[derive(Clone, Copy)]
-pub struct PipelinePair {
+pub struct FramePipelines {
+    pub layout: VkPipelineLayout,
     pub opaque: VkPipeline,
     pub blended: VkPipeline,
-    pub layout: VkPipelineLayout,
+    pub shadow: VkPipeline,
+    pub sky: VkPipeline,
+    pub bloom_down: VkPipeline,
+    pub bloom_up: VkPipeline,
+    pub composite: VkPipeline,
+    pub fxaa: VkPipeline,
+    pub overlay: VkPipeline,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -522,31 +805,36 @@ fn create_cache(dev: &Device, data: &[u8]) -> Result<VkPipelineCache, VkResult> 
 }
 
 impl Pipelines {
-    /// Shaders, layout and the pipeline cache, seeded from `cache_blob` when it was made by this
-    /// device and driver (the outcome is in [`Pipelines::stats`]). No pipelines yet: see
-    /// [`Pipelines::prebuild`].
-    pub fn new(dev: &Device, cache_blob: Option<&[u8]>, id: &CacheIdentity) -> Result<Pipelines, GpuError> {
+    /// Shaders, layout (over `set_layout`) and the pipeline cache, seeded from `cache_blob` when it
+    /// was made by this device and driver (the outcome is in [`Pipelines::stats`]). No pipelines
+    /// yet: see [`Pipelines::prebuild`].
+    pub fn new(
+        dev: &Device,
+        set_layout: VkDescriptorSetLayout,
+        cache_blob: Option<&[u8]>,
+        id: &CacheIdentity,
+    ) -> Result<Pipelines, GpuError> {
         let mut p = Pipelines {
-            vert: VK_NULL_HANDLE,
-            frag: VK_NULL_HANDLE,
+            modules: Vec::new(),
             layout: VK_NULL_HANDLE,
             cache: VK_NULL_HANDLE,
-            by_format: Vec::new(),
+            by_key: Vec::new(),
             created: 0,
             warm_at: None,
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
         };
         let result = (|| {
-            p.vert = create_shader(dev, VERT_SPV, "mesh.vert")?;
-            p.frag = create_shader(dev, FRAG_SPV, "mesh.frag")?;
-            let range = VkPushConstantRange { stage_flags: PUSH_STAGES, offset: 0, size: size_of::<PushConstants>() as u32 };
+            for (name, spv) in SHADERS {
+                p.modules.push(create_shader(dev, spv, name)?);
+            }
+            let range = VkPushConstantRange { stage_flags: PUSH_STAGES, offset: 0, size: PUSH_BYTES };
             let info = VkPipelineLayoutCreateInfo {
                 s_type: ST_PIPELINE_LAYOUT_CREATE_INFO,
                 p_next: ptr::null(),
                 flags: 0,
-                set_layout_count: 0,
-                p_set_layouts: ptr::null(),
+                set_layout_count: 1,
+                p_set_layouts: &set_layout,
                 push_constant_range_count: 1,
                 p_push_constant_ranges: &range,
             };
@@ -589,34 +877,83 @@ impl Pipelines {
         }
     }
 
-    /// Create every variant (depth mode × blending) for `color_format` that doesn't exist yet.
+    /// Every pipeline that renders into `color_format` (a target or window format).
     pub fn prebuild(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
-        for (reverse_z, blended) in VARIANTS {
-            self.get_one(dev, color_format, reverse_z, blended)?;
+        self.prebuild_scene(dev, color_format)?;
+        self.get(dev, PipelineKey::Composite { format: color_format })?;
+        self.get(dev, PipelineKey::Fxaa { format: color_format })?;
+        for depth in [false, true] {
+            self.get(dev, PipelineKey::Overlay { format: color_format, depth })?;
         }
         Ok(())
     }
 
-    /// The pipelines rendering into `color_format` (+ D32 depth, reversed or standard). They are
-    /// normally prebuilt; one created here (an unexpected format) is counted against the warm mark.
-    pub fn get(&mut self, dev: &Device, color_format: VkFormat, reverse_z: bool) -> Result<PipelinePair, GpuError> {
-        Ok(PipelinePair {
-            opaque: self.get_one(dev, color_format, reverse_z, false)?,
-            blended: self.get_one(dev, color_format, reverse_z, true)?,
-            layout: self.layout,
+    fn prebuild_scene(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
+        for blended in [false, true] {
+            for features in FEATURE_SETS {
+                self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
+            }
+        }
+        for fog in [false, true] {
+            self.get(dev, PipelineKey::Sky { format: color_format, fog })?;
+        }
+        Ok(())
+    }
+
+    /// Pipelines that don't depend on the output format: shadows, the HDR scene, bloom.
+    pub fn prebuild_common(&mut self, dev: &Device) -> Result<(), GpuError> {
+        self.get(dev, PipelineKey::Shadow)?;
+        self.prebuild_scene(dev, HDR_FORMAT)?;
+        self.get(dev, PipelineKey::BloomDown)?;
+        self.get(dev, PipelineKey::BloomUp)?;
+        Ok(())
+    }
+
+    /// The pipelines of a frame ending in `final_format`, with scene `features` and post `mode`.
+    /// `sky`: the frame draws the sky; `overlay`: it has overlay quads.
+    pub fn frame(
+        &mut self,
+        dev: &Device,
+        final_format: VkFormat,
+        features: u32,
+        mode: PostMode,
+        sky: bool,
+        overlay: bool,
+    ) -> Result<FramePipelines, GpuError> {
+        let scene_format = if mode.bloom() {
+            HDR_FORMAT
+        } else if mode.fxaa {
+            LDR_FORMAT
+        } else {
+            final_format
+        };
+        let layout = self.layout;
+        let mut get = |want: bool, key: PipelineKey| if want { self.get(dev, key) } else { Ok(VK_NULL_HANDLE) };
+        let composite_format = if mode.fxaa { LDR_FORMAT } else { final_format };
+        Ok(FramePipelines {
+            layout,
+            opaque: get(true, PipelineKey::Mesh { format: scene_format, blended: false, features })?,
+            blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features })?,
+            shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::Shadow)?,
+            sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
+            bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
+            bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
+            composite: get(mode.bloom(), PipelineKey::Composite { format: composite_format })?,
+            fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
+            overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
         })
     }
 
-    fn get_one(&mut self, dev: &Device, color_format: VkFormat, reverse_z: bool, blended: bool) -> Result<VkPipeline, GpuError> {
-        let key = (color_format, reverse_z, blended);
-        if let Some(&(_, p)) = self.by_format.iter().find(|(k, _)| *k == key) {
+    /// The pipeline for `key`. Normally prebuilt; one created here is counted against the warm mark.
+    pub fn get(&mut self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
+        if let Some(&(_, p)) = self.by_key.iter().find(|(k, _)| *k == key) {
             return Ok(p);
         }
         let start = Instant::now();
-        let p = self.create(dev, color_format, reverse_z, blended)?;
+        let p = self.create(dev, key)?;
         self.create_ms += start.elapsed().as_secs_f64() * 1e3;
         self.created += 1;
-        self.by_format.push((key, p));
+        self.by_key.push((key, p));
         Ok(p)
     }
 
@@ -660,28 +997,29 @@ impl Pipelines {
         }
     }
 
-    fn create(&self, dev: &Device, color_format: VkFormat, reverse_z: bool, blended: bool) -> Result<VkPipeline, GpuError> {
+    fn create(&self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
+        let d = key.desc();
         let entry = c"main";
-        let stages = [
-            VkPipelineShaderStageCreateInfo {
-                s_type: ST_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: 0,
-                stage: VK_SHADER_STAGE_VERTEX_BIT,
-                module: self.vert,
-                p_name: entry.as_ptr(),
-                p_specialization_info: ptr::null(),
-            },
-            VkPipelineShaderStageCreateInfo {
-                s_type: ST_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                p_next: ptr::null(),
-                flags: 0,
-                stage: VK_SHADER_STAGE_FRAGMENT_BIT,
-                module: self.frag,
-                p_name: entry.as_ptr(),
-                p_specialization_info: ptr::null(),
-            },
-        ];
+        let spec_entry = VkSpecializationMapEntry { constant_id: 0, offset: 0, size: size_of::<u32>() };
+        let spec = VkSpecializationInfo {
+            map_entry_count: 1,
+            p_map_entries: &spec_entry,
+            data_size: size_of::<u32>(),
+            p_data: &d.spec as *const u32 as *const c_void,
+        };
+        let stage = |stage: VkFlags, shader: Shader| VkPipelineShaderStageCreateInfo {
+            s_type: ST_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            stage,
+            module: self.modules[shader as usize],
+            p_name: entry.as_ptr(),
+            p_specialization_info: &spec as *const VkSpecializationInfo as *const c_void,
+        };
+        let mut stages = vec![stage(VK_SHADER_STAGE_VERTEX_BIT, d.vert)];
+        if let Some(frag) = d.frag {
+            stages.push(stage(VK_SHADER_STAGE_FRAGMENT_BIT, frag));
+        }
         let binding = VkVertexInputBindingDescription {
             binding: 0,
             stride: size_of::<Vertex>() as u32,
@@ -700,14 +1038,25 @@ impl Pipelines {
                 format: VK_FORMAT_R32G32B32_SFLOAT,
                 offset: offset_of!(Vertex, normal) as u32,
             },
+            VkVertexInputAttributeDescription {
+                location: 2,
+                binding: 0,
+                format: VK_FORMAT_R8G8B8A8_UNORM,
+                offset: offset_of!(Vertex, color) as u32,
+            },
         ];
+        let (binding_count, attribute_count) = match d.vertex {
+            VertexInput::None => (0, 0),
+            VertexInput::Mesh => (1, attributes.len() as u32),
+            VertexInput::Position => (1, 1),
+        };
         let vertex_input = VkPipelineVertexInputStateCreateInfo {
             s_type: ST_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
-            vertex_binding_description_count: 1,
+            vertex_binding_description_count: binding_count,
             p_vertex_binding_descriptions: &binding,
-            vertex_attribute_description_count: attributes.len() as u32,
+            vertex_attribute_description_count: attribute_count,
             p_vertex_attribute_descriptions: attributes.as_ptr(),
         };
         let input_assembly = VkPipelineInputAssemblyStateCreateInfo {
@@ -735,7 +1084,7 @@ impl Pipelines {
             polygon_mode: VK_POLYGON_MODE_FILL,
             cull_mode: VK_CULL_MODE_NONE,
             front_face: VK_FRONT_FACE_COUNTER_CLOCKWISE,
-            depth_bias_enable: VK_FALSE,
+            depth_bias_enable: d.depth_bias as VkBool32,
             depth_bias_constant_factor: 0.0,
             depth_bias_clamp: 0.0,
             depth_bias_slope_factor: 0.0,
@@ -756,10 +1105,9 @@ impl Pipelines {
             s_type: ST_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
-            depth_test_enable: VK_TRUE,
-            // Blended surfaces never hide what is behind them.
-            depth_write_enable: if blended { VK_FALSE } else { VK_TRUE },
-            depth_compare_op: if reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS },
+            depth_test_enable: d.depth_test as VkBool32,
+            depth_write_enable: d.depth_write as VkBool32,
+            depth_compare_op: d.compare.unwrap_or(VK_COMPARE_OP_LESS),
             depth_bounds_test_enable: VK_FALSE,
             stencil_test_enable: VK_FALSE,
             front: VkStencilOpState::default(),
@@ -767,9 +1115,13 @@ impl Pipelines {
             min_depth_bounds: 0.0,
             max_depth_bounds: 1.0,
         };
-        // Blended materials output premultiplied colour: dst = src + dst × (1 − src.a).
-        let blend_attachment = if blended {
-            VkPipelineColorBlendAttachmentState {
+        let blend_attachment = match d.blend {
+            Blend::Off => VkPipelineColorBlendAttachmentState {
+                blend_enable: VK_FALSE,
+                color_write_mask: VK_COLOR_COMPONENT_RGBA,
+                ..Default::default()
+            },
+            Blend::Premultiplied => VkPipelineColorBlendAttachmentState {
                 blend_enable: VK_TRUE,
                 src_color_blend_factor: VK_BLEND_FACTOR_ONE,
                 dst_color_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
@@ -778,13 +1130,7 @@ impl Pipelines {
                 dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: VK_COLOR_COMPONENT_RGBA,
-            }
-        } else {
-            VkPipelineColorBlendAttachmentState {
-                blend_enable: VK_FALSE,
-                color_write_mask: VK_COLOR_COMPONENT_RGBA,
-                ..Default::default()
-            }
+            },
         };
         let blend = VkPipelineColorBlendStateCreateInfo {
             s_type: ST_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -792,11 +1138,17 @@ impl Pipelines {
             flags: 0,
             logic_op_enable: VK_FALSE,
             logic_op: 0,
-            attachment_count: 1,
+            attachment_count: d.color.is_some() as u32,
             p_attachments: &blend_attachment,
             blend_constants: [0.0; 4],
         };
-        let dynamic_states = [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR];
+        let mut dynamic_states = vec![VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR];
+        if d.compare.is_none() && d.depth_test {
+            dynamic_states.push(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
+        }
+        if d.depth_bias {
+            dynamic_states.push(VK_DYNAMIC_STATE_DEPTH_BIAS);
+        }
         let dynamic = VkPipelineDynamicStateCreateInfo {
             s_type: ST_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
             p_next: ptr::null(),
@@ -804,13 +1156,14 @@ impl Pipelines {
             dynamic_state_count: dynamic_states.len() as u32,
             p_dynamic_states: dynamic_states.as_ptr(),
         };
+        let color_format = d.color.unwrap_or(0);
         let rendering = VkPipelineRenderingCreateInfo {
             s_type: ST_PIPELINE_RENDERING_CREATE_INFO,
             p_next: ptr::null(),
             view_mask: 0,
-            color_attachment_count: 1,
+            color_attachment_count: d.color.is_some() as u32,
             p_color_attachment_formats: &color_format,
-            depth_attachment_format: DEPTH_FORMAT,
+            depth_attachment_format: d.depth.unwrap_or(0),
             stencil_attachment_format: 0, // VK_FORMAT_UNDEFINED
         };
         let info = VkGraphicsPipelineCreateInfo {
@@ -825,8 +1178,8 @@ impl Pipelines {
             p_viewport_state: &viewport,
             p_rasterization_state: &raster,
             p_multisample_state: &multisample,
-            p_depth_stencil_state: &depth_stencil,
-            p_color_blend_state: &blend,
+            p_depth_stencil_state: if d.depth.is_some() { &depth_stencil } else { ptr::null() },
+            p_color_blend_state: if d.color.is_some() { &blend } else { ptr::null() },
             p_dynamic_state: &dynamic,
             layout: self.layout,
             render_pass: VK_NULL_HANDLE,
@@ -839,7 +1192,7 @@ impl Pipelines {
         // is this device's pipeline cache, used from this thread only.
         let r = unsafe { (dev.fns.create_graphics_pipelines)(dev.handle, self.cache, 1, &info, ptr::null(), &mut pipeline) };
         if r != VK_SUCCESS {
-            return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines (colour format {color_format}, blended {blended})"), r));
+            return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({key:?})"), r));
         }
         Ok(pipeline)
     }
@@ -847,52 +1200,169 @@ impl Pipelines {
     pub fn destroy(&mut self, dev: &Device) {
         // SAFETY: the device is idle; every object is destroyed once (null handles are ignored).
         unsafe {
-            for (_, p) in self.by_format.drain(..) {
+            for (_, p) in self.by_key.drain(..) {
                 (dev.fns.destroy_pipeline)(dev.handle, p, ptr::null());
             }
             (dev.fns.destroy_pipeline_cache)(dev.handle, self.cache, ptr::null());
             (dev.fns.destroy_pipeline_layout)(dev.handle, self.layout, ptr::null());
-            (dev.fns.destroy_shader_module)(dev.handle, self.vert, ptr::null());
-            (dev.fns.destroy_shader_module)(dev.handle, self.frag, ptr::null());
+            for m in self.modules.drain(..) {
+                (dev.fns.destroy_shader_module)(dev.handle, m, ptr::null());
+            }
         }
         self.cache = VK_NULL_HANDLE;
         self.layout = VK_NULL_HANDLE;
-        self.vert = VK_NULL_HANDLE;
-        self.frag = VK_NULL_HANDLE;
     }
 }
 
 /// Fail early (before recording) if a draw names a mesh that does not exist or there are too
 /// many lights.
-pub fn check_frame(meshes: &HashMap<u32, Mesh>, frame: &FrameDesc) -> Result<(), GpuError> {
+pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
+    check_overlay(frame.overlay, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
     match frame.draws.iter().find(|d| !meshes.contains_key(&d.mesh.0)) {
-        Some(d) => Err(GpuError::new(format!("unknown mesh id {} in draw list", d.mesh.0))),
+        Some(d) => Err(GpuError::unknown(crate::IdKind::Mesh, d.mesh.0, " in draw list")),
         None => Ok(()),
     }
 }
 
-/// Cull and batch `frame` against `meshes`, then write its frame data and draw records into
-/// `upload` (resizing it). The GPU must not be reading `upload`. The plan is left in
-/// `scratch.plan` for [`record_scene`].
+/// Cull and batch `frame` against `meshes`, plan its shadow casters, then write its frame data
+/// and draw records into `upload` (resizing it). The GPU must not be reading `upload`. The plans
+/// are left in `scratch` for recording.
 pub fn prepare_frame(
     dev: &Device,
     meshes: &HashMap<u32, Mesh>,
+    textures: &Textures,
     frame: &FrameDesc,
     extent: VkExtent2D,
     upload: &mut FrameUpload,
     scratch: &mut FrameScratch,
 ) -> Result<(), GpuError> {
-    crate::batch::plan_into(frame, |m| meshes.get(&m.0).map(|mesh| mesh.bounds), &mut scratch.plan);
+    let bounds = |m: crate::MeshId| meshes.get(&m.0).map(|mesh| mesh.bounds);
+    crate::batch::plan_into(frame, bounds, &mut scratch.plan);
+    plan_shadows(frame, &scratch.plan, bounds, &mut scratch.shadow);
     build_records(frame, &scratch.plan, &mut scratch.linear, &mut scratch.records);
-    upload.reserve(dev, scratch.records.len())?;
-    upload.write(&frame_data(frame, extent), &scratch.records);
+    append_shadow_records(frame, &scratch.shadow, &mut scratch.records);
+    build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
+    upload.reserve(dev, scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize))?;
+    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay);
     Ok(())
 }
 
+/// Everything recording a frame needs besides the command buffer, target and timer.
+pub struct FrameContext<'a> {
+    pub dev: &'a Device,
+    pub pipelines: FramePipelines,
+    pub descriptors: &'a Descriptors,
+    pub meshes: &'a HashMap<u32, Mesh>,
+    /// Present when the frame has a shadow pass (`pipelines.shadow` set).
+    pub shadow_map: Option<&'a crate::shadow::ShadowMap>,
+    pub frame: &'a FrameDesc<'a>,
+    pub scratch: &'a FrameScratch,
+    pub upload: &'a FrameUpload,
+    /// The target's post images (ensured for `mode`).
+    pub post: &'a PostTargets,
+    pub mode: PostMode,
+}
+
+/// The scene features a frame prepared in `scratch` uses, given whether a shadow map exists.
+pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map: bool) -> u32 {
+    let mut f = 0;
+    if have_shadow_map && scratch.shadow.data.count > 0 {
+        f |= FEAT_SHADOWS;
+    }
+    if frame.environment.fog.enabled {
+        f |= FEAT_FOG;
+    }
+    f
+}
+
+/// Record a whole frame into `target`: the shadow pass (if any), the scene, then the post chain.
+/// The final colour image must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its
+/// transitions).
+pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTarget, timer: Option<&mut PassTimer>) -> DrawStats {
+    let mut timer = timer;
+    let mut shadow_stats = DrawStats::default();
+    ctx.descriptors.bind(ctx.dev, cmd, ctx.pipelines.layout);
+    if let (Some(map), true) = (ctx.shadow_map, ctx.pipelines.shadow != VK_NULL_HANDLE) {
+        crate::shadow::record_shadow_pass(
+            ctx.dev,
+            cmd,
+            ctx.pipelines.shadow,
+            ctx.pipelines.layout,
+            ctx.meshes,
+            map,
+            &ctx.scratch.shadow,
+            ctx.scratch.shadow_first_record(),
+            ctx.upload,
+            ctx.frame.environment.shadow.bias,
+            timer.as_deref_mut(),
+            &mut shadow_stats,
+        );
+    }
+    let env = &ctx.frame.environment;
+    let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
+    let mut scene = RenderTarget { color_view: target.color_view, ..*target };
+    let mut scene_clear = clear;
+    let intermediate = match (ctx.mode.bloom(), ctx.mode.fxaa) {
+        (true, _) => ctx.post.hdr.as_ref(),
+        (false, true) => ctx.post.ldr.as_ref(),
+        _ => None,
+    };
+    if let Some(img) = intermediate {
+        color_barrier(ctx.dev, cmd, img.image.handle, false);
+        scene.color_view = img.image.view;
+        if ctx.mode.bloom() {
+            scene_clear = hdr_clear(clear, env.tonemap);
+        }
+    }
+    let overlay = OverlayDraw {
+        pipeline: ctx.pipelines.overlay,
+        layout: ctx.pipelines.layout,
+        frame: ctx.upload.frame_address(),
+        quads: ctx.upload.overlay_address(ctx.scratch.records.len()),
+        count: ctx.scratch.overlay.len() as u32,
+    };
+    let mut stats = record_scene(
+        ctx.dev,
+        cmd,
+        &ctx.pipelines,
+        ctx.descriptors,
+        ctx.meshes,
+        &scene,
+        scene_clear,
+        ctx.frame,
+        &ctx.scratch.plan,
+        ctx.upload,
+        intermediate.is_none().then_some(&overlay),
+        timer.as_deref_mut(),
+    );
+    stats.overlay_quads = overlay.count;
+    if intermediate.is_some() {
+        let out = FinalImage { view: target.color_view, extent: target.extent };
+        record_post(
+            ctx.dev,
+            cmd,
+            &ctx.pipelines,
+            env,
+            ctx.upload.frame_address(),
+            ctx.post,
+            ctx.mode,
+            &out,
+            timer,
+            &overlay,
+        );
+    }
+    stats.shadow_cascades = shadow_stats.shadow_cascades;
+    stats.shadow_draw_calls = shadow_stats.shadow_draw_calls;
+    stats.shadow_instances = shadow_stats.shadow_instances;
+    stats.shadow_triangles = shadow_stats.shadow_triangles;
+    stats
+}
+
 /// Where a frame is drawn: colour + depth views of `extent`.
+#[derive(Clone, Copy)]
 pub struct RenderTarget {
     pub color_view: VkImageView,
     pub depth_view: VkImageView,
@@ -908,16 +1378,19 @@ pub struct RenderTarget {
 pub fn record_scene(
     dev: &Device,
     cmd: VkCommandBuffer,
-    pipelines: PipelinePair,
+    pipelines: &FramePipelines,
+    descriptors: &Descriptors,
     meshes: &HashMap<u32, Mesh>,
     target: &RenderTarget,
+    clear: [f32; 4],
     frame: &FrameDesc,
     plan: &Plan,
     upload: &FrameUpload,
+    overlay: Option<&OverlayDraw>,
     timer: Option<&mut PassTimer>,
 ) -> DrawStats {
     let mut timer = timer;
-    let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_SCENE));
+    let mut pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_SCENE));
     // Depth contents are never kept between frames: discard them, but order the transition after
     // the previous frame's depth reads/writes (same image, possibly still in flight).
     let depth_stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -936,7 +1409,6 @@ pub fn record_scene(
         )],
     );
 
-    let clear = srgb_to_linear_rgba(frame.clear_color);
     let color_attachment = VkRenderingAttachmentInfo {
         s_type: ST_RENDERING_ATTACHMENT_INFO,
         p_next: ptr::null(),
@@ -997,9 +1469,40 @@ pub fn record_scene(
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
+        (dev.fns.cmd_set_depth_compare_op)(cmd, if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS });
+        descriptors.bind(dev, cmd, pipelines.layout);
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
+        let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
+        let draw_sky = |cmd: VkCommandBuffer| {
+            // Behind everything opaque, before anything blended (glass shows the sky through it).
+            (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.sky);
+            let push = crate::post::PostPush {
+                frame: upload.frame_address(),
+                src: 0,
+                src2: 0,
+                texel: [0.0; 2],
+                mode: frame.reverse_z as u32,
+                pad: 0,
+                params: [0.0; 4],
+            };
+            (dev.fns.cmd_push_constants)(
+                cmd,
+                pipelines.layout,
+                PUSH_STAGES,
+                0,
+                size_of::<crate::post::PostPush>() as u32,
+                &push as *const crate::post::PostPush as *const c_void,
+            );
+            (dev.fns.cmd_draw)(cmd, 3, 1, 0, 0);
+        };
         for batch in &plan.batches {
+            if sky_pending && batch.material.blended() {
+                draw_sky(cmd);
+                sky_pending = false;
+                bound = pipelines.sky;
+                stats.pipeline_binds += 1;
+            }
             let Some(mesh) = meshes.get(&batch.mesh.0) else { continue };
             let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
             if pipeline != bound {
@@ -1031,6 +1534,17 @@ pub fn record_scene(
             stats.draw_calls += 1;
             stats.instances += batch.count;
             stats.triangles += (mesh.index_count / 3) as u64 * batch.count as u64;
+        }
+        if sky_pending {
+            draw_sky(cmd);
+            stats.pipeline_binds += 1;
+        }
+        if let Some(o) = overlay.filter(|o| o.count > 0) {
+            // The overlay is timed on its own.
+            if let Some(t) = timer.as_mut() {
+                t.end_pass(dev, cmd, pass.take());
+            }
+            record_overlay(dev, cmd, o, timer.as_deref_mut());
         }
         (dev.fns.cmd_end_rendering)(cmd);
     }
@@ -1070,7 +1584,8 @@ mod tests {
         assert_eq!(offset_of!(PushConstants, draws), 8);
         assert_eq!(offset_of!(PushConstants, material), 16);
         assert_eq!(offset_of!(PushConstants, pass), 20);
-        assert_eq!(size_of::<Vertex>(), 24);
+        assert_eq!(size_of::<Vertex>(), 28);
+        assert_eq!(offset_of!(Vertex, color), 24);
     }
 
     #[test]
@@ -1080,7 +1595,7 @@ mod tests {
         assert_eq!(offset_of!(DrawRecord, color2), 80);
         assert_eq!(offset_of!(DrawRecord, params), 96);
         assert_eq!(size_of::<DrawRecord>(), 112);
-        assert_eq!(RECORDS_OFFSET, 768);
+        assert_eq!(RECORDS_OFFSET, 1280);
     }
 
     #[test]
@@ -1089,13 +1604,19 @@ mod tests {
         assert_eq!(offset_of!(FrameData, camera_time), 64);
         assert_eq!(offset_of!(FrameData, viewport), 144);
         assert_eq!(offset_of!(FrameData, lights), 160);
-        assert_eq!(size_of::<FrameData>(), 160 + 32 * MAX_POINT_LIGHTS);
+        assert_eq!(offset_of!(FrameData, inv_view_proj), 160 + 32 * MAX_POINT_LIGHTS);
+        assert_eq!(offset_of!(FrameData, shadow_mats), 736);
+        assert_eq!(offset_of!(FrameData, shadow_params), 992);
+        assert_eq!(offset_of!(FrameData, shadow_fade), 1040);
+        assert_eq!(offset_of!(FrameData, fog_color), 1056);
+        assert_eq!(offset_of!(FrameData, sky_params), 1136);
+        assert_eq!(size_of::<FrameData>(), 1152);
     }
 
     #[test]
     fn default_frame_data_reproduces_m0_lighting() {
         let frame = FrameDesc::default();
-        let d = frame_data(&frame, VkExtent2D { width: 4, height: 2 });
+        let d = frame_data(&frame, VkExtent2D { width: 4, height: 2 }, &ShadowData::default());
         assert!((d.ambient[0] - 0.25).abs() < 1e-6 && (d.sun_color[1] - 0.75).abs() < 1e-6);
         assert_eq!(d.ambient[3], 1.0, "exposure");
         assert_eq!(d.sky[3], 0.0, "no tone mapping");
@@ -1210,7 +1731,7 @@ mod tests {
     fn too_many_lights_is_a_structured_error() {
         let lights = [crate::PointLight { position: [0.0; 3], color: [1.0; 3], intensity: 1.0, range: 1.0 }; MAX_POINT_LIGHTS + 1];
         let frame = FrameDesc { lights: &lights, ..Default::default() };
-        let err = check_frame(&HashMap::new(), &frame).unwrap_err();
+        let err = check_frame(&HashMap::new(), &Textures::default(), &frame).unwrap_err();
         assert_eq!(
             err.limit,
             Some(crate::LimitExceeded { what: Limit::PointLights, requested: 17, max: MAX_POINT_LIGHTS as u64 })
@@ -1268,7 +1789,7 @@ mod tests {
 
     #[test]
     fn embedded_spirv_is_valid_shape() {
-        for spv in [VERT_SPV, FRAG_SPV] {
+        for (_, spv) in SHADERS {
             assert_eq!(spv.len() % 4, 0);
             assert_eq!(spirv_words(spv)[0], 0x0723_0203, "SPIR-V magic");
         }
