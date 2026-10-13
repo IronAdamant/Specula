@@ -1,0 +1,6 @@
+# Determinism (foundation F2): std's HashMap/HashSet iterate in a per-process random order.
+# The simulation uses Vec indexed by stable ids and BTreeMap instead.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "random iteration order breaks determinism; use BTreeMap or a Vec indexed by id" },
+    { path = "std::collections::HashSet", reason = "random iteration order breaks determinism; use BTreeSet or a Vec<bool> indexed by id" },
+]

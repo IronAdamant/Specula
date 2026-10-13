@@ -61,6 +61,21 @@ pub(crate) fn wheel_notches(wparam: usize) -> f32 {
     f32::from(hiword(wparam as isize) as i16) / 120.0
 }
 
+/// `WM_POINTER*`'s pointer id (`GET_POINTERID_WPARAM`: low word of `wParam`).
+pub(crate) fn pointer_id(wparam: usize) -> u32 {
+    u32::from(loword(wparam as isize))
+}
+
+/// `WM_POINTER*`'s `POINTER_MESSAGE_FLAG_*` bits (high word of `wParam`).
+pub(crate) fn pointer_flags(wparam: usize) -> u32 {
+    u32::from(hiword(wparam as isize))
+}
+
+/// `POINTER_MESSAGE_FLAG_INCONTACT`: touching the surface (tip down / finger down).
+pub(crate) const POINTER_FLAG_INCONTACT: u32 = 0x0004;
+/// `POINTER_MESSAGE_FLAG_CANCELED`: the interaction was cancelled (e.g. palm rejection).
+pub(crate) const POINTER_FLAG_CANCELED: u32 = 0x8000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +144,14 @@ mod tests {
         // Key-up messages also set bit 31 (transition state); bit 30 is still what matters.
         assert!(key_repeat(0xC000_0001u32 as isize));
         assert!(!key_repeat(0x8000_0001u32 as isize));
+    }
+
+    #[test]
+    fn pointer_wparam_splits_id_and_flags() {
+        let w = (0x8004usize << 16) | 0x0123;
+        assert_eq!(pointer_id(w), 0x123);
+        assert_eq!(pointer_flags(w), POINTER_FLAG_CANCELED | POINTER_FLAG_INCONTACT);
+        assert_eq!(pointer_flags(0xFFFF), 0);
     }
 
     #[test]

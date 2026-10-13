@@ -5,7 +5,7 @@
 //! (clipped to the camera's near/far planes and the image); occlusion is not considered yet.
 
 use crate::meshes::ShapeMeshes;
-use crate::world::{color_hex, material_name, vec3_json, Entity, World};
+use crate::world::{color_hex, material_name, vec3_json, Entity, Shape, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
 use specula_gpu::{DrawItem, FrameDesc, MeshId, PointLight, MAX_POINT_LIGHTS};
@@ -32,6 +32,21 @@ impl Camera {
         proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
     }
 
+    /// The ray from the eye through window pixel `(x, y)` (origin top-left) of a `width` x `height`
+    /// view: `(origin, unit direction)`. For mouse picking.
+    pub fn ray(&self, x: f32, y: f32, width: u32, height: u32) -> (Vec3, Vec3) {
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        let forward = (self.target - self.eye).normalize();
+        // Looking straight up or down: any horizontal right vector will do.
+        let side = forward.cross(Vec3::Y);
+        let right = if side.length() > 1e-6 { side.normalize() } else { Vec3::X };
+        let up = right.cross(forward);
+        let tan = (self.fov_y_deg.to_radians() * 0.5).tan();
+        let nx = (2.0 * (x + 0.5) / w - 1.0) * tan * (w / h);
+        let ny = (1.0 - 2.0 * (y + 0.5) / h) * tan;
+        (self.eye, (forward + right * nx + up * ny).normalize())
+    }
+
     pub fn to_json(self) -> Json {
         Json::obj([
             ("eye", vec3_json(self.eye)),
@@ -56,11 +71,10 @@ pub fn auto_camera(world: &World, fov_y_deg: f32) -> Camera {
 /// Uploaded lathe meshes by entity id: `(profile key, mesh)`.
 pub type LatheMeshes = HashMap<u64, (u64, MeshId)>;
 
-/// One draw per entity that has a mesh (a lathe whose upload failed is skipped).
+/// One draw per entity that has a mesh (groups, and a lathe whose upload failed, are skipped).
 pub fn draw_list(world: &World, meshes: &ShapeMeshes, lathes: &LatheMeshes) -> Vec<DrawItem> {
     world
         .entities()
-        .iter()
         .filter_map(|e| {
             let mesh = meshes.get(e.shape).or_else(|| lathes.get(&e.id).map(|&(_, m)| m))?;
             let c = e.color;
@@ -75,10 +89,10 @@ pub fn draw_list(world: &World, meshes: &ShapeMeshes, lathes: &LatheMeshes) -> V
         .collect()
 }
 
-/// The world's point lights (entity order), at most [`MAX_POINT_LIGHTS`], and how many were
+/// The world's point lights (entity id order), at most [`MAX_POINT_LIGHTS`], and how many were
 /// left out.
 pub fn lights(world: &World) -> (Vec<PointLight>, usize) {
-    let mut all: Vec<PointLight> = world.entities().iter().filter_map(|e| e.world_light()).collect();
+    let mut all: Vec<PointLight> = world.entities().filter_map(|e| e.world_light()).collect();
     let dropped = all.len().saturating_sub(MAX_POINT_LIGHTS);
     all.truncate(MAX_POINT_LIGHTS);
     (all, dropped)
@@ -86,13 +100,13 @@ pub fn lights(world: &World) -> (Vec<PointLight>, usize) {
 
 /// A frame of the world seen through `view_proj` (reversed Z) at animation time `time_s`.
 pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights: &'a [PointLight], time_s: f32) -> FrameDesc<'a> {
-    let b = world.env.background;
+    let b = world.env().background;
     FrameDesc {
         view_proj: view_proj.to_cols_array(),
         clear_color: [b[0], b[1], b[2], 1.0],
         draws,
         reverse_z: true,
-        environment: world.env.light,
+        environment: world.env().light,
         lights,
         time_s,
         ..Default::default()
@@ -107,15 +121,16 @@ pub struct Subject {
     pub area: u64,
 }
 
-/// One entry per entity, in world order.
+/// One entry per entity with geometry (groups draw nothing and are left out), in id order.
 ///
 /// `screen` is the pixel rectangle `[x, y, w, h]` (origin top-left) of the entity's bounding box
 /// after clipping to the near plane and the image, or null when none of it is in view.
 /// `distance_m` is the distance along the view axis to the nearest visible part of the box.
+/// `position` is the world position.
 pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec<Subject> {
     world
         .entities()
-        .iter()
+        .filter(|e| e.shape != Shape::Group)
         .map(|e| {
             let clip = clip_box(e, view_proj);
             let screen = screen_rect(&clip, width, height);
@@ -123,11 +138,12 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec
             let json = Json::obj([
                 ("id", Json::from(e.id)),
                 ("name", Json::from(e.name.as_str())),
+                ("path", Json::from(world.path_of(e.id))),
                 ("shape", Json::from(e.shape.name())),
                 ("material", Json::from(material_name(e.look.material))),
                 ("color", Json::from(color_hex(e.color))),
-                ("position", vec3_json(e.position)),
-                ("created_by", Json::from(e.created_by.as_str())),
+                ("position", vec3_json(e.world_position())),
+                ("created_by", Json::from(&*e.created_by)),
                 ("on_screen", Json::from(screen.is_some())),
                 ("screen", screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
                 ("distance_m", if screen.is_some() { Json::from(distance) } else { Json::Null }),
@@ -157,7 +173,8 @@ pub fn most_relevant(subjects: &[Subject], max: usize) -> (Vec<Json>, usize) {
 /// exactly the vertices of the clipped box, so their projection bounds its image. With the
 /// reversed-Z infinite projection, z ≤ w is the near plane and z ≥ 0 holds for everything in front.
 fn clip_box(e: &Entity, view_proj: &Mat4) -> Vec<Vec4> {
-    let corners = e.world_corners().map(|p| view_proj.mul_vec4(p.extend(1.0)));
+    let Some(corners) = e.world_corners() else { return Vec::new() };
+    let corners = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
     let inside = |p: &Vec4| p.z >= 0.0 && p.z <= p.w;
     let mut points: Vec<Vec4> = corners.iter().copied().filter(inside).collect();
     // Signed distance to the two depth-range planes (inside when ≥ 0).
@@ -213,7 +230,27 @@ fn screen_rect(points: &[Vec4], width: u32, height: u32) -> Option<[u32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{Shape, SpawnSpec};
+    use crate::world::{EntityKey, SpawnSpec};
+
+    #[test]
+    fn camera_rays_hit_what_the_pixel_shows() {
+        let cam = Camera { eye: Vec3::new(3.0, 8.0, 10.0), target: Vec3::new(1.0, 0.0, -2.0), fov_y_deg: 50.0 };
+        let (w, h) = (1280u32, 720u32);
+        let vp = cam.view_proj(w, h);
+        for p in [Vec3::new(1.0, 0.0, -2.0), Vec3::new(4.0, 1.0, 0.0), Vec3::new(-3.0, 0.5, -6.0)] {
+            // Project p to a pixel, cast a ray back through it, and check it passes through p.
+            let (sx, sy, _) = specula_core::math::project_to_screen(&vp, p, w, h).unwrap();
+            // `ray` takes pixel indices (it aims at the pixel centre).
+            let (o, d) = cam.ray(sx - 0.5, sy - 0.5, w, h);
+            let to_p = p - o;
+            let miss = (to_p - d * to_p.dot(d)).length();
+            assert!(miss < 1e-3 * to_p.length(), "{p:?} missed by {miss}");
+            assert!((d.length() - 1.0).abs() < 1e-5);
+        }
+        let down = Camera { eye: Vec3::new(0.0, 10.0, 0.0), target: Vec3::ZERO, fov_y_deg: 60.0 };
+        let (_, d) = down.ray(639.5, 359.5, w, h);
+        assert!(d.y < -0.999, "straight down still works: {d:?}");
+    }
 
     fn spawn_scaled(world: &mut World, shape: Shape, name: &str, position: Vec3, scale: Vec3) {
         let mut spec = SpawnSpec::new(shape);
@@ -302,7 +339,7 @@ mod tests {
         spawn_scaled(&mut world, Shape::Quad, "ground", Vec3::ZERO, Vec3::new(5000.0, 1.0, 5000.0));
         let vp = auto_camera(&world, 50.0).view_proj(800, 450);
         for e in world.entities() {
-            for c in e.world_corners() {
+            for c in e.world_corners().unwrap() {
                 let p = vp.mul_vec4(c.extend(1.0));
                 assert!(p.w > 0.0 && p.z >= 0.0 && p.z <= p.w, "{} corner {c:?} outside the depth range", e.name);
             }
@@ -340,6 +377,26 @@ mod tests {
         assert_eq!(rect(&s[0]), [0, 0, 640, 480], "room surrounds the camera");
         let d = s[1].json.get("distance_m").and_then(Json::as_f64).unwrap();
         assert!((d - 4.0).abs() < 1e-3, "crate's near face is 4 m ahead, got {d}");
+    }
+
+    #[test]
+    fn subjects_use_world_transforms_and_skip_groups() {
+        let mut world = World::default();
+        let mut group = SpawnSpec::new(Shape::Group);
+        group.name = Some("tower".into());
+        group.position = Vec3::new(3.0, 0.0, 0.0);
+        world.spawn(group, "test").unwrap();
+        let mut top = SpawnSpec::new(Shape::Cube);
+        top.name = Some("top".into());
+        top.parent = Some(EntityKey::Path("/tower".into()));
+        top.position = Vec3::new(0.0, 2.0, 0.0);
+        world.spawn(top, "test").unwrap();
+        spawn(&mut world, Shape::Cube, "loose", Vec3::new(3.0, 2.0, 0.0));
+        let s = frame(&world, cam(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0), 50.0), 640, 480);
+        assert_eq!(s.len(), 2, "the group has no subject");
+        assert_eq!(s[0].json.get("path").and_then(Json::as_str), Some("/tower/top"));
+        assert_eq!(s[0].json.get("position"), Some(&vec3_json(Vec3::new(3.0, 2.0, 0.0))));
+        assert_eq!(rect(&s[0]), rect(&s[1]), "a child lands where the same box at its world position would");
     }
 
     #[test]

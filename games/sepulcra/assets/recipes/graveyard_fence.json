@@ -1,0 +1,30 @@
+{
+  "recipe": 1,
+  "name": "graveyard_fence",
+  "category": "graveyard",
+  "description": "2 m wrought-iron fence segment along X, about 0.95 m high: posts with pyramid caps at both ends, two rails, nine spear-tipped pickets. Low enough to see the graveyard's pale tombstones over it.",
+  "seed": 707,
+  "budget": { "max_triangles": 700 },
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 30,
+  "parts": [
+    { "name": "posts", "material": "iron",
+      "shape": { "op": "box", "size": [0.1, 0.95, 0.1], "bevel": 0.015 },
+      "ops": [ { "op": "move", "by": [-0.97, 0, 0] }, { "op": "array", "count": 2, "offset": [1.94, 0, 0] } ] },
+    { "name": "post_caps", "material": "iron",
+      "shape": { "op": "loft", "outline": { "rect": [0.14, 0.14] }, "stations": [[1, 0], [1, 0.03], [0, 0.12]] },
+      "ops": [ { "op": "move", "by": [-0.97, 0.95, 0] }, { "op": "array", "count": 2, "offset": [1.94, 0, 0] } ] },
+    { "name": "rails", "material": "iron",
+      "shape": { "op": "box", "size": [1.9, 0.045, 0.035], "bevel": 0.008 },
+      "ops": [ { "op": "move", "by": [0, 0.16, 0] }, { "op": "array", "count": 2, "offset": [0, 0.58, 0] } ] },
+    { "name": "pickets", "material": "iron",
+      "shape": { "op": "box", "size": [0.03, 0.8, 0.03] },
+      "ops": [ { "op": "move", "by": [-0.76, 0.02, 0] },
+               { "op": "array", "count": 9, "offset": [0.19, 0, 0], "jitter": { "rotate": [1.5, 0, 1.5] } } ] },
+    { "name": "spear_tips", "material": "iron",
+      "shape": { "op": "cone", "radius": 0.035, "height": 0.11, "sides": 4 },
+      "ops": [ { "op": "move", "by": [-0.76, 0.81, 0] }, { "op": "array", "count": 9, "offset": [0.19, 0, 0] } ] }
+  ],
+  "finish": [ { "op": "gradient", "from": "iron_dark", "to": "iron", "range": [0, 1] } ]
+}

@@ -3,14 +3,16 @@
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. Last updated **2026-10-13**.
 
-- **START HERE next session:** the first game is chosen (2026-10-13): a 3D tower defence on a shattered slab,
-  working title *Sepulcra*. Draft design doc: [games/sepulcra/DESIGN.md](games/sepulcra/DESIGN.md). Next:
-  1. Go through its **(open)** and **(proposal)** lines with the owner.
-  2. Write the **style bible** together.
-  3. Build **M1 save/load**.
-  4. Greybox the slab through MCP.
-
-  How it was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
+- **START HERE next session:** the owner asked (2026-10-13) for subagent swarms to advance M1 and M2 **while
+  building Sepulcra to completion as dogfood** (Windows first), keep improving the lava lamps as features land,
+  and keep performance baselines. Work runs as **lanes**: one subagent per crate/area in a git worktree, each
+  attacked by a `lane-reviewer` before merge (`.claude/agents/`). Check `git log` and the roadmap ticks for
+  where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
+  [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
+  How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
+- **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
+  in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
+  (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).
 - **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - **Hard rules:** [AGENTS.md](AGENTS.md).
@@ -74,6 +76,7 @@ In practice that means six **foundations** that apply to every change from M1 on
 | 2026-10-13 | Engine survey and UI design written. The roadmap gained a **path to production**: v1.0 = a commercial PC game on Steam for Windows and Steam Deck; Phase A M1 → Phase B playable slice (lanes built in parallel by subagent swarms) → Phase C production → Phase D ship. |
 | 2026-10-13 | The owner accepted **every** Claude proposal: physics, skeletal animation, headless playtests, batch edits, procedural modelling, review queue, swarm track. The swarm track became primary, foundations F1–F5 were added, and Claude researched and wrote the four design docs in `docs/design/`. Next: the owner's game project, then M1. |
 | 2026-10-13 | **Lava-lamp fidelity benchmark** (the owner's first asset challenge): three lamps from basic to "as real as possible", built in the engine. It added per-frame GPU data (buffer device address), materials, point lights, glass, blob shadows, lathe meshes, tone mapping and a ray-marched lava lamp. Run it with `python scripts/lava_lamps.py`. The NVIDIA and Intel captures match within 3/255. |
+| 2026-10-13 | **Swarm session (owner: "advance through M1 and M2 while building the TD game").** Wave 1, all reviewed then merged: capture speed (parallel deterministic PNG, ~25x faster), GPU (frame stats, instancing, culling, pipeline warm-up and cache), World (hierarchy, versions, batch, query, crash-safe text saves), determinism (`dmath`, correctly rounded f32; Android CI check), Sepulcra's headless simulation. Then the engine got a `Game` hook, a fixed-tick clock, `perf_frame` and `time_control`. Wave 2 lanes: render (shadows, post, sky, overlay), text, procedural modelling, input, the Sepulcra app, journal/claims. |
 | 2026-10-13 | **First game chosen:** the tower defence *Sepulcra* (over a cozy castle builder and a squad RPG). Platforms: Windows + Steam Deck; mobile later, so foundation **F6 (portable by design)** was added. A **Fidelity track** was added to the roadmap: benchmark assets rebuilt at each tier, from greybox up to Unreal-class realism. |
 
 ## What works today
@@ -94,14 +97,18 @@ In practice that means six **foundations** that apply to every change from M1 on
   - `window_view`: point the human's window camera (or `auto`).
   - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. `time_s`
     fixes the animation time, so a frame is reproducible. The full packet is saved to `captures/run-*/`.
+  - `world_query` (paged filters), `world_batch` (atomic), `world_save` / `world_load` (text world files),
+    `agent_hello` (identity and role).
+  - `perf_frame` (GPU ms per pass, draws, memory, pacing, budget errors) and `time_control` (pause, step, scale).
+  - A hosted game adds its own `play_*` tools.
   - `engine_info`.
 - **Size:** about 15k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
   `specula`). 149 tests. **Zero third-party crates.**
 - **Linking:** the Rust toolchain's own linker. Vulkan is loaded at runtime.
 
 **What it can't do yet.** Plan game sessions around these limits:
-- **No save/load.** The world is gone when the engine closes. Persistence is the first item of M1, so pull it forward
-  if game work needs it.
+- **Save/load exists** (`--world NAME` autosaves to `worlds/NAME/`), but there's no journal, undo or claims yet
+  (the Journal lane is building them).
 - **Visuals are early.** Materials, point lights, glass, emission and tone mapping exist (built for the lava-lamp
   benchmark, 2026-10-13). There are no textures, shadow maps, bloom pass, imported models or 2D sprites yet.
 - **Not playable yet.** There's no game logic, input, physics, audio, or text/UI, so nothing can be played until M3.

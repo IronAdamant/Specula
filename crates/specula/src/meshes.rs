@@ -28,7 +28,7 @@ impl ShapeMeshes {
             Shape::Cube => Some(self.cube),
             Shape::Quad => Some(self.quad),
             Shape::Sphere => Some(self.sphere),
-            Shape::Lathe => None,
+            Shape::Lathe | Shape::Group => None,
         }
     }
 }
