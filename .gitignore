@@ -32,3 +32,6 @@ tmp/
 # Tooling caches / local indexes (not product source)
 .wikifier_staging/
 .stele-context/
+
+# Subagent worktrees (Claude Code)
+.claude/worktrees/

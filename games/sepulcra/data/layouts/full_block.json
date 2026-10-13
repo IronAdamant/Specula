@@ -1,0 +1,12 @@
+{
+  "name": "full block",
+  "notes": "Walls on all four graveyard gates, so no open route exists: every ground enemy must break a wall (the owner's rule). Two warding stones and a brazier cover the south and east gates.",
+  "commands": [
+    { "wave": 0, "wall": "top:10,7" },
+    { "wave": 0, "wall": "top:12,10" },
+    { "wave": 0, "wall": "top:9,12" },
+    { "wave": 0, "wall": "top:7,9" },
+    { "wave": 0, "place": "warding", "at": "top:8,12" },
+    { "wave": 1, "place": "brazier", "at": "top:12,12" }
+  ]
+}

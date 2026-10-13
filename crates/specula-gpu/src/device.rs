@@ -2,11 +2,13 @@
 
 use crate::instance::Instance;
 use crate::vk::*;
-use crate::GpuError;
+use crate::{GpuError, HeapStats, MemoryKind, MemoryStats};
+use std::cell::Cell;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
 
 const EXT_SWAPCHAIN: &CStr = c"VK_KHR_swapchain";
+const EXT_MEMORY_BUDGET: &CStr = c"VK_EXT_memory_budget";
 
 /// Upper bound for any synchronous GPU wait; a frame taking longer means something is wrong.
 pub const FENCE_TIMEOUT_NS: u64 = 10_000_000_000;
@@ -19,15 +21,32 @@ pub struct Device {
     pub swapchain: Option<SwapchainFns>,
     pub queue: VkQueue,
     pub queue_family: u32,
+    /// Meaningful bits of the queue's timestamps (0 = no timestamp support).
+    pub timestamp_valid_bits: u32,
+    /// Nanoseconds per timestamp tick.
+    pub timestamp_period: f32,
+    /// `VK_EXT_memory_budget` is enabled.
+    pub memory_budget: bool,
     memory: VkPhysicalDeviceMemoryProperties,
+    /// Bytes allocated per [`MemoryKind`], and the live allocation count.
+    allocated: Cell<[u64; MemoryKind::ALL.len()]>,
+    allocations: Cell<u32>,
 }
 
 impl Device {
     pub fn new(instance: &Instance, physical: VkPhysicalDevice, queue_family: u32) -> Result<Device, GpuError> {
         let available = instance.device_extensions(physical)?;
-        let want_swapchain =
-            instance.surface.is_some() && available.iter().any(|e| *e == EXT_SWAPCHAIN.to_string_lossy());
-        let ext_ptrs: Vec<*const c_char> = if want_swapchain { vec![EXT_SWAPCHAIN.as_ptr()] } else { Vec::new() };
+        let has = |name: &CStr| available.iter().any(|e| *e == name.to_string_lossy());
+        let want_swapchain = instance.surface.is_some() && has(EXT_SWAPCHAIN);
+        // Optional: heap budgets for frame statistics.
+        let memory_budget = has(EXT_MEMORY_BUDGET);
+        let mut ext_ptrs: Vec<*const c_char> = Vec::new();
+        if want_swapchain {
+            ext_ptrs.push(EXT_SWAPCHAIN.as_ptr());
+        }
+        if memory_budget {
+            ext_ptrs.push(EXT_MEMORY_BUDGET.as_ptr());
+        }
 
         let priority = 1.0f32;
         let queue_info = VkDeviceQueueCreateInfo {
@@ -41,9 +60,14 @@ impl Device {
         let mut v13 = VkPhysicalDeviceVulkan13Features::new();
         v13.dynamic_rendering = VK_TRUE;
         v13.synchronization2 = VK_TRUE;
+        // `discard` compiles to OpDemoteToHelperInvocation for Vulkan 1.3 targets.
+        v13.shader_demote_to_helper_invocation = VK_TRUE;
+        // Per-frame data (camera, lights, time) is read through buffer device addresses.
+        let mut v12 = VkPhysicalDeviceVulkan12Features::new(&mut v13 as *mut _ as *mut c_void);
+        v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] = VK_TRUE;
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
-            p_next: &mut v13 as *mut _ as *mut c_void,
+            p_next: &mut v12 as *mut _ as *mut c_void,
             features: VkPhysicalDeviceFeatures { flags: [0; 55] },
         };
         let info = VkDeviceCreateInfo {
@@ -86,6 +110,8 @@ impl Device {
                 return Err(GpuError::new(format!("Vulkan device is missing command {name}")));
             }
         };
+        let timestamp_valid_bits =
+            instance.queue_families(physical).get(queue_family as usize).map_or(0, |f| f.timestamp_valid_bits);
         let mut device = Device {
             physical,
             handle,
@@ -93,7 +119,12 @@ impl Device {
             swapchain: None,
             queue: ptr::null_mut(),
             queue_family,
+            timestamp_valid_bits,
+            timestamp_period: instance.properties(physical).limits.timestamp_period(),
+            memory_budget,
             memory: instance.memory_properties(physical),
+            allocated: Cell::new([0; MemoryKind::ALL.len()]),
+            allocations: Cell::new(0),
         };
         if want_swapchain {
             device.swapchain = Some(
@@ -120,13 +151,27 @@ impl Device {
             .map(|i| i as u32)
     }
 
-    fn allocate(&self, req: &VkMemoryRequirements, required: VkFlags, preferred: VkFlags, what: &str) -> Result<VkDeviceMemory, GpuError> {
+    fn allocate(
+        &self,
+        req: &VkMemoryRequirements,
+        required: VkFlags,
+        preferred: VkFlags,
+        device_address: bool,
+        kind: MemoryKind,
+        what: &str,
+    ) -> Result<VkDeviceMemory, GpuError> {
         let type_index = self.memory_type(req.memory_type_bits, required, preferred).ok_or_else(|| {
             GpuError::new(format!("no memory type for {what} (type bits {:#x}, flags {required:#x})", req.memory_type_bits))
         })?;
+        let flags = VkMemoryAllocateFlagsInfo {
+            s_type: ST_MEMORY_ALLOCATE_FLAGS_INFO,
+            p_next: ptr::null(),
+            flags: VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+            device_mask: 0,
+        };
         let info = VkMemoryAllocateInfo {
             s_type: ST_MEMORY_ALLOCATE_INFO,
-            p_next: ptr::null(),
+            p_next: if device_address { &flags as *const _ as *const c_void } else { ptr::null() },
             allocation_size: req.size,
             memory_type_index: type_index,
         };
@@ -136,11 +181,61 @@ impl Device {
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkAllocateMemory ({what}, {} bytes)", req.size), r));
         }
+        self.account(kind, req.size, true);
         Ok(memory)
     }
 
+    /// Record one allocation of `bytes` for `kind` made (`added`) or freed.
+    fn account(&self, kind: MemoryKind, bytes: u64, added: bool) {
+        let mut all = self.allocated.get();
+        let slot = &mut all[kind.index()];
+        *slot = if added { slot.saturating_add(bytes) } else { slot.saturating_sub(bytes) };
+        self.allocated.set(all);
+        let n = self.allocations.get();
+        self.allocations.set(if added { n + 1 } else { n.saturating_sub(1) });
+    }
+
+    /// Bytes our allocator holds, plus per-heap sizes and (with `VK_EXT_memory_budget`) budgets.
+    pub fn memory_stats(&self, instance: &Instance) -> MemoryStats {
+        let bytes = self.allocated.get();
+        let by_kind: Vec<(MemoryKind, u64)> = MemoryKind::ALL.iter().map(|&k| (k, bytes[k.index()])).collect();
+        let mut budget = VkPhysicalDeviceMemoryBudgetPropertiesEXT {
+            s_type: ST_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+            p_next: ptr::null_mut(),
+            heap_budget: [0; VK_MAX_MEMORY_HEAPS],
+            heap_usage: [0; VK_MAX_MEMORY_HEAPS],
+        };
+        let mut props = VkPhysicalDeviceMemoryProperties2 {
+            s_type: ST_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+            p_next: if self.memory_budget { &mut budget as *mut _ as *mut c_void } else { ptr::null_mut() },
+            memory_properties: self.memory,
+        };
+        // SAFETY: valid physical device; `props` (and `budget`, chained only when the extension is
+        // enabled) are valid out-structs for the call.
+        unsafe { (instance.fns.get_physical_device_memory_properties2)(self.physical, &mut props) };
+        let m = &props.memory_properties;
+        let heaps = (0..(m.memory_heap_count as usize).min(VK_MAX_MEMORY_HEAPS))
+            .map(|i| HeapStats {
+                index: i as u32,
+                size: m.memory_heaps[i].size,
+                device_local: m.memory_heaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT != 0,
+                budget: self.memory_budget.then_some(budget.heap_budget[i]),
+                usage: self.memory_budget.then_some(budget.heap_usage[i]),
+            })
+            .collect();
+        MemoryStats { total_bytes: bytes.iter().sum(), by_kind, allocations: self.allocations.get(), heaps }
+    }
+
     /// A buffer with its own memory. Host-visible buffers are persistently mapped.
-    pub fn create_buffer(&self, size: u64, usage: VkFlags, required: VkFlags, preferred: VkFlags, what: &str) -> Result<Buffer, GpuError> {
+    pub fn create_buffer(
+        &self,
+        size: u64,
+        usage: VkFlags,
+        required: VkFlags,
+        preferred: VkFlags,
+        kind: MemoryKind,
+        what: &str,
+    ) -> Result<Buffer, GpuError> {
         let info = VkBufferCreateInfo {
             s_type: ST_BUFFER_CREATE_INFO,
             p_next: ptr::null(),
@@ -157,12 +252,14 @@ impl Device {
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateBuffer ({what}, {size} bytes)"), r));
         }
-        let mut buffer = Buffer { handle, memory: VK_NULL_HANDLE, mapped: ptr::null_mut() };
+        let mut buffer = Buffer { handle, memory: VK_NULL_HANDLE, mapped: ptr::null_mut(), bytes: 0, kind };
         let mut req = VkMemoryRequirements::default();
         // SAFETY: `handle` is a live buffer of this device.
         unsafe { (self.fns.get_buffer_memory_requirements)(self.handle, handle, &mut req) };
         let result = (|| {
-            buffer.memory = self.allocate(&req, required, preferred, what)?;
+            let device_address = usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0;
+            buffer.memory = self.allocate(&req, required, preferred, device_address, kind, what)?;
+            buffer.bytes = req.size;
             // SAFETY: memory was allocated for this buffer's requirements; offset 0 is aligned.
             let r = unsafe { (self.fns.bind_buffer_memory)(self.handle, handle, buffer.memory, 0) };
             if r != VK_SUCCESS {
@@ -186,6 +283,13 @@ impl Device {
         }
     }
 
+    /// GPU address of a buffer created with `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`.
+    pub fn buffer_address(&self, buffer: &Buffer) -> u64 {
+        let info = VkBufferDeviceAddressInfo { s_type: ST_BUFFER_DEVICE_ADDRESS_INFO, p_next: ptr::null(), buffer: buffer.handle };
+        // SAFETY: live buffer of this device, created with the device-address usage and memory flag.
+        unsafe { (self.fns.get_buffer_device_address)(self.handle, &info) }
+    }
+
     pub fn destroy_buffer(&self, buffer: &Buffer) {
         // SAFETY: the buffer and memory belong to this device, are no longer used by the GPU
         // (callers wait first), and are destroyed exactly once. Null handles are ignored by Vulkan.
@@ -196,10 +300,23 @@ impl Device {
             (self.fns.destroy_buffer)(self.handle, buffer.handle, ptr::null());
             (self.fns.free_memory)(self.handle, buffer.memory, ptr::null());
         }
+        if buffer.memory != VK_NULL_HANDLE {
+            self.account(buffer.kind, buffer.bytes, false);
+        }
     }
 
     /// A 2D optimal-tiling image in device-local memory, plus a full view.
-    pub fn create_image(&self, format: VkFormat, width: u32, height: u32, usage: VkFlags, aspect: VkFlags, what: &str) -> Result<Image, GpuError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_image(
+        &self,
+        format: VkFormat,
+        width: u32,
+        height: u32,
+        usage: VkFlags,
+        aspect: VkFlags,
+        kind: MemoryKind,
+        what: &str,
+    ) -> Result<Image, GpuError> {
         let info = VkImageCreateInfo {
             s_type: ST_IMAGE_CREATE_INFO,
             p_next: ptr::null(),
@@ -223,12 +340,13 @@ impl Device {
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateImage ({what}, {width}x{height})"), r));
         }
-        let mut image = Image { handle, memory: VK_NULL_HANDLE, view: VK_NULL_HANDLE };
+        let mut image = Image { handle, memory: VK_NULL_HANDLE, view: VK_NULL_HANDLE, bytes: 0, kind };
         let mut req = VkMemoryRequirements::default();
         // SAFETY: `handle` is a live image of this device.
         unsafe { (self.fns.get_image_memory_requirements)(self.handle, handle, &mut req) };
         let result = (|| {
-            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, what)?;
+            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, false, kind, what)?;
+            image.bytes = req.size;
             // SAFETY: memory matches the image's requirements; offset 0.
             let r = unsafe { (self.fns.bind_image_memory)(self.handle, handle, image.memory, 0) };
             if r != VK_SUCCESS {
@@ -272,6 +390,9 @@ impl Device {
             (self.fns.destroy_image_view)(self.handle, image.view, ptr::null());
             (self.fns.destroy_image)(self.handle, image.handle, ptr::null());
             (self.fns.free_memory)(self.handle, image.memory, ptr::null());
+        }
+        if image.memory != VK_NULL_HANDLE {
+            self.account(image.kind, image.bytes, false);
         }
     }
 
@@ -455,12 +576,17 @@ pub struct Buffer {
     pub memory: VkDeviceMemory,
     /// Non-null for host-visible buffers.
     pub mapped: *mut c_void,
+    /// Size of the memory allocation (at least the requested size).
+    pub bytes: u64,
+    pub kind: MemoryKind,
 }
 
 pub struct Image {
     pub handle: VkImage,
     pub memory: VkDeviceMemory,
     pub view: VkImageView,
+    pub bytes: u64,
+    pub kind: MemoryKind,
 }
 
 pub fn full_range(aspect: VkFlags) -> VkImageSubresourceRange {

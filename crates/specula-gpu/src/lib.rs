@@ -8,14 +8,34 @@
 //!   their messages are captured for agents via [`Gpu::take_validation_messages`].
 //! - Everything works **headless** (offscreen targets + readback); a window swapchain is optional.
 //!
-//! # Rendering contract (M0)
+//! # Rendering contract
 //!
 //! - Matrices are column-major `[f32; 16]` in Vulkan clip conventions (y down, depth 0..1) — build
 //!   them with `specula_core::math` (`perspective_vk`, `look_at_rh`, `from_trs`).
-//! - One pipeline: triangle lists of [`Vertex`], D32 depth test (LESS with clear 1, or GREATER with clear 0
-//!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`), **no face culling**, a fixed
-//!   directional light (world direction towards the light ≈ normalize(0.4, 0.8, 0.45)) with
-//!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`.
+//! - Triangle lists of [`Vertex`], D32 depth test (LESS with clear 1, or GREATER with clear 0 when
+//!   [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
+//! - Opaque draws ([`Material::Lit`]) come first, with no face culling. Blended draws (every other
+//!   material) follow, sorted far to near, with depth test on and depth writes off.
+//! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
+//!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
+//! - Per-frame data (camera, environment, lights, time) and one record per draw (model, colours,
+//!   surface) reach the shaders through buffer device addresses; push constants carry only the
+//!   two addresses, the material and the glass pass.
+//!
+//! # Performance
+//!
+//! - **Culling:** a draw whose mesh's bounding sphere lies outside the view frustum is skipped
+//!   (standard or reversed Z, finite or infinite far plane).
+//! - **Instancing:** opaque draws are sorted by mesh so equal ones merge into one instanced draw
+//!   call; blended draws keep their far-to-near order and merge only when adjacent. Depth testing
+//!   makes the opaque order irrelevant except where two opaque surfaces are exactly coplanar.
+//! - **Pipelines** are all built up front: every variant for the offscreen format at
+//!   [`Gpu::new`] and for the window's format at [`Gpu::attach_window`]. A `VkPipelineCache` can be
+//!   persisted ([`Gpu::pipeline_cache_data`]) and fed back ([`GpuOptions::pipeline_cache`]).
+//!   Call [`Gpu::mark_warm`] after loading; a pipeline created later is counted as a budget error
+//!   ([`PipelineStats::created_after_warm`]).
+//! - **Statistics:** [`Gpu::last_frame_stats`] — GPU time per pass (timestamp queries, read without
+//!   stalling), CPU time, draw calls, instances, triangles, culled draws, pipelines and memory.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are
 //!   `R8G8B8A8_SRGB`; the swapchain prefers `B8G8R8A8_SRGB`. Readback bytes are therefore sRGB RGBA8,
 //!   ready to write as PNG.
@@ -23,13 +43,18 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod batch;
 mod device;
 mod gpu;
 mod instance;
 mod loader;
 mod render;
+mod stats;
 mod swapchain;
+mod timing;
 mod vk;
+
+pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Validation {
@@ -49,15 +74,18 @@ pub enum AdapterPreference {
     Index(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuOptions {
     pub validation: Validation,
     pub adapter: AdapterPreference,
+    /// Bytes from an earlier [`Gpu::pipeline_cache_data`], to skip shader compilation. A blob
+    /// from another GPU or driver is safely ignored; [`PipelineStats::cache`] says what happened.
+    pub pipeline_cache: Option<Vec<u8>>,
 }
 
 impl Default for GpuOptions {
     fn default() -> Self {
-        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance }
+        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance, pipeline_cache: None }
     }
 }
 
@@ -104,6 +132,25 @@ pub struct GpuError {
     pub message: String,
     /// The failing `VkResult`, when a Vulkan call failed.
     pub vk_result: Option<i32>,
+    /// Set when a request exceeded a fixed limit.
+    pub limit: Option<LimitExceeded>,
+}
+
+/// A limit of the GPU layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// Point lights per frame ([`MAX_POINT_LIGHTS`]).
+    PointLights,
+    /// Visible draw records per frame (instance indices are `u32`).
+    DrawRecords,
+}
+
+/// What was asked for and what is allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitExceeded {
+    pub what: Limit,
+    pub requested: u64,
+    pub max: u64,
 }
 
 impl fmt::Display for GpuError {
@@ -119,12 +166,25 @@ impl std::error::Error for GpuError {}
 
 impl GpuError {
     pub(crate) fn new(message: impl Into<String>) -> GpuError {
-        GpuError { message: message.into(), vk_result: None }
+        GpuError { message: message.into(), vk_result: None, limit: None }
     }
 
     /// `what` failed with `result`.
     pub(crate) fn vk(what: &str, result: i32) -> GpuError {
-        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result) }
+        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None }
+    }
+
+    /// `requested` exceeds the limit `what` (at most `max`).
+    pub(crate) fn limit(what: Limit, requested: u64, max: u64) -> GpuError {
+        let name = match what {
+            Limit::PointLights => "point lights per frame",
+            Limit::DrawRecords => "visible draw records per frame",
+        };
+        GpuError {
+            message: format!("{requested} {name} requested; at most {max}"),
+            vk_result: None,
+            limit: Some(LimitExceeded { what, requested, max }),
+        }
     }
 }
 
@@ -141,18 +201,120 @@ pub struct MeshId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TargetId(pub u32);
 
+/// How a draw is shaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// Opaque. Sun, ambient and point lights; optional emission, specular and metal.
+    #[default]
+    Lit,
+    /// Blended thin glass or liquid shell: Fresnel reflection plus tinted, lit body of
+    /// `color.a` opacity. Drawn twice, back faces then front faces.
+    Glass,
+    /// Blended soft dark disc on the XZ quad (a contact shadow); `color.a` is its darkness.
+    BlobShadow,
+    /// Ray-marched lava lamp inside the unit-cube proxy: glass vessel, liquid (`Surface::color2`)
+    /// and moving wax (`color`), with a glow halo. Animated by [`FrameDesc::time_s`].
+    LavaLamp,
+}
+
+impl Material {
+    /// Drawn in the blended pass.
+    pub fn blended(self) -> bool {
+        self != Material::Lit
+    }
+}
+
+/// Per-draw material parameters. The default gives M0's matte look.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Surface {
+    /// Light emitted, as a multiple of `color` (0 = none). Values above 1 glow (HDR).
+    pub emissive: f32,
+    /// 0 = dielectric, 1 = metal (specular tinted by `color`, no diffuse).
+    pub metallic: f32,
+    /// 0 = mirror-sharp highlights, 1 = very broad.
+    pub roughness: f32,
+    /// Strength of highlights and reflections (0 = none, as in M0).
+    pub specular: f32,
+    /// Secondary sRGB colour (the lava lamp's liquid).
+    pub color2: [f32; 3],
+    /// Variation seed (the lava lamp's wax motion).
+    pub seed: f32,
+}
+
+impl Default for Surface {
+    fn default() -> Self {
+        Surface { emissive: 0.0, metallic: 0.0, roughness: 0.5, specular: 0.0, color2: [0.0; 3], seed: 0.0 }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DrawItem {
     pub mesh: MeshId,
     /// Model (object → world) matrix, column-major.
     pub model: [f32; 16],
-    /// sRGB colour, alpha currently ignored (opaque).
+    /// sRGB colour; alpha is the opacity of blended materials (ignored by `Lit`).
     pub color: [f32; 4],
+    pub material: Material,
+    pub surface: Surface,
+}
+
+impl DrawItem {
+    /// A matte (M0-style) draw.
+    pub fn new(mesh: MeshId, model: [f32; 16], color: [f32; 4]) -> DrawItem {
+        DrawItem { mesh, model, color, material: Material::Lit, surface: Surface::default() }
+    }
+}
+
+/// A point light: inverse-square falloff, smoothly cut to zero at `range`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointLight {
+    pub position: [f32; 3],
+    /// sRGB.
+    pub color: [f32; 3],
+    /// Radiant intensity: at 1 m an intensity of 1 lights a white surface facing it fully.
+    pub intensity: f32,
+    /// Metres; no light beyond it.
+    pub range: f32,
+}
+
+/// At most this many point lights per frame.
+pub const MAX_POINT_LIGHTS: usize = 16;
+
+/// Scene-wide lighting. The default reproduces M0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Environment {
+    /// World direction towards the sun (normalized by the renderer).
+    pub sun_direction: [f32; 3],
+    /// sRGB.
+    pub sun_color: [f32; 3],
+    pub sun_intensity: f32,
+    /// sRGB; also the colour reflections pick up from the surroundings.
+    pub ambient_color: [f32; 3],
+    pub ambient_intensity: f32,
+    /// Multiplies all light before display.
+    pub exposure: f32,
+    /// Filmic (ACES) tone mapping plus dithering; off = plain clamp, as in M0.
+    pub tonemap: bool,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Environment {
+            sun_direction: [0.4, 0.8, 0.45],
+            sun_color: [1.0; 3],
+            sun_intensity: 0.75,
+            ambient_color: [1.0; 3],
+            ambient_intensity: 0.25,
+            exposure: 1.0,
+            tonemap: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct FrameDesc<'a> {
-    /// Projection × view, column-major, Vulkan clip conventions.
+    /// Projection × view, column-major, Vulkan clip conventions. The camera position used for
+    /// highlights, reflections and ray marching is derived from it.
     pub view_proj: [f32; 16],
     /// sRGB clear colour.
     pub clear_color: [f32; 4],
@@ -160,6 +322,25 @@ pub struct FrameDesc<'a> {
     /// `view_proj` uses reversed Z (depth 1 at the near plane, 0 at infinity): depth test GREATER,
     /// depth cleared to 0. `false`: standard depth 0..1, test LESS, cleared to 1.
     pub reverse_z: bool,
+    pub environment: Environment,
+    /// At most [`MAX_POINT_LIGHTS`].
+    pub lights: &'a [PointLight],
+    /// Seconds of animation time. Captures pass it explicitly, so a frame is reproducible.
+    pub time_s: f32,
+}
+
+impl Default for FrameDesc<'_> {
+    fn default() -> Self {
+        FrameDesc {
+            view_proj: [0.0; 16],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            draws: &[],
+            reverse_z: false,
+            environment: Environment::default(),
+            lights: &[],
+            time_s: 0.0,
+        }
+    }
 }
 
 /// True if the Vulkan loader can be loaded and an instance created.
@@ -275,5 +456,30 @@ impl Gpu {
     /// flight; a frame that hits an out-of-date swapchain is skipped (the next one rebuilds it).
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
         self.inner.present(frame)
+    }
+
+    /// Statistics of the most recent frame from [`Gpu::render`] or [`Gpu::present`] (whichever
+    /// ran last), with the current pipeline and memory state. `frame == 0` before any frame.
+    pub fn last_frame_stats(&self) -> FrameStats {
+        self.inner.last_frame_stats(None)
+    }
+
+    /// Like [`Gpu::last_frame_stats`], but the latest frame of one path (`None` if it has none
+    /// yet): the window's frame rate is not disturbed by agents' offscreen captures.
+    pub fn last_frame_stats_of(&self, path: FramePath) -> Option<FrameStats> {
+        let stats = self.inner.last_frame_stats(Some(path));
+        (stats.frame != 0).then_some(stats)
+    }
+
+    /// Declare loading finished: every pipeline the game needs exists. Pipelines created after
+    /// this are counted in [`PipelineStats::created_after_warm`] (a budget error: each is a hitch).
+    pub fn mark_warm(&mut self) {
+        self.inner.mark_warm()
+    }
+
+    /// The pipeline cache's contents, to save (e.g. at shutdown) and pass back through
+    /// [`GpuOptions::pipeline_cache`] next time.
+    pub fn pipeline_cache_data(&self) -> Result<Vec<u8>, GpuError> {
+        self.inner.pipeline_cache_data()
     }
 }

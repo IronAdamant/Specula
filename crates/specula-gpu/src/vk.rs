@@ -39,6 +39,8 @@ pub type VkSemaphore = u64;
 pub type VkSurfaceKHR = u64;
 pub type VkSwapchainKHR = u64;
 pub type VkDebugUtilsMessengerEXT = u64;
+pub type VkQueryPool = u64;
+pub type VkPipelineCache = u64;
 
 pub const VK_NULL_HANDLE: u64 = 0;
 pub const VK_TRUE: VkBool32 = 1;
@@ -124,10 +126,12 @@ pub const ST_DEVICE_CREATE_INFO: VkStructureType = 3;
 pub const ST_MEMORY_ALLOCATE_INFO: VkStructureType = 5;
 pub const ST_FENCE_CREATE_INFO: VkStructureType = 8;
 pub const ST_SEMAPHORE_CREATE_INFO: VkStructureType = 9;
+pub const ST_QUERY_POOL_CREATE_INFO: VkStructureType = 11;
 pub const ST_BUFFER_CREATE_INFO: VkStructureType = 12;
 pub const ST_IMAGE_CREATE_INFO: VkStructureType = 14;
 pub const ST_IMAGE_VIEW_CREATE_INFO: VkStructureType = 15;
 pub const ST_SHADER_MODULE_CREATE_INFO: VkStructureType = 16;
+pub const ST_PIPELINE_CACHE_CREATE_INFO: VkStructureType = 17;
 pub const ST_PIPELINE_SHADER_STAGE_CREATE_INFO: VkStructureType = 18;
 pub const ST_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO: VkStructureType = 19;
 pub const ST_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO: VkStructureType = 20;
@@ -142,8 +146,13 @@ pub const ST_PIPELINE_LAYOUT_CREATE_INFO: VkStructureType = 30;
 pub const ST_COMMAND_POOL_CREATE_INFO: VkStructureType = 39;
 pub const ST_COMMAND_BUFFER_ALLOCATE_INFO: VkStructureType = 40;
 pub const ST_COMMAND_BUFFER_BEGIN_INFO: VkStructureType = 42;
+pub const ST_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: VkStructureType = 51;
 pub const ST_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: VkStructureType = 53;
+pub const ST_MEMORY_ALLOCATE_FLAGS_INFO: VkStructureType = 1_000_060_000;
+pub const ST_BUFFER_DEVICE_ADDRESS_INFO: VkStructureType = 1_000_244_001;
 pub const ST_PHYSICAL_DEVICE_FEATURES_2: VkStructureType = 1_000_059_000;
+pub const ST_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2: VkStructureType = 1_000_059_006;
+pub const ST_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: VkStructureType = 1_000_237_000;
 pub const ST_BUFFER_MEMORY_BARRIER_2: VkStructureType = 1_000_314_001;
 pub const ST_IMAGE_MEMORY_BARRIER_2: VkStructureType = 1_000_314_002;
 pub const ST_DEPENDENCY_INFO: VkStructureType = 1_000_314_003;
@@ -187,6 +196,9 @@ pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: i32 = 0;
 pub const VK_INDEX_TYPE_UINT32: i32 = 1;
 pub const VK_COMPARE_OP_LESS: i32 = 1;
 pub const VK_COMPARE_OP_GREATER: i32 = 4;
+pub const VK_BLEND_FACTOR_ONE: i32 = 1;
+pub const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: i32 = 7;
+pub const VK_BLEND_OP_ADD: i32 = 0;
 pub const VK_PIPELINE_BIND_POINT_GRAPHICS: i32 = 0;
 pub const VK_DYNAMIC_STATE_VIEWPORT: i32 = 0;
 pub const VK_DYNAMIC_STATE_SCISSOR: i32 = 1;
@@ -201,6 +213,8 @@ pub const VK_RESOLVE_MODE_NONE: u32 = 0;
 pub const VK_PRESENT_MODE_FIFO_KHR: i32 = 2;
 pub const VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: i32 = 0;
 pub const VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT: i32 = 4;
+pub const VK_QUERY_TYPE_TIMESTAMP: i32 = 2;
+pub const VK_PIPELINE_CACHE_HEADER_VERSION_ONE: u32 = 1;
 
 // Flags
 pub const VK_QUEUE_GRAPHICS_BIT: VkFlags = 0x1;
@@ -208,10 +222,15 @@ pub const VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT: VkFlags = 0x1;
 pub const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: VkFlags = 0x2;
 pub const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: VkFlags = 0x4;
 pub const VK_MEMORY_PROPERTY_HOST_CACHED_BIT: VkFlags = 0x8;
+pub const VK_MEMORY_HEAP_DEVICE_LOCAL_BIT: VkFlags = 0x1;
+pub const VK_QUERY_RESULT_64_BIT: VkFlags = 0x1;
+pub const VK_QUERY_RESULT_WITH_AVAILABILITY_BIT: VkFlags = 0x4;
 pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: VkFlags = 0x2;
 pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: VkFlags = 0x40;
 pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: VkFlags = 0x80;
+pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: VkFlags = 0x2_0000;
+pub const VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT: VkFlags = 0x2;
 pub const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: VkFlags = 0x10;
 pub const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkFlags = 0x20;
@@ -410,6 +429,29 @@ pub struct VkPhysicalDeviceLimits {
     pub rest: [u64; 62],
 }
 
+impl VkPhysicalDeviceLimits {
+    /// Byte offsets of 32-bit members inside the C struct (vulkan_core.h, 64-bit layout). The
+    /// test-only ones let a GPU test check the offsets against limits with known minimums.
+    #[cfg(test)]
+    pub const MAX_PUSH_CONSTANTS_SIZE: usize = 32;
+    #[cfg(test)]
+    pub const MAX_DRAW_INDEXED_INDEX_VALUE: usize = 260;
+    pub const TIMESTAMP_PERIOD: usize = 424;
+
+    /// The 32-bit member at byte `offset` (one of the constants above, so at least 8).
+    pub fn word(&self, offset: usize) -> u32 {
+        let i = offset - 8; // past the two named fields
+        let b = self.rest[i / 8].to_ne_bytes();
+        let k = i % 8;
+        u32::from_ne_bytes([b[k], b[k + 1], b[k + 2], b[k + 3]])
+    }
+
+    /// Nanoseconds per timestamp tick.
+    pub fn timestamp_period(&self) -> f32 {
+        f32::from_bits(self.word(Self::TIMESTAMP_PERIOD))
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkPhysicalDeviceSparseProperties {
@@ -467,6 +509,41 @@ pub struct VkPhysicalDeviceMemoryProperties {
 }
 
 #[repr(C)]
+pub struct VkPhysicalDeviceMemoryProperties2 {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub memory_properties: VkPhysicalDeviceMemoryProperties,
+}
+
+/// `VK_EXT_memory_budget`: per-heap budget and current process usage, in bytes.
+#[repr(C)]
+pub struct VkPhysicalDeviceMemoryBudgetPropertiesEXT {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub heap_budget: [VkDeviceSize; VK_MAX_MEMORY_HEAPS],
+    pub heap_usage: [VkDeviceSize; VK_MAX_MEMORY_HEAPS],
+}
+
+#[repr(C)]
+pub struct VkQueryPoolCreateInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub flags: VkFlags,
+    pub query_type: i32,
+    pub query_count: u32,
+    pub pipeline_statistics: VkFlags,
+}
+
+#[repr(C)]
+pub struct VkPipelineCacheCreateInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub flags: VkFlags,
+    pub initial_data_size: usize,
+    pub p_initial_data: *const c_void,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VkFormatProperties {
     pub linear_tiling_features: VkFlags,
@@ -486,6 +563,39 @@ pub struct VkPhysicalDeviceFeatures2 {
     pub s_type: VkStructureType,
     pub p_next: *mut c_void,
     pub features: VkPhysicalDeviceFeatures,
+}
+
+/// The 47 `VkBool32` members of `VkPhysicalDeviceVulkan12Features`, by index.
+#[repr(C)]
+pub struct VkPhysicalDeviceVulkan12Features {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub flags: [VkBool32; 47],
+}
+
+impl VkPhysicalDeviceVulkan12Features {
+    /// Index of `bufferDeviceAddress` in [`Self::flags`].
+    pub const BUFFER_DEVICE_ADDRESS: usize = 38;
+
+    /// All features off, chained to `next`.
+    pub fn new(next: *mut c_void) -> Self {
+        VkPhysicalDeviceVulkan12Features { s_type: ST_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, p_next: next, flags: [0; 47] }
+    }
+}
+
+#[repr(C)]
+pub struct VkMemoryAllocateFlagsInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub flags: VkFlags,
+    pub device_mask: u32,
+}
+
+#[repr(C)]
+pub struct VkBufferDeviceAddressInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub buffer: VkBuffer,
 }
 
 #[repr(C)]
@@ -1155,6 +1265,8 @@ fn_table! {
             fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
         get_physical_device_memory_properties = c"vkGetPhysicalDeviceMemoryProperties":
             fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties);
+        get_physical_device_memory_properties2 = c"vkGetPhysicalDeviceMemoryProperties2":
+            fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties2);
         get_physical_device_features2 = c"vkGetPhysicalDeviceFeatures2":
             fn(VkPhysicalDevice, *mut VkPhysicalDeviceFeatures2);
         get_physical_device_format_properties = c"vkGetPhysicalDeviceFormatProperties":
@@ -1263,10 +1375,23 @@ fn_table! {
         cmd_push_constants = c"vkCmdPushConstants":
             fn(VkCommandBuffer, VkPipelineLayout, VkFlags, u32, u32, *const c_void);
         cmd_draw_indexed = c"vkCmdDrawIndexed": fn(VkCommandBuffer, u32, u32, u32, i32, u32);
+        get_buffer_device_address = c"vkGetBufferDeviceAddress": fn(VkDevice, *const VkBufferDeviceAddressInfo) -> u64;
         cmd_copy_buffer = c"vkCmdCopyBuffer":
             fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
         cmd_copy_image_to_buffer = c"vkCmdCopyImageToBuffer":
             fn(VkCommandBuffer, VkImage, VkImageLayout, VkBuffer, u32, *const VkBufferImageCopy);
+        create_query_pool = c"vkCreateQueryPool":
+            fn(VkDevice, *const VkQueryPoolCreateInfo, *const c_void, *mut VkQueryPool) -> VkResult;
+        destroy_query_pool = c"vkDestroyQueryPool": fn(VkDevice, VkQueryPool, *const c_void);
+        cmd_reset_query_pool = c"vkCmdResetQueryPool": fn(VkCommandBuffer, VkQueryPool, u32, u32);
+        cmd_write_timestamp2 = c"vkCmdWriteTimestamp2": fn(VkCommandBuffer, VkFlags64, VkQueryPool, u32);
+        get_query_pool_results = c"vkGetQueryPoolResults":
+            fn(VkDevice, VkQueryPool, u32, u32, usize, *mut c_void, VkDeviceSize, VkFlags) -> VkResult;
+        create_pipeline_cache = c"vkCreatePipelineCache":
+            fn(VkDevice, *const VkPipelineCacheCreateInfo, *const c_void, *mut VkPipelineCache) -> VkResult;
+        destroy_pipeline_cache = c"vkDestroyPipelineCache": fn(VkDevice, VkPipelineCache, *const c_void);
+        get_pipeline_cache_data = c"vkGetPipelineCacheData":
+            fn(VkDevice, VkPipelineCache, *mut usize, *mut c_void) -> VkResult;
     }
 }
 
@@ -1328,6 +1453,9 @@ mod tests {
             VkPhysicalDeviceFeatures => 220, 4;
             VkPhysicalDeviceFeatures2 => 240, 8;
             VkPhysicalDeviceVulkan13Features => 80, 8;
+            VkPhysicalDeviceVulkan12Features => 208, 8;
+            VkMemoryAllocateFlagsInfo => 24, 8;
+            VkBufferDeviceAddressInfo => 24, 8;
             VkFormatProperties => 12, 4;
             VkDeviceQueueCreateInfo => 40, 8;
             VkDeviceCreateInfo => 72, 8;
@@ -1383,7 +1511,27 @@ mod tests {
             VkSurfaceFormatKHR => 8, 4;
             VkSwapchainCreateInfoKHR => 104, 8;
             VkPresentInfoKHR => 64, 8;
+            VkPhysicalDeviceMemoryProperties2 => 536, 8;
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT => 272, 8;
+            VkQueryPoolCreateInfo => 32, 8;
+            VkPipelineCacheCreateInfo => 40, 8;
         }
+    }
+
+    #[test]
+    fn limits_words_read_the_right_bytes() {
+        let mut limits = VkPhysicalDeviceLimits { max_image_dimension_1d: 0, max_image_dimension_2d: 0, rest: [0; 62] };
+        // Write through a byte view, as the driver would, then read back by C offset.
+        // SAFETY: `limits` is plain data of exactly 504 bytes; the view does not outlive it.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(&mut limits as *mut VkPhysicalDeviceLimits as *mut u8, size_of::<VkPhysicalDeviceLimits>())
+        };
+        bytes[424..428].copy_from_slice(&83.333f32.to_ne_bytes());
+        bytes[32..36].copy_from_slice(&256u32.to_ne_bytes());
+        bytes[260..264].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert_eq!(limits.timestamp_period(), 83.333);
+        assert_eq!(limits.word(VkPhysicalDeviceLimits::MAX_PUSH_CONSTANTS_SIZE), 256);
+        assert_eq!(limits.word(VkPhysicalDeviceLimits::MAX_DRAW_INDEXED_INDEX_VALUE), u32::MAX);
     }
 
     #[test]
@@ -1394,6 +1542,8 @@ mod tests {
         assert_eq!(offset_of!(VkPhysicalDeviceMemoryProperties, memory_heap_count), 260);
         assert_eq!(offset_of!(VkPhysicalDeviceMemoryProperties, memory_heaps), 264);
         assert_eq!(offset_of!(VkPhysicalDeviceVulkan13Features, synchronization2), 52);
+        // bufferDeviceAddress sits at offset 168 in VkPhysicalDeviceVulkan12Features.
+        assert_eq!(offset_of!(VkPhysicalDeviceVulkan12Features, flags) + 4 * VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS, 168);
         assert_eq!(offset_of!(VkPhysicalDeviceVulkan13Features, dynamic_rendering), 64);
         assert_eq!(offset_of!(VkRenderingAttachmentInfo, clear_value), 52);
     }
