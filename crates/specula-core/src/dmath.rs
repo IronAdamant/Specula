@@ -10,9 +10,10 @@
 //!
 //! # Design
 //!
-//! - The `f32` functions evaluate in `f64` and round once at the end, so they are almost always
-//!   correctly rounded (0 ulp off on every input the tests sweep; ≤ 1 ulp asserted). `f32` is what
-//!   the engine uses.
+//! - The `f32` functions are **correctly rounded** (`f32` is what the engine uses). They take the
+//!   fast `f64` result unless it is too close to an `f32` midpoint to round safely, and then
+//!   recompute in double-double (see `to_f32`). Verified exhaustively for the one-argument
+//!   functions (`tests::exhaustive` + `scripts/dmath_oracle.py`).
 //! - The `f64` functions (`*_f64`) use the same algorithms. They are within 1–2 ulp, not correctly
 //!   rounded (measured bounds are in the tests and in `docs/design/DETERMINISM.md`). There is no
 //!   `pow_f64`: it would need a double-double `ln` to stay accurate.
@@ -41,6 +42,7 @@ const PI_LO: f64 = f64::from_bits(0x3CA1A62633145C07);
 const PIO2_HI: f64 = f64::from_bits(0x3FF921FB54442D18);
 const PIO2_LO: f64 = f64::from_bits(0x3C91A62633145C07);
 const PIO4_HI: f64 = f64::from_bits(0x3FE921FB54442D18);
+const PIO4_LO: f64 = f64::from_bits(0x3C81A62633145C07);
 /// 2/π rounded to f64 (only used to pick the quadrant, exactness not needed).
 const TWO_OVER_PI_F64: f64 = f64::from_bits(0x3FE45F306DC9C883);
 /// π/2 = PIO2_1 + PIO2_2 + PIO2_3 + PIO2_3T, the first three with ≤ 33 significant bits so that
@@ -114,7 +116,7 @@ fn horner(x: f64, c: &[f64]) -> f64 {
 
 /// `a + b = s + e` exactly.
 #[inline]
-fn two_sum(a: f64, b: f64) -> (f64, f64) {
+const fn two_sum(a: f64, b: f64) -> (f64, f64) {
     let s = a + b;
     let bb = s - a;
     (s, (a - (s - bb)) + (b - bb))
@@ -122,7 +124,7 @@ fn two_sum(a: f64, b: f64) -> (f64, f64) {
 
 /// Veltkamp split into two 26-bit halves. Valid for |a| < 2⁹⁹⁶.
 #[inline]
-fn split(a: f64) -> (f64, f64) {
+const fn split(a: f64) -> (f64, f64) {
     let t = 134_217_729.0 * a; // 2^27 + 1
     let hi = t - (t - a);
     (hi, a - hi)
@@ -130,7 +132,7 @@ fn split(a: f64) -> (f64, f64) {
 
 /// `a * b = p + e` exactly (Dekker). Valid when no intermediate overflows or underflows.
 #[inline]
-fn two_prod(a: f64, b: f64) -> (f64, f64) {
+const fn two_prod(a: f64, b: f64) -> (f64, f64) {
     let p = a * b;
     let (ah, al) = split(a);
     let (bh, bl) = split(b);
@@ -156,6 +158,159 @@ fn scalbn(mut y: f64, mut n: i32) -> f64 {
         }
     }
     y * pow2(n)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Double-double arithmetic (value = hi + lo, |lo| ≤ ulp(hi)/2): ~106-bit intermediates for the
+// accurate paths that decide f32 rounding.
+
+type Dd = (f64, f64);
+
+/// `a + b = s + e` exactly when |a| ≥ |b| (or a = 0).
+#[inline]
+const fn fast_two_sum(a: f64, b: f64) -> Dd {
+    let s = a + b;
+    (s, b - (s - a))
+}
+
+#[inline]
+fn dd_add(a: Dd, b: Dd) -> Dd {
+    let (s, e) = two_sum(a.0, b.0);
+    let (t, f) = two_sum(a.1, b.1);
+    let (s, e) = fast_two_sum(s, e + t);
+    fast_two_sum(s, e + f)
+}
+
+#[inline]
+fn dd_mul(a: Dd, b: Dd) -> Dd {
+    let (p, e) = two_prod(a.0, b.0);
+    fast_two_sum(p, e + (a.0 * b.1 + a.1 * b.0))
+}
+
+#[inline]
+fn dd_mul_d(a: Dd, b: f64) -> Dd {
+    let (p, e) = two_prod(a.0, b);
+    fast_two_sum(p, e + a.1 * b)
+}
+
+fn dd_div(a: Dd, b: Dd) -> Dd {
+    let q1 = a.0 / b.0;
+    let r = dd_add(a, dd_mul_d(b, -q1));
+    let q2 = r.0 / b.0;
+    let r = dd_add(r, dd_mul_d(b, -q2));
+    let q3 = r.0 / b.0;
+    dd_add(fast_two_sum(q1, q2), (q3, 0.0))
+}
+
+#[inline]
+const fn dd_neg(a: Dd) -> Dd {
+    (-a.0, -a.1)
+}
+
+/// 1/n as a double-double (compile time).
+const fn recip_dd(n: f64) -> Dd {
+    let hi = 1.0 / n;
+    let (p, e) = two_prod(hi, n);
+    (hi, ((1.0 - p) - e) / n)
+}
+
+const THIRD_DD: Dd = recip_dd(3.0);
+const FIFTH_DD: Dd = recip_dd(5.0);
+const SIXTH_DD: Dd = recip_dd(6.0);
+const LN2_DD: Dd = (LN2_HI, LN2_LO);
+const INV_LN2_DD: Dd = (INV_LN2_HI, INV_LN2_LO);
+const PI_DD: Dd = (PI_HI, PI_LO);
+const PIO2_DD: Dd = (PIO2_HI, PIO2_LO);
+
+// ---------------------------------------------------------------------------------------------
+// Correct rounding to f32.
+//
+// Rounding an f64 result to f32 rounds twice: when the f64 value lands exactly on an f32 midpoint
+// the tie is broken by ties-to-even instead of by the true value (17 such inputs over all 2³²
+// for the first version of this module). So the f32 functions use a Ziv-style two-step scheme:
+// the fast f64 result (error ≤ a few f64 ulp) is used unless it lies within `MIDPOINT_TOL` f64 ulp
+// of an f32 midpoint (about 1 input in 2²³); then an accurate double-double result (relative
+// error ≲ 2⁻⁶²) is narrowed with the tie decided by the sign of its low part.
+
+/// Distance from an f32 midpoint, in f64 ulp, below which a fast result with error of a few ulp
+/// can't be trusted.
+const MIDPOINT_TOL: i64 = 32;
+
+/// Whether `h` (an f64 approximation with error < `tol` ulp) might round to a different f32 than
+/// the exact value.
+#[inline]
+fn near_f32_midpoint(h: f64, tol: i64) -> bool {
+    let b = h.to_bits();
+    let e = ((b >> 52) & 0x7ff) as i32;
+    if e == 0 || e == 0x7ff {
+        return false; // zero, f64-subnormal (far below f32), inf, NaN
+    }
+    // f64 significand bits below the f32 rounding position (more for f32-subnormal results).
+    let drop = 29 + (-126 - (e - 1023)).max(0);
+    if drop > 53 {
+        return true; // below half the smallest f32 subnormal: let the accurate path decide
+    }
+    let m = (b & ((1 << 52) - 1)) | (1 << 52);
+    let low = (m & ((1u64 << drop) - 1)) as i64;
+    (low - (1i64 << (drop - 1))).abs() <= tol
+}
+
+/// Next f32 from `c` in the direction of the sign of `d`.
+fn next_f32(c: f32, d: f64) -> f32 {
+    if c == 0.0 {
+        return f32::from_bits(1).copysign(d as f32);
+    }
+    let b = c.to_bits();
+    f32::from_bits(if (c > 0.0) == (d > 0.0) { b + 1 } else { b - 1 })
+}
+
+/// Correctly rounds the double-double `h + l` to f32 (round to nearest, ties to even), assuming
+/// `h + l` is closer to the exact value than to any f32 midpoint.
+fn narrow(h: f64, l: f64) -> f32 {
+    if l == 0.0 {
+        return h as f32; // exact (keeps -0): a real tie keeps ties-to-even
+    }
+    let (h, l) = fast_two_sum(h, l);
+    let c = h as f32;
+    if c.is_infinite() {
+        // Overflow boundary: h exactly halfway between MAX and 2^128 with the true value below.
+        let mid = f32::MAX as f64 + pow2(103);
+        return if h.abs() == mid && (l > 0.0) != (h > 0.0) { f32::MAX.copysign(c) } else { c };
+    }
+    let d = h - c as f64; // exact
+    if d == 0.0 {
+        return c;
+    }
+    let other = next_f32(c, d);
+    if other as f64 - h == d && (l > 0.0) == (d > 0.0) {
+        other // h is exactly a midpoint and the true value lies beyond it
+    } else {
+        c
+    }
+}
+
+/// The fast f64 result rounded to f32, or the accurate one when the fast one is ambiguous.
+#[inline]
+fn to_f32(fast: f64, accurate: impl FnOnce() -> Dd) -> f32 {
+    to_f32_tol(fast, MIDPOINT_TOL, accurate)
+}
+
+/// `to_f32` for a fast result whose error bound is `tol` f64 ulp.
+#[inline]
+fn to_f32_tol(fast: f64, tol: i64, accurate: impl FnOnce() -> Dd) -> f32 {
+    if near_f32_midpoint(fast, tol) {
+        narrow_slow(accurate)
+    } else {
+        fast as f32
+    }
+}
+
+/// Out of line so the rarely used double-double code doesn't bloat the fast paths.
+#[cold]
+#[inline(never)]
+fn narrow_slow(accurate: impl FnOnce() -> Dd) -> f32 {
+    let (h, l) = accurate();
+    narrow(h, l)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -458,43 +613,105 @@ pub fn tan_f64(x: f64) -> f64 {
     }
 }
 
+const S3_DD: Dd = dd_neg(SIXTH_DD);
+const S5_DD: Dd = recip_dd(120.0);
+const C4_DD: Dd = recip_dd(24.0);
+const C6_DD: Dd = dd_neg(recip_dd(720.0));
+
+/// (sin, cos)(x + y) for |x| ≲ π/4 as double-doubles: the leading terms in double-double,
+/// the rest (≤ x⁷/5040) in double. Relative error ≲ 2⁻⁶⁶.
+fn sin_cos_kernel_dd(x: f64, y: f64) -> (Dd, Dd) {
+    let xy: Dd = (x, y);
+    let z = dd_mul(xy, xy);
+    let u = z.0;
+    let qs = dd_add(S3_DD, dd_mul(z, dd_add(S5_DD, (u * horner(u, &SIN[2..]), 0.0))));
+    let sin = dd_add(xy, dd_mul(dd_mul(z, xy), qs));
+    let qc = dd_add(C4_DD, dd_mul(z, dd_add(C6_DD, (u * horner(u, &COS[2..]), 0.0))));
+    let cos = dd_add((1.0, 0.0), dd_add((-0.5 * z.0, -0.5 * z.1), dd_mul(dd_mul(z, z), qc)));
+    (sin, cos)
+}
+
+/// Accurate (sin x, cos x) for finite x as double-doubles.
+fn sin_cos_dd(x: f64) -> (Dd, Dd) {
+    if x.abs() < TINY {
+        return ((x, -x * x * x / 6.0), (1.0, -0.5 * x * x));
+    }
+    let (q, a, b) = rem_pio2(x);
+    let (s, c) = sin_cos_kernel_dd(a, b);
+    match q {
+        0 => (s, c),
+        1 => (c, dd_neg(s)),
+        2 => (dd_neg(s), dd_neg(c)),
+        _ => (dd_neg(c), s),
+    }
+}
+
+fn tan_dd(x: f64) -> Dd {
+    if x.abs() < TINY {
+        return (x, x * x * x / 3.0); // keeps ±0
+    }
+    let (s, c) = sin_cos_dd(x);
+    dd_div(s, c)
+}
+
 pub fn sin(x: f32) -> f32 {
-    sin_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(sin_f64(x), || sin_cos_dd(x).0)
 }
 
 pub fn cos(x: f32) -> f32 {
-    cos_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(cos_f64(x), || sin_cos_dd(x).1)
 }
 
 /// `(sin x, cos x)` with one range reduction.
 pub fn sin_cos(x: f32) -> (f32, f32) {
-    let (s, c) = sin_cos_f64(x as f64);
-    (s as f32, c as f32)
+    let x = x as f64;
+    let (s, c) = sin_cos_f64(x);
+    (to_f32(s, || sin_cos_dd(x).0), to_f32(c, || sin_cos_dd(x).1))
 }
 
 pub fn tan(x: f32) -> f32 {
-    tan_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(tan_f64(x), || tan_dd(x))
 }
 
 // ---------------------------------------------------------------------------------------------
 // atan / atan2 / asin / acos
+//
+// One implementation, two precisions: `ACC = false` evaluates the series tail in double (≤ 1 ulp
+// in f64, the fast path), `ACC = true` in double-double (the accurate path for f32 rounding).
 
-/// atan(t) - t for |t| ≤ 1/16: series through t¹⁵ (truncation < 4e-21 relative).
+const ATAN: [f64; 6] = [1.0 / 5.0, -1.0 / 7.0, 1.0 / 9.0, -1.0 / 11.0, 1.0 / 13.0, -1.0 / 15.0];
+
+/// atan(t) - t for |t| ≤ 1/16: t³·(-1/3 + t²/5 - …), series through t¹⁵ (truncation < 4e-21
+/// relative); with `ACC` the -1/3 term in double-double (total ≲ 2⁻⁷⁰).
 #[inline]
-fn atan_tail(t: f64) -> f64 {
-    const ATAN: [f64; 7] = [-1.0 / 3.0, 1.0 / 5.0, -1.0 / 7.0, 1.0 / 9.0, -1.0 / 11.0, 1.0 / 13.0, -1.0 / 15.0];
-    let z = t * t;
-    t * z * horner(z, &ATAN)
+fn atan_tail<const ACC: bool>(t: f64) -> Dd {
+    if ACC {
+        let z = two_prod(t, t);
+        let p = dd_add(dd_neg(THIRD_DD), (z.0 * horner(z.0, &ATAN), 0.0));
+        dd_mul(dd_mul_d(z, t), p)
+    } else {
+        let z = t * t;
+        (t * z * (-1.0 / 3.0 + z * horner(z, &ATAN)), 0.0)
+    }
 }
 
-/// atan(a + a_lo) for a ∈ [0, 1], |a_lo| ≲ ulp(a), as an unevaluated sum (hi, lo):
+/// atan(a + a_lo) for a ∈ [0, 1], |a_lo| ≲ ulp(a), as a double-double:
 /// atan(c) + atan((a - c)/(1 + ac)) with c = k/8 the nearest eighth, the quotient kept as a
 /// double-double so the table split adds no error.
-fn atan_unit(a: f64, a_lo: f64) -> (f64, f64) {
+#[inline]
+fn atan_unit<const ACC: bool>(a: f64, a_lo: f64) -> Dd {
     let k = round_f64(a * 8.0);
     if k == 0.0 {
-        // atan(a + a_lo) ≈ atan(a) + a_lo/(1 + a²)
-        return (a, atan_tail(a) + a_lo * (1.0 - a * a));
+        // atan(a + a_lo) ≈ atan(a) + a_lo·(1 - a²)
+        let tail = atan_tail::<ACC>(a);
+        return if ACC {
+            dd_add(fast_two_sum(a, a_lo * (1.0 - a * a)), tail)
+        } else {
+            (a, tail.0 + a_lo * (1.0 - a * a))
+        };
     }
     let c = k * 0.125;
     let num = a - c; // exact (Sterbenz)
@@ -504,98 +721,100 @@ fn atan_unit(a: f64, a_lo: f64) -> (f64, f64) {
     let t = num / d;
     let (q, qe) = two_prod(t, d);
     let t_lo = (((num - q) - qe) + a_lo - t * de) / d;
+    let tail = atan_tail::<ACC>(t);
     let (hi, lo) = ATAN_K8[k as usize];
-    let (s, e) = two_sum(hi, t);
-    (s, e + (lo + (atan_tail(t) + t_lo * (1.0 - t * t))))
+    if ACC {
+        dd_add((hi, lo), dd_add(fast_two_sum(t, t_lo * (1.0 - t * t)), tail))
+    } else {
+        let (s, e) = two_sum(hi, t);
+        (s, e + (lo + (tail.0 + t_lo * (1.0 - t * t))))
+    }
 }
 
 /// atan(n/d) for 0 ≤ n ≤ d, 0 < d < inf, with both given as double-doubles.
-fn atan_ratio(n: f64, n_lo: f64, d: f64, d_lo: f64) -> (f64, f64) {
+#[inline]
+fn atan_ratio<const ACC: bool>(n: f64, n_lo: f64, d: f64, d_lo: f64) -> Dd {
     // Scale by a power of two so d ∈ [1, 2): exact (n may underflow only where the ratio is
     // negligible) and keeps `two_prod` in range.
     let e = 1023 - ((d.to_bits() >> 52) & 0x7ff) as i32;
     let (n, n_lo, d, d_lo) = (scalbn(n, e), scalbn(n_lo, e), scalbn(d, e), scalbn(d_lo, e));
     let a = n / d;
     let (p, pe) = two_prod(a, d);
-    atan_unit(a, (((n - p) - pe) + n_lo - a * d_lo) / d)
-}
-
-/// π/2 - (h + l) as a double-double.
-fn pio2_minus((h, l): (f64, f64)) -> (f64, f64) {
-    let (s, e) = two_sum(PIO2_HI, -h);
-    (s, (e + PIO2_LO) - l)
-}
-
-/// π - (h + l), rounded.
-fn pi_minus((h, l): (f64, f64)) -> f64 {
-    let (s, e) = two_sum(PI_HI, -h);
-    s + ((e + PI_LO) - l)
+    atan_unit::<ACC>(a, (((n - p) - pe) + n_lo - a * d_lo) / d)
 }
 
 /// Angle of the vector (x, y) for x, y ≥ 0 finite, not both zero, given as double-doubles.
-fn angle_first_quadrant(y: f64, y_lo: f64, x: f64, x_lo: f64) -> (f64, f64) {
+#[inline]
+fn angle_first_quadrant<const ACC: bool>(y: f64, y_lo: f64, x: f64, x_lo: f64) -> Dd {
     if y <= x {
-        atan_ratio(y, y_lo, x, x_lo)
+        atan_ratio::<ACC>(y, y_lo, x, x_lo)
     } else {
-        pio2_minus(atan_ratio(x, x_lo, y, y_lo))
+        dd_add(PIO2_DD, dd_neg(atan_ratio::<ACC>(x, x_lo, y, y_lo)))
     }
 }
 
-pub fn atan_f64(x: f64) -> f64 {
-    if x.is_nan() {
-        return x;
+/// Copies the sign of `s` onto a double-double.
+fn dd_copysign(a: Dd, s: f64) -> Dd {
+    if (a.0 < 0.0) == s.is_sign_negative() || a.0.is_nan() {
+        (a.0.copysign(s), a.1)
+    } else {
+        dd_neg(a)
     }
+}
+
+/// atan for x not NaN.
+fn atan_dd<const ACC: bool>(x: f64) -> Dd {
     let ax = x.abs();
-    let (h, l) = if ax <= 1.0 {
-        atan_unit(ax, 0.0)
+    let a = if ax <= 1.0 {
+        atan_unit::<ACC>(ax, 0.0)
     } else if ax.is_infinite() {
-        (PIO2_HI, PIO2_LO)
+        PIO2_DD
     } else {
-        pio2_minus(atan_ratio(1.0, 0.0, ax, 0.0))
+        dd_add(PIO2_DD, dd_neg(atan_ratio::<ACC>(1.0, 0.0, ax, 0.0)))
     };
-    (h + l).copysign(x)
+    dd_copysign(a, x)
 }
 
-/// Angle of the point (x, y) in [-π, π], with the C99 special cases (`atan2(±0, -0) = ±π`, …).
-pub fn atan2_f64(y: f64, x: f64) -> f64 {
+/// atan2 as a double-double; special cases give exact (v, 0).
+fn atan2_dd<const ACC: bool>(y: f64, x: f64) -> Dd {
     if x.is_nan() || y.is_nan() {
-        return f64::NAN;
+        return (f64::NAN, 0.0);
     }
     let (ay, ax) = (y.abs(), x.abs());
     let x_neg = x.is_sign_negative();
     let r = if ay == 0.0 {
         if x_neg {
-            PI_HI
+            PI_DD
         } else {
-            0.0
+            (0.0, 0.0)
         }
     } else if ax == 0.0 {
-        PIO2_HI
+        PIO2_DD
     } else if ay.is_infinite() {
         match (ax.is_infinite(), x_neg) {
-            (true, false) => PIO4_HI,
-            (true, true) => 3.0 * PIO4_HI, // rounds to the f64 nearest 3π/4
-            _ => PIO2_HI,
+            (true, false) => (PIO4_HI, PIO4_LO),
+            (true, true) => dd_add(PIO2_DD, (PIO4_HI, PIO4_LO)),
+            _ => PIO2_DD,
         }
     } else if ax.is_infinite() {
         if x_neg {
-            PI_HI
+            PI_DD
         } else {
-            0.0
+            (0.0, 0.0)
         }
     } else {
-        let a = angle_first_quadrant(ay, 0.0, ax, 0.0);
+        let a = angle_first_quadrant::<ACC>(ay, 0.0, ax, 0.0);
         if x_neg {
-            pi_minus(a)
+            dd_add(PI_DD, dd_neg(a))
         } else {
-            a.0 + a.1
+            a
         }
     };
-    r.copysign(y)
+    dd_copysign(r, y)
 }
 
 /// √(1 - x²) for 0 ≤ x ≤ 1 as a double-double (1 - x² is formed exactly).
-fn sqrt_one_minus_sq(x: f64) -> (f64, f64) {
+fn sqrt_one_minus_sq(x: f64) -> Dd {
     let (p, pe) = two_prod(x, x);
     let (h, he) = two_sum(1.0, -p);
     let (h, l) = two_sum(h, he - pe);
@@ -608,48 +827,85 @@ fn sqrt_one_minus_sq(x: f64) -> (f64, f64) {
     two_sum(s, (((h - ss) - sse) + l) / (2.0 * s))
 }
 
-pub fn asin_f64(x: f64) -> f64 {
+/// asin for |x| ≤ 1 (not NaN).
+fn asin_dd<const ACC: bool>(x: f64) -> Dd {
     let ax = x.abs();
-    if x.is_nan() || ax > 1.0 {
-        return f64::NAN;
-    }
     if ax < TINY {
-        return x;
+        return (x, x * x * x / 6.0);
     }
     let (d, d_lo) = sqrt_one_minus_sq(ax);
-    let (h, l) = angle_first_quadrant(ax, 0.0, d, d_lo);
-    (h + l).copysign(x)
+    dd_copysign(angle_first_quadrant::<ACC>(ax, 0.0, d, d_lo), x)
+}
+
+/// acos for |x| ≤ 1 (not NaN).
+fn acos_dd<const ACC: bool>(x: f64) -> Dd {
+    let (d, d_lo) = sqrt_one_minus_sq(x.abs());
+    let a = angle_first_quadrant::<ACC>(d, d_lo, x.abs(), 0.0);
+    if x.is_sign_negative() {
+        dd_add(PI_DD, dd_neg(a))
+    } else {
+        a
+    }
+}
+
+pub fn atan_f64(x: f64) -> f64 {
+    if x.is_nan() {
+        return x;
+    }
+    let (h, l) = atan_dd::<false>(x);
+    h + l
+}
+
+/// Angle of the point (x, y) in [-π, π], with the C99 special cases (`atan2(±0, -0) = ±π`, …).
+pub fn atan2_f64(y: f64, x: f64) -> f64 {
+    let (h, l) = atan2_dd::<false>(y, x);
+    h + l
+}
+
+pub fn asin_f64(x: f64) -> f64 {
+    if x.is_nan() || x.abs() > 1.0 {
+        return f64::NAN;
+    }
+    let (h, l) = asin_dd::<false>(x);
+    h + l
 }
 
 pub fn acos_f64(x: f64) -> f64 {
-    let ax = x.abs();
-    if x.is_nan() || ax > 1.0 {
+    if x.is_nan() || x.abs() > 1.0 {
         return f64::NAN;
     }
-    let (d, d_lo) = sqrt_one_minus_sq(ax);
-    let a = angle_first_quadrant(d, d_lo, ax, 0.0);
-    if x.is_sign_negative() {
-        pi_minus(a)
-    } else {
-        a.0 + a.1
-    }
+    let (h, l) = acos_dd::<false>(x);
+    h + l
 }
 
 pub fn atan(x: f32) -> f32 {
-    atan_f64(x as f64) as f32
+    let x = x as f64;
+    if x.is_nan() {
+        return f32::NAN;
+    }
+    to_f32(atan_f64(x), || atan_dd::<true>(x))
 }
 
 /// Angle of the point (x, y) in [-π, π].
 pub fn atan2(y: f32, x: f32) -> f32 {
-    atan2_f64(y as f64, x as f64) as f32
+    let (y, x) = (y as f64, x as f64);
+    to_f32(atan2_f64(y, x), || atan2_dd::<true>(y, x))
 }
 
 pub fn asin(x: f32) -> f32 {
-    asin_f64(x as f64) as f32
+    if x.is_nan() || x.abs() > 1.0 {
+        return f32::NAN;
+    }
+    let x = x as f64;
+    to_f32(asin_f64(x), || asin_dd::<true>(x))
 }
 
 pub fn acos(x: f32) -> f32 {
-    acos_f64(x as f64) as f32
+    if x.is_nan() || x.abs() > 1.0 {
+        return f32::NAN;
+    }
+    let x = x as f64;
+    to_f32(acos_f64(x), || acos_dd::<true>(x))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -711,12 +967,46 @@ pub fn exp2_f64(x: f64) -> f64 {
     exp_finish(r, re, k as i32)
 }
 
+/// e^(r + re) for |r| ≲ ln2/2 as a double-double: 1 + r + r²/2 + r³/6 in double-double, the
+/// rest (≤ r⁴/24) in double. Relative error ≲ 2⁻⁶³.
+fn exp_kernel_dd(r: f64, re: f64) -> Dd {
+    let rr: Dd = (r, re);
+    let r2 = dd_mul(rr, rr);
+    let r3_6 = dd_mul(dd_mul(r2, rr), SIXTH_DD);
+    let tail = r2.0 * r2.0 * horner(r, &EXP[2..]);
+    let s = dd_add(r3_6, (tail, 0.0));
+    let s = dd_add((0.5 * r2.0, 0.5 * r2.1), s);
+    dd_add((1.0, 0.0), dd_add(rr, s))
+}
+
+/// e^(t.0 + t.1) as a double-double, for EXP_UNDERFLOW ≤ t.0 ≤ EXP_OVERFLOW.
+fn exp_dd(t: Dd) -> Dd {
+    let k = round_f64(t.0 * INV_LN2_HI);
+    let hi = t.0 - k * LN2_CW_HI; // exact
+    let (r, re) = two_sum(hi, -(k * LN2_CW_LO));
+    let (r, re) = fast_two_sum(r, re + t.1);
+    let (h, l) = exp_kernel_dd(r, re);
+    (scalbn(h, k as i32), scalbn(l, k as i32))
+}
+
+/// 2^x as a double-double, for -1075 < x < 1024.
+fn exp2_dd(x: f64) -> Dd {
+    let k = round_f64(x);
+    let f = x - k; // exact
+    let (h, l) = two_prod(f, LN2_HI);
+    let (r, re) = fast_two_sum(h, l + f * LN2_LO);
+    let (h, l) = exp_kernel_dd(r, re);
+    (scalbn(h, k as i32), scalbn(l, k as i32))
+}
+
 pub fn exp(x: f32) -> f32 {
-    exp_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(exp_f64(x), || exp_dd((x, 0.0)))
 }
 
 pub fn exp2(x: f32) -> f32 {
-    exp2_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(exp2_f64(x), || exp2_dd(x))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -789,21 +1079,114 @@ pub fn log2_f64(x: f64) -> f64 {
     s + (e + tail)
 }
 
+/// ln(1 + f) for f from `log_reduce` as a double-double: 2s·(1 + s²/3 + s⁴/5 + …), s = f/(2+f),
+/// with s and the first two terms in double-double. Relative error ≲ 2⁻⁷⁰.
+fn ln1p_dd(f: f64) -> Dd {
+    const TAIL: [f64; 12] = [
+        1.0 / 7.0, 1.0 / 9.0, 1.0 / 11.0, 1.0 / 13.0, 1.0 / 15.0, 1.0 / 17.0, 1.0 / 19.0, 1.0 / 21.0, 1.0 / 23.0,
+        1.0 / 25.0, 1.0 / 27.0, 1.0 / 29.0,
+    ];
+    let s = dd_div((f, 0.0), two_sum(2.0, f));
+    let s2 = dd_mul(s, s);
+    let u = s2.0;
+    let inner = dd_add(FIFTH_DD, (u * horner(u, &TAIL), 0.0));
+    let b = dd_mul(s2, dd_add(THIRD_DD, dd_mul(s2, inner)));
+    dd_mul((2.0 * s.0, 2.0 * s.1), dd_add((1.0, 0.0), b))
+}
+
+/// ln x for finite x > 0 as a double-double.
+fn ln_dd(x: f64) -> Dd {
+    let (k, f) = log_reduce(x).unwrap_or((0, f64::NAN));
+    dd_add(dd_mul_d(LN2_DD, k as f64), ln1p_dd(f))
+}
+
+/// log₂ x for finite x > 0 as a double-double (exact for powers of two).
+fn log2_dd(x: f64) -> Dd {
+    let (k, f) = log_reduce(x).unwrap_or((0, f64::NAN));
+    dd_add((k as f64, 0.0), dd_mul(ln1p_dd(f), INV_LN2_DD))
+}
+
 /// Natural logarithm.
 pub fn ln(x: f32) -> f32 {
-    ln_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(ln_f64(x), || ln_dd(x))
 }
 
 /// Base-2 logarithm; exact for powers of two.
 pub fn log2(x: f32) -> f32 {
-    log2_f64(x as f64) as f32
+    let x = x as f64;
+    to_f32(log2_f64(x), || log2_dd(x))
 }
 
 // ---------------------------------------------------------------------------------------------
 // pow / hypot
 
-/// `x^y` with the C99 special cases (like `f32::powf`). Evaluated as exp(y·ln x) in f64; for
-/// f32 results that keeps the error ≤ 1 ulp across the whole range.
+/// |x|^y for finite |x| ∉ {0, 1} and finite y ≠ 0, as a double-double that is **exact** whenever
+/// the result is an f32 value or an f32 midpoint (so ties round correctly), accurate to ≲ 2⁻⁶²
+/// otherwise.
+///
+/// Exact results only arise from (a) a power-of-two base with y·log₂|x| an integer, or (b) an
+/// integer power of a base after taking exact square roots (y = n/2^j): both are computed
+/// exactly; everything else goes through exp(y·ln|x|) in double-double.
+fn pow_dd(ax: f32, y: f32) -> Dd {
+    let bits = ax.to_bits();
+    let (mut b, mut e) = (ax as f64, y as f64);
+    if bits & 0x007f_ffff == 0 || bits < 0x0080_0000 && bits.is_power_of_two() {
+        // ax = 2^j: the result is 2^(j·y), j·y exact in f64.
+        let j = if bits < 0x0080_0000 { bits.trailing_zeros() as i32 - 149 } else { (bits >> 23) as i32 - 127 };
+        let t = j as f64 * e;
+        return if t >= 1024.0 {
+            (f64::INFINITY, 0.0)
+        } else if t <= -1075.0 {
+            (0.0, 0.0)
+        } else {
+            exp2_dd(t)
+        };
+    }
+    // Take exact square roots while y has a fractional part: x^(n/2^j) = (x^(1/2^j))^n.
+    while trunc_f64(e) != e {
+        let s = b.sqrt();
+        let (p, pe) = two_prod(s, s);
+        if p != b || pe != 0.0 {
+            break;
+        }
+        (b, e) = (s, e * 2.0);
+    }
+    if trunc_f64(e) == e && e.abs() <= 64.0 {
+        // b ∈ [2^lg, 2^(lg+1)): decide certain overflow/underflow first so the products stay
+        // far inside the double range (two_prod needs |v| < 2^996).
+        let lg = ((b.to_bits() >> 52) & 0x7ff) as i32 - 1023;
+        let n = e.abs() as i32;
+        if lg >= 0 && lg * n > 300 || lg < 0 && (lg + 1) * n < -300 {
+            let big = (lg >= 0) == (e > 0.0);
+            return if big { (f64::INFINITY, 0.0) } else { (0.0, 0.0) };
+        }
+        // Binary powering in double-double: exact while the result fits in 106 bits, which
+        // covers every result with ≤ 25 significant bits.
+        let (mut acc, mut base, mut m) = ((1.0, 0.0), (b, 0.0), n as u32);
+        while m > 0 {
+            if m & 1 == 1 {
+                acc = dd_mul(acc, base);
+            }
+            m >>= 1;
+            if m > 0 {
+                base = dd_mul(base, base);
+            }
+        }
+        return if e < 0.0 { dd_div((1.0, 0.0), acc) } else { acc };
+    }
+    let t = dd_mul_d(ln_dd(b), e);
+    if t.0 > EXP_OVERFLOW {
+        (f64::INFINITY, 0.0)
+    } else if t.0 < EXP_UNDERFLOW {
+        (0.0, 0.0)
+    } else {
+        exp_dd(t)
+    }
+}
+
+/// `x^y` with the C99 special cases (like `f32::powf`), correctly rounded, exact cases included
+/// (`pow(x, 2) == x * x`, `pow(x, 0.5) == sqrt(x)`, `pow(x, -1) == 1 / x`).
 pub fn pow(x: f32, y: f32) -> f32 {
     if y == 0.0 || x == 1.0 {
         return 1.0;
@@ -829,16 +1212,27 @@ pub fn pow(x: f32, y: f32) -> f32 {
         let mag = if y < 0.0 { 0.0 } else { f32::INFINITY };
         return if y_odd { mag.copysign(x) } else { mag };
     }
-    let mut sign = 1.0;
-    if x < 0.0 {
-        if !y_int {
-            return f32::NAN;
-        }
-        if y_odd {
-            sign = -1.0;
-        }
+    if x < 0.0 && !y_int {
+        return f32::NAN;
     }
-    (sign * exp_f64(y as f64 * ln_f64(x.abs() as f64))) as f32
+    // IEEE-exact operations for the commonest exponents.
+    match y {
+        1.0 => return x,
+        -1.0 => return 1.0 / x,
+        2.0 => return x * x,
+        0.5 => return x.sqrt(), // x > 0 here
+        _ => {}
+    }
+    // Fast path exp(y·ln|x|) in f64: ln's 1-ulp error grows by |t| through exp, so the trust
+    // radius around f32 midpoints widens with |t| (exact midpoint results always fall inside it).
+    let ax = x.abs();
+    let t = y as f64 * ln_f64(ax as f64);
+    let r = to_f32_tol(exp_f64(t), MIDPOINT_TOL + 4 * t.abs().min(1e6) as i64, || pow_dd(ax, y));
+    if x < 0.0 && y_odd {
+        -r
+    } else {
+        r
+    }
 }
 
 /// √(x² + y²) without undue overflow or underflow; `inf` if either is infinite (even with NaN).
@@ -881,9 +1275,19 @@ pub fn hypot(x: f32, y: f32) -> f32 {
     if x.is_infinite() || y.is_infinite() {
         return f32::INFINITY;
     }
-    // f32 squares are exact in f64 and can't overflow or underflow there.
+    if x.is_nan() || y.is_nan() {
+        return f32::NAN;
+    }
+    // f32 squares are exact in f64 (no overflow or underflow there), so the fast result has two
+    // roundings; near a midpoint, x² + y² as an exact double-double and one Newton step give the
+    // root to ~2⁻¹⁰⁰.
     let (x, y) = (x as f64, y as f64);
-    (x * x + y * y).sqrt() as f32
+    to_f32((x * x + y * y).sqrt(), || {
+        let (h, l) = two_sum(x * x, y * y);
+        let s = h.sqrt();
+        let (ss, sse) = two_prod(s, s);
+        (s, (((h - ss) - sse) + l) / (2.0 * s))
+    })
 }
 
 #[cfg(test)]

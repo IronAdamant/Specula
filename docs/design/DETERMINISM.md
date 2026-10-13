@@ -91,7 +91,8 @@ Built 2026-10-13 (rule 4). Simulation code calls `dmath::sin(x)` instead of `x.s
 The same set exists for `f64` with a `_f64` suffix, except `pow`. `dmath::VERSION` goes into replay headers.
 
 **How.** The functions use only IEEE basic operations (`+ - * /`, `sqrt`), conversions and integer bit operations.
-Those are correctly rounded, so every platform gets the same bits. The `f32` functions compute in `f64` and round once.
+Those are correctly rounded, so every platform gets the same bits. The `f32` functions compute in `f64` or
+double-double (see below).
 - **Polynomials:** truncated Taylor and `atanh` series with exact rational coefficients, on arguments reduced far
   enough that truncation is below 2⁻⁶⁰.
 - **Tables:** π, 2/π, ln 2 and `atan(k/8)`, generated with exact integer arithmetic.
@@ -99,19 +100,48 @@ Those are correctly rounded, so every platform gets the same bits. The `f32` fun
   Payne–Hanek with 1216 bits of 2/π, so accuracy holds up to `f64::MAX`. There is no cliff for huge arguments.
 - **Special values:** follow C99 Annex F, like `std`: NaN, ±0, ±inf, and the `atan2` and `pow` grids.
 
-**Measured accuracy**, from the tests, over 400k inputs per function.
+**Rounding `f32` results.** A plain `f(x as f64) as f32` rounds twice. When the `f64` result lands exactly on an `f32`
+midpoint, ties-to-even decides the result instead of the true value. An exhaustive review scan found 17 such inputs in
+the first version: ln ×5, cos ×4, and sin, atan, exp2 and acos ×2 each. So the `f32` functions now work in two steps
+(Ziv's strategy):
+- **Fast path:** they use the fast `f64` result unless it lies within 32 `f64` ulp of an `f32` midpoint, which is about
+  1 input in 2²³.
+- **Accurate path:** otherwise they compute a double-double result, with relative error ≲ 2⁻⁶², and round it with the
+  tie decided by the sign of its low part.
+- **pow:** the trust radius grows with |y·ln x|, because ln's error is amplified by exp.
 
-| | `f32` | `f64` |
-|---|---|---|
-| All functions | 0 ulp from the correctly rounded result on every input tested (asserted ≤ 1) | — |
-| sin, cos, exp, exp2, ln, log2, hypot | — | ≤ 1 ulp |
-| atan, atan2, asin, acos | — | ≤ 1 ulp measured, ≤ 2 asserted |
-| tan | — | ≤ 2 ulp |
-| sin, cos at 1e22, 1e300, `f64::MAX` | — | ≤ 1 ulp, against 1600-bit references |
+`pow` computes exact results exactly:
+- `pow(x, 2) == x * x`, `pow(x, 0.5) == sqrt(x)` and `pow(x, -1) == 1 / x`.
+- Integer powers up to 64 use double-double binary powering.
+- Half-integer powers of perfect squares are computed through exact square roots.
+- Powers of two are computed as `2^(j·y)`.
 
-**Speed.** Release build on windows-gnu, compared with mingw-w64's libm:
-- **Faster:** sin, cos, exp and hypot are about 0.3×, ln 0.4×, pow 0.5×, atan and atan2 0.7×.
-- **Slower:** tan is 1.8× and asin 1.2×.
+So an exact midpoint such as `4097² = 16785409` ties to even, as IEEE requires.
+
+**Accuracy.** The `f32` functions are **correctly rounded**, checked in two ways:
+- **One-argument functions:** an exhaustive scan (`dmath::tests::exhaustive`) checks every input. The scan also requires
+  the fast and accurate paths to agree on every input. Each input whose exact value lies within 2⁻²⁴ `f32` ulp of a
+  midpoint was then checked against an independent 120-digit decimal oracle (`scripts/dmath_oracle.py`). No other input
+  is close enough to a midpoint for the double-double error to matter.
+- **atan2, pow and hypot:** 20,000 random samples each, with integer and half-integer exponents for pow, all agreeing
+  with the oracle.
+
+The first version's tests compared against mingw-w64's `f64` libm rounded to `f32`. That reference double-rounds as
+well, so it could not see these cases. The tests now pin them against oracle values.
+
+The `f64` functions (`*_f64`) are not correctly rounded. Measured against `std` and the exact references:
+- sin, cos, exp, exp2, ln, log2 and hypot are within 1 ulp.
+- tan is within 2 ulp.
+- atan, atan2, asin and acos are within 1 ulp.
+- sin and cos at 1e22, 1e300 and `f64::MAX` are within 1 ulp of 1600-bit references.
+
+**Speed.** Release build on windows-gnu, compared with mingw-w64's libm. The machine was noisy, so these are rough:
+- **Faster:** sin, cos and exp are about 0.5×, ln and pow 0.6×, hypot 0.7×.
+- **About the same:** atan and atan2 at 1.0×.
+- **Slower:** asin is 1.3× and tan 2.5×.
+
+Correct rounding costs about 10–40% over casting the `f64` result, which is mostly the midpoint check. The double-double
+path runs for about 1 input in 2²³.
 
 A faster libm such as glibc or UCRT would narrow the gap. To measure:
 `cargo test -p specula-core --release dmath::tests::bench -- --ignored --nocapture`.

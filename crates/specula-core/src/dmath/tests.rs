@@ -276,11 +276,31 @@ fn pow_hypot_accuracy() {
     }
     println!("     pow f32: max {wp} ulp; hypot f32: max {wh} ulp; hypot f64: max {wh64} ulp");
     assert!(wp <= 1 && wh <= 1 && wh64 <= 1);
-    // Exact cases.
+    // Exact cases, including exact midpoints (which must tie to even, not follow the error).
     assert_eq!(pow(2.0, 10.0), 1024.0);
     assert_eq!(pow(10.0, 3.0), 1000.0);
     assert_eq!(pow(-2.0, 3.0), -8.0);
     assert_eq!(pow(9.0, 0.5), 3.0);
+    assert_eq!(pow(3.0, 15.0), 14_348_907.0);
+    assert_eq!(pow(4097.0, 2.0), 16_785_408.0); // 16785409 is a midpoint
+    assert_eq!(pow(257.0, 3.0), 16_974_592.0); // 16974593 is a midpoint
+    assert_eq!(pow(66049.0, 1.5), 16_974_592.0); // = 257³ via an exact square root
+    assert_eq!(pow(16.0, 0.25), 2.0);
+    assert_eq!(pow(2.0, -150.0), 0.0); // 2⁻¹⁵⁰ is the midpoint between 0 and the smallest subnormal
+    assert_eq!(pow(0.25, 75.0), 0.0);
+    assert_eq!(pow(2.0, -149.0), f32::from_bits(1));
+    assert_eq!(pow(-0.5, -3.0), -8.0);
+    // The IEEE-exact operations for the commonest exponents, over random inputs.
+    for _ in 0..N {
+        let x = f32::from_bits(rng.next() as u32 & 0x7fff_ffff);
+        if !x.is_finite() || x == 0.0 {
+            continue;
+        }
+        assert_eq!(pow(x, 2.0).to_bits(), (x * x).to_bits());
+        assert_eq!(pow(x, 0.5).to_bits(), x.sqrt().to_bits());
+        assert_eq!(pow(x, -1.0).to_bits(), (1.0 / x).to_bits());
+        assert_eq!(pow(-x, 3.0).to_bits(), (-pow(x, 3.0)).to_bits());
+    }
     assert_eq!(hypot(3.0, 4.0), 5.0);
     assert_eq!(hypot_f64(3e300, 4e300), 5e300);
     assert_eq!(hypot_f64(3e-310, 4e-310), 5e-310);
@@ -398,6 +418,7 @@ fn special_values() {
         }
     }
     assert!(pow(-8.0, 1.0 / 3.0).is_nan());
+    assert!(hypot(0.0, -0.0) == 0.0 && hypot(f32::MAX, f32::MAX) == inf);
     assert_eq!(pow(-2.0, 1e10), inf); // huge even exponent
 }
 
@@ -546,6 +567,147 @@ fn golden_hash_f64() {
     assert!(missing.is_empty(), "add to GOLDEN:\n{}", missing.join("\n"));
 }
 
+/// Exhaustive scan of every f32 input of the one-argument functions (about 3 minutes on 32
+/// threads, release). For each input it checks that the public function equals the accurate
+/// double-double path rounded with `narrow` (so the fast path never decided a case it couldn't),
+/// and writes every input whose exact value lies within 2⁻²⁴ f32 ulp of a midpoint to
+/// `$DMATH_HARD` (default `target/dmath-hard.txt`; `$DMATH_ONLY=name` scans one function) as `name input_bits result_bits`. Those are the
+/// only inputs where a double-double error far below 2⁻⁴⁸ could matter; check them against an
+/// independent high-precision oracle with `python scripts/dmath_oracle.py target/dmath-hard.txt`.
+/// Run with
+/// `cargo test -p specula-core --release dmath::tests::exhaustive -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn exhaustive() {
+    type Case = (&'static str, fn(f32) -> f32, fn(f64) -> Dd, fn(f32) -> bool);
+    let all = |x: f32| x.is_finite();
+    let cases: [Case; 10] = [
+        ("sin", sin, |x| sin_cos_dd(x).0, all),
+        ("cos", cos, |x| sin_cos_dd(x).1, all),
+        ("tan", tan, tan_dd, all),
+        ("atan", atan, atan_dd::<true>, all),
+        ("asin", asin, asin_dd::<true>, |x| x.abs() <= 1.0),
+        ("acos", acos, acos_dd::<true>, |x| x.abs() <= 1.0),
+        ("exp", exp, |x| exp_dd((x, 0.0)), |x| (-104.0..89.0).contains(&x)),
+        ("exp2", exp2, exp2_dd, |x| (-150.0..128.0).contains(&x)),
+        ("ln", ln, ln_dd, |x| x > 0.0 && x.is_finite()),
+        ("log2", log2, log2_dd, |x| x > 0.0 && x.is_finite()),
+    ];
+    let path = std::env::var("DMATH_HARD").unwrap_or_else(|_| "../../target/dmath-hard.txt".into());
+    let mut out = String::new();
+    let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
+    let mut total_mismatches = 0;
+    let only = std::env::var("DMATH_ONLY").ok(); // e.g. DMATH_ONLY=tan to scan one function
+    for (name, f, dd, domain) in cases {
+        if only.as_deref().is_some_and(|o| o != name) {
+            continue;
+        }
+        let t = std::time::Instant::now();
+        let chunk = (1u64 << 32).div_ceil(threads as u64);
+        let results: Vec<(Vec<String>, u64)> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..threads as u64)
+                .map(|i| {
+                    s.spawn(move || {
+                        let (mut hard, mut mismatches) = (Vec::new(), 0u64);
+                        for bits in (i * chunk)..((i + 1) * chunk).min(1 << 32) {
+                            let x = f32::from_bits(bits as u32);
+                            if !domain(x) {
+                                continue;
+                            }
+                            let r = f(x);
+                            let (h, l) = dd(x as f64);
+                            if r.to_bits() != narrow(h, l).to_bits() && !(r.is_nan() && h.is_nan()) {
+                                mismatches += 1;
+                                if mismatches < 5 {
+                                    println!("{name}: fast/accurate mismatch at {:#010x}", bits);
+                                }
+                            }
+                            // Distance of h + l from the nearest f32 midpoint, in f32 ulp.
+                            let (h, l) = fast_two_sum(h, l);
+                            let c = h as f32;
+                            if !c.is_finite() || c == 0.0 && h == 0.0 {
+                                continue;
+                            }
+                            let d = h - c as f64;
+                            let next = next_f32(c, if d == 0.0 { 1.0 } else { d });
+                            let mid = (c as f64 + next as f64) * 0.5;
+                            let dist = (((h - mid) + l) / (next as f64 - c as f64)).abs();
+                            if dist < 1.0 / (1u64 << 24) as f64 {
+                                hard.push(format!("{name} {:#010x} {:#010x}", bits, r.to_bits()));
+                            }
+                        }
+                        (hard, mismatches)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mismatches: u64 = results.iter().map(|r| r.1).sum();
+        let hard: Vec<String> = results.into_iter().flat_map(|r| r.0).collect();
+        println!("{name:>5}: {} hard inputs, {mismatches} fast/accurate mismatches, {:.1?}", hard.len(), t.elapsed());
+        total_mismatches += mismatches;
+        for line in hard {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    // Two-argument functions can't be enumerated: random samples (with integer and half-integer
+    // exponents for pow, where the exact cases live) go to the oracle instead.
+    let mut rng = Rng(0xB1);
+    for i in 0..20_000 {
+        let x = f32::from_bits(rng.next() as u32 & 0x7fff_ffff);
+        let y = match i % 4 {
+            0 => (rng.range(-40.0, 40.0) as f32).round(),
+            1 => (rng.range(-40.0, 40.0) as f32).round() * 0.5,
+            _ => rng.range(-8.0, 8.0) as f32,
+        };
+        let x = if x.is_finite() && i % 2 == 0 { x } else { rng.range(0.0, 1000.0) as f32 };
+        let r = pow(x, y);
+        out.push_str(&format!("pow {:#010x} {:#010x} {:#010x}\n", x.to_bits(), y.to_bits(), r.to_bits()));
+        let (a, b) = (rng.log_signed(-30.0, 30.0) as f32, rng.log_signed(-30.0, 30.0) as f32);
+        out.push_str(&format!("atan2 {:#010x} {:#010x} {:#010x}\n", a.to_bits(), b.to_bits(), atan2(a, b).to_bits()));
+        out.push_str(&format!("hypot {:#010x} {:#010x} {:#010x}\n", a.to_bits(), b.to_bits(), hypot(a, b).to_bits()));
+    }
+    std::fs::write(&path, out).expect("write hard-case list");
+    println!("hard cases and two-argument samples written to {path}");
+    assert_eq!(total_mismatches, 0, "the fast path disagreed with the accurate path");
+}
+
+/// The 17 inputs (over all 2³² per function) where rounding the f64 result to f32 rounds twice
+/// and lands on the wrong side: the f64 result is exactly an f32 midpoint. Expected bits come from
+/// the independent 120-digit oracle (`scripts/dmath_oracle.py --print`), not from this code.
+#[test]
+fn double_rounding_cases_are_correctly_rounded() {
+    #[rustfmt::skip]
+    const CASES: [(&str, u32, u32); 17] = [
+        ("sin", 0x46199998, 0xbeb1fa5d), ("sin", 0xc6199998, 0x3eb1fa5d),
+        ("cos", 0x5f18b878, 0x3f7f14bb), ("cos", 0x6115cb11, 0x3f78142f),
+        ("cos", 0xdf18b878, 0x3f7f14bb), ("cos", 0xe115cb11, 0x3f78142f),
+        ("atan", 0x3d8d6b23, 0x3d8d31c3), ("atan", 0xbd8d6b23, 0xbd8d31c3),
+        ("acos", 0x328885a3, 0x3fc90fdb), ("acos", 0x39826222, 0x3fc907b5),
+        ("exp2", 0x3b429d37, 0x3f804385), ("exp2", 0xbcf3a937, 0x3f7ac6b1),
+        ("ln", 0x3c413d3a, 0xc08e158f), ("ln", 0x41178feb, 0x400fe5e7),
+        ("ln", 0x4c5d65a5, 0x418f034b), ("ln", 0x65d890d3, 0x4254d1f9),
+        ("ln", 0x6f31a8ec, 0x42845a89),
+    ];
+    for (name, x, want) in CASES {
+        let x = f32::from_bits(x);
+        let (got, naive) = match name {
+            "sin" => (sin(x), sin_f64(x as f64) as f32),
+            "cos" => (cos(x), cos_f64(x as f64) as f32),
+            "atan" => (atan(x), atan_f64(x as f64) as f32),
+            "acos" => (acos(x), acos_f64(x as f64) as f32),
+            "exp2" => (exp2(x), exp2_f64(x as f64) as f32),
+            _ => (ln(x), ln_f64(x as f64) as f32),
+        };
+        assert_eq!(got.to_bits(), want, "{name}({x:e})");
+        assert_ne!(naive.to_bits(), want, "{name}({x:e}) is no longer a double-rounding case");
+    }
+    let (s, c) = sin_cos(f32::from_bits(0x46199998));
+    assert_eq!(s.to_bits(), 0xbeb1fa5d);
+    assert_eq!(c.to_bits(), cos(f32::from_bits(0x46199998)).to_bits());
+}
+
 /// Rough speed against std. Run with
 /// `cargo test -p specula-core --release dmath::tests::bench -- --ignored --nocapture`.
 #[test]
@@ -564,7 +726,7 @@ fn bench() {
         t.elapsed().as_secs_f64() * 1e9 / xs.len() as f64
     };
     type F = dyn Fn(f32) -> f32;
-    let pairs: [(&str, &F, &F); 10] = [
+    let pairs: [(&str, &F, &F); 12] = [
         ("sin", &sin, &f32::sin),
         ("cos", &cos, &f32::cos),
         ("tan", &tan, &f32::tan),
@@ -575,6 +737,9 @@ fn bench() {
         ("ln", &|x| ln(x + 5.5), &|x| (x + 5.5).ln()),
         ("pow", &|x| pow(x + 5.5, 1.7), &|x| (x + 5.5).powf(1.7)),
         ("hypot", &|x| hypot(x, 0.7), &|x| x.hypot(0.7)),
+        // The cost of correct rounding: against the f64 result simply cast (double rounding).
+        ("sin/f64", &sin, &|x| sin_f64(x as f64) as f32),
+        ("atan/f64", &atan, &|x| atan_f64(x as f64) as f32),
     ];
     for (name, ours, theirs) in pairs {
         let (a, b) = (time(ours), time(theirs));

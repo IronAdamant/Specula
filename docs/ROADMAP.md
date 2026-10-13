@@ -236,8 +236,11 @@ claims and versions more agents just means more collisions.
   platform maths library.
   *Why:* Rust's `f32::sin` and similar call the platform maths library. The msvc and gnu builds link different ones,
   so results can differ in the last bit between our own CI jobs.
-  *Done (2026-10-13):* `specula_core::dmath`. The `f32` functions are correctly rounded on every input tested, and the
-  `f64` ones are within 1–2 ulp. Golden bits are pinned by the tests. `math.rs` uses it for its trig.
+  *Done (2026-10-13):* `specula_core::dmath`. The `f32` functions are correctly rounded:
+  - one-argument functions: an exhaustive 2³² scan, with the near-midpoint cases checked by a 120-digit oracle;
+  - atan2, pow and hypot: random samples checked by the same oracle.
+
+  The `f64` ones are within 1–2 ulp. Golden bits are pinned by the tests. `math.rs` uses it for its trig.
 - [ ] **Ordered containers in simulation code.** No dependence on `HashMap` iteration order, which Rust randomises
   per process.
 - [ ] **`world_hash`**: a hash of simulation state per tick.
