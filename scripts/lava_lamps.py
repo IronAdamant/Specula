@@ -10,50 +10,10 @@ Usage: python scripts/lava_lamps.py [--port N] [--out DIR]
 Starts nothing: run the engine first (cargo run -p specula). Prints the capture paths.
 """
 import argparse
-import json
 import shutil
 import sys
-import urllib.request
 
-
-class Mcp:
-    """Minimal MCP client over Streamable HTTP (JSON responses)."""
-
-    def __init__(self, url, client_name):
-        self.url, self.session, self.next_id = url, None, 1
-        self.request("initialize", {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {},
-            "clientInfo": {"name": client_name, "version": "0"},
-        })
-        self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-    def post(self, msg):
-        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-        if self.session:
-            headers["Mcp-Session-Id"] = self.session
-        req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            self.session = self.session or r.headers.get("Mcp-Session-Id")
-            body = r.read()
-        return json.loads(body) if body else None
-
-    def request(self, method, params):
-        reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
-        self.next_id += 1
-        if "error" in reply:
-            raise RuntimeError(f"{method}: {reply['error']}")
-        return reply["result"]
-
-    def call(self, tool, **args):
-        result = self.request("tools/call", {"name": tool, "arguments": args})
-        if result.get("isError"):
-            raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
-        return result
-
-    def frame(self, **args):
-        result = self.call("sight_frame", **args)
-        return json.loads(next(c["text"] for c in result["content"] if c["type"] == "text"))
+from specula_mcp import Mcp
 
 
 # Classic colours: red wax in yellow liquid.
@@ -78,9 +38,23 @@ def globe(scale=1.0):
     return [[r * scale, y] for r, y in pts]
 
 
+def clear_world(m):
+    """Deletes everything. Paged engines (world_query) delete top-level entities, which takes their
+    subtrees with them; older engines list everything in one call."""
+    if "world_query" not in m.tools():
+        for e in m.json("world_list")["entities"]:
+            m.call("world_delete", id=e["id"])
+        return
+    while True:
+        page = m.json("world_query", fields=["id", "path"], limit=500)
+        top = [e for e in page["items"] if e["path"].count("/") == 1]
+        if not top:
+            return
+        m.call("world_batch", ops=[{"op": "delete", "id": e["id"]} for e in top[:1000]])
+
+
 def build(m):
-    for e in json.loads(m.call("world_list")["content"][0]["text"])["entities"]:
-        m.call("world_delete", id=e["id"])
+    clear_world(m)
     m.call("world_env", sun_direction=[-0.3, 0.8, 0.5], sun_color="#9fb4ff", sun_intensity=0.06,
            ambient_color="#6d7a99", ambient_intensity=0.035, exposure=1.3, tonemap=True, background="#050608")
 
