@@ -24,6 +24,8 @@ use specula_gpu::{Environment, Material, Surface};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 /// Longest entity name, in characters.
 pub const MAX_NAME_CHARS: usize = 128;
@@ -37,6 +39,209 @@ pub const MAX_PROPS_BYTES: usize = 16 * 1024;
 
 /// Parent key of top-level entities in the child index (entity ids start at 1).
 const ROOT: u64 = 0;
+
+// Value limits. The world enforces them on every write (tools, world files and in-process game
+// code alike), so everything the world holds can be saved and loaded again.
+
+/// Largest |coordinate| of a position or offset (1000 km): keeps every transform and camera finite.
+pub const MAX_COORD: f32 = 1.0e6;
+pub const SCALE: RangeInclusive<f32> = 1.0e-3..=1.0e5;
+/// Colour components (sRGB), opacity, metallic, roughness.
+pub const UNIT: RangeInclusive<f32> = 0.0..=1.0;
+pub const EMISSIVE: RangeInclusive<f32> = 0.0..=1000.0;
+pub const SPECULAR: RangeInclusive<f32> = 0.0..=10.0;
+pub const SEED: RangeInclusive<f32> = -1.0e6..=1.0e6;
+pub const LIGHT_INTENSITY: RangeInclusive<f32> = 0.0..=1.0e6;
+pub const LIGHT_RANGE: RangeInclusive<f32> = 0.01..=1.0e4;
+/// Sun and ambient intensity, exposure.
+pub const ENV_LEVEL: RangeInclusive<f32> = 0.0..=1000.0;
+pub const PROFILE_POINTS: RangeInclusive<usize> = 2..=256;
+pub const PROFILE_RADIUS: RangeInclusive<f32> = 0.0..=1.0e5;
+pub const PROFILE_HEIGHT: RangeInclusive<f32> = -1.0e5..=1.0e5;
+pub const SEGMENTS: RangeInclusive<u32> = 3..=256;
+/// Collider sizes and radii, metres.
+pub const COLLIDER_SIZE: RangeInclusive<f32> = 1.0e-4..=1.0e5;
+pub const MASS: RangeInclusive<f32> = 1.0e-6..=1.0e9;
+
+fn invalid(field: &str, message: String) -> WorldError {
+    WorldError::new("invalid_value", message).with("field", field)
+}
+
+/// A finite number within `range`. Messages start with the quoted field, as argument errors do.
+pub fn check_num(field: &str, v: f32, range: &RangeInclusive<f32>) -> Result<(), WorldError> {
+    if v.is_finite() && range.contains(&v) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("'{field}' must be a number from {} to {} (got {v})", range.start(), range.end())))
+    }
+}
+
+/// A point or offset: finite, within ±[`MAX_COORD`] on every axis.
+pub fn check_point(field: &str, p: Vec3) -> Result<(), WorldError> {
+    if [p.x, p.y, p.z].iter().all(|c| c.is_finite() && c.abs() <= MAX_COORD) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("'{field}' components must be finite and within ±{MAX_COORD} m")))
+    }
+}
+
+fn check_rotation(r: Vec3) -> Result<(), WorldError> {
+    if [r.x, r.y, r.z].iter().all(|c| c.is_finite()) {
+        Ok(())
+    } else {
+        Err(invalid("rotation_deg", "'rotation_deg' components must be finite".into()))
+    }
+}
+
+fn check_scale(s: Vec3) -> Result<(), WorldError> {
+    if [s.x, s.y, s.z].iter().all(|c| SCALE.contains(c)) {
+        Ok(())
+    } else {
+        Err(invalid("scale", format!("'scale' components must be between {} and {}", SCALE.start(), SCALE.end())))
+    }
+}
+
+/// sRGB, every component 0..1.
+pub fn check_color(field: &str, c: [f32; 3]) -> Result<(), WorldError> {
+    if c.iter().all(|v| UNIT.contains(v)) {
+        Ok(())
+    } else {
+        Err(invalid(field, format!("'{field}' components must be 0..1 (sRGB)")))
+    }
+}
+
+fn check_look_patch(p: &LookPatch) -> Result<(), WorldError> {
+    let nums = [
+        ("opacity", p.opacity, &UNIT),
+        ("emissive", p.emissive, &EMISSIVE),
+        ("metallic", p.metallic, &UNIT),
+        ("roughness", p.roughness, &UNIT),
+        ("specular", p.specular, &SPECULAR),
+        ("seed", p.seed, &SEED),
+    ];
+    for (field, v, range) in nums {
+        if let Some(v) = v {
+            check_num(field, v, range)?;
+        }
+    }
+    p.color2.map_or(Ok(()), |c| check_color("color2", c))
+}
+
+fn check_look(l: &Look) -> Result<(), WorldError> {
+    let s = &l.surface;
+    check_look_patch(&LookPatch {
+        material: None,
+        opacity: Some(l.opacity),
+        emissive: Some(s.emissive),
+        metallic: Some(s.metallic),
+        roughness: Some(s.roughness),
+        specular: Some(s.specular),
+        color2: Some(s.color2),
+        seed: Some(s.seed),
+    })
+}
+
+fn check_light(l: &LightSpec) -> Result<(), WorldError> {
+    check_num("light.intensity", l.intensity, &LIGHT_INTENSITY)?;
+    check_num("light.range", l.range, &LIGHT_RANGE)?;
+    check_point("light.offset", l.offset)?;
+    l.color.map_or(Ok(()), |c| check_color("light.color", c))
+}
+
+/// 2..256 points, radius 0..100000 (at least one above 0), |height| ≤ 100000, 3..256 segments.
+pub fn check_profile(p: &Profile) -> Result<(), WorldError> {
+    let points_ok = PROFILE_POINTS.contains(&p.points.len())
+        && p.points.iter().all(|[r, y]| PROFILE_RADIUS.contains(r) && PROFILE_HEIGHT.contains(y));
+    if !points_ok {
+        return Err(invalid(
+            "profile",
+            "'profile' must be 2..256 [radius, height] pairs: radius 0..100000, |height| <= 100000".into(),
+        ));
+    }
+    if !p.points.iter().any(|q| q[0] > 0.0) {
+        return Err(invalid("profile", "'profile' needs at least one point with a radius above 0".into()));
+    }
+    if !SEGMENTS.contains(&p.segments) {
+        return Err(invalid("segments", "'segments' must be an integer from 3 to 256".into()));
+    }
+    Ok(())
+}
+
+fn check_body(b: &Body) -> Result<(), WorldError> {
+    check_num("body.mass", b.mass, &MASS)
+}
+
+fn check_tags<'a>(tags: impl IntoIterator<Item = &'a String>) -> Result<(), WorldError> {
+    tags.into_iter().try_for_each(|t| validate_tag(t).map_err(|e| e.with("field", "tags")))
+}
+
+/// Everything [`World::spawn`] checks about the values (structure — parent, names — is checked
+/// against the world).
+pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
+    check_point("position", s.position)?;
+    check_rotation(s.rotation_deg)?;
+    check_scale(s.scale)?;
+    check_color("color", s.color)?;
+    check_look(&s.look)?;
+    s.light.as_ref().map_or(Ok(()), check_light)?;
+    if (s.shape == Shape::Lathe) != s.profile.is_some() {
+        return Err(invalid("profile", "'profile' is required for shape 'lathe' and only allowed for it".into()));
+    }
+    s.profile.as_ref().map_or(Ok(()), check_profile)?;
+    check_tags(&s.tags)?;
+    if s.tags.len() > MAX_TAGS {
+        return Err(invalid("tags", format!("'tags': at most {MAX_TAGS}")));
+    }
+    if !matches!(s.props, Json::Null | Json::Obj(_)) {
+        return Err(invalid("props", "'props' must be a JSON object".into()));
+    }
+    s.collider.as_ref().map_or(Ok(()), Collider::validate)?;
+    s.body.as_ref().map_or(Ok(()), check_body)
+}
+
+/// Everything [`World::update`] can check without the world.
+pub fn check_update(u: &UpdateSpec) -> Result<(), WorldError> {
+    if let Some(n) = &u.name {
+        validate_name(n)?;
+    }
+    u.position.map_or(Ok(()), |p| check_point("position", p))?;
+    u.rotation_deg.map_or(Ok(()), check_rotation)?;
+    u.scale.map_or(Ok(()), check_scale)?;
+    u.color.map_or(Ok(()), |c| check_color("color", c))?;
+    check_look_patch(&u.look)?;
+    if let Some(Some(l)) = &u.light {
+        check_light(l)?;
+    }
+    u.profile.as_ref().map_or(Ok(()), check_profile)?;
+    check_tags(u.tags.iter().flatten().chain(&u.add_tags))?;
+    if u.props.as_ref().is_some_and(|p| !matches!(p, Json::Obj(_))) {
+        return Err(invalid("props", "'props' must be a JSON object".into()));
+    }
+    if let Some(Some(c)) = &u.collider {
+        c.validate()?;
+    }
+    if let Some(Some(b)) = &u.body {
+        check_body(b)?;
+    }
+    Ok(())
+}
+
+/// Everything [`World::set_env`] checks.
+pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
+    if let Some(d) = p.sun_direction {
+        let finite = [d.x, d.y, d.z].iter().all(|c| c.is_finite() && c.abs() <= MAX_COORD);
+        if !finite || d.length() < 1e-6 {
+            return Err(invalid("sun_direction", "'sun_direction' must be finite and not zero".into()));
+        }
+    }
+    for (field, c) in [("sun_color", p.sun_color), ("ambient_color", p.ambient_color), ("background", p.background)] {
+        c.map_or(Ok(()), |c| check_color(field, c))?;
+    }
+    for (field, v) in [("sun_intensity", p.sun_intensity), ("ambient_intensity", p.ambient_intensity), ("exposure", p.exposure)] {
+        v.map_or(Ok(()), |v| check_num(field, v, &ENV_LEVEL))?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shape {
@@ -274,16 +479,23 @@ impl Collider {
     }
 
     fn validate(&self) -> Result<(), WorldError> {
-        let ok = |v: f32| v.is_finite() && v > 0.0;
-        let fine = match self.shape {
-            ColliderShape::Box { size } => ok(size.x) && ok(size.y) && ok(size.z),
-            ColliderShape::Sphere { radius } => ok(radius),
-            ColliderShape::Capsule { radius, height } => ok(radius) && ok(height) && height >= 2.0 * radius,
-        };
-        if !fine || ![self.offset.x, self.offset.y, self.offset.z].iter().all(|c| c.is_finite()) {
-            return Err(WorldError::new("invalid_component", "collider dimensions must be finite and positive")
-                .with("field", "collider"));
+        match self.shape {
+            ColliderShape::Box { size } => {
+                [size.x, size.y, size.z].iter().try_for_each(|v| check_num("collider.size", *v, &COLLIDER_SIZE))?
+            }
+            ColliderShape::Sphere { radius } => check_num("collider.radius", radius, &COLLIDER_SIZE)?,
+            ColliderShape::Capsule { radius, height } => {
+                check_num("collider.radius", radius, &COLLIDER_SIZE)?;
+                check_num("collider.height", height, &COLLIDER_SIZE)?;
+                if height < 2.0 * radius {
+                    return Err(invalid(
+                        "collider.height",
+                        "'collider.height' is the total height and must be at least 2 x radius".into(),
+                    ));
+                }
+            }
         }
+        check_point("collider.offset", self.offset)?;
         validate_tag(&self.layer).map_err(|e| e.with("field", "collider.layer"))
     }
 }
@@ -482,10 +694,10 @@ pub struct Entity {
     pub body: Option<Body>,
     /// 1 when spawned, +1 on every change.
     pub version: u64,
-    /// Agent name.
-    pub created_by: String,
+    /// Agent name (shared: see [`World`]'s interning).
+    pub created_by: Arc<str>,
     /// Agent name of the last change.
-    pub modified_by: String,
+    pub modified_by: Arc<str>,
     /// Cached world transform: parent's world × local. Kept current by [`World`].
     world: Mat4,
 }
@@ -589,8 +801,8 @@ impl Entity {
             fields.push(("body", b.to_json()));
         }
         fields.push(("version", Json::from(self.version)));
-        fields.push(("created_by", Json::from(self.created_by.as_str())));
-        fields.push(("modified_by", Json::from(self.modified_by.as_str())));
+        fields.push(("created_by", Json::from(&*self.created_by)));
+        fields.push(("modified_by", Json::from(&*self.modified_by)));
         Json::obj(fields)
     }
 
@@ -854,11 +1066,51 @@ pub struct World {
     names: BTreeSet<(String, u64)>,
     next_id: u64,
     env: Env,
-    /// Bumped by every change; persistence compares it to know when to save.
+    /// Bumped by every change; persistence compares it to know when to save. A failed batch
+    /// restores it.
     revision: u64,
+    /// Agent names, so attribution is a reference count per change rather than an allocation.
+    agents: BTreeSet<Arc<str>>,
+    /// Never goes back (unlike `revision`): stamps changes for [`World::subtree_stamp`].
+    stamp: u64,
+    /// Top-level id → stamp of the latest change anywhere in its subtree. Lets world files rewrite
+    /// only the subtrees that changed.
+    touched: BTreeMap<u64, u64>,
 }
 
 impl World {
+    /// The shared copy of an agent name.
+    fn intern(&mut self, name: &str) -> Arc<str> {
+        if let Some(a) = self.agents.get(name) {
+            return Arc::clone(a);
+        }
+        let a: Arc<str> = Arc::from(name);
+        self.agents.insert(Arc::clone(&a));
+        a
+    }
+
+    /// The top-level entity above (or at) `id`.
+    fn top_of(&self, id: u64) -> Option<u64> {
+        let mut at = self.entities.get(&id)?;
+        while let Some(p) = at.parent.and_then(|p| self.entities.get(&p)) {
+            at = p;
+        }
+        Some(at.id)
+    }
+
+    /// Records a change in `id`'s top-level subtree.
+    fn touch(&mut self, id: u64) {
+        if let Some(top) = self.top_of(id) {
+            self.stamp += 1;
+            self.touched.insert(top, self.stamp);
+        }
+    }
+
+    /// Changes so far in the subtree under top-level entity `top`, as an opaque stamp: equal stamps
+    /// mean nothing in that subtree changed in between (0 = never changed since the world began).
+    pub fn subtree_stamp(&self, top: u64) -> u64 {
+        self.touched.get(&top).copied().unwrap_or(0)
+    }
     pub fn len(&self) -> usize {
         self.entities.len()
     }
@@ -880,9 +1132,11 @@ impl World {
         &self.env
     }
 
-    pub fn set_env(&mut self, patch: &EnvPatch) {
+    pub fn set_env(&mut self, patch: &EnvPatch) -> Result<(), WorldError> {
+        check_env(patch)?;
         patch.apply(&mut self.env);
         self.revision += 1;
+        Ok(())
     }
 
     /// Changes so far (any change bumps it).
@@ -895,15 +1149,11 @@ impl World {
         self.next_id
     }
 
-    /// Restores the id counter from a world file; never below an existing id.
-    pub(crate) fn set_next_id(&mut self, next_id: u64) -> Result<(), WorldError> {
+    /// Restores the id counter from a world file. Never below an existing id, so a stale counter
+    /// can't hand out an id twice.
+    pub(crate) fn set_next_id(&mut self, next_id: u64) {
         let max = self.entities.keys().next_back().copied().unwrap_or(0);
-        if next_id < max {
-            return Err(WorldError::new("invalid_world", format!("next_id {next_id} is below entity id {max}"))
-                .with("field", "next_id"));
-        }
-        self.next_id = next_id;
-        Ok(())
+        self.next_id = next_id.max(max);
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
@@ -1079,20 +1329,8 @@ impl World {
     }
 
     fn insert(&mut self, spec: SpawnSpec, id: u64, version: u64, created_by: &str, modified_by: &str) -> Result<(), WorldError> {
-        if (spec.shape == Shape::Lathe) != spec.profile.is_some() {
-            return Err(WorldError::new("invalid_component", "a 'profile' is required for shape 'lathe' and only allowed for it")
-                .with("field", "profile"));
-        }
-        for t in &spec.tags {
-            validate_tag(t)?;
-        }
-        if spec.tags.len() > MAX_TAGS {
-            return Err(WorldError::new("invalid_component", format!("at most {MAX_TAGS} tags")).with("field", "tags"));
-        }
+        check_spawn(&spec)?;
         let props = canonical_props(spec.props)?;
-        if let Some(c) = &spec.collider {
-            c.validate()?;
-        }
         let parent = match &spec.parent {
             Some(key) => Some(self.resolve(key).map_err(|e| e.with("field", "parent"))?),
             None => None,
@@ -1122,6 +1360,7 @@ impl World {
                 name
             }
         };
+        let (created_by, modified_by) = (self.intern(created_by), self.intern(modified_by));
         self.link(Entity {
             id,
             name,
@@ -1139,11 +1378,12 @@ impl World {
             collider: spec.collider,
             body: spec.body,
             version,
-            created_by: created_by.to_owned(),
-            modified_by: modified_by.to_owned(),
+            created_by,
+            modified_by,
             world: Mat4::IDENTITY,
         });
         self.refresh(id);
+        self.touch(id);
         self.revision += 1;
         Ok(())
     }
@@ -1177,6 +1417,7 @@ impl World {
 
     /// Changes an existing entity; its id never changes and its version goes up by one.
     pub fn update(&mut self, key: &EntityKey, change: UpdateSpec, by: &str) -> Result<&Entity, WorldError> {
+        check_update(&change)?;
         let id = self.resolve(key)?;
         self.check_version(id, change.expect_version)?;
         let e = &self.entities[&id];
@@ -1206,9 +1447,6 @@ impl World {
                 }
             }
         }
-        if let Some(n) = &change.name {
-            validate_name(n)?;
-        }
         let renamed = change.name.as_ref().is_some_and(|n| *n != e.name);
         let relink = reparent || renamed;
         if relink {
@@ -1221,9 +1459,6 @@ impl World {
             (None, true) => None,
             (base, _) => {
                 let mut tags = base.clone().unwrap_or_else(|| e.tags.clone());
-                for t in base.iter().flatten().chain(&change.add_tags) {
-                    validate_tag(t)?;
-                }
                 tags.extend(change.add_tags.iter().cloned());
                 for t in &change.remove_tags {
                     tags.remove(t);
@@ -1238,11 +1473,12 @@ impl World {
             None => None,
             Some(patch) => Some(merge_props(&e.props, patch)?),
         };
-        if let Some(Some(c)) = &change.collider {
-            c.validate()?;
-        }
 
         let old = relink.then(|| (e.parent.unwrap_or(ROOT), e.name.clone()));
+        if reparent {
+            self.touch(id); // the subtree it leaves
+        }
+        let by = self.intern(by);
         let moved = reparent || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
         let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some(name) = change.name {
@@ -1281,7 +1517,7 @@ impl World {
             e.body = b;
         }
         e.version += 1;
-        e.modified_by = by.to_owned();
+        e.modified_by = by;
         if let Some((old_parent, old_name)) = old {
             let new_key = (e.parent.unwrap_or(ROOT), e.name.clone());
             self.names.remove(&(old_name.clone(), id));
@@ -1292,6 +1528,7 @@ impl World {
         if moved {
             self.refresh(id);
         }
+        self.touch(id);
         self.revision += 1;
         Ok(&self.entities[&id])
     }
@@ -1301,6 +1538,7 @@ impl World {
         let id = self.resolve(key)?;
         self.check_version(id, expect_version)?;
         let path = self.path_of(id);
+        self.touch(id);
         let mut order = Vec::new();
         let mut stack = vec![id];
         while let Some(at) = stack.pop() {
@@ -1315,7 +1553,8 @@ impl World {
     }
 
     /// Applies every op or none: on the first failure everything already applied is rolled back
-    /// (ids, versions and the revision counter included) and the failing op's index is returned.
+    /// (ids, versions, indexes and the revision counter included) and the failing op's index is
+    /// returned.
     /// Later ops can address entities spawned earlier in the batch by path.
     pub fn apply_batch(&mut self, ops: Vec<Op>, by: &str) -> Result<Vec<OpResult>, (usize, WorldError)> {
         let (next_id, revision) = (self.next_id, self.revision);
@@ -1357,10 +1596,12 @@ impl World {
         for step in undo.into_iter().rev() {
             match step {
                 Undo::Spawned(id) => {
+                    self.touch(id);
                     self.unlink(id);
                 }
                 Undo::Updated(before) => {
                     touched.push(before.id);
+                    self.touch(before.id);
                     self.unlink(before.id);
                     self.link(*before);
                 }
@@ -1372,9 +1613,12 @@ impl World {
                 }
             }
         }
+        // World files must rewrite every subtree the batch touched, even though its content is
+        // back to what was saved: stamps only ever move forward.
         for id in touched {
             if self.entities.contains_key(&id) {
                 self.refresh(id);
+                self.touch(id);
             }
         }
     }
@@ -1418,7 +1662,7 @@ impl World {
             let matches = q.tags.iter().all(|t| e.tags.contains(t))
                 && q.shape.is_none_or(|s| s == e.shape)
                 && q.material.is_none_or(|m| m == e.look.material && e.shape != Shape::Group)
-                && q.created_by.as_ref().is_none_or(|c| *c == e.created_by)
+                && q.created_by.as_ref().is_none_or(|c| c.as_str() == &*e.created_by)
                 && q.region.is_none_or(|(min, max)| {
                     let (lo, hi) = e.world_aabb();
                     lo.x <= max.x && hi.x >= min.x && lo.y <= max.y && hi.y >= min.y && lo.z <= max.z && hi.z >= min.z
@@ -1639,6 +1883,12 @@ mod tests {
         w.spawn(spec, "t").unwrap().id
     }
 
+    /// Everything a rollback must restore: entities (versions, attribution, cached world
+    /// transforms), both indexes, the id and revision counters, the environment.
+    fn snapshot(w: &World) -> String {
+        format!("{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.next_id, w.revision, w.env)
+    }
+
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-5
     }
@@ -1836,7 +2086,7 @@ mod tests {
         assert_eq!(w.get(id).unwrap().position.x, 1.0, "the stale write changed nothing");
         assert_eq!(w.delete(&EntityKey::Id(id), Some(1)).err().unwrap().code, "stale_version");
         let e = w.get(id).unwrap();
-        assert_eq!((e.created_by.as_str(), e.modified_by.as_str()), ("t", "alice"));
+        assert_eq!((&*e.created_by, &*e.modified_by), ("t", "alice"));
         assert!(w.delete(&EntityKey::Id(id), Some(2)).is_ok());
     }
 
@@ -1894,7 +2144,7 @@ mod tests {
         let mut w = World::default();
         put(&mut w, Shape::Group, "keep", None, Vec3::ZERO);
         put(&mut w, Shape::Cube, "old", Some("/keep"), Vec3::ZERO);
-        let (hash, revision, next) = (w.state_hash(), w.revision(), w.next_id());
+        let before = snapshot(&w);
         let named = |name: &str, parent: Option<&str>| {
             let mut s = SpawnSpec::new(Shape::Cube);
             s.name = Some(name.into());
@@ -1915,7 +2165,7 @@ mod tests {
         ];
         let (index, err) = w.apply_batch(ops, "t").err().unwrap();
         assert_eq!((index, err.code), (5, "not_found"));
-        assert_eq!((w.state_hash(), w.revision(), w.next_id()), (hash, revision, next), "rolled back exactly");
+        assert_eq!(snapshot(&w), before, "rolled back exactly: entities, indexes, counters");
         assert_eq!(w.path_of(w.find_path("/keep/old").unwrap()), "/keep/old");
         assert_eq!(w.len(), 2);
 
@@ -2016,8 +2266,68 @@ mod tests {
         assert_ne!(a.state_hash(), b.state_hash(), "-0 is a different bit pattern");
         b.update(&EntityKey::Id(id), UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() }, "x").unwrap();
         assert_eq!(a.state_hash(), b.state_hash());
-        b.set_env(&EnvPatch { exposure: Some(2.0), ..Default::default() });
+        b.set_env(&EnvPatch { exposure: Some(2.0), ..Default::default() }).unwrap();
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    /// Reviewer finding: the in-process API accepted values the loader rejects, so autosave could
+    /// write a world that can't be loaded again.
+    #[test]
+    fn the_rust_api_enforces_the_same_limits_as_the_tools() {
+        let mut w = World::default();
+        let field = |e: WorldError| e.detail("field").and_then(Json::as_str).map(str::to_owned);
+        let spawn = |w: &mut World, f: fn(&mut SpawnSpec)| {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            f(&mut s);
+            w.spawn(s, "game").err().map(field)
+        };
+        assert_eq!(spawn(&mut w, |s| s.position.x = f32::NAN), Some(Some("position".into())));
+        assert_eq!(spawn(&mut w, |s| s.position.y = 2.0e6), Some(Some("position".into())));
+        assert_eq!(spawn(&mut w, |s| s.rotation_deg.z = f32::INFINITY), Some(Some("rotation_deg".into())));
+        assert_eq!(spawn(&mut w, |s| s.scale.x = 0.0), Some(Some("scale".into())));
+        assert_eq!(spawn(&mut w, |s| s.color = [1.5, 0.0, 0.0]), Some(Some("color".into())));
+        assert_eq!(spawn(&mut w, |s| s.look.surface.emissive = -1.0), Some(Some("emissive".into())));
+        assert_eq!(
+            spawn(&mut w, |s| s.light = Some(LightSpec { intensity: f32::NAN, range: 1.0, color: None, offset: Vec3::ZERO })),
+            Some(Some("light.intensity".into()))
+        );
+        assert_eq!(spawn(&mut w, |s| s.body = Some(Body { kind: BodyKind::Dynamic, mass: 0.0 })), Some(Some("body.mass".into())));
+        assert_eq!(w.len(), 0);
+        let id = w.spawn(SpawnSpec::new(Shape::Cube), "game").unwrap().id;
+        let bad = UpdateSpec { position: Some(Vec3::new(0.0, f32::NAN, 0.0)), ..Default::default() };
+        assert_eq!(w.update(&EntityKey::Id(id), bad, "game").err().map(field), Some(Some("position".into())));
+        let bad = UpdateSpec { color: Some([0.0, 2.0, 0.0]), ..Default::default() };
+        assert!(w.update(&EntityKey::Id(id), bad, "game").is_err());
+        assert_eq!(w.get(id).unwrap().version, 1, "rejected updates change nothing");
+        let env = EnvPatch { exposure: Some(f32::NAN), ..Default::default() };
+        assert_eq!(w.set_env(&env).err().map(field), Some(Some("exposure".into())));
+        let env = EnvPatch { sun_direction: Some(Vec3::ZERO), ..Default::default() };
+        assert!(w.set_env(&env).is_err());
+        assert_eq!(*w.env(), Env::default());
+    }
+
+    #[test]
+    fn subtree_stamps_track_changes_per_top_level_subtree() {
+        let mut w = World::default();
+        let a = put(&mut w, Shape::Group, "a", None, Vec3::ZERO);
+        let b = put(&mut w, Shape::Group, "b", None, Vec3::ZERO);
+        let leaf = put(&mut w, Shape::Cube, "leaf", Some("/a"), Vec3::ZERO);
+        let (sa, sb) = (w.subtree_stamp(a), w.subtree_stamp(b));
+        w.update(&EntityKey::Id(leaf), UpdateSpec { position: Some(Vec3::ONE), ..Default::default() }, "t").unwrap();
+        assert!(w.subtree_stamp(a) > sa && w.subtree_stamp(b) == sb, "a deep change marks only its top");
+        let (sa, sb) = (w.subtree_stamp(a), w.subtree_stamp(b));
+        let to_b = UpdateSpec { parent: Some(Some(EntityKey::Id(b))), ..Default::default() };
+        w.update(&EntityKey::Id(leaf), to_b, "t").unwrap();
+        assert!(w.subtree_stamp(a) > sa && w.subtree_stamp(b) > sb, "a move marks both subtrees");
+        let sb = w.subtree_stamp(b);
+        let ops = vec![
+            Op::Set(EntityKey::Id(leaf), UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() }),
+            Op::Delete(EntityKey::Path("/nope".into()), None),
+        ];
+        assert!(w.apply_batch(ops, "t").is_err());
+        assert!(w.subtree_stamp(b) > sb, "stamps never go back, even when a batch does");
+        let (one, two) = (Arc::as_ptr(&w.get(a).unwrap().created_by), Arc::as_ptr(&w.get(b).unwrap().created_by));
+        assert_eq!(one, two, "agent names are interned");
     }
 
     #[test]

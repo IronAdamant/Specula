@@ -45,6 +45,8 @@ const AUTOSAVE_EVERY: Duration = Duration::from_secs(10);
 const MAX_LISTING_BYTES: usize = 128 * 1024;
 /// Agent identities remembered (sessions are capped at 1024 by the protocol).
 const MAX_AGENTS: usize = 1024;
+/// world_batch lists per-op results up to this many bytes, then summarises the rest.
+const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME]";
@@ -120,9 +122,13 @@ pub fn run() -> Result<(), String> {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
         let dir = engine.worlds_dir.join(&name);
         if dir.join("world.json").exists() {
-            engine.world = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            engine.world = world;
+            engine.saved = Some(saved);
             eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
         } else {
+            // A folder with other files in it isn't ours to fill.
+            persist::check_adoptable(&dir).map_err(|e| format!("world '{name}': {e}"))?;
             eprintln!("specula: new world '{name}'; autosaving to {}", dir.display());
         }
         engine.saved_revision = engine.world.revision();
@@ -167,7 +173,8 @@ pub fn run() -> Result<(), String> {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
     };
-    engine.autosave();
+    engine.finish_autosave(true);
+    engine.autosave(true);
     // Queued calls get "shutting down" as soon as their reply channels close; give them a moment
     // to write that response before the server closes every connection.
     drop(requests);
@@ -210,8 +217,21 @@ struct Engine {
     /// `world.revision()` as last saved or loaded.
     saved_revision: u64,
     last_autosave: Instant,
+    /// What was last written to or read from the current world's folder, so saves only rewrite
+    /// what changed.
+    saved: Option<persist::Saved>,
+    /// An autosave being written on a worker thread.
+    autosave_job: Option<AutosaveJob>,
+    /// The last autosave failure (cleared by the next success), shown in engine_info.
+    autosave_error: Option<Json>,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
+}
+
+struct AutosaveJob {
+    /// The world revision the job is writing.
+    revision: u64,
+    done: Receiver<Result<(persist::Saved, persist::SaveReport), persist::PersistError>>,
 }
 
 struct Agent {
@@ -238,6 +258,9 @@ impl Engine {
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
+            saved: None,
+            autosave_job: None,
+            autosave_error: None,
             agents: BTreeMap::new(),
         })
     }
@@ -247,22 +270,76 @@ impl Engine {
         self.world.revision() != self.saved_revision
     }
 
-    /// Saves to the current world, if there is one and it changed.
-    fn autosave(&mut self) {
+    /// Saves the current world, if there is one and it changed. The engine thread only takes the
+    /// changed subtrees off the world ([`persist::plan`]); rendering and writing happen on a worker
+    /// thread, unless `wait` (shutdown).
+    fn autosave(&mut self, wait: bool) {
         self.last_autosave = Instant::now();
+        self.finish_autosave(false);
         let Some(name) = self.world_name.clone() else { return };
-        if !self.dirty() {
+        if self.autosave_job.is_some() || !self.dirty() {
             return;
         }
-        match persist::save(&self.world, &self.worlds_dir.join(&name)) {
-            Ok(_) => self.saved_revision = self.world.revision(),
-            Err(e) => eprintln!("specula: autosave of world '{name}' failed: {e}"),
+        let plan = persist::plan(&self.world, &self.worlds_dir.join(&name), self.saved.as_ref());
+        let (tx, done) = mpsc::channel();
+        let job = move || {
+            let _ = tx.send(persist::execute(plan));
+        };
+        let revision = self.world.revision();
+        if wait {
+            job();
+        } else if let Err(e) = std::thread::Builder::new().name("specula-autosave".into()).spawn(job) {
+            // The plan went with the closure; try again at the next autosave.
+            eprintln!("specula: could not start the autosave thread: {e}");
+            return;
+        }
+        self.autosave_job = Some(AutosaveJob { revision, done });
+        self.finish_autosave(wait);
+    }
+
+    /// Collects a finished autosave (or waits for it with `block`).
+    fn finish_autosave(&mut self, block: bool) {
+        let Some(job) = &self.autosave_job else { return };
+        let received = if block {
+            job.done.recv().ok()
+        } else {
+            match job.done.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Empty) => return, // still writing
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let result = match received {
+            Some(r) => r,
+            None => Err(persist::PersistError {
+                code: "io",
+                message: "the autosave thread stopped without reporting".into(),
+                file: None,
+                entity: None,
+                field: None,
+            }),
+        };
+        let revision = job.revision;
+        self.autosave_job = None;
+        match result {
+            Ok((saved, _)) => {
+                self.saved = Some(saved);
+                self.saved_revision = revision;
+                self.autosave_error = None;
+            }
+            Err(e) => {
+                eprintln!("specula: autosave failed: {e}");
+                let mut j = e.to_json();
+                j.set("at_revision", Json::from(revision));
+                self.autosave_error = Some(j);
+            }
         }
     }
 
     fn autosave_if_due(&mut self) {
+        self.finish_autosave(false);
         if self.last_autosave.elapsed() >= AUTOSAVE_EVERY {
-            self.autosave();
+            self.autosave(false);
         }
     }
 
@@ -389,13 +466,7 @@ impl Engine {
             Command::Batch(ops) => {
                 let count = ops.len();
                 match self.world.apply_batch(ops, &by) {
-                    Ok(results) => ToolOutput::text(
-                        Json::obj([
-                            ("applied", Json::from(results.len())),
-                            ("results", Json::arr(results.iter().map(|r| r.to_json()))),
-                        ])
-                        .to_string(),
-                    ),
+                    Ok(results) => ToolOutput::text(batch_summary(&results).to_string()),
                     Err((index, e)) => ToolOutput::error(
                         Json::obj([
                             ("error", Json::from("batch_failed")),
@@ -410,7 +481,7 @@ impl Engine {
                     ),
                 }
             }
-            Command::Save(name) => self.save(name),
+            Command::Save { name, overwrite } => self.save(name, overwrite),
             Command::Load { name, force } => self.load(name, force),
             Command::Hello { name, role } => {
                 if self.agents.len() >= MAX_AGENTS && !self.agents.contains_key(&request.session.id) {
@@ -422,10 +493,10 @@ impl Engine {
                 ToolOutput::text(reply.to_pretty())
             }
             Command::Frame(spec) => self.capture(&spec, &request.session),
-            Command::Env(patch) => {
-                self.world.set_env(&patch);
-                ToolOutput::text(self.world.env().to_json().to_pretty())
-            }
+            Command::Env(patch) => match self.world.set_env(&patch) {
+                Ok(()) => ToolOutput::text(self.world.env().to_json().to_pretty()),
+                Err(e) => world_error(&e),
+            },
             Command::View(camera) => {
                 self.window_camera = camera;
                 ToolOutput::text(match camera {
@@ -471,7 +542,8 @@ impl Engine {
         ToolOutput::text(out.to_string())
     }
 
-    fn save(&mut self, name: Option<String>) -> ToolOutput {
+    fn save(&mut self, name: Option<String>, overwrite: bool) -> ToolOutput {
+        self.finish_autosave(true);
         let Some(name) = name.or_else(|| self.world_name.clone()) else {
             return ToolOutput::error(
                 Json::obj([
@@ -482,15 +554,42 @@ impl Engine {
             );
         };
         let dir = self.worlds_dir.join(&name);
-        match persist::save(&self.world, &dir) {
-            Ok(report) => {
+        let current = self.world_name.as_deref() == Some(name.as_str());
+        if !current && !overwrite && dir.join("world.json").exists() {
+            // Another world lives there: never replace it by accident.
+            let (entities, problem) = match persist::load(&dir) {
+                Ok((w, _)) => (Json::from(w.len()), Json::Null),
+                Err(e) => (Json::Null, e.to_json()),
+            };
+            return ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("world_exists")),
+                    (
+                        "message",
+                        Json::from(format!(
+                            "a different world named '{name}' already exists; pick another name, world_load it, or pass \
+                             overwrite: true to replace it"
+                        )),
+                    ),
+                    ("name", Json::from(name.as_str())),
+                    ("entities", entities),
+                    ("unreadable", problem),
+                ])
+                .to_pretty(),
+            );
+        }
+        match persist::save(&self.world, &dir, self.saved.as_ref()) {
+            Ok((saved, report)) => {
+                self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
                 self.last_autosave = Instant::now();
+                self.autosave_error = None;
                 ToolOutput::text(
                     Json::obj([
                         ("saved", Json::from(name)),
                         ("dir", Json::from(report.dir.display().to_string())),
+                        ("generation", Json::from(report.generation)),
                         ("files", Json::from(report.files)),
                         ("files_written", Json::from(report.written)),
                         ("files_removed", Json::from(report.removed)),
@@ -505,6 +604,7 @@ impl Engine {
     }
 
     fn load(&mut self, name: String, force: bool) -> ToolOutput {
+        self.finish_autosave(true);
         if self.dirty() && !force {
             let current = self.world_name.as_deref().map_or(Json::Null, Json::from);
             return ToolOutput::error(
@@ -522,8 +622,9 @@ impl Engine {
         }
         let dir = self.worlds_dir.join(&name);
         match persist::load(&dir) {
-            Ok(world) => {
+            Ok((world, saved)) => {
                 self.world = world;
+                self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
                 self.last_autosave = Instant::now();
@@ -670,6 +771,7 @@ impl Engine {
             ("worlds_dir", Json::from(self.worlds_dir.display().to_string())),
             ("entities", Json::from(self.world.len())),
             ("unsaved_changes", Json::from(self.dirty())),
+            ("last_autosave_error", self.autosave_error.clone().unwrap_or(Json::Null)),
             ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
         ]);
         let info = Json::obj([
@@ -684,6 +786,35 @@ impl Engine {
         ]);
         ToolOutput::text(info.to_pretty())
     }
+}
+
+/// world_batch's answer: every op's result while they fit in [`MAX_BATCH_RESULT_BYTES`], then a
+/// summary of the rest (spawned ids are consecutive, so first and last describe them).
+fn batch_summary(results: &[world::OpResult]) -> Json {
+    let mut shown = Vec::new();
+    let mut bytes = 0;
+    for r in results {
+        let j = r.to_json();
+        bytes += j.to_string().len() + 1; // and its comma
+        if bytes > MAX_BATCH_RESULT_BYTES {
+            break;
+        }
+        shown.push(j);
+    }
+    let mut out = vec![("applied", Json::from(results.len())), ("results", Json::Arr(Vec::new()))];
+    let rest = &results[shown.len()..];
+    out[1].1 = Json::Arr(shown);
+    if !rest.is_empty() {
+        let id = |r: &world::OpResult| match r {
+            world::OpResult::Spawned { id, .. } | world::OpResult::Updated { id, .. } | world::OpResult::Deleted { id, .. } => *id,
+        };
+        out.extend([
+            ("results_omitted", Json::from(rest.len())),
+            ("first_id", Json::from(id(&rest[0]))),
+            ("last_id", Json::from(id(&rest[rest.len() - 1]))),
+        ]);
+    }
+    Json::obj(out)
 }
 
 fn world_error(e: &WorldError) -> ToolOutput {
@@ -726,6 +857,23 @@ fn prune_capture_runs(root: &Path, keep: usize, current: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reviewer finding: 1000 spawns answered with ~158 KB of per-op results.
+    #[test]
+    fn batch_results_are_capped_with_a_summary() {
+        let results: Vec<world::OpResult> = (1..=1000)
+            .map(|id| world::OpResult::Spawned { id, path: format!("/district_with_a_long_name/house_{id:04}") })
+            .collect();
+        let out = batch_summary(&results);
+        assert!(out.to_string().len() <= MAX_BATCH_RESULT_BYTES + 200, "{} bytes", out.to_string().len());
+        let shown = out.get("results").and_then(Json::as_array).unwrap().len();
+        assert_eq!(out.get("applied"), Some(&Json::from(1000)));
+        assert_eq!(out.get("results_omitted"), Some(&Json::from(1000 - shown)));
+        assert_eq!(out.get("first_id"), Some(&Json::from(shown as u64 + 1)));
+        assert_eq!(out.get("last_id"), Some(&Json::from(1000)));
+        let small = batch_summary(&results[..3]);
+        assert_eq!((small.get("results").and_then(Json::as_array).unwrap().len(), small.get("results_omitted")), (3, None));
+    }
 
     #[test]
     fn run_names_must_match_exactly() {

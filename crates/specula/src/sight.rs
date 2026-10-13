@@ -127,7 +127,7 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec
                 ("material", Json::from(material_name(e.look.material))),
                 ("color", Json::from(color_hex(e.color))),
                 ("position", vec3_json(e.world_position())),
-                ("created_by", Json::from(e.created_by.as_str())),
+                ("created_by", Json::from(&*e.created_by)),
                 ("on_screen", Json::from(screen.is_some())),
                 ("screen", screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
                 ("distance_m", if screen.is_some() { Json::from(distance) } else { Json::Null }),

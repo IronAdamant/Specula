@@ -2,11 +2,11 @@
 //!
 //! A world named `greybox` lives in `<worlds dir>/greybox/`:
 //!
-//! - `world.json` — format, the id counter, the environment, the list of subtree files, and the
-//!   top-level entities that have no children.
-//! - one `<top-level name>.json` per top-level entity **with** children, holding that whole
-//!   subtree. Agents usually build in separate top-level groups (districts), so their work lands
-//!   in separate files: git diffs stay small and parallel work doesn't merge-conflict.
+//! - `world.json`: the format, a save `generation`, the id counter, the environment, the list of
+//!   subtree files, and the top-level entities that have no children.
+//! - one `<top-level name>.<generation>.json` per top-level entity **with** children, holding
+//!   that whole subtree. Agents usually build in separate top-level groups (districts), so their
+//!   work lands in separate files: git diffs stay small and parallel work doesn't merge-conflict.
 //!
 //! Every entity is one line of JSON (fixed field order, defaults left out, keys sorted in
 //! `props`), listed in path order. Each record is also valid `world_spawn` arguments plus `id`,
@@ -14,25 +14,37 @@
 //! are written as the shortest decimal that reads back bit-exactly, and colours as hex only when
 //! hex is exact, so save → load restores the world bit for bit ([`World::state_hash`] matches).
 //!
-//! Saving writes only files whose content changed (each via a temporary file and a rename),
-//! `world.json` last, then removes files the world no longer has.
+//! **`world.json` is the single commit point.** A save writes the subtrees that changed under new
+//! generation-suffixed names (synced to disk), then replaces `world.json` (temporary file, sync,
+//! rename) listing exactly the files of the new state, then deletes the previous generation's
+//! files that are no longer listed. A crash at any moment leaves either the old world or the new
+//! one, never a mix. Unchanged subtrees keep their files (and names), and files the world never
+//! listed (a user's notes) are never touched.
+//!
+//! Saving is split so the engine can write from a worker thread: [`plan`] takes what changed off
+//! the live world (on the engine thread; unchanged subtrees cost nothing), and [`execute`] renders
+//! and writes it.
 
-use crate::tools::{parse_env, parse_spawn};
+use crate::tools::{check_keys, parse_env, parse_spawn_fields, ENV_KEYS};
 use crate::world::{color_json_exact, material_name, vec3_json, Entity, Look, World, WorldError};
 use specula_core::hash::hash_str;
 use specula_core::Json;
 use specula_gpu::Material;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
+const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
 const RECORD_KEYS: [&str; 25] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by",
 ];
+const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "env", "subtrees", "entities"];
+const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
 
 /// What went wrong reading or writing a world, with where: the file, the entity path and the
 /// field, when known.
@@ -52,6 +64,11 @@ impl PersistError {
 
     fn in_file(mut self, file: &str) -> PersistError {
         self.file.get_or_insert_with(|| file.to_owned());
+        self
+    }
+
+    fn field(mut self, field: &str) -> PersistError {
+        self.field = Some(field.to_owned());
         self
     }
 
@@ -106,32 +123,150 @@ fn is_device_name(name: &str) -> bool {
             && stem.as_bytes()[3].is_ascii_digit())
 }
 
-/// File names for the top-level subtrees `names` (in that order): the name with anything outside
-/// `A-Z a-z 0-9 _ -` replaced by `_`, plus a short hash of the real name when that would clash
-/// (case-insensitively, for Windows and macOS) or be a device name.
-fn file_names(names: &[&str]) -> Vec<String> {
-    let mut used: BTreeSet<String> = BTreeSet::from(["world".to_owned()]);
-    names
-        .iter()
-        .map(|name| {
-            let mut stem: String = name
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-                .take(64)
-                .collect();
-            if used.contains(&stem.to_ascii_lowercase()) || is_device_name(&stem) {
-                stem = format!("{stem}-{:08x}", hash_str(name) as u32);
+/// `<stem>.<generation>.json` with a stem of `A-Z a-z 0-9 _ -`.
+fn is_subtree_file(name: &str) -> bool {
+    let Some(rest) = name.strip_suffix(".json") else { return false };
+    let Some((stem, generation)) = rest.rsplit_once('.') else { return false };
+    !stem.is_empty()
+        && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && !generation.is_empty()
+        && generation.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn stem_of(file: &str) -> &str {
+    file.strip_suffix(".json").and_then(|r| r.rsplit_once('.')).map_or(file, |(stem, _)| stem)
+}
+
+/// What the engine remembers about the world folder it last wrote or read, so the next save
+/// rewrites only what changed: the generation, and per top-level subtree its file and the
+/// [`World::subtree_stamp`] that file holds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Saved {
+    pub dir: PathBuf,
+    pub generation: u64,
+    /// Top-level entity id → its file.
+    pub subtrees: BTreeMap<u64, SavedSubtree>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedSubtree {
+    pub stamp: u64,
+    pub root: String,
+    pub file: String,
+}
+
+enum Part {
+    /// Unchanged since it was written: keep the file.
+    Keep { id: u64, saved: SavedSubtree },
+    /// Changed or new: write under `stem`.
+    Write { id: u64, stamp: u64, root: String, stem: String, entities: Vec<(Entity, String)> },
+}
+
+/// A world save detached from the live world: owned copies of what changed, ready for
+/// [`execute`] on any thread.
+pub struct Plan {
+    dir: PathBuf,
+    next_id: u64,
+    env: Json,
+    /// Top-level entities without children (they live in `world.json`).
+    loose: Vec<(Entity, String)>,
+    parts: Vec<Part>,
+    previous: Option<Saved>,
+}
+
+/// Takes what [`execute`] needs from `world`. `previous` is what was saved into `dir` before (by
+/// this engine); subtrees whose stamp hasn't moved since are kept, not copied.
+pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
+    let previous = previous.filter(|p| p.dir == dir).cloned();
+    let tops: Vec<u64> = world.children_of(None).collect();
+    let (subtrees, loose): (Vec<u64>, Vec<u64>) = tops.into_iter().partition(|&id| world.children_of(Some(id)).next().is_some());
+    let loose = loose.into_iter().map(|id| (world.get(id).expect("listed").clone(), world.path_of(id))).collect();
+    // Stems stay with their subtree (by path) so files don't churn; newcomers take what's free.
+    let old_stems: BTreeMap<&str, &str> =
+        previous.iter().flat_map(|p| p.subtrees.values()).map(|s| (s.root.as_str(), stem_of(&s.file))).collect();
+    let roots: Vec<String> = subtrees.iter().map(|&id| world.path_of(id)).collect();
+    let mut taken: BTreeSet<String> =
+        roots.iter().filter_map(|r| old_stems.get(r.as_str())).map(|s| s.to_ascii_lowercase()).collect();
+    let mut parts = Vec::with_capacity(subtrees.len());
+    for (&id, root) in subtrees.iter().zip(roots) {
+        let stamp = world.subtree_stamp(id);
+        let kept = previous.as_ref().and_then(|p| p.subtrees.get(&id)).filter(|s| s.stamp == stamp && s.root == root);
+        if let Some(saved) = kept {
+            parts.push(Part::Keep { id, saved: saved.clone() });
+            continue;
+        }
+        let stem = match old_stems.get(root.as_str()) {
+            Some(stem) => (*stem).to_owned(),
+            None => new_stem(&world.get(id).expect("listed").name, &mut taken),
+        };
+        let mut entities = Vec::new();
+        world.walk(Some(id), |e, path| entities.push((e.clone(), path.to_owned())));
+        parts.push(Part::Write { id, stamp, root, stem, entities });
+    }
+    Plan { dir: dir.to_owned(), next_id: world.next_id(), env: world.env().to_json_exact(), loose, parts, previous }
+}
+
+/// A file stem for a new subtree: the name with anything outside `A-Z a-z 0-9 _ -` replaced by
+/// `_`, plus a short hash of the real name when that clashes (case-insensitively, for Windows and
+/// macOS) with a stem in use or is a device name.
+fn new_stem(name: &str, taken: &mut BTreeSet<String>) -> String {
+    let mut stem: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).take(64).collect();
+    if taken.contains(&stem.to_ascii_lowercase()) || is_device_name(&stem) || stem == "world" {
+        stem = format!("{stem}-{:08x}", hash_str(name) as u32);
+    }
+    let mut candidate = stem.clone();
+    let mut n = 2;
+    while taken.contains(&candidate.to_ascii_lowercase()) {
+        candidate = format!("{stem}-{n}");
+        n += 1;
+    }
+    taken.insert(candidate.to_ascii_lowercase());
+    candidate
+}
+
+impl Plan {
+    /// The files to write for `generation` (changed subtrees, then `world.json`) and the state
+    /// they leave behind. Pure.
+    fn render(&self, generation: u64) -> (Vec<(String, String)>, Saved) {
+        let mut files = Vec::new();
+        let mut saved = Saved { dir: self.dir.clone(), generation, subtrees: BTreeMap::new() };
+        for part in &self.parts {
+            match part {
+                Part::Keep { id, saved: s } => {
+                    saved.subtrees.insert(*id, s.clone());
+                }
+                Part::Write { id, stamp, root, stem, entities } => {
+                    let file = format!("{stem}.{generation}.json");
+                    let records: Vec<Json> = entities.iter().map(|(e, path)| record(e, path)).collect();
+                    let header = vec![("format", Json::from(FORMAT)), ("root", Json::from(root.as_str()))];
+                    files.push((file.clone(), document(header, &records)));
+                    saved.subtrees.insert(*id, SavedSubtree { stamp: *stamp, root: root.clone(), file });
+                }
             }
-            let mut candidate = stem.clone();
-            let mut n = 2;
-            while used.contains(&candidate.to_ascii_lowercase()) {
-                candidate = format!("{stem}-{n}");
-                n += 1;
-            }
-            used.insert(candidate.to_ascii_lowercase());
-            format!("{candidate}.json")
-        })
-        .collect()
+        }
+        // Listed in path order, like everything else.
+        let mut listed: Vec<&SavedSubtree> = saved.subtrees.values().collect();
+        listed.sort_by(|a, b| crate::world::path_cmp(&a.root, &b.root));
+        let subtrees = Json::arr(listed.iter().map(|s| {
+            Json::obj([("root", Json::from(s.root.as_str())), ("file", Json::from(s.file.as_str()))])
+        }));
+        let loose: Vec<Json> = self.loose.iter().map(|(e, path)| record(e, path)).collect();
+        let header = vec![
+            ("format", Json::from(FORMAT)),
+            ("generation", Json::from(generation)),
+            ("next_id", Json::from(self.next_id)),
+            ("env", self.env.clone()),
+            ("subtrees", subtrees),
+        ];
+        files.push((INDEX.to_owned(), document(header, &loose)));
+        (files, saved)
+    }
+}
+
+/// Every file of the world, as a first save would write it. Pure and deterministic.
+pub fn render(world: &World) -> Vec<(String, String)> {
+    plan(world, Path::new(""), None).render(1).0
 }
 
 /// One entity as saved: valid `world_spawn` arguments plus id, version and attribution.
@@ -151,7 +286,7 @@ fn record(e: &Entity, path: &str) -> Json {
         f.push(("material", Json::from(material_name(look.material))));
     }
     // Non-standard materials get a material-specific default opacity on spawn: always write it.
-    if look.material != Material::Lit || look.opacity != d.opacity {
+    if look.material != Material::Lit || look.opacity.to_bits() != d.opacity.to_bits() {
         f.push(("opacity", Json::from(look.opacity)));
     }
     for (key, v, default) in [
@@ -196,8 +331,8 @@ fn record(e: &Entity, path: &str) -> Json {
         f.push(("body", b.to_json()));
     }
     f.push(("version", Json::from(e.version)));
-    f.push(("created_by", Json::from(e.created_by.as_str())));
-    f.push(("modified_by", Json::from(e.modified_by.as_str())));
+    f.push(("created_by", Json::from(&*e.created_by)));
+    f.push(("modified_by", Json::from(&*e.modified_by)));
     Json::obj(f)
 }
 
@@ -216,148 +351,167 @@ fn document(header: Vec<(&str, Json)>, entities: &[Json]) -> String {
     out
 }
 
-/// Every file of the world as `(file name, content)`, `world.json` last. Pure and deterministic.
-pub fn render(world: &World) -> Vec<(String, String)> {
-    let tops: Vec<u64> = world.children_of(None).collect();
-    let (subtrees, loose): (Vec<u64>, Vec<u64>) = tops.into_iter().partition(|&id| world.children_of(Some(id)).next().is_some());
-    let names: Vec<&str> = subtrees.iter().map(|&id| world.get(id).expect("listed").name.as_str()).collect();
-    let files = file_names(&names);
-    let mut out = Vec::with_capacity(files.len() + 1);
-    for (&root, file) in subtrees.iter().zip(&files) {
-        let mut entities = Vec::new();
-        world.walk(Some(root), |e, path| entities.push(record(e, path)));
-        let header = vec![("format", Json::from(FORMAT)), ("root", Json::from(world.path_of(root)))];
-        out.push((file.clone(), document(header, &entities)));
-    }
-    let loose: Vec<Json> = loose.iter().map(|&id| record(world.get(id).expect("listed"), &world.path_of(id))).collect();
-    let header = vec![
-        ("format", Json::from(FORMAT)),
-        ("next_id", Json::from(world.next_id())),
-        ("env", world.env().to_json_exact()),
-        ("files", Json::arr(files.iter().map(|f| Json::from(f.as_str())))),
-    ];
-    out.push((INDEX.to_owned(), document(header, &loose)));
-    out
-}
-
 pub struct SaveReport {
     pub dir: PathBuf,
+    pub generation: u64,
+    /// Files the world now consists of (`world.json` included).
     pub files: usize,
-    /// Files whose content changed.
+    /// Files written by this save (`world.json` included).
     pub written: usize,
-    /// Files of entities that no longer exist.
+    /// Files of the previous generation that are no longer part of the world.
     pub removed: usize,
 }
 
-/// Writes the world into `dir` (created if needed).
-pub fn save(world: &World, dir: &Path) -> Result<SaveReport, PersistError> {
-    let files = render(world);
-    let shown = dir.display().to_string();
-    std::fs::create_dir_all(dir).map_err(|e| PersistError::io(&shown, e))?;
-    let mut written = 0;
-    for (name, content) in &files {
-        let path = dir.join(name);
-        if std::fs::read(&path).is_ok_and(|old| old == content.as_bytes()) {
-            continue;
+/// The generation and files of the world already in `dir`: `None` for a missing or empty folder.
+/// A non-empty folder without `world.json` is refused rather than adopted: it isn't ours.
+fn on_disk(dir: &Path) -> Result<Option<(u64, Vec<String>)>, PersistError> {
+    let index = dir.join(INDEX);
+    if !index.exists() {
+        let occupied = std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
+        if occupied {
+            return Err(PersistError::new(
+                "not_a_world",
+                format!("{} has files but no world.json; refusing to save a world into it", dir.display()),
+            ));
         }
-        let tmp = dir.join(format!("{name}.tmp"));
-        std::fs::write(&tmp, content).map_err(|e| PersistError::io(name, e))?;
-        std::fs::rename(&tmp, &path).map_err(|e| PersistError::io(name, e))?;
-        written += 1;
+        return Ok(None);
     }
-    let keep: BTreeSet<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
-    let mut removed = 0;
-    for entry in std::fs::read_dir(dir).map_err(|e| PersistError::io(&shown, e))?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let ours = name.ends_with(".json") || name.ends_with(".json.tmp");
-        if ours && !keep.contains(name.as_str()) && entry.file_type().is_ok_and(|t| t.is_file()) {
-            std::fs::remove_file(entry.path()).map_err(|e| PersistError::io(&name, e))?;
-            removed += 1;
-        }
-    }
-    Ok(SaveReport { dir: dir.to_owned(), files: files.len(), written, removed })
+    let text = std::fs::read_to_string(&index).map_err(|e| PersistError::io(INDEX, e))?;
+    let doc = parse_doc(INDEX, &text)?;
+    let generation = doc.get("generation").and_then(Json::as_u64).unwrap_or(0);
+    let files = doc
+        .get("subtrees")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| s.get("file").and_then(Json::as_str))
+        .filter(|f| is_subtree_file(f))
+        .map(str::to_owned)
+        .collect();
+    Ok(Some((generation, files)))
 }
 
-/// Reads the world saved in `dir`.
-pub fn load(dir: &Path) -> Result<World, PersistError> {
-    load_with(|file| {
+/// Whether a world may be created in `dir` (missing, empty, or already a world).
+pub fn check_adoptable(dir: &Path) -> Result<(), PersistError> {
+    on_disk(dir).map(|_| ())
+}
+
+fn write_synced(path: &Path, name: &str, content: &str) -> Result<(), PersistError> {
+    let mut f = std::fs::File::create(path).map_err(|e| PersistError::io(name, e))?;
+    f.write_all(content.as_bytes()).map_err(|e| PersistError::io(name, e))?;
+    f.sync_all().map_err(|e| PersistError::io(name, e))
+}
+
+/// Writes `plan` (see the module docs for the commit order) and returns what is now on disk.
+pub fn execute(plan: Plan) -> Result<(Saved, SaveReport), PersistError> {
+    let dir = &plan.dir;
+    let shown = dir.display().to_string();
+    let (generation, old_files) = match &plan.previous {
+        Some(p) => (p.generation, p.subtrees.values().map(|s| s.file.clone()).collect()),
+        None => on_disk(dir)?.unwrap_or_default(),
+    };
+    std::fs::create_dir_all(dir).map_err(|e| PersistError::io(&shown, e))?;
+    let (files, saved) = plan.render(generation + 1);
+    let (index, subtrees) = files.split_last().expect("world.json is always rendered");
+    for (name, content) in subtrees {
+        write_synced(&dir.join(name), name, content)?;
+    }
+    write_synced(&dir.join(INDEX_TMP), INDEX, &index.1)?;
+    std::fs::rename(dir.join(INDEX_TMP), dir.join(INDEX)).map_err(|e| PersistError::io(INDEX, e))?;
+    // Committed. What the previous generation listed and this one doesn't is garbage now.
+    let keep: BTreeSet<&str> = saved.subtrees.values().map(|s| s.file.as_str()).collect();
+    let mut removed = 0;
+    for old in old_files.iter().filter(|f| !keep.contains(f.as_str())) {
+        match std::fs::remove_file(dir.join(old)) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(PersistError::io(old, e)),
+        }
+    }
+    let report =
+        SaveReport { dir: dir.clone(), generation: saved.generation, files: keep.len() + 1, written: files.len(), removed };
+    Ok((saved, report))
+}
+
+/// Writes the world into `dir` (created if needed). `previous` as for [`plan`].
+pub fn save(world: &World, dir: &Path, previous: Option<&Saved>) -> Result<(Saved, SaveReport), PersistError> {
+    execute(plan(world, dir, previous))
+}
+
+/// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally.
+pub fn load(dir: &Path) -> Result<(World, Saved), PersistError> {
+    let (world, mut saved) = load_with(|file| {
         std::fs::read_to_string(dir.join(file)).map_err(|e| {
             let code = if e.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" };
             PersistError::new(code, format!("{}: {e}", dir.join(file).display())).in_file(file)
         })
-    })
+    })?;
+    saved.dir = dir.to_owned();
+    Ok((world, saved))
 }
 
-/// [`load`] over any file source (tests read from memory).
-pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<World, PersistError> {
+/// [`load`] over any file source (tests read from memory). Only files listed in `world.json` are
+/// read.
+pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<(World, Saved), PersistError> {
     let index = parse_doc(INDEX, &read(INDEX)?)?;
-    let bad = |field: &str, message: &str| {
-        let mut e = PersistError::new("invalid_world", message).in_file(INDEX);
-        e.field = Some(field.to_owned());
-        e
-    };
+    let bad = |field: &str, message: &str| PersistError::new("invalid_world", message).in_file(INDEX).field(field);
+    check_keys(&index, INDEX, &[INDEX_KEYS]).map_err(|m| bad(&quoted_field(&m).unwrap_or_default(), &m))?;
+    let generation = index.get("generation").and_then(Json::as_u64).ok_or_else(|| bad("generation", "'generation' must be an integer"))?;
     let next_id = index.get("next_id").and_then(Json::as_u64).ok_or_else(|| bad("next_id", "'next_id' must be an integer"))?;
     let env = index.get("env").ok_or_else(|| bad("env", "'env' is missing"))?;
-    if let Some((key, _)) = env.as_object().unwrap_or_default().iter().find(|(k, _)| !ENV_KEYS.contains(&k.as_str())) {
-        return Err(bad(&format!("env.{key}"), &format!("unknown environment field '{key}'")));
-    }
-    let env = parse_env(env).map_err(|m| bad(&format!("env.{}", quoted_field(&m).unwrap_or_default()), &m))?;
-    let files: Vec<String> = match index.get("files").and_then(Json::as_array) {
+    let env = check_keys(env, "env", &[ENV_KEYS])
+        .and_then(|()| parse_env(env))
+        .map_err(|m| bad(&format!("env.{}", quoted_field(&m).unwrap_or_default()), &m))?;
+    let listed: Vec<(String, String)> = match index.get("subtrees").and_then(Json::as_array) {
         Some(items) => items
             .iter()
-            .map(|f| match f.as_str() {
-                Some(name) if is_subtree_file(name) => Ok(name.to_owned()),
-                _ => Err(bad("files", "'files' must list plain file names like \"slab.json\"")),
+            .map(|s| {
+                let root = s.get("root").and_then(Json::as_str);
+                let file = s.get("file").and_then(Json::as_str).filter(|f| is_subtree_file(f));
+                let keys_ok = s.as_object().is_some_and(|o| o.len() == 2);
+                match (root, file, keys_ok) {
+                    (Some(r), Some(f), true) => Ok((r.to_owned(), f.to_owned())),
+                    _ => Err(bad("subtrees", "'subtrees' entries must be {root: \"/name\", file: \"name.<gen>.json\"}")),
+                }
             })
             .collect::<Result<_, _>>()?,
-        None => return Err(bad("files", "'files' must be an array of file names")),
+        None => return Err(bad("subtrees", "'subtrees' must be an array")),
     };
 
     let mut world = World::default();
-    world.set_env(&env);
+    world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
-    for file in &files {
+    let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new() };
+    for (root, file) in &listed {
         let doc = parse_doc(file, &read(file)?)?;
-        let root = doc.get("root").and_then(Json::as_str).map(str::to_owned);
-        let root = root.ok_or_else(|| {
-            let mut e = PersistError::new("invalid_world", "'root' must be the subtree's top-level path").in_file(file);
-            e.field = Some("root".into());
-            e
-        })?;
-        load_entities(&mut world, file, &doc, Some(&root))?;
+        check_keys(&doc, file, &[SUBTREE_KEYS])
+            .map_err(|m| PersistError::new("invalid_world", m.clone()).in_file(file).field(&quoted_field(&m).unwrap_or_default()))?;
+        if doc.get("root").and_then(Json::as_str) != Some(root.as_str()) {
+            return Err(PersistError::new("invalid_world", format!("'root' must be {root}, as world.json lists it"))
+                .in_file(file)
+                .field("root"));
+        }
+        load_entities(&mut world, file, &doc, Some(root))?;
+        let id = world.find_path(root).map_err(|e| from_world(e, file, Some(root)))?;
+        saved.subtrees.insert(id, SavedSubtree { stamp: 0, root: root.clone(), file: file.clone() });
     }
-    world.set_next_id(next_id).map_err(|e| from_world(e, INDEX, None))?;
-    Ok(world)
-}
-
-const ENV_KEYS: [&str; 8] = [
-    "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
-    "background",
-];
-
-fn is_subtree_file(name: &str) -> bool {
-    name.strip_suffix(".json").is_some_and(|stem| {
-        !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    }) && name != INDEX
+    world.set_next_id(next_id);
+    for (&id, s) in saved.subtrees.iter_mut() {
+        s.stamp = world.subtree_stamp(id);
+    }
+    Ok((world, saved))
 }
 
 fn parse_doc(file: &str, text: &str) -> Result<Json, PersistError> {
-    let doc = Json::parse(text).map_err(|e| {
-        let mut err = PersistError::new("invalid_json", e.to_string()).in_file(file);
-        err.field = Some(format!("byte {}", e.offset));
-        err
-    })?;
+    let doc = Json::parse(text).map_err(|e| PersistError::new("invalid_json", e.to_string()).in_file(file).field(&format!("byte {}", e.offset)))?;
     match doc.get("format").and_then(Json::as_str) {
         Some(FORMAT) => Ok(doc),
-        other => {
-            let mut e = PersistError::new(
-                "unsupported_format",
-                format!("format is {}, this engine reads {FORMAT}", other.map_or("missing".into(), |f| format!("'{f}'"))),
-            )
-            .in_file(file);
-            e.field = Some("format".into());
-            Err(e)
-        }
+        other => Err(PersistError::new(
+            "unsupported_format",
+            format!("format is {}, this engine reads {FORMAT}", other.map_or("missing".into(), |f| format!("'{f}'"))),
+        )
+        .in_file(file)
+        .field("format")),
     }
 }
 
@@ -372,11 +526,10 @@ fn from_world(e: WorldError, file: &str, entity: Option<&str>) -> PersistError {
 }
 
 fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) -> Result<(), PersistError> {
-    let records = doc.get("entities").and_then(Json::as_array).ok_or_else(|| {
-        let mut e = PersistError::new("invalid_world", "'entities' must be an array").in_file(file);
-        e.field = Some("entities".into());
-        e
-    })?;
+    let records = doc
+        .get("entities")
+        .and_then(Json::as_array)
+        .ok_or_else(|| PersistError::new("invalid_world", "'entities' must be an array").in_file(file).field("entities"))?;
     for (i, rec) in records.iter().enumerate() {
         let path = rec.get("path").and_then(Json::as_str);
         let fail = |field: Option<String>, message: String| PersistError {
@@ -400,7 +553,10 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             return Err(fail(Some("path".into()), format!("'{path}' does not belong in this file: expected {want}")));
         }
         let int = |key: &str| {
-            rec.get(key).and_then(Json::as_u64).filter(|&n| n >= 1).ok_or_else(|| fail(Some(key.into()), format!("'{key}' must be an integer >= 1")))
+            rec.get(key)
+                .and_then(Json::as_u64)
+                .filter(|&n| n >= 1)
+                .ok_or_else(|| fail(Some(key.into()), format!("'{key}' must be an integer >= 1")))
         };
         let (id, version) = (int("id")?, int("version")?);
         let text = |key: &str| match rec.get(key) {
@@ -408,7 +564,7 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             _ => Err(fail(Some(key.into()), format!("'{key}' must be a string"))),
         };
         let (created_by, modified_by) = (text("created_by")?, text("modified_by")?);
-        let spec = parse_spawn(rec).map_err(|m| fail(quoted_field(&m), m))?;
+        let spec = parse_spawn_fields(rec).map_err(|m| fail(quoted_field(&m), m))?;
         world.restore(spec, id, version, &created_by, &modified_by).map_err(|e| from_world(e, file, Some(path)))?;
     }
     Ok(())
@@ -419,11 +575,11 @@ mod tests {
     use super::*;
     use crate::world::{Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, Profile, Shape, SpawnSpec, UpdateSpec};
     use specula_core::math::Vec3;
-    use std::collections::BTreeMap;
 
     fn sample() -> World {
         let mut w = World::default();
-        w.set_env(&EnvPatch { sun_color: Some([0.123_456_79, 1.0 / 3.0, 0.0]), tonemap: Some(true), ..Default::default() });
+        w.set_env(&EnvPatch { sun_color: Some([0.123_456_79, 1.0 / 3.0, 0.0]), tonemap: Some(true), ..Default::default() })
+            .unwrap();
         let mut slab = SpawnSpec::new(Shape::Group);
         slab.name = Some("slab".into());
         slab.position = Vec3::new(0.1, -0.0, 1.0e-7);
@@ -442,7 +598,12 @@ mod tests {
             s.color = [0.31, 0.62, 0.93];
             s.tags = ["ward".to_string()].into();
             s.props = Json::parse(r#"{"hp": 12.5, "faction": "old"}"#).unwrap();
-            s.collider = Some(Collider { shape: ColliderShape::Box { size: Vec3::ONE }, offset: Vec3::ZERO, is_trigger: i == 1, layer: "terrain".into() });
+            s.collider = Some(Collider {
+                shape: ColliderShape::Box { size: Vec3::ONE },
+                offset: Vec3::ZERO,
+                is_trigger: i == 1,
+                layer: "terrain".into(),
+            });
             s.body = Some(Body { kind: BodyKind::Static, mass: 1.0 });
             w.spawn(s, "bob").unwrap();
         }
@@ -452,7 +613,8 @@ mod tests {
         glass.look.material = Material::Glass;
         glass.look.opacity = 1.0;
         glass.look.surface.color2 = [0.2, 0.4, 0.6];
-        glass.light = Some(LightSpec { intensity: 0.7, range: 2.5, color: Some([1.0, 0.9, 0.8]), offset: Vec3::new(0.0, 0.2, 0.0) });
+        glass.light =
+            Some(LightSpec { intensity: 0.7, range: 2.5, color: Some([1.0, 0.9, 0.8]), offset: Vec3::new(0.0, 0.2, 0.0) });
         w.spawn(glass, "carol").unwrap();
         let mut sun = SpawnSpec::new(Shape::Sphere);
         sun.name = Some("sun".into());
@@ -469,7 +631,20 @@ mod tests {
     }
 
     fn reload(files: &BTreeMap<String, String>) -> Result<World, PersistError> {
-        load_with(|f| files.get(f).cloned().ok_or_else(|| PersistError::new("not_found", f).in_file(f)))
+        load_with(|f| files.get(f).cloned().ok_or_else(|| PersistError::new("not_found", f).in_file(f))).map(|(w, _)| w)
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("specula-persist-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -492,33 +667,36 @@ mod tests {
     fn layout_is_one_file_per_subtree() {
         let saved = files(&sample());
         let names: Vec<&str> = saved.keys().map(String::as_str).collect();
-        assert_eq!(names, ["slab.json", "world.json"]);
+        assert_eq!(names, ["slab.1.json", "world.json"]);
         let index = &saved["world.json"];
-        assert!(index.contains(r#""files": ["slab.json"]"#), "{index}");
+        assert!(index.contains(r#""subtrees": [{"root":"/slab","file":"slab.1.json"}]"#), "{index}");
+        assert!(index.contains(r#""generation": 1,"#), "{index}");
         // Loose top-level entities live in world.json, one line each, in path order.
         let lines: Vec<&str> = index.lines().filter(|l| l.trim_start().starts_with("{\"path\"")).collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains(r#""path":"/Vase (tall)""#) && lines[1].contains(r#""path":"/sun""#));
         assert!(lines[0].contains(r#""opacity":1"#), "non-standard materials always store opacity");
-        let slab = &saved["slab.json"];
+        let slab = &saved["slab.1.json"];
         assert_eq!(slab.lines().filter(|l| l.contains("\"path\"")).count(), 5);
-        assert!(slab.contains(r#""position":[0.1,-0,1e-7]"#) || slab.contains(r#""position":[0.1,-0,0.0000001]"#), "{slab}");
+        assert!(slab.contains(r#""position":[0.1,-0,0.0000001]"#), "{slab}");
         assert!(slab.contains(r#""props":{"faction":"old","hp":12.5}"#));
     }
 
     #[test]
-    fn file_names_are_safe_and_distinct() {
-        let names = file_names(&["slab", "Slab", "a/b", "con", "world", "x.y", "a_b"]);
-        assert_eq!(names[0], "slab.json");
-        assert!(names[1].starts_with("Slab-") && names[1].ends_with(".json"), "{names:?}");
-        assert_eq!(names[2], "a_b.json");
-        assert!(names[3].starts_with("con-"), "{names:?}");
-        assert!(names[4].starts_with("world-"), "{names:?}");
-        assert_eq!(names[5], "x_y.json");
-        assert!(names[6].starts_with("a_b-"), "clashes with a/b: {names:?}");
-        let lower: BTreeSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
-        assert_eq!(lower.len(), names.len());
-        assert!(names.iter().all(|n| is_subtree_file(n)));
+    fn new_stems_are_safe_and_distinct() {
+        let mut taken = BTreeSet::new();
+        let stems: Vec<String> =
+            ["slab", "Slab", "a/b", "con", "world", "x.y", "a_b"].iter().map(|n| new_stem(n, &mut taken)).collect();
+        assert_eq!(stems[0], "slab");
+        assert!(stems[1].starts_with("Slab-"), "{stems:?}");
+        assert_eq!(stems[2], "a_b");
+        assert!(stems[3].starts_with("con-"), "{stems:?}");
+        assert!(stems[4].starts_with("world-"), "{stems:?}");
+        assert_eq!(stems[5], "x_y");
+        assert!(stems[6].starts_with("a_b-"), "clashes with a/b: {stems:?}");
+        assert_eq!(taken.len(), stems.len());
+        assert!(stems.iter().all(|s| is_subtree_file(&format!("{s}.3.json"))));
+        assert!(!is_subtree_file("slab.json") && !is_subtree_file("../slab.1.json") && !is_subtree_file("world.json"));
     }
 
     #[test]
@@ -541,36 +719,119 @@ mod tests {
             *text = text.replacen(from, to, 1);
             reload(&f).unwrap_err()
         };
-        let e = broken("slab.json", r#""shape":"cube""#, r#""shape":"cone""#);
-        assert_eq!((e.file.as_deref(), e.entity.as_deref(), e.field.as_deref()), (Some("slab.json"), Some("/slab/stones/ward_00"), Some("shape")));
-        let e = broken("slab.json", r#""scale":[0.3,0.5,0.3]"#, r#""scale":[0,0.5,0.3]"#);
+        let slab = "slab.1.json";
+        let e = broken(slab, r#""shape":"cube""#, r#""shape":"cone""#);
+        assert_eq!((e.file.as_deref(), e.entity.as_deref(), e.field.as_deref()), (Some(slab), Some("/slab/stones/ward_00"), Some("shape")));
+        let e = broken(slab, r#""scale":[0.3,0.5,0.3]"#, r#""scale":[0,0.5,0.3]"#);
         assert_eq!(e.field.as_deref(), Some("scale"));
-        let e = broken("slab.json", r#""version":1"#, r#""version":0"#);
+        let e = broken(slab, r#""color":[0.31,0.62,0.93]"#, r#""color":[3.1,0.62,0.93]"#);
+        assert_eq!(e.field.as_deref(), Some("color"));
+        let e = broken(slab, r#""version":1"#, r#""version":0"#);
         assert_eq!(e.field.as_deref(), Some("version"));
-        let e = broken("slab.json", r#""path":"/slab/stones/ward_02""#, r#""path":"/slab/stones/ward_00""#);
+        let e = broken(slab, r#""path":"/slab/stones/ward_02""#, r#""path":"/slab/stones/ward_00""#);
         assert_eq!((e.entity.as_deref(), e.field.as_deref()), (Some("/slab/stones/ward_00"), None));
         assert!(e.message.contains("already exists"), "{e}");
-        let e = broken("slab.json", r#""path":"/slab/stones/ward_02""#, r#""path":"/elsewhere/ward_02""#);
+        let e = broken(slab, r#""path":"/slab/stones/ward_02""#, r#""path":"/elsewhere/ward_02""#);
         assert_eq!(e.field.as_deref(), Some("path"));
-        let e = broken("slab.json", r#""path":"/slab/stones","#, r#""path":"/slab/stones","colour":1,"#);
+        let e = broken(slab, r#""path":"/slab/stones","#, r#""path":"/slab/stones","colour":1,"#);
         assert_eq!(e.field.as_deref(), Some("colour"));
-        let e = broken("slab.json", "\"entities\": [", "\"entities\": [[");
-        assert_eq!((e.code, e.file.as_deref()), ("invalid_json", Some("slab.json")));
+        let e = broken(slab, r#""layer":"terrain""#, r#""layer":"terrain","mask":3"#);
+        assert_eq!(e.field.as_deref(), Some("collider.mask"), "{e}");
+        let e = broken("world.json", r#""intensity":0.7"#, r#""intensity":0.7,"radius":2"#);
+        assert_eq!(e.field.as_deref(), Some("light.radius"), "{e}");
+        let e = broken(slab, "\"entities\": [", "\"entities\": [[");
+        assert_eq!((e.code, e.file.as_deref()), ("invalid_json", Some(slab)));
+        let e = broken(slab, r#""root": "/slab""#, r#""root": "/slab", "extra": 1"#);
+        assert_eq!(e.field.as_deref(), Some("extra"));
+        let e = broken(slab, r#""root": "/slab""#, r#""root": "/other""#);
+        assert_eq!(e.field.as_deref(), Some("root"));
         let e = broken("world.json", FORMAT, "specula.world/v9");
         assert_eq!(e.code, "unsupported_format");
-        let e = broken("world.json", r#""files": ["slab.json"]"#, r#""files": ["../slab.json"]"#);
-        assert_eq!(e.field.as_deref(), Some("files"));
-        let e = broken("world.json", r#""files": ["slab.json"]"#, r#""files": ["gone.json"]"#);
-        assert_eq!((e.code, e.file.as_deref()), ("not_found", Some("gone.json")));
-        let e = broken("world.json", r#""next_id": 7"#, r#""next_id": 3"#);
-        assert_eq!(e.field.as_deref(), Some("next_id"));
+        let e = broken("world.json", r#""next_id": 7,"#, r#""next_id": 7, "notes": "x","#);
+        assert_eq!(e.field.as_deref(), Some("notes"));
+        let e = broken("world.json", r#""file":"slab.1.json""#, r#""file":"../slab.1.json""#);
+        assert_eq!(e.field.as_deref(), Some("subtrees"));
+        let e = broken("world.json", r#""file":"slab.1.json""#, r#""file":"gone.1.json""#);
+        assert_eq!((e.code, e.file.as_deref()), ("not_found", Some("gone.1.json")));
         let e = broken("world.json", r#""exposure":1"#, r#""exposure":-1"#);
         assert_eq!(e.field.as_deref(), Some("env.exposure"));
+        let e = broken("world.json", r#""exposure":1"#, r#""exposure":1,"fog":2"#);
+        assert_eq!(e.field.as_deref(), Some("env.fog"));
         let e = broken("world.json", r#""path":"/sun""#, r#""path":"/sun/x""#);
         assert_eq!(e.field.as_deref(), Some("path"));
+        // A stale id counter is repaired rather than refused: ids are never handed out twice.
+        let mut low = good.clone();
+        let index = low.get_mut("world.json").unwrap();
+        *index = index.replacen(r#""next_id": 7"#, r#""next_id": 2"#, 1);
+        assert_eq!(reload(&low).unwrap().next_id(), 7);
     }
 
-    /// Scale check, run by hand: `cargo test -p specula --release -- --ignored --nocapture`.
+    #[test]
+    fn saves_commit_through_world_json_and_rewrite_only_changes() {
+        let dir = temp_dir("commit");
+        let mut w = sample();
+        let mut cul = SpawnSpec::new(Shape::Group);
+        cul.name = Some("culvert".into());
+        w.spawn(cul, "t").unwrap();
+        let mut pipe = SpawnSpec::new(Shape::Cube);
+        pipe.parent = Some(EntityKey::Path("/culvert".into()));
+        w.spawn(pipe, "t").unwrap();
+        let (saved, first) = save(&w, &dir, None).unwrap();
+        assert_eq!((first.generation, first.files, first.written, first.removed), (1, 3, 3, 0));
+        assert_eq!(listing(&dir), ["culvert.1.json", "slab.1.json", "world.json"]);
+
+        // Change one subtree: only it and world.json are written; its old file goes.
+        let edit = UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..Default::default() };
+        w.update(&EntityKey::Path("/culvert/cube_9".into()), edit, "t").unwrap();
+        let (saved, second) = save(&w, &dir, Some(&saved)).unwrap();
+        assert_eq!((second.generation, second.written, second.removed), (2, 2, 1));
+        assert_eq!(listing(&dir), ["culvert.2.json", "slab.1.json", "world.json"]);
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+
+        // A crash after the subtree files but before world.json leaves the old world loadable:
+        // the new generation's files are simply not listed.
+        std::fs::write(dir.join("slab.3.json"), "half a file").unwrap();
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+
+        // Files the world never listed are never deleted; a new top-level name that clashes takes
+        // the hash and leaves the existing file's name alone.
+        std::fs::write(dir.join("notes.json"), "{}").unwrap();
+        let mut rival = SpawnSpec::new(Shape::Group);
+        rival.name = Some("Slab".into());
+        w.spawn(rival, "t").unwrap();
+        let mut kid = SpawnSpec::new(Shape::Cube);
+        kid.parent = Some(EntityKey::Path("/Slab".into()));
+        w.spawn(kid, "t").unwrap();
+        w.delete(&EntityKey::Path("/culvert".into()), None).unwrap();
+        let (_, third) = save(&w, &dir, Some(&saved)).unwrap();
+        let names = listing(&dir);
+        assert!(names.contains(&"notes.json".to_string()) && names.contains(&"slab.1.json".to_string()), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("Slab-") && n.ends_with(".3.json")), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("culvert")), "{names:?}");
+        assert_eq!(third.removed, 1);
+        let (back, reread) = load(&dir).unwrap();
+        assert_eq!(back.state_hash(), w.state_hash());
+
+        // Saving the loaded world without changes writes only world.json.
+        let (_, fourth) = save(&back, &dir, Some(&reread)).unwrap();
+        assert_eq!((fourth.written, fourth.removed), (1, 0));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(load(&dir).err().unwrap().code, "not_found");
+    }
+
+    #[test]
+    fn folders_that_are_not_worlds_are_left_alone() {
+        let dir = temp_dir("adopt");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(check_adoptable(&dir).is_ok(), "an empty folder is fine");
+        std::fs::write(dir.join("notes.json"), "{}").unwrap();
+        assert_eq!(save(&sample(), &dir, None).err().unwrap().code, "not_a_world");
+        assert_eq!(check_adoptable(&dir).err().unwrap().code, "not_a_world");
+        assert_eq!(listing(&dir), ["notes.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Scale check, run by hand: `cargo test -p specula -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn hundred_thousand_entities() {
@@ -595,36 +856,28 @@ mod tests {
         let page = w.query(&crate::world::Query { tags: vec!["house".into()], limit: 50, ..Default::default() }).unwrap();
         assert_eq!(page.total, 99_900);
         let queried = t.elapsed();
+        let dir = temp_dir("100k");
         let t = std::time::Instant::now();
-        let saved = files(&w);
-        let rendered = t.elapsed();
+        let (saved, _) = save(&w, &dir, None).unwrap();
+        let first_save = t.elapsed();
+        // One district changes, as a game tick would: the next save's engine-thread part.
+        let edit = UpdateSpec { position: Some(Vec3::ONE), ..Default::default() };
+        w.update(&EntityKey::Path("/district_42/house_007".into()), edit, "t").unwrap();
         let t = std::time::Instant::now();
-        let back = reload(&saved).unwrap();
+        let p = plan(&w, &dir, Some(&saved));
+        let planned = t.elapsed();
+        let t = std::time::Instant::now();
+        let (_, report) = execute(p).unwrap();
+        let executed = t.elapsed();
+        let t = std::time::Instant::now();
+        let (back, _) = load(&dir).unwrap();
         let loaded = t.elapsed();
         assert_eq!(back.state_hash(), w.state_hash());
-        let bytes: usize = saved.values().map(String::len).sum();
+        assert_eq!(report.written, 2);
         println!(
-            "100k entities: build {built:?}, tag query {queried:?}, render {rendered:?} ({} files, {} MB), load {loaded:?}",
-            saved.len(),
-            bytes / 1_000_000
+            "100k entities: build {built:?}, tag query {queried:?}, first save {first_save:?}, \
+             1-district change: plan {planned:?} (engine thread) + write {executed:?}, load {loaded:?}"
         );
-    }
-
-    #[test]
-    fn save_writes_only_changes_and_removes_stale_files() {
-        let dir = std::env::temp_dir().join(format!("specula-persist-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut w = sample();
-        let first = save(&w, &dir).unwrap();
-        assert_eq!((first.files, first.written, first.removed), (2, 2, 0));
-        let again = save(&w, &dir).unwrap();
-        assert_eq!((again.written, again.removed), (0, 0), "unchanged files are not rewritten");
-        w.delete(&EntityKey::Path("/slab".into()), None).unwrap();
-        let after = save(&w, &dir).unwrap();
-        assert_eq!((after.files, after.written, after.removed), (1, 1, 1));
-        assert!(!dir.join("slab.json").exists());
-        assert_eq!(load(&dir).unwrap().state_hash(), w.state_hash());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(load(&dir).err().unwrap().code, "not_found");
     }
 }

@@ -207,7 +207,17 @@ def main():
         build(m)
         saved = m.call("world_save")
         assert saved["saved"] == "e2e" and saved["entities"] == 12, saved
-        # One more change after the save: only the shutdown autosave can keep it.
+        # A change after the save, then the periodic autosave (worker thread, every 10 s) picks it up.
+        m.call("world_set", path="/slab/stones/ward_00", props={"hp": 99})
+        for _ in range(40):
+            world = m.call("engine_info")["world"]
+            if not world["unsaved_changes"]:
+                break
+            time.sleep(0.5)
+        assert not world["unsaved_changes"] and world["last_autosave_error"] is None, world
+        slab_files = sorted(p.name for p in (args.out / "worlds" / "e2e").glob("slab.*.json"))
+        assert slab_files == ["slab.2.json"], slab_files
+        # One more change: only the shutdown autosave can keep it.
         m.call("world_set", path="/pawn", rotation_deg=[0, 33.3, 0])
         info1 = m.call("engine_info")
         assert info1["world"]["unsaved_changes"] is True, info1["world"]
@@ -219,7 +229,8 @@ def main():
             stop(proc, log, log_path, 1)
     files = sorted(p.name for p in (args.out / "worlds" / "e2e").iterdir())
     print(f"run 1: {total1} entities, state {info1['world']['state_hash']}, files {files}")
-    assert files == ["slab.json", "world.json"], files
+    # The shutdown autosave only touched /pawn (in world.json): the slab subtree keeps generation 2.
+    assert files == ["slab.2.json", "world.json"], files
 
     proc, log, log_path = start(args.exe, args.out, args.port, 2)
     problems = []
@@ -235,6 +246,10 @@ def main():
         damaged, _ = m.frame()
         if damaged == png1:
             problems.append("deleting the lamp did not change the frame")
+        # The copy is now the current world: saving over e2e by name must be refused.
+        clash = m.fails("world_save", name="e2e")
+        if (clash["error"], clash["entities"]) != ("world_exists", 12):
+            problems.append(f"world_save over another world: {clash}")
         refused = m.fails("world_load", name="e2e")
         if refused["error"] != "unsaved_changes":
             problems.append(f"world_load over unsaved changes: {refused}")

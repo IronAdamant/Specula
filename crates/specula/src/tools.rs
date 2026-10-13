@@ -35,11 +35,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 /// timeout, so a call reported as timed out has definitely not been applied.
 const APPLY_DEADLINE: Duration = Duration::from_secs(25);
 
-/// Largest accepted |coordinate| (1000 km): keeps every transform and camera finite.
-const MAX_COORD: f32 = 1.0e6;
-const MIN_SCALE: f32 = 1.0e-3;
-const MAX_SCALE: f32 = 1.0e5;
-const MAX_PROFILE_POINTS: usize = 256;
 /// Operations per world_batch call.
 pub const MAX_BATCH_OPS: usize = 1000;
 /// Default and largest page sizes: world_list returns whole entities, world_query compact ones.
@@ -48,6 +43,70 @@ const QUERY_LIMITS: (u32, u32) = (50, 500);
 /// world_query's fields when none are asked for.
 pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags", "version"];
 
+// Arguments each tool accepts. Anything else is rejected (with the closest valid name), so a typo
+// like `rotation` for `rotation_deg` is an error instead of a silently ignored value.
+const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light"];
+const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body"];
+pub(crate) const SPAWN_KEYS: &[&str] =
+    &["shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments"];
+const SET_KEYS: &[&str] = &[
+    "id", "path", "name", "expect_version", "rename", "parent", "position", "rotation_deg", "scale", "color", "profile",
+    "segments", "add_tags", "remove_tags",
+];
+const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
+const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
+const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s"];
+pub(crate) const ENV_KEYS: &[&str] = &[
+    "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
+    "background",
+];
+
+/// Rejects keys of `args` (an object, or null for none) that are in none of `allowed`.
+pub(crate) fn check_keys(args: &Json, what: &str, allowed: &[&[&str]]) -> Result<(), String> {
+    let pairs = match args {
+        Json::Null => return Ok(()),
+        Json::Obj(pairs) => pairs,
+        _ => return Err(format!("{what} must be a JSON object")),
+    };
+    let known = || allowed.iter().flat_map(|list| list.iter().copied());
+    for (key, _) in pairs {
+        if !known().any(|k| k == key) {
+            let hint = closest(key, known()).map(|c| format!("; did you mean '{c}'?")).unwrap_or_default();
+            return Err(format!("'{key}' is not an argument of {what}{hint}"));
+        }
+    }
+    Ok(())
+}
+
+/// The valid name `key` was most likely meant to be: a prefix match (`rotation` → `rotation_deg`)
+/// or the nearest by edit distance, if near enough.
+fn closest<'a>(key: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let distance = |a: &str, b: &str| -> usize {
+        if a.starts_with(b) || b.starts_with(a) {
+            return 1;
+        }
+        let b: Vec<char> = b.chars().collect();
+        let mut row: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut prev = row[0];
+            row[0] = i + 1;
+            for (j, cb) in b.iter().enumerate() {
+                let next = (row[j + 1] + 1).min(row[j] + 1).min(prev + usize::from(ca != *cb));
+                prev = row[j + 1];
+                row[j + 1] = next;
+            }
+        }
+        row[b.len()]
+    };
+    let limit = (key.chars().count() / 3).max(2);
+    candidates.map(|c| (distance(key, c), c)).filter(|(d, _)| *d <= limit).min().map(|(_, c)| c)
+}
+
+/// A world value check as an argument error (its message already starts with the quoted field).
+fn value_error(e: world::WorldError) -> String {
+    e.message
+}
+
 pub enum Command {
     Spawn(SpawnSpec),
     Set(EntityKey, UpdateSpec),
@@ -55,8 +114,8 @@ pub enum Command {
     Delete(EntityKey, Option<u64>),
     Query(QuerySpec),
     Batch(Vec<Op>),
-    /// `None` = the current world name.
-    Save(Option<String>),
+    /// `name: None` = the current world. Another existing world is only replaced with `overwrite`.
+    Save { name: Option<String>, overwrite: bool },
     /// Replace the world with a saved one; `force` discards unsaved changes.
     Load { name: String, force: bool },
     Hello { name: String, role: String },
@@ -142,16 +201,34 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
         "world_query" => parse_query(args, false).map(Command::Query),
         "world_delete" => parse_delete(args).map(|(key, v)| Command::Delete(key, v)),
         "world_batch" => parse_batch(args).map(Command::Batch),
-        "world_save" => Ok(Command::Save(world_name_arg(args, false)?)),
-        "world_load" => Ok(Command::Load {
-            name: world_name_arg(args, true)?.expect("required"),
-            force: bool_arg(args, "force")?.unwrap_or(false),
-        }),
+        "world_save" => {
+            check_keys(args, name, &[&["name", "overwrite"]])?;
+            Ok(Command::Save {
+                name: world_name_arg(args, false)?,
+                overwrite: bool_arg(args, "overwrite")?.unwrap_or(false),
+            })
+        }
+        "world_load" => {
+            check_keys(args, name, &[&["name", "force"]])?;
+            Ok(Command::Load {
+                name: world_name_arg(args, true)?.expect("required"),
+                force: bool_arg(args, "force")?.unwrap_or(false),
+            })
+        }
         "agent_hello" => parse_hello(args),
-        "sight_frame" => parse_frame(args).map(Command::Frame),
-        "world_env" => parse_env(args).map(Command::Env),
-        "window_view" => parse_view(args).map(Command::View),
-        "engine_info" => Ok(Command::Info),
+        "sight_frame" => {
+            check_keys(args, name, &[FRAME_KEYS])?;
+            parse_frame(args).map(Command::Frame)
+        }
+        "world_env" => {
+            check_keys(args, name, &[ENV_KEYS])?;
+            parse_env(args).map(Command::Env)
+        }
+        "window_view" => {
+            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "auto"]])?;
+            parse_view(args).map(Command::View)
+        }
+        "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
         other => Err(format!("unknown tool '{other}'")),
     }
 }
@@ -208,6 +285,11 @@ fn parent_arg(args: &Json) -> Result<Option<Option<EntityKey>>, String> {
 }
 
 fn parse_delete(args: &Json) -> Result<(EntityKey, Option<u64>), String> {
+    check_keys(args, "world_delete", &[DELETE_KEYS])?;
+    parse_delete_fields(args)
+}
+
+fn parse_delete_fields(args: &Json) -> Result<(EntityKey, Option<u64>), String> {
     Ok((entity_key(args, "world_delete")?, version_arg(args)?))
 }
 
@@ -236,7 +318,13 @@ fn string_arg<'a>(args: &'a Json, key: &str) -> Result<Option<&'a str>, String> 
     }
 }
 
-pub(crate) fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
+fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
+    check_keys(args, "world_spawn", &[SPAWN_KEYS, LOOK_KEYS, COMPONENT_KEYS])?;
+    parse_spawn_fields(args)
+}
+
+/// world_spawn's arguments, without the key check (world files check their own keys).
+pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     let shape_name = match args.get("shape") {
         None | Some(Json::Null) => return Err("'shape' is required".into()),
         Some(Json::Str(s)) => s,
@@ -262,10 +350,10 @@ pub(crate) fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
         spec.name = name_arg(Some(&Json::from(name))).map_err(|e| format!("'path': {e}"))?;
         spec.parent = (!parent.is_empty()).then(|| EntityKey::Path(parent.to_owned()));
     }
-    spec.position = position_arg(args, "position")?.unwrap_or(Vec3::ZERO);
+    spec.position = vec3_arg(args, "position")?.unwrap_or(Vec3::ZERO);
     spec.rotation_deg = vec3_arg(args, "rotation_deg")?.unwrap_or(Vec3::ZERO);
     spec.scale = scale_arg(args)?.unwrap_or(Vec3::ONE);
-    spec.color = color_arg(args.get("color"))?.unwrap_or([0.8, 0.8, 0.8]);
+    spec.color = color_arg(args, "color")?.unwrap_or([0.8, 0.8, 0.8]);
     look_arg(args)?.apply(&mut spec.look);
     if spec.look.material != specula_gpu::Material::Lit && args.get("opacity").is_none() {
         spec.look.opacity = match spec.look.material {
@@ -280,6 +368,8 @@ pub(crate) fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
     spec.props = props_arg(args)?.unwrap_or(Json::Null);
     spec.collider = collider_arg(args)?.flatten();
     spec.body = body_arg(args)?.flatten();
+    // Value ranges are the world's to decide (the same checks guard in-process game code).
+    world::check_spawn(&spec).map_err(value_error)?;
     Ok(spec)
 }
 
@@ -308,11 +398,11 @@ fn props_arg(args: &Json) -> Result<Option<Json>, String> {
     }
 }
 
-/// A positive size within the world's limits.
+/// A size (the world checks its range), or `default`.
 fn size_arg(args: &Json, key: &str, default: Option<f32>) -> Result<f32, String> {
-    match num_arg(args, key, 1.0e-4..=MAX_SCALE)? {
+    match num_arg(args, key)? {
         Some(v) => Ok(v),
-        None => default.ok_or_else(|| format!("'{key}' is required (metres, 0.0001..100000)")),
+        None => default.ok_or_else(|| format!("'collider.{key}' is required (metres)")),
     }
 }
 
@@ -327,32 +417,21 @@ fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
         Some(c @ Json::Obj(_)) => c,
         Some(_) => return Err(ERR.into()),
     };
+    check_keys(c, "collider", &[&["shape", "size", "radius", "height", "offset", "is_trigger", "layer"]])
+        .map_err(|e| e.replacen('\'', "'collider.", 1))?;
     let shape = match c.get("shape").and_then(Json::as_str) {
-        Some("box") => ColliderShape::Box {
-            size: match vec3_arg(c, "size")? {
-                Some(s) if [s.x, s.y, s.z].iter().all(|v| (1.0e-4..=MAX_SCALE).contains(v)) => s,
-                Some(_) => return Err("'collider.size' components must be 0.0001..100000".into()),
-                None => Vec3::ONE,
-            },
-        },
+        Some("box") => ColliderShape::Box { size: vec3_arg(c, "size")?.unwrap_or(Vec3::ONE) },
         Some("sphere") => ColliderShape::Sphere { radius: size_arg(c, "radius", Some(0.5))? },
         Some("capsule") => {
-            let radius = size_arg(c, "radius", None)?;
-            let height = size_arg(c, "height", None)?;
-            if height < 2.0 * radius {
-                return Err("'collider.height' is the total height and must be at least 2 x radius".into());
-            }
-            ColliderShape::Capsule { radius, height }
+            ColliderShape::Capsule { radius: size_arg(c, "radius", None)?, height: size_arg(c, "height", None)? }
         }
         _ => return Err(ERR.into()),
     };
-    let layer = string_arg(c, "layer")?.unwrap_or("default").to_owned();
-    world::validate_tag(&layer).map_err(|e| format!("'collider.layer': {}", e.message))?;
     Ok(Some(Some(Collider {
         shape,
-        offset: position_arg(c, "offset")?.unwrap_or(Vec3::ZERO),
+        offset: vec3_arg(c, "offset")?.unwrap_or(Vec3::ZERO),
         is_trigger: bool_arg(c, "is_trigger")?.unwrap_or(false),
-        layer,
+        layer: string_arg(c, "layer")?.unwrap_or("default").to_owned(),
     })))
 }
 
@@ -363,21 +442,34 @@ fn body_arg(args: &Json) -> Result<Option<Option<Body>>, String> {
         None | Some(Json::Null) => return Ok(None),
         Some(Json::Bool(false)) => return Ok(Some(None)),
         Some(Json::Str(k)) => (k.as_str(), None),
-        Some(b @ Json::Obj(_)) => (b.get("kind").and_then(Json::as_str).ok_or(ERR)?, num_arg(b, "mass", 1.0e-6..=1.0e9)?),
+        Some(b @ Json::Obj(_)) => {
+            check_keys(b, "body", &[&["kind", "mass"]]).map_err(|e| e.replacen('\'', "'body.", 1))?;
+            (b.get("kind").and_then(Json::as_str).ok_or(ERR)?, num_arg(b, "mass")?)
+        }
         Some(_) => return Err(ERR.into()),
     };
     let kind = BodyKind::parse(kind).ok_or(ERR)?;
     Ok(Some(Some(Body { kind, mass: mass.unwrap_or(1.0) })))
 }
 
-/// Optional number within `range`.
-fn num_arg(args: &Json, key: &str, range: std::ops::RangeInclusive<f32>) -> Result<Option<f32>, String> {
+/// Optional finite number. Its range is checked by the world (or by [`num_in`] for non-world
+/// values such as camera settings).
+fn num_arg(args: &Json, key: &str) -> Result<Option<f32>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(v) => match v.as_f64() {
-            Some(f) if f.is_finite() && range.contains(&(f as f32)) => Ok(Some(f as f32)),
-            _ => Err(format!("'{key}' must be a number from {} to {}", range.start(), range.end())),
+            Some(f) if f.is_finite() && f.abs() <= f64::from(f32::MAX) => Ok(Some(f as f32)),
+            _ => Err(format!("'{key}' must be a finite number")),
         },
+    }
+}
+
+/// Optional number within `range`.
+fn num_in(args: &Json, key: &str, range: std::ops::RangeInclusive<f32>) -> Result<Option<f32>, String> {
+    let v = num_arg(args, key)?;
+    match v {
+        Some(f) if !range.contains(&f) => Err(format!("'{key}' must be a number from {} to {}", range.start(), range.end())),
+        _ => Ok(v),
     }
 }
 
@@ -392,13 +484,13 @@ fn look_arg(args: &Json) -> Result<LookPatch, String> {
     };
     Ok(LookPatch {
         material,
-        opacity: num_arg(args, "opacity", 0.0..=1.0)?,
-        emissive: num_arg(args, "emissive", 0.0..=1000.0)?,
-        metallic: num_arg(args, "metallic", 0.0..=1.0)?,
-        roughness: num_arg(args, "roughness", 0.0..=1.0)?,
-        specular: num_arg(args, "specular", 0.0..=10.0)?,
-        color2: color_arg(args.get("color2")).map_err(|e| e.replace("'color'", "'color2'"))?,
-        seed: num_arg(args, "seed", -1.0e6..=1.0e6)?,
+        opacity: num_arg(args, "opacity")?,
+        emissive: num_arg(args, "emissive")?,
+        metallic: num_arg(args, "metallic")?,
+        roughness: num_arg(args, "roughness")?,
+        specular: num_arg(args, "specular")?,
+        color2: color_arg(args, "color2")?,
+        seed: num_arg(args, "seed")?,
     })
 }
 
@@ -409,12 +501,13 @@ fn light_arg(args: &Json) -> Result<Option<Option<LightSpec>>, String> {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Bool(false)) => Ok(Some(None)),
         Some(l @ Json::Obj(_)) => {
-            let intensity = num_arg(l, "intensity", 0.0..=1.0e6)?.ok_or("'light' needs 'intensity' (0..1000000)")?;
+            check_keys(l, "light", &[&["intensity", "range", "color", "offset"]]).map_err(|e| e.replacen('\'', "'light.", 1))?;
+            let intensity = num_arg(l, "intensity")?.ok_or("'light' needs 'intensity' (0..1000000)")?;
             Ok(Some(Some(LightSpec {
                 intensity,
-                range: num_arg(l, "range", 0.01..=1.0e4)?.unwrap_or(5.0),
-                color: color_arg(l.get("color")).map_err(|e| e.replace("'color'", "'light.color'"))?,
-                offset: position_arg(l, "offset")?.unwrap_or(Vec3::ZERO),
+                range: num_arg(l, "range")?.unwrap_or(5.0),
+                color: color_arg(l, "color").map_err(|e| e.replacen('\'', "'light.", 1))?,
+                offset: vec3_arg(l, "offset")?.unwrap_or(Vec3::ZERO),
             })))
         }
         Some(_) => Err(ERR.into()),
@@ -423,60 +516,48 @@ fn light_arg(args: &Json) -> Result<Option<Option<LightSpec>>, String> {
 
 /// `profile` ([[radius, height], ...], bottom to top) and `segments`, for lathes.
 fn profile_arg(args: &Json) -> Result<Option<Profile>, String> {
-    const ERR: &str = "'profile' must be 2..256 [radius, height] pairs: radius 0..100000, |height| <= 100000";
+    const ERR: &str = "'profile' must be 2..256 [radius, height] pairs of numbers";
     let Some(v) = args.get("profile").filter(|v| !v.is_null()) else {
         if args.get("segments").is_some_and(|s| !s.is_null()) {
             return Err("'segments' is only used with 'profile'".into());
         }
         return Ok(None);
     };
-    let items = v.as_array().ok_or(ERR)?;
-    if !(2..=MAX_PROFILE_POINTS).contains(&items.len()) {
-        return Err(ERR.into());
-    }
+    let items = v.as_array().filter(|a| world::PROFILE_POINTS.contains(&a.len())).ok_or(ERR)?;
     let mut points = Vec::with_capacity(items.len());
     for item in items {
         let pair: Option<Vec<f64>> = item.as_array().and_then(|a| a.iter().map(Json::as_f64).collect());
         match pair.as_deref() {
-            Some(&[r, y]) if (0.0..=1.0e5).contains(&r) && y.is_finite() && y.abs() <= 1.0e5 => {
+            Some(&[r, y]) if [r, y].iter().all(|c| c.is_finite() && c.abs() <= f64::from(f32::MAX)) => {
                 points.push([r as f32, y as f32])
             }
             _ => return Err(ERR.into()),
         }
     }
-    if !points.iter().any(|p| p[0] > 0.0) {
-        return Err("'profile' needs at least one point with a radius above 0".into());
-    }
     let segments = match args.get("segments") {
         None | Some(Json::Null) => 32,
         Some(s) => match s.as_u64() {
-            Some(n) if (3..=256).contains(&n) => n as u32,
+            Some(n) if n <= u64::from(u32::MAX) => n as u32,
             _ => return Err("'segments' must be an integer from 3 to 256".into()),
         },
     };
     Ok(Some(Profile { points, segments }))
 }
 
+/// world_env's arguments (keys are checked by the caller: the tool, or the world file loader).
 pub(crate) fn parse_env(args: &Json) -> Result<EnvPatch, String> {
-    let sun_direction = vec3_arg(args, "sun_direction")?;
-    if sun_direction.is_some_and(|d| d.length() < 1e-6) {
-        return Err("'sun_direction' must not be zero".into());
-    }
-    let tonemap = match args.get("tonemap") {
-        None | Some(Json::Null) => None,
-        Some(v) => Some(v.as_bool().ok_or("'tonemap' must be true or false")?),
+    let patch = EnvPatch {
+        sun_direction: vec3_arg(args, "sun_direction")?,
+        sun_color: color_arg(args, "sun_color")?,
+        sun_intensity: num_arg(args, "sun_intensity")?,
+        ambient_color: color_arg(args, "ambient_color")?,
+        ambient_intensity: num_arg(args, "ambient_intensity")?,
+        exposure: num_arg(args, "exposure")?,
+        tonemap: bool_arg(args, "tonemap")?,
+        background: color_arg(args, "background")?,
     };
-    let rename = |e: String, key: &str| e.replace("'color'", &format!("'{key}'"));
-    Ok(EnvPatch {
-        sun_direction,
-        sun_color: color_arg(args.get("sun_color")).map_err(|e| rename(e, "sun_color"))?,
-        sun_intensity: num_arg(args, "sun_intensity", 0.0..=1000.0)?,
-        ambient_color: color_arg(args.get("ambient_color")).map_err(|e| rename(e, "ambient_color"))?,
-        ambient_intensity: num_arg(args, "ambient_intensity", 0.0..=1000.0)?,
-        exposure: num_arg(args, "exposure", 0.0..=1000.0)?,
-        tonemap,
-        background: color_arg(args.get("background")).map_err(|e| rename(e, "background"))?,
-    })
+    world::check_env(&patch).map_err(value_error)?;
+    Ok(patch)
 }
 
 fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
@@ -491,14 +572,19 @@ fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
 }
 
 fn parse_set(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
+    check_keys(args, "world_set", &[SET_KEYS, LOOK_KEYS, COMPONENT_KEYS])?;
+    parse_set_fields(args)
+}
+
+fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     let key = entity_key(args, "world_set")?;
     let change = UpdateSpec {
         name: name_arg(args.get("rename"))?,
         parent: parent_arg(args)?,
-        position: position_arg(args, "position")?,
+        position: vec3_arg(args, "position")?,
         rotation_deg: vec3_arg(args, "rotation_deg")?,
         scale: scale_arg(args)?,
-        color: color_arg(args.get("color"))?,
+        color: color_arg(args, "color")?,
         look: look_arg(args)?,
         light: light_arg(args)?,
         profile: profile_arg(args)?,
@@ -516,10 +602,12 @@ fn parse_set(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
                     profile, tags, add_tags, remove_tags, props, collider or body"
             .into());
     }
+    world::check_update(&change).map_err(value_error)?;
     Ok((key, change))
 }
 
 fn parse_batch(args: &Json) -> Result<Vec<Op>, String> {
+    check_keys(args, "world_batch", &[&["ops"]])?;
     let ops = args.get("ops").and_then(Json::as_array).ok_or("'ops' must be an array of {op: spawn|set|delete, ...}")?;
     if ops.is_empty() || ops.len() > MAX_BATCH_OPS {
         return Err(format!("'ops' must hold 1..{MAX_BATCH_OPS} operations (got {}); split larger edits", ops.len()));
@@ -528,10 +616,17 @@ fn parse_batch(args: &Json) -> Result<Vec<Op>, String> {
         .enumerate()
         .map(|(i, op)| {
             let kind = op.get("op").and_then(Json::as_str).unwrap_or("");
+            const OP: &[&str] = &["op"];
             let parsed = match kind {
-                "spawn" => parse_spawn(op).map(Op::Spawn),
-                "set" => parse_set(op).map(|(key, change)| Op::Set(key, change)),
-                "delete" => parse_delete(op).map(|(key, v)| Op::Delete(key, v)),
+                "spawn" => check_keys(op, "a spawn op", &[OP, SPAWN_KEYS, LOOK_KEYS, COMPONENT_KEYS])
+                    .and_then(|()| parse_spawn_fields(op))
+                    .map(Op::Spawn),
+                "set" => check_keys(op, "a set op", &[OP, SET_KEYS, LOOK_KEYS, COMPONENT_KEYS])
+                    .and_then(|()| parse_set_fields(op))
+                    .map(|(key, change)| Op::Set(key, change)),
+                "delete" => check_keys(op, "a delete op", &[OP, DELETE_KEYS])
+                    .and_then(|()| parse_delete_fields(op))
+                    .map(|(key, v)| Op::Delete(key, v)),
                 _ => Err("'op' must be \"spawn\", \"set\" or \"delete\"".into()),
             };
             parsed.map_err(|e| format!("ops[{i}] ({kind}): {e}"))
@@ -541,6 +636,7 @@ fn parse_batch(args: &Json) -> Result<Vec<Op>, String> {
 
 /// world_list (`list`: whole entities) and world_query (compact fields by default).
 fn parse_query(args: &Json, list: bool) -> Result<QuerySpec, String> {
+    check_keys(args, if list { "world_list" } else { "world_query" }, &[QUERY_KEYS])?;
     let (default, max) = if list { LIST_LIMITS } else { QUERY_LIMITS };
     let limit = match args.get("limit") {
         None | Some(Json::Null) => default,
@@ -570,7 +666,7 @@ fn parse_query(args: &Json, list: bool) -> Result<QuerySpec, String> {
     };
     let region = match args.get("region").filter(|r| !r.is_null()) {
         None => None,
-        Some(r) => match (vec3_arg(r, "min")?, vec3_arg(r, "max")?) {
+        Some(r) => match check_keys(r, "region", &[&["min", "max"]]).and_then(|()| Ok((vec3_arg(r, "min")?, vec3_arg(r, "max")?)))? {
             (Some(lo), Some(hi)) if lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z => Some((lo, hi)),
             _ => return Err("'region' must be {min: [x,y,z], max: [x,y,z]} with min <= max".into()),
         },
@@ -621,6 +717,7 @@ fn world_name_arg(args: &Json, required: bool) -> Result<Option<String>, String>
 }
 
 fn parse_hello(args: &Json) -> Result<Command, String> {
+    check_keys(args, "agent_hello", &[&["name", "role"]])?;
     let name = name_arg(args.get("name"))?.ok_or("'name' is required: how this agent appears in attribution")?;
     if name.chars().count() > 64 {
         return Err("'name' must be at most 64 characters".into());
@@ -665,7 +762,7 @@ fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         target,
         fov_y_deg,
         max_subjects: int("max_subjects", 50, 1..=500)? as usize,
-        time_s: num_arg(args, "time_s", 0.0..=1.0e6)?,
+        time_s: num_in(args, "time_s", 0.0..=1.0e6)?,
     })
 }
 
@@ -704,44 +801,37 @@ fn vec3_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
     }
 }
 
-/// A point in the world: within ±[`MAX_COORD`] metres on every axis.
+/// A camera point: within ±[`world::MAX_COORD`] metres on every axis. (Entity positions are
+/// checked by the world.)
 fn position_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
     let p = vec3_arg(args, key)?;
     if let Some(p) = p {
-        if [p.x, p.y, p.z].iter().any(|c| c.abs() > MAX_COORD) {
-            return Err(format!("'{key}' components must be within ±{MAX_COORD} m"));
-        }
+        world::check_point(key, p).map_err(value_error)?;
     }
     Ok(p)
 }
 
-/// Number (uniform) or `[x, y, z]`, each within [`MIN_SCALE`]..=[`MAX_SCALE`].
+/// Number (uniform) or `[x, y, z]`.
 fn scale_arg(args: &Json) -> Result<Option<Vec3>, String> {
-    let scale = match args.get("scale") {
-        Some(Json::Num(s)) => Some(Vec3::new(*s as f32, *s as f32, *s as f32)),
-        _ => vec3_arg(args, "scale")?,
-    };
-    if let Some(s) = scale {
-        if [s.x, s.y, s.z].iter().any(|c| !(MIN_SCALE..=MAX_SCALE).contains(c)) {
-            return Err(format!("'scale' components must be between {MIN_SCALE} and {MAX_SCALE}"));
-        }
+    match args.get("scale") {
+        Some(Json::Num(_)) => Ok(num_arg(args, "scale")?.map(|s| Vec3::new(s, s, s))),
+        _ => vec3_arg(args, "scale"),
     }
-    Ok(scale)
 }
 
-/// `"#rrggbb"`, `"#rgb"`, or `[r, g, b]` with components in 0..1 (sRGB).
-fn color_arg(v: Option<&Json>) -> Result<Option<[f32; 3]>, String> {
-    const ERR: &str = "'color' must be \"#rrggbb\", \"#rgb\" or [r, g, b] with components 0..1";
-    match v {
+/// `"#rrggbb"`, `"#rgb"`, or `[r, g, b]` (sRGB; the world checks the components are 0..1).
+fn color_arg(args: &Json, key: &str) -> Result<Option<[f32; 3]>, String> {
+    let err = || format!("'{key}' must be \"#rrggbb\", \"#rgb\" or [r, g, b] with components 0..1");
+    match args.get(key) {
         None | Some(Json::Null) => Ok(None),
-        Some(Json::Str(s)) => world::color_from_hex(s).map(Some).ok_or_else(|| ERR.into()),
+        Some(Json::Str(s)) => world::color_from_hex(s).map(Some).ok_or_else(err),
         Some(Json::Arr(a)) => match a.iter().map(Json::as_f64).collect::<Option<Vec<_>>>().as_deref() {
-            Some(&[r, g, b]) if [r, g, b].iter().all(|c| (0.0..=1.0).contains(c)) => {
+            Some(&[r, g, b]) if [r, g, b].iter().all(|c| c.is_finite() && c.abs() <= f64::from(f32::MAX)) => {
                 Ok(Some([r as f32, g as f32, b as f32]))
             }
-            _ => Err(ERR.into()),
+            _ => Err(err()),
         },
-        Some(_) => Err(ERR.into()),
+        Some(_) => Err(err()),
     }
 }
 
@@ -1023,7 +1113,13 @@ fn definitions() -> Vec<ToolDef> {
                           engine then autosaves there every 10 s while there are changes, and on shutdown."
                 .into(),
             input_schema: schema(
-                vec![("name", string("World name: letters, digits, _ - . (default: the current world)"))],
+                vec![
+                    ("name", string("World name: letters, digits, _ - . (default: the current world)")),
+                    (
+                        "overwrite",
+                        boolean("Replace a different world that already exists under that name (default false)"),
+                    ),
+                ],
                 &[],
             ),
         },
@@ -1327,13 +1423,59 @@ mod tests {
 
     #[test]
     fn persistence_and_identity_arguments() {
-        assert!(matches!(parse("world_save", &args("{}")), Ok(Command::Save(None))));
+        assert!(matches!(parse("world_save", &args("{}")), Ok(Command::Save { name: None, overwrite: false })));
         assert!(matches!(parse("world_load", &args(r#"{"name":"grey","force":true}"#)), Ok(Command::Load { force: true, .. })));
         assert!(parse("world_load", &args("{}")).is_err());
         assert!(parse("world_save", &args(r#"{"name":"../escape"}"#)).is_err());
         assert!(matches!(parse("agent_hello", &args(r#"{"name":"mason"}"#)), Ok(Command::Hello { role, .. }) if role == "builder"));
         assert!(parse("agent_hello", &args(r#"{"name":"mason","role":"chief builder"}"#)).is_err());
         assert!(parse("agent_hello", &args("{}")).is_err());
+    }
+
+    /// Reviewer finding: unknown arguments were silently ignored.
+    #[test]
+    fn unknown_arguments_are_rejected_with_a_suggestion() {
+        let e = parse("world_spawn", &args(r#"{"shape":"cube","rotation":[0,90,0]}"#)).err().unwrap();
+        assert!(e.contains("'rotation'") && e.contains("did you mean 'rotation_deg'"), "{e}");
+        assert_eq!(argument_error(&e).get("field"), Some(&Json::from("rotation")));
+        let e = parse("world_set", &args(r##"{"id":1,"colour":"#fff"}"##)).err().unwrap();
+        assert!(e.contains("did you mean 'color'"), "{e}");
+        assert!(parse("world_set", &args(r#"{"id":1,"rename":"x","add_tags":["a"]}"#)).is_ok());
+        let e = parse("world_spawn", &args(r#"{"shape":"cube","light":{"intensity":1,"radius":2}}"#)).err().unwrap();
+        assert_eq!(argument_error(&e).get("field"), Some(&Json::from("light.radius")), "{e}");
+        let e = parse("world_spawn", &args(r#"{"shape":"cube","collider":{"shape":"box","mask":1}}"#)).err().unwrap();
+        assert_eq!(argument_error(&e).get("field"), Some(&Json::from("collider.mask")), "{e}");
+        let e = parse("world_batch", &args(r#"{"ops":[{"op":"spawn","shape":"cube","pos":[0,0,0]}]}"#)).err().unwrap();
+        assert!(e.starts_with("ops[0] (spawn): 'pos'"), "{e}");
+        assert!(parse("world_batch", &args(r#"{"ops":[{"op":"delete","id":3,"expect_version":1}]}"#)).is_ok());
+        for (tool, bad) in [
+            ("world_query", r#"{"tag":["x"]}"#),
+            ("world_list", r#"{"page":2}"#),
+            ("world_delete", r#"{"id":1,"recursive":true}"#),
+            ("sight_frame", r#"{"fov":60}"#),
+            ("world_env", r#"{"fog":1}"#),
+            ("world_save", r#"{"name":"a","force":true}"#),
+            ("engine_info", r#"{"verbose":true}"#),
+            ("world_query", r#"{"region":{"min":[0,0,0],"max":[1,1,1],"mid":[0,0,0]}}"#),
+        ] {
+            assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
+        }
+        assert_eq!(closest("rotation", SPAWN_KEYS.iter().copied()), Some("rotation_deg"));
+        assert_eq!(closest("zzzzzz", SPAWN_KEYS.iter().copied()), None);
+    }
+
+    #[test]
+    fn value_ranges_come_from_the_world() {
+        for bad in [
+            r#"{"shape":"cube","position":[0,2e6,0]}"#,
+            r#"{"shape":"cube","color":[1.5,0,0]}"#,
+            r#"{"shape":"cube","light":{"intensity":1,"range":0}}"#,
+            r#"{"shape":"lathe","profile":[[1,0],[1,1]],"segments":1000}"#,
+        ] {
+            let e = parse_spawn(&args(bad)).err().unwrap();
+            assert!(e.starts_with('\''), "messages lead with the field: {e}");
+        }
+        assert!(parse_env(&args(r#"{"exposure":5000}"#)).is_err());
     }
 
     #[test]
