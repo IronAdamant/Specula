@@ -35,3 +35,9 @@ tmp/
 
 # Subagent worktrees (Claude Code)
 .claude/worktrees/
+
+# Pipeline cache written by the engine
+.specula-cache/
+
+# Held by a running engine that owns a world folder
+worlds/*/world.lock
