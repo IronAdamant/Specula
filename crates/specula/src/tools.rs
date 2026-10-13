@@ -32,11 +32,16 @@ text files. Say who you are with agent_hello. perf_frame reports GPU time per pa
 frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
-agent_hello (a unique name), claim_take the subtree or region you will build in (writes inside another agent's \
-live claim are rejected with error 'claimed'), and renew it while you work. Every change is journaled with its \
-author and tick: world_history shows who did what, world_undo undoes your own recent changes (refusing to \
-overwrite someone else's later work unless forced), world_changes is a feed to poll for other agents' changes, \
-and world_hash gives the state hash per tick.";
+agent_hello. Names are unique among connected sessions (a taken name is refused with a free suggestion); \
+without agent_hello you are '<client name>-<6 characters of your session id>'. Your claims and 'your own changes' \
+belong to your name in this session: a later session using the same name adopts none of them. claim_take the \
+subtree or region you will build in and renew it while you work: writes inside another agent's live claim are \
+rejected with error 'claimed' (also when renaming or moving something would carry entities into or out of a \
+claim), and 'claims_overlap' means a path claim and a region claim meet there (claim_share or release one). \
+world_load is refused while other agents hold claims. Every change is journaled with its author and tick: \
+world_history shows who did what, world_undo undoes your own recent changes (refusing to overwrite someone \
+else's later work unless forced; claims always apply), world_changes is a feed to poll for other agents' \
+changes, and world_hash gives the state hash per tick.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1396,7 +1401,8 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "world_load".into(),
             description: "Replace the whole live world (every agent's work) with a saved one and make it the current \
-                          world. Refuses while there are unsaved changes unless force is true."
+                          world. Refuses while there are unsaved changes unless force is true, and while another \
+                          agent holds a live claim (error claimed, listing them; force doesn't override claims)."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1409,8 +1415,10 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "agent_hello".into(),
             description: "Say who you are: the name is recorded as created_by / modified_by on everything you \
-                          change, and engine_info lists you with your role. Default: your MCP client name, role \
-                          builder."
+                          change, owns your claims and scopes your undo, and engine_info lists you with your role. \
+                          Names are unique among connected sessions (error name_taken with a suggestion). Default: \
+                          '<MCP client name>-<6 characters of your session id>', role builder. A session holding \
+                          claims can't change its name."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1535,8 +1543,8 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "world_undo".into(),
-            description: "Undo journal entries: by default your own most recent change (count for more), or specific \
-                          entries by id. A batch undoes as a unit; several entries undo newest first, all or nothing. \
+            description: "Undo journal entries: by default your own most recent change in this session (count for \
+                          more), or specific entries by id. A batch undoes as a unit; several entries undo newest first, all or nothing. \
                           Refused (error undo_conflict, naming who and which entry) when another agent changed the same \
                           entities later, unless force. The undo is itself journaled: undo its id to redo. Game \
                           updates are replay-only and can't be undone."

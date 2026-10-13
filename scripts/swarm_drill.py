@@ -42,11 +42,11 @@ PORT = 7488
 class Agent:
     """One MCP session with timing per tool."""
 
-    def __init__(self, url, name):
+    def __init__(self, url, name, client="swarm-drill"):
         self.url, self.name, self.session, self.next_id = url, name, None, 1
         self.timings = {}
         self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
-                                "clientInfo": {"name": "swarm-drill", "version": "0"}})
+                                "clientInfo": {"name": client, "version": "0"}})
         self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     def post(self, msg):
@@ -77,6 +77,12 @@ class Agent:
         except ValueError:
             payload = text
         return not result.get("isError"), payload
+
+    def end(self):
+        """Ends the session (HTTP DELETE), as a client that disconnects cleanly does."""
+        req = urllib.request.Request(self.url, method="DELETE", headers={"Mcp-Session-Id": self.session})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read()
 
     def ok(self, tool, **args):
         ok, payload = self.call(tool, **args)
@@ -222,6 +228,101 @@ def overload(port, extra=20):
     return {"held": len(held), "extra_requests": extra, "statuses": statuses, "service_resumed": resumed}
 
 
+def cpu_busy_pct(seconds=1.0):
+    """Whole-machine CPU use over `seconds` (Windows; as perf_baseline.py), so noisy runs are flagged."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32")
+
+    def times():
+        idle, kernel, user = (ctypes.c_uint64(), ctypes.c_uint64(), ctypes.c_uint64())
+        k32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+        return idle.value, kernel.value + user.value  # kernel time includes idle time
+
+    i0, t0 = times()
+    time.sleep(seconds)
+    i1, t1 = times()
+    total = t1 - t0
+    return round(100.0 * (1 - (i1 - i0) / total), 1) if total else None
+
+
+def attacks(url):
+    """Every claim bypass found in review, tried live: each must be refused with the expected code.
+
+    Returns (rejected, leaked, wrong): leaked = accepted when it must not be; wrong = refused with
+    another error than expected.
+    """
+    ann, bob, carl = Agent(url, "attack-ann"), Agent(url, "attack-bob"), Agent(url, "attack-carl")
+    ann.ok("agent_hello", name="attack_ann")
+    bob.ok("agent_hello", name="attack_bob")
+    carl.ok("agent_hello", name="attack_carl")
+    results = {"rejected": 0, "leaked": [], "wrong": []}
+
+    def expect(agent, code, label, tool, **args):
+        ok, payload = agent.call(tool, **args)
+        got = payload.get("error") if isinstance(payload, dict) else None
+        if ok:
+            results["leaked"].append(label)
+        elif got != code:
+            results["wrong"].append({"case": label, "expected": code, "got": payload})
+        else:
+            results["rejected"] += 1
+
+    spawn = lambda path, **kw: {"op": "spawn", "shape": "group", "path": path, **kw}
+    # 1. Renaming / moving an ancestor carries a claimed subtree out of its claim.
+    bob.ok("world_batch", ops=[spawn("/siege"), spawn("/siege/keep"), spawn("/siege/keep/wall"), spawn("/bobyard")])
+    ann.ok("claim_take", path="/siege/keep", lease_s=300)
+    expect(bob, "claimed", "rename ancestor out", "world_set", path="/siege", rename="siege_moved")
+    expect(bob, "claimed", "reparent ancestor out", "world_set", path="/siege", parent="/bobyard")
+    expect(bob, "claimed", "rename ancestor in a batch", "world_batch", ops=[{"op": "set", "path": "/siege", "rename": "x"}])
+    expect(bob, "claimed", "delete ancestor", "world_delete", path="/siege")
+    # 1b. ...or carries foreign entities into a claim.
+    ann.ok("claim_take", path="/camp/keep", lease_s=300)
+    bob.ok("world_batch", ops=[spawn("/bobs"), spawn("/bobs/keep"), spawn("/bobs/keep/x")])
+    expect(bob, "claimed", "rename ancestor into a claim", "world_set", path="/bobs", rename="camp")
+    # 1c. ...and through undo, which puts an old state back.
+    bob.ok("world_batch", ops=[spawn("/lane"), spawn("/lane/c")])
+    bob.ok("world_set", path="/lane", rename="road")
+    ann.ok("claim_take", path="/lane/c", lease_s=300)
+    expect(bob, "claimed", "undo a rename into a claim", "world_undo", force=True)
+    # 2. Identity: names are unique; another session adopts nothing.
+    expect(carl, "name_taken", "hello as a live agent's name", "agent_hello", name="attack_ann")
+    claim_id = ann.ok("claim_list", mine=True)["claims"][0]["id"]
+    expect(carl, "not_owner", "release someone's claim", "claim_release", id=claim_id)
+    expect(carl, "not_owner", "renew someone's claim", "claim_renew", id=claim_id)
+    expect(carl, "claimed", "write inside someone's claim", "world_spawn", shape="cube", path="/siege/keep/graffiti")
+    dave = Agent(url, "attack-dave")
+    dave.ok("agent_hello", name="attack_dave")
+    dave.ok("claim_take", path="/dave_zone", lease_s=300)
+    entry = dave.ok("world_spawn", shape="group", path="/dave_zone")["journal"]
+    dave.end()
+    heir = Agent(url, "attack-heir")
+    heir.ok("agent_hello", name="attack_dave")  # the name is free again...
+    expect(heir, "nothing_to_undo", "undo a former session's work", "world_undo")
+    expect(heir, "not_yours", "undo a former session's entry by id", "world_undo", ids=[entry])
+    anon = Agent(url, "anon-1", client="claude-code")
+    other = Agent(url, "anon-2", client="claude-code")
+    names = [a["name"] for a in anon.ok("engine_info")["agents"] if a["client"] == "claude-code"]
+    if len(names) != len(set(names)) or len(names) < 2:
+        results["wrong"].append({"case": "unnamed sessions get distinct names", "got": names})
+    else:
+        results["rejected"] += 1
+    del other
+    # 3. world_load would replace claimed work.
+    carl.ok("world_save", name="drill_attack")
+    expect(bob, "claimed", "world_load over others' claims", "world_load", name="drill_attack", force=True)
+    # 5. A path claim and a region claim that meet later.
+    ann.ok("claim_take", path="/pr", lease_s=300)
+    bob.ok("claim_take", region={"min": [5000, -10, -10], "max": [5010, 10, 10]}, lease_s=300)
+    ann.ok("world_spawn", shape="group", path="/pr")
+    expect(ann, "claims_overlap", "path claim meets region claim", "world_spawn", shape="cube", path="/pr/x",
+           position=[5005, 0, 0])
+    for a in (ann, bob, carl, heir):
+        a.ok("claim_release", all=True)
+    return results
+
+
 def verify(url, workers):
     """Every district holds exactly what its agent built; the journal replays to the live hash."""
     v = Agent(url, "verifier")
@@ -270,19 +371,21 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--debug", action="store_true", help="use the debug build (default: release)")
     ap.add_argument("--no-feed", action="store_true", help="agents don't poll world_changes (isolates its cost)")
+    ap.add_argument("--exe", type=Path, help="engine binary (default: target/release or target/debug with --debug)")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default=str(ROOT / "perf" / "drills"))
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("never drill on 7471 (the interactive engine's port)")
-    exe = ROOT / "target" / ("debug" if args.debug else "release") / ("specula.exe" if sys.platform == "win32" else "specula")
+    exe = args.exe or ROOT / "target" / ("debug" if args.debug else "release") / ("specula.exe" if sys.platform == "win32" else "specula")
     if not exe.exists():
         sys.exit(f"{exe} not found: cargo build -p specula{'' if args.debug else ' --release'}")
     work = Path(tempfile.mkdtemp(prefix="specula-drill-"))
     url = url_for(args.port)
     result = {"schema": "specula.drill/v1", "label": args.label, "agents": args.agents, "rounds": args.rounds,
               "batch": args.batch, "feed": not args.no_feed, "build": "debug" if args.debug else "release",
-              "when": datetime.datetime.now().isoformat(timespec="seconds")}
+              "when": datetime.datetime.now().isoformat(timespec="seconds"),
+              "cpu_busy_pct_before": cpu_busy_pct()}
     try:
         with Engine(exe, args.port, work / "engine.log", "--headless", "--captures", str(work / "captures"),
                     "--worlds", str(work / "worlds"), cwd=work) as engine:
@@ -295,6 +398,11 @@ def main():
                 w.join()
             wall = time.perf_counter() - start
             problems, h, verify_s, history, info = verify(url, workers)
+            result["attacks"] = atk = attacks(url)
+            if atk["leaked"]:
+                problems.append(f"claim bypasses accepted: {atk['leaked']}")
+            if atk["wrong"]:
+                problems.append(f"attacks refused with unexpected errors: {atk['wrong']}")
             result["overload"] = over = overload(args.port)
             if over["statuses"].get("503+retry-after") != over["extra_requests"] or not over["service_resumed"]:
                 problems.append(f"overload: expected every extra request to get 503 + Retry-After: {over}")
@@ -341,6 +449,7 @@ def main():
         })
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    result["cpu_busy_pct_after"] = cpu_busy_pct()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -361,6 +470,11 @@ def main():
         print(f"  entities {result['entities']}, journal {entries} entries ~{(j.get('approx_bytes') or 0) // 1024} KiB, "
               f"replay {'MATCHES' if result['replay'].get('matches') else 'MISMATCH'} "
               f"({result['replay_check_s']} s), hash {result['state_hash']}")
+    if "attacks" in result:
+        a = result["attacks"]
+        print(f"  attacks (review repros): {a['rejected']} refused as expected, {len(a['leaked'])} leaked, "
+              f"{len(a['wrong'])} wrong errors")
+    print(f"  machine CPU busy: {result.get('cpu_busy_pct_before')}% before, {result.get('cpu_busy_pct_after')}% after")
     if "overload" in result:
         o = result["overload"]
         print(f"  overload: {o['held']} connections held, {o['extra_requests']} extra requests -> {o['statuses']}, "

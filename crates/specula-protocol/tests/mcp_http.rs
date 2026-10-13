@@ -634,3 +634,19 @@ fn connection_limit_answers_503_not_a_reset() {
     }
     server.shutdown();
 }
+
+/// Reviewer finding: shutdown waited for every queued rejection to linger (up to ~2.5 s each).
+#[test]
+fn shutdown_is_prompt_with_rejections_queued() {
+    let server = start();
+    let addr = server.local_addr();
+    let held: Vec<TcpStream> = (0..256).map(|_| TcpStream::connect(addr).expect("connect")).collect();
+    std::thread::sleep(Duration::from_millis(300));
+    // Silent clients over the limit: each would linger until its timeout.
+    let queued: Vec<TcpStream> = (0..40).map(|_| TcpStream::connect(addr).expect("connect")).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    server.shutdown();
+    assert!(t.elapsed() < Duration::from_secs(3), "shutdown took {:?}", t.elapsed());
+    drop((held, queued));
+}

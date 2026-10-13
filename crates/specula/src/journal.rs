@@ -49,6 +49,31 @@ const DETAIL_CHANGES: usize = 50;
 /// Responses stop adding items past this many bytes and hand back a cursor.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// Who makes a change: an agent name and the protocol session it came from (`None` for the
+/// hosted game and in-process callers). Names are unique among live sessions, but a name can be
+/// taken again after its session ends: undo ownership and claims go by both, so a later session
+/// with the same name adopts nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Writer<'a> {
+    pub name: &'a str,
+    pub session: Option<&'a str>,
+}
+
+impl<'a> Writer<'a> {
+    pub fn new(name: &'a str, session: Option<&'a str>) -> Writer<'a> {
+        Writer { name, session }
+    }
+}
+
+impl<'a> From<&'a str> for Writer<'a> {
+    fn from(name: &'a str) -> Writer<'a> {
+        Writer { name, session: None }
+    }
+}
+
+/// Interned names past which unreferenced ones are dropped.
+const NAMES_PRUNE_AT: usize = 1024;
+
 /// What kind of action an entry records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -117,6 +142,8 @@ pub struct Entry {
     pub by: Arc<str>,
     /// For game entries caused by an agent's game tool call: that agent.
     pub via: Option<Arc<str>>,
+    /// The protocol session of `by` (`None` for the game and in-process callers).
+    pub session: Option<Arc<str>>,
     pub kind: Kind,
     /// In the order they happened (coalesced per entity for game entries).
     pub changes: Vec<Change>,
@@ -143,9 +170,14 @@ impl Entry {
         &self.ids
     }
 
+    /// Whether `w` made this entry (same name and session).
+    pub fn is_by(&self, w: Writer) -> bool {
+        &*self.by == w.name && self.session.as_deref() == w.session
+    }
+
     /// Whether every change kept its previous state (game updates don't).
     pub fn undoable(&self) -> bool {
-        self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. }))
+        self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
     }
 
     fn matches_path(&self, prefix: &str) -> bool {
@@ -395,6 +427,8 @@ pub struct Journal {
     /// What the base is: `"empty"` or `"world:<name>"`.
     base_label: String,
     names: BTreeSet<Arc<str>>,
+    /// Prune unreferenced names once there are this many.
+    names_prune_at: usize,
 }
 
 impl Default for Journal {
@@ -422,6 +456,7 @@ impl Journal {
             base_hash: 0,
             base_label: String::new(),
             names: BTreeSet::new(),
+            names_prune_at: NAMES_PRUNE_AT,
         };
         j.rebase(base, label);
         j
@@ -435,6 +470,7 @@ impl Journal {
             *ring = Ring { lost_upto: last, ..Ring::new(ring.max_entries, ring.max_bytes) };
         }
         self.game_touch.clear();
+        self.names.clear();
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
@@ -447,20 +483,35 @@ impl Journal {
         if let Some(a) = self.names.get(name) {
             return Arc::clone(a);
         }
+        if self.names.len() >= self.names_prune_at {
+            // Names (and session ids) no entry refers to any more.
+            self.names.retain(|a| Arc::strong_count(a) > 1);
+            self.names_prune_at = (self.names.len() * 2).max(NAMES_PRUNE_AT);
+        }
         let a: Arc<str> = Arc::from(name);
         self.names.insert(Arc::clone(&a));
         a
     }
 
-    /// Records `changes` as one entry; returns its id.
-    pub fn append(&mut self, tick: u64, by: &str, via: Option<&str>, kind: Kind, changes: Vec<Change>, next_id: u64) -> u64 {
+    /// Records `changes` as one entry by `by`; returns its id.
+    pub fn append<'w>(
+        &mut self,
+        tick: u64,
+        by: impl Into<Writer<'w>>,
+        via: Option<&str>,
+        kind: Kind,
+        changes: Vec<Change>,
+        next_id: u64,
+    ) -> u64 {
+        let w: Writer = by.into();
         let seq = self.next_seq;
         self.next_seq += 1;
         let mut ids: Vec<u64> = changes.iter().map(Change::id).collect();
         ids.sort_unstable();
         ids.dedup();
         let bytes = std::mem::size_of::<Entry>() + ids.len() * 8 + changes.iter().map(Change::approx_bytes).sum::<usize>();
-        let by = self.intern(by);
+        let by = self.intern(w.name);
+        let session = w.session.map(|s| self.intern(s));
         for c in &changes {
             match c {
                 // Gone entities need no conflict memory (an undo that brings one back conflicts
@@ -480,6 +531,7 @@ impl Journal {
             tick,
             by,
             via: via.map(|v| self.intern(v)),
+            session,
             kind,
             changes,
             next_id,
@@ -511,6 +563,20 @@ impl Journal {
             return None;
         }
         let changes = coalesce(changes);
+        self.append_snapshot(tick, game, via, kind, changes, next_id)
+    }
+
+    /// Records a game's changes that are already one per entity (a
+    /// [`Recording::Snapshot`] take); nothing when there are none and the id counter didn't move.
+    pub fn append_snapshot(
+        &mut self,
+        tick: u64,
+        game: &str,
+        via: Option<&str>,
+        kind: Kind,
+        changes: Vec<Change>,
+        next_id: u64,
+    ) -> Option<u64> {
         let previous = self.entries_rev().next().map_or(self.base.next_id(), |e| e.next_id);
         if changes.is_empty() && previous == next_id {
             return None;
@@ -702,14 +768,15 @@ impl Journal {
     /// before they are kept (the engine checks claims there); an error rolls everything back.
     ///
     /// `world` must have no changes pending.
-    pub fn undo(
+    pub fn undo<'w>(
         &mut self,
         world: &mut World,
         tick: u64,
-        by: &str,
+        by: impl Into<Writer<'w>>,
         req: &UndoRequest,
         check: &mut Check,
     ) -> Result<Undone, WorldError> {
+        let by: Writer = by.into();
         let targets = self.select(by, req)?;
         if !req.force {
             self.check_conflicts(world, by, &targets)?;
@@ -720,7 +787,7 @@ impl Journal {
         let mut result = Ok(());
         for &seq in &targets {
             let entry = self.get(seq).expect("selected above");
-            if let Err(e) = undo_entry(world, entry, by, req.force) {
+            if let Err(e) = undo_entry(world, entry, by.name, req.force) {
                 result = Err(e.with("entry", seq));
                 break;
             }
@@ -759,7 +826,7 @@ impl Journal {
     }
 
     /// The entries an undo request names, newest first.
-    fn select(&self, by: &str, req: &UndoRequest) -> Result<Vec<u64>, WorldError> {
+    fn select(&self, by: Writer, req: &UndoRequest) -> Result<Vec<u64>, WorldError> {
         let mut targets = Vec::new();
         match &req.ids {
             Some(ids) => {
@@ -775,10 +842,15 @@ impl Journal {
                         };
                         return Err(err.with("entry", seq).with("oldest_kept", Json::from(self.oldest_kept())));
                     };
-                    if &*e.by != by && !req.force {
+                    if !e.is_by(by) && !req.force {
+                        let who = if &*e.by == by.name {
+                            format!("{} in another session", e.by)
+                        } else {
+                            e.by.to_string()
+                        };
                         return Err(WorldError::new(
                             "not_yours",
-                            format!("journal entry {seq} was made by {}; pass force: true to undo someone else's change", e.by),
+                            format!("journal entry {seq} was made by {who}; pass force: true to undo someone else's change"),
                         )
                         .with("entry", seq)
                         .with("by", &*e.by));
@@ -807,22 +879,25 @@ impl Journal {
                     .entries
                     .iter()
                     .rev()
-                    .filter(|e| &*e.by == by && e.undone_by.is_none() && e.kind != Kind::Undo && e.undoable())
+                    .filter(|e| e.is_by(by) && e.undone_by.is_none() && e.kind != Kind::Undo && e.undoable())
                     .take(req.count)
                     .map(|e| e.seq)
                     .collect();
             }
         }
         if targets.is_empty() {
-            return Err(WorldError::new("nothing_to_undo", format!("{by} has no undoable changes in the journal"))
-                .with("agent", by));
+            return Err(WorldError::new(
+                "nothing_to_undo",
+                format!("{} has no undoable changes in the journal from this session", by.name),
+            )
+            .with("agent", by.name));
         }
         Ok(targets)
     }
 
     /// Refuses when someone else (another agent, or the game) changed what an entry touched
     /// after it, or something now below an entity it spawned.
-    fn check_conflicts(&self, world: &World, by: &str, targets: &[u64]) -> Result<(), WorldError> {
+    fn check_conflicts(&self, world: &World, by: Writer, targets: &[u64]) -> Result<(), WorldError> {
         let conflict = |seq: u64, id: u64, path: &str, later: u64, later_by: &str, later_tick: u64| {
             WorldError::new(
                 "undo_conflict",
@@ -848,12 +923,12 @@ impl Journal {
                 }
             }
             for &id in &ids {
-                if let Some(g) = self.game_touch.get(&id).filter(|g| g.seq > seq && &*g.by != by) {
+                if let Some(g) = self.game_touch.get(&id).filter(|g| g.seq > seq && !(by.session.is_none() && &*g.by == by.name)) {
                     return Err(conflict(seq, id, &g.path, g.seq, &g.by, g.tick));
                 }
             }
             for later in self.agents.from(seq + 1) {
-                if &*later.by == by || targets.contains(&later.seq) {
+                if later.is_by(by) || targets.contains(&later.seq) {
                     continue;
                 }
                 let hit = if later.ids.len() < ids.len() {
@@ -913,7 +988,7 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 world.check_put(&e)?;
                 world.put_raw(e);
             }
-            Change::Set { before: None, .. } => {
+            Change::Set { before: None, .. } | Change::Pose { .. } => {
                 return Err(WorldError::new("not_undoable", "this entry kept no previous state"));
             }
             Change::Delete { before, path } => {
@@ -962,6 +1037,15 @@ pub fn coalesce(changes: Vec<Change>) -> Vec<Change> {
             }
             (Some(Change::Set { .. }), d @ Change::Delete { .. }) => Some(d),
             (Some(Change::Env { before, .. }), Change::Env { after, .. }) => Some(Change::Env { before, after }),
+            // A pose on top of a full state is that state with the pose.
+            (Some(Change::Spawn { mut after, .. }), Change::Pose { path, pose }) => {
+                pose.apply_to(&mut after);
+                Some(Change::Spawn { path, after })
+            }
+            (Some(Change::Set { before, prev_path, mut after, .. }), Change::Pose { path, pose }) => {
+                pose.apply_to(&mut after);
+                Some(Change::Set { path, prev_path, before, after })
+            }
             // Anything after a delete (an id coming back) or other unusual sequences: keep the
             // latest state, which is what replay needs.
             (Some(_), c) => Some(c),
@@ -982,6 +1066,7 @@ pub fn replay<'a>(mut base: World, entries: impl IntoIterator<Item = &'a Entry>)
                     base.remove_raw(before.id);
                 }
                 Change::Env { after, .. } => base.replace_env(*after),
+                Change::Pose { pose, .. } => base.apply_pose(pose, &e.by),
             }
         }
         base.replay_next_id(e.next_id);
@@ -996,11 +1081,11 @@ pub fn hex(h: u64) -> String {
 /// Applies an agent's command to `world` with `check` vetting what it changed, then journals it.
 /// On a failed command or check nothing changes (the world is rolled back). Returns the
 /// command's result and the journal id (`None` when nothing changed).
-pub fn commit<T>(
+pub fn commit<'w, T>(
     world: &mut World,
     journal: &mut Journal,
     tick: u64,
-    by: &str,
+    by: impl Into<Writer<'w>>,
     kind: Kind,
     check: &mut Check,
     command: impl FnOnce(&mut World) -> Result<T, WorldError>,
@@ -1123,7 +1208,7 @@ mod tests {
         let (mut w, mut j) = live();
         let mut plain = World::default();
         for tick in 0..80u64 {
-            w.set_recording(Recording::AfterOnly);
+            w.set_recording(Recording::Snapshot);
             for _ in 0..rng.next(12) {
                 let ids: Vec<u64> = w.entities().map(|e| e.id).collect();
                 let pick = |rng: &mut Lcg| ids[rng.next(ids.len() as u64) as usize];
@@ -1284,7 +1369,7 @@ mod tests {
         spawn(&mut w, &mut j, "ann", "/a");
         set(&mut w, &mut j, "ann", "/a", moved(1.0));
         for t in 0..50 {
-            w.set_recording(Recording::AfterOnly);
+            w.set_recording(Recording::Snapshot);
             w.update(&EntityKey::Path("/a".into()), moved(t as f32), "game").unwrap();
             w.set_recording(Recording::Full);
             let changes = w.take_changes();

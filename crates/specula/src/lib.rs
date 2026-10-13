@@ -17,13 +17,14 @@ mod meshes;
 mod perf;
 pub mod persist;
 pub mod sight;
+pub mod swarm;
 mod tools;
 mod ui;
 pub mod world;
 
-use claims::Claims;
 use game::{Clock, Ctx, Game};
-use journal::{Journal, Kind};
+use journal::{Kind, Writer};
+use swarm::Swarm;
 use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
@@ -32,14 +33,14 @@ use sight::{Camera, LatheMeshes};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tools::{Command, FrameSpec, QuerySpec, Request, TimeOp};
 use ui::UiThread;
-use world::{Change, Recording, World, WorldError};
+use world::{Recording, World, WorldError};
 
 const DEFAULT_PORT: u16 = 7471;
 
@@ -52,8 +53,6 @@ const AUTOSAVE_EVERY: Duration = Duration::from_secs(10);
 /// Listings stop adding items past this many bytes (compact JSON) and hand back a cursor, so a
 /// page of huge entities still fits in an agent's context.
 const MAX_LISTING_BYTES: usize = 128 * 1024;
-/// Agent identities remembered (sessions are capped at 1024 by the protocol).
-const MAX_AGENTS: usize = 1024;
 /// world_batch lists per-op results up to this many bytes, then summarises the rest.
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
@@ -287,8 +286,6 @@ struct Engine {
     autosave_error: Option<Json>,
     /// Old world files the last save committed past but couldn't remove.
     leftovers: Vec<String>,
-    /// Session id → identity given with agent_hello.
-    agents: BTreeMap<String, Agent>,
     /// Simulation time: the hosted game's fixed tick (or the default rate without a game).
     clock: Clock,
     game: Option<Box<dyn Game>>,
@@ -302,10 +299,8 @@ struct Engine {
     input: Vec<Event>,
     /// A window title set by the game (its HUD until the engine draws text).
     game_title: Option<String>,
-    /// Every world change, attributed and tick-stamped (see [`journal`]).
-    journal: Journal,
-    /// Agents' leases on parts of the world (see [`claims`]).
-    claims: Claims,
+    /// Identities, claims and the journal of every world change (see [`swarm`]).
+    swarm: Swarm,
     /// `(tick, state hash)` recorded as each tick begins, newest last; at most [`TICK_HASHES`].
     tick_hashes: VecDeque<(u64, u64)>,
     /// `(world generation, revision, hash)` of the last hash taken: unchanged worlds aren't
@@ -320,11 +315,6 @@ struct AutosaveJob {
     /// The world revision the job is writing.
     revision: u64,
     done: Receiver<Result<(persist::Saved, persist::SaveReport), persist::PersistError>>,
-}
-
-struct Agent {
-    name: String,
-    role: String,
 }
 
 impl Engine {
@@ -353,7 +343,6 @@ impl Engine {
             autosave_job: None,
             autosave_error: None,
             leftovers: Vec::new(),
-            agents: BTreeMap::new(),
             clock: Clock::new(DEFAULT_TICK_HZ),
             game: None,
             game_name: String::new(),
@@ -361,8 +350,7 @@ impl Engine {
             last_advance: Instant::now(),
             input: Vec::new(),
             game_title: None,
-            journal: Journal::default(),
-            claims: Claims::default(),
+            swarm: Swarm::default(),
             tick_hashes: VecDeque::new(),
             hash_cache: None,
             world_generation: 0,
@@ -373,17 +361,16 @@ impl Engine {
     /// Makes a loaded world the live one: it records changes, and the journal starts over from it.
     fn replace_world(&mut self, mut world: World, name: &str) {
         world.set_recording(Recording::Full);
-        self.journal.rebase(&world, &format!("world:{name}"));
+        self.swarm.journal.rebase(&world, &format!("world:{name}"));
         self.world = world;
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
     }
 
-    /// Journals what the game just changed (attributed to the game; `via` = the agent that asked).
-    fn journal_game(&mut self, kind: Kind, via: Option<&str>) {
-        let changes = self.world.take_changes();
-        self.journal.append_game(self.clock.tick(), &self.game_name, via, kind, changes, self.world.next_id());
+    /// Journals what the hosted game just changed on its own (exempt from claims).
+    fn journal_game(&mut self, kind: Kind) {
+        self.swarm.game_changes(&mut self.world, self.clock.tick(), &self.game_name, kind);
     }
 
     /// The world's state hash, reusing the last one while nothing changed.
@@ -410,37 +397,18 @@ impl Engine {
 
     /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
     fn sweep_claims(&mut self, server: &Server) {
-        if self.claims.is_empty() || self.last_claim_sweep.elapsed() < CLAIM_SWEEP_EVERY {
+        if self.swarm.claims.is_empty() || self.last_claim_sweep.elapsed() < CLAIM_SWEEP_EVERY {
             return;
         }
         self.last_claim_sweep = Instant::now();
-        let live: BTreeSet<String> = server.sessions().into_iter().map(|s| s.id).collect();
-        self.claims.expire(Instant::now(), Some(&live));
-    }
-
-    /// Applies an agent's world command: rejected (and rolled back) when it wrote inside another
-    /// agent's claim, journaled otherwise. Returns the result and the journal id.
-    fn commit<T>(
-        &mut self,
-        by: &str,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        let now = Instant::now();
-        let claims = &self.claims;
-        let mut check = |w: &World, changes: &[Change]| claims.check(w, changes, by, now);
-        let result = journal::commit(&mut self.world, &mut self.journal, self.clock.tick(), by, kind, &mut check, command);
-        if matches!(&result, Err(e) if e.code == "claimed") {
-            self.claims.rejected += 1;
-        }
-        result
+        self.swarm.sweep(&server.sessions(), Instant::now());
     }
 
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
         game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
-        self.journal_game(Kind::GameStart, None);
+        self.journal_game(Kind::GameStart);
         self.last_advance = Instant::now();
     }
 
@@ -453,10 +421,10 @@ impl Engine {
             if let Some(game) = self.game.as_mut() {
                 let start = Instant::now();
                 // Game updates are journaled replay-only and coalesced per tick (F3).
-                self.world.set_recording(Recording::AfterOnly);
+                self.world.set_recording(Recording::Snapshot);
                 game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name });
                 self.world.set_recording(Recording::Full);
-                self.journal_game(Kind::GameTick, None);
+                self.journal_game(Kind::GameTick);
                 self.pacing.tick.push(start.elapsed());
             }
             self.clock.finish_tick();
@@ -478,10 +446,10 @@ impl Engine {
             camera: &mut self.window_camera,
             title: &mut self.game_title,
         };
-        self.world.set_recording(Recording::AfterOnly);
+        self.world.set_recording(Recording::Snapshot);
         game.frame(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name }, &mut frame);
         self.world.set_recording(Recording::Full);
-        self.journal_game(Kind::GameFrame, None);
+        self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
     }
 
@@ -575,14 +543,6 @@ impl Engine {
         self.leftovers = report.leftovers.clone();
     }
 
-    /// Who a session is in attribution: its agent_hello name, else its MCP client name.
-    fn agent_name(&self, session: &SessionInfo) -> String {
-        match self.agents.get(&session.id) {
-            Some(a) => a.name.clone(),
-            None if session.client_name.is_empty() => "anonymous".into(),
-            None => session.client_name.clone(),
-        }
-    }
     fn time_s(&self) -> f32 {
         self.started.elapsed().as_secs_f32()
     }
@@ -692,17 +652,22 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
-        let by = self.agent_name(&request.session);
+        let by = self.swarm.agent_name(&request.session);
+        let session = request.session.id.clone();
+        let w = Writer::new(&by, Some(&session));
+        let tick = self.clock.tick();
         let output = match request.command {
-            Command::Spawn(spec) => match self.commit(&by, Kind::Spawn, |w| w.spawn(spec, &by).map(|e| e.id)) {
+            Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
                 Err(e) => world_error(&e),
             },
-            Command::Set(key, change) => match self.commit(&by, Kind::Set, |w| w.update(&key, change, &by).map(|e| e.id)) {
-                Ok((id, seq)) => self.entity_output(id, seq),
-                Err(e) => world_error(&e),
-            },
-            Command::Delete(key, expect) => match self.commit(&by, Kind::Delete, |w| w.delete(&key, expect)) {
+            Command::Set(key, change) => {
+                match self.swarm.commit(&mut self.world, tick, w, Kind::Set, |wd| wd.update(&key, change, &by).map(|e| e.id)) {
+                    Ok((id, seq)) => self.entity_output(id, seq),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::Delete(key, expect) => match self.swarm.commit(&mut self.world, tick, w, Kind::Delete, |wd| wd.delete(&key, expect)) {
                 Ok((d, seq)) => ToolOutput::text(
                     Json::obj([
                         ("deleted", Json::from(d.removed.len())),
@@ -717,15 +682,15 @@ impl Engine {
             Command::Query(spec) => self.query(&spec),
             Command::Batch(ops) => {
                 let count = ops.len();
-                let apply = |w: &mut World| w.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
-                match self.commit(&by, Kind::Batch, apply) {
+                let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
+                match self.swarm.commit(&mut self.world, tick, w, Kind::Batch, apply) {
                     Ok((results, seq)) => {
                         let mut summary = batch_summary(&results);
                         summary.set("journal", Json::from(seq));
                         ToolOutput::text(summary.to_string())
                     }
                     // A claim rejects the batch as a whole (no single op is at fault).
-                    Err(e) if e.code == "claimed" => world_error(&e),
+                    Err(e) if e.detail("op_index").is_none() => world_error(&e),
                     Err(mut e) => {
                         let index = e.detail("op_index").and_then(Json::as_u64).unwrap_or(0);
                         e.details.retain(|(k, _)| *k != "op_index");
@@ -748,18 +713,16 @@ impl Engine {
                 }
             }
             Command::Save { name, overwrite } => self.save(name, overwrite),
-            Command::Load { name, force } => self.load(name, force),
-            Command::Hello { name, role } => {
-                if self.agents.len() >= MAX_AGENTS && !self.agents.contains_key(&request.session.id) {
-                    let live: Vec<String> = server.sessions().into_iter().map(|s| s.id).collect();
-                    self.agents.retain(|id, _| live.contains(id));
-                }
-                let reply = Json::obj([("agent", Json::from(name.as_str())), ("role", Json::from(role.as_str()))]);
-                self.agents.insert(request.session.id.clone(), Agent { name, role });
-                ToolOutput::text(reply.to_pretty())
-            }
+            Command::Load { name, force } => match self.swarm.check_replace_world(w) {
+                Ok(()) => self.load(name, force),
+                Err(e) => world_error(&e),
+            },
+            Command::Hello { name, role } => match self.swarm.hello(&request.session, name, role, &server.sessions()) {
+                Ok(reply) => ToolOutput::text(reply.to_pretty()),
+                Err(e) => world_error(&e),
+            },
             Command::Frame(spec) => self.capture(&spec, &request.session),
-            Command::Env(patch) => match self.commit(&by, Kind::Env, |w| w.set_env(&patch)) {
+            Command::Env(patch) => match self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)) {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
                     env.set("journal", Json::from(seq));
@@ -793,95 +756,48 @@ impl Engine {
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
-                    let mut ctx = Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name };
-                    let out = game.call_tool(&mut ctx, &name, &args);
-                    self.journal_game(Kind::GameTool, Some(&by));
-                    out
-                }
-                None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
-            },
-            Command::History(q) => ToolOutput::text(self.journal.history(&q).to_string()),
-            Command::Changes(q) => ToolOutput::text(self.journal.changes_text(&q)),
-            Command::Undo(req) => {
-                let now = Instant::now();
-                let claims = &self.claims;
-                let mut check = |w: &World, changes: &[Change]| claims.check(w, changes, &by, now);
-                match self.journal.undo(&mut self.world, self.clock.tick(), &by, &req, &mut check) {
-                    Ok(u) => ToolOutput::text(
-                        Json::obj([
-                            ("journal", Json::from(u.seq)),
-                            ("undone", Json::arr(u.undone.iter().map(|s| Json::from(*s)))),
-                            ("changes", Json::from(u.changes)),
-                        ])
-                        .to_string(),
-                    ),
-                    Err(e) => {
-                        if e.code == "claimed" {
-                            self.claims.rejected += 1;
-                        }
-                        world_error(&e)
-                    }
-                }
-            }
-            Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
-            Command::ClaimTake(spec) => {
-                if !self.agents.contains_key(&request.session.id) {
-                    ToolOutput::error(
-                        Json::obj([
-                            ("error", Json::from("hello_required")),
-                            (
-                                "message",
-                                Json::from("claims belong to agent names: call agent_hello with a unique name first"),
-                            ),
-                        ])
-                        .to_pretty(),
-                    )
-                } else {
-                    let now = Instant::now();
-                    match self.claims.take(&self.world, &by, &request.session.id, spec, now) {
-                        Ok(c) => ToolOutput::text(c.to_json(now).to_string()),
+                    let (clock, agent) = (&self.clock, self.game_name.as_str());
+                    let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent }, &name, &args);
+                    match self.swarm.game_tool(&mut self.world, tick, agent, w, call) {
+                        Ok(out) => out,
                         Err(e) => world_error(&e),
                     }
                 }
-            }
-            Command::ClaimRenew { id, lease } => {
-                let now = Instant::now();
-                let ids = id.map_or_else(|| self.claims.owned_by(&by), |id| vec![id]);
-                let mut renewed = Vec::new();
-                let mut failed = None;
-                for id in ids {
-                    match self.claims.renew(id, &by, &request.session.id, lease, now) {
-                        Ok(c) => renewed.push(c.to_json(now)),
-                        Err(e) => failed = Some(e),
-                    }
-                }
-                match failed {
-                    Some(e) if renewed.is_empty() => world_error(&e),
-                    _ => ToolOutput::text(Json::obj([("renewed", Json::Arr(renewed))]).to_string()),
-                }
-            }
-            Command::ClaimRelease { id } => {
-                let released = match id {
-                    Some(id) => self.claims.release(id, &by, Instant::now()).map(|()| vec![id]),
-                    None => Ok(self.claims.release_all(&by)),
-                };
-                match released {
-                    Ok(ids) => ToolOutput::text(
-                        Json::obj([("released", Json::arr(ids.into_iter().map(Json::from)))]).to_string(),
-                    ),
-                    Err(e) => world_error(&e),
-                }
-            }
-            Command::ClaimShare { id, with, revoke } => {
-                let now = Instant::now();
-                match self.claims.share(id, &by, &with, revoke, now) {
-                    Ok(c) => ToolOutput::text(c.to_json(now).to_string()),
-                    Err(e) => world_error(&e),
-                }
-            }
+                None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
+            },
+            Command::History(q) => ToolOutput::text(self.swarm.journal.history(&q).to_string()),
+            Command::Changes(q) => ToolOutput::text(self.swarm.journal.changes_text(&q)),
+            Command::Undo(req) => match self.swarm.undo(&mut self.world, tick, w, &req) {
+                Ok(u) => ToolOutput::text(
+                    Json::obj([
+                        ("journal", Json::from(u.seq)),
+                        ("undone", Json::arr(u.undone.iter().map(|s| Json::from(*s)))),
+                        ("changes", Json::from(u.changes)),
+                    ])
+                    .to_string(),
+                ),
+                Err(e) => world_error(&e),
+            },
+            Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
+            Command::ClaimTake(spec) => match self.swarm.take_claim(&self.world, &request.session, spec) {
+                Ok(c) => ToolOutput::text(c.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimRenew { id, lease } => match self.swarm.renew(w, id, lease) {
+                Ok(out) => ToolOutput::text(out.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimRelease { id } => match self.swarm.release(w, id) {
+                Ok(out) => ToolOutput::text(out.to_string()),
+                Err(e) => world_error(&e),
+            },
+            Command::ClaimShare { id, with, revoke } => match self.swarm.share(w, id, &with, revoke, &server.sessions()) {
+                Ok(c) => ToolOutput::text(c.to_string()),
+                Err(e) => world_error(&e),
+            },
             Command::ClaimList { owner, mine, path_prefix, after, limit } => {
                 let owner = if mine { Some(by.clone()) } else { owner };
-                let list = self.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
+                let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
                 ToolOutput::text(list.to_string())
             }
         };
@@ -906,7 +822,7 @@ impl Engine {
             ("tick", Json::from(self.clock.tick())),
             ("state_hash", Json::from(journal::hex(hash))),
             ("entities", Json::from(self.world.len())),
-            ("journal_last_id", Json::from(self.journal.last_seq())),
+            ("journal_last_id", Json::from(self.swarm.journal.last_seq())),
             ("recent", Json::arr(self.tick_hashes.range(start..).map(pair))),
         ]);
         if let Some(t) = tick {
@@ -916,12 +832,12 @@ impl Engine {
         }
         if verify {
             let started = Instant::now();
-            let report = match self.journal.replay() {
+            let report = match self.swarm.journal.replay() {
                 Some(w) => {
                     let replayed = w.state_hash();
                     Json::obj([
                         ("replayable", Json::from(true)),
-                        ("entries", Json::from(self.journal.len())),
+                        ("entries", Json::from(self.swarm.journal.len())),
                         ("replay_hash", Json::from(journal::hex(replayed))),
                         ("matches", Json::from(replayed == hash)),
                         ("ms", Json::from(started.elapsed().as_secs_f64() * 1000.0)),
@@ -1146,7 +1062,7 @@ impl Engine {
         let mut packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(self.agent_name(session))),
+            ("requested_by", Json::from(self.swarm.agent_name(session))),
             ("image", image),
             ("camera", camera.to_json()),
             ("time_s", Json::from(time_s)),
@@ -1234,9 +1150,9 @@ impl Engine {
             ("vulkan", Json::from(format!("{}.{}.{}", a.api_version.0, a.api_version.1, a.api_version.2))),
         ]);
         let agents = sessions.iter().map(|s| {
-            let role = self.agents.get(&s.id).map_or("builder", |a| a.role.as_str());
+            let role = self.swarm.role(&s.id);
             Json::obj([
-                ("name", Json::from(self.agent_name(s))),
+                ("name", Json::from(self.swarm.agent_name(s))),
                 ("role", Json::from(role)),
                 ("client", Json::from(s.client_name.as_str())),
                 ("version", Json::from(s.client_version.as_str())),
@@ -1261,14 +1177,7 @@ impl Engine {
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
             ("clock", self.clock.to_json()),
-            (
-                "swarm",
-                Json::obj([
-                    ("journal", self.journal.stats_json()),
-                    ("claims", Json::from(self.claims.len())),
-                    ("claim_rejections", Json::from(self.claims.rejected)),
-                ]),
-            ),
+            ("swarm", self.swarm.stats_json()),
         ]);
         let mut info = info;
         if let Some(game) = &self.game {

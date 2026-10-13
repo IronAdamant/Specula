@@ -76,7 +76,11 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     let (reject, rejected) = mpsc::sync_channel::<TcpStream>(REJECT_QUEUE);
     let rejecter = thread::Builder::new()
         .name("specula-mcp-reject".into())
-        .spawn(move || rejected.into_iter().for_each(answer_busy))
+        .spawn({
+            let shared = Arc::clone(&shared);
+            // Shutting down: queued connections are just closed.
+            move || rejected.into_iter().for_each(|stream| answer_busy(&shared.stopping, stream))
+        })
         .ok();
     for incoming in listener.incoming() {
         if shared.stopping.load(Ordering::SeqCst) {
@@ -135,7 +139,10 @@ fn busy_response() -> Response {
 }
 
 /// Answers a connection over the limit with 503, then closes it gently (see [`send_http_error`]).
-fn answer_busy(stream: TcpStream) {
+fn answer_busy(stopping: &AtomicBool, stream: TcpStream) {
+    if stopping.load(Ordering::SeqCst) {
+        return;
+    }
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     // Give the request a moment to arrive, so the response follows it rather than racing it.
     let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
@@ -144,7 +151,7 @@ fn answer_busy(stream: TcpStream) {
     if !send(&stream, &busy_response(), false) {
         return;
     }
-    linger(&stream, REJECT_LINGER);
+    linger(&stream, REJECT_LINGER, Some(stopping));
 }
 
 /// Deregisters a connection when its thread ends, even by panic.
@@ -236,17 +243,17 @@ fn send_http_error(stream: &TcpStream, e: http::HttpError) {
     if !send(stream, &resp, false) {
         return;
     }
-    linger(stream, LINGER);
+    linger(stream, LINGER, None);
 }
 
 /// Half-closes `stream` and discards what the client still sends for up to `how_long`, so the
 /// final close doesn't reset the connection before the client has read the response.
-fn linger(mut stream: &TcpStream, how_long: Duration) {
+fn linger(mut stream: &TcpStream, how_long: Duration, stopping: Option<&AtomicBool>) {
     let _ = stream.shutdown(Shutdown::Write);
     let _ = stream.set_read_timeout(Some(LINGER_STEP));
     let deadline = Instant::now() + how_long;
     let mut sink = [0u8; 16 * 1024];
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !stopping.is_some_and(|s| s.load(Ordering::SeqCst)) {
         match stream.read(&mut sink) {
             Ok(0) => break,
             Err(e) if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => break,

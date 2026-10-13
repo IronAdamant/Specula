@@ -62,11 +62,11 @@ impl Live {
 
     /// One game tick: the game's updates are recorded after-only and coalesced.
     fn game_tick(&mut self, update: impl FnOnce(&mut World)) {
-        self.world.set_recording(Recording::AfterOnly);
+        self.world.set_recording(Recording::Snapshot);
         update(&mut self.world);
         self.world.set_recording(Recording::Full);
         let changes = self.world.take_changes();
-        self.journal.append_game(self.tick, "game", None, Kind::GameTick, changes, self.world.next_id());
+        self.journal.append_snapshot(self.tick, "game", None, Kind::GameTick, changes, self.world.next_id());
         self.tick += 1;
     }
 
@@ -179,9 +179,10 @@ fn the_replayed_hash_is_the_same_on_every_build() {
     assert_eq!(journal::replay(World::default(), live.journal.entries()).state_hash(), EXPECTED_HASH);
 }
 
-/// What journaling costs the hosted game per tick (F3): 500 entity moves per tick with recording
-/// off, and with after-only recording + per-tick coalescing + appending to the journal; plus the
-/// per-tick state hash the engine records.
+/// What journaling costs the hosted game per tick (F3): 500 entity updates per tick with
+/// recording off, and with the engine's game path (snapshot recording + appending to the
+/// journal), plus the per-tick state hash the engine records. Three shapes of tick: 500 distinct
+/// entities moved, 100 entities moved 5 times each, and 500 moves of which 50 also change props.
 #[test]
 #[ignore = "timing report; run with --release --ignored --nocapture"]
 fn journaling_cost_per_tick() {
@@ -201,44 +202,57 @@ fn journaling_cost_per_tick() {
         w.apply_batch(ops, "setup").unwrap();
         w
     };
-    let run = |w: &mut World, journal: Option<&mut Journal>| -> Duration {
-        let mut journal = journal;
-        let start = Instant::now();
-        for t in 0..TICKS {
-            if journal.is_some() {
-                w.set_recording(Recording::AfterOnly);
+    // (label, distinct entities per tick, every n-th update also changes props (0 = never))
+    let shapes = [("500 distinct", 500, 0), ("100 x 5", 100, 0), ("500, 50 with props", 500, 10)];
+    for (label, distinct, props_every) in shapes {
+        let run = |w: &mut World, journal: Option<&mut Journal>| -> (Duration, Duration) {
+            let mut journal = journal;
+            let (mut ticking, mut hashing) = (Duration::ZERO, Duration::ZERO);
+            for t in 0..TICKS {
+                let start = Instant::now();
+                if journal.is_some() {
+                    w.set_recording(Recording::Snapshot);
+                }
+                for k in 0..UPDATES {
+                    let id = ((t * 37 + (k % distinct) * 3) % ENTITIES) as u64 + 1;
+                    let mut change = UpdateSpec { position: Some(Vec3::new(k as f32, t as f32 * 0.01, 0.0)), ..Default::default() };
+                    if props_every > 0 && k % props_every == 0 {
+                        change.props = Some(specula_core::Json::parse(&format!(r#"{{"hp":{}}}"#, t % 10)).unwrap());
+                    }
+                    w.update(&EntityKey::Id(id), change, "game").unwrap();
+                }
+                if let Some(j) = journal.as_deref_mut() {
+                    w.set_recording(Recording::Full);
+                    let changes = w.take_changes();
+                    j.append_snapshot(t as u64, "game", None, Kind::GameTick, changes, w.next_id());
+                }
+                ticking += start.elapsed();
+                let start = Instant::now();
+                std::hint::black_box(w.state_hash());
+                hashing += start.elapsed();
             }
-            for k in 0..UPDATES {
-                let id = ((t * 37 + k * 3) % ENTITIES) as u64 + 1;
-                let change = UpdateSpec { position: Some(Vec3::new(k as f32, t as f32 * 0.01, 0.0)), ..Default::default() };
-                w.update(&EntityKey::Id(id), change, "game").unwrap();
-            }
-            if let Some(j) = journal.as_deref_mut() {
-                w.set_recording(Recording::Full);
-                let changes = w.take_changes();
-                j.append_game(t as u64, "game", None, Kind::GameTick, changes, w.next_id());
-            }
-        }
-        start.elapsed() / TICKS as u32
-    };
-    let mut plain = build();
-    let off = run(&mut plain, None);
-    let mut recorded = build();
-    let mut j = Journal::new(&recorded, "bench");
-    let on = run(&mut recorded, Some(&mut j));
-    let start = Instant::now();
-    for _ in 0..20 {
-        std::hint::black_box(recorded.state_hash());
+            (ticking / TICKS as u32, hashing / TICKS as u32)
+        };
+        let mut plain = build();
+        let (off, _) = run(&mut plain, None);
+        let mut recorded = build();
+        let mut j = Journal::new(&recorded, "bench");
+        let (on, hash) = run(&mut recorded, Some(&mut j));
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        let stats = j.stats_json();
+        let bytes = stats.get("approx_bytes").and_then(specula_core::Json::as_u64).unwrap_or(0);
+        let entries = stats.get("game_entries").and_then(specula_core::Json::as_u64).unwrap_or(1).max(1);
+        println!(
+            "{label}: {:.3} ms/tick without journaling, {:.3} with (+{:.3} ms, x{:.2}); per-tick state hash over \
+             {ENTITIES} entities {:.3} ms; ~{} KiB per tick, so the 16 MiB game ring holds {} ticks",
+            ms(off),
+            ms(on),
+            ms(on) - ms(off),
+            ms(on) / ms(off),
+            ms(hash),
+            bytes / entries / 1024,
+            journal::MAX_GAME_BYTES as u64 / (bytes / entries).max(1),
+        );
+        assert_eq!(plain.state_hash(), recorded.state_hash());
     }
-    let hash = start.elapsed() / 20;
-    let stats = j.stats_json();
-    println!(
-        "{UPDATES} updates/tick over {ENTITIES} entities: {:.3} ms/tick without journaling, {:.3} ms/tick with \
-         (+{:.3} ms); state hash of {ENTITIES} entities {:.3} ms; journal after {TICKS} ticks: {stats}",
-        off.as_secs_f64() * 1e3,
-        on.as_secs_f64() * 1e3,
-        (on.as_secs_f64() - off.as_secs_f64()) * 1e3,
-        hash.as_secs_f64() * 1e3,
-    );
-    assert_eq!(plain.state_hash(), recorded.state_hash());
 }
