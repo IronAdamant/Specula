@@ -570,6 +570,46 @@ mod tests {
         assert_eq!(e.field.as_deref(), Some("path"));
     }
 
+    /// Scale check, run by hand: `cargo test -p specula --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn hundred_thousand_entities() {
+        let t = std::time::Instant::now();
+        let mut w = World::default();
+        for d in 0..100 {
+            let mut g = SpawnSpec::new(Shape::Group);
+            g.name = Some(format!("district_{d:02}"));
+            w.spawn(g, "t").unwrap();
+            let parent = format!("/district_{d:02}");
+            for i in 0..999 {
+                let mut s = SpawnSpec::new(Shape::Cube);
+                s.name = Some(format!("house_{i:03}"));
+                s.parent = Some(EntityKey::Path(parent.clone()));
+                s.position = Vec3::new(d as f32 * 40.0, 0.0, i as f32 * 0.37);
+                s.tags = ["house".to_string()].into();
+                w.spawn(s, "t").unwrap();
+            }
+        }
+        let built = t.elapsed();
+        let t = std::time::Instant::now();
+        let page = w.query(&crate::world::Query { tags: vec!["house".into()], limit: 50, ..Default::default() }).unwrap();
+        assert_eq!(page.total, 99_900);
+        let queried = t.elapsed();
+        let t = std::time::Instant::now();
+        let saved = files(&w);
+        let rendered = t.elapsed();
+        let t = std::time::Instant::now();
+        let back = reload(&saved).unwrap();
+        let loaded = t.elapsed();
+        assert_eq!(back.state_hash(), w.state_hash());
+        let bytes: usize = saved.values().map(String::len).sum();
+        println!(
+            "100k entities: build {built:?}, tag query {queried:?}, render {rendered:?} ({} files, {} MB), load {loaded:?}",
+            saved.len(),
+            bytes / 1_000_000
+        );
+    }
+
     #[test]
     fn save_writes_only_changes_and_removes_stale_files() {
         let dir = std::env::temp_dir().join(format!("specula-persist-test-{}", std::process::id()));
