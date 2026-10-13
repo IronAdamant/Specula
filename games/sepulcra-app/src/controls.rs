@@ -15,7 +15,7 @@ use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_input::{ActionMap, Device, Input};
 use specula_platform::gamepad::Gamepads;
-use specula_platform::{Event, GamepadState};
+use specula_platform::{Event, GamepadState, MAX_GAMEPADS};
 use std::time::Instant;
 
 /// The game's shared bindings and the app's additions.
@@ -159,12 +159,12 @@ impl Controls {
 
     /// Reads this frame's events (and pads), moves the camera, and returns the player's actions.
     pub fn frame(&mut self, events: &[Event], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
-        let pads: Vec<GamepadState> = match &mut self.pads {
+        let pads = match &mut self.pads {
             Some(p) => {
                 p.poll();
-                p.states().to_vec()
+                *p.states()
             }
-            None => Vec::new(),
+            None => [GamepadState::default(); MAX_GAMEPADS],
         };
         // This clock only measures frame time for input (taps, holds), never the simulation.
         let now = self.started.elapsed().as_secs_f64();
@@ -206,22 +206,25 @@ impl Controls {
                 self.orbit.yaw_goal = None;
             }
         }
-        // The cursor: the pointer (mouse, touch), or the gamepad's own cursor.
-        let [cx, cy] = input.value2("cursor_move");
-        let (w, h) = (size.0 as f32, size.1 as f32);
-        if cx != 0.0 || cy != 0.0 {
-            let (x, y) = self.pad_cursor.unwrap_or((w / 2.0, h / 2.0));
-            self.pad_cursor = Some(((x + cx).clamp(0.0, w - 1.0), (y + cy).clamp(0.0, h - 1.0)));
+        // The cursor: the pointer (mouse, touch), or the gamepad's own cursor. A minimized window
+        // is 0x0: there is nothing to point at, so the cursor and the hovered cell stay as they are.
+        if size.0 > 0 && size.1 > 0 {
+            let [cx, cy] = input.value2("cursor_move");
+            let (w, h) = (size.0 as f32, size.1 as f32);
+            if cx != 0.0 || cy != 0.0 {
+                let (x, y) = self.pad_cursor.unwrap_or((w / 2.0, h / 2.0));
+                self.pad_cursor = Some(((x + cx).clamp(0.0, (w - 1.0).max(0.0)), (y + cy).clamp(0.0, (h - 1.0).max(0.0))));
+            }
+            let at = match input.last_device() {
+                Some(Device::Gamepad(_)) => Some(self.pad_cursor.unwrap_or((w / 2.0, h / 2.0))),
+                _ => input.pointer().map(|p| (p.x, p.y)),
+            };
+            let orbit = self.orbit;
+            self.hover = at.and_then(|(x, y)| {
+                let (o, d) = orbit.camera().ray(x, y, size.0, size.1);
+                geo.pick(map, o, d)
+            });
         }
-        let at = match input.last_device() {
-            Some(Device::Gamepad(_)) => Some(self.pad_cursor.unwrap_or((w / 2.0, h / 2.0))),
-            _ => input.pointer().map(|p| (p.x, p.y)),
-        };
-        let orbit = self.orbit;
-        self.hover = at.and_then(|(x, y)| {
-            let (o, d) = orbit.camera().ray(x, y, size.0, size.1);
-            geo.pick(map, o, d)
-        });
         // Buttons, in a fixed order.
         let mut actions = Vec::new();
         for (i, name) in ["select_1", "select_2", "select_3", "select_4"].iter().enumerate() {

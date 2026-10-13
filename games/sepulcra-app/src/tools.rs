@@ -203,19 +203,79 @@ fn seed_arg(args: &Json) -> Result<u64, ToolOutput> {
     }
 }
 
-/// A path under the working directory (no absolute paths, no `..`).
-fn safe_path(rel: &str) -> Result<PathBuf, ToolOutput> {
-    let p = Path::new(rel);
-    let ok = !rel.is_empty() && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
-    if !ok {
-        return Err(error("bad_path", format!("'{rel}' must be a relative path inside the working directory (no '..', no drive or root)"), vec![("path", Json::from(rel))]));
-    }
-    let cwd = std::env::current_dir().map_err(|e| error("io", e.to_string(), vec![]))?;
-    Ok(cwd.join(p))
+/// Windows device names: a file called `NUL.json` or `CON` is a device, not a file.
+const RESERVED: [&str; 24] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
+    "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$", "CONOUT$",
+];
+
+/// A path for people: without Windows' `\\?\` prefix that canonical paths carry.
+fn show(p: &Path) -> String {
+    let s = p.display().to_string();
+    s.strip_prefix(r"\\?\").map_or(s.clone(), str::to_owned)
 }
 
-fn parse_command(content: &Content, item: &Json) -> Result<Command, ToolOutput> {
-    check_keys(item, &["action", "cell", "stone"])?;
+fn bad_path(rel: &str, why: &str) -> ToolOutput {
+    error("bad_path", format!("'{rel}': {why}"), vec![("path", Json::from(rel))])
+}
+
+/// A file path inside the working directory, checked lexically and on disk: relative, no `..`,
+/// no `:` (drives, alternate data streams), no device names, and after following junctions and
+/// links it must still resolve inside the working directory. `write`: the parent folders are
+/// created (only once the deepest existing one is known to be inside).
+pub(crate) fn safe_path(rel: &str, write: bool) -> Result<PathBuf, ToolOutput> {
+    let p = Path::new(rel);
+    if rel.is_empty() || !p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return Err(bad_path(rel, "must be a relative path inside the working directory (no '..', no drive or root)"));
+    }
+    if rel.contains(':') {
+        return Err(bad_path(rel, "':' is not allowed (drives and alternate data streams)"));
+    }
+    for c in p.components() {
+        if let Component::Normal(name) = c {
+            let name = name.to_string_lossy();
+            // Windows ignores trailing dots and spaces, and a device name keeps its meaning with
+            // any extension (NUL.json is NUL).
+            let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
+            if RESERVED.contains(&stem.as_str()) {
+                return Err(bad_path(rel, &format!("'{name}' is a Windows device name")));
+            }
+        }
+    }
+    let io = |e: std::io::Error| error("io", format!("{rel}: {e}"), vec![("path", Json::from(rel))]);
+    let cwd = std::env::current_dir().and_then(|d| d.canonicalize()).map_err(io)?;
+    let inside = |real: &Path| -> Result<(), ToolOutput> {
+        if real.starts_with(&cwd) {
+            Ok(())
+        } else {
+            Err(bad_path(rel, "resolves outside the working directory (through a link or junction)"))
+        }
+    };
+    let full = cwd.join(p);
+    if !write {
+        let real = full.canonicalize().map_err(io)?;
+        inside(&real)?;
+        return Ok(real);
+    }
+    let parent = full.parent().unwrap_or(&cwd).to_path_buf();
+    let mut existing = parent.as_path();
+    while !existing.exists() {
+        existing = existing.parent().unwrap_or(&cwd);
+    }
+    inside(&existing.canonicalize().map_err(io)?)?;
+    std::fs::create_dir_all(&parent).map_err(io)?;
+    let real_parent = parent.canonicalize().map_err(io)?;
+    inside(&real_parent)?;
+    let target = real_parent.join(full.file_name().unwrap_or_default());
+    if target.exists() {
+        inside(&target.canonicalize().map_err(io)?)?;
+    }
+    Ok(target)
+}
+
+/// A command from `item`'s action, cell and stone; `allowed` are the keys `item` may have.
+fn parse_command(content: &Content, item: &Json, allowed: &[&str]) -> Result<Command, ToolOutput> {
+    check_keys(item, allowed)?;
     let action = str_arg(item, "action")?.ok_or_else(|| error("bad_argument", format!("'action' is required: one of {}", ACTIONS.join(", ")), vec![("field", Json::from("action"))]))?;
     let cell = || -> Result<sepulcra::CellId, ToolOutput> {
         let name = str_arg(item, "cell")?.ok_or_else(|| error("bad_argument", format!("'{action}' needs a 'cell' like \"top:12,9\""), vec![("field", Json::from("cell"))]))?;
@@ -360,15 +420,22 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
 }
 
 fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
-    check_keys(args, &["action", "cell", "stone", "commands", "dry_run"])?;
+    const KEYS: [&str; 5] = ["action", "cell", "stone", "commands", "dry_run"];
+    check_keys(args, &KEYS)?;
     let dry = bool_arg(args, "dry_run")?.unwrap_or(false);
     let content = game.content();
-    let one = |game: &mut SepulcraGame, ctx: &mut Ctx, cmd: Command| -> Result<Json, Rejection> {
+    // A dry run plays the commands on a copy of the state, so a batch is judged exactly as it
+    // would be for real (an upgrade after a placement in the same batch, dust running out).
+    let mut shadow = dry.then(|| game.state.clone());
+    let mut scratch = Vec::new();
+    let mut one = |game: &mut SepulcraGame, ctx: &mut Ctx, cmd: Command| -> Result<Json, Rejection> {
         let tick = game.state.tick();
-        if dry {
-            game.state.check(&cmd)?;
-        } else {
-            game.command(ctx.world, cmd)?;
+        match &mut shadow {
+            Some(s) => {
+                scratch.clear();
+                s.apply(&cmd, &mut scratch)?;
+            }
+            None => game.command(ctx.world, cmd)?,
         }
         let mut j = command_to_json(&cmd, &content);
         j.set("tick", Json::from(tick));
@@ -383,7 +450,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
     };
     match args.get("commands") {
         None | Some(Json::Null) => {
-            let cmd = parse_command(&content, args)?;
+            let cmd = parse_command(&content, args, &KEYS)?;
             match one(game, ctx, cmd) {
                 Ok(j) => Ok(answer(game, obj([("accepted", Json::Bool(true)), ("command", j)]))),
                 Err(r) => {
@@ -406,7 +473,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
             // Parse everything first: a malformed batch applies nothing.
             let mut cmds = Vec::new();
             for (i, item) in items.iter().enumerate() {
-                cmds.push(parse_command(&content, item).map_err(|e| {
+                cmds.push(parse_command(&content, item, &["action", "cell", "stone"]).map_err(|e| {
                     let text = e.content.first().map(|c| match c {
                         specula_protocol::Content::Text(t) => t.clone(),
                         _ => String::new(),
@@ -458,7 +525,7 @@ fn new(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput
     check_keys(args, &["seed", "layout", "data"])?;
     let seed = seed_arg(args)?;
     let content = match str_arg(args, "data")? {
-        Some(dir) => Arc::new(Content::load_dir(&safe_path(dir)?).map_err(|e| data_error(&e))?),
+        Some(dir) => Arc::new(Content::load_dir(&safe_path(dir, false)?).map_err(|e| data_error(&e))?),
         None => game.content(),
     };
     let autoplay = match str_arg(args, "layout")? {
@@ -467,7 +534,7 @@ fn new(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput
             let (text, file) = match LAYOUTS.iter().find(|(n, _)| *n == name) {
                 Some((n, t)) => ((*t).to_owned(), format!("layouts/{n}.json")),
                 None => {
-                    let path = safe_path(name)?;
+                    let path = safe_path(name, false)?;
                     let text = std::fs::read_to_string(&path).map_err(|e| {
                         let names: Vec<Json> = LAYOUTS.iter().map(|(n, _)| Json::from(*n)).collect();
                         error("io", format!("layout '{name}' is not built in and can't be read: {e}"), vec![("layouts", Json::Arr(names))])
@@ -508,16 +575,13 @@ fn record(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     check_keys(args, &["path"])?;
     let default = format!("recordings/sepulcra-{}-{}.json", game.state.seed(), game.state.tick());
     let rel = str_arg(args, "path")?.map_or(default, str::to_owned);
-    let path = safe_path(&rel)?;
+    let path = safe_path(&rel, true)?;
     let (rec, advanced) = recording(game);
     let text = rec.to_json(game.state.content()).to_pretty();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| error("io", format!("{}: {e}", dir.display()), vec![]))?;
-    }
-    std::fs::write(&path, text).map_err(|e| error("io", format!("{}: {e}", path.display()), vec![]))?;
+    std::fs::write(&path, text).map_err(|e| error("io", format!("{}: {e}", show(&path)), vec![]))?;
     let end = rec.end.expect("set above");
     let mut out = obj([
-        ("path", Json::from(path.display().to_string())),
+        ("path", Json::from(show(&path))),
         ("seed", Json::from(rec.seed.to_string())),
         ("commands", Json::from(rec.journal.len())),
         ("end_tick", Json::from(end.tick)),
@@ -533,8 +597,8 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
     check_keys(args, &["path", "load"])?;
     let rel = str_arg(args, "path")?.ok_or_else(|| error("bad_argument", "'path' is required", vec![("field", Json::from("path"))]))?;
     let load = bool_arg(args, "load")?.unwrap_or(false);
-    let path = safe_path(rel)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| error("io", format!("{}: {e}", path.display()), vec![("path", Json::from(rel))]))?;
+    let path = safe_path(rel, false)?;
+    let text = std::fs::read_to_string(&path).map_err(|e| error("io", format!("{}: {e}", show(&path)), vec![("path", Json::from(rel))]))?;
     let content = game.content();
     let rec = Recording::from_json(&text, &content, rel).map_err(|e| data_error(&e))?;
     let replayed = rec.verify(Arc::clone(&content)).map_err(|e| {

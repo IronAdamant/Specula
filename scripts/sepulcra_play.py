@@ -154,6 +154,8 @@ def main():
                 mcp.call("time_control", action="resume")
                 time.sleep(4.0)
                 perf = mcp.json("perf_frame")
+                # While the clock runs: what the window shows (interpolated, with live flashes).
+                run.capture("busy_wave_live", eye=[14, 16, 22], target=[0, 0, 2], fov=45)
                 mcp.call("time_control", action="pause")
                 summary["perf_busy_wave"] = {
                     "wave": st["wave"], "enemies": st["enemies"], "entities": perf.get("entities"),

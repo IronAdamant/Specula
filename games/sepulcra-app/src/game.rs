@@ -15,7 +15,7 @@ use crate::hud::Hud;
 use crate::scene::{CursorLook, Scene};
 use crate::{looks::palette, tools};
 use sepulcra::script::{Journal, Player};
-use sepulcra::sim::DustSource;
+use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Outcome, Rejection, State, TICK_HZ};
 use specula::game::{Ctx, Frame, Game};
 use specula::world::{EnvPatch, World};
@@ -24,8 +24,11 @@ use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const MESSAGE_S: f32 = 6.0;
+/// A window frame this recent means another follows the next tick.
+const FRAMED_WITHIN: Duration = Duration::from_millis(250);
 const LOG_LEN: usize = 32;
 pub const SPEEDS: [u32; 3] = [1, 2, 4];
 
@@ -53,6 +56,14 @@ pub struct SepulcraGame {
     /// `time_control step` as in real time.
     pres_ticks: u64,
     message_until: f32,
+    /// When `frame` last ran (window frames follow ticks, so ticks needn't move things too).
+    last_frame: Option<Instant>,
+    /// What the HUD showed last (the title is rebuilt only when it changes).
+    shown_hud: Option<Hud>,
+    /// The hovered cell and what stood there when its text was made.
+    hover_key: Option<(CellId, Option<Stone>, Option<Wall>)>,
+    /// The selection the HUD label was made for.
+    label_for: Option<Option<u8>>,
     /// Recent messages with their tick, for agents (`play_state`).
     pub(crate) log: VecDeque<(u32, String)>,
 }
@@ -74,6 +85,10 @@ impl SepulcraGame {
             now: 0.0,
             pres_ticks: 0,
             message_until: 0.0,
+            last_frame: None,
+            shown_hud: None,
+            hover_key: None,
+            label_for: None,
             log: VecDeque::new(),
         }
     }
@@ -125,6 +140,8 @@ impl SepulcraGame {
     }
 
     fn rebuild(&mut self, world: &mut World, agent: &str) {
+        self.label_for = None;
+        self.hover_key = None;
         let mut scene = Scene::build(world, agent, &self.state);
         scene.sync(world, &self.state, &[], self.now);
         scene.animate(world, 1.0, self.now);
@@ -292,6 +309,7 @@ impl SepulcraGame {
             scene.show_cursor(world, &self.state, CursorLook::Hidden);
             scene.show_range(world, &self.state, None);
             self.hud.hover.clear();
+            self.hover_key = None;
             return;
         };
         let cmd = match self.selected.filter(|&i| usize::from(i) < content.stones.len()) {
@@ -308,8 +326,11 @@ impl SepulcraGame {
             _ => None,
         };
         scene.show_range(world, &self.state, ring);
-        let text = self.hover_text(cell);
-        self.hud.hover = text;
+        let key = (cell, self.state.stone(cell).copied(), self.state.wall(cell).copied());
+        if self.hover_key != Some(key) {
+            self.hover_key = Some(key);
+            self.hud.hover = self.hover_text(cell);
+        }
     }
 
     pub(crate) fn status_json(&self) -> Json {
@@ -394,25 +415,35 @@ impl Game for SepulcraGame {
         }
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
-        if !self.paused {
-            // Flashes keep fading after the run ends (no more steps, but time still passes).
-            self.pres_ticks += u64::from(self.speed).max(stepped);
-        }
+        // Flashes keep fading after the run ends (no more steps, but time still passes).
+        let advance = if self.paused { 0 } else { u64::from(self.speed).max(stepped) };
+        self.pres_ticks += advance;
         self.now = self.pres_ticks as f32 / TICK_HZ as f32;
+        // Window frames after this tick draw presentation time from (pres_ticks - advance) at
+        // alpha 0 up to pres_ticks at alpha 1; flashes born in this tick start at the beginning
+        // of that span, so the first frame after the tick already shows them.
+        let born = (self.pres_ticks - advance) as f32 / TICK_HZ as f32;
+        let framed = self.last_frame.is_some_and(|t| t.elapsed() < FRAMED_WITHIN);
         if let Some(scene) = &mut self.scene {
-            scene.sync(ctx.world, &self.state, &events, self.now);
-            // Everything where it is at this tick: correct for agents' sight_frame even when
-            // ticks run without window frames in between (time_control step, headless engines).
-            // A window frame then interpolates from here.
-            scene.animate(ctx.world, 1.0, self.now);
+            scene.sync(ctx.world, &self.state, &events, born);
+            // Without window frames (headless), or while agents step a paused clock (a capture
+            // may come before the next frame), put everything where it is at this tick.
+            // Otherwise the next window frame moves things anyway: don't write them twice.
+            if !framed || ctx.clock.paused() {
+                scene.animate(ctx.world, 1.0, self.now);
+            }
         }
         self.events = events;
     }
 
     fn frame(&mut self, ctx: &mut Ctx, frame: &mut Frame) {
-        let alpha = if self.paused { 1.0 } else { frame.alpha };
-        // Between ticks: interpolate presentation time like positions (alpha of the next tick).
-        let sub = if self.paused { 0.0 } else { (alpha - 1.0) * self.speed as f32 };
+        self.last_frame = Some(Instant::now());
+        // Frames draw the span between the last two ticks: positions at prev..cur by alpha, and
+        // presentation time to match. When either the game or the engine clock is paused there is
+        // no span: draw the newest tick (alpha 1), as play_state reports it.
+        let still = self.paused || ctx.clock.paused();
+        let alpha = if still { 1.0 } else { frame.alpha };
+        let sub = (alpha - 1.0) * self.speed as f32;
         self.now = ((self.pres_ticks as f32) + sub).max(0.0) / TICK_HZ as f32;
         let Some(scene) = &self.scene else { return };
         let map = Arc::clone(self.state.content_arc());
@@ -429,10 +460,17 @@ impl Game for SepulcraGame {
             self.hud.message.clear();
         }
         self.hud.read(&self.state);
-        self.hud.selected = self.selected_label();
+        if self.label_for != Some(self.selected) {
+            self.label_for = Some(self.selected);
+            self.hud.selected = self.selected_label();
+        }
         self.hud.paused = self.paused;
         self.hud.speed = self.speed;
-        *frame.title = Some(self.hud.title());
+        // The title only when something on it changed (no string building per frame).
+        if self.shown_hud.as_ref() != Some(&self.hud) {
+            *frame.title = Some(self.hud.title());
+            self.shown_hud = Some(self.hud.clone());
+        }
     }
 
     fn tools(&self) -> Vec<ToolDef> {

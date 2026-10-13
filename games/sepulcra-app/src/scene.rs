@@ -103,6 +103,8 @@ pub struct Scene {
     ring_shown: Option<(u32, u32, u32, u32)>,
     /// Scratch, reused per tick.
     seen: Vec<u32>,
+    /// Scratch: live projectile ids, sorted.
+    live: Vec<ProjectileId>,
 }
 
 fn props_obj(pairs: Vec<(&str, Json)>) -> Json {
@@ -174,6 +176,7 @@ impl Scene {
             ring,
             ring_shown: None,
             seen: Vec::new(),
+            live: Vec::new(),
         };
         scene.build_tombstones(world, state);
         scene
@@ -438,8 +441,12 @@ impl Scene {
         self.seen.clear();
         // After the end the simulation stops, so its last projectiles would hang in the air: hide them.
         let live: &[Projectile] = if state.outcome() == sepulcra::Outcome::Running { state.projectiles() } else { &[] };
-        let alive = |id: ProjectileId| live.iter().any(|p| p.id == id);
-        self.seen.extend(self.bolts.keys().copied().filter(|id| !alive(*id)));
+        // Both id-sorted lists, one merge pass (no per-bolt scan).
+        self.live.clear();
+        self.live.extend(live.iter().map(|p| p.id));
+        self.live.sort_unstable();
+        let ids = &self.live;
+        self.seen.extend(self.bolts.keys().copied().filter(|id| ids.binary_search(id).is_err()));
         for k in 0..self.seen.len() {
             let id = self.seen[k];
             if let Some(i) = self.bolts.remove(&id) {
@@ -614,8 +621,10 @@ impl Scene {
             if !f.active {
                 continue;
             }
+            // A flash born in a tick may start a little after the frame being drawn (frames lag
+            // the newest tick by up to one tick): it shows at its first size until then.
             let t = ((now - f.start) / f.dur.max(1e-3)).clamp(0.0, 1.0);
-            if t >= 1.0 || now < f.start {
+            if t >= 1.0 {
                 f.active = false;
                 ents::place(world, &self.agent, f.id, Some(PARK), None, Some(PARK_SCALE));
                 continue;

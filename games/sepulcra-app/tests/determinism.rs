@@ -165,7 +165,7 @@ fn recordings_verify_even_right_after_a_command() {
     assert_eq!(err.get("code").and_then(Json::as_str), Some("not_enough_dust"), "{err}");
     assert!(err.get("need").is_some() && err.get("have").is_some());
 
-    let dir = "target/sepulcra-app-test";
+    let dir = "sepulcra-app-test-recordings";
     let path = format!("{dir}/rec.json");
     let rec = host.call("play_record", &Json::obj([("path", Json::from(path.as_str()))]));
     assert!(!rec.is_error, "{}", text(&rec));
