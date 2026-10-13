@@ -5,8 +5,10 @@
 pub mod base64;
 pub mod checksum;
 pub mod deflate;
+pub mod hash;
 pub mod json;
 pub mod math;
 pub mod png;
+pub mod rng;
 
 pub use json::{Json, JsonError};
