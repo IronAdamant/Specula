@@ -33,6 +33,8 @@ const LIMIT_CEILING: f32 = 0.977;
 const LIMIT_RELEASE_S: f32 = 0.15;
 /// Duck rules that can be active at once.
 pub const MAX_DUCKS: usize = 4;
+/// Longest fade accepted (seconds).
+pub const MAX_FADE_S: f32 = 600.0;
 
 /// A mixer bus. Every voice plays on one; each has a volume, and buses can duck each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +179,10 @@ pub(crate) struct SharedStats {
     pub reconnects: AtomicU64,
     pub last_hresult: AtomicU32,
     pub queue_full: AtomicU64,
+    /// The audio thread panicked (set by its drop guard).
+    pub thread_panicked: std::sync::atomic::AtomicBool,
+    /// Non-finite samples replaced by silence at the master (should stay 0).
+    pub non_finite: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -341,6 +347,17 @@ impl MixerHandle {
         if slot >= MAX_DUCKS {
             return Err(AudioError::new(ErrorCode::OutOfRange, "duck slot out of range").with_numbers(slot as f64, MAX_DUCKS as f64 - 1.0));
         }
+        if let Some(r) = &rule {
+            if r.target == Bus::Master {
+                return Err(AudioError::new(ErrorCode::OutOfRange, "a duck rule can't target the master bus (duck a sub-bus instead)"));
+            }
+            if r.source == r.target {
+                return Err(AudioError::new(ErrorCode::OutOfRange, "a bus can't duck itself"));
+            }
+            if ![r.depth_db, r.threshold_db, r.attack_s, r.release_s].iter().all(|x| x.is_finite()) {
+                return Err(AudioError::new(ErrorCode::OutOfRange, "duck rule numbers must be finite"));
+            }
+        }
         self.send(Command::SetDuck { slot, rule })
     }
 
@@ -353,6 +370,32 @@ impl MixerHandle {
         self.collect();
         std::mem::take(&mut self.finished)
     }
+}
+
+/// Fade times: NaN → 0, clamped to 0 ..= 600 s (an infinite fade would never finish).
+fn sane_fade(s: f32) -> f32 {
+    sane(s, 0.0, MAX_FADE_S)
+}
+
+/// Every `Spatial` field finite and in range, so distance maths can't produce NaN/inf. A
+/// non-finite position is kept: `spatialize` treats it as inaudible.
+fn sane_spatial(s: Spatial) -> Spatial {
+    let min = sane_or(s.min_distance, 2.0, 0.01, 1.0e6);
+    let max = sane_or(s.max_distance, 80.0, min + 0.01, 1.0e7).max(min + 0.01);
+    Spatial { position: s.position, min_distance: min, max_distance: max, rolloff: sane_or(s.rolloff, 1.0, 0.0, 100.0), lowpass: s.lowpass }
+}
+
+/// NaN → `default`, then clamped (so ±inf land on the bounds).
+fn sane_or(v: f32, default: f32, lo: f32, hi: f32) -> f32 {
+    if v.is_nan() {
+        default
+    } else {
+        v.clamp(lo, hi)
+    }
+}
+
+fn finite3(v: [f32; 3]) -> bool {
+    v.iter().all(|x| x.is_finite())
 }
 
 fn sane(v: f32, lo: f32, hi: f32) -> f32 {
@@ -448,7 +491,10 @@ impl Mixer {
         &self.stats
     }
 
-    fn apply_listener(&mut self, l: Listener) {
+    fn apply_listener(&mut self, mut l: Listener) {
+        if !finite3(l.position) {
+            l.position = self.listener.position;
+        }
         let f = normalize(l.forward).unwrap_or([0.0, 0.0, -1.0]);
         let u = normalize(l.up).unwrap_or([0.0, 1.0, 0.0]);
         // right = forward × up (right-handed, +Y up, -Z forward → +X right).
@@ -466,12 +512,14 @@ impl Mixer {
         match cmd {
             Command::Play { id, sound, params } => self.start_voice(id, sound, params),
             Command::Stop { id, fade_s } => {
+                let fade_s = sane_fade(fade_s);
                 if let Some(v) = self.find(id) {
                     v.stopping = true;
                     v.fade.set(0.0, fade_s.max(DECLICK_S), rate);
                 }
             }
             Command::StopAll { bus, fade_s } => {
+                let fade_s = sane_fade(fade_s);
                 for v in self.voices.iter_mut().filter(|v| bus.is_none_or(|b| v.params.bus == b)) {
                     v.stopping = true;
                     v.fade.set(0.0, fade_s.max(DECLICK_S), rate);
@@ -479,7 +527,7 @@ impl Mixer {
             }
             Command::SetGain { id, gain, fade_s } => {
                 if let Some(v) = self.find(id) {
-                    v.gain.set(gain, fade_s, rate);
+                    v.gain.set(gain, sane_fade(fade_s), rate);
                 }
             }
             Command::SetPitch { id, pitch } => {
@@ -494,13 +542,17 @@ impl Mixer {
                 }
             }
             Command::SetPosition { id, position } => {
+                // Ignore non-finite updates: the voice keeps its last good position.
+                if !finite3(position) {
+                    return;
+                }
                 if let Some(v) = self.find(id) {
                     if let Some(s) = &mut v.params.spatial {
                         s.position = position;
                     }
                 }
             }
-            Command::SetBusGain { bus, gain, fade_s } => self.buses[bus as usize].gain.set(gain, fade_s, rate),
+            Command::SetBusGain { bus, gain, fade_s } => self.buses[bus as usize].gain.set(gain, sane_fade(fade_s), rate),
             Command::SetDuck { slot, rule } => self.ducks[slot] = rule,
             Command::SetListener(l) => self.apply_listener(l),
         }
@@ -510,6 +562,8 @@ impl Mixer {
         params.gain = sane(params.gain, 0.0, 16.0);
         params.pan = sane(params.pan, -1.0, 1.0);
         params.pitch = sane(params.pitch, 1.0 / 16.0, 16.0);
+        params.fade_in_s = sane_fade(params.fade_in_s);
+        params.spatial = params.spatial.map(sane_spatial);
         let live = self.voices.iter().filter(|v| !v.tail).count();
         if live >= self.max_voices {
             // Steal the least important live voice: lowest priority, then quietest, then oldest.
@@ -701,13 +755,25 @@ impl Mixer {
         let (c0, c1) = (m0 * l0.min(l1), m1 * l1);
         let dc = (c1 - c0) / n as f32;
         let mut peak = 0.0f32;
+        let mut bad = 0u64;
+        let mut finite = |x: f32| {
+            if x.is_finite() {
+                x
+            } else {
+                bad += 1;
+                0.0
+            }
+        };
         for f in 0..n {
             let g = c0 + dc * (f + 1) as f32;
-            let l = (master[2 * f] * g).clamp(-1.0, 1.0);
-            let r = (master[2 * f + 1] * g).clamp(-1.0, 1.0);
+            let l = finite(master[2 * f] * g).clamp(-1.0, 1.0);
+            let r = finite(master[2 * f + 1] * g).clamp(-1.0, 1.0);
             peak = peak.max(l.abs()).max(r.abs());
             out[2 * f] = l;
             out[2 * f + 1] = r;
+        }
+        if bad > 0 {
+            self.stats.non_finite.fetch_add(bad, Ordering::Relaxed);
         }
         self.stats.master_peak_bits.store(peak.to_bits(), Ordering::Relaxed);
         self.stats.limiter_gain_bits.store(l1.to_bits(), Ordering::Relaxed);
@@ -736,6 +802,18 @@ fn v_zombie(id: u64, sound: Arc<SoundData>) -> Voice {
         lp_on: false,
         age: 0,
     }
+}
+
+/// Wraps a looping read position (32.32 fixed point) back into `start..end`, however far past
+/// the end one step carried it (a pitch-16 voice on a 2-frame loop moves 8 loops per frame).
+#[inline]
+fn wrap_loop(pos: u64, start: usize, end: usize) -> u64 {
+    let end_fp = (end as u64) << FRAC_BITS;
+    if pos < end_fp {
+        return pos;
+    }
+    let start_fp = (start as u64) << FRAC_BITS;
+    start_fp + (pos - start_fp) % (end_fp - start_fp)
 }
 
 /// `e^(-dt/tc)`.
@@ -814,6 +892,9 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
             ([base * g[0], base * g[1]], None)
         }
     };
+    // Last line of defence: a bad voice goes silent instead of poisoning its bus.
+    let target = if target.iter().all(|g| g.is_finite()) { target } else { [0.0; 2] };
+    let lp_coef = lp_coef.filter(|c| c.is_finite());
     if !v.started {
         v.started = true;
         // Start at the target (sharp attacks stay sharp); a fade-in is already in `fade`.
@@ -868,7 +949,7 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
             f += run;
             v.pos += (run as u64) << FRAC_BITS;
             if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
-                v.pos -= loop_len << FRAC_BITS;
+                v.pos = wrap_loop(v.pos, data.loop_start, data.loop_end);
                 v.wrapped = true;
             }
         }
@@ -912,12 +993,10 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
                 let (mut al, mut ar) = (0.0, 0.0);
                 for (k, ck) in c.iter().enumerate() {
                     let mut i = idx as i64 - 3 + k as i64;
-                    if looping {
-                        if i >= data.loop_end as i64 {
-                            i = data.loop_start as i64 + (i - data.loop_start as i64) % loop_len as i64;
-                        } else if i < data.loop_start as i64 && v.wrapped {
-                            i += loop_len as i64;
-                        }
+                    // Taps past the loop end (or before its start once wrapped) read from inside
+                    // the loop, even when the loop is shorter than the kernel.
+                    if looping && (i >= data.loop_end as i64 || (i < data.loop_start as i64 && v.wrapped)) {
+                        i = data.loop_start as i64 + (i - data.loop_start as i64).rem_euclid(loop_len as i64);
                     }
                     if i < 0 || i as usize >= data.frames {
                         continue;
@@ -939,7 +1018,7 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
             }
             v.pos += v.step;
             if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
-                v.pos -= loop_len << FRAC_BITS;
+                v.pos = wrap_loop(v.pos, data.loop_start, data.loop_end);
                 v.wrapped = true;
             }
         }
@@ -953,7 +1032,7 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
             }
             v.pos += v.step;
             if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
-                v.pos -= loop_len << FRAC_BITS;
+                v.pos = wrap_loop(v.pos, data.loop_start, data.loop_end);
                 v.wrapped = true;
             }
         }
@@ -1032,6 +1111,8 @@ impl Stats {
             reconnects: s.reconnects.load(Ordering::Relaxed),
             last_hresult: s.last_hresult.load(Ordering::Relaxed),
             commands_dropped: s.queue_full.load(Ordering::Relaxed),
+            audio_thread_panicked: s.thread_panicked.load(Ordering::Relaxed),
+            non_finite_samples: s.non_finite.load(Ordering::Relaxed),
         }
     }
 }
@@ -1108,6 +1189,11 @@ pub struct Stats {
     /// Last failing `HRESULT` the device backend saw (0 = none).
     pub last_hresult: u32,
     pub commands_dropped: u64,
+    /// The audio thread died; [`crate::Audio`] calls now fail with `ThreadGone`. Start a new
+    /// `Audio` to recover.
+    pub audio_thread_panicked: bool,
+    /// Non-finite samples the master replaced with silence (a bug indicator; should stay 0).
+    pub non_finite_samples: u64,
 }
 
 impl Stats {
@@ -1134,6 +1220,8 @@ impl Stats {
             ("reconnects", Json::from(self.reconnects)),
             ("last_hresult", Json::from(format!("0x{:08X}", self.last_hresult))),
             ("commands_dropped", Json::from(self.commands_dropped)),
+            ("audio_thread_panicked", Json::from(self.audio_thread_panicked)),
+            ("non_finite_samples", Json::from(self.non_finite_samples)),
         ])
     }
 }

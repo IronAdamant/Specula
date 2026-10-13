@@ -272,3 +272,100 @@ fn non_finite_parameters_are_sanitised() {
     let out = run(&mut m, 512);
     assert!(out.iter().all(|s| s.is_finite()));
 }
+
+/// Review probe `loop`: a pitch-16 voice on a 2-frame loop moves 8 loops per frame; switching it
+/// to pitch 1 used to underflow on the audio thread.
+#[test]
+fn huge_step_on_a_tiny_loop_wraps_without_panicking() {
+    let s = Sound::new("x", RATE, 1, (0..16).map(|i| i as f32 / 16.0).collect()).unwrap().with_loop(0, 2).unwrap();
+    let (mut h, mut m) = mixer(4);
+    let id = h.play(&s, PlayParams { looping: true, pitch: 16.0, pan: -1.0, ..Default::default() }).unwrap();
+    for _ in 0..4 {
+        run(&mut m, 256);
+        assert!((m.voices[0].pos >> FRAC_BITS) < 2, "position stays inside the loop");
+    }
+    h.set_pitch(id, 1.0).unwrap();
+    let out = left(&run(&mut m, 256));
+    // Pitch 1 on the loop [0, 2): plain copies alternating 0 and 1/16.
+    assert!(out.iter().all(|&x| x == 0.0 || (x - 1.0 / 16.0).abs() < 1e-6), "{:?}", &out[..8]);
+    assert!(out.iter().any(|&x| x > 0.0));
+}
+
+/// Random pitches on short loops (fast, slow-edge and copy paths, mono and stereo) never panic
+/// and never produce non-finite output.
+#[test]
+fn loop_and_pitch_fuzz() {
+    use specula_core::rng::Rng;
+    let mut rng = Rng::named(7, "loop_fuzz");
+    for case in 0..200 {
+        let ch = 1 + (case % 2) as u16;
+        let frames = 1 + rng.below(40) as usize;
+        let samples: Vec<f32> = (0..frames * ch as usize).map(|_| rng.range_f32(-1.0, 1.0)).collect();
+        let start = rng.below(frames as u32) as usize;
+        let end = start + 1 + rng.below((frames - start) as u32) as usize;
+        let s = Sound::new("f", 8_000 + rng.below(90_000), ch, samples).unwrap().with_loop(start, end).unwrap();
+        let (mut h, mut m) = mixer(4);
+        let id = h.play(&s, PlayParams { looping: rng.chance(0.8), pitch: rng.range_f32(0.05, 16.0), ..Default::default() }).unwrap();
+        for _ in 0..6 {
+            let out = run(&mut m, 1 + rng.below(700) as usize);
+            assert!(out.iter().all(|x| x.is_finite()), "case {case}");
+            h.set_pitch(id, [1.0, 16.0, 0.0625, rng.range_f32(0.05, 16.0)][rng.below(4) as usize]).unwrap();
+        }
+    }
+}
+
+/// Review probe `fade`: an infinite fade never finished; fades are clamped to 600 s and NaN
+/// means "now".
+#[test]
+fn infinite_and_nan_fades_are_clamped() {
+    let (mut h, mut m) = mixer(4);
+    let long = h.play(&dc(0.5, 4800), PlayParams { looping: true, pan: -1.0, ..Default::default() }).unwrap();
+    let now = h.play(&dc(0.5, 4800), PlayParams { looping: true, pan: 1.0, ..Default::default() }).unwrap();
+    run(&mut m, 256);
+    h.stop(long, f32::INFINITY).unwrap();
+    h.stop(now, f32::NAN).unwrap();
+    let out = run(&mut m, 48_000);
+    assert_eq!(h.drain_finished(), vec![now]);
+    // One second into a 600 s fade: 1/600 quieter, and still moving.
+    let l = out[out.len() - 2];
+    let expect = 0.5 * (1.0 - 1.0 / MAX_FADE_S);
+    assert!((l - expect).abs() < 1e-4, "{l} vs {expect}");
+    assert_eq!(m.voices.len(), 1);
+    assert!(!m.voices[0].fade.done());
+}
+
+/// Review probe `nan`: an infinite rolloff or min distance turned the whole master into NaN,
+/// other voices included. Spatial fields are sanitised, and the master guards non-finite output.
+#[test]
+fn non_finite_spatial_fields_cannot_poison_the_mix() {
+    let cases = [
+        Spatial { rolloff: f32::INFINITY, ..Spatial::at([0.5, 0.0, 0.0]) },
+        Spatial { min_distance: f32::INFINITY, ..Spatial::at([0.5, 0.0, 0.0]) },
+        Spatial { max_distance: f32::NAN, min_distance: f32::NEG_INFINITY, ..Spatial::at([30.0, 0.0, 0.0]) },
+        Spatial { rolloff: f32::NAN, ..Spatial::at([f32::NAN, 0.0, f32::INFINITY]) },
+    ];
+    for (i, sp) in cases.into_iter().enumerate() {
+        let (mut h, mut m) = mixer(4);
+        // The innocent voice: hard left at 0.2.
+        h.play(&dc(0.2, 48_000), PlayParams { pan: -1.0, ..Default::default() }).unwrap();
+        let bad = h.play(&dc(0.1, 48_000), PlayParams { spatial: Some(sp), ..Default::default() }).unwrap();
+        run(&mut m, 480);
+        h.set_position(bad, [f32::NAN, 1.0, 1.0]).unwrap();
+        h.set_listener(Listener { position: [f32::INFINITY, 0.0, 0.0], forward: [f32::NAN; 3], up: [0.0; 3] }).unwrap();
+        let out = run(&mut m, 480);
+        assert!(out.iter().all(|x| x.is_finite()), "case {i}");
+        assert!(out[out.len() - 2] >= 0.2 - 1e-5, "case {i}: the other voice survives: {}", out[out.len() - 2]);
+        assert_eq!(Stats::read(&h.stats).non_finite_samples, 0, "case {i}: sanitised before the master");
+    }
+}
+
+#[test]
+fn duck_rules_are_validated() {
+    let (mut h, _m) = mixer(4);
+    let rule = DuckRule { source: Bus::Sfx, target: Bus::Master, depth_db: 6.0, threshold_db: -30.0, attack_s: 0.01, release_s: 0.1 };
+    assert_eq!(h.set_duck(0, Some(rule)).unwrap_err().code, ErrorCode::OutOfRange);
+    assert_eq!(h.set_duck(0, Some(DuckRule { target: Bus::Sfx, ..rule })).unwrap_err().code, ErrorCode::OutOfRange);
+    assert_eq!(h.set_duck(0, Some(DuckRule { target: Bus::Music, depth_db: f32::NAN, ..rule })).unwrap_err().code, ErrorCode::OutOfRange);
+    h.set_duck(0, Some(DuckRule { target: Bus::Music, ..rule })).unwrap();
+    h.set_duck(0, None).unwrap();
+}

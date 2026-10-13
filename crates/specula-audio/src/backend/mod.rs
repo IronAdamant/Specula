@@ -53,6 +53,19 @@ impl Clock {
     }
 }
 
+/// Lives on the audio thread's stack: if the thread unwinds from a panic, publishes `Stopped` and
+/// the panic flag so callers see the failure instead of a silently dead "device" backend.
+pub(crate) struct PanicGuard(pub std::sync::Arc<SharedStats>);
+
+impl Drop for PanicGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.thread_panicked.store(true, Ordering::Relaxed);
+            set_state(&self.0, BackendState::Stopped);
+        }
+    }
+}
+
 pub(crate) fn set_state(stats: &SharedStats, state: BackendState) {
     stats.backend_state.store(state.as_u32(), Ordering::Relaxed);
 }
@@ -77,5 +90,34 @@ impl ThreadBackend {
 impl Drop for ThreadBackend {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A panicking audio thread publishes `Stopped` and the panic flag instead of leaving the
+    /// stats claiming a live device.
+    #[test]
+    fn panic_guard_publishes_the_failure() {
+        let stats = Arc::new(SharedStats::default());
+        set_state(&stats, BackendState::Device);
+        let s2 = stats.clone();
+        let joined = std::thread::spawn(move || {
+            let _guard = PanicGuard(s2);
+            panic!("simulated audio thread panic (expected by this test)");
+        })
+        .join();
+        assert!(joined.is_err());
+        let st = crate::Stats::read(&stats);
+        assert!(st.audio_thread_panicked);
+        assert_eq!(st.backend, BackendState::Stopped);
+        // A normal exit leaves the flag alone.
+        let fresh = Arc::new(SharedStats::default());
+        let s3 = fresh.clone();
+        std::thread::spawn(move || drop(PanicGuard(s3))).join().unwrap();
+        assert!(!fresh.thread_panicked.load(Ordering::Relaxed));
     }
 }

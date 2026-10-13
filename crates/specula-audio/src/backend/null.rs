@@ -22,6 +22,7 @@ pub(crate) fn start(mut mixer: Mixer) -> Result<ThreadBackend> {
     let join = std::thread::Builder::new()
         .name("specula-audio-null".into())
         .spawn(move || {
+            let _guard = super::PanicGuard(stats.clone());
             let mut clock = Clock::new(rate, BLOCK_MS);
             while !stop2.load(Ordering::Relaxed) {
                 clock.tick(&mut mixer, &stats, &stop2);

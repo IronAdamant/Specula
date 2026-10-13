@@ -13,13 +13,14 @@ pub const MAX_POINTS: usize = 256;
 pub const MAX_PARTIALS: usize = 32;
 pub const MAX_FILTERS: usize = 4;
 pub const MAX_FX: usize = 8;
-/// Upper bound on synthesis work (layer instances × frames × partials × unison voices at the
-/// render rate) so a hostile recipe can't hang a server.
-pub const MAX_WORK: f64 = 400_000_000.0;
+/// Most synthesis work a recipe may need ([`Recipe::work_estimate`], at the render rate) so a
+/// hostile recipe can't hang a server. Fixed, not scaled by rate: long sounds at 192 kHz are
+/// refused rather than taking 4× as long.
+pub const MAX_WORK: f64 = 300_000_000.0; // cost units ≈ ns: about 0.3 s of rendering on one core
 
 /// A number that is either fixed or drawn from a seeded range (`{"rand": [lo, hi]}`). Each field
-/// draws from its own stream keyed by its recipe path, so editing one field never changes the
-/// random values of another.
+/// draws from its own stream keyed by its recipe path, with a named layer's path rooted at its
+/// name rather than its index (see the crate docs for exactly what that guarantees).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Num {
     pub lo: f64,
@@ -163,7 +164,8 @@ pub struct Layer {
     pub filters: Vec<Filter>,
     pub fx: Vec<Fx>,
     pub repeat: Option<Repeat>,
-    /// Stream key for this layer's per-instance draws (repeat jitter, noise seeds).
+    /// Stream key for this layer's per-instance draws (repeat jitter, noise seeds): from its
+    /// name when it has one, else its index.
     pub key: u64,
 }
 
@@ -222,7 +224,7 @@ impl<'a> Cx<'a> {
                 return Err(AudioError::at(ErrorCode::UnknownField, join(path, k), format!("unknown field `{k}` (allowed: {})", allowed.join(", "))));
             }
             if pairs[..i].iter().any(|(p, _)| p == k) {
-                return Err(AudioError::at(ErrorCode::UnknownField, join(path, k), format!("duplicate field `{k}`")));
+                return Err(AudioError::at(ErrorCode::Duplicate, join(path, k), format!("duplicate field `{k}`")));
             }
         }
         Ok(Cx { path: path.to_string(), pairs })
@@ -283,6 +285,107 @@ fn range_check(v: f64, path: &str, lo: f64, hi: f64) -> Result<f64> {
     Ok(v)
 }
 
+/// Stream key for a recipe path. The first segment (`layers[2]`) and the rest
+/// (`source.freq.rand`) are hashed separately and XORed, so [`key_layer`] can move a whole
+/// layer's draws from its index to its name.
+fn path_key(path: &str) -> u64 {
+    let (head, tail) = path.split_once('.').unwrap_or((path, ""));
+    hash_str(head).rotate_left(17) ^ hash_str(tail)
+}
+
+/// The stream-key head of layer `index`: its name when it has one (so inserting, removing or
+/// reordering other layers never changes its random draws), else its index.
+fn layer_head(layer: &Layer, index: usize) -> String {
+    if layer.name.is_empty() {
+        format!("layers[{index}]")
+    } else {
+        format!("layers{{{}}}", layer.name)
+    }
+}
+
+/// Re-keys every random number in a layer (parsed under `layers[index]`) to [`layer_head`].
+fn key_layer(l: &mut Layer, index: usize) {
+    let head = layer_head(l, index);
+    let delta = hash_str(&format!("layers[{index}]")).rotate_left(17) ^ hash_str(&head).rotate_left(17);
+    l.key = hash_str(&head);
+    let mut f = |n: &mut Num| {
+        if n.key != 0 {
+            n.key ^= delta;
+        }
+    };
+    let param = |p: &mut Param, f: &mut dyn FnMut(&mut Num)| match p {
+        Param::Const(n) => f(n),
+        Param::Points { points, .. } => points.iter_mut().for_each(|(t, v)| {
+            f(t);
+            f(v);
+        }),
+    };
+    for n in [&mut l.at, &mut l.gain_db, &mut l.pan] {
+        f(n);
+    }
+    if let Some(n) = &mut l.length {
+        f(n);
+    }
+    let s = &mut l.source;
+    if let Some(p) = &mut s.freq {
+        param(p, &mut f);
+    }
+    param(&mut s.duty, &mut f);
+    f(&mut s.phase);
+    for p in &mut s.partials {
+        f(&mut p.ratio);
+        f(&mut p.gain);
+        if let Some(d) = &mut p.decay {
+            f(d);
+        }
+    }
+    if let Some(fm) = &mut s.fm {
+        f(&mut fm.ratio);
+        param(&mut fm.index, &mut f);
+    }
+    if let Some(u) = &mut s.unison {
+        f(&mut u.cents);
+    }
+    match &mut l.env {
+        Some(Env::Adsr { attack, hold, decay, sustain, release, .. }) => {
+            for n in [attack, hold, decay, sustain, release] {
+                f(n);
+            }
+        }
+        Some(Env::Points(points)) => points.iter_mut().for_each(|(t, v)| {
+            f(t);
+            f(v);
+        }),
+        None => {}
+    }
+    if let Some(v) = &mut l.vibrato {
+        for n in [&mut v.rate, &mut v.depth, &mut v.delay] {
+            f(n);
+        }
+    }
+    if let Some(a) = &mut l.arp {
+        f(&mut a.rate);
+    }
+    for flt in &mut l.filters {
+        param(&mut flt.cutoff, &mut f);
+        f(&mut flt.q);
+    }
+    for fx in &mut l.fx {
+        match fx {
+            Fx::Distort { drive, mix } => [drive, mix].into_iter().for_each(&mut f),
+            Fx::Bitcrush { bits, rate } => [bits, rate].into_iter().for_each(&mut f),
+            Fx::Delay { time, feedback, mix, damp } => [time, feedback, mix, damp].into_iter().for_each(&mut f),
+            Fx::Reverb { room, damp, mix, width } => [room, damp, mix, width].into_iter().for_each(&mut f),
+            Fx::Tremolo { rate, depth } => [rate, depth].into_iter().for_each(&mut f),
+        }
+    }
+    if let Some(r) = &mut l.repeat {
+        for n in [&mut r.interval, &mut r.jitter, &mut r.gain_db_step, &mut r.pitch_jitter] {
+            f(n);
+        }
+    }
+}
+
 fn plain_number(j: &Json, path: &str) -> Result<f64> {
     j.as_f64().ok_or_else(|| wrong(path, "a number"))
 }
@@ -301,7 +404,7 @@ pub(crate) fn num(j: &Json, path: &str, lo: f64, hi: f64) -> Result<Num> {
     if a0 > a1 {
         return Err(AudioError::at(ErrorCode::OutOfRange, rp, "rand range must be [lo, hi] with lo <= hi").with_numbers(a0, a1));
     }
-    Ok(Num { lo: a0, hi: a1, key: hash_str(path) })
+    Ok(Num { lo: a0, hi: a1, key: path_key(path) })
 }
 
 fn points(j: &Json, path: &str, lo: f64, hi: f64, positive: bool) -> Result<Vec<(Num, Num)>> {
@@ -552,7 +655,7 @@ fn layer(j: &Json, path: &str) -> Result<Layer> {
         filters,
         fx: fx_list(&cx, "fx", MAX_FX)?,
         repeat,
-        key: hash_str(path),
+        key: 0,
     })
 }
 
@@ -618,7 +721,14 @@ impl Recipe {
         if larr.is_empty() || larr.len() > MAX_LAYERS {
             return Err(AudioError::at(ErrorCode::Limit, "layers", "need 1 ..= 32 layers").with_numbers(larr.len() as f64, MAX_LAYERS as f64));
         }
-        let layers = larr.iter().enumerate().map(|(i, l)| layer(l, &format!("layers[{i}]"))).collect::<Result<Vec<_>>>()?;
+        let mut layers = larr.iter().enumerate().map(|(i, l)| layer(l, &format!("layers[{i}]"))).collect::<Result<Vec<_>>>()?;
+        for i in 0..layers.len() {
+            let name = layers[i].name.clone();
+            if !name.is_empty() && layers[..i].iter().any(|l| l.name == name) {
+                return Err(AudioError::at(ErrorCode::Duplicate, format!("layers[{i}].name"), format!("duplicate layer name `{name}` (names key the layer's random draws)")));
+            }
+            key_layer(&mut layers[i], i);
+        }
         let recipe = Recipe {
             name: name.to_string(),
             bus,
@@ -637,24 +747,91 @@ impl Recipe {
         };
         let work = recipe.work_estimate(48_000);
         if work > MAX_WORK {
-            return Err(AudioError::at(ErrorCode::Limit, "layers", "recipe is too expensive to render (layers × repeats × length × partials)").with_numbers(work, MAX_WORK));
+            return Err(AudioError::at(ErrorCode::Limit, "layers", "recipe is too expensive to render (estimated cost of layers × repeats × length × partials × fx)").with_numbers(work, MAX_WORK));
         }
         Ok(recipe)
     }
 
-    /// Upper bound on synthesis work at `rate` (sample-operations).
+    /// Estimated synthesis cost at `rate`, in cost units (≈ ns of one modern core, release
+    /// build). Each layer instance is charged per sample for what it actually runs (a sine
+    /// partial ≈ one `sin`, a reverb ≈ 12 delay lines…) over the frames it can actually sound
+    /// (its gate + release, or to the end when it has a delay/reverb tail).
     pub fn work_estimate(&self, rate: u32) -> f64 {
-        let frames = (self.duration + self.loop_crossfade.unwrap_or(0.0)) * rate as f64;
-        self.layers
+        let rate = rate as f64;
+        let total = self.duration + self.loop_crossfade.unwrap_or(0.0);
+        let layers: f64 = self
+            .layers
             .iter()
             .map(|l| {
                 let count = l.repeat.as_ref().map_or(1, |r| r.count) as f64;
-                let partials = l.source.partials.len().max(1) as f64;
-                let unison = l.source.unison.as_ref().map_or(1, |u| u.voices) as f64;
-                let fx = 1.0 + l.fx.len() as f64 + l.filters.len() as f64;
-                count * frames * (partials * unison + fx)
+                let remaining = (total - l.at.lo).max(0.0);
+                let tail = l.fx.iter().any(Fx::has_tail);
+                let gate = l.length.map_or(remaining, |n| n.hi);
+                let sounding = match &l.env {
+                    _ if tail => remaining,
+                    None => gate,
+                    Some(Env::Adsr { attack, hold, decay, sustain, release, .. }) => {
+                        if sustain.hi == 0.0 {
+                            gate.min(attack.hi + hold.hi + decay.hi) + release.hi
+                        } else {
+                            gate + release.hi
+                        }
+                    }
+                    Some(Env::Points(p)) => match p.last() {
+                        Some((t, v)) if v.hi == 0.0 => t.hi,
+                        _ => remaining,
+                    },
+                };
+                count * sounding.min(remaining) * rate * layer_cost(l)
             })
-            .sum::<f64>()
-            + frames * self.fx.len() as f64 * 10.0
+            .sum();
+        let master: f64 = self.fx.iter().map(fx_cost).sum::<f64>() * self.channels as f64 * total * rate;
+        layers + master
     }
+}
+
+/// Per-sample cost units, calibrated in a release build on the reviewer's worst-case probes
+/// (reverb stacks, 32 partials × 8 unison voices, FM, saw stacks with every effect): 1 unit ≈ 1 ns.
+mod cost {
+    pub const BASE: f64 = 6.0;
+    /// One `dmath` sin/cos/exp/exp2 call.
+    pub const SIN: f64 = 25.0;
+    pub const BLEP: f64 = 8.0;
+    pub const NOISE: f64 = 3.0;
+    pub const EXP: f64 = 25.0;
+    /// Includes a `tan` every 16 samples when the cutoff moves.
+    pub const SVF: f64 = 5.0;
+    /// 8 combs + 4 all-passes.
+    pub const REVERB: f64 = 34.0;
+    pub const DELAY: f64 = 3.0;
+    pub const DISTORT: f64 = 3.0;
+    pub const BITCRUSH: f64 = 6.0;
+    pub const TREMOLO: f64 = 25.0;
+}
+
+fn fx_cost(f: &Fx) -> f64 {
+    match f {
+        Fx::Reverb { .. } => cost::REVERB,
+        Fx::Delay { .. } => cost::DELAY,
+        Fx::Distort { .. } => cost::DISTORT,
+        Fx::Bitcrush { .. } => cost::BITCRUSH,
+        Fx::Tremolo { .. } => cost::TREMOLO,
+    }
+}
+
+fn layer_cost(l: &Layer) -> f64 {
+    let s = &l.source;
+    let voices = s.unison.as_ref().map_or(1, |u| u.voices) as f64;
+    let osc = match s.wave {
+        Wave::Sine => voices * s.partials.len().max(1) as f64 * cost::SIN + if s.fm.is_some() { cost::SIN } else { 0.0 },
+        Wave::Noise(_) => cost::NOISE,
+        _ => voices * cost::BLEP,
+    };
+    let pitch_mod = if l.vibrato.is_some() || l.arp.is_some() { cost::EXP + cost::SIN } else { 0.0 };
+    let env = match &l.env {
+        Some(Env::Adsr { exp: true, .. }) => cost::EXP,
+        _ => 0.0,
+    };
+    let filters = l.filters.len() as f64 * cost::SVF;
+    cost::BASE + osc + pitch_mod + env + filters + l.fx.iter().map(fx_cost).sum::<f64>()
 }

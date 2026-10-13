@@ -37,8 +37,9 @@ pub(crate) struct Options {
 fn hr_error(call: &str, hr: HRESULT) -> AudioError {
     let u = hr as u32;
     let code = match u {
-        E_NOTFOUND => ErrorCode::NoDevice,
-        AUDCLNT_E_DEVICE_INVALIDATED | AUDCLNT_E_SERVICE_NOT_RUNNING | AUDCLNT_E_ENDPOINT_CREATE_FAILED | AUDCLNT_E_DEVICE_IN_USE => ErrorCode::DeviceLost,
+        // No endpoint, or the Windows audio service is off: either way there is no device to use.
+        E_NOTFOUND | AUDCLNT_E_SERVICE_NOT_RUNNING => ErrorCode::NoDevice,
+        AUDCLNT_E_DEVICE_INVALIDATED | AUDCLNT_E_ENDPOINT_CREATE_FAILED | AUDCLNT_E_DEVICE_IN_USE => ErrorCode::DeviceLost,
         _ => ErrorCode::Os,
     };
     AudioError::at(code, call, format!("{call} failed")).with_hresult(u)
@@ -506,6 +507,7 @@ pub(crate) fn start(mixer: Mixer, options: Options) -> Result<ThreadBackend> {
 
 fn thread_main(mut mixer: Mixer, stop: &AtomicBool, options: Options, tx: std::sync::mpsc::SyncSender<Result<()>>) {
     let stats = mixer.stats().clone();
+    let _guard = super::PanicGuard(stats.clone());
     let mut tx = Some(tx);
     let report = |tx: &mut Option<std::sync::mpsc::SyncSender<Result<()>>>, r: Result<()>| {
         if let Some(t) = tx.take() {

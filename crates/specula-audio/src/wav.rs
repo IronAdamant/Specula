@@ -191,13 +191,21 @@ fn sanitize(v: f32) -> f32 {
 
 /// Encodes interleaved `samples` as a WAV file. PCM output is clamped to -1..1, scaled by 2^(bits-1)
 /// (the same scale the decoder divides by, so a round trip only adds rounding error) and rounded
-/// (no dither, so it is deterministic).
-pub fn encode(samples: &[f32], channels: u16, rate: u32, format: WavFormat) -> Vec<u8> {
-    let channels = channels.max(1);
+/// (no dither, so it is deterministic). Fails on 0 or more than [`MAX_CHANNELS`] channels, a rate
+/// outside 1 ..= 1 000 000 Hz, or more data than a RIFF file can hold (4 GiB).
+pub fn encode(samples: &[f32], channels: u16, rate: u32, format: WavFormat) -> Result<Vec<u8>> {
+    if channels == 0 || channels > MAX_CHANNELS {
+        return Err(AudioError::new(ErrorCode::WavBadFormat, "WAV channel count must be 1 ..= 32").with_numbers(channels as f64, MAX_CHANNELS as f64));
+    }
+    if !(1..=1_000_000).contains(&rate) {
+        return Err(AudioError::new(ErrorCode::WavBadFormat, "WAV sample rate must be 1 ..= 1000000 Hz").with_numbers(rate as f64, 1_000_000.0));
+    }
     let bits = format.bits();
     let bytes = bits as usize / 8;
     let frames = samples.len() / channels as usize;
-    let data_len = frames * channels as usize * bytes;
+    let block = channels as usize * bytes;
+    let too_big = || AudioError::new(ErrorCode::Limit, "too much audio for one WAV file (4 GiB RIFF limit)").with_numbers(samples.len() as f64, u32::MAX as f64);
+    let data_len = frames.checked_mul(block).filter(|&d| d <= u32::MAX as usize - 44).ok_or_else(too_big)?;
     let float = format.is_float();
     let mut out = Vec::with_capacity(44 + data_len + 1);
     out.extend_from_slice(b"RIFF");
@@ -208,8 +216,9 @@ pub fn encode(samples: &[f32], channels: u16, rate: u32, format: WavFormat) -> V
     out.extend_from_slice(&(if float { 3u16 } else { 1u16 }).to_le_bytes());
     out.extend_from_slice(&channels.to_le_bytes());
     out.extend_from_slice(&rate.to_le_bytes());
-    out.extend_from_slice(&(rate * channels as u32 * bytes as u32).to_le_bytes());
-    out.extend_from_slice(&(channels * bytes as u16).to_le_bytes());
+    // Both fit: rate ≤ 10^6 and block ≤ 32 × 8 bytes.
+    out.extend_from_slice(&(rate * block as u32).to_le_bytes());
+    out.extend_from_slice(&(block as u16).to_le_bytes());
     out.extend_from_slice(&bits.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&(data_len as u32).to_le_bytes());
@@ -227,7 +236,7 @@ pub fn encode(samples: &[f32], channels: u16, rate: u32, format: WavFormat) -> V
     if data_len & 1 == 1 {
         out.push(0);
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -250,7 +259,7 @@ mod tests {
             (WavFormat::Float32, 0.0),
             (WavFormat::Float64, 0.0),
         ] {
-            let bytes = encode(&s, 2, 44_100, fmt);
+            let bytes = encode(&s, 2, 44_100, fmt).unwrap();
             let w = decode(&bytes).unwrap();
             assert_eq!((w.rate, w.channels, w.format, w.truncated), (44_100, 2, fmt, false));
             assert_eq!(w.samples.len(), 1000);
@@ -260,7 +269,7 @@ mod tests {
         }
         // Float32 is bit exact, including values beyond ±1.
         let wild = vec![1.5f32, -2.25, 0.1, f32::MIN_POSITIVE];
-        assert_eq!(decode(&encode(&wild, 1, 48_000, WavFormat::Float32)).unwrap().samples, wild);
+        assert_eq!(decode(&encode(&wild, 1, 48_000, WavFormat::Float32).unwrap()).unwrap().samples, wild);
     }
 
     #[test]
@@ -269,7 +278,7 @@ mod tests {
         let mut b = Vec::new();
         b.extend_from_slice(b"RIFF\0\0\0\0WAVE");
         b.extend_from_slice(b"LIST\x03\0\0\0abc\0");
-        let body = encode(&[0.0, 0.5, -0.5], 1, 8000, WavFormat::Pcm8);
+        let body = encode(&[0.0, 0.5, -0.5], 1, 8000, WavFormat::Pcm8).unwrap();
         b.extend_from_slice(&body[12..]);
         let w = decode(&b).unwrap();
         assert_eq!(w.samples.len(), 3);
@@ -306,7 +315,7 @@ mod tests {
         assert_eq!(decode(b"").unwrap_err().code, ErrorCode::WavNotWave);
         assert_eq!(decode(b"RIFF\0\0\0\0WAVX").unwrap_err().code, ErrorCode::WavNotWave);
         assert_eq!(decode(b"RIFF\0\0\0\0WAVE").unwrap_err().code, ErrorCode::WavTruncated);
-        let good = encode(&ramp(10), 1, 8000, WavFormat::Pcm16);
+        let good = encode(&ramp(10), 1, 8000, WavFormat::Pcm16).unwrap();
         // Data cut short: whole frames kept, flagged.
         let w = decode(&good[..good.len() - 3]).unwrap();
         assert!(w.truncated);
@@ -328,6 +337,17 @@ mod tests {
         assert_eq!(decode(&good[..36]).unwrap_err().code, ErrorCode::WavTruncated);
     }
 
+    #[test]
+    fn encode_rejects_impossible_headers() {
+        assert_eq!(encode(&[0.0; 4], 0, 48_000, WavFormat::Pcm16).unwrap_err().code, ErrorCode::WavBadFormat);
+        assert_eq!(encode(&[0.0; 4], 33, 48_000, WavFormat::Pcm16).unwrap_err().code, ErrorCode::WavBadFormat);
+        assert_eq!(encode(&[0.0; 4], 1, 0, WavFormat::Pcm16).unwrap_err().code, ErrorCode::WavBadFormat);
+        assert_eq!(encode(&[0.0; 4], 1, u32::MAX, WavFormat::Float64).unwrap_err().code, ErrorCode::WavBadFormat);
+        // The largest legal header doesn't overflow: 32 channels of f64 at 1 MHz.
+        let w = decode(&encode(&[0.25; 64], 32, 1_000_000, WavFormat::Float64).unwrap()).unwrap();
+        assert_eq!((w.channels, w.rate, w.samples.len()), (32, 1_000_000, 64));
+    }
+
     /// Mutation fuzz: random byte flips, truncations, inserted garbage and size-field lies on
     /// valid files of every format must never panic, and every success must be self-consistent.
     #[test]
@@ -336,7 +356,7 @@ mod tests {
         let seeds: Vec<Vec<u8>> = [WavFormat::Pcm8, WavFormat::Pcm16, WavFormat::Pcm24, WavFormat::Pcm32, WavFormat::Float32, WavFormat::Float64]
             .iter()
             .enumerate()
-            .map(|(i, &f)| encode(&ramp(37 + i), 1 + (i % 3) as u16, 22_050, f))
+            .map(|(i, &f)| encode(&ramp(37 + i), 1 + (i % 3) as u16, 22_050, f).unwrap())
             .collect();
         for iter in 0..20_000 {
             let mut b = seeds[iter % seeds.len()].clone();

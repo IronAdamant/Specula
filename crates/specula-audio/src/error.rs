@@ -18,6 +18,8 @@ pub enum ErrorCode {
     OutOfRange,
     /// An unknown name (waveform, filter type, bus…).
     UnknownName,
+    /// A field or layer name that appears twice.
+    Duplicate,
     /// A safety limit was exceeded (render length, layers, repeats, file size).
     Limit,
     /// The bytes are not a RIFF/WAVE file.
@@ -57,6 +59,7 @@ impl ErrorCode {
             ErrorCode::WrongType => "wrong_type",
             ErrorCode::OutOfRange => "out_of_range",
             ErrorCode::UnknownName => "unknown_name",
+            ErrorCode::Duplicate => "duplicate",
             ErrorCode::Limit => "limit",
             ErrorCode::WavNotWave => "wav_not_wave",
             ErrorCode::WavBadFormat => "wav_bad_format",

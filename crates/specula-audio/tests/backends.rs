@@ -73,7 +73,8 @@ fn auto_backend_always_starts_and_stops_cleanly() {
 fn live_device_plays_silence_then_tone() {
     let audio = match Audio::start(AudioConfig { backend: Backend::Device, ..Default::default() }) {
         Ok(a) => a,
-        Err(e) if matches!(e.code, ErrorCode::NoDevice | ErrorCode::Unsupported | ErrorCode::DeviceLost | ErrorCode::Os | ErrorCode::DeviceFormat) => {
+        // Only "there is no device" skips; any other failure (COM, format, a lost device) is a bug to see.
+        Err(e) if matches!(e.code, ErrorCode::NoDevice | ErrorCode::Unsupported) => {
             println!("SKIP live_device_plays_silence_then_tone: no usable audio device ({e})");
             return;
         }

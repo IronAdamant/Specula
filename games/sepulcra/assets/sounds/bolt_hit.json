@@ -8,7 +8,7 @@
   "loudness": -21,
   "vary": { "pitch": [-2, 2], "gain_db": [-2, 0] },
   "layers": [
-    { "name": "thump",
+    { "name": "thump", "gain_db": -2,
       "source": { "wave": "sine", "freq": { "points": [[0, 220], [0.08, 60]], "curve": "exp" } },
       "env": { "attack": 0.001, "decay": 0.1, "sustain": 0, "release": 0.02 } },
     { "name": "crack", "gain_db": -6,

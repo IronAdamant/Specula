@@ -58,9 +58,9 @@ fn render_is_deterministic_and_pinned() {
     assert_eq!(r44.hash, PINNED_44K_HASH, "44.1 kHz hash changed: {:#018x}", r44.hash);
 }
 
-const PINNED_DETERMINISM_HASH: u64 = 0xbef0_6d5f_dce6_d907;
-const PINNED_VARIATION1_HASH: u64 = 0x668a_a4b9_942a_1f0e;
-const PINNED_44K_HASH: u64 = 0xafd0_c54a_5aeb_604b;
+const PINNED_DETERMINISM_HASH: u64 = 0x1903_a86b_e780_5ab2;
+const PINNED_VARIATION1_HASH: u64 = 0xc16f_8b80_20bc_28fd;
+const PINNED_44K_HASH: u64 = 0x8fd0_ee94_6775_0423;
 
 #[test]
 fn adsr_envelope_shape() {
@@ -279,7 +279,7 @@ fn validation_errors_have_paths_and_codes() {
         (one(r#"{"source": {"wave": "sine", "freq": 100}, "fx": [{"type": "chorus"}]}"#, 1.0), ErrorCode::UnknownName, "layers[0].fx[0].type"),
         (one(r#"{"source": {"wave": "sine", "freq": {"points": [[0.5, 100], [0.1, 200]]}}}"#, 1.0), ErrorCode::OutOfRange, "layers[0].source.freq.points[1][0]"),
         (one(r#"{"source": {"wave": "sine", "freq": {"points": [[0, 0], [1, 200]], "curve": "exp"}}}"#, 1.0), ErrorCode::OutOfRange, "layers[0].source.freq.points[0][1]"),
-        (one(r#"{"source": {"wave": "sine", "freq": 100}, "gain_db": 1, "gain_db": 2}"#, 1.0), ErrorCode::UnknownField, "layers[0].gain_db"),
+        (one(r#"{"source": {"wave": "sine", "freq": 100}, "gain_db": 1, "gain_db": 2}"#, 1.0), ErrorCode::Duplicate, "layers[0].gain_db"),
         (one(r#"{"source": {"wave": "sine", "freq": 100}, "repeat": {"count": 9999}}"#, 1.0), ErrorCode::OutOfRange, "layers[0].repeat.count"),
         (one(r#"{"source": {"wave": "sine", "freq": "loud"}}"#, 1.0), ErrorCode::WrongType, "layers[0].source.freq"),
     ];
@@ -301,4 +301,63 @@ fn expensive_recipes_are_refused() {
     let e = err(&format!(r#"{{"sound": 1, "name": "t", "duration": 60, "layers": [{layers}]}}"#));
     assert_eq!(e.code, ErrorCode::Limit);
     assert!(e.measured.unwrap() > e.limit.unwrap());
+}
+
+/// Review probes `reverb` / `master` / `partials`: recipes whose render would take seconds are
+/// refused at parse time; the limit doesn't grow with the render rate.
+#[test]
+fn review_cost_probes_are_refused() {
+    let filt = r#"{"type":"lowpass","cutoff":2000}"#;
+    let reverb = r#"{"type":"reverb"}"#;
+    let layer = format!(r#"{{"source":{{"wave":"noise"}},"filters":[{f},{f},{f},{f}],"fx":[{r},{r},{r},{r},{r},{r},{r},{r}]}}"#, f = filt, r = reverb);
+    let nine = format!(r#"{{"sound":1,"name":"bomb","duration":60,"layers":[{}]}}"#, [layer.as_str(); 9].join(","));
+    let master = r#"{"sound":1,"name":"bomb","duration":60,"channels":2,"layers":[{"source":{"wave":"noise"}}],
+        "fx":[{"type":"reverb"},{"type":"reverb"},{"type":"reverb"},{"type":"reverb"},{"type":"reverb"},{"type":"reverb"},{"type":"reverb"},{"type":"reverb"}]}"#
+        .to_string();
+    let partials: Vec<String> = (0..32).map(|i| format!("[{},1]", 1.0 + i as f64 * 0.01)).collect();
+    let partials = format!(r#"{{"sound":1,"name":"bomb","duration":30,"layers":[{{"source":{{"wave":"sine","freq":100,"unison":{{"voices":8}},"partials":[{}]}}}}]}}"#, partials.join(","));
+    for text in [nine, master, partials] {
+        let e = err(&text);
+        assert_eq!(e.code, ErrorCode::Limit, "{e}");
+        assert!(e.measured.unwrap() > e.limit.unwrap());
+    }
+    // One reverb-stack layer for 10 s parses at 48 kHz but is refused at 192 kHz (fixed limit).
+    let one = Recipe::parse(&format!(r#"{{"sound":1,"name":"ok","duration":10,"layers":[{layer}]}}"#)).unwrap();
+    assert!(one.work_estimate(48_000) <= recipe::MAX_WORK);
+    assert_eq!(render(&one, &RenderOptions { rate: 192_000, variation: 0 }).unwrap_err().code, ErrorCode::Limit);
+}
+
+/// Instances with `sustain: 0` stop after their decay (they are exactly silent from there), so
+/// long repeats of short hits don't cost the whole sound length each.
+#[test]
+fn zero_sustain_instances_end_after_their_decay() {
+    let text = one(r#"{"source": {"wave": "sine", "freq": 500}, "env": {"attack": 0.001, "decay": 0.05, "sustain": 0}}"#, 2.0);
+    let r = Recipe::parse(&text).unwrap();
+    // Charged for ~0.06 s, not 2 s.
+    assert!(r.work_estimate(48_000) < 0.1 * 48_000.0 * 100.0, "{}", r.work_estimate(48_000));
+    let out = render(&r, &RenderOptions::default()).unwrap();
+    assert!(out.samples[(0.06 * 48_000.0) as usize..].iter().all(|&s| s == 0.0));
+}
+
+/// Named layers keep their random draws when other layers are inserted before them; duplicate
+/// names are refused.
+#[test]
+fn named_layers_keep_their_draws_when_layers_are_inserted() {
+    let a = r#"{"name": "a", "source": {"wave": "sine", "freq": {"rand": [100, 1000]}}, "gain_db": {"rand": [-12, 0]}}"#;
+    let filler = r#"{"source": {"wave": "noise"}, "gain_db": {"rand": [-6, 0]}}"#;
+    let solo = Recipe::parse(&format!(r#"{{"sound":1,"name":"t","duration":0.1,"layers":[{a}]}}"#)).unwrap();
+    let shifted = Recipe::parse(&format!(r#"{{"sound":1,"name":"t","duration":0.1,"layers":[{filler},{filler},{a}]}}"#)).unwrap();
+    let cx_keys = |l: &recipe::Layer| match &l.source.freq {
+        Some(recipe::Param::Const(n)) => (n.key, l.gain_db.key, l.key),
+        _ => unreachable!(),
+    };
+    assert_eq!(cx_keys(&solo.layers[0]), cx_keys(&shifted.layers[2]));
+    // Unnamed layers are keyed by index, so the two fillers differ.
+    assert_ne!(shifted.layers[0].gain_db.key, shifted.layers[1].gain_db.key);
+    // And the rendered layer is identical: same frequency and level.
+    let mut only_a = shifted.clone();
+    only_a.layers.drain(0..2);
+    assert_eq!(render(&solo, &RenderOptions::default()).unwrap().hash, render(&only_a, &RenderOptions::default()).unwrap().hash);
+    let e = err(&format!(r#"{{"sound":1,"name":"t","duration":0.1,"layers":[{a},{a}]}}"#));
+    assert_eq!((e.code, e.path.as_str()), (ErrorCode::Duplicate, "layers[1].name"));
 }

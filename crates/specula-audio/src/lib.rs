@@ -46,8 +46,11 @@
 //!   "fx": [ { "type": "reverb", "room": 0.4, "damp": 0.6, "mix": 0.15 } ] }
 //! ```
 //!
-//! - **Numbers**: any number may be `{"rand": [lo, hi]}`, drawn from a stream keyed by its path
-//!   (so editing one field never reshuffles another), per variation and per repeat.
+//! - **Numbers**: any number may be `{"rand": [lo, hi]}`, redrawn per variation and per repeat
+//!   from a stream keyed by its path. A **named** layer is keyed by its name, so adding,
+//!   removing or reordering layers leaves named layers' draws alone (unnamed layers are keyed by
+//!   index; within a layer, array entries such as `filters[1]` are keyed by index). Editing a
+//!   value never changes other fields' draws. Layer names must be unique.
 //! - **Params over time** (`freq`, `cutoff`, `duty`, `fm.index`): a number or
 //!   `{"points": [[t, v], ...], "curve": "linear" | "exp"}` with t in seconds from the layer start.
 //! - **Sources**: `wave` = `sine` (optional `partials: [[ratio, gain, decay_s?], ...]` and
@@ -179,49 +182,48 @@ impl Audio {
 
     /// Plays `sound`; returns its voice id.
     pub fn play(&self, sound: &Sound, params: PlayParams) -> Result<VoiceId> {
-        self.check()?;
-        lock(&self.handle).play(sound, params)
+        self.cmd(|h| h.play(sound, params))
     }
 
     /// Stops a voice, fading out over `fade_s` seconds (a few ms minimum, to avoid clicks).
     pub fn stop(&self, id: VoiceId, fade_s: f32) -> Result<()> {
-        lock(&self.handle).stop(id, fade_s)
+        self.cmd(|h| h.stop(id, fade_s))
     }
 
     /// Stops every voice on `bus` (or everywhere with `None`).
     pub fn stop_all(&self, bus: Option<Bus>, fade_s: f32) -> Result<()> {
-        lock(&self.handle).stop_all(bus, fade_s)
+        self.cmd(|h| h.stop_all(bus, fade_s))
     }
 
     pub fn set_gain(&self, id: VoiceId, gain: f32, fade_s: f32) -> Result<()> {
-        lock(&self.handle).set_gain(id, gain, fade_s)
+        self.cmd(|h| h.set_gain(id, gain, fade_s))
     }
 
     pub fn set_pitch(&self, id: VoiceId, pitch: f32) -> Result<()> {
-        lock(&self.handle).set_pitch(id, pitch)
+        self.cmd(|h| h.set_pitch(id, pitch))
     }
 
     pub fn set_pan(&self, id: VoiceId, pan: f32) -> Result<()> {
-        lock(&self.handle).set_pan(id, pan)
+        self.cmd(|h| h.set_pan(id, pan))
     }
 
     /// Moves a spatial voice.
     pub fn set_position(&self, id: VoiceId, position: [f32; 3]) -> Result<()> {
-        lock(&self.handle).set_position(id, position)
+        self.cmd(|h| h.set_position(id, position))
     }
 
     pub fn set_listener(&self, listener: Listener) -> Result<()> {
-        lock(&self.handle).set_listener(listener)
+        self.cmd(|h| h.set_listener(listener))
     }
 
     /// Sets a bus volume (linear), ramped over `fade_s`.
     pub fn set_bus_gain(&self, bus: Bus, gain: f32, fade_s: f32) -> Result<()> {
-        lock(&self.handle).set_bus_gain(bus, gain, fade_s)
+        self.cmd(|h| h.set_bus_gain(bus, gain, fade_s))
     }
 
     /// Installs or clears duck rule `slot` (0..4).
     pub fn set_duck(&self, slot: usize, rule: Option<DuckRule>) -> Result<()> {
-        lock(&self.handle).set_duck(slot, rule)
+        self.cmd(|h| h.set_duck(slot, rule))
     }
 
     /// Voices that ended since the last call.
@@ -244,7 +246,16 @@ impl Audio {
         }
     }
 
+    /// Runs a command on the handle, failing fast if the audio thread is gone.
+    fn cmd<T>(&self, f: impl FnOnce(&mut MixerHandle) -> Result<T>) -> Result<T> {
+        self.check()?;
+        f(&mut lock(&self.handle))
+    }
+
     fn check(&self) -> Result<()> {
+        if self.stats.thread_panicked.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(AudioError::new(ErrorCode::ThreadGone, "the audio thread panicked; start a new Audio to recover"));
+        }
         if let Some(Runner::Thread(t)) = &self.runner {
             if t.join.as_ref().is_some_and(|j| j.is_finished()) {
                 return Err(AudioError::new(ErrorCode::ThreadGone, "the audio thread has stopped"));

@@ -7,7 +7,7 @@
 //!
 //! Defaults: `games/sepulcra/assets/sounds` → `target/sound-sheet/` (`<name>.wav`,
 //! `sound_sheet.png`, `report.json`). Exits non-zero if any recipe fails, clips, or misses its
-//! loudness target by more than 0.5 LU.
+//! loudness target by more than 0.1 LU.
 
 use specula_audio::{analysis, synth, wav, RenderOptions};
 use specula_core::Json;
@@ -53,14 +53,14 @@ fn main() {
         };
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         let m = r.metrics();
-        let bytes = wav::encode(&r.samples, r.channels, r.rate, wav::WavFormat::Pcm16);
+        let bytes = wav::encode(&r.samples, r.channels, r.rate, wav::WavFormat::Pcm16).expect("encode wav");
         std::fs::write(out.join(format!("{}.wav", r.name)), &bytes).expect("write wav");
         let back = wav::decode(&bytes).expect("decode our own wav");
         assert_eq!(back.samples.len(), r.samples.len());
 
         let target = recipe.loudness;
         let miss = target.map_or(0.0, |t| (m.lufs - t).abs());
-        let bad = m.clipped > 0 || miss > 0.5;
+        let bad = m.clipped > 0 || miss > 0.1;
         if bad {
             failures += 1;
         }
@@ -72,14 +72,14 @@ fn main() {
             m.peak_dbfs,
             m.rms_dbfs,
             m.lufs,
-            target.map_or("-".to_string(), |t| format!("{t:.0}")),
+            target.map_or("-".to_string(), |t| format!("{t:.1}")),
             m.centroid_hz,
             r.normalize_db,
             ms,
             if bad { "  <-- CHECK" } else { "" }
         );
         let mut title = format!("{} ({}{})", r.name, r.bus.name(), if r.looping { ", loop" } else { "" });
-        if r.ceiling_db < 0.0 {
+        if r.ceiling_db < -0.05 {
             title.push_str(&format!(" ceil {:.1}DB", r.ceiling_db));
         }
         panels.push(analysis::sound_panel(&title, &r.samples, r.channels as usize, r.rate, 460, &m));

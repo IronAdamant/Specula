@@ -5,7 +5,7 @@
   "bus": "sfx",
   "seed": 116,
   "duration": 3.4,
-  "loudness": -19,
+  "loudness": -19.5,
   "layers": [
     { "name": "crack", "gain_db": -10,
       "source": { "wave": "noise" },

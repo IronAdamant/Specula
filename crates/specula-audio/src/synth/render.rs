@@ -253,7 +253,9 @@ impl EnvEval {
     fn end(&self) -> Option<f64> {
         match self {
             EnvEval::Gate { gate } => Some(*gate),
-            EnvEval::Adsr { r, gate, .. } => Some(gate + r),
+            // With sustain 0 the level is exactly 0 from the end of the decay until the gate,
+            // and the release then starts from 0: the instance ends early.
+            &EnvEval::Adsr { a, h, d, s, r, gate, .. } => Some(if s == 0.0 && gate >= a + h + d { a + h + d } else { gate + r }),
             EnvEval::Points(c) => (c.last_value() == 0.0).then(|| c.last_time()),
         }
     }
@@ -666,7 +668,7 @@ pub fn render(recipe: &Recipe, opts: &RenderOptions) -> Result<Rendered> {
         return Err(AudioError::at(ErrorCode::OutOfRange, "rate", "render rate must be 8000 ..= 192000 Hz").with_numbers(opts.rate as f64, 192_000.0));
     }
     let work = recipe.work_estimate(opts.rate);
-    if work > MAX_WORK * (opts.rate as f64 / 48_000.0).max(1.0) {
+    if work > MAX_WORK {
         return Err(AudioError::at(ErrorCode::Limit, "layers", "recipe is too expensive to render at this rate").with_numbers(work, MAX_WORK));
     }
     let rate = opts.rate as f64;
@@ -703,7 +705,8 @@ pub fn render(recipe: &Recipe, opts: &RenderOptions) -> Result<Rendered> {
             let start = (start_s * rate).round() as usize;
             let gate = match &layer.length {
                 Some(l) => cx.v(l),
-                None => (recipe.duration - start_s).max(0.0),
+                // To the end of the render, including a loop's crossfade tail (else loops dip at the seam).
+                None => (frames as f64 / rate - start_s).max(0.0),
             };
             let gain = dsp::db_to_gain(gain_db) as f32;
             render_instance(layer, &cx, recipe, rate, start, gate, gain, pitch, &mut buf);

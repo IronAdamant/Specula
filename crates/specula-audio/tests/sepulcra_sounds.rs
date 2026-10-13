@@ -38,7 +38,7 @@ fn every_recipe_renders_levelled_without_clipping() {
         assert_eq!(m.clipped, 0, "{file} clips");
         assert!(m.peak_dbfs <= recipe.peak_ceiling_db + 0.01, "{file}: peak {}", m.peak_dbfs);
         let target = recipe.loudness.unwrap_or_else(|| panic!("{file}: every set sound declares a loudness target"));
-        assert!((m.lufs - target).abs() <= 0.5, "{file}: {:.2} LUFS vs target {target}", m.lufs);
+        assert!((m.lufs - target).abs() <= 0.1, "{file}: {:.2} LUFS vs target {target}", m.lufs);
         assert!(m.dc_offset.abs() < 0.01, "{file}: DC offset {}", m.dc_offset);
         if r.looping {
             // Loops wrap without a jump bigger than the sound's own largest step.

@@ -6,6 +6,10 @@
 //! - **typical**: the same, but sounds rendered at the device rate and played at pitch 1 (how
 //!   synthesised sets are used), so no resampling.
 //!
+//! The pass/fail gate is the **median** (p50) block: tail latencies (p99, max) depend on what
+//! else the machine is doing, so they are printed with the system CPU load measured during the
+//! run, not gated on.
+//!
 //! ```text
 //! cargo run --release -p specula-audio --example mix_bench
 //! ```
@@ -15,6 +19,7 @@ use specula_audio::{Bus, DuckRule, Listener, PlayParams, Sound, Spatial};
 use std::time::Instant;
 
 fn run(name: &str, src_rate: u32, pitched: bool) -> f64 {
+    let load0 = system_times();
     let rate = 48_000u32;
     let (mut h, mut m) = Mixer::new(MixerConfig { rate, max_voices: 64, command_capacity: 1024 });
     let n = src_rate as usize;
@@ -57,14 +62,54 @@ fn run(name: &str, src_rate: u32, pitched: bool) -> f64 {
     times.sort_by(f64::total_cmp);
     let mean = times.iter().sum::<f64>() / times.len() as f64;
     let (min, p50, p99) = (times[0], times[times.len() / 2], times[times.len() * 99 / 100]);
-    println!("{name:<8} min {min:6.1} us  p50 {p50:6.1} us  mean {mean:6.1} us  p99 {p99:6.1} us  ({:.1}% of one core at p50)", p50 / 100.0);
-    p99
+    let load = match (load0, system_times()) {
+        (Some(a), Some(b)) => format!("{:.0}%", cpu_load(a, b) * 100.0),
+        _ => "n/a".into(),
+    };
+    println!("{name:<8} min {min:6.1} us  p50 {p50:6.1} us  mean {mean:6.1} us  p99 {p99:6.1} us  ({:.1}% of one core at p50; system CPU load {load})", p50 / 100.0);
+    p50
+}
+
+/// (idle, kernel, user) system times in 100 ns units. `kernel32` is owned by `specula-sys`, so
+/// `GetSystemTimes` is looked up at runtime rather than declared here.
+#[cfg(windows)]
+fn system_times() -> Option<(u64, u64, u64)> {
+    type GetSystemTimes = unsafe extern "system" fn(*mut u64, *mut u64, *mut u64) -> i32;
+    let lib = specula_sys::dynlib::Library::open("kernel32.dll").ok()?;
+    let f = lib.symbol("GetSystemTimes")?;
+    let (mut idle, mut kernel, mut user) = (0u64, 0u64, 0u64);
+    // SAFETY: `GetSystemTimes` has this signature; each FILETIME is 8 bytes (two little-endian
+    // u32 halves = one u64) and the pointers are valid for the call; `lib` outlives it.
+    let ok = unsafe { std::mem::transmute::<*mut std::ffi::c_void, GetSystemTimes>(f)(&mut idle, &mut kernel, &mut user) };
+    (ok != 0).then_some((idle, kernel, user))
+}
+
+#[cfg(not(windows))]
+fn system_times() -> Option<(u64, u64, u64)> {
+    None
+}
+
+/// Busy fraction of all cores between two samples (kernel time includes idle time).
+fn cpu_load(a: (u64, u64, u64), b: (u64, u64, u64)) -> f64 {
+    let idle = b.0.saturating_sub(a.0) as f64;
+    let total = (b.1.saturating_sub(a.1) + b.2.saturating_sub(a.2)) as f64;
+    if total > 0.0 {
+        1.0 - idle / total
+    } else {
+        0.0
+    }
 }
 
 fn main() {
     println!("64 voices, 48 kHz output, 10 ms (480-frame) blocks, 3D + distance low-pass + ducking:");
     let worst = run("worst", 44_100, true);
     let typical = run("typical", 48_000, false);
-    let ok = worst < 1000.0 && typical < 1000.0;
-    println!("budget: well under 1000 us per 10 ms block -> {}", if ok { "PASS" } else { "FAIL" });
+    let cores = std::thread::available_parallelism().map_or(0, |n| n.get());
+    println!("({cores} logical cores; load is for the whole system during each run)");
+    // Gate: the median block under half the 1 ms budget.
+    let ok = worst < 500.0 && typical < 500.0;
+    println!("budget: p50 under 500 us (half of 1 ms) per 10 ms block -> {}", if ok { "PASS" } else { "FAIL" });
+    if !ok {
+        std::process::exit(1);
+    }
 }
