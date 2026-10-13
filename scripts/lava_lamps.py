@@ -10,7 +10,6 @@ Usage: python scripts/lava_lamps.py [--port N] [--out DIR]
 Starts nothing: run the engine first (cargo run -p specula). Prints the capture paths.
 """
 import argparse
-import json
 import shutil
 import sys
 
@@ -39,9 +38,23 @@ def globe(scale=1.0):
     return [[r * scale, y] for r, y in pts]
 
 
+def clear_world(m):
+    """Deletes everything. Paged engines (world_query) delete top-level entities, which takes their
+    subtrees with them; older engines list everything in one call."""
+    if "world_query" not in m.tools():
+        for e in m.json("world_list")["entities"]:
+            m.call("world_delete", id=e["id"])
+        return
+    while True:
+        page = m.json("world_query", fields=["id", "path"], limit=500)
+        top = [e for e in page["items"] if e["path"].count("/") == 1]
+        if not top:
+            return
+        m.call("world_batch", ops=[{"op": "delete", "id": e["id"]} for e in top[:1000]])
+
+
 def build(m):
-    for e in json.loads(m.call("world_list")["content"][0]["text"])["entities"]:
-        m.call("world_delete", id=e["id"])
+    clear_world(m)
     m.call("world_env", sun_direction=[-0.3, 0.8, 0.5], sun_color="#9fb4ff", sun_intensity=0.06,
            ambient_color="#6d7a99", ambient_intensity=0.035, exposure=1.3, tonemap=True, background="#050608")
 
