@@ -2,7 +2,12 @@
 //! one programmatic resize and one minimize/restore, then exit. Prints any validation messages and
 //! exits non-zero on validation errors.
 //!
-//! `cargo run -p specula-gpu --example present -- [--adapter N] [--frames N]`
+//! `cargo run -p specula-gpu --example present -- [--adapter N] [--frames N] [--features]`
+//!
+//! `--features` adds a ground plane and turns on the M2 features in stages while the window is
+//! resized and minimized: shadows, sky and fog from the start, then bloom, then FXAA with bloom
+//! levels changed, plus a textured overlay panel; the window's post images are recreated on the
+//! way.
 //!
 //! The Win32 calls are declared here on purpose (raw-dylib `user32`): specula-gpu must not depend
 //! on specula-platform, and nothing this example links imports user32. `kernel32` comes from
@@ -20,7 +25,10 @@ fn main() {
 
 #[cfg(windows)]
 mod win {
-    use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, Gpu, GpuOptions, Severity, Validation, Vertex};
+    use specula_gpu::{
+        AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, OverlayKind, OverlayQuad, Severity, TextureFormat,
+        Validation, Vertex,
+    };
     use std::ffi::c_void;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -203,6 +211,7 @@ mod win {
             return 0;
         }
         let frames = arg("--frames").unwrap_or(120);
+        let features = std::env::args().any(|a| a == "--features");
         let adapter = arg("--adapter").map_or(AdapterPreference::HighPerformance, AdapterPreference::Index);
 
         let class_name = specula_sys::wide("SpeculaGpuPresentExample");
@@ -255,7 +264,7 @@ mod win {
         unsafe { GetClientRect(hwnd, &mut rect) };
         let (mut w, mut h) = ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32);
 
-        let code = match render_loop(hinstance, hwnd, adapter, frames, &mut w, &mut h) {
+        let code = match render_loop(hinstance, hwnd, adapter, frames, features, &mut w, &mut h) {
             Ok(errors) => {
                 if errors == 0 {
                     0
@@ -282,6 +291,7 @@ mod win {
         hwnd: Hwnd,
         adapter: AdapterPreference,
         frames: usize,
+        features: bool,
         w: &mut u32,
         h: &mut u32,
     ) -> Result<usize, specula_gpu::GpuError> {
@@ -289,6 +299,8 @@ mod win {
         println!("present: {} — validation {}", gpu.adapter().name, if gpu.validation_enabled() { "on" } else { "off" });
         let (vertices, indices) = cube();
         let mesh = gpu.upload_mesh(&vertices, &indices)?;
+        // A 2×2 checker texture for the overlay.
+        let texture = gpu.upload_texture(2, 2, TextureFormat::R8, &[255, 64, 64, 255])?;
         gpu.attach_window(hinstance, hwnd, *w, *h)?;
         println!("present: attached {w}x{h}");
         // Loading is done: every pipeline the loop needs must exist already.
@@ -327,8 +339,38 @@ mod win {
             let t = frame as f32 / 60.0;
             let aspect = if *h > 0 { *w as f32 / *h as f32 } else { 1.0 };
             let view_proj = mul(&perspective_vk(50f32.to_radians(), aspect, 0.1, 100.0), &view());
-            let draws = [DrawItem::new(mesh, rotation(t * 1.5, 0.35), [0.85, 0.55, 0.25, 1.0])];
-            gpu.present(&FrameDesc { view_proj, clear_color: [0.10, 0.20, 0.30, 1.0], draws: &draws, reverse_z: false, ..Default::default() })?;
+            let mut ground = [0.0f32; 16];
+            (ground[0], ground[5], ground[10], ground[13], ground[15]) = (6.0, 0.05, 6.0, -0.8, 1.0);
+            let mut glow = DrawItem::new(mesh, rotation(t * 1.5, 0.35), [0.85, 0.55, 0.25, 1.0]);
+            if features {
+                glow.surface.emissive = 1.5;
+            }
+            let all = [glow, DrawItem::new(mesh, ground, [0.4, 0.45, 0.5, 1.0])];
+            let draws = if features { &all[..] } else { &all[..1] };
+            let mut environment = Environment::default();
+            let mut overlay = Vec::new();
+            if features {
+                // Stages: shadows, sky and fog throughout; bloom from a quarter in; FXAA (and
+                // fewer bloom levels) from the resize on.
+                environment.shadow.enabled = true;
+                environment.sky.enabled = true;
+                environment.fog.enabled = true;
+                environment.tonemap = true;
+                environment.bloom.enabled = frame >= frames / 4;
+                environment.fxaa = frame >= frames / 2;
+                environment.bloom.levels = if frame >= frames / 2 { 3 } else { 5 };
+                overlay.push(OverlayQuad { radius: 8.0, ..OverlayQuad::solid([16.0, 16.0, 220.0, 60.0], [0.17, 0.19, 0.22, 0.85]) });
+                overlay.push(OverlayQuad::textured([28.0, 28.0, 36.0, 36.0], [0.0, 0.0, 1.0, 1.0], texture, OverlayKind::AlphaMask, [0.93, 0.9, 0.84, 1.0]));
+            }
+            gpu.present(&FrameDesc {
+                view_proj,
+                clear_color: [0.10, 0.20, 0.30, 1.0],
+                draws,
+                reverse_z: false,
+                environment,
+                overlay: &overlay,
+                ..Default::default()
+            })?;
             if *w > 0 && *h > 0 {
                 presented += 1;
             }
@@ -358,6 +400,7 @@ mod win {
                     println!("present: PROBLEM window GPU timings missing or stale");
                     problems += 1;
                 }
+                // With --features the ground is the same mesh, so it joins the cube's instanced call.
                 if s.pipelines.created_after_warm != 0 || s.draws.draw_calls != 1 {
                     println!("present: PROBLEM pipelines created after warm-up or wrong draw count");
                     problems += 1;
@@ -365,6 +408,7 @@ mod win {
             }
         }
         gpu.destroy_mesh(mesh);
+        gpu.destroy_texture(texture);
         let messages = gpu.close(); // includes teardown messages
         let errors = messages.iter().filter(|m| m.severity == Severity::Error).count();
         for m in &messages {
