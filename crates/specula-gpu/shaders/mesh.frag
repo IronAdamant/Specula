@@ -47,6 +47,23 @@ const float PI = 3.14159265;
 
 vec3 camera_pos() { return pc.frame.camera_time.xyz; }
 
+// Height fog between this fragment and the camera over premultiplied light `c` of opacity
+// `alpha`: the light dims and the fog's own colour shows through in proportion.
+vec3 fogged(vec3 c, float alpha) {
+    vec3 d = v_world - camera_pos();
+    float dist = length(d);
+    vec3 dir = d / max(dist, 1e-6);
+    float t = fog_transmittance(pc.frame, dir, dist, false);
+    return c * t + fog_radiance(pc.frame, dir) * ((1.0 - t) * alpha);
+}
+
+// How much of a blended layer's darkening survives the fog in front of it.
+float fog_keep() {
+    vec3 d = v_world - camera_pos();
+    float dist = length(d);
+    return fog_transmittance(pc.frame, d / max(dist, 1e-6), dist, false);
+}
+
 // The vertex colour, snapped to exactly 1 near white so interpolation never alters an untinted draw.
 vec4 tint() { return mix(v_tint, vec4(1.0), greaterThan(v_tint, vec4(0.99999))); }
 
@@ -205,6 +222,9 @@ vec4 shade_lit() {
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
     }
     c += albedo * emissive;
+    if (FOG) {
+        c = fogged(c, 1.0);
+    }
     return vec4(display(c), 1.0);
 }
 
@@ -235,6 +255,9 @@ vec4 shade_glass() {
     vec3 body_light = DRAW.color.rgb * t.rgb * (0.5 * diffuse + DRAW.params.x);
     float alpha = path + fresnel * (1.0 - path);
     vec3 c = body_light * path * (1.0 - fresnel) + reflected * fresnel;
+    if (FOG) {
+        c = fogged(c, alpha);
+    }
     return vec4(display(c), alpha);
 }
 
@@ -245,6 +268,9 @@ vec4 shade_glass() {
 vec4 shade_blob_shadow() {
     float r = length(v_local.xz) * 2.0;
     float a = clamp(DRAW.color.a * tint().a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
+    if (FOG) {
+        a *= fog_keep();
+    }
     return vec4(0.0, 0.0, 0.0, a);
 }
 
@@ -381,6 +407,9 @@ vec4 shade_lava_lamp() {
         }
     }
     if (!hit) {
+        if (FOG) {
+            halo = fogged(halo, 0.0);
+        }
         return vec4(display(halo), 0.0);
     }
 
@@ -449,6 +478,9 @@ vec4 shade_lava_lamp() {
     inside *= mix(0.55, 1.0, smoothstep(0.0, 0.35, cos_i));
     vec3 c = reflected * fresnel + inside * (1.0 - fresnel) + halo;
     float alpha = fresnel + (1.0 - fresnel) * (1.0 - (transmit.r + transmit.g + transmit.b) / 3.0);
+    if (FOG) {
+        c = fogged(c, alpha);
+    }
     return vec4(display(c), alpha);
 }
 

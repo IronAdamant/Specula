@@ -341,7 +341,7 @@ impl Window {
         prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
         let features = frame_features(frame, scratch, shadow_map.is_some());
         let mode = PostMode::of(&frame.environment).fit(self.extent);
-        let pipelines = pipelines.frame(dev, self.format.format, features, mode)?;
+        let pipelines = pipelines.frame(dev, self.format.format, features, mode, frame.environment.sky.enabled)?;
         // Resized or re-configured images may still be used by frames in flight: wait for them.
         self.post.ensure(dev, descriptors, self.extent, mode, || dev.wait_idle())?;
         let descriptors = &*descriptors;

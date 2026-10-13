@@ -376,6 +376,83 @@ impl Default for BloomSettings {
     }
 }
 
+/// An analytic sky drawn behind everything, instead of the flat clear colour. Off by default.
+///
+/// A vertical gradient (ground below the horizon, horizon colour at it, zenith overhead) and a
+/// disc with a glow in the sun's direction (a moon, at night). Colours are sRGB; the sky is
+/// scene light, so exposure, tone mapping, bloom and fog apply to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkySettings {
+    pub enabled: bool,
+    pub zenith: [f32; 3],
+    pub horizon: [f32; 3],
+    /// Below the horizon.
+    pub ground: [f32; 3],
+    /// Multiplies the gradient.
+    pub intensity: f32,
+    /// How quickly the horizon colour gives way to the zenith (higher = thinner horizon band).
+    pub horizon_sharpness: f32,
+    /// Angular radius of the sun/moon disc in degrees (0 = no disc).
+    pub disc_size_deg: f32,
+    /// Brightness of the disc, times the sun colour (above 1 blooms).
+    pub disc_intensity: f32,
+    /// Strength of the halo around the disc.
+    pub glow: f32,
+}
+
+impl Default for SkySettings {
+    /// A clear moonlit night (the Sepulcra palette).
+    fn default() -> Self {
+        SkySettings {
+            enabled: false,
+            zenith: [0.043, 0.063, 0.125],
+            horizon: [0.165, 0.204, 0.282],
+            ground: [0.08, 0.1, 0.14],
+            intensity: 1.0,
+            horizon_sharpness: 3.0,
+            disc_size_deg: 1.2,
+            disc_intensity: 6.0,
+            glow: 0.25,
+        }
+    }
+}
+
+/// Exponential height fog. Off by default.
+///
+/// Density is `density` at `height` and changes by a factor e every `1 / falloff` metres: thick
+/// below, thin above (`falloff` 0 = uniform fog). It starts `start_distance` metres from the
+/// camera, applies to every material and to the sky (when the sky is on; otherwise the
+/// background stays the clear colour), and brightens towards the sun by `sun_scatter`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogSettings {
+    pub enabled: bool,
+    /// sRGB.
+    pub color: [f32; 3],
+    /// Extinction per metre at `height`.
+    pub density: f32,
+    /// Per metre of height.
+    pub falloff: f32,
+    /// Reference height (m).
+    pub height: f32,
+    pub start_distance: f32,
+    /// In-scattered sunlight towards the sun (0 = none).
+    pub sun_scatter: f32,
+}
+
+impl Default for FogSettings {
+    fn default() -> Self {
+        FogSettings {
+            enabled: false,
+            color: [0.165, 0.204, 0.282],
+            density: 0.03,
+            falloff: 0.25,
+            height: 0.0,
+            start_distance: 0.0,
+            sun_scatter: 0.3,
+        }
+    }
+}
+
 /// Scene-wide lighting. The default reproduces M0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Environment {
@@ -397,6 +474,10 @@ pub struct Environment {
     pub bloom: BloomSettings,
     /// FXAA edge anti-aliasing after tone mapping (off by default).
     pub fxaa: bool,
+    /// Gradient sky with a sun/moon disc (off by default: the clear colour shows).
+    pub sky: SkySettings,
+    /// Exponential height fog (off by default).
+    pub fog: FogSettings,
 }
 
 impl Default for Environment {
@@ -412,6 +493,8 @@ impl Default for Environment {
             shadow: ShadowSettings::default(),
             bloom: BloomSettings::default(),
             fxaa: false,
+            sky: SkySettings::default(),
+            fog: FogSettings::default(),
         }
     }
 }

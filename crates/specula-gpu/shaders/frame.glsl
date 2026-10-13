@@ -22,7 +22,44 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     vec4 shadow_texel;  // world size of a texel per cascade
     vec4 shadow_axis;   // view depth = dot(xyz, p) + w
     vec4 shadow_fade;   // view depths where shadows start / finish fading out
+    vec4 fog_color;     // linear RGB, w density (per m at the reference height)
+    vec4 fog_params;    // falloff (per m), reference height, start distance, sun scatter
+    vec4 sky_zenith;    // linear RGB x intensity, w cos(disc radius)
+    vec4 sky_horizon;   // linear RGB x intensity, w disc intensity
+    vec4 sky_ground;    // linear RGB x intensity, w glow strength
+    vec4 sky_params;    // horizon sharpness
 };
+
+// Fraction of light that crosses the height fog from `dist` metres along `dir` to the camera
+// (`to_infinity` for the sky: then the ray must climb out of the fog or it is fully fogged).
+float fog_transmittance(Frame f, vec3 dir, float dist, bool to_infinity) {
+    float start = f.fog_params.z;
+    if (!to_infinity && dist <= start) {
+        return 1.0;
+    }
+    vec3 o = f.camera_time.xyz + dir * start;
+    float density = f.fog_color.w;
+    float falloff = f.fog_params.x;
+    float k = density * exp(clamp(-falloff * (o.y - f.fog_params.y), -80.0, 80.0));
+    float optical;
+    if (to_infinity) {
+        if (falloff * dir.y <= 1e-5) {
+            return 0.0;
+        }
+        optical = k / (falloff * dir.y);
+    } else {
+        float len = dist - start;
+        float x = falloff * dir.y * len;
+        optical = abs(x) > 1e-4 ? k * len * (1.0 - exp(clamp(-x, -80.0, 80.0))) / x : k * len;
+    }
+    return exp(-optical);
+}
+
+// The fog's colour seen along `dir`: brighter towards the sun.
+vec3 fog_radiance(Frame f, vec3 dir) {
+    float s = pow(max(dot(dir, f.sun_dir.xyz), 0.0), 8.0);
+    return f.fog_color.rgb + f.sun_color.rgb * (f.fog_params.w * s);
+}
 
 // Per-draw records; must match `DrawRecord` in src/render.rs.
 struct Draw {

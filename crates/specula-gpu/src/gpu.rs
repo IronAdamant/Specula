@@ -409,7 +409,7 @@ impl GpuInner {
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
         prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
         let features = frame_features(frame, &self.scratch, self.shadow_map.is_some());
-        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode)?;
+        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, frame.environment.sky.enabled)?;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");

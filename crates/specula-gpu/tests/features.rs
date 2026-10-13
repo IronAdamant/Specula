@@ -251,7 +251,7 @@ fn fxaa_smooths_edges_only() {
         for p in [[-5.0, 0.01, 5.0], [0.0, 1.0, 1.0]] {
             assert_eq!(scene.px(&plain, p), scene.px(&smooth, p), "{p:?}");
         }
-        // Bloom and FXAA together.
+        // Bloom and FXAA together (the FXAA-only path is above).
         env.bloom.enabled = true;
         env.tonemap = true;
         scene.render(&mut gpu, env, "bloom_fxaa");
@@ -259,6 +259,79 @@ fn fxaa_smooths_edges_only() {
             let names: Vec<_> = t.passes.iter().map(|p| p.name).collect();
             assert!(names.ends_with(&[specula_gpu::PASS_BLOOM, specula_gpu::PASS_TONEMAP, specula_gpu::PASS_FXAA]), "{names:?}");
         }
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
+#[test]
+fn sky_gradient_and_moon_disc() {
+    every_adapter("sky", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let mut env = scene.environment();
+        env.sky.enabled = true;
+        let rgba = scene.render(&mut gpu, env, "sky");
+        // The camera looks down: the top row is at the horizon, lower rows look below it (the
+        // darker ground colour) where the ground plane ends.
+        let horizon = pixel(&rgba, W, W / 2, 1);
+        let below = pixel(&rgba, W, 10, 40);
+        eprintln!("{test}: horizon {horizon:?}, below it {below:?}");
+        assert!(luma(below) < luma(horizon), "below the horizon is darker: {below:?} vs {horizon:?}");
+        assert_ne!(horizon, [10, 15, 33, 255], "the sky replaces the clear colour");
+        // Looking at the moon: a bright disc where it should be, with a glow around it.
+        let m = moon();
+        let eye = [0.0, 2.0, 0.0];
+        let at = [eye[0] + m[0], eye[1] + m[1], eye[2] + m[2]];
+        let view_proj = mul(&perspective_vk_reverse_z(40f32.to_radians(), W as f32 / H as f32, 0.05), &look_at_rh(eye, at, [0.0, 1.0, 0.0]));
+        let target = gpu.create_target(W, H).unwrap();
+        gpu.render(target, &FrameDesc { view_proj, reverse_z: true, environment: env, ..Default::default() }).unwrap();
+        let moon_view = gpu.read_rgba8(target).unwrap();
+        write_png(&format!("features_moon_{}.png", gpu.adapter().index), &moon_view, W, H);
+        let centre = pixel(&moon_view, W, W / 2, H / 2);
+        let halo = pixel(&moon_view, W, W / 2 + 25, H / 2);
+        let far = pixel(&moon_view, W, W / 2 + 200, H / 2);
+        eprintln!("{test}: disc {centre:?}, halo {halo:?}, away {far:?}");
+        // Looking up: the top of the frame (higher) is darker than the bottom (nearer the horizon).
+        let (high, low) = (pixel(&moon_view, W, 2, 2), pixel(&moon_view, W, 2, H - 3));
+        assert!(luma(high) < luma(low), "zenith darker than the horizon: {high:?} vs {low:?}");
+        assert!(luma(centre) > 600, "the disc is near white: {centre:?}");
+        assert!(luma(halo) > luma(far), "glow around the disc: {halo:?} vs {far:?}");
+        gpu.destroy_target(target);
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
+#[test]
+fn fog_thickens_with_distance_and_depth() {
+    every_adapter("fog", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let env = scene.environment();
+        let plain = scene.render(&mut gpu, env, "no_fog");
+        let mut foggy = env;
+        foggy.fog.enabled = true;
+        foggy.fog.color = [0.5, 0.55, 0.65];
+        foggy.fog.density = 0.05;
+        foggy.fog.falloff = 1.5;
+        foggy.fog.height = 0.4;
+        foggy.fog.sun_scatter = 0.0;
+        let fogged = scene.render(&mut gpu, foggy, "fog");
+        let change = |p: V3| luma(scene.px(&fogged, p)) - luma(scene.px(&plain, p));
+        // Ground: near the camera vs far away.
+        let (near, far) = (change([2.0, 0.01, 10.0]), change([2.0, 0.01, -20.0]));
+        eprintln!("{test}: ground change near {near}, far {far}");
+        assert!(far > near + 20 && near >= 0, "fog thickens with distance: near {near}, far {far}");
+        // A pillar at one distance: its foot (in the low fog) changes more than its top.
+        let (foot, top) = (change([-6.0, 0.1, -4.55]), change([-6.0, 1.5, -4.55]));
+        eprintln!("{test}: pillar foot {foot}, top {top}");
+        assert!(foot > top + 10, "fog thickens below its height: foot {foot}, top {top}");
+        // The sky fogs too: below the horizon it is all fog.
+        foggy.sky.enabled = true;
+        let both = scene.render(&mut gpu, foggy, "fog_sky");
+        let horizon = pixel(&both, W, 4, 40);
+        eprintln!("{test}: fogged sky near the horizon {horizon:?}");
         let errors = validation_errors(test, gpu);
         assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
     });

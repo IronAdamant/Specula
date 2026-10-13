@@ -19,7 +19,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 8] = [
+static SHADERS: [(&str, &[u8]); 10] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -28,6 +28,8 @@ static SHADERS: [(&str, &[u8]); 8] = [
     ("bloom_up.frag", include_bytes!("../shaders/bloom_up.frag.spv")),
     ("composite.frag", include_bytes!("../shaders/composite.frag.spv")),
     ("fxaa.frag", include_bytes!("../shaders/fxaa.frag.spv")),
+    ("sky.vert", include_bytes!("../shaders/sky.vert.spv")),
+    ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +42,8 @@ enum Shader {
     BloomUpFrag = 5,
     CompositeFrag = 6,
     FxaaFrag = 7,
+    SkyVert = 8,
+    SkyFrag = 9,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -56,7 +60,7 @@ pub const FEAT_FOG: u32 = 2;
 /// rendering into [`HDR_FORMAT`].
 pub const FEAT_HDR: u32 = 4;
 /// Feature combinations built for every colour format.
-const FEATURE_SETS: [u32; 2] = [0, FEAT_SHADOWS];
+const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 
 /// Push constant bytes every pipeline layout reserves (the minimum every device supports).
 const PUSH_BYTES: u32 = 128;
@@ -131,6 +135,18 @@ pub struct FrameData {
     pub shadow_axis: [f32; 4],
     /// View depths where shadows start and finish fading out; unused.
     pub shadow_fade: [f32; 4],
+    /// Linear RGB; w density per metre at the reference height.
+    pub fog_color: [f32; 4],
+    /// Falloff per metre, reference height, start distance, sun scatter.
+    pub fog_params: [f32; 4],
+    /// Linear RGB × intensity; w disc radius (radians, 0 = none).
+    pub sky_zenith: [f32; 4],
+    /// Linear RGB × intensity; w disc intensity.
+    pub sky_horizon: [f32; 4],
+    /// Linear RGB × intensity; w glow strength.
+    pub sky_ground: [f32; 4],
+    /// Horizon sharpness, unused ×3.
+    pub sky_params: [f32; 4],
 }
 
 pub const FRAME_DATA_SIZE: u64 = size_of::<FrameData>() as u64;
@@ -179,6 +195,8 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
         *slot = GpuPointLight { pos_range: [p[0], p[1], p[2], l.range.max(1e-3)], color: lin(l.color, l.intensity.max(0.0)) };
     }
     let c = camera_position(&frame.view_proj);
+    let (fog, sky_s) = (&env.fog, &env.sky);
+    let sky_k = sky_s.intensity.max(0.0);
     const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
     FrameData {
         view_proj: frame.view_proj,
@@ -195,6 +213,28 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
         shadow_texel: shadow.texel,
         shadow_axis: shadow.axis,
         shadow_fade: [shadow.fade[0], shadow.fade[1], 0.0, 0.0],
+        fog_color: {
+            let mut c = lin(fog.color, 1.0);
+            c[3] = fog.density.max(0.0);
+            c
+        },
+        fog_params: [fog.falloff.max(0.0), fog.height, fog.start_distance.max(0.0), fog.sun_scatter.max(0.0)],
+        sky_zenith: {
+            let mut c = lin(sky_s.zenith, sky_k);
+            c[3] = sky_s.disc_size_deg.clamp(0.0, 45.0).to_radians();
+            c
+        },
+        sky_horizon: {
+            let mut c = lin(sky_s.horizon, sky_k);
+            c[3] = sky_s.disc_intensity.max(0.0);
+            c
+        },
+        sky_ground: {
+            let mut c = lin(sky_s.ground, sky_k);
+            c[3] = sky_s.glow.max(0.0);
+            c
+        },
+        sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), 0.0, 0.0, 0.0],
     }
 }
 
@@ -551,6 +591,8 @@ pub enum PipelineKey {
     Composite { format: VkFormat },
     /// FXAA into `format`.
     Fxaa { format: VkFormat },
+    /// The sky behind the scene in `format` (+ D32 depth, EQUAL far plane), with or without fog.
+    Sky { format: VkFormat, fog: bool },
 }
 
 /// What vertex data a pipeline reads.
@@ -623,6 +665,19 @@ impl PipelineKey {
             PipelineKey::BloomUp => fullscreen(Shader::BloomUpFrag, HDR_FORMAT, Blend::Off),
             PipelineKey::Composite { format } => fullscreen(Shader::CompositeFrag, format, Blend::Off),
             PipelineKey::Fxaa { format } => fullscreen(Shader::FxaaFrag, format, Blend::Off),
+            PipelineKey::Sky { format, fog } => PipelineDesc {
+                vert: Shader::SkyVert,
+                frag: Some(Shader::SkyFrag),
+                spec: if fog { FEAT_FOG } else { 0 } | if format == HDR_FORMAT { FEAT_HDR } else { 0 },
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_EQUAL),
+                blend: Blend::Off,
+                depth_bias: false,
+            },
         }
     }
 }
@@ -670,6 +725,7 @@ pub struct FramePipelines {
     pub opaque: VkPipeline,
     pub blended: VkPipeline,
     pub shadow: VkPipeline,
+    pub sky: VkPipeline,
     pub bloom_down: VkPipeline,
     pub bloom_up: VkPipeline,
     pub composite: VkPipeline,
@@ -803,6 +859,9 @@ impl Pipelines {
                 self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
             }
         }
+        for fog in [false, true] {
+            self.get(dev, PipelineKey::Sky { format: color_format, fog })?;
+        }
         Ok(())
     }
 
@@ -816,7 +875,8 @@ impl Pipelines {
     }
 
     /// The pipelines of a frame ending in `final_format`, with scene `features` and post `mode`.
-    pub fn frame(&mut self, dev: &Device, final_format: VkFormat, features: u32, mode: PostMode) -> Result<FramePipelines, GpuError> {
+    /// `sky`: the frame draws the sky.
+    pub fn frame(&mut self, dev: &Device, final_format: VkFormat, features: u32, mode: PostMode, sky: bool) -> Result<FramePipelines, GpuError> {
         let scene_format = if mode.bloom() {
             HDR_FORMAT
         } else if mode.fxaa {
@@ -833,6 +893,7 @@ impl Pipelines {
             opaque: get(true, PipelineKey::Mesh { format: scene_format, blended: false, features })?,
             blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features })?,
             shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::Shadow)?,
+            sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
             composite: get(mode.bloom(), PipelineKey::Composite { format: composite_format })?,
@@ -1161,12 +1222,14 @@ pub struct FrameContext<'a> {
 
 /// The scene features a frame prepared in `scratch` uses, given whether a shadow map exists.
 pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map: bool) -> u32 {
-    let _ = frame;
+    let mut f = 0;
     if have_shadow_map && scratch.shadow.data.count > 0 {
-        FEAT_SHADOWS
-    } else {
-        0
+        f |= FEAT_SHADOWS;
     }
+    if frame.environment.fog.enabled {
+        f |= FEAT_FOG;
+    }
+    f
 }
 
 /// Record a whole frame into `target`: the shadow pass (if any), the scene, then the post chain.
@@ -1354,7 +1417,36 @@ pub fn record_scene(
         descriptors.bind(dev, cmd, pipelines.layout);
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
+        let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
+        let draw_sky = |cmd: VkCommandBuffer| {
+            // Behind everything opaque, before anything blended (glass shows the sky through it).
+            (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.sky);
+            let push = crate::post::PostPush {
+                frame: upload.frame_address(),
+                src: 0,
+                src2: 0,
+                texel: [0.0; 2],
+                mode: frame.reverse_z as u32,
+                pad: 0,
+                params: [0.0; 4],
+            };
+            (dev.fns.cmd_push_constants)(
+                cmd,
+                pipelines.layout,
+                PUSH_STAGES,
+                0,
+                size_of::<crate::post::PostPush>() as u32,
+                &push as *const crate::post::PostPush as *const c_void,
+            );
+            (dev.fns.cmd_draw)(cmd, 3, 1, 0, 0);
+        };
         for batch in &plan.batches {
+            if sky_pending && batch.material.blended() {
+                draw_sky(cmd);
+                sky_pending = false;
+                bound = pipelines.sky;
+                stats.pipeline_binds += 1;
+            }
             let Some(mesh) = meshes.get(&batch.mesh.0) else { continue };
             let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
             if pipeline != bound {
@@ -1386,6 +1478,10 @@ pub fn record_scene(
             stats.draw_calls += 1;
             stats.instances += batch.count;
             stats.triangles += (mesh.index_count / 3) as u64 * batch.count as u64;
+        }
+        if sky_pending {
+            draw_sky(cmd);
+            stats.pipeline_binds += 1;
         }
         (dev.fns.cmd_end_rendering)(cmd);
     }
@@ -1449,7 +1545,9 @@ mod tests {
         assert_eq!(offset_of!(FrameData, shadow_mats), 736);
         assert_eq!(offset_of!(FrameData, shadow_params), 992);
         assert_eq!(offset_of!(FrameData, shadow_fade), 1040);
-        assert_eq!(size_of::<FrameData>(), 1056);
+        assert_eq!(offset_of!(FrameData, fog_color), 1056);
+        assert_eq!(offset_of!(FrameData, sky_params), 1136);
+        assert_eq!(size_of::<FrameData>(), 1152);
     }
 
     #[test]
