@@ -152,7 +152,7 @@ def main():
             print(f"capture {tag}: {p['image']['path']}  models {p['models']}")
         front = entries[: len(rows[0])]
         fx = sum(e["pos"][0] for e in front) / len(front)
-        close = mcp.frame(width=1920, height=1080, eye=[fx, 4.0, 12.0], target=[fx, 1.5, -2.0], fov_y_deg=50,
+        close = mcp.frame(width=1920, height=1080, eye=[fx, 3.2, 9.0], target=[fx, 1.3, -2.5], fov_y_deg=50,
                           time_s=1.0, max_subjects=500)
         shots["front_row"] = close
         print(f"capture front_row: {close['image']['path']}  models {close['models']}")
