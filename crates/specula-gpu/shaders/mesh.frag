@@ -15,6 +15,9 @@ const bool HDR = (FEATURES & 4u) != 0u;
 // The opaque pipeline only ever draws Lit: leaving the other materials out keeps its register
 // use (and so the GPU's occupancy) that of the Lit path alone.
 const bool OPAQUE = (FEATURES & 8u) != 0u;
+// The blended pipeline never draws Lit: leaving the Lit path out means nothing there reads the
+// vertex colour (see `tint`).
+const bool BLENDED = (FEATURES & 16u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
@@ -68,9 +71,16 @@ float fog_keep() {
 }
 
 // The vertex colour, snapped to exactly 1 near white so interpolation never alters an untinted draw.
-// Read by the Lit path only: reading it in the blended pipeline (glass, blob shadows) hung the
-// Intel Windows driver (101.5187) after ~70 frames of the mixed_1000 bench, with sync validation
-// clean; reading other varyings there does not. Revisit with newer drivers.
+// Read by the Lit path only, and the blended pipeline is specialized (BLENDED) so it contains no
+// Lit path: reading v_tint in the blended pipeline hangs the Intel Windows driver 101.5187
+// (RaptorLake iGPU) - VK_ERROR_DEVICE_LOST after 60-100 frames. Reading other varyings there does
+// not; sync and GPU-assisted validation are clean; likely an Intel compiler bug.
+// Reproducer: in shade_glass use `DRAW.color.a * tint().a` for `body` and
+// `DRAW.color.rgb * tint().rgb` in `body_light`, and `DRAW.color.a * tint().a` for the blob
+// shadow's alpha; rebuild the shaders (shaders/build.sh), then
+//   cargo run --release -p specula-gpu --example bench -- --adapter integrated --frames 120 --scenes mixed_1000
+// fails with VK_ERROR_DEVICE_LOST (it runs 1000 frames without the change). Revisit with newer
+// drivers.
 vec4 tint() { return mix(v_tint, vec4(1.0), greaterThan(v_tint, vec4(0.99999))); }
 
 // Integer hashes (PCG): bit-exact on every GPU, so a seed gives the same lamp everywhere.
@@ -496,9 +506,9 @@ void main() {
         out_color = shade_glass();
     } else if (pc.material == MAT_BLOB_SHADOW) {
         out_color = shade_blob_shadow();
-    } else if (pc.material == MAT_LAVA_LAMP) {
+    } else if (BLENDED || pc.material == MAT_LAVA_LAMP) {
         out_color = shade_lava_lamp();
     } else {
-        out_color = shade_lit();
+        out_color = shade_lit(); // only in an unspecialized pipeline (none is built)
     }
 }

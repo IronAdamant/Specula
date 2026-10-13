@@ -66,6 +66,8 @@ pub const FEAT_FOG: u32 = 2;
 pub const FEAT_HDR: u32 = 4;
 /// The opaque pipeline: Lit only (the other materials' code is specialized away).
 pub const FEAT_OPAQUE: u32 = 8;
+/// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh.frag`).
+pub const FEAT_BLENDED: u32 = 16;
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 
@@ -655,7 +657,7 @@ impl PipelineKey {
             PipelineKey::Mesh { format, blended, features } => PipelineDesc {
                 vert: Shader::MeshVert,
                 frag: Some(Shader::MeshFrag),
-                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if blended { 0 } else { FEAT_OPAQUE },
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if blended { FEAT_BLENDED } else { FEAT_OPAQUE },
                 vertex: VertexInput::Mesh,
                 color: Some(format),
                 depth: Some(DEPTH_FORMAT),
