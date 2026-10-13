@@ -41,10 +41,10 @@ pub mod system;
 #[cfg(test)]
 mod fuzz_tests;
 
-pub use atlas::{AtlasConfig, AtlasGlyph, AtlasStats, DirtyRect, GlyphAtlas, GlyphKey, SUBPIXEL_BINS};
+pub use atlas::{AtlasConfig, AtlasGlyph, AtlasStats, DirtyRect, GlyphAtlas, GlyphKey, NO_PAGE, SUBPIXEL_BINS};
 pub use error::{AtlasError, FontError, Reason, Tag};
 pub use font::{font_count, Font, FontId, GlyphId, LineMetrics};
 pub use layout::{layout, layout_into, measure, Align, GlyphQuad, Line, PositionedGlyph, TextLayout, TextMetrics, TextStyle};
 pub use outline::{Outline, Point, Segment};
-pub use raster::{rasterize_sdf, Bitmap, Rasterizer};
+pub use raster::{rasterize_sdf, Bitmap, Rasterizer, MAX_BITMAP_DIM, MAX_SDF_DIM};
 pub use system::{find_system_ui_font, load_font_file, system_ui_font_candidates, LoadError};

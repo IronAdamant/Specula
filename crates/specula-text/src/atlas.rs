@@ -59,9 +59,19 @@ pub fn quantize_size(size_px: f32) -> u32 {
     }
 }
 
+/// `AtlasGlyph::page` of ink-less glyphs (space, or a glyph whose outline could not be read).
+pub const NO_PAGE: u32 = u32::MAX;
+
+/// Ink-less cache entries are dropped once there are more than this many (e.g. after a size
+/// tween); they cost nothing to recreate.
+const MAX_EMPTY_ENTRIES: usize = 4096;
+
+const EMPTY_GLYPH: AtlasGlyph = AtlasGlyph { page: NO_PAGE, x: 0, y: 0, width: 0, height: 0, left: 0, top: 0 };
+
 /// Where a glyph lives in the atlas and how to place it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AtlasGlyph {
+    /// Atlas page; [`NO_PAGE`] for glyphs with no ink.
     pub page: u32,
     /// Top-left texel of the glyph bitmap in the page (padding excluded).
     pub x: u32,
@@ -248,6 +258,7 @@ pub struct GlyphAtlas {
     raster: Rasterizer,
     frame: u64,
     stats: AtlasStats,
+    empty_entries: usize,
 }
 
 impl GlyphAtlas {
@@ -265,6 +276,7 @@ impl GlyphAtlas {
             raster: Rasterizer::new(),
             frame: 1,
             stats: AtlasStats::default(),
+            empty_entries: 0,
         }
     }
 
@@ -299,6 +311,7 @@ impl GlyphAtlas {
     pub fn clear(&mut self) {
         self.pages.clear();
         self.cache.clear();
+        self.empty_entries = 0;
     }
 
     /// Changed regions since the last call, one union rectangle per changed page.
@@ -322,8 +335,8 @@ impl GlyphAtlas {
         out.clear();
         let Some(page) = self.pages.get(r.page as usize) else { return };
         let size = self.config.page_size;
-        let x1 = (r.x + r.width).min(size);
-        let y1 = (r.y + r.height).min(size);
+        let x1 = r.x.saturating_add(r.width).min(size);
+        let y1 = r.y.saturating_add(r.height).min(size);
         for y in r.y.min(size)..y1 {
             let row = (y * size) as usize;
             out.extend_from_slice(&page.pixels[row + r.x.min(size) as usize..row + x1 as usize]);
@@ -336,6 +349,7 @@ impl GlyphAtlas {
         let key = GlyphKey::new(font, glyph, size_px, subpixel);
         if let Some(g) = self.cache.get(&key) {
             self.stats.hits += 1;
+            // Ink-less glyphs (NO_PAGE) touch no page, so they never pin one against eviction.
             if let Some(p) = self.pages.get_mut(g.page as usize) {
                 p.last_used = self.frame;
             }
@@ -350,14 +364,15 @@ impl GlyphAtlas {
         {
             Ok(b) => b,
             Err(e) => {
+                // Reported once; afterwards the glyph is a cached ink-less entry.
                 self.stats.font_errors += 1;
+                self.insert_empty(key);
                 return Err(AtlasError::Font(e));
             }
         };
         if bmp.is_empty() {
-            let g = AtlasGlyph::default();
-            self.cache.insert(key, g);
-            return Ok(g);
+            self.insert_empty(key);
+            return Ok(EMPTY_GLYPH);
         }
         let pad = self.config.padding;
         let (w, h) = (bmp.width + 2 * pad, bmp.height + 2 * pad);
@@ -388,6 +403,15 @@ impl GlyphAtlas {
         Ok(g)
     }
 
+    fn insert_empty(&mut self, key: GlyphKey) {
+        if self.empty_entries >= MAX_EMPTY_ENTRIES {
+            self.cache.retain(|_, g| g.page != NO_PAGE);
+            self.empty_entries = 0;
+        }
+        self.cache.insert(key, EMPTY_GLYPH);
+        self.empty_entries += 1;
+    }
+
     fn allocate(&mut self, w: u32, h: u32) -> Result<(usize, u32, u32), AtlasError> {
         let ps = self.config.page_size;
         // Most recent pages first: they are the emptiest.
@@ -409,7 +433,9 @@ impl GlyphAtlas {
                 .min_by_key(|&i| self.pages[i].last_used);
             if let Some(i) = victim {
                 self.pages[i].clear(ps);
-                self.cache.retain(|_, g| g.page as usize != i || g.width == 0);
+                // Drop the page's glyphs, and the ink-less entries too (cheap to recreate).
+                self.cache.retain(|_, g| g.page as usize != i && g.page != NO_PAGE);
+                self.empty_entries = 0;
                 self.stats.evictions += 1;
                 if let Some((x, y)) = self.pages[i].alloc(w, h, ps) {
                     return Ok((i, x, y));
@@ -509,6 +535,30 @@ mod tests {
     }
 
     #[test]
+    fn font_errors_and_empty_entries_are_bounded() {
+        let font = Font::from_bytes(tiny_font()).unwrap();
+        let mut atlas = GlyphAtlas::new(AtlasConfig::default());
+        // An unreadable glyph is reported once, then cached as ink-less.
+        assert_eq!(atlas.glyph(&font, 999, 16.0, 0).unwrap_err().code(), "glyph_id");
+        assert_eq!(atlas.glyph(&font, 999, 16.0, 0).unwrap(), EMPTY_GLYPH);
+        assert_eq!(atlas.stats().font_errors, 1);
+        // A size tween over ink-less glyphs does not grow the cache without bound.
+        for i in 0..3 * MAX_EMPTY_ENTRIES {
+            atlas.glyph(&font, 0, 8.0 + i as f32 / 64.0, 0).unwrap();
+        }
+        assert!(atlas.stats().glyphs <= MAX_EMPTY_ENTRIES + 1, "{}", atlas.stats().glyphs);
+        // copy_rect with absurd public fields neither panics nor over-reads.
+        atlas.glyph(&font, 1, 16.0, 0).unwrap();
+        let mut buf = Vec::new();
+        atlas.copy_rect(&DirtyRect { page: 0, x: u32::MAX - 1, y: 5, width: u32::MAX, height: u32::MAX }, &mut buf);
+        assert!(buf.is_empty());
+        atlas.copy_rect(&DirtyRect { page: 0, x: 0, y: u32::MAX, width: 4, height: u32::MAX }, &mut buf);
+        assert!(buf.is_empty());
+        atlas.copy_rect(&DirtyRect { page: 7, x: 0, y: 0, width: 4, height: 4 }, &mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
     fn full_and_eviction() {
         let font = Font::from_bytes(tiny_font()).unwrap();
         let cfg = AtlasConfig { page_size: 32, max_pages: 1, padding: 1, evict: false };
@@ -535,6 +585,20 @@ mod tests {
         atlas.glyph(&font, 2, 20.0, 0).unwrap();
         assert_eq!(atlas.stats().evictions, 1);
         atlas.validate().unwrap();
+        // Regression: a cache hit on an ink-less glyph must not pin a page. Fill the only page
+        // in one frame, cache a space; next frame a space plus a new glyph must still evict.
+        let mut atlas = GlyphAtlas::new(AtlasConfig { page_size: 64, max_pages: 1, padding: 1, evict: true });
+        let mut n = 0;
+        while atlas.glyph(&font, 1, 20.0 + n as f32 / 64.0, 0).is_ok() {
+            n += 1;
+        }
+        assert_eq!(atlas.glyph(&font, 0, 20.0, 0).unwrap().page, NO_PAGE);
+        atlas.begin_frame();
+        assert_eq!(atlas.glyph(&font, 0, 20.0, 0).unwrap().page, NO_PAGE);
+        atlas.glyph(&font, 2, 21.0, 0).unwrap();
+        assert_eq!(atlas.stats().evictions, 1);
+        atlas.validate().unwrap();
+
         // Too large for a page at all.
         let e = atlas.glyph(&font, 1, 200.0, 0).unwrap_err();
         assert_eq!(e.code(), "glyph_too_large");

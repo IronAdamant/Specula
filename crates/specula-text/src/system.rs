@@ -55,6 +55,10 @@ pub fn system_ui_font_candidates() -> Vec<PathBuf> {
         for name in ["segoeui.ttf", "arial.ttf", "tahoma.ttf"] {
             out.push(fonts.join(name));
         }
+    } else if cfg!(target_os = "android") {
+        for p in ["/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSans-Regular.ttf", "/system/fonts/DroidSans.ttf"] {
+            out.push(PathBuf::from(p));
+        }
     } else if cfg!(target_os = "macos") {
         // Most macOS UI fonts are CFF / .ttc; Arial is plain TrueType.
         out.push(PathBuf::from("/System/Library/Fonts/Supplemental/Arial.ttf"));

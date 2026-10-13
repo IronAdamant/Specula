@@ -56,6 +56,8 @@ pub enum Reason {
     CompositeTooDeep { depth: u32 },
     /// A glyph expands to more outline points than the limit.
     TooManyPoints { points: usize },
+    /// A table asks for more work than a sane font needs (`what` exceeds `limit`).
+    LimitExceeded { what: &'static str, limit: usize },
 }
 
 impl Reason {
@@ -72,6 +74,7 @@ impl Reason {
             Reason::GlyphId { .. } => "glyph_id",
             Reason::CompositeTooDeep { .. } => "composite_too_deep",
             Reason::TooManyPoints { .. } => "too_many_points",
+            Reason::LimitExceeded { .. } => "limit_exceeded",
         }
     }
 }
@@ -109,6 +112,7 @@ impl fmt::Display for FontError {
             Reason::GlyphId { glyph, num_glyphs } => write!(f, "glyph id {glyph} out of range ({num_glyphs} glyphs)"),
             Reason::CompositeTooDeep { depth } => write!(f, "composite glyph nesting exceeds {depth} (cycle?)"),
             Reason::TooManyPoints { points } => write!(f, "glyph expands to more than {points} points"),
+            Reason::LimitExceeded { what, limit } => write!(f, "{what} exceed the limit of {limit}"),
         }
     }
 }

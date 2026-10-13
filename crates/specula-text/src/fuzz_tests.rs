@@ -4,7 +4,8 @@
 //! real system font. Set `SPECULA_TEXT_FUZZ_ITERS` for a longer run.
 
 use crate::atlas::{AtlasConfig, GlyphAtlas};
-use crate::font::{tests::tiny_font, Font};
+use crate::font::tests::{gpos_table, tiny_font, tiny_font_with};
+use crate::font::Font;
 use crate::layout::{layout, Align, TextStyle};
 use crate::raster::rasterize_sdf;
 
@@ -132,16 +133,19 @@ fn iterations(default: usize) -> usize {
 
 #[test]
 fn mutated_tiny_fonts_never_panic() {
-    let src = tiny_font();
-    let tables = table_ranges(&src);
+    // The plain tiny font, and one with a GPOS table (pair kerning plus duplicated indices).
+    let sources = [tiny_font(), tiny_font_with(vec![(b"GPOS", gpos_table(40, 40, 40, false))])];
     let mut rng = Rng(0x5eed_1234_abcd_0001);
-    for _ in 0..iterations(4000) {
-        let d = mutate(&mut rng, &src, &tables);
-        exercise(d, &mut rng, true);
-    }
-    // Every truncation length.
-    for len in 0..src.len() {
-        exercise(src[..len].to_vec(), &mut rng, true);
+    for src in &sources {
+        let tables = table_ranges(src);
+        for _ in 0..iterations(4000) {
+            let d = mutate(&mut rng, src, &tables);
+            exercise(d, &mut rng, true);
+        }
+        // Every truncation length.
+        for len in 0..src.len() {
+            exercise(src[..len].to_vec(), &mut rng, true);
+        }
     }
 }
 

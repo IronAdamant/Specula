@@ -214,6 +214,11 @@ impl Font {
         !self.gpos_kern.is_empty()
     }
 
+    /// Number of GPOS PairPos subtables consulted per kerning query.
+    pub fn gpos_kern_subtables(&self) -> usize {
+        self.gpos_kern.iter().map(Vec::len).sum()
+    }
+
     fn view(&self, r: Range, tag: &[u8; 4]) -> View<'_> {
         View::new(&self.data[r.offset..r.offset + r.len], r.offset, Tag(*tag))
     }
@@ -475,7 +480,15 @@ impl Parsed {
         }
         let loca = View::new(&data[self.loca.offset..self.loca.offset + self.loca.len], self.loca.offset, Tag(*b"loca"));
         let g = g as usize;
-        let start = if self.loca_long { loca.u32(g * 4).ok()? as usize } else { loca.u16(g * 2).ok()? as usize * 2 };
+        let (start, end) = if self.loca_long {
+            (loca.u32(g * 4).ok()? as usize, loca.u32(g * 4 + 4).ok()? as usize)
+        } else {
+            (loca.u16(g * 2).ok()? as usize * 2, loca.u16(g * 2 + 2).ok()? as usize * 2)
+        };
+        // An empty glyph has no header: its yMax would be read from the next glyph.
+        if end < start.saturating_add(10) {
+            return None;
+        }
         let glyf = View::new(&data[self.glyf.offset..self.glyf.offset + self.glyf.len], self.glyf.offset, Tag(*b"glyf"));
         glyf.i16(start + 8).ok().filter(|&v| v > 0)
     }
@@ -687,8 +700,11 @@ fn gpos_kern_lookups(v: View<'_>) -> Result<Vec<Vec<usize>>, FontError> {
         v.bytes(feature_list + 2 + fi * 6, 4).map(|t| t == b"kern").unwrap_or(false)
     };
 
-    // Feature indices from the default LangSys of 'latn' or 'DFLT'.
-    let mut features: Vec<usize> = Vec::new();
+    // Feature indices from the default LangSys of 'latn' or 'DFLT' (first matching script record
+    // only). A bitset dedups them before they are expanded, so a malformed table cannot make the
+    // work quadratic.
+    let mut is_feature = vec![false; feature_count];
+    let mut any_feature = false;
     let script_count = v.u16(script_list)? as usize;
     for want in [b"latn", b"DFLT"] {
         for si in 0..script_count {
@@ -698,47 +714,59 @@ fn gpos_kern_lookups(v: View<'_>) -> Result<Vec<Vec<usize>>, FontError> {
             }
             let script = script_list + v.u16(rec + 4)? as usize;
             let default_lang = v.u16(script)? as usize;
-            if default_lang == 0 {
-                continue;
-            }
-            let lang = script + default_lang;
-            let n = v.u16(lang + 4)? as usize;
-            for k in 0..n {
-                let fi = v.u16(lang + 6 + k * 2)? as usize;
-                if fi < feature_count && is_kern(fi) {
-                    features.push(fi);
+            if default_lang != 0 {
+                let lang = script + default_lang;
+                let n = v.u16(lang + 4)? as usize;
+                for k in 0..n {
+                    let fi = v.u16(lang + 6 + k * 2)? as usize;
+                    if fi < feature_count && !is_feature[fi] && is_kern(fi) {
+                        is_feature[fi] = true;
+                        any_feature = true;
+                    }
                 }
             }
+            break;
         }
-        if !features.is_empty() {
+        if any_feature {
             break;
         }
     }
-    if features.is_empty() {
-        features = (0..feature_count).filter(|&fi| is_kern(fi)).collect();
+    if !any_feature {
+        for (fi, f) in is_feature.iter_mut().enumerate() {
+            *f = is_kern(fi);
+        }
     }
 
-    let mut lookup_indices: Vec<usize> = Vec::new();
-    for fi in features {
+    // Lookup indices, deduplicated as they are read; total reads are bounded.
+    let lookup_count = v.u16(lookup_list)? as usize;
+    let mut is_lookup = vec![false; lookup_count];
+    let mut reads = 0usize;
+    for fi in (0..feature_count).filter(|&fi| is_feature[fi]) {
         let feature = feature_list + v.u16(feature_list + 2 + fi * 6 + 4)? as usize;
         let n = v.u16(feature + 2)? as usize;
+        reads += n;
+        if reads > MAX_GPOS_INDEX_READS {
+            return Err(v.err(feature, Reason::LimitExceeded { what: "GPOS kern lookup indices", limit: MAX_GPOS_INDEX_READS }));
+        }
         for k in 0..n {
-            lookup_indices.push(v.u16(feature + 4 + k * 2)? as usize);
+            let li = v.u16(feature + 4 + k * 2)? as usize;
+            if li < lookup_count {
+                is_lookup[li] = true;
+            }
         }
     }
-    lookup_indices.sort_unstable();
-    lookup_indices.dedup();
 
-    let lookup_count = v.u16(lookup_list)? as usize;
     let mut lookups = Vec::new();
-    for li in lookup_indices {
-        if li >= lookup_count {
-            continue;
-        }
+    let mut total = 0usize;
+    for li in (0..lookup_count).filter(|&li| is_lookup[li]) {
         let lookup = lookup_list + v.u16(lookup_list + 2 + li * 2)? as usize;
         let kind = v.u16(lookup)?;
         let subs = v.u16(lookup + 4)? as usize;
-        let mut list = Vec::new();
+        reads += subs;
+        if reads > MAX_GPOS_INDEX_READS {
+            return Err(v.err(lookup, Reason::LimitExceeded { what: "GPOS kern lookup records", limit: MAX_GPOS_INDEX_READS }));
+        }
+        let mut list: Vec<usize> = Vec::new();
         for s in 0..subs {
             let mut sub = lookup + v.u16(lookup + 6 + s * 2)? as usize;
             let mut sub_kind = kind;
@@ -749,8 +777,17 @@ fn gpos_kern_lookups(v: View<'_>) -> Result<Vec<Vec<usize>>, FontError> {
             }
             if sub_kind == 2 {
                 let format = v.u16(sub)?;
-                if format == 1 || format == 2 {
-                    list.push(v.base + sub);
+                let abs = v.base + sub;
+                // Repeated offsets can never apply twice (the first one decides), so drop them.
+                if (format == 1 || format == 2) && !list.contains(&abs) {
+                    total += 1;
+                    if total > MAX_GPOS_KERN_SUBTABLES {
+                        return Err(v.err(
+                            lookup,
+                            Reason::LimitExceeded { what: "GPOS kern subtables", limit: MAX_GPOS_KERN_SUBTABLES },
+                        ));
+                    }
+                    list.push(abs);
                 }
             }
         }
@@ -760,6 +797,11 @@ fn gpos_kern_lookups(v: View<'_>) -> Result<Vec<Vec<usize>>, FontError> {
     }
     Ok(lookups)
 }
+
+/// Real fonts use tens of kerning subtables; malformed tables are cut off with an error here.
+pub const MAX_GPOS_KERN_SUBTABLES: usize = 1024;
+/// Upper bound on lookup-index and subtable-offset entries read for the `kern` feature.
+const MAX_GPOS_INDEX_READS: usize = 1 << 16;
 
 fn value_record_size(format: u16) -> usize {
     (format & 0xff).count_ones() as usize * 2
@@ -911,6 +953,89 @@ pub(crate) mod tests {
     /// glyph 4 = composite with a scaled, point-matched component.
     /// cmap (format 4): 'A' -> 1, 'O' -> 2, 'C' -> 3, ' ' -> 0 is unmapped. units_per_em = 1000.
     pub(crate) fn tiny_font() -> Vec<u8> {
+        tiny_font_with(Vec::new())
+    }
+
+    /// A GPOS table whose 'latn' default LangSys lists feature 0 `n_feat` times, whose single
+    /// 'kern' feature lists lookup 0 `n_lookup` times, and whose lookup has `n_subs` copies of
+    /// one PairPos format 1 subtable (A, O) = -30. Malformed when the counts are large. With
+    /// `distinct`, the subtable offsets instead point at `n_subs` different places in a run of
+    /// `0x0001` words (each looks like a PairPos format 1 header).
+    pub(crate) fn gpos_table(n_feat: u16, n_lookup: u16, n_subs: u16, distinct: bool) -> Vec<u8> {
+        let mut g = Vec::new();
+        let be16 = |g: &mut Vec<u8>, x: u16| g.extend_from_slice(&x.to_be_bytes());
+        // Header: version 1.0, ScriptList at 10.
+        be16(&mut g, 1);
+        be16(&mut g, 0);
+        let script_list = 10usize;
+        let lang_len = 6 + 2 * n_feat as usize;
+        let feature_list = script_list + 2 + 6 + 4 + lang_len;
+        let feature_table = feature_list + 2 + 6;
+        let lookup_list = feature_table + 4 + 2 * n_lookup as usize;
+        be16(&mut g, script_list as u16);
+        be16(&mut g, feature_list as u16);
+        be16(&mut g, lookup_list as u16);
+        // ScriptList: 1 record 'latn' -> Script at +8.
+        be16(&mut g, 1);
+        g.extend_from_slice(b"latn");
+        be16(&mut g, 8);
+        // Script: defaultLangSys at +4, 0 LangSys records.
+        be16(&mut g, 4);
+        be16(&mut g, 0);
+        // LangSys: lookupOrder 0, requiredFeature 0xFFFF, n_feat x feature 0.
+        be16(&mut g, 0);
+        be16(&mut g, 0xffff);
+        be16(&mut g, n_feat);
+        for _ in 0..n_feat {
+            be16(&mut g, 0);
+        }
+        assert_eq!(g.len(), feature_list);
+        // FeatureList: 1 record 'kern' -> Feature at +8.
+        be16(&mut g, 1);
+        g.extend_from_slice(b"kern");
+        be16(&mut g, 8);
+        be16(&mut g, 0);
+        be16(&mut g, n_lookup);
+        for _ in 0..n_lookup {
+            be16(&mut g, 0);
+        }
+        assert_eq!(g.len(), lookup_list);
+        // LookupList: 1 lookup at +4.
+        be16(&mut g, 1);
+        be16(&mut g, 4);
+        // Lookup: type 2, flag 0, n_subs offsets all to one subtable after the array.
+        let sub_off = 6 + 2 * n_subs as usize;
+        be16(&mut g, 2);
+        be16(&mut g, 0);
+        be16(&mut g, n_subs);
+        for k in 0..n_subs as usize {
+            be16(&mut g, if distinct { (sub_off + 24 + 2 * k) as u16 } else { sub_off as u16 });
+        }
+        // PairPos format 1: coverage at +12, valueFormat1 = XAdvance, valueFormat2 = 0,
+        // 1 PairSet at +18.
+        be16(&mut g, 1);
+        be16(&mut g, 12);
+        be16(&mut g, 4);
+        be16(&mut g, 0);
+        be16(&mut g, 1);
+        be16(&mut g, 18);
+        // Coverage format 1: [glyph 1 ('A')].
+        be16(&mut g, 1);
+        be16(&mut g, 1);
+        be16(&mut g, 1);
+        // PairSet: 1 record: second glyph 2 ('O'), XAdvance -30.
+        be16(&mut g, 1);
+        be16(&mut g, 2);
+        be16(&mut g, (-30i16) as u16);
+        if distinct {
+            for _ in 0..n_subs as usize + 8 {
+                be16(&mut g, 1);
+            }
+        }
+        g
+    }
+
+    pub(crate) fn tiny_font_with(extra: Vec<(&[u8; 4], Vec<u8>)>) -> Vec<u8> {
         fn be16(v: &mut Vec<u8>, x: u16) {
             v.extend_from_slice(&x.to_be_bytes());
         }
@@ -1093,6 +1218,9 @@ pub(crate) mod tests {
             (b"maxp", maxp),
             (b"name", name),
         ];
+        let mut tables = tables;
+        tables.extend(extra);
+        tables.sort_by_key(|t| *t.0);
         let mut out = Vec::new();
         be32(&mut out, 0x0001_0000);
         be16(&mut out, tables.len() as u16);
@@ -1201,6 +1329,40 @@ pub(crate) mod tests {
         bad[12..16].copy_from_slice(&u32::MAX.to_be_bytes());
         let v = View::new(&bad, 0, Tag(*b"cmap"));
         assert!(lookup_cmap(v, cmap, 0x1F601).is_err());
+    }
+
+    #[test]
+    fn gpos_pair_kerning_applies() {
+        let font = Font::from_bytes(tiny_font_with(vec![(b"GPOS", gpos_table(1, 1, 1, false))])).unwrap();
+        assert!(font.has_gpos_kerning());
+        assert_eq!(font.gpos_kern_subtables(), 1);
+        // GPOS wins over the legacy kern table (-50).
+        assert_eq!(font.kerning(1, 2), -30);
+        assert_eq!(font.kerning(2, 1), 0);
+    }
+
+    #[test]
+    fn malformed_gpos_is_bounded() {
+        // Regression: 16000 duplicated feature indices x 16000 duplicated lookup indices used to
+        // expand to 256M entries (GBs). Now they collapse to one lookup with one subtable, fast.
+        let t = std::time::Instant::now();
+        let g = gpos_table(16000, 16000, 30000, false);
+        let v = View::new(&g, 0, Tag(*b"GPOS"));
+        assert_eq!(gpos_kern_lookups(v).unwrap(), vec![vec![g.len() - 24]]);
+        let font = Font::from_bytes(tiny_font_with(vec![(b"GPOS", g)])).unwrap();
+        assert_eq!(font.gpos_kern_subtables(), 1);
+        assert_eq!(font.kerning(1, 2), -30);
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+
+        // Too many distinct subtables: a structured error; the font falls back to `kern`.
+        let g = gpos_table(1, 1, (MAX_GPOS_KERN_SUBTABLES + 50) as u16, true);
+        let v = View::new(&g, 0, Tag(*b"GPOS"));
+        let e = gpos_kern_lookups(v).unwrap_err();
+        assert_eq!(e.reason.code(), "limit_exceeded");
+        assert!(matches!(e.reason, Reason::LimitExceeded { limit: MAX_GPOS_KERN_SUBTABLES, .. }));
+        let font = Font::from_bytes(tiny_font_with(vec![(b"GPOS", g)])).unwrap();
+        assert!(!font.has_gpos_kerning());
+        assert_eq!(font.kerning(1, 2), -50);
     }
 
     #[test]

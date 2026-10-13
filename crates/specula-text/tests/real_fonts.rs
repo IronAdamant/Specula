@@ -74,11 +74,11 @@ fn parses_metrics_and_advances_match_hmtx() {
         assert!(adv('m') > adv('i'));
         assert!("0123456789".chars().all(|c| adv(c) == adv('0')), "{name}: digits not tabular");
         println!(
-            "{name}: family {:?}, {} glyphs, upem {}, gpos kerning {}, kerning {}",
+            "{name}: family {:?}, {} glyphs, upem {}, gpos kern subtables {}, kerning {}",
             font.family_name(),
             font.num_glyphs(),
             font.units_per_em(),
-            font.has_gpos_kerning(),
+            font.gpos_kern_subtables(),
             font.has_kerning()
         );
     }

@@ -225,33 +225,45 @@ fn check_dim(w: u32, h: u32) -> Result<(), FontError> {
     Ok(())
 }
 
+/// Largest SDF bitmap side. SDF generation is brute force, O(width × height × segments): a
+/// 48 px glyph (about 60×60 px with spread) against ~100 segments is ~0.4 M distance tests, about
+/// a millisecond; this cap keeps a hostile outline to well under a second. SDFs are meant to be
+/// generated once at a modest size (32–64 px) and scaled by the shader.
+pub const MAX_SDF_DIM: u32 = 256;
+
 /// Signed distance field of an outline: 128 on the edge, 255 at `spread` px inside, 0 at `spread`
-/// px outside. The bitmap is padded by `spread` px on every side.
+/// px outside. The bitmap is padded by `spread` px on every side. Sides are capped at
+/// [`MAX_SDF_DIM`] (an error beyond that); `spread` is clamped to 0.5..=32 px.
 pub fn rasterize_sdf(outline: &Outline, scale: f32, spread: f32) -> Result<Bitmap, FontError> {
-    let spread = spread.max(0.5);
+    let spread = if spread.is_finite() { spread.clamp(0.5, 32.0) } else { 4.0 };
     let Some((left, top, w, h)) = pixel_box(outline, scale, 0.0, spread) else {
         return Ok(Bitmap::default());
     };
-    check_dim(w, h)?;
+    if w > MAX_SDF_DIM || h > MAX_SDF_DIM {
+        return Err(FontError::new(
+            Tag(*b"glyf"),
+            0,
+            Reason::BadValue { field: "SDF bitmap size (px)", value: w.max(h) as i64 },
+        ));
+    }
     let xf = Xform { scale, dx: -(left as f32), dy: -(top as f32) };
     let mut segs: Vec<[f32; 4]> = Vec::new();
     flatten(outline, xf, |a, b| segs.push([a[0], a[1], b[0], b[1]]));
     let (w, h) = (w as usize, h as usize);
     let mut pixels = vec![0u8; w * h];
+    // Segments crossing the current scanline (for the winding number), with their x there.
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
     for row in 0..h {
         let py = row as f32 + 0.5;
-        // Segments crossing this scanline (for the winding number), with their x at py.
-        let crossings: Vec<(f32, i32)> = segs
-            .iter()
-            .filter_map(|s| {
-                let (y0, y1) = (s[1], s[3]);
-                if (y0 <= py) == (y1 <= py) {
-                    return None;
-                }
-                let t = (py - y0) / (y1 - y0);
-                Some((s[0] + t * (s[2] - s[0]), if y1 > y0 { 1 } else { -1 }))
-            })
-            .collect();
+        crossings.clear();
+        crossings.extend(segs.iter().filter_map(|s| {
+            let (y0, y1) = (s[1], s[3]);
+            if (y0 <= py) == (y1 <= py) {
+                return None;
+            }
+            let t = (py - y0) / (y1 - y0);
+            Some((s[0] + t * (s[2] - s[0]), if y1 > y0 { 1 } else { -1 }))
+        }));
         for col in 0..w {
             let px = col as f32 + 0.5;
             let winding: i32 = crossings.iter().filter(|c| c.0 > px).map(|c| c.1).sum();
@@ -385,6 +397,10 @@ mod tests {
         let sq = poly(&[&[(0.0, 0.0), (0.0, 30000.0), (30000.0, 30000.0), (30000.0, 0.0)]]);
         let e = Rasterizer::new().rasterize(&sq, 1.0, 0.0).unwrap_err();
         assert_eq!(e.reason.code(), "bad_value");
+        // SDFs have a much smaller cap (brute-force cost).
+        assert!(rasterize_sdf(&sq, 0.005, 4.0).is_ok());
+        assert_eq!(rasterize_sdf(&sq, 0.1, 4.0).unwrap_err().reason.code(), "bad_value");
+        assert!(rasterize_sdf(&sq, 0.001, f32::NAN).is_ok());
         // NaN / infinite scales give an empty bitmap rather than a panic.
         assert!(Rasterizer::new().rasterize(&sq, f32::NAN, 0.0).unwrap().is_empty());
         assert!(Rasterizer::new().rasterize(&sq, f32::INFINITY, 0.0).is_err() ||
