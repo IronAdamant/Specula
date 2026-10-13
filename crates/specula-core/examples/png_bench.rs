@@ -1,4 +1,4 @@
-//! PNG encode benchmark: a realistic capture frame at every level, one thread vs all threads.
+//! PNG encode benchmark: a realistic capture frame at every level, one thread vs several.
 //!
 //! ```text
 //! cargo run --release -p specula-core --example png_bench [-- [FRAME.png] [--threads N] [--out DIR]]
@@ -7,9 +7,11 @@
 //! Uses `target/lava/all.png` (the lava-lamp benchmark capture, `python scripts/lava_lamps.py`)
 //! when present, else a synthetic dithered gradient. The 1280×720 case is a centre crop of the
 //! frame. Every encode is decoded again and checked, and the single- and multi-threaded outputs
-//! must be byte-identical. `--threads N` sets the parallel column's thread count (default: every
-//! core), e.g. 4 to approximate a low-end laptop. `--out DIR` also writes each encoded PNG, plus multi-band zlib streams
-//! of non-image data, so an independent decoder (e.g. Python's `zlib`) can check them.
+//! must be byte-identical. `--threads N` sets the parallel column's thread count (default:
+//! `deflate::available_threads()`), e.g. 4 to approximate a low-end laptop. `--out DIR` also
+//! writes each encoded PNG, plus multi-band zlib streams of non-image data, so an independent
+//! decoder (e.g. Python's `zlib`) can check them. A very wide image (rows spanning many bands)
+//! is timed too.
 
 use specula_core::deflate::{self, Level};
 use specula_core::png::{self, Image};
@@ -45,7 +47,8 @@ fn main() {
             synthetic(1600, 900)
         }
     };
-    println!("parallel column: {threads} threads (machine has {})\n", deflate::available_threads());
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    println!("parallel column: {threads} threads (machine has {cores})\n");
     for (w, h) in [(frame.width, frame.height), (1280, 720)] {
         let img = crop(&frame, w, h);
         let (w, h) = (img.width, img.height);
@@ -70,6 +73,19 @@ fn main() {
         }
         println!();
     }
+
+    // A very wide image: each row spans many compression bands.
+    let (w, h) = (1u32 << 20, 2u32);
+    let wide = synthetic(w, h);
+    println!("{w}x{h} (rows wider than a band)");
+    for level in [Level::Fastest, Level::Default] {
+        let (single_ms, single) = time(|| png::encode_rgba8_threads(w, h, &wide.rgba, level, 1));
+        let (par_ms, par) = time(|| png::encode_rgba8_threads(w, h, &wide.rgba, level, threads));
+        assert_eq!(single, par, "{level:?}: output depends on the thread count");
+        assert_eq!(png::decode(&par).expect("decodes").rgba, wide.rgba, "{level:?}: round trip");
+        println!("  {:<8} {:>7.1} ms {:>7.1} ms {:>9} KB", format!("{level:?}"), single_ms, par_ms, par.len() / 1024);
+    }
+    println!();
 
     if let Some(dir) = &out_dir {
         // Non-image data across many bands: text-like words, runs and noise.

@@ -23,9 +23,10 @@ use std::sync::Mutex;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     /// Capture speed: no match search, only runs of a repeated byte (distance 1, like zlib's
-    /// `Z_RLE`) plus Huffman coding. Several times faster than [`Level::Fast`]; on filtered,
-    /// dithered image data the output is about the same size, because LZ77 finds little there.
-    /// Poor on text and other data whose redundancy is in repeated strings.
+    /// `Z_RLE`) plus Huffman coding. About 2x as fast as [`Level::Fast`] and 4x as fast as
+    /// [`Level::Default`]; on filtered, dithered image data the output is about the same size
+    /// (often smaller), because LZ77 finds little there. Poor on text and other data whose
+    /// redundancy is in repeated strings.
     Fastest,
     /// Short match search.
     Fast,
@@ -39,9 +40,15 @@ pub enum Level {
 /// from the core count) so the output bytes never depend on the machine.
 pub const BAND_SIZE: usize = 128 * 1024;
 
-/// Threads the parallel compressors use by default: every core the OS offers this process.
+/// Most threads the compressors use by default (the `*_threads` functions accept any count).
+pub const MAX_DEFAULT_THREADS: usize = 8;
+
+/// Threads the parallel compressors use by default: all cores but one (left for the render and
+/// server threads, so a capture never starves the frame on a low-end laptop), at most
+/// [`MAX_DEFAULT_THREADS`], at least 1. The thread count never changes the output bytes.
 pub fn available_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    cores.saturating_sub(1).clamp(1, MAX_DEFAULT_THREADS)
 }
 
 /// Raw DEFLATE stream, using [`available_threads`] threads for large inputs.
@@ -148,9 +155,11 @@ fn deflate_into<S: Source + ?Sized>(out: &mut Vec<u8>, src: &S, level: Level, th
     }
 }
 
-/// Run `work` on `threads` threads: thread `k` (the caller is 0) first spawns threads `2k + 1`
-/// and `2k + 2`, so start-up is a tree of depth log2(threads) rather than a serial loop on the
-/// caller (spawning costs tens of microseconds per thread on Windows).
+/// Run `work` on up to `threads` threads: thread `k` (the caller is 0) first spawns threads
+/// `2k + 1` and `2k + 2`, so start-up is a tree of depth log2(threads) rather than a serial loop
+/// on the caller (spawning costs tens of microseconds per thread on Windows). If the OS refuses
+/// a thread, that subtree is skipped: `work` pulls from a shared queue, so the threads that did
+/// start (at least the caller) finish everything.
 fn fan_out<'scope, 'env, F: Fn() + Sync>(
     s: &'scope std::thread::Scope<'scope, 'env>,
     k: usize,
@@ -159,7 +168,10 @@ fn fan_out<'scope, 'env, F: Fn() + Sync>(
 ) {
     for child in [2 * k + 1, 2 * k + 2] {
         if child < threads {
-            s.spawn(move || fan_out(s, child, threads, work));
+            let spawned = std::thread::Builder::new().spawn_scoped(s, move || fan_out(s, child, threads, work));
+            if spawned.is_err() {
+                break;
+            }
         }
     }
     work();
@@ -673,8 +685,9 @@ impl Level {
 }
 
 const HASH_BITS: u32 = 15;
-/// Empty hash-chain slot.
-const NIL: usize = usize::MAX;
+/// Empty hash-chain slot. Chains hold `u32` positions within a band's slice (at most
+/// `BAND_SIZE + WINDOW` bytes), which halves the tables a band resets and keeps them in cache.
+const NIL: u32 = u32::MAX;
 /// Tokens buffered before a block is emitted.
 const BLOCK_TOKENS: usize = 1 << 15;
 /// Length-3 matches further than this usually cost more bits than three literals.
@@ -730,8 +743,8 @@ impl BitWriter {
 /// A compressor's allocations, handed from band to band.
 #[derive(Default)]
 struct Buffers {
-    head: Vec<usize>,
-    prev: Vec<usize>,
+    head: Vec<u32>,
+    prev: Vec<u32>,
     tokens: Vec<Token>,
 }
 
@@ -739,9 +752,9 @@ struct Compressor<'a> {
     data: &'a [u8],
     p: Params,
     /// Most recent position for each 3-byte hash.
-    head: Vec<usize>,
+    head: Vec<u32>,
     /// Previous position with the same hash, indexed by `pos % WINDOW`.
-    prev: Vec<usize>,
+    prev: Vec<u32>,
     tokens: Vec<Token>,
     /// Symbol frequencies of the buffered tokens, counted as they are pushed.
     lit_freq: [u32; NUM_LITLEN],
@@ -754,6 +767,7 @@ impl<'a> Compressor<'a> {
     /// A compressor over `data`, reusing (and resetting) `bufs`.
     fn new(data: &'a [u8], p: Params, bufs: Buffers) -> Self {
         let Buffers { mut head, mut prev, mut tokens } = bufs;
+        assert!(data.len() < NIL as usize, "deflate band of {} bytes overflows u32 positions", data.len());
         // Run-length mode never consults the hash chains.
         if !p.rle {
             head.clear();
@@ -787,7 +801,7 @@ impl<'a> Compressor<'a> {
         if pos + MIN_MATCH <= self.data.len() {
             let h = self.hash(pos);
             self.prev[pos % WINDOW] = self.head[h];
-            self.head[h] = pos;
+            self.head[h] = pos as u32;
         }
     }
 
@@ -809,8 +823,8 @@ impl<'a> Compressor<'a> {
             return (0, 0);
         }
         let mut best_dist = 0;
-        let mut cand = self.prev[pos % WINDOW];
-        while cand != NIL && cand < pos && chain > 0 {
+        let mut cand = self.prev[pos % WINDOW] as usize;
+        while cand != NIL as usize && cand < pos && chain > 0 {
             let c = cand;
             let dist = pos - c;
             if dist > WINDOW {
@@ -827,8 +841,8 @@ impl<'a> Compressor<'a> {
                     }
                 }
             }
-            let next = self.prev[c % WINDOW];
-            if next == NIL || next >= cand {
+            let next = self.prev[c % WINDOW] as usize;
+            if next == NIL as usize || next >= cand {
                 break;
             }
             cand = next;

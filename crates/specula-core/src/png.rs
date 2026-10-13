@@ -2,6 +2,7 @@
 
 use crate::checksum::{crc32, crc32_update};
 use crate::deflate::{self, Level};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
@@ -25,8 +26,8 @@ const MAX_PIXELS: u64 = 1 << 28;
 /// Large images are filtered and compressed on [`deflate::available_threads`] threads; the
 /// bytes are the same for any thread count (see [`encode_rgba8_threads`]).
 ///
-/// For agent captures, [`Level::Fastest`] is several times faster than [`Level::Default`] at
-/// about the same size, because rendered frames are dithered and LZ77 finds little in them.
+/// For agent captures, [`Level::Fastest`] is about 4x as fast as [`Level::Default`] at about the
+/// same size (often smaller), because rendered frames are dithered and LZ77 finds little in them.
 pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8], level: Level) -> Vec<u8> {
     encode_rgba8_threads(width, height, rgba, level, deflate::available_threads())
 }
@@ -55,7 +56,7 @@ fn encode_with_filter(
         rgba.len()
     );
     // Rows are filtered inside the compression workers, band by band.
-    let rows = FilteredRows { rgba, stride, height: height as usize, force: force_filter };
+    let rows = FilteredRows::new(rgba, stride, height as usize, force_filter);
     let z = deflate::zlib_compress_source(&rows, level, threads);
 
     let mut out = Vec::with_capacity(z.len() + 64);
@@ -101,15 +102,43 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
 /// Bytes per complete pixel for the filters (8-bit RGBA).
 const BPP: usize = 4;
 
-/// The filtered image stream (per row: a filter-type byte, then the filtered row), computed on
-/// demand for the rows each compression band needs. Each row depends only on the unfiltered
-/// input, so bands can be filtered on any thread, in any order, with the same result. Rows that
-/// straddle a band boundary are filtered by both bands.
+/// The filtered image stream (per line: a filter-type byte, then the filtered row), computed on
+/// demand for the byte range each compression band needs. Each line depends only on the
+/// unfiltered input, so bands can be filtered on any thread, in any order, with the same result.
+///
+/// A line wholly inside the range is filtered adaptively in one pass. For a line the range only
+/// partly covers, the filter type (which depends on the whole row) is chosen once and cached in
+/// `types`, and only the covered bytes are filtered, so a row wider than a band costs O(width)
+/// in total rather than O(width) per band.
 struct FilteredRows<'a> {
     rgba: &'a [u8],
     stride: usize,
     height: usize,
     force: Option<u8>,
+    types: Vec<OnceLock<u8>>,
+}
+
+impl<'a> FilteredRows<'a> {
+    fn new(rgba: &'a [u8], stride: usize, height: usize, force: Option<u8>) -> Self {
+        FilteredRows { rgba, stride, height, force, types: (0..height).map(|_| OnceLock::new()).collect() }
+    }
+
+    /// Row `y` and the row above it (`None` for the first row, which predicts from zeros).
+    fn rows(&self, y: usize) -> (&'a [u8], Option<&'a [u8]>) {
+        let s = self.stride;
+        let up = if y == 0 { None } else { Some(&self.rgba[(y - 1) * s..y * s]) };
+        (&self.rgba[y * s..(y + 1) * s], up)
+    }
+
+    /// Filter type of row `y`, computed once by whichever band needs it first.
+    fn row_type(&self, y: usize) -> u8 {
+        *self.types[y].get_or_init(|| {
+            self.force.unwrap_or_else(|| {
+                let (row, up) = self.rows(y);
+                choose_filter(row, up)
+            })
+        })
+    }
 }
 
 impl deflate::Source for FilteredRows<'_> {
@@ -119,41 +148,111 @@ impl deflate::Source for FilteredRows<'_> {
 
     fn bytes<'s>(&'s self, range: std::ops::Range<usize>, scratch: &'s mut Vec<u8>) -> &'s [u8] {
         let line = self.stride + 1;
-        let (first, end_row) = (range.start / line, range.end.div_ceil(line));
         scratch.clear();
-        scratch.resize((end_row - first) * line, 0);
-        filter_row_range(self.rgba, self.stride, first, self.force, scratch);
-        let base = first * line;
-        &scratch[range.start - base..range.end - base]
+        scratch.resize(range.len(), 0);
+        // Whole-line filtering state, allocated only if some line fits wholly in the range.
+        let mut whole: Option<LineFilter> = None;
+        let mut span = Vec::new();
+        let mut pos = range.start;
+        while pos < range.end {
+            let y = pos / line;
+            let (a, b) = (pos - y * line, (range.end - y * line).min(line));
+            let out = &mut scratch[pos - range.start..pos - range.start + (b - a)];
+            let (row, up) = self.rows(y);
+            if a == 0 && b == line {
+                whole.get_or_insert_with(|| LineFilter::new(self.stride)).filter(row, up, self.force, out);
+            } else {
+                // Line byte 0 is the filter type; line byte `i > 0` is row byte `i - 1`.
+                let t = self.row_type(y);
+                let (out, from) = if a == 0 {
+                    out[0] = t;
+                    (&mut out[1..], 0)
+                } else {
+                    (out, a - 1)
+                };
+                out.copy_from_slice(filter_span(t, row, up, from, b - 1, &mut span));
+            }
+            pos += b - a;
+        }
+        scratch
     }
 }
 
-/// Filter the rows starting at `first_row` into `out` (whole lines of `1 + stride` bytes): each
-/// line is its filter type byte and the filtered bytes. Adaptive selection uses the "minimum sum
-/// of absolute differences" heuristic (bytes read as signed).
-fn filter_row_range(rgba: &[u8], stride: usize, first_row: usize, force: Option<u8>, out: &mut [u8]) {
-    let zero_row = vec![0u8; stride];
-    let mut candidates: [Vec<u8>; 5] = std::array::from_fn(|_| vec![0u8; stride]);
-    let types: &[u8] = match force {
-        Some(t) => &[t][..],
-        None => &[0, 1, 2, 3, 4][..],
-    };
-    for (i, line) in out.chunks_exact_mut(stride + 1).enumerate() {
-        let y = first_row + i;
-        let row = &rgba[y * stride..(y + 1) * stride];
-        let up = if y == 0 { &zero_row[..] } else { &rgba[(y - 1) * stride..y * stride] };
+/// Adaptive filtering of whole lines: every filter type is tried and the cheapest kept.
+struct LineFilter {
+    zero_row: Vec<u8>,
+    candidates: [Vec<u8>; 5],
+}
+
+impl LineFilter {
+    fn new(stride: usize) -> Self {
+        LineFilter { zero_row: vec![0; stride], candidates: std::array::from_fn(|_| vec![0; stride]) }
+    }
+
+    /// Write `row`'s line (filter type byte, then the filtered bytes) to `out`. Adaptive selection
+    /// uses the "minimum sum of absolute differences" heuristic (bytes read as signed); ties go to
+    /// the lowest filter type, exactly as in [`choose_filter`].
+    fn filter(&mut self, row: &[u8], up: Option<&[u8]>, force: Option<u8>, out: &mut [u8]) {
+        let up = up.unwrap_or(&self.zero_row);
+        let types: &[u8] = match force {
+            Some(t) => &[t][..],
+            None => &[0, 1, 2, 3, 4][..],
+        };
         let mut best = (u64::MAX, 0u8);
         for &t in types {
-            let buf = &mut candidates[t as usize];
+            let buf = &mut self.candidates[t as usize];
             apply_filter(t, row, up, buf);
             let cost = filter_cost(buf);
             if cost < best.0 {
                 best = (cost, t);
             }
         }
-        line[0] = best.1;
-        line[1..].copy_from_slice(&candidates[best.1 as usize]);
+        out[0] = best.1;
+        out[1..].copy_from_slice(&self.candidates[best.1 as usize]);
     }
+}
+
+/// The adaptive filter type for `row`, computed in cache-sized chunks so a very wide row needs no
+/// row-sized buffers. Same choice as [`LineFilter::filter`].
+fn choose_filter(row: &[u8], up: Option<&[u8]>) -> u8 {
+    const CHUNK: usize = 16 * 1024;
+    let mut costs = [0u64; 5];
+    let mut span = Vec::new();
+    let mut a = 0;
+    while a < row.len() {
+        let b = (a + CHUNK).min(row.len());
+        for (t, cost) in costs.iter_mut().enumerate() {
+            *cost += filter_cost(filter_span(t as u8, row, up, a, b, &mut span));
+        }
+        a = b;
+    }
+    let mut best = (u64::MAX, 0u8);
+    for (t, &cost) in costs.iter().enumerate() {
+        if cost < best.0 {
+            best = (cost, t as u8);
+        }
+    }
+    best.1
+}
+
+/// Filter type `t` applied to `row[a..b]` only (with `up` the row above, `None` for zeros),
+/// computed in `buf`. Starts up to one pixel early so every byte has its left neighbour.
+fn filter_span<'b>(t: u8, row: &[u8], up: Option<&[u8]>, a: usize, b: usize, buf: &'b mut Vec<u8>) -> &'b [u8] {
+    let s = a.saturating_sub(BPP);
+    let zeros;
+    let up = match up {
+        Some(u) => &u[s..b],
+        None => {
+            zeros = vec![0u8; b - s];
+            &zeros[..]
+        }
+    };
+    buf.clear();
+    buf.resize(b - s, 0);
+    // The first `a - s` outputs lack left neighbours unless `s == 0` (the true row start);
+    // they are dropped.
+    apply_filter(t, &row[s..b], up, buf);
+    &buf[a - s..]
 }
 
 /// Sum of the filtered bytes read as signed magnitudes (the adaptive filter's cost).
@@ -583,6 +682,34 @@ mod tests {
             let png = encode_with_filter(w, h, &px, Level::Fastest, force, 4);
             assert_eq!(png, encode_with_filter(w, h, &px, Level::Fastest, force, 1), "filter {force:?}");
             assert!(decode(&png).unwrap().rgba == px, "filter {force:?}");
+        }
+    }
+
+    #[test]
+    fn rows_wider_than_a_band_are_filtered_in_pieces() {
+        // Each 1.2 MB row spans ~10 bands: bands filter only their slice, using a filter type
+        // chosen once per row from the whole row.
+        let (w, h) = (300_000u32, 3u32);
+        assert!(w as usize * 4 > 8 * deflate::BAND_SIZE);
+        let px = noisy_pixels(w, h, 11);
+        for level in [Level::Fastest, Level::Default] {
+            let one = encode_rgba8_threads(w, h, &px, level, 1);
+            assert!(decode(&one).unwrap().rgba == px, "{level:?}");
+            assert!(one == encode_rgba8_threads(w, h, &px, level, 4), "{level:?}: thread count changed the bytes");
+        }
+        // The chunked type choice matches whole-row adaptive filtering, rows longer than a
+        // chunk included.
+        for (w, seed) in [(3u32, 1u32), (100, 2), (5000, 3), (20_000, 4)] {
+            let px = noisy_pixels(w, 3, seed);
+            let stride = w as usize * 4;
+            let mut line = vec![0u8; stride + 1];
+            let mut whole = LineFilter::new(stride);
+            for y in 0..3 {
+                let row = &px[y * stride..(y + 1) * stride];
+                let up = (y > 0).then(|| &px[(y - 1) * stride..y * stride]);
+                whole.filter(row, up, None, &mut line);
+                assert_eq!(choose_filter(row, up), line[0], "width {w}, row {y}");
+            }
         }
     }
 
