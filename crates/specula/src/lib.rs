@@ -1073,7 +1073,8 @@ impl Engine {
                         ("files_written", Json::from(report.written)),
                         ("files_removed", Json::from(report.removed)),
                         ("leftover_files", Json::arr(report.leftovers.iter().map(|f| Json::from(f.as_str())))),
-                        ("entities", Json::from(self.world.len())),
+                        // Transient entities are never saved.
+                        ("entities", Json::from(self.world.persistent_len())),
                         ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
                     ])
                     .to_pretty(),

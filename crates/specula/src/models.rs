@@ -217,7 +217,16 @@ impl Library {
                 return Ok(ResolvedModel { handle: h, bounds: b.bounds() });
             }
         }
-        let built = self.build(spec)?.0;
+        let built = match self.build(spec) {
+            Ok((b, _)) => b,
+            // A recipe written moments ago may not be in the cached folder yet: look again now
+            // (a forced poll also rebuilds whatever else changed in the meantime).
+            Err(e) if e.code == "recipe_not_found" => {
+                self.poll(true);
+                self.build(spec)?.0
+            }
+            Err(e) => return Err(e),
+        };
         let bounds = built.bounds();
         let h = match self.by_spec.get(&key) {
             Some(&h) => h,
@@ -1018,6 +1027,9 @@ mod tests {
         world.spawn(SpawnSpec::model(ModelSpec::new("recipes/block.json")), "t").unwrap();
         let up = UpdateSpec { params: Some(vec![("tier".into(), 2.0)]), ..Default::default() };
         assert_eq!(world.update(&EntityKey::Id(id), up, "t").err().unwrap().code, "recipe_invalid");
+        // A recipe written just now (its folder already cached) is found without waiting a poll.
+        std::fs::write(root.join("recipes/fresh.json"), block(0.5)).unwrap();
+        world.spawn(SpawnSpec::model(ModelSpec::new("recipes/fresh.json")), "t").unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
