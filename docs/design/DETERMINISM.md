@@ -1,6 +1,6 @@
 # Design: determinism
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
+Status: researched 2026-10-13. Deterministic maths (`dmath`) is implemented; the rest is not yet. Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
 
 **The rule:** the same starting world, the same seed and the same inputs give the same simulation, bit for bit, on
 every run.
@@ -64,7 +64,7 @@ boundary and journaled with that tick number. The journal is therefore a complet
    separate processes and compares hashes.
 4. **Our own transcendental functions.** `f32::sin`, `cos`, `atan2`, `exp`, `ln` and `powf` call the platform maths
    library. It differs between the msvc and gnu builds and between OSes, and can differ in the last bit. Box2D found
-   `atan2f` differs across platforms and wrote its own. We implement these in `specula-core::math` (polynomial
+   `atan2f` differs across platforms and wrote its own. We implement these in `specula_core::dmath` (polynomial
    approximations with fixed coefficients), and simulation code uses only those. `sqrt` is correctly rounded under IEEE
    754, so it is safe to use directly. So are `+ - * /`.
 5. **No fused or reordered floating point.** Rust doesn't fuse `a*b+c` into FMA or reorder float operations on its
@@ -81,6 +81,65 @@ boundary and journaled with that tick number. The journal is therefore a complet
    treated as failures.
 9. **Floats are serialised exactly.** World files and the journal store floats so they round-trip bit-exactly
    (shortest round-trip decimal, or hex bits where needed). Otherwise saving and loading changes the simulation.
+
+## Deterministic maths: `specula_core::dmath`
+
+Built 2026-10-13 (rule 4). Simulation code calls `dmath::sin(x)` instead of `x.sin()`.
+
+**API.** For `f32` (what the engine uses): `sin`, `cos`, `sin_cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`exp`, `exp2`, `ln`, `log2`, `pow`, `hypot`, and `floor`, `ceil`, `round`, `round_ties_even`, `trunc`, `fract`.
+The same set exists for `f64` with a `_f64` suffix, except `pow`. `dmath::VERSION` goes into replay headers.
+
+**How.** The functions use only IEEE basic operations (`+ - * /`, `sqrt`), conversions and integer bit operations.
+Those are correctly rounded, so every platform gets the same bits. The `f32` functions compute in `f64` and round once.
+- **Polynomials:** truncated Taylor and `atanh` series with exact rational coefficients, on arguments reduced far
+  enough that truncation is below 2⁻⁶⁰.
+- **Tables:** π, 2/π, ln 2 and `atan(k/8)`, generated with exact integer arithmetic.
+- **sin, cos and tan:** reduced by π/2 with a 4-part Cody–Waite split kept as a double-double. Above 1.6·10⁶ they use
+  Payne–Hanek with 1216 bits of 2/π, so accuracy holds up to `f64::MAX`. There is no cliff for huge arguments.
+- **Special values:** follow C99 Annex F, like `std`: NaN, ±0, ±inf, and the `atan2` and `pow` grids.
+
+**Measured accuracy**, from the tests, over 400k inputs per function.
+
+| | `f32` | `f64` |
+|---|---|---|
+| All functions | 0 ulp from the correctly rounded result on every input tested (asserted ≤ 1) | — |
+| sin, cos, exp, exp2, ln, log2, hypot | — | ≤ 1 ulp |
+| atan, atan2, asin, acos | — | ≤ 1 ulp measured, ≤ 2 asserted |
+| tan | — | ≤ 2 ulp |
+| sin, cos at 1e22, 1e300, `f64::MAX` | — | ≤ 1 ulp, against 1600-bit references |
+
+**Speed.** Release build on windows-gnu, compared with mingw-w64's libm:
+- **Faster:** sin, cos, exp and hypot are about 0.3×, ln 0.4×, pow 0.5×, atan and atan2 0.7×.
+- **Slower:** tan is 1.8× and asin 1.2×.
+
+A faster libm such as glibc or UCRT would narrow the gap. To measure:
+`cargo test -p specula-core --release dmath::tests::bench -- --ignored --nocapture`.
+
+**Why `std` can't be used.** Two problems were measured on this machine while building dmath:
+- **`f32::round(0.49999997)` returns `1.0` on windows-gnu.** mingw-w64's `roundf` computes `floor(x + 0.5)`. Even
+  rounding goes through libm.
+- **`f64::sin` is far off on windows-gnu.** mingw-w64 uses x87 `fsin`, which reduces with a 66-bit π:
+  - `sin(-6.2832)` is 5 ulp off.
+  - `sin(-946140.89…)` is 11,000 ulp off.
+
+**What is safe from `std` in simulation code:**
+- `+ - * /`
+- `sqrt`
+- `abs`, `copysign` and negation
+- `min`, `max` and `clamp`
+- `to_radians` and `to_degrees` (a multiply)
+- `recip`
+- `as` casts
+- `to_bits` and `from_bits`
+- comparisons and `total_cmp`
+
+**What isn't:** every transcendental function, plus `floor`, `ceil`, `round`, `trunc` and `fract` (use the dmath
+versions), `powi` (compiler-rt; LLVM may fold it differently), `mul_add`, `cbrt`, `exp_m1`, `ln_1p`, `log10`, and
+`sinh`, `cosh`, `tanh` and their inverses. Add those to dmath first if the simulation needs them.
+
+**Golden values.** `golden_bits_f32` and `golden_hash_f64` pin the output bits. If one ever has to change, bump
+`dmath::VERSION`, because old replays won't match any more.
 
 ## Verification
 
@@ -106,7 +165,7 @@ boundary and journaled with that tick number. The journal is therefore a complet
 - **M1:**
   - fixed tick clock
   - seeded RNG
-  - `specula-core` deterministic maths
+  - `specula-core` deterministic maths (done: `dmath`)
   - ordered containers in world code
   - exact float serialisation
   - tick-stamped journal

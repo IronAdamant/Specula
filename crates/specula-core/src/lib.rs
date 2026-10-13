@@ -5,6 +5,7 @@
 pub mod base64;
 pub mod checksum;
 pub mod deflate;
+pub mod dmath;
 pub mod json;
 pub mod math;
 pub mod png;

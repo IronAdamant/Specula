@@ -232,10 +232,12 @@ claims and versions more agents just means more collisions.
 **Determinism groundwork (F2):**
 - [ ] **Fixed-tick simulation clock**: the tick number is the only time the simulation knows. Rendering interpolates.
 - [ ] **Seeded engine RNG** in `specula-core`, with a separate stream per system.
-- [ ] **Deterministic maths** in `specula-core`: our own `sin`, `cos`, `atan2`, `exp`, `ln`, and no reliance on the
+- [x] **Deterministic maths** in `specula-core`: our own `sin`, `cos`, `atan2`, `exp`, `ln`, and no reliance on the
   platform maths library.
   *Why:* Rust's `f32::sin` and similar call the platform maths library. The msvc and gnu builds link different ones,
   so results can differ in the last bit between our own CI jobs.
+  *Done (2026-10-13):* `specula_core::dmath`. The `f32` functions are correctly rounded on every input tested, and the
+  `f64` ones are within 1–2 ulp. Golden bits are pinned by the tests. `math.rs` uses it for its trig.
 - [ ] **Ordered containers in simulation code.** No dependence on `HashMap` iteration order, which Rust randomises
   per process.
 - [ ] **`world_hash`**: a hash of simulation state per tick.
