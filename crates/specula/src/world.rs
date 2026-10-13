@@ -3772,6 +3772,21 @@ mod tests {
         assert_eq!(w.state_hash(), before);
     }
 
+    /// Reviewer finding: a journal state put back whose spec no longer resolves kept its old
+    /// handle, which may name another spec's model by then.
+    #[test]
+    fn put_back_states_never_keep_a_stale_model_handle() {
+        let mut w = with_models();
+        let id = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/ok.json").with_param("tier", 3.0)), "t").unwrap().id;
+        let mut old = w.get(id).unwrap().clone();
+        assert_eq!(old.resolved_model().unwrap().handle, 3);
+        old.model = Some(ModelSpec::new("recipes/broken.json"));
+        w.put_raw(old);
+        let e = w.get(id).unwrap();
+        assert_eq!((e.resolved_model(), e.model_state(), e.local_bounds()), (None, "unresolved", None));
+        assert_eq!(e.to_json("/x").get("model_state"), Some(&Json::from("unresolved")));
+    }
+
     #[test]
     fn hidden_entities_and_their_subtrees_are_not_shown() {
         let mut w = World::default();
