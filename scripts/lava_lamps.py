@@ -13,47 +13,8 @@ import argparse
 import json
 import shutil
 import sys
-import urllib.request
 
-
-class Mcp:
-    """Minimal MCP client over Streamable HTTP (JSON responses)."""
-
-    def __init__(self, url, client_name):
-        self.url, self.session, self.next_id = url, None, 1
-        self.request("initialize", {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {},
-            "clientInfo": {"name": client_name, "version": "0"},
-        })
-        self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-    def post(self, msg):
-        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-        if self.session:
-            headers["Mcp-Session-Id"] = self.session
-        req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            self.session = self.session or r.headers.get("Mcp-Session-Id")
-            body = r.read()
-        return json.loads(body) if body else None
-
-    def request(self, method, params):
-        reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
-        self.next_id += 1
-        if "error" in reply:
-            raise RuntimeError(f"{method}: {reply['error']}")
-        return reply["result"]
-
-    def call(self, tool, **args):
-        result = self.request("tools/call", {"name": tool, "arguments": args})
-        if result.get("isError"):
-            raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
-        return result
-
-    def frame(self, **args):
-        result = self.call("sight_frame", **args)
-        return json.loads(next(c["text"] for c in result["content"] if c["type"] == "text"))
+from specula_mcp import Mcp
 
 
 # Classic colours: red wax in yellow liquid.
