@@ -18,6 +18,7 @@ use crate::lod::{self, LodInput};
 use crate::math3::{self, Affine, V2, V3};
 use crate::mesh::{Bounds, MeshData};
 use crate::poly;
+use crate::rig::{Bone, Rig, MAX_BONES};
 use crate::shape::{Gradient, Jitter, Rgba, Shape};
 use crate::style::{MaterialPreset, Style};
 
@@ -234,6 +235,28 @@ struct PartDef {
     ops: Vec<Node>,
     smooth_angle: Option<Expr>,
     lod_detail: Option<Expr>,
+    /// Bones this part's vertices may bind to (names in the recipe's rig; empty = the root).
+    bones: Vec<String>,
+    /// Joint blend band in metres (overrides the rig's `blend`).
+    blend: Option<Expr>,
+}
+
+/// A bone as written in the recipe (a `mirror` bone also produces a twin with `mirror_x`).
+#[derive(Clone, Debug)]
+struct BoneDef {
+    path: String,
+    name: String,
+    parent: Option<usize>,
+    head: Val,
+    tail: Option<Val>,
+    /// The `_r` twin of a mirrored `_l` bone: X is negated.
+    mirror_x: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RigDef {
+    blend: Option<Expr>,
+    bones: Vec<BoneDef>,
 }
 
 /// A parsed, validated recipe (not yet built).
@@ -251,6 +274,7 @@ pub struct Recipe {
     smooth_angle: Option<Expr>,
     parts: Vec<PartDef>,
     finish: Vec<Node>,
+    rig: Option<RigDef>,
 }
 
 fn e(path: &str, code: ErrorCode, msg: impl Into<String>) -> RecipeError {
@@ -423,6 +447,82 @@ impl Parser<'_> {
         }
         items.iter().enumerate().map(|(i, x)| self.op_node(&format!("{path}[{i}]"), x, OPS, "op")).collect()
     }
+
+    /// The `rig` section: bones parents-first, `_l` bones with `"mirror": true` gain an `_r` twin
+    /// right after them.
+    fn rig(&self, v: &Json) -> Result<RigDef, RecipeError> {
+        let o = v.as_object().ok_or_else(|| type_err("rig", "{\"bones\": [...], \"blend\": metres}"))?;
+        let mut blend = None;
+        let mut items = None;
+        for (k, x) in o {
+            match k.as_str() {
+                "blend" => blend = Some(self.expr("rig.blend", x)?),
+                "bones" => items = Some(x.as_array().ok_or_else(|| type_err("rig.bones", "a list of bones"))?),
+                "note" => {}
+                _ => return Err(e(&format!("rig.{k}"), ErrorCode::UnknownField, "a rig accepts: bones, blend, note")),
+            }
+        }
+        let items = items.ok_or_else(|| e("rig.bones", ErrorCode::MissingField, "a rig needs \"bones\""))?;
+        if items.is_empty() {
+            return Err(e("rig.bones", ErrorCode::MissingField, "a rig needs at least one bone (the root)"));
+        }
+        let mut bones: Vec<BoneDef> = Vec::new();
+        for (i, b) in items.iter().enumerate() {
+            let path = format!("rig.bones[{i}]");
+            let bo = b.as_object().ok_or_else(|| type_err(&path, "a bone object"))?;
+            let (mut name, mut parent, mut head, mut tail, mut mirror) = (None, None, None, None, false);
+            for (k, x) in bo {
+                let fp = format!("{path}.{k}");
+                match k.as_str() {
+                    "name" => name = Some(x.as_str().ok_or_else(|| type_err(&fp, "a bone name"))?.to_string()),
+                    "parent" => parent = Some(x.as_str().ok_or_else(|| type_err(&fp, "a bone name"))?.to_string()),
+                    "head" => head = Some(self.value(&fp, Vec3, x)?),
+                    "tail" => tail = Some(self.value(&fp, Vec3, x)?),
+                    "mirror" => mirror = x.as_bool().ok_or_else(|| type_err(&fp, "true or false"))?,
+                    "note" => {}
+                    _ => return Err(e(&fp, ErrorCode::UnknownField, "a bone accepts: name, parent, head, tail, mirror, note")),
+                }
+            }
+            let name = name.ok_or_else(|| e(&format!("{path}.name"), ErrorCode::MissingField, "a bone needs a \"name\""))?;
+            if !is_ident(&name) {
+                return Err(e(&format!("{path}.name"), ErrorCode::WrongType, "bone names are identifiers (letters, digits, _)"));
+            }
+            let head = head.ok_or_else(|| e(&format!("{path}.head"), ErrorCode::MissingField, "a bone needs a \"head\" (its pivot, [x, y, z] m)"))?;
+            let parent = match parent {
+                None if bones.is_empty() => None,
+                None => return Err(e(&format!("{path}.parent"), ErrorCode::MissingField, "every bone after the first needs a parent (bone 0 is the root)")),
+                Some(_) if bones.is_empty() => return Err(e(&format!("{path}.parent"), ErrorCode::WrongType, "the first bone is the root and has no parent")),
+                Some(pn) => Some(bones.iter().position(|q| q.name == pn).ok_or_else(|| {
+                    let known: Vec<&str> = bones.iter().map(|q| q.name.as_str()).collect();
+                    e(&format!("{path}.parent"), ErrorCode::UnknownName, format!("parent '{pn}' is not an earlier bone (known: {})", known.join(", ")))
+                })?),
+            };
+            let dup = |n: &str, bones: &[BoneDef]| -> Result<(), RecipeError> {
+                if bones.iter().any(|q| q.name == n) {
+                    return Err(e(&format!("{path}.name"), ErrorCode::WrongType, format!("duplicate bone name '{n}'")));
+                }
+                Ok(())
+            };
+            dup(&name, &bones)?;
+            bones.push(BoneDef { path: path.clone(), name: name.clone(), parent, head: head.clone(), tail: tail.clone(), mirror_x: false });
+            if mirror {
+                let Some(stem) = name.strip_suffix("_l") else {
+                    return Err(e(&format!("{path}.mirror"), ErrorCode::WrongType, "a mirrored bone is named *_l (left, +X); its twin is *_r"));
+                };
+                let twin = format!("{stem}_r");
+                dup(&twin, &bones)?;
+                // The twin hangs from the parent's own twin when there is one.
+                let twin_parent = parent.map(|pi| {
+                    bones[pi].name.strip_suffix("_l").and_then(|s| bones.iter().position(|q| q.name == format!("{s}_r"))).unwrap_or(pi)
+                });
+                bones.push(BoneDef { path: format!("{path}.mirror"), name: twin, parent: twin_parent, head, tail, mirror_x: true });
+            }
+            if bones.len() > MAX_BONES {
+                return Err(e(&path, ErrorCode::Limit, format!("more than {MAX_BONES} bones")).with_numbers(bones.len() as f64, MAX_BONES as f64));
+            }
+        }
+        Ok(RigDef { blend, bones })
+    }
 }
 
 fn is_ident(s: &str) -> bool {
@@ -442,7 +542,7 @@ impl Recipe {
         crate::error::check_duplicate_keys(&json, "")?;
         let obj = json.as_object().ok_or_else(|| type_err("", "a recipe object"))?;
         const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "parts", "finish"];
+            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish"];
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
@@ -560,6 +660,7 @@ impl Recipe {
             None => ColliderKind::ConvexHull,
         };
         let smooth_angle = get("smooth_angle").map(|v| p.expr("smooth_angle", v)).transpose()?;
+        let rig = get("rig").map(|v| p.rig(v)).transpose()?;
         // Parts.
         let parts_json = get("parts").ok_or_else(|| e("parts", ErrorCode::MissingField, "a recipe needs \"parts\""))?;
         let items = parts_json.as_array().ok_or_else(|| type_err("parts", "a list of parts"))?;
@@ -573,7 +674,8 @@ impl Recipe {
         for (i, pj) in items.iter().enumerate() {
             let path = format!("parts[{i}]");
             let po = pj.as_object().ok_or_else(|| type_err(&path, "a part object"))?;
-            const PART: &[&str] = &["name", "material", "color", "when", "shape", "include", "params", "ops", "smooth_angle", "lod_detail", "note"];
+            const PART: &[&str] =
+                &["name", "material", "color", "when", "shape", "include", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "note"];
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
                     return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("a part accepts: {}", PART.join(", "))));
@@ -625,10 +727,38 @@ impl Recipe {
             let ops = p.ops(&format!("{path}.ops"), pget("ops"))?;
             let smooth_angle = pget("smooth_angle").map(|v| p.expr(&format!("{path}.smooth_angle"), v)).transpose()?;
             let lod_detail = pget("lod_detail").map(|v| p.expr(&format!("{path}.lod_detail"), v)).transpose()?;
-            parts.push(PartDef { path, name: pname.to_string(), material, color, when, source, ops, smooth_angle, lod_detail });
+            let mut bones = Vec::new();
+            if let Some(bv) = pget("bones") {
+                let bpath = format!("{path}.bones");
+                let Some(rig) = &rig else {
+                    return Err(e(&bpath, ErrorCode::MissingField, "a part's bones need a \"rig\" section in the recipe"));
+                };
+                let names: Vec<&Json> = match bv {
+                    Json::Str(_) => vec![bv],
+                    Json::Arr(items) if !items.is_empty() => items.iter().collect(),
+                    _ => return Err(type_err(&bpath, "a bone name or a non-empty list of bone names")),
+                };
+                for (k, n) in names.iter().enumerate() {
+                    let np = if matches!(bv, Json::Arr(_)) { format!("{bpath}[{k}]") } else { bpath.clone() };
+                    let n = n.as_str().ok_or_else(|| type_err(&np, "a bone name"))?;
+                    if !rig.bones.iter().any(|b| b.name == n) {
+                        let known: Vec<&str> = rig.bones.iter().map(|b| b.name.as_str()).collect();
+                        return Err(e(&np, ErrorCode::UnknownName, format!("no bone '{n}' in the rig (bones: {})", known.join(", "))));
+                    }
+                    if bones.iter().any(|b| b == n) {
+                        return Err(e(&np, ErrorCode::WrongType, format!("bone '{n}' listed twice")));
+                    }
+                    bones.push(n.to_string());
+                }
+            }
+            let blend = pget("blend").map(|v| p.expr(&format!("{path}.blend"), v)).transpose()?;
+            if blend.is_some() && rig.is_none() {
+                return Err(e(&format!("{path}.blend"), ErrorCode::MissingField, "blend needs a \"rig\" section in the recipe"));
+            }
+            parts.push(PartDef { path, name: pname.to_string(), material, color, when, source, ops, smooth_angle, lod_detail, bones, blend });
         }
         let finish = p.ops("finish", get("finish"))?;
-        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish })
+        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig })
     }
 }
 
@@ -677,6 +807,10 @@ pub struct Model {
     pub budget: (Option<u32>, Option<u32>),
     /// What the build changed or gave up on (skipped LODs, a hull that fell back to a box).
     pub notes: Vec<String>,
+    /// The bone tree when the recipe has a `rig`; every LOD then carries per-vertex
+    /// `joints`/`weights` into it. Included recipes' rigs are not merged (their parts bind to the
+    /// including part's bones).
+    pub rig: Option<Rig>,
 }
 
 impl Model {
@@ -713,6 +847,13 @@ impl Model {
                 ),
             ),
             ("notes", Json::arr(self.notes.iter().map(|n| Json::Str(n.clone())))),
+            (
+                "rig",
+                match &self.rig {
+                    Some(r) => Json::arr(r.bones.iter().map(|b| Json::Str(b.name.clone()))),
+                    None => Json::Null,
+                },
+            ),
         ])
     }
 }
@@ -735,7 +876,19 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let tally = Tally::default();
     let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally)?;
     let mut notes = Vec::new();
-    let lod0 = assemble(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>());
+    let rig = match &recipe.rig {
+        Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default() })?),
+        None => None,
+    };
+    let bindings: Vec<Binding> = match &rig {
+        Some((r, blend)) => built
+            .iter()
+            .map(|b| Binding { bones: b.bones.iter().filter_map(|n| r.find(n)).collect(), blend: b.blend.unwrap_or(*blend) })
+            .collect(),
+        None => Vec::new(),
+    };
+    let skin = rig.as_ref().map(|(r, _)| (r, &bindings[..]));
+    let lod0 = assemble(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin);
     lod0.validate().map_err(|er| e("parts", ErrorCode::InvalidMesh, er.to_string()))?;
     if lod0.triangle_count() == 0 {
         return Err(e("parts", ErrorCode::Geometry, "the model has no triangles (every part switched off?)"));
@@ -780,7 +933,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             continue;
         };
         let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
-        let mesh = assemble(&pairs);
+        let mesh = assemble(&pairs, skin);
         mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
         // An LOD that saves under 10% over the previous one is dropped: it would cost memory and
         // a switch for nothing (parts kept with lod_detail 0 can make a model irreducible).
@@ -805,6 +958,11 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         h.write_u64(m.content_hash());
     }
     hash_collider(&mut h, &collider);
+    // Unrigged models hash exactly as they did before rigs existed.
+    if let Some((r, _)) = &rig {
+        h.write_u8(1);
+        r.hash_into(&mut h);
+    }
     let mut used: Vec<(String, f64)> = recipe.params.iter().map(|p| (p.name.clone(), vars[&p.name])).collect();
     used.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(Model {
@@ -819,7 +977,79 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         seed,
         budget: (min_t, max_t),
         notes,
+        rig: rig.map(|(r, _)| r),
     })
+}
+
+/// Which bones a built part's vertices bind to, and its blend band (metres).
+struct Binding {
+    bones: Vec<usize>,
+    blend: f32,
+}
+
+/// Evaluates the rig's bones, fills default tails (a bone's only child's head, else a point) and
+/// moves the rig with the recipe's rigid `finish` ops (move, rotate, scale, mirror without keep),
+/// so pivots are written in the same space as the parts. Returns the rig and its default blend.
+fn build_rig(recipe: &Recipe, def: &RigDef, ctx: &Ctx) -> Result<(Rig, f32), RecipeError> {
+    let point = |v: &Val, path: &str| -> Result<V3, RecipeError> {
+        let l = ctx.list(v, path)?;
+        let p = [l[0], l[1], l[2]];
+        if !p.iter().all(|x| fits(*x, MAX_EXTENT_M)) {
+            return Err(e(path, ErrorCode::OutOfRange, format!("bone positions must be within ±{MAX_EXTENT_M} m")));
+        }
+        Ok(p)
+    };
+    let mut ends: Vec<(V3, Option<V3>)> = Vec::with_capacity(def.bones.len());
+    for b in &def.bones {
+        let mut head = point(&b.head, &format!("{}.head", b.path))?;
+        let mut tail = b.tail.as_ref().map(|t| point(t, &format!("{}.tail", b.path))).transpose()?;
+        if b.mirror_x {
+            head[0] = -head[0];
+            if let Some(t) = &mut tail {
+                t[0] = -t[0];
+            }
+        }
+        ends.push((head, tail));
+    }
+    let bones = def
+        .bones
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let (head, tail) = ends[i];
+            let tail = tail.unwrap_or_else(|| {
+                let mut kids = def.bones.iter().enumerate().filter(|(_, c)| c.parent == Some(i));
+                match (kids.next(), kids.next()) {
+                    (Some((k, _)), None) => ends[k].0,
+                    _ => head,
+                }
+            });
+            Bone { name: b.name.clone(), parent: b.parent, head, tail }
+        })
+        .collect();
+    let mut rig = Rig { bones };
+    for op in &recipe.finish {
+        if let Some(t) = ctx.rig_affine(op)? {
+            for b in &mut rig.bones {
+                b.head = t.apply_point(b.head);
+                b.tail = t.apply_point(b.tail);
+            }
+        }
+    }
+    rig.validate().map_err(|er| e("rig", ErrorCode::Geometry, er.to_string()))?;
+    let blend = match &def.blend {
+        Some(x) => blend_value(ctx, x, "rig.blend")?,
+        None => 0.0,
+    };
+    Ok((rig, blend))
+}
+
+fn blend_value(ctx: &Ctx, x: &Expr, path: &str) -> Result<f32, RecipeError> {
+    let v = ctx.eval(x, path)?;
+    if !(0.0..=10.0).contains(&v) {
+        return Err(e(path, ErrorCode::OutOfRange, format!("blend {v} is outside 0..10 m")).with_numbers(v, 10.0));
+    }
+    Ok(v as f32)
 }
 
 /// Running totals for one build, shared by every part and include, so limits hold across the
@@ -893,12 +1123,23 @@ struct BuiltPart {
     material: String,
     smooth_angle: f32,
     lod_detail: f32,
+    /// Bone names from the (top-level) part that produced this piece.
+    bones: Vec<String>,
+    blend: Option<f32>,
 }
 
-fn assemble(parts: &[(&Shape, &BuiltPart)]) -> MeshData {
+/// Meshes every part and merges them by material. With a rig, each part's vertices are bound
+/// to its bones (`skin.1[k]` belongs to `parts[k]`).
+fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> MeshData {
     let mut mesh = MeshData::default();
-    for (shape, info) in parts {
-        mesh.merge(&shape.finalize(info.smooth_angle, &info.material));
+    for (k, (shape, info)) in parts.iter().enumerate() {
+        let mut m = shape.finalize(info.smooth_angle, &info.material);
+        if let Some((rig, binds)) = skin {
+            let (j, w) = rig.bind(&m.positions, &binds[k].bones, binds[k].blend);
+            m.joints = j;
+            m.weights = w;
+        }
+        mesh.merge(&m);
     }
     mesh.group_by_material();
     mesh
@@ -977,7 +1218,7 @@ fn build_parts(
                     Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
                 };
-                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0 }]
+                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0, bones: Vec::new(), blend: None }]
             }
             Source::Include { asset, params: inc_params } => {
                 let path = format!("{}.include", part.path);
@@ -1010,6 +1251,12 @@ fn build_parts(
                 return Err(e(&format!("{}.lod_detail", part.path), ErrorCode::OutOfRange, "lod_detail must be 0..4 (0 = never simplify)"));
             }
             pieces.iter_mut().for_each(|p| p.lod_detail *= v);
+        }
+        // Bones name this recipe's rig: an include's own bindings are replaced by this part's.
+        let blend = part.blend.as_ref().map(|x| blend_value(&ctx, x, &format!("{}.blend", part.path))).transpose()?;
+        for p in &mut pieces {
+            p.bones = part.bones.clone();
+            p.blend = blend;
         }
         for piece in &mut pieces {
             for (i, op) in part.ops.iter().enumerate() {
@@ -1391,6 +1638,45 @@ impl Ctx<'_> {
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;
         Ok(s)
+    }
+
+    /// The rigid transform a `finish` op applies, so a rig can follow it: `move`, `rotate`,
+    /// `scale` and `mirror` without `keep`. Other ops don't move bones (`None`); a mirror that
+    /// keeps both halves can't be followed and is an error.
+    fn rig_affine(&self, n: &Node) -> Result<Option<Affine>, RecipeError> {
+        if let Some(w) = &n.when {
+            if self.eval(w, &format!("{}.when", n.path))? == 0.0 {
+                return Ok(None);
+            }
+        }
+        let pivoted = |t: Affine, pivot: V3| Affine::translate(pivot).then_after(&t.then_after(&Affine::translate(math3::scale(pivot, -1.0))));
+        Ok(match n.op.as_str() {
+            "move" => Some(Affine::translate(self.vec3(n, "by", [0.0; 3])?)),
+            "rotate" => {
+                let d = self.vec3(n, "deg", [0.0; 3])?;
+                let t = Affine::rotate_euler_deg([d[0] as f64, d[1] as f64, d[2] as f64]);
+                Some(pivoted(t, self.vec3(n, "pivot", [0.0; 3])?))
+            }
+            "scale" => {
+                let by = match n.get("by") {
+                    Some(Val::Num(x)) => {
+                        let v = self.eval(x, &n.at("by"))? as f32;
+                        [v, v, v]
+                    }
+                    _ => self.vec3(n, "by", [1.0; 3])?,
+                };
+                Some(pivoted(Affine::scale(by), self.vec3(n, "pivot", [0.0; 3])?))
+            }
+            "mirror" if self.bool(n, "keep", true) => {
+                return Err(e(&n.path, ErrorCode::WrongType, "a rigged recipe can't finish with a mirror that keeps both halves (bones can't be duplicated): mirror the parts and use mirrored bones"));
+            }
+            "mirror" => {
+                let mut s = [1.0; 3];
+                s[axis_index(self.str(n, "axis", "x"))] = -1.0;
+                Some(Affine::scale(s))
+            }
+            _ => None,
+        })
     }
 
     fn jitter(&self, n: &Node) -> Result<Jitter, RecipeError> {
