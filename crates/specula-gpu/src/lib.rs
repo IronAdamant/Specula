@@ -50,6 +50,7 @@ mod device;
 mod gpu;
 mod instance;
 mod loader;
+mod post;
 mod render;
 mod shadow;
 mod stats;
@@ -350,6 +351,31 @@ impl Default for ShadowSettings {
     }
 }
 
+/// Bloom: light above `threshold` spreads into a soft glow. Off by default.
+///
+/// With bloom on the scene renders to a 16-bit float target; a chain of half-resolution levels
+/// blurs what is bright, and the tonemap pass adds it back. Exposure applies first, so with the
+/// default threshold of 1 only what would display brighter than white blooms (emissive surfaces,
+/// bright highlights), not lit stone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BloomSettings {
+    pub enabled: bool,
+    /// Exposed brightness where bloom starts.
+    pub threshold: f32,
+    /// Softens the threshold over this range (0 = hard cut).
+    pub knee: f32,
+    /// Strength of the glow added back.
+    pub intensity: f32,
+    /// Blur levels (1..=8): each halves the resolution and widens the glow. Fewer = cheaper.
+    pub levels: u32,
+}
+
+impl Default for BloomSettings {
+    fn default() -> Self {
+        BloomSettings { enabled: false, threshold: 1.0, knee: 0.5, intensity: 1.0, levels: 5 }
+    }
+}
+
 /// Scene-wide lighting. The default reproduces M0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Environment {
@@ -367,6 +393,10 @@ pub struct Environment {
     pub tonemap: bool,
     /// Directional shadows from the sun (off by default).
     pub shadow: ShadowSettings,
+    /// Glow around bright light (off by default).
+    pub bloom: BloomSettings,
+    /// FXAA edge anti-aliasing after tone mapping (off by default).
+    pub fxaa: bool,
 }
 
 impl Default for Environment {
@@ -380,6 +410,8 @@ impl Default for Environment {
             exposure: 1.0,
             tonemap: false,
             shadow: ShadowSettings::default(),
+            bloom: BloomSettings::default(),
+            fxaa: false,
         }
     }
 }

@@ -181,3 +181,85 @@ fn blended_materials_do_not_cast() {
     let errors = validation_errors(test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
+
+/// (pixels that differ, largest channel difference).
+fn diff(a: &[u8], b: &[u8]) -> (usize, u8) {
+    let mut n = 0;
+    let mut most = 0;
+    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let d = (0..4).map(|k| p[k].abs_diff(q[k])).max().unwrap();
+        n += (d > 0) as usize;
+        most = most.max(d);
+    }
+    (n, most)
+}
+
+#[test]
+fn bloom_glows_around_emissive_only() {
+    every_adapter("bloom", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let env = scene.environment();
+        let plain = scene.render(&mut gpu, env, "no_bloom");
+
+        // The HDR path with no glow added matches the forward path (16-bit float rounding only).
+        let mut hdr = env;
+        hdr.bloom.enabled = true;
+        hdr.bloom.intensity = 0.0;
+        let same = scene.render(&mut gpu, hdr, "bloom_zero");
+        let (n, most) = diff(&plain, &same);
+        eprintln!("{test}: HDR path vs forward: {n} pixels differ, by at most {most}");
+        assert!(most <= 2, "the HDR path tone maps like the forward path: max diff {most}");
+
+        let mut glow = env;
+        glow.bloom.enabled = true;
+        let bloomed = scene.render(&mut gpu, glow, "bloom");
+        let stats = gpu.last_frame_stats();
+        if let Some(t) = &stats.gpu {
+            let names: Vec<_> = t.passes.iter().map(|p| p.name).collect();
+            assert!(names.contains(&specula_gpu::PASS_BLOOM) && names.contains(&specula_gpu::PASS_TONEMAP), "{names:?}");
+        }
+        // Beside the glowing cube: brighter.
+        let near = [4.75, 0.01, 3.0];
+        let (a, b) = (scene.px(&plain, near), scene.px(&bloomed, near));
+        eprintln!("{test}: beside the glow {a:?} -> {b:?}");
+        assert!(luma(b) > luma(a) + 15, "glow spreads around the emissive cube: {a:?} -> {b:?}");
+        // Lit stone far from it: unchanged (only what's brighter than the threshold blooms).
+        for p in [[-5.0, 0.01, 5.0], [0.0, 2.0, 0.0], [-6.0, 1.6, -5.0]] {
+            let (a, b) = (scene.px(&plain, p), scene.px(&bloomed, p));
+            assert!(luma(a).abs_diff(luma(b)) <= 6, "{p:?} doesn't bloom: {a:?} -> {b:?}");
+        }
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
+#[test]
+fn fxaa_smooths_edges_only() {
+    every_adapter("fxaa", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let mut env = scene.environment();
+        env.tonemap = false; // no dither: flat areas must come through exactly
+        let plain = scene.render(&mut gpu, env, "no_fxaa");
+        env.fxaa = true;
+        let smooth = scene.render(&mut gpu, env, "fxaa");
+        let (n, most) = diff(&plain, &smooth);
+        eprintln!("{test}: {n} pixels changed, by at most {most}");
+        assert!(n > 50 && n < (W * H / 10) as usize, "only edge pixels change: {n}");
+        // Flat ground and the middle of a face come through unchanged.
+        for p in [[-5.0, 0.01, 5.0], [0.0, 1.0, 1.0]] {
+            assert_eq!(scene.px(&plain, p), scene.px(&smooth, p), "{p:?}");
+        }
+        // Bloom and FXAA together.
+        env.bloom.enabled = true;
+        env.tonemap = true;
+        scene.render(&mut gpu, env, "bloom_fxaa");
+        if let Some(t) = &gpu.last_frame_stats().gpu {
+            let names: Vec<_> = t.passes.iter().map(|p| p.name).collect();
+            assert!(names.ends_with(&[specula_gpu::PASS_BLOOM, specula_gpu::PASS_TONEMAP, specula_gpu::PASS_FXAA]), "{names:?}");
+        }
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}

@@ -669,24 +669,6 @@ pub fn image_barrier(
     }
 }
 
-/// Like [`image_barrier`], for one mip level (all layers).
-#[allow(clippy::too_many_arguments)]
-pub fn mip_barrier(
-    image: VkImage,
-    mip: u32,
-    src_stage: VkFlags64,
-    src_access: VkFlags64,
-    dst_stage: VkFlags64,
-    dst_access: VkFlags64,
-    old_layout: VkImageLayout,
-    new_layout: VkImageLayout,
-) -> VkImageMemoryBarrier2 {
-    let mut b = image_barrier(image, VK_IMAGE_ASPECT_COLOR_BIT, src_stage, src_access, dst_stage, dst_access, old_layout, new_layout);
-    b.subresource_range.base_mip_level = mip;
-    b.subresource_range.level_count = 1;
-    b
-}
-
 pub fn buffer_barrier(
     buffer: VkBuffer,
     src_stage: VkFlags64,

@@ -8,6 +8,7 @@ use crate::render::{
     check_frame, frame_features, prepare_frame, record_frame, CacheIdentity, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines,
     RenderTarget, DEPTH_FORMAT,
 };
+use crate::post::{PostMode, PostTargets};
 use crate::shadow::{clamp_resolution, ShadowMap};
 use crate::swapchain::Window;
 use crate::timing::PassTimer;
@@ -23,7 +24,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Offscreen colour format (readback bytes are sRGB RGBA8).
-pub const TARGET_FORMAT: VkFormat = VK_FORMAT_R8G8B8A8_SRGB;
+pub const TARGET_FORMAT: VkFormat = crate::render::LDR_FORMAT;
 
 /// Where `run_sync` spent its time, in milliseconds.
 #[derive(Clone, Copy, Debug, Default)]
@@ -38,6 +39,8 @@ struct Target {
     depth: Image,
     readback: Buffer,
     extent: VkExtent2D,
+    /// Post-chain images, created when a frame first needs them.
+    post: PostTargets,
     /// False until the first `render`; the colour image then sits in TRANSFER_SRC_OPTIMAL.
     rendered: bool,
 }
@@ -354,13 +357,14 @@ impl GpuInner {
         };
         let id = self.next_id();
         self.targets
-            .insert(id, Target { color, depth, readback, extent: VkExtent2D { width, height }, rendered: false });
+            .insert(id, Target { color, depth, readback, extent: VkExtent2D { width, height }, post: PostTargets::default(), rendered: false });
         Ok(TargetId(id))
     }
 
     pub fn destroy_target(&mut self, target: TargetId) {
-        let Some(t) = self.targets.remove(&target.0) else { return };
+        let Some(mut t) = self.targets.remove(&target.0) else { return };
         // Offscreen work is synchronous, so nothing on the GPU still uses the target.
+        t.post.destroy(&self.device, &mut self.descriptors);
         self.device.destroy_buffer(&t.readback);
         self.device.destroy_image(&t.depth);
         self.device.destroy_image(&t.color);
@@ -395,13 +399,17 @@ impl GpuInner {
             return Err(GpuError::new(format!("unknown target id {}", target.0)));
         }
         self.ensure_frame_resources(frame)?;
+        let t = self.targets.get_mut(&target.0).expect("checked");
+        let mode = PostMode::of(&frame.environment).fit(t.extent);
+        // Offscreen work is synchronous: nothing pending uses the images.
+        t.post.ensure(&self.device, &mut self.descriptors, t.extent, mode, || {})?;
         let t = &self.targets[&target.0];
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
         prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
         let features = frame_features(frame, &self.scratch, self.shadow_map.is_some());
-        let pipelines = self.pipelines.scene(&self.device, TARGET_FORMAT, features)?;
+        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode)?;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -424,6 +432,8 @@ impl GpuInner {
             frame,
             scratch: &self.scratch,
             upload,
+            post: &t.post,
+            mode,
         };
         let ran = self.run_sync(|dev, cmd| {
             if let Some(t) = timer.as_mut() {
@@ -537,6 +547,7 @@ impl GpuInner {
     pub fn attach_window(&mut self, hinstance: *mut c_void, hwnd: *mut c_void, width: u32, height: u32) -> Result<(), GpuError> {
         if let Some(mut old) = self.window.take() {
             self.device.wait_idle();
+            old.post.destroy(&self.device, &mut self.descriptors);
             old.destroy(&self.instance, &self.device, self.pool);
         }
         let window = Window::new(&self.instance, &self.device, self.pool, hinstance, hwnd, width, height)?;
@@ -567,7 +578,7 @@ impl GpuInner {
             &self.instance,
             &self.device,
             &mut self.pipelines,
-            &self.descriptors,
+            &mut self.descriptors,
             self.shadow_map.as_ref(),
             &self.meshes,
             frame,
@@ -610,12 +621,14 @@ impl Drop for GpuInner {
         let dev = &self.device;
         dev.wait_idle();
         if let Some(mut w) = self.window.take() {
+            w.post.destroy(dev, &mut self.descriptors);
             w.destroy(&self.instance, dev, self.pool);
         }
         for (_, m) in self.meshes.drain() {
             dev.destroy_buffer(&m.buffer);
         }
-        for (_, t) in self.targets.drain() {
+        for (_, mut t) in self.targets.drain() {
+            t.post.destroy(dev, &mut self.descriptors);
             dev.destroy_buffer(&t.readback);
             dev.destroy_image(&t.depth);
             dev.destroy_image(&t.color);

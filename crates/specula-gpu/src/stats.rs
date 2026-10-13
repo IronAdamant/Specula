@@ -7,6 +7,12 @@
 pub const PASS_SCENE: &str = "scene";
 /// The sun's shadow map: every cascade's depth-only draws.
 pub const PASS_SHADOW: &str = "shadow";
+/// Bloom: bright-pass downsampling and the upsampling blur chain.
+pub const PASS_BLOOM: &str = "post_bloom";
+/// HDR → display: bloom added back, exposure already applied, ACES and dithering.
+pub const PASS_TONEMAP: &str = "post_tonemap";
+/// FXAA anti-aliasing.
+pub const PASS_FXAA: &str = "post_fxaa";
 
 /// Which entry point produced a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

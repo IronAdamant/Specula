@@ -4,6 +4,7 @@
 use crate::batch::{Bounds, Plan};
 use crate::descriptors::Descriptors;
 use crate::device::{image_barrier, Buffer, Device};
+use crate::post::{color_barrier, hdr_clear, record_post, FinalImage, PostMode, PostTargets};
 use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
@@ -18,10 +19,15 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 3] = [
+static SHADERS: [(&str, &[u8]); 8] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
+    ("fullscreen.vert", include_bytes!("../shaders/fullscreen.vert.spv")),
+    ("bloom_down.frag", include_bytes!("../shaders/bloom_down.frag.spv")),
+    ("bloom_up.frag", include_bytes!("../shaders/bloom_up.frag.spv")),
+    ("composite.frag", include_bytes!("../shaders/composite.frag.spv")),
+    ("fxaa.frag", include_bytes!("../shaders/fxaa.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,7 +35,15 @@ enum Shader {
     MeshVert = 0,
     MeshFrag = 1,
     ShadowVert = 2,
+    FullscreenVert = 3,
+    BloomDownFrag = 4,
+    BloomUpFrag = 5,
+    CompositeFrag = 6,
+    FxaaFrag = 7,
 }
+
+/// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
+pub const LDR_FORMAT: VkFormat = VK_FORMAT_R8G8B8A8_SRGB;
 
 pub const DEPTH_FORMAT: VkFormat = VK_FORMAT_D32_SFLOAT;
 
@@ -529,6 +543,14 @@ pub enum PipelineKey {
     Mesh { format: VkFormat, blended: bool, features: u32 },
     /// Depth-only shadow casters into a D16 layer.
     Shadow,
+    /// Bloom downsample (and bright pass) into an HDR level.
+    BloomDown,
+    /// Bloom upsample: the blur below, tent-filtered, plus this level.
+    BloomUp,
+    /// HDR (+ bloom) → display values in `format`.
+    Composite { format: VkFormat },
+    /// FXAA into `format`.
+    Fxaa { format: VkFormat },
 }
 
 /// What vertex data a pipeline reads.
@@ -547,8 +569,6 @@ enum Blend {
     Off,
     /// dst = src + dst × (1 − src.a).
     Premultiplied,
-    /// dst = src + dst.
-    Additive,
 }
 
 /// How a pipeline is built.
@@ -599,7 +619,28 @@ impl PipelineKey {
                 blend: Blend::Off,
                 depth_bias: true,
             },
+            PipelineKey::BloomDown => fullscreen(Shader::BloomDownFrag, HDR_FORMAT, Blend::Off),
+            PipelineKey::BloomUp => fullscreen(Shader::BloomUpFrag, HDR_FORMAT, Blend::Off),
+            PipelineKey::Composite { format } => fullscreen(Shader::CompositeFrag, format, Blend::Off),
+            PipelineKey::Fxaa { format } => fullscreen(Shader::FxaaFrag, format, Blend::Off),
         }
+    }
+}
+
+/// A full-screen triangle pass into one colour attachment, no depth.
+fn fullscreen(frag: Shader, format: VkFormat, blend: Blend) -> PipelineDesc {
+    PipelineDesc {
+        vert: Shader::FullscreenVert,
+        frag: Some(frag),
+        spec: 0,
+        vertex: VertexInput::None,
+        color: Some(format),
+        depth: None,
+        depth_test: false,
+        depth_write: false,
+        compare: Some(VK_COMPARE_OP_LESS),
+        blend,
+        depth_bias: false,
     }
 }
 
@@ -620,14 +661,19 @@ pub struct Pipelines {
     cache_load: PipelineCacheLoad,
 }
 
-/// The pipelines one frame's scene uses.
+/// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
 #[derive(Clone, Copy)]
-pub struct ScenePipelines {
+pub struct FramePipelines {
     pub layout: VkPipelineLayout,
+    /// The scene's colour format (the final image's, or the HDR or LDR intermediate's).
+    pub scene_format: VkFormat,
     pub opaque: VkPipeline,
     pub blended: VkPipeline,
-    /// `VK_NULL_HANDLE` when the frame has no shadow pass.
     pub shadow: VkPipeline,
+    pub bloom_down: VkPipeline,
+    pub bloom_up: VkPipeline,
+    pub composite: VkPipeline,
+    pub fxaa: VkPipeline,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -745,6 +791,13 @@ impl Pipelines {
 
     /// Every pipeline that renders into `color_format` (a target or window format).
     pub fn prebuild(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
+        self.prebuild_scene(dev, color_format)?;
+        self.get(dev, PipelineKey::Composite { format: color_format })?;
+        self.get(dev, PipelineKey::Fxaa { format: color_format })?;
+        Ok(())
+    }
+
+    fn prebuild_scene(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
         for blended in [false, true] {
             for features in FEATURE_SETS {
                 self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
@@ -753,20 +806,37 @@ impl Pipelines {
         Ok(())
     }
 
-    /// Pipelines that don't depend on the output format (shadows; later the HDR scene and bloom).
+    /// Pipelines that don't depend on the output format: shadows, the HDR scene, bloom.
     pub fn prebuild_common(&mut self, dev: &Device) -> Result<(), GpuError> {
         self.get(dev, PipelineKey::Shadow)?;
+        self.prebuild_scene(dev, HDR_FORMAT)?;
+        self.get(dev, PipelineKey::BloomDown)?;
+        self.get(dev, PipelineKey::BloomUp)?;
         Ok(())
     }
 
-    /// The scene pipelines for a frame rendering into `color_format` with `features`; the shadow
-    /// pipeline when `features` has [`FEAT_SHADOWS`].
-    pub fn scene(&mut self, dev: &Device, color_format: VkFormat, features: u32) -> Result<ScenePipelines, GpuError> {
-        Ok(ScenePipelines {
-            layout: self.layout,
-            opaque: self.get(dev, PipelineKey::Mesh { format: color_format, blended: false, features })?,
-            blended: self.get(dev, PipelineKey::Mesh { format: color_format, blended: true, features })?,
-            shadow: if features & FEAT_SHADOWS != 0 { self.get(dev, PipelineKey::Shadow)? } else { VK_NULL_HANDLE },
+    /// The pipelines of a frame ending in `final_format`, with scene `features` and post `mode`.
+    pub fn frame(&mut self, dev: &Device, final_format: VkFormat, features: u32, mode: PostMode) -> Result<FramePipelines, GpuError> {
+        let scene_format = if mode.bloom() {
+            HDR_FORMAT
+        } else if mode.fxaa {
+            LDR_FORMAT
+        } else {
+            final_format
+        };
+        let layout = self.layout;
+        let mut get = |want: bool, key: PipelineKey| if want { self.get(dev, key) } else { Ok(VK_NULL_HANDLE) };
+        let composite_format = if mode.fxaa { LDR_FORMAT } else { final_format };
+        Ok(FramePipelines {
+            layout,
+            scene_format,
+            opaque: get(true, PipelineKey::Mesh { format: scene_format, blended: false, features })?,
+            blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features })?,
+            shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::Shadow)?,
+            bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
+            bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
+            composite: get(mode.bloom(), PipelineKey::Composite { format: composite_format })?,
+            fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
         })
     }
 
@@ -947,19 +1017,16 @@ impl Pipelines {
                 color_write_mask: VK_COLOR_COMPONENT_RGBA,
                 ..Default::default()
             },
-            Blend::Premultiplied | Blend::Additive => {
-                let dst = if d.blend == Blend::Additive { VK_BLEND_FACTOR_ONE } else { VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
-                VkPipelineColorBlendAttachmentState {
-                    blend_enable: VK_TRUE,
-                    src_color_blend_factor: VK_BLEND_FACTOR_ONE,
-                    dst_color_blend_factor: dst,
-                    color_blend_op: VK_BLEND_OP_ADD,
-                    src_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
-                    dst_alpha_blend_factor: dst,
-                    alpha_blend_op: VK_BLEND_OP_ADD,
-                    color_write_mask: VK_COLOR_COMPONENT_RGBA,
-                }
-            }
+            Blend::Premultiplied => VkPipelineColorBlendAttachmentState {
+                blend_enable: VK_TRUE,
+                src_color_blend_factor: VK_BLEND_FACTOR_ONE,
+                dst_color_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                color_blend_op: VK_BLEND_OP_ADD,
+                src_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
+                dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                alpha_blend_op: VK_BLEND_OP_ADD,
+                color_write_mask: VK_COLOR_COMPONENT_RGBA,
+            },
         };
         let blend = VkPipelineColorBlendStateCreateInfo {
             s_type: ST_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1079,7 +1146,7 @@ pub fn prepare_frame(
 /// Everything recording a frame needs besides the command buffer, target and timer.
 pub struct FrameContext<'a> {
     pub dev: &'a Device,
-    pub pipelines: ScenePipelines,
+    pub pipelines: FramePipelines,
     pub descriptors: &'a Descriptors,
     pub meshes: &'a HashMap<u32, Mesh>,
     /// Present when the frame has a shadow pass (`pipelines.shadow` set).
@@ -1087,6 +1154,9 @@ pub struct FrameContext<'a> {
     pub frame: &'a FrameDesc<'a>,
     pub scratch: &'a FrameScratch,
     pub upload: &'a FrameUpload,
+    /// The target's post images (ensured for `mode`).
+    pub post: &'a PostTargets,
+    pub mode: PostMode,
 }
 
 /// The scene features a frame prepared in `scratch` uses, given whether a shadow map exists.
@@ -1099,13 +1169,14 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
     }
 }
 
-/// Record a whole frame into `target`: the shadow pass (if any), then the scene. The colour image
-/// must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its transitions).
+/// Record a whole frame into `target`: the shadow pass (if any), the scene, then the post chain.
+/// The final colour image must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its
+/// transitions).
 pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTarget, timer: Option<&mut PassTimer>) -> DrawStats {
     let mut timer = timer;
     let mut shadow_stats = DrawStats::default();
+    ctx.descriptors.bind(ctx.dev, cmd, ctx.pipelines.layout);
     if let (Some(map), true) = (ctx.shadow_map, ctx.pipelines.shadow != VK_NULL_HANDLE) {
-        ctx.descriptors.bind(ctx.dev, cmd, ctx.pipelines.layout);
         crate::shadow::record_shadow_pass(
             ctx.dev,
             cmd,
@@ -1121,18 +1192,50 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTar
             &mut shadow_stats,
         );
     }
+    let env = &ctx.frame.environment;
+    let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
+    let mut scene = RenderTarget { color_view: target.color_view, ..*target };
+    let mut scene_clear = clear;
+    let intermediate = match (ctx.mode.bloom(), ctx.mode.fxaa) {
+        (true, _) => ctx.post.hdr.as_ref(),
+        (false, true) => ctx.post.ldr.as_ref(),
+        _ => None,
+    };
+    if let Some(img) = intermediate {
+        color_barrier(ctx.dev, cmd, img.image.handle, false);
+        scene.color_view = img.image.view;
+        if ctx.mode.bloom() {
+            scene_clear = hdr_clear(clear, env.tonemap);
+        }
+    }
     let mut stats = record_scene(
         ctx.dev,
         cmd,
         &ctx.pipelines,
         ctx.descriptors,
         ctx.meshes,
-        target,
+        &scene,
+        scene_clear,
         ctx.frame,
         &ctx.scratch.plan,
         ctx.upload,
-        timer,
+        timer.as_deref_mut(),
     );
+    if intermediate.is_some() {
+        let out = FinalImage { view: target.color_view, extent: target.extent };
+        record_post(
+            ctx.dev,
+            cmd,
+            &ctx.pipelines,
+            env,
+            ctx.upload.frame_address(),
+            ctx.post,
+            ctx.mode,
+            &out,
+            timer,
+            &mut |_| {},
+        );
+    }
     stats.shadow_cascades = shadow_stats.shadow_cascades;
     stats.shadow_draw_calls = shadow_stats.shadow_draw_calls;
     stats.shadow_instances = shadow_stats.shadow_instances;
@@ -1141,6 +1244,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTar
 }
 
 /// Where a frame is drawn: colour + depth views of `extent`.
+#[derive(Clone, Copy)]
 pub struct RenderTarget {
     pub color_view: VkImageView,
     pub depth_view: VkImageView,
@@ -1156,10 +1260,11 @@ pub struct RenderTarget {
 pub fn record_scene(
     dev: &Device,
     cmd: VkCommandBuffer,
-    pipelines: &ScenePipelines,
+    pipelines: &FramePipelines,
     descriptors: &Descriptors,
     meshes: &HashMap<u32, Mesh>,
     target: &RenderTarget,
+    clear: [f32; 4],
     frame: &FrameDesc,
     plan: &Plan,
     upload: &FrameUpload,
@@ -1185,7 +1290,6 @@ pub fn record_scene(
         )],
     );
 
-    let clear = srgb_to_linear_rgba(frame.clear_color);
     let color_attachment = VkRenderingAttachmentInfo {
         s_type: ST_RENDERING_ATTACHMENT_INFO,
         p_next: ptr::null(),
