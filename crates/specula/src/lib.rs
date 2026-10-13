@@ -112,7 +112,7 @@ pub fn run() -> Result<(), String> {
     if let Err(e) = interrupt::install() {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
-    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter })
+    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, ..Default::default() })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));

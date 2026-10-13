@@ -21,21 +21,34 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     PointLight lights[16];
 };
 
+// Per-draw records; must match `DrawRecord` in src/render.rs (and mesh.vert).
+struct Draw {
+    mat4 model;  // object -> world
+    vec4 color;  // linear RGB, a opacity
+    vec4 color2; // linear RGB, a seed
+    vec4 params; // emissive, metallic, roughness, specular
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
+    Draw items[];
+};
+
+// Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
-    mat4 model;    // object -> world
-    vec4 color;    // linear RGB, a opacity
-    vec4 color2;   // linear RGB, a seed
-    vec4 params;   // emissive, metallic, roughness, specular
     Frame frame;
-    uint material;
+    Draws draws;
+    uint material; // the same for every instance of a batch, so branches on it stay uniform
     uint pass;
 } pc;
 
 layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec3 v_local;
+layout(location = 3) flat in uint v_draw;
 
 layout(location = 0) out vec4 out_color;
+
+// This fragment's draw record.
+#define DRAW pc.draws.items[v_draw]
 
 const uint MAT_LIT = 0u;
 const uint MAT_GLASS = 1u;
@@ -143,11 +156,11 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec
 // ---------------------------------------------------------------------------------------------
 
 vec4 shade_lit() {
-    vec3 albedo = pc.color.rgb;
-    float emissive = pc.params.x;
-    float metallic = pc.params.y;
-    float rough = clamp(pc.params.z, 0.02, 1.0);
-    float spec_weight = pc.params.w;
+    vec3 albedo = DRAW.color.rgb;
+    float emissive = DRAW.params.x;
+    float metallic = DRAW.params.y;
+    float rough = clamp(DRAW.params.z, 0.02, 1.0);
+    float spec_weight = DRAW.params.w;
     vec3 n = normalize(v_normal);
     vec3 v = normalize(camera_pos() - v_world);
     if (dot(n, v) < 0.0) {
@@ -187,9 +200,9 @@ vec4 shade_glass() {
     gather_light(v_world, n, v, 0.05, diffuse, specular);
     vec3 reflected = env_radiance(reflect(-v, n)) + specular;
     // A tinted body: the path through a thin shell grows at grazing angles.
-    float body = clamp(pc.color.a, 0.0, 1.0);
+    float body = clamp(DRAW.color.a, 0.0, 1.0);
     float path = 1.0 - pow(1.0 - body, 1.0 / max(ndv, 0.2));
-    vec3 body_light = pc.color.rgb * (0.5 * diffuse + pc.params.x);
+    vec3 body_light = DRAW.color.rgb * (0.5 * diffuse + DRAW.params.x);
     float alpha = path + fresnel * (1.0 - path);
     vec3 c = body_light * path * (1.0 - fresnel) + reflected * fresnel;
     return vec4(display(c), alpha);
@@ -201,7 +214,7 @@ vec4 shade_glass() {
 
 vec4 shade_blob_shadow() {
     float r = length(v_local.xz) * 2.0;
-    float a = clamp(pc.color.a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
+    float a = clamp(DRAW.color.a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
     return vec4(0.0, 0.0, 0.0, a);
 }
 
@@ -280,14 +293,14 @@ vec3 wax_normal(vec3 p) {
 }
 
 vec4 shade_lava_lamp() {
-    mat4 m = pc.model;
+    mat4 m = DRAW.model;
     vec3 scale = vec3(length(m[0].xyz), length(m[1].xyz), length(m[2].xyz));
     mat3 rot = mat3(m[0].xyz / scale.x, m[1].xyz / scale.y, m[2].xyz / scale.z);
     vec3 origin = m[3].xyz;
     g_h = scale.y;
     g_rmax = 0.5 * min(scale.x, scale.z) / 1.6;
     g_time = pc.frame.camera_time.w;
-    g_seed = floatBitsToUint(pc.color2.a);
+    g_seed = floatBitsToUint(DRAW.color2.a);
 
     vec3 ro = transpose(rot) * (camera_pos() - origin);
     vec3 half_size = 0.5 * scale;
@@ -307,9 +320,9 @@ vec4 shade_lava_lamp() {
     float t_near = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float t_far = min(min(tmax.x, tmax.y), tmax.z);
 
-    vec3 wax_color = pc.color.rgb;
-    vec3 liquid = pc.color2.rgb;
-    float glow = pc.params.x;
+    vec3 wax_color = DRAW.color.rgb;
+    vec3 liquid = DRAW.color2.rgb;
+    float glow = DRAW.params.x;
 
     // Halo: glare around the bright core, by the ray's closest approach to the lamp's axis.
     vec2 o2 = ro.xz;

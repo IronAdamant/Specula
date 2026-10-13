@@ -24,13 +24,21 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     PointLight lights[16];
 };
 
-// 128 bytes, shared with mesh.frag; must match `PushConstants` in src/render.rs.
+// Per-draw records; must match `DrawRecord` in src/render.rs (and mesh.frag).
+struct Draw {
+    mat4 model;  // object -> world
+    vec4 color;  // linear RGB, a opacity
+    vec4 color2; // linear RGB, a seed
+    vec4 params; // emissive, metallic, roughness, specular
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
+    Draw items[];
+};
+
+// Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
-    mat4 model;    // object -> world
-    vec4 color;    // linear RGB, a opacity
-    vec4 color2;   // linear RGB, a seed
-    vec4 params;   // emissive, metallic, roughness, specular
     Frame frame;
+    Draws draws;   // instance i reads items[gl_InstanceIndex] (firstInstance = the batch's first)
     uint material;
     uint pass;
 } pc;
@@ -38,15 +46,18 @@ layout(push_constant) uniform Push {
 layout(location = 0) out vec3 v_world;  // world position
 layout(location = 1) out vec3 v_normal; // world normal, not normalized
 layout(location = 2) out vec3 v_local;  // object-space position
+layout(location = 3) flat out uint v_draw; // record index
 
 void main() {
-    vec4 world = pc.model * vec4(in_position, 1.0);
+    mat4 model = pc.draws.items[gl_InstanceIndex].model;
+    vec4 world = model * vec4(in_position, 1.0);
     gl_Position = pc.frame.view_proj * world;
     // Inverse-transpose of the model's 3x3: cofactor columns (b x c, c x a, a x b) / det.
-    mat3 m = mat3(pc.model);
+    mat3 m = mat3(model);
     mat3 cof = mat3(cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1]));
     float det = dot(m[0], cof[0]);
     v_normal = cof * in_normal / (abs(det) > 1e-20 ? det : 1.0);
     v_world = world.xyz;
     v_local = in_position;
+    v_draw = uint(gl_InstanceIndex);
 }
