@@ -588,7 +588,7 @@ fn handle(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> 
             // Mouse and touchpad pointers (and ids the OS no longer knows) go to DefWindowProc,
             // which turns them into the usual mouse messages.
             let kind = pointer_kind(state, decode::pointer_id(wparam))?;
-            Some(handle_pointer(state, hwnd, msg, wparam, lparam, kind))
+            handle_pointer(state, hwnd, msg, wparam, lparam, kind)
         }
         WM_DPICHANGED => {
             // SAFETY: for WM_DPICHANGED, lParam points to the suggested window RECT.
@@ -629,9 +629,11 @@ fn pointer_kind(state: &State, id: u32) -> Option<PointerKind> {
     }
 }
 
-/// Turns a touch/pen `WM_POINTER*` message into pointer events. Always handled (returns 0), so
-/// the OS doesn't also synthesise mouse messages for the same contact.
-fn handle_pointer(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize, kind: PointerKind) -> isize {
+/// Turns a touch/pen `WM_POINTER*` message into pointer events. Contact messages are handled
+/// (`Some(0)`), so the OS doesn't also synthesise mouse messages for the same contact; pen hover
+/// (in range, not touching) returns `None` so DefWindowProc turns it into mouse moves and the
+/// cursor follows the pen.
+fn handle_pointer(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize, kind: PointerKind) -> Option<isize> {
     let id = decode::pointer_id(wparam);
     let flags = decode::pointer_flags(wparam);
     let client = || {
@@ -678,10 +680,12 @@ fn handle_pointer(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: is
             }
         }
         WM_POINTERCAPTURECHANGED if was_down => state.push(Event::PointerCancel { id, kind }),
-        // Hover updates, and messages for contacts that never went down in this window.
+        // Hover: let the OS make mouse moves of it.
+        WM_POINTERUPDATE if flags & decode::POINTER_FLAG_INCONTACT == 0 => return None,
+        // Messages for contacts that never went down in this window.
         _ => {}
     }
-    0
+    Some(0)
 }
 
 /// Win32-specific window tests that inject messages or query the HWND directly. They skip
@@ -839,9 +843,10 @@ mod tests {
         let touch = PointerKind::Touch;
         let pen = PointerKind::Pen;
 
-        assert_eq!(handle_pointer(state, hwnd, WM_POINTERDOWN, wp(7, contact), at, touch), 0);
+        assert_eq!(handle_pointer(state, hwnd, WM_POINTERDOWN, wp(7, contact), at, touch), Some(0));
         handle_pointer(state, hwnd, WM_POINTERUPDATE, wp(7, contact), at, touch);
-        handle_pointer(state, hwnd, WM_POINTERUPDATE, wp(9, 0), at, pen); // pen hover: ignored
+        // Pen hover goes to DefWindowProc (which makes mouse moves of it), not into pointer events.
+        assert_eq!(handle_pointer(state, hwnd, WM_POINTERUPDATE, wp(9, 0), at, pen), None);
         handle_pointer(state, hwnd, WM_POINTERDOWN, wp(8, contact), at, touch);
         handle_pointer(state, hwnd, WM_POINTERUP, wp(7, 0), at, touch);
         handle_pointer(state, hwnd, WM_POINTERUP, wp(7, 0), at, touch); // already up: ignored

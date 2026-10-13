@@ -36,6 +36,14 @@ pub struct Pointer {
     pub kind: PointerKind,
 }
 
+/// A touch or pen contact that is down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Touch {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
 /// Text-mode input for a text field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextEvent {
@@ -61,13 +69,23 @@ impl RebindRequest {
     }
 }
 
+/// Why listening for a rebind stopped without a binding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CancelReason {
+    /// One of `settings.rebind_cancel` was pressed.
+    Input(Source),
+    /// `settings.rebind_timeout_s` passed without input.
+    Timeout,
+    /// [`Input::cancel_rebind`] was called.
+    Requested,
+}
+
 /// How a rebind ended. Nothing is changed until [`Input::apply_rebind`]: show `conflicts`
 /// first if there are any.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RebindOutcome {
     Captured { request: RebindRequest, binding: Binding, conflicts: Vec<Conflict> },
-    /// Escape was pressed, or [`Input::cancel_rebind`] called.
-    Cancelled { request: RebindRequest },
+    Cancelled { request: RebindRequest, reason: CancelReason },
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +98,8 @@ struct Rebind {
     /// A modifier key pressed alone; bound by itself if released without another press.
     pending_modifier: Option<u32>,
     mouse_travel: [f32; 2],
+    /// Time of the first update spent listening (for the timeout).
+    started: Option<f64>,
 }
 
 /// 256 bits, one per key code.
@@ -148,9 +168,14 @@ impl Devices {
         }
     }
 
+    /// Everything currently down is ignored until released, and this frame's presses are
+    /// forgotten: input that ended a mode (rebind, text entry) must not leak into gameplay.
     fn mask_all(&mut self) {
         self.key_masked = self.key_down;
+        self.key_pulse = Bits::default();
         self.mouse_masked = self.mouse_down;
+        self.mouse_pulse = 0;
+        self.wheel = 0.0;
         for i in 0..MAX_GAMEPADS {
             self.pad_masked[i] = Devices::pad_buttons(&self.pads[i]);
         }
@@ -188,13 +213,16 @@ pub struct Input {
     states: Vec<ActionState>,
     dev: Devices,
     gestures: Gestures,
+    touches: Vec<Touch>,
     pointer: Option<Pointer>,
     last_device: Option<Device>,
     pad_style: PadStyle,
     pad_filter: Option<usize>,
+    focused: bool,
+    /// Focus came back this frame: pad buttons held now are ignored until released.
+    refocused: bool,
     text_mode: bool,
     text: Vec<TextEvent>,
-    frame_text: String,
     rebind: Option<Rebind>,
     rebind_outcome: Option<RebindOutcome>,
     last_time: Option<f64>,
@@ -209,13 +237,15 @@ impl Input {
             states: Vec::new(),
             dev: Devices::default(),
             gestures: Gestures::default(),
+            touches: Vec::new(),
             pointer: None,
             last_device: None,
             pad_style: PadStyle::default(),
             pad_filter: None,
+            focused: true,
+            refocused: false,
             text_mode: false,
             text: Vec::new(),
-            frame_text: String::new(),
             rebind: None,
             rebind_outcome: None,
             last_time: None,
@@ -265,6 +295,10 @@ impl Input {
     /// Advances one frame. `time_s` is a monotonic clock in seconds (only differences are used:
     /// for stick/key rates and tap/long-press timing); `events` are this frame's window events;
     /// `pads` the polled pad states (missing entries count as disconnected).
+    ///
+    /// Call mode switches ([`Input::start_rebind`], [`Input::set_text_mode`]) *after* `update`,
+    /// typically in response to an action read this frame: the next `update` then only sees
+    /// newer input, so the press that opened the mode never feeds it.
     pub fn update(&mut self, time_s: f64, events: &[Event], pads: &[GamepadState]) {
         let max_dt = f64::from(self.map.settings.max_dt_s);
         self.dt = self.last_time.map_or(0.0, |t| (time_s - t).clamp(0.0, max_dt)) as f32;
@@ -275,10 +309,15 @@ impl Input {
         }
         self.update_pads(pads);
         self.gestures.tick(time_s, &self.map.settings);
-        if self.rebind.is_some() {
-            self.capture_rebind();
+        self.touches.clear();
+        self.touches.extend(self.gestures.contacts().iter().map(|c| Touch { id: c.id, x: c.pos[0], y: c.pos[1] }));
+        // Actions stay idle for the whole frame that ends a rebind, so the input that completed
+        // or cancelled it never reaches gameplay.
+        let listening = self.rebind.is_some();
+        if listening {
+            self.capture_rebind(time_s);
         }
-        self.evaluate();
+        self.evaluate(listening);
     }
 
     fn begin_frame(&mut self) {
@@ -291,7 +330,7 @@ impl Input {
         d.mouse_delta = [0.0, 0.0];
         self.gestures.begin_frame();
         self.text.clear();
-        self.frame_text.clear();
+        self.refocused = false;
     }
 
     fn mouse_at(&mut self, x: i32, y: i32) {
@@ -328,7 +367,6 @@ impl Input {
             Event::Char(c) => {
                 if self.text_mode {
                     self.text.push(TextEvent::Char(c));
-                    self.frame_text.push(c);
                 }
             }
             Event::MouseMove { x, y } => {
@@ -385,9 +423,17 @@ impl Input {
             }
             Event::Focused(false) => {
                 // Key-ups won't arrive while unfocused: release everything (actions see a
-                // release), and drop touches without firing gestures.
+                // release), and drop touches without firing gestures. Pads are ignored too
+                // unless `settings.background_pads`.
+                self.focused = false;
                 self.dev.release_all();
                 self.gestures.clear();
+            }
+            Event::Focused(true) => {
+                if !self.focused {
+                    self.refocused = true;
+                }
+                self.focused = true;
             }
             _ => {}
         }
@@ -401,12 +447,18 @@ impl Input {
 
     fn update_pads(&mut self, pads: &[GamepadState]) {
         let threshold = self.map.settings.press_threshold;
+        let ignore = !self.focused && !self.map.settings.background_pads;
         for i in 0..MAX_GAMEPADS {
-            let new = pads.get(i).copied().unwrap_or_default();
+            let new = if ignore { GamepadState::default() } else { pads.get(i).copied().unwrap_or_default() };
             self.dev.pad_prev[i] = self.dev.pads[i];
             self.dev.pads[i] = new;
             let held = Devices::pad_buttons(&new);
             self.dev.pad_masked[i] &= held;
+            if self.refocused {
+                // Buttons held while focus returns are ignored until released.
+                self.dev.pad_masked[i] = held;
+                continue;
+            }
             if !self.pad_allowed(i) || !new.connected {
                 continue;
             }
@@ -454,13 +506,14 @@ impl Input {
                 for i in (0..MAX_GAMEPADS).filter(|&i| self.pad_allowed(i)) {
                     let now = Devices::pad_buttons(&d.pads[i]) & b.bit() != 0;
                     let before = Devices::pad_buttons(&d.pad_prev[i]) & b.bit() != 0;
-                    p.active |= now && d.pad_masked[i] & b.bit() == 0;
-                    p.fresh |= now && !before;
+                    let usable = now && d.pad_masked[i] & b.bit() == 0;
+                    p.active |= usable;
+                    p.fresh |= usable && !before;
                 }
                 p
             }
-            Source::WheelUp => Press { active: d.wheel > 0.0, fresh: d.wheel > 0.0, repress: false },
-            Source::WheelDown => Press { active: d.wheel < 0.0, fresh: d.wheel < 0.0, repress: false },
+            Source::WheelUp => self.pulse(d.wheel > 0.0),
+            Source::WheelDown => self.pulse(d.wheel < 0.0),
             Source::Tap => self.pulse(self.gestures.out.tap),
             Source::TwoFingerTap => self.pulse(self.gestures.out.two_finger_tap),
             Source::LongPress => self.pulse(self.gestures.out.long_press),
@@ -485,14 +538,18 @@ impl Input {
         }
     }
 
-    /// The analog value of an axis source (largest across allowed pads); `dead_zone` overrides
-    /// the platform's.
     fn analog(&self, s: Source, dead_zone: Option<f32>) -> [f32; 2] {
+        self.analog_with(s, dead_zone, &self.dev.pads)
+    }
+
+    /// The analog value of a source (largest across allowed pads), reading pad values from
+    /// `pads` (the current or the previous poll). `dead_zone` overrides the platform's.
+    fn analog_with(&self, s: Source, dead_zone: Option<f32>, pads: &[GamepadState; MAX_GAMEPADS]) -> [f32; 2] {
         let d = &self.dev;
         let pad_value = |f: &dyn Fn(&GamepadState) -> [f32; 2]| {
             let mut best = [0.0f32, 0.0f32];
-            for i in (0..MAX_GAMEPADS).filter(|&i| self.pad_allowed(i) && d.pads[i].connected) {
-                let v = f(&d.pads[i]);
+            for i in (0..MAX_GAMEPADS).filter(|&i| self.pad_allowed(i) && pads[i].connected) {
+                let v = f(&pads[i]);
                 if v[0] * v[0] + v[1] * v[1] > best[0] * best[0] + best[1] * best[1] {
                     best = v;
                 }
@@ -535,10 +592,19 @@ impl Input {
                 [v, 0.0]
             }),
             Source::Dpad => {
-                let b = |x: GamepadButton| if self.press(Source::Pad(x)).active { 1.0 } else { 0.0 };
+                let held = |b: GamepadButton| {
+                    let on = (0..MAX_GAMEPADS).filter(|&i| self.pad_allowed(i)).any(|i| {
+                        Devices::pad_buttons(&pads[i]) & b.bit() != 0 && d.pad_masked[i] & b.bit() == 0
+                    });
+                    if on {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
                 clamp_unit([
-                    b(GamepadButton::DpadRight) - b(GamepadButton::DpadLeft),
-                    b(GamepadButton::DpadUp) - b(GamepadButton::DpadDown),
+                    held(GamepadButton::DpadRight) - held(GamepadButton::DpadLeft),
+                    held(GamepadButton::DpadUp) - held(GamepadButton::DpadDown),
                 ])
             }
             Source::Drag => self.gestures.out.drag,
@@ -551,6 +617,36 @@ impl Input {
         }
     }
 
+    fn level(&self, s: Source, pads: &[GamepadState; MAX_GAMEPADS]) -> f32 {
+        let v = self.analog_with(s, None, pads);
+        (v[0] * v[0] + v[1] * v[1]).sqrt()
+    }
+
+    /// Raw device query: is `source` down (buttons), past `settings.press_threshold` (sticks,
+    /// triggers, d-pad) or moving this frame (wheel, mouse motion, gestures)? Ignores bindings
+    /// and modes, so a game can implement its own "back" while rebinding or typing. Reads idle
+    /// during a replay.
+    pub fn source_held(&self, source: Source) -> bool {
+        match source.signal() {
+            Signal::Button => self.press(source).active,
+            _ if source.is_delta() => self.level(source, &self.dev.pads) != 0.0,
+            _ => self.level(source, &self.dev.pads) > self.map.settings.press_threshold,
+        }
+    }
+
+    /// Raw device query: did `source` go down / cross the press threshold this frame? See
+    /// [`Input::source_held`].
+    pub fn source_pressed(&self, source: Source) -> bool {
+        match source.signal() {
+            Signal::Button => self.press(source).fresh,
+            _ if source.is_delta() => self.source_held(source),
+            _ => {
+                let t = self.map.settings.press_threshold;
+                self.level(source, &self.dev.pads) > t && self.level(source, &self.dev.pad_prev) <= t
+            }
+        }
+    }
+
     // ---- evaluation ----
 
     fn binding_live(&self, i: usize, j: usize, b: &Binding) -> bool {
@@ -560,13 +656,13 @@ impl Input {
             })
     }
 
-    fn evaluate(&mut self) {
-        let suppressed = self.rebind.is_some();
-        let mut next = Vec::with_capacity(self.states.len());
+    /// Recomputes every action's state in place. `suppressed`: everything reads idle.
+    fn evaluate(&mut self, suppressed: bool) {
+        let mut states = std::mem::take(&mut self.states);
         for (i, a) in self.map.actions().iter().enumerate() {
-            let prev = self.states[i];
+            let prev = states[i];
             let live = !suppressed && (!self.text_mode || a.text_mode);
-            let state = match a.kind {
+            states[i] = match a.kind {
                 ActionKind::Button => {
                     let (mut held, mut repress) = (false, false);
                     if live {
@@ -631,9 +727,8 @@ impl Input {
                     ActionState::axis(value, &prev)
                 }
             };
-            next.push(state);
         }
-        self.states = next;
+        self.states = states;
     }
 
     // ---- queries ----
@@ -677,9 +772,9 @@ impl Input {
         self.pointer
     }
 
-    /// Touch/pen contacts currently down, first-down first, as `(id, [x, y])`.
-    pub fn touches(&self) -> Vec<(u32, [f32; 2])> {
-        self.gestures.contacts().iter().map(|c| (c.id, c.pos)).collect()
+    /// Touch/pen contacts currently down, first-down first.
+    pub fn touches(&self) -> &[Touch] {
+        &self.touches
     }
 
     /// Seconds since the previous update (capped by `settings.max_dt_s`).
@@ -723,7 +818,7 @@ impl Input {
         self.text_mode
     }
 
-    /// Text mode: `Char` and key events are collected for a text field ([`Input::take_text`]) and
+    /// Text mode: `Char` and key events are collected for a text field ([`Input::text`]) and
     /// every action not marked `text_mode` reads as idle. Keys still held when leaving text mode
     /// are ignored until released, so typing never leaks into gameplay.
     pub fn set_text_mode(&mut self, on: bool) {
@@ -733,16 +828,20 @@ impl Input {
         self.text_mode = on;
     }
 
-    /// This frame's text events (text mode only).
-    pub fn take_text(&mut self) -> Vec<TextEvent> {
-        std::mem::take(&mut self.text)
+    /// This frame's text events (text mode only), in order.
+    pub fn text(&self) -> &[TextEvent] {
+        &self.text
     }
 
     // ---- rebinding ----
 
     /// Listen for the next input and turn it into a binding for `request.action`. While
-    /// listening every action reads as idle. Escape cancels. Collect the result with
-    /// [`Input::take_rebind_outcome`].
+    /// listening (and in the frame that ends it) every action reads as idle. Any of
+    /// `settings.rebind_cancel` cancels (Escape, Start and a two-finger tap by default), as does
+    /// `settings.rebind_timeout_s`. Collect the result with [`Input::take_rebind_outcome`].
+    ///
+    /// Call it after [`Input::update`]: only input from later updates is captured, so the press
+    /// that chose "rebind" in a menu is never bound itself.
     pub fn start_rebind(&mut self, request: RebindRequest) -> Result<(), InputError> {
         let i = self.map.index_of(&request.action).ok_or_else(|| {
             InputError::new(ErrorCode::UnknownAction, "", format!("no action named {:?}", request.action))
@@ -774,7 +873,8 @@ impl Input {
                 (ActionKind::Button, existing)
             }
         };
-        self.rebind = Some(Rebind { request, target, base, pending_modifier: None, mouse_travel: [0.0, 0.0] });
+        self.rebind =
+            Some(Rebind { request, target, base, pending_modifier: None, mouse_travel: [0.0, 0.0], started: None });
         self.rebind_outcome = None;
         Ok(())
     }
@@ -785,7 +885,7 @@ impl Input {
 
     pub fn cancel_rebind(&mut self) {
         if let Some(r) = self.rebind.take() {
-            self.rebind_outcome = Some(RebindOutcome::Cancelled { request: r.request });
+            self.rebind_outcome = Some(RebindOutcome::Cancelled { request: r.request, reason: CancelReason::Requested });
             self.dev.mask_all();
         }
     }
@@ -818,12 +918,22 @@ impl Input {
             .collect()
     }
 
+    fn end_rebind(&mut self, outcome: RebindOutcome) {
+        self.rebind_outcome = Some(outcome);
+        self.dev.mask_all();
+    }
+
     /// Looks for the input to bind in this frame's device state.
-    fn capture_rebind(&mut self) {
+    fn capture_rebind(&mut self, now: f64) {
         let Some(mut r) = self.rebind.take() else { return };
-        if self.dev.key_pulse.get(keys::ESCAPE) {
-            self.rebind_outcome = Some(RebindOutcome::Cancelled { request: r.request });
-            self.dev.mask_all();
+        let started = *r.started.get_or_insert(now);
+        if let Some(&s) = self.map.settings.rebind_cancel.iter().find(|&&s| self.press(s).fresh) {
+            self.end_rebind(RebindOutcome::Cancelled { request: r.request, reason: CancelReason::Input(s) });
+            return;
+        }
+        let timeout = f64::from(self.map.settings.rebind_timeout_s);
+        if timeout > 0.0 && now - started >= timeout {
+            self.end_rebind(RebindOutcome::Cancelled { request: r.request, reason: CancelReason::Timeout });
             return;
         }
         r.mouse_travel[0] += self.dev.mouse_delta[0];
@@ -964,23 +1074,32 @@ impl Input {
             BindingSlot::Append => None,
         };
         let conflicts = self.map.conflicts_with(&r.request.action, &binding, ignore);
-        self.rebind_outcome = Some(RebindOutcome::Captured { request: r.request, binding, conflicts });
-        self.dev.mask_all();
+        self.end_rebind(RebindOutcome::Captured { request: r.request, binding, conflicts });
     }
 
     // ---- recording and replay ----
 
-    /// This frame's action state, for a [`Recording`](crate::Recording) or a journal.
+    /// This frame's recordable state, for a [`Recording`](crate::Recording) or a journal.
     pub fn action_frame(&self) -> ActionFrame {
-        ActionFrame {
-            actions: self.states.clone(),
-            pointer: self.pointer.map(|p| [p.x, p.y]),
-            text: self.frame_text.clone(),
-        }
+        let mut frame = ActionFrame::default();
+        self.write_action_frame(&mut frame);
+        frame
     }
 
-    /// Replays a recorded frame: action states, pointer and text are set from it, so queries
-    /// answer exactly as they did when it was recorded. Use instead of [`Input::update`].
+    /// [`Input::action_frame`] into an existing frame, reusing its buffers (no allocation per
+    /// tick once warmed up).
+    pub fn write_action_frame(&self, out: &mut ActionFrame) {
+        out.actions.clone_from(&self.states);
+        out.pointer = self.pointer;
+        out.text.clone_from(&self.text);
+        out.touches.clone_from(&self.touches);
+        out.last_device = self.last_device;
+        out.dt = self.dt;
+    }
+
+    /// Replays a recorded frame instead of [`Input::update`]: the recorded queries (see
+    /// [`crate::record`]) answer exactly as they did live. Raw device state is cleared, so
+    /// `source_pressed` / `source_held` read idle.
     pub fn apply_frame(&mut self, frame: &ActionFrame) -> Result<(), InputError> {
         if frame.actions.len() != self.states.len() {
             return Err(InputError::new(
@@ -990,13 +1109,14 @@ impl Input {
             ));
         }
         self.states.clone_from(&frame.actions);
-        self.pointer = frame.pointer.map(|[x, y]| Pointer {
-            x,
-            y,
-            kind: self.pointer.map_or(PointerKind::Mouse, |p| p.kind),
-        });
-        self.text = frame.text.chars().map(TextEvent::Char).collect();
-        self.frame_text.clone_from(&frame.text);
+        self.pointer = frame.pointer;
+        self.text.clone_from(&frame.text);
+        self.touches.clone_from(&frame.touches);
+        self.last_device = frame.last_device;
+        self.dt = frame.dt;
+        self.dev = Devices::default();
+        self.gestures.clear();
+        self.gestures.begin_frame();
         Ok(())
     }
 }

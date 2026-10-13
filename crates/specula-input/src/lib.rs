@@ -35,7 +35,7 @@ pub mod record;
 pub mod source;
 
 pub use error::{ErrorCode, InputError};
-pub use input::{Device, Input, Pointer, RebindOutcome, RebindRequest, TextEvent};
+pub use input::{CancelReason, Device, Input, Pointer, RebindOutcome, RebindRequest, TextEvent, Touch};
 pub use map::{
     Action, ActionKind, ActionMap, AxisOutput, Binding, BindingInput, BindingSlot, CompositePart, Conflict, Settings,
 };

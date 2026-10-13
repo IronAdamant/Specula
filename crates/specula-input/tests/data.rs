@@ -2,8 +2,8 @@
 
 use specula_core::Json;
 use specula_input::{
-    ActionFrame, ActionMap, ActionState, BindingSlot, ErrorCode, FrameDecoder, FrameEncoder, Input, Player, Recording,
-    Source,
+    ActionFrame, ActionMap, ActionState, BindingSlot, ErrorCode, FrameDecoder, FrameEncoder, Input, Player, Pointer,
+    Recording, Source, TextEvent,
 };
 use specula_platform::{keys, DeadZones, Event, GamepadButton, GamepadState, MouseButton, PointerKind, RawGamepad};
 
@@ -205,7 +205,7 @@ fn recording_round_trips_bit_exactly() {
     assert!(frames.iter().filter(|f| f.actions[idx("place")].pressed).count() >= 2, "click and tap");
 
     let bytes = rec.to_bytes();
-    assert!(bytes.len() < 400, "compact: {} bytes for {} frames", bytes.len(), frames.len());
+    assert!(bytes.len() < 500, "compact: {} bytes for {} frames (schema header included)", bytes.len(), frames.len());
     let back = Recording::from_bytes(&bytes).unwrap();
     assert_eq!(back.frames(), &frames[..]);
     assert_eq!(back.schema_hash(), map.schema_hash());
@@ -227,19 +227,65 @@ fn player_reproduces_every_query() {
     let (rec, frames) = run(&map, &script);
     let mut replay = Input::new(map.clone());
     let mut player = Player::new(Recording::from_bytes(&rec.to_bytes()).unwrap(), &map).unwrap();
-    for f in &frames {
+    // Re-run live alongside the replay and compare every recorded query.
+    let mut live = Input::new(map.clone());
+    for (f, (t, events, pad)) in frames.iter().zip(&script) {
+        live.update(*t, events, std::slice::from_ref(pad));
         assert!(player.step(&mut replay));
         assert_eq!(&replay.action_frame(), f);
         for a in map.actions() {
-            let live = f.actions[map.index_of(&a.name).unwrap()];
-            assert_eq!(replay.state(&a.name), live);
-            assert_eq!(replay.pressed(&a.name), live.pressed);
-            assert_eq!(replay.value2(&a.name), live.value);
+            assert_eq!(replay.state(&a.name), live.state(&a.name), "{}", a.name);
+            assert_eq!(replay.prompt(&a.name), live.prompt(&a.name), "{}", a.name);
         }
+        assert_eq!(replay.pointer(), live.pointer());
+        assert_eq!(replay.touches(), live.touches());
+        assert_eq!(replay.text(), live.text());
+        assert_eq!(replay.last_device(), live.last_device());
+        assert_eq!(replay.dt().to_bits(), live.dt().to_bits());
+        assert!(!replay.source_held(Source::Key(keys::SPACE)), "raw device queries read idle in a replay");
     }
+    assert!(frames.iter().any(|f| f.touches.len() == 1), "the script has a touch down");
+    assert!(frames.iter().any(|f| f.pointer.is_some_and(|p| p.kind == PointerKind::Touch)));
+    assert!(frames.iter().any(|f| f.last_device == Some(specula_input::Device::Gamepad(0))));
     assert_eq!(player.remaining(), 0);
     assert!(!player.step(&mut replay), "finished");
     assert!(replay.states().iter().all(|s| *s == ActionState::default()));
+}
+
+#[test]
+fn player_end_releases_held_actions() {
+    let map = ActionMap::from_json_str(SEPULCRA).unwrap();
+    let mut input = Input::new(map.clone());
+    let mut rec = Recording::new(&map);
+    let pad = GamepadState::from_raw(RawGamepad { buttons: GamepadButton::South.bit(), ..Default::default() }, &DeadZones::default());
+    input.update(0.0, &[], &[pad]);
+    rec.push(input.action_frame()).unwrap();
+    assert!(input.held("place"));
+    let mut replay = Input::new(map.clone());
+    let mut player = Player::new(rec, &map).unwrap();
+    assert!(player.step(&mut replay));
+    assert!(replay.pressed("place"));
+    assert!(!player.step(&mut replay));
+    assert!(replay.released("place") && !replay.held("place"), "the end releases what was held");
+    assert!(!player.step(&mut replay));
+    assert!(!replay.released("place"), "once");
+}
+
+#[test]
+fn axis_held_before_recording_starts_round_trips_exactly() {
+    let map = ActionMap::from_json_str(SEPULCRA).unwrap();
+    let mut input = Input::new(map.clone());
+    let stick = GamepadState::from_raw(RawGamepad { left_x: 32767, ..Default::default() }, &DeadZones::default());
+    input.update(0.0, &[], &[stick]);
+    input.update(0.016, &[], &[stick]);
+    let mut rec = Recording::new(&map);
+    input.update(0.032, &[], &[stick]);
+    let first = input.action_frame();
+    let cursor = first.actions[map.index_of("cursor_move").unwrap()];
+    assert!(cursor.held && !cursor.pressed, "{cursor:?}");
+    rec.push(first.clone()).unwrap();
+    let back = Recording::from_bytes(&rec.to_bytes()).unwrap();
+    assert_eq!(back.frames()[0], first);
 }
 
 #[test]
@@ -273,11 +319,20 @@ fn text_and_pointer_are_recorded() {
     rec.push(input.action_frame()).unwrap();
     input.update(0.1, &[Event::Char('x')], &[]);
     rec.push(input.action_frame()).unwrap();
+    input.update(0.2, &[Event::KeyDown { code: keys::BACKSPACE, repeat: false }, Event::KeyDown { code: keys::LEFT, repeat: true }], &[]);
+    rec.push(input.action_frame()).unwrap();
     let back = Recording::from_bytes(&rec.to_bytes()).unwrap();
-    assert_eq!(back.frames()[0].text, "R\u{e9}");
-    assert_eq!(back.frames()[0].pointer, Some([3.0, 4.0]));
-    assert_eq!(back.frames()[1].text, "x", "text doesn't carry over");
-    assert_eq!(back.frames()[1].pointer, Some([3.0, 4.0]), "pointer does");
+    assert_eq!(back.frames()[0].text, vec![TextEvent::Char('R'), TextEvent::Char('\u{e9}')]);
+    let mouse = Some(Pointer { x: 3.0, y: 4.0, kind: PointerKind::Mouse });
+    assert_eq!(back.frames()[0].pointer, mouse);
+    assert_eq!(back.frames()[1].text, vec![TextEvent::Char('x')], "text doesn't carry over");
+    assert_eq!(back.frames()[1].pointer, mouse, "pointer does");
+    assert_eq!(
+        back.frames()[2].text,
+        vec![TextEvent::Key { code: keys::BACKSPACE, repeat: false }, TextEvent::Key { code: keys::LEFT, repeat: true }],
+        "editing keys replay"
+    );
+    assert_eq!(back.frames(), rec.frames());
 }
 
 #[test]

@@ -7,6 +7,8 @@
 //! second finger (lifting one finger after a pinch must not swing the camera). Two-finger values
 //! come from the first two contacts and are reported as per-frame changes.
 
+use specula_core::dmath;
+
 use crate::map::Settings;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,7 +171,7 @@ impl Gestures {
         Some(TwoRef {
             ids: (a.id, b.id),
             dist: len(d),
-            angle: d[1].atan2(d[0]),
+            angle: dmath::atan2(d[1], d[0]),
             center: [(a.pos[0] + b.pos[0]) * 0.5, (a.pos[1] + b.pos[1]) * 0.5],
         })
     }
@@ -182,7 +184,7 @@ impl Gestures {
         let Some(now) = self.two_now() else { return };
         if let Some(prev) = self.two.filter(|p| p.ids == now.ids) {
             if prev.dist > 1.0 && now.dist > 1.0 {
-                self.out.pinch += (now.dist / prev.dist).ln();
+                self.out.pinch += dmath::ln(now.dist / prev.dist);
                 self.out.rotate += wrap(now.angle - prev.angle);
             }
             let c = sub(now.center, prev.center);

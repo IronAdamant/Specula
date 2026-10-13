@@ -8,7 +8,7 @@
 //! Default map: `games/sepulcra/data/input.json`. Buttons print on press/release with the prompt
 //! for the last-used device; axes print their summed amount four times a second while moving.
 //! Keys inside the window: F1 rumbles every connected pad briefly, F5 rebinds `place` (press the
-//! new input; Escape cancels). Close the window (or Ctrl+C) to quit.
+//! new input; Escape, Start or a two-finger tap cancels). Close the window (or Ctrl+C) to quit.
 
 use std::time::{Duration, Instant};
 
@@ -73,6 +73,7 @@ fn main() {
     let mut sums: Vec<[f32; 2]> = vec![[0.0; 2]; input.map().actions().len()];
     let mut next_print = Instant::now();
     let mut rumble_until: Option<Instant> = None;
+    let mut want_rebind = false;
 
     'run: loop {
         let events = window.poll_events();
@@ -89,12 +90,7 @@ fn main() {
                         rumble_until = Some(Instant::now() + Duration::from_millis(300));
                     }
                 }
-                Event::KeyDown { code, repeat: false } if *code == f5 => {
-                    match input.start_rebind(RebindRequest::new("place", BindingSlot::Append)) {
-                        Ok(()) => println!("rebind: press the new input for 'place' (Escape cancels)"),
-                        Err(e) => println!("rebind: {e}"),
-                    }
-                }
+                Event::KeyDown { code, repeat: false } if *code == f5 => want_rebind = true,
                 _ => {}
             }
         }
@@ -115,6 +111,13 @@ fn main() {
         }
         let pad_states = pads.as_ref().map(|p| *p.states()).unwrap_or_default();
         input.update(start.elapsed().as_secs_f64(), &events, &pad_states);
+        // Mode switches go after `update`, so the F5 press itself is never captured.
+        if std::mem::take(&mut want_rebind) {
+            match input.start_rebind(RebindRequest::new("place", BindingSlot::Append)) {
+                Ok(()) => println!("rebind: press the new input for 'place' (Escape / Start / two-finger tap cancel)"),
+                Err(e) => println!("rebind: {e}"),
+            }
+        }
 
         if input.last_device() != last_device {
             last_device = input.last_device();
@@ -128,7 +131,7 @@ fn main() {
                         println!("rebind: {e}");
                     }
                 }
-                RebindOutcome::Cancelled { .. } => println!("rebind: cancelled"),
+                RebindOutcome::Cancelled { reason, .. } => println!("rebind: cancelled ({reason:?})"),
             }
         }
         let names: Vec<(String, ActionKind)> = input.map().actions().iter().map(|a| (a.name.clone(), a.kind)).collect();

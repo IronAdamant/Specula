@@ -1,7 +1,7 @@
 //! Behaviour of `Input` driven by synthetic platform events (no window or pad needed).
 
 use specula_input::{
-    Action, ActionKind, ActionMap, Binding, BindingInput, BindingSlot, CompositePart, Device, DeviceFamily, ErrorCode,
+    Action, ActionKind, ActionMap, Binding, BindingInput, BindingSlot, CancelReason, CompositePart, Device, DeviceFamily, ErrorCode,
     Input, PadStyle, RebindOutcome, RebindRequest, Source, TextEvent,
 };
 use specula_platform::{keys, DeadZones, Event, GamepadButton, GamepadState, MouseButton, PointerKind, RawGamepad};
@@ -337,11 +337,9 @@ fn text_mode_passes_text_and_suppresses_actions() {
     h.input.set_text_mode(true);
     h.frame(&[Event::Char('h'), Event::Char('i'), kd("Backspace")]);
     assert!(h.input.released("jump"), "entering text mode releases held actions");
-    assert_eq!(
-        h.input.take_text(),
-        vec![TextEvent::Char('h'), TextEvent::Char('i'), TextEvent::Key { code: keys::BACKSPACE, repeat: false }]
-    );
-    assert_eq!(h.input.action_frame().text, "hi");
+    let typed = [TextEvent::Char('h'), TextEvent::Char('i'), TextEvent::Key { code: keys::BACKSPACE, repeat: false }];
+    assert_eq!(h.input.text(), &typed);
+    assert_eq!(h.input.action_frame().text, typed, "editing keys are recorded too");
     h.frame(&[kd("Z"), kd("Escape")]);
     assert!(!h.input.held("zap"));
     assert!(h.input.pressed("text_escape"), "text_mode actions stay live");
@@ -352,7 +350,34 @@ fn text_mode_passes_text_and_suppresses_actions() {
     h.frame(&[kd("Z")]);
     assert!(h.input.pressed("zap"));
     h.frame(&[Event::Char('x')]);
-    assert!(h.input.take_text().is_empty(), "no text outside text mode");
+    assert!(h.input.text().is_empty(), "no text outside text mode");
+}
+
+// ---- focus ----
+
+#[test]
+fn pads_are_ignored_while_unfocused_unless_allowed() {
+    let mut h = Harness::new(BASIC);
+    let a = RawGamepad { buttons: GamepadButton::South.bit(), ..Default::default() };
+    h.frame(&[Event::Focused(false)]);
+    h.pad(a);
+    h.frame(&[]);
+    assert!(!h.input.held("jump"), "XInput reports pads while unfocused; they are ignored");
+    h.frame(&[Event::Focused(true)]);
+    assert!(!h.input.held("jump"), "a button held while focus returns waits for release");
+    h.pad(RawGamepad::default());
+    h.frame(&[]);
+    h.pad(a);
+    h.frame(&[]);
+    assert!(h.input.pressed("jump"));
+
+    let mut map = ActionMap::from_json_str(BASIC).unwrap();
+    map.settings.background_pads = true;
+    let mut h = Harness { input: Input::new(map), t: 0.0, pads: Default::default() };
+    h.frame(&[Event::Focused(false)]);
+    h.pad(a);
+    h.frame(&[]);
+    assert!(h.input.pressed("jump"), "background_pads keeps them live");
 }
 
 // ---- devices and glyphs ----
@@ -496,6 +521,107 @@ fn rebind_axes_and_composite_parts() {
     let Some(RebindOutcome::Captured { binding, conflicts, .. }) = h.input.take_rebind_outcome() else { panic!() };
     assert_eq!(binding.glyph(PadStyle::Xbox), "RMB+Mouse");
     assert_eq!(conflicts.len(), 1, "same as look's existing binding");
+}
+
+#[test]
+fn the_input_that_ends_a_rebind_never_reaches_gameplay() {
+    let mut h = Harness::new(BASIC);
+    // Capturing Z (zap's key) for jump: zap stays idle in the capture frame and after.
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.frame(&[kd("Z")]);
+    assert!(matches!(h.input.take_rebind_outcome(), Some(RebindOutcome::Captured { .. })));
+    assert!(!h.input.held("zap") && !h.input.pressed("zap"));
+    h.frame(&[]);
+    assert!(!h.input.held("zap"), "still held: ignored until released");
+    h.frame(&[ku("Z")]);
+
+    // Cancelling with Escape doesn't fire the Escape-bound action.
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.frame(&[kd("Escape")]);
+    assert_eq!(
+        h.input.take_rebind_outcome(),
+        Some(RebindOutcome::Cancelled {
+            request: RebindRequest::new("jump", BindingSlot::Append),
+            reason: CancelReason::Input(Source::Key(keys::ESCAPE)),
+        })
+    );
+    assert!(!h.input.held("text_escape"));
+    h.frame(&[]);
+    assert!(!h.input.held("text_escape"));
+    h.frame(&[ku("Escape")]);
+
+    // A press and release inside the capture frame doesn't surface as a pulse afterwards.
+    h.input.start_rebind(RebindRequest::new("zap", BindingSlot::Append)).unwrap();
+    h.frame(&[kd("Space"), ku("Space")]);
+    assert!(matches!(h.input.take_rebind_outcome(), Some(RebindOutcome::Captured { .. })));
+    assert!(!h.input.held("jump"));
+    h.frame(&[]);
+    assert!(!h.input.held("jump") && !h.input.released("jump"));
+}
+
+#[test]
+fn start_rebind_after_update_ignores_that_frames_press() {
+    let mut h = Harness::new(BASIC);
+    h.frame(&[kd("F5")]);
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.frame(&[]);
+    assert!(h.input.take_rebind_outcome().is_none() && h.input.rebinding(), "F5 was not captured");
+    h.frame(&[ku("F5"), kd("K")]);
+    let Some(RebindOutcome::Captured { binding, .. }) = h.input.take_rebind_outcome() else { panic!() };
+    assert_eq!(binding, Binding::source(Source::Key(code("K"))));
+}
+
+#[test]
+fn every_device_can_back_out_of_a_rebind() {
+    let mut h = Harness::new(BASIC);
+    let cancelled = |h: &mut Harness| match h.input.take_rebind_outcome() {
+        Some(RebindOutcome::Cancelled { reason, .. }) => Some(reason),
+        _ => None,
+    };
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.pad(RawGamepad { buttons: GamepadButton::Start.bit(), ..Default::default() });
+    h.frame(&[]);
+    assert_eq!(cancelled(&mut h), Some(CancelReason::Input(Source::Pad(GamepadButton::Start))));
+    h.pad(RawGamepad::default());
+    h.frame(&[]);
+
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.frame(&[touch_down(1, 10, 10), touch_down(2, 60, 10)]);
+    h.frame(&[touch_up(1, 10, 10), touch_up(2, 60, 10)]);
+    assert_eq!(cancelled(&mut h), Some(CancelReason::Input(Source::TwoFingerTap)));
+
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.input.cancel_rebind();
+    assert_eq!(cancelled(&mut h), Some(CancelReason::Requested));
+
+    let mut map = ActionMap::from_json_str(BASIC).unwrap();
+    map.settings.rebind_timeout_s = 2.0;
+    map.settings.rebind_cancel = vec![Source::Pad(GamepadButton::Back)];
+    let mut h = Harness { input: Input::new(map), t: 0.0, pads: Default::default() };
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Append)).unwrap();
+    h.frame(&[]);
+    h.wait(1.0);
+    assert!(h.input.rebinding());
+    h.wait(1.1);
+    assert_eq!(cancelled(&mut h), Some(CancelReason::Timeout));
+}
+
+#[test]
+fn raw_source_queries_work_in_any_mode() {
+    let mut h = Harness::new(BASIC);
+    h.input.set_text_mode(true);
+    h.pad(RawGamepad { buttons: GamepadButton::East.bit(), right_trigger: 255, ..Default::default() });
+    h.frame(&[]);
+    assert!(h.input.source_pressed(Source::Pad(GamepadButton::East)), "a game's own 'back' while typing");
+    assert!(h.input.source_held(Source::Pad(GamepadButton::East)));
+    assert!(h.input.source_pressed(Source::PadAxis(specula_input::PadAxis::RightTrigger)));
+    assert!(!h.input.held("fire"), "actions are idle in text mode");
+    h.frame(&[]);
+    assert!(!h.input.source_pressed(Source::Pad(GamepadButton::East)));
+    assert!(h.input.source_held(Source::Pad(GamepadButton::East)));
+    assert!(!h.input.source_pressed(Source::PadAxis(specula_input::PadAxis::RightTrigger)));
+    h.frame(&[Event::MouseWheel { delta: -1.0 }]);
+    assert!(h.input.source_pressed(Source::WheelDown) && !h.input.source_held(Source::WheelUp));
 }
 
 #[test]

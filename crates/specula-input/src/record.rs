@@ -1,8 +1,13 @@
 //! Recording and replay of **action state** (not raw OS events), one frame per simulation tick.
 //!
-//! Replays feed [`ActionFrame`]s back into [`Input`](crate::Input), so game code reads
-//! `pressed("place")` the same way live and in a replay, and a replay doesn't depend on window
-//! size, keyboard layout, pad dead zones or binding changes made since.
+//! Replays feed [`ActionFrame`]s back into [`Input`](crate::Input) with
+//! [`Input::apply_frame`](crate::Input::apply_frame). These queries then answer exactly as they did
+//! live: `state` / `states` / `pressed` / `released` / `held` / `value` / `value2`, `pointer`
+//! (position and kind), `touches`, `text`, `last_device`, `dt`, and therefore `prompt` / `glyphs`
+//! given the same map and pad style. Not recorded: the raw device queries (`source_pressed`,
+//! `source_held`, which read idle during a replay) and rebinding (a menu activity, not gameplay).
+//! A replay doesn't depend on window size, keyboard layout, pad dead zones or binding changes made
+//! since.
 //!
 //! # Byte format (`SPIR` v1), deterministic: the same frames always give the same bytes
 //!
@@ -10,21 +15,24 @@
 //! "SPIR" u8:version(1)
 //! varint:action_count  { u8:kind(0 button, 1 axis, 2 axis2)  varint:len  utf8:name } * action_count
 //! varint:frame_count   frame * frame_count
-//! frame  = varint:change_count  change * change_count        (changes vs the previous frame)
-//! change = varint:slot  payload
-//!   slot <  action_count: button -> u8 flags (1 held, 2 pressed, 4 released)
-//!                         axis   -> f32 LE
-//!                         axis2  -> f32 LE, f32 LE
-//!   slot == action_count:     pointer -> u8 present, then f32 LE x, f32 LE y if present
-//!   slot == action_count + 1: text    -> varint:len utf8      (text never carries over)
+//! frame  = varint:change_count  change * change_count   (changes vs the previous frame, slots ascending)
+//! change = varint:slot  payload                          (n = action_count)
+//!   slot <  n : u8 flags (1 held, 2 pressed, 4 released); axis: + f32; axis2: + f32 f32
+//!   slot n    : pointer  u8 (0 none, 1 mouse, 2 touch, 3 pen) [f32 x, f32 y]
+//!   slot n+1  : text     varint:count { u8 (0 char, 1 key, 2 key repeat)  varint:scalar or code }
+//!                        (text never carries over to the next frame)
+//!   slot n+2  : touches  varint:count { varint:id  f32 x  f32 y }
+//!   slot n+3  : device   u8 (0 none, 1 keyboard/mouse, 2 touch, 3 + pad index)
+//!   slot n+4  : dt       f32 seconds
 //! ```
 //!
-//! An idle frame is one byte. Axis edges (`held` = non-zero, `pressed`, `released`) are derived
-//! when decoding, exactly as [`Input`](crate::Input) derives them live. Floats are stored by bit
-//! pattern, so replays are bit-exact.
+//! Floats are little-endian and stored by bit pattern, so replays are bit-exact. A frame with no
+//! changes is one byte.
 
 use crate::error::{ErrorCode, InputError};
+use crate::input::{Device, Pointer, TextEvent, Touch};
 use crate::map::{schema_hash, ActionKind, ActionMap};
+use specula_platform::PointerKind;
 
 const MAGIC: &[u8; 4] = b"SPIR";
 const VERSION: u8 = 1;
@@ -56,6 +64,10 @@ impl ActionState {
     fn flags(&self) -> u8 {
         u8::from(self.held) | u8::from(self.pressed) << 1 | u8::from(self.released) << 2
     }
+
+    fn same(&self, other: &ActionState) -> bool {
+        self.flags() == other.flags() && self.value.map(f32::to_bits) == other.value.map(f32::to_bits)
+    }
 }
 
 /// Everything game code can read from input in one frame.
@@ -63,15 +75,46 @@ impl ActionState {
 pub struct ActionFrame {
     /// Indexed like the map's actions.
     pub actions: Vec<ActionState>,
-    /// Pointer position (mouse or primary touch), client pixels.
-    pub pointer: Option<[f32; 2]>,
-    /// Text typed this frame (text input mode only).
-    pub text: String,
+    pub pointer: Option<Pointer>,
+    /// Text-mode events this frame.
+    pub text: Vec<TextEvent>,
+    /// Touch/pen contacts down, first-down first.
+    pub touches: Vec<Touch>,
+    pub last_device: Option<Device>,
+    /// Seconds since the previous frame (as used for level sources).
+    pub dt: f32,
 }
 
 impl ActionFrame {
     pub(crate) fn neutral(n: usize) -> ActionFrame {
-        ActionFrame { actions: vec![ActionState::default(); n], pointer: None, text: String::new() }
+        ActionFrame { actions: vec![ActionState::default(); n], ..ActionFrame::default() }
+    }
+
+    /// Copies `other` into `self`, reusing `self`'s buffers.
+    pub fn copy_from(&mut self, other: &ActionFrame) {
+        self.actions.clone_from(&other.actions);
+        self.pointer = other.pointer;
+        self.text.clone_from(&other.text);
+        self.touches.clone_from(&other.touches);
+        self.last_device = other.last_device;
+        self.dt = other.dt;
+    }
+}
+
+fn pointer_bits(p: &Option<Pointer>) -> Option<(PointerKind, u32, u32)> {
+    p.map(|p| (p.kind, p.x.to_bits(), p.y.to_bits()))
+}
+
+fn touches_same(a: &[Touch], b: &[Touch]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.id == b.id && a.x.to_bits() == b.x.to_bits() && a.y.to_bits() == b.y.to_bits())
+}
+
+fn device_code(d: Option<Device>) -> u64 {
+    match d {
+        None => 0,
+        Some(Device::KeyboardMouse) => 1,
+        Some(Device::Touch) => 2,
+        Some(Device::Gamepad(i)) => 3 + i as u64,
     }
 }
 
@@ -81,6 +124,10 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
         v >>= 7;
     }
     out.push(v as u8);
+}
+
+fn put_f32(out: &mut Vec<u8>, v: f32) {
+    out.extend_from_slice(&v.to_le_bytes());
 }
 
 fn bad(offset: usize, message: impl Into<String>) -> InputError {
@@ -140,10 +187,12 @@ impl Reader<'_> {
 }
 
 /// Encodes frames one at a time as changes against the previous frame (for streaming into a
-/// journal tick by tick). [`Recording::to_bytes`] uses it.
+/// journal tick by tick). Allocation-free per frame once warmed up. [`Recording::to_bytes`]
+/// uses it.
 pub struct FrameEncoder {
     kinds: Vec<ActionKind>,
     prev: ActionFrame,
+    body: Vec<u8>,
 }
 
 impl FrameEncoder {
@@ -153,10 +202,11 @@ impl FrameEncoder {
 
     fn with_kinds(kinds: Vec<ActionKind>) -> FrameEncoder {
         let n = kinds.len();
-        FrameEncoder { kinds, prev: ActionFrame::neutral(n) }
+        FrameEncoder { kinds, prev: ActionFrame::neutral(n), body: Vec::new() }
     }
 
-    /// Appends one frame. Errors (`schema_mismatch`) if the frame has the wrong number of actions.
+    /// Appends one frame to `out`. Errors (`schema_mismatch`) if the frame has the wrong number of
+    /// actions.
     pub fn encode(&mut self, frame: &ActionFrame, out: &mut Vec<u8>) -> Result<(), InputError> {
         let n = self.kinds.len();
         if frame.actions.len() != n {
@@ -166,75 +216,94 @@ impl FrameEncoder {
                 format!("frame has {} actions, the recording has {n}", frame.actions.len()),
             ));
         }
-        let mut body = Vec::new();
+        let body = &mut self.body;
+        body.clear();
         let mut changes = 0u64;
-        for (i, (kind, (now, prev))) in self.kinds.iter().zip(frame.actions.iter().zip(&self.prev.actions)).enumerate() {
+        for i in 0..n {
+            let kind = self.kinds[i];
+            let mut now = frame.actions[i];
+            if kind == ActionKind::Button {
+                // Buttons' value follows `held`; store what the decoder will rebuild.
+                now = ActionState::button(now.held, now.pressed, now.released);
+            } else if kind == ActionKind::Axis {
+                now.value[1] = 0.0;
+            }
+            if now.same(&self.prev.actions[i]) {
+                continue;
+            }
+            put_varint(body, i as u64);
+            body.push(now.flags());
             match kind {
-                ActionKind::Button => {
-                    if now.flags() != prev.flags() {
-                        put_varint(&mut body, i as u64);
-                        body.push(now.flags());
-                        changes += 1;
-                    }
-                }
-                ActionKind::Axis => {
-                    if now.value[0].to_bits() != prev.value[0].to_bits() {
-                        put_varint(&mut body, i as u64);
-                        body.extend_from_slice(&now.value[0].to_le_bytes());
-                        changes += 1;
-                    }
-                }
+                ActionKind::Button => {}
+                ActionKind::Axis => put_f32(body, now.value[0]),
                 ActionKind::Axis2 => {
-                    if now.value.map(f32::to_bits) != prev.value.map(f32::to_bits) {
-                        put_varint(&mut body, i as u64);
-                        body.extend_from_slice(&now.value[0].to_le_bytes());
-                        body.extend_from_slice(&now.value[1].to_le_bytes());
-                        changes += 1;
-                    }
+                    put_f32(body, now.value[0]);
+                    put_f32(body, now.value[1]);
                 }
             }
+            self.prev.actions[i] = now;
+            changes += 1;
         }
-        if frame.pointer.map(|p| p.map(f32::to_bits)) != self.prev.pointer.map(|p| p.map(f32::to_bits)) {
-            put_varint(&mut body, n as u64);
+        if pointer_bits(&frame.pointer) != pointer_bits(&self.prev.pointer) {
+            put_varint(body, n as u64);
             match frame.pointer {
-                Some([x, y]) => {
-                    body.push(1);
-                    body.extend_from_slice(&x.to_le_bytes());
-                    body.extend_from_slice(&y.to_le_bytes());
-                }
                 None => body.push(0),
+                Some(p) => {
+                    body.push(match p.kind {
+                        PointerKind::Mouse => 1,
+                        PointerKind::Touch => 2,
+                        PointerKind::Pen => 3,
+                    });
+                    put_f32(body, p.x);
+                    put_f32(body, p.y);
+                }
             }
             changes += 1;
         }
         if !frame.text.is_empty() {
-            put_varint(&mut body, n as u64 + 1);
-            put_varint(&mut body, frame.text.len() as u64);
-            body.extend_from_slice(frame.text.as_bytes());
+            put_varint(body, n as u64 + 1);
+            put_varint(body, frame.text.len() as u64);
+            for t in &frame.text {
+                match *t {
+                    TextEvent::Char(c) => {
+                        body.push(0);
+                        put_varint(body, u64::from(u32::from(c)));
+                    }
+                    TextEvent::Key { code, repeat } => {
+                        body.push(if repeat { 2 } else { 1 });
+                        put_varint(body, u64::from(code));
+                    }
+                }
+            }
+            changes += 1;
+        }
+        if !touches_same(&frame.touches, &self.prev.touches) {
+            put_varint(body, n as u64 + 2);
+            put_varint(body, frame.touches.len() as u64);
+            for t in &frame.touches {
+                put_varint(body, u64::from(t.id));
+                put_f32(body, t.x);
+                put_f32(body, t.y);
+            }
+            changes += 1;
+        }
+        if frame.last_device != self.prev.last_device {
+            put_varint(body, n as u64 + 3);
+            body.push(device_code(frame.last_device) as u8);
+            changes += 1;
+        }
+        if frame.dt.to_bits() != self.prev.dt.to_bits() {
+            put_varint(body, n as u64 + 4);
+            put_f32(body, frame.dt);
             changes += 1;
         }
         put_varint(out, changes);
-        out.extend_from_slice(&body);
-        // Store what the decoder will reconstruct (axis flags derived, buttons' value normalised),
-        // so the encoder and decoder agree on "previous" exactly.
-        self.prev = canonical(&self.kinds, frame, &self.prev);
+        out.extend_from_slice(body);
+        self.prev.pointer = frame.pointer;
+        self.prev.touches.clone_from(&frame.touches);
+        self.prev.last_device = frame.last_device;
+        self.prev.dt = frame.dt;
         Ok(())
-    }
-}
-
-/// The frame as the decoder will produce it.
-fn canonical(kinds: &[ActionKind], frame: &ActionFrame, prev: &ActionFrame) -> ActionFrame {
-    ActionFrame {
-        actions: kinds
-            .iter()
-            .zip(frame.actions.iter().zip(&prev.actions))
-            .map(|(kind, (now, prev))| match kind {
-                ActionKind::Button => ActionState::button(now.held, now.pressed, now.released),
-                ActionKind::Axis => ActionState::axis([now.value[0], 0.0], prev),
-                ActionKind::Axis2 => ActionState::axis(now.value, prev),
-            })
-            .collect(),
-        pointer: frame.pointer,
-        text: frame.text.clone(),
     }
 }
 
@@ -265,9 +334,8 @@ impl FrameDecoder {
     fn read(&mut self, r: &mut Reader) -> Result<ActionFrame, InputError> {
         let n = self.kinds.len();
         let changes = r.count("change count")?;
-        let mut values: Vec<ActionState> = self.prev.actions.clone();
-        let mut pointer = self.prev.pointer;
-        let mut text = String::new();
+        let mut frame = self.prev.clone();
+        frame.text.clear();
         let mut last_slot: Option<u64> = None;
         for _ in 0..changes {
             let at = r.pos;
@@ -276,42 +344,75 @@ impl FrameDecoder {
                 return Err(bad(at, format!("slot {slot} out of order")));
             }
             last_slot = Some(slot);
-            match slot as usize {
-                i if i < n => match self.kinds[i] {
-                    ActionKind::Button => {
-                        let f = r.u8()?;
-                        if f > 7 {
-                            return Err(bad(r.pos - 1, format!("button flags {f:#x} out of range")));
-                        }
-                        values[i] = ActionState::button(f & 1 != 0, f & 2 != 0, f & 4 != 0);
+            let slot = usize::try_from(slot).unwrap_or(usize::MAX);
+            match slot {
+                i if i < n => {
+                    let f = r.u8()?;
+                    if f > 7 {
+                        return Err(bad(r.pos - 1, format!("action flags {f:#x} out of range")));
                     }
-                    ActionKind::Axis => values[i].value = [r.f32()?, 0.0],
-                    ActionKind::Axis2 => values[i].value = [r.f32()?, r.f32()?],
-                },
+                    let (held, pressed, released) = (f & 1 != 0, f & 2 != 0, f & 4 != 0);
+                    frame.actions[i] = match self.kinds[i] {
+                        ActionKind::Button => ActionState::button(held, pressed, released),
+                        ActionKind::Axis => ActionState { held, pressed, released, value: [r.f32()?, 0.0] },
+                        ActionKind::Axis2 => ActionState { held, pressed, released, value: [r.f32()?, r.f32()?] },
+                    };
+                }
                 i if i == n => {
-                    pointer = match r.u8()? {
+                    let kind = match r.u8()? {
                         0 => None,
-                        1 => Some([r.f32()?, r.f32()?]),
-                        other => return Err(bad(r.pos - 1, format!("pointer tag {other} is not 0 or 1"))),
+                        1 => Some(PointerKind::Mouse),
+                        2 => Some(PointerKind::Touch),
+                        3 => Some(PointerKind::Pen),
+                        other => return Err(bad(r.pos - 1, format!("pointer tag {other} out of range"))),
+                    };
+                    frame.pointer = match kind {
+                        None => None,
+                        Some(kind) => Some(Pointer { x: r.f32()?, y: r.f32()?, kind }),
+                    };
+                }
+                i if i == n + 1 => {
+                    let count = r.count("text event count")?;
+                    for _ in 0..count {
+                        let at = r.pos;
+                        let tag = r.u8()?;
+                        let v = r.varint()?;
+                        frame.text.push(match tag {
+                            0 => TextEvent::Char(
+                                u32::try_from(v).ok().and_then(char::from_u32).ok_or_else(|| bad(at, "invalid char"))?,
+                            ),
+                            1 | 2 => TextEvent::Key {
+                                code: u32::try_from(v).map_err(|_| bad(at, "key code out of range"))?,
+                                repeat: tag == 2,
+                            },
+                            other => return Err(bad(at, format!("text tag {other} out of range"))),
+                        });
                     }
                 }
-                i if i == n + 1 => text = r.str()?,
-                _ => return Err(bad(at, format!("slot {slot} out of range (0..={})", n + 1))),
+                i if i == n + 2 => {
+                    let count = r.count("touch count")?;
+                    frame.touches.clear();
+                    for _ in 0..count {
+                        let at = r.pos;
+                        let id = u32::try_from(r.varint()?).map_err(|_| bad(at, "touch id out of range"))?;
+                        frame.touches.push(Touch { id, x: r.f32()?, y: r.f32()? });
+                    }
+                }
+                i if i == n + 3 => {
+                    let at = r.pos;
+                    frame.last_device = match r.u8()? {
+                        0 => None,
+                        1 => Some(Device::KeyboardMouse),
+                        2 => Some(Device::Touch),
+                        p @ 3..=6 => Some(Device::Gamepad(usize::from(p - 3))),
+                        other => return Err(bad(at, format!("device tag {other} out of range"))),
+                    };
+                }
+                i if i == n + 4 => frame.dt = r.f32()?,
+                _ => return Err(bad(at, format!("slot {slot} out of range (0..={})", n + 4))),
             }
         }
-        // Unchanged buttons repeat the previous flags exactly (the encoder writes any flag change);
-        // axis edges are derived from the values.
-        let actions = self
-            .kinds
-            .iter()
-            .zip(values.iter().zip(&self.prev.actions))
-            .map(|(kind, (v, prev))| match kind {
-                ActionKind::Button => *v,
-                ActionKind::Axis | ActionKind::Axis2 => ActionState::axis(v.value, prev),
-            })
-            .collect();
-        let frame = ActionFrame { actions, pointer, text };
-        self.prev = frame.clone();
+        self.prev.copy_from(&frame);
         Ok(frame)
     }
 }
@@ -365,7 +466,9 @@ impl Recording {
 
     /// `schema_mismatch` unless `map` has exactly the recorded actions (names, kinds, order).
     pub fn check(&self, map: &ActionMap) -> Result<(), InputError> {
-        if self.schema_hash() == map.schema_hash() && self.schema.len() == map.actions().len() {
+        let same = self.schema.len() == map.actions().len()
+            && self.schema.iter().zip(map.actions()).all(|((n, k), a)| *n == a.name && *k == a.kind);
+        if same {
             return Ok(());
         }
         let recorded: Vec<String> = self.schema.iter().map(|(n, k)| format!("{n}:{}", k.name())).collect();
@@ -443,30 +546,41 @@ impl Recording {
 pub struct Player {
     frames: Vec<ActionFrame>,
     next: usize,
+    /// Reused for the frames after the end.
+    tail: ActionFrame,
 }
 
 impl Player {
     /// Errors (`schema_mismatch`) unless the recording was made with this map's actions.
     pub fn new(recording: Recording, map: &ActionMap) -> Result<Player, InputError> {
         recording.check(map)?;
-        Ok(Player { frames: recording.frames, next: 0 })
+        Ok(Player { frames: recording.frames, next: 0, tail: ActionFrame::default() })
     }
 
-    /// Applies the next frame to `input` (instead of `Input::update`). `false` once finished; the
-    /// input is then left neutral.
+    /// Applies the next frame to `input` (instead of `Input::update`). Returns `false` once the
+    /// recording is finished: from then on the input goes idle, with a `released` edge (in the
+    /// first frame after the end) for every action that was still held.
     pub fn step(&mut self, input: &mut crate::Input) -> bool {
-        match self.frames.get(self.next) {
-            Some(frame) => {
-                input.apply_frame(frame).expect("schema checked in Player::new");
-                self.next += 1;
-                true
-            }
-            None => {
-                let n = input.map().actions().len();
-                let _ = input.apply_frame(&ActionFrame::neutral(n));
-                false
-            }
+        if let Some(frame) = self.frames.get(self.next) {
+            input.apply_frame(frame).expect("schema checked in Player::new");
+            self.next += 1;
+            return true;
         }
+        let tail = &mut self.tail;
+        tail.actions.clear();
+        tail.actions.extend(input.states().iter().map(|s| ActionState {
+            held: false,
+            pressed: false,
+            released: s.held,
+            value: [0.0, 0.0],
+        }));
+        tail.pointer = input.pointer();
+        tail.text.clear();
+        tail.touches.clear();
+        tail.last_device = input.last_device();
+        tail.dt = 0.0;
+        input.apply_frame(tail).expect("built from the input's own actions");
+        false
     }
 
     /// Frames applied so far.

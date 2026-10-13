@@ -258,7 +258,7 @@ impl Action {
 pub const DEFAULT_GROUP: &str = "default";
 
 /// Tuning shared by all actions.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Analog level that counts as a press on button actions (triggers, sticks).
     pub press_threshold: f32,
@@ -270,11 +270,32 @@ pub struct Settings {
     pub long_press_s: f32,
     /// Frame time cap for level sources, seconds (a hitch must not fling the camera).
     pub max_dt_s: f32,
+    /// Inputs that cancel listen-for-next-input rebinding, one per device family so every
+    /// player can back out (Steam Deck: no keyboard). They can't be captured as bindings.
+    pub rebind_cancel: Vec<Source>,
+    /// Rebinding gives up after this many seconds without input (0 = never).
+    pub rebind_timeout_s: f32,
+    /// Keep reading gamepads while the window is unfocused (XInput reports pads regardless of
+    /// focus; by default they are ignored, like the keyboard).
+    pub background_pads: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { press_threshold: 0.5, tap_max_s: 0.3, tap_slop_px: 12.0, long_press_s: 0.5, max_dt_s: 0.1 }
+        Settings {
+            press_threshold: 0.5,
+            tap_max_s: 0.3,
+            tap_slop_px: 12.0,
+            long_press_s: 0.5,
+            max_dt_s: 0.1,
+            rebind_cancel: vec![
+                Source::Key(specula_platform::keys::ESCAPE),
+                Source::Pad(specula_platform::GamepadButton::Start),
+                Source::TwoFingerTap,
+            ],
+            rebind_timeout_s: 0.0,
+            background_pads: false,
+        }
     }
 }
 
@@ -464,6 +485,9 @@ impl ActionMap {
             ("tap_slop_px", num(s.tap_slop_px)),
             ("long_press_s", num(s.long_press_s)),
             ("max_dt_s", num(s.max_dt_s)),
+            ("rebind_cancel", Json::arr(s.rebind_cancel.iter().map(|c| Json::from(c.name())))),
+            ("rebind_timeout_s", num(s.rebind_timeout_s)),
+            ("background_pads", Json::Bool(s.background_pads)),
         ]);
         let actions = self.actions.iter().map(|a| {
             let mut o = Json::obj([("name", Json::from(a.name.as_str())), ("kind", Json::from(a.kind.name()))]);
@@ -728,7 +752,16 @@ fn check_format(obj: &Obj, expected: &str) -> Result<(), InputError> {
 
 fn parse_settings(json: &Json, path: &str) -> Result<Settings, InputError> {
     let obj = Obj::new(json, path)?;
-    obj.only(&["press_threshold", "tap_max_s", "tap_slop_px", "long_press_s", "max_dt_s"])?;
+    obj.only(&[
+        "press_threshold",
+        "tap_max_s",
+        "tap_slop_px",
+        "long_press_s",
+        "max_dt_s",
+        "rebind_cancel",
+        "rebind_timeout_s",
+        "background_pads",
+    ])?;
     let mut s = Settings::default();
     let field = |key: &str, slot: &mut f32, ok: fn(f32) -> bool, why: &str| -> Result<(), InputError> {
         if let Some(v) = obj.num(key)? {
@@ -744,6 +777,23 @@ fn parse_settings(json: &Json, path: &str) -> Result<Settings, InputError> {
     field("tap_slop_px", &mut s.tap_slop_px, |v| v >= 0.0, "must not be negative")?;
     field("long_press_s", &mut s.long_press_s, |v| v > 0.0, "must be positive")?;
     field("max_dt_s", &mut s.max_dt_s, |v| v > 0.0, "must be positive")?;
+    field("rebind_timeout_s", &mut s.rebind_timeout_s, |v| v >= 0.0, "must not be negative (0 = never)")?;
+    if let Some(list) = obj.opt("rebind_cancel") {
+        let cpath = join(path, "rebind_cancel");
+        let items = list.as_array().ok_or_else(|| wrong_type(&cpath, "an array of source names"))?;
+        s.rebind_cancel.clear();
+        for (i, item) in items.iter().enumerate() {
+            let ipath = format!("{cpath}[{i}]");
+            let source = parse_source_json(item, &ipath)?;
+            if source.signal() != Signal::Button {
+                return Err(InputError::new(ErrorCode::IncompatibleSource, ipath, format!("{} is not a button", source.name())));
+            }
+            s.rebind_cancel.push(source);
+        }
+    }
+    if let Some(b) = obj.bool("background_pads")? {
+        s.background_pads = b;
+    }
     Ok(s)
 }
 
