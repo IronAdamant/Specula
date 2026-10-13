@@ -224,11 +224,14 @@ impl Key {
     }
 }
 
-/// The values bindings read: the game's map plus, inside a list `repeat`, the current row.
+/// The values bindings read: the game's map, inside a list `repeat` the current row, and the
+/// UI's own `ui.*` keys (`ui.width`, `ui.height`, `ui.portrait`, `ui.narrow`, `ui.gamepad`,
+/// `ui.touch`) for layouts that adapt to the screen and device.
 #[derive(Clone, Copy)]
 pub struct Scope<'a> {
     pub state: &'a StateMap,
     pub item: Option<(usize, &'a StateMap)>,
+    pub env: Option<&'a StateMap>,
 }
 
 /// A looked-up value, borrowed or synthesised (indices).
@@ -239,11 +242,17 @@ pub enum Lookup<'a> {
 
 impl<'a> Scope<'a> {
     pub fn new(state: &'a StateMap) -> Scope<'a> {
-        Scope { state, item: None }
+        Scope { state, item: None, env: None }
+    }
+
+    pub fn with_env(mut self, env: &'a StateMap) -> Scope<'a> {
+        self.env = Some(env);
+        self
     }
 
     pub fn get(&self, key: &Key) -> Option<Lookup<'a>> {
         match key {
+            Key::Global(k) if k.starts_with("ui.") => self.env.and_then(|e| e.get(k)).map(Lookup::Value),
             Key::Global(k) => self.state.get(k).map(Lookup::Value),
             Key::Item(k) => self.item.and_then(|(_, row)| row.get(k)).map(Lookup::Value),
             Key::Index { one_based } => self.item.map(|(i, _)| Lookup::Index(i as i64 + i64::from(*one_based))),
@@ -602,7 +611,7 @@ mod tests {
         let rows = s.list("rows").unwrap();
         let t = Template::parse("{item.number}. {item.label}", "t").unwrap();
         let mut out = String::new();
-        t.render(&Scope { state: &s, item: Some((1, rows.row(1).unwrap())) }, &mut out);
+        t.render(&Scope { state: &s, item: Some((1, rows.row(1).unwrap())), env: None }, &mut out);
         assert_eq!(out, "2. second");
     }
 

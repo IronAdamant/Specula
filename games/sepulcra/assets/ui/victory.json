@@ -1,0 +1,43 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "victory",
+  "input": "menu",
+  "layer": 25,
+  "modal": true,
+  "focus": "new_run",
+  "notes": "Shown when the run is won. State: waves, tombstones, tombstones_max, run_time_s, kills.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "menu",
+        "anchor": "center",
+        "width": "22em",
+        "max_width": "96%",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 10,
+        "children": [
+          { "type": "box", "layout": "row", "justify": "center", "children": [ { "type": "icon", "shape": "rune", "size": "3em", "color": "rune" } ] },
+          { "type": "label", "text": "The graves hold", "role": "title", "text_align": "center", "wrap": true },
+          { "type": "label", "text": "All {waves} waves survived", "role": "subtitle", "text_align": "center" },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [6, 0, 6, 0] },
+          {
+            "type": "box", "layout": "grid", "columns": 2, "gap": 6,
+            "children": [
+              { "type": "label", "text": "Tombstones", "role": "body" },
+              { "type": "label", "text": "{tombstones}/{tombstones_max}", "role": "heading", "text_align": "right", "width": "fill" },
+              { "type": "label", "text": "Undead laid to rest", "role": "body" },
+              { "type": "label", "text": "{kills}", "role": "heading", "text_align": "right", "width": "fill" },
+              { "type": "label", "text": "Time", "role": "body" },
+              { "type": "label", "text": "{run_time_s:time}", "role": "heading", "text_align": "right", "width": "fill" }
+            ]
+          },
+          { "type": "button", "id": "new_run", "style": "primary", "text": "New run", "action": "new_run" },
+          { "type": "button", "id": "to_title", "text": "Title screen", "action": "quit_to_title" }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "title",
+  "input": "menu",
+  "layer": 40,
+  "modal": true,
+  "focus": "start",
+  "notes": "A minimal title screen over the slab. Actions: new_run, open_controls, open_settings, quit_game.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "box",
+        "anchor": "center",
+        "layout": "column",
+        "align": "center",
+        "gap": 12,
+        "children": [
+          { "type": "icon", "shape": "warding", "size": "3.2em", "color": "rune" },
+          { "type": "label", "text": "SEPULCRA", "role": "title" },
+          { "type": "label", "text": "Guard the graves of the shattered slab", "role": "subtitle" },
+          {
+            "type": "panel", "style": "menu", "width": "16em", "layout": "column", "align": "stretch", "gap": 10, "margin": [14, 0, 0, 0],
+            "children": [
+              { "type": "button", "id": "start", "style": "primary", "text": "New run", "action": "new_run" },
+              { "type": "button", "id": "title_controls", "text": "Controls", "action": "open_controls" },
+              { "type": "button", "id": "title_settings", "text": "Settings", "action": "open_settings" },
+              { "type": "button", "id": "quit_game", "text": "Quit", "action": "quit_game" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

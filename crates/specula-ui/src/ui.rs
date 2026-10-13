@@ -325,6 +325,8 @@ pub struct Ui {
     tip_laid: TextLayout,
     threat_text: Vec<(String, TextLayout)>,
     pub(crate) last_view: Option<Viewport>,
+    /// The `ui.*` keys conditions and templates can read.
+    pub(crate) env: StateMap,
 }
 
 impl Ui {
@@ -354,6 +356,7 @@ impl Ui {
             tip_laid: TextLayout::default(),
             threat_text: Vec::new(),
             last_view: None,
+            env: StateMap::new(),
         }
     }
 
@@ -457,7 +460,7 @@ impl Ui {
         self.order.iter().map(|&i| self.screens[i].screen.name.as_str())
     }
 
-    fn reorder(&mut self) {
+    pub(crate) fn reorder(&mut self) {
         self.order.clear();
         self.order.extend((0..self.screens.len()).filter(|&i| self.screens[i].visible));
         let screens = &self.screens;
@@ -521,6 +524,13 @@ impl Ui {
         t.age = 0.0;
     }
 
+    /// Remove every toast.
+    pub fn clear_toasts(&mut self) {
+        for t in &mut self.toasts {
+            t.kind = None;
+        }
+    }
+
     /// Fix the UI clock (seconds) for reproducible previews; `None` follows `input.dt()`.
     pub fn set_time(&mut self, t: Option<f64>) {
         self.fixed_time = t;
@@ -568,6 +578,16 @@ impl Ui {
             }
         }
         self.update_prompts(input);
+        let safe = view.safe();
+        let (lw, lh) = (safe.w / view.scale, safe.h / view.scale);
+        let device = input.last_device().map(|d| d.family());
+        self.env
+            .set_num("ui.width", f64::from(lw.round()))
+            .set_num("ui.height", f64::from(lh.round()))
+            .set_bool("ui.portrait", lh > lw)
+            .set_bool("ui.narrow", lw < 760.0)
+            .set_bool("ui.gamepad", device == Some(DeviceFamily::Gamepad))
+            .set_bool("ui.touch", device == Some(DeviceFamily::Touch));
         for k in 0..self.order.len() {
             let s = self.order[k];
             self.prepare(s, state, view);
@@ -609,9 +629,18 @@ impl Ui {
 
     /// Visibility, enabled, texts and layout of one screen.
     fn prepare(&mut self, s: usize, state: &StateMap, view: &Viewport) {
+        // Texts can depend on focus (the radial centre): if the fix-up moved it, go again.
+        if self.prepare_once(s, state, view) {
+            self.prepare_once(s, state, view);
+        }
+    }
+
+    /// One pass of [`Ui::prepare`]; returns true if it had to move the focus.
+    fn prepare_once(&mut self, s: usize, state: &StateMap, view: &Viewport) -> bool {
         let theme = &self.theme;
         let fonts = &self.fonts;
         let prompts = &self.prompts;
+        let env = &self.env;
         let sr = &mut self.screens[s];
         let screen = &sr.screen;
         let n = screen.nodes.len();
@@ -621,9 +650,9 @@ impl Ui {
                 Some(p) => (sr.comp[p as usize].visible, sr.rt[p as usize].enabled),
                 None => (true, true),
             };
-            let scope = scope_for(screen, node, state);
+            let scope = scope_for(screen, node, state, env);
             let mut vis = pv && scope.is_some();
-            let scope = scope.unwrap_or(Scope::new(state));
+            let scope = scope.unwrap_or(Scope::new(state).with_env(env));
             if vis {
                 vis = node.visible.eval(&scope);
             }
@@ -647,7 +676,7 @@ impl Ui {
                                 let focus = sr.focus.filter(|f| screen.nodes[*f as usize].parent == Some(*r));
                                 if let Some(f) = focus {
                                     if let Kind::RadialItem { detail, .. } = &screen.nodes[f as usize].kind {
-                                        let fs = scope_for(screen, &screen.nodes[f as usize], state).unwrap_or(Scope::new(state));
+                                        let fs = scope_for(screen, &screen.nodes[f as usize], state, env).unwrap_or(Scope::new(state).with_env(env));
                                         detail.render(&fs, &mut rt.text);
                                     }
                                 }
@@ -682,9 +711,12 @@ impl Ui {
         if screen.input == InputMode::Menu {
             let ok = sr.focus.is_some_and(|f| focusable(sr, f as usize));
             if !ok {
+                let before = sr.focus;
                 sr.focus = screen.focus.filter(|&f| focusable(sr, f as usize)).or_else(|| (0..n).find(|&i| focusable(sr, i)).map(|i| i as u32));
+                return sr.focus != before;
             }
         }
+        false
     }
 
     fn collect_hits(&mut self) {
@@ -1121,7 +1153,7 @@ impl Ui {
                     Kind::Bar { value, max, color } => (value.clone(), max.clone(), color.clone()),
                     _ => return,
                 };
-                let scope = scope_for(&self.screens[s].screen, &self.screens[s].screen.nodes[i], state).unwrap_or(Scope::new(state));
+                let scope = scope_for(&self.screens[s].screen, &self.screens[s].screen.nodes[i], state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
                 let get = |n: &Num| match n {
                     Num::Const(v) => f64::from(*v),
                     Num::Key(k) => scope.num(k).unwrap_or(0.0),
@@ -1286,7 +1318,7 @@ impl Ui {
             let r = Rect::new(pos[0] - size * 0.5 * grow, pos[1] - size * 0.5 * grow, size * grow, size * grow);
             // Dark halo for contrast over bright scenery, then the arrow.
             let start = self.draw.begin_mesh();
-            shapes::draw_shape(&mut self.draw.vertices, &mut self.scratch, crate::screen::Shape::Circle, r.grow(size * 0.12), 0.0, [0.02, 0.04, 0.06, 0.55]);
+            shapes::draw_shape(&mut self.draw.vertices, &mut self.scratch, crate::screen::Shape::Circle, r.grow(size * 0.12), 0.0, t.halo);
             shapes::draw_shape(&mut self.draw.vertices, &mut self.scratch, crate::screen::Shape::Arrow, r, angle, with_alpha(t.color, alpha));
             self.draw.end_mesh(start);
             // Optional label inside the arrow (towards the screen centre).
@@ -1411,7 +1443,7 @@ impl Ui {
         let sr = &self.screens[w.screen];
         let node = &sr.screen.nodes[w.node as usize];
         let Some(tpl) = &node.tooltip else { return };
-        let scope = scope_for(&sr.screen, node, state).unwrap_or(Scope::new(state));
+        let scope = scope_for(&sr.screen, node, state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
         tpl.render(&scope, &mut self.tip_text);
         let font = self.fonts.font(fi);
         let style = TextStyle::new(role.size).with_scale(scale).with_max_width(st.max_width);
@@ -1511,14 +1543,14 @@ pub(crate) fn draw_box(d: &mut DrawList, b: &BoxStyle, r: Rect, scale: f32) {
 
 /// The scope a node's bindings read: its list row inside a repeat, or the plain state. `None`
 /// when the node belongs to a repeat row that doesn't exist this frame.
-pub(crate) fn scope_for<'a>(screen: &Screen, node: &Node, state: &'a StateMap) -> Option<Scope<'a>> {
+pub(crate) fn scope_for<'a>(screen: &Screen, node: &Node, state: &'a StateMap, env: &'a StateMap) -> Option<Scope<'a>> {
     match node.item {
-        None => Some(Scope::new(state)),
+        None => Some(Scope::new(state).with_env(env)),
         Some((list, row)) => {
-            let Kind::List { repeat: Some(rep) } = &screen.nodes[list as usize].kind else { return Some(Scope::new(state)) };
+            let Kind::List { repeat: Some(rep) } = &screen.nodes[list as usize].kind else { return Some(Scope::new(state).with_env(env)) };
             let crate::state::Key::Global(k) = &rep.source else { return None };
             let r = state.list(k)?.row(row)?;
-            Some(Scope { state, item: Some((row, r)) })
+            Some(Scope { state, item: Some((row, r)), env: Some(env) })
         }
     }
 }

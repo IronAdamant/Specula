@@ -1,0 +1,40 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "radial",
+  "input": "menu",
+  "layer": 10,
+  "back": "close_build_menu",
+  "notes": "The radial build menu. Gamepad: point with the left stick (or step with the d-pad), accept carves, back closes. Mouse / touch: point or tap a wedge. Actions: build:<stone>. State: dust (items you can't afford are disabled but still show their cost).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "radial",
+        "id": "build",
+        "anchor": "center",
+        "radius": 150,
+        "inner_radius": 62,
+        "items": [
+          { "id": "warding", "label": "Warding", "icon": "warding", "action": "build:warding", "enabled": "dust >= 50", "detail": "Warding stone\n50 dust" },
+          { "id": "pillar", "label": "Pillar", "icon": "pillar", "action": "build:pillar", "enabled": "dust >= 60", "detail": "Rune pillar\n60 dust" },
+          { "id": "brazier", "label": "Brazier", "icon": "brazier", "action": "build:brazier", "enabled": "dust >= 80", "detail": "Brazier cairn\n80 dust" },
+          { "id": "obelisk", "label": "Obelisk", "icon": "obelisk", "action": "build:obelisk", "enabled": "dust >= 70", "detail": "Sky obelisk\n70 dust" },
+          { "id": "wall", "label": "Wall", "icon": "wall", "action": "build:wall", "enabled": "dust >= 15", "detail": "Stone wall\n15 dust" }
+        ]
+      },
+      {
+        "type": "panel",
+        "id": "radial_hints",
+        "anchor": "center",
+        "offset": [0, 196],
+        "layout": "row",
+        "gap": 18,
+        "padding": [6, 14],
+        "children": [
+          { "type": "prompt", "action": "ui_accept", "text": "Carve" },
+          { "type": "prompt", "action": "ui_back", "text": "Cancel" }
+        ]
+      }
+    ]
+  }
+}

@@ -59,7 +59,26 @@ fn lerp4(a: Rgba, b: Rgba, t: f32) -> Rgba {
 pub fn render(list: &DrawList, atlas: &GlyphAtlas, textures: &[Texture<'_>], background: Rgba) -> Image {
     let (w, h) = (list.size[0] as usize, list.size[1] as usize);
     let bg = premul(background, 1.0);
-    let mut c = Canvas { w, px: vec![bg; w * h], clip: [0, 0, w as i32, h as i32] };
+    let c = Canvas { w, px: vec![bg; w * h], clip: [0, 0, w as i32, h as i32] };
+    finish(raster(c, list, atlas, textures))
+}
+
+/// Rasterise `list` on top of an existing image (e.g. a game frame or a scene backdrop). The
+/// image must have the draw list's size.
+pub fn render_onto(base: &Image, list: &DrawList, atlas: &GlyphAtlas, textures: &[Texture<'_>]) -> Image {
+    let (w, h) = (list.size[0] as usize, list.size[1] as usize);
+    assert_eq!((base.width as usize, base.height as usize), (w, h), "base image size must match the draw list");
+    let px = base
+        .rgba
+        .chunks_exact(4)
+        .map(|p| premul([f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0, f32::from(p[3]) / 255.0], 1.0))
+        .collect();
+    let c = Canvas { w, px, clip: [0, 0, w as i32, h as i32] };
+    finish(raster(c, list, atlas, textures))
+}
+
+fn raster(mut c: Canvas, list: &DrawList, atlas: &GlyphAtlas, textures: &[Texture<'_>]) -> (Canvas, usize) {
+    let (w, h) = (list.size[0] as usize, list.size[1] as usize);
     for cmd in &list.cmds {
         match *cmd {
             DrawCmd::Clip(r) => {
@@ -107,6 +126,11 @@ pub fn render(list: &DrawList, atlas: &GlyphAtlas, textures: &[Texture<'_>], bac
             }
         }
     }
+    (c, h)
+}
+
+fn finish((c, h): (Canvas, usize)) -> Image {
+    let w = c.w;
     let mut rgba = Vec::with_capacity(w * h * 4);
     for p in &c.px {
         let a = p[3];

@@ -1,0 +1,33 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "settings",
+  "input": "menu",
+  "layer": 30,
+  "modal": true,
+  "focus": "ui_scale",
+  "back": "close_settings",
+  "notes": "Each button cycles a setting. State: ui_scale (ratio), reduced_motion_text, glyph_style (Auto / Xbox / PlayStation / Steam Deck), volume (ratio).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "menu",
+        "anchor": "center",
+        "width": "24em",
+        "max_width": "96%",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 10,
+        "children": [
+          { "type": "label", "text": "Settings", "role": "title", "text_align": "center" },
+          { "type": "button", "id": "ui_scale", "text": "Interface size: {ui_scale:pct}", "action": "cycle_ui_scale" },
+          { "type": "button", "id": "volume", "text": "Volume: {volume:pct}", "action": "cycle_volume" },
+          { "type": "button", "id": "glyphs", "text": "Button prompts: {glyph_style}", "action": "cycle_glyphs" },
+          { "type": "button", "id": "motion", "text": "Reduced motion: {reduced_motion_text}", "action": "toggle_motion", "tooltip": "Stops UI animation and camera shake." },
+          { "type": "button", "id": "settings_back", "style": "primary", "text": "Back", "action": "close_settings" }
+        ]
+      }
+    ]
+  }
+}

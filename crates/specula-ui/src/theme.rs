@@ -134,6 +134,8 @@ pub struct RadialStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThreatStyle {
     pub color: Rgba,
+    /// A dark disc behind each arrow, so it reads over bright scenery.
+    pub halo: Rgba,
     /// Arrow length, logical px.
     pub size: f32,
     /// Distance from the safe-area edge to the arrow tip, logical px.
@@ -278,7 +280,7 @@ impl Theme {
                 text: [0.93, 0.9, 0.84, 1.0],
                 text_disabled: [0.6, 0.6, 0.6, 1.0],
             },
-            threat: ThreatStyle { color: [0.61, 1.0, 0.31, 1.0], size: 28.0, inset: 10.0, pulse_hz: 1.5, label: 0, label_box: 0 },
+            threat: ThreatStyle { color: [0.61, 1.0, 0.31, 1.0], halo: [0.02, 0.03, 0.06, 0.8], size: 28.0, inset: 10.0, pulse_hz: 1.5, label: 0, label_box: 0 },
             toast: ToastStyle {
                 boxed: 0,
                 role: 0,
@@ -377,6 +379,7 @@ impl Theme {
             let mut f = Obj::new(j, "threat")?;
             let mut t = theme.threat.clone();
             t.color = theme.color_field(&mut f, "color")?.unwrap_or(t.color);
+            t.halo = theme.color_field(&mut f, "halo")?.unwrap_or(t.halo);
             t.size = f.num("size")?.unwrap_or(t.size);
             t.inset = f.num("inset")?.unwrap_or(t.inset);
             t.pulse_hz = f.num("pulse_hz")?.unwrap_or(t.pulse_hz);
@@ -386,7 +389,7 @@ impl Theme {
             if let Some(n) = f.str("label_box")? {
                 t.label_box = theme.box_ref(n, &f.field_path("label_box"))?;
             }
-            f.finish(&["color", "size", "inset", "pulse_hz", "label", "label_box"])?;
+            f.finish(&["color", "halo", "size", "inset", "pulse_hz", "label", "label_box"])?;
             theme.threat = t;
         }
         if let Some(j) = o.get("toast") {

@@ -162,10 +162,7 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
         s.visible = ids.contains(&i);
         s.focus = s.screen.focus;
     }
-    // Re-sort by showing / hiding through the public API (keeps the order logic in one place).
-    for s in screens {
-        ui.show(s)?;
-    }
+    ui.reorder();
     let input = Input::new(input_map.cloned().unwrap_or_default());
     let mut out = Vec::new();
     if ui.fonts.is_empty() {
@@ -192,11 +189,7 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
         s.visible = v;
         s.focus = f;
     }
-    // Restore the draw order.
-    let names: Vec<String> = ui.screens.iter().filter(|s| s.visible).map(|s| s.screen.name.clone()).collect();
-    for n in names {
-        ui.show(&n)?;
-    }
+    ui.reorder();
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.rule.cmp(b.rule)));
     Ok(out)
 }
@@ -239,6 +232,9 @@ fn per_target(ui: &Ui, ids: &[usize], t: &Target, view: &Viewport, out: &mut Vec
                         Kind::List { .. } => cr.intersect(&sr.comp[i].rect),
                         _ => cr,
                     };
+                    if cr.is_empty() {
+                        continue;
+                    }
                     r = Some(match r {
                         Some(a) => union(a, cr),
                         None => cr,
@@ -503,6 +499,8 @@ fn backgrounds(ui: &Ui, sr: &ScreenRt, i: usize, modal_below: bool) -> Vec<Rgba>
             Kind::Panel { boxed } => layers.push(theme.boxed(*boxed).mid_fill()),
             Kind::Button { style, .. } => layers.push(theme.boxed(theme.button(*style).normal.boxed).mid_fill()),
             Kind::RadialItem { .. } => layers.push(theme.radial.wedge),
+            // Only the centre label sits directly in the radial: on the centre disc.
+            Kind::Radial { .. } => layers.push(theme.boxed(theme.radial.centre).mid_fill()),
             _ => {}
         }
         p = sr.screen.nodes[k].parent;
@@ -544,7 +542,7 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
         let modal_below = modal_pos.is_some_and(|m| m < k);
         for (i, node) in sr.screen.nodes.iter().enumerate() {
             // ---- unbound keys (also in hidden widgets: they may show later) ----
-            let scope = scope_for(&sr.screen, node, state);
+            let scope = scope_for(&sr.screen, node, state, &ui.env);
             let mut keys: Vec<Key> = Vec::new();
             node.visible.keys(&mut keys);
             node.enabled.keys(&mut keys);
@@ -558,7 +556,7 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
                 keys.extend(detail.keys().cloned());
                 keys.extend(label.keys().cloned());
             }
-            let probe = scope.unwrap_or(Scope::new(state));
+            let probe = scope.unwrap_or(Scope::new(state).with_env(&ui.env));
             for key in keys {
                 let missing = match &key {
                     Key::Global(_) => probe.get(&key).is_none(),
@@ -605,6 +603,27 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
                                 );
                             }
                         }
+                    }
+                }
+            }
+            // ---- focus ring against what surrounds the widget (menus draw it) ----
+            if sr.screen.input == InputMode::Menu && c.visible && node.kind.interactive() && !matches!(node.kind, Kind::RadialItem { .. }) {
+                let ring = theme.focus.color;
+                let worst = backgrounds(ui, sr, i, modal_below)
+                    .into_iter()
+                    .map(|bg| (contrast_ratio(over(ring, bg), bg), bg))
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((ratio, bg)) = worst {
+                    if ratio + 1e-3 < 3.0 {
+                        push(
+                            "non_text_contrast",
+                            Severity::Error,
+                            &sr.screen.name,
+                            widget_name(sr, i),
+                            format!("focus ring {} on {} is {ratio:.2}:1", to_hex(ring), to_hex(bg)),
+                            ratio,
+                            3.0,
+                        );
                     }
                 }
             }
@@ -666,7 +685,6 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
     let to = &theme.toast;
     theme_pair("contrast", "toast text", theme.role(to.role).color, &on(to.boxed), rules.contrast_body);
     theme_pair("contrast", "threat label", theme.threat.color, &on(theme.threat.label_box), rules.contrast_body);
-    theme_pair("non_text_contrast", "threat arrow", theme.threat.color, &scene, 3.0);
-    theme_pair("non_text_contrast", "focus ring", theme.focus.color, &scene, 3.0);
-    let _ = Input::new;
+    let haloed: Vec<Rgba> = scene.iter().map(|&s| over(theme.threat.halo, [s[0], s[1], s[2], 1.0])).collect();
+    theme_pair("non_text_contrast", "threat arrow", theme.threat.color, &haloed, 3.0);
 }
