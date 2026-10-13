@@ -127,7 +127,7 @@ def main():
         mcp.call("time_control", action="pause")
         mcp.json("play_new", seed=args.seed)
         run.drive()
-        overview = dict(eye=[30, 27, 41], target=[0, -5, 1])
+        overview = dict(eye=[38, 27, 52], target=[0, -9, 1])
         run.capture("build_overview", **overview)
         run.capture("build_closeup", eye=[16, 14, 20], target=[1, 0, 1], fov=40)
 
