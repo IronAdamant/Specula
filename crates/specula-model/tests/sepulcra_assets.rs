@@ -164,7 +164,31 @@ fn builds_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra asset hash changed");
 }
 
-const PINNED: &str = "ec66bf86c2b116e5";
+const PINNED: &str = "5e7861f2374c42c9";
+
+/// Every enemy (and the fire) is rigged: each LOD carries skinning data, the rig stays within
+/// the crowd joint budget, and every bone moves some vertices.
+#[test]
+fn creatures_are_rigged() {
+    let (style, lib) = load();
+    for name in ["shambler", "skeleton_runner", "wraith", "bone_colossus", "brazier_fire"] {
+        let m = model(&style, &lib, name, None);
+        let rig = m.rig.as_ref().unwrap_or_else(|| panic!("{name} has no rig"));
+        rig.validate().unwrap();
+        assert!(rig.len() <= 24, "{name}: {} bones", rig.len());
+        for (i, l) in m.lods.iter().enumerate() {
+            assert!(l.is_skinned(), "{name} LOD{i} is not skinned");
+            assert!(l.joints.iter().flatten().all(|j| (*j as usize) < rig.len()));
+        }
+        let l0 = &m.lods[0];
+        for (b, bone) in rig.bones.iter().enumerate().skip(1) {
+            let used = l0.joints.iter().zip(&l0.weights).any(|(j, w)| (0..4).any(|k| w[k] > 0 && j[k] as usize == b));
+            assert!(used, "{name}: bone {} binds no vertices", bone.name);
+        }
+    }
+    // The cairn includes the fire but has no rig: unskinned.
+    assert!(!model(&style, &lib, "brazier_cairn", Some(1.0)).lods[0].is_skinned());
+}
 
 /// STYLE.md "bevel everything": every box and extruded/lofted outline in stones, walls and
 /// graveyard pieces is chamfered by at least 4% of its smallest dimension. Exempt: glowing rune
