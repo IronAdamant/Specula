@@ -454,12 +454,14 @@ impl ModelSpec {
 }
 
 /// A recipe path relative to the assets root: 1..256 bytes of `A-Z a-z 0-9 _ - . /`, segments
-/// separated by single `/`, none of them `.` or `..`, ending in `.json`.
+/// separated by single `/`, none empty or starting or ending with `.`, ending in `.json`.
 pub fn validate_recipe_path(path: &str) -> Result<(), WorldError> {
     let ok = !path.is_empty()
         && path.len() <= MAX_RECIPE_PATH
         && path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/'))
-        && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        // No empty, dot-led or dot-ended segments: covers `.` and `..`, hidden files, and the
+        // trailing dots Windows strips (which would let two keys name one file).
+        && path.split('/').all(|seg| !seg.is_empty() && !seg.starts_with('.') && !seg.ends_with('.'))
         && path.ends_with(".json");
     if ok {
         Ok(())
@@ -474,17 +476,43 @@ pub fn validate_recipe_path(path: &str) -> Result<(), WorldError> {
     }
 }
 
-/// What the engine knows about a model entity's built model: its slot in the model library and
-/// its object-space bounds. Derived data: not saved, not hashed, refreshed when recipes change.
+/// Where a model entity's build stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModelState {
+    /// Being built (off the engine thread); drawn once it is ready.
+    #[default]
+    Building,
+    Ready,
+    /// The build failed (budget, geometry...): nothing to draw until the recipe is fixed.
+    Failed,
+}
+
+impl ModelState {
+    pub fn name(self) -> &'static str {
+        match self {
+            ModelState::Building => "building",
+            ModelState::Ready => "ready",
+            ModelState::Failed => "failed",
+        }
+    }
+}
+
+/// What the engine knows about a model entity's built model: its slot in the model library, its
+/// state and (once built) its object-space bounds. Derived data: not saved, not hashed, refreshed
+/// when builds finish and when recipes change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedModel {
     pub handle: u32,
-    pub bounds: (Vec3, Vec3),
+    pub state: ModelState,
+    /// `None` until a build is ready.
+    pub bounds: Option<(Vec3, Vec3)>,
 }
 
 /// Builds models for the world (the engine's model library). The world asks it whenever a model
-/// entity is spawned or its recipe, parameters or seed change, so a broken recipe is refused at
-/// spawn time with a structured error.
+/// entity is spawned or its recipe, parameters or seed change. It answers at once: what can be
+/// checked without building (the path, the file, the style, the recipe's structure, parameter
+/// names and ranges) is refused with a structured error; the build itself may still be running
+/// (state [`ModelState::Building`]).
 pub trait ModelSource: Send + Sync {
     fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError>;
 }
@@ -1016,12 +1044,22 @@ impl Entity {
         self.resolved
     }
 
+    /// A model entity's build: `building`, `ready`, `failed`, or `unresolved` (no model source,
+    /// or its recipe was refused when the world was loaded). Empty for other shapes.
+    pub fn model_state(&self) -> &'static str {
+        match (&self.model, self.resolved) {
+            (None, _) => "",
+            (Some(_), None) => "unresolved",
+            (Some(_), Some(r)) => r.state.name(),
+        }
+    }
+
     /// Object-space bounding box; `None` for groups, which have no geometry (and for a model the
     /// engine could not build).
     pub fn local_bounds(&self) -> Option<(Vec3, Vec3)> {
         match (self.shape, &self.profile) {
             (Shape::Group, _) => None,
-            (Shape::Model, _) => self.resolved.map(|r| r.bounds),
+            (Shape::Model, _) => self.resolved.and_then(|r| r.bounds),
             (Shape::Lathe, Some(p)) => Some(p.bounds()),
             (Shape::Quad, _) => Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5))),
             _ => Some((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))),
@@ -1092,6 +1130,10 @@ impl Entity {
             fields.push(("recipe", Json::from(m.recipe.as_str())));
             fields.push(("params", m.params_json()));
             fields.push(("seed", Json::from(m.seed)));
+            let state = self.model_state();
+            if state != "ready" {
+                fields.push(("model_state", Json::from(state)));
+            }
         }
         if !self.visible {
             fields.push(("visible", Json::from(false)));
@@ -1625,11 +1667,11 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 34] = [
+pub const FIELDS: [&str; 35] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
-    "params", "visible", "layer", "transient",
+    "params", "visible", "layer", "transient", "model_state",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -1771,10 +1813,31 @@ impl World {
             let Some(spec) = &e.model else { continue };
             match source.resolve(spec) {
                 Ok(r) => e.resolved = Some(r),
-                Err(err) => failed.push((e.id, err)),
+                Err(err) => {
+                    // An old handle may name another spec by now.
+                    e.resolved = None;
+                    failed.push((e.id, err));
+                }
             }
         }
         failed
+    }
+
+    /// Re-resolves only the model entities whose handle is in `handles` (their builds just
+    /// finished or changed). Derived data only, like [`World::refresh_models`].
+    pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
+        let Some(source) = self.models.0.clone() else { return };
+        let mut touched = false;
+        for e in self.entities.values_mut() {
+            let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
+            if handles.contains(&r.handle) {
+                e.resolved = source.resolve(spec).ok();
+                touched = true;
+            }
+        }
+        if touched {
+            self.mesh_epoch += 1;
+        }
     }
 
     /// Resolves `spec` with the model source, if there is one.
@@ -2711,11 +2774,10 @@ impl World {
             e.shown = o.shown;
             e.in_ui = o.in_ui;
         }
-        // A state from the journal carries the bounds of its time; recipes may have changed since.
+        // A state from the journal carries the handle and bounds of its time; recipes may have
+        // changed since, and the handle may have been reused for another spec: never keep it.
         if let (Some(spec), Some(source)) = (&e.model, &self.models.0) {
-            if let Ok(r) = source.resolve(spec) {
-                e.resolved = Some(r);
-            }
+            e.resolved = source.resolve(spec).ok();
         }
         let transient = e.transient;
         let remeshed = e.owns_mesh() || old.is_some_and(Entity::owns_mesh);
@@ -2870,6 +2932,12 @@ impl World {
         self.child_range(id).next().is_some()
     }
 
+    /// Whether the entity has children that are not transient (game presentation the game may
+    /// have hung under it doesn't count).
+    pub fn has_persistent_children(&self, id: u64) -> bool {
+        self.child_range(id).any(|(_, c)| self.entities.get(c).is_some_and(|e| !e.transient))
+    }
+
     /// Matching entities in path order, paged.
     pub fn query(&self, q: &Query) -> Result<QueryPage<'_>, WorldError> {
         let root = match &q.path_prefix {
@@ -2922,6 +2990,7 @@ impl World {
                 "visible" => Json::from(e.visible),
                 "layer" => Json::from(e.layer.name()),
                 "transient" => Json::from(e.transient),
+                "model_state" => if e.model.is_some() { Json::from(e.model_state()) } else { Json::Null },
                 "color2" => Json::from(color_hex(s.color2)),
                 "tags" => tags_json(&e.tags),
                 "props" => e.props.clone(),
@@ -3647,7 +3716,7 @@ mod tests {
                 return Err(WorldError::new("recipe_invalid", "broken on purpose").with("field", "recipe"));
             }
             let tier = spec.params.iter().find(|(k, _)| k == "tier").map_or(1.0, |p| p.1) as f32;
-            Ok(ResolvedModel { handle: tier as u32, bounds: (Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, tier, 0.5)) })
+            Ok(ResolvedModel { handle: tier as u32, state: ModelState::Ready, bounds: Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, tier, 0.5))) })
         }
     }
 

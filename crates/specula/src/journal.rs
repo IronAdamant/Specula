@@ -979,7 +979,8 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 if world.get(after.id).is_none() {
                     continue; // already gone
                 }
-                if world.has_children(after.id) && !force {
+                // Transient children (the hosted game's presentation) don't count: they go with it.
+                if world.has_persistent_children(after.id) && !force {
                     return Err(WorldError::new(
                         "has_children",
                         format!("{path} has children added since; undo those first, or pass force: true to remove them too"),
@@ -1100,7 +1101,13 @@ pub fn commit<'w, T>(
     command: impl FnOnce(&mut World) -> Result<T, WorldError>,
 ) -> Result<(T, Option<u64>), WorldError> {
     let mark = world.mark();
-    let out = match command(world) {
+    // Agents never create or change transient entities (the hosted game's presentation): those
+    // changes would leave no trace in history, feed or undo.
+    let out = command(world).and_then(|v| match transient_write(world, mark) {
+        Some(e) => Err(e),
+        None => Ok(v),
+    });
+    let out = match out {
         // Each change against the world as it was at that step: a later op can hide what an
         // earlier one did (a rename then a delete, two moves).
         Ok(v) => match check {
@@ -1118,6 +1125,39 @@ pub fn commit<'w, T>(
     let changes = world.take_changes();
     let seq = (!changes.is_empty()).then(|| journal.append(tick, by, None, kind, changes, world.next_id()));
     Ok((out, seq))
+}
+
+/// The first change since `mark` that writes a transient entity on purpose: spawning or changing
+/// one, or deleting one directly. (Deleting a saved entity removes the transient entities the game
+/// hung under it; that is allowed.)
+fn transient_write(world: &World, mark: crate::world::Mark) -> Option<WorldError> {
+    let start = world.mark_changes(mark);
+    let refuse = |path: &str, what: &str| {
+        Some(
+            WorldError::new(
+                "transient_entity",
+                format!(
+                    "{path} is transient: presentation the hosted game owns and redraws from its own state; agents \
+                     can't {what} it (change the game's state through its play_* tools instead)"
+                ),
+            )
+            .with("path", path),
+        )
+    };
+    for c in &world.pending_changes()[start..] {
+        match c {
+            Change::Spawn { after, path } if after.transient => return refuse(path, "create"),
+            Change::Set { after, path, .. } if after.transient => return refuse(path, "change"),
+            Change::Delete { before, path } if before.transient => {
+                let swept = before.parent.is_some_and(|p| world.get(p).is_none());
+                if !swept {
+                    return refuse(path, "delete");
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1213,25 +1253,43 @@ mod tests {
         let (mut w, mut j) = live();
         spawn(&mut w, &mut j, "ann", "/enemies");
         let transient = |path: &str| SpawnSpec { transient: true, ..spec(path) };
-        let s = transient("/enemies/e1");
-        let (id, seq) = commit(&mut w, &mut j, 0, "ann", Kind::Spawn, Some(&mut no_check), |w| w.spawn(s, "ann").map(|e| e.id)).unwrap();
-        assert_eq!(seq, None, "an agent's transient spawn makes no entry");
-        assert_eq!(set(&mut w, &mut j, "ann", "/enemies/e1", moved(4.0)), None);
-        // The game's ticks: hundreds of moves, no entry at all.
-        for tick in 0..50 {
+        // The game (in process, outside agents' commits) spawns and moves its presentation.
+        w.set_recording(Recording::Snapshot);
+        let id = w.spawn(transient("/enemies/e1"), "game").unwrap().id;
+        w.set_recording(Recording::Full);
+        assert_eq!(j.append_snapshot(0, "game", None, Kind::GameTick, w.take_changes(), w.next_id()), None);
+        for tick in 1..50 {
             w.set_recording(Recording::Snapshot);
             w.update(&EntityKey::Id(id), moved(tick as f32), "game").unwrap();
             w.spawn(transient(&format!("/enemies/fx{tick}")), "game").unwrap();
             w.set_recording(Recording::Full);
             assert_eq!(j.append_snapshot(tick, "game", None, Kind::GameTick, w.take_changes(), w.next_id()), None);
         }
-        assert_eq!(j.len(), 1);
+        assert_eq!(j.len(), 1, "no entry at all for the game's presentation");
         assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
-        // A command mixing both journals only the persistent part.
-        let ops = vec![Op::Spawn(spec("/enemies/boss")), Op::Delete(EntityKey::Id(id), None)];
-        batch(&mut w, &mut j, "ann", ops).unwrap();
-        let last = j.entries().last().unwrap();
-        assert_eq!(last.changes.len(), 1);
+        // Agents can't create, change or delete it (it would leave no trace); nothing changes.
+        let before = (w.len(), w.revision());
+        let s = transient("/enemies/e2");
+        let e = commit(&mut w, &mut j, 0, "ann", Kind::Spawn, Some(&mut no_check), |w| w.spawn(s, "ann").map(|_| ())).unwrap_err();
+        assert_eq!(e.code, "transient_entity");
+        let under = spec("/enemies/e1/hat"); // inherits transient from its parent
+        assert_eq!(commit(&mut w, &mut j, 0, "ann", Kind::Spawn, None, |w| w.spawn(under, "ann").map(|_| ())).unwrap_err().code, "transient_entity");
+        let mv = |w: &mut World| w.update(&EntityKey::Id(id), moved(9.0), "ann").map(|_| ());
+        assert_eq!(commit(&mut w, &mut j, 0, "ann", Kind::Set, None, mv).unwrap_err().code, "transient_entity");
+        let del = |w: &mut World| w.delete(&EntityKey::Id(id), None).map(|_| ());
+        assert_eq!(commit(&mut w, &mut j, 0, "ann", Kind::Delete, None, del).unwrap_err().code, "transient_entity");
+        assert_eq!((w.len(), w.get(id).unwrap().position.x), (before.0, 49.0));
+        // Undoing ann's spawn of /enemies removes the game's presentation under it (it doesn't
+        // count as "children added since"), and deleting a saved parent sweeps it too.
+        undo(&mut w, &mut j, "ann", last(1)).unwrap();
+        assert!(w.find_path("/enemies").is_err() && w.get(id).is_none() && w.transient_len() == 0);
+        assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
+        spawn(&mut w, &mut j, "ann", "/camp");
+        w.spawn(transient("/camp/fire"), "game").unwrap();
+        w.take_changes();
+        let del = |w: &mut World| w.delete(&EntityKey::Path("/camp".into()), None).map(|_| ());
+        let (_, seq) = commit(&mut w, &mut j, 0, "ann", Kind::Delete, None, del).unwrap();
+        assert_eq!(j.get(seq.unwrap()).unwrap().changes.len(), 1, "only the saved entity is journaled");
         assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
     }
 

@@ -26,8 +26,8 @@ them with world_query (filters, paged) or world_list. Address an entity by id, p
 unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
 newer change. Shape 'model' builds a procedural model from a recipe file (model_build reports on one without \
-spawning). Entities can be hidden (visible: false), put on the 'ui' layer (left out of captures), or spawned \
-transient (game presentation: never saved or journaled). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
+spawning). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
+game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
@@ -676,7 +676,11 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     look.apply(&mut spec.look);
     spec.visible = bool_arg(args, "visible")?.unwrap_or(true);
     spec.layer = layer_arg(args)?.unwrap_or_default();
-    spec.transient = bool_arg(args, "transient")?.unwrap_or(false);
+    if bool_arg(args, "transient")? == Some(true) {
+        return Err("'transient' is reserved for the hosted game's presentation (its in-process API): agents' \
+                    entities are always saved and journaled"
+            .into());
+    }
     if spec.look.material != specula_gpu::Material::Lit && args.get("opacity").is_none() {
         spec.look.opacity = match spec.look.material {
             specula_gpu::Material::Glass => 0.15,
@@ -1345,9 +1349,10 @@ fn definitions() -> Vec<ToolDef> {
             name: "world_spawn".into(),
             description: "Add an entity to the live world: a shape (or a procedural model built from a recipe file) \
                           with an optional parent, material, point light, tags, props and reserved physics \
-                          components. Returns the new entity (id, path, transform, look, version). transient: true \
-                          marks game presentation that is never saved or journaled (children of a transient \
-                          entity are transient too)."
+                          components. Returns the new entity (id, path, transform, look, version). A model may \
+                          still be building when this returns (model_state \"building\"); sight_frame waits for \
+                          it. Entities the hosted game marks transient (its presentation) can't be spawned under, \
+                          changed or deleted by agents."
                 .into(),
             input_schema: schema(
                 {
@@ -1390,9 +1395,10 @@ fn definitions() -> Vec<ToolDef> {
                         (
                             "transient",
                             boolean(
-                                "Game presentation derived from game state (moving enemies, effects): not saved, \
-                                 not journaled, not in world_hash, never marks the world unsaved; still drawn and \
-                                 queryable. Set at spawn only (default false)",
+                                "Reserved for the hosted game: its presentation (moving enemies, effects) is \
+                                 transient - not saved, journaled or in world_hash, drawn and queryable like \
+                                 anything. Agents can't create, change or delete transient entities (error \
+                                 transient_entity); true is refused here",
                             ),
                         ),
                     ];
@@ -2206,14 +2212,16 @@ mod tests {
     fn model_and_presentation_arguments() {
         let s = parse_spawn(&args(
             r#"{"shape":"model","recipe":"recipes/warding_stone.json","params":{"tier":2,"glow":0.5},"seed":7,
-                "visible":false,"layer":"ui","transient":true}"#,
+                "visible":false,"layer":"ui","transient":false}"#,
         ))
         .unwrap();
         let m = s.model.as_ref().unwrap();
         assert_eq!((m.recipe.as_str(), m.seed), ("recipes/warding_stone.json", Some(7)));
         assert_eq!(m.params, vec![("glow".to_string(), 0.5), ("tier".to_string(), 2.0)], "sorted by name");
         assert_eq!((s.look.surface.seed, s.color), (0.0, [1.0; 3]), "a model's seed is its model seed; white by default");
-        assert_eq!((s.visible, s.layer, s.transient), (false, world::Layer::Ui, true));
+        assert_eq!((s.visible, s.layer, s.transient), (false, world::Layer::Ui, false));
+        let e = parse_spawn(&args(r#"{"shape":"cube","transient":true}"#)).err().unwrap();
+        assert!(e.contains("reserved for the hosted game"), "{e}");
         let s = parse_spawn(&args(r#"{"shape":"cube","seed":2.5,"layer":"world"}"#)).unwrap();
         assert_eq!(s.look.surface.seed, 2.5, "other shapes keep the surface seed");
         for bad in [

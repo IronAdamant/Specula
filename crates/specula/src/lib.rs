@@ -35,7 +35,7 @@ use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOpt
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use swarm::Swarm;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -62,6 +62,8 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [-- GAME ARGS...]";
 
+/// How long a capture waits for models still building.
+const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
 /// Per-tick state hashes kept for world_hash.
@@ -312,6 +314,10 @@ struct Engine {
     windowed: bool,
     /// The world mesh epoch `lod_levels` was last pruned at.
     lod_epoch: u64,
+    /// Calls waiting for model builds.
+    build_waiters: Vec<BuildWaiter>,
+    /// When the model library last dropped what no entity uses, at which world mesh epoch.
+    last_gc: (Instant, u64),
     world: World,
     /// Animation time zero.
     started: Instant,
@@ -365,6 +371,19 @@ struct Engine {
     last_claim_sweep: Instant,
 }
 
+/// A model_build or model_reload call waiting for builds on the worker threads.
+struct BuildWaiter {
+    /// Jobs still running.
+    jobs: BTreeSet<u64>,
+    /// model_build: the spec reported on (`None`: a reload).
+    spec: Option<world::ModelSpec>,
+    /// model_reload: the report so far.
+    reload: models::Reload,
+    reply: std::sync::mpsc::Sender<ToolOutput>,
+    deadline: Instant,
+    answer: Option<ToolOutput>,
+}
+
 struct AutosaveJob {
     /// The world revision the job is writing.
     revision: u64,
@@ -392,6 +411,8 @@ impl Engine {
             draws: Vec::new(),
             windowed: false,
             lod_epoch: 0,
+            build_waiters: Vec::new(),
+            last_gc: (Instant::now(), 0),
             world,
             started: Instant::now(),
             window_camera: None,
@@ -638,18 +659,137 @@ impl Engine {
     /// Rebuilds models whose recipe or style files changed (checked at most once a second;
     /// `force`: now). Returns the reload report when something was checked and changed.
     fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
-        let reload = self.library.lock().poll(force)?;
-        for (id, e) in self.world.refresh_models() {
-            eprintln!("specula: model {} ({id}) not rebuilt: {e}", self.world.path_of(id));
+        let reload = self.library.lock().poll(force);
+        // Forget what no entity uses any more, once a second after the world's models changed,
+        // whether or not anything is drawn (a headless engine never syncs GPU meshes).
+        let epoch = self.world.mesh_epoch();
+        let due = (self.last_gc.0.elapsed() >= models::POLL_EVERY && epoch != self.last_gc.1)
+            // More specs than the world could use: certainly garbage, collect now.
+            || self.library.lock().spec_count() > self.world.len() + models::SPARE_HANDLES;
+        if force || due {
+            let live = models::live_handles(&self.world);
+            self.library.lock().collect_garbage(&live);
+            self.last_gc = (Instant::now(), epoch);
         }
-        if !reload.rebuilt.is_empty() || !reload.errors.is_empty() {
+        let reload = reload?;
+        if reload.files_changed > 0 || !reload.rebuilt.is_empty() || !reload.errors.is_empty() {
+            for (id, e) in self.world.refresh_models().into_iter().take(10) {
+                eprintln!("specula: model {} ({id}) not rebuilt: {e}", self.world.path_of(id));
+            }
             eprintln!(
-                "specula: recipes changed: {} model(s) rebuilt, {} error(s)",
+                "specula: recipes changed: {} rebuilt from the cache, {} rebuilding, {} error(s)",
                 reload.rebuilt.len(),
+                reload.rebuilding.len(),
                 reload.errors.len()
             );
         }
         Some(reload)
+    }
+
+    /// Takes finished model builds (waiting up to `wait` for one when builds are in flight),
+    /// updates the entities that use them and answers the calls waiting on them.
+    fn pump_builds(&mut self, wait: Option<Duration>) {
+        let (finished, changed) = self.library.lock().finish(wait);
+        if !changed.is_empty() {
+            self.world.refresh_model_handles(&changed);
+        }
+        let now = Instant::now();
+        let mut waiters = std::mem::take(&mut self.build_waiters);
+        waiters.retain_mut(|w| {
+            for f in &finished {
+                if w.jobs.remove(&f.job) {
+                    match (&f.result, &w.spec) {
+                        (Ok(b), Some(spec)) => {
+                            self.library.lock().remember_build(b);
+                            w.answer = Some(ToolOutput::text(models::report(spec, b, false).to_pretty()));
+                        }
+                        (Err(e), Some(_)) => w.answer = Some(world_error(e)),
+                        (Err(e), None) => {
+                            let recipe = e.detail("recipe").and_then(Json::as_str).unwrap_or_default().to_owned();
+                            w.reload.errors.push((recipe, e.to_json()));
+                        }
+                        (Ok(_), None) => {}
+                    }
+                }
+            }
+            if w.jobs.is_empty() && w.answer.is_none() {
+                // A reload: every build it queued is done.
+                let mut out = w.reload.to_json();
+                out.set("library", self.library.lock().stats_json());
+                w.answer = Some(ToolOutput::text(out.to_pretty()));
+            }
+            if w.answer.is_none() && now > w.deadline {
+                w.answer = Some(ToolOutput::error(
+                    Json::obj([
+                        ("error", Json::from("still_building")),
+                        (
+                            "message",
+                            Json::from(format!(
+                                "{} build(s) still running; they finish in the background (engine_info models.library)",
+                                w.jobs.len()
+                            )),
+                        ),
+                    ])
+                    .to_pretty(),
+                ));
+            }
+            match w.answer.take() {
+                Some(out) => {
+                    let _ = w.reply.send(out);
+                    false
+                }
+                None => true,
+            }
+        });
+        self.build_waiters.extend(waiters);
+    }
+
+    /// Waits (up to `limit`) until no model entity is still building, so a capture shows what
+    /// was just spawned. Returns how many still are.
+    fn wait_for_models(&mut self, limit: Duration) -> usize {
+        let deadline = Instant::now() + limit;
+        loop {
+            self.pump_builds(None);
+            let building = self
+                .world
+                .entities()
+                .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building))
+                .count();
+            let left = deadline.saturating_duration_since(Instant::now());
+            if building == 0 || left.is_zero() {
+                return building;
+            }
+            self.pump_builds(Some(left.min(Duration::from_millis(50))));
+        }
+    }
+
+    /// model_build and model_reload: answered when their builds finish (other calls go on).
+    fn handle_model_call(&mut self, request: Request) {
+        let Request { command, reply, deadline, .. } = request;
+        let mut waiter = BuildWaiter { jobs: BTreeSet::new(), spec: None, reload: models::Reload::default(), reply, deadline, answer: None };
+        match command {
+            Command::ModelBuild(spec) => {
+                let requested = self.library.lock().request(&spec);
+                match requested {
+                    Err(e) => waiter.answer = Some(world_error(&e)),
+                    Ok(models::BuildRequest::Ready(b, cached)) => {
+                        waiter.answer = Some(ToolOutput::text(models::report(&spec, &b, cached).to_pretty()))
+                    }
+                    Ok(models::BuildRequest::Pending(job)) => {
+                        waiter.jobs.insert(job);
+                        waiter.spec = Some(spec);
+                    }
+                }
+            }
+            Command::ModelReload => {
+                let reload = self.poll_assets(true).unwrap_or_default();
+                waiter.jobs = reload.jobs.clone();
+                waiter.reload = reload;
+            }
+            _ => unreachable!("only model calls come here"),
+        }
+        self.build_waiters.push(waiter);
+        self.pump_builds(None);
     }
 
     /// The draws for a frame through `camera` at `size`, into `out`: meshes synced first.
@@ -678,6 +818,7 @@ impl Engine {
             self.autosave_if_due();
             self.sweep_claims(server);
             self.poll_assets(false);
+            self.pump_builds(None);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -727,7 +868,11 @@ impl Engine {
     fn run_headless(&mut self, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
         while !interrupt::requested() {
             // Wake for the next tick at the latest, so a hosted game keeps real time headless too.
-            let wait = self.clock.until_next().min(Duration::from_millis(100));
+            let mut wait = self.clock.until_next().min(Duration::from_millis(100));
+            if self.library.lock().in_flight() > 0 {
+                // Builds land promptly (and calls waiting on them are answered).
+                wait = wait.min(Duration::from_millis(5));
+            }
             match requests.recv_timeout(wait) {
                 Ok(request) => self.handle(request, server),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -737,6 +882,7 @@ impl Engine {
             self.autosave_if_due();
             self.sweep_claims(server);
             self.poll_assets(false);
+            self.pump_builds(None);
         }
         Ok(())
     }
@@ -745,6 +891,10 @@ impl Engine {
         if Instant::now() > request.deadline {
             // The caller is about to give up; applying the command now would surprise it.
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
+            return;
+        }
+        if matches!(request.command, Command::ModelBuild(_) | Command::ModelReload) {
+            self.handle_model_call(request);
             return;
         }
         let by = self.swarm.agent_name(&request.session);
@@ -909,21 +1059,7 @@ impl Engine {
                 let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
                 ToolOutput::text(list.to_string())
             }
-            Command::ModelBuild(spec) => {
-                // Fresh from disk: an agent iterating on a recipe just saved it.
-                self.poll_assets(true);
-                let built = self.library.lock().build(&spec);
-                match built {
-                    Ok((b, cached)) => ToolOutput::text(models::report(&spec, &b, cached).to_pretty()),
-                    Err(e) => world_error(&e),
-                }
-            }
-            Command::ModelReload => {
-                let reload = self.poll_assets(true).unwrap_or_default();
-                let mut out = reload.to_json();
-                out.set("library", self.library.lock().stats_json());
-                ToolOutput::text(out.to_pretty())
-            }
+            Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
@@ -1146,6 +1282,9 @@ impl Engine {
             self.world.set_recording(Recording::Full);
             self.journal_game(Kind::GameFrame);
         }
+        // Models spawned just before still building: wait for them (bounded), so the capture
+        // shows what the world holds.
+        let building = self.wait_for_models(CAPTURE_BUILD_WAIT);
         let camera = match (spec.eye, spec.target) {
             (Some(eye), Some(target)) => sight::Camera { eye, target, fov_y_deg: spec.fov_y_deg },
             _ => sight::auto_camera(&self.world, spec.fov_y_deg),
@@ -1158,9 +1297,11 @@ impl Engine {
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
         if stats.missing > 0 {
             warnings.push(Json::from(format!(
-                "{} model entit{} not drawn: no build (see engine_info models.broken, or world_query fields recipe)",
+                "{} model entit{} not drawn: no build yet or a failed one ({building} still building after {} s; \
+                 world_query fields model_state, engine_info models.library.broken)",
                 stats.missing,
-                if stats.missing == 1 { "y" } else { "ies" }
+                if stats.missing == 1 { "y" } else { "ies" },
+                CAPTURE_BUILD_WAIT.as_secs()
             )));
         }
         let (lights, dropped) = sight::lights(&self.world, spec.include_ui);

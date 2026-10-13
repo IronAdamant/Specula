@@ -32,7 +32,7 @@ pub trait Game {
     fn configure(&mut self, args: &[String]) -> Result<(), String> {
         match args.first() {
             None => Ok(()),
-            Some(a) => Err(format!("{} takes no arguments (got '{a}')", self.name())),
+            Some(a) => Err(format!("takes no arguments (got '{a}')")),
         }
     }
 

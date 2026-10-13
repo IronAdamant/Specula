@@ -536,6 +536,40 @@ fn as_u64_exact(v: &Json) -> Option<u64> {
 }
 
 impl Recipe {
+    /// Assets this recipe includes directly (file stems, sorted, each once), whether or not a
+    /// part's `when` switches them on: what its build may read from the library.
+    pub fn includes(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .parts
+            .iter()
+            .filter_map(|p| match &p.source {
+                Source::Include { asset, .. } => Some(asset.clone()),
+                Source::Shape(_) => None,
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Checks parameter values against the declared parameters exactly as a build does
+    /// (unknown names, ranges, integers), without building.
+    pub fn check_values(&self, values: &[(&str, f64)]) -> Result<(), RecipeError> {
+        for (k, v) in values {
+            let Some(def) = self.params.iter().find(|p| p.name == *k) else {
+                let names: Vec<&str> = self.params.iter().map(|p| p.name.as_str()).collect();
+                return Err(e(&format!("params.{k}"), ErrorCode::UnknownName, format!("'{}' has no parameter '{k}' (has: {})", self.name, names.join(", "))));
+            };
+            if !v.is_finite() || *v < def.min || *v > def.max {
+                return Err(e(&format!("params.{k}"), ErrorCode::OutOfRange, format!("{v} is outside {}..{}", def.min, def.max)).with_numbers(*v, def.max));
+            }
+            if def.integer && dmath::trunc_f64(*v) != *v {
+                return Err(e(&format!("params.{k}"), ErrorCode::OutOfRange, format!("'{k}' must be an integer, got {v}")));
+            }
+        }
+        Ok(())
+    }
+
     /// Parses and validates `text` against `style` (materials and colours must exist).
     pub fn parse(text: &str, style: &Style) -> Result<Recipe, RecipeError> {
         let json = Json::parse(text).map_err(|er| e("", ErrorCode::Json, er.message.clone()).with_offset(er.offset))?;
@@ -1165,17 +1199,8 @@ fn build_parts(
     tally: &Tally,
 ) -> Result<(Vec<BuiltPart>, BTreeMap<String, f64>), RecipeError> {
     let mut vars: BTreeMap<String, f64> = BTreeMap::new();
+    recipe.check_values(values)?;
     for (k, v) in values {
-        let Some(def) = recipe.params.iter().find(|p| p.name == *k) else {
-            let names: Vec<&str> = recipe.params.iter().map(|p| p.name.as_str()).collect();
-            return Err(e(&format!("params.{k}"), ErrorCode::UnknownName, format!("'{}' has no parameter '{k}' (has: {})", recipe.name, names.join(", "))));
-        };
-        if !v.is_finite() || *v < def.min || *v > def.max {
-            return Err(e(&format!("params.{k}"), ErrorCode::OutOfRange, format!("{v} is outside {}..{}", def.min, def.max)).with_numbers(*v, def.max));
-        }
-        if def.integer && dmath::trunc_f64(*v) != *v {
-            return Err(e(&format!("params.{k}"), ErrorCode::OutOfRange, format!("'{k}' must be an integer, got {v}")));
-        }
         vars.insert(k.to_string(), *v);
     }
     for p in &recipe.params {

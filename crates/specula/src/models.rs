@@ -1,30 +1,48 @@
-//! Procedural models in the world: recipe files built with `specula-model`, cached, uploaded once
-//! and drawn at a level of detail that fits their size on screen.
+//! Procedural models in the world: recipe files built with `specula-model` on worker threads,
+//! cached, uploaded once and drawn at a level of detail that fits their size on screen.
 //!
 //! # Where recipes come from
 //!
 //! A model entity names a recipe file relative to the **assets root** (`--assets DIR`, default the
-//! engine's working directory), e.g. `recipes/warding_stone.json`. Every `*.json` file in the same
-//! folder is the recipe's include library (by file stem), and its style is `--style FILE` or the
+//! engine's working directory), e.g. `recipes/warding_stone.json`. The other `*.json` files in
+//! the same folder are its include library (by file stem), and its style is `--style FILE` or the
 //! first `style.json` found walking up from the recipe's folder to the assets root (Sepulcra keeps
-//! `assets/style.json` above `assets/recipes/`). Paths can't leave the assets root.
+//! `assets/style.json` above `assets/recipes/`). Paths can't leave the assets root, and links
+//! inside it are not followed.
+//!
+//! # Never stalling the engine
+//!
+//! Builds run on worker threads. Resolving a spec ([`Library::resolve`], what `world_spawn` and the
+//! game's in-process spawns call) only does what is cheap: it checks the path, reads the file if
+//! needed, finds the style, **parses** the recipe and checks parameter names and ranges — those
+//! mistakes are refused at spawn with the recipe's structured error — and then either finds the
+//! build in the cache or queues it. The entity's model is `building` until the build lands; it is
+//! drawn from then on (captures wait for builds in flight, so a capture right after a spawn shows
+//! the model). A build that fails (budget, geometry) leaves the entity `failed`.
 //!
 //! # Cache and sharing
 //!
-//! A build is keyed by **content**: a hash of the recipe file, its folder's library and its style,
-//! plus the parameters and seed. Entities with the same key share one [`Built`] model, and the
-//! GPU side ([`GpuModels`]) uploads each build once: one mesh per LOD per material part, so equal
-//! models instance together. A spec (recipe path + parameters + seed) gets a stable **handle**;
-//! the world stores it on the entity (with the model's bounds), and the renderer maps handles to
-//! uploaded meshes without locking the library.
+//! A build is keyed by **content**: a hash of the recipe file, the files it includes (transitively)
+//! and its style, plus the parameters and seed. Entities with the same key share one [`Built`]
+//! model, and the GPU side ([`GpuModels`]) uploads each build once: one mesh per LOD per material
+//! part, so equal models instance together. A spec (recipe path + parameters + seed) gets a stable
+//! **handle**; the world stores it on the entity with its state and bounds, and the renderer maps
+//! handles to uploaded meshes without locking the library.
 //!
 //! # Hot reload
 //!
-//! [`Library::poll`] checks recipe and style modification times at most once a second (or now,
-//! for `model_reload` and `model_build`). When anything changed, every handle is rebuilt; unchanged
-//! content hits the cache, changed content gets a new build, and a recipe that broke keeps its
-//! last good build (the error is reported). The world then re-reads bounds
-//! ([`crate::world::World::refresh_models`]) and the GPU cache re-syncs.
+//! [`Library::poll`] checks the modification times of the files in the folders it uses (and of
+//! the styles) at most once a second; `model_reload` checks now, and `model_build` re-reads its own
+//! recipe's folder. Only recipes whose content (the file, its includes or its style) changed are
+//! looked at again, and only handles whose key changed are rebuilt; a recipe that broke keeps its
+//! last good build (the error is reported).
+//!
+//! # Bounds on what agents can make it hold
+//!
+//! Folders that don't exist are never cached; folders, recipes, styles and builds no handle uses
+//! are dropped by [`Library::collect_garbage`] (the engine runs it once a second after the world's
+//! models changed, drawn or not), which also forgets unused handles once there are more than
+//! [`SPARE_HANDLES`] of them, and cancels queued builds nobody waits for any more.
 //!
 //! # Materials
 //!
@@ -42,14 +60,15 @@
 //! [`LOD_HYSTERESIS`] (±15% around each threshold) so a model at a boundary doesn't flicker;
 //! captures choose without memory, so a capture is reproducible.
 
-use crate::world::{Entity, ModelSource, ModelSpec, ResolvedModel, World, WorldError};
+use crate::world::{Entity, ModelSource, ModelSpec, ModelState, ResolvedModel, World, WorldError};
 use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
 use specula_gpu::{DrawItem, Gpu, Material, MeshId, Surface, Vertex};
-use specula_model::{build, BuildParams, MaterialKind, MaterialPreset, MeshData, Model, RecipeError, Style};
-use std::collections::{BTreeMap, BTreeSet};
+use specula_model::{build, BuildParams, ErrorCode, MaterialKind, MaterialPreset, MeshData, Model, Recipe, RecipeError, Style};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -64,15 +83,21 @@ pub const LOD_PIXELS: [f32; 3] = [192.0, 64.0, 24.0];
 pub const LOD_HYSTERESIS: f32 = 0.15;
 /// Histogram buckets for LOD statistics (LOD 3 and coarser share the last).
 pub const LOD_BUCKETS: usize = 4;
-/// Unused handles allowed before the library drops them.
-const SPARE_HANDLES: usize = 256;
+/// Unused handles kept before the library forgets them.
+pub const SPARE_HANDLES: usize = 256;
+/// Builds kept for `model_build` results no entity uses (so building then spawning reuses them).
+const RECENT_BUILDS: usize = 16;
+/// Worker threads that build models.
+const WORKERS: usize = 2;
+/// Lists in a reload report stop here (the rest is counted).
+const MAX_LISTED: usize = 20;
 
 /// One built model, shared by every spec with the same content, parameters and seed.
 pub struct Built {
     /// Unique per build: the GPU cache's key.
     pub id: u64,
     pub model: Model,
-    /// Content hash of the recipe, its library folder and its style.
+    /// Content hash of the recipe, its includes and its style.
     pub content: u64,
     pub build_ms: f64,
     /// The style file it was built with.
@@ -86,20 +111,20 @@ impl Built {
     }
 }
 
-/// One recipe file as last read.
+/// `(content, parameters as exact bits, seed)`.
+type BuildKey = (u64, String, Option<u64>);
+
+/// One file of a recipe folder as last read.
 struct SourceFile {
-    text: Result<String, String>,
+    text: Result<Arc<str>, String>,
     mtime: Option<SystemTime>,
 }
 
-/// A recipe folder: its files (the include library) and their combined hash.
+/// A recipe folder: its regular `*.json` files (the include library).
 struct Folder {
     files: BTreeMap<String, SourceFile>,
     /// The folder's own modification time (files added or removed).
     mtime: Option<SystemTime>,
-    hash: u64,
-    /// Stem → text of every readable file, for `include`.
-    library: BTreeMap<String, String>,
 }
 
 struct StyleFile {
@@ -108,60 +133,248 @@ struct StyleFile {
     hash: u64,
 }
 
-/// A spec's slot: what it currently builds to.
+/// What a recipe's builds need, worked out once per content.
+struct RecipeInfo {
+    folder: PathBuf,
+    content: u64,
+    text: Arc<str>,
+    /// The files it includes, transitively (stem → text).
+    library: Arc<BTreeMap<String, String>>,
+    style: Arc<Style>,
+    style_path: PathBuf,
+    recipe: Recipe,
+}
+
+/// A spec's slot: what it draws now and what it waits for.
 struct Handle {
     spec: ModelSpec,
     built: Option<Arc<Built>>,
-    /// The latest rebuild's error (the last good build stays in `built`).
+    /// The key of the build it is waiting for (queued or running).
+    want: Option<BuildKey>,
+    /// The latest build's error (the last good build stays in `built`).
     error: Option<WorldError>,
 }
 
-type BuildKey = (u64, String, Option<u64>);
+impl Handle {
+    fn resolved(&self, h: u32) -> ResolvedModel {
+        let state = match (&self.built, &self.want, &self.error) {
+            (Some(_), _, _) => ModelState::Ready,
+            (None, Some(_), _) => ModelState::Building,
+            (None, None, _) => ModelState::Failed,
+        };
+        ResolvedModel { handle: h, state, bounds: self.built.as_ref().map(|b| b.bounds()) }
+    }
+}
 
-/// What a reload changed.
+/// A build for a worker.
+struct Job {
+    id: u64,
+    key: BuildKey,
+    recipe: String,
+    text: Arc<str>,
+    library: Arc<BTreeMap<String, String>>,
+    style: Arc<Style>,
+    style_path: PathBuf,
+    params: Vec<(String, f64)>,
+    seed: Option<u64>,
+}
+
+/// A worker's answer.
+struct Done {
+    id: u64,
+    key: BuildKey,
+    recipe: String,
+    style_path: PathBuf,
+    result: Result<Model, RecipeError>,
+    build_ms: f64,
+}
+
+/// A build in flight.
+struct InFlight {
+    job: u64,
+    /// A `model_build` call waits for it: never cancelled.
+    pinned: bool,
+}
+
+/// A finished build, for whoever waited on its job.
+pub struct Finished {
+    pub job: u64,
+    pub result: Result<Arc<Built>, WorldError>,
+}
+
+/// What `model_build` gets back at once.
+pub enum BuildRequest {
+    /// Built already (from the cache: `true`).
+    Ready(Arc<Built>, bool),
+    /// Queued (or already running): wait for this job.
+    Pending(u64),
+}
+
+/// What a reload looked at and queued.
 #[derive(Default)]
 pub struct Reload {
     pub files_changed: usize,
-    /// Recipes whose model changed.
+    /// Builds queued for changed recipes, and the specs (recipe keys) they serve.
+    pub jobs: BTreeSet<u64>,
+    pub rebuilding: Vec<String>,
+    /// Specs that changed to a build already in the cache.
     pub rebuilt: Vec<String>,
-    /// Specs whose rebuild failed (they keep their last good build).
-    pub errors: Vec<Json>,
+    /// Errors (recipe, structured error), for specs that keep their last good build.
+    pub errors: Vec<(String, Json)>,
 }
 
 impl Reload {
+    /// The report, bounded: at most [`MAX_LISTED`] names per list and identical errors grouped.
     pub fn to_json(&self) -> Json {
+        let list = |items: &[String]| {
+            let shown = Json::arr(items.iter().take(MAX_LISTED).map(|r| Json::from(r.as_str())));
+            (shown, items.len().saturating_sub(MAX_LISTED))
+        };
+        let (rebuilt, rebuilt_omitted) = list(&self.rebuilt);
+        let (rebuilding, rebuilding_omitted) = list(&self.rebuilding);
+        let mut groups: BTreeMap<String, (Json, Vec<&str>)> = BTreeMap::new();
+        for (recipe, err) in &self.errors {
+            let g = groups.entry(err.to_string()).or_insert_with(|| (err.clone(), Vec::new()));
+            g.1.push(recipe);
+        }
+        let error_groups = groups.len();
+        let errors = Json::arr(groups.into_values().take(MAX_LISTED).map(|(err, specs)| {
+            let mut sample: Vec<&str> = specs.clone();
+            sample.sort();
+            sample.dedup();
+            Json::obj([
+                ("error", err),
+                ("specs", Json::from(specs.len())),
+                ("recipes", Json::arr(sample.into_iter().take(5).map(Json::from))),
+            ])
+        }));
         Json::obj([
             ("files_changed", Json::from(self.files_changed)),
-            ("rebuilt", Json::arr(self.rebuilt.iter().map(|r| Json::from(r.as_str())))),
-            ("errors", Json::Arr(self.errors.clone())),
+            ("rebuilt", rebuilt),
+            ("rebuilt_omitted", Json::from(rebuilt_omitted)),
+            ("rebuilding", rebuilding),
+            ("rebuilding_omitted", Json::from(rebuilding_omitted)),
+            ("errors", errors),
+            ("errors_omitted", Json::from(error_groups.saturating_sub(MAX_LISTED))),
+            ("error_count", Json::from(self.errors.len())),
         ])
     }
+}
+
+/// The worker threads and their channels. Dropping it lets the workers finish and exit.
+struct Workers {
+    jobs: Option<Sender<Job>>,
+    done: Receiver<Done>,
+    /// Jobs nobody waits for any more: workers skip them.
+    cancelled: Arc<Mutex<BTreeSet<u64>>>,
+}
+
+impl Workers {
+    fn start(n: usize) -> Workers {
+        let (jobs, rx) = mpsc::channel::<Job>();
+        let (tx, done) = mpsc::channel::<Done>();
+        let rx = Arc::new(Mutex::new(rx));
+        let cancelled = Arc::new(Mutex::new(BTreeSet::new()));
+        for i in 0..n {
+            let (rx, tx, cancelled) = (Arc::clone(&rx), tx.clone(), Arc::clone(&cancelled));
+            let spawned = std::thread::Builder::new().name(format!("specula-model-{i}")).spawn(move || loop {
+                let job = match rx.lock().unwrap_or_else(PoisonError::into_inner).recv() {
+                    Ok(job) => job,
+                    Err(_) => return, // the library is gone
+                };
+                let skip = cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&job.id);
+                let started = Instant::now();
+                let result = if skip {
+                    Err(RecipeError::new("", ErrorCode::Limit, "cancelled: no entity needs this build any more"))
+                } else {
+                    run(&job)
+                };
+                let done = Done {
+                    id: job.id,
+                    key: job.key,
+                    recipe: job.recipe,
+                    style_path: job.style_path,
+                    result,
+                    build_ms: started.elapsed().as_secs_f64() * 1000.0,
+                };
+                if tx.send(done).is_err() {
+                    return;
+                }
+            });
+            if let Err(e) = spawned {
+                eprintln!("specula: model build thread {i} not started: {e}");
+            }
+        }
+        Workers { jobs: Some(jobs), done, cancelled }
+    }
+}
+
+/// Builds one job; a panic in the model crate becomes a structured error instead of a dead worker.
+fn run(job: &Job) -> Result<Model, RecipeError> {
+    let values: Vec<(&str, f64)> = job.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&job.text, &params)));
+    let model = match built {
+        Ok(r) => r?,
+        Err(_) => return Err(RecipeError::new("", ErrorCode::Limit, "the build panicked (a bug in specula-model)")),
+    };
+    check_uploadable(&model).map_err(|m| RecipeError::new("", ErrorCode::InvalidMesh, m))?;
+    Ok(model)
 }
 
 /// Recipe files, styles, builds and handles (see the module docs).
 pub struct Library {
     root: PathBuf,
-    /// `root`, canonicalized when it exists (paths are checked to stay inside it).
+    /// `root`, canonicalized (worked out when first needed: the folder may appear later).
     canonical_root: Option<PathBuf>,
     style_override: Option<PathBuf>,
-    /// By folder, relative to the root.
+    /// By folder, relative to the root. Only folders that exist.
     folders: BTreeMap<PathBuf, Folder>,
-    /// By absolute path.
+    /// By path.
     styles: BTreeMap<PathBuf, StyleFile>,
+    /// By recipe path.
+    recipes: BTreeMap<String, RecipeInfo>,
     builds: BTreeMap<BuildKey, Arc<Built>>,
+    in_flight: BTreeMap<BuildKey, InFlight>,
+    /// Build key → the handles waiting for it.
+    waiting: BTreeMap<BuildKey, BTreeSet<u32>>,
     handles: Vec<Option<Handle>>,
     free_handles: Vec<u32>,
     by_spec: BTreeMap<String, u32>,
-    next_build: u64,
+    /// Build ids handed out by `model_build` lately (kept even if no entity uses them).
+    recent: VecDeque<u64>,
+    next_id: u64,
     /// Bumped whenever a handle's build changes (the GPU cache re-syncs on it).
     generation: u64,
     last_poll: Instant,
+    workers: Workers,
     pub cache_hits: u64,
     pub cache_misses: u64,
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    std::fs::symlink_metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// A regular file (not a link, not a folder).
+fn is_regular(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+}
+
+fn not_found(spec: &ModelSpec, root: &Path) -> WorldError {
+    WorldError::new("recipe_not_found", format!("no recipe file {} under the assets root {}", spec.recipe, root.display()))
+        .with("field", "recipe")
+        .with("recipe", spec.recipe.as_str())
+        .with("assets_root", root.display().to_string())
+}
+
+/// A recipe error as a world error: code `recipe_invalid`, the recipe, and the build's own
+/// structured error (`code`, `path` into the recipe, `message`, offsets and numbers).
+pub fn recipe_error(recipe: &str, e: &RecipeError) -> WorldError {
+    WorldError::new("recipe_invalid", format!("{recipe}: {e}"))
+        .with("field", "recipe")
+        .with("recipe", recipe)
+        .with("recipe_error", e.to_json())
 }
 
 impl Library {
@@ -170,17 +383,22 @@ impl Library {
     pub fn new(root: &Path, style: Option<&Path>) -> Library {
         Library {
             root: root.to_owned(),
-            canonical_root: root.canonicalize().ok(),
+            canonical_root: None,
             style_override: style.map(Path::to_owned),
             folders: BTreeMap::new(),
             styles: BTreeMap::new(),
+            recipes: BTreeMap::new(),
             builds: BTreeMap::new(),
+            in_flight: BTreeMap::new(),
+            waiting: BTreeMap::new(),
             handles: Vec::new(),
             free_handles: Vec::new(),
             by_spec: BTreeMap::new(),
-            next_build: 1,
+            recent: VecDeque::new(),
+            next_id: 1,
             generation: 0,
             last_poll: Instant::now(),
+            workers: Workers::start(WORKERS),
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -199,7 +417,7 @@ impl Library {
         self.handles.get(handle as usize)?.as_ref()?.built.as_ref()
     }
 
-    /// The latest error of a handle whose recipe broke after it built once.
+    /// The latest error of a handle (its build failed, or its recipe broke after it built once).
     pub fn handle_error(&self, handle: u32) -> Option<&WorldError> {
         self.handles.get(handle as usize)?.as_ref()?.error.as_ref()
     }
@@ -208,169 +426,285 @@ impl Library {
         self.handles.get(handle as usize)?.as_ref().map(|h| &h.spec)
     }
 
-    /// The spec's handle and bounds, building it if needed.
-    pub fn resolve(&mut self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
-        let key = spec.key();
-        if let Some(&h) = self.by_spec.get(&key) {
-            let slot = self.handles[h as usize].as_ref().expect("indexed handles exist");
-            if let Some(b) = &slot.built {
-                return Ok(ResolvedModel { handle: h, bounds: b.bounds() });
-            }
-        }
-        let built = match self.build(spec) {
-            Ok((b, _)) => b,
-            // A recipe written moments ago may not be in the cached folder yet: look again now
-            // (a forced poll also rebuilds whatever else changed in the meantime).
-            Err(e) if e.code == "recipe_not_found" => {
-                self.poll(true);
-                self.build(spec)?.0
-            }
-            Err(e) => return Err(e),
-        };
-        let bounds = built.bounds();
-        let h = match self.by_spec.get(&key) {
-            Some(&h) => h,
-            None => {
-                let slot = Some(Handle { spec: spec.clone(), built: None, error: None });
-                let h = match self.free_handles.pop() {
-                    Some(h) => {
-                        self.handles[h as usize] = slot;
-                        h
-                    }
-                    None => {
-                        self.handles.push(slot);
-                        (self.handles.len() - 1) as u32
-                    }
-                };
-                self.by_spec.insert(key, h);
-                h
-            }
-        };
-        let slot = self.handles[h as usize].as_mut().expect("just set");
-        slot.built = Some(built);
-        slot.error = None;
-        self.generation += 1;
-        Ok(ResolvedModel { handle: h, bounds })
+    /// Specs and handles in use, builds cached and in flight, folders cached.
+    pub fn counts(&self) -> (usize, usize, usize, usize) {
+        (self.handles.iter().flatten().count(), self.builds.len(), self.in_flight.len(), self.folders.len())
     }
 
-    /// Builds `spec` (from the cache when its content, parameters and seed were built before).
-    /// Returns the build and whether it came from the cache.
-    pub fn build(&mut self, spec: &ModelSpec) -> Result<(Arc<Built>, bool), WorldError> {
+    /// Builds queued or running.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    /// Specs with a handle.
+    pub fn spec_count(&self) -> usize {
+        self.by_spec.len()
+    }
+
+    /// The spec's handle, state and bounds (see the module docs: never builds on this thread).
+    pub fn resolve(&mut self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
+        if let Some(&h) = self.by_spec.get(&spec.key()) {
+            return Ok(self.handles[h as usize].as_ref().expect("indexed handles exist").resolved(h));
+        }
+        let key = self.key_for(spec, true)?;
+        let h = match self.free_handles.pop() {
+            Some(h) => h,
+            None => {
+                self.handles.push(None);
+                (self.handles.len() - 1) as u32
+            }
+        };
+        self.handles[h as usize] = Some(Handle { spec: spec.clone(), built: None, want: None, error: None });
+        self.by_spec.insert(spec.key(), h);
+        self.want(h, key, false);
+        Ok(self.handles[h as usize].as_ref().expect("just set").resolved(h))
+    }
+
+    /// `model_build`: the spec built fresh from disk (its folder re-read now), from the cache or
+    /// queued.
+    pub fn request(&mut self, spec: &ModelSpec) -> Result<BuildRequest, WorldError> {
+        spec.check()?;
+        let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
+        self.refresh_folder(&folder);
+        let key = self.key_for(spec, false)?;
+        if let Some(b) = self.builds.get(&key) {
+            self.cache_hits += 1;
+            let b = Arc::clone(b);
+            self.remember(b.id);
+            return Ok(BuildRequest::Ready(b, true));
+        }
+        Ok(BuildRequest::Pending(self.submit(&spec.recipe, &key, spec, true)))
+    }
+
+    /// Points handle `h` at the build for `key`: at once from the cache, or once it is built.
+    fn want(&mut self, h: u32, key: BuildKey, count_hit: bool) {
+        if let Some(b) = self.builds.get(&key).cloned() {
+            self.set_want(h, None);
+            let slot = self.handles[h as usize].as_mut().expect("live handle");
+            if slot.built.as_ref().is_none_or(|old| old.id != b.id) {
+                slot.built = Some(b);
+                self.generation += 1;
+            }
+            slot.error = None;
+            if count_hit {
+                self.cache_hits += 1;
+            }
+            return;
+        }
+        self.set_want(h, Some(key.clone()));
+        let spec = self.handles[h as usize].as_ref().expect("live handle").spec.clone();
+        self.submit(&spec.recipe, &key, &spec, false);
+    }
+
+    /// Sets what handle `h` waits for, keeping the key → handles index in step.
+    fn set_want(&mut self, h: u32, key: Option<BuildKey>) {
+        let slot = self.handles[h as usize].as_mut().expect("live handle");
+        if let Some(old) = slot.want.take() {
+            if let Some(set) = self.waiting.get_mut(&old) {
+                set.remove(&h);
+                if set.is_empty() {
+                    self.waiting.remove(&old);
+                }
+            }
+        }
+        if let Some(k) = key {
+            self.waiting.entry(k.clone()).or_default().insert(h);
+            slot.want = Some(k);
+        }
+    }
+
+    /// Queues the build for `key` unless it is already in flight; returns its job id.
+    fn submit(&mut self, recipe: &str, key: &BuildKey, spec: &ModelSpec, pin: bool) -> u64 {
+        if let Some(f) = self.in_flight.get_mut(key) {
+            f.pinned |= pin;
+            return f.job;
+        }
+        let info = &self.recipes[recipe];
+        let id = self.next_id;
+        self.next_id += 1;
+        self.cache_misses += 1;
+        let job = Job {
+            id,
+            key: key.clone(),
+            recipe: recipe.to_owned(),
+            text: Arc::clone(&info.text),
+            library: Arc::clone(&info.library),
+            style: Arc::clone(&info.style),
+            style_path: info.style_path.clone(),
+            params: spec.params.clone(),
+            seed: spec.seed,
+        };
+        self.in_flight.insert(key.clone(), InFlight { job: id, pinned: pin });
+        if let Some(tx) = &self.workers.jobs {
+            if tx.send(job).is_err() {
+                eprintln!("specula: model build workers are gone; {recipe} will not build");
+            }
+        }
+        id
+    }
+
+    /// The build key for `spec`: everything checkable without building is checked here.
+    /// `retry`: a recipe missing from its cached folder is looked for again (it may be new).
+    fn key_for(&mut self, spec: &ModelSpec, retry: bool) -> Result<BuildKey, WorldError> {
         spec.check()?;
         let rel = Path::new(&spec.recipe);
-        let folder_rel = rel.parent().unwrap_or(Path::new("")).to_owned();
+        let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
         let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
-        self.check_inside(rel, spec)?;
-        if !self.folders.contains_key(&folder_rel) {
-            let folder = self.read_folder(&folder_rel);
-            self.folders.insert(folder_rel.clone(), folder);
+        self.check_inside(&folder, spec)?;
+        if !self.folders.contains_key(&folder) {
+            // Folders that don't exist are never cached (agents could make the cache grow).
+            let f = self.read_folder(&folder).ok_or_else(|| not_found(spec, &self.root))?;
+            self.folders.insert(folder.clone(), f);
+        } else if retry && !self.folders[&folder].files.contains_key(&stem) {
+            self.refresh_folder(&folder);
         }
-        let style_path = self.style_path(&folder_rel).ok_or_else(|| {
+        if !self.recipes.contains_key(&spec.recipe) {
+            let info = self.recipe_info(&spec.recipe, &folder, &stem, spec)?;
+            self.recipes.insert(spec.recipe.clone(), info);
+        }
+        let info = &self.recipes[&spec.recipe];
+        let values: Vec<(&str, f64)> = spec.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        info.recipe.check_values(&values).map_err(|e| recipe_error(&spec.recipe, &e))?;
+        let params: String = spec.params.iter().map(|(k, v)| format!("{k}={:016x};", v.to_bits())).collect();
+        Ok((info.content, params, spec.seed))
+    }
+
+    /// Reads, parses and hashes a recipe with its transitive includes and style.
+    fn recipe_info(&mut self, recipe: &str, folder: &Path, stem: &str, spec: &ModelSpec) -> Result<RecipeInfo, WorldError> {
+        let files = &self.folders[folder].files;
+        let text = match files.get(stem).map(|f| &f.text) {
+            Some(Ok(t)) => Arc::clone(t),
+            Some(Err(e)) => {
+                return Err(WorldError::new("recipe_unreadable", format!("{recipe}: {e}")).with("field", "recipe").with("recipe", recipe))
+            }
+            None => return Err(not_found(spec, &self.root)),
+        };
+        let style_path = self.style_path(folder).ok_or_else(|| {
             WorldError::new(
                 "style_not_found",
                 format!(
-                    "no {STYLE_FILE} next to {} or above it inside the assets root {}; add one or start the engine with --style",
-                    spec.recipe,
+                    "no {STYLE_FILE} next to {recipe} or above it inside the assets root {}; add one or start the engine with --style",
                     self.root.display()
                 ),
             )
             .with("field", "recipe")
-            .with("recipe", spec.recipe.as_str())
+            .with("recipe", recipe)
         })?;
-        let (style, style_hash) = self.style(&style_path, spec)?;
-        let folder = &self.folders[&folder_rel];
-        let text = match folder.files.get(&stem).map(|f| &f.text) {
-            Some(Ok(t)) => t,
-            Some(Err(e)) => {
-                return Err(WorldError::new("recipe_unreadable", format!("{}: {e}", spec.recipe))
-                    .with("field", "recipe")
-                    .with("recipe", spec.recipe.as_str()))
-            }
-            None => {
-                return Err(WorldError::new(
-                    "recipe_not_found",
-                    format!("no recipe file {} under the assets root {}", spec.recipe, self.root.display()),
-                )
-                .with("field", "recipe")
-                .with("recipe", spec.recipe.as_str())
-                .with("assets_root", self.root.display().to_string()))
-            }
-        };
-        let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0001);
-        h.write_str(text);
-        h.write_u64(folder.hash);
-        h.write_u64(style_hash);
-        let content = h.finish();
-        let params_key: String = spec.params.iter().map(|(k, v)| format!("{k}={:016x};", v.to_bits())).collect();
-        let key = (content, params_key, spec.seed);
-        if let Some(b) = self.builds.get(&key) {
-            self.cache_hits += 1;
-            return Ok((Arc::clone(b), true));
-        }
-        self.cache_misses += 1;
-        let values: Vec<(&str, f64)> = spec.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        let started = Instant::now();
-        let params = BuildParams { values: &values, seed: spec.seed, library: Some(&folder.library), ..BuildParams::new(&style) };
-        let model = build(text, &params).map_err(|e| recipe_error(spec, &e))?;
-        check_uploadable(&model).map_err(|m| {
-            WorldError::new("recipe_invalid", format!("{}: {m}", spec.recipe)).with("field", "recipe").with("recipe", spec.recipe.as_str())
-        })?;
-        let built = Arc::new(Built {
-            id: self.next_build,
-            model,
-            content,
-            build_ms: started.elapsed().as_secs_f64() * 1000.0,
-            style: style_path,
-        });
-        self.next_build += 1;
-        self.builds.insert(key, Arc::clone(&built));
-        Ok((built, false))
-    }
-
-    /// Refuses a recipe path that leads outside the assets root (through a link, say).
-    fn check_inside(&self, rel: &Path, spec: &ModelSpec) -> Result<(), WorldError> {
-        let (Some(root), Ok(full)) = (&self.canonical_root, self.root.join(rel).canonicalize()) else {
-            return Ok(()); // missing files are reported when read
-        };
-        if full.starts_with(root) {
-            Ok(())
-        } else {
-            Err(WorldError::new("recipe_outside_assets", format!("{} leads outside the assets root", spec.recipe))
-                .with("field", "recipe")
-                .with("recipe", spec.recipe.as_str()))
-        }
-    }
-
-    fn read_folder(&self, rel: &Path) -> Folder {
-        let dir = self.root.join(rel);
-        let mut files = BTreeMap::new();
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.extension().is_none_or(|x| x != "json") {
-                    continue;
-                }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-                if stem == "style" {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).map_err(|e| e.to_string());
-                files.insert(stem.to_owned(), SourceFile { text, mtime: mtime(&path) });
-            }
-        }
-        let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0002);
+        let (style, style_hash) = self.style(&style_path, recipe)?;
+        let parsed = Recipe::parse(&text, &style).map_err(|e| recipe_error(recipe, &e))?;
+        // The files it includes, transitively; a missing one is left for the build to report.
+        let files = &self.folders[folder].files;
         let mut library = BTreeMap::new();
-        for (stem, f) in &files {
-            h.write_str(stem);
-            match &f.text {
-                Ok(t) => {
-                    h.write_str(t);
-                    library.insert(stem.clone(), t.clone());
-                }
-                Err(e) => h.write_str(e),
+        let mut todo = parsed.includes();
+        while let Some(name) = todo.pop() {
+            if library.contains_key(&name) {
+                continue;
             }
+            let Some(Ok(t)) = files.get(&name).map(|f| &f.text) else { continue };
+            if let Ok(inner) = Recipe::parse(t, &style) {
+                todo.extend(inner.includes());
+            }
+            library.insert(name, t.to_string());
         }
-        Folder { files, mtime: mtime(&dir), hash: h.finish(), library }
+        let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0001);
+        h.write_str(&text);
+        h.write_u64(library.len() as u64);
+        for (name, t) in &library {
+            h.write_str(name);
+            h.write_str(t);
+        }
+        h.write_u64(style_hash);
+        Ok(RecipeInfo {
+            folder: folder.to_owned(),
+            content: h.finish(),
+            text,
+            library: Arc::new(library),
+            style,
+            style_path,
+            recipe: parsed,
+        })
+    }
+
+    /// Refuses a folder that leads outside the assets root (through a link, say).
+    fn check_inside(&mut self, folder: &Path, spec: &ModelSpec) -> Result<(), WorldError> {
+        if self.canonical_root.is_none() {
+            self.canonical_root = self.root.canonicalize().ok();
+        }
+        let Some(root) = &self.canonical_root else {
+            return Err(not_found(spec, &self.root)); // no assets root at all (yet)
+        };
+        match self.root.join(folder).canonicalize() {
+            Ok(full) if full.starts_with(root) => Ok(()),
+            Ok(_) => Err(WorldError::new("recipe_outside_assets", format!("{} leads outside the assets root", spec.recipe))
+                .with("field", "recipe")
+                .with("recipe", spec.recipe.as_str())),
+            Err(_) => Err(not_found(spec, &self.root)),
+        }
+    }
+
+    /// The folder's regular `*.json` files (links are not followed); `None` if it doesn't exist.
+    fn read_folder(&self, rel: &Path) -> Option<Folder> {
+        self.read_folder_from(rel, None)
+    }
+
+    /// Like [`Library::read_folder`], reusing files from `old` whose modification time is the same.
+    fn read_folder_from(&self, rel: &Path, old: Option<&Folder>) -> Option<Folder> {
+        let dir = self.root.join(rel);
+        let entries = std::fs::read_dir(&dir).ok()?;
+        let mut files = BTreeMap::new();
+        for e in entries.flatten() {
+            let path = e.path();
+            if !e.file_type().is_ok_and(|t| t.is_file()) || path.extension().is_none_or(|x| x != "json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            if stem == "style" {
+                continue;
+            }
+            let modified = mtime(&path);
+            let reuse = old.and_then(|o| o.files.get(stem)).filter(|f| f.mtime == modified && modified.is_some());
+            let text = match reuse {
+                Some(f) => f.text.clone(),
+                None => std::fs::read_to_string(&path).map(Arc::from).map_err(|e| e.to_string()),
+            };
+            files.insert(stem.to_owned(), SourceFile { text, mtime: modified });
+        }
+        Some(Folder { files, mtime: mtime(&dir) })
+    }
+
+    /// Re-reads one cached folder when it changed; forgets the recipes there whose text changed.
+    /// Returns how many files changed (a folder that vanished counts its files).
+    fn refresh_folder(&mut self, rel: &Path) -> usize {
+        let Some(old) = self.folders.get(rel) else { return 0 };
+        let dir = self.root.join(rel);
+        let unchanged = mtime(&dir) == old.mtime
+            && old.files.iter().all(|(stem, f)| f.mtime.is_some() && mtime(&dir.join(format!("{stem}.json"))) == f.mtime);
+        if unchanged {
+            return 0;
+        }
+        let new = self.read_folder_from(rel, Some(old));
+        let old = self.folders.remove(rel).expect("checked above");
+        let changed = match &new {
+            None => old.files.len().max(1),
+            Some(n) => {
+                let stems: BTreeSet<&String> = old.files.keys().chain(n.files.keys()).collect();
+                stems
+                    .into_iter()
+                    .filter(|s| match (old.files.get(*s), n.files.get(*s)) {
+                        (Some(a), Some(b)) => a.text.as_ref().ok() != b.text.as_ref().ok() || a.text.is_err() != b.text.is_err(),
+                        _ => true,
+                    })
+                    .count()
+            }
+        };
+        if let Some(n) = new {
+            self.folders.insert(rel.to_owned(), n);
+        }
+        if changed > 0 {
+            // Any recipe there may include a changed file: work them out again (cheap: no builds).
+            self.recipes.retain(|_, r| r.folder != rel);
+        }
+        changed
     }
 
     /// `--style`, or the nearest `style.json` from the recipe's folder up to the root.
@@ -381,7 +715,7 @@ impl Library {
         let mut at = Some(folder_rel);
         while let Some(rel) = at {
             let candidate = self.root.join(rel).join(STYLE_FILE);
-            if candidate.is_file() {
+            if is_regular(&candidate) {
                 return Some(candidate);
             }
             at = rel.parent();
@@ -389,7 +723,7 @@ impl Library {
         None
     }
 
-    fn style(&mut self, path: &Path, spec: &ModelSpec) -> Result<(Arc<Style>, u64), WorldError> {
+    fn style(&mut self, path: &Path, recipe: &str) -> Result<(Arc<Style>, u64), WorldError> {
         if !self.styles.contains_key(path) {
             let file = read_style(path);
             self.styles.insert(path.to_owned(), file);
@@ -397,7 +731,7 @@ impl Library {
         let s = &self.styles[path];
         match &s.parsed {
             Ok(style) => Ok((Arc::clone(style), s.hash)),
-            Err(e) => Err(WorldError::new("style_invalid", format!("{} (style for {}): {e}", path.display(), spec.recipe))
+            Err(e) => Err(WorldError::new("style_invalid", format!("{} (style for {recipe}): {e}", path.display()))
                 .with("field", "recipe")
                 .with("style", path.display().to_string())
                 .with("recipe_error", e.to_json())),
@@ -405,80 +739,169 @@ impl Library {
     }
 
     /// Re-reads changed recipe folders and styles (at most once per [`POLL_EVERY`] unless
-    /// `force`) and rebuilds every handle. `None` when nothing was checked or changed.
+    /// `force`) and re-keys the handles whose recipe content changed: an unchanged key is left
+    /// alone, a cached one is taken at once, anything else is queued. `None` when nothing was
+    /// checked or nothing changed.
     pub fn poll(&mut self, force: bool) -> Option<Reload> {
         if !force && self.last_poll.elapsed() < POLL_EVERY {
             return None;
         }
         self.last_poll = Instant::now();
-        let mut changed = 0;
-        let stale: Vec<PathBuf> = self
-            .folders
-            .iter()
-            .filter(|(rel, f)| {
-                let dir = self.root.join(rel);
-                mtime(&dir) != f.mtime || f.files.keys().any(|stem| mtime(&dir.join(format!("{stem}.json"))) != f.files[stem].mtime)
-            })
-            .map(|(rel, _)| rel.clone())
-            .collect();
-        for rel in stale {
-            let folder = self.read_folder(&rel);
-            let old = self.folders.insert(rel, folder);
-            changed += old.map_or(1, |o| o.files.len().max(1));
+        let mut report = Reload::default();
+        let folders: Vec<PathBuf> = self.folders.keys().cloned().collect();
+        for f in folders {
+            report.files_changed += self.refresh_folder(&f);
         }
         let stale_styles: Vec<PathBuf> = self.styles.iter().filter(|(p, s)| mtime(p) != s.mtime).map(|(p, _)| p.clone()).collect();
         for p in stale_styles {
             let file = read_style(&p);
-            self.styles.insert(p, file);
-            changed += 1;
+            self.styles.insert(p.clone(), file);
+            self.recipes.retain(|_, r| r.style_path != p);
+            report.files_changed += 1;
         }
-        if changed == 0 && !force {
+        if report.files_changed == 0 && !force {
             return None;
         }
-        let mut report = Reload { files_changed: changed, ..Reload::default() };
+        // Handles whose recipe was forgotten above get their key worked out again.
         for h in 0..self.handles.len() {
-            let Some(spec) = self.handles[h].as_ref().map(|s| s.spec.clone()) else { continue };
-            let result = self.build(&spec);
-            let slot = self.handles[h].as_mut().expect("checked above");
-            match result {
-                Ok((built, _)) => {
-                    if slot.built.as_ref().is_none_or(|b| b.id != built.id) {
-                        report.rebuilt.push(spec.key());
-                        slot.built = Some(built);
-                        self.generation += 1;
+            let Some(slot) = &self.handles[h] else { continue };
+            if self.recipes.contains_key(&slot.spec.recipe) {
+                continue;
+            }
+            let spec = slot.spec.clone();
+            let current = self.handles[h].as_ref().and_then(|s| s.built.as_ref().map(|b| b.id));
+            match self.key_for(&spec, false) {
+                Ok(key) => {
+                    let unchanged = self.builds.get(&key).is_some_and(|b| Some(b.id) == current);
+                    if unchanged {
+                        continue;
                     }
-                    slot.error = None;
+                    self.want(h as u32, key.clone(), true);
+                    match self.in_flight.get(&key) {
+                        Some(f) => {
+                            report.jobs.insert(f.job);
+                            report.rebuilding.push(spec.key());
+                        }
+                        None => report.rebuilt.push(spec.key()),
+                    }
                 }
                 Err(e) => {
-                    report.errors.push(e.to_json());
-                    slot.error = Some(e);
+                    report.errors.push((spec.recipe.clone(), e.to_json()));
+                    self.set_want(h as u32, None);
+                    self.handles[h].as_mut().expect("live handle").error = Some(e);
                 }
             }
         }
-        // Builds no handle uses any more (old content, model_build experiments) are dropped.
-        let used: BTreeSet<u64> = self.handles.iter().flatten().filter_map(|h| h.built.as_ref().map(|b| b.id)).collect();
-        self.builds.retain(|_, b| used.contains(&b.id));
         Some(report)
     }
 
-    /// Forgets handles no live entity uses once there are many of them (a game spawning a fresh
-    /// seed per enemy would otherwise keep every variant forever). Entities that come back later
-    /// (undo) resolve their spec again.
-    pub fn collect_garbage(&mut self, live: &BTreeSet<u32>) {
-        let used = self.handles.iter().flatten().count();
-        if used <= live.len() + SPARE_HANDLES {
-            return;
+    /// Takes finished builds (waiting up to `wait` for the first one when some are in flight)
+    /// and points the handles that wanted them at them. Returns them for whoever waits on their
+    /// jobs, and the handles whose build or state changed.
+    pub fn finish(&mut self, wait: Option<Duration>) -> (Vec<Finished>, BTreeSet<u32>) {
+        let mut finished = Vec::new();
+        let mut changed = BTreeSet::new();
+        let mut first = wait.filter(|_| !self.in_flight.is_empty());
+        loop {
+            let done = match first.take() {
+                Some(d) => match self.workers.done.recv_timeout(d) {
+                    Ok(done) => done,
+                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+                },
+                None => match self.workers.done.try_recv() {
+                    Ok(done) => done,
+                    Err(_) => break,
+                },
+            };
+            if self.in_flight.get(&done.key).is_some_and(|f| f.job == done.id) {
+                self.in_flight.remove(&done.key);
+            }
+            let result = match done.result {
+                Ok(model) => {
+                    let built = Arc::new(Built {
+                        id: self.next_id,
+                        model,
+                        content: done.key.0,
+                        build_ms: done.build_ms,
+                        style: done.style_path,
+                    });
+                    self.next_id += 1;
+                    self.builds.insert(done.key.clone(), Arc::clone(&built));
+                    Ok(built)
+                }
+                Err(e) => Err(recipe_error(&done.recipe, &e)),
+            };
+            for h in self.waiting.remove(&done.key).unwrap_or_default() {
+                let Some(slot) = self.handles[h as usize].as_mut() else { continue };
+                slot.want = None;
+                match &result {
+                    Ok(b) => {
+                        slot.built = Some(Arc::clone(b));
+                        slot.error = None;
+                    }
+                    Err(e) => slot.error = Some(e.clone()),
+                }
+                changed.insert(h);
+            }
+            if !changed.is_empty() {
+                self.generation += 1;
+            }
+            finished.push(Finished { job: done.id, result });
         }
-        for (h, slot) in self.handles.iter_mut().enumerate() {
-            if slot.is_some() && !live.contains(&(h as u32)) {
-                let gone = slot.take().expect("checked");
-                self.by_spec.remove(&gone.spec.key());
-                self.free_handles.push(h as u32);
+        (finished, changed)
+    }
+
+    /// Keeps `id` (a `model_build` result) among the builds kept without an entity.
+    fn remember(&mut self, id: u64) {
+        self.recent.retain(|r| *r != id);
+        self.recent.push_back(id);
+        while self.recent.len() > RECENT_BUILDS {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Notes a finished `model_build` job's build as recent (see [`Library::remember`]).
+    pub fn remember_build(&mut self, built: &Built) {
+        self.remember(built.id);
+    }
+
+    /// Drops what no live entity uses (see the module docs). `live`: the handles of the world's
+    /// model entities.
+    pub fn collect_garbage(&mut self, live: &BTreeSet<u32>) {
+        if self.by_spec.len() > live.len() + SPARE_HANDLES {
+            for h in 0..self.handles.len() as u32 {
+                if self.handles[h as usize].is_some() && !live.contains(&h) {
+                    self.set_want(h, None);
+                    let gone = self.handles[h as usize].take().expect("checked");
+                    self.by_spec.remove(&gone.spec.key());
+                    self.free_handles.push(h);
+                }
+            }
+            self.generation += 1;
+        }
+        let handles: Vec<&Handle> = self.handles.iter().flatten().collect();
+        let kept: BTreeSet<u64> = handles.iter().filter_map(|h| h.built.as_ref().map(|b| b.id)).chain(self.recent.iter().copied()).collect();
+        self.builds.retain(|_, b| kept.contains(&b.id));
+        // Queued builds nobody waits for: workers skip them.
+        let dropped: Vec<BuildKey> =
+            self.in_flight.iter().filter(|(k, f)| !f.pinned && !self.waiting.contains_key(k)).map(|(k, _)| k.clone()).collect();
+        if !dropped.is_empty() {
+            let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
+            for k in dropped {
+                if let Some(f) = self.in_flight.remove(&k) {
+                    cancelled.insert(f.job);
+                }
             }
         }
-        let kept: BTreeSet<u64> = self.handles.iter().flatten().filter_map(|h| h.built.as_ref().map(|b| b.id)).collect();
-        self.builds.retain(|_, b| kept.contains(&b.id));
-        self.generation += 1;
+        // Folders, recipes and styles only live handles need.
+        let recipes: BTreeSet<&str> = handles.iter().map(|h| h.spec.recipe.as_str()).collect();
+        let folders: BTreeSet<PathBuf> =
+            recipes.iter().map(|r| Path::new(r).parent().unwrap_or(Path::new("")).to_owned()).collect();
+        self.recipes.retain(|r, _| recipes.contains(r.as_str()));
+        self.folders.retain(|f, _| folders.contains(f));
+        let styles: BTreeSet<&PathBuf> = self.recipes.values().map(|r| &r.style_path).collect();
+        let styles: BTreeSet<PathBuf> = styles.into_iter().cloned().collect();
+        self.styles.retain(|p, _| styles.contains(p));
     }
 
     /// Sizes for engine_info and perf_frame.
@@ -490,11 +913,14 @@ impl Library {
             .filter_map(|h| h.error.as_ref().map(|e| Json::obj([("recipe", Json::from(h.spec.recipe.as_str())), ("error", e.to_json())])))
             .take(8)
             .collect();
+        let (specs, builds, in_flight, folders) = self.counts();
         Json::obj([
             ("assets_root", Json::from(self.root.display().to_string())),
             ("style", self.style_override.as_ref().map_or(Json::Null, |p| Json::from(p.display().to_string()))),
-            ("specs", Json::from(self.handles.iter().flatten().count())),
-            ("builds", Json::from(self.builds.len())),
+            ("specs", Json::from(specs)),
+            ("builds", Json::from(builds)),
+            ("building", Json::from(in_flight)),
+            ("folders", Json::from(folders)),
             ("cache_hits", Json::from(self.cache_hits)),
             ("cache_misses", Json::from(self.cache_misses)),
             ("broken", Json::Arr(errors)),
@@ -503,28 +929,19 @@ impl Library {
 }
 
 fn read_style(path: &Path) -> StyleFile {
-    let text = std::fs::read_to_string(path);
+    let text = if is_regular(path) || path.is_file() { std::fs::read_to_string(path) } else { Err(std::io::ErrorKind::NotFound.into()) };
     let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0003);
     let parsed = match &text {
         Ok(t) => {
             h.write_str(t);
             Style::parse(t).map(Arc::new)
         }
-        Err(e) => Err(RecipeError::new("", specula_model::ErrorCode::Style, format!("can't read {}: {e}", path.display()))),
+        Err(e) => Err(RecipeError::new("", ErrorCode::Style, format!("can't read {}: {e}", path.display()))),
     };
     StyleFile { parsed, mtime: mtime(path), hash: h.finish() }
 }
 
-/// A recipe error as a world error: code `recipe_invalid`, the recipe, and the build's own
-/// structured error (`code`, `path` into the recipe, `message`, offsets and numbers).
-pub fn recipe_error(spec: &ModelSpec, e: &RecipeError) -> WorldError {
-    WorldError::new("recipe_invalid", format!("{}: {e}", spec.recipe))
-        .with("field", "recipe")
-        .with("recipe", spec.recipe.as_str())
-        .with("recipe_error", e.to_json())
-}
-
-/// Every part's vertices fit in one upload (u32 indices).
+/// Every part's vertices fit in one upload (u32 indices) and every material resolved.
 fn check_uploadable(model: &Model) -> Result<(), String> {
     for (i, lod) in model.lods.iter().enumerate() {
         if lod.positions.len() >= u32::MAX as usize {
@@ -537,6 +954,11 @@ fn check_uploadable(model: &Model) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The model handles the world's model entities use.
+pub fn live_handles(world: &World) -> BTreeSet<u32> {
+    world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect()
 }
 
 /// The library as the world's [`ModelSource`], shared with the engine.
@@ -698,14 +1120,13 @@ impl GpuModels {
     /// Uploads the builds live model entities use and frees the rest, when the world's model
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
-        let mut lib = library.lock();
+        let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
             return Vec::new();
         }
-        let live: BTreeSet<u32> = world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect();
-        lib.collect_garbage(&live);
-        self.synced = Some((world.mesh_epoch(), lib.generation(), world_generation));
+        self.synced = Some(key);
+        let live = live_handles(world);
         self.by_handle.clear();
         let mut wanted: BTreeMap<u64, Arc<Built>> = BTreeMap::new();
         for &h in &live {
@@ -921,10 +1342,38 @@ mod tests {
         )
     }
 
+    /// A recipe whose only part is `block` (included).
+    const HOST: &str = r#"{"recipe":1,"name":"host","parts":[{"name":"b","include":"block"}]}"#;
+
+    /// A heavy-but-legal recipe (from the review's probe): many subdivisions and noise passes.
+    fn heavy() -> String {
+        let mut ops = vec![r#"{"op":"subdivide","levels":4}"#.to_string(), r#"{"op":"subdivide","levels":2}"#.to_string()];
+        ops.extend((0..30).map(|_| r#"{"op":"displace","amount":0.01,"scale":0.5,"octaves":6}"#.to_string()));
+        ops.extend((0..10).map(|_| r#"{"op":"ao","amount":0.3}"#.to_string()));
+        let part = |i: u32| format!(r#"{{"name":"p{i}","material":"stone","shape":{{"op":"box","size":[1,1,1]}},"ops":[{}]}}"#, ops.join(","));
+        format!(r#"{{"recipe":1,"name":"heavy","lods":[0.5,0.25],"budget":{{"max_triangles":200000}},"parts":[{},{}]}}"#, part(0), part(1))
+    }
+
+    /// Takes finished builds until none is in flight (or 60 s pass).
+    fn settle(lib: &mut Library) -> BTreeSet<u32> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut changed = BTreeSet::new();
+        while lib.in_flight() > 0 && Instant::now() < deadline {
+            changed.extend(lib.finish(Some(Duration::from_millis(50))).1);
+        }
+        assert_eq!(lib.in_flight(), 0, "builds didn't finish");
+        changed
+    }
+
+    fn settle_shared(shared: &SharedLibrary, world: &mut World) {
+        let changed = settle(&mut shared.lock());
+        world.refresh_model_handles(&changed);
+    }
+
     #[test]
     fn every_sepulcra_recipe_builds_in_the_engine() {
         let mut lib = Library::new(&sepulcra(), None);
-        let mut n = 0;
+        let mut handles = Vec::new();
         for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
             let path = e.unwrap().path();
             let name = path.file_name().unwrap().to_str().unwrap().to_owned();
@@ -936,12 +1385,16 @@ mod tests {
                     spec.set_param("tier", t);
                 }
                 let r = lib.resolve(&spec).unwrap_or_else(|e| panic!("{name} {t:?}: {e}"));
-                let (lo, hi) = r.bounds;
-                assert!(hi.y > lo.y && hi.x > lo.x, "{name}: bounds {lo:?} {hi:?}");
-                n += 1;
+                handles.push((name.clone(), r.handle));
             }
         }
-        assert!(n >= 20, "{n} builds");
+        settle(&mut lib);
+        for (name, h) in &handles {
+            let b = lib.built(*h).unwrap_or_else(|| panic!("{name}: {:?}", lib.handle_error(*h)));
+            let (lo, hi) = b.bounds();
+            assert!(hi.y > lo.y && hi.x > lo.x, "{name}: bounds {lo:?} {hi:?}");
+        }
+        assert!(handles.len() >= 20, "{} builds", handles.len());
     }
 
     #[test]
@@ -949,21 +1402,25 @@ mod tests {
         let root = scratch("share", &[("block", &block(1.0)), ("twin", &block(1.0))]);
         let mut lib = Library::new(&root, None);
         let a = ModelSpec::new("recipes/block.json").with_param("tier", 2.0);
-        let (r1, r2) = (lib.resolve(&a).unwrap(), lib.resolve(&a).unwrap());
-        assert_eq!(r1, r2, "one handle per spec");
-        assert_eq!((lib.cache_misses, lib.cache_hits), (1, 0), "the second resolve didn't even look");
+        let first = lib.resolve(&a).unwrap();
+        assert_eq!((first.state, first.bounds), (ModelState::Building, None), "spawns never wait for a build");
+        assert_eq!(lib.resolve(&a).unwrap(), first, "one handle per spec");
         // The same content under another name is the same build (keyed by content, not path).
         let twin = lib.resolve(&ModelSpec::new("recipes/twin.json").with_param("tier", 2.0)).unwrap();
-        assert_ne!(twin.handle, r1.handle);
-        assert_eq!(lib.built(twin.handle).unwrap().id, lib.built(r1.handle).unwrap().id);
-        // Other parameters or seeds are other builds.
+        assert_ne!(twin.handle, first.handle);
+        assert_eq!(lib.in_flight(), 1, "one build in flight for both");
         let t3 = lib.resolve(&ModelSpec::new("recipes/block.json").with_param("tier", 3.0)).unwrap();
         let seeded = lib.resolve(&a.clone().with_seed(5)).unwrap();
-        let ids: BTreeSet<u64> = [r1, t3, seeded].iter().map(|r| lib.built(r.handle).unwrap().id).collect();
-        assert_eq!(ids.len(), 3);
-        assert_eq!(t3.bounds.1.y, 3.0 + 0.9, "bounds come from the model (box + a halo resting 0.3 above it)");
-        let (_, cached) = lib.build(&a).unwrap();
-        assert!(cached);
+        settle(&mut lib);
+        assert_eq!(lib.built(twin.handle).unwrap().id, lib.built(first.handle).unwrap().id);
+        let ids: BTreeSet<u64> = [first, t3, seeded].iter().map(|r| lib.built(r.handle).unwrap().id).collect();
+        assert_eq!(ids.len(), 3, "other parameters or seeds are other builds");
+        let r3 = lib.resolve(&ModelSpec::new("recipes/block.json").with_param("tier", 3.0)).unwrap();
+        assert_eq!((r3.state, r3.bounds.unwrap().1.y), (ModelState::Ready, 3.0 + 0.9), "bounds come from the model");
+        match lib.request(&a).unwrap() {
+            BuildRequest::Ready(_, cached) => assert!(cached),
+            BuildRequest::Pending(_) => panic!("should be cached"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -971,117 +1428,147 @@ mod tests {
     fn recipe_failures_are_structured() {
         let bad_op = r#"{"recipe":1,"name":"bad","parts":[{"name":"p","material":"stone","shape":{"op":"box","size":[1,1,1]},
                          "ops":[{"op":"explode"}]}]}"#;
-        let root = scratch("errors", &[("bad_op", bad_op), ("bad_json", "{\"recipe\":"), ("block", &block(1.0))]);
+        let over = r#"{"recipe":1,"name":"over","budget":{"max_triangles":4},"parts":[{"name":"p","material":"stone","shape":{"op":"box","size":[1,1,1]}}]}"#;
+        let root = scratch("errors", &[("bad_op", bad_op), ("bad_json", "{\"recipe\":"), ("block", &block(1.0)), ("over", over)]);
         let mut lib = Library::new(&root, None);
         let err = |lib: &mut Library, spec: ModelSpec| lib.resolve(&spec).err().unwrap();
+        let code = |e: &WorldError| e.detail("recipe_error").and_then(|j| j.get("code")).cloned();
+        // Checked at spawn, without building: structure, parameters, files, paths, style.
         let e = err(&mut lib, ModelSpec::new("recipes/bad_op.json"));
-        assert_eq!(e.code, "recipe_invalid");
-        let inner = e.detail("recipe_error").unwrap();
-        assert_eq!(inner.get("code"), Some(&Json::from("UnknownOp")));
-        assert_eq!(inner.get("path"), Some(&Json::from("parts[0].ops[0].op")), "{inner}");
-        let e = err(&mut lib, ModelSpec::new("recipes/bad_json.json"));
-        assert_eq!(e.detail("recipe_error").and_then(|j| j.get("code")), Some(&Json::from("Json")));
+        assert_eq!((e.code, code(&e)), ("recipe_invalid", Some(Json::from("UnknownOp"))));
+        assert_eq!(e.detail("recipe_error").unwrap().get("path"), Some(&Json::from("parts[0].ops[0].op")));
+        assert_eq!(code(&err(&mut lib, ModelSpec::new("recipes/bad_json.json"))), Some(Json::from("Json")));
         assert_eq!(err(&mut lib, ModelSpec::new("recipes/nope.json")).code, "recipe_not_found");
+        assert_eq!(err(&mut lib, ModelSpec::new("nowhere/x.json")).code, "recipe_not_found");
         let e = err(&mut lib, ModelSpec::new("recipes/block.json").with_param("tier", 9.0));
-        assert_eq!(e.detail("recipe_error").and_then(|j| j.get("code")), Some(&Json::from("OutOfRange")));
-        let e = err(&mut lib, ModelSpec::new("recipes/block.json").with_param("height", 1.0));
-        assert_eq!(e.detail("recipe_error").and_then(|j| j.get("code")), Some(&Json::from("UnknownName")));
-        assert_eq!(err(&mut lib, ModelSpec::new("../escape.json")).code, "invalid_value");
+        assert_eq!((code(&e), e.detail("recipe_error").unwrap().get("path")), (Some(Json::from("OutOfRange")), Some(&Json::from("params.tier"))));
+        assert_eq!(code(&err(&mut lib, ModelSpec::new("recipes/block.json").with_param("tier", 1.5))), Some(Json::from("OutOfRange")));
+        assert_eq!(code(&err(&mut lib, ModelSpec::new("recipes/block.json").with_param("height", 1.0))), Some(Json::from("UnknownName")));
+        for bad in ["../escape.json", "recipes./block.json", "recipes/block.json."] {
+            assert_eq!(err(&mut lib, ModelSpec::new(bad)).code, "invalid_value", "{bad}");
+        }
+        // Found only by building: the entity spawns, then its model fails.
+        let r = lib.resolve(&ModelSpec::new("recipes/over.json")).unwrap();
+        assert_eq!(r.state, ModelState::Building);
+        settle(&mut lib);
+        let r = lib.resolve(&ModelSpec::new("recipes/over.json")).unwrap();
+        assert_eq!((r.state, r.bounds), (ModelState::Failed, None));
+        assert_eq!(code(lib.handle_error(r.handle).unwrap()), Some(Json::from("OverBudget")));
         // No style anywhere: a clear error, not a panic.
         std::fs::remove_file(root.join(STYLE_FILE)).unwrap();
         let mut lib = Library::new(&root, None);
         assert_eq!(err(&mut lib, ModelSpec::new("recipes/block.json")).code, "style_not_found");
+        // No assets root at all (yet): refused, and nothing cached.
+        let mut lib = Library::new(&root.join("not_yet"), None);
+        assert_eq!(err(&mut lib, ModelSpec::new("recipes/block.json")).code, "recipe_not_found");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn edited_recipes_rebuild_and_broken_edits_keep_the_last_good_model() {
-        let root = scratch("reload", &[("block", &block(1.0))]);
-        let file = root.join("recipes/block.json");
+    fn heavy_builds_never_block_resolving() {
+        let root = scratch("heavy", &[("heavy", &heavy()), ("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        let started = Instant::now();
+        let h = lib.resolve(&ModelSpec::new("recipes/heavy.json")).unwrap();
+        let b = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(100), "resolving took {took:?}");
+        assert_eq!((h.state, b.state), (ModelState::Building, ModelState::Building));
+        // The light build lands while the heavy one may still run.
+        settle(&mut lib);
+        assert!(lib.built(h.handle).is_some() && lib.built(b.handle).is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edits_rebuild_only_what_they_change() {
+        let root = scratch("reload", &[("block", &block(1.0)), ("host", HOST), ("other", &block(1.0))]);
+        let file = |name: &str| root.join(format!("recipes/{name}.json"));
         let shared = Arc::new(SharedLibrary::new(Library::new(&root, None)));
         let mut world = World::default();
         world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
         let id = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/block.json")), "t").unwrap().id;
+        let host = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/host.json")), "t").unwrap().id;
+        assert_eq!(world.get(id).unwrap().model_state(), "building");
+        assert!(world.get(id).unwrap().local_bounds().is_none(), "no bounds before the build lands");
+        settle_shared(&shared, &mut world);
+        assert_eq!(world.get(id).unwrap().model_state(), "ready");
         assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 1.9);
         assert!(shared.lock().poll(false).is_none(), "polled at most once a second");
-        // Edit: taller block. (The modification time is set explicitly: some file systems
-        // only keep whole seconds.)
-        let touch = |text: &str, secs: u64| {
-            std::fs::write(&file, text).unwrap();
-            let f = std::fs::File::options().write(true).open(&file).unwrap();
+        // (Modification times are set explicitly: some file systems keep whole seconds only.)
+        let touch = |name: &str, text: &str, secs: u64| {
+            std::fs::write(file(name), text).unwrap();
+            let f = std::fs::File::options().write(true).open(file(name)).unwrap();
             f.set_modified(SystemTime::now() + Duration::from_secs(secs)).unwrap();
         };
-        touch(&block(2.0), 5);
+        // An unrelated recipe in the same folder changes: nothing is rebuilt.
+        touch("other", &block(5.0), 5);
         let report = shared.lock().poll(true).unwrap();
-        assert_eq!((report.files_changed > 0, report.rebuilt.len(), report.errors.len()), (true, 1, 0));
-        assert!(world.refresh_models().is_empty());
+        assert_eq!((report.files_changed, report.rebuilding.len(), report.rebuilt.len()), (1, 0, 0), "unrelated edits rebuild nothing");
+        // The included file changes: both its own spec and the host's rebuild.
+        touch("block", &block(2.0), 10);
+        let report = shared.lock().poll(true).unwrap();
+        assert_eq!((report.rebuilding.len(), report.errors.len()), (2, 0), "{:?}", report.rebuilding);
+        settle_shared(&shared, &mut world);
         assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 2.9);
+        assert_eq!(world.get(host).unwrap().local_bounds().unwrap().1.y, 2.9, "the host follows its include");
         // Break it: the error is reported and the last good build stays.
-        touch("{\"recipe\": 1, \"parts\": 7}", 10);
+        touch("block", "{\"recipe\": 1, \"parts\": 7}", 15);
         let report = shared.lock().poll(true).unwrap();
-        assert_eq!((report.rebuilt.len(), report.errors.len()), (0, 1));
+        assert_eq!(report.errors.len(), 1, "the host fails at build time, the block at parse time");
+        settle_shared(&shared, &mut world);
+        assert!(world.refresh_models().is_empty(), "existing specs keep their handle");
         let handle = world.get(id).unwrap().resolved_model().unwrap().handle;
         assert!(shared.lock().handle_error(handle).is_some());
         assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 2.9);
-        // A spawn of the same spec still works (last good build), a new spec is refused.
-        world.spawn(SpawnSpec::model(ModelSpec::new("recipes/block.json")), "t").unwrap();
         let up = UpdateSpec { params: Some(vec![("tier".into(), 2.0)]), ..Default::default() };
-        assert_eq!(world.update(&EntityKey::Id(id), up, "t").err().unwrap().code, "recipe_invalid");
-        // A recipe written just now (its folder already cached) is found without waiting a poll.
-        std::fs::write(root.join("recipes/fresh.json"), block(0.5)).unwrap();
+        assert_eq!(world.update(&EntityKey::Id(id), up, "t").err().unwrap().code, "recipe_invalid", "a new spec is refused");
+        // A recipe written just now (its folder cached) is found without waiting for the poll.
+        std::fs::write(file("fresh"), block(0.5)).unwrap();
         world.spawn(SpawnSpec::model(ModelSpec::new("recipes/fresh.json")), "t").unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn uploads_are_shared_per_build_and_lods_follow_size() {
-        if !specula_gpu::is_available() {
-            eprintln!("SKIPPED: Vulkan is not available");
-            return;
+    fn what_no_entity_uses_is_dropped() {
+        let root = scratch("gc", &[("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        // Agents can't grow the folder cache with folders that don't exist.
+        for i in 0..200 {
+            assert!(lib.resolve(&ModelSpec::new(format!("bogus_{i}/x.json"))).is_err());
         }
-        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("SKIPPED: {e}");
-                return;
-            }
-        };
-        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
-        let mut world = World::default();
-        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
-        let stone = ModelSpec::new("recipes/warding_stone.json").with_param("tier", 2.0);
-        let mut ids = Vec::new();
-        for i in 0..3 {
-            let mut s = SpawnSpec::model(stone.clone());
-            s.position = Vec3::new(i as f32 * 4.0, 0.0, 0.0);
-            ids.push(world.spawn(s, "t").unwrap().id);
+        assert_eq!(lib.counts().3, 0, "missing folders are never cached");
+        // A game spawning a fresh seed per effect, then dropping them all.
+        let keep = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
+        for s in 0..(SPARE_HANDLES as u64 + 300) {
+            lib.resolve(&ModelSpec::new("recipes/block.json").with_seed(s + 1)).unwrap();
         }
-        world.spawn(SpawnSpec::model(stone.clone().with_param("tier", 3.0)), "t").unwrap();
-        let mut models = GpuModels::default();
-        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
-        let stats = models.stats_json();
-        assert_eq!(stats.get("builds_uploaded"), Some(&Json::from(2)), "three tier-2 stones share one upload");
-        let built = Arc::clone(shared.lock().built(world.get(ids[0]).unwrap().resolved_model().unwrap().handle).unwrap());
-        let parts: usize = built.model.lods.iter().map(|l| l.parts.len()).sum();
-        assert!(stats.get("meshes").and_then(Json::as_u64).unwrap() as usize >= parts);
-        // Near: LOD 0; far: the last LOD.
-        let e = world.get(ids[0]).unwrap();
-        let mut out = Vec::new();
-        let mut st = LodStats::default();
-        models.draw(e, Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fresh, &mut st, &mut out);
-        assert_eq!(st.histogram[0], 1);
-        assert_eq!(out.len(), built.model.lods[0].parts.len(), "one draw per material part");
-        models.draw(e, Vec3::new(0.0, 1.0, 900.0), 50.0, 1080, &mut LodChoice::Fresh, &mut st, &mut out);
-        assert_eq!(st.histogram[(built.model.lods.len() - 1).min(LOD_BUCKETS - 1)], 1);
-        // Deleting every user of a build frees its meshes.
-        for id in ids {
-            world.delete(&EntityKey::Id(id), None).unwrap();
+        lib.collect_garbage(&BTreeSet::from([keep]));
+        settle(&mut lib);
+        lib.collect_garbage(&BTreeSet::from([keep]));
+        let (specs, builds, in_flight, folders) = lib.counts();
+        assert_eq!((specs, builds, in_flight, folders), (1, 1, 0, 1), "only what the live entity uses stays");
+        assert!(lib.built(keep).is_some());
+        // Nothing live: folders and recipes go too (handles stay while under the spare count).
+        lib.collect_garbage(&BTreeSet::new());
+        assert_eq!(lib.counts().0, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reload_reports_are_bounded() {
+        let mut report = Reload { files_changed: 3, ..Reload::default() };
+        for i in 0..400 {
+            let recipe = format!("recipes/r{}.json", i % 7);
+            let e = WorldError::new("recipe_invalid", format!("{recipe}: broken")).with("recipe", recipe.as_str());
+            report.errors.push((recipe, e.to_json()));
+            report.rebuilt.push(format!("recipes/x.json|#{i}"));
         }
-        models.sync(&mut gpu, &shared, &world, 0);
-        assert_eq!(models.stats_json().get("builds_uploaded"), Some(&Json::from(1)));
-        drop(models);
-        let msgs = gpu.close();
-        assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
+        let json = report.to_json();
+        assert!(json.to_string().len() < 8 * 1024, "{} bytes", json.to_string().len());
+        assert_eq!(json.get("errors").and_then(Json::as_array).unwrap().len(), 7, "identical errors grouped");
+        assert_eq!(json.get("error_count"), Some(&Json::from(400)));
+        assert_eq!(json.get("rebuilt_omitted"), Some(&Json::from(400 - MAX_LISTED)));
     }
 
     #[test]
@@ -1112,5 +1599,57 @@ mod tests {
         assert!((near / far - 2.0).abs() < 1e-4, "{near} {far}");
         assert!((near - 1.0 / (10.0 * 20f32.to_radians().tan()) * 1080.0).abs() < 1e-3);
         assert_eq!(screen_px(1.0, 0.5, 40.0, 1080), f32::INFINITY);
+    }
+
+    #[test]
+    fn uploads_are_shared_per_build_and_lods_follow_size() {
+        if !specula_gpu::is_available() {
+            eprintln!("SKIPPED: Vulkan is not available");
+            return;
+        }
+        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("SKIPPED: {e}");
+                return;
+            }
+        };
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let stone = ModelSpec::new("recipes/warding_stone.json").with_param("tier", 2.0);
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let mut s = SpawnSpec::model(stone.clone());
+            s.position = Vec3::new(i as f32 * 4.0, 0.0, 0.0);
+            ids.push(world.spawn(s, "t").unwrap().id);
+        }
+        world.spawn(SpawnSpec::model(stone.clone().with_param("tier", 3.0)), "t").unwrap();
+        settle_shared(&shared, &mut world);
+        let mut models = GpuModels::default();
+        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        let stats = models.stats_json();
+        assert_eq!(stats.get("builds_uploaded"), Some(&Json::from(2)), "three tier-2 stones share one upload");
+        let built = Arc::clone(shared.lock().built(world.get(ids[0]).unwrap().resolved_model().unwrap().handle).unwrap());
+        let parts: usize = built.model.lods.iter().map(|l| l.parts.len()).sum();
+        assert!(stats.get("meshes").and_then(Json::as_u64).unwrap() as usize >= parts);
+        // Near: LOD 0; far: the last LOD.
+        let e = world.get(ids[0]).unwrap();
+        let mut out = Vec::new();
+        let mut st = LodStats::default();
+        models.draw(e, Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fresh, &mut st, &mut out);
+        assert_eq!(st.histogram[0], 1);
+        assert_eq!(out.len(), built.model.lods[0].parts.len(), "one draw per material part");
+        models.draw(e, Vec3::new(0.0, 1.0, 900.0), 50.0, 1080, &mut LodChoice::Fresh, &mut st, &mut out);
+        assert_eq!(st.histogram[(built.model.lods.len() - 1).min(LOD_BUCKETS - 1)], 1);
+        // Deleting every user of a build frees its meshes.
+        for id in ids {
+            world.delete(&EntityKey::Id(id), None).unwrap();
+        }
+        models.sync(&mut gpu, &shared, &world, 0);
+        assert_eq!(models.stats_json().get("builds_uploaded"), Some(&Json::from(1)));
+        drop(models);
+        let msgs = gpu.close();
+        assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
     }
 }
