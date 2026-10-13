@@ -311,12 +311,29 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         let id = map.at(Face::Top, c as u8, r as u8)?;
         (map.cell(id).kind == CellKind::Fragment).then_some(piece_of[id.index()])
     });
+    let piece_at = |c: i32, r: i32| -> Option<u32> {
+        if c < 0 || r < 0 {
+            return None;
+        }
+        let id = map.at(Face::Top, c as u8, r as u8)?;
+        (map.cell(id).kind == CellKind::Fragment).then_some(piece_of[id.index()])
+    };
     for (c, r, w, h, piece) in rects {
         let id = map.at(Face::Top, c as u8, r as u8).expect("in the grid");
         let top_y = geo.surface[id.index()];
-        let pos = Vec3::new(x_of(c as f32 + w as f32 / 2.0), (top_y - 0.1) / 2.0, z_of(r as f32 + h as f32 / 2.0));
-        // A hair narrower than the cells, so neighbouring pieces show a seam.
-        let scale = Vec3::new(w as f32 * geo.cell - 0.06, top_y + 0.1, h as f32 * geo.cell - 0.06);
+        let (ci, ri, wi, hi) = (c as i32, r as i32, w as i32, h as i32);
+        // Inset a side (a seam) only where it meets something other than its own piece, so one
+        // piece reads as one stone however it was split into rectangles.
+        let other = |cells: Vec<(i32, i32)>| cells.into_iter().any(|(cc, rr)| piece_at(cc, rr) != Some(piece));
+        let seam = 0.04;
+        let west = if other((ri..ri + hi).map(|rr| (ci - 1, rr)).collect()) { seam } else { 0.0 };
+        let east = if other((ri..ri + hi).map(|rr| (ci + wi, rr)).collect()) { seam } else { 0.0 };
+        let north = if other((ci..ci + wi).map(|cc| (cc, ri - 1)).collect()) { seam } else { 0.0 };
+        let south = if other((ci..ci + wi).map(|cc| (cc, ri + hi)).collect()) { seam } else { 0.0 };
+        let (x0, x1) = (x_of(c as f32) + west, x_of((c + w) as f32) - east);
+        let (z0, z1) = (z_of(r as f32) + north, z_of((r + h) as f32) - south);
+        let pos = Vec3::new((x0 + x1) / 2.0, (top_y - 0.1) / 2.0, (z0 + z1) / 2.0);
+        let scale = Vec3::new(x1 - x0, top_y + 0.1, z1 - z0);
         let p = Part::cube("", pos, scale, shade(SLAB_TOP, piece_shade[piece as usize])).rough(0.9);
         ents::part_named(world, agent, frags, &format!("piece{piece:02}_{c}_{r}"), &p);
     }
@@ -465,8 +482,6 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         }
     }
 
-    // A sea of mist far below, so the slab floats (height fog arrives with M2).
-    ents::part(world, agent, slab, &Part::new("mist", specula::world::Shape::Quad, Vec3::new(0.0, -geo.depth - 14.0, 0.0), Vec3::new(600.0, 1.0, 600.0), MIST).glow(0.25).rough(1.0));
     slab
 }
 

@@ -330,14 +330,16 @@ pub fn outcome_name(o: Outcome) -> &'static str {
 
 /// STYLE.md lighting: a low cool moon, dim blue-violet ambient, ACES tone mapping, night sky.
 pub fn night(world: &mut World) {
-    let a = 30f32.to_radians();
-    let az = 60f32.to_radians(); // from the east-north-east
+    // A low moon (about 30 degrees up) from the east-south-east: the east and south faces catch
+    // it, the north and west fall into blue shadow, so turning the slab shows which face is which.
+    let (elev, az) = (30f32.to_radians(), 60f32.to_radians());
+    let moon = Vec3::new(elev.cos() * az.sin(), elev.sin(), elev.cos() * az.cos());
     let patch = EnvPatch {
-        sun_direction: Some(Vec3::new(a.cos() * az.sin(), a.sin(), -a.cos() * az.cos() * 0.6)),
+        sun_direction: Some(moon),
         sun_color: Some(palette::MOON),
-        sun_intensity: Some(1.15),
+        sun_intensity: Some(1.3),
         ambient_color: Some(palette::MIST),
-        ambient_intensity: Some(1.6),
+        ambient_intensity: Some(1.2),
         exposure: Some(1.1),
         tonemap: Some(true),
         background: Some(palette::SKY),

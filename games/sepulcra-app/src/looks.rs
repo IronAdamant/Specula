@@ -233,15 +233,16 @@ pub fn enemy_model(kind: &str) -> Vec<Part> {
             eyes("eyes", v(0.0, 1.63, 0.64), v(0.2, 0.05, 0.04)),
         ],
         "wraith" => {
+            // A tattered hood: the hem narrows and flares in layers, with no feet.
             let hood = Profile {
-                points: vec![[0.02, -1.1], [0.3, -0.5], [0.52, 0.2], [0.56, 0.62], [0.42, 0.92], [0.0, 1.1]],
+                points: vec![[0.0, -1.1], [0.32, -0.8], [0.18, -0.62], [0.46, -0.25], [0.32, -0.08], [0.58, 0.3], [0.56, 0.68], [0.4, 0.95], [0.0, 1.1]],
                 segments: 9,
             };
-            let mut shroud = Part::new("shroud", Shape::Lathe, Vec3::ZERO, Vec3::ONE, GRAVE_GLOW).glass(0.35).glow(0.8);
+            let mut shroud = Part::new("shroud", Shape::Lathe, Vec3::ZERO, Vec3::ONE, GRAVE_DEEP).glass(0.3).glow(0.25);
             shroud.profile = Some(hood);
             vec![
                 shroud,
-                Part::sphere("core", v(0.0, 0.3, 0.0), v(0.34, 0.6, 0.34), GRAVE_DEEP).glow(1.2),
+                Part::sphere("core", v(0.0, 0.3, 0.0), v(0.3, 0.55, 0.3), GRAVE_GLOW).glow(0.9),
                 eyes("eyes", v(0.0, 0.72, 0.44), v(0.3, 0.07, 0.05)),
             ]
         }
@@ -306,7 +307,8 @@ pub fn wall_model(seed: u32, hp: f32) -> Vec<Part> {
 
 /// A tombstone (the graveyard's lives). `index` varies the lichen.
 pub fn tombstone_model(index: usize) -> Vec<Part> {
-    let c = if index % 3 == 1 { LICHEN } else { GRAVE_STONE };
+    // Lichen is a neutral here: green belongs to the dead (STYLE.md), so living stone stays grey.
+    let c = if index % 3 == 1 { hex(0x9a978c) } else { GRAVE_STONE };
     vec![
         Part::cube("slab", v(0.0, 0.4, 0.0), v(0.5, 0.8, 0.15), c).rough(0.9),
         Part::sphere("crown", v(0.0, 0.8, 0.0), v(0.5, 0.26, 0.15), c).rough(0.9),

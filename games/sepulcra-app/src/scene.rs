@@ -26,6 +26,8 @@ use std::collections::BTreeMap;
 const MAX_GAME_LIGHTS: usize = 12;
 const FX_POOL: usize = 48;
 const RING_DOTS: usize = 28;
+/// Gameplay pieces read from 30–60 m away (STYLE.md: slightly oversized).
+const ENEMY_SCALE: Vec3 = Vec3 { x: 1.25, y: 1.25, z: 1.25 };
 
 /// A pooled moving thing (an enemy or a projectile).
 struct Slot {
@@ -405,7 +407,7 @@ impl Scene {
                     s.prev_rot = Vec3::new(0.0, yaw, 0.0);
                     s.rot = s.prev_rot;
                     ents::update(world, &self.agent, s.id, UpdateSpec {
-                        scale: Some(Vec3::ONE),
+                        scale: Some(ENEMY_SCALE),
                         props: Some(Json::obj([("enemy", Json::from(e.id))])),
                         remove_tags: vec!["idle".into()],
                         ..UpdateSpec::default()
@@ -505,7 +507,7 @@ impl Scene {
                 Event::Died { pos, kind, .. } => {
                     let [x, y, z] = pos.to_f32();
                     let big = if content.enemy(kind).id == "colossus" { 5.0 } else { 1.0 };
-                    self.flash(world, now, Vec3::new(x, y + 0.9 * big, z), 0.3 * big, 1.7 * big, 0.4, GRAVE_GLOW, 2.5, None);
+                    self.flash(world, now, Vec3::new(x, y + 0.9 * big, z), 0.2 * big, 1.2 * big, 0.35, GRAVE_GLOW, 1.2, Some(0.3));
                 }
                 Event::Hit { enemy, .. } => {
                     if let Some(&i) = self.enemies.get(&enemy) {
@@ -522,7 +524,7 @@ impl Scene {
                         .and_then(|s| s.tiers.get(usize::from(tier)))
                         .map_or(1.8, |t| t.splash as f32 / 1000.0);
                     let [x, y, z] = pos.to_f32();
-                    self.flash(world, now, Vec3::new(x, y + 0.4, z), 0.4, splash * 2.0, 0.35, FIRE_FLAME, 3.0, Some(0.85));
+                    self.flash(world, now, Vec3::new(x, y + 0.3, z), 0.4, splash * 2.0, 0.35, FIRE_FLAME, 1.2, Some(0.3));
                 }
                 Event::Pulsed { stone, .. } => {
                     if let Some(s) = state.stone(stone) {
@@ -533,7 +535,7 @@ impl Scene {
                 }
                 Event::StonePlaced { cell, .. } | Event::StoneUpgraded { cell, .. } => {
                     let (a, _) = self.geo.anchor(map, cell);
-                    self.flash(world, now, a + Vec3::new(0.0, 1.2, 0.0), 0.5, 2.6, 0.45, RUNE_PALE, 2.5, Some(0.5));
+                    self.disc(world, now, a + Vec3::new(0.0, 0.15, 0.0), 1.6, 0.5);
                 }
                 Event::WallBroken { cell } => {
                     let (a, _) = self.geo.anchor(map, cell);
@@ -541,7 +543,7 @@ impl Scene {
                 }
                 Event::TombstonesLost { .. } => {
                     let [x, _, z] = map.graveyard_centre.to_f32();
-                    self.flash(world, now, Vec3::new(x, 1.5, z), 1.0, 6.0, 0.7, GRAVE_GLOW, 2.0, Some(0.45));
+                    self.flash(world, now, Vec3::new(x, 1.5, z), 1.0, 6.0, 0.7, GRAVE_GLOW, 1.0, Some(0.2));
                 }
                 _ => {}
             }
@@ -558,7 +560,7 @@ impl Scene {
     /// A flat ring of light spreading to `radius` (a rune pillar's pulse).
     fn disc(&mut self, world: &mut World, now: f32, pos: Vec3, radius: f32, dur: f32) {
         let (s0, s1) = (Vec3::new(0.6, 0.06, 0.6), Vec3::new(radius * 2.0, 0.06, radius * 2.0));
-        self.effect(world, now, pos, s0, s1, dur, RUNE_GLOW, 1.5, Some(0.35));
+        self.effect(world, now, pos, s0, s1, dur, RUNE_GLOW, 1.0, Some(0.12));
     }
 
     #[allow(clippy::too_many_arguments)]
