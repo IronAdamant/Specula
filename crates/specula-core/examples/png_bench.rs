@@ -1,13 +1,14 @@
 //! PNG encode benchmark: a realistic capture frame at every level, one thread vs all threads.
 //!
 //! ```text
-//! cargo run --release -p specula-core --example png_bench [-- [FRAME.png] [--out DIR]]
+//! cargo run --release -p specula-core --example png_bench [-- [FRAME.png] [--threads N] [--out DIR]]
 //! ```
 //!
 //! Uses `target/lava/all.png` (the lava-lamp benchmark capture, `python scripts/lava_lamps.py`)
 //! when present, else a synthetic dithered gradient. The 1280×720 case is a centre crop of the
 //! frame. Every encode is decoded again and checked, and the single- and multi-threaded outputs
-//! must be byte-identical. `--out DIR` also writes each encoded PNG, plus multi-band zlib streams
+//! must be byte-identical. `--threads N` sets the parallel column's thread count (default: every
+//! core), e.g. 4 to approximate a low-end laptop. `--out DIR` also writes each encoded PNG, plus multi-band zlib streams
 //! of non-image data, so an independent decoder (e.g. Python's `zlib`) can check them.
 
 use specula_core::deflate::{self, Level};
@@ -20,9 +21,11 @@ const LEVELS: [Level; 4] = [Level::Fastest, Level::Fast, Level::Default, Level::
 fn main() {
     let mut path = "target/lava/all.png".to_string();
     let mut out_dir = None;
+    let mut threads = deflate::available_threads();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--threads" => threads = args.next().and_then(|n| n.parse().ok()).expect("--threads needs a number"),
             "--out" => out_dir = Some(std::path::PathBuf::from(args.next().expect("--out needs a directory"))),
             _ => path = arg,
         }
@@ -42,8 +45,7 @@ fn main() {
             synthetic(1600, 900)
         }
     };
-    let threads = deflate::available_threads();
-    println!("threads available: {threads}\n");
+    println!("parallel column: {threads} threads (machine has {})\n", deflate::available_threads());
     for (w, h) in [(frame.width, frame.height), (1280, 720)] {
         let img = crop(&frame, w, h);
         let (w, h) = (img.width, img.height);
