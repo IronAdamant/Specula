@@ -34,6 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-audio"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-sys",
+]
+
+[[package]]
 name = "specula-core"
 version = "0.3.0"
 

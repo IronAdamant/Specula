@@ -9,6 +9,7 @@ members = [
     "crates/specula-gpu",
     "crates/specula-protocol",
     "crates/specula-text",
+    "crates/specula-audio",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -33,6 +34,7 @@ specula-input = { path = "crates/specula-input" }
 specula-gpu = { path = "crates/specula-gpu" }
 specula-protocol = { path = "crates/specula-protocol" }
 specula-text = { path = "crates/specula-text" }
+specula-audio = { path = "crates/specula-audio" }
 
 [profile.dev]
 opt-level = 1
