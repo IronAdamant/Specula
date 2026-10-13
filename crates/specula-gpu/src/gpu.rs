@@ -535,7 +535,7 @@ impl GpuInner {
             old.destroy(&self.device);
         }
         let map = ShadowMap::new(&self.device, resolution, layers)?;
-        self.descriptors.write_shadow(&self.device, map.image.view);
+        self.descriptors.write_shadow(&self.device, map.array_view);
         self.shadow_map = Some(map);
         Ok(())
     }
@@ -849,7 +849,8 @@ mod tests {
         };
         assert!(gpu.validation_enabled());
         let early = gpu.take_validation_messages();
-        assert!(early.is_empty(), "{early:#?}");
+        // Errors only: GPU-assisted validation (VK_LAYER_ENABLES) adds informational warnings here.
+        assert!(early.iter().all(|m| m.severity != Severity::Error), "{early:#?}");
         // Deliberate misuse: an undefined VkFenceCreateFlags bit.
         let info = VkFenceCreateInfo { s_type: ST_FENCE_CREATE_INFO, p_next: ptr::null(), flags: 0x4000_0000 };
         let mut fence = VK_NULL_HANDLE;

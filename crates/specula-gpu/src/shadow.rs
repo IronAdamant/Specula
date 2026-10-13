@@ -414,6 +414,10 @@ pub fn clamp_resolution(r: u32) -> u32 {
 pub struct ShadowMap {
     pub image: Image,
     pub layers: Vec<VkImageView>,
+    /// `2D_ARRAY` over every layer, even when there is only one: the shaders sample it as
+    /// `sampler2DArrayShadow`, and a `2D` view there is undefined behaviour (GPU-assisted
+    /// validation: VUID-vkCmdDrawIndexed-viewType-07752).
+    pub array_view: VkImageView,
     pub resolution: u32,
 }
 
@@ -430,7 +434,15 @@ impl ShadowMap {
             MemoryKind::ShadowMaps,
             "shadow map",
         )?;
-        let mut map = ShadowMap { image, layers: Vec::new(), resolution };
+        let mut map = ShadowMap { image, layers: Vec::new(), array_view: VK_NULL_HANDLE, resolution };
+        let array = dev.create_view_range(map.image.handle, SHADOW_FORMAT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, (0, 1), (0, layers));
+        match array {
+            Ok(v) => map.array_view = v,
+            Err(e) => {
+                map.destroy(dev);
+                return Err(e);
+            }
+        }
         for l in 0..layers {
             match dev.create_view_range(map.image.handle, SHADOW_FORMAT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D, (0, 1), (l, 1)) {
                 Ok(v) => map.layers.push(v),
@@ -454,7 +466,9 @@ impl ShadowMap {
             for v in self.layers.drain(..) {
                 (dev.fns.destroy_image_view)(dev.handle, v, ptr::null());
             }
+            (dev.fns.destroy_image_view)(dev.handle, self.array_view, ptr::null());
         }
+        self.array_view = VK_NULL_HANDLE;
         dev.destroy_image(&self.image);
     }
 }
