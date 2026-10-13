@@ -1,0 +1,23 @@
+{
+  "sound": 1,
+  "name": "pillar_pulse",
+  "notes": "Rune pillar's slowing aura, played once per pulse: a low swell with a soft shimmer and breath, long tail.",
+  "bus": "sfx",
+  "seed": 103,
+  "duration": 1.8,
+  "loudness": -24,
+  "layers": [
+    { "name": "drone",
+      "source": { "wave": "sine", "freq": 82, "partials": [[1, 1], [2, 0.4], [3, 0.15]] },
+      "env": { "attack": 0.4, "hold": 0.1, "decay": 0.9, "sustain": 0 } },
+    { "name": "shimmer", "gain_db": -14,
+      "source": { "wave": "sine", "freq": 660, "fm": { "ratio": 0.5, "index": 1.5 } },
+      "vibrato": { "rate": 4, "depth": 0.15 },
+      "env": { "attack": 0.5, "decay": 0.9, "sustain": 0 } },
+    { "name": "breath", "gain_db": -16,
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.5, "decay": 0.8, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 400 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.7, "damp": 0.5, "mix": 0.3 } ]
+}

@@ -1,0 +1,26 @@
+{
+  "sound": 1,
+  "name": "wall_place",
+  "notes": "A dry-stone wall segment goes down: two block thuds and a patter of gravel.",
+  "bus": "sfx",
+  "seed": 110,
+  "duration": 0.6,
+  "loudness": -20,
+  "vary": { "pitch": [-1, 1] },
+  "layers": [
+    { "name": "thuds",
+      "source": { "wave": "sine", "freq": { "points": [[0, 120], [0.08, 55]], "curve": "exp" } },
+      "env": { "attack": 0.001, "decay": 0.12, "sustain": 0 },
+      "repeat": { "count": 2, "interval": 0.14, "gain_db_step": -3, "pitch_jitter": 1.5 } },
+    { "name": "bodies", "gain_db": -3,
+      "source": { "wave": "noise", "color": "brown" },
+      "env": { "attack": 0.001, "decay": 0.1, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 500 } ],
+      "repeat": { "count": 2, "interval": 0.14, "gain_db_step": -3 } },
+    { "name": "gravel", "at": 0.02, "length": 0.006, "gain_db": -12,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0003, "decay": { "rand": [0.005, 0.015] }, "sustain": 0, "release": 0.002 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [1500, 3000] }, "q": 0.8 } ],
+      "repeat": { "count": 14, "interval": 0.025, "jitter": 0.012, "gain_db_step": -1 } }
+  ]
+}

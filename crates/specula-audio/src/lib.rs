@@ -123,7 +123,7 @@ impl Default for AudioConfig {
 
 enum Runner {
     Thread(backend::ThreadBackend),
-    Manual(Mutex<Mixer>),
+    Manual(Box<Mutex<Mixer>>),
 }
 
 /// The audio system: a backend thread (or a manual mixer) plus the command side.
@@ -150,7 +150,7 @@ impl Audio {
             Backend::Manual => {
                 backend::set_state(&stats, BackendState::Null);
                 stats.device_channels.store(2, std::sync::atomic::Ordering::Relaxed);
-                Runner::Manual(Mutex::new(mixer))
+                Runner::Manual(Box::new(Mutex::new(mixer)))
             }
             Backend::Null => Runner::Thread(backend::null::start(mixer)?),
             Backend::Auto | Backend::Device => {

@@ -1,0 +1,20 @@
+{
+  "sound": 1,
+  "name": "sell",
+  "notes": "A stone is sold back to grave-dust: two falling bell notes and a dissolving sweep.",
+  "bus": "sfx",
+  "seed": 109,
+  "duration": 1.0,
+  "loudness": -22,
+  "layers": [
+    { "name": "g5", "source": { "wave": "sine", "freq": 783.99, "partials": [[1, 1, 0.4], [2, 0.25, 0.2], [3.01, 0.1, 0.1]] },
+      "env": { "attack": 0.002, "decay": 0.5, "sustain": 0 } },
+    { "name": "c5", "at": 0.1, "source": { "wave": "sine", "freq": 523.25, "partials": [[1, 1, 0.5], [2, 0.25, 0.25], [3.01, 0.1, 0.12]] },
+      "env": { "attack": 0.002, "decay": 0.6, "sustain": 0 } },
+    { "name": "dissolve", "gain_db": -8,
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.05, "decay": 0.5, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": { "points": [[0, 3000], [0.5, 600]], "curve": "exp" }, "q": 1.5 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.5, "damp": 0.5, "mix": 0.2 } ]
+}

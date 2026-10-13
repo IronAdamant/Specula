@@ -468,7 +468,7 @@ fn fx_list(cx: &Cx, key: &str, max: usize) -> Result<Vec<Fx>> {
             }
             "tremolo" => {
                 let c = Cx::new(f, &p, &["type", "rate", "depth"])?;
-                Fx::Tremolo { rate: c.num("rate", 0.0, 50.0, 6.0)?, depth: c.num("depth", 0.0, 1.0, 0.5)? }
+                Fx::Tremolo { rate: c.num("rate", 0.0, 200.0, 6.0)?, depth: c.num("depth", 0.0, 1.0, 0.5)? }
             }
             o => return Err(AudioError::at(ErrorCode::UnknownName, format!("{p}.type"), format!("unknown fx `{o}` ({})", FX_NAMES.join(", ")))),
         };

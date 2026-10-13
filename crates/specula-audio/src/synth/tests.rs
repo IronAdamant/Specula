@@ -58,9 +58,9 @@ fn render_is_deterministic_and_pinned() {
     assert_eq!(r44.hash, PINNED_44K_HASH, "44.1 kHz hash changed: {:#018x}", r44.hash);
 }
 
-const PINNED_DETERMINISM_HASH: u64 = 0x2c43_fe23_bffe_f448;
-const PINNED_VARIATION1_HASH: u64 = 0x76d6_04d8_b1ca_6dcb;
-const PINNED_44K_HASH: u64 = 0x5c27_1316_c7a7_d9d7;
+const PINNED_DETERMINISM_HASH: u64 = 0xbef0_6d5f_dce6_d907;
+const PINNED_VARIATION1_HASH: u64 = 0x668a_a4b9_942a_1f0e;
+const PINNED_44K_HASH: u64 = 0xafd0_c54a_5aeb_604b;
 
 #[test]
 fn adsr_envelope_shape() {

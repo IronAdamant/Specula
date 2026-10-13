@@ -14,7 +14,7 @@
 //! ```
 
 use crate::dsp::{self, OnePole};
-use crate::resample::{SincTable, FRAC_BITS, ONE, TAPS};
+use crate::resample::{dot8, SincTable, FRAC_BITS, ONE, TAPS};
 use crate::ring::{self, Consumer, Producer};
 use crate::sound::{Sound, SoundData};
 use crate::error::{AudioError, ErrorCode, Result};
@@ -847,90 +847,159 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
     let loop_len = (data.loop_end - data.loop_start) as u64;
     let samples = &data.samples[..];
 
-    for f in 0..n {
-        let idx = (v.pos >> FRAC_BITS) as usize;
-        if !looping && idx >= data.frames {
-            v.finished = true;
-            break;
+    // Pass 1: read and resample into a stack buffer (no heap, no bus traffic).
+    let mut src = [0f32; MAX_BLOCK * 2];
+    let mut frames = n;
+    let whole_copy = v.step == ONE && (v.pos as u32) == 0;
+    if !silent && whole_copy {
+        // Same rate, integer position: plain copies, a contiguous run at a time.
+        let mut f = 0;
+        while f < n {
+            let idx = (v.pos >> FRAC_BITS) as usize;
+            let end = if looping { limit } else { data.frames };
+            // Looping voices wrap below, so only one-shots can run off the end.
+            if !looping && idx >= end {
+                frames = f;
+                v.finished = true;
+                break;
+            }
+            let run = (n - f).min(end - idx);
+            src[f * ch..(f + run) * ch].copy_from_slice(&samples[idx * ch..(idx + run) * ch]);
+            f += run;
+            v.pos += (run as u64) << FRAC_BITS;
+            if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
+                v.pos -= loop_len << FRAC_BITS;
+                v.wrapped = true;
+            }
         }
-        if !silent {
+    } else if !silent {
+        for f in 0..n {
+            let idx = (v.pos >> FRAC_BITS) as usize;
+            if !looping && idx >= data.frames {
+                frames = f;
+                v.finished = true;
+                break;
+            }
             let frac = v.pos as u32;
-            let (mut l, mut r);
             if v.step == ONE && frac == 0 {
                 // Same rate, integer position: no interpolation needed.
                 if ch == 1 {
-                    l = samples[idx];
-                    r = l;
+                    src[f] = samples[idx];
                 } else {
-                    l = samples[2 * idx];
-                    r = samples[2 * idx + 1];
+                    src[2 * f] = samples[2 * idx];
+                    src[2 * f + 1] = samples[2 * idx + 1];
+                }
+            } else if idx >= 3 && idx + TAPS - 3 < limit {
+                let (cd, t) = table.phase(v.kernel, frac);
+                let start = idx - 3;
+                if ch == 1 {
+                    let x: &[f32; TAPS] = samples[start..start + TAPS].try_into().expect("8 taps");
+                    src[f] = dot8(cd, t, x);
+                } else {
+                    let s: &[f32; 2 * TAPS] = samples[2 * start..2 * (start + TAPS)].try_into().expect("8 stereo taps");
+                    let mut xl = [0f32; TAPS];
+                    let mut xr = [0f32; TAPS];
+                    for k in 0..TAPS {
+                        xl[k] = s[2 * k];
+                        xr[k] = s[2 * k + 1];
+                    }
+                    src[2 * f] = dot8(cd, t, &xl);
+                    src[2 * f + 1] = dot8(cd, t, &xr);
                 }
             } else {
+                // Near the edges: fetch each tap with bounds / loop wrapping.
                 let c = table.coeffs(v.kernel, frac);
-                if idx >= 3 && idx + TAPS - 3 < limit {
-                    let start = idx - 3;
+                let (mut al, mut ar) = (0.0, 0.0);
+                for (k, ck) in c.iter().enumerate() {
+                    let mut i = idx as i64 - 3 + k as i64;
+                    if looping {
+                        if i >= data.loop_end as i64 {
+                            i = data.loop_start as i64 + (i - data.loop_start as i64) % loop_len as i64;
+                        } else if i < data.loop_start as i64 && v.wrapped {
+                            i += loop_len as i64;
+                        }
+                    }
+                    if i < 0 || i as usize >= data.frames {
+                        continue;
+                    }
+                    let i = i as usize;
                     if ch == 1 {
-                        let s = &samples[start..start + TAPS];
-                        let mut acc = 0.0;
-                        for k in 0..TAPS {
-                            acc += c[k] * s[k];
-                        }
-                        l = acc;
-                        r = acc;
+                        al += ck * samples[i];
                     } else {
-                        let s = &samples[2 * start..2 * (start + TAPS)];
-                        let (mut al, mut ar) = (0.0, 0.0);
-                        for k in 0..TAPS {
-                            al += c[k] * s[2 * k];
-                            ar += c[k] * s[2 * k + 1];
-                        }
-                        l = al;
-                        r = ar;
+                        al += ck * samples[2 * i];
+                        ar += ck * samples[2 * i + 1];
                     }
+                }
+                if ch == 1 {
+                    src[f] = al;
                 } else {
-                    // Near the edges: fetch each tap with bounds / loop wrapping.
-                    let (mut al, mut ar) = (0.0, 0.0);
-                    for (k, ck) in c.iter().enumerate() {
-                        let mut i = idx as i64 - 3 + k as i64;
-                        if looping {
-                            if i >= data.loop_end as i64 {
-                                i = data.loop_start as i64 + (i - data.loop_start as i64) % loop_len as i64;
-                            } else if i < data.loop_start as i64 && v.wrapped {
-                                i += loop_len as i64;
-                            }
-                        }
-                        if i < 0 || i as usize >= data.frames {
-                            continue;
-                        }
-                        let i = i as usize;
-                        if ch == 1 {
-                            al += ck * samples[i];
-                        } else {
-                            al += ck * samples[2 * i];
-                            ar += ck * samples[2 * i + 1];
-                        }
-                    }
-                    l = al;
-                    r = if ch == 1 { al } else { ar };
+                    src[2 * f] = al;
+                    src[2 * f + 1] = ar;
                 }
             }
-            if spatial_downmix {
-                l = 0.5 * (l + r);
-                r = l;
+            v.pos += v.step;
+            if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
+                v.pos -= loop_len << FRAC_BITS;
+                v.wrapped = true;
             }
-            if v.lp_on {
-                l = v.lp[0].process(l);
-                r = if ch == 1 || spatial_downmix { l } else { v.lp[1].process(r) };
-            }
-            let gl = g0[0] + d[0] * (f + 1) as f32;
-            let gr = g0[1] + d[1] * (f + 1) as f32;
-            bus[2 * f] += l * gl;
-            bus[2 * f + 1] += r * gr;
         }
-        v.pos += v.step;
-        if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
-            v.pos -= loop_len << FRAC_BITS;
-            v.wrapped = true;
+    } else {
+        // Inaudible (culled by distance or muted): keep the place without reading samples.
+        for f in 0..n {
+            if !looping && (v.pos >> FRAC_BITS) as usize >= data.frames {
+                frames = f;
+                v.finished = true;
+                break;
+            }
+            v.pos += v.step;
+            if looping && (v.pos >> FRAC_BITS) >= limit as u64 {
+                v.pos -= loop_len << FRAC_BITS;
+                v.wrapped = true;
+            }
+        }
+        frames = frames.min(n);
+        let _ = frames;
+        if v.tail && v.fade.done() {
+            v.finished = true;
+        }
+        return;
+    }
+
+    // Pass 2: filter, gain ramp, pan, accumulate (specialised so the loops stay branch-free).
+    let mono = ch == 1 || spatial_downmix;
+    let (mut gl, mut gr) = (g0[0], g0[1]);
+    let bus = &mut bus[..2 * frames];
+    if mono {
+        if spatial_downmix {
+            for f in 0..frames {
+                src[f] = 0.5 * (src[2 * f] + src[2 * f + 1]);
+            }
+        }
+        if v.lp_on {
+            let lp = &mut v.lp[0];
+            for x in &mut src[..frames] {
+                *x = lp.process(*x);
+            }
+        }
+        for (o, &x) in bus.chunks_exact_mut(2).zip(&src[..frames]) {
+            gl += d[0];
+            gr += d[1];
+            o[0] += x * gl;
+            o[1] += x * gr;
+        }
+    } else {
+        if v.lp_on {
+            let [lpl, lpr] = &mut v.lp;
+            for fr in src[..2 * frames].chunks_exact_mut(2) {
+                fr[0] = lpl.process(fr[0]);
+                fr[1] = lpr.process(fr[1]);
+            }
+        }
+        for (o, x) in bus.chunks_exact_mut(2).zip(src[..2 * frames].chunks_exact(2)) {
+            gl += d[0];
+            gr += d[1];
+            o[0] += x[0] * gl;
+            o[1] += x[1] * gr;
         }
     }
     if v.tail && v.fade.done() {
@@ -956,7 +1025,7 @@ impl Stats {
             mix_calls: blocks,
             mix_us_last: s.mix_ns_last.load(Ordering::Relaxed) as f32 / 1000.0,
             mix_us_max: s.mix_ns_max.load(Ordering::Relaxed) as f32 / 1000.0,
-            mix_us_mean: if blocks == 0 { 0.0 } else { (s.mix_ns_total.load(Ordering::Relaxed) / blocks) as f32 / 1000.0 },
+            mix_us_mean: s.mix_ns_total.load(Ordering::Relaxed).checked_div(blocks).map_or(0.0, |ns| ns as f32 / 1000.0),
             master_peak: f32::from_bits(s.master_peak_bits.load(Ordering::Relaxed)),
             limiter_gain: f32::from_bits(s.limiter_gain_bits.load(Ordering::Relaxed)),
             underruns: s.underruns.load(Ordering::Relaxed),

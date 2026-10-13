@@ -1,0 +1,26 @@
+{
+  "sound": 1,
+  "name": "obelisk_zap",
+  "notes": "Sky obelisk fires at a flyer: a buzzing crushed square arc, crackling static, and a falling ping.",
+  "bus": "sfx",
+  "seed": 106,
+  "duration": 0.5,
+  "loudness": -21,
+  "vary": { "pitch": [-1.5, 1.5], "gain_db": [-1.5, 0] },
+  "layers": [
+    { "name": "arc", "length": 0.25,
+      "source": { "wave": "square", "freq": 140, "duty": { "rand": [0.2, 0.4] } },
+      "vibrato": { "rate": 35, "depth": 3 },
+      "env": { "attack": 0.002, "decay": 0.3, "sustain": 0.2, "release": 0.08 },
+      "filters": [ { "type": "lowpass", "cutoff": { "points": [[0, 8000], [0.3, 1500]], "curve": "exp" }, "q": 1.5 } ],
+      "fx": [ { "type": "bitcrush", "bits": 5, "rate": 12000 } ] },
+    { "name": "static", "gain_db": -6,
+      "source": { "wave": "noise", "freq": { "rand": [3000, 6000] } },
+      "env": { "attack": 0.001, "decay": 0.2, "sustain": 0, "release": 0.03 },
+      "filters": [ { "type": "highpass", "cutoff": 2000 } ],
+      "fx": [ { "type": "tremolo", "rate": 60, "depth": 0.8 } ] },
+    { "name": "ping", "gain_db": -10,
+      "source": { "wave": "sine", "freq": { "points": [[0, 1320], [0.25, 990]], "curve": "exp" }, "partials": [[1, 1, 0.2], [2.01, 0.3, 0.1]] },
+      "env": { "attack": 0.002, "decay": 0.3, "sustain": 0 } }
+  ]
+}

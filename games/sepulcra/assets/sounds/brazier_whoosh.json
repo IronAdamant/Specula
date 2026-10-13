@@ -1,0 +1,26 @@
+{
+  "sound": 1,
+  "name": "brazier_whoosh",
+  "notes": "Brazier cairn throws splash fire: a filtered whoosh that opens and closes, a low roar, a burst of crackles.",
+  "bus": "sfx",
+  "seed": 104,
+  "duration": 0.85,
+  "loudness": -21,
+  "vary": { "pitch": [-1, 1], "gain_db": [-1.5, 0] },
+  "layers": [
+    { "name": "whoosh",
+      "source": { "wave": "noise", "color": "pink" },
+      "env": { "attack": 0.06, "decay": 0.6, "sustain": 0 },
+      "filters": [ { "type": "bandpass", "cutoff": { "points": [[0, 300], [0.15, 1800], [0.7, 500]], "curve": "exp" }, "q": 0.9 } ] },
+    { "name": "roar", "gain_db": -4,
+      "source": { "wave": "noise", "color": "brown" },
+      "env": { "attack": 0.03, "decay": 0.5, "sustain": 0 },
+      "filters": [ { "type": "lowpass", "cutoff": 250 } ],
+      "fx": [ { "type": "distort", "drive": 2 } ] },
+    { "name": "crackles", "at": 0.08, "length": 0.006, "gain_db": -13,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0003, "decay": { "rand": [0.004, 0.015] }, "sustain": 0, "release": 0.002 },
+      "filters": [ { "type": "highpass", "cutoff": { "rand": [2000, 4500] }, "q": 1.5 } ],
+      "repeat": { "count": 10, "interval": 0.05, "jitter": 0.03, "gain_db_step": -1 } }
+  ]
+}

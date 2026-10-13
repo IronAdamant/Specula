@@ -1,0 +1,29 @@
+{
+  "sound": 1,
+  "name": "brazier_crackle_loop",
+  "notes": "Seamless loop on each lit brazier (3D, quiet): a soft fire bed with random crackles and the odd pop.",
+  "bus": "sfx",
+  "seed": 105,
+  "duration": 4.0,
+  "loop": { "crossfade": 0.5 },
+  "loudness": -28,
+  "layers": [
+    { "name": "bed", "gain_db": -6,
+      "source": { "wave": "noise", "color": "brown" },
+      "filters": [ { "type": "lowpass", "cutoff": 400, "q": 0.5 } ],
+      "fx": [ { "type": "tremolo", "rate": 0.75, "depth": 0.3 } ] },
+    { "name": "hiss", "gain_db": -20,
+      "source": { "wave": "noise", "color": "pink" },
+      "filters": [ { "type": "bandpass", "cutoff": 1500, "q": 0.6 } ] },
+    { "name": "crackles", "length": 0.01, "gain_db": { "rand": [-14, -2] },
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0003, "decay": { "rand": [0.004, 0.02] }, "sustain": 0, "release": 0.002 },
+      "filters": [ { "type": "highpass", "cutoff": { "rand": [1800, 4500] }, "q": 2 } ],
+      "repeat": { "count": 60, "interval": 0.075, "jitter": 0.035 } },
+    { "name": "pops", "at": 0.2, "length": 0.01, "gain_db": -6,
+      "source": { "wave": "noise" },
+      "env": { "attack": 0.0005, "decay": 0.03, "sustain": 0, "release": 0.005 },
+      "filters": [ { "type": "bandpass", "cutoff": { "rand": [500, 1200] }, "q": 3 } ],
+      "repeat": { "count": 12, "interval": 0.33, "jitter": 0.15 } }
+  ]
+}

@@ -426,7 +426,8 @@ impl Osc {
                         Wave::Saw => 2.0 * ph - 1.0 - blep(ph, dt),
                         Wave::Square => {
                             let naive = if ph < duty { 1.0 } else { -1.0 };
-                            naive + blep(ph, dt) - blep(frac(ph - duty + 1.0), dt)
+                            // Minus the pulse's mean (2·duty − 1), so narrow pulses carry no DC.
+                            naive + blep(ph, dt) - blep(frac(ph - duty + 1.0), dt) - (2.0 * duty - 1.0)
                         }
                         _ => 1.0 - 4.0 * (ph - 0.5).abs(),
                     };

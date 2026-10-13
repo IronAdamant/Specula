@@ -42,9 +42,24 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
-/// Polyphase kernels for each cutoff: `[cutoff][phase 0..=PHASES][tap]`.
+/// Polyphase kernels for each cutoff: `[cutoff][phase 0..PHASES][16]`, where each phase holds
+/// its 8 taps followed by the 8 differences to the next phase. Interpolating at fraction `t`
+/// is then `Σ c·x + t·Σ d·x`: two independent 8-wide dot products that vectorise.
 pub struct SincTable {
     coeffs: Box<[f32]>,
+}
+
+/// Interpolates one sample from 8 input samples with a phase entry from [`SincTable::phase`].
+/// Lane-wise products and a fixed summation tree, so the compiler can use SIMD without
+/// reassociating floats (results stay bit-reproducible).
+#[inline(always)]
+pub fn dot8(cd: &[f32; 2 * TAPS], t: f32, x: &[f32; TAPS]) -> f32 {
+    let mut p = [0f32; TAPS];
+    for k in 0..TAPS {
+        p[k] = (cd[k] + t * cd[TAPS + k]) * x[k];
+    }
+    let q = [p[0] + p[4], p[1] + p[5], p[2] + p[6], p[3] + p[7]];
+    (q[0] + q[2]) + (q[1] + q[3])
 }
 
 impl Default for SincTable {
@@ -57,7 +72,7 @@ impl SincTable {
     pub fn new() -> SincTable {
         let half = (TAPS / 2) as f64;
         let i0_beta = bessel_i0(KAISER_BETA);
-        let mut coeffs = Vec::with_capacity(CUTOFFS.len() * (PHASES + 1) * TAPS);
+        let mut raw = Vec::with_capacity(CUTOFFS.len() * (PHASES + 1) * TAPS);
         for &fc in &CUTOFFS {
             for p in 0..=PHASES {
                 let frac = p as f64 / PHASES as f64;
@@ -74,10 +89,30 @@ impl SincTable {
                     sum += *tap;
                 }
                 // Unity DC gain at every phase (no amplitude ripple as the phase moves).
-                coeffs.extend(taps.iter().map(|t| (t / sum) as f32));
+                raw.extend(taps.iter().map(|t| (t / sum) as f32));
+            }
+        }
+        let mut coeffs = Vec::with_capacity(CUTOFFS.len() * PHASES * 2 * TAPS);
+        for kernel in 0..CUTOFFS.len() {
+            for p in 0..PHASES {
+                let a = (kernel * (PHASES + 1) + p) * TAPS;
+                coeffs.extend_from_slice(&raw[a..a + TAPS]);
+                coeffs.extend((0..TAPS).map(|k| raw[a + TAPS + k] - raw[a + k]));
             }
         }
         SincTable { coeffs: coeffs.into_boxed_slice() }
+    }
+
+    /// The phase entry (taps + deltas) and the interpolation fraction for position `frac`
+    /// (32 fractional bits) with `kernel`.
+    #[inline(always)]
+    pub fn phase(&self, kernel: usize, frac: u32) -> (&[f32; 2 * TAPS], f32) {
+        let scaled = frac as u64 * PHASES as u64;
+        let p = (scaled >> 32) as usize;
+        let t = (scaled & 0xffff_ffff) as f32 * (1.0 / 4_294_967_296.0);
+        let base = (kernel * PHASES + p) * 2 * TAPS;
+        let entry: &[f32; 2 * TAPS] = self.coeffs[base..base + 2 * TAPS].try_into().expect("16 coefficients");
+        (entry, t)
     }
 
     /// The kernel index to use for a read step (input samples per output sample, 32.32).
@@ -96,15 +131,10 @@ impl SincTable {
     /// Coefficients for fractional position `frac` (0..2³², 32 fractional bits) with `kernel`.
     #[inline]
     pub fn coeffs(&self, kernel: usize, frac: u32) -> [f32; TAPS] {
-        let scaled = frac as u64 * PHASES as u64;
-        let p = (scaled >> 32) as usize;
-        let t = (scaled & 0xffff_ffff) as f32 * (1.0 / 4_294_967_296.0);
-        let base = (kernel * (PHASES + 1) + p) * TAPS;
-        let a = &self.coeffs[base..base + TAPS];
-        let b = &self.coeffs[base + TAPS..base + 2 * TAPS];
+        let (cd, t) = self.phase(kernel, frac);
         let mut out = [0f32; TAPS];
         for k in 0..TAPS {
-            out[k] = a[k] + t * (b[k] - a[k]);
+            out[k] = cd[k] + t * cd[TAPS + k];
         }
         out
     }
