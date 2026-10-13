@@ -79,12 +79,15 @@ impl Scene {
     }
 
     fn render(&self, gpu: &mut Gpu, env: Environment, name: &str) -> Vec<u8> {
+        self.render_draws(gpu, env, name, &self.draws())
+    }
+
+    fn render_draws(&self, gpu: &mut Gpu, env: Environment, name: &str, draws: &[DrawItem]) -> Vec<u8> {
         let target = gpu.create_target(W, H).unwrap();
-        let draws = self.draws();
         let frame = FrameDesc {
             view_proj: self.view_proj,
             clear_color: [0.04, 0.06, 0.13, 1.0],
-            draws: &draws,
+            draws,
             reverse_z: true,
             environment: env,
             ..Default::default()
@@ -329,9 +332,14 @@ fn fog_thickens_with_distance_and_depth() {
         assert!(foot > top + 10, "fog thickens below its height: foot {foot}, top {top}");
         // The sky fogs too: below the horizon it is all fog.
         foggy.sky.enabled = true;
-        let both = scene.render(&mut gpu, foggy, "fog_sky");
-        let horizon = pixel(&both, W, 4, 40);
-        eprintln!("{test}: fogged sky near the horizon {horizon:?}");
+        // With a ground reaching far into the fog, the far ground fades into the fogged sky.
+        let mut draws = scene.draws();
+        draws[0].model = scale3([4000.0, 1.0, 4000.0], [0.0; 3]);
+        let both = scene.render_draws(&mut gpu, foggy, "fog_sky", &draws);
+        // The camera looks down: the top rows are the farthest ground, which must fade into the fog.
+        let step = (0..60).map(|y| luma(pixel(&both, W, 40, y)).abs_diff(luma(pixel(&both, W, 40, y + 1)))).max().unwrap();
+        eprintln!("{test}: largest row-to-row step at the far ground: {step}");
+        assert!(step <= 6, "no seam between the far ground and the fog: step {step}");
         let errors = validation_errors(test, gpu);
         assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
     });
