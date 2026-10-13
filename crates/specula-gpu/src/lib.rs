@@ -244,7 +244,8 @@ impl GpuError {
     }
 
     /// `requested` exceeds the limit `what` (at most `max`).
-    pub(crate) fn limit(what: Limit, requested: u64, max: u64) -> GpuError {
+    /// A limit error (public so adapters that build GPU input, like `specula-ui`'s, report it the same way).
+    pub fn limit(what: Limit, requested: u64, max: u64) -> GpuError {
         let name = match what {
             Limit::PointLights => "point lights per frame",
             Limit::DrawRecords => "visible draw records per frame",
@@ -337,6 +338,11 @@ pub enum OverlayKind {
 /// A rectangle drawn over the finished frame (HUD, text, UI panels), after post-processing, in
 /// list order. Pixel coordinates with the origin at the top left; blended with premultiplied
 /// alpha. Shows in offscreen captures as on the window.
+///
+/// Beyond a flat fill: a vertical gradient (`color` → `color_bottom`), a border of `border` px
+/// inside the edge with its own gradient, a soft edge (`feather`, for shadows), a clip rect, and
+/// coloured triangles ([`OverlayQuad::triangle`]) that stay in list order with the quads.
+/// Colours are sRGB with straight alpha; interpolation and blending happen in linear light.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverlayQuad {
     /// x, y, width, height in pixels.
@@ -350,11 +356,50 @@ pub struct OverlayQuad {
     pub kind: OverlayKind,
     /// Corner radius in pixels (0 = square). Edges are anti-aliased.
     pub radius: f32,
+    /// Bottom colour of a vertical gradient from `color` at the top (`None` = flat).
+    pub color_bottom: Option<[f32; 4]>,
+    /// Border width in pixels, inside the edge (0 = none).
+    pub border: f32,
+    /// Border colour at the top and bottom (sRGB, straight alpha).
+    pub border_color: [[f32; 4]; 2],
+    /// Edge softness in pixels: 1 = crisp anti-aliasing; larger fades the edge over that width
+    /// (soft shadows). At most [`MAX_OVERLAY_FEATHER`].
+    pub feather: f32,
+    /// Only pixels inside this x, y, width, height rect are drawn (`None` = everywhere).
+    /// Edges snap to whole pixels.
+    pub clip: Option<[f32; 4]>,
+    /// Draw this triangle instead of the rect (`rect`, `uv`, `texture`, `radius`, `border` are
+    /// ignored; `clip` applies).
+    pub triangle: Option<OverlayTriangle>,
 }
+
+/// A triangle with per-vertex sRGB colours (straight alpha), interpolated in linear light.
+/// Not anti-aliased by itself: give meshes an alpha fringe (as `specula-ui` does).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayTriangle {
+    pub points: [[f32; 2]; 3],
+    pub colors: [[f32; 4]; 3],
+}
+
+/// Largest [`OverlayQuad::feather`], pixels.
+pub const MAX_OVERLAY_FEATHER: f32 = 128.0;
 
 impl Default for OverlayQuad {
     fn default() -> Self {
-        OverlayQuad { rect: [0.0; 4], uv: [0.0, 0.0, 1.0, 1.0], color: [1.0; 4], texture: None, kind: OverlayKind::Rgba, radius: 0.0 }
+        OverlayQuad {
+            rect: [0.0; 4],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0; 4],
+            texture: None,
+            kind: OverlayKind::Rgba,
+            radius: 0.0,
+            color_bottom: None,
+            border: 0.0,
+            border_color: [[0.0; 4]; 2],
+            feather: 1.0,
+            clip: None,
+            triangle: None,
+        }
     }
 }
 
@@ -366,7 +411,12 @@ impl OverlayQuad {
 
     /// A textured rectangle showing `uv` of `texture`, tinted by `color`.
     pub fn textured(rect: [f32; 4], uv: [f32; 4], texture: TextureId, kind: OverlayKind, color: [f32; 4]) -> OverlayQuad {
-        OverlayQuad { rect, uv, color, texture: Some(texture), kind, radius: 0.0 }
+        OverlayQuad { rect, uv, color, texture: Some(texture), kind, ..Default::default() }
+    }
+
+    /// A triangle with per-vertex colours.
+    pub fn triangle(points: [[f32; 2]; 3], colors: [[f32; 4]; 3]) -> OverlayQuad {
+        OverlayQuad { triangle: Some(OverlayTriangle { points, colors }), ..Default::default() }
     }
 }
 

@@ -26,6 +26,7 @@ pub mod color;
 pub mod draw;
 pub mod error;
 pub mod geom;
+pub mod gpu;
 pub mod layout;
 pub mod preview;
 pub mod screen;
