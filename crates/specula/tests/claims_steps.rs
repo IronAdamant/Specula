@@ -54,8 +54,8 @@ fn setup() -> Setup {
     let (s1, s2) = (session("aaaaaa11"), session("bbbbbb22"));
     let live = vec![s1.clone(), s2.clone()];
     let mut sw = Swarm::default();
-    sw.hello(&s1, "ann".into(), "builder".into(), &live).unwrap();
-    sw.hello(&s2, "bob".into(), "builder".into(), &live).unwrap();
+    sw.hello(&s1, "ann".into(), "builder".into(), None, &live).unwrap();
+    sw.hello(&s2, "bob".into(), "builder".into(), None, &live).unwrap();
     let mut w = World::default();
     w.set_recording(Recording::Full);
     Setup { sw, w, s1 }

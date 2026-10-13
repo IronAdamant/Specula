@@ -28,8 +28,9 @@
 //!   path owner builds into the region, or the region holds the path's subtree), writes where
 //!   they meet are rejected for both owners with `claims_overlap`, naming both claims: resolve it
 //!   with `claim_share` or by releasing one.
-//! - **Expiry.** A claim ends when its lease runs out, when its owner releases it, or when its
-//!   session disappears from the protocol (ended, or idle past the protocol's listing timeout).
+//! - **Expiry.** A claim ends when its lease runs out or its owner releases it. A claim taken by an
+//!   introduced agent survives its session (the agent can resume with its `resume_token`, see
+//!   `swarm`); shares bound to a session end with it.
 //!   Expired claims never block.
 //! - **Live coordination only:** claims are not saved with the world. `world_load` is refused
 //!   while another agent holds a live claim (it would replace their work). Wall-clock time is fine
@@ -330,6 +331,11 @@ impl Claims {
     }
 
     /// Ids of the claims `owner` holds.
+    /// Whether some live claim is owned by `name` under an identity other than `key`.
+    pub fn held_by_name_elsewhere(&self, name: &str, key: &str, now: Instant) -> bool {
+        self.claims.values().any(|c| c.owner == name && c.session != key && c.expires > now)
+    }
+
     pub fn owned_by(&self, owner: Writer) -> Vec<u64> {
         self.claims.values().filter(|c| c.held_by(owner)).map(|c| c.id).collect()
     }

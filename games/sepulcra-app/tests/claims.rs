@@ -61,8 +61,8 @@ impl Host {
         swarm.game_changes(&mut world, 0, "sepulcra", Kind::GameStart);
         let (ann, bob) = (session("aaaaaa11"), session("bbbbbb22"));
         let live = vec![ann.clone(), bob.clone()];
-        swarm.hello(&ann, "ann".into(), "builder".into(), &live).unwrap();
-        swarm.hello(&bob, "bob".into(), "builder".into(), &live).unwrap();
+        swarm.hello(&ann, "ann".into(), "builder".into(), None, &live).unwrap();
+        swarm.hello(&bob, "bob".into(), "builder".into(), None, &live).unwrap();
         Host { game, world, swarm, clock, ann }
     }
 
@@ -166,7 +166,7 @@ fn tools_apply_normally_without_claims() {
 fn agents_cannot_take_the_games_name() {
     let mut h = Host::new();
     let s = session("cccccc33");
-    let err = h.swarm.hello(&s, "sepulcra".into(), "builder".into(), std::slice::from_ref(&s)).unwrap_err();
+    let err = h.swarm.hello(&s, "sepulcra".into(), "builder".into(), None, std::slice::from_ref(&s)).unwrap_err();
     assert_eq!(err.code, "name_reserved");
 }
 
