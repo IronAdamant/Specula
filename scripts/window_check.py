@@ -12,6 +12,9 @@ the engine's window loop:
     cargo build -p specula
     python scripts/window_check.py                    # all adapters
     python scripts/window_check.py --adapters 1       # one adapter
+    python scripts/window_check.py --gpu-av           # also GPU-assisted validation (slower):
+                                                      # checks what shaders read (descriptor
+                                                      # types, view types, bounds)
 
 Screenshots and engine logs go to target/window-check/ — open the PNGs and look at them.
 Standard library only (ctypes for Win32, zlib for PNG); it ships nothing and runs out of process,
@@ -20,6 +23,7 @@ so it doesn't conflict with the engine's raw-dylib imports.
 import argparse
 import ctypes
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -152,13 +156,21 @@ def screenshot(hwnd, path):
     return ok != 0 and colours > 2  # captured, and not a blank/solid frame
 
 
-def check_adapter(exe, adapter, out, port):
+# Notices GPU-assisted validation itself raises at start-up (it adjusts features and settings).
+GPU_AV_NOTICES = ("VALIDATION-SETTINGS", "WARNING-Setting-Limit-Adjusted")
+
+
+def check_adapter(exe, adapter, out, port, gpu_av=False):
     """Returns True (clean), False (problem) or None (no such adapter)."""
     log_path = out / f"engine_adapter{adapter}.log"
+    env = dict(os.environ)
+    if gpu_av:
+        env["VK_LAYER_ENABLES"] = "VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
             [str(exe), "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
             stderr=log,
+            env=env,
         )
     try:
         for _ in range(150):
@@ -224,6 +236,8 @@ def check_adapter(exe, adapter, out, port):
         if sizes[2] != (0, 0) or sizes[3] != sizes[1]:
             problems.append(f"unexpected size sequence {sizes}")
         warnings += mcp.frame_warnings()  # includes everything raised while presenting
+        if gpu_av:
+            warnings = [w for w in warnings if not any(n in str(w) for n in GPU_AV_NOTICES)]
         if warnings:
             problems.append(f"validation warnings: {warnings}")
 
@@ -249,6 +263,7 @@ def main():
     parser.add_argument("--adapters", default="all", help="'all' or comma-separated indices, e.g. 0,1")
     parser.add_argument("--out", type=Path, default=ROOT / "target" / "window-check")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"engine port (default {DEFAULT_PORT})")
+    parser.add_argument("--gpu-av", action="store_true", help="also run GPU-assisted validation (slower)")
     args = parser.parse_args()
     global URL
     URL = f"http://127.0.0.1:{args.port}/mcp"
@@ -261,7 +276,7 @@ def main():
     indices = range(16) if args.adapters == "all" else [int(i) for i in args.adapters.split(",")]
     results = {}
     for i in indices:
-        result = check_adapter(args.exe, i, args.out, args.port)
+        result = check_adapter(args.exe, i, args.out, args.port, args.gpu_av)
         if result is None:
             if args.adapters != "all":
                 results[i] = False

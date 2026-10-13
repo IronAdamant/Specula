@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn mesh_bounds_cover_every_vertex() {
-        let v = |x: f32, y: f32, z: f32| Vertex { position: [x, y, z], normal: [0.0; 3] };
+        let v = |x: f32, y: f32, z: f32| Vertex::new([x, y, z], [0.0; 3]);
         let b = mesh_bounds(&[v(0.0, 0.0, 0.0), v(2.0, 0.0, 0.0), v(0.0, 4.0, 0.0), v(2.0, 4.0, 0.0)]);
         assert_eq!(b.center, [1.0, 2.0, 0.0]);
         assert!((b.radius - 5f32.sqrt()).abs() < 1e-6);

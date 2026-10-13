@@ -3,9 +3,18 @@
 //! Everything here is a number, a flag or an enum, so agents read budgets from data rather than
 //! from log text. See [`crate::Gpu::last_frame_stats`].
 
-/// Name of the main pass: depth clear plus every draw of the frame. Later passes (shadows, post)
-/// get their own names.
+/// Name of the main pass: depth clear plus every draw of the frame (and the sky).
 pub const PASS_SCENE: &str = "scene";
+/// The sun's shadow map: every cascade's depth-only draws.
+pub const PASS_SHADOW: &str = "shadow";
+/// Bloom: bright-pass downsampling and the upsampling blur chain.
+pub const PASS_BLOOM: &str = "post_bloom";
+/// HDR → display: bloom added back, exposure already applied, ACES and dithering.
+pub const PASS_TONEMAP: &str = "post_tonemap";
+/// FXAA anti-aliasing.
+pub const PASS_FXAA: &str = "post_fxaa";
+/// Overlay quads. Drawn inside the last pass's rendering, so that pass's time includes it.
+pub const PASS_OVERLAY: &str = "overlay";
 
 /// Which entry point produced a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,6 +75,16 @@ pub struct DrawStats {
     /// Draw calls the pre-instancing renderer would have issued for the same visible items
     /// (one per item, two per glass item).
     pub unbatched_draw_calls: u32,
+    /// Shadow cascades rendered (0 = shadows off or nothing visible to shadow).
+    pub shadow_cascades: u32,
+    /// Depth-only draw calls across all cascades.
+    pub shadow_draw_calls: u32,
+    /// Caster instances across all cascades (a caster spanning two cascades counts twice).
+    pub shadow_instances: u32,
+    /// Triangles drawn into the shadow map.
+    pub shadow_triangles: u64,
+    /// Overlay quads drawn (one instanced draw call, not counted in `draw_calls`).
+    pub overlay_quads: u32,
 }
 
 /// Why a pipeline cache blob given in [`crate::GpuOptions::pipeline_cache`] was not used.
@@ -125,11 +144,25 @@ pub enum MemoryKind {
     PerFrame,
     /// Transient upload buffers (freed right after use).
     Staging,
+    /// The sun's shadow map.
+    ShadowMaps,
+    /// Intermediate images of the post chain (HDR scene, bloom levels, anti-aliasing input).
+    PostTargets,
+    /// Textures uploaded with `Gpu::upload_texture`.
+    Textures,
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 5] =
-        [MemoryKind::Meshes, MemoryKind::RenderTargets, MemoryKind::Readback, MemoryKind::PerFrame, MemoryKind::Staging];
+    pub const ALL: [MemoryKind; 8] = [
+        MemoryKind::Meshes,
+        MemoryKind::RenderTargets,
+        MemoryKind::Readback,
+        MemoryKind::PerFrame,
+        MemoryKind::Staging,
+        MemoryKind::ShadowMaps,
+        MemoryKind::PostTargets,
+        MemoryKind::Textures,
+    ];
 
     pub(crate) fn index(self) -> usize {
         self as usize
