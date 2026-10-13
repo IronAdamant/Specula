@@ -84,6 +84,12 @@ pub use sound::Sound;
 pub use synth::{Recipe, RenderOptions, Rendered};
 
 use mixer::{Mixer, MixerConfig, MixerHandle, SharedStats};
+
+/// Parses and renders a recipe into a playable [`Sound`] (the usual way to load a sound set;
+/// render at [`Stats::output_rate`] to skip resampling, or at 48 kHz for reproducible hashes).
+pub fn load_recipe(text: &str, options: &RenderOptions) -> Result<Sound> {
+    synth::render_text(text, options)?.to_sound()
+}
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Which output to use.
@@ -273,5 +279,30 @@ impl Audio {
 impl Drop for Audio {
     fn drop(&mut self) {
         let _ = self.stop_runner();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_can_be_shared_across_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Audio>();
+        assert_send_sync::<Sound>();
+    }
+
+    #[test]
+    fn load_recipe_plays_through_manual_backend() {
+        let text = r#"{"sound": 1, "name": "beep", "duration": 0.05, "layers": [{"source": {"wave": "sine", "freq": 880}}]}"#;
+        let sound = load_recipe(text, &RenderOptions::default()).unwrap();
+        assert_eq!((sound.rate(), sound.channels(), sound.frames()), (48_000, 1, 2400));
+        let audio = Audio::start(AudioConfig { backend: Backend::Manual, ..Default::default() }).unwrap();
+        audio.play(&sound, PlayParams::default()).unwrap();
+        let mut out = vec![0.0; 4800];
+        audio.pull(&mut out).unwrap();
+        assert!(out.iter().any(|s| s.abs() > 0.3));
+        assert_eq!(load_recipe("{}", &RenderOptions::default()).unwrap_err().code, ErrorCode::MissingField);
     }
 }

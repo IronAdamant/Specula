@@ -521,8 +521,8 @@ fn thread_main(mut mixer: Mixer, stop: &AtomicBool, options: Options, tx: std::s
                 return;
             }
             // No COM: behave as the null backend.
-            report(&mut tx, Ok(()));
             set_state(&stats, BackendState::Null);
+            report(&mut tx, Ok(()));
             let mut clock = Clock::new(mixer.rate(), 10);
             while !stop.load(Ordering::Relaxed) {
                 clock.tick(&mut mixer, &stats, stop);
@@ -537,13 +537,14 @@ fn thread_main(mut mixer: Mixer, stop: &AtomicBool, options: Options, tx: std::s
         let generation = watcher.generation();
         match Device::open(&k32, options.latency_ms) {
             Ok(dev) => {
-                report(&mut tx, Ok(()));
                 backoff = Duration::from_millis(250);
                 mixer.set_rate(dev.format.rate);
                 stats.device_channels.store(dev.format.channels as u32, Ordering::Relaxed);
                 stats.buffer_frames.store(dev.buffer_frames, Ordering::Relaxed);
                 stats.latency_us.store(dev.latency_us, Ordering::Relaxed);
                 set_state(&stats, BackendState::Device);
+                // Report only after the stats are published, so `start` returns a settled state.
+                report(&mut tx, Ok(()));
                 match dev.run(&k32, &mut mixer, &stats, stop, &watcher, generation) {
                     Exit::Stop => break,
                     Exit::Lost(hr) => {
@@ -561,9 +562,9 @@ fn thread_main(mut mixer: Mixer, stop: &AtomicBool, options: Options, tx: std::s
                     report(&mut tx, Err(e));
                     return;
                 }
-                report(&mut tx, Ok(()));
                 stats.last_hresult.store(e.hresult.unwrap_or(0), Ordering::Relaxed);
                 set_state(&stats, BackendState::Reconnecting);
+                report(&mut tx, Ok(()));
                 // Keep voices moving in real time until the next attempt (or a device appears).
                 let mut clock = Clock::new(mixer.rate(), 10);
                 let until = Instant::now() + backoff;

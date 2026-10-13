@@ -672,7 +672,7 @@ pub fn render(recipe: &Recipe, opts: &RenderOptions) -> Result<Rendered> {
     let rate = opts.rate as f64;
     let channels = recipe.channels as usize;
     let total = ((recipe.duration * rate).round() as usize).max(1);
-    let xfade = recipe.loop_crossfade.map_or(0, |x| ((x * rate).round() as usize).clamp(1, total / 2));
+    let xfade = recipe.loop_crossfade.map_or(0, |x| ((x * rate).round() as usize).min(total / 2).max(1));
     let frames = total + xfade;
     let mut buf = vec![0f32; frames * channels];
     let base = Ctx { seed: recipe.seed, variation: opts.variation, instance: 0 };
