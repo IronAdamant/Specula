@@ -44,6 +44,7 @@ layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec3 v_local;
 layout(location = 3) flat in uint v_draw;
+layout(location = 4) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -61,6 +62,9 @@ const float PI = 3.14159265;
 // ---------------------------------------------------------------------------------------------
 
 vec3 camera_pos() { return pc.frame.camera_time.xyz; }
+
+// The vertex colour, snapped to exactly 1 near white so interpolation never alters an untinted draw.
+vec4 tint() { return mix(v_tint, vec4(1.0), greaterThan(v_tint, vec4(0.99999))); }
 
 // Integer hashes (PCG): bit-exact on every GPU, so a seed gives the same lamp everywhere.
 uint pcg(uint v) {
@@ -156,7 +160,7 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec
 // ---------------------------------------------------------------------------------------------
 
 vec4 shade_lit() {
-    vec3 albedo = DRAW.color.rgb;
+    vec3 albedo = DRAW.color.rgb * tint().rgb;
     float emissive = DRAW.params.x;
     float metallic = DRAW.params.y;
     float rough = clamp(DRAW.params.z, 0.02, 1.0);
@@ -200,9 +204,10 @@ vec4 shade_glass() {
     gather_light(v_world, n, v, 0.05, diffuse, specular);
     vec3 reflected = env_radiance(reflect(-v, n)) + specular;
     // A tinted body: the path through a thin shell grows at grazing angles.
-    float body = clamp(DRAW.color.a, 0.0, 1.0);
+    vec4 t = tint();
+    float body = clamp(DRAW.color.a * t.a, 0.0, 1.0);
     float path = 1.0 - pow(1.0 - body, 1.0 / max(ndv, 0.2));
-    vec3 body_light = DRAW.color.rgb * (0.5 * diffuse + DRAW.params.x);
+    vec3 body_light = DRAW.color.rgb * t.rgb * (0.5 * diffuse + DRAW.params.x);
     float alpha = path + fresnel * (1.0 - path);
     vec3 c = body_light * path * (1.0 - fresnel) + reflected * fresnel;
     return vec4(display(c), alpha);
@@ -214,7 +219,7 @@ vec4 shade_glass() {
 
 vec4 shade_blob_shadow() {
     float r = length(v_local.xz) * 2.0;
-    float a = clamp(DRAW.color.a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
+    float a = clamp(DRAW.color.a * tint().a, 0.0, 1.0) * pow(1.0 - smoothstep(0.0, 1.0, r), 1.5);
     return vec4(0.0, 0.0, 0.0, a);
 }
 

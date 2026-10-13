@@ -12,7 +12,8 @@
 //!
 //! - Matrices are column-major `[f32; 16]` in Vulkan clip conventions (y down, depth 0..1) — build
 //!   them with `specula_core::math` (`perspective_vk`, `look_at_rh`, `from_trs`).
-//! - Triangle lists of [`Vertex`], D32 depth test (LESS with clear 1, or GREATER with clear 0 when
+//! - Triangle lists of [`Vertex`] (position, normal, sRGB vertex colour multiplied with the draw
+//!   colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0 when
 //!   [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
 //! - Opaque draws ([`Material::Lit`]) come first, with no face culling. Blended draws (every other
 //!   material) follow, sorted far to near, with depth test on and depth writes off.
@@ -188,11 +189,38 @@ impl GpuError {
     }
 }
 
+/// One mesh vertex (28 bytes).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    /// sRGB colour and alpha (0–255), multiplied with the draw's colour (and, for blended
+    /// materials, its opacity). White ([`Vertex::WHITE`]) leaves the draw colour unchanged, bit
+    /// for bit. The ray-marched `LavaLamp` ignores it.
+    pub color: [u8; 4],
+}
+
+impl Vertex {
+    /// The neutral vertex colour.
+    pub const WHITE: [u8; 4] = [255; 4];
+
+    /// A white vertex.
+    pub const fn new(position: [f32; 3], normal: [f32; 3]) -> Vertex {
+        Vertex { position, normal, color: Vertex::WHITE }
+    }
+
+    /// A vertex with an sRGB colour.
+    pub const fn with_color(position: [f32; 3], normal: [f32; 3], color: [u8; 4]) -> Vertex {
+        Vertex { position, normal, color }
+    }
+}
+
+impl Default for Vertex {
+    /// At the origin, zero normal, white.
+    fn default() -> Self {
+        Vertex::new([0.0; 3], [0.0; 3])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

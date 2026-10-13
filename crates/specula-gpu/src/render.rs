@@ -700,6 +700,12 @@ impl Pipelines {
                 format: VK_FORMAT_R32G32B32_SFLOAT,
                 offset: offset_of!(Vertex, normal) as u32,
             },
+            VkVertexInputAttributeDescription {
+                location: 2,
+                binding: 0,
+                format: VK_FORMAT_R8G8B8A8_UNORM,
+                offset: offset_of!(Vertex, color) as u32,
+            },
         ];
         let vertex_input = VkPipelineVertexInputStateCreateInfo {
             s_type: ST_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1070,7 +1076,8 @@ mod tests {
         assert_eq!(offset_of!(PushConstants, draws), 8);
         assert_eq!(offset_of!(PushConstants, material), 16);
         assert_eq!(offset_of!(PushConstants, pass), 20);
-        assert_eq!(size_of::<Vertex>(), 24);
+        assert_eq!(size_of::<Vertex>(), 28);
+        assert_eq!(offset_of!(Vertex, color), 24);
     }
 
     #[test]

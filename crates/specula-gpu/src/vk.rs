@@ -169,6 +169,7 @@ pub const ST_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT: VkStructureType = 1_000_128_
 pub const ST_VALIDATION_FEATURES_EXT: VkStructureType = 1_000_247_000;
 
 // VkFormat
+pub const VK_FORMAT_R8G8B8A8_UNORM: VkFormat = 37;
 pub const VK_FORMAT_R8G8B8A8_SRGB: VkFormat = 43;
 pub const VK_FORMAT_B8G8R8A8_SRGB: VkFormat = 50;
 pub const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;

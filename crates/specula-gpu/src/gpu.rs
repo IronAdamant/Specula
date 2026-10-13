@@ -576,7 +576,7 @@ impl Drop for GpuInner {
     }
 }
 
-const _: () = assert!(size_of::<Vertex>() == 24);
+const _: () = assert!(size_of::<Vertex>() == 28);
 
 #[cfg(test)]
 mod tests {

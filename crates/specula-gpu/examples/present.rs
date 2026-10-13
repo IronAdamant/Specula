@@ -185,7 +185,7 @@ mod win {
             let base = v.len() as u32;
             for (sa, sb) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                 let p = |k: usize| 0.5 * (n[k] + sa * a[k] + sb * b[k]);
-                v.push(Vertex { position: [p(0), p(1), p(2)], normal: n });
+                v.push(Vertex::new([p(0), p(1), p(2)], n));
             }
             i.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }

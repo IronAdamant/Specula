@@ -7,6 +7,7 @@
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec4 in_color; // sRGB-encoded RGBA (unorm8)
 
 // Per-frame data; must match `FrameData` in src/render.rs (and mesh.frag).
 struct PointLight {
@@ -47,6 +48,7 @@ layout(location = 0) out vec3 v_world;  // world position
 layout(location = 1) out vec3 v_normal; // world normal, not normalized
 layout(location = 2) out vec3 v_local;  // object-space position
 layout(location = 3) flat out uint v_draw; // record index
+layout(location = 4) out vec4 v_tint;      // linear vertex colour, a = alpha
 
 void main() {
     mat4 model = pc.draws.items[gl_InstanceIndex].model;
@@ -60,4 +62,8 @@ void main() {
     v_world = world.xyz;
     v_local = in_position;
     v_draw = uint(gl_InstanceIndex);
+    // sRGB -> linear; white stays exactly 1 so an untinted draw is unchanged bit for bit.
+    vec3 c = in_color.rgb;
+    vec3 lin = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
+    v_tint = vec4(mix(lin, vec3(1.0), greaterThanEqual(c, vec3(1.0))), in_color.a);
 }

@@ -89,7 +89,7 @@ fn cube() -> (Vec<Vertex>, Vec<u32>) {
         let base = vertices.len() as u32;
         for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
             let p = |k: usize| 0.5 * (n[k] + su * u[k] + sv * v[k]);
-            vertices.push(Vertex { position: [p(0), p(1), p(2)], normal: n });
+            vertices.push(Vertex::new([p(0), p(1), p(2)], n));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -104,7 +104,7 @@ fn sphere(segments: u32, rings: u32) -> (Vec<Vertex>, Vec<u32>) {
         for s in 0..=segments {
             let theta = TAU * s as f32 / segments as f32;
             let n = [phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin()];
-            vertices.push(Vertex { position: n.map(|c| c * 0.5), normal: n });
+            vertices.push(Vertex::new(n.map(|c| c * 0.5), n));
         }
     }
     let row = segments + 1;
@@ -122,7 +122,7 @@ fn sphere(segments: u32, rings: u32) -> (Vec<Vertex>, Vec<u32>) {
 /// Unit quad on XZ, facing +Y.
 fn quad() -> (Vec<Vertex>, Vec<u32>) {
     let n = [0.0, 1.0, 0.0];
-    let vertices = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|position| Vertex { position, normal: n });
+    let vertices = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|position| Vertex::new(position, n));
     (vertices.to_vec(), vec![0, 1, 2, 0, 2, 3])
 }
 

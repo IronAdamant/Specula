@@ -50,7 +50,7 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
         let base = vertices.len() as u32;
         for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
             let p = |k: usize| 0.5 * (n[k] + su * u[k] + sv * v[k]);
-            vertices.push(Vertex { position: [p(0), p(1), p(2)], normal: n });
+            vertices.push(Vertex::new([p(0), p(1), p(2)], n));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -61,7 +61,7 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
 pub fn quad() -> (Vec<Vertex>, Vec<u32>) {
     let n = [0.0, 1.0, 0.0];
     let vertices = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]]
-        .map(|position| Vertex { position, normal: n })
+        .map(|position| Vertex::new(position, n))
         .to_vec();
     (vertices, vec![0, 1, 2, 0, 2, 3])
 }
@@ -74,7 +74,7 @@ pub fn sphere(segments: u32, rings: u32) -> (Vec<Vertex>, Vec<u32>) {
         for s in 0..=segments {
             let theta = TAU * s as f32 / segments as f32;
             let n = [phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin()];
-            vertices.push(Vertex { position: n.map(|c| c * 0.5), normal: n });
+            vertices.push(Vertex::new(n.map(|c| c * 0.5), n));
         }
     }
     let row = segments + 1;
@@ -120,7 +120,7 @@ pub fn lathe(profile: &[[f32; 2]], segments: u32) -> (Vec<Vertex>, Vec<u32>) {
         for i in 0..=segments {
             let theta = TAU * i as f32 / segments as f32;
             let (s, c) = theta.sin_cos();
-            vertices.push(Vertex { position: [p[0] * c, p[1], p[0] * s], normal: [n[0] * c, n[1], n[0] * s] });
+            vertices.push(Vertex::new([p[0] * c, p[1], p[0] * s], [n[0] * c, n[1], n[0] * s]));
         }
     };
     for (k, &(a, b, n)) in segs.iter().enumerate() {
@@ -141,7 +141,7 @@ pub fn lathe(profile: &[[f32; 2]], segments: u32) -> (Vec<Vertex>, Vec<u32>) {
         }
         let n = if up { [0.0, 1.0] } else { [0.0, -1.0] };
         let centre = vertices.len() as u32;
-        vertices.push(Vertex { position: [0.0, p[1], 0.0], normal: [0.0, n[1], 0.0] });
+        vertices.push(Vertex::new([0.0, p[1], 0.0], [0.0, n[1], 0.0]));
         ring(&mut vertices, p, n);
         for i in 0..segments {
             indices.extend_from_slice(&[centre, centre + 1 + i, centre + 2 + i]);
