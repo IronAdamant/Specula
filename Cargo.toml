@@ -6,6 +6,7 @@ members = [
     "crates/specula-platform",
     "crates/specula-gpu",
     "crates/specula-protocol",
+    "crates/specula-text",
     "crates/specula",
     "games/sepulcra",
 ]
@@ -26,6 +27,7 @@ specula-core = { path = "crates/specula-core" }
 specula-platform = { path = "crates/specula-platform" }
 specula-gpu = { path = "crates/specula-gpu" }
 specula-protocol = { path = "crates/specula-protocol" }
+specula-text = { path = "crates/specula-text" }
 
 [profile.dev]
 opt-level = 1
