@@ -237,6 +237,14 @@ def main():
     try:
         m = Mcp(url, "roundtrip")
         info2 = m.call("engine_info")
+        # A second engine on the same world must be turned away, not allowed to interleave saves.
+        rival = subprocess.run(
+            [str(args.exe), "--headless", "--port", str(args.port + 1), "--worlds", str(args.out / "worlds"),
+             "--world", "e2e", "--captures", str(args.out / "captures")],
+            capture_output=True, text=True, timeout=60,
+        )
+        if rival.returncode == 0 or "world_locked" not in rival.stderr:
+            problems.append(f"a second engine on the same world was not refused: {rival.returncode} {rival.stderr[-300:]}")
         png2, packet2 = m.frame()
         total2, entities2 = m.everything()
         # world_load must restore a world that has really changed. Save a copy first, so autosave

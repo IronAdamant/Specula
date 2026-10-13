@@ -18,8 +18,11 @@
 //! generation-suffixed names (synced to disk), then replaces `world.json` (temporary file, sync,
 //! rename) listing exactly the files of the new state, then deletes the previous generation's
 //! files that are no longer listed. A crash at any moment leaves either the old world or the new
-//! one, never a mix. Unchanged subtrees keep their files (and names), and files the world never
-//! listed (a user's notes) are never touched.
+//! one, never a mix. A save that fails before the commit removes the files it created. Unchanged
+//! subtrees keep their files (and names). Only files that are named like ours *and* start like a
+//! world file (`{"format": "specula.world/v1", ...`) are ever swept, so other files in the folder
+//! (a user's `notes.2026.json`) are never touched. While an engine owns a world it holds
+//! `world.lock` there ([`WorldLock`]), so two engines can't interleave saves.
 //!
 //! Saving is split so the engine can write from a worker thread: [`plan`] takes what changed off
 //! the live world (on the engine thread; unchanged subtrees cost nothing), and [`execute`] renders
@@ -71,6 +74,13 @@ impl PersistError {
     fn field(mut self, field: &str) -> PersistError {
         self.field = Some(field.to_owned());
         self
+    }
+
+    /// Whether the engine's [`Saved`] cache can no longer be trusted after this failed save.
+    /// Failures before the commit leave every listed file as it was, so the cache stays valid;
+    /// only a file the cache relies on having gone missing invalidates it.
+    pub fn invalidates_cache(&self) -> bool {
+        self.code == "missing_file"
     }
 
     fn io(file: &str, e: std::io::Error) -> PersistError {
@@ -401,15 +411,34 @@ pub struct SaveReport {
 struct Folder {
     /// The committed `world.json`'s generation and the subtree files it lists, if there is one.
     committed: Option<(u64, BTreeSet<String>)>,
-    /// Every file named like ours (`<stem>.<gen>.json`, `world.json.tmp`), listed or not.
+    /// Files of ours (`<stem>.<gen>.json` or `world.json.tmp` that start like a world file),
+    /// listed or not: what a save may sweep.
     ours: Vec<String>,
-    /// The highest generation suffix of any subtree-pattern file.
+    /// The highest generation suffix of any `<stem>.<gen>.json` name (any case, any content):
+    /// a new save's names stay clear of all of them.
     highest: u64,
 }
 
-/// Reads `dir`. A folder that has files but neither `world.json` nor only files named like ours
-/// is refused: it isn't a world, and saving would mix ours into someone else's. (Only our own
-/// names there means a first save crashed before committing: the folder is adopted and swept.)
+/// The lock file an engine holds while it owns a world folder (never swept, never a reason to
+/// refuse adoption).
+const LOCK: &str = "world.lock";
+
+/// Whether a file starts like one we write: `{` then `"format": "specula.world/v1"`, ignoring
+/// whitespace (so a CRLF checkout still counts).
+fn starts_like_ours(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = Vec::with_capacity(64);
+    let read = std::fs::File::open(path).and_then(|f| f.take(64).read_to_end(&mut head));
+    if read.is_err() {
+        return false;
+    }
+    let compact: Vec<u8> = head.into_iter().filter(|b| !b.is_ascii_whitespace()).collect();
+    compact.starts_with(format!("{{\"format\":\"{FORMAT}\"").as_bytes())
+}
+
+/// Reads `dir`. A folder that has files but neither `world.json` nor only files of ours is
+/// refused: it isn't a world, and saving would mix ours into someone else's. (Only files of ours
+/// there means a first save crashed before committing: the folder is adopted and swept.)
 fn scan(dir: &Path) -> Result<Folder, PersistError> {
     let mut folder = Folder { committed: None, ours: Vec::new(), highest: 0 };
     let mut foreign = None;
@@ -417,14 +446,14 @@ fn scan(dir: &Path) -> Result<Folder, PersistError> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(generation) = generation_of(&name) {
+                folder.highest = folder.highest.max(generation);
+            }
             if name == INDEX {
                 has_index = true;
-            } else if name == INDEX_TMP || is_subtree_file(&name) {
-                if let Some(generation) = generation_of(&name) {
-                    folder.highest = folder.highest.max(generation);
-                }
+            } else if (name == INDEX_TMP || is_subtree_file(&name)) && starts_like_ours(&entry.path()) {
                 folder.ours.push(name);
-            } else {
+            } else if name != LOCK {
                 foreign.get_or_insert(name);
             }
         }
@@ -453,8 +482,18 @@ fn scan(dir: &Path) -> Result<Folder, PersistError> {
     Ok(folder)
 }
 
+/// The generation in a `<stem>.<gen>.json` name (`.json` in any case). Numbers above 2^53 are
+/// ignored: no save gets there, and following one could overflow.
 fn generation_of(file: &str) -> Option<u64> {
-    file.strip_suffix(".json")?.rsplit_once('.')?.1.parse().ok()
+    let dot = file.len().checked_sub(5)?;
+    if !file.get(dot..)?.eq_ignore_ascii_case(".json") {
+        return None;
+    }
+    let digits = file[..dot].rsplit_once('.')?.1;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|&g: &u64| g <= 1 << 53)
 }
 
 /// Whether a world may be created in `dir` (missing, empty, already a world, or the remains of
@@ -463,15 +502,73 @@ pub fn check_adoptable(dir: &Path) -> Result<(), PersistError> {
     scan(dir).map(|_| ())
 }
 
-/// The entity count `world.json` in `dir` records, without loading the world. `None` when there
-/// is no world there.
+/// The entity count `world.json` in `dir` records, without loading the world: only the header
+/// lines are read (`entity_count` is written before the environment and the entities). `None`
+/// when there is no world there, or no count.
 pub fn peek_entity_count(dir: &Path) -> Result<Option<u64>, PersistError> {
-    let path = dir.join(INDEX);
-    if !path.exists() {
-        return Ok(None);
+    use std::io::Read as _;
+    let file = match std::fs::File::open(dir.join(INDEX)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(PersistError::io(INDEX, e)),
+    };
+    let mut head = Vec::new();
+    file.take(1024).read_to_end(&mut head).map_err(|e| PersistError::io(INDEX, e))?;
+    let head = String::from_utf8_lossy(&head);
+    Ok(head
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("\"entity_count\":"))
+        .and_then(|v| v.trim().trim_end_matches(',').parse().ok()))
+}
+
+/// Exclusive ownership of a world folder while an engine works in it, so a second engine (on
+/// another port, say) can't interleave saves and sweep files the first one's `world.json` lists.
+///
+/// On Windows the lock is `world.lock` opened with no sharing: the OS releases it when the
+/// process exits, even after a crash, so a stale file never blocks anyone. Elsewhere it isn't
+/// enforced yet (the engine doesn't run there).
+pub struct WorldLock {
+    path: PathBuf,
+    /// The open handle is the lock; `None` only while dropping.
+    file: Option<std::fs::File>,
+}
+
+impl WorldLock {
+    /// Takes `dir` (created if needed), or fails with `world_locked`.
+    pub fn acquire(dir: &Path) -> Result<WorldLock, PersistError> {
+        let shown = dir.display().to_string();
+        std::fs::create_dir_all(dir).map_err(|e| PersistError::io(&shown, e))?;
+        let path = dir.join(LOCK);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            options.share_mode(0);
+        }
+        match options.open(&path) {
+            Ok(file) => Ok(WorldLock { path, file: Some(file) }),
+            // ERROR_SHARING_VIOLATION: another process holds it.
+            Err(e) if e.raw_os_error() == Some(32) || e.kind() == std::io::ErrorKind::PermissionDenied => Err(
+                PersistError::new("world_locked", format!("{shown} is in use by another engine (it holds {LOCK})"))
+                    .in_file(LOCK),
+            ),
+            Err(e) => Err(PersistError::io(LOCK, e)),
+        }
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| PersistError::io(INDEX, e))?;
-    Ok(parse_doc(INDEX, &text)?.get("entity_count").and_then(Json::as_u64))
+
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new(""))
+    }
+}
+
+impl Drop for WorldLock {
+    fn drop(&mut self) {
+        // Close the handle (releasing the lock), then tidy up. A leftover file is harmless: only
+        // an open handle locks.
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// A filesystem step of [`execute`], for tests that cut a save short.
@@ -483,8 +580,8 @@ pub(crate) enum Step<'a> {
     Remove(&'a str),
 }
 
-/// What a test hook does at a [`Step`]: go on, fail that step (an I/O error), or crash (stop
-/// right there, as if the process died).
+/// What a test hook does at a [`Step`]: go on, fail that step (an I/O error the save handles),
+/// or crash (stop right there, as if the process died: nothing is cleaned up).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(not(test), allow(dead_code))] // only tests cut saves short
 pub(crate) enum Hook {
@@ -499,10 +596,10 @@ fn injected(step: &Step) -> PersistError {
 
 /// Writes a file that must not exist yet: a save never opens an existing file for writing, so
 /// it can't damage one a committed `world.json` lists.
-fn create_synced(path: &Path, name: &str, content: &str) -> Result<(), PersistError> {
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| PersistError::io(name, e))?;
-    f.write_all(content.as_bytes()).map_err(|e| PersistError::io(name, e))?;
-    f.sync_all().map_err(|e| PersistError::io(name, e))
+fn create_synced(path: &Path, content: &str) -> Result<(), std::io::Error> {
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
 }
 
 /// Writes `plan` (see the module docs for the commit order) and returns what is now on disk.
@@ -510,40 +607,84 @@ pub fn execute(plan: Plan) -> Result<(Saved, SaveReport), PersistError> {
     execute_with(plan, &mut |_| Hook::Go)
 }
 
+/// How often a save moves to a later generation when a name it wanted already exists.
+const NAME_RETRIES: u32 = 8;
+
 pub(crate) fn execute_with(plan: Plan, hook: &mut dyn FnMut(Step) -> Hook) -> Result<(Saved, SaveReport), PersistError> {
     let dir = &plan.dir;
     let shown = dir.display().to_string();
     let folder = scan(dir)?;
     // Above every generation anyone has written here (memory may be stale after a failure), so
-    // new file names never collide with a listed one.
+    // new file names don't collide with a listed one.
     let previous = plan.previous.as_ref().map_or(0, |p| p.generation);
     let committed = folder.committed.as_ref().map_or(0, |(g, _)| *g);
-    let generation = previous.max(committed).max(folder.highest) + 1;
+    let overflow = || PersistError::new("generation_overflow", "no generation number is left for this world").in_file(INDEX);
+    let mut generation = previous.max(committed).max(folder.highest).checked_add(1).ok_or_else(overflow)?;
     std::fs::create_dir_all(dir).map_err(|e| PersistError::io(&shown, e))?;
-    let (files, saved) = plan.render(generation);
-    for kept in saved.subtrees.values().filter(|s| !files.iter().any(|(f, _)| *f == s.file)) {
-        if !folder.ours.contains(&kept.file) {
-            return Err(PersistError::new("missing_file", format!("{} is gone; the next save rewrites everything", kept.file))
-                .in_file(&kept.file));
+
+    // Write the new files. Before the commit nothing listed is touched, so on any failure the
+    // files this attempt created are removed again (and the caller's cache stays valid).
+    let mut created: Vec<PathBuf> = Vec::new();
+    let mut retries = 0;
+    let (files, saved) = loop {
+        let (files, saved) = plan.render(generation);
+        for kept in saved.subtrees.values().filter(|s| !files.iter().any(|(f, _)| *f == s.file)) {
+            if !dir.join(&kept.file).is_file() {
+                return Err(PersistError::new("missing_file", format!("{} is gone; the next save rewrites everything", kept.file))
+                    .in_file(&kept.file));
+            }
         }
-    }
-    let (index, subtrees) = files.split_last().expect("world.json is always rendered");
-    for (name, content) in subtrees {
-        let step = Step::Write(name);
-        if hook(step) != Hook::Go {
-            return Err(injected(&step));
+        let mut clash = false;
+        for (name, content) in &files[..files.len() - 1] {
+            let step = Step::Write(name);
+            match hook(step) {
+                Hook::Go => {}
+                Hook::Crash => return Err(injected(&step)),
+                Hook::Fail => return Err(undo(&created, injected(&step))),
+            }
+            let path = dir.join(name);
+            match create_synced(&path, content) {
+                Ok(()) => created.push(path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && retries < NAME_RETRIES => {
+                    clash = true;
+                    break;
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&path); // a partial write of ours
+                    return Err(undo(&created, PersistError::io(name, e)));
+                }
+            }
         }
-        create_synced(&dir.join(name), name, content)?;
+        if !clash {
+            break (files, saved);
+        }
+        // Someone else's file has the name (a differently-cased extension, say): move on.
+        let _ = undo(&created, PersistError::new("io", ""));
+        created.clear();
+        retries += 1;
+        generation = generation.checked_add(1).ok_or_else(overflow)?;
+    };
+    let index = &files[files.len() - 1];
+    match hook(Step::WriteIndex) {
+        Hook::Go => {}
+        Hook::Crash => return Err(injected(&Step::WriteIndex)),
+        Hook::Fail => return Err(undo(&created, injected(&Step::WriteIndex))),
     }
-    if hook(Step::WriteIndex) != Hook::Go {
-        return Err(injected(&Step::WriteIndex));
+    let tmp = dir.join(INDEX_TMP);
+    let _ = std::fs::remove_file(&tmp); // a crashed save's, never listed
+    if let Err(e) = create_synced(&tmp, &index.1) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(undo(&created, PersistError::io(INDEX, e)));
     }
-    let _ = std::fs::remove_file(dir.join(INDEX_TMP)); // a crashed save's, never listed
-    create_synced(&dir.join(INDEX_TMP), INDEX, &index.1)?;
-    if hook(Step::Commit) != Hook::Go {
-        return Err(injected(&Step::Commit));
+    created.push(tmp.clone());
+    match hook(Step::Commit) {
+        Hook::Go => {}
+        Hook::Crash => return Err(injected(&Step::Commit)),
+        Hook::Fail => return Err(undo(&created, injected(&Step::Commit))),
     }
-    std::fs::rename(dir.join(INDEX_TMP), dir.join(INDEX)).map_err(|e| PersistError::io(INDEX, e))?;
+    if let Err(e) = std::fs::rename(&tmp, dir.join(INDEX)) {
+        return Err(undo(&created, PersistError::io(INDEX, e)));
+    }
 
     // Committed. Sweep every file of ours the new world.json doesn't list: the previous
     // generation's, and anything a crashed save left. Failures are only leftovers now.
@@ -570,6 +711,15 @@ pub(crate) fn execute_with(plan: Plan, hook: &mut dyn FnMut(Step) -> Hook) -> Re
         leftovers,
     };
     Ok((saved, report))
+}
+
+/// Removes the files a failed attempt created (never listed by any `world.json`, so always
+/// safe) and passes the error on.
+fn undo(created: &[PathBuf], error: PersistError) -> PersistError {
+    for path in created {
+        let _ = std::fs::remove_file(path);
+    }
+    error
 }
 
 /// Writes the world into `dir` (created if needed). `previous` as for [`plan`].
@@ -975,7 +1125,7 @@ mod tests {
 
         // A crashed save's stray file is never listed: the world still loads as committed, the
         // next save picks a generation above it, and sweeps it.
-        std::fs::write(dir.join("slab.3.json"), "half a file").unwrap();
+        std::fs::write(dir.join("slab.3.json"), format!("{{\n  \"format\": \"{FORMAT}\",\n  \"root\": \"/sl")).unwrap();
         assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
 
         // Files that aren't named like ours are never deleted; a new top-level name that clashes
@@ -1136,6 +1286,108 @@ mod tests {
         assert_eq!(listing(&dir), ["slab.3.json", "world.json"], "slab.2.json was swept, never rewritten");
         assert_ne!(std::fs::read_to_string(dir.join("slab.3.json")).unwrap(), committed);
         assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reviewer repro: saves that failed before the commit left their new files behind, and
+    /// every retry (autosave every 10 s) added a full copy.
+    #[test]
+    fn failed_saves_clean_up_after_themselves() {
+        let dir = temp_dir("precommit");
+        let mut w = sample();
+        let (saved, _) = save(&w, &dir, None).unwrap();
+        let before = listing(&dir);
+        let edit = UpdateSpec { color: Some([0.0, 0.0, 1.0]), ..Default::default() };
+        w.update(&EntityKey::Path("/slab/stones/ward_02".into()), edit, "t").unwrap();
+        for cut in [Step::WriteIndex, Step::Commit] {
+            for _ in 0..3 {
+                let e = execute_with(plan(&w, &dir, Some(&saved)), &mut |s| if s == cut { Hook::Fail } else { Hook::Go });
+                assert!(!e.err().unwrap().invalidates_cache(), "nothing listed was touched");
+                assert_eq!(listing(&dir), before, "{cut:?}: the attempt's files are gone");
+            }
+        }
+        #[cfg(windows)]
+        {
+            // The reviewer's case: world.json can't be replaced.
+            let index = dir.join(INDEX);
+            let mut perms = std::fs::metadata(&index).unwrap().permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(&index, perms.clone()).unwrap();
+            for _ in 0..5 {
+                assert_eq!(save(&w, &dir, Some(&saved)).err().unwrap().code, "io");
+            }
+            assert_eq!(listing(&dir), before, "five failed saves leave nothing behind");
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&index, perms).unwrap();
+        }
+        // The cache kept after those failures is still right.
+        save(&w, &dir, Some(&saved)).unwrap();
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reviewer findings: files merely *named* like ours were adopted and swept; a huge suffix
+    /// overflowed; an upper-case `.JSON` stray made every save fail.
+    #[test]
+    fn only_files_that_are_ours_are_touched() {
+        let dir = temp_dir("foreign");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.2026.json"), "{\"todo\": [\"walls\"]}").unwrap();
+        assert_eq!(check_adoptable(&dir).err().unwrap().code, "not_a_world", "a lone user file isn't a crashed save");
+        std::fs::remove_file(dir.join("notes.2026.json")).unwrap();
+
+        let w = sample();
+        save(&w, &dir, None).unwrap();
+        std::fs::write(dir.join("notes.2026.json"), "{\"todo\": []}").unwrap();
+        std::fs::write(dir.join("g.18446744073709551615.json"), "{}").unwrap();
+        std::fs::write(dir.join("g.9007199254740993.json"), "{}").unwrap();
+        std::fs::write(dir.join("slab.2027.JSON"), "x").unwrap();
+        let (_, report) = save(&w, &dir, None).unwrap();
+        assert_eq!(report.generation, 2028, "past every suffix, any case, but not the absurd ones");
+        let names = listing(&dir);
+        for kept in ["notes.2026.json", "g.18446744073709551615.json", "g.9007199254740993.json", "slab.2027.JSON"] {
+            assert!(names.contains(&kept.to_string()), "{kept} must stay: {names:?}");
+        }
+        assert_eq!(load(&dir).unwrap().0.state_hash(), w.state_hash());
+        assert_eq!(generation_of("a.1.Json"), Some(1));
+        assert_eq!(generation_of("a.18446744073709551616.json"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_world_folder_has_one_owner() {
+        let dir = temp_dir("lock");
+        let lock = WorldLock::acquire(&dir).unwrap();
+        assert_eq!(lock.dir(), dir.as_path());
+        #[cfg(windows)]
+        {
+            let e = WorldLock::acquire(&dir).err().unwrap();
+            assert_eq!(e.code, "world_locked", "{e}");
+        }
+        assert!(check_adoptable(&dir).is_ok(), "the lock file doesn't make a folder foreign");
+        let w = sample();
+        save(&w, &dir, None).unwrap();
+        assert!(listing(&dir).contains(&LOCK.to_string()), "saves leave the lock alone");
+        drop(lock);
+        let again = WorldLock::acquire(&dir).unwrap();
+        drop(again);
+        assert!(!listing(&dir).contains(&LOCK.to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn peeking_reads_only_the_header() {
+        let dir = temp_dir("peek");
+        let w = sample();
+        save(&w, &dir, None).unwrap();
+        assert_eq!(peek_entity_count(&dir).unwrap(), Some(w.len() as u64));
+        // Garbage after the header doesn't matter: it is never read.
+        let index = dir.join(INDEX);
+        let text = std::fs::read_to_string(&index).unwrap();
+        let cut = text.find("\"env\"").unwrap();
+        std::fs::write(&index, format!("{}{}", &text[..cut], "x".repeat(1 << 20))).unwrap();
+        assert_eq!(peek_entity_count(&dir).unwrap(), Some(w.len() as u64));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

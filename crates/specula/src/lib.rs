@@ -152,6 +152,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
         let dir = engine.worlds_dir.join(&name);
+        // Owned for as long as this engine works in it: a second engine is refused, not interleaved.
+        engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
             let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
             engine.world = world;
@@ -269,6 +271,8 @@ struct Engine {
     /// What was last written to or read from the current world's folder, so saves only rewrite
     /// what changed.
     saved: Option<persist::Saved>,
+    /// Exclusive ownership of the current world's folder.
+    world_lock: Option<persist::WorldLock>,
     /// An autosave being written on a worker thread.
     autosave_job: Option<AutosaveJob>,
     /// The last autosave failure (cleared by the next success), shown in engine_info.
@@ -323,6 +327,7 @@ impl Engine {
             saved_revision: 0,
             last_autosave: Instant::now(),
             saved: None,
+            world_lock: None,
             autosave_job: None,
             autosave_error: None,
             leftovers: Vec::new(),
@@ -445,9 +450,9 @@ impl Engine {
                 let mut j = e.to_json();
                 j.set("at_revision", Json::from(revision));
                 self.autosave_error = Some(j);
-                // Nothing was committed, but whatever went wrong may have touched files the cache
-                // relies on: the next save writes everything afresh.
-                self.saved = None;
+                if e.invalidates_cache() {
+                    self.saved = None;
+                }
             }
         }
     }
@@ -702,6 +707,14 @@ impl Engine {
         ToolOutput::text(out.to_string())
     }
 
+    /// The lock for `dir` if this engine doesn't hold it yet (`None` when it already does).
+    fn lock_for(&self, dir: &Path) -> Result<Option<persist::WorldLock>, persist::PersistError> {
+        if self.world_lock.as_ref().is_some_and(|l| l.dir() == dir) {
+            return Ok(None);
+        }
+        persist::WorldLock::acquire(dir).map(Some)
+    }
+
     fn save(&mut self, name: Option<String>, overwrite: bool) -> ToolOutput {
         self.finish_autosave(true);
         let Some(name) = name.or_else(|| self.world_name.clone()) else {
@@ -739,8 +752,15 @@ impl Engine {
                 .to_pretty(),
             );
         }
+        let lock = match self.lock_for(&dir) {
+            Ok(lock) => lock,
+            Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
+        };
         match persist::save(&self.world, &dir, self.saved.as_ref()) {
             Ok((saved, report)) => {
+                if lock.is_some() {
+                    self.world_lock = lock;
+                }
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -763,7 +783,9 @@ impl Engine {
                 )
             }
             Err(e) => {
-                self.saved = None;
+                if e.invalidates_cache() {
+                    self.saved = None;
+                }
                 ToolOutput::error(e.to_json().to_pretty())
             }
         }
@@ -787,8 +809,15 @@ impl Engine {
             );
         }
         let dir = self.worlds_dir.join(&name);
+        let lock = match self.lock_for(&dir) {
+            Ok(lock) => lock,
+            Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
+        };
         match persist::load(&dir) {
             Ok((world, saved)) => {
+                if lock.is_some() {
+                    self.world_lock = lock;
+                }
                 self.world = world;
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
