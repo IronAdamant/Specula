@@ -6,7 +6,13 @@
   "batch": 20,
   "feed": true,
   "build": "release",
-  "when": "2026-10-13T15:12:24",
+  "when": "2026-10-13T15:43:15",
+  "cpu_busy_pct_before": 16.7,
+  "attacks": {
+    "rejected": 15,
+    "leaked": [],
+    "wrong": []
+  },
   "overload": {
     "held": 256,
     "extra_requests": 20,
@@ -15,64 +21,64 @@
     },
     "service_resumed": true
   },
-  "wall_s": 0.632,
+  "wall_s": 1.516,
   "world_ops": 5024,
-  "ops_per_s": 7950.9,
-  "tool_calls": 849,
-  "calls_per_s": 1343.6,
+  "ops_per_s": 3313.7,
+  "tool_calls": 846,
+  "calls_per_s": 558.0,
   "latency_ms": {
     "agent_hello": {
-      "p50": 3.84,
-      "p95": 6.61,
-      "max": 8.18,
+      "p50": 8.46,
+      "p95": 13.57,
+      "max": 14.88,
       "n": 16
     },
     "claim_release": {
-      "p50": 1.29,
-      "p95": 20.76,
-      "max": 25.3,
+      "p50": 15.15,
+      "p95": 17.35,
+      "max": 25.32,
       "n": 16
     },
     "claim_renew": {
-      "p50": 7.52,
-      "p95": 15.72,
-      "max": 23.8,
+      "p50": 8.37,
+      "p95": 13.59,
+      "max": 17.22,
       "n": 16
     },
     "claim_take": {
-      "p50": 3.08,
-      "p95": 5.68,
-      "max": 15.45,
+      "p50": 8.36,
+      "p95": 11.18,
+      "max": 11.93,
       "n": 16
     },
     "world_batch": {
-      "p50": 9.64,
-      "p95": 16.72,
-      "max": 21.75,
+      "p50": 19.09,
+      "p95": 59.9,
+      "max": 181.25,
       "n": 304
     },
     "world_changes": {
-      "p50": 13.4,
-      "p95": 19.84,
-      "max": 23.38,
-      "n": 225
+      "p50": 26.91,
+      "p95": 97.57,
+      "max": 250.29,
+      "n": 222
     },
     "world_set": {
-      "p50": 8.66,
-      "p95": 15.42,
-      "max": 19.75,
+      "p50": 18.2,
+      "p95": 89.6,
+      "max": 152.25,
       "n": 64
     },
     "world_spawn": {
-      "p50": 8.67,
-      "p95": 15.21,
-      "max": 19.64,
+      "p50": 20.63,
+      "p95": 48.98,
+      "max": 137.9,
       "n": 112
     },
     "world_undo": {
-      "p50": 8.63,
-      "p95": 14.93,
-      "max": 20.25,
+      "p50": 17.0,
+      "p95": 29.65,
+      "max": 45.65,
       "n": 80
     }
   },
@@ -80,24 +86,24 @@
   "intrusions_leaked": 0,
   "intrusion_other_errors": [],
   "undos": 80,
-  "feed_items": 80516,
+  "feed_items": 80623,
   "feed_gaps": 0,
   "entities": 3856,
-  "state_hash": "14b2cb5cfeed6392",
+  "state_hash": "deecafdd0894da10",
   "replay": {
     "replayable": true,
     "entries": 368,
-    "replay_hash": "14b2cb5cfeed6392",
+    "replay_hash": "deecafdd0894da10",
     "matches": true,
-    "ms": 11.3129
+    "ms": 13.9986
   },
-  "replay_check_s": 0.014,
+  "replay_check_s": 0.03,
   "journal": {
     "first_id": 1,
     "last_id": 368,
     "agent_entries": 368,
     "game_entries": 0,
-    "approx_bytes": 4008528,
+    "approx_bytes": 5709648,
     "evicted": 0,
     "replayable": true,
     "base": "empty",
@@ -106,8 +112,8 @@
   "claim_rejections_engine": 192,
   "history_sample": [
     {
-      "id": 358,
-      "tick": 22,
+      "id": 349,
+      "tick": 46,
       "by": "agent_00",
       "kind": "undo",
       "changes": 5,
@@ -117,12 +123,12 @@
         "/district_00/tmp_11_2"
       ],
       "undoes": [
-        354
+        341
       ]
     },
     {
-      "id": 354,
-      "tick": 22,
+      "id": 341,
+      "tick": 45,
       "by": "agent_00",
       "kind": "batch",
       "changes": 5,
@@ -131,9 +137,10 @@
         "/district_00/tmp_11_1",
         "/district_00/tmp_11_2"
       ],
-      "undone_by": 358
+      "undone_by": 349
     }
   ],
   "agent_errors": [],
-  "problems": []
+  "problems": [],
+  "cpu_busy_pct_after": 12.9
 }
