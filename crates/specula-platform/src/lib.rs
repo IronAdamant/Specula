@@ -1,4 +1,6 @@
-//! Specula platform layer: native windows and input events.
+//! Specula platform layer: native windows and input events (keyboard, mouse, touch/pen pointers),
+//! gamepads ([`gamepad`], XInput loaded at runtime) and key names ([`keys`]). Mapping all of this
+//! onto game actions is `specula-input`'s job.
 //!
 //! Windows first (raw Win32 via `#[link(kind = "raw-dylib")]`, no import libraries); Linux and
 //! macOS backends come later behind this same API. On other platforms `Window::new` returns
@@ -8,8 +10,12 @@ use std::ffi::c_void;
 use std::fmt;
 
 mod decode;
+pub mod gamepad;
+pub mod keys;
 #[cfg(windows)]
 mod win32;
+
+pub use gamepad::{DeadZones, GamepadButton, GamepadEvent, GamepadState, Gamepads, RawGamepad, MAX_GAMEPADS};
 #[cfg(windows)]
 use win32 as imp;
 
@@ -58,11 +64,21 @@ pub fn client_size_of(raw: RawWindow) -> (u32, u32) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
     Right,
     Middle,
+}
+
+/// What produced a pointer event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerKind {
+    /// Reserved for backends that report the mouse as a pointer (Win32 reports it through the
+    /// `Mouse*` events instead).
+    Mouse,
+    Touch,
+    Pen,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +119,36 @@ pub enum Event {
     /// Wheel notches; positive = away from the user.
     MouseWheel {
         delta: f32,
+    },
+    /// A touch contact or pen tip touched down. `id` is stable for the contact's lifetime and may
+    /// be reused afterwards. Client-area pixels, origin top-left. Touch and pen input is reported
+    /// only through `Pointer*` events (Win32 does not also synthesise mouse events for it); the
+    /// mouse keeps using the `Mouse*` events.
+    PointerDown {
+        id: u32,
+        kind: PointerKind,
+        x: i32,
+        y: i32,
+    },
+    /// A contact that is down moved.
+    PointerMove {
+        id: u32,
+        kind: PointerKind,
+        x: i32,
+        y: i32,
+    },
+    /// A contact lifted normally.
+    PointerUp {
+        id: u32,
+        kind: PointerKind,
+        x: i32,
+        y: i32,
+    },
+    /// A contact ended abnormally (palm rejection, capture lost): treat as lifted, but don't act
+    /// on it (no tap).
+    PointerCancel {
+        id: u32,
+        kind: PointerKind,
     },
 }
 

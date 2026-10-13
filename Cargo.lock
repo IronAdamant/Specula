@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "sepulcra"
+version = "0.1.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula"
 version = "0.3.0"
 dependencies = [
@@ -22,6 +29,14 @@ name = "specula-gpu"
 version = "0.3.0"
 dependencies = [
  "specula-sys",
+]
+
+[[package]]
+name = "specula-input"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-platform",
 ]
 
 [[package]]
@@ -49,3 +64,10 @@ dependencies = [
 [[package]]
 name = "specula-sys"
 version = "0.3.0"
+
+[[package]]
+name = "specula-text"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]

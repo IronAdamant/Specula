@@ -1,7 +1,8 @@
 //! JSON value, parser and serializer.
 //!
 //! Objects keep insertion order (`Vec` of pairs) so output is stable and readable — worlds and
-//! protocol traffic diff cleanly. Numbers are `f64`; integers up to 2^53 round-trip exactly.
+//! protocol traffic diff cleanly. Numbers are `f64`; integers up to 2^53 round-trip exactly, and
+//! every finite `f64` and `f32` (including `-0.0`) round-trips bit for bit: world files rely on it.
 
 use std::fmt::{self, Write as _};
 
@@ -160,8 +161,25 @@ impl From<f64> for Json {
 }
 
 impl From<f32> for Json {
+    /// Stored as the `f64` nearest the shortest decimal that reads back as exactly `v`, so `0.1f32`
+    /// prints as `0.1` (not `0.10000000149011612`) and `as_f64() as f32` restores the same bits.
     fn from(v: f32) -> Self {
-        Json::Num(v as f64)
+        Json::Num(f32_as_short_f64(v))
+    }
+}
+
+/// `v` widened so that printing it gives `v`'s shortest decimal. Rust's `f32` `Display` is the
+/// shortest string that parses back to `v`; reading that string as an `f64` and narrowing could in
+/// principle round twice to a neighbour, so the result is checked and the exact widening is used
+/// when it would not come back bit-exact.
+fn f32_as_short_f64(v: f32) -> f64 {
+    let exact = f64::from(v);
+    if !v.is_finite() {
+        return exact;
+    }
+    match v.to_string().parse::<f64>() {
+        Ok(short) if (short as f32).to_bits() == v.to_bits() => short,
+        _ => exact,
     }
 }
 
@@ -281,6 +299,9 @@ fn write_number(out: &mut String, n: f64) {
     if !n.is_finite() {
         // JSON has no NaN/Infinity.
         out.push_str("null");
+    } else if n == 0.0 && n.is_sign_negative() {
+        // `-0.0 as i64` would lose the sign; bit-exact round trips need it.
+        out.push_str("-0");
     } else if n.fract() == 0.0 && n.abs() < 1e15 {
         let _ = write!(out, "{}", n as i64);
     } else {
@@ -566,6 +587,50 @@ mod tests {
         for bad in ["01", "1.", "-", "1e", ".5", "+1"] {
             assert!(Json::parse(bad).is_err(), "{bad} should fail");
         }
+    }
+
+    #[test]
+    fn floats_round_trip_bit_exactly() {
+        let reparse = |j: Json| Json::parse(&j.to_string()).unwrap().as_f64().unwrap();
+        let mut f32s = vec![
+            0.0f32, -0.0, 0.1, -0.1, 1.0 / 3.0, 0.8, 1.0e-3, 1.0e6, 16_777_217.0, f32::MAX, f32::MIN,
+            f32::MIN_POSITIVE, f32::EPSILON, 1.0e-45, -3.4e-39, 123_456.79, 1.0e15, 3.0e38,
+        ];
+        // A deterministic spread over every exponent, sign and many mantissas.
+        let mut bits = 0x1234_5678u32;
+        for _ in 0..20_000 {
+            bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = f32::from_bits(bits);
+            if v.is_finite() {
+                f32s.push(v);
+            }
+        }
+        for v in f32s {
+            let back = reparse(Json::from(v)) as f32;
+            assert_eq!(back.to_bits(), v.to_bits(), "f32 {v:e} came back as {back:e}");
+        }
+        let mut b = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..20_000 {
+            b = b.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let v = f64::from_bits(b);
+            if v.is_finite() {
+                assert_eq!(reparse(Json::from(v)).to_bits(), v.to_bits(), "f64 {v:e}");
+            }
+        }
+        for v in [-0.0f64, 1.0e15, 9.007_199_254_740_993e15, f64::MAX, f64::MIN_POSITIVE, 5.0e-324] {
+            assert_eq!(reparse(Json::from(v)).to_bits(), v.to_bits(), "f64 {v:e}");
+        }
+    }
+
+    #[test]
+    fn floats_print_short() {
+        assert_eq!(Json::from(0.1f32).to_string(), "0.1");
+        assert_eq!(Json::from(0.8f32).to_string(), "0.8");
+        assert_eq!(Json::from(-2.5f32).to_string(), "-2.5");
+        assert_eq!(Json::from(-0.0f32).to_string(), "-0");
+        assert_eq!(Json::from(-0.0f64).to_string(), "-0");
+        assert_eq!(Json::from(0.0f32).to_string(), "0");
+        assert_eq!(Json::from(1.0e20f32).to_string(), "100000000000000000000");
     }
 
     #[test]

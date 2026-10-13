@@ -4,6 +4,7 @@
 //! its messages. Pumping on a dedicated thread keeps the engine thread rendering and answering
 //! agents meanwhile. The engine thread presents to the window through its raw handles and reads
 //! its size with [`specula_platform::client_size_of`]; the window itself never leaves this thread.
+//! Input events are forwarded to the engine thread, which drains them once per frame.
 
 use specula_platform::{Event, RawWindow, Window, WindowDesc};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -21,6 +22,8 @@ enum ToUi {
 pub struct UiThread {
     pub raw: RawWindow,
     close_requests: Receiver<()>,
+    /// Keyboard, mouse and focus events, in order.
+    events: Receiver<Event>,
     to_ui: Sender<ToUi>,
     handle: Option<JoinHandle<()>>,
 }
@@ -30,6 +33,7 @@ impl UiThread {
     pub fn spawn(desc: WindowDesc) -> Result<UiThread, String> {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<RawWindow, String>>();
         let (close_tx, close_requests) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
         let (to_ui, from_engine) = mpsc::channel();
         let handle = std::thread::Builder::new()
             .name("specula-window".into())
@@ -42,12 +46,12 @@ impl UiThread {
                     }
                 };
                 let _ = ready_tx.send(Ok(window.raw()));
-                pump(&mut window, &close_tx, &from_engine);
+                pump(&mut window, &close_tx, &events_tx, &from_engine);
                 // `window` drops here, on its own thread, after the engine released its surface.
             })
             .map_err(|e| format!("cannot start the window thread: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(raw)) => Ok(UiThread { raw, close_requests, to_ui, handle: Some(handle) }),
+            Ok(Ok(raw)) => Ok(UiThread { raw, close_requests, events, to_ui, handle: Some(handle) }),
             Ok(Err(e)) => {
                 let _ = handle.join();
                 Err(e)
@@ -59,6 +63,11 @@ impl UiThread {
     /// True once the user asked to close the window (close button, Alt+F4).
     pub fn close_requested(&self) -> bool {
         self.close_requests.try_recv().is_ok()
+    }
+
+    /// Input events since the last call, oldest first. Appends to `out` so a frame can reuse it.
+    pub fn drain_events(&self, out: &mut Vec<Event>) {
+        out.extend(self.events.try_iter());
     }
 
     pub fn set_title(&self, title: &str) {
@@ -83,11 +92,18 @@ impl Drop for UiThread {
     }
 }
 
-fn pump(window: &mut Window, close_tx: &Sender<()>, from_engine: &Receiver<ToUi>) {
+fn pump(window: &mut Window, close_tx: &Sender<()>, events_tx: &Sender<Event>, from_engine: &Receiver<ToUi>) {
     loop {
         for event in window.poll_events() {
-            if event == Event::CloseRequested {
-                let _ = close_tx.send(());
+            match event {
+                Event::CloseRequested => {
+                    let _ = close_tx.send(());
+                }
+                // The engine reads the size directly (it stays current inside modal loops).
+                Event::Resized { .. } => {}
+                other => {
+                    let _ = events_tx.send(other);
+                }
             }
         }
         loop {

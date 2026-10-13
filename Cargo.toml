@@ -5,9 +5,12 @@ members = [
     "crates/specula-core",
     "crates/specula-model",
     "crates/specula-platform",
+    "crates/specula-input",
     "crates/specula-gpu",
     "crates/specula-protocol",
+    "crates/specula-text",
     "crates/specula",
+    "games/sepulcra",
 ]
 
 [workspace.package]
@@ -25,8 +28,10 @@ specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }
 specula-model = { path = "crates/specula-model" }
 specula-platform = { path = "crates/specula-platform" }
+specula-input = { path = "crates/specula-input" }
 specula-gpu = { path = "crates/specula-gpu" }
 specula-protocol = { path = "crates/specula-protocol" }
+specula-text = { path = "crates/specula-text" }
 
 [profile.dev]
 opt-level = 1

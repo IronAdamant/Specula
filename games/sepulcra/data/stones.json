@@ -1,0 +1,45 @@
+{
+  "notes": "Stones are carved on fragment (#) cells; tiers I-III are carved runes. edge_reach_m: a stone reaches enemies on another face only within this distance of the rim the two faces share. Range is measured in 3D from the cell's surface centre. Units: metres, seconds, HP.",
+  "edge_reach_m": 3.0,
+  "sell_refund": 0.7,
+  "wall": { "cost": 15, "hp": 300, "breach_penalty_m": 8.0 },
+  "nature": { "from_wave": 5, "min_tier": 2, "radius_m": 2.9, "slow": 0.15 },
+  "stones": [
+    {
+      "id": "warding", "name": "Warding stone", "glyph": "W",
+      "targets": "ground", "policy": "first", "attack": "bolt",
+      "tiers": [
+        { "cost": 50, "range_m": 7.0, "cooldown_s": 0.8, "damage": 10, "projectile_mps": 20 },
+        { "cost": 60, "range_m": 7.5, "cooldown_s": 0.7, "damage": 18, "projectile_mps": 22 },
+        { "cost": 90, "range_m": 8.0, "cooldown_s": 0.6, "damage": 30, "projectile_mps": 24 }
+      ]
+    },
+    {
+      "id": "rune_pillar", "name": "Rune pillar", "glyph": "P",
+      "targets": "ground", "policy": "first", "attack": "pulse",
+      "tiers": [
+        { "cost": 60, "range_m": 5.0, "cooldown_s": 1.0, "damage": 2, "slow": 0.35, "slow_s": 1.5 },
+        { "cost": 60, "range_m": 5.5, "cooldown_s": 1.0, "damage": 4, "slow": 0.45, "slow_s": 1.5 },
+        { "cost": 90, "range_m": 6.0, "cooldown_s": 1.0, "damage": 6, "slow": 0.55, "slow_s": 1.5 }
+      ]
+    },
+    {
+      "id": "brazier", "name": "Brazier cairn", "glyph": "F",
+      "targets": "ground", "policy": "first", "attack": "lob",
+      "tiers": [
+        { "cost": 80, "range_m": 6.0, "cooldown_s": 1.6, "damage": 16, "projectile_mps": 10, "splash_m": 1.8 },
+        { "cost": 80, "range_m": 6.5, "cooldown_s": 1.5, "damage": 28, "projectile_mps": 11, "splash_m": 2.0 },
+        { "cost": 110, "range_m": 7.0, "cooldown_s": 1.4, "damage": 45, "projectile_mps": 12, "splash_m": 2.3 }
+      ]
+    },
+    {
+      "id": "sky_obelisk", "name": "Sky obelisk", "glyph": "O",
+      "targets": "air", "policy": "first", "attack": "bolt",
+      "tiers": [
+        { "cost": 70, "range_m": 9.0, "cooldown_s": 0.9, "damage": 22, "projectile_mps": 30 },
+        { "cost": 70, "range_m": 9.5, "cooldown_s": 0.8, "damage": 40, "projectile_mps": 32 },
+        { "cost": 100, "range_m": 10.0, "cooldown_s": 0.7, "damage": 65, "projectile_mps": 34 }
+      ]
+    }
+  ]
+}
