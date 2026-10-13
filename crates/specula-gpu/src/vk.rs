@@ -142,7 +142,10 @@ pub const ST_PIPELINE_LAYOUT_CREATE_INFO: VkStructureType = 30;
 pub const ST_COMMAND_POOL_CREATE_INFO: VkStructureType = 39;
 pub const ST_COMMAND_BUFFER_ALLOCATE_INFO: VkStructureType = 40;
 pub const ST_COMMAND_BUFFER_BEGIN_INFO: VkStructureType = 42;
+pub const ST_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: VkStructureType = 51;
 pub const ST_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: VkStructureType = 53;
+pub const ST_MEMORY_ALLOCATE_FLAGS_INFO: VkStructureType = 1_000_060_000;
+pub const ST_BUFFER_DEVICE_ADDRESS_INFO: VkStructureType = 1_000_244_001;
 pub const ST_PHYSICAL_DEVICE_FEATURES_2: VkStructureType = 1_000_059_000;
 pub const ST_BUFFER_MEMORY_BARRIER_2: VkStructureType = 1_000_314_001;
 pub const ST_IMAGE_MEMORY_BARRIER_2: VkStructureType = 1_000_314_002;
@@ -187,6 +190,9 @@ pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: i32 = 0;
 pub const VK_INDEX_TYPE_UINT32: i32 = 1;
 pub const VK_COMPARE_OP_LESS: i32 = 1;
 pub const VK_COMPARE_OP_GREATER: i32 = 4;
+pub const VK_BLEND_FACTOR_ONE: i32 = 1;
+pub const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: i32 = 7;
+pub const VK_BLEND_OP_ADD: i32 = 0;
 pub const VK_PIPELINE_BIND_POINT_GRAPHICS: i32 = 0;
 pub const VK_DYNAMIC_STATE_VIEWPORT: i32 = 0;
 pub const VK_DYNAMIC_STATE_SCISSOR: i32 = 1;
@@ -212,6 +218,8 @@ pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: VkFlags = 0x2;
 pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: VkFlags = 0x40;
 pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: VkFlags = 0x80;
+pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: VkFlags = 0x2_0000;
+pub const VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT: VkFlags = 0x2;
 pub const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: VkFlags = 0x10;
 pub const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkFlags = 0x20;
@@ -486,6 +494,39 @@ pub struct VkPhysicalDeviceFeatures2 {
     pub s_type: VkStructureType,
     pub p_next: *mut c_void,
     pub features: VkPhysicalDeviceFeatures,
+}
+
+/// The 47 `VkBool32` members of `VkPhysicalDeviceVulkan12Features`, by index.
+#[repr(C)]
+pub struct VkPhysicalDeviceVulkan12Features {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub flags: [VkBool32; 47],
+}
+
+impl VkPhysicalDeviceVulkan12Features {
+    /// Index of `bufferDeviceAddress` in [`Self::flags`].
+    pub const BUFFER_DEVICE_ADDRESS: usize = 38;
+
+    /// All features off, chained to `next`.
+    pub fn new(next: *mut c_void) -> Self {
+        VkPhysicalDeviceVulkan12Features { s_type: ST_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, p_next: next, flags: [0; 47] }
+    }
+}
+
+#[repr(C)]
+pub struct VkMemoryAllocateFlagsInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub flags: VkFlags,
+    pub device_mask: u32,
+}
+
+#[repr(C)]
+pub struct VkBufferDeviceAddressInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub buffer: VkBuffer,
 }
 
 #[repr(C)]
@@ -1263,6 +1304,7 @@ fn_table! {
         cmd_push_constants = c"vkCmdPushConstants":
             fn(VkCommandBuffer, VkPipelineLayout, VkFlags, u32, u32, *const c_void);
         cmd_draw_indexed = c"vkCmdDrawIndexed": fn(VkCommandBuffer, u32, u32, u32, i32, u32);
+        get_buffer_device_address = c"vkGetBufferDeviceAddress": fn(VkDevice, *const VkBufferDeviceAddressInfo) -> u64;
         cmd_copy_buffer = c"vkCmdCopyBuffer":
             fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
         cmd_copy_image_to_buffer = c"vkCmdCopyImageToBuffer":
@@ -1328,6 +1370,9 @@ mod tests {
             VkPhysicalDeviceFeatures => 220, 4;
             VkPhysicalDeviceFeatures2 => 240, 8;
             VkPhysicalDeviceVulkan13Features => 80, 8;
+            VkPhysicalDeviceVulkan12Features => 208, 8;
+            VkMemoryAllocateFlagsInfo => 24, 8;
+            VkBufferDeviceAddressInfo => 24, 8;
             VkFormatProperties => 12, 4;
             VkDeviceQueueCreateInfo => 40, 8;
             VkDeviceCreateInfo => 72, 8;
@@ -1394,6 +1439,8 @@ mod tests {
         assert_eq!(offset_of!(VkPhysicalDeviceMemoryProperties, memory_heap_count), 260);
         assert_eq!(offset_of!(VkPhysicalDeviceMemoryProperties, memory_heaps), 264);
         assert_eq!(offset_of!(VkPhysicalDeviceVulkan13Features, synchronization2), 52);
+        // bufferDeviceAddress sits at offset 168 in VkPhysicalDeviceVulkan12Features.
+        assert_eq!(offset_of!(VkPhysicalDeviceVulkan12Features, flags) + 4 * VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS, 168);
         assert_eq!(offset_of!(VkPhysicalDeviceVulkan13Features, dynamic_rendering), 64);
         assert_eq!(offset_of!(VkRenderingAttachmentInfo, clear_value), 52);
     }

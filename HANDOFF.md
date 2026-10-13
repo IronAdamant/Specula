@@ -3,9 +3,14 @@
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. Last updated **2026-10-13**.
 
-- **START HERE next session:** [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md). The owner is choosing the first
-  game from a few ideas and wants one that's fast to build on Specula. It has the criteria, a genre fit table, the
-  questions to ask about each idea, and how to score them.
+- **START HERE next session:** the first game is chosen (2026-10-13): a 3D tower defence on a shattered slab,
+  working title *Sepulcra*. Draft design doc: [games/sepulcra/DESIGN.md](games/sepulcra/DESIGN.md). Next:
+  1. Go through its **(open)** and **(proposal)** lines with the owner.
+  2. Write the **style bible** together.
+  3. Build **M1 save/load**.
+  4. Greybox the slab through MCP.
+
+  How it was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
 - **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - **Hard rules:** [AGENTS.md](AGENTS.md).
@@ -45,13 +50,15 @@ Specula is a **zero-dependency, agent-native game engine and editor in Rust**. A
 human editor is built on the same protocol they use. The owner (GitHub **IronAdamant**) is building an original game on
 it with Claude, starting now.
 
-In practice that means five **foundations** that apply to every change from M1 onwards (details in ROADMAP.md):
+In practice that means six **foundations** that apply to every change from M1 onwards (details in ROADMAP.md):
 - **F1 Swarm-first.** The swarm track is the primary track.
 - **F2 Determinism.**
 - **F3 Low-end performance.** The Intel iGPU is the reference device.
 - **F4 Physics and animation designed in** from the start.
 - **F5 Humans optional, never locked out.** Devs can click, point, draw and drag in a Rust editor UI if they want to,
   but agents must be able to build the whole game without it.
+- **F6 Portable by design.** Mobile comes after v1.0 (the owner isn't familiar with it yet), but nothing may assume a
+  desktop, x86 or a keyboard, so the port stays cheap.
 
 ## How we got here
 
@@ -66,6 +73,8 @@ In practice that means five **foundations** that apply to every change from M1 o
 | 2026-10-13 | ROADMAP.md and this handoff written. |
 | 2026-10-13 | Engine survey and UI design written. The roadmap gained a **path to production**: v1.0 = a commercial PC game on Steam for Windows and Steam Deck; Phase A M1 → Phase B playable slice (lanes built in parallel by subagent swarms) → Phase C production → Phase D ship. |
 | 2026-10-13 | The owner accepted **every** Claude proposal: physics, skeletal animation, headless playtests, batch edits, procedural modelling, review queue, swarm track. The swarm track became primary, foundations F1–F5 were added, and Claude researched and wrote the four design docs in `docs/design/`. Next: the owner's game project, then M1. |
+| 2026-10-13 | **Lava-lamp fidelity benchmark** (the owner's first asset challenge): three lamps from basic to "as real as possible", built in the engine. It added per-frame GPU data (buffer device address), materials, point lights, glass, blob shadows, lathe meshes, tone mapping and a ray-marched lava lamp. Run it with `python scripts/lava_lamps.py`. The NVIDIA and Intel captures match within 3/255. |
+| 2026-10-13 | **First game chosen:** the tower defence *Sepulcra* (over a cozy castle builder and a squad RPG). Platforms: Windows + Steam Deck; mobile later, so foundation **F6 (portable by design)** was added. A **Fidelity track** was added to the roadmap: benchmark assets rebuilt at each tier, from greybox up to Unreal-class realism. |
 
 ## What works today
 
@@ -73,21 +82,28 @@ In practice that means five **foundations** that apply to every change from M1 o
   opened in this folder connects through `.mcp.json`.
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`.
 - **Tools:**
-  - `world_spawn`: cube, sphere or quad, with position, rotation, scale, colour and name.
-  - `world_set`: change an entity in place, including `rename`.
+  - `world_spawn`: cube, sphere, quad or **lathe** (a profile spun around +Y), with position, rotation, scale, colour
+    and name, plus a **material** and an optional **point light**:
+    - `standard`: opaque, with `emissive`, `metallic`, `roughness` and `specular`.
+    - `glass`: a blended thin shell with Fresnel reflections.
+    - `blob_shadow`: a soft contact shadow.
+    - `lava_lamp`: a ray-marched lamp.
+  - `world_set`: change an entity in place, including `rename`, its look, light and lathe profile.
   - `world_list` and `world_delete`.
-  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. The full
-    packet is saved to `captures/run-*/`.
+  - `world_env`: sun, ambient light, exposure, filmic tone mapping and background.
+  - `window_view`: point the human's window camera (or `auto`).
+  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. `time_s`
+    fixes the animation time, so a frame is reproducible. The full packet is saved to `captures/run-*/`.
   - `engine_info`.
-- **Size:** about 14k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
-  `specula`). 139 tests. **Zero third-party crates.**
+- **Size:** about 15k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
+  `specula`). 149 tests. **Zero third-party crates.**
 - **Linking:** the Rust toolchain's own linker. Vulkan is loaded at runtime.
 
 **What it can't do yet.** Plan game sessions around these limits:
 - **No save/load.** The world is gone when the engine closes. Persistence is the first item of M1, so pull it forward
   if game work needs it.
-- **Visuals are basic.** Only coloured primitives with a single fixed light: no textures, materials, shadows, imported
-  models, or 2D sprites.
+- **Visuals are early.** Materials, point lights, glass, emission and tone mapping exist (built for the lava-lamp
+  benchmark, 2026-10-13). There are no textures, shadow maps, bloom pass, imported models or 2D sprites yet.
 - **Not playable yet.** There's no game logic, input, physics, audio, or text/UI, so nothing can be played until M3.
 - **Sight limits:** no occlusion, and sphere boxes are about 30% loose.
 
@@ -128,10 +144,9 @@ sightlines). Let the game decide which engine features come first.
 ## Open owner decisions
 
 These are listed in ROADMAP.md under "Path to production":
-- **First game's scope:** genre, art style, size and languages. This sets the depth of every lane. Being worked out
-  now; see docs/GAME_SELECTION.md.
+- **First game:** the genre is chosen (tower defence, *Sepulcra*). Art style and launch languages are still open.
+  v1.0 platforms are decided: Windows + Steam Deck, with mobile later.
 - **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service?
-- **v1.0 platforms:** Windows + Steam Deck, or macOS too?
 
 ## Claude's opinions and thoughts
 
@@ -146,7 +161,7 @@ These are listed in ROADMAP.md under "Path to production":
 - **Scope.** Zero-dep means writing a TrueType rasteriser, a Vorbis decoder, physics, skeletal animation, a UI toolkit
   and three platform backends. Agents make that feasible, but it's still years of work. The owner knows and accepts
   this. Keep every feature in the plan, but **let the game decide the order within each milestone**, and never break
-  a foundation (F1–F5) to go faster.
+  a foundation (F1–F6) to go faster.
 - **Coordination is the real bottleneck for swarms, not rendering.** That's why M1 (claims, versions, journal) matters
   more than pretty pixels, and why I added a swarm track to the roadmap.
 - **Content is where small studios lose.** The biggest leverage is M4: procedural modelling tools, `style.toml` hard
