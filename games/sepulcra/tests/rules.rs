@@ -110,7 +110,12 @@ fn a_full_block_makes_enemies_break_the_wall_on_the_shortest_route() {
     let attacked: Vec<CellId> = ev.iter().filter_map(|e| if let Event::AttackingWall { wall, .. } = e { Some(*wall) } else { None }).collect();
     assert_eq!(attacked, vec![south], "the central lane leads straight to the south gate");
     assert!(ev.contains(&Event::WallBroken { cell: south }));
-    assert!(ev.iter().any(|e| matches!(e, Event::WallDamaged { cell, .. } if *cell == south)), "damage thresholds are reported");
+    let marks: Vec<i32> = ev
+        .iter()
+        .filter_map(|e| if let Event::WallDamaged { cell, hp, max_hp } = e { (*cell == south).then_some(hp * 100 / max_hp) } else { None })
+        .collect();
+    assert_eq!(marks.len(), 3, "reported at 75, 50 and 25 %: {marks:?}");
+    assert!(marks[0] <= 75 && marks[0] > 70 && marks[1] <= 50 && marks[2] <= 25, "{marks:?}");
     assert_eq!(leaked(&ev), 1, "through the breach");
     assert_eq!(s.walls().count(), 3, "the other walls stand untouched");
     assert!(s.walls().all(|(_, w)| w.hp == w.max_hp));

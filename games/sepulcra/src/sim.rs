@@ -259,8 +259,10 @@ pub struct WaveStats {
     pub leaked: u32,
     pub tombstones_lost: i32,
     pub dust_from_kills: i32,
-    pending: u32,
-    alive: u32,
+    /// Enemies of this wave not yet spawned.
+    pub pending: u32,
+    /// Enemies of this wave on the slab now.
+    pub alive: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -647,9 +649,7 @@ impl World {
             if self.next_wave_tick.is_some_and(|t| self.tick >= t) {
                 self.start_wave(content, false, &mut ev);
             }
-            // One handle for the whole tick (not one per phase or per enemy): parallel sweeps
-            // sharing an `Arc<Content>` would otherwise contend on its reference count.
-                self.spawn_due(content, &mut ev);
+            self.spawn_due(content, &mut ev);
             self.summon(content, &mut ev);
             self.move_enemies(content, &mut ev);
             self.fire_stones(content, &mut ev);
@@ -956,7 +956,11 @@ impl World {
 
     fn damage_wall(&mut self, content: &Content, cell: CellId, dmg: i32, ev: &mut Vec<Event>) {
         let Some(w) = self.walls.get_mut(&cell) else { return };
-        let quarter = |hp: i32, max: i32| i64::from(hp.max(0)) * 4 / i64::from(max.max(1));
+        // Quarters rounded up: 4 above 75 %, 3 down to 50 %, ... so the event fires at the marks.
+        let quarter = |hp: i32, max: i32| {
+            let max = i64::from(max.max(1));
+            (i64::from(hp.max(0)) * 4 + max - 1) / max
+        };
         let before = quarter(w.hp, w.max_hp);
         w.hp -= dmg;
         if w.hp <= 0 {
@@ -1388,6 +1392,35 @@ mod tests {
         assert!(in_range(&near, 12_000, &flyer) && !in_range(&near, 9_000, &flyer));
         assert_eq!(flyer.face(c), None);
         assert_eq!(on_cliff.face(c), Some(Face::North));
+    }
+
+    #[test]
+    fn targeting_policies_pick_by_data() {
+        let mut state = State::new(Arc::new(Content::builtin()), 1);
+        let content = Arc::clone(&state.content);
+        let c = &*content;
+        let id = |s: &str| c.map.cell_ref(s).unwrap();
+        let mut put = |n: u32, cell: &str, hp: i32| {
+            let at = id(cell);
+            let mut e = enemy(&state, Motion::Ground { from: at, to: at, progress: 0, len: 0, leap: true });
+            (e.id, e.hp) = (n, hp);
+            state.w.enemies.push(e);
+        };
+        // Along the central lane: 3 is nearest the graveyard, 1 the farthest; 2 is the toughest.
+        put(1, "top:9,17", 5_000);
+        put(2, "top:9,16", 9_000);
+        put(3, "top:9,15", 5_000);
+        put(4, "top:9,14", 9_000); // as tough as 2 but nearer the graveyard
+        let stone = *c.map.cell(id("top:10,15"));
+        let mut def = c.stone(c.stone_kind("warding").unwrap()).clone();
+        let t = def.tiers[0];
+        let pick = |def: &StoneDef| state.w.pick_target(c, &stone, def, &t).map(|i| state.w.enemies[i].id);
+        for (policy, want) in [(Policy::First, 4), (Policy::Last, 1), (Policy::Strongest, 4), (Policy::Closest, 3)] {
+            def.policy = policy;
+            assert_eq!(pick(&def), Some(want), "{policy:?}");
+        }
+        def.targets = crate::content::Targets::Air;
+        assert_eq!(pick(&def), None, "no flyers in range");
     }
 
     #[test]
