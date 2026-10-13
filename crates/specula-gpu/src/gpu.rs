@@ -4,7 +4,7 @@ use crate::batch::mesh_bounds;
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
 use crate::render::{
-    check_frame, prepare_frame, record_scene, CacheIdentity, DrawRecord, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT,
+    check_frame, prepare_frame, record_scene, CacheIdentity, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT,
 };
 use crate::swapchain::Window;
 use crate::timing::PassTimer;
@@ -50,8 +50,8 @@ pub struct GpuInner {
     upload: Option<FrameUpload>,
     /// Timestamps for offscreen renders (`None` without timestamp support).
     timer: Option<PassTimer>,
-    /// Scratch for building draw records.
-    records: Vec<DrawRecord>,
+    /// Draw-record scratch and the sRGB conversion cache, shared by both paths.
+    scratch: FrameScratch,
     pipelines: Pipelines,
     meshes: HashMap<u32, Mesh>,
     targets: HashMap<u32, Target>,
@@ -126,7 +126,7 @@ impl GpuInner {
             sync_fence: VK_NULL_HANDLE,
             upload: None,
             timer: None,
-            records: Vec::new(),
+            scratch: FrameScratch::default(),
             pipelines,
             meshes: HashMap::new(),
             targets: HashMap::new(),
@@ -355,7 +355,7 @@ impl GpuInner {
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
-        let plan = prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.records)?;
+        let plan = prepare_frame(&self.device, &self.meshes, frame, t.extent, upload, &mut self.scratch)?;
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -504,7 +504,7 @@ impl GpuInner {
         let window = self.window.as_mut().ok_or_else(|| GpuError::new("present: no window attached"))?;
         let frame_no = self.frame_no + 1;
         let report =
-            window.present(&self.instance, &self.device, &mut self.pipelines, &self.meshes, frame, frame_no, &mut self.records)?;
+            window.present(&self.instance, &self.device, &mut self.pipelines, &self.meshes, frame, frame_no, &mut self.scratch)?;
         if let Some(r) = report {
             self.frame_no = frame_no;
             self.last_window = Some(FrameStats {

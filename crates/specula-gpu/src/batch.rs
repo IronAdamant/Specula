@@ -118,50 +118,58 @@ pub struct Plan {
     pub culled: u32,
 }
 
-/// Sort key for opaque draws: pipeline, then material, then mesh.
-fn opaque_key(material: Material, mesh: MeshId) -> (u32, u32) {
-    (material as u32, mesh.0)
+/// Sort key for opaque draws: material (and so pipeline), mesh, then near to far (early depth
+/// rejection hides what is behind instead of shading it twice), then list position. `dist2` is
+/// non-negative or NaN, so its bits order like its value (NaN last).
+fn opaque_key(material: Material, mesh: MeshId, dist2: f32, index: usize) -> (u32, u32, u32, usize) {
+    (material as u32, mesh.0, dist2.to_bits(), index)
 }
 
 /// Cull, order and batch `frame`'s draws. `bounds` gives a mesh's object-space sphere (`None` =
 /// never cull it).
 ///
-/// Order: opaque draws first, stably sorted by (material, mesh) so equal ones batch (depth testing
-/// makes their order irrelevant except for exactly coplanar overlaps). Then blended draws far to
-/// near by model origin; glass appears twice, back faces (pass 0) then front faces (pass 1).
+/// Order: opaque draws first, sorted by (material, mesh) so equal ones batch, and near to far
+/// within a batch (by bounding-sphere centre) so hidden surfaces fail the depth test early. Depth
+/// testing makes their order irrelevant except for exactly coplanar overlaps. Then blended draws
+/// far to near by model origin; glass appears twice, back faces (pass 0) then front faces (pass 1).
 /// Blended draws sharing an origin are nested shells listed outermost first: all their back faces
 /// in list order, then their front faces in reverse, so an inner liquid sits inside its glass.
 /// Blended entries keep this order exactly and batch only when adjacent.
 pub fn plan(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>) -> Plan {
     let frustum = Frustum::from_view_proj(&frame.view_proj);
+    let c = camera_position(&frame.view_proj);
     let mut culled = 0u32;
-    let mut visible = Vec::with_capacity(frame.draws.len());
+    let mut blended = Vec::new();
+    // Visible opaque draws as sort keys.
+    let mut opaque = Vec::with_capacity(frame.draws.len());
     for (i, d) in frame.draws.iter().enumerate() {
-        let keep = match bounds(d.mesh) {
+        let (center, keep) = match bounds(d.mesh) {
             Some(b) => {
-                let (c, r) = world_sphere(&d.model, b);
-                frustum.sphere_visible(c, r)
+                let (center, r) = world_sphere(&d.model, b);
+                (center, frustum.sphere_visible(center, r))
             }
-            None => true,
+            None => ([d.model[12], d.model[13], d.model[14]], true),
         };
-        if keep {
-            visible.push(i);
-        } else {
+        if !keep {
             culled += 1;
+        } else if d.material.blended() {
+            blended.push(i);
+        } else {
+            let v = [center[0] - c[0], center[1] - c[1], center[2] - c[2]];
+            // `abs` only clears the sign of a NaN, so every NaN sorts last.
+            let dist2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).abs();
+            opaque.push(opaque_key(d.material, d.mesh, dist2, i));
         }
     }
 
-    let mut opaque: Vec<usize> = visible.iter().copied().filter(|&i| !frame.draws[i].material.blended()).collect();
-    opaque.sort_by_key(|&i| opaque_key(frame.draws[i].material, frame.draws[i].mesh)); // stable
-    let mut entries: Vec<(usize, u32)> = opaque.into_iter().map(|i| (i, 0)).collect();
+    opaque.sort_unstable(); // keys are unique (they end in the index): deterministic
+    let mut entries: Vec<(usize, u32)> = opaque.into_iter().map(|k| (k.3, 0)).collect();
 
-    let c = camera_position(&frame.view_proj);
     let dist2 = |i: usize| {
         let m = &frame.draws[i].model;
         let d = [m[12] - c[0], m[13] - c[1], m[14] - c[2]];
         d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
     };
-    let mut blended: Vec<usize> = visible.into_iter().filter(|&i| frame.draws[i].material.blended()).collect();
     blended.sort_by(|&a, &b| dist2(b).total_cmp(&dist2(a))); // stable: ties keep list order
     for group in blended.chunk_by(|&a, &b| dist2(a) == dist2(b)) {
         entries.extend(group.iter().map(|&i| (i, 0)));
@@ -300,6 +308,24 @@ mod tests {
         );
         // Without bounds nothing is culled.
         assert_eq!(plan(&frame, |_| None).culled, 0);
+    }
+
+    #[test]
+    fn opaque_instances_draw_near_to_far() {
+        // Listed far to near (the worst case for early depth rejection); a NaN model sorts last.
+        let mut nan = at(0.0, 0.0, -1.0);
+        nan[12] = f32::NAN;
+        let draws = [
+            draw(1, at(0.0, 0.0, -9.0), Material::Lit),
+            draw(1, nan, Material::Lit),
+            draw(1, at(0.0, 0.0, -6.0), Material::Lit),
+            draw(1, at(0.0, 0.0, -3.0), Material::Lit),
+            draw(1, at(0.0, 0.0, -3.0), Material::Lit), // a tie keeps list order
+        ];
+        let frame = FrameDesc { draws: &draws, view_proj: camera(0.0, true), ..Default::default() };
+        let p = plan(&frame, |_| Some(UNIT));
+        assert_eq!(p.entries, vec![(3, 0), (4, 0), (2, 0), (0, 0), (1, 0)]);
+        assert_eq!(p.batches.len(), 1);
     }
 
     #[test]

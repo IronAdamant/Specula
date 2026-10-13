@@ -2,7 +2,7 @@
 
 use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
-use crate::render::{check_frame, prepare_frame, record_scene, DrawRecord, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::render::{check_frame, prepare_frame, record_scene, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{CpuTiming, DrawStats, FrameDesc, GpuError, GpuTiming, MemoryKind};
@@ -298,7 +298,7 @@ impl Window {
     }
 
     /// Render and present `frame` (number `frame_no`). `Ok(None)`: nothing was presented
-    /// (minimized, or the swapchain was out of date). `records` is scratch space.
+    /// (minimized, or the swapchain was out of date). `scratch` is reusable CPU-side space.
     #[allow(clippy::too_many_arguments)]
     pub fn present(
         &mut self,
@@ -308,7 +308,7 @@ impl Window {
         meshes: &HashMap<u32, Mesh>,
         frame: &FrameDesc,
         frame_no: u64,
-        records: &mut Vec<DrawRecord>,
+        scratch: &mut FrameScratch,
     ) -> Result<Option<FrameReport>, GpuError> {
         check_frame(meshes, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
@@ -334,7 +334,7 @@ impl Window {
         }
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
-        let plan = prepare_frame(dev, meshes, frame, self.extent, upload, records)?;
+        let plan = prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
         let t2 = Instant::now();
 
         let mut index = 0u32;

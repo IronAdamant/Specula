@@ -173,20 +173,75 @@ pub fn camera_position(view_proj: &[f32; 16]) -> [f32; 3] {
 }
 
 /// The shader-side record of a draw (colours converted to linear, parameters clamped).
+#[cfg(test)]
 pub fn draw_record(draw: &DrawItem) -> DrawRecord {
+    draw_record_with(draw, &mut |rgb| rgb.map(srgb_to_linear))
+}
+
+fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 3]) -> DrawRecord {
     let s = &draw.surface;
-    let c2 = srgb_to_linear_rgba([s.color2[0], s.color2[1], s.color2[2], 1.0]);
+    let c = linear([draw.color[0], draw.color[1], draw.color[2]]);
+    let c2 = linear(s.color2);
     DrawRecord {
         model: draw.model,
-        color: srgb_to_linear_rgba(draw.color),
+        color: [c[0], c[1], c[2], draw.color[3]],
         color2: [c2[0], c2[1], c2[2], s.seed],
         params: [s.emissive.max(0.0), s.metallic.clamp(0.0, 1.0), s.roughness.clamp(0.0, 1.0), s.specular.max(0.0)],
     }
 }
 
-/// Fill `out` with the records of `plan.entries`, in order. Runs of equal colours (common in
-/// batches) convert once.
-pub fn build_records(frame: &FrameDesc, plan: &Plan, out: &mut Vec<DrawRecord>) {
+/// FxHash-style hasher for small fixed keys (no DoS concern: keys are our own colours).
+#[derive(Default)]
+pub struct FastHasher(u64);
+
+impl std::hash::Hasher for FastHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// sRGB → linear conversions remembered across frames, keyed by the exact input bits, so the
+/// result is bit-identical to converting afresh (`powf` is slow: ~100 ns on some C runtimes, three
+/// per draw). Bounded: cleared when full.
+#[derive(Default)]
+pub struct LinearCache {
+    map: HashMap<[u32; 3], [f32; 3], std::hash::BuildHasherDefault<FastHasher>>,
+}
+
+impl LinearCache {
+    const MAX_ENTRIES: usize = 1 << 16;
+
+    pub fn get(&mut self, rgb: [f32; 3]) -> [f32; 3] {
+        let key = rgb.map(f32::to_bits);
+        if let Some(&v) = self.map.get(&key) {
+            return v;
+        }
+        if self.map.len() >= Self::MAX_ENTRIES {
+            self.map.clear();
+        }
+        let v = rgb.map(srgb_to_linear);
+        self.map.insert(key, v);
+        v
+    }
+}
+
+/// Fill `out` with the records of `plan.entries`, in order. Runs of equal looks (common in
+/// batches) convert once; other colours come from `cache`.
+pub fn build_records(frame: &FrameDesc, plan: &Plan, cache: &mut LinearCache, out: &mut Vec<DrawRecord>) {
     out.clear();
     out.reserve(plan.entries.len());
     let mut last: Option<(&DrawItem, DrawRecord)> = None;
@@ -194,11 +249,18 @@ pub fn build_records(frame: &FrameDesc, plan: &Plan, out: &mut Vec<DrawRecord>) 
         let d = &frame.draws[i];
         let record = match last {
             Some((prev, r)) if prev.color == d.color && prev.surface == d.surface => DrawRecord { model: d.model, ..r },
-            _ => draw_record(d),
+            _ => draw_record_with(d, &mut |rgb| cache.get(rgb)),
         };
         last = Some((d, record));
         out.push(record);
     }
+}
+
+/// Reusable CPU-side scratch for preparing frames.
+#[derive(Default)]
+pub struct FrameScratch {
+    pub records: Vec<DrawRecord>,
+    pub linear: LinearCache,
 }
 
 /// A frame's upload buffer: [`FrameData`] at offset 0, [`DrawRecord`]s at [`RECORDS_OFFSET`].
@@ -739,19 +801,19 @@ pub fn check_frame(meshes: &HashMap<u32, Mesh>, frame: &FrameDesc) -> Result<(),
 }
 
 /// Cull and batch `frame` against `meshes`, then write its frame data and draw records into
-/// `upload` (growing it). The GPU must not be reading `upload`. `records` is scratch space.
+/// `upload` (growing it). The GPU must not be reading `upload`.
 pub fn prepare_frame(
     dev: &Device,
     meshes: &HashMap<u32, Mesh>,
     frame: &FrameDesc,
     extent: VkExtent2D,
     upload: &mut FrameUpload,
-    records: &mut Vec<DrawRecord>,
+    scratch: &mut FrameScratch,
 ) -> Result<Plan, GpuError> {
     let plan = crate::batch::plan(frame, |m| meshes.get(&m.0).map(|mesh| mesh.bounds));
-    build_records(frame, &plan, records);
-    upload.reserve(dev, records.len())?;
-    upload.write(&frame_data(frame, extent), records);
+    build_records(frame, &plan, &mut scratch.linear, &mut scratch.records);
+    upload.reserve(dev, scratch.records.len())?;
+    upload.write(&frame_data(frame, extent), &scratch.records);
     Ok(plan)
 }
 
@@ -993,7 +1055,7 @@ mod tests {
         let frame = FrameDesc { draws: &draws, ..Default::default() };
         let plan = Plan { entries: vec![(2, 0), (1, 0), (0, 0), (0, 1)], ..Default::default() };
         let mut out = Vec::new();
-        build_records(&frame, &plan, &mut out);
+        build_records(&frame, &plan, &mut LinearCache::default(), &mut out);
         assert_eq!(out.len(), 4);
         assert_eq!(out[0], draw_record(&c));
         assert_eq!(out[1], draw_record(&b));
@@ -1005,6 +1067,25 @@ mod tests {
         assert_eq!(r.color[3], 0.3, "opacity passes through");
         assert_eq!(r.color2[3], 7.0, "seed");
         assert!((r.color[0] - 0.214_041).abs() < 1e-5, "linear");
+    }
+
+    #[test]
+    fn linear_cache_is_bit_identical_and_bounded() {
+        let mut cache = LinearCache::default();
+        let mut x = 0x1234_5678u32;
+        for _ in 0..3 {
+            for i in 0..1000u32 {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let rgb = [(x >> 8) as f32 / 16_777_216.0, i as f32 / 999.0, f32::from_bits(x)];
+                let want = rgb.map(srgb_to_linear);
+                assert_eq!(cache.get(rgb).map(f32::to_bits), want.map(f32::to_bits), "{rgb:?}");
+                assert_eq!(cache.get(rgb).map(f32::to_bits), want.map(f32::to_bits), "cached {rgb:?}");
+            }
+        }
+        for i in 0..LinearCache::MAX_ENTRIES as u32 + 10 {
+            cache.get([f32::from_bits(i), 0.0, 0.0]);
+        }
+        assert!(cache.map.len() <= LinearCache::MAX_ENTRIES);
     }
 
     #[test]
