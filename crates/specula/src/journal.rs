@@ -461,14 +461,18 @@ impl Journal {
         ids.dedup();
         let bytes = std::mem::size_of::<Entry>() + ids.len() * 8 + changes.iter().map(Change::approx_bytes).sum::<usize>();
         let by = self.intern(by);
-        if kind.is_game() {
-            for c in &changes {
-                if let Change::Delete { .. } = c {
+        for c in &changes {
+            match c {
+                // Gone entities need no conflict memory (an undo that brings one back conflicts
+                // with the delete itself): keeps the map bounded by live entities.
+                Change::Delete { .. } => {
                     self.game_touch.remove(&c.id());
-                } else {
+                }
+                _ if kind.is_game() => {
                     let touch = GameTouch { seq, tick, by: Arc::clone(&by), path: c.path().to_owned() };
                     self.game_touch.insert(c.id(), touch);
                 }
+                _ => {}
             }
         }
         let entry = Entry {

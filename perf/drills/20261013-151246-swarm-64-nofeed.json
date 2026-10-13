@@ -1,0 +1,133 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "nofeed",
+  "agents": 64,
+  "rounds": 12,
+  "batch": 20,
+  "feed": false,
+  "build": "release",
+  "when": "2026-10-13T15:12:39",
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 1.41,
+  "world_ops": 20096,
+  "ops_per_s": 14254.6,
+  "tool_calls": 2496,
+  "calls_per_s": 1770.5,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 7.53,
+      "p95": 13.53,
+      "max": 17.26,
+      "n": 64
+    },
+    "claim_release": {
+      "p50": 1.03,
+      "p95": 15.88,
+      "max": 16.05,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 15.98,
+      "p95": 31.08,
+      "max": 43.46,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 7.01,
+      "p95": 11.69,
+      "max": 18.66,
+      "n": 64
+    },
+    "world_batch": {
+      "p50": 33.15,
+      "p95": 55.51,
+      "max": 74.96,
+      "n": 1216
+    },
+    "world_set": {
+      "p50": 33.78,
+      "p95": 58.71,
+      "max": 85.5,
+      "n": 256
+    },
+    "world_spawn": {
+      "p50": 33.73,
+      "p95": 55.17,
+      "max": 74.38,
+      "n": 448
+    },
+    "world_undo": {
+      "p50": 30.29,
+      "p95": 53.5,
+      "max": 84.54,
+      "n": 320
+    }
+  },
+  "intrusions_rejected": 768,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 320,
+  "feed_items": 0,
+  "feed_gaps": 0,
+  "entities": 15424,
+  "state_hash": "81c3cdf93c33935b",
+  "replay": {
+    "replayable": true,
+    "entries": 1472,
+    "replay_hash": "81c3cdf93c33935b",
+    "matches": true,
+    "ms": 48.7227
+  },
+  "replay_check_s": 0.056,
+  "journal": {
+    "first_id": 1,
+    "last_id": 1472,
+    "agent_entries": 1472,
+    "game_entries": 0,
+    "approx_bytes": 16034112,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "79421b3b40fba741"
+  },
+  "claim_rejections_engine": 768,
+  "history_sample": [
+    {
+      "id": 1326,
+      "tick": 44,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_4",
+        "/district_00/tmp_11_3",
+        "/district_00/tmp_11_2"
+      ],
+      "undoes": [
+        1273
+      ]
+    },
+    {
+      "id": 1273,
+      "tick": 43,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_0",
+        "/district_00/tmp_11_1",
+        "/district_00/tmp_11_2"
+      ],
+      "undone_by": 1326
+    }
+  ],
+  "agent_errors": [],
+  "problems": []
+}

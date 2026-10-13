@@ -90,9 +90,11 @@ def district(i):
 
 
 class Worker(threading.Thread):
-    def __init__(self, url, index, count, rounds, batch):
+    def __init__(self, url, index, count, rounds, batch, feed, ready):
         super().__init__(name=f"agent-{index}")
         self.url, self.index, self.count, self.rounds, self.batch = url, index, count, rounds, batch
+        self.feed = feed
+        self.ready = ready  # every district is claimed and exists before anyone intrudes
         self.name_ = f"agent_{index:02d}"
         self.expected = set()      # paths this agent built and kept
         self.ops = 0               # world ops applied (each batch op counts)
@@ -110,6 +112,7 @@ class Worker(threading.Thread):
             self.work()
         except Exception as e:  # reported in the summary
             self.error = f"{type(e).__name__}: {e}"
+            self.ready.abort()
 
     def intrude(self, tool, **args):
         ok, payload = self.agent.call(tool, **args)
@@ -132,6 +135,7 @@ class Worker(threading.Thread):
         a.ok("world_batch", ops=[{"op": "spawn", "shape": "group", "path": home, "position": [x0, 0, z0]}])
         self.ops += 1
         self.expected.add(home)
+        self.ready.wait()
         cursor = "0"
         neighbour = district((self.index + 1) % self.count)
         for r in range(self.rounds):
@@ -167,7 +171,7 @@ class Worker(threading.Thread):
                 self.undone += 1
                 self.ops += 6
             # Follow everyone's changes.
-            while True:
+            while self.feed:
                 feed = a.ok("world_changes", since=cursor, limit=500)
                 self.feed_items += len(feed["changes"])
                 self.feed_gaps += 1 if feed["gap"] else 0
@@ -265,6 +269,7 @@ def main():
     ap.add_argument("--batch", type=int, default=20, help="spawns per batch round")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--debug", action="store_true", help="use the debug build (default: release)")
+    ap.add_argument("--no-feed", action="store_true", help="agents don't poll world_changes (isolates its cost)")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default=str(ROOT / "perf" / "drills"))
     args = ap.parse_args()
@@ -276,12 +281,13 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="specula-drill-"))
     url = url_for(args.port)
     result = {"schema": "specula.drill/v1", "label": args.label, "agents": args.agents, "rounds": args.rounds,
-              "batch": args.batch, "build": "debug" if args.debug else "release",
+              "batch": args.batch, "feed": not args.no_feed, "build": "debug" if args.debug else "release",
               "when": datetime.datetime.now().isoformat(timespec="seconds")}
     try:
         with Engine(exe, args.port, work / "engine.log", "--headless", "--captures", str(work / "captures"),
                     "--worlds", str(work / "worlds"), cwd=work) as engine:
-            workers = [Worker(url, i, args.agents, args.rounds, args.batch) for i in range(args.agents)]
+            ready = threading.Barrier(args.agents)
+            workers = [Worker(url, i, args.agents, args.rounds, args.batch, not args.no_feed, ready) for i in range(args.agents)]
             start = time.perf_counter()
             for w in workers:
                 w.start()
