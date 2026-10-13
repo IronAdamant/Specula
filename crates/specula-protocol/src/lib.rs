@@ -20,7 +20,8 @@
 //! `400` here and falls back to `initialize`.
 //!
 //! Limits: request bodies up to 16 MiB (`413` beyond); idle connections close after 60 s;
-//! at most 256 concurrent connections (`503` beyond) and 1024 open sessions (oldest evicted).
+//! at most 256 concurrent connections (beyond that, a proper `503` with `Retry-After: 1`, never a
+//! reset) and 1024 open sessions (oldest evicted).
 
 mod http;
 mod mcp;

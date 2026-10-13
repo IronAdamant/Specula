@@ -7,6 +7,8 @@ N agents (threads, each its own MCP session) work on one headless engine at the 
      and a set): every one of those must be rejected with error 'claimed',
   4. spawns scratch entities and undoes them with world_undo (single changes and a whole batch),
   5. polls world_changes to follow everyone else's work.
+Then it overloads the server: it holds the protocol's 256 connections open and checks that extra
+requests get a proper HTTP 503 (with Retry-After), not a reset, and that service resumes after.
 At the end the drill checks that every district holds exactly what its agent built (nothing more,
 nothing missing, nothing by anyone else), that the journal replays to the live state hash
 (world_hash verify), and that claims are listed and released cleanly.
@@ -22,11 +24,13 @@ import argparse
 import datetime
 import json
 import shutil
+import socket
 import statistics
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -181,6 +185,39 @@ def stats_ms(samples):
     return {"p50": round(statistics.median(ms), 2), "p95": round(p95, 2), "max": round(ms[-1], 2), "n": len(ms)}
 
 
+def overload(port, extra=20):
+    """Hold 256 idle connections; each extra request must be answered 503, then service resumes."""
+    held = []
+    try:
+        for _ in range(256):
+            held.append(socket.create_connection(("127.0.0.1", port), timeout=10))
+        time.sleep(0.3)
+        statuses = {}
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        for _ in range(extra):
+            req = urllib.request.Request(url_for(port), body, {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    key = str(r.status)
+            except urllib.error.HTTPError as e:
+                key = f"{e.code}" + ("+retry-after" if e.headers.get("Retry-After") else "")
+            except OSError as e:
+                key = f"reset:{type(e).__name__}"
+            statuses[key] = statuses.get(key, 0) + 1
+    finally:
+        for h in held:
+            h.close()
+    resumed = False
+    deadline = time.perf_counter() + 10
+    while time.perf_counter() < deadline and not resumed:
+        try:
+            Agent(url_for(port), "after-overload")
+            resumed = True
+        except (OSError, RuntimeError):
+            time.sleep(0.1)
+    return {"held": len(held), "extra_requests": extra, "statuses": statuses, "service_resumed": resumed}
+
+
 def verify(url, workers):
     """Every district holds exactly what its agent built; the journal replays to the live hash."""
     v = Agent(url, "verifier")
@@ -252,6 +289,9 @@ def main():
                 w.join()
             wall = time.perf_counter() - start
             problems, h, verify_s, history, info = verify(url, workers)
+            result["overload"] = over = overload(args.port)
+            if over["statuses"].get("503+retry-after") != over["extra_requests"] or not over["service_resumed"]:
+                problems.append(f"overload: expected every extra request to get 503 + Retry-After: {over}")
             for w in workers:
                 w.agent.ok("claim_release", all=True)
             released = Agent(url, "check").ok("claim_list")["total"]
@@ -315,6 +355,10 @@ def main():
         print(f"  entities {result['entities']}, journal {entries} entries ~{(j.get('approx_bytes') or 0) // 1024} KiB, "
               f"replay {'MATCHES' if result['replay'].get('matches') else 'MISMATCH'} "
               f"({result['replay_check_s']} s), hash {result['state_hash']}")
+    if "overload" in result:
+        o = result["overload"]
+        print(f"  overload: {o['held']} connections held, {o['extra_requests']} extra requests -> {o['statuses']}, "
+              f"service resumed: {o['service_resumed']}")
     problems = result.get("problems", []) + result.get("agent_errors", [])
     for p in problems:
         print(f"  PROBLEM: {p}")

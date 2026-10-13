@@ -601,3 +601,36 @@ fn drop_stops_the_server() {
         assert!(c.is_closed());
     }
 }
+
+/// Swarm scale (M1): past the connection limit a client gets a proper `503` response (even when
+/// it has already sent its request), never a reset; once connections free up, service resumes.
+#[test]
+fn connection_limit_answers_503_not_a_reset() {
+    const LIMIT: usize = 256;
+    let server = start();
+    let addr = server.local_addr();
+    let held: Vec<TcpStream> = (0..LIMIT).map(|_| TcpStream::connect(addr).expect("connect")).collect();
+    // Let the accept thread hand every held connection to a worker.
+    std::thread::sleep(Duration::from_millis(300));
+    for attempt in 0..5 {
+        let mut c = Client::connect(addr);
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let resp = post(&mut c, None, body);
+        assert_eq!(resp.status, 503, "attempt {attempt}: {:?}", String::from_utf8_lossy(&resp.body));
+        assert_eq!(resp.error_code(), Some(-32000));
+        assert!(c.is_closed(), "the rejected connection is closed");
+    }
+    drop(held);
+    // Workers notice their clients left; then requests are served again.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut c = Client::connect(addr);
+        let (_, resp) = initialize(&mut c, "2025-06-18", "after");
+        if resp.status == 200 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "service did not resume");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    server.shutdown();
+}
