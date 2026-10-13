@@ -25,7 +25,7 @@ impl Value {
             Value::Int(i) => *i != 0,
             Value::Num(n) => *n != 0.0 && !n.is_nan(),
             Value::Str(s) => !s.is_empty(),
-            Value::List(l) => l.len() != 0,
+            Value::List(l) => !l.is_empty(),
         }
     }
 

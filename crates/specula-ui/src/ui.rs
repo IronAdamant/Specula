@@ -807,11 +807,11 @@ impl Ui {
                 if sr.screen.input == InputMode::None {
                     continue;
                 }
-                if let Some((radial, item)) = radial_under(sr, p) {
-                    let _ = radial;
-                    if moved || pressed {
-                        hot = item.map(|node| WidgetRef { screen: s, node });
-                    }
+                if let Some((_, item)) = radial_under(sr, p) {
+                    // The whole sector (inside and around the ring) is the item's target; the
+                    // dead zone in the middle picks nothing. Focus follows only when the pointer
+                    // moves, so a resting mouse doesn't fight the stick.
+                    hot = item.map(|node| WidgetRef { screen: s, node });
                     break;
                 }
             }
@@ -1069,6 +1069,12 @@ impl Ui {
         self.draw_tooltip(view, state);
     }
 
+    /// A text role's drawing parameters (no strings, so no allocation).
+    fn role_look(&self, i: usize) -> RoleLook {
+        let r = self.theme.role(i);
+        RoleLook { color: r.color, shadow: r.shadow, size: r.size, font: self.fonts.index(&r.font) }
+    }
+
     fn color_ref(&self, c: &ColorRef) -> Rgba {
         match c {
             ColorRef::Hex(c) => *c,
@@ -1129,13 +1135,15 @@ impl Ui {
             }
             Shallow::Label => self.draw_label(s, i, content, scale),
             Shallow::Icon => {
-                let (icon, color, rotation) = match &self.screens[s].screen.nodes[i].kind {
-                    Kind::Icon { icon, color, rotation } => (icon.clone(), color.clone(), *rotation),
+                let (icon, c, rotation) = match &self.screens[s].screen.nodes[i].kind {
+                    Kind::Icon { icon, color, rotation } => {
+                        let c = match color {
+                            Some(c) => self.color_ref(c),
+                            None => self.text_color_for(s, i).unwrap_or(self.theme.role(self.theme.role_index("body").unwrap_or(0)).color),
+                        };
+                        (*icon, c, *rotation)
+                    }
                     _ => return,
-                };
-                let c = match color {
-                    Some(c) => self.color_ref(&c),
-                    None => self.text_color_for(s, i).unwrap_or(self.theme.role(self.theme.role_index("body").unwrap_or(0)).color),
                 };
                 match icon {
                     IconSource::Shape(shape) => {
@@ -1149,24 +1157,25 @@ impl Ui {
                 }
             }
             Shallow::Bar => {
-                let (value, max, color) = match &self.screens[s].screen.nodes[i].kind {
-                    Kind::Bar { value, max, color } => (value.clone(), max.clone(), color.clone()),
-                    _ => return,
+                let (frac, fill_c) = {
+                    let node = &self.screens[s].screen.nodes[i];
+                    let Kind::Bar { value, max, color } = &node.kind else { return };
+                    let scope = scope_for(&self.screens[s].screen, node, state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
+                    let get = |n: &Num| match n {
+                        Num::Const(v) => f64::from(*v),
+                        Num::Key(k) => scope.num(k).unwrap_or(0.0),
+                    };
+                    let (v, m) = (get(value), get(max));
+                    let frac = if m > 0.0 { (v / m).clamp(0.0, 1.0) as f32 } else { 0.0 };
+                    let fill_c = match color {
+                        Some(c) => self.color_ref(c),
+                        None if frac <= self.theme.bar.low_below => self.theme.bar.low,
+                        None => self.theme.bar.fill,
+                    };
+                    (frac, fill_c)
                 };
-                let scope = scope_for(&self.screens[s].screen, &self.screens[s].screen.nodes[i], state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
-                let get = |n: &Num| match n {
-                    Num::Const(v) => f64::from(*v),
-                    Num::Key(k) => scope.num(k).unwrap_or(0.0),
-                };
-                let (v, m) = (get(&value), get(&max));
-                let frac = if m > 0.0 { (v / m).clamp(0.0, 1.0) as f32 } else { 0.0 };
                 let track = self.theme.boxed(self.theme.bar.track).clone();
                 self.draw_box(&track, rect, scale);
-                let fill_c = match color {
-                    Some(c) => self.color_ref(&c),
-                    None if frac <= self.theme.bar.low_below => self.theme.bar.low,
-                    None => self.theme.bar.fill,
-                };
                 let inner = content;
                 if frac > 0.0 && inner.w > 0.0 {
                     let fw = (inner.w * frac).max(inner.h.min(inner.w));
@@ -1210,14 +1219,16 @@ impl Ui {
     }
 
     fn draw_label(&mut self, s: usize, i: usize, content: Rect, scale: f32) {
-        let (role_i, color, align, wrap) = match &self.screens[s].screen.nodes[i].kind {
-            Kind::Label { role, color, align, wrap, .. } => (*role, color.clone(), *align, *wrap),
+        let (role, c, align, wrap) = match &self.screens[s].screen.nodes[i].kind {
+            Kind::Label { role, color, align, wrap, .. } => {
+                let role = self.role_look(*role);
+                let c = match color {
+                    Some(c) => self.color_ref(c),
+                    None => self.text_color_for(s, i).unwrap_or(role.color),
+                };
+                (role, c, *align, *wrap)
+            }
             _ => return,
-        };
-        let role = self.theme.role(role_i).clone();
-        let c = match color {
-            Some(c) => self.color_ref(&c),
-            None => self.text_color_for(s, i).unwrap_or(role.color),
         };
         let Some(font_i) = self.screens[s].rt[i].font else { return };
         let tsize = self.screens[s].comp[i].text;
@@ -1247,7 +1258,6 @@ impl Ui {
         let st = self.theme.radial.clone();
         let sector = std::f32::consts::TAU / count as f32;
         let gap_a = (st.gap * scale) / radius.max(1.0);
-        let mut k = 0usize;
         // Soft shadow disc under the ring.
         self.draw.rect(RectCmd {
             rect: Rect::new(centre[0] - radius, centre[1] - radius + 3.0 * scale, radius * 2.0, radius * 2.0).grow(2.0 * scale),
@@ -1258,10 +1268,9 @@ impl Ui {
             feather: 10.0 * scale,
         });
         let start = self.draw.begin_mesh();
-        for &c in children.iter().take(count) {
+        for (k, &c) in children.iter().take(count).enumerate() {
             let sr = &self.screens[s];
             let a = crate::layout::radial_angle(k, count);
-            k += 1;
             let hot = sr.focus == Some(c);
             let enabled = sr.rt[c as usize].enabled;
             let fill = if !enabled {
@@ -1290,12 +1299,11 @@ impl Ui {
     }
 
     fn draw_threats(&mut self, s: usize, i: usize, bounds: Rect, state: &StateMap, scale: f32) {
-        let source = match &self.screens[s].screen.nodes[i].kind {
-            Kind::Threats { source } => source.clone(),
-            _ => return,
+        let list = match &self.screens[s].screen.nodes[i].kind {
+            Kind::Threats { source: crate::state::Key::Global(key) } => state.list(key),
+            _ => None,
         };
-        let crate::state::Key::Global(key) = &source else { return };
-        let Some(list) = state.list(key) else { return };
+        let Some(list) = list else { return };
         let t = self.theme.threat.clone();
         let size = t.size * scale;
         let margin = t.inset * scale + size * 0.5;
@@ -1323,8 +1331,8 @@ impl Ui {
             self.draw.end_mesh(start);
             // Optional label inside the arrow (towards the screen centre).
             if let Some(Value::Str(label)) = row.get("label") {
-                let role = self.theme.role(t.label).clone();
-                let Some(fi) = self.fonts.index(&role.font) else { continue };
+                let role = self.role_look(t.label);
+                let Some(fi) = role.font else { continue };
                 let font = self.fonts.font(fi);
                 let (text, laid) = &mut self.threat_text[k];
                 if text != label || laid.glyphs.is_empty() {
@@ -1351,8 +1359,8 @@ impl Ui {
 
     fn draw_toasts(&mut self, rect: Rect, scale: f32, upward: bool) {
         let st = self.theme.toast.clone();
-        let role = self.theme.role(st.role).clone();
-        let Some(fi) = self.fonts.index(&role.font) else { return };
+        let role = self.role_look(st.role);
+        let Some(fi) = role.font else { return };
         let b = self.theme.boxed(st.boxed).clone();
         let pad = b.padding.map(|v| v * scale);
         let gap = 6.0 * scale;
@@ -1437,8 +1445,8 @@ impl Ui {
             return;
         }
         let st = self.theme.tooltip.clone();
-        let role = self.theme.role(st.role).clone();
-        let Some(fi) = self.fonts.index(&role.font) else { return };
+        let role = self.role_look(st.role);
+        let Some(fi) = role.font else { return };
         let scale = view.scale;
         let sr = &self.screens[w.screen];
         let node = &sr.screen.nodes[w.node as usize];
@@ -1643,6 +1651,14 @@ impl Measure for Meas<'_> {
         let w = rt.laid.lines.iter().map(|l| l.width).fold(0.0f32, f32::max);
         [w.ceil(), rt.laid.height.ceil()]
     }
+}
+
+#[derive(Clone, Copy)]
+struct RoleLook {
+    color: Rgba,
+    shadow: Option<Rgba>,
+    size: f32,
+    font: Option<usize>,
 }
 
 /// A shallow copy of a node kind's variant (avoids cloning templates while drawing).

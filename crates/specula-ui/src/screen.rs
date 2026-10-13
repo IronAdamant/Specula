@@ -158,7 +158,7 @@ pub const SHAPES: [(&str, Shape); 19] = [
     ("play", Shape::Play),
 ];
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IconSource {
     Shape(Shape),
     /// A region of a texture the renderer knows by id; `uv` is `[u0, v0, u1, v1]`.

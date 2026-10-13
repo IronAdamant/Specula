@@ -211,6 +211,9 @@ impl<'a> Obj<'a> {
     /// Fail on any field never read. `allowed` lists every field name the format has, for hints.
     pub fn finish(self, allowed: &[&str]) -> Result<(), UiError> {
         for (i, (k, _)) in self.pairs.iter().enumerate() {
+            if self.pairs[..i].iter().any(|(p, _)| p == k) {
+                return Err(UiError::new(ErrorCode::UnknownField, self.field_path(k), format!("field \"{k}\" appears twice")));
+            }
             if !self.seen[i] {
                 let hint = suggest(k, allowed.iter().copied());
                 let known = if hint.is_empty() { format!("; known fields: {}", allowed.join(", ")) } else { hint };

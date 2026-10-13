@@ -273,7 +273,7 @@ fn resolve(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize, axis: us
             let cn = &screen.nodes[c];
             if let Size::Fill(w) = size_of(cn, axis) {
                 let share = if weights > 0.0 { free * w / weights } else { 0.0 };
-                let v = ctx.clamp(cn, axis, share.max(comp[c].fit[axis].min(share.max(0.0))), inner);
+                let v = ctx.clamp(cn, axis, share, inner);
                 set_size(&mut comp[c], axis, v);
             }
         }
@@ -285,23 +285,16 @@ fn resolve(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize, axis: us
             let cols = columns as f32;
             ((inner - gap * (cols - 1.0)) / cols).max(0.0)
         }
-        Layout::Grid { columns } => {
-            // Row height: the tallest child in that row (computed per row below).
-            let _ = columns;
-            -1.0
-        }
+        // Grid row height: the tallest child of each row (computed per row below).
+        Layout::Grid { .. } => -1.0,
         _ => inner,
     };
-    let mut grid_rows: [f32; 0] = [];
-    let _ = &mut grid_rows;
     let mut k = 0usize;
     let mut row_h = 0.0f32;
     let columns = match node.layout {
         Layout::Grid { columns } => columns as usize,
         _ => 1,
     };
-    let children_start = i + 1;
-    let _ = children_start;
     for c in screen.children(i as u32) {
         let c = c as usize;
         if !comp[c].visible {
@@ -316,15 +309,10 @@ fn resolve(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize, axis: us
             // Grid height: the row's tallest fit.
             if k % columns == 0 {
                 row_h = 0.0;
-                let mut j = 0;
-                for c2 in screen.children(i as u32).filter(|&c2| comp[c2 as usize].visible).skip(k) {
-                    if j == columns {
-                        break;
-                    }
+                for c2 in screen.children(i as u32).filter(|&c2| comp[c2 as usize].visible).skip(k).take(columns) {
                     let c2n = &screen.nodes[c2 as usize];
                     let mg2 = ctx.margin(c2n, inner);
                     row_h = row_h.max(ask(ctx, c2n, &comp[c2 as usize], 1) + mg2[0] + mg2[2]);
-                    j += 1;
                 }
             }
             row_h
@@ -333,7 +321,7 @@ fn resolve(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize, axis: us
         let v = match size_of(cn, axis) {
             Size::Fill(_) => space - extra,
             Size::Fixed(l) => ctx.len(l, space),
-            Size::Auto if stretch || matches!(node.layout, Layout::Grid { .. }) && axis == 0 && cn.kind.interactive() => space - extra,
+            Size::Auto if stretch || (matches!(node.layout, Layout::Grid { .. }) && axis == 0 && cn.kind.interactive()) => space - extra,
             Size::Auto => comp[c].fit[axis].min(if matches!(node.layout, Layout::Grid { .. }) { space - extra } else { f32::MAX }),
         };
         let v = ctx.clamp(cn, axis, v, space);
@@ -507,8 +495,6 @@ fn place(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize) {
             }
         }
     }
-    // Children's content boxes for leaves (no further place() call needs them otherwise).
-    let _ = Rect::default();
 }
 
 /// Angle (radians, y down: −π/2 is up) of item `k` of `n` in a radial menu: the first item at the
