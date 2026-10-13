@@ -30,6 +30,7 @@ const RING_DOTS: usize = 28;
 const ENEMY_SCALE: Vec3 = Vec3 { x: 1.25, y: 1.25, z: 1.25 };
 
 /// A pooled moving thing (an enemy or a projectile).
+#[derive(Clone)]
 struct Slot {
     id: u64,
     /// Enemy kind or stone kind index: slots are reused only for the same look.
@@ -47,6 +48,7 @@ struct Slot {
     flies: bool,
 }
 
+#[derive(Clone)]
 struct StoneView {
     id: u64,
     kind: u8,
@@ -54,6 +56,7 @@ struct StoneView {
     lit: bool,
 }
 
+#[derive(Clone)]
 struct WallView {
     id: u64,
     bucket: u8,
@@ -77,6 +80,9 @@ pub enum CursorLook {
     Invalid(CellId),
 }
 
+/// Cloneable so the game can checkpoint it (see `Game::checkpoint`): the entity ids it caches
+/// must go back with the world when a rejected game tool is rolled back.
+#[derive(Clone)]
 pub struct Scene {
     pub geo: SlabGeo,
     agent: String,

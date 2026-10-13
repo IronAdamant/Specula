@@ -12,15 +12,28 @@
 //!
 //! - Matrices are column-major `[f32; 16]` in Vulkan clip conventions (y down, depth 0..1) — build
 //!   them with `specula_core::math` (`perspective_vk`, `look_at_rh`, `from_trs`).
-//! - Triangle lists of [`Vertex`], D32 depth test (LESS with clear 1, or GREATER with clear 0 when
-//!   [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
-//! - Opaque draws ([`Material::Lit`]) come first, with no face culling. Blended draws (every other
-//!   material) follow, sorted far to near, with depth test on and depth writes off.
+//! - Triangle lists of [`Vertex`] (position, normal, sRGB vertex colour multiplied with a `Lit`
+//!   draw's colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0
+//!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
+//! - Opaque draws ([`Material::Lit`]) come first, with no face culling; then the sky (if on);
+//!   then blended draws (every other material), sorted far to near, with depth test on and depth
+//!   writes off; then the overlay, last, over everything, after post-processing.
 //! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
-//! - Per-frame data (camera, environment, lights, time) and one record per draw (model, colours,
-//!   surface) reach the shaders through buffer device addresses; push constants carry only the
-//!   two addresses, the material and the glass pass.
+//! - Per-frame data (camera, environment, lights, time, shadow cascades, fog, sky) and one record
+//!   per draw (model, colours, surface) reach the shaders through buffer device addresses; push
+//!   constants carry only the two addresses, the material and the glass pass. One global
+//!   descriptor set holds the shadow map and the bindless texture array.
+//!
+//! # Frame passes
+//!
+//! `shadow` (sun shadow map, [`ShadowSettings`]) → `scene` (forward, all materials, the sky
+//! [`SkySettings`], height fog [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`])
+//! → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
+//! **off by default**, and each one off is specialized out of the shaders (or its pass skipped),
+//! so a frame without it renders exactly — bit for bit — what it rendered before the feature
+//! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
+//! straight to the target (no intermediate images: cheapest, and tile-GPU friendly).
 //!
 //! # Performance
 //!
@@ -34,8 +47,16 @@
 //!   persisted ([`Gpu::pipeline_cache_data`]) and fed back ([`GpuOptions::pipeline_cache`]).
 //!   Call [`Gpu::mark_warm`] after loading; a pipeline created later is counted as a budget error
 //!   ([`PipelineStats::created_after_warm`]).
+//! - **Specialization:** the scene shaders are one source; each pipeline specializes it by
+//!   feature (shadows, fog, HDR output) and the opaque pipeline to the `Lit` path alone, so a
+//!   frame pays only for what it uses (on the Intel iGPU this cut the game scene's main pass from
+//!   6.9 to 4.4 ms).
+//! - **Budget** (`examples/bench.rs`, scene `game`: 2,000 instanced objects, shadows, bloom, fog,
+//!   sky, FXAA, 200 overlay quads at 1600×900): about 7.5 ms GPU on the Intel RaptorLake iGPU
+//!   with one fitted 2048² shadow map; each extra cascade adds about 1.2 ms.
 //! - **Statistics:** [`Gpu::last_frame_stats`] — GPU time per pass (timestamp queries, read without
-//!   stalling), CPU time, draw calls, instances, triangles, culled draws, pipelines and memory.
+//!   stalling), CPU time, draw calls, instances, triangles, culled draws, shadow casters, overlay
+//!   quads, pipelines and memory.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are
 //!   `R8G8B8A8_SRGB`; the swapchain prefers `B8G8R8A8_SRGB`. Readback bytes are therefore sRGB RGBA8,
 //!   ready to write as PNG.
@@ -44,11 +65,15 @@ use std::ffi::c_void;
 use std::fmt;
 
 mod batch;
+mod descriptors;
 mod device;
 mod gpu;
 mod instance;
 mod loader;
+mod overlay;
+mod post;
 mod render;
+mod shadow;
 mod stats;
 mod swapchain;
 mod timing;
@@ -134,6 +159,31 @@ pub struct GpuError {
     pub vk_result: Option<i32>,
     /// Set when a request exceeded a fixed limit.
     pub limit: Option<LimitExceeded>,
+    /// Set when an argument was rejected, saying what was wrong with it.
+    pub reason: Option<ErrorReason>,
+}
+
+/// Which kind of resource an id names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdKind {
+    Mesh,
+    Texture,
+    Target,
+}
+
+/// Why an argument was rejected (machine-readable; `message` says the same in words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorReason {
+    /// An id that names nothing (never created, or destroyed).
+    UnknownId { kind: IdKind, id: u32 },
+    /// A width or height of 0.
+    ZeroSize { width: u32, height: u32 },
+    /// A width or height above the device's limit.
+    TooLarge { width: u32, height: u32, max: u32 },
+    /// Pixel data of the wrong length.
+    DataLength { given: u64, expected: u64 },
+    /// A region that leaves the texture.
+    RegionOutside { x: u32, y: u32, width: u32, height: u32, texture_width: u32, texture_height: u32 },
 }
 
 /// A limit of the GPU layer.
@@ -143,6 +193,10 @@ pub enum Limit {
     PointLights,
     /// Visible draw records per frame (instance indices are `u32`).
     DrawRecords,
+    /// Live textures plus post-chain images (slots in the bindless array).
+    Textures,
+    /// Overlay quads per frame ([`MAX_OVERLAY_QUADS`]).
+    OverlayQuads,
 }
 
 /// What was asked for and what is allowed.
@@ -166,12 +220,27 @@ impl std::error::Error for GpuError {}
 
 impl GpuError {
     pub(crate) fn new(message: impl Into<String>) -> GpuError {
-        GpuError { message: message.into(), vk_result: None, limit: None }
+        GpuError { message: message.into(), vk_result: None, limit: None, reason: None }
+    }
+
+    /// An argument was rejected for `reason`.
+    pub(crate) fn rejected(reason: ErrorReason, message: impl Into<String>) -> GpuError {
+        GpuError { message: message.into(), vk_result: None, limit: None, reason: Some(reason) }
+    }
+
+    /// `id` of `kind` names nothing.
+    pub(crate) fn unknown(kind: IdKind, id: u32, context: &str) -> GpuError {
+        let name = match kind {
+            IdKind::Mesh => "mesh",
+            IdKind::Texture => "texture",
+            IdKind::Target => "target",
+        };
+        GpuError::rejected(ErrorReason::UnknownId { kind, id }, format!("unknown {name} id {id}{context}"))
     }
 
     /// `what` failed with `result`.
     pub(crate) fn vk(what: &str, result: i32) -> GpuError {
-        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None }
+        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None, reason: None }
     }
 
     /// `requested` exceeds the limit `what` (at most `max`).
@@ -179,20 +248,51 @@ impl GpuError {
         let name = match what {
             Limit::PointLights => "point lights per frame",
             Limit::DrawRecords => "visible draw records per frame",
+            Limit::Textures => "textures (and post-chain images) alive at once",
+            Limit::OverlayQuads => "overlay quads per frame",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
             vk_result: None,
             limit: Some(LimitExceeded { what, requested, max }),
+            reason: None,
         }
     }
 }
 
+/// One mesh vertex (28 bytes).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    /// sRGB colour (0–255), multiplied with the draw's colour by `Lit` (the stylised
+    /// vertex-colour path). White ([`Vertex::WHITE`]) leaves the draw colour unchanged, bit for
+    /// bit. Blended materials ignore it for now (reading it there hung the Intel driver); alpha is
+    /// reserved.
+    pub color: [u8; 4],
+}
+
+impl Vertex {
+    /// The neutral vertex colour.
+    pub const WHITE: [u8; 4] = [255; 4];
+
+    /// A white vertex.
+    pub const fn new(position: [f32; 3], normal: [f32; 3]) -> Vertex {
+        Vertex { position, normal, color: Vertex::WHITE }
+    }
+
+    /// A vertex with an sRGB colour.
+    pub const fn with_color(position: [f32; 3], normal: [f32; 3], color: [u8; 4]) -> Vertex {
+        Vertex { position, normal, color }
+    }
+}
+
+impl Default for Vertex {
+    /// At the origin, zero normal, white.
+    fn default() -> Self {
+        Vertex::new([0.0; 3], [0.0; 3])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -200,6 +300,75 @@ pub struct MeshId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TargetId(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureId(pub u32);
+
+/// Pixel format of an uploaded texture (tightly packed rows, top row first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureFormat {
+    /// One byte per pixel, e.g. a font atlas's coverage (sampled as red).
+    R8,
+    /// sRGB colour + linear alpha (pictures, UI art): sampled as linear colour.
+    Rgba8Srgb,
+    /// Raw data in 0..1 (masks, data textures).
+    Rgba8Unorm,
+}
+
+impl TextureFormat {
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            TextureFormat::R8 => 1,
+            TextureFormat::Rgba8Srgb | TextureFormat::Rgba8Unorm => 4,
+        }
+    }
+}
+
+/// How an overlay quad uses its texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OverlayKind {
+    /// colour × texel (straight alpha).
+    #[default]
+    Rgba,
+    /// The texture's red channel is coverage (a font atlas): colour with alpha × coverage.
+    AlphaMask,
+}
+
+/// A rectangle drawn over the finished frame (HUD, text, UI panels), after post-processing, in
+/// list order. Pixel coordinates with the origin at the top left; blended with premultiplied
+/// alpha. Shows in offscreen captures as on the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayQuad {
+    /// x, y, width, height in pixels.
+    pub rect: [f32; 4],
+    /// Texture coordinates of the rect's top-left and bottom-right corners: u0, v0, u1, v1.
+    pub uv: [f32; 4],
+    /// sRGB colour and straight (non-premultiplied) alpha; multiplies the texture.
+    pub color: [f32; 4],
+    /// `None` = a solid fill of `color`.
+    pub texture: Option<TextureId>,
+    pub kind: OverlayKind,
+    /// Corner radius in pixels (0 = square). Edges are anti-aliased.
+    pub radius: f32,
+}
+
+impl Default for OverlayQuad {
+    fn default() -> Self {
+        OverlayQuad { rect: [0.0; 4], uv: [0.0, 0.0, 1.0, 1.0], color: [1.0; 4], texture: None, kind: OverlayKind::Rgba, radius: 0.0 }
+    }
+}
+
+impl OverlayQuad {
+    /// A solid rectangle.
+    pub fn solid(rect: [f32; 4], color: [f32; 4]) -> OverlayQuad {
+        OverlayQuad { rect, color, ..Default::default() }
+    }
+
+    /// A textured rectangle showing `uv` of `texture`, tinted by `color`.
+    pub fn textured(rect: [f32; 4], uv: [f32; 4], texture: TextureId, kind: OverlayKind, color: [f32; 4]) -> OverlayQuad {
+        OverlayQuad { rect, uv, color, texture: Some(texture), kind, radius: 0.0 }
+    }
+}
 
 /// How a draw is shaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -280,6 +449,144 @@ pub struct PointLight {
 /// At most this many point lights per frame.
 pub const MAX_POINT_LIGHTS: usize = 16;
 
+/// At most this many overlay quads per frame.
+pub const MAX_OVERLAY_QUADS: usize = 65_536;
+
+/// Most shadow cascades.
+pub const MAX_SHADOW_CASCADES: u32 = 4;
+
+/// The sun's (or moon's) shadow: a cascaded shadow map fitted to the view. Off by default.
+///
+/// Only opaque (`Lit`) draws cast; every material receives (the lava lamp's glass included).
+/// Cascades split the visible depth range (from the nearest visible draw to `distance`, or the
+/// farthest visible draw if nearer); each is a square fitted around its slice, snapped to whole
+/// texels so it does not shimmer as the camera moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowSettings {
+    pub enabled: bool,
+    /// Texels per side of each cascade (clamped to 256..=8192).
+    pub resolution: u32,
+    /// 1..=[`MAX_SHADOW_CASCADES`]. One map fitted to what is visible suits compact, top-down
+    /// views (and is cheapest: on the Intel iGPU each cascade costs about 1.2 ms in the game
+    /// bench); more cascades keep near shadows sharp over long views.
+    pub cascades: u32,
+    /// View depth (m) where shadows end; they fade out over the last 10%.
+    pub distance: f32,
+    /// Penumbra radius in texels of the nearest cascade (0 = hard, hardware 2×2 filtering only).
+    pub softness: f32,
+    /// Scales the depth bias (constant and slope) and the receiver's offset along its normal.
+    /// Raise it if surfaces shadow themselves ("acne"); lower it if shadows detach.
+    pub bias: f32,
+}
+
+impl Default for ShadowSettings {
+    fn default() -> Self {
+        ShadowSettings { enabled: false, resolution: 2048, cascades: 1, distance: 80.0, softness: 1.5, bias: 1.0 }
+    }
+}
+
+/// Bloom: light above `threshold` spreads into a soft glow. Off by default.
+///
+/// With bloom on the scene renders to a 16-bit float target; a chain of half-resolution levels
+/// blurs what is bright, and the tonemap pass adds it back. Exposure applies first, so with the
+/// default threshold of 1 only what would display brighter than white blooms (emissive surfaces,
+/// bright highlights), not lit stone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BloomSettings {
+    pub enabled: bool,
+    /// Exposed brightness where bloom starts.
+    pub threshold: f32,
+    /// Softens the threshold over this range (0 = hard cut).
+    pub knee: f32,
+    /// Strength of the glow added back.
+    pub intensity: f32,
+    /// Blur levels (1..=8): each halves the resolution and widens the glow. Fewer = cheaper.
+    pub levels: u32,
+}
+
+impl Default for BloomSettings {
+    fn default() -> Self {
+        BloomSettings { enabled: false, threshold: 1.0, knee: 0.5, intensity: 1.0, levels: 5 }
+    }
+}
+
+/// An analytic sky drawn behind everything, instead of the flat clear colour. Off by default.
+///
+/// A vertical gradient (ground below the horizon, horizon colour at it, zenith overhead) and a
+/// disc with a glow in the sun's direction (a moon, at night). Colours are sRGB; the sky is
+/// scene light, so exposure, tone mapping, bloom and fog apply to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkySettings {
+    pub enabled: bool,
+    pub zenith: [f32; 3],
+    pub horizon: [f32; 3],
+    /// Below the horizon.
+    pub ground: [f32; 3],
+    /// Multiplies the gradient.
+    pub intensity: f32,
+    /// How quickly the horizon colour gives way to the zenith (higher = thinner horizon band).
+    pub horizon_sharpness: f32,
+    /// Angular radius of the sun/moon disc in degrees (0 = no disc).
+    pub disc_size_deg: f32,
+    /// Brightness of the disc, times the sun colour (above 1 blooms).
+    pub disc_intensity: f32,
+    /// Strength of the halo around the disc.
+    pub glow: f32,
+}
+
+impl Default for SkySettings {
+    /// A clear moonlit night (the Sepulcra palette).
+    fn default() -> Self {
+        SkySettings {
+            enabled: false,
+            zenith: [0.043, 0.063, 0.125],
+            horizon: [0.165, 0.204, 0.282],
+            ground: [0.08, 0.1, 0.14],
+            intensity: 1.0,
+            horizon_sharpness: 3.0,
+            disc_size_deg: 1.2,
+            disc_intensity: 6.0,
+            glow: 0.25,
+        }
+    }
+}
+
+/// Exponential height fog. Off by default.
+///
+/// Density is `density` at `height` and changes by a factor e every `1 / falloff` metres: thick
+/// below, thin above (`falloff` 0 = uniform fog). It starts `start_distance` metres from the
+/// camera, applies to every material and to the sky (when the sky is on; otherwise the
+/// background stays the clear colour), and brightens towards the sun by `sun_scatter`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogSettings {
+    pub enabled: bool,
+    /// sRGB.
+    pub color: [f32; 3],
+    /// Extinction per metre at `height`.
+    pub density: f32,
+    /// Per metre of height.
+    pub falloff: f32,
+    /// Reference height (m).
+    pub height: f32,
+    pub start_distance: f32,
+    /// In-scattered sunlight towards the sun (0 = none).
+    pub sun_scatter: f32,
+}
+
+impl Default for FogSettings {
+    fn default() -> Self {
+        FogSettings {
+            enabled: false,
+            color: [0.165, 0.204, 0.282],
+            density: 0.03,
+            falloff: 0.25,
+            height: 0.0,
+            start_distance: 0.0,
+            sun_scatter: 0.3,
+        }
+    }
+}
+
 /// Scene-wide lighting. The default reproduces M0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Environment {
@@ -295,6 +602,16 @@ pub struct Environment {
     pub exposure: f32,
     /// Filmic (ACES) tone mapping plus dithering; off = plain clamp, as in M0.
     pub tonemap: bool,
+    /// Directional shadows from the sun (off by default).
+    pub shadow: ShadowSettings,
+    /// Glow around bright light (off by default).
+    pub bloom: BloomSettings,
+    /// FXAA edge anti-aliasing after tone mapping (off by default).
+    pub fxaa: bool,
+    /// Gradient sky with a sun/moon disc (off by default: the clear colour shows).
+    pub sky: SkySettings,
+    /// Exponential height fog (off by default).
+    pub fog: FogSettings,
 }
 
 impl Default for Environment {
@@ -307,6 +624,11 @@ impl Default for Environment {
             ambient_intensity: 0.25,
             exposure: 1.0,
             tonemap: false,
+            shadow: ShadowSettings::default(),
+            bloom: BloomSettings::default(),
+            fxaa: false,
+            sky: SkySettings::default(),
+            fog: FogSettings::default(),
         }
     }
 }
@@ -327,6 +649,8 @@ pub struct FrameDesc<'a> {
     pub lights: &'a [PointLight],
     /// Seconds of animation time. Captures pass it explicitly, so a frame is reproducible.
     pub time_s: f32,
+    /// Drawn last, over everything, in list order (at most [`MAX_OVERLAY_QUADS`]).
+    pub overlay: &'a [OverlayQuad],
 }
 
 impl Default for FrameDesc<'_> {
@@ -339,6 +663,7 @@ impl Default for FrameDesc<'_> {
             environment: Environment::default(),
             lights: &[],
             time_s: 0.0,
+            overlay: &[],
         }
     }
 }
@@ -422,6 +747,24 @@ impl Gpu {
     /// Render a frame into an offscreen target. Completes before returning (M0: simple, synchronous).
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         self.inner.render(target, frame)
+    }
+
+    /// Upload a texture for overlay quads (and, later, materials). `pixels` holds
+    /// `width × height × format.bytes_per_pixel()` bytes, top row first. Errors (structured) when
+    /// a size is 0 or too large, the data has the wrong length, or every texture slot is taken.
+    pub fn upload_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        self.inner.upload_texture(width, height, format, pixels)
+    }
+
+    /// Replace the `width × height` region at (`x`, `y`) of a texture (glyph atlases grow this
+    /// way). Frames already submitted see the old or new contents, never a mix within a draw.
+    pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
+        self.inner.update_texture(texture, x, y, width, height, pixels)
+    }
+
+    /// Unknown ids are ignored. Waits for in-flight window frames that may still use it.
+    pub fn destroy_texture(&mut self, texture: TextureId) {
+        self.inner.destroy_texture(texture)
     }
 
     /// Read back the target as tightly packed sRGB RGBA8, top row first.

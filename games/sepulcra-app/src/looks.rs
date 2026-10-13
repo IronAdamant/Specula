@@ -42,6 +42,10 @@ pub mod palette {
     pub const LICHEN: [f32; 3] = hex(0x7d8a6a);
     pub const SKY: [f32; 3] = hex(0x0b1020);
     pub const MIST: [f32; 3] = hex(0x2a3448);
+    /// Fog below the slab: darker than MIST so cliffs fade into the night, not into a haze.
+    pub const DEEP_MIST: [f32; 3] = hex(0x161c2a);
+    /// The sky below the horizon (the void under the slab).
+    pub const VOID: [f32; 3] = hex(0x06080e);
     pub const MOON: [f32; 3] = hex(0xc9d6ff);
     pub const IRON: [f32; 3] = hex(0x5c6168);
     /// The chalk scar on lane-jump ledges (a pale neutral).

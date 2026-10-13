@@ -269,37 +269,46 @@ claims and versions more agents just means more collisions.
 - [x] **Ordered containers in simulation code.** No dependence on `HashMap` iteration order, which Rust randomises
   per process.
   *Done 2026-10-13:* the world uses ordered maps; Sepulcra's sim bans `HashMap`/`HashSet` with clippy.
-- [ ] **`world_hash`**: a hash of simulation state per tick.
-- [ ] **Journal-replay test**: replaying a journal reproduces the same hash, in CI.
+- [x] **`world_hash`**: a hash of simulation state per tick.
+  *Done 2026-10-13:* `world_hash` tool with a per-tick ring of (tick, hash) and a replay `verify`.
+- [x] **Journal-replay test**: replaying a journal reproduces the same hash, in CI.
+  *Done 2026-10-13:* `crates/specula/tests/journal_replay.rs` (GPU-free, pinned hash, runs on every CI job).
 
 **Safe concurrency:**
 - [x] **Agent identity**: session → agent id, name and role (from MCP `clientInfo` or `agent_hello`).
   *Done 2026-10-13:* `agent_hello`; attribution is `created_by`/`modified_by`.
-- [ ] **Journal**: append-only, agent-attributed, and tick-stamped. `world_history`, and `world_undo` scoped to your
+- [x] **Journal**: append-only, agent-attributed, and tick-stamped. `world_history`, and `world_undo` scoped to your
   own changes by default.
   *Why:* swarms make mistakes at volume, so undo has to be surgical. Tick stamps make the journal a replay log (F2).
+  *Done 2026-10-13:* two bounded rings (agents, game); game changes coalesced per tick; undo as a unit with conflict errors.
 - [x] **Versions**: per-entity versions with an optional `expect_version`. A stale write is rejected with the current
   state.
-- [ ] **Claims**: on a subtree path or a region, as leases with a time limit that expire if the agent disappears.
+- [x] **Claims**: on a subtree path or a region, as leases with a time limit that expire if the agent disappears.
   Writes outside your claim are rejected unless co-claimed.
-- [ ] **Change feed**: `world_changes(since)` for polling, plus MCP notifications where clients support them.
+  *Done 2026-10-13:* paths and regions, leases, session-bound identities; checked step by step for batches, undo, game tools and ancestor moves (4 adversarial review rounds).
+- [x] **Change feed**: `world_changes(since)` for polling, plus MCP notifications where clients support them.
+  *Done 2026-10-13:* polling with cursors and gap reporting; MCP push notifications still to do.
 
 **Performance from the start (F3):**
 - [x] **`perf_frame`**: CPU tick time, GPU time per pass (timestamp queries), draw count, triangle count, GPU memory.
   *Why:* agents can only optimise what they can see.
   *Done 2026-10-13:* per-pass GPU timestamps, CPU record/submit, draws, triangles, culled, pipelines after warm-up, memory and heap budgets, frame pacing, sim tick cost, structured budget errors.
-- [ ] **Reference run on the Intel integrated GPU** in the exit proof.
+- [x] **Reference run on the Intel integrated GPU** in the exit proof.
+  *Done 2026-10-13:* `perf_frame` and `scripts/perf_baseline.py` run on both GPUs.
 
 **Scale:**
-- [ ] **Connection limit returns HTTP 503**, not a reset. Scale drill with 16+ concurrent agents.
+- [x] **Connection limit returns HTTP 503**, not a reset. Scale drill with 16+ concurrent agents.
+  *Done 2026-10-13:* 503 with Retry-After; `scripts/swarm_drill.py` at 16 and 64 agents with a 22-case attack phase (0 leaked).
 
 **Exit proof:**
 - [ ] 4+ agents (Claude Code subagents) build separate districts at once.
-- [ ] A deliberately conflicting write is rejected cleanly.
-- [ ] Save → restart → load gives a pixel-identical render and the same `world_hash`.
+- [x] A deliberately conflicting write is rejected cleanly.
+- [x] Save → restart → load gives a pixel-identical render and the same `world_hash`.
+  *Done 2026-10-13:* `scripts/world_roundtrip.py`: identical hash, subjects and PNG bytes.
 - [ ] A journal replay matches its hash on both the msvc and gnu builds.
-- [ ] It runs on both GPUs.
-- [ ] An adversarial review passes.
+- [x] It runs on both GPUs.
+- [x] An adversarial review passes.
+  *Done 2026-10-13:* every M1 lane passed lane-reviewer rounds before merging.
 
 ---
 

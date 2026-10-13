@@ -76,6 +76,9 @@ fn kind_name(k: MemoryKind) -> &'static str {
         MemoryKind::Readback => "readback",
         MemoryKind::PerFrame => "per_frame",
         MemoryKind::Staging => "staging",
+        MemoryKind::ShadowMaps => "shadow_maps",
+        MemoryKind::PostTargets => "post_targets",
+        MemoryKind::Textures => "textures",
     }
 }
 

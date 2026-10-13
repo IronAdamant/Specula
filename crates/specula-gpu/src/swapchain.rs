@@ -2,7 +2,14 @@
 
 use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
-use crate::render::{check_frame, prepare_frame, record_scene, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::descriptors::Descriptors;
+use crate::render::{
+    check_frame, frame_features, prepare_frame, record_frame, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget,
+    DEPTH_FORMAT,
+};
+use crate::overlay::Textures;
+use crate::post::{PostMode, PostTargets};
+use crate::shadow::ShadowMap;
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, MemoryKind};
@@ -46,6 +53,8 @@ pub struct Window {
     wanted: (u32, u32),
     /// Swapchain must be (re)built before the next present.
     stale: bool,
+    /// Post-chain images at the swapchain's size (the owner frees them before `destroy`).
+    pub post: PostTargets,
 }
 
 fn surface_fns(inst: &Instance) -> Result<&SurfaceFns, GpuError> {
@@ -99,6 +108,7 @@ impl Window {
             frame_index: 0,
             wanted: (width, height),
             stale: true,
+            post: PostTargets::default(),
         };
         match window.init(inst, dev, pool) {
             Ok(()) => Ok(window),
@@ -294,13 +304,16 @@ impl Window {
         inst: &Instance,
         dev: &Device,
         pipelines: &mut Pipelines,
+        descriptors: &mut Descriptors,
+        shadow_map: Option<&ShadowMap>,
         meshes: &HashMap<u32, Mesh>,
+        textures: &Textures,
         frame: &FrameDesc,
         frame_no: u64,
         scratch: &mut FrameScratch,
         stats: &mut FrameStats,
     ) -> Result<bool, GpuError> {
-        check_frame(meshes, frame)?;
+        check_frame(meshes, textures, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
             return Ok(false); // minimized: nothing to present
         }
@@ -308,7 +321,6 @@ impl Window {
             return Ok(false);
         }
         let scfns = swapchain_fns(dev)?;
-        let pipelines = pipelines.get(dev, self.format.format, frame.reverse_z)?;
         let t0 = Instant::now();
         let f = &mut self.frames[self.frame_index];
         if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
@@ -328,7 +340,14 @@ impl Window {
         }
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
-        prepare_frame(dev, meshes, frame, self.extent, upload, scratch)?;
+        prepare_frame(dev, meshes, textures, frame, self.extent, upload, scratch)?;
+        let features = frame_features(frame, scratch, shadow_map.is_some());
+        let mode = PostMode::of(&frame.environment).fit(self.extent);
+        let pipelines =
+            pipelines.frame(dev, self.format.format, features, mode, frame.environment.sky.enabled, !frame.overlay.is_empty())?;
+        // Resized or re-configured images may still be used by frames in flight: wait for them.
+        self.post.ensure(dev, descriptors, self.extent, mode, || dev.wait_idle())?;
+        let descriptors = &*descriptors;
         let t2 = Instant::now();
 
         let mut index = 0u32;
@@ -378,7 +397,8 @@ impl Window {
             )],
         );
         let upload = f.upload.as_ref().expect("created in init");
-        let draws = record_scene(dev, f.cmd, pipelines, meshes, &target, frame, &scratch.plan, upload, f.timer.as_mut());
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, shadow_map, frame, scratch, upload, post: &self.post, mode };
+        let draws = record_frame(&ctx, f.cmd, &target, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.barrier(
             f.cmd,
