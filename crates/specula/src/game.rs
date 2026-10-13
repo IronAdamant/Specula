@@ -53,6 +53,11 @@ pub trait Game {
 }
 
 /// What a game can touch.
+///
+/// Everything the game changes in the world is journaled under its name (see
+/// [`crate::journal`]): per tick (and per frame) the changes are coalesced to one per entity and
+/// kept replay-only, so hundreds of updates a tick stay cheap. The game is the simulation's rules,
+/// so its writes are never checked against agents' claims.
 pub struct Ctx<'a> {
     pub world: &'a mut World,
     pub clock: &'a Clock,
