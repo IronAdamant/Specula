@@ -22,13 +22,31 @@ const MAX_PIXELS: u64 = 1 << 28;
 
 /// Encode RGBA8 pixels (top row first). Panics if `rgba.len() != width * height * 4`.
 /// Uses adaptive per-row filtering (pick the filter with smallest sum of abs values) and zlib.
+/// Large images are filtered and compressed on [`deflate::available_threads`] threads; the
+/// bytes are the same for any thread count (see [`encode_rgba8_threads`]).
+///
+/// For agent captures, [`Level::Fastest`] is several times faster than [`Level::Default`] at
+/// about the same size, because rendered frames are dithered and LZ77 finds little in them.
 pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8], level: Level) -> Vec<u8> {
-    encode_with_filter(width, height, rgba, level, None)
+    encode_rgba8_threads(width, height, rgba, level, deflate::available_threads())
+}
+
+/// [`encode_rgba8`] with at most `threads` threads (0 or 1 = the calling thread only). The
+/// output is byte-identical for every thread count.
+pub fn encode_rgba8_threads(width: u32, height: u32, rgba: &[u8], level: Level, threads: usize) -> Vec<u8> {
+    encode_with_filter(width, height, rgba, level, None, threads)
 }
 
 /// Encoder core; `force_filter` pins every row to one filter type (tests use it to exercise
 /// each unfilter path).
-fn encode_with_filter(width: u32, height: u32, rgba: &[u8], level: Level, force_filter: Option<u8>) -> Vec<u8> {
+fn encode_with_filter(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    level: Level,
+    force_filter: Option<u8>,
+    threads: usize,
+) -> Vec<u8> {
     let stride = width as usize * 4;
     assert_eq!(
         rgba.len(),
@@ -36,8 +54,9 @@ fn encode_with_filter(width: u32, height: u32, rgba: &[u8], level: Level, force_
         "encode_rgba8: rgba has {} bytes, expected {width}×{height}×4",
         rgba.len()
     );
-    let filtered = filter_rows(rgba, stride, height as usize, force_filter);
-    let z = deflate::zlib_compress(&filtered, level);
+    // Rows are filtered inside the compression workers, band by band.
+    let rows = FilteredRows { rgba, stride, height: height as usize, force: force_filter };
+    let z = deflate::zlib_compress_source(&rows, level, threads);
 
     let mut out = Vec::with_capacity(z.len() + 64);
     out.extend_from_slice(&SIGNATURE);
@@ -65,75 +84,129 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 /// Paeth predictor (PNG spec §9.4).
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let p = a as i16 + b as i16 - c as i16;
-    let pa = (p - a as i16).abs();
-    let pb = (p - b as i16).abs();
-    let pc = (p - c as i16).abs();
+    // With p = a + b - c: |p - a| = |b - c|, |p - b| = |a - c|, |p - c| = |a + b - 2c|.
+    // Written as selects so the encoder's filter loops vectorise.
+    let (a16, b16, c16) = (i16::from(a), i16::from(b), i16::from(c));
+    let pa = (b16 - c16).abs();
+    let pb = (a16 - c16).abs();
+    let pc = (a16 + b16 - 2 * c16).abs();
+    let bc = if pb <= pc { b } else { c };
     if pa <= pb && pa <= pc {
         a
-    } else if pb <= pc {
-        b
     } else {
-        c
+        bc
     }
 }
 
 /// Bytes per complete pixel for the filters (8-bit RGBA).
 const BPP: usize = 4;
 
-/// Prefix each row with its filter type byte and the filtered bytes. Adaptive selection uses the
-/// "minimum sum of absolute differences" heuristic (bytes read as signed).
-fn filter_rows(rgba: &[u8], stride: usize, height: usize, force: Option<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity((stride + 1) * height);
+/// The filtered image stream (per row: a filter-type byte, then the filtered row), computed on
+/// demand for the rows each compression band needs. Each row depends only on the unfiltered
+/// input, so bands can be filtered on any thread, in any order, with the same result. Rows that
+/// straddle a band boundary are filtered by both bands.
+struct FilteredRows<'a> {
+    rgba: &'a [u8],
+    stride: usize,
+    height: usize,
+    force: Option<u8>,
+}
+
+impl deflate::Source for FilteredRows<'_> {
+    fn total_len(&self) -> usize {
+        (self.stride + 1) * self.height
+    }
+
+    fn bytes<'s>(&'s self, range: std::ops::Range<usize>, scratch: &'s mut Vec<u8>) -> &'s [u8] {
+        let line = self.stride + 1;
+        let (first, end_row) = (range.start / line, range.end.div_ceil(line));
+        scratch.clear();
+        scratch.resize((end_row - first) * line, 0);
+        filter_row_range(self.rgba, self.stride, first, self.force, scratch);
+        let base = first * line;
+        &scratch[range.start - base..range.end - base]
+    }
+}
+
+/// Filter the rows starting at `first_row` into `out` (whole lines of `1 + stride` bytes): each
+/// line is its filter type byte and the filtered bytes. Adaptive selection uses the "minimum sum
+/// of absolute differences" heuristic (bytes read as signed).
+fn filter_row_range(rgba: &[u8], stride: usize, first_row: usize, force: Option<u8>, out: &mut [u8]) {
     let zero_row = vec![0u8; stride];
     let mut candidates: [Vec<u8>; 5] = std::array::from_fn(|_| vec![0u8; stride]);
-    for y in 0..height {
+    let types: &[u8] = match force {
+        Some(t) => &[t][..],
+        None => &[0, 1, 2, 3, 4][..],
+    };
+    for (i, line) in out.chunks_exact_mut(stride + 1).enumerate() {
+        let y = first_row + i;
         let row = &rgba[y * stride..(y + 1) * stride];
         let up = if y == 0 { &zero_row[..] } else { &rgba[(y - 1) * stride..y * stride] };
-        let types: &[u8] = match force {
-            Some(t) => &[t][..],
-            None => &[0, 1, 2, 3, 4][..],
-        };
         let mut best = (u64::MAX, 0u8);
         for &t in types {
             let buf = &mut candidates[t as usize];
             apply_filter(t, row, up, buf);
-            let cost: u64 = buf.iter().map(|&b| (b as i8).unsigned_abs() as u64).sum();
+            let cost = filter_cost(buf);
             if cost < best.0 {
                 best = (cost, t);
             }
         }
-        out.push(best.1);
-        out.extend_from_slice(&candidates[best.1 as usize]);
+        line[0] = best.1;
+        line[1..].copy_from_slice(&candidates[best.1 as usize]);
     }
-    out
 }
 
+/// Sum of the filtered bytes read as signed magnitudes (the adaptive filter's cost).
+fn filter_cost(buf: &[u8]) -> u64 {
+    // u32 lanes vectorise; 64 Ki bytes of at most 128 each cannot overflow them.
+    buf.chunks(1 << 16).map(|c| u64::from(c.iter().map(|&b| u32::from((b as i8).unsigned_abs())).sum::<u32>())).sum()
+}
+
+/// Apply filter `t` to `row` (with `up` the unfiltered row above, zeros for the first row).
+/// The first pixel has no left neighbour; the rest run as bounds-check-free loops over equal-
+/// length slices so they vectorise.
 fn apply_filter(t: u8, row: &[u8], up: &[u8], out: &mut [u8]) {
     let n = row.len();
+    let k = BPP.min(n);
+    let (out_head, out) = out.split_at_mut(k);
+    let (cur, left) = (&row[k..], &row[..n - k]);
+    let (up_head, up_rest, up_left) = (&up[..k], &up[k..n], &up[..n - k]);
+    let m = out.len();
+    let (cur, left, up_rest, up_left) = (&cur[..m], &left[..m], &up_rest[..m], &up_left[..m]);
     match t {
-        0 => out.copy_from_slice(row),
+        0 => {
+            out_head.copy_from_slice(&row[..k]);
+            out.copy_from_slice(cur);
+        }
         1 => {
-            out[..BPP.min(n)].copy_from_slice(&row[..BPP.min(n)]);
-            for i in BPP..n {
-                out[i] = row[i].wrapping_sub(row[i - BPP]);
+            out_head.copy_from_slice(&row[..k]);
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(left[i]);
             }
         }
         2 => {
-            for i in 0..n {
-                out[i] = row[i].wrapping_sub(up[i]);
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i]);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(up_rest[i]);
             }
         }
         3 => {
-            for i in 0..n {
-                let left = if i >= BPP { row[i - BPP] as u16 } else { 0 };
-                out[i] = row[i].wrapping_sub(((left + up[i] as u16) / 2) as u8);
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i] / 2);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(((u16::from(left[i]) + u16::from(up_rest[i])) / 2) as u8);
             }
         }
         _ => {
-            for i in 0..n {
-                let (a, c) = if i >= BPP { (row[i - BPP], up[i - BPP]) } else { (0, 0) };
-                out[i] = row[i].wrapping_sub(paeth(a, up[i], c));
+            // Paeth with no left neighbours predicts the byte above.
+            for i in 0..k {
+                out_head[i] = row[i].wrapping_sub(up_head[i]);
+            }
+            for i in 0..m {
+                out[i] = cur[i].wrapping_sub(paeth(left[i], up_rest[i], up_left[i]));
             }
         }
     }
@@ -456,7 +529,7 @@ mod tests {
             })
             .collect();
         for force in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
-            let png = encode_with_filter(w, h, &px, Level::Default, force);
+            let png = encode_with_filter(w, h, &px, Level::Default, force, 1);
             let img = decode(&png).unwrap();
             assert_eq!((img.width, img.height), (w, h));
             assert_eq!(img.rgba, px, "filter {force:?}");
@@ -464,6 +537,74 @@ mod tests {
         // A 1×1 image is valid too.
         let one = decode(&encode_rgba8(1, 1, &[1, 2, 3, 4], Level::Fast)).unwrap();
         assert_eq!(one.rgba, [1, 2, 3, 4]);
+    }
+
+    /// Noisy RGBA test pixels with flat patches, so every filter type and both literals and runs
+    /// occur.
+    fn noisy_pixels(w: u32, h: u32, seed: u32) -> Vec<u8> {
+        let mut state = seed | 1;
+        (0..w as usize * h as usize * 4)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let (x, y) = (i / 4 % w as usize, i / 4 / w as usize);
+                if (x / 16 + y / 8) % 3 == 0 { 40 } else { ((x + 2 * y) as u32 + (state & 3)) as u8 }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn output_is_identical_for_every_thread_count() {
+        // Sizes chosen so compression bands start mid-row (rows of 3109 and 2253 bytes), one
+        // image has a single row longer than a band (filtered twice, by both bands), and one is
+        // a 1-pixel-wide column.
+        let line = |w: u32| w as usize * 4 + 1;
+        assert!(line(40_000) > deflate::BAND_SIZE);
+        let sizes = [(777u32, 301u32), (563, 467), (40_000, 1), (40_000, 2), (1, 70_001), (2, 1), (1, 1)];
+        let levels = [Level::Fastest, Level::Fast, Level::Default, Level::Best];
+        for (w, h) in sizes {
+            let px = noisy_pixels(w, h, w ^ h);
+            for level in levels {
+                let one = encode_rgba8_threads(w, h, &px, level, 1);
+                let img = decode(&one).unwrap_or_else(|e| panic!("{w}x{h} {level:?}: {e}"));
+                assert_eq!((img.width, img.height), (w, h));
+                assert!(img.rgba == px, "{w}x{h} {level:?}: pixels differ");
+                for threads in [2, 3, 7, deflate::available_threads()] {
+                    let many = encode_rgba8_threads(w, h, &px, level, threads);
+                    assert!(one == many, "{w}x{h} {level:?}: {threads} threads differ from 1");
+                }
+            }
+        }
+        // Forced filters through the band path, too.
+        let (w, h) = (777, 301);
+        let px = noisy_pixels(w, h, 7);
+        for force in [Some(0), Some(1), Some(2), Some(3), Some(4)] {
+            let png = encode_with_filter(w, h, &px, Level::Fastest, force, 4);
+            assert_eq!(png, encode_with_filter(w, h, &px, Level::Fastest, force, 1), "filter {force:?}");
+            assert!(decode(&png).unwrap().rgba == px, "filter {force:?}");
+        }
+    }
+
+    #[test]
+    fn huge_image_round_trips() {
+        let (w, h) = (3840, 2160);
+        let px = synthetic_frame(w, h);
+        let png = encode_rgba8(w, h, &px, Level::Fastest);
+        assert!(png.len() < px.len() / 10, "{} bytes", png.len());
+        assert!(decode(&png).unwrap().rgba == px);
+        assert_eq!(png, encode_rgba8_threads(w, h, &px, Level::Fastest, 1));
+    }
+
+    #[test]
+    fn fastest_is_close_to_default_on_frames() {
+        let (w, h) = (1280, 720);
+        let px = synthetic_frame(w, h);
+        let fastest = encode_rgba8(w, h, &px, Level::Fastest).len();
+        let default = encode_rgba8(w, h, &px, Level::Default).len();
+        println!("1280x720 frame: Fastest {fastest} bytes, Default {default} bytes");
+        // Flat shapes favour LZ77 a little; dithered renders favour Fastest (see png_bench).
+        assert!(fastest < default * 2 && fastest < px.len() / 20, "fastest {fastest}, default {default}");
     }
 
     #[test]
@@ -555,5 +696,5 @@ mod tests {
         // Ancillary chunks are skipped.
         assert!(decode(&png_from_parts(ihdr(1, 1, 8, 0, 0), &[(b"tEXt", b"k\0v")], &z)).is_ok());
     }
-}
 
+}

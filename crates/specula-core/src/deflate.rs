@@ -8,12 +8,26 @@
 //! length-limited (15 bits for literal/length and distance codes, 7 for code-length codes).
 //! The decompressor handles all three block types and rejects malformed input with an
 //! [`InflateError`] instead of panicking.
+//!
+//! **Parallel and deterministic.** Inputs longer than one band ([`BAND_SIZE`] bytes) are cut into
+//! fixed-size bands that are compressed on separate threads and stitched pigz-style: every band
+//! but the last ends with an empty stored block (a "sync flush") so it finishes on a byte
+//! boundary, only the last band sets BFINAL, and each band may still refer back into the previous
+//! 32 KiB. The band layout depends only on the input length, never on the thread count, so the
+//! output bytes are identical whether one thread or sixty-four run.
 
-use crate::checksum::adler32;
+use crate::checksum::{adler32, adler32_combine};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// Fastest: short match search.
+    /// Capture speed: no match search, only runs of a repeated byte (distance 1, like zlib's
+    /// `Z_RLE`) plus Huffman coding. Several times faster than [`Level::Fast`]; on filtered,
+    /// dithered image data the output is about the same size, because LZ77 finds little there.
+    /// Poor on text and other data whose redundancy is in repeated strings.
+    Fastest,
+    /// Short match search.
     Fast,
     /// Balanced default.
     Default,
@@ -21,11 +35,149 @@ pub enum Level {
     Best,
 }
 
-/// Raw DEFLATE stream.
+/// Inputs are compressed in bands of this many bytes, one band per task. Fixed (not derived
+/// from the core count) so the output bytes never depend on the machine.
+pub const BAND_SIZE: usize = 128 * 1024;
+
+/// Threads the parallel compressors use by default: every core the OS offers this process.
+pub fn available_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// Raw DEFLATE stream, using [`available_threads`] threads for large inputs.
 pub fn compress(data: &[u8], level: Level) -> Vec<u8> {
-    let mut w = BitWriter::with_capacity(data.len() / 2 + 64);
-    Compressor::new(data, level.params()).run(&mut w);
-    w.finish()
+    compress_threads(data, level, available_threads())
+}
+
+/// [`compress`] with at most `threads` threads (0 or 1 = the calling thread only). The output
+/// is byte-identical for every thread count.
+pub fn compress_threads(data: &[u8], level: Level, threads: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() / 2 + 64);
+    deflate_into(&mut out, data, level, threads, false);
+    out
+}
+
+/// Bytes to compress, produced band by band. Lets the PNG encoder filter rows inside the
+/// compression workers instead of materialising the whole filtered image first.
+pub(crate) trait Source: Sync {
+    /// Length of the whole stream.
+    fn total_len(&self) -> usize;
+    /// Bytes `range` of the stream, borrowed or computed into `scratch`.
+    fn bytes<'s>(&'s self, range: std::ops::Range<usize>, scratch: &'s mut Vec<u8>) -> &'s [u8];
+}
+
+impl Source for [u8] {
+    fn total_len(&self) -> usize {
+        self.len()
+    }
+
+    fn bytes<'s>(&'s self, range: std::ops::Range<usize>, _: &'s mut Vec<u8>) -> &'s [u8] {
+        &self[range]
+    }
+}
+
+/// Per-worker buffers, reused from band to band so workers do not fault in fresh pages.
+#[derive(Default)]
+struct Scratch {
+    source: Vec<u8>,
+    buffers: Buffers,
+}
+
+/// A compressed band and the Adler-32 of its input bytes.
+type Band = (Vec<u8>, u32);
+
+/// Compress `src` into `out` as raw DEFLATE, in bands on up to `threads` threads. Returns the
+/// Adler-32 of the stream when `want_adler` is set (computed band by band on the workers), else 0.
+fn deflate_into<S: Source + ?Sized>(out: &mut Vec<u8>, src: &S, level: Level, threads: usize, want_adler: bool) -> u32 {
+    let params = level.params();
+    let total = src.total_len();
+    let bands = total.div_ceil(BAND_SIZE).max(1);
+    // History each band sees before its first byte: the LZ77 window, or one byte for runs.
+    let history = if params.rle { 1 } else { WINDOW };
+
+    // Band `i` covers `[i * BAND_SIZE, (i + 1) * BAND_SIZE)`. Its compressor also sees up to
+    // `history` bytes before that, so matches may reach back across the boundary; positions are
+    // relative, so the bytes it emits are the same as if it saw the whole prefix.
+    let encode_band = |i: usize, scratch: &mut Scratch| -> Band {
+        let start = i * BAND_SIZE;
+        let end = (start + BAND_SIZE).min(total);
+        let lead = start.min(history);
+        let data = src.bytes(start - lead..end, &mut scratch.source);
+        let mut w = BitWriter::with_capacity((end - start) / 2 + 64);
+        let buffers = std::mem::take(&mut scratch.buffers);
+        scratch.buffers = Compressor::new(data, params, buffers).run(&mut w, lead, end == total);
+        let adler = if want_adler { adler32(&data[lead..]) } else { 0 };
+        (w.finish(), adler)
+    };
+    let threads = threads.clamp(1, bands);
+    let parts: Vec<Band> = if threads == 1 {
+        let mut scratch = Scratch::default();
+        (0..bands).map(|i| encode_band(i, &mut scratch)).collect()
+    } else {
+        // Workers pull band indices from a shared counter and file results by index, so
+        // scheduling never affects the output.
+        let next = AtomicUsize::new(0);
+        let slots: Mutex<Vec<Option<Band>>> = Mutex::new((0..bands).map(|_| None).collect());
+        let work = || {
+            let mut scratch = Scratch::default();
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= bands {
+                    return;
+                }
+                let part = encode_band(i, &mut scratch);
+                slots.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(part);
+            }
+        };
+        std::thread::scope(|s| fan_out(s, 0, threads, &work));
+        let slots = slots.into_inner().unwrap_or_else(|e| e.into_inner());
+        slots.into_iter().map(|s| s.expect("every band is compressed exactly once")).collect()
+    };
+
+    out.reserve(parts.iter().map(|(p, _)| p.len()).sum());
+    let mut adler = 1;
+    for (i, (part, band_adler)) in parts.iter().enumerate() {
+        out.extend_from_slice(part);
+        let len = (total - i * BAND_SIZE).min(BAND_SIZE);
+        adler = adler32_combine(adler, *band_adler, len);
+    }
+    if want_adler {
+        adler
+    } else {
+        0
+    }
+}
+
+/// Run `work` on `threads` threads: thread `k` (the caller is 0) first spawns threads `2k + 1`
+/// and `2k + 2`, so start-up is a tree of depth log2(threads) rather than a serial loop on the
+/// caller (spawning costs tens of microseconds per thread on Windows).
+fn fan_out<'scope, 'env, F: Fn() + Sync>(
+    s: &'scope std::thread::Scope<'scope, 'env>,
+    k: usize,
+    threads: usize,
+    work: &'env F,
+) {
+    for child in [2 * k + 1, 2 * k + 2] {
+        if child < threads {
+            s.spawn(move || fan_out(s, child, threads, work));
+        }
+    }
+    work();
+}
+
+/// zlib-wrap any [`Source`] (the PNG encoder streams filtered rows through this).
+pub(crate) fn zlib_compress_source<S: Source + ?Sized>(src: &S, level: Level, threads: usize) -> Vec<u8> {
+    // CMF 0x78 = deflate with a 32 KiB window; FLG carries FLEVEL and makes the header a multiple of 31.
+    let flg = match level {
+        Level::Fastest | Level::Fast => 0x01,
+        Level::Default => 0x9C,
+        Level::Best => 0xDA,
+    };
+    let mut out = Vec::with_capacity(src.total_len() / 2 + 64);
+    out.extend_from_slice(&[0x78, flg]);
+    let adler = deflate_into(&mut out, src, level, threads, true);
+    out.extend_from_slice(&adler.to_be_bytes());
+    out
 }
 
 /// Output cap of [`decompress`] and [`zlib_decompress`]: a few kilobytes of hostile input can
@@ -43,20 +195,16 @@ pub fn decompress_with_limit(data: &[u8], max_out: usize) -> Result<Vec<u8>, Inf
     inflate(data, max_out).map(|(out, _)| out)
 }
 
-/// zlib stream: 2-byte header, DEFLATE data, Adler-32 trailer.
+/// zlib stream: 2-byte header, DEFLATE data, Adler-32 trailer. Uses [`available_threads`]
+/// threads for large inputs.
 pub fn zlib_compress(data: &[u8], level: Level) -> Vec<u8> {
-    // CMF 0x78 = deflate with a 32 KiB window; FLG carries FLEVEL and makes the header a multiple of 31.
-    let flg = match level {
-        Level::Fast => 0x01,
-        Level::Default => 0x9C,
-        Level::Best => 0xDA,
-    };
-    let mut w = BitWriter::with_capacity(data.len() / 2 + 64);
-    w.out.extend_from_slice(&[0x78, flg]);
-    Compressor::new(data, level.params()).run(&mut w);
-    let mut out = w.finish();
-    out.extend_from_slice(&adler32(data).to_be_bytes());
-    out
+    zlib_compress_threads(data, level, available_threads())
+}
+
+/// [`zlib_compress`] with at most `threads` threads (0 or 1 = the calling thread only). The
+/// output is byte-identical for every thread count.
+pub fn zlib_compress_threads(data: &[u8], level: Level, threads: usize) -> Vec<u8> {
+    zlib_compress_source(data, level, threads)
 }
 
 /// Validates header and Adler-32. Output over [`DEFAULT_MAX_OUTPUT`] is an error.
@@ -506,14 +654,20 @@ struct Params {
     max_lazy: usize,
     /// Quarter the chain length when the pending lazy match is already this long.
     good_len: usize,
+    /// Skip the hash chains: only look for runs of the previous byte (distance 1).
+    rle: bool,
 }
 
 impl Level {
     fn params(self) -> Params {
+        let lz = |max_chain, nice_len, max_lazy, good_len| {
+            Params { max_chain, nice_len, max_lazy, good_len, rle: false }
+        };
         match self {
-            Level::Fast => Params { max_chain: 8, nice_len: 32, max_lazy: 0, good_len: 4 },
-            Level::Default => Params { max_chain: 48, nice_len: 128, max_lazy: 16, good_len: 8 },
-            Level::Best => Params { max_chain: 1024, nice_len: MAX_MATCH, max_lazy: MAX_MATCH, good_len: 32 },
+            Level::Fastest => Params { max_chain: 0, nice_len: MAX_MATCH, max_lazy: 0, good_len: 0, rle: true },
+            Level::Fast => lz(8, 32, 0, 4),
+            Level::Default => lz(48, 128, 16, 8),
+            Level::Best => lz(1024, MAX_MATCH, MAX_MATCH, 32),
         }
     }
 }
@@ -573,6 +727,14 @@ impl BitWriter {
     }
 }
 
+/// A compressor's allocations, handed from band to band.
+#[derive(Default)]
+struct Buffers {
+    head: Vec<usize>,
+    prev: Vec<usize>,
+    tokens: Vec<Token>,
+}
+
 struct Compressor<'a> {
     data: &'a [u8],
     p: Params,
@@ -581,18 +743,34 @@ struct Compressor<'a> {
     /// Previous position with the same hash, indexed by `pos % WINDOW`.
     prev: Vec<usize>,
     tokens: Vec<Token>,
+    /// Symbol frequencies of the buffered tokens, counted as they are pushed.
+    lit_freq: [u32; NUM_LITLEN],
+    dist_freq: [u32; NUM_DIST],
     /// Input offset where the buffered tokens start (for stored-block fallback).
     block_start: usize,
 }
 
 impl<'a> Compressor<'a> {
-    fn new(data: &'a [u8], p: Params) -> Self {
+    /// A compressor over `data`, reusing (and resetting) `bufs`.
+    fn new(data: &'a [u8], p: Params, bufs: Buffers) -> Self {
+        let Buffers { mut head, mut prev, mut tokens } = bufs;
+        // Run-length mode never consults the hash chains.
+        if !p.rle {
+            head.clear();
+            head.resize(1 << HASH_BITS, NIL);
+            prev.clear();
+            prev.resize(WINDOW, NIL);
+        }
+        tokens.clear();
+        tokens.reserve(BLOCK_TOKENS + 2);
         Compressor {
             data,
             p,
-            head: vec![NIL; 1 << HASH_BITS],
-            prev: vec![NIL; WINDOW],
-            tokens: Vec::with_capacity(BLOCK_TOKENS + 2),
+            head,
+            prev,
+            tokens,
+            lit_freq: [0; NUM_LITLEN],
+            dist_freq: [0; NUM_DIST],
             block_start: 0,
         }
     }
@@ -663,32 +841,95 @@ impl<'a> Compressor<'a> {
         }
     }
 
+    #[inline]
     fn push_literal(&mut self, w: &mut BitWriter, pos: usize) {
-        self.tokens.push(Token { value: self.data[pos] as u16, dist: 0 });
+        let byte = self.data[pos];
+        self.tokens.push(Token { value: u16::from(byte), dist: 0 });
+        self.lit_freq[usize::from(byte)] += 1;
         self.maybe_flush(w, pos + 1);
     }
 
     fn push_match(&mut self, w: &mut BitWriter, pos: usize, len: usize, dist: usize) {
         self.tokens.push(Token { value: len as u16, dist: dist as u16 });
+        self.lit_freq[257 + LENGTH_SYMBOL[len - MIN_MATCH] as usize] += 1;
+        self.dist_freq[dist_symbol(dist)] += 1;
         // Insert every covered position (the first is already in the hash chains).
-        for q in pos + 1..pos + len {
-            self.insert(q);
+        if !self.p.rle {
+            for q in pos + 1..pos + len {
+                self.insert(q);
+            }
         }
         self.maybe_flush(w, pos + len);
     }
 
+    #[inline]
     fn maybe_flush(&mut self, w: &mut BitWriter, end: usize) {
         if self.tokens.len() >= BLOCK_TOKENS {
             self.flush_block(w, end, false);
         }
     }
 
-    fn run(mut self, w: &mut BitWriter) {
+    /// Compress `data[start..]` (the bytes before `start` are history that matches may refer
+    /// to) and end with a final block when `last`, else with a sync flush: an empty stored
+    /// block that byte-aligns the output so another stream can be appended.
+    fn run(mut self, w: &mut BitWriter, start: usize, last: bool) -> Buffers {
+        let n = self.data.len();
+        self.block_start = start;
+        if self.p.rle {
+            self.run_rle(w, start);
+        } else {
+            for q in start.saturating_sub(WINDOW)..start {
+                self.insert(q);
+            }
+            self.run_lz77(w, start);
+        }
+        self.flush_block(w, n, last);
+        if !last {
+            write_stored(w, &[], false);
+        }
+        Buffers { head: self.head, prev: self.prev, tokens: self.tokens }
+    }
+
+    /// Run-length mode: a match is only ever a repeat of the previous byte. Literal stretches
+    /// are found first and buffered in bulk, which keeps the hot loops branch-light.
+    fn run_rle(&mut self, w: &mut BitWriter, start: usize) {
+        let data = self.data;
+        let n = data.len();
+        // A run (distance-1 match of at least MIN_MATCH) can start at `p`.
+        let run_at = |p: usize| p > 0 && p + MIN_MATCH <= n && {
+            let b = data[p - 1];
+            (data[p] == b) & (data[p + 1] == b) & (data[p + 2] == b)
+        };
+        let mut pos = start;
+        while pos < n {
+            // Literals up to the next run, without overfilling the block.
+            let limit = n.min(pos + (BLOCK_TOKENS - self.tokens.len()));
+            let mut end = pos;
+            while end < limit && !run_at(end) {
+                end += 1;
+            }
+            let lits = &data[pos..end];
+            self.tokens.extend(lits.iter().map(|&b| Token { value: u16::from(b), dist: 0 }));
+            for &b in lits {
+                self.lit_freq[usize::from(b)] += 1;
+            }
+            pos = end;
+            self.maybe_flush(w, pos);
+            if pos < n && run_at(pos) {
+                let len = match_length(data, pos - 1, pos, MAX_MATCH.min(n - pos));
+                self.push_match(w, pos, len, 1);
+                pos += len;
+            }
+        }
+    }
+
+    /// LZ77 with hash chains and optional lazy matching. Leaves the last block buffered.
+    fn run_lz77(&mut self, w: &mut BitWriter, start: usize) {
         let n = self.data.len();
         let lazy = self.p.max_lazy > 0;
         // A match `(start, length, distance)` held back to see whether `start + 1` does better.
         let mut pending: Option<(usize, usize, usize)> = None;
-        let mut pos = 0;
+        let mut pos = start;
         while pos < n {
             self.insert(pos);
             let prev_len = pending.map_or(0, |(_, l, _)| l);
@@ -727,21 +968,12 @@ impl<'a> Compressor<'a> {
         if let Some((pstart, plen, pdist)) = pending {
             self.push_match(w, pstart, plen, pdist);
         }
-        self.flush_block(w, n, true);
     }
 
     /// Emit the buffered tokens (covering input `block_start..end`) as the cheapest block type.
     fn flush_block(&mut self, w: &mut BitWriter, end: usize, last: bool) {
-        let mut lit_freq = [0u32; NUM_LITLEN];
-        let mut dist_freq = [0u32; NUM_DIST];
-        for t in &self.tokens {
-            if t.dist == 0 {
-                lit_freq[t.value as usize] += 1;
-            } else {
-                lit_freq[257 + LENGTH_SYMBOL[t.value as usize - MIN_MATCH] as usize] += 1;
-                dist_freq[dist_symbol(t.dist as usize)] += 1;
-            }
-        }
+        let mut lit_freq = std::mem::replace(&mut self.lit_freq, [0; NUM_LITLEN]);
+        let dist_freq = std::mem::replace(&mut self.dist_freq, [0; NUM_DIST]);
         lit_freq[END_OF_BLOCK] = 1;
 
         // Extra bits are the same for fixed and dynamic codes.
@@ -782,25 +1014,31 @@ impl<'a> Compressor<'a> {
     }
 
     fn write_tokens(&self, w: &mut BitWriter, lit_lens: &[u8], dist_lens: &[u8]) {
-        let lit_codes = canonical_codes(lit_lens);
-        let dist_codes = canonical_codes(dist_lens);
+        // `(code, length)` per symbol, so each symbol costs one table load.
+        let table = |lens: &[u8]| -> Vec<(u32, u32)> {
+            canonical_codes(lens).iter().zip(lens).map(|(&c, &l)| (u32::from(c), u32::from(l))).collect()
+        };
+        let lit = table(lit_lens);
+        let dist = table(dist_lens);
         for t in &self.tokens {
             if t.dist == 0 {
-                let s = t.value as usize;
-                w.put(u32::from(lit_codes[s]), u32::from(lit_lens[s]));
+                let (code, len) = lit[t.value as usize];
+                w.put(code, len);
             } else {
                 let len = t.value as usize;
                 let li = LENGTH_SYMBOL[len - MIN_MATCH] as usize;
-                let s = 257 + li;
-                w.put(u32::from(lit_codes[s]), u32::from(lit_lens[s]));
+                let (code, bits) = lit[257 + li];
+                w.put(code, bits);
                 w.put((len - LENGTH_BASE[li] as usize) as u32, u32::from(LENGTH_EXTRA[li]));
                 let d = t.dist as usize;
                 let ds = dist_symbol(d);
-                w.put(u32::from(dist_codes[ds]), u32::from(dist_lens[ds]));
+                let (code, bits) = dist[ds];
+                w.put(code, bits);
                 w.put((d - DIST_BASE[ds] as usize) as u32, u32::from(DIST_EXTRA[ds]));
             }
         }
-        w.put(u32::from(lit_codes[END_OF_BLOCK]), u32::from(lit_lens[END_OF_BLOCK]));
+        let (code, bits) = lit[END_OF_BLOCK];
+        w.put(code, bits);
     }
 }
 
@@ -1030,7 +1268,7 @@ mod tests {
         }
     }
 
-    const LEVELS: [Level; 3] = [Level::Fast, Level::Default, Level::Best];
+    const LEVELS: [Level; 4] = [Level::Fastest, Level::Fast, Level::Default, Level::Best];
 
     fn round_trip(data: &[u8]) {
         for level in LEVELS {
@@ -1074,6 +1312,83 @@ mod tests {
         far.extend_from_slice(&Rng(10).bytes(10));
         far.extend_from_slice(&block);
         round_trip(&far);
+    }
+
+    /// Inputs of several bands: band-sized edges, runs and repeats straddling band boundaries,
+    /// and noise, so both run-length and LZ77 matches reach back across a boundary.
+    fn multi_band_inputs() -> Vec<Vec<u8>> {
+        let mut rng = Rng(0xBA4D);
+        let mut striped = Vec::new();
+        while striped.len() < 3 * BAND_SIZE + 4321 {
+            // A run of zeros ending just past each boundary, then a repeated 1 KiB pattern.
+            let to_boundary = BAND_SIZE - striped.len() % BAND_SIZE;
+            striped.extend(rng.bytes(to_boundary.saturating_sub(700)));
+            striped.extend(std::iter::repeat_n(0u8, 900));
+            let pattern = rng.bytes(1024);
+            for _ in 0..3 {
+                striped.extend_from_slice(&pattern);
+            }
+        }
+        let mut repeated = mixed_data();
+        while repeated.len() < 2 * BAND_SIZE + 1 {
+            repeated.extend_from_within(..100_000);
+        }
+        vec![
+            mixed_data().iter().cycle().take(BAND_SIZE - 1).copied().collect(),
+            mixed_data().iter().cycle().take(BAND_SIZE).copied().collect(),
+            mixed_data().iter().cycle().take(BAND_SIZE + 1).copied().collect(),
+            striped,
+            repeated,
+            Rng(3).bytes(2 * BAND_SIZE + 5),
+            vec![9u8; 5 * BAND_SIZE + 3],
+        ]
+    }
+
+    #[test]
+    fn output_is_identical_for_every_thread_count() {
+        for data in multi_band_inputs() {
+            for level in LEVELS {
+                let one = zlib_compress_threads(&data, level, 1);
+                assert_eq!(zlib_decompress(&one).unwrap(), data, "{level:?}, {} bytes", data.len());
+                for threads in [0, 2, 3, 8, available_threads()] {
+                    let many = zlib_compress_threads(&data, level, threads);
+                    assert!(one == many, "{level:?}, {} bytes: {threads} threads differ from 1", data.len());
+                }
+                let raw = compress_threads(&data, level, 1);
+                assert_eq!(raw, compress_threads(&data, level, 5), "raw {level:?}");
+                assert_eq!(decompress(&raw).unwrap(), data, "raw {level:?}");
+                assert_eq!(&one[2..one.len() - 4], &raw[..], "zlib body is the raw stream");
+            }
+        }
+    }
+
+    #[test]
+    fn bands_are_stitched_with_sync_flushes() {
+        let data = mixed_data().iter().cycle().take(3 * BAND_SIZE).copied().collect::<Vec<u8>>();
+        for level in LEVELS {
+            let c = compress_threads(&data, level, 1);
+            // Sync flushes (empty stored blocks: LEN 0, NLEN 0xFFFF) end bands 0 and 1.
+            let marks = c.windows(4).filter(|w| w == &[0, 0, 0xFF, 0xFF]).count();
+            assert!(marks >= 2, "{level:?}: {marks} sync markers");
+            // Only the last band sets BFINAL: inflating stops at the end of the stream.
+            let (out, used) = inflate(&c, usize::MAX).unwrap();
+            assert_eq!(out, data);
+            assert_eq!(used, c.len(), "{level:?}");
+        }
+        // One band: no sync flush, same bytes whatever the thread count.
+        let small = &data[..BAND_SIZE];
+        assert_eq!(compress_threads(small, Level::Default, 1), compress_threads(small, Level::Default, 16));
+    }
+
+    #[test]
+    fn fastest_compresses_runs_and_round_trips_text() {
+        let runs = vec![42u8; 1 << 20];
+        assert!(compress(&runs, Level::Fastest).len() < 3000);
+        let text = b"the quick brown fox jumps over the lazy dog. ".repeat(2000);
+        let c = compress(&text, Level::Fastest);
+        assert_eq!(decompress(&c).unwrap(), text);
+        // No string matching: Huffman only, still well under the raw size.
+        assert!(c.len() < text.len() * 3 / 4, "{}", c.len());
     }
 
     #[test]
