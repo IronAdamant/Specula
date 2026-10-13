@@ -24,11 +24,7 @@ use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-/// Without a window frame for this long, the game moves things itself every tick (headless
-/// engines never call `frame`, but agents still look with `sight_frame`).
-const HEADLESS_AFTER: Duration = Duration::from_millis(250);
 const MESSAGE_S: f32 = 6.0;
 const LOG_LEN: usize = 32;
 pub const SPEEDS: [u32; 3] = [1, 2, 4];
@@ -52,7 +48,10 @@ pub struct SepulcraGame {
     pending: Vec<Event>,
     /// Presentation time (flashes, bobbing); stops while paused.
     now: f32,
-    last_frame: Option<Instant>,
+    /// Presentation ticks: engine ticks while the game isn't paused (times the speed). Flashes
+    /// and bobbing run on these, so they freeze with the clock and replay the same under
+    /// `time_control step` as in real time.
+    pres_ticks: u64,
     message_until: f32,
     /// Recent messages with their tick, for agents (`play_state`).
     pub(crate) log: VecDeque<(u32, String)>,
@@ -73,7 +72,7 @@ impl SepulcraGame {
             events: Vec::new(),
             pending: Vec::new(),
             now: 0.0,
-            last_frame: None,
+            pres_ticks: 0,
             message_until: 0.0,
             log: VecDeque::new(),
         }
@@ -395,25 +394,26 @@ impl Game for SepulcraGame {
         }
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
-        let headless = self.last_frame.is_none_or(|t| t.elapsed() > HEADLESS_AFTER);
-        if headless && !self.paused {
+        if !self.paused {
             // Flashes keep fading after the run ends (no more steps, but time still passes).
-            self.now += stepped.max(1) as f32 / TICK_HZ as f32;
+            self.pres_ticks += u64::from(self.speed).max(stepped);
         }
+        self.now = self.pres_ticks as f32 / TICK_HZ as f32;
         if let Some(scene) = &mut self.scene {
             scene.sync(ctx.world, &self.state, &events, self.now);
-            if headless {
-                scene.animate(ctx.world, 1.0, self.now);
-            }
+            // Everything where it is at this tick: correct for agents' sight_frame even when
+            // ticks run without window frames in between (time_control step, headless engines).
+            // A window frame then interpolates from here.
+            scene.animate(ctx.world, 1.0, self.now);
         }
         self.events = events;
     }
 
     fn frame(&mut self, ctx: &mut Ctx, frame: &mut Frame) {
-        self.last_frame = Some(Instant::now());
-        if !self.paused {
-            self.now += frame.dt_s.min(0.25) * self.speed as f32;
-        }
+        let alpha = if self.paused { 1.0 } else { frame.alpha };
+        // Between ticks: interpolate presentation time like positions (alpha of the next tick).
+        let sub = if self.paused { 0.0 } else { (alpha - 1.0) * self.speed as f32 };
+        self.now = ((self.pres_ticks as f32) + sub).max(0.0) / TICK_HZ as f32;
         let Some(scene) = &self.scene else { return };
         let map = Arc::clone(self.state.content_arc());
         let actions = self.controls.frame(frame.input, frame.dt_s.min(0.25), frame.size, &scene.geo, &map.map);
@@ -423,7 +423,7 @@ impl Game for SepulcraGame {
         self.controls.sync_camera(frame.camera);
         self.hover(ctx.world);
         if let Some(scene) = &mut self.scene {
-            scene.animate(ctx.world, if self.paused { 1.0 } else { frame.alpha }, self.now);
+            scene.animate(ctx.world, alpha, self.now);
         }
         if self.now > self.message_until {
             self.hud.message.clear();
