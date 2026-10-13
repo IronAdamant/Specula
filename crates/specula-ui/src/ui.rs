@@ -1410,6 +1410,17 @@ impl Ui {
             let p = [num("x"), num("y")];
             let behind = row.get("behind").is_some_and(Value::truthy);
             let Some((pos, angle)) = threat_arrow(bounds, margin, p, behind) else { continue };
+            // Keep clear of HUD panels and buttons (other screens' and this screen's widgets).
+            let inner = bounds.inset(margin, margin, margin, margin);
+            let mut obstacles = [Rect::default(); 32];
+            let mut n_obs = 0;
+            for hit in &self.hits {
+                if n_obs < obstacles.len() && !matches!(self.screens[hit.w.screen].screen.nodes[hit.w.node as usize].kind, Kind::Radial { .. } | Kind::RadialItem { .. }) {
+                    obstacles[n_obs] = hit.rect;
+                    n_obs += 1;
+                }
+            }
+            let pos = crate::geom::avoid_on_edge(pos, [size * 0.62, size * 0.62], inner, 4.0 * scale, &obstacles[..n_obs]);
             let grow = 1.0 + 0.12 * pulse;
             let alpha = 0.7 + 0.3 * pulse;
             let r = Rect::new(pos[0] - size * 0.5 * grow, pos[1] - size * 0.5 * grow, size * grow, size * grow);

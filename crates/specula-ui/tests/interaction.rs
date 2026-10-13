@@ -357,6 +357,26 @@ fn threat_labels_follow_the_scale() {
 }
 
 #[test]
+fn threat_arrows_keep_clear_of_hud_widgets() {
+    // Regression (sight review): an arrow for a threat off the bottom-right corner sat under the
+    // corner button.
+    let root = r#"{"type": "box", "children": [{"type": "threats", "source": "threats"},
+        {"type": "button", "id": "call", "text": "Call wave", "action": "c", "shortcut": "c", "anchor": "bottom_right", "margin": 12}]}"#;
+    let mut ui = ui_with("hud", root);
+    let mut h = Harness::new();
+    let mut s = StateMap::new();
+    s.list_mut("threats").push().set_num("x", 1600.0).set_num("y", 1000.0);
+    h.frame(&mut ui, &[], &s, &view(1280, 800));
+    h.frame(&mut ui, &[], &s, &view(1280, 800));
+    let button = ui.rect(ui.widget("s", "call").unwrap()).unwrap();
+    let d = ui.draw_list();
+    assert!(!d.vertices.is_empty(), "an arrow was drawn");
+    for v in &d.vertices {
+        assert!(!button.contains(v.pos), "arrow vertex {:?} inside the button {button:?}", v.pos);
+    }
+}
+
+#[test]
 fn hit_testing_matches_layout() {
     let mut ui = menu_ui();
     let mut h = Harness::new();

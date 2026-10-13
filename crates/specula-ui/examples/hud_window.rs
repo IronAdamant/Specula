@@ -115,6 +115,7 @@ fn main() {
     let mut overlay = GpuOverlay::new();
     let mut state = StateMap::new();
     let start = Instant::now();
+    let mut world_t = 0.0f64;
     let mut dust = 135i64;
     let mut touched = false;
     let mut overlay_ms: Vec<f64> = Vec::new();
@@ -147,7 +148,9 @@ fn main() {
             }
             None => Default::default(),
         };
-        let t = start.elapsed().as_secs_f64();
+        // Time is the frame index at 60 Hz, not the wall clock: the same frame looks the same on
+        // every adapter and every run (F2), however fast frames are presented.
+        let t = frame_no as f64 / 60.0;
         input.update(t, &events, &pad_states);
         if w == 0 || h == 0 {
             continue; // minimized
@@ -169,7 +172,11 @@ fn main() {
         } else if !ui.is_visible("radial") && !ui.is_visible("pause") && input.pressed("build_menu") {
             ui.show("radial").unwrap();
         }
-        fill_state(&mut state, t, w as f32, h as f32, dust);
+        // The world (and so the threats) stands still while paused.
+        if !ui.is_visible("pause") {
+            world_t += 1.0 / 60.0;
+        }
+        fill_state(&mut state, world_t, w as f32, h as f32, dust);
         let scale = ui.theme().scale.scale([w, h], None, 1.0);
         let view = Viewport::new([w, h], scale);
         let events_out = ui.frame(&input, &state, &view).events.clone();
@@ -218,7 +225,7 @@ fn main() {
     for m in &messages {
         println!("[{:?}] {} {}", m.severity, m.id_name, m.message);
     }
-    println!("validation errors: {errors}");
+    println!("validation errors: {errors}; {frame_no} frames in {:.1} s", start.elapsed().as_secs_f64());
     drop(window);
     if errors > 0 {
         std::process::exit(1);

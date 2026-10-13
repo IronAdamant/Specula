@@ -118,6 +118,39 @@ pub fn threat_arrow(bounds: Rect, margin: f32, p: [f32; 2], behind: bool) -> Opt
     Some((pos, angle))
 }
 
+/// Slide an edge marker (centre `pos`, half-size `half`) along its edge of `inner` (the rect the
+/// markers' centres live on) until its box, grown by `gap`, overlaps none of `obstacles` (HUD
+/// panels and buttons). Moves to whichever free side is nearer; keeps `pos` if nothing on that
+/// edge is free.
+pub fn avoid_on_edge(pos: [f32; 2], half: [f32; 2], inner: Rect, gap: f32, obstacles: &[Rect]) -> [f32; 2] {
+    const E: f32 = 0.5;
+    let vertical_edge = (pos[0] - inner.x).abs() < E || (pos[0] - inner.right()).abs() < E;
+    let axis = if vertical_edge { 1 } else { 0 };
+    let (lo, hi) = if axis == 1 { (inner.y, inner.bottom()) } else { (inner.x, inner.right()) };
+    let boxed = |p: [f32; 2]| Rect::new(p[0] - half[0] - gap, p[1] - half[1] - gap, 2.0 * (half[0] + gap), 2.0 * (half[1] + gap));
+    let clear = |p: [f32; 2]| obstacles.iter().all(|o| o.intersect(&boxed(p)).is_empty());
+    if clear(pos) {
+        return pos;
+    }
+    // Candidate positions: just past either side of every obstacle, along the edge.
+    let mut best: Option<(f32, [f32; 2])> = None;
+    for o in obstacles {
+        let (o_lo, o_hi) = if axis == 1 { (o.y, o.bottom()) } else { (o.x, o.right()) };
+        for v in [o_lo - half[axis] - gap - E, o_hi + half[axis] + gap + E] {
+            if v < lo || v > hi {
+                continue;
+            }
+            let mut p = pos;
+            p[axis] = v;
+            let d = (v - pos[axis]).abs();
+            if clear(p) && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, p));
+            }
+        }
+    }
+    best.map_or(pos, |(_, p)| p)
+}
+
 /// Shortest signed difference between two angles, in `-π..π`.
 pub fn angle_diff(a: f32, b: f32) -> f32 {
     (a - b + PI).rem_euclid(TAU) - PI
@@ -183,6 +216,26 @@ mod tests {
             let a = crate::layout::radial_angle(k, 5);
             assert_eq!(radial_pick([a.cos(), a.sin()], 5, 0.5), Some(k), "{k}");
         }
+    }
+
+    #[test]
+    fn edge_markers_slide_clear_of_hud_widgets() {
+        let inner = r(20.0, 20.0, 960.0, 460.0);
+        // A button in the bottom-right corner; a marker on the right edge just above it.
+        let button = r(800.0, 440.0, 190.0, 50.0);
+        let p = avoid_on_edge([980.0, 450.0], [15.0, 15.0], inner, 4.0, &[button]);
+        assert_eq!(p[0], 980.0, "stays on its edge");
+        assert!(p[1] + 15.0 + 4.0 <= 440.0, "moved above the button: {p:?}");
+        // Nothing in the way: unchanged.
+        assert_eq!(avoid_on_edge([980.0, 200.0], [15.0, 15.0], inner, 4.0, &[button]), [980.0, 200.0]);
+        // A top-edge marker under a top bar slides sideways to the nearer free side.
+        let bar = r(400.0, 0.0, 200.0, 50.0);
+        let p = avoid_on_edge([560.0, 20.0], [15.0, 15.0], inner, 4.0, &[bar]);
+        assert_eq!(p[1], 20.0);
+        assert!(p[0] - 19.0 >= 600.0, "{p:?}");
+        // Fully blocked: keep the original place.
+        let wall = r(0.0, 0.0, 1000.0, 500.0);
+        assert_eq!(avoid_on_edge([980.0, 300.0], [15.0, 15.0], inner, 4.0, &[wall]), [980.0, 300.0]);
     }
 
     #[test]
