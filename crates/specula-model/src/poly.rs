@@ -119,12 +119,7 @@ pub fn triangulate(p: &[V2]) -> Option<Vec<[u32; 3]>> {
         if !found {
             // Collinear leftovers: drop a flat vertex if there is one.
             let flat = (0..m).find(|&k| cross2(p[idx[(k + m - 1) % m]], p[idx[k]], p[idx[(k + 1) % m]]) == 0.0);
-            match flat {
-                Some(k) => {
-                    idx.remove(k);
-                }
-                None => return None,
-            }
+            idx.remove(flat?);
         }
         guard += 1;
         if guard > 4 * n {

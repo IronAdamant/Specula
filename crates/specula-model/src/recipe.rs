@@ -18,7 +18,7 @@ use crate::lod::{self, LodInput};
 use crate::math3::{self, Affine, V2, V3};
 use crate::mesh::{Bounds, MeshData};
 use crate::poly;
-use crate::shape::{Jitter, Rgba, Shape};
+use crate::shape::{Gradient, Jitter, Rgba, Shape};
 use crate::style::{MaterialPreset, Style};
 
 /// The recipe format version this crate reads.
@@ -140,7 +140,7 @@ const OPS: &[(&str, &[Field])] = &[
     ("bend", &[r("deg_per_m", Num)]),
     ("weld", &[o("eps", Num)]),
     ("color", &[r("color", Color)]),
-    ("gradient", &[o("axis", Axis), r("from", Color), r("to", Color), o("range", Vec2), o("absolute", Bool)]),
+    ("gradient", &[o("axis", Axis), r("from", Color), r("to", Color), o("range", Vec2), o("absolute", Bool), o("strength", Num), o("keep_outside", Bool)]),
     ("bands", &[o("axis", Axis), r("colors", Colors), r("width", Num), o("wobble", Num)]),
     ("noise_tint", &[r("amount", Num), o("scale", Num)]),
     ("ao", &[o("amount", Num)]),
@@ -409,7 +409,7 @@ fn is_ident(s: &str) -> bool {
 
 fn as_u64_exact(v: &Json) -> Option<u64> {
     let x = v.as_f64()?;
-    (x >= 0.0 && x <= 9_007_199_254_740_992.0 && dmath::trunc_f64(x) == x).then_some(x as u64)
+    ((0.0..=9_007_199_254_740_992.0).contains(&x) && dmath::trunc_f64(x) == x).then_some(x as u64)
 }
 
 impl Recipe {
@@ -1312,7 +1312,15 @@ impl Ctx<'_> {
             "color" => s.set_color(self.color(n, "color")),
             "gradient" => {
                 let range = self.vec2(n, "range", [0.0, 1.0])?;
-                s.gradient(axis_index(self.str(n, "axis", "y")), self.color(n, "from"), self.color(n, "to"), range, self.bool(n, "absolute", false));
+                s.gradient(&Gradient {
+                    axis: axis_index(self.str(n, "axis", "y")),
+                    from: self.color(n, "from"),
+                    to: self.color(n, "to"),
+                    range,
+                    absolute: self.bool(n, "absolute", false),
+                    strength: self.ranged(n, "strength", 1.0, 0.0, 1.0)?,
+                    keep_outside: self.bool(n, "keep_outside", false),
+                });
             }
             "bands" => {
                 let colors: Vec<Rgba> = match n.get("colors") {

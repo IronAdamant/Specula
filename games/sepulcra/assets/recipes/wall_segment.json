@@ -1,0 +1,40 @@
+{
+  "recipe": 1,
+  "name": "wall_segment",
+  "category": "wall",
+  "description": "One lane-cell wall: 2 m long (X), 0.6 m deep, 0.9 m high. Low dry-stone rows of slightly irregular chamfered blocks, three courses with offset joints (STYLE.md). Change the seed for a different stone layout.",
+  "seed": 505,
+  "budget": { "max_triangles": 1000 },
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 28,
+  "parts": [
+    { "name": "course_1", "material": "carved_stone",
+      "shape": { "op": "box", "size": [0.48, 0.3, 0.58], "bevel": 0.045 },
+      "ops": [ { "op": "displace", "amount": 0.025, "scale": 0.22 },
+               { "op": "move", "by": [-0.75, 0, 0] },
+               { "op": "array", "count": 4, "offset": [0.5, 0, 0], "jitter": { "offset": [0.01, 0, 0.02], "rotate": [0, 3, 1], "scale": 0.04 } },
+               { "op": "color", "color": "carved_shadow" } ] },
+    { "name": "course_2", "material": "carved_stone",
+      "shape": { "op": "box", "size": [0.47, 0.29, 0.55], "bevel": 0.045 },
+      "ops": [ { "op": "displace", "amount": 0.025, "scale": 0.22 },
+               { "op": "move", "by": [-0.5, 0.3, 0] },
+               { "op": "array", "count": 3, "offset": [0.5, 0, 0], "jitter": { "offset": [0.01, 0, 0.02], "rotate": [0, 4, 1.5], "scale": 0.04 } } ] },
+    { "name": "course_2_ends", "material": "carved_stone",
+      "shape": { "op": "box", "size": [0.22, 0.29, 0.54], "bevel": 0.04 },
+      "ops": [ { "op": "displace", "amount": 0.02, "scale": 0.2 },
+               { "op": "move", "by": [-0.875, 0.3, 0.01] },
+               { "op": "array", "count": 2, "offset": [1.75, 0, 0], "jitter": { "rotate": [0, 4, 1], "scale": 0.04 } } ] },
+    { "name": "course_3", "material": "carved_stone",
+      "shape": { "op": "box", "size": [0.37, 0.28, 0.5], "bevel": 0.045 },
+      "ops": [ { "op": "displace", "amount": 0.025, "scale": 0.2 },
+               { "op": "move", "by": [-0.8, 0.59, 0] },
+               { "op": "array", "count": 5, "offset": [0.4, 0, 0], "jitter": { "offset": [0.01, 0.005, 0.02], "rotate": [2, 6, 2], "scale": 0.05 } },
+               { "op": "color", "color": "carved_highlight" } ] }
+  ],
+  "finish": [
+    { "op": "noise_tint", "amount": 0.14, "scale": 0.3 },
+    { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.45 },
+    { "op": "ground_shade", "amount": 0.35, "height": 0.35 }
+  ]
+}

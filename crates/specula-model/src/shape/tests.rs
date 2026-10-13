@@ -276,7 +276,7 @@ fn deformers() {
 #[test]
 fn colour_ops() {
     let mut s = Shape::cuboid([1.0, 2.0, 1.0], 0.0);
-    s.gradient(1, [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0], [0.0, 1.0], false);
+    s.gradient(&Gradient { axis: 1, from: [0.0, 0.0, 0.0, 1.0], to: [1.0; 4], range: [0.0, 1.0], absolute: false, strength: 1.0, keep_outside: false });
     for (p, c) in s.positions.iter().zip(&s.colors) {
         assert!((c[0] - p[1] / 2.0).abs() < 1e-6);
     }

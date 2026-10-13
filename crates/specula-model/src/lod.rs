@@ -97,8 +97,20 @@ pub struct LodInput<'a> {
 /// shapes and the cell size used.
 pub fn simplify(parts: &[LodInput], ratio: f32, origin: V3, extent: f32) -> (Vec<Shape>, f32) {
     let total: usize = parts.iter().map(|p| p.shape.triangle_count()).sum();
-    let target = (total as f32 * ratio) as usize;
-    let run = |cell: f32| -> Vec<Shape> { parts.iter().map(|p| cluster(p.shape, cell * p.cell_scale, origin)).collect() };
+    // Kept parts (cell_scale 0) can't shrink: aim the remaining budget at the others.
+    let kept: usize = parts.iter().filter(|p| p.cell_scale <= 0.0).map(|p| p.shape.triangle_count()).sum();
+    let target = ((total as f32 * ratio) as usize).saturating_sub(kept) + kept;
+    // No part may collapse entirely: its cell is capped at a quarter of its largest dimension.
+    let caps: Vec<f32> = parts
+        .iter()
+        .map(|p| {
+            let s = p.shape.bounds().size();
+            0.25 * s[0].max(s[1]).max(s[2])
+        })
+        .collect();
+    let run = |cell: f32| -> Vec<Shape> {
+        parts.iter().zip(&caps).map(|(p, &cap)| cluster(p.shape, (cell * p.cell_scale).min(cap), origin)).collect()
+    };
     let count = |v: &[Shape]| v.iter().map(|s| s.triangle_count()).sum::<usize>();
     if ratio >= 1.0 || total == 0 {
         return (parts.iter().map(|p| p.shape.clone()).collect(), 0.0);

@@ -43,6 +43,24 @@ pub struct Shape {
 
 /// A ring of a ring stack: several points, or one point (an apex).
 type Ring = Vec<V3>;
+/// A cap triangulation over a ring's points, if the end is capped.
+type CapTris<'a> = Option<&'a [[u32; 3]]>;
+
+/// A colour gradient for [`Shape::gradient`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gradient {
+    /// 0 = X, 1 = Y, 2 = Z.
+    pub axis: usize,
+    pub from: Rgba,
+    pub to: Rgba,
+    /// Fractions of the current bounds along `axis`, or metres when `absolute`.
+    pub range: V2,
+    pub absolute: bool,
+    /// Blend over the current colour (1 = replace).
+    pub strength: f32,
+    /// Vertices outside the range keep their colour (a local tint band).
+    pub keep_outside: bool,
+}
 
 const WHITE: Rgba = [1.0, 1.0, 1.0, 1.0];
 
@@ -69,7 +87,7 @@ impl Shape {
     /// (counter-clockwise in the profile plane): `caps.0` closes the first ring (reversed so it
     /// faces backwards), `caps.1` the last.
     /// `tags[k]` tags the band between ring k and k+1.
-    fn ring_stack(rings: &[Ring], caps: (Option<&[[u32; 3]]>, Option<&[[u32; 3]]>), closed: bool, band_tags: &[u8]) -> Shape {
+    fn ring_stack(rings: &[Ring], caps: (CapTris, CapTris), closed: bool, band_tags: &[u8]) -> Shape {
         let mut s = Shape::default();
         let mut starts = Vec::with_capacity(rings.len());
         for r in rings {
@@ -712,9 +730,9 @@ impl Shape {
         for p in &mut self.positions {
             let t = (p[axis] - lo) / span;
             let s = from + (to - from) * t;
-            for k in 0..3 {
+            for (k, v) in p.iter_mut().enumerate() {
                 if k != axis {
-                    p[k] *= s;
+                    *v *= s;
                 }
             }
         }
@@ -760,17 +778,24 @@ impl Shape {
         self.colors.iter_mut().for_each(|v| *v = c);
     }
 
-    /// Linear gradient along `axis` between `range` (fractions of the current bounds).
-    pub fn gradient(&mut self, axis: usize, from: Rgba, to: Rgba, range: V2, absolute: bool) {
+    /// Linear colour gradient along an axis (see [`Gradient`]).
+    pub fn gradient(&mut self, g: &Gradient) {
+        let Gradient { axis, from, to, range, absolute, strength, keep_outside } = *g;
         let b = self.bounds();
-        let (lo, hi) = if absolute { (range[0], range[1]) } else {
+        let (lo, hi) = if absolute {
+            (range[0], range[1])
+        } else {
             let span = b.max[axis] - b.min[axis];
             (b.min[axis] + span * range[0], b.min[axis] + span * range[1])
         };
         let span = hi - lo;
+        let (rlo, rhi) = (lo.min(hi), lo.max(hi));
         for (p, c) in self.positions.iter().zip(self.colors.iter_mut()) {
+            if keep_outside && (p[axis] < rlo || p[axis] > rhi) {
+                continue;
+            }
             let t = if span.abs() < 1e-9 { 1.0 } else { ((p[axis] - lo) / span).clamp(0.0, 1.0) };
-            *c = mix(from, to, t);
+            *c = mix(*c, mix(from, to, t), strength);
         }
     }
 
