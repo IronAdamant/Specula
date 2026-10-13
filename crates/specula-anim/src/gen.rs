@@ -337,8 +337,13 @@ fn solve(skel: &Skeleton, body: &Body, f: &mut Frame) -> f32 {
         let target = g_root.apply_point(math3::sub(target, skel.heads[0]));
         let parent = skel.parents[leg.thigh].map_or(0, |p| p as usize);
         let gp = if skel.parents[leg.thigh].is_some() { global(skel, &f.d, parent) } else { Affine::IDENTITY };
-        let qp = rotation_of(&gp);
-        let hip = gp.apply_point(math3::add(skel.rest[leg.thigh].t, f.d[leg.thigh].t));
+        // Solve in the thigh's parent space: rest vectors are in its units, so a scaled body
+        // (crumbling, shrinking) stays consistent.
+        let q_foot_model = qmul(q_root, qaxis([1.0, 0.0, 0.0], pitch + leg.foot_pitch));
+        let qp_model = rotation_of(&gp);
+        let target = inverse(&gp).unwrap_or(Affine::IDENTITY).apply_point(target);
+        let qp = QID;
+        let hip = math3::add(skel.rest[leg.thigh].t, f.d[leg.thigh].t);
         let (l1, l2) = (math3::length(leg.a), math3::length(leg.b));
         let dv = math3::sub(target, hip);
         let want = math3::length(dv);
@@ -361,8 +366,8 @@ fn solve(skel: &Skeleton, body: &Body, f: &mut Frame) -> f32 {
         f.d[leg.thigh].r = qnorm(qmul(qconj(qp), q_thigh));
         f.d[leg.shin].r = qnorm(qmul(qconj(q_thigh), q_shin));
         if let Some(foot) = leg.foot {
-            let q_foot = qmul(q_root, qaxis([1.0, 0.0, 0.0], pitch + leg.foot_pitch));
-            f.d[foot].r = qnorm(qmul(qconj(q_shin), q_foot));
+            // Foot model rotation = qp_model · q_shin(parent space) · local.
+            f.d[foot].r = qnorm(qmul(qconj(qmul(qp_model, q_shin)), q_foot_model));
         }
     }
     worst
@@ -401,7 +406,8 @@ fn generate_inner(spec: &Json, skel: &Skeleton) -> Result<Clip, AnimError> {
     let name = o.req_str("name")?.to_string();
     let kind = o.req_str("kind")?;
     let duration = o.req_num("duration", 0.05, 60.0)?;
-    let rate = o.num("rate", 30.0, 4.0, 120.0)?;
+    // At least 48 keys per clip, so fast cycles (a 0.5 s sprint) stay smooth and planted.
+    let rate = o.num("rate", (48.0 / duration).clamp(30.0, 120.0), 4.0, 120.0)?;
     let default_loop = matches!(kind, "gait" | "idle" | "hover" | "wobble");
     let looping = match o.str("loop")? {
         None => {
@@ -597,7 +603,12 @@ fn gait(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32,
             } else {
                 let q = (p - duty) / (1.0 - duty);
                 let up = specula_core::dmath::sin(std::f32::consts::PI * q);
-                (stance_len * (smoothstep(q) - 0.5), lift * l.lift * up, 22.0 * sin_turns(q) * (lift * l.lift / 0.1).min(1.0))
+                // Hermite from back to front whose end slopes match the stance's backward
+                // speed, so the foot leaves and meets the ground at zero ground speed.
+                let m = -stance_len * (1.0 - duty) / duty;
+                let (q2, q3) = (q * q, q * q * q);
+                let z = (2.0 * q3 - 3.0 * q2 + 1.0) * (-0.5 * stance_len) + (q3 - 2.0 * q2 + q) * m + (-2.0 * q3 + 3.0 * q2) * (0.5 * stance_len) + (q3 - q2) * m;
+                (z, lift * l.lift * up, 22.0 * sin_turns(q) * (lift * l.lift / 0.1).min(1.0))
             };
             f.feet[i] = Some(([l.plant[0], l.plant[1] + y, l.plant[2] + dz], pitch));
         }
@@ -881,10 +892,9 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
                 }
                 if crumble {
                     let c = smoothstep(((q - fall_end) / (1.0 - fall_end)).clamp(0.0, 1.0));
+                    // The whole body shrinks towards the ground and sinks into it.
                     f.mov(0, [0.0, -sink * c, 0.0]);
-                    for b in 1..skel.len() {
-                        f.scale(b, [1.0 - (1.0 - shrink) * c; 3]);
-                    }
+                    f.scale(0, [1.0 - (1.0 - shrink) * c; 3]);
                 }
                 planted(&mut f, body);
                 apply_wobbles(&mut f, body, q);
