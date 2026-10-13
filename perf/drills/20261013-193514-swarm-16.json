@@ -1,15 +1,15 @@
 {
   "schema": "specula.drill/v1",
   "label": "",
-  "agents": 64,
+  "agents": 16,
   "rounds": 12,
   "batch": 20,
   "feed": true,
   "build": "release",
-  "when": "2026-10-13T15:43:24",
-  "cpu_busy_pct_before": 6.6,
+  "when": "2026-10-13T19:35:06",
+  "cpu_busy_pct_before": 4.9,
   "attacks": {
-    "rejected": 15,
+    "rejected": 20,
     "leaked": [],
     "wrong": []
   },
@@ -21,99 +21,99 @@
     },
     "service_resumed": true
   },
-  "wall_s": 6.379,
-  "world_ops": 20096,
-  "ops_per_s": 3150.4,
-  "tool_calls": 5258,
-  "calls_per_s": 824.3,
+  "wall_s": 0.861,
+  "world_ops": 5024,
+  "ops_per_s": 5835.6,
+  "tool_calls": 854,
+  "calls_per_s": 992.0,
   "latency_ms": {
     "agent_hello": {
-      "p50": 10.07,
-      "p95": 16.89,
-      "max": 23.44,
-      "n": 64
+      "p50": 10.59,
+      "p95": 14.24,
+      "max": 14.39,
+      "n": 16
     },
     "claim_release": {
-      "p50": 2.74,
-      "p95": 25.59,
-      "max": 26.78,
-      "n": 64
+      "p50": 1.12,
+      "p95": 15.82,
+      "max": 26.71,
+      "n": 16
     },
     "claim_renew": {
-      "p50": 33.47,
-      "p95": 120.45,
-      "max": 156.5,
-      "n": 64
+      "p50": 7.3,
+      "p95": 16.23,
+      "max": 18.56,
+      "n": 16
     },
     "claim_take": {
-      "p50": 9.69,
-      "p95": 15.99,
-      "max": 25.35,
-      "n": 64
+      "p50": 8.24,
+      "p95": 10.89,
+      "max": 12.44,
+      "n": 16
     },
     "world_batch": {
-      "p50": 59.91,
-      "p95": 110.75,
-      "max": 182.88,
-      "n": 1216
+      "p50": 13.4,
+      "p95": 22.47,
+      "max": 34.0,
+      "n": 304
     },
     "world_changes": {
-      "p50": 83.41,
-      "p95": 139.0,
-      "max": 212.38,
-      "n": 2762
+      "p50": 18.43,
+      "p95": 33.03,
+      "max": 41.61,
+      "n": 230
     },
     "world_set": {
-      "p50": 61.15,
-      "p95": 117.97,
-      "max": 167.34,
-      "n": 256
+      "p50": 12.5,
+      "p95": 19.26,
+      "max": 20.57,
+      "n": 64
     },
     "world_spawn": {
-      "p50": 63.99,
-      "p95": 114.62,
-      "max": 213.29,
-      "n": 448
+      "p50": 13.6,
+      "p95": 23.57,
+      "max": 27.1,
+      "n": 112
     },
     "world_undo": {
-      "p50": 63.08,
-      "p95": 102.46,
-      "max": 230.87,
-      "n": 320
+      "p50": 13.38,
+      "p95": 21.27,
+      "max": 29.28,
+      "n": 80
     }
   },
-  "intrusions_rejected": 768,
+  "intrusions_rejected": 192,
   "intrusions_leaked": 0,
   "intrusion_other_errors": [],
-  "undos": 320,
-  "feed_items": 1274655,
+  "undos": 80,
+  "feed_items": 79839,
   "feed_gaps": 0,
-  "entities": 15424,
-  "state_hash": "70fafcc1c6d59ee4",
+  "entities": 3856,
+  "state_hash": "14f7d690969141c7",
   "replay": {
     "replayable": true,
-    "entries": 1472,
-    "replay_hash": "70fafcc1c6d59ee4",
+    "entries": 368,
+    "replay_hash": "14f7d690969141c7",
     "matches": true,
-    "ms": 85.3853
+    "ms": 22.2053
   },
-  "replay_check_s": 0.098,
+  "replay_check_s": 0.027,
   "journal": {
     "first_id": 1,
-    "last_id": 1472,
-    "agent_entries": 1472,
+    "last_id": 368,
+    "agent_entries": 368,
     "game_entries": 0,
-    "approx_bytes": 22838592,
+    "approx_bytes": 5709648,
     "evicted": 0,
     "replayable": true,
     "base": "empty",
     "base_hash": "79421b3b40fba741"
   },
-  "claim_rejections_engine": 768,
+  "claim_rejections_engine": 192,
   "history_sample": [
     {
-      "id": 1449,
-      "tick": 193,
+      "id": 350,
+      "tick": 27,
       "by": "agent_00",
       "kind": "undo",
       "changes": 5,
@@ -123,12 +123,12 @@
         "/district_00/tmp_11_2"
       ],
       "undoes": [
-        1437
+        341
       ]
     },
     {
-      "id": 1437,
-      "tick": 192,
+      "id": 341,
+      "tick": 26,
       "by": "agent_00",
       "kind": "batch",
       "changes": 5,
@@ -137,10 +137,10 @@
         "/district_00/tmp_11_1",
         "/district_00/tmp_11_2"
       ],
-      "undone_by": 1449
+      "undone_by": 350
     }
   ],
   "agent_errors": [],
   "problems": [],
-  "cpu_busy_pct_after": 13.6
+  "cpu_busy_pct_after": 6.2
 }
