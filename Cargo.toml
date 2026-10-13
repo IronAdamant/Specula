@@ -11,6 +11,7 @@ members = [
     "crates/specula-text",
     "crates/specula",
     "games/sepulcra",
+    "games/sepulcra-app",
 ]
 
 [workspace.package]
