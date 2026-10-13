@@ -276,7 +276,7 @@ mod win {
         code
     }
 
-    /// Returns the number of validation errors.
+    /// Returns the number of validation errors plus failed statistics checks.
     fn render_loop(
         hinstance: *mut c_void,
         hwnd: Hwnd,
@@ -291,6 +291,8 @@ mod win {
         let mesh = gpu.upload_mesh(&vertices, &indices)?;
         gpu.attach_window(hinstance, hwnd, *w, *h)?;
         println!("present: attached {w}x{h}");
+        // Loading is done: every pipeline the loop needs must exist already.
+        gpu.mark_warm();
 
         let start = std::time::Instant::now();
         let mut presented = 0usize;
@@ -337,6 +339,31 @@ mod win {
             elapsed.as_secs_f64(),
             presented as f64 / elapsed.as_secs_f64()
         );
+        // Window-path statistics: GPU timings come from an earlier, completed frame.
+        let mut problems = 0;
+        match gpu.last_frame_stats_of(specula_gpu::FramePath::Window) {
+            None => {
+                println!("present: PROBLEM no window frame statistics");
+                problems += 1;
+            }
+            Some(s) => {
+                let gpu_t = s.gpu.as_ref().map(|g| (g.frame, g.total_ms));
+                println!(
+                    "present: frame {} {}x{}: gpu {gpu_t:?} ms, cpu wait {:.3} record {:.3} submit {:.3} ms, {} draw call(s), pipelines {} ({} after warm)",
+                    s.frame, s.width, s.height, s.cpu.wait_ms, s.cpu.record_ms, s.cpu.submit_ms, s.draws.draw_calls,
+                    s.pipelines.created, s.pipelines.created_after_warm
+                );
+                let lag_ok = s.gpu.as_ref().is_some_and(|g| g.frame < s.frame && g.frame + 4 >= s.frame && g.total_ms > 0.0);
+                if s.timestamps_supported && !lag_ok {
+                    println!("present: PROBLEM window GPU timings missing or stale");
+                    problems += 1;
+                }
+                if s.pipelines.created_after_warm != 0 || s.draws.draw_calls != 1 {
+                    println!("present: PROBLEM pipelines created after warm-up or wrong draw count");
+                    problems += 1;
+                }
+            }
+        }
         gpu.destroy_mesh(mesh);
         let messages = gpu.close(); // includes teardown messages
         let errors = messages.iter().filter(|m| m.severity == Severity::Error).count();
@@ -344,6 +371,6 @@ mod win {
             println!("present: [{:?}] {} {}", m.severity, m.id_name, m.message);
         }
         println!("present: {} validation message(s), {errors} error(s)", messages.len());
-        Ok(errors)
+        Ok(errors + problems)
     }
 }
