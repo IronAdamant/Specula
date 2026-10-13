@@ -385,15 +385,19 @@ impl Instance {
             .ok_or("device has no graphics queue")?;
 
         let mut v13 = VkPhysicalDeviceVulkan13Features::new();
+        let mut v12 = VkPhysicalDeviceVulkan12Features::new(&mut v13 as *mut _ as *mut c_void);
         let mut features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
-            p_next: &mut v13 as *mut _ as *mut c_void,
+            p_next: &mut v12 as *mut _ as *mut c_void,
             features: VkPhysicalDeviceFeatures { flags: [0; 55] },
         };
-        // SAFETY: `features2` chains `v13`, both valid for the call.
+        // SAFETY: `features2` chains `v12` then `v13`, all valid for the call.
         unsafe { (self.fns.get_physical_device_features2)(pd, &mut features2) };
-        if v13.dynamic_rendering == 0 || v13.synchronization2 == 0 {
-            return Err("device lacks dynamicRendering or synchronization2".into());
+        if v13.dynamic_rendering == 0 || v13.synchronization2 == 0 || v13.shader_demote_to_helper_invocation == 0 {
+            return Err("device lacks dynamicRendering, synchronization2 or shaderDemoteToHelperInvocation".into());
+        }
+        if v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] == 0 {
+            return Err("device lacks bufferDeviceAddress".into());
         }
         if self.format_features(pd, VK_FORMAT_D32_SFLOAT).optimal_tiling_features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT == 0 {
             return Err("device cannot use D32_SFLOAT as a depth attachment".into());

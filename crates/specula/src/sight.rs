@@ -5,15 +5,13 @@
 //! (clipped to the camera's near/far planes and the image); occlusion is not considered yet.
 
 use crate::meshes::ShapeMeshes;
-use crate::world::{color_hex, vec3_json, Entity, World};
+use crate::world::{color_hex, material_name, vec3_json, Entity, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
-use specula_gpu::DrawItem;
+use specula_gpu::{DrawItem, FrameDesc, MeshId, PointLight, MAX_POINT_LIGHTS};
+use std::collections::HashMap;
 
 pub const SCHEMA: &str = "specula.sight/v1";
-
-/// sRGB background for every view.
-pub const CLEAR_COLOR: [f32; 4] = [0.10, 0.11, 0.13, 1.0];
 
 /// Near clip plane in metres. With reversed-Z and no far plane it never has to grow, however
 /// large the world is (a "sun" 1000 km away no longer pushes the near plane out).
@@ -55,16 +53,49 @@ pub fn auto_camera(world: &World, fov_y_deg: f32) -> Camera {
     Camera { eye: center + dir * distance, target: center, fov_y_deg }
 }
 
-pub fn draw_list(world: &World, meshes: &ShapeMeshes) -> Vec<DrawItem> {
+/// Uploaded lathe meshes by entity id: `(profile key, mesh)`.
+pub type LatheMeshes = HashMap<u64, (u64, MeshId)>;
+
+/// One draw per entity that has a mesh (a lathe whose upload failed is skipped).
+pub fn draw_list(world: &World, meshes: &ShapeMeshes, lathes: &LatheMeshes) -> Vec<DrawItem> {
     world
         .entities()
         .iter()
-        .map(|e| DrawItem {
-            mesh: meshes.get(e.shape),
-            model: e.model().to_cols_array(),
-            color: [e.color[0], e.color[1], e.color[2], 1.0],
+        .filter_map(|e| {
+            let mesh = meshes.get(e.shape).or_else(|| lathes.get(&e.id).map(|&(_, m)| m))?;
+            let c = e.color;
+            Some(DrawItem {
+                mesh,
+                model: e.model().to_cols_array(),
+                color: [c[0], c[1], c[2], e.look.opacity],
+                material: e.look.material,
+                surface: e.look.surface,
+            })
         })
         .collect()
+}
+
+/// The world's point lights (entity order), at most [`MAX_POINT_LIGHTS`], and how many were
+/// left out.
+pub fn lights(world: &World) -> (Vec<PointLight>, usize) {
+    let mut all: Vec<PointLight> = world.entities().iter().filter_map(|e| e.world_light()).collect();
+    let dropped = all.len().saturating_sub(MAX_POINT_LIGHTS);
+    all.truncate(MAX_POINT_LIGHTS);
+    (all, dropped)
+}
+
+/// A frame of the world seen through `view_proj` (reversed Z) at animation time `time_s`.
+pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights: &'a [PointLight], time_s: f32) -> FrameDesc<'a> {
+    let b = world.env.background;
+    FrameDesc {
+        view_proj: view_proj.to_cols_array(),
+        clear_color: [b[0], b[1], b[2], 1.0],
+        draws,
+        reverse_z: true,
+        environment: world.env.light,
+        lights,
+        time_s,
+    }
 }
 
 /// Where one entity landed in a frame.
@@ -92,6 +123,7 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32) -> Vec
                 ("id", Json::from(e.id)),
                 ("name", Json::from(e.name.as_str())),
                 ("shape", Json::from(e.shape.name())),
+                ("material", Json::from(material_name(e.look.material))),
                 ("color", Json::from(color_hex(e.color))),
                 ("position", vec3_json(e.position)),
                 ("created_by", Json::from(e.created_by.as_str())),
@@ -183,7 +215,11 @@ mod tests {
     use crate::world::{Shape, SpawnSpec};
 
     fn spawn_scaled(world: &mut World, shape: Shape, name: &str, position: Vec3, scale: Vec3) {
-        let spec = SpawnSpec { shape, name: Some(name.into()), position, rotation_deg: Vec3::ZERO, scale, color: [1.0, 0.0, 0.0] };
+        let mut spec = SpawnSpec::new(shape);
+        spec.name = Some(name.into());
+        spec.position = position;
+        spec.scale = scale;
+        spec.color = [1.0, 0.0, 0.0];
         world.spawn(spec, "test").unwrap();
     }
 

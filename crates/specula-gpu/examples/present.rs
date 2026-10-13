@@ -325,8 +325,8 @@ mod win {
             let t = frame as f32 / 60.0;
             let aspect = if *h > 0 { *w as f32 / *h as f32 } else { 1.0 };
             let view_proj = mul(&perspective_vk(50f32.to_radians(), aspect, 0.1, 100.0), &view());
-            let draws = [DrawItem { mesh, model: rotation(t * 1.5, 0.35), color: [0.85, 0.55, 0.25, 1.0] }];
-            gpu.present(&FrameDesc { view_proj, clear_color: [0.10, 0.20, 0.30, 1.0], draws: &draws, reverse_z: false })?;
+            let draws = [DrawItem::new(mesh, rotation(t * 1.5, 0.35), [0.85, 0.55, 0.25, 1.0])];
+            gpu.present(&FrameDesc { view_proj, clear_color: [0.10, 0.20, 0.30, 1.0], draws: &draws, reverse_z: false, ..Default::default() })?;
             if *w > 0 && *h > 0 {
                 presented += 1;
             }

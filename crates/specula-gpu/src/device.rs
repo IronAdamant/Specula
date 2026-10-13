@@ -41,9 +41,14 @@ impl Device {
         let mut v13 = VkPhysicalDeviceVulkan13Features::new();
         v13.dynamic_rendering = VK_TRUE;
         v13.synchronization2 = VK_TRUE;
+        // `discard` compiles to OpDemoteToHelperInvocation for Vulkan 1.3 targets.
+        v13.shader_demote_to_helper_invocation = VK_TRUE;
+        // Per-frame data (camera, lights, time) is read through buffer device addresses.
+        let mut v12 = VkPhysicalDeviceVulkan12Features::new(&mut v13 as *mut _ as *mut c_void);
+        v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] = VK_TRUE;
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
-            p_next: &mut v13 as *mut _ as *mut c_void,
+            p_next: &mut v12 as *mut _ as *mut c_void,
             features: VkPhysicalDeviceFeatures { flags: [0; 55] },
         };
         let info = VkDeviceCreateInfo {
@@ -120,13 +125,26 @@ impl Device {
             .map(|i| i as u32)
     }
 
-    fn allocate(&self, req: &VkMemoryRequirements, required: VkFlags, preferred: VkFlags, what: &str) -> Result<VkDeviceMemory, GpuError> {
+    fn allocate(
+        &self,
+        req: &VkMemoryRequirements,
+        required: VkFlags,
+        preferred: VkFlags,
+        device_address: bool,
+        what: &str,
+    ) -> Result<VkDeviceMemory, GpuError> {
         let type_index = self.memory_type(req.memory_type_bits, required, preferred).ok_or_else(|| {
             GpuError::new(format!("no memory type for {what} (type bits {:#x}, flags {required:#x})", req.memory_type_bits))
         })?;
+        let flags = VkMemoryAllocateFlagsInfo {
+            s_type: ST_MEMORY_ALLOCATE_FLAGS_INFO,
+            p_next: ptr::null(),
+            flags: VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+            device_mask: 0,
+        };
         let info = VkMemoryAllocateInfo {
             s_type: ST_MEMORY_ALLOCATE_INFO,
-            p_next: ptr::null(),
+            p_next: if device_address { &flags as *const _ as *const c_void } else { ptr::null() },
             allocation_size: req.size,
             memory_type_index: type_index,
         };
@@ -162,7 +180,8 @@ impl Device {
         // SAFETY: `handle` is a live buffer of this device.
         unsafe { (self.fns.get_buffer_memory_requirements)(self.handle, handle, &mut req) };
         let result = (|| {
-            buffer.memory = self.allocate(&req, required, preferred, what)?;
+            let device_address = usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0;
+            buffer.memory = self.allocate(&req, required, preferred, device_address, what)?;
             // SAFETY: memory was allocated for this buffer's requirements; offset 0 is aligned.
             let r = unsafe { (self.fns.bind_buffer_memory)(self.handle, handle, buffer.memory, 0) };
             if r != VK_SUCCESS {
@@ -184,6 +203,13 @@ impl Device {
                 Err(e)
             }
         }
+    }
+
+    /// GPU address of a buffer created with `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`.
+    pub fn buffer_address(&self, buffer: &Buffer) -> u64 {
+        let info = VkBufferDeviceAddressInfo { s_type: ST_BUFFER_DEVICE_ADDRESS_INFO, p_next: ptr::null(), buffer: buffer.handle };
+        // SAFETY: live buffer of this device, created with the device-address usage and memory flag.
+        unsafe { (self.fns.get_buffer_device_address)(self.handle, &info) }
     }
 
     pub fn destroy_buffer(&self, buffer: &Buffer) {
@@ -228,7 +254,7 @@ impl Device {
         // SAFETY: `handle` is a live image of this device.
         unsafe { (self.fns.get_image_memory_requirements)(self.handle, handle, &mut req) };
         let result = (|| {
-            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, what)?;
+            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, false, what)?;
             // SAFETY: memory matches the image's requirements; offset 0.
             let r = unsafe { (self.fns.bind_image_memory)(self.handle, handle, image.memory, 0) };
             if r != VK_SUCCESS {

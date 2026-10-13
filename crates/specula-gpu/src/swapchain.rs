@@ -1,8 +1,8 @@
 //! Window surface + swapchain (FIFO), frames in flight, present.
 
-use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
+use crate::device::{image_barrier, Buffer, Device, Image, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
-use crate::render::{check_meshes, record_scene, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::render::{check_frame, create_frame_buffer, record_scene, write_frame_data, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
 use crate::vk::*;
 use crate::{FrameDesc, GpuError};
 use std::collections::HashMap;
@@ -11,11 +11,14 @@ use std::ptr;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 
-/// Per-frame-in-flight objects. `acquired` is reused once `fence` shows the frame finished.
+/// Per-frame-in-flight objects. `acquired` and `data` are reused once `fence` shows the frame
+/// finished.
 struct Frame {
     cmd: VkCommandBuffer,
     fence: VkFence,
     acquired: VkSemaphore,
+    /// This frame's `FrameData` and its device address.
+    data: Option<(Buffer, u64)>,
 }
 
 pub struct Window {
@@ -120,11 +123,12 @@ impl Window {
 
         for _ in 0..FRAMES_IN_FLIGHT {
             let cmd = dev.allocate_command_buffer(pool)?;
-            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE };
+            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, data: None };
             self.frames.push(frame);
             let f = self.frames.last_mut().expect("just pushed");
             f.fence = dev.create_fence(true)?;
             f.acquired = dev.create_semaphore()?;
+            f.data = Some(create_frame_buffer(dev)?);
         }
         if self.wanted.0 > 0 && self.wanted.1 > 0 {
             self.rebuild(inst, dev)?;
@@ -278,7 +282,7 @@ impl Window {
         meshes: &HashMap<u32, Mesh>,
         frame: &FrameDesc,
     ) -> Result<(), GpuError> {
-        check_meshes(meshes, frame)?;
+        check_frame(meshes, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
             return Ok(()); // minimized: nothing to present
         }
@@ -286,7 +290,7 @@ impl Window {
             return Ok(());
         }
         let scfns = swapchain_fns(dev)?;
-        let pipeline = pipelines.get(dev, self.format.format, frame.reverse_z)?;
+        let pipelines = pipelines.get(dev, self.format.format, frame.reverse_z)?;
         let f = &self.frames[self.frame_index];
         if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
             return Err(GpuError::new(
@@ -294,6 +298,10 @@ impl Window {
             ));
         }
         dev.wait_fence(f.fence)?;
+        let (data, data_address) = f.data.as_ref().expect("created in init");
+        // The fence shows the GPU finished the frame that last read this buffer.
+        write_frame_data(data, frame, self.extent);
+        let data_address = *data_address;
 
         let mut index = 0u32;
         // SAFETY: valid device and swapchain; `f.acquired` is unsignaled (its previous wait
@@ -337,7 +345,7 @@ impl Window {
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             )],
         );
-        record_scene(dev, f.cmd, pipeline, pipelines.layout, meshes, &target, frame);
+        record_scene(dev, f.cmd, pipelines, meshes, &target, frame, data_address);
         dev.barrier(
             f.cmd,
             &[],
@@ -413,6 +421,9 @@ impl Window {
         // SAFETY: device idle; every object belongs to `dev`/`inst` and is destroyed once.
         unsafe {
             for f in self.frames.drain(..) {
+                if let Some((b, _)) = &f.data {
+                    dev.destroy_buffer(b);
+                }
                 (dev.fns.destroy_fence)(dev.handle, f.fence, ptr::null());
                 (dev.fns.destroy_semaphore)(dev.handle, f.acquired, ptr::null());
                 (dev.fns.free_command_buffers)(dev.handle, pool, 1, &f.cmd);

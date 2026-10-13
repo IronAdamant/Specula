@@ -299,6 +299,13 @@ shapes?"
 
 - [ ] **Render graph** that owns barriers and transitions.
 - [ ] **Materials** (PBR-lite plus a stylised/vertex-colour path), **directional and point lights**, **shadow maps**.
+  *Started 2026-10-13 for the lava-lamp benchmark:*
+  - per-frame data through a buffer device address
+  - a `standard` material (GGX highlights, metal, emission) and up to 16 point lights
+  - blended `glass` and `blob_shadow`, sorted far to near (nested shells handled)
+  - ACES tone mapping with dithering, and an adjustable sun and ambient light
+
+  Still to do: shadow maps, textures, the vertex-colour path, and a real bloom pass (the lamp's halo is analytic).
   *Why the stylised path:* it's cheap on low-end GPUs (F3) and suits agent-made content.
 - [ ] **GPU instancing, frustum culling, and LOD selection.**
   *Why:* swarms build big worlds, and low-end hardware must stay at frame rate.
@@ -474,7 +481,16 @@ Each tier is rendered in the M4 stage world from fixed cameras, and every milest
 | T3 | Detailed stylised: SDF sculpting, normal maps, baked GI, decals, particles | M4 |
 | T4 | Realistic, Unreal-class | the items below |
 
-- [ ] **Benchmark recipes** for all subjects at T0, with the contact sheet scripted.
+- [x] **First benchmark: the lava lamp** (owner's choice, 2026-10-13), built at three levels by
+  `scripts/lava_lamps.py`:
+  - L1: opaque lathes with emissive colour.
+  - L2: metal, glass over a tinted liquid, wax spheres and a point light.
+  - L3: the ray-marched `lava_lamp` material with refraction, an absorbing and scattering liquid, metaball wax with
+    deep cores and glowing edges, a halo, and light spill.
+
+  The captures are reproducible with `time_s` and match on NVIDIA and Intel within 3/255 (integer hashes, not
+  `sin` hashes, in shaders).
+- [ ] **Benchmark recipes** for the other subjects at T0, with the contact sheet scripted.
 - [ ] **Every rung has an integrated-GPU budget** (F3). T4 is reached through quality presets that scale down to the
   iGPU and the Deck, not through Nanite/Lumen-style brute force. *Why:* "realistic within budget" is itself a way to
   stand out from Unreal.

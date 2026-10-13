@@ -2,7 +2,7 @@
 
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
-use crate::render::{check_meshes, record_scene, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::render::{check_frame, create_frame_buffer, record_scene, write_frame_data, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
 use crate::swapchain::Window;
 use crate::vk::*;
 use crate::{AdapterInfo, AdapterKind, AdapterPreference, FrameDesc, GpuError, GpuOptions, MeshId, TargetId, ValidationMessage, Vertex};
@@ -30,6 +30,8 @@ pub struct GpuInner {
     /// Command buffer + fence for synchronous work (uploads, offscreen renders, readback).
     sync_cmd: VkCommandBuffer,
     sync_fence: VkFence,
+    /// Frame data for offscreen renders (synchronous, so one buffer suffices) and its address.
+    frame_buffer: Option<(Buffer, u64)>,
     pipelines: Pipelines,
     meshes: HashMap<u32, Mesh>,
     targets: HashMap<u32, Target>,
@@ -95,6 +97,7 @@ impl GpuInner {
             pool: VK_NULL_HANDLE,
             sync_cmd: ptr::null_mut(),
             sync_fence: VK_NULL_HANDLE,
+            frame_buffer: None,
             pipelines,
             meshes: HashMap::new(),
             targets: HashMap::new(),
@@ -107,6 +110,7 @@ impl GpuInner {
         gpu.pool = gpu.device.create_command_pool()?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
+        gpu.frame_buffer = Some(create_frame_buffer(&gpu.device)?);
         gpu.pipelines.get(&gpu.device, TARGET_FORMAT, false)?;
         Ok(gpu)
     }
@@ -300,9 +304,13 @@ impl GpuInner {
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
-        check_meshes(&self.meshes, frame)?;
+        check_frame(&self.meshes, frame)?;
         let t = self.targets.get(&target.0).ok_or_else(|| GpuError::new(format!("unknown target id {}", target.0)))?;
-        let pipeline = self.pipelines.get(&self.device, TARGET_FORMAT, frame.reverse_z)?;
+        let pipelines = self.pipelines.get(&self.device, TARGET_FORMAT, frame.reverse_z)?;
+        let (frame_buffer, frame_address) = self.frame_buffer.as_ref().expect("created in new");
+        // Offscreen work is synchronous: no earlier frame still reads this buffer.
+        write_frame_data(frame_buffer, frame, t.extent);
+        let frame_address = *frame_address;
         let rt = RenderTarget {
             color_view: t.color.view,
             depth_view: t.depth.view,
@@ -310,7 +318,7 @@ impl GpuInner {
             extent: t.extent,
         };
         let color = t.color.handle;
-        let (layout, meshes) = (self.pipelines.layout, &self.meshes);
+        let meshes = &self.meshes;
         self.run_sync(|dev, cmd| {
             // Previous contents are discarded; order after any earlier copy-out of this image.
             dev.barrier(
@@ -327,7 +335,7 @@ impl GpuInner {
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 )],
             );
-            record_scene(dev, cmd, pipeline, layout, meshes, &rt, frame);
+            record_scene(dev, cmd, pipelines, meshes, &rt, frame, frame_address);
             dev.barrier(
                 cmd,
                 &[],
@@ -431,6 +439,9 @@ impl Drop for GpuInner {
             dev.destroy_image(&t.depth);
             dev.destroy_image(&t.color);
         }
+        if let Some((b, _)) = self.frame_buffer.take() {
+            dev.destroy_buffer(&b);
+        }
         self.pipelines.destroy(dev);
         // SAFETY: device idle; objects belong to `dev` and are destroyed once (null is ignored).
         unsafe {
@@ -464,7 +475,8 @@ mod tests {
             }
         };
         assert!(gpu.validation_enabled());
-        assert!(gpu.take_validation_messages().is_empty());
+        let early = gpu.take_validation_messages();
+        assert!(early.is_empty(), "{early:#?}");
         // Deliberate misuse: an undefined VkFenceCreateFlags bit.
         let info = VkFenceCreateInfo { s_type: ST_FENCE_CREATE_INFO, p_next: ptr::null(), flags: 0x4000_0000 };
         let mut fence = VK_NULL_HANDLE;

@@ -15,6 +15,7 @@ use meshes::ShapeMeshes;
 use specula_core::deflate::Level;
 use specula_core::{base64, png, Json};
 use specula_gpu::{AdapterPreference, FrameDesc, Gpu, GpuOptions, Severity, TargetId, Validation};
+use sight::{Camera, LatheMeshes};
 use specula_platform::{client_size_of, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -162,7 +163,13 @@ fn run() -> Result<(), String> {
 struct Engine {
     gpu: Gpu,
     meshes: ShapeMeshes,
+    /// Meshes built from lathe profiles, by entity id.
+    lathes: LatheMeshes,
     world: World,
+    /// Animation time zero.
+    started: Instant,
+    /// The human's window camera; `None` = auto-frame the world.
+    window_camera: Option<Camera>,
     /// Offscreen targets by size, most recently used last; at most [`MAX_CACHED_TARGETS`].
     targets: Vec<((u32, u32), TargetId)>,
     frames_captured: u64,
@@ -175,7 +182,54 @@ impl Engine {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
-        Ok(Engine { gpu, meshes, world: World::default(), targets: Vec::new(), frames_captured: 0, capture_dir })
+        Ok(Engine {
+            gpu,
+            meshes,
+            lathes: LatheMeshes::new(),
+            world: World::default(),
+            started: Instant::now(),
+            window_camera: None,
+            targets: Vec::new(),
+            frames_captured: 0,
+            capture_dir,
+        })
+    }
+
+    fn time_s(&self) -> f32 {
+        self.started.elapsed().as_secs_f32()
+    }
+
+    /// Build meshes for new or changed lathe profiles and free those of deleted entities.
+    /// Returns a message per failed upload (that entity is not drawn).
+    fn sync_lathes(&mut self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let gpu = &mut self.gpu;
+        for e in self.world.entities() {
+            let Some(profile) = &e.profile else { continue };
+            let key = profile.key();
+            if self.lathes.get(&e.id).is_some_and(|&(k, _)| k == key) {
+                continue;
+            }
+            if let Some((_, old)) = self.lathes.remove(&e.id) {
+                gpu.destroy_mesh(old);
+            }
+            let (vertices, indices) = meshes::lathe(&profile.points, profile.segments);
+            match gpu.upload_mesh(&vertices, &indices) {
+                Ok(mesh) => {
+                    self.lathes.insert(e.id, (key, mesh));
+                }
+                Err(err) => errors.push(format!("lathe '{}' not drawn: {err}", e.name)),
+            }
+        }
+        let live: std::collections::HashSet<u64> =
+            self.world.entities().iter().filter(|e| e.profile.is_some()).map(|e| e.id).collect();
+        let stale: Vec<u64> = self.lathes.keys().copied().filter(|id| !live.contains(id)).collect();
+        for id in stale {
+            if let Some((_, mesh)) = self.lathes.remove(&id) {
+                gpu.destroy_mesh(mesh);
+            }
+        }
+        errors
     }
 
     fn run_windowed(&mut self, ui: &UiThread, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
@@ -202,14 +256,14 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            let camera = sight::auto_camera(&self.world, 50.0);
-            let draws = sight::draw_list(&self.world, &self.meshes);
-            let frame = FrameDesc {
-                view_proj: camera.view_proj(size.0, size.1).to_cols_array(),
-                clear_color: sight::CLEAR_COLOR,
-                draws: &draws,
-                reverse_z: true,
-            };
+            for e in self.sync_lathes() {
+                eprintln!("specula: {e}");
+            }
+            let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
+            let draws = sight::draw_list(&self.world, &self.meshes, &self.lathes);
+            let (lights, _) = sight::lights(&self.world);
+            let view_proj = camera.view_proj(size.0, size.1);
+            let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
             // FIFO present paces the loop to the display refresh.
             self.gpu.present(&frame).map_err(|e| format!("present: {e}"))?;
         }
@@ -252,6 +306,17 @@ impl Engine {
                 None => ToolOutput::error("no such entity"),
             },
             Command::Frame(spec) => self.capture(&spec, &request.session),
+            Command::Env(patch) => {
+                patch.apply(&mut self.world.env);
+                ToolOutput::text(self.world.env.to_json().to_pretty())
+            }
+            Command::View(camera) => {
+                self.window_camera = camera;
+                ToolOutput::text(match camera {
+                    Some(c) => Json::obj([("window_camera", c.to_json())]).to_pretty(),
+                    None => "window camera: auto-framing the world".into(),
+                })
+            }
             Command::Info => self.info(&server.sessions()),
         };
         // The caller may have timed out; nothing to do then.
@@ -265,9 +330,17 @@ impl Engine {
         };
         let (w, h) = (spec.width, spec.height);
         let view_proj = camera.view_proj(w, h);
-        let draws = sight::draw_list(&self.world, &self.meshes);
-        let frame =
-            FrameDesc { view_proj: view_proj.to_cols_array(), clear_color: sight::CLEAR_COLOR, draws: &draws, reverse_z: true };
+        let mut warnings: Vec<Json> = self.sync_lathes().into_iter().map(Json::from).collect();
+        let draws = sight::draw_list(&self.world, &self.meshes, &self.lathes);
+        let (lights, dropped) = sight::lights(&self.world);
+        if dropped > 0 {
+            warnings.push(Json::from(format!(
+                "{dropped} point light(s) not rendered: at most {} per frame",
+                specula_gpu::MAX_POINT_LIGHTS
+            )));
+        }
+        let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
+        let frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
 
         let rgba = match self.render_offscreen(w, h, &frame) {
             Ok(rgba) => rgba,
@@ -277,7 +350,6 @@ impl Engine {
         self.frames_captured += 1;
         let png_path = self.save_capture("png", &png_bytes);
 
-        let mut warnings = Vec::new();
         for m in self.gpu.take_validation_messages() {
             if m.severity >= Severity::Warning {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
@@ -306,6 +378,8 @@ impl Engine {
             ("requested_by", Json::from(session.client_name.as_str())),
             ("image", image),
             ("camera", camera.to_json()),
+            ("time_s", Json::from(time_s)),
+            ("lights", Json::from(lights.len())),
             ("subjects_total", Json::from(subjects.len())),
             ("subjects_on_screen", Json::from(on_screen)),
             ("subjects", Json::arr(subjects.iter().map(|s| s.json.clone()))),

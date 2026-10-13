@@ -73,6 +73,7 @@ In practice that means six **foundations** that apply to every change from M1 on
 | 2026-10-13 | ROADMAP.md and this handoff written. |
 | 2026-10-13 | Engine survey and UI design written. The roadmap gained a **path to production**: v1.0 = a commercial PC game on Steam for Windows and Steam Deck; Phase A M1 → Phase B playable slice (lanes built in parallel by subagent swarms) → Phase C production → Phase D ship. |
 | 2026-10-13 | The owner accepted **every** Claude proposal: physics, skeletal animation, headless playtests, batch edits, procedural modelling, review queue, swarm track. The swarm track became primary, foundations F1–F5 were added, and Claude researched and wrote the four design docs in `docs/design/`. Next: the owner's game project, then M1. |
+| 2026-10-13 | **Lava-lamp fidelity benchmark** (the owner's first asset challenge): three lamps from basic to "as real as possible", built in the engine. It added per-frame GPU data (buffer device address), materials, point lights, glass, blob shadows, lathe meshes, tone mapping and a ray-marched lava lamp. Run it with `python scripts/lava_lamps.py`. The NVIDIA and Intel captures match within 3/255. |
 | 2026-10-13 | **First game chosen:** the tower defence *Sepulcra* (over a cozy castle builder and a squad RPG). Platforms: Windows + Steam Deck; mobile later, so foundation **F6 (portable by design)** was added. A **Fidelity track** was added to the roadmap: benchmark assets rebuilt at each tier, from greybox up to Unreal-class realism. |
 
 ## What works today
@@ -81,21 +82,28 @@ In practice that means six **foundations** that apply to every change from M1 on
   opened in this folder connects through `.mcp.json`.
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`.
 - **Tools:**
-  - `world_spawn`: cube, sphere or quad, with position, rotation, scale, colour and name.
-  - `world_set`: change an entity in place, including `rename`.
+  - `world_spawn`: cube, sphere, quad or **lathe** (a profile spun around +Y), with position, rotation, scale, colour
+    and name, plus a **material** and an optional **point light**:
+    - `standard`: opaque, with `emissive`, `metallic`, `roughness` and `specular`.
+    - `glass`: a blended thin shell with Fresnel reflections.
+    - `blob_shadow`: a soft contact shadow.
+    - `lava_lamp`: a ray-marched lamp.
+  - `world_set`: change an entity in place, including `rename`, its look, light and lathe profile.
   - `world_list` and `world_delete`.
-  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. The full
-    packet is saved to `captures/run-*/`.
+  - `world_env`: sun, ambient light, exposure, filmic tone mapping and background.
+  - `window_view`: point the human's window camera (or `auto`).
+  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. `time_s`
+    fixes the animation time, so a frame is reproducible. The full packet is saved to `captures/run-*/`.
   - `engine_info`.
-- **Size:** about 14k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
-  `specula`). 139 tests. **Zero third-party crates.**
+- **Size:** about 15k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
+  `specula`). 149 tests. **Zero third-party crates.**
 - **Linking:** the Rust toolchain's own linker. Vulkan is loaded at runtime.
 
 **What it can't do yet.** Plan game sessions around these limits:
 - **No save/load.** The world is gone when the engine closes. Persistence is the first item of M1, so pull it forward
   if game work needs it.
-- **Visuals are basic.** Only coloured primitives with a single fixed light: no textures, materials, shadows, imported
-  models, or 2D sprites.
+- **Visuals are early.** Materials, point lights, glass, emission and tone mapping exist (built for the lava-lamp
+  benchmark, 2026-10-13). There are no textures, shadow maps, bloom pass, imported models or 2D sprites yet.
 - **Not playable yet.** There's no game logic, input, physics, audio, or text/UI, so nothing can be played until M3.
 - **Sight limits:** no occlusion, and sphere boxes are about 30% loose.
 
