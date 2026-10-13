@@ -174,11 +174,11 @@ pub fn gpu_or_skip(test: &str, adapter: specula_gpu::AdapterPreference) -> Optio
             return None;
         }
     }
-    let gpu = match Gpu::new(&GpuOptions { validation: Validation::On, adapter }) {
+    let gpu = match Gpu::new(&GpuOptions { validation: Validation::On, adapter, ..Default::default() }) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("{test}: validation unavailable ({e}); running without it");
-            Gpu::new(&GpuOptions { validation: Validation::Off, adapter }).expect("Gpu::new")
+            Gpu::new(&GpuOptions { validation: Validation::Off, adapter, ..Default::default() }).expect("Gpu::new")
         }
     };
     Some(gpu)

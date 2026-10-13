@@ -1,24 +1,42 @@
 //! Window surface + swapchain (FIFO), frames in flight, present.
 
-use crate::device::{image_barrier, Buffer, Device, Image, FENCE_TIMEOUT_NS};
+use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
-use crate::render::{check_frame, create_frame_buffer, record_scene, write_frame_data, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::render::{check_frame, prepare_frame, record_scene, DrawRecord, FrameUpload, Mesh, Pipelines, RenderTarget, DEPTH_FORMAT};
+use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{FrameDesc, GpuError};
+use crate::{CpuTiming, DrawStats, FrameDesc, GpuError, GpuTiming, MemoryKind};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+use std::time::Instant;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 
-/// Per-frame-in-flight objects. `acquired` and `data` are reused once `fence` shows the frame
-/// finished.
+/// Per-frame-in-flight objects. `acquired`, `upload` and `timer` are reused once `fence` shows
+/// the frame finished.
 struct Frame {
     cmd: VkCommandBuffer,
     fence: VkFence,
     acquired: VkSemaphore,
-    /// This frame's `FrameData` and its device address.
-    data: Option<(Buffer, u64)>,
+    /// This frame's frame data and draw records.
+    upload: Option<FrameUpload>,
+    /// `None` without timestamp support.
+    timer: Option<PassTimer>,
+}
+
+/// What one presented frame did.
+pub struct FrameReport {
+    pub cpu: CpuTiming,
+    pub draws: DrawStats,
+    /// Latest completed GPU timings (an earlier frame's).
+    pub gpu: Option<GpuTiming>,
+    pub extent: VkExtent2D,
+    pub upload_bytes: u64,
+}
+
+fn ms(from: Instant, to: Instant) -> f64 {
+    (to - from).as_secs_f64() * 1e3
 }
 
 pub struct Window {
@@ -34,6 +52,8 @@ pub struct Window {
     depth: Option<Image>,
     frames: Vec<Frame>,
     frame_index: usize,
+    /// Latest GPU timings read back from a completed frame.
+    last_gpu: Option<GpuTiming>,
     /// Client size requested by the application.
     wanted: (u32, u32),
     /// Swapchain must be (re)built before the next present.
@@ -89,6 +109,7 @@ impl Window {
             depth: None,
             frames: Vec::new(),
             frame_index: 0,
+            last_gpu: None,
             wanted: (width, height),
             stale: true,
         };
@@ -123,12 +144,13 @@ impl Window {
 
         for _ in 0..FRAMES_IN_FLIGHT {
             let cmd = dev.allocate_command_buffer(pool)?;
-            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, data: None };
+            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, upload: None, timer: None };
             self.frames.push(frame);
             let f = self.frames.last_mut().expect("just pushed");
             f.fence = dev.create_fence(true)?;
             f.acquired = dev.create_semaphore()?;
-            f.data = Some(create_frame_buffer(dev)?);
+            f.upload = Some(FrameUpload::new(dev)?);
+            f.timer = PassTimer::new(dev)?;
         }
         if self.wanted.0 > 0 && self.wanted.1 > 0 {
             self.rebuild(inst, dev)?;
@@ -243,6 +265,7 @@ impl Window {
             extent.height,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT,
+            MemoryKind::RenderTargets,
             "swapchain depth",
         )?);
         self.stale = false;
@@ -274,6 +297,9 @@ impl Window {
         Ok(())
     }
 
+    /// Render and present `frame` (number `frame_no`). `Ok(None)`: nothing was presented
+    /// (minimized, or the swapchain was out of date). `records` is scratch space.
+    #[allow(clippy::too_many_arguments)]
     pub fn present(
         &mut self,
         inst: &Instance,
@@ -281,27 +307,35 @@ impl Window {
         pipelines: &mut Pipelines,
         meshes: &HashMap<u32, Mesh>,
         frame: &FrameDesc,
-    ) -> Result<(), GpuError> {
+        frame_no: u64,
+        records: &mut Vec<DrawRecord>,
+    ) -> Result<Option<FrameReport>, GpuError> {
         check_frame(meshes, frame)?;
         if self.wanted.0 == 0 || self.wanted.1 == 0 {
-            return Ok(()); // minimized: nothing to present
+            return Ok(None); // minimized: nothing to present
         }
         if (self.stale || self.swapchain == VK_NULL_HANDLE) && !self.rebuild(inst, dev)? {
-            return Ok(());
+            return Ok(None);
         }
         let scfns = swapchain_fns(dev)?;
         let pipelines = pipelines.get(dev, self.format.format, frame.reverse_z)?;
-        let f = &self.frames[self.frame_index];
+        let t0 = Instant::now();
+        let f = &mut self.frames[self.frame_index];
         if f.fence == VK_NULL_HANDLE || f.acquired == VK_NULL_HANDLE {
             return Err(GpuError::new(
                 "window frame resources were lost after a failed submit; attach the window again",
             ));
         }
         dev.wait_fence(f.fence)?;
-        let (data, data_address) = f.data.as_ref().expect("created in init");
-        // The fence shows the GPU finished the frame that last read this buffer.
-        write_frame_data(data, frame, self.extent);
-        let data_address = *data_address;
+        // The fence shows the GPU finished the frame that last used this slot: its timestamps are
+        // ready and its upload buffer is free.
+        if let Some(gpu) = f.timer.as_mut().and_then(|t| t.read(dev)) {
+            self.last_gpu = Some(gpu);
+        }
+        let t1 = Instant::now();
+        let upload = f.upload.as_mut().expect("created in init");
+        let plan = prepare_frame(dev, meshes, frame, self.extent, upload, records)?;
+        let t2 = Instant::now();
 
         let mut index = 0u32;
         // SAFETY: valid device and swapchain; `f.acquired` is unsignaled (its previous wait
@@ -314,10 +348,11 @@ impl Window {
             VK_SUBOPTIMAL_KHR => self.stale = true, // still usable this frame; rebuild next time
             VK_ERROR_OUT_OF_DATE_KHR => {
                 self.stale = true; // nothing acquired, semaphore untouched: skip this frame
-                return Ok(());
+                return Ok(None);
             }
             _ => return Err(GpuError::vk("vkAcquireNextImageKHR", r)),
         }
+        let t3 = Instant::now();
         let i = index as usize;
         let image = self.images[i];
         let depth = self.depth.as_ref().expect("swapchain has a depth image");
@@ -329,6 +364,9 @@ impl Window {
         };
 
         dev.begin(f.cmd)?;
+        if let Some(t) = f.timer.as_mut() {
+            t.begin_frame(dev, f.cmd, frame_no);
+        }
         // The acquire semaphore is waited at COLOR_ATTACHMENT_OUTPUT, so the transition is
         // ordered after the presentation engine released the image.
         dev.barrier(
@@ -345,7 +383,9 @@ impl Window {
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             )],
         );
-        record_scene(dev, f.cmd, pipelines, meshes, &target, frame, data_address);
+        let upload = f.upload.as_ref().expect("created in init");
+        let draws = record_scene(dev, f.cmd, pipelines, meshes, &target, frame, &plan, upload, f.timer.as_mut());
+        let upload_bytes = upload.bytes();
         dev.barrier(
             f.cmd,
             &[],
@@ -361,6 +401,7 @@ impl Window {
             )],
         );
         dev.end(f.cmd)?;
+        let t4 = Instant::now();
         dev.reset_fence(f.fence)?;
         let submitted = dev.submit(
             f.cmd,
@@ -371,6 +412,9 @@ impl Window {
         if let Err(e) = submitted {
             self.recover_frame(dev, self.frame_index);
             return Err(e);
+        }
+        if let Some(t) = f.timer.as_mut() {
+            t.submitted();
         }
 
         let present = VkPresentInfoKHR {
@@ -386,14 +430,19 @@ impl Window {
         // SAFETY: valid queue; all referenced handles/structs live for the call.
         let r = unsafe { (scfns.queue_present)(dev.queue, &present) };
         self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT;
+        let t5 = Instant::now();
         match r {
-            VK_SUCCESS => Ok(()),
-            VK_SUBOPTIMAL_KHR | VK_ERROR_OUT_OF_DATE_KHR => {
-                self.stale = true;
-                Ok(())
-            }
-            _ => Err(GpuError::vk("vkQueuePresentKHR", r)),
+            VK_SUCCESS => {}
+            VK_SUBOPTIMAL_KHR | VK_ERROR_OUT_OF_DATE_KHR => self.stale = true,
+            _ => return Err(GpuError::vk("vkQueuePresentKHR", r)),
         }
+        Ok(Some(FrameReport {
+            cpu: CpuTiming { wait_ms: ms(t0, t1) + ms(t2, t3), record_ms: ms(t1, t2) + ms(t3, t4), submit_ms: ms(t4, t5) },
+            draws,
+            gpu: self.last_gpu.clone(),
+            extent: self.extent,
+            upload_bytes,
+        }))
     }
 
     /// After a failed submit nothing was queued: the frame's fence (already reset) would never
@@ -420,9 +469,12 @@ impl Window {
         self.destroy_swapchain_resources(dev);
         // SAFETY: device idle; every object belongs to `dev`/`inst` and is destroyed once.
         unsafe {
-            for f in self.frames.drain(..) {
-                if let Some((b, _)) = &f.data {
-                    dev.destroy_buffer(b);
+            for mut f in self.frames.drain(..) {
+                if let Some(u) = &f.upload {
+                    u.destroy(dev);
+                }
+                if let Some(t) = f.timer.as_mut() {
+                    t.destroy(dev);
                 }
                 (dev.fns.destroy_fence)(dev.handle, f.fence, ptr::null());
                 (dev.fns.destroy_semaphore)(dev.handle, f.acquired, ptr::null());

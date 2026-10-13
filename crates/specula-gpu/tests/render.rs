@@ -155,6 +155,7 @@ fn preferences_pick_expected_kinds() {
     let err = specula_gpu::Gpu::new(&specula_gpu::GpuOptions {
         validation: specula_gpu::Validation::Off,
         adapter: AdapterPreference::Index(adapters.len()),
+        ..Default::default()
     })
     .err()
     .expect("out-of-range adapter index must fail");

@@ -285,7 +285,7 @@ mod win {
         w: &mut u32,
         h: &mut u32,
     ) -> Result<usize, specula_gpu::GpuError> {
-        let mut gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter })?;
+        let mut gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter, ..Default::default() })?;
         println!("present: {} — validation {}", gpu.adapter().name, if gpu.validation_enabled() { "on" } else { "off" });
         let (vertices, indices) = cube();
         let mesh = gpu.upload_mesh(&vertices, &indices)?;

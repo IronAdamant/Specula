@@ -18,8 +18,23 @@
 //!   material) follow, sorted far to near, with depth test on and depth writes off.
 //! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
-//! - Per-frame data (camera, environment, lights, time) reaches the shaders through a buffer
-//!   device address; per-draw data through 128 bytes of push constants.
+//! - Per-frame data (camera, environment, lights, time) and one record per draw (model, colours,
+//!   surface) reach the shaders through buffer device addresses; push constants carry only the
+//!   two addresses, the material and the glass pass.
+//!
+//! # Performance
+//!
+//! - **Culling:** a draw whose mesh's bounding sphere lies outside the view frustum is skipped
+//!   (standard or reversed Z, finite or infinite far plane).
+//! - **Instancing:** opaque draws are sorted by mesh so equal ones merge into one instanced draw
+//!   call; blended draws keep their far-to-near order and merge only when adjacent. Depth testing
+//!   makes the opaque order irrelevant except where two opaque surfaces are exactly coplanar.
+//! - **Pipelines** are all built up front: every variant for the offscreen format at
+//!   [`Gpu::new`] and for the window's format at [`Gpu::attach_window`]. A `VkPipelineCache` can be
+//!   persisted ([`Gpu::pipeline_cache_data`]) and fed back ([`GpuOptions::pipeline_cache`]).
+//!   Call [`Gpu::mark_warm`] after loading; later pipeline creation is reported as an error budget.
+//! - **Statistics:** [`Gpu::last_frame_stats`] — GPU time per pass (timestamp queries, read without
+//!   stalling), CPU time, draw calls, instances, triangles, culled draws, pipelines and memory.
 //! - Colours given to the API are **sRGB** (as picked by humans/agents). Offscreen targets are
 //!   `R8G8B8A8_SRGB`; the swapchain prefers `B8G8R8A8_SRGB`. Readback bytes are therefore sRGB RGBA8,
 //!   ready to write as PNG.
@@ -27,13 +42,18 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod batch;
 mod device;
 mod gpu;
 mod instance;
 mod loader;
 mod render;
+mod stats;
 mod swapchain;
+mod timing;
 mod vk;
+
+pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Validation {
@@ -53,15 +73,18 @@ pub enum AdapterPreference {
     Index(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuOptions {
     pub validation: Validation,
     pub adapter: AdapterPreference,
+    /// Bytes from an earlier [`Gpu::pipeline_cache_data`], to skip shader compilation. A blob
+    /// from another GPU or driver is safely ignored; [`PipelineStats::cache`] says what happened.
+    pub pipeline_cache: Option<Vec<u8>>,
 }
 
 impl Default for GpuOptions {
     fn default() -> Self {
-        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance }
+        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance, pipeline_cache: None }
     }
 }
 
@@ -400,5 +423,30 @@ impl Gpu {
     /// flight; a frame that hits an out-of-date swapchain is skipped (the next one rebuilds it).
     pub fn present(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
         self.inner.present(frame)
+    }
+
+    /// Statistics of the most recent frame from [`Gpu::render`] or [`Gpu::present`] (whichever
+    /// ran last), with the current pipeline and memory state. `frame == 0` before any frame.
+    pub fn last_frame_stats(&self) -> FrameStats {
+        self.inner.last_frame_stats(None)
+    }
+
+    /// Like [`Gpu::last_frame_stats`], but the latest frame of one path (`None` if it has none
+    /// yet): the window's frame rate is not disturbed by agents' offscreen captures.
+    pub fn last_frame_stats_of(&self, path: FramePath) -> Option<FrameStats> {
+        let stats = self.inner.last_frame_stats(Some(path));
+        (stats.frame != 0).then_some(stats)
+    }
+
+    /// Declare loading finished: every pipeline the game needs exists. Pipelines created after
+    /// this are counted in [`PipelineStats::created_after_warm`] (a budget error: each is a hitch).
+    pub fn mark_warm(&mut self) {
+        self.inner.mark_warm()
+    }
+
+    /// The pipeline cache's contents, to save (e.g. at shutdown) and pass back through
+    /// [`GpuOptions::pipeline_cache`] next time.
+    pub fn pipeline_cache_data(&self) -> Result<Vec<u8>, GpuError> {
+        self.inner.pipeline_cache_data()
     }
 }

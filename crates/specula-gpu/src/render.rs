@@ -1,23 +1,45 @@
-//! The mesh pipelines: shaders, pipeline creation, per-frame data, per-draw constants and scene
-//! recording.
+//! The mesh pipelines: shaders, pipeline creation and caching, per-frame data, per-draw records
+//! and scene recording (instanced batches).
 
+use crate::batch::{Bounds, Plan};
 use crate::device::{image_barrier, Buffer, Device};
+use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{FrameDesc, GpuError, Material, Vertex, MAX_POINT_LIGHTS};
+use crate::{
+    CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Material, MemoryKind, PipelineCacheLoad, PipelineStats, Vertex,
+    MAX_POINT_LIGHTS, PASS_SCENE,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of};
 use std::ptr;
+use std::time::Instant;
 
 static VERT_SPV: &[u8] = include_bytes!("../shaders/mesh.vert.spv");
 static FRAG_SPV: &[u8] = include_bytes!("../shaders/mesh.frag.spv");
 
 pub const DEPTH_FORMAT: VkFormat = VK_FORMAT_D32_SFLOAT;
 
-/// Push constants shared by both stages; must match the `Push` block in `shaders/mesh.*`.
+/// Push constants shared by both stages, set once per batch; must match the `Push` block in
+/// `shaders/mesh.*`. Far below the 128 bytes every device guarantees.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PushConstants {
+    /// Device address of this frame's [`FrameData`].
+    pub frame: u64,
+    /// Device address of this frame's [`DrawRecord`] array; an instance reads record
+    /// `gl_InstanceIndex` (the batch's first record + instance).
+    pub draws: u64,
+    /// [`Material`] as `MAT_*` in the shader (one per batch).
+    pub material: u32,
+    /// Glass: 0 = back faces, 1 = front faces.
+    pub pass: u32,
+}
+
+/// Per-draw data as the shaders read it; must match `Draw` in `shaders/mesh.*` (std430).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawRecord {
     /// Object → world, column-major.
     pub model: [f32; 16],
     /// Linear RGB; a = opacity.
@@ -26,12 +48,6 @@ pub struct PushConstants {
     pub color2: [f32; 4],
     /// emissive, metallic, roughness, specular.
     pub params: [f32; 4],
-    /// Device address of this frame's [`FrameData`].
-    pub frame: u64,
-    /// [`Material`] as `MAT_*` in the shader.
-    pub material: u32,
-    /// Glass: 0 = back faces, 1 = front faces.
-    pub pass: u32,
 }
 
 /// One point light as the shader reads it.
@@ -65,6 +81,16 @@ pub struct FrameData {
 }
 
 pub const FRAME_DATA_SIZE: u64 = size_of::<FrameData>() as u64;
+/// Where the draw records start in a frame's upload buffer (frame data first, 256-aligned).
+pub const RECORDS_OFFSET: u64 = FRAME_DATA_SIZE.div_ceil(256) * 256;
+const RECORD_SIZE: u64 = size_of::<DrawRecord>() as u64;
+/// Records a fresh upload buffer has room for.
+const INITIAL_RECORDS: u32 = 256;
+
+// Records follow the frame data at an aligned offset; push constants stay within the 128 bytes
+// every device guarantees.
+const _: () = assert!(RECORDS_OFFSET >= FRAME_DATA_SIZE && RECORDS_OFFSET % 256 == 0);
+const _: () = assert!(size_of::<PushConstants>() <= 128);
 
 const MAT_LIT: u32 = 0;
 const MAT_GLASS: u32 = 1;
@@ -146,27 +172,110 @@ pub fn camera_position(view_proj: &[f32; 16]) -> [f32; 3] {
     [(p[0] / p[3]) as f32, (p[1] / p[3]) as f32, (p[2] / p[3]) as f32]
 }
 
-/// Write `frame`'s data into a persistently mapped buffer of at least [`FRAME_DATA_SIZE`] bytes.
-pub fn write_frame_data(buffer: &Buffer, frame: &FrameDesc, extent: VkExtent2D) {
-    let data = frame_data(frame, extent);
-    // SAFETY: `buffer.mapped` is coherent host memory of at least FRAME_DATA_SIZE bytes that the
-    // GPU no longer reads (callers wait for the frame that last used it); `FrameData` is plain data.
-    unsafe {
-        ptr::copy_nonoverlapping(&data as *const FrameData as *const u8, buffer.mapped as *mut u8, size_of::<FrameData>())
-    };
+/// The shader-side record of a draw (colours converted to linear, parameters clamped).
+pub fn draw_record(draw: &DrawItem) -> DrawRecord {
+    let s = &draw.surface;
+    let c2 = srgb_to_linear_rgba([s.color2[0], s.color2[1], s.color2[2], 1.0]);
+    DrawRecord {
+        model: draw.model,
+        color: srgb_to_linear_rgba(draw.color),
+        color2: [c2[0], c2[1], c2[2], s.seed],
+        params: [s.emissive.max(0.0), s.metallic.clamp(0.0, 1.0), s.roughness.clamp(0.0, 1.0), s.specular.max(0.0)],
+    }
 }
 
-/// A host-visible buffer for one frame's [`FrameData`] and its device address.
-pub fn create_frame_buffer(dev: &Device) -> Result<(Buffer, u64), GpuError> {
-    let buffer = dev.create_buffer(
-        FRAME_DATA_SIZE,
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        "frame data",
-    )?;
-    let address = dev.buffer_address(&buffer);
-    Ok((buffer, address))
+/// Fill `out` with the records of `plan.entries`, in order. Runs of equal colours (common in
+/// batches) convert once.
+pub fn build_records(frame: &FrameDesc, plan: &Plan, out: &mut Vec<DrawRecord>) {
+    out.clear();
+    out.reserve(plan.entries.len());
+    let mut last: Option<(&DrawItem, DrawRecord)> = None;
+    for &(i, _) in &plan.entries {
+        let d = &frame.draws[i];
+        let record = match last {
+            Some((prev, r)) if prev.color == d.color && prev.surface == d.surface => DrawRecord { model: d.model, ..r },
+            _ => draw_record(d),
+        };
+        last = Some((d, record));
+        out.push(record);
+    }
+}
+
+/// A frame's upload buffer: [`FrameData`] at offset 0, [`DrawRecord`]s at [`RECORDS_OFFSET`].
+/// Host-visible (device-local when the device offers it), persistently mapped, read by the
+/// shaders through its device address. Grows as needed.
+pub struct FrameUpload {
+    buffer: Buffer,
+    address: u64,
+    /// Records it has room for.
+    capacity: u32,
+}
+
+impl FrameUpload {
+    pub fn new(dev: &Device) -> Result<FrameUpload, GpuError> {
+        Self::with_capacity(dev, INITIAL_RECORDS)
+    }
+
+    fn with_capacity(dev: &Device, capacity: u32) -> Result<FrameUpload, GpuError> {
+        let buffer = dev.create_buffer(
+            RECORDS_OFFSET + capacity as u64 * RECORD_SIZE,
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            MemoryKind::PerFrame,
+            "frame upload",
+        )?;
+        let address = dev.buffer_address(&buffer);
+        Ok(FrameUpload { buffer, address, capacity })
+    }
+
+    /// Make room for `records`, replacing the buffer (at least doubling) when it is too small.
+    /// The GPU must not be reading this buffer (callers waited for the frame that last used it).
+    pub fn reserve(&mut self, dev: &Device, records: usize) -> Result<(), GpuError> {
+        if records <= self.capacity as usize {
+            return Ok(());
+        }
+        let wanted = records.max(2 * self.capacity as usize);
+        let capacity = u32::try_from(wanted)
+            .map_err(|_| GpuError::new(format!("{records} draw records in one frame; at most {} fit", u32::MAX)))?;
+        let grown = Self::with_capacity(dev, capacity)?;
+        dev.destroy_buffer(&self.buffer);
+        *self = grown;
+        Ok(())
+    }
+
+    /// Write the frame's data and records (`records.len()` ≤ the reserved capacity).
+    pub fn write(&self, data: &FrameData, records: &[DrawRecord]) {
+        assert!(records.len() <= self.capacity as usize, "reserve() before write()");
+        // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE bytes
+        // that the GPU no longer reads (see `reserve`); both copies stay in bounds and the types
+        // are plain `repr(C)` data.
+        unsafe {
+            let base = self.buffer.mapped as *mut u8;
+            ptr::copy_nonoverlapping(data as *const FrameData as *const u8, base, size_of::<FrameData>());
+            ptr::copy_nonoverlapping(
+                records.as_ptr() as *const u8,
+                base.add(RECORDS_OFFSET as usize),
+                std::mem::size_of_val(records),
+            );
+        }
+    }
+
+    pub fn frame_address(&self) -> u64 {
+        self.address
+    }
+
+    pub fn records_address(&self) -> u64 {
+        self.address + RECORDS_OFFSET
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.buffer.bytes
+    }
+
+    pub fn destroy(&self, dev: &Device) {
+        dev.destroy_buffer(&self.buffer);
+    }
 }
 
 const PUSH_STAGES: VkFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -176,14 +285,56 @@ pub struct Mesh {
     pub buffer: Buffer,
     pub index_offset: u64,
     pub index_count: u32,
+    /// Object-space bounding sphere, for frustum culling.
+    pub bounds: Bounds,
 }
 
-/// Shader modules, layout and one pipeline per (colour format, depth mode, blended).
+/// Identity of the device a pipeline cache blob must come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheIdentity {
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub uuid: [u8; VK_UUID_SIZE],
+}
+
+/// Check a `VkPipelineCacheHeaderVersionOne` (all fields little-endian) against this device, so a
+/// blob from another GPU or driver is never handed to the driver.
+pub fn check_cache_header(blob: &[u8], id: &CacheIdentity) -> Result<(), CacheRejection> {
+    if blob.len() < 32 {
+        return Err(CacheRejection::TooShort { len: blob.len() });
+    }
+    let word = |i: usize| u32::from_le_bytes([blob[i], blob[i + 1], blob[i + 2], blob[i + 3]]);
+    let (header_size, header_version) = (word(0), word(4));
+    if header_version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || header_size < 32 || header_size as usize > blob.len() {
+        return Err(CacheRejection::BadHeader { header_size, header_version });
+    }
+    if word(8) != id.vendor_id {
+        return Err(CacheRejection::OtherVendor { vendor_id: word(8) });
+    }
+    if word(12) != id.device_id {
+        return Err(CacheRejection::OtherDevice { device_id: word(12) });
+    }
+    if blob[16..32] != id.uuid {
+        return Err(CacheRejection::OtherDriver);
+    }
+    Ok(())
+}
+
+/// Every pipeline variant per colour format: (reverse_z, blended).
+const VARIANTS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+
+/// Shader modules, layout, the pipeline cache and every pipeline variant per colour format.
 pub struct Pipelines {
     vert: VkShaderModule,
     frag: VkShaderModule,
     pub layout: VkPipelineLayout,
+    cache: VkPipelineCache,
     by_format: Vec<((VkFormat, bool, bool), VkPipeline)>,
+    created: u32,
+    /// `created` when `mark_warm` was called.
+    warm_at: Option<u32>,
+    create_ms: f64,
+    cache_load: PipelineCacheLoad,
 }
 
 /// The opaque and blended pipelines for one target.
@@ -216,9 +367,40 @@ fn create_shader(dev: &Device, spv: &[u8], what: &str) -> Result<VkShaderModule,
     Ok(module)
 }
 
+fn create_cache(dev: &Device, data: &[u8]) -> Result<VkPipelineCache, VkResult> {
+    let info = VkPipelineCacheCreateInfo {
+        s_type: ST_PIPELINE_CACHE_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: 0,
+        initial_data_size: data.len(),
+        p_initial_data: if data.is_empty() { ptr::null() } else { data.as_ptr() as *const c_void },
+    };
+    let mut cache = VK_NULL_HANDLE;
+    // SAFETY: valid device; `data` (header checked by the caller) outlives the call.
+    let r = unsafe { (dev.fns.create_pipeline_cache)(dev.handle, &info, ptr::null(), &mut cache) };
+    if r == VK_SUCCESS {
+        Ok(cache)
+    } else {
+        Err(r)
+    }
+}
+
 impl Pipelines {
-    pub fn new(dev: &Device) -> Result<Pipelines, GpuError> {
-        let mut p = Pipelines { vert: VK_NULL_HANDLE, frag: VK_NULL_HANDLE, layout: VK_NULL_HANDLE, by_format: Vec::new() };
+    /// Shaders, layout and the pipeline cache, seeded from `cache_blob` when it was made by this
+    /// device and driver (the outcome is in [`Pipelines::stats`]). No pipelines yet: see
+    /// [`Pipelines::prebuild`].
+    pub fn new(dev: &Device, cache_blob: Option<&[u8]>, id: &CacheIdentity) -> Result<Pipelines, GpuError> {
+        let mut p = Pipelines {
+            vert: VK_NULL_HANDLE,
+            frag: VK_NULL_HANDLE,
+            layout: VK_NULL_HANDLE,
+            cache: VK_NULL_HANDLE,
+            by_format: Vec::new(),
+            created: 0,
+            warm_at: None,
+            create_ms: 0.0,
+            cache_load: PipelineCacheLoad::NotProvided,
+        };
         let result = (|| {
             p.vert = create_shader(dev, VERT_SPV, "mesh.vert")?;
             p.frag = create_shader(dev, FRAG_SPV, "mesh.frag")?;
@@ -237,6 +419,29 @@ impl Pipelines {
             if r != VK_SUCCESS {
                 return Err(GpuError::vk("vkCreatePipelineLayout", r));
             }
+            let seeded = match cache_blob {
+                None => None,
+                Some(blob) => match check_cache_header(blob, id) {
+                    Err(why) => {
+                        p.cache_load = PipelineCacheLoad::Rejected(why);
+                        None
+                    }
+                    Ok(()) => match create_cache(dev, blob) {
+                        Ok(cache) => {
+                            p.cache_load = PipelineCacheLoad::Loaded { bytes: blob.len() };
+                            Some(cache)
+                        }
+                        Err(r) => {
+                            p.cache_load = PipelineCacheLoad::Rejected(CacheRejection::Driver { vk_result: r });
+                            None
+                        }
+                    },
+                },
+            };
+            p.cache = match seeded {
+                Some(cache) => cache,
+                None => create_cache(dev, &[]).map_err(|r| GpuError::vk("vkCreatePipelineCache", r))?,
+            };
             Ok(())
         })();
         match result {
@@ -248,8 +453,16 @@ impl Pipelines {
         }
     }
 
-    /// The pipelines rendering into `color_format` (+ D32 depth, reversed or standard), created
-    /// on first use.
+    /// Create every variant (depth mode × blending) for `color_format` that doesn't exist yet.
+    pub fn prebuild(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
+        for (reverse_z, blended) in VARIANTS {
+            self.get_one(dev, color_format, reverse_z, blended)?;
+        }
+        Ok(())
+    }
+
+    /// The pipelines rendering into `color_format` (+ D32 depth, reversed or standard). They are
+    /// normally prebuilt; one created here (an unexpected format) is counted against the warm mark.
     pub fn get(&mut self, dev: &Device, color_format: VkFormat, reverse_z: bool) -> Result<PipelinePair, GpuError> {
         Ok(PipelinePair {
             opaque: self.get_one(dev, color_format, reverse_z, false)?,
@@ -263,9 +476,52 @@ impl Pipelines {
         if let Some(&(_, p)) = self.by_format.iter().find(|(k, _)| *k == key) {
             return Ok(p);
         }
+        let start = Instant::now();
         let p = self.create(dev, color_format, reverse_z, blended)?;
+        self.create_ms += start.elapsed().as_secs_f64() * 1e3;
+        self.created += 1;
         self.by_format.push((key, p));
         Ok(p)
+    }
+
+    /// Loading is done: any pipeline created from now on is reported as a hitch.
+    pub fn mark_warm(&mut self) {
+        self.warm_at = Some(self.created);
+    }
+
+    pub fn stats(&self) -> PipelineStats {
+        PipelineStats {
+            created: self.created,
+            created_after_warm: self.warm_at.map_or(0, |w| self.created - w),
+            warm: self.warm_at.is_some(),
+            create_ms: self.create_ms,
+            cache: self.cache_load,
+        }
+    }
+
+    /// The pipeline cache's contents, to persist and pass back as `GpuOptions::pipeline_cache`.
+    pub fn cache_data(&self, dev: &Device) -> Result<Vec<u8>, GpuError> {
+        loop {
+            let mut size = 0usize;
+            // SAFETY: valid device and cache; size query with a null buffer.
+            let r = unsafe { (dev.fns.get_pipeline_cache_data)(dev.handle, self.cache, &mut size, ptr::null_mut()) };
+            if r != VK_SUCCESS {
+                return Err(GpuError::vk("vkGetPipelineCacheData", r));
+            }
+            let mut data = vec![0u8; size];
+            // SAFETY: `data` holds `size` bytes.
+            let r = unsafe {
+                (dev.fns.get_pipeline_cache_data)(dev.handle, self.cache, &mut size, data.as_mut_ptr() as *mut c_void)
+            };
+            match r {
+                VK_SUCCESS => {
+                    data.truncate(size);
+                    return Ok(data);
+                }
+                VK_INCOMPLETE => continue, // grew between the calls
+                _ => return Err(GpuError::vk("vkGetPipelineCacheData", r)),
+            }
+        }
     }
 
     fn create(&self, dev: &Device, color_format: VkFormat, reverse_z: bool, blended: bool) -> Result<VkPipeline, GpuError> {
@@ -443,8 +699,9 @@ impl Pipelines {
             base_pipeline_index: -1,
         };
         let mut pipeline = VK_NULL_HANDLE;
-        // SAFETY: every state struct referenced by `info` is a local alive for the call.
-        let r = unsafe { (dev.fns.create_graphics_pipelines)(dev.handle, VK_NULL_HANDLE, 1, &info, ptr::null(), &mut pipeline) };
+        // SAFETY: every state struct referenced by `info` is a local alive for the call; `cache`
+        // is this device's pipeline cache, used from this thread only.
+        let r = unsafe { (dev.fns.create_graphics_pipelines)(dev.handle, self.cache, 1, &info, ptr::null(), &mut pipeline) };
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines (colour format {color_format}, blended {blended})"), r));
         }
@@ -457,10 +714,12 @@ impl Pipelines {
             for (_, p) in self.by_format.drain(..) {
                 (dev.fns.destroy_pipeline)(dev.handle, p, ptr::null());
             }
+            (dev.fns.destroy_pipeline_cache)(dev.handle, self.cache, ptr::null());
             (dev.fns.destroy_pipeline_layout)(dev.handle, self.layout, ptr::null());
             (dev.fns.destroy_shader_module)(dev.handle, self.vert, ptr::null());
             (dev.fns.destroy_shader_module)(dev.handle, self.frag, ptr::null());
         }
+        self.cache = VK_NULL_HANDLE;
         self.layout = VK_NULL_HANDLE;
         self.vert = VK_NULL_HANDLE;
         self.frag = VK_NULL_HANDLE;
@@ -479,28 +738,21 @@ pub fn check_frame(meshes: &HashMap<u32, Mesh>, frame: &FrameDesc) -> Result<(),
     }
 }
 
-/// Draw order: opaque draws as given, then blended ones far to near (by model origin). Glass
-/// appears twice: back faces (pass 0), then front faces (pass 1). Blended draws sharing an origin
-/// are treated as nested shells listed outermost first: all their back faces in list order, then
-/// their front faces in reverse, so an inner liquid sits inside its outer glass. Returns
-/// (draw index, pass).
-pub fn draw_order(frame: &FrameDesc) -> Vec<(usize, u32)> {
-    let mut order: Vec<(usize, u32)> =
-        frame.draws.iter().enumerate().filter(|(_, d)| !d.material.blended()).map(|(i, _)| (i, 0)).collect();
-    let c = camera_position(&frame.view_proj);
-    let dist2 = |i: usize| {
-        let m = &frame.draws[i].model;
-        let d = [m[12] - c[0], m[13] - c[1], m[14] - c[2]];
-        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-    };
-    let mut blended: Vec<usize> = (0..frame.draws.len()).filter(|&i| frame.draws[i].material.blended()).collect();
-    blended.sort_by(|&a, &b| dist2(b).total_cmp(&dist2(a))); // stable: ties keep list order
-    for group in blended.chunk_by(|&a, &b| dist2(a) == dist2(b)) {
-        order.extend(group.iter().map(|&i| (i, 0)));
-        let glass = group.iter().rev().filter(|&&i| frame.draws[i].material == Material::Glass);
-        order.extend(glass.map(|&i| (i, 1)));
-    }
-    order
+/// Cull and batch `frame` against `meshes`, then write its frame data and draw records into
+/// `upload` (growing it). The GPU must not be reading `upload`. `records` is scratch space.
+pub fn prepare_frame(
+    dev: &Device,
+    meshes: &HashMap<u32, Mesh>,
+    frame: &FrameDesc,
+    extent: VkExtent2D,
+    upload: &mut FrameUpload,
+    records: &mut Vec<DrawRecord>,
+) -> Result<Plan, GpuError> {
+    let plan = crate::batch::plan(frame, |m| meshes.get(&m.0).map(|mesh| mesh.bounds));
+    build_records(frame, &plan, records);
+    upload.reserve(dev, records.len())?;
+    upload.write(&frame_data(frame, extent), records);
+    Ok(plan)
 }
 
 /// Where a frame is drawn: colour + depth views of `extent`.
@@ -511,10 +763,11 @@ pub struct RenderTarget {
     pub extent: VkExtent2D,
 }
 
-/// Record: depth layout transition, clear, draw every item. The colour image must already be in
-/// `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its transitions); it stays there.
-///
-/// `frame_address` is the device address of this frame's [`FrameData`], already written.
+/// Record the scene pass: depth layout transition, clear, one instanced draw per batch of `plan`.
+/// The colour image must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its
+/// transitions); it stays there. `upload` holds the frame's data and records (`prepare_frame`).
+/// With a `timer` (already reset for this frame) the pass is timestamped.
+#[allow(clippy::too_many_arguments)]
 pub fn record_scene(
     dev: &Device,
     cmd: VkCommandBuffer,
@@ -522,8 +775,12 @@ pub fn record_scene(
     meshes: &HashMap<u32, Mesh>,
     target: &RenderTarget,
     frame: &FrameDesc,
-    frame_address: u64,
-) {
+    plan: &Plan,
+    upload: &FrameUpload,
+    timer: Option<&mut PassTimer>,
+) -> DrawStats {
+    let mut timer = timer;
+    let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_SCENE));
     // Depth contents are never kept between frames: discard them, but order the transition after
     // the previous frame's depth reads/writes (same image, possibly still in flight).
     let depth_stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
@@ -589,32 +846,35 @@ pub fn record_scene(
         min_depth: 0.0,
         max_depth: 1.0,
     };
-    // SAFETY: `cmd` is recording; all referenced structs outlive each call; the pipeline and
+    let mut stats = DrawStats {
+        submitted: frame.draws.len() as u32,
+        culled: plan.culled,
+        unbatched_draw_calls: plan.entries.len() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `cmd` is recording; all referenced structs outlive each call; the pipelines and
     // layout are compatible; every mesh buffer is live (checked by `check_frame`) and the GPU
-    // does not outlive it (callers wait before destroying meshes).
+    // does not outlive it (callers wait before destroying meshes); `upload` holds the frame data
+    // and one record per plan entry, so every instance index is in bounds.
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
         let mut bound = VK_NULL_HANDLE;
-        for (i, pass) in draw_order(frame) {
-            let draw = &frame.draws[i];
-            let Some(mesh) = meshes.get(&draw.mesh.0) else { continue };
-            let pipeline = if draw.material.blended() { pipelines.blended } else { pipelines.opaque };
+        let mut bound_mesh = None;
+        for batch in &plan.batches {
+            let Some(mesh) = meshes.get(&batch.mesh.0) else { continue };
+            let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                 bound = pipeline;
+                stats.pipeline_binds += 1;
             }
-            let s = &draw.surface;
-            let c2 = srgb_to_linear_rgba([s.color2[0], s.color2[1], s.color2[2], 1.0]);
             let pc = PushConstants {
-                model: draw.model,
-                color: srgb_to_linear_rgba(draw.color),
-                color2: [c2[0], c2[1], c2[2], s.seed],
-                params: [s.emissive.max(0.0), s.metallic.clamp(0.0, 1.0), s.roughness.clamp(0.0, 1.0), s.specular.max(0.0)],
-                frame: frame_address,
-                material: material_id(draw.material),
-                pass,
+                frame: upload.frame_address(),
+                draws: upload.records_address(),
+                material: material_id(batch.material),
+                pass: batch.pass,
             };
             (dev.fns.cmd_push_constants)(
                 cmd,
@@ -624,13 +884,23 @@ pub fn record_scene(
                 size_of::<PushConstants>() as u32,
                 &pc as *const PushConstants as *const c_void,
             );
-            let offset: VkDeviceSize = 0;
-            (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &mesh.buffer.handle, &offset);
-            (dev.fns.cmd_bind_index_buffer)(cmd, mesh.buffer.handle, mesh.index_offset, VK_INDEX_TYPE_UINT32);
-            (dev.fns.cmd_draw_indexed)(cmd, mesh.index_count, 1, 0, 0, 0);
+            if bound_mesh != Some(batch.mesh) {
+                let offset: VkDeviceSize = 0;
+                (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &mesh.buffer.handle, &offset);
+                (dev.fns.cmd_bind_index_buffer)(cmd, mesh.buffer.handle, mesh.index_offset, VK_INDEX_TYPE_UINT32);
+                bound_mesh = Some(batch.mesh);
+            }
+            (dev.fns.cmd_draw_indexed)(cmd, mesh.index_count, batch.count, 0, 0, batch.first);
+            stats.draw_calls += 1;
+            stats.instances += batch.count;
+            stats.triangles += (mesh.index_count / 3) as u64 * batch.count as u64;
         }
         (dev.fns.cmd_end_rendering)(cmd);
     }
+    if let Some(t) = timer {
+        t.end_pass(dev, cmd, pass);
+    }
+    stats
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -655,15 +925,25 @@ pub fn srgb_to_linear_rgba(c: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MeshId, Surface};
 
     #[test]
-    fn push_constants_fit_128_bytes() {
-        assert_eq!(size_of::<PushConstants>(), 128);
-        assert_eq!(offset_of!(PushConstants, color), 64);
-        assert_eq!(offset_of!(PushConstants, params), 96);
-        assert_eq!(offset_of!(PushConstants, frame), 112);
-        assert_eq!(offset_of!(PushConstants, pass), 124);
+    fn push_constants_match_shader_layout() {
+        assert_eq!(size_of::<PushConstants>(), 24);
+        assert_eq!(offset_of!(PushConstants, draws), 8);
+        assert_eq!(offset_of!(PushConstants, material), 16);
+        assert_eq!(offset_of!(PushConstants, pass), 20);
         assert_eq!(size_of::<Vertex>(), 24);
+    }
+
+    #[test]
+    fn draw_record_matches_shader_layout() {
+        // std430 `Draw` in shaders/mesh.*: mat4 + 3 × vec4, array stride 112.
+        assert_eq!(offset_of!(DrawRecord, color), 64);
+        assert_eq!(offset_of!(DrawRecord, color2), 80);
+        assert_eq!(offset_of!(DrawRecord, params), 96);
+        assert_eq!(size_of::<DrawRecord>(), 112);
+        assert_eq!(RECORDS_OFFSET, 768);
     }
 
     #[test]
@@ -687,59 +967,73 @@ mod tests {
         assert_eq!(d.viewport, [4.0, 2.0, 0.0, 0.0]);
     }
 
-    /// A perspective camera at (0, 0, z) looking down −Z (Vulkan clip, reversed Z, near 0.05).
-    fn look_from_z(z: f32) -> [f32; 16] {
-        // proj (column-major): x' = x, y' = −y, z' = 0.05, w' = −z_view; view = translate(0, 0, −z).
-        let proj = [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.05, 0.0];
-        let mut vp = proj;
-        // proj · translate: column 3 += proj · (0, 0, −z, 0).
-        for r in 0..4 {
-            vp[12 + r] += proj[8 + r] * -z;
-        }
-        vp
-    }
-
     #[test]
     fn camera_position_comes_from_view_proj() {
-        let p = camera_position(&look_from_z(5.0));
+        // A camera at (0, 0, 5) looking down −Z (Vulkan clip, reversed Z, near 0.05).
+        let mut vp = [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.05, 0.0];
+        for r in 0..4 {
+            vp[12 + r] += vp[8 + r] * -5.0;
+        }
+        let p = camera_position(&vp);
         assert!((p[0]).abs() < 1e-5 && (p[1]).abs() < 1e-5 && (p[2] - 5.0).abs() < 1e-5, "{p:?}");
         assert_eq!(camera_position(&[0.0; 16]), [0.0; 3], "singular falls back to the origin");
     }
 
     #[test]
-    fn blended_draws_follow_opaque_far_to_near() {
-        let at = |z: f32| {
-            let mut m = [0.0; 16];
-            m[0] = 1.0;
-            m[5] = 1.0;
-            m[10] = 1.0;
-            m[15] = 1.0;
-            m[14] = z;
-            m
-        };
-        let mesh = crate::MeshId(1);
-        let mut glass = crate::DrawItem::new(mesh, at(-2.0), [1.0; 4]);
-        glass.material = Material::Glass;
-        let mut lamp = crate::DrawItem::new(mesh, at(-5.0), [1.0; 4]);
-        lamp.material = Material::LavaLamp;
-        let draws = [glass, crate::DrawItem::new(mesh, at(-1.0), [1.0; 4]), lamp];
+    fn records_follow_plan_order_and_convert_once_per_run() {
+        let mut model = [0.0; 16];
+        model[0] = 1.0;
+        model[15] = 1.0;
+        let mut a = DrawItem::new(MeshId(1), model, [0.5, 0.25, 1.0, 0.3]);
+        a.surface = Surface { emissive: -1.0, metallic: 2.0, roughness: 0.4, specular: 0.5, color2: [1.0, 0.5, 0.0], seed: 7.0 };
+        let mut b = a;
+        b.model[12] = 3.0;
+        let c = DrawItem::new(MeshId(1), model, [0.0, 0.0, 0.0, 1.0]);
+        let draws = [a, b, c];
         let frame = FrameDesc { draws: &draws, ..Default::default() };
-        assert_eq!(draw_order(&frame), vec![(1, 0), (2, 0), (0, 0), (0, 1)]);
+        let plan = Plan { entries: vec![(2, 0), (1, 0), (0, 0), (0, 1)], ..Default::default() };
+        let mut out = Vec::new();
+        build_records(&frame, &plan, &mut out);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0], draw_record(&c));
+        assert_eq!(out[1], draw_record(&b));
+        assert_eq!(out[2], draw_record(&a));
+        assert_eq!(out[3], draw_record(&a));
+        assert_eq!(out[1].model[12], 3.0, "the memo keeps each draw's own model");
+        let r = draw_record(&a);
+        assert_eq!(r.params, [0.0, 1.0, 0.4, 0.5], "clamped");
+        assert_eq!(r.color[3], 0.3, "opacity passes through");
+        assert_eq!(r.color2[3], 7.0, "seed");
+        assert!((r.color[0] - 0.214_041).abs() < 1e-5, "linear");
     }
 
     #[test]
-    fn nested_glass_shells_draw_inner_inside_outer() {
-        let mut m = [0.0; 16];
-        m[0] = 1.0;
-        m[5] = 1.0;
-        m[10] = 1.0;
-        m[15] = 1.0;
-        let mut outer = crate::DrawItem::new(crate::MeshId(1), m, [1.0; 4]);
-        outer.material = Material::Glass;
-        let inner = outer;
-        let draws = [outer, inner];
-        let frame = FrameDesc { draws: &draws, view_proj: look_from_z(5.0), ..Default::default() };
-        assert_eq!(draw_order(&frame), vec![(0, 0), (1, 0), (1, 1), (0, 1)]);
+    fn cache_header_checks_identity() {
+        let id = CacheIdentity { vendor_id: 0x10de, device_id: 0x2717, uuid: [7; 16] };
+        let mut blob = Vec::new();
+        for w in [32u32, 1, 0x10de, 0x2717] {
+            blob.extend_from_slice(&w.to_le_bytes());
+        }
+        blob.extend_from_slice(&[7; 16]);
+        blob.extend_from_slice(b"driver data");
+        assert_eq!(check_cache_header(&blob, &id), Ok(()));
+        assert_eq!(check_cache_header(&blob[..20], &id), Err(CacheRejection::TooShort { len: 20 }));
+        let mut bad = blob.clone();
+        bad[4] = 2;
+        assert_eq!(check_cache_header(&bad, &id), Err(CacheRejection::BadHeader { header_size: 32, header_version: 2 }));
+        let mut bad = blob.clone();
+        bad[0] = 200; // header claims to be longer than the blob
+        assert!(matches!(check_cache_header(&bad, &id), Err(CacheRejection::BadHeader { .. })));
+        let mut bad = blob.clone();
+        bad[8] = 0x86;
+        bad[9] = 0x80;
+        assert_eq!(check_cache_header(&bad, &id), Err(CacheRejection::OtherVendor { vendor_id: 0x8086 }));
+        let mut bad = blob.clone();
+        bad[12] = 0;
+        assert_eq!(check_cache_header(&bad, &id), Err(CacheRejection::OtherDevice { device_id: 0x2700 }));
+        let mut bad = blob.clone();
+        bad[31] = 8;
+        assert_eq!(check_cache_header(&bad, &id), Err(CacheRejection::OtherDriver));
     }
 
     #[test]
