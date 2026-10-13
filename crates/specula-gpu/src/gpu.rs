@@ -130,7 +130,11 @@ impl GpuInner {
         let max_image_dimension_2d = props.limits.max_image_dimension_2d;
         let device = Device::new(&instance, physical, family)?;
         let id = CacheIdentity { vendor_id: props.vendor_id, device_id: props.device_id, uuid: props.pipeline_cache_uuid };
-        let mut descriptors = Descriptors::new(&device)?;
+        // Linear depth-compare filtering is optional for D16; without it shadows filter nearest.
+        let shadow_linear = instance.format_features(physical, crate::shadow::SHADOW_FORMAT).optimal_tiling_features
+            & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+            != 0;
+        let mut descriptors = Descriptors::new(&device, shadow_linear)?;
         let pipelines = match Pipelines::new(&device, descriptors.layout, options.pipeline_cache.as_deref(), &id) {
             Ok(p) => p,
             Err(e) => {
@@ -408,7 +412,10 @@ impl GpuInner {
         check_pixels("upload_texture", width, height, format, pixels)?;
         let max = self.max_image_dimension_2d;
         if width > max || height > max {
-            return Err(GpuError::new(format!("upload_texture: size {width}x{height} exceeds {max} in a dimension")));
+            return Err(GpuError::rejected(
+                crate::ErrorReason::TooLarge { width, height, max },
+                format!("upload_texture: size {width}x{height} exceeds {max} in a dimension"),
+            ));
         }
         let slot = self.descriptors.alloc_slot()?;
         let image = match self.device.create_image(
@@ -439,13 +446,15 @@ impl GpuInner {
     }
 
     pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
-        let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::new(format!("unknown texture id {}", texture.0)))?;
+        let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Texture, texture.0, ""))?;
         check_pixels("update_texture", width, height, t.format, pixels)?;
         if x as u64 + width as u64 > t.width as u64 || y as u64 + height as u64 > t.height as u64 {
-            return Err(GpuError::new(format!(
-                "update_texture: region {width}x{height} at ({x}, {y}) leaves the {}x{} texture",
-                t.width, t.height
-            )));
+            let reason =
+                crate::ErrorReason::RegionOutside { x, y, width, height, texture_width: t.width, texture_height: t.height };
+            return Err(GpuError::rejected(
+                reason,
+                format!("update_texture: region {width}x{height} at ({x}, {y}) leaves the {}x{} texture", t.width, t.height),
+            ));
         }
         self.copy_to_image(t.image.handle, false, x, y, width, height, pixels)
     }
@@ -543,7 +552,7 @@ impl GpuInner {
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
         if !self.targets.contains_key(&target.0) {
-            return Err(GpuError::new(format!("unknown target id {}", target.0)));
+            return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         }
         self.ensure_frame_resources(frame)?;
         let t = self.targets.get_mut(&target.0).expect("checked");
@@ -648,7 +657,7 @@ impl GpuInner {
     }
 
     pub fn read_rgba8(&mut self, target: TargetId) -> Result<Vec<u8>, GpuError> {
-        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::new(format!("unknown target id {}", target.0)))?;
+        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
         if !t.rendered {
             return Err(GpuError::new(format!("read_rgba8: target {} has not been rendered yet", target.0)));
         }

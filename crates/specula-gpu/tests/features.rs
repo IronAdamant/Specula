@@ -359,8 +359,14 @@ fn overlay_quads_draw_on_top_in_every_path() {
         let mask = gpu.upload_texture(8, 8, TextureFormat::R8, &glyph()).unwrap();
         // 2×1 RGBA: red, then green.
         let rgba = gpu.upload_texture(2, 1, TextureFormat::Rgba8Srgb, &[255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
-        assert!(gpu.upload_texture(2, 2, TextureFormat::R8, &[0; 3]).is_err(), "wrong data length");
-        assert!(gpu.update_texture(mask, 6, 6, 4, 4, &[0; 16]).is_err(), "region outside the texture");
+        use specula_gpu::{ErrorReason, IdKind};
+        let err = gpu.upload_texture(2, 2, TextureFormat::R8, &[0; 3]).unwrap_err();
+        assert_eq!(err.reason, Some(ErrorReason::DataLength { given: 3, expected: 4 }), "wrong data length");
+        let err = gpu.update_texture(mask, 6, 6, 4, 4, &[0; 16]).unwrap_err();
+        let outside = ErrorReason::RegionOutside { x: 6, y: 6, width: 4, height: 4, texture_width: 8, texture_height: 8 };
+        assert_eq!(err.reason, Some(outside), "region outside the texture");
+        let err = gpu.upload_texture(1 << 20, 1, TextureFormat::R8, &vec![0; 1 << 20]).unwrap_err();
+        assert!(matches!(err.reason, Some(ErrorReason::TooLarge { width: 1048576, .. })), "{err:?}");
         let quads = [
             // A dark rounded panel, partly transparent.
             OverlayQuad { radius: 12.0, ..OverlayQuad::solid([20.0, 20.0, 200.0, 80.0], [0.17, 0.19, 0.22, 0.85]) },
@@ -417,7 +423,7 @@ fn overlay_quads_draw_on_top_in_every_path() {
         // Unknown textures are a structured error; destroyed textures become unknown.
         gpu.destroy_texture(rgba);
         let err = gpu.render(target, &frame).unwrap_err();
-        assert!(err.message.contains("texture"), "{err}");
+        assert_eq!(err.reason, Some(ErrorReason::UnknownId { kind: IdKind::Texture, id: rgba.0 }), "{err}");
         gpu.destroy_texture(mask);
         gpu.destroy_target(target);
         let errors = validation_errors(test, gpu);

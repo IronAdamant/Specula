@@ -399,6 +399,12 @@ impl Instance {
         if v12.flags[VkPhysicalDeviceVulkan12Features::BUFFER_DEVICE_ADDRESS] == 0 {
             return Err("device lacks bufferDeviceAddress".into());
         }
+        // Required up front, even when a game never turns the features on: descriptor indexing
+        // (textures, overlay, post), RGBA16F render + filter (bloom) and D16 render + sample
+        // (shadows). Every desktop GPU with Vulkan 1.3 and the Steam Deck have them; many Android
+        // devices lack descriptor indexing (or update-after-bind for sampled images), so the
+        // mobile port will need a fallback (fixed-size descriptor arrays) instead of rejecting
+        // the adapter (F6).
         if VkPhysicalDeviceVulkan12Features::BINDLESS.iter().any(|&i| v12.flags[i] == 0) {
             return Err("device lacks descriptor indexing (runtime arrays, partially bound, update-after-bind, \
                         non-uniform sampled-image indexing)"

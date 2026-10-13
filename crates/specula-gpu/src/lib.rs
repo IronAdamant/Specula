@@ -159,6 +159,31 @@ pub struct GpuError {
     pub vk_result: Option<i32>,
     /// Set when a request exceeded a fixed limit.
     pub limit: Option<LimitExceeded>,
+    /// Set when an argument was rejected, saying what was wrong with it.
+    pub reason: Option<ErrorReason>,
+}
+
+/// Which kind of resource an id names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdKind {
+    Mesh,
+    Texture,
+    Target,
+}
+
+/// Why an argument was rejected (machine-readable; `message` says the same in words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorReason {
+    /// An id that names nothing (never created, or destroyed).
+    UnknownId { kind: IdKind, id: u32 },
+    /// A width or height of 0.
+    ZeroSize { width: u32, height: u32 },
+    /// A width or height above the device's limit.
+    TooLarge { width: u32, height: u32, max: u32 },
+    /// Pixel data of the wrong length.
+    DataLength { given: u64, expected: u64 },
+    /// A region that leaves the texture.
+    RegionOutside { x: u32, y: u32, width: u32, height: u32, texture_width: u32, texture_height: u32 },
 }
 
 /// A limit of the GPU layer.
@@ -195,12 +220,27 @@ impl std::error::Error for GpuError {}
 
 impl GpuError {
     pub(crate) fn new(message: impl Into<String>) -> GpuError {
-        GpuError { message: message.into(), vk_result: None, limit: None }
+        GpuError { message: message.into(), vk_result: None, limit: None, reason: None }
+    }
+
+    /// An argument was rejected for `reason`.
+    pub(crate) fn rejected(reason: ErrorReason, message: impl Into<String>) -> GpuError {
+        GpuError { message: message.into(), vk_result: None, limit: None, reason: Some(reason) }
+    }
+
+    /// `id` of `kind` names nothing.
+    pub(crate) fn unknown(kind: IdKind, id: u32, context: &str) -> GpuError {
+        let name = match kind {
+            IdKind::Mesh => "mesh",
+            IdKind::Texture => "texture",
+            IdKind::Target => "target",
+        };
+        GpuError::rejected(ErrorReason::UnknownId { kind, id }, format!("unknown {name} id {id}{context}"))
     }
 
     /// `what` failed with `result`.
     pub(crate) fn vk(what: &str, result: i32) -> GpuError {
-        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None }
+        GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None, reason: None }
     }
 
     /// `requested` exceeds the limit `what` (at most `max`).
@@ -215,6 +255,7 @@ impl GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
             vk_result: None,
             limit: Some(LimitExceeded { what, requested, max }),
+            reason: None,
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::device::{Device, Image};
 use crate::render::{FrameUpload, LinearCache, PushConstants, PUSH_STAGES};
 use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{GpuError, Limit, OverlayKind, OverlayQuad, TextureFormat, TextureId, MAX_OVERLAY_QUADS, PASS_OVERLAY};
+use crate::{ErrorReason, GpuError, IdKind, Limit, OverlayKind, OverlayQuad, TextureFormat, TextureId, MAX_OVERLAY_QUADS, PASS_OVERLAY};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -41,14 +41,14 @@ impl Textures {
 /// Check pixel data for a `width × height` region of `format`.
 pub fn check_pixels(what: &str, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<(), GpuError> {
     if width == 0 || height == 0 {
-        return Err(GpuError::new(format!("{what}: size {width}x{height} must not be 0")));
+        return Err(GpuError::rejected(ErrorReason::ZeroSize { width, height }, format!("{what}: size {width}x{height} must not be 0")));
     }
     let want = width as u64 * height as u64 * format.bytes_per_pixel() as u64;
     if pixels.len() as u64 != want {
-        return Err(GpuError::new(format!(
-            "{what}: {} bytes given; {width}x{height} {format:?} needs {want}",
-            pixels.len()
-        )));
+        return Err(GpuError::rejected(
+            ErrorReason::DataLength { given: pixels.len() as u64, expected: want },
+            format!("{what}: {} bytes given; {width}x{height} {format:?} needs {want}", pixels.len()),
+        ));
     }
     Ok(())
 }
@@ -75,7 +75,7 @@ pub fn check_overlay(overlay: &[OverlayQuad], textures: &Textures) -> Result<(),
         return Err(GpuError::limit(Limit::OverlayQuads, overlay.len() as u64, MAX_OVERLAY_QUADS as u64));
     }
     match overlay.iter().find_map(|q| q.texture.filter(|t| textures.slot(*t).is_none())) {
-        Some(t) => Err(GpuError::new(format!("unknown texture id {} in overlay", t.0))),
+        Some(t) => Err(GpuError::unknown(IdKind::Texture, t.0, " in overlay")),
         None => Ok(()),
     }
 }
@@ -177,6 +177,12 @@ mod tests {
         assert_eq!(out[0].params[0], 0.0);
         assert_eq!(out[0].info, [0, 0, 0, 0]);
         let bad = [OverlayQuad { texture: Some(TextureId(42)), ..Default::default() }];
-        assert!(check_overlay(&bad, &textures).unwrap_err().message.contains("42"));
+        let err = check_overlay(&bad, &textures).unwrap_err();
+        assert_eq!(err.reason, Some(ErrorReason::UnknownId { kind: IdKind::Texture, id: 42 }));
+        assert!(err.message.contains("42"));
+        let err = check_pixels("t", 2, 2, TextureFormat::Rgba8Srgb, &[0; 3]).unwrap_err();
+        assert_eq!(err.reason, Some(ErrorReason::DataLength { given: 3, expected: 16 }));
+        let err = check_pixels("t", 0, 2, TextureFormat::R8, &[]).unwrap_err();
+        assert_eq!(err.reason, Some(ErrorReason::ZeroSize { width: 0, height: 2 }));
     }
 }

@@ -1222,7 +1222,7 @@ pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &Fra
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
     match frame.draws.iter().find(|d| !meshes.contains_key(&d.mesh.0)) {
-        Some(d) => Err(GpuError::new(format!("unknown mesh id {} in draw list", d.mesh.0))),
+        Some(d) => Err(GpuError::unknown(crate::IdKind::Mesh, d.mesh.0, " in draw list")),
         None => Ok(()),
     }
 }

@@ -24,20 +24,22 @@ pub struct Descriptors {
     pub set: VkDescriptorSet,
     /// Bilinear, clamp to edge: textures and post inputs.
     pub linear: VkSampler,
-    /// Bilinear depth comparison (hardware 2×2 PCF), white border.
+    /// Depth comparison with a white border: bilinear (hardware 2×2 PCF) where the device can
+    /// filter D16 linearly, nearest otherwise.
     pub shadow: VkSampler,
     free: Vec<u32>,
     next: u32,
 }
 
-fn create_sampler(dev: &Device, compare: bool) -> Result<VkSampler, GpuError> {
+fn create_sampler(dev: &Device, compare: bool, linear: bool) -> Result<VkSampler, GpuError> {
     let address = if compare { VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER } else { VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE };
+    let filter = if linear { VK_FILTER_LINEAR } else { VK_FILTER_NEAREST };
     let info = VkSamplerCreateInfo {
         s_type: ST_SAMPLER_CREATE_INFO,
         p_next: ptr::null(),
         flags: 0,
-        mag_filter: VK_FILTER_LINEAR,
-        min_filter: VK_FILTER_LINEAR,
+        mag_filter: filter,
+        min_filter: filter,
         mipmap_mode: VK_SAMPLER_MIPMAP_MODE_NEAREST,
         address_mode_u: address,
         address_mode_v: address,
@@ -62,7 +64,8 @@ fn create_sampler(dev: &Device, compare: bool) -> Result<VkSampler, GpuError> {
 }
 
 impl Descriptors {
-    pub fn new(dev: &Device) -> Result<Descriptors, GpuError> {
+    /// `shadow_linear`: the device filters `D16_UNORM` linearly (else the shadow sampler is nearest).
+    pub fn new(dev: &Device, shadow_linear: bool) -> Result<Descriptors, GpuError> {
         let mut d = Descriptors {
             layout: VK_NULL_HANDLE,
             pool: VK_NULL_HANDLE,
@@ -72,7 +75,7 @@ impl Descriptors {
             free: Vec::new(),
             next: 0,
         };
-        match d.init(dev) {
+        match d.init(dev, shadow_linear) {
             Ok(()) => Ok(d),
             Err(e) => {
                 d.destroy(dev);
@@ -81,9 +84,9 @@ impl Descriptors {
         }
     }
 
-    fn init(&mut self, dev: &Device) -> Result<(), GpuError> {
-        self.linear = create_sampler(dev, false)?;
-        self.shadow = create_sampler(dev, true)?;
+    fn init(&mut self, dev: &Device, shadow_linear: bool) -> Result<(), GpuError> {
+        self.linear = create_sampler(dev, false, true)?;
+        self.shadow = create_sampler(dev, true, shadow_linear)?;
         let stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         let bindings = [
             VkDescriptorSetLayoutBinding {
