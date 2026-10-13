@@ -224,6 +224,15 @@ impl SepulcraGame {
                 self.selected = i.filter(|&i| usize::from(i) < n).or(if i.is_some() { self.selected } else { None });
                 return;
             }
+            Action::SelectNext => {
+                let n = self.state.content().stones.len() as u8;
+                self.selected = match self.selected {
+                    Some(i) if i + 1 < n => Some(i + 1),
+                    Some(_) => None,
+                    None => Some(0),
+                };
+                return;
+            }
             Action::Build(cell) => self.build_command(cell),
             Action::Upgrade(cell) => Command::Upgrade { cell },
             Action::Sell(cell) => Command::Sell { cell },
@@ -360,6 +369,7 @@ impl Game for SepulcraGame {
 
     fn start(&mut self, ctx: &mut Ctx) {
         night(ctx.world);
+        self.controls.enable_gamepads();
         self.rebuild(ctx.world, ctx.agent);
         self.say(format!("Seed {}: build before wave 1 (F1 for help)", self.state.seed()));
     }

@@ -26,7 +26,7 @@ pub struct Hud {
     pub hover: String,
 }
 
-pub const HELP: &str = "RMB drag orbit | wheel zoom | MMB drag/WASD pan | Q/E turn to next face | 1-4 stones, 5 wall | LMB build | U upgrade | X sell | R remove wall | Space next wave | P/Esc pause | F speed | N new game (after the end) | F1 help";
+pub const HELP: &str = "RMB drag/arrows orbit | wheel zoom | MMB drag/WASD pan | Q/E next face | 1-4 stones, 5 wall | LMB build | U upgrade | X sell | R remove wall | Space next wave | P/Esc pause | F speed | N new game | Pad: LS cursor, A build, Y next stone, X upgrade, View sell, R3 unwall, L3 wave, RS orbit, LT/RT zoom, LB/RB faces, Start pause";
 
 impl Hud {
     pub fn read(&mut self, state: &State) {

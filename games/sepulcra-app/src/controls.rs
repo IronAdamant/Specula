@@ -1,21 +1,34 @@
-//! Mouse and keyboard: window events in, camera motion and player [`Action`]s out.
+//! Input: window events and gamepads in, camera motion and player [`Action`]s out.
 //!
-//! All input handling lives here so the Input lane's data-driven actions (and the gamepad) can
-//! replace it in one place: the rest of the game only sees [`Action`]s and the hovered cell.
-//! Nothing outside this module knows about keys or buttons (F6: nothing may assume a keyboard).
+//! Driven by `specula-input` actions, not keys (F6): the bindings are data,
+//! `games/sepulcra/data/input.json` (the game's shared actions: place, cancel, faces, pause,
+//! orbit, zoom, cursor) plus `games/sepulcra-app/data/input_app.json` (selection, upgrade, sell,
+//! waves, pan, ...), merged at start-up. Mouse, keyboard, gamepad (XInput) and touch all go
+//! through the same actions. All input handling lives in this module: the rest of the game only
+//! sees [`Action`]s and the hovered cell.
 
 use crate::slab::SlabGeo;
 use sepulcra::map::Map;
 use sepulcra::CellId;
 use specula::sight::Camera;
 use specula_core::math::Vec3;
-use specula_platform::{Event, MouseButton};
+use specula_core::Json;
+use specula_input::{ActionMap, Device, Input};
+use specula_platform::gamepad::Gamepads;
+use specula_platform::{Event, GamepadState};
+use std::time::Instant;
+
+/// The game's shared bindings and the app's additions.
+pub const GAME_BINDINGS: &str = include_str!("../../sepulcra/data/input.json");
+pub const APP_BINDINGS: &str = include_str!("../data/input_app.json");
 
 /// What the player asked for this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// 0-based stone index (keys 1–4), or `None` for the wall (key 5).
+    /// 0-based stone index, or `None` for the wall.
     Select(Option<u8>),
+    /// The next stone (then the wall): the pad's build button until the radial menu exists.
+    SelectNext,
     Build(CellId),
     Upgrade(CellId),
     Sell(CellId),
@@ -27,18 +40,15 @@ pub enum Action {
     NewGame,
 }
 
-// Win32 virtual-key codes.
-const VK_SPACE: u32 = 0x20;
-const VK_ESCAPE: u32 = 0x1b;
-const VK_F1: u32 = 0x70;
-const VK_LEFT: u32 = 0x25;
-const VK_UP: u32 = 0x26;
-const VK_RIGHT: u32 = 0x27;
-const VK_DOWN: u32 = 0x28;
-const VK_NUMPAD1: u32 = 0x61;
-
-fn key(c: char) -> u32 {
-    c as u32
+/// The merged action map: the game's file with the app's actions appended (a name used twice is
+/// an error from the map's own validation).
+pub fn bindings() -> Result<ActionMap, String> {
+    let mut game = Json::parse(GAME_BINDINGS).map_err(|e| format!("sepulcra/data/input.json: {}", e.message))?;
+    let app = Json::parse(APP_BINDINGS).map_err(|e| format!("sepulcra-app/data/input_app.json: {}", e.message))?;
+    let mut actions: Vec<Json> = game.get("actions").and_then(Json::as_array).unwrap_or(&[]).to_vec();
+    actions.extend(app.get("actions").and_then(Json::as_array).unwrap_or(&[]).iter().cloned());
+    game.set("actions", Json::Arr(actions));
+    ActionMap::from_json(&game).map_err(|e| format!("input bindings: {e}"))
 }
 
 /// An orbit camera around the slab.
@@ -50,7 +60,7 @@ pub struct Orbit {
     /// Degrees above the horizon.
     pub pitch: f32,
     pub dist: f32,
-    /// Where Q/E is turning to.
+    /// Where the next/previous-face buttons are turning to.
     pub yaw_goal: Option<f32>,
     pub fov_y_deg: f32,
 }
@@ -64,7 +74,7 @@ const PAN_LIMIT: f32 = 30.0;
 impl Default for Orbit {
     /// A three-quarter view from the south-east that shows the top and the east cliff.
     fn default() -> Self {
-        Orbit { target: Vec3::new(0.0, -3.0, 0.0), yaw: 35.0, pitch: 42.0, dist: 66.0, yaw_goal: None, fov_y_deg: 45.0 }
+        Orbit { target: Vec3::new(0.0, -2.0, 1.0), yaw: 35.0, pitch: 42.0, dist: 56.0, yaw_goal: None, fov_y_deg: 45.0 }
     }
 }
 
@@ -92,6 +102,13 @@ impl Orbit {
         let t = self.target + r * right + f * forward;
         self.target = Vec3::new(t.x.clamp(-PAN_LIMIT, PAN_LIMIT), t.y, t.z.clamp(-PAN_LIMIT, PAN_LIMIT));
     }
+
+    /// Starts turning to the next face-centred view (yaw 0, 90, 180, 270) in direction `step`.
+    fn turn(&mut self, step: f32) {
+        let from = self.yaw_goal.unwrap_or(self.yaw);
+        let snapped = if step < 0.0 { ((from - 1.0) / 90.0).floor() * 90.0 } else { ((from + 1.0) / 90.0).ceil() * 90.0 };
+        self.yaw_goal = Some(if (snapped - from).abs() < 1.0 { from + 90.0 * step } else { snapped });
+    }
 }
 
 fn same(a: &Camera, b: &Camera) -> bool {
@@ -99,132 +116,88 @@ fn same(a: &Camera, b: &Camera) -> bool {
 }
 
 /// Input state carried between frames.
-#[derive(Default)]
 pub struct Controls {
     pub orbit: Orbit,
-    mouse: Option<(f32, f32)>,
-    right: bool,
-    middle: bool,
-    /// Pan keys held: left, right, forward, back.
-    held: [bool; 4],
+    input: Input,
+    pads: Option<Gamepads>,
+    started: Instant,
+    /// The gamepad's cursor, in window pixels.
+    pad_cursor: Option<(f32, f32)>,
     /// The camera this module last wrote (to notice agents' changes).
     written: Option<Camera>,
-    /// The cell under the mouse.
+    /// The cell under the cursor.
     pub hover: Option<CellId>,
 }
 
+impl Default for Controls {
+    fn default() -> Self {
+        Controls::new()
+    }
+}
+
 impl Controls {
-    /// Reads this frame's events, moves the camera, and returns the player's actions.
-    pub fn frame(&mut self, input: &[Event], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
-        let mut actions = Vec::new();
-        let pick = |orbit: &Orbit, x: f32, y: f32| {
-            let (o, d) = orbit.camera().ray(x, y, size.0, size.1);
-            geo.pick(map, o, d)
-        };
-        for ev in input {
-            match *ev {
-                Event::MouseMove { x, y } => {
-                    let (x, y) = (x as f32, y as f32);
-                    if let Some((px, py)) = self.mouse {
-                        let (dx, dy) = (x - px, y - py);
-                        if self.right {
-                            self.orbit.yaw -= dx * 0.3;
-                            self.orbit.pitch = (self.orbit.pitch + dy * 0.25).clamp(MIN_PITCH, MAX_PITCH);
-                            self.orbit.yaw_goal = None;
-                        }
-                        if self.middle {
-                            let k = self.orbit.dist * 0.0016;
-                            self.orbit.pan(-dx * k, dy * k);
-                        }
-                    }
-                    self.mouse = Some((x, y));
-                }
-                Event::MouseDown { button, x, y } => {
-                    self.mouse = Some((x as f32, y as f32));
-                    match button {
-                        MouseButton::Right => self.right = true,
-                        MouseButton::Middle => self.middle = true,
-                        MouseButton::Left => {
-                            if let Some(cell) = pick(&self.orbit, x as f32, y as f32) {
-                                actions.push(Action::Build(cell));
-                            }
-                        }
-                    }
-                }
-                Event::MouseUp { button, .. } => match button {
-                    MouseButton::Right => self.right = false,
-                    MouseButton::Middle => self.middle = false,
-                    MouseButton::Left => {}
-                },
-                Event::MouseWheel { delta } => {
-                    self.orbit.dist = (self.orbit.dist * 0.88f32.powf(delta)).clamp(MIN_DIST, MAX_DIST);
-                }
-                Event::Focused(false) => {
-                    self.right = false;
-                    self.middle = false;
-                    self.held = [false; 4];
-                }
-                Event::KeyDown { code, repeat } => {
-                    if let Some(i) = pan_key(code) {
-                        self.held[i] = true;
-                    }
-                    if repeat {
-                        continue;
-                    }
-                    let hovered = self.hover;
-                    let on = |a: fn(CellId) -> Action| hovered.map(a);
-                    let action = match code {
-                        c if (key('1')..=key('4')).contains(&c) => Some(Action::Select(Some((c - key('1')) as u8))),
-                        c if (VK_NUMPAD1..VK_NUMPAD1 + 4).contains(&c) => Some(Action::Select(Some((c - VK_NUMPAD1) as u8))),
-                        c if c == key('5') || c == VK_NUMPAD1 + 4 => Some(Action::Select(None)),
-                        c if c == key('U') => on(Action::Upgrade),
-                        c if c == key('X') => on(Action::Sell),
-                        c if c == key('R') => on(Action::Unwall),
-                        c if c == key('P') || c == VK_ESCAPE => Some(Action::TogglePause),
-                        c if c == key('F') => Some(Action::CycleSpeed),
-                        c if c == key('N') => Some(Action::NewGame),
-                        VK_SPACE => Some(Action::CallWave),
-                        VK_F1 => Some(Action::ToggleHelp),
-                        c if c == key('Q') || c == key('E') => {
-                            let from = self.orbit.yaw_goal.unwrap_or(self.orbit.yaw);
-                            let step = if c == key('Q') { -90.0 } else { 90.0 };
-                            // Snap to the next face-centred view (0, 90, 180, 270).
-                            let snapped = if c == key('Q') { ((from - 1.0) / 90.0).floor() * 90.0 } else { ((from + 1.0) / 90.0).ceil() * 90.0 };
-                            let goal = if (snapped - from).abs() < 1.0 { from + step } else { snapped };
-                            self.orbit.yaw_goal = Some(goal);
-                            None
-                        }
-                        _ => None,
-                    };
-                    actions.extend(action);
-                }
-                Event::KeyUp { code } => {
-                    if let Some(i) = pan_key(code) {
-                        self.held[i] = false;
-                    }
-                }
-                _ => {}
+    pub fn new() -> Controls {
+        let map = bindings().expect("the built-in bindings are valid (tested)");
+        Controls {
+            orbit: Orbit::default(),
+            input: Input::new(map),
+            pads: None,
+            started: Instant::now(),
+            pad_cursor: None,
+            written: None,
+            hover: None,
+        }
+    }
+
+    /// Starts polling gamepads (optional: without XInput the game is mouse, touch and keyboard).
+    pub fn enable_gamepads(&mut self) {
+        match Gamepads::new() {
+            Ok(p) => self.pads = Some(p),
+            Err(e) => eprintln!("sepulcra: no gamepads: {e}"),
+        }
+    }
+
+    /// Reads this frame's events (and pads), moves the camera, and returns the player's actions.
+    pub fn frame(&mut self, events: &[Event], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
+        let pads: Vec<GamepadState> = match &mut self.pads {
+            Some(p) => {
+                p.poll();
+                p.states().to_vec()
             }
+            None => Vec::new(),
+        };
+        // This clock only measures frame time for input (taps, holds), never the simulation.
+        let now = self.started.elapsed().as_secs_f64();
+        self.frame_at(now, events, &pads, dt, size, geo, map)
+    }
+
+    /// [`Controls::frame`] with an explicit input clock and pad states (tests, playtests).
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_at(&mut self, now_s: f64, events: &[Event], pads: &[GamepadState], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
+        self.input.update(now_s, events, pads);
+        let input = &self.input;
+        // Camera.
+        let [ox, oy] = input.value2("orbit");
+        if ox != 0.0 || oy != 0.0 {
+            self.orbit.yaw -= ox * 0.3;
+            self.orbit.pitch = (self.orbit.pitch + oy * 0.25).clamp(MIN_PITCH, MAX_PITCH);
+            self.orbit.yaw_goal = None;
         }
-        // Keyboard pan.
-        let speed = self.orbit.dist * 0.7 * dt;
-        let (mut r, mut f) = (0.0, 0.0);
-        if self.held[0] {
-            r -= speed;
+        let zoom = input.value("zoom");
+        if zoom != 0.0 {
+            self.orbit.dist = (self.orbit.dist * 0.88f32.powf(zoom)).clamp(MIN_DIST, MAX_DIST);
         }
-        if self.held[1] {
-            r += speed;
+        let [px, py] = input.value2("pan");
+        if px != 0.0 || py != 0.0 {
+            let k = self.orbit.dist;
+            self.orbit.pan(px * k, py * k);
         }
-        if self.held[2] {
-            f += speed;
+        if input.pressed("prev_face") {
+            self.orbit.turn(-1.0);
         }
-        if self.held[3] {
-            f -= speed;
+        if input.pressed("next_face") {
+            self.orbit.turn(1.0);
         }
-        if r != 0.0 || f != 0.0 {
-            self.orbit.pan(r, f);
-        }
-        // Q/E turn smoothly.
         if let Some(goal) = self.orbit.yaw_goal {
             let k = 1.0 - (-dt * 9.0).exp();
             self.orbit.yaw += (goal - self.orbit.yaw) * k;
@@ -233,8 +206,59 @@ impl Controls {
                 self.orbit.yaw_goal = None;
             }
         }
-        self.hover = self.mouse.and_then(|(x, y)| pick(&self.orbit, x, y));
+        // The cursor: the pointer (mouse, touch), or the gamepad's own cursor.
+        let [cx, cy] = input.value2("cursor_move");
+        let (w, h) = (size.0 as f32, size.1 as f32);
+        if cx != 0.0 || cy != 0.0 {
+            let (x, y) = self.pad_cursor.unwrap_or((w / 2.0, h / 2.0));
+            self.pad_cursor = Some(((x + cx).clamp(0.0, w - 1.0), (y + cy).clamp(0.0, h - 1.0)));
+        }
+        let at = match input.last_device() {
+            Some(Device::Gamepad(_)) => Some(self.pad_cursor.unwrap_or((w / 2.0, h / 2.0))),
+            _ => input.pointer().map(|p| (p.x, p.y)),
+        };
+        let orbit = self.orbit;
+        self.hover = at.and_then(|(x, y)| {
+            let (o, d) = orbit.camera().ray(x, y, size.0, size.1);
+            geo.pick(map, o, d)
+        });
+        // Buttons, in a fixed order.
+        let mut actions = Vec::new();
+        for (i, name) in ["select_1", "select_2", "select_3", "select_4"].iter().enumerate() {
+            if input.pressed(name) {
+                actions.push(Action::Select(Some(i as u8)));
+            }
+        }
+        let simple = [
+            ("select_wall", Action::Select(None)),
+            ("build_menu", Action::SelectNext),
+            ("call_wave", Action::CallWave),
+            ("pause", Action::TogglePause),
+            // Nothing else to cancel yet, so cancel opens the pause (as the binding file says).
+            ("cancel", Action::TogglePause),
+            ("help", Action::ToggleHelp),
+            ("speed", Action::CycleSpeed),
+            ("new_game", Action::NewGame),
+        ];
+        for (name, action) in simple {
+            if input.pressed(name) {
+                actions.push(action);
+            }
+        }
+        type OnCell = fn(CellId) -> Action;
+        let on_cell: [(&str, OnCell); 4] =
+            [("place", Action::Build), ("upgrade", Action::Upgrade), ("sell", Action::Sell), ("unwall", Action::Unwall)];
+        for (name, action) in on_cell {
+            if input.pressed(name) {
+                actions.extend(self.hover.map(action));
+            }
+        }
         actions
+    }
+
+    /// The prompt for an action on the device in use ("LMB", "A", "Tap"), for the HUD.
+    pub fn prompt(&self, action: &str) -> String {
+        self.input.prompt(action).unwrap_or_default()
     }
 
     /// Adopts a camera an agent set since the last frame (`window_view`), then writes this
@@ -253,21 +277,19 @@ impl Controls {
     }
 }
 
-/// Pan keys: WASD and the arrows → left, right, forward, back.
-fn pan_key(code: u32) -> Option<usize> {
-    match code {
-        c if c == key('A') || c == VK_LEFT => Some(0),
-        c if c == key('D') || c == VK_RIGHT => Some(1),
-        c if c == key('W') || c == VK_UP => Some(2),
-        c if c == key('S') || c == VK_DOWN => Some(3),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sepulcra::Content;
+    use specula_platform::MouseButton;
+
+    #[test]
+    fn the_merged_bindings_are_valid() {
+        let map = bindings().unwrap();
+        for name in ["place", "orbit", "zoom", "pan", "select_1", "select_wall", "upgrade", "sell", "unwall", "call_wave", "help"] {
+            assert!(map.to_json().to_string().contains(&format!("\"{name}\"")), "{name} missing");
+        }
+    }
 
     #[test]
     fn adopting_a_camera_round_trips() {
@@ -277,32 +299,34 @@ mod tests {
     }
 
     #[test]
-    fn keys_become_actions_and_clicks_pick_cells() {
+    fn input_becomes_actions_and_clicks_pick_cells() {
         let content = Content::builtin();
         let geo = SlabGeo::new(&content.map);
-        let mut c = Controls::default();
+        let mut c = Controls::new();
         let size = (1280, 720);
-        // Point the mouse at the middle of the screen: the camera looks at the slab centre.
-        let input = [
-            Event::MouseMove { x: 640, y: 360 },
-            Event::KeyDown { code: key('2'), repeat: false },
-            Event::KeyDown { code: key('2'), repeat: true },
-            Event::KeyDown { code: VK_SPACE, repeat: false },
-            Event::MouseDown { button: MouseButton::Left, x: 640, y: 360 },
-        ];
-        let actions = c.frame(&input, 0.016, size, &geo, &content.map);
-        assert_eq!(actions[0], Action::Select(Some(1)));
+        let key = |code: u32| Event::KeyDown { code, repeat: false };
+        // The mouse at the middle of the screen: the camera looks at the slab.
+        let input = [Event::MouseMove { x: 640, y: 360 }, key(0x32), key(0x20), Event::MouseDown { button: MouseButton::Left, x: 640, y: 360 }];
+        let actions = c.frame_at(0.0, &input, &[], 0.016, size, &geo, &content.map);
+        assert_eq!(actions[0], Action::Select(Some(1)), "{actions:?}");
         assert_eq!(actions[1], Action::CallWave);
         assert!(matches!(actions[2], Action::Build(_)), "{actions:?}");
         assert!(c.hover.is_some());
+        let up = [Event::KeyUp { code: 0x32 }, Event::KeyUp { code: 0x20 }, Event::MouseUp { button: MouseButton::Left, x: 640, y: 360 }];
+        c.frame_at(0.02, &up, &[], 0.016, size, &geo, &content.map);
         // Q turns to a face-centred view.
-        c.frame(&[Event::KeyDown { code: key('Q'), repeat: false }], 0.016, size, &geo, &content.map);
+        c.frame_at(0.04, &[key(0x51)], &[], 0.016, size, &geo, &content.map);
         assert_eq!(c.orbit.yaw_goal, Some(0.0));
+        // Right-drag orbits.
+        let yaw = c.orbit.yaw;
+        let drag = [Event::MouseDown { button: MouseButton::Right, x: 640, y: 360 }, Event::MouseMove { x: 700, y: 360 }];
+        c.frame_at(0.06, &drag, &[], 0.016, size, &geo, &content.map);
+        assert!(c.orbit.yaw < yaw, "dragging right turns the view: {} -> {}", yaw, c.orbit.yaw);
     }
 
     #[test]
     fn agents_window_view_is_adopted() {
-        let mut c = Controls::default();
+        let mut c = Controls::new();
         let mut slot = None;
         c.sync_camera(&mut slot);
         let agent = Camera { eye: Vec3::new(0.0, 40.0, 1.0), target: Vec3::ZERO, fov_y_deg: 50.0 };

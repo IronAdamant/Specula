@@ -22,5 +22,6 @@ sepulcra = { path = "../sepulcra" }
 specula = { path = "../../crates/specula" }
 specula-core = { workspace = true }
 specula-gpu = { workspace = true }
+specula-input = { workspace = true }
 specula-platform = { workspace = true }
 specula-protocol = { workspace = true }

@@ -17,6 +17,7 @@ dependencies = [
  "specula",
  "specula-core",
  "specula-gpu",
+ "specula-input",
  "specula-platform",
  "specula-protocol",
 ]
