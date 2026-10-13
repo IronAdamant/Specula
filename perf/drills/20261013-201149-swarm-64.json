@@ -1,15 +1,15 @@
 {
   "schema": "specula.drill/v1",
   "label": "",
-  "agents": 16,
+  "agents": 64,
   "rounds": 12,
   "batch": 20,
   "feed": true,
   "build": "release",
-  "when": "2026-10-13T19:35:06",
-  "cpu_busy_pct_before": 4.9,
+  "when": "2026-10-13T20:11:32",
+  "cpu_busy_pct_before": 4.5,
   "attacks": {
-    "rejected": 20,
+    "rejected": 22,
     "leaked": [],
     "wrong": []
   },
@@ -21,99 +21,99 @@
     },
     "service_resumed": true
   },
-  "wall_s": 0.861,
-  "world_ops": 5024,
-  "ops_per_s": 5835.6,
-  "tool_calls": 854,
-  "calls_per_s": 992.0,
+  "wall_s": 6.467,
+  "world_ops": 20096,
+  "ops_per_s": 3107.4,
+  "tool_calls": 5264,
+  "calls_per_s": 814.0,
   "latency_ms": {
     "agent_hello": {
-      "p50": 10.59,
-      "p95": 14.24,
-      "max": 14.39,
-      "n": 16
-    },
-    "claim_release": {
-      "p50": 1.12,
-      "p95": 15.82,
-      "max": 26.71,
-      "n": 16
-    },
-    "claim_renew": {
-      "p50": 7.3,
-      "p95": 16.23,
-      "max": 18.56,
-      "n": 16
-    },
-    "claim_take": {
-      "p50": 8.24,
-      "p95": 10.89,
-      "max": 12.44,
-      "n": 16
-    },
-    "world_batch": {
-      "p50": 13.4,
-      "p95": 22.47,
-      "max": 34.0,
-      "n": 304
-    },
-    "world_changes": {
-      "p50": 18.43,
-      "p95": 33.03,
-      "max": 41.61,
-      "n": 230
-    },
-    "world_set": {
-      "p50": 12.5,
-      "p95": 19.26,
-      "max": 20.57,
+      "p50": 7.1,
+      "p95": 13.0,
+      "max": 23.31,
       "n": 64
     },
+    "claim_release": {
+      "p50": 15.0,
+      "p95": 16.38,
+      "max": 26.12,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 42.87,
+      "p95": 92.73,
+      "max": 167.36,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 7.62,
+      "p95": 12.18,
+      "max": 20.14,
+      "n": 64
+    },
+    "world_batch": {
+      "p50": 60.76,
+      "p95": 105.33,
+      "max": 176.81,
+      "n": 1216
+    },
+    "world_changes": {
+      "p50": 83.34,
+      "p95": 140.05,
+      "max": 213.8,
+      "n": 2768
+    },
+    "world_set": {
+      "p50": 63.3,
+      "p95": 109.73,
+      "max": 196.69,
+      "n": 256
+    },
     "world_spawn": {
-      "p50": 13.6,
-      "p95": 23.57,
-      "max": 27.1,
-      "n": 112
+      "p50": 63.38,
+      "p95": 112.66,
+      "max": 184.29,
+      "n": 448
     },
     "world_undo": {
-      "p50": 13.38,
-      "p95": 21.27,
-      "max": 29.28,
-      "n": 80
+      "p50": 63.64,
+      "p95": 104.36,
+      "max": 138.25,
+      "n": 320
     }
   },
-  "intrusions_rejected": 192,
+  "intrusions_rejected": 768,
   "intrusions_leaked": 0,
   "intrusion_other_errors": [],
-  "undos": 80,
-  "feed_items": 79839,
+  "undos": 320,
+  "feed_items": 1276523,
   "feed_gaps": 0,
-  "entities": 3856,
-  "state_hash": "14f7d690969141c7",
+  "entities": 15424,
+  "state_hash": "e0caa341ac4de496",
   "replay": {
     "replayable": true,
-    "entries": 368,
-    "replay_hash": "14f7d690969141c7",
+    "entries": 1472,
+    "replay_hash": "e0caa341ac4de496",
     "matches": true,
-    "ms": 22.2053
+    "ms": 54.447500000000005
   },
-  "replay_check_s": 0.027,
+  "replay_check_s": 0.074,
   "journal": {
     "first_id": 1,
-    "last_id": 368,
-    "agent_entries": 368,
+    "last_id": 1472,
+    "agent_entries": 1472,
     "game_entries": 0,
-    "approx_bytes": 5709648,
+    "approx_bytes": 22014272,
     "evicted": 0,
     "replayable": true,
     "base": "empty",
     "base_hash": "79421b3b40fba741"
   },
-  "claim_rejections_engine": 192,
+  "claim_rejections_engine": 768,
   "history_sample": [
     {
-      "id": 350,
-      "tick": 27,
+      "id": 1139,
+      "tick": 155,
       "by": "agent_00",
       "kind": "undo",
       "changes": 5,
@@ -123,12 +123,12 @@
         "/district_00/tmp_11_2"
       ],
       "undoes": [
-        341
+        1117
       ]
     },
     {
-      "id": 341,
-      "tick": 26,
+      "id": 1117,
+      "tick": 153,
       "by": "agent_00",
       "kind": "batch",
       "changes": 5,
@@ -137,10 +137,10 @@
         "/district_00/tmp_11_1",
         "/district_00/tmp_11_2"
       ],
-      "undone_by": 350
+      "undone_by": 1139
     }
   ],
   "agent_errors": [],
   "problems": [],
-  "cpu_busy_pct_after": 6.2
+  "cpu_busy_pct_after": 26.4
 }
