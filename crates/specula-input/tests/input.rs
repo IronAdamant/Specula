@@ -659,6 +659,7 @@ fn touch_cancel_is_reported_for_one_frame_and_is_not_a_tap() {
     h.frame(&[Event::PointerCancel { id: 1, kind: PointerKind::Touch }]);
     assert!(h.input.touch_cancelled());
     assert!(!h.input.source_pressed(Source::Tap));
+    assert_eq!(h.input.cancelled_contacts(), &[1]);
     h.frame(&[]);
     assert!(!h.input.touch_cancelled());
     // A normal lift is not a cancel.
@@ -667,6 +668,12 @@ fn touch_cancel_is_reported_for_one_frame_and_is_not_a_tap() {
     assert!(!h.input.touch_cancelled());
     // Losing focus mid-touch cancels it.
     h.frame(&[touch_down(3, 10, 10)]);
+    h.frame(&[touch_down(4, 20, 20)]);
     h.frame(&[Event::Focused(false)]);
     assert!(h.input.touch_cancelled());
+    let mut ids = h.input.cancelled_contacts().to_vec();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![3, 4], "focus loss cancels every contact");
+    h.frame(&[]);
+    assert!(h.input.cancelled_contacts().is_empty());
 }

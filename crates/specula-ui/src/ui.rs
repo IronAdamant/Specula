@@ -213,6 +213,8 @@ pub(crate) struct PointerSt {
     captured: bool,
     dragging_list: Option<WidgetRef>,
     hover: Option<WidgetRef>,
+    /// The touch / pen contact that made the press (`None`: the mouse).
+    press_contact: Option<u32>,
 }
 
 /// Names of the input actions the UI reads (with raw fallbacks when the game's map lacks them).
@@ -326,6 +328,8 @@ pub struct Ui {
     /// Threat-arrow labels: text, layout, and the scale it was laid out at.
     threat_text: Vec<(String, TextLayout, f32)>,
     pub(crate) last_view: Option<Viewport>,
+    /// Image textures the game registered (`None`: none yet). See [`Ui::set_textures`].
+    pub(crate) textures: Option<Vec<u32>>,
     /// The `ui.*` keys conditions and templates can read.
     pub(crate) env: StateMap,
 }
@@ -358,6 +362,7 @@ impl Ui {
             threat_text: Vec::new(),
             last_view: None,
             env: StateMap::new(),
+            textures: None,
         }
     }
 
@@ -517,6 +522,16 @@ impl Ui {
         self.screens.get(w.screen)?.screen.nodes.get(w.node as usize)?.id.as_deref()
     }
 
+    /// Number of loaded screens.
+    pub fn screen_count(&self) -> usize {
+        self.screens.len()
+    }
+
+    /// A widget's JSON path in its screen (`root.children[2]`), for widgets without an id.
+    pub fn widget_path(&self, w: WidgetRef) -> Option<&str> {
+        Some(self.screens.get(w.screen)?.screen.nodes.get(w.node as usize)?.path.as_str())
+    }
+
     pub fn screen_name(&self, screen: usize) -> &str {
         &self.screens[screen].screen.name
     }
@@ -569,6 +584,21 @@ impl Ui {
         t.text.push_str(text);
         t.kind = Some(kind);
         t.age = 0.0;
+    }
+
+    /// Register the texture ids image icons may use (`specula_gpu::TextureId` numbers the game
+    /// uploaded). `ui_check` flags images outside this set and `gpu::GpuOverlay` skips them
+    /// (instead of the whole GPU frame failing on an unknown texture).
+    pub fn set_textures(&mut self, ids: &[u32]) {
+        let mut v = ids.to_vec();
+        v.sort_unstable();
+        v.dedup();
+        self.textures = Some(v);
+    }
+
+    /// The registered image textures, sorted (`None` before [`Ui::set_textures`]).
+    pub fn textures(&self) -> Option<&[u32]> {
+        self.textures.as_deref()
     }
 
     /// Remove every toast.
@@ -842,7 +872,9 @@ impl Ui {
         let pressed = (down && !self.pointer.down) || input.source_pressed(Source::Mouse(MouseButton::Left)) || quick_tap;
         let released = (!down && self.pointer.down) || quick_tap;
         // An OS-cancelled touch abandons the press: never an activation.
-        let cancelled = input.touch_cancelled();
+        // Only the contact that made the press can cancel it: a stray cancelled finger must not
+        // drop a press made by the mouse or another finger.
+        let cancelled = self.pointer.press_contact.is_some_and(|id| input.cancelled_contacts().contains(&id));
         // A finger that isn't touching doesn't hover: a touch pointer only counts while in
         // contact (and in the frame it lifts).
         let is_touch = input.pointer().is_some_and(|p| p.kind != specula_platform::PointerKind::Mouse && p.kind != specula_platform::PointerKind::Pen);
@@ -882,6 +914,7 @@ impl Ui {
         }
         let on_ui = hit_any.is_some() || over_radial;
         if pressed {
+            self.pointer.press_contact = if touch_down { input.touches().first().map(|t| t.id) } else { None };
             self.pointer.press = hot;
             self.pointer.press_pos = pos.unwrap_or([0.0; 2]);
             self.pointer.captured = on_ui;
@@ -917,6 +950,7 @@ impl Ui {
                 }
             }
             self.pointer.press = None;
+            self.pointer.press_contact = None;
         }
         self.events.consumed.pointer = on_ui || (self.pointer.captured && (down || released || cancelled));
         if !down && !released {
@@ -1216,7 +1250,8 @@ impl Ui {
                         self.draw.end_mesh(start);
                     }
                     IconSource::Image { texture, uv } => {
-                        self.draw.cmds.push(crate::draw::DrawCmd::Image { rect: content, uv, texture, color: c });
+                        let owner = crate::draw::Owner { screen: s as u32, node: i as u32 };
+                        self.draw.cmds.push(crate::draw::DrawCmd::Image { rect: content, uv, texture, color: c, owner });
                     }
                 }
             }

@@ -233,6 +233,22 @@ fn non_text_contrast_of_the_focus_ring_and_threat_arrows() {
 }
 
 #[test]
+fn image_textures_must_be_registered() {
+    let root = r#"{"type": "box", "children": [{"type": "panel", "anchor": "center", "children": [
+        {"type": "icon", "id": "pic", "image": {"texture": 4242}}]}]}"#;
+    let mut ui = ui();
+    ui.load_screen(&screen("s", "hud", root)).unwrap();
+    let f = run_with(&mut ui, &["s"], &StateMap::new(), None, &[target()]);
+    assert!(f.iter().any(|x| x.rule == "unknown_texture" && x.widget == "pic" && x.message.contains("no texture registry")), "{f:?}");
+    ui.set_textures(&[1, 2]);
+    let f = run_with(&mut ui, &["s"], &StateMap::new(), None, &[target()]);
+    assert!(has(&f, "unknown_texture", "pic"), "{f:?}");
+    ui.set_textures(&[4242]);
+    let f = run_with(&mut ui, &["s"], &StateMap::new(), None, &[target()]);
+    assert!(!has(&f, "unknown_texture", "pic"), "{f:?}");
+}
+
+#[test]
 fn report_is_json_and_the_ui_is_restored() {
     let mut ui = ui();
     ui.load_screen(&screen("a", "hud", r#"{"type": "box", "children": [{"type": "label", "text": "{x}"}]}"#)).unwrap();

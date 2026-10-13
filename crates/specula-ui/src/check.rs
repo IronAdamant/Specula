@@ -671,6 +671,22 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
                     }
                 }
             }
+            // ---- image icons must use registered textures (what the GPU overlay will draw) ----
+            if let Kind::Icon { icon: crate::screen::IconSource::Image { texture, .. }, .. } = &node.kind {
+                let known = ui.textures().is_some_and(|ids| ids.binary_search(texture).is_ok());
+                if !known {
+                    let why = if ui.textures().is_none() { "no texture registry (Ui::set_textures)" } else { "not a registered texture" };
+                    push(
+                        "unknown_texture",
+                        Severity::Error,
+                        &sr.screen.name,
+                        widget_name(sr, i),
+                        format!("image texture {texture}: {why}; the GPU overlay would skip it"),
+                        *texture as f32,
+                        0.0,
+                    );
+                }
+            }
             // ---- gamepad access for pointer-only HUD buttons ----
             if sr.screen.input == InputMode::Hud {
                 if let Kind::Button { shortcut, .. } = &node.kind {

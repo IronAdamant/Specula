@@ -200,7 +200,7 @@ fn main() {
             }
         }
         overlay.sync_atlas(&mut gpu, ui.atlas_mut()).expect("atlas");
-        let quads = overlay.build(ui.draw_list()).expect("overlay");
+        let quads = overlay.build(&ui).expect("overlay");
         let frame = FrameDesc { clear_color: [0.043, 0.063, 0.125, 1.0], overlay: quads, reverse_z: true, ..Default::default() };
         gpu.present(&frame).expect("present");
         if let Some(ms) = gpu.last_frame_stats_of(FramePath::Window).and_then(|s| s.gpu).and_then(|g| g.passes.iter().find(|p| p.name == specula_gpu::PASS_OVERLAY).map(|p| p.gpu_ms)) {

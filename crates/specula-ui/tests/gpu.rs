@@ -84,7 +84,7 @@ fn the_gpu_overlay_matches_the_software_preview() {
 
         let mut overlay = GpuOverlay::new();
         overlay.sync_atlas(&mut gpu, ui.atlas_mut()).expect("atlas upload");
-        let quads = overlay.build(ui.draw_list()).expect("overlay");
+        let quads = overlay.build(&ui).expect("overlay");
         let n = quads.len();
         let target = gpu.create_target(w, h).unwrap();
         let frame = FrameDesc { clear_color: [0.0, 0.0, 0.0, 1.0], overlay: quads, reverse_z: true, ..Default::default() };
@@ -128,6 +128,27 @@ fn the_gpu_overlay_matches_the_software_preview() {
         eprintln!("{test}: mean |diff| {mean:.3} levels, {big} px ({:.3} %) > 16, worst {worst}; images in {}", frac * 100.0, dir.display());
         assert!(mean < 0.5, "{test}: mean difference {mean:.3}");
         assert!(frac < 0.005, "{test}: {:.3} % of pixels differ by more than 16", frac * 100.0);
+
+        // An image icon with a texture nobody registered: skipped and reported, and the GPU frame
+        // still renders (it used to fail with "unknown texture id").
+        let mut bad = Ui::new(
+            Theme::from_json_str(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets/ui/theme.json")).unwrap()).unwrap(),
+            FontSet::new().with("ui", specula_ui::testfont::box_font_parsed()),
+        );
+        let icon = r#"{"format": "specula.ui.screen.v1", "name": "pics", "root": {"type": "box", "children": [
+            {"type": "icon", "id": "pic", "image": {"texture": 4242}, "anchor": "center"},
+            {"type": "icon", "id": "page", "image": {"texture": PAGE}, "anchor": "top_left"}]}}"#;
+        bad.load_screen(&icon.replace("PAGE", &overlay.atlas_textures()[0].0.to_string())).unwrap();
+        bad.show("pics").unwrap();
+        bad.set_textures(&[overlay.atlas_textures()[0].0]);
+        input.frame(&mut bad, &[], &st, &view);
+        let quads = overlay.build(&bad).expect("overlay");
+        let frame = FrameDesc { clear_color: [0.0, 0.0, 0.0, 1.0], overlay: quads, reverse_z: true, ..Default::default() };
+        gpu.render(target, &frame).expect("an unknown image texture must not fail the frame");
+        let skipped: Vec<String> = overlay.skipped().iter().map(|s| s.to_json(&bad).to_pretty()).collect();
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(skipped[0].contains("unknown_texture") && skipped[0].contains("\"pic\""), "{}", skipped[0]);
+        assert!(skipped[1].contains("atlas_page_texture") && skipped[1].contains("\"page\""), "{}", skipped[1]);
 
         overlay.destroy(&mut gpu);
         gpu.destroy_target(target);
