@@ -967,9 +967,10 @@ mod tests {
             extent,
             prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COPY_BIT },
             fin: Final::TransferSrc,
-            mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false },
+            mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false, ..Default::default() },
             shadow: Some(shadow_desc(&ShadowSettings { enabled: true, resolution, ..Default::default() })),
             overlay: false,
+            ssao: None,
         };
         let mut g = FrameGraph::new(77);
         let shadow_view = |gpu: &GpuInner| gpu.descriptors.shadow_view;
