@@ -1579,7 +1579,10 @@ fn definitions() -> Vec<ToolDef> {
                           on-screen rectangle [x, y, w, h] (pixels, origin top-left): the engine's projection of its \
                           bounding box, clipped to the view; occlusion is not considered. Without eye/target the camera \
                           frames the whole world from a three-quarter view. Large worlds return the biggest on-screen \
-                          subjects first (max_subjects); the full list is saved at packet_path."
+                          subjects first (max_subjects); the full list is saved at packet_path. If models in view are \
+                          still building, it waits for them (up to 10 s, other calls go on meanwhile) and then \
+                          renders the world as it is at that moment; packet 'models' and 'warnings' say what wasn't \
+                          drawn."
                 .into(),
             input_schema: schema(
                 vec![

@@ -40,9 +40,13 @@
 //! # Bounds on what agents can make it hold
 //!
 //! Folders that don't exist are never cached; folders, recipes, styles and builds no handle uses
-//! are dropped by [`Library::collect_garbage`] (the engine runs it once a second after the world's
-//! models changed, drawn or not), which also forgets unused handles once there are more than
-//! [`SPARE_HANDLES`] of them, and cancels queued builds nobody waits for any more.
+//! are dropped by [`Library::collect_garbage`] (the engine runs it at most once a second after the
+//! world's models changed, drawn or not, or at once when specs outnumber entities by more than
+//! [`SPARE_HANDLES`]), which also forgets unused handles past that many. While builds are in
+//! flight, the cheaper [`Library::drop_unwanted`] runs every 100 ms after a change: builds no
+//! entity waits for any more are cancelled, so deleted entities never hold up live ones. A handle
+//! no entity used meanwhile works its key out again when it is next used (its recipe may have
+//! changed while nothing was watching it).
 //!
 //! # Materials
 //!
@@ -149,10 +153,15 @@ struct RecipeInfo {
 struct Handle {
     spec: ModelSpec,
     built: Option<Arc<Built>>,
+    /// The key `built` was built for.
+    built_key: Option<BuildKey>,
     /// The key of the build it is waiting for (queued or running).
     want: Option<BuildKey>,
     /// The latest build's error (the last good build stays in `built`).
     error: Option<WorldError>,
+    /// No entity used it for a while (garbage collection stopped its waiting): its recipe may
+    /// have changed meanwhile, so the next resolve works its key out again.
+    verify: bool,
 }
 
 impl Handle {
@@ -278,6 +287,11 @@ struct Workers {
     done: Receiver<Done>,
     /// Jobs nobody waits for any more: workers skip them.
     cancelled: Arc<Mutex<BTreeSet<u64>>>,
+    /// The job queue's receiving end (kept so a library without workers still queues).
+    _queue: Arc<Mutex<Receiver<Job>>>,
+    /// Tests deliver results by hand through this.
+    #[cfg(test)]
+    inject: Sender<Done>,
 }
 
 impl Workers {
@@ -312,7 +326,14 @@ impl Workers {
                 eprintln!("specula: model build thread {i} not started: {e}");
             }
         }
-        Workers { jobs: Some(jobs), done, cancelled }
+        Workers {
+            jobs: Some(jobs),
+            done,
+            cancelled,
+            _queue: rx,
+            #[cfg(test)]
+            inject: tx,
+        }
     }
 }
 
@@ -402,6 +423,11 @@ impl Library {
     /// `root`: the assets root; `style`: a style file for every recipe (otherwise looked up next
     /// to each recipe).
     pub fn new(root: &Path, style: Option<&Path>) -> Library {
+        Library::with_workers(root, style, WORKERS)
+    }
+
+    /// With `workers` build threads (0 in tests that deliver results by hand).
+    fn with_workers(root: &Path, style: Option<&Path>, workers: usize) -> Library {
         Library {
             root: root.to_owned(),
             canonical_root: None,
@@ -420,7 +446,7 @@ impl Library {
             next_id: 1,
             generation: 0,
             last_poll: Instant::now(),
-            workers: Workers::start(WORKERS),
+            workers: Workers::start(workers),
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -472,11 +498,28 @@ impl Library {
     /// The spec's handle, state and bounds (see the module docs: never builds on this thread).
     pub fn resolve(&mut self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
         if let Some(&h) = self.by_spec.get(&spec.key()) {
-            let slot = self.handles[h as usize].as_ref().expect("indexed handles exist");
-            if slot.built.is_none() && slot.want.is_none() && slot.error.is_none() {
-                // It stopped waiting while no entity used it (garbage collection): wanted again.
-                let key = self.key_for(spec, true)?;
-                self.want(h, key, false);
+            let slot = self.handles[h as usize].as_mut().expect("indexed handles exist");
+            if slot.verify {
+                // Unused for a while: its recipe may have been edited (or broken, or fixed)
+                // meanwhile, when nothing rebuilt it. Same key: the build stands.
+                slot.verify = false;
+                match self.key_for(spec, true) {
+                    Ok(key) => {
+                        let slot = self.handles[h as usize].as_ref().expect("live handle");
+                        if slot.built_key.as_ref() != Some(&key) && slot.want.as_ref() != Some(&key) {
+                            self.want(h, key, false);
+                        } else if slot.built_key.as_ref() == Some(&key) {
+                            self.handles[h as usize].as_mut().expect("live handle").error = None;
+                        }
+                    }
+                    Err(e) => {
+                        let slot = self.handles[h as usize].as_mut().expect("live handle");
+                        if slot.built.is_none() {
+                            return Err(e);
+                        }
+                        slot.error = Some(e); // the last good build stays
+                    }
+                }
             }
             return Ok(self.handles[h as usize].as_ref().expect("indexed handles exist").resolved(h));
         }
@@ -488,7 +531,8 @@ impl Library {
                 (self.handles.len() - 1) as u32
             }
         };
-        self.handles[h as usize] = Some(Handle { spec: spec.clone(), built: None, want: None, error: None });
+        self.handles[h as usize] =
+            Some(Handle { spec: spec.clone(), built: None, built_key: None, want: None, error: None, verify: false });
         self.by_spec.insert(spec.key(), h);
         self.want(h, key, false);
         Ok(self.handles[h as usize].as_ref().expect("just set").resolved(h))
@@ -519,6 +563,7 @@ impl Library {
                 slot.built = Some(b);
                 self.generation += 1;
             }
+            slot.built_key = Some(key);
             slot.error = None;
             if count_hit {
                 self.cache_hits += 1;
@@ -584,8 +629,9 @@ impl Library {
         let rel = Path::new(&spec.recipe);
         let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
         let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
-        self.check_inside(&folder, spec)?;
         if !self.folders.contains_key(&folder) {
+            // Cached folders were checked when read (and are checked again when re-read).
+            self.check_inside(&folder, spec)?;
             // Folders that don't exist are never cached (agents could make the cache grow).
             let f = self.read_folder(&folder).ok_or_else(|| not_found(spec, &self.root))?;
             self.folders.insert(folder.clone(), f);
@@ -673,6 +719,15 @@ impl Library {
     }
 
     /// Refuses a folder that leads outside the assets root (through a link, say).
+    /// Whether `folder` exists inside the assets root (links resolved).
+    fn folder_inside(&mut self, folder: &Path) -> bool {
+        if self.canonical_root.is_none() {
+            self.canonical_root = self.root.canonicalize().ok();
+        }
+        let Some(root) = &self.canonical_root else { return false };
+        self.root.join(folder).canonicalize().is_ok_and(|full| full.starts_with(root))
+    }
+
     fn check_inside(&mut self, folder: &Path, spec: &ModelSpec) -> Result<(), WorldError> {
         if self.canonical_root.is_none() {
             self.canonical_root = self.root.canonicalize().ok();
@@ -729,7 +784,8 @@ impl Library {
         if unchanged {
             return 0;
         }
-        let new = self.read_folder_from(rel, Some(old));
+        // Re-read only while it still lies inside the root (it may have become a link).
+        let new = if self.folder_inside(rel) { self.read_folder_from(rel, self.folders.get(rel)) } else { None };
         let old = self.folders.remove(rel).expect("checked above");
         let changed = match &new {
             None => old.files.len().max(1),
@@ -817,6 +873,9 @@ impl Library {
             .filter(|f| !self.folders.contains_key(f))
             .collect();
         for f in missing {
+            if !self.folder_inside(&f) {
+                continue;
+            }
             if let Some(folder) = self.read_folder(&f) {
                 report.files_changed += folder.files.len().max(1);
                 self.folders.insert(f.clone(), folder);
@@ -934,6 +993,7 @@ impl Library {
                 match &result {
                     Ok(b) => {
                         slot.built = Some(Arc::clone(b));
+                        slot.built_key = Some(done.key.clone());
                         slot.error = None;
                     }
                     Err(e) => slot.error = Some(e.clone()),
@@ -967,15 +1027,10 @@ impl Library {
     pub fn collect_garbage(&mut self, live: &BTreeSet<u32>) {
         let forget = self.by_spec.len() > live.len() + SPARE_HANDLES;
         for h in 0..self.handles.len() as u32 {
-            let Some(slot) = &self.handles[h as usize] else { continue };
-            if live.contains(&h) {
+            if self.handles[h as usize].is_none() || live.contains(&h) {
                 continue;
             }
-            // No entity uses it: it stops waiting (its queued build is cancelled below unless
-            // something else waits for it), so deleted entities never hold up live ones.
-            if slot.want.is_some() {
-                self.set_want(h, None);
-            }
+            self.unuse(h);
             if forget {
                 let gone = self.handles[h as usize].take().expect("checked");
                 self.by_spec.remove(&gone.spec.key());
@@ -985,30 +1040,74 @@ impl Library {
         if forget {
             self.generation += 1;
         }
+        self.cancel_unwanted();
         let handles: Vec<&Handle> = self.handles.iter().flatten().collect();
         let kept: BTreeSet<u64> = handles.iter().filter_map(|h| h.built.as_ref().map(|b| b.id)).chain(self.recent.iter().copied()).collect();
         self.builds.retain(|_, b| kept.contains(&b.id));
-        // Queued builds nobody waits for: workers skip them.
-        let dropped: Vec<BuildKey> =
-            self.in_flight.iter().filter(|(k, f)| !f.pinned && !self.waiting.contains_key(k)).map(|(k, _)| k.clone()).collect();
-        if !dropped.is_empty() {
-            let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
-            for k in dropped {
-                if let Some(f) = self.in_flight.remove(&k) {
-                    cancelled.insert(f.job);
-                }
-            }
-        }
-        // Folders, recipes and styles only live handles need.
+        // Folders, recipes and styles only live handles need (one path per recipe, not per handle).
         let recipes: BTreeSet<&str> = handles.iter().map(|h| h.spec.recipe.as_str()).collect();
-        let folders: BTreeSet<PathBuf> =
-            recipes.iter().map(|r| Path::new(r).parent().unwrap_or(Path::new("")).to_owned()).collect();
+        let folders: BTreeSet<&Path> = recipes.iter().map(|r| Path::new(*r).parent().unwrap_or(Path::new(""))).collect();
         self.recipes.retain(|r, _| recipes.contains(r.as_str()));
         self.failed.retain(|r, _| recipes.contains(r.as_str()));
-        self.folders.retain(|f, _| folders.contains(f));
+        self.folders.retain(|f, _| folders.contains(f.as_path()));
         let styles: BTreeSet<&PathBuf> = self.recipes.values().map(|r| &r.style_path).collect();
         let styles: BTreeSet<PathBuf> = styles.into_iter().cloned().collect();
         self.styles.retain(|p, _| styles.contains(p));
+    }
+
+    /// No entity uses handle `h`: it stops waiting (its build is cancelled unless something
+    /// else waits for it), so deleted entities never hold up live ones, and it re-checks its key
+    /// when it is used again (the recipe may change meanwhile).
+    fn unuse(&mut self, h: u32) {
+        if self.handles[h as usize].as_ref().is_some_and(|s| s.want.is_some()) {
+            self.set_want(h, None);
+        }
+        if let Some(slot) = self.handles[h as usize].as_mut() {
+            slot.verify = true;
+        }
+    }
+
+    /// The cheap part of garbage collection, for while builds are in flight (the engine runs it
+    /// after entities stopped using models, [`crate::world::World::model_drops`]): handles waiting
+    /// for a build that no entity uses (`live`: the handles entities use, sorted) stop waiting,
+    /// and the builds that leaves nobody waiting for are cancelled. No allocation per handle.
+    pub fn drop_unwanted(&mut self, live: &[u32]) {
+        let unused: Vec<u32> =
+            self.waiting.values().flatten().copied().filter(|h| live.binary_search(h).is_err()).collect();
+        if unused.is_empty() {
+            return;
+        }
+        let mut freed = Vec::new();
+        for h in unused {
+            if let Some(k) = self.handles[h as usize].as_ref().and_then(|s| s.want.clone()) {
+                freed.push(k);
+            }
+            self.unuse(h);
+        }
+        let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
+        for k in freed {
+            if self.waiting.contains_key(&k) || self.in_flight.get(&k).is_none_or(|f| f.pinned) {
+                continue;
+            }
+            if let Some(f) = self.in_flight.remove(&k) {
+                cancelled.insert(f.job);
+            }
+        }
+    }
+
+    /// Queued builds nobody waits for: workers skip them.
+    fn cancel_unwanted(&mut self) {
+        let dropped: Vec<BuildKey> =
+            self.in_flight.iter().filter(|(k, f)| !f.pinned && !self.waiting.contains_key(k)).map(|(k, _)| k.clone()).collect();
+        if dropped.is_empty() {
+            return;
+        }
+        let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
+        for k in dropped {
+            if let Some(f) = self.in_flight.remove(&k) {
+                cancelled.insert(f.job);
+            }
+        }
     }
 
     /// Sizes for engine_info and perf_frame.
@@ -1695,6 +1794,117 @@ mod tests {
         let r = lib.resolve(&heavies[5]).unwrap();
         assert_eq!(r.state, ModelState::Ready, "{:?}", lib.handle_error(r.handle));
         assert!(lib.workers.cancelled.lock().unwrap().is_empty(), "cancelled ids are pruned as their jobs end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review round 3: deterministic (no workers; results delivered by hand). A job that was
+    /// cancelled, then replaced when its key was wanted again, never fails or cancels the entity
+    /// now waiting; a good result from it still serves it (and the replacement is dropped).
+    #[test]
+    fn stale_job_results_never_fail_a_rewanted_entity() {
+        let root = scratch("stale", &[("block", &block(1.0))]);
+        let mut lib = Library::with_workers(&root, None, 0);
+        let spec = ModelSpec::new("recipes/block.json");
+        let h = lib.resolve(&spec).unwrap().handle;
+        let key = lib.handles[h as usize].as_ref().unwrap().want.clone().unwrap();
+        let first = lib.in_flight[&key].job;
+        lib.collect_garbage(&BTreeSet::new()); // its entity was deleted
+        assert_eq!(lib.in_flight(), 0);
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Building, "wanted again");
+        let second = lib.in_flight[&key].job;
+        assert_ne!(first, second);
+        let deliver = |lib: &mut Library, id: u64, outcome: Outcome| {
+            let done = Done { id, key: key.clone(), recipe: spec.recipe.clone(), style_path: PathBuf::new(), outcome, build_ms: 0.0 };
+            lib.workers.inject.send(done).unwrap();
+            lib.finish(None)
+        };
+        let failure = || Outcome::Failed(RecipeError::new("parts", ErrorCode::Geometry, "old job"));
+        let (finished, changed) = deliver(&mut lib, first, failure());
+        assert_eq!((finished.len(), changed.len()), (1, 0), "the old job's failure changes nothing");
+        deliver(&mut lib, first, Outcome::Cancelled);
+        let r = lib.resolve(&spec).unwrap();
+        assert_eq!((r.state, lib.handle_error(h).is_none()), (ModelState::Building, true));
+        assert_eq!(lib.in_flight[&key].job, second, "the replacement still runs");
+        // The real build lands.
+        let style = Style::parse(&std::fs::read_to_string(root.join(STYLE_FILE)).unwrap()).unwrap();
+        let model = || build(&block(1.0), &BuildParams::new(&style)).unwrap();
+        deliver(&mut lib, second, Outcome::Built(model()));
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
+        // Again, but this time the old job's good result arrives first: it serves the entity and
+        // the replacement is cancelled.
+        lib.collect_garbage(&BTreeSet::new());
+        lib.handles[h as usize].as_mut().unwrap().built = None; // as if never built
+        lib.handles[h as usize].as_mut().unwrap().built_key = None;
+        lib.builds.clear();
+        lib.resolve(&spec).unwrap();
+        let replacement = lib.in_flight[&key].job;
+        deliver(&mut lib, first, Outcome::Built(model()));
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
+        assert_eq!(lib.in_flight(), 0, "the replacement is dropped");
+        assert!(lib.workers.cancelled.lock().unwrap().contains(&replacement));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review round 3: a recipe edited while its entity was deleted came back with the old model,
+    /// and model_reload couldn't fix it; a stale error stayed the same way.
+    #[test]
+    fn deleted_entities_come_back_with_the_recipe_as_it_is_now() {
+        let root = scratch("comeback", &[("block", &block(1.0))]);
+        let file = root.join("recipes/block.json");
+        let touch = |text: &str, secs: u64| {
+            std::fs::write(&file, text).unwrap();
+            std::fs::File::options().write(true).open(&file).unwrap().set_modified(SystemTime::now() + Duration::from_secs(secs)).unwrap();
+        };
+        let shared = Arc::new(SharedLibrary::new(Library::new(&root, None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let spec = ModelSpec::new("recipes/block.json");
+        let id = world.spawn(SpawnSpec::model(spec.clone()), "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        let saved = world.get(id).unwrap().clone();
+        world.delete(&EntityKey::Id(id), None).unwrap();
+        let gc = |world: &World| shared.lock().collect_garbage(&live_handles(world));
+        gc(&world);
+        // Edited (5 m) while nothing uses it; the reload's rebuild is dropped (nobody waits).
+        touch(&block(5.0), 5);
+        shared.lock().poll(true).unwrap();
+        gc(&world);
+        settle(&mut shared.lock());
+        // Respawned: the new recipe, not the old build.
+        let again = world.spawn(SpawnSpec::model(spec.clone()), "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        assert_eq!(world.get(again).unwrap().local_bounds().unwrap().1.y, 5.9, "built from the recipe as it is now");
+        world.delete(&EntityKey::Id(again), None).unwrap();
+        gc(&world);
+        // Undone (an old state put back) after another edit: the same.
+        touch(&block(3.0), 10);
+        shared.lock().poll(true).unwrap();
+        gc(&world);
+        world.put_raw(saved.clone());
+        settle_shared(&shared, &mut world);
+        assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 3.9, "the undone entity too");
+        world.delete(&EntityKey::Id(id), None).unwrap();
+        gc(&world);
+        // Broken then fixed back while unused: no stale error when it is used again.
+        touch("{\"recipe\": 1, \"parts\": 7}", 15);
+        shared.lock().poll(true).unwrap();
+        touch(&block(3.0), 20);
+        shared.lock().poll(true).unwrap();
+        let back = world.spawn(SpawnSpec::model(spec.clone()), "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        let h = world.get(back).unwrap().resolved_model().unwrap().handle;
+        assert!(shared.lock().handle_error(h).is_none(), "{:?}", shared.lock().handle_error(h));
+        assert_eq!(world.get(back).unwrap().model_state(), "ready");
+        // Broken while unused and not reloaded: used again, the error shows (the last good build
+        // still draws).
+        world.delete(&EntityKey::Id(back), None).unwrap();
+        gc(&world);
+        touch("{\"recipe\": 1, \"parts\": 7}", 25);
+        shared.lock().poll(true).unwrap();
+        gc(&world);
+        let broken = world.spawn(SpawnSpec::model(spec), "t").unwrap().id;
+        assert_eq!(world.get(broken).unwrap().model_state(), "ready");
+        assert!(shared.lock().handle_error(h).is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

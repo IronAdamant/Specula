@@ -58,6 +58,59 @@ def recipes():
     return out
 
 
+def heavy_recipe():
+    """A heavy-but-legal recipe (about 1.5 s to build in a dev build)."""
+    ops = [{"op": "subdivide", "levels": 4}, {"op": "subdivide", "levels": 2}]
+    ops += [{"op": "displace", "amount": 0.01, "scale": 0.5, "octaves": 6} for _ in range(30)]
+    ops += [{"op": "ao", "amount": 0.3} for _ in range(10)]
+    part = lambda i: {"name": f"p{i}", "material": "carved_stone", "shape": {"op": "box", "size": [1, 1, 1]}, "ops": ops}
+    return {"recipe": 1, "name": "heavy", "lods": [0.5, 0.25], "budget": {"max_triangles": 200000},
+            "parts": [part(0), part(1)]}
+
+
+def shutdown_check(a, out, check):
+    """Ctrl+Break while a capture is parked on building models and a model_build is pending:
+    both callers get an answer at once and the engine exits promptly."""
+    import shutil
+    import threading
+    import time
+    from specula_mcp import Mcp, url_for
+    assets = out / "shutdown_assets"
+    shutil.rmtree(assets, ignore_errors=True)
+    (assets / "recipes").mkdir(parents=True)
+    shutil.copy(ASSETS / "style.json", assets / "style.json")
+    (assets / "recipes" / "heavy.json").write_text(json.dumps(heavy_recipe()))
+    args = ["--headless", "--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds")]
+    answers = {}
+
+    def call(name, tool, **args):
+        start = time.perf_counter()
+        r = Mcp(url_for(a.port), name).request("tools/call", {"name": tool, "arguments": args})
+        text = next(c["text"] for c in r["content"] if c["type"] == "text")
+        answers[name] = (time.perf_counter() - start, r.get("isError", False), text[:120])
+
+    with Engine(a.exe, a.port, out / "shutdown.log", *args, cwd=str(ROOT)) as engine:
+        mcp = engine.mcp("shutdown-check")
+        for s in range(6):
+            mcp.call("world_spawn", shape="model", recipe="recipes/heavy.json", seed=s, position=[s * 2, 0, 0])
+        threads = [threading.Thread(target=call, args=("capture", "sight_frame"), kwargs={"width": 64, "height": 64}),
+                   threading.Thread(target=call, args=("build", "model_build"), kwargs={"recipe": "recipes/heavy.json", "seed": 99})]
+        for t in threads:
+            t.start()
+        time.sleep(0.5)
+        stopping = time.perf_counter()
+        engine.stop()
+        stop_s = time.perf_counter() - stopping
+    for t in threads:
+        t.join(timeout=60)
+    check(stop_s < 1.5, f"shutdown with a parked capture and a pending model_build took {stop_s:.2f} s")
+    for name in ("capture", "build"):
+        took, is_error, text = answers.get(name, (None, None, "no answer"))
+        ok = took is not None and took < 5 and is_error and "shutting down" in text
+        check(ok, f"{name} answered at shutdown: {took and round(took, 2)} s, {text!r}")
+    check(engine.validation_errors() == 0, f"validation errors at that shutdown: {engine.validation_errors()}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=7490)
@@ -188,6 +241,7 @@ def main():
         (out / "gallery.json").write_text(json.dumps(summary, indent=1))
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
+    shutdown_check(a, out, check)
     print(f"summary: {out / 'gallery.json'}")
     if failures:
         sys.exit(f"{len(failures)} check(s) failed")

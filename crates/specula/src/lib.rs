@@ -65,8 +65,12 @@ const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
 /// The model library forgets what no entity uses at most this often (after the world's models
-/// changed): soon enough that deleted entities' builds are cancelled before they hold others up.
-const GC_EVERY: Duration = Duration::from_millis(100);
+/// changed).
+const GC_EVERY: Duration = Duration::from_secs(1);
+/// While builds are in flight, builds no entity waits for any more are cancelled at most this
+/// often after entities stopped using models (`World::model_drops`): soon enough that deleted
+/// entities' builds never hold up live ones, and never on spawns or moves alone.
+const GC_UNWANTED_EVERY: Duration = Duration::from_millis(100);
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
 /// Per-tick state hashes kept for world_hash.
@@ -268,6 +272,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     };
     engine.finish_autosave(true);
     engine.autosave(true);
+    // Parked captures and model calls hold reply channels: answer them now, or their callers
+    // (and the server's connection threads) would wait out their full timeout.
+    engine.answer_waiters_shutting_down();
     // Queued calls get "shutting down" as soon as their reply channels close; give them a moment
     // to write that response before the server closes every connection.
     drop(requests);
@@ -323,6 +330,8 @@ struct Engine {
     capture_waiters: Vec<CaptureWaiter>,
     /// When the model library last dropped what no entity uses, at which world mesh epoch.
     last_gc: (Instant, u64),
+    /// When builds nobody waits for were last cancelled, at which `World::model_drops`.
+    last_unwanted: (Instant, u64),
     world: World,
     /// Animation time zero.
     started: Instant,
@@ -383,6 +392,18 @@ struct CaptureWaiter {
     reply: std::sync::mpsc::Sender<ToolOutput>,
     /// Rendered then whatever is still building.
     until: Instant,
+    wait: CaptureWait,
+}
+
+/// How a capture waited for models, for its packet.
+#[derive(Clone, Copy)]
+struct CaptureWait {
+    /// The tick the game last brought its presentation up to (`before_capture`).
+    presented_at: Option<u64>,
+    /// When it was parked (`None`: rendered at once).
+    parked_at: Option<Instant>,
+    /// It renders because the caller's deadline came, not after the usual wait.
+    cut_by_deadline: bool,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -428,6 +449,7 @@ impl Engine {
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
             last_gc: (Instant::now(), 0),
+            last_unwanted: (Instant::now(), 0),
             world,
             started: Instant::now(),
             window_camera: None,
@@ -675,12 +697,26 @@ impl Engine {
     /// `force`: now). Returns the reload report when something was checked and changed.
     fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
         let reload = self.library.lock().poll(force);
-        // Forget what no entity uses any more, once a second after the world's models changed,
-        // whether or not anything is drawn (a headless engine never syncs GPU meshes).
+        // Garbage collection, whether or not anything is drawn (a headless engine never syncs
+        // GPU meshes). Cheap part, every GC_UNWANTED_EVERY while builds are in flight after the
+        // world's models changed: builds no entity waits for any more are cancelled. Full part,
+        // every GC_EVERY after a change: unused specs, builds, folders and recipes go.
         let epoch = self.world.mesh_epoch();
+        let (in_flight, specs) = {
+            let lib = self.library.lock();
+            (lib.in_flight(), lib.spec_count())
+        };
+        let drops = self.world.model_drops();
+        if in_flight > 0 && drops != self.last_unwanted.1 && self.last_unwanted.0.elapsed() >= GC_UNWANTED_EVERY {
+            let mut live: Vec<u32> = self.world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect();
+            live.sort_unstable();
+            live.dedup();
+            self.library.lock().drop_unwanted(&live);
+            self.last_unwanted = (Instant::now(), drops);
+        }
         let due = (self.last_gc.0.elapsed() >= GC_EVERY && epoch != self.last_gc.1)
             // More specs than the world could use: certainly garbage, collect now.
-            || self.library.lock().spec_count() > self.world.len() + models::SPARE_HANDLES;
+            || specs > self.world.len() + models::SPARE_HANDLES;
         if force || due {
             let live = models::live_handles(&self.world);
             self.library.lock().collect_garbage(&live);
@@ -790,13 +826,31 @@ impl Engine {
         let Request { command: Command::Frame(spec), session, reply, deadline } = request else {
             unreachable!("only captures come here")
         };
+        // The game brings its presentation up to date first, so models it spawns for this
+        // capture are waited for too.
+        let presented_at = self.before_capture();
+        let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
         if self.building_in_frame(&spec) == 0 {
-            let _ = reply.send(self.capture(&spec, &session));
+            let _ = reply.send(self.capture(&spec, &session, wait));
             return;
         }
         // Answer before the caller's own deadline, building or not.
-        let until = (Instant::now() + CAPTURE_BUILD_WAIT).min(deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline));
-        self.capture_waiters.push(CaptureWaiter { spec, session, reply, until });
+        let usual = Instant::now() + CAPTURE_BUILD_WAIT;
+        let latest = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline);
+        wait.parked_at = Some(Instant::now());
+        wait.cut_by_deadline = latest < usual;
+        self.capture_waiters.push(CaptureWaiter { spec, session, reply, until: usual.min(latest), wait });
+    }
+
+    /// Answers every parked call: the engine is stopping.
+    fn answer_waiters_shutting_down(&mut self) {
+        let out = || ToolOutput::error("the engine is shutting down; the call was not completed");
+        for w in self.capture_waiters.drain(..) {
+            let _ = w.reply.send(out());
+        }
+        for w in self.build_waiters.drain(..) {
+            let _ = w.reply.send(out());
+        }
     }
 
     /// Renders parked captures whose models are built (or whose wait ran out).
@@ -808,7 +862,8 @@ impl Engine {
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
             if now >= w.until || self.building_in_frame(&w.spec) == 0 {
-                let _ = w.reply.send(self.capture(&w.spec, &w.session));
+                let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
+                let _ = w.reply.send(self.capture(&w.spec, &w.session, wait));
             } else {
                 self.capture_waiters.push(w);
             }
@@ -1331,17 +1386,24 @@ impl Engine {
         }
     }
 
-    fn capture(&mut self, spec: &FrameSpec, session: &SessionInfo) -> ToolOutput {
-        // The game brings its presentation up to the current tick first (headless engines never
-        // run its per-frame update).
-        if let Some(game) = self.game.as_mut() {
-            self.world.set_recording(Recording::Snapshot);
-            let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
-            game.before_capture(ctx);
-            self.world.set_recording(Recording::Full);
-            self.journal_game(Kind::GameFrame);
+    /// The hosted game's `before_capture`: presentation up to the current tick (a headless engine
+    /// never runs its per-frame update). Returns the tick it ran at (`None` without a game).
+    fn before_capture(&mut self) -> Option<u64> {
+        let game = self.game.as_mut()?;
+        self.world.set_recording(Recording::Snapshot);
+        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
+        game.before_capture(ctx);
+        self.world.set_recording(Recording::Full);
+        self.journal_game(Kind::GameFrame);
+        Some(self.clock.tick())
+    }
+
+    /// Renders the world as it is now (a parked capture: after its wait).
+    fn capture(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait) -> ToolOutput {
+        // Presentation again only if the simulation moved on while the capture was parked.
+        if self.game.is_some() && wait.presented_at != Some(self.clock.tick()) {
+            self.before_capture();
         }
-        // (Parked by handle_capture while models it shows were building; what still is, is said.)
         self.pump_builds(None);
         let building = self.building_in_frame(spec);
         let camera = self.capture_camera(spec);
@@ -1352,12 +1414,16 @@ impl Engine {
         self.lod_capture = stats;
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
         if stats.missing > 0 {
+            let waited = match (wait.parked_at, wait.cut_by_deadline) {
+                (None, _) => "none was in frame when the call came".to_owned(),
+                (Some(t), false) => format!("waited {:.1} s", t.elapsed().as_secs_f64()),
+                (Some(t), true) => format!("waited {:.1} s, cut short by the call's deadline", t.elapsed().as_secs_f64()),
+            };
             warnings.push(Json::from(format!(
-                "{} model entit{} not drawn: no build yet or a failed one ({building} still building after {} s; \
-                 world_query fields model_state, engine_info models.library.broken)",
+                "{} model entit{} not drawn: {building} in frame still building ({waited}), others failed or \
+                 started building since (world_query fields model_state, engine_info models.library.broken)",
                 stats.missing,
                 if stats.missing == 1 { "y" } else { "ies" },
-                CAPTURE_BUILD_WAIT.as_secs()
             )));
         }
         let (lights, dropped) = sight::lights(&self.world, spec.include_ui);

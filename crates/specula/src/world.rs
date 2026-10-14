@@ -1713,6 +1713,8 @@ pub struct World {
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
+    /// See [`World::model_drops`].
+    model_drops: u64,
     /// Builds model entities' models (the engine's model library).
     models: SourceSlot,
 }
@@ -1783,6 +1785,13 @@ impl World {
     /// See the field: changes whenever GPU meshes may need building or freeing.
     pub fn mesh_epoch(&self) -> u64 {
         self.mesh_epoch
+    }
+
+    /// Bumped whenever a model entity may have stopped using its model (removed, its spec
+    /// changed, an old state put back, a batch rolled back): when the engine looks for builds
+    /// nobody waits for any more.
+    pub fn model_drops(&self) -> u64 {
+        self.model_drops
     }
 
     /// The model library model entities are built with (`None`: model entities spawn
@@ -2384,6 +2393,7 @@ impl World {
         self.bump(transient);
         if remeshed {
             self.mesh_epoch += 1;
+            self.model_drops += 1;
         }
         match self.recording {
             Recording::Off => {}
@@ -2422,6 +2432,9 @@ impl World {
         let removed: Vec<Entity> = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
         // A transient root has only transient descendants.
         self.bump(removed[0].transient);
+        if removed.iter().any(|e| e.shape == Shape::Model) {
+            self.model_drops += 1;
+        }
         if removed.iter().any(Entity::owns_mesh) {
             self.mesh_epoch += 1;
         }
@@ -2466,6 +2479,7 @@ impl World {
                     self.transient_seq = transient_seq;
                     self.revision = revision;
                     self.mesh_epoch += 1;
+                    self.model_drops += 1;
                     self.changes.truncate(recorded);
                     return Err((index, error));
                 }
@@ -2804,6 +2818,7 @@ impl World {
         self.bump(transient);
         if remeshed {
             self.mesh_epoch += 1;
+            self.model_drops += 1;
         }
         if recording == Recording::Snapshot && !transient {
             let mark = if existed { Dirty::Changed } else { Dirty::Spawned };
@@ -2832,6 +2847,9 @@ impl World {
         self.touch_removal(id);
         let e = self.unlink_exact(id)?;
         self.bump(e.transient);
+        if e.shape == Shape::Model {
+            self.model_drops += 1;
+        }
         if e.owns_mesh() {
             self.mesh_epoch += 1;
         }
