@@ -197,7 +197,12 @@ impl Window {
             return Ok(false);
         }
 
-        // Nothing may still use the old images, views or semaphores.
+        // Nothing may still use the old swapchain's images, views or `render_done` semaphores
+        // (frames in flight render into them; queued presents wait on the semaphores). The frame
+        // graph's images (depth, post chain) need no wait here: a new size makes new ones and the
+        // old ones are freed once their frames finished. Deferring this wait too would need the
+        // old swapchain's views and semaphores kept until a present fence
+        // (VK_EXT_swapchain_maintenance1) says they are free.
         dev.wait_idle();
 
         let mut min_images = caps.min_image_count + 1;
