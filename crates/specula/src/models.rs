@@ -185,8 +185,19 @@ struct Done {
     key: BuildKey,
     recipe: String,
     style_path: PathBuf,
-    result: Result<Model, RecipeError>,
+    outcome: Outcome,
     build_ms: f64,
+}
+
+/// How a job ended.
+enum Outcome {
+    Built(Model),
+    /// The recipe failed to build (budget, geometry, a missing include...).
+    Failed(RecipeError),
+    /// `specula-model` panicked (a bug there, not in the recipe).
+    Panicked(String),
+    /// Nobody wanted it any more when a worker got to it.
+    Cancelled,
 }
 
 /// A build in flight.
@@ -284,17 +295,13 @@ impl Workers {
                 };
                 let skip = cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&job.id);
                 let started = Instant::now();
-                let result = if skip {
-                    Err(RecipeError::new("", ErrorCode::Limit, "cancelled: no entity needs this build any more"))
-                } else {
-                    run(&job)
-                };
+                let outcome = if skip { Outcome::Cancelled } else { run(&job, build) };
                 let done = Done {
                     id: job.id,
                     key: job.key,
                     recipe: job.recipe,
                     style_path: job.style_path,
-                    result,
+                    outcome,
                     build_ms: started.elapsed().as_secs_f64() * 1000.0,
                 };
                 if tx.send(done).is_err() {
@@ -309,17 +316,29 @@ impl Workers {
     }
 }
 
-/// Builds one job; a panic in the model crate becomes a structured error instead of a dead worker.
-fn run(job: &Job) -> Result<Model, RecipeError> {
+/// The build function workers call (`specula_model::build`; tests pass others).
+type BuildFn = fn(&str, &BuildParams) -> Result<Model, RecipeError>;
+
+/// Builds one job with `build`; a panic becomes [`Outcome::Panicked`] instead of a dead worker.
+fn run(job: &Job, build: BuildFn) -> Outcome {
     let values: Vec<(&str, f64)> = job.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
     let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&job.text, &params)));
-    let model = match built {
-        Ok(r) => r?,
-        Err(_) => return Err(RecipeError::new("", ErrorCode::Limit, "the build panicked (a bug in specula-model)")),
-    };
-    check_uploadable(&model).map_err(|m| RecipeError::new("", ErrorCode::InvalidMesh, m))?;
-    Ok(model)
+    match built {
+        Ok(Ok(model)) => match check_uploadable(&model) {
+            Ok(()) => Outcome::Built(model),
+            Err(m) => Outcome::Failed(RecipeError::new("", ErrorCode::InvalidMesh, m)),
+        },
+        Ok(Err(e)) => Outcome::Failed(e),
+        Err(panic) => {
+            let why = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".into());
+            Outcome::Panicked(why)
+        }
+    }
 }
 
 /// Recipe files, styles, builds and handles (see the module docs).
@@ -334,6 +353,8 @@ pub struct Library {
     styles: BTreeMap<PathBuf, StyleFile>,
     /// By recipe path.
     recipes: BTreeMap<String, RecipeInfo>,
+    /// Recipes that failed to parse (or whose style did), until their files change.
+    failed: BTreeMap<String, WorldError>,
     builds: BTreeMap<BuildKey, Arc<Built>>,
     in_flight: BTreeMap<BuildKey, InFlight>,
     /// Build key → the handles waiting for it.
@@ -388,6 +409,7 @@ impl Library {
             folders: BTreeMap::new(),
             styles: BTreeMap::new(),
             recipes: BTreeMap::new(),
+            failed: BTreeMap::new(),
             builds: BTreeMap::new(),
             in_flight: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -441,9 +463,21 @@ impl Library {
         self.by_spec.len()
     }
 
+    /// Makes the next unforced [`Library::poll`] look at the files (tests).
+    #[cfg(test)]
+    fn poll_due_now(&mut self) {
+        self.last_poll = Instant::now().checked_sub(POLL_EVERY).unwrap_or(self.last_poll);
+    }
+
     /// The spec's handle, state and bounds (see the module docs: never builds on this thread).
     pub fn resolve(&mut self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
         if let Some(&h) = self.by_spec.get(&spec.key()) {
+            let slot = self.handles[h as usize].as_ref().expect("indexed handles exist");
+            if slot.built.is_none() && slot.want.is_none() && slot.error.is_none() {
+                // It stopped waiting while no entity used it (garbage collection): wanted again.
+                let key = self.key_for(spec, true)?;
+                self.want(h, key, false);
+            }
             return Ok(self.handles[h as usize].as_ref().expect("indexed handles exist").resolved(h));
         }
         let key = self.key_for(spec, true)?;
@@ -559,8 +593,21 @@ impl Library {
             self.refresh_folder(&folder);
         }
         if !self.recipes.contains_key(&spec.recipe) {
-            let info = self.recipe_info(&spec.recipe, &folder, &stem, spec)?;
-            self.recipes.insert(spec.recipe.clone(), info);
+            // A recipe that failed to parse fails the same way until its files change.
+            if let Some(e) = self.failed.get(&spec.recipe) {
+                return Err(e.clone());
+            }
+            match self.recipe_info(&spec.recipe, &folder, &stem, spec) {
+                Ok(info) => {
+                    self.recipes.insert(spec.recipe.clone(), info);
+                }
+                Err(e) => {
+                    if !matches!(e.code, "recipe_not_found" | "recipe_unreadable" | "style_not_found") {
+                        self.failed.insert(spec.recipe.clone(), e.clone());
+                    }
+                    return Err(e);
+                }
+            }
         }
         let info = &self.recipes[&spec.recipe];
         let values: Vec<(&str, f64)> = spec.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
@@ -703,6 +750,7 @@ impl Library {
         if changed > 0 {
             // Any recipe there may include a changed file: work them out again (cheap: no builds).
             self.recipes.retain(|_, r| r.folder != rel);
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
         }
         changed
     }
@@ -757,7 +805,24 @@ impl Library {
             let file = read_style(&p);
             self.styles.insert(p.clone(), file);
             self.recipes.retain(|_, r| r.style_path != p);
+            self.failed.clear();
             report.files_changed += 1;
+        }
+        // Folders handles need that weren't there (removed, or not made yet): back now?
+        let missing: BTreeSet<PathBuf> = self
+            .handles
+            .iter()
+            .flatten()
+            .map(|h| Path::new(&h.spec.recipe).parent().unwrap_or(Path::new("")).to_owned())
+            .filter(|f| !self.folders.contains_key(f))
+            .collect();
+        for f in missing {
+            if let Some(folder) = self.read_folder(&f) {
+                report.files_changed += folder.files.len().max(1);
+                self.folders.insert(f.clone(), folder);
+                self.recipes.retain(|_, r| r.folder != f);
+                self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != f);
+            }
         }
         if report.files_changed == 0 && !force {
             return None;
@@ -774,6 +839,9 @@ impl Library {
                 Ok(key) => {
                     let unchanged = self.builds.get(&key).is_some_and(|b| Some(b.id) == current);
                     if unchanged {
+                        // Fixed back to what it was: the build stands, and so must not the error.
+                        self.set_want(h as u32, None);
+                        self.handles[h].as_mut().expect("live handle").error = None;
                         continue;
                     }
                     self.want(h as u32, key.clone(), true);
@@ -813,11 +881,16 @@ impl Library {
                     Err(_) => break,
                 },
             };
-            if self.in_flight.get(&done.key).is_some_and(|f| f.job == done.id) {
+            // A job a later one replaced (it was cancelled, then the key was wanted again) speaks
+            // only for itself: its failure or cancellation never reaches the handles now waiting.
+            let current = self.in_flight.get(&done.key).is_some_and(|f| f.job == done.id);
+            if current {
                 self.in_flight.remove(&done.key);
             }
-            let result = match done.result {
-                Ok(model) => {
+            // Ids of jobs cancelled while already running would otherwise stay in the set.
+            self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&done.id);
+            let result = match done.outcome {
+                Outcome::Built(model) => {
                     let built = Arc::new(Built {
                         id: self.next_id,
                         model,
@@ -829,9 +902,33 @@ impl Library {
                     self.builds.insert(done.key.clone(), Arc::clone(&built));
                     Ok(built)
                 }
-                Err(e) => Err(recipe_error(&done.recipe, &e)),
+                Outcome::Failed(e) => Err(recipe_error(&done.recipe, &e)),
+                Outcome::Panicked(why) => Err(WorldError::new(
+                    "build_panicked",
+                    format!("{}: the model build panicked ({why}); a bug in specula-model, not in the recipe", done.recipe),
+                )
+                .with("recipe", done.recipe.as_str())),
+                Outcome::Cancelled => Err(WorldError::new("build_cancelled", "no entity needed this build any more")
+                    .with("recipe", done.recipe.as_str())),
             };
-            for h in self.waiting.remove(&done.key).unwrap_or_default() {
+            // A good build serves whoever waits for its key; anything else only if it is the
+            // key's current job (and a cancellation never does).
+            let applies = match &result {
+                Ok(_) => true,
+                Err(e) => current && e.code != "build_cancelled",
+            };
+            let waiting = if applies { self.waiting.remove(&done.key).unwrap_or_default() } else { BTreeSet::new() };
+            if applies && !current {
+                // The key's current job is no longer needed by anyone.
+                if let Some(f) = self.in_flight.remove(&done.key) {
+                    if !f.pinned {
+                        self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner).insert(f.job);
+                    } else {
+                        self.in_flight.insert(done.key.clone(), f);
+                    }
+                }
+            }
+            for h in waiting {
                 let Some(slot) = self.handles[h as usize].as_mut() else { continue };
                 slot.want = None;
                 match &result {
@@ -868,15 +965,24 @@ impl Library {
     /// Drops what no live entity uses (see the module docs). `live`: the handles of the world's
     /// model entities.
     pub fn collect_garbage(&mut self, live: &BTreeSet<u32>) {
-        if self.by_spec.len() > live.len() + SPARE_HANDLES {
-            for h in 0..self.handles.len() as u32 {
-                if self.handles[h as usize].is_some() && !live.contains(&h) {
-                    self.set_want(h, None);
-                    let gone = self.handles[h as usize].take().expect("checked");
-                    self.by_spec.remove(&gone.spec.key());
-                    self.free_handles.push(h);
-                }
+        let forget = self.by_spec.len() > live.len() + SPARE_HANDLES;
+        for h in 0..self.handles.len() as u32 {
+            let Some(slot) = &self.handles[h as usize] else { continue };
+            if live.contains(&h) {
+                continue;
             }
+            // No entity uses it: it stops waiting (its queued build is cancelled below unless
+            // something else waits for it), so deleted entities never hold up live ones.
+            if slot.want.is_some() {
+                self.set_want(h, None);
+            }
+            if forget {
+                let gone = self.handles[h as usize].take().expect("checked");
+                self.by_spec.remove(&gone.spec.key());
+                self.free_handles.push(h);
+            }
+        }
+        if forget {
             self.generation += 1;
         }
         let handles: Vec<&Handle> = self.handles.iter().flatten().collect();
@@ -898,6 +1004,7 @@ impl Library {
         let folders: BTreeSet<PathBuf> =
             recipes.iter().map(|r| Path::new(r).parent().unwrap_or(Path::new("")).to_owned()).collect();
         self.recipes.retain(|r, _| recipes.contains(r.as_str()));
+        self.failed.retain(|r, _| recipes.contains(r.as_str()));
         self.folders.retain(|f, _| folders.contains(f));
         let styles: BTreeSet<&PathBuf> = self.recipes.values().map(|r| &r.style_path).collect();
         let styles: BTreeSet<PathBuf> = styles.into_iter().cloned().collect();
@@ -1523,6 +1630,12 @@ mod tests {
         assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 2.9);
         let up = UpdateSpec { params: Some(vec![("tier".into(), 2.0)]), ..Default::default() };
         assert_eq!(world.update(&EntityKey::Id(id), up, "t").err().unwrap().code, "recipe_invalid", "a new spec is refused");
+        // Put back exactly as it was: the build stands and the error clears.
+        touch("block", &block(2.0), 20);
+        let report = shared.lock().poll(true).unwrap();
+        assert_eq!((report.rebuilding.len(), report.errors.len()), (0, 0), "{:?}", report.rebuilding);
+        settle_shared(&shared, &mut world);
+        assert!(shared.lock().handle_error(handle).is_none(), "the stale error is gone");
         // A recipe written just now (its folder cached) is found without waiting for the poll.
         std::fs::write(file("fresh"), block(0.5)).unwrap();
         world.spawn(SpawnSpec::model(ModelSpec::new("recipes/fresh.json")), "t").unwrap();
@@ -1552,6 +1665,89 @@ mod tests {
         // Nothing live: folders and recipes go too (handles stay while under the spare count).
         lib.collect_garbage(&BTreeSet::new());
         assert_eq!(lib.counts().0, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review round 2: deleted entities' queued builds held up live ones, and a cancelled job's
+    /// result marked a respawned entity `failed` for good.
+    #[test]
+    fn cancelled_builds_never_hold_up_or_fail_live_entities() {
+        let root = scratch("cancel", &[("heavy", &heavy()), ("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        let heavies: Vec<ModelSpec> = (0..6).map(|s| ModelSpec::new("recipes/heavy.json").with_seed(s)).collect();
+        let handles: Vec<u32> = heavies.iter().map(|s| lib.resolve(s).unwrap().handle).collect();
+        assert_eq!(lib.in_flight(), 6);
+        // Their entities are deleted: every queued build is dropped at once (no spare threshold).
+        lib.collect_garbage(&BTreeSet::new());
+        assert_eq!(lib.in_flight(), 0, "nobody waits for them");
+        // A live entity's light build is not stuck behind them (at most the two already running).
+        let started = Instant::now();
+        let light = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
+        while lib.built(light).is_none() && started.elapsed() < Duration::from_secs(20) {
+            lib.finish(Some(Duration::from_millis(20)));
+        }
+        assert!(lib.built(light).is_some(), "the live build landed");
+        // The last heavy spec is wanted again while its cancelled job is still queued or running:
+        // whatever that old job reports, the entity ends up built, not failed.
+        let again = lib.resolve(&heavies[5]).unwrap();
+        assert_eq!((again.handle, again.state), (handles[5], ModelState::Building));
+        settle(&mut lib);
+        let r = lib.resolve(&heavies[5]).unwrap();
+        assert_eq!(r.state, ModelState::Ready, "{:?}", lib.handle_error(r.handle));
+        assert!(lib.workers.cancelled.lock().unwrap().is_empty(), "cancelled ids are pruned as their jobs end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A panic in the model crate becomes its own structured outcome, not a dead worker.
+    #[test]
+    fn a_panicking_build_is_reported_not_fatal() {
+        fn boom(_: &str, _: &BuildParams) -> Result<Model, RecipeError> {
+            panic!("kaboom")
+        }
+        let job = Job {
+            id: 1,
+            key: (0, String::new(), None),
+            recipe: "recipes/x.json".into(),
+            text: Arc::from("{}"),
+            library: Arc::new(BTreeMap::new()),
+            style: Arc::new(Style::default()),
+            style_path: PathBuf::new(),
+            params: Vec::new(),
+            seed: None,
+        };
+        match run(&job, boom) {
+            Outcome::Panicked(why) => assert!(why.contains("kaboom"), "{why}"),
+            _ => panic!("expected a panic outcome"),
+        }
+        fn fails(_: &str, _: &BuildParams) -> Result<Model, RecipeError> {
+            Err(RecipeError::new("parts", ErrorCode::Geometry, "no"))
+        }
+        assert!(matches!(run(&job, fails), Outcome::Failed(e) if e.code == ErrorCode::Geometry));
+    }
+
+    #[test]
+    fn a_folder_removed_and_restored_is_watched_again() {
+        let root = scratch("folder", &[("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        let h = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
+        settle(&mut lib);
+        std::fs::rename(root.join("recipes"), root.join("away")).unwrap();
+        lib.poll_due_now();
+        let report = lib.poll(false).unwrap();
+        assert_eq!(report.errors.len(), 1, "the recipe is gone");
+        assert!(lib.built(h).is_some(), "the last good build stays");
+        std::fs::rename(root.join("away"), root.join("recipes")).unwrap();
+        lib.poll_due_now();
+        lib.poll(false).expect("the restored folder is noticed by the automatic poll");
+        assert!(lib.handle_error(h).is_none(), "and the error is gone");
+        // Later edits are picked up again.
+        let file = root.join("recipes/block.json");
+        std::fs::write(&file, block(4.0)).unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(SystemTime::now() + Duration::from_secs(30)).unwrap();
+        lib.poll_due_now();
+        lib.poll(false).unwrap();
+        settle(&mut lib);
+        assert_eq!(lib.built(h).unwrap().bounds().1.y, 4.9);
         let _ = std::fs::remove_dir_all(&root);
     }
 

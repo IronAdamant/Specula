@@ -62,8 +62,11 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [-- GAME ARGS...]";
 
-/// How long a capture waits for models still building.
+/// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
+/// The model library forgets what no entity uses at most this often (after the world's models
+/// changed): soon enough that deleted entities' builds are cancelled before they hold others up.
+const GC_EVERY: Duration = Duration::from_millis(100);
 /// Simulation rate when no game is hosted (the clock still keeps time for agents).
 const DEFAULT_TICK_HZ: u32 = 30;
 /// Per-tick state hashes kept for world_hash.
@@ -316,6 +319,8 @@ struct Engine {
     lod_epoch: u64,
     /// Calls waiting for model builds.
     build_waiters: Vec<BuildWaiter>,
+    /// Captures waiting for models they show.
+    capture_waiters: Vec<CaptureWaiter>,
     /// When the model library last dropped what no entity uses, at which world mesh epoch.
     last_gc: (Instant, u64),
     world: World,
@@ -371,6 +376,15 @@ struct Engine {
     last_claim_sweep: Instant,
 }
 
+/// A sight_frame call parked until the models it would show are built.
+struct CaptureWaiter {
+    spec: FrameSpec,
+    session: SessionInfo,
+    reply: std::sync::mpsc::Sender<ToolOutput>,
+    /// Rendered then whatever is still building.
+    until: Instant,
+}
+
 /// A model_build or model_reload call waiting for builds on the worker threads.
 struct BuildWaiter {
     /// Jobs still running.
@@ -412,6 +426,7 @@ impl Engine {
             windowed: false,
             lod_epoch: 0,
             build_waiters: Vec::new(),
+            capture_waiters: Vec::new(),
             last_gc: (Instant::now(), 0),
             world,
             started: Instant::now(),
@@ -663,7 +678,7 @@ impl Engine {
         // Forget what no entity uses any more, once a second after the world's models changed,
         // whether or not anything is drawn (a headless engine never syncs GPU meshes).
         let epoch = self.world.mesh_epoch();
-        let due = (self.last_gc.0.elapsed() >= models::POLL_EVERY && epoch != self.last_gc.1)
+        let due = (self.last_gc.0.elapsed() >= GC_EVERY && epoch != self.last_gc.1)
             // More specs than the world could use: certainly garbage, collect now.
             || self.library.lock().spec_count() > self.world.len() + models::SPARE_HANDLES;
         if force || due {
@@ -704,10 +719,11 @@ impl Engine {
                             w.answer = Some(ToolOutput::text(models::report(spec, b, false).to_pretty()));
                         }
                         (Err(e), Some(_)) => w.answer = Some(world_error(e)),
-                        (Err(e), None) => {
+                        (Err(e), None) if e.code != "build_cancelled" => {
                             let recipe = e.detail("recipe").and_then(Json::as_str).unwrap_or_default().to_owned();
                             w.reload.errors.push((recipe, e.to_json()));
                         }
+                        (Err(_), None) => {}
                         (Ok(_), None) => {}
                     }
                 }
@@ -744,22 +760,58 @@ impl Engine {
         self.build_waiters.extend(waiters);
     }
 
-    /// Waits (up to `limit`) until no model entity is still building, so a capture shows what
-    /// was just spawned. Returns how many still are.
-    fn wait_for_models(&mut self, limit: Duration) -> usize {
-        let deadline = Instant::now() + limit;
-        loop {
-            self.pump_builds(None);
-            let building = self
-                .world
-                .entities()
-                .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building))
-                .count();
-            let left = deadline.saturating_duration_since(Instant::now());
-            if building == 0 || left.is_zero() {
-                return building;
+    /// The camera a capture uses: its own, or framing the whole world.
+    fn capture_camera(&self, spec: &FrameSpec) -> Camera {
+        match (spec.eye, spec.target) {
+            (Some(eye), Some(target)) => Camera { eye, target, fov_y_deg: spec.fov_y_deg },
+            _ => sight::auto_camera(&self.world, spec.fov_y_deg),
+        }
+    }
+
+    /// Model entities still building that the capture would show: drawn (visible, on a layer
+    /// it includes) and with their origin in view (with a margin: their bounds aren't known
+    /// until they are built).
+    fn building_in_frame(&self, spec: &FrameSpec) -> usize {
+        let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
+        self.world
+            .entities()
+            .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building))
+            .filter(|e| sight::in_frame(e, spec.include_ui))
+            .filter(|e| {
+                let p = view_proj.mul_vec4(e.world_position().extend(1.0));
+                p.w > 0.0 && p.x.abs() <= p.w * 1.5 && p.y.abs() <= p.w * 1.5
+            })
+            .count()
+    }
+
+    /// sight_frame: rendered now, or (when models it would show are still building) parked
+    /// until they are built or its wait runs out, while the engine goes on serving everyone.
+    fn handle_capture(&mut self, request: Request) {
+        let Request { command: Command::Frame(spec), session, reply, deadline } = request else {
+            unreachable!("only captures come here")
+        };
+        if self.building_in_frame(&spec) == 0 {
+            let _ = reply.send(self.capture(&spec, &session));
+            return;
+        }
+        // Answer before the caller's own deadline, building or not.
+        let until = (Instant::now() + CAPTURE_BUILD_WAIT).min(deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline));
+        self.capture_waiters.push(CaptureWaiter { spec, session, reply, until });
+    }
+
+    /// Renders parked captures whose models are built (or whose wait ran out).
+    fn serve_captures(&mut self) {
+        if self.capture_waiters.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let waiters = std::mem::take(&mut self.capture_waiters);
+        for w in waiters {
+            if now >= w.until || self.building_in_frame(&w.spec) == 0 {
+                let _ = w.reply.send(self.capture(&w.spec, &w.session));
+            } else {
+                self.capture_waiters.push(w);
             }
-            self.pump_builds(Some(left.min(Duration::from_millis(50))));
         }
     }
 
@@ -819,6 +871,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.serve_captures();
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -869,7 +922,7 @@ impl Engine {
         while !interrupt::requested() {
             // Wake for the next tick at the latest, so a hosted game keeps real time headless too.
             let mut wait = self.clock.until_next().min(Duration::from_millis(100));
-            if self.library.lock().in_flight() > 0 {
+            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
@@ -883,6 +936,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.serve_captures();
         }
         Ok(())
     }
@@ -895,6 +949,10 @@ impl Engine {
         }
         if matches!(request.command, Command::ModelBuild(_) | Command::ModelReload) {
             self.handle_model_call(request);
+            return;
+        }
+        if matches!(request.command, Command::Frame(_)) {
+            self.handle_capture(request);
             return;
         }
         let by = self.swarm.agent_name(&request.session);
@@ -967,7 +1025,7 @@ impl Engine {
                 Ok(reply) => ToolOutput::text(reply.to_pretty()),
                 Err(e) => world_error(&e),
             },
-            Command::Frame(spec) => self.capture(&spec, &request.session),
+            Command::Frame(_) => unreachable!("answered by handle_capture"),
             Command::Env(patch) => match self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)) {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
@@ -1283,13 +1341,10 @@ impl Engine {
             self.world.set_recording(Recording::Full);
             self.journal_game(Kind::GameFrame);
         }
-        // Models spawned just before still building: wait for them (bounded), so the capture
-        // shows what the world holds.
-        let building = self.wait_for_models(CAPTURE_BUILD_WAIT);
-        let camera = match (spec.eye, spec.target) {
-            (Some(eye), Some(target)) => sight::Camera { eye, target, fov_y_deg: spec.fov_y_deg },
-            _ => sight::auto_camera(&self.world, spec.fov_y_deg),
-        };
+        // (Parked by handle_capture while models it shows were building; what still is, is said.)
+        self.pump_builds(None);
+        let building = self.building_in_frame(spec);
+        let camera = self.capture_camera(spec);
         let (w, h) = (spec.width, spec.height);
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
