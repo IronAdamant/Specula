@@ -349,8 +349,6 @@ struct Engine {
     /// When builds nobody waits for were last cancelled, at which `World::model_drops`.
     last_unwanted: (Instant, u64),
     world: World,
-    /// Animation time zero.
-    started: Instant,
     /// The human's window camera; `None` = auto-frame the world.
     window_camera: Option<Camera>,
     /// Offscreen targets by size, most recently used last; at most [`MAX_CACHED_TARGETS`].
@@ -471,7 +469,6 @@ impl Engine {
             last_gc: (Instant::now(), 0),
             last_unwanted: (Instant::now(), 0),
             world,
-            started: Instant::now(),
             window_camera: None,
             targets: Vec::new(),
             frames_captured: 0,
@@ -570,6 +567,8 @@ impl Engine {
         self.last_advance = now;
         let _z = profile::zone("sim");
         for _ in 0..ticks {
+            // Animations set during the tick start at its time.
+            self.world.set_clock_s(self.clock.seconds());
             if let Some(game) = self.game.as_mut() {
                 let _t = profile::zone("tick");
                 let start = Instant::now();
@@ -584,6 +583,7 @@ impl Engine {
             let _h = profile::zone("tick_hash");
             self.record_tick_hash();
         }
+        self.world.set_clock_s(self.clock.seconds());
     }
 
     /// The game's per-frame update: input, camera, title.
@@ -707,8 +707,15 @@ impl Engine {
         self.leftovers = report.leftovers.clone();
     }
 
-    fn time_s(&self) -> f32 {
-        self.started.elapsed().as_secs_f32()
+    /// Render time when a capture gives none: the engine clock (whole ticks), so animation and
+    /// the lava lamp follow time_control and a capture's time is reproducible.
+    fn time_s(&self) -> f64 {
+        self.clock.seconds()
+    }
+
+    /// The window's render time: the clock plus the elapsed part of the next tick (smooth motion).
+    fn window_time_s(&self) -> f64 {
+        self.clock.seconds() + f64::from(self.clock.alpha()) / f64::from(self.clock.hz())
     }
 
     /// Builds meshes for new or changed lathe profiles and models and frees unused ones — only
@@ -939,8 +946,21 @@ impl Engine {
 
     /// The draws for a frame through `camera` at `size`, into `out`: meshes synced first.
     #[allow(clippy::too_many_arguments)]
-    fn build_draws(&mut self, camera: Camera, viewport_h: u32, include_ui: bool, lod: Option<usize>, window: bool, out: &mut Vec<DrawItem>) -> (LodStats, Vec<String>) {
+    /// The draw list (and, in `self.models`, the bone matrices of animated models posed at
+    /// render time `time_s`: take them with `take_bones`).
+    #[allow(clippy::too_many_arguments)]
+    fn build_draws(
+        &mut self,
+        camera: Camera,
+        viewport_h: u32,
+        include_ui: bool,
+        lod: Option<usize>,
+        window: bool,
+        time_s: f64,
+        out: &mut Vec<DrawItem>,
+    ) -> (LodStats, Vec<String>) {
         let errors = self.sync_meshes();
+        self.models.begin_frame(time_s);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         let lod = match (lod, window) {
             (Some(l), _) => LodChoice::Fixed(l),
@@ -1002,7 +1022,8 @@ impl Engine {
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
-            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, &mut draws);
+            let time_s = self.window_time_s();
+            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, time_s, &mut draws);
             self.pacing.draw_list.push(started.elapsed());
             for e in errors {
                 eprintln!("specula: {e}");
@@ -1010,11 +1031,13 @@ impl Engine {
             self.lod_window = stats;
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
-            let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            let bones = self.models.take_bones();
+            let frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
             let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
             presented?;
@@ -1494,7 +1517,8 @@ impl Engine {
         let (w, h) = (spec.width, spec.height);
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
-        let (stats, _) = self.build_draws(camera, h, spec.include_ui, spec.lod, false, &mut draws);
+        let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
+        let (stats, _) = self.build_draws(camera, h, spec.include_ui, spec.lod, false, time_s, &mut draws);
         self.lod_capture = stats;
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
         if stats.missing > 0 {
@@ -1517,13 +1541,14 @@ impl Engine {
                 specula_gpu::MAX_POINT_LIGHTS
             )));
         }
-        let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
-        let frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
+        let bones = self.models.take_bones();
+        let frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
 
         let rendered = {
             let _z = profile::zone("sight.render");
             self.render_offscreen(w, h, &frame)
         };
+        self.models.put_bones(bones);
         let rgba = match rendered {
             Ok(rgba) => rgba,
             Err(e) => return ToolOutput::error(e),
