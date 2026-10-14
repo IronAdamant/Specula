@@ -18,7 +18,7 @@ use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Outcome, Rejection, State, TICK_HZ};
 use specula::game::{Ctx, Frame, Game};
-use specula::effects::{BloomPatch, FogPatch, ShadowPatch, SkyPatch};
+use specula::effects::{BloomPatch, FogPatch, GradingFields, GradingPatch, ShadowPatch, SkyPatch, SsaoPatch};
 use specula::world::{EnvPatch, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -412,7 +412,31 @@ pub fn night(world: &mut World) {
             sun_scatter: Some(0.15),
             ..Default::default()
         }),
-        ..Default::default()
+        // The grade (STYLE.md): deeper, cooler shadows, highlights a touch warm (the fire's side),
+        // stone pulled towards neutral by negative vibrance while the rune-cyan, grave-green and
+        // fire families, already saturated, keep theirs; a soft vignette. No contrast boost: it
+        // pushes the glowing runes into the tone curve's shoulder, where they wash out.
+        grading: Some(GradingPatch {
+            fields: GradingFields {
+                enabled: Some(true),
+                vibrance: Some(-1.0),
+                lift: Some([-0.01, -0.004, 0.012]),
+                gain: Some([1.03, 1.0, 0.97]),
+                vignette: Some(0.25),
+                vignette_radius: Some(0.55),
+                ..Default::default()
+            },
+            lut: None,
+        }),
+        // Contact shadows where stones, walls and the dead meet the slab, at half resolution
+        // with 8 samples (the iGPU-safe setting).
+        ssao: Some(SsaoPatch {
+            enabled: Some(true),
+            radius: Some(0.6),
+            intensity: Some(1.0),
+            samples: Some(8),
+            resolution: Some(0.5),
+        }),
     };
     if let Err(e) = world.set_env(&patch) {
         eprintln!("sepulcra: lighting: {e}");
