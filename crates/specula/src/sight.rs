@@ -239,6 +239,7 @@ pub struct Subject {
 pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
     // Billboards turn to the camera: their subject is the card as drawn.
     let view = specula_gpu::view_2d(&view_proj.to_cols_array(), true);
+    let ortho = view.ortho;
     world
         .entities()
         .filter(|e| e.local_bounds().is_some() && in_frame(e, include_ui))
@@ -246,7 +247,10 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, includ
             let card = e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view));
             let clip = clip_box(e, card, view_proj);
             let screen = screen_rect(&clip, width, height);
-            let distance = clip.iter().map(|p| p.w).fold(f32::INFINITY, f32::min);
+            // Perspective: clip w is the view depth. Orthographic (w = 1): undo the reversed-Z
+            // depth range of `Projection::Ortho` instead.
+            let depth = |p: &Vec4| if ortho { NEAR + (1.0 - p.z / p.w) * (ORTHO_FAR - NEAR) } else { p.w };
+            let distance = clip.iter().map(depth).fold(f32::INFINITY, f32::min);
             let mut fields = vec![
                 ("id", Json::from(e.id)),
                 ("name", Json::from(e.name.as_str())),
@@ -573,6 +577,9 @@ mod tests {
         let [x, y, w, h] = rect(&s[0]);
         assert!((w as i64 - 40).abs() <= 2 && (h as i64 - 80).abs() <= 2, "the card faces the camera: {:?}", [x, y, w, h]);
         assert!((x as i64 - 180).abs() <= 1 && (y as i64 + h as i64 - 200).abs() <= 1, "feet at the centre: {:?}", [x, y, w, h]);
+        // The card faces the eye 14.14 m away (centre at depth 14.14; its near edge too).
+        let d = s[0].json.get("distance_m").and_then(Json::as_f64).unwrap();
+        assert!((d - 200f64.sqrt()).abs() < 0.05, "orthographic distance along the view axis: {d}");
     }
 
     #[test]
