@@ -412,6 +412,7 @@ impl Engine {
         let (ids, entities) = sight::dense_ids(&owners);
         let target = self.offscreen_target(w, h)?;
         let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s);
+        self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
@@ -728,6 +729,8 @@ impl Engine {
             ("subjects_on_screen", Json::from(on_screen)),
             ("subjects", Json::arr(r.subjects.iter().map(|s| s.json.clone()))),
             ("warnings", Json::Arr(warnings.clone())),
+            // Structured problems (objects), next to the plain-text warnings.
+            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
         ]);
         if let Some(o) = &r.overlays {
             packet.set("overlays", o.clone());

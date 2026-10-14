@@ -7,6 +7,8 @@
 pub const PASS_SCENE: &str = "scene";
 /// The sun's shadow map: every cascade's depth-only draws.
 pub const PASS_SHADOW: &str = "shadow";
+/// Screen-space ambient occlusion: the occlusion from the scene's depth and its two blur passes.
+pub const PASS_SSAO: &str = "ssao";
 /// Bloom: bright-pass downsampling and the upsampling blur chain.
 pub const PASS_BLOOM: &str = "post_bloom";
 /// HDR → display: bloom added back, exposure already applied, ACES and dithering.

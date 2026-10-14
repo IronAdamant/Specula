@@ -72,5 +72,6 @@ void main() {
         float t = fog_transmittance(f, dir, 0.0, true);
         c = mix(fog_radiance(f, dir), c, t);
     }
-    out_color = vec4(display(c), 1.0);
+    // HDR alpha is SSAO's ambient luminance (src/ssao.rs): the sky has none.
+    out_color = vec4(display(c), HDR ? 0.0 : 1.0);
 }

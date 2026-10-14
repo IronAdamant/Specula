@@ -5,7 +5,8 @@
 
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 
-// Must match `PostPush` in src/post.rs.
+// Must match `PostPush` in src/post.rs (a pass with its own push block defines CUSTOM_PUSH).
+#ifndef CUSTOM_PUSH
 layout(push_constant) uniform Push {
     Frame frame;
     uint src;    // texture slot read
@@ -15,6 +16,7 @@ layout(push_constant) uniform Push {
     uint pad;
     vec4 params; // pass-specific
 } pc;
+#endif
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;

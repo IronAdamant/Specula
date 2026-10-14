@@ -607,6 +607,7 @@ impl GpuInner {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            ssao: crate::ssao::ssao_extent(env, extent),
         };
         let res = declare_frame(&mut t.graph, &shape);
         // Sight's ID passes come after the frame's own, so the image is the same with or without.
@@ -636,6 +637,7 @@ impl GpuInner {
             scratch: &self.scratch,
             upload,
             ids: id_frame,
+            textures: &self.textures,
         };
         let graph = &mut t.graph;
         let ran = run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| {
@@ -1028,9 +1030,10 @@ mod tests {
             extent,
             prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COPY_BIT },
             fin: Final::TransferSrc,
-            mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false },
+            mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false, ..Default::default() },
             shadow: Some(shadow_desc(&ShadowSettings { enabled: true, resolution, ..Default::default() })),
             overlay: false,
+            ssao: None,
         };
         let mut g = FrameGraph::new(77);
         let shadow_view = |gpu: &GpuInner| gpu.descriptors.shadow_view;

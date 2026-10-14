@@ -86,7 +86,7 @@ const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "
 pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
-    "background", "shadow", "bloom", "fxaa", "sky", "fog",
+    "background", "shadow", "bloom", "fxaa", "sky", "fog", "grading", "ssao",
 ];
 
 /// Rejects keys of `args` (an object, or null for none) that are in none of `allowed`.
@@ -979,6 +979,8 @@ pub(crate) fn parse_env(args: &Json) -> Result<EnvPatch, String> {
         fxaa: bool_arg(args, "fxaa")?,
         sky: effect_arg(args, "sky", crate::effects::SkyPatch::parse)?,
         fog: effect_arg(args, "fog", crate::effects::FogPatch::parse)?,
+        grading: effect_arg(args, "grading", crate::effects::GradingPatch::parse)?,
+        ssao: effect_arg(args, "ssao", crate::effects::SsaoPatch::parse)?,
     };
     world::check_env(&patch).map_err(value_error)?;
     Ok(patch)
@@ -1668,7 +1670,9 @@ fn definitions() -> Vec<ToolDef> {
                           the biggest on-screen subjects first (max_subjects; subjects: \"on_screen\" or \"visible\" \
                           filters); the full list is saved at packet_path. If models in view are still building, it \
                           waits for them (up to 10 s, other calls go on meanwhile) and then renders the world as it \
-                          is at that moment; packet 'models' and 'warnings' say what wasn't drawn."
+                          is at that moment; packet 'models' and 'warnings' (text) say what wasn't drawn; \
+                          'problems' lists effects that can't apply as {error, message, ...} (a grading LUT \
+                          that failed to load). A grading LUT edited on disk is reloaded before each capture."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1732,7 +1736,13 @@ fn definitions() -> Vec<ToolDef> {
                           threshold, knee, intensity, levels} glow on bright/emissive light; fxaa (edge smoothing); \
                           sky {enabled, zenith, horizon, ground, intensity, horizon_sharpness, disc_size_deg, \
                           disc_intensity, glow} gradient with a sun/moon disc; fog {enabled, color, density, falloff, \
-                          height, start_distance, sun_scatter} height fog. Each costs GPU time: check perf_frame."
+                          height, start_distance, sun_scatter} height fog; grading {enabled, temperature, tint, contrast, \
+                          saturation, vibrance, lift, gamma, gain ([r,g,b] shadows/midtones/highlights), lut (PNG \
+                          strip N*N x N under the assets root, \"\" for none; checked now, reloaded when the file \
+                          changes; a LUT that stops loading is listed in 'problems'), lut_strength, vignette, \
+                          vignette_radius, grain} colour grading (neutral values change nothing); ssao {enabled, \
+                          radius m, intensity, samples 4..16, resolution 0.25..1} ambient occlusion in creases \
+                          (ambient light only). Each costs GPU time: check perf_frame."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1749,6 +1759,8 @@ fn definitions() -> Vec<ToolDef> {
                     ("fxaa", Json::obj([("type", Json::from("boolean")), ("description", Json::from("Anti-aliasing post pass"))])),
                     ("sky", object("Analytic sky: {enabled, zenith, horizon, ground (colours), intensity, horizon_sharpness, disc_size_deg, disc_intensity, glow}")),
                     ("fog", object("Height fog: {enabled, color, density, falloff, height, start_distance, sun_scatter}")),
+                    ("grading", object("Colour grading: {enabled, temperature -1..1 (+ warm), tint -1..1 (+ magenta), contrast 0..4, saturation 0..4, vibrance -1..1, lift [r,g,b] -1..1, gamma [r,g,b] 0.1..10, gain [r,g,b] 0..4, lut (PNG path under the assets root, 32x32x32 as 1024x32), lut_strength 0..1, vignette 0..1, vignette_radius 0..0.99, grain 0..4}")),
+                    ("ssao", object("Ambient occlusion: {enabled, radius 0.05..10 m, intensity 0..4, samples 4..16, resolution 0.25..1 of the frame}")),
                 ],
                 &[],
             ),
@@ -1773,7 +1785,8 @@ fn definitions() -> Vec<ToolDef> {
             description: "Performance of the last frames (foundation F3): GPU ms per pass, CPU record/submit, draw \
                           calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
                           heap budgets, frame pacing (mean/p95/max), simulation tick cost, CPU frame time and heap, \
-                          and `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}. \
+                          `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}, and \
+                          `problems` listing effects that can't apply as {error, message, ...}. \
                           Budgets come from perf.toml (per adapter kind). The window and the last capture are \
                           reported separately."
                 .into(),
@@ -2085,6 +2098,13 @@ mod tests {
         assert_eq!((e.sun_intensity, e.tonemap, e.background), (Some(0.0), Some(true), Some([0.0; 3])));
         assert!(parse_env(&args(r#"{"sun_direction":[0,0,0]}"#)).is_err());
         assert!(parse_env(&args(r#"{"tonemap":1}"#)).is_err());
+        let e = parse_env(&args(r#"{"grading":{"saturation":0.9,"lut":"luts/a.png"},"ssao":{"enabled":true}}"#)).unwrap();
+        let g = e.grading.unwrap();
+        assert_eq!((g.fields.saturation, g.lut.map(|p| p.as_str().to_owned())), (Some(0.9), Some("luts/a.png".into())));
+        assert_eq!(e.ssao.unwrap().enabled, Some(true));
+        for bad in [r#"{"grading":{"lut":"../x.png"}}"#, r#"{"grading":{"gamma":[0,1,1]}}"#, r#"{"ssao":{"radius":50}}"#, r#"{"ssao":1}"#] {
+            assert!(parse_env(&args(bad)).is_err(), "{bad} should be rejected");
+        }
         assert!(matches!(parse_view(&args(r#"{"auto":true}"#)), Ok(None)));
         assert!(matches!(parse_view(&args(r#"{"eye":[0,1,2],"target":[0,0,0]}"#)), Ok(Some(_))));
         assert!(parse_view(&args("{}")).is_err());
