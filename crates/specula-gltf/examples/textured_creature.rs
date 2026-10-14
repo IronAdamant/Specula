@@ -54,7 +54,8 @@ fn textures() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             base.extend_from_slice(&[(255.0 * tone) as u8, (238.0 * tone) as u8, (205.0 * tone) as u8, 255]);
             let (xl, xr, yu, yd) = ((x + N - 1) % N, (x + 1) % N, (y + N - 1) % N, (y + 1) % N);
             let (dx, dy) = (height(xr, y) - height(xl, y), height(x, yd) - height(x, yu));
-            let n = [-dx * 3.0, -dy * 3.0, 1.0];
+            // Tangent space: +X right, +Y towards the image top (glTF), so the slope along +Y is −dy.
+            let n = [-dx * 3.0, dy * 3.0, 1.0];
             let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             normal.extend_from_slice(&[(127.5 + 127.5 * n[0] / l) as u8, (127.5 + 127.5 * n[1] / l) as u8, (127.5 + 127.5 * n[2] / l) as u8, 255]);
             // Glossy where raised (polished bone), rough in the pits; no metal.

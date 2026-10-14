@@ -1986,7 +1986,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
             if p.indices.is_empty() {
                 continue;
             }
-            let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: None };
+            let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
             let mesh = match gpu.upload_mesh_with(&p.vertices, &p.indices, &streams) {
                 Ok(m) => m,
                 Err(e) => {
@@ -2009,13 +2009,15 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
 }
 
 /// One part of a mesh alone (re-indexed): vertices, indices, mean vertex colour (sRGB), and its
-/// skin stream (rigged meshes) and UVs (when asked and present).
+/// skin stream (rigged meshes), UVs (when asked and present) and the file's tangents (when every
+/// vertex of the part has one; otherwise the GPU generates them).
 pub struct PartMesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub mean: [f32; 3],
     pub skin: Option<Vec<SkinVertex>>,
     pub uvs: Option<Vec<[f32; 2]>>,
+    pub tangents: Option<Vec<[f32; 4]>>,
 }
 
 /// Part `i` of `m` alone (see [`PartMesh`]).
@@ -2026,7 +2028,8 @@ pub fn part_mesh(m: &MeshData, i: usize, with_uvs: bool) -> PartMesh {
     let mut indices = Vec::with_capacity(src.len());
     let skinned = m.is_skinned();
     let with_uvs = with_uvs && m.uvs.len() == m.positions.len();
-    let (mut skin, mut uvs) = (Vec::new(), Vec::new());
+    let with_tangents = with_uvs && m.tangents.len() == m.positions.len();
+    let (mut skin, mut uvs, mut tangents) = (Vec::new(), Vec::new(), Vec::new());
     let mut sum = [0.0f64; 3];
     for &v in src {
         let slot = &mut remap[v as usize];
@@ -2044,6 +2047,9 @@ pub fn part_mesh(m: &MeshData, i: usize, with_uvs: bool) -> PartMesh {
             if with_uvs {
                 uvs.push(m.uvs[v]);
             }
+            if with_tangents {
+                tangents.push(m.tangents[v]);
+            }
         }
         indices.push(*slot);
     }
@@ -2054,6 +2060,7 @@ pub fn part_mesh(m: &MeshData, i: usize, with_uvs: bool) -> PartMesh {
         mean: sum.map(|s| (s / n / 255.0) as f32),
         skin: skinned.then_some(skin),
         uvs: with_uvs.then_some(uvs),
+        tangents: (with_tangents && tangents.iter().all(|t| t[0] != 0.0 || t[1] != 0.0 || t[2] != 0.0)).then_some(tangents),
     }
 }
 

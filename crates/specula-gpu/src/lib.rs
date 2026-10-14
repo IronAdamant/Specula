@@ -335,8 +335,10 @@ pub struct MeshStreams<'a> {
     pub skin: Option<&'a [SkinVertex]>,
     /// Texture coordinates (origin at the image's top left, as glTF): the mesh can be textured.
     pub uvs: Option<&'a [[f32; 2]]>,
-    /// Object-space tangents (xyz) and bitangent sign (w = ±1), for normal maps. Generated from
-    /// the UVs when `None` ([`generate_tangents`]); ignored without UVs.
+    /// Object-space tangents (xyz) and bitangent sign (w = ±1), for normal maps, in glTF's
+    /// convention (bitangent = cross(normal, xyz) × w, pointing along −V: a normal map's +Y is
+    /// the image's top). Generated from the UVs when `None` ([`generate_tangents`]); ignored
+    /// without UVs.
     pub tangents: Option<&'a [[f32; 4]]>,
 }
 

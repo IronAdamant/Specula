@@ -521,6 +521,8 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
     let mut parts: Vec<Part> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut tangents: Vec<[f32; 4]> = Vec::new();
+    let mut has_tangent = false;
     for (pi, prim) in doc.meshes[mi].primitives.iter().enumerate() {
         let path = format!("meshes[{mi}].primitives[{pi}]");
         if prim.has_targets {
@@ -570,10 +572,23 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
             }
             None => None,
         };
-        if let Some(a) = attr("TANGENT") {
-            expect_type(doc, a, &ap("TANGENT"), &[ElemType::Vec4])?;
-            floats(doc, g.bufs, a, &ap("TANGENT"))?;
-        }
+        let tangent = match attr("TANGENT") {
+            Some(a) => {
+                expect_type(doc, a, &ap("TANGENT"), &[ElemType::Vec4])?;
+                Some(floats(doc, g.bufs, a, &ap("TANGENT"))?)
+            }
+            None => None,
+        };
+        // A tangent per vertex (unit xyz, w ±1); zero marks "none" (the renderer generates them).
+        let tangent_of = |i: usize| -> [f32; 4] {
+            let Some(t) = &tangent else { return [0.0; 4] };
+            let v = [t[4 * i], t[4 * i + 1], t[4 * i + 2]];
+            let l = math3::length(v);
+            if !(l.is_finite() && l > 1e-6) {
+                return [0.0; 4];
+            }
+            [v[0] / l, v[1] / l, v[2] / l, if t[4 * i + 3] < 0.0 { -1.0 } else { 1.0 }]
+        };
         let uv = match attr("TEXCOORD_0") {
             Some(a) => {
                 expect_type(doc, a, &ap("TEXCOORD_0"), &[ElemType::Vec2])?;
@@ -676,7 +691,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
         // Append the vertices (shared when another primitive used the same accessors).
         let first_index = indices.len() as u32;
         if let Some(nv) = &normals {
-            let mut key: Vec<u64> = ["POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0", "JOINTS_0", "WEIGHTS_0", "JOINTS_1", "WEIGHTS_1"].iter().map(|k| attr(k).map_or(u64::MAX, |a| a as u64)).collect();
+            let mut key: Vec<u64> = ["POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0", "JOINTS_0", "WEIGHTS_0", "JOINTS_1", "WEIGHTS_1", "TANGENT"].iter().map(|k| attr(k).map_or(u64::MAX, |a| a as u64)).collect();
             key.extend(mult.iter().map(|m| m.to_bits() as u64));
             key.push(tex.as_ref().map_or(u64::MAX, |t| t.0 as u64));
             let base = match cache.get(&key) {
@@ -701,6 +716,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                         }
                         inst.mesh.colors.push(color_of(i));
                         uvs.push(uv.as_ref().map_or([0.0; 2], |u| [u[2 * i], u[2 * i + 1]]));
+                        tangents.push(tangent_of(i));
                         if let Some(v) = &infl {
                             inst.infl.push(v[i]);
                         }
@@ -740,6 +756,8 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                     inst.mesh.normals.push(nn);
                     inst.mesh.colors.push(color_of(i));
                     uvs.push(uv.as_ref().map_or([0.0; 2], |u| [u[2 * i], u[2 * i + 1]]));
+                    // Flat-shaded corners keep no tangent (their normal is not the file's).
+                    tangents.push([0.0; 4]);
                     if let Some(v) = &infl {
                         inst.infl.push(v[i]);
                     }
@@ -747,6 +765,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
             }
         }
         has_uv |= uv.is_some();
+        has_tangent |= tangent.is_some() && normals.is_some();
         let count = indices.len() as u32 - first_index;
         if count > 0 {
             parts.push(Part { material: mats.list[mat].name.clone(), first_index, index_count: count });
@@ -759,6 +778,9 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
     inst.mesh.parts = parts;
     if has_uv {
         inst.mesh.uvs = uvs;
+    }
+    if has_tangent {
+        inst.mesh.tangents = tangents;
     }
     Ok(inst)
 }
@@ -1488,6 +1510,9 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
                     all_det_neg &= m.determinant() < 0.0;
                     inst.mesh.positions[v] = m.apply_point(inst.mesh.positions[v]);
                     inst.mesh.normals[v] = m.apply_normal(inst.mesh.normals[v]);
+                    if let Some(tg) = inst.mesh.tangents.get_mut(v) {
+                        *tg = specula_model::mesh::transform_tangent(&m, *tg, m.determinant() < 0.0);
+                    }
                 }
                 if all_det_neg && !inst.mesh.positions.is_empty() {
                     for t in inst.mesh.indices.chunks_exact_mut(3) {

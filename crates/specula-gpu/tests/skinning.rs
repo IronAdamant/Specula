@@ -274,6 +274,66 @@ fn textured_quads_sample_mips_and_masks_on_every_adapter() {
     }
 }
 
+/// The glTF normal-map convention, derived from the spec rather than the code: UV (0, 0) is the
+/// image's top-left texel, and a tangent-space normal's +Y (green) leans towards the image's top
+/// row. A quad facing +Z whose image top is world +Y, mapped with a texel leaning 45° to the
+/// image top (128, 218, 218), must be lit more by a sun above (+Y) than by a sun below; a flat
+/// texel (128, 128, 255) must be lit the same by both. Checked with generated tangents and with
+/// explicit glTF tangents ((1, 0, 0, +1): bitangent = cross(+Z, +X) = +Y, the image top).
+fn normal_map_convention_on(adapter: AdapterPreference, label: &str) {
+    let test = format!("normal_map_convention[{label}]");
+    let Some(mut gpu) = gpu_or_skip(&test, adapter) else { return };
+    let n = [0.0, 0.0, 1.0];
+    let v = vec![
+        Vertex::new([-1.0, 1.0, 0.0], n),  // image top left
+        Vertex::new([1.0, 1.0, 0.0], n),   // image top right
+        Vertex::new([1.0, -1.0, 0.0], n),  // image bottom right
+        Vertex::new([-1.0, -1.0, 0.0], n), // image bottom left
+    ];
+    let uvs = [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let idx = [0, 3, 2, 0, 2, 1];
+    let tangents = [[1.0f32, 0.0, 0.0, 1.0]; 4];
+    let generated = gpu.upload_mesh_with(&v, &idx, &MeshStreams { uvs: Some(&uvs), ..Default::default() }).unwrap();
+    let explicit = gpu.upload_mesh_with(&v, &idx, &MeshStreams { uvs: Some(&uvs), tangents: Some(&tangents), ..Default::default() }).unwrap();
+    let texture = |gpu: &mut Gpu, texel: [u8; 4]| {
+        let px: Vec<u8> = std::iter::repeat_n(texel, 16).flatten().collect();
+        gpu.upload_material_texture(4, 4, TextureFormat::Rgba8Unorm, &px, TextureSampler::default()).unwrap()
+    };
+    let up = texture(&mut gpu, [128, 218, 218, 255]);
+    let flat = texture(&mut gpu, [128, 128, 255, 255]);
+    let target = gpu.create_target(64, 64).unwrap();
+    let view = look_at_rh([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let view_proj = mul(&perspective_vk_reverse_z(50f32.to_radians(), 1.0, 0.05), &view);
+    let lit = |gpu: &mut Gpu, mesh, map, sun: [f32; 3]| {
+        let mut d = DrawItem::new(mesh, IDENTITY, [1.0; 4]);
+        d.surface.textures = MaterialTextures { normal: Some(map), ..MaterialTextures::NONE };
+        let environment = Environment { sun_direction: sun, ..Default::default() };
+        gpu.render(target, &FrameDesc { view_proj, draws: &[d], reverse_z: true, environment, ..Default::default() }).unwrap();
+        pixel(&gpu.read_rgba8(target).unwrap(), 64, 32, 32)[0]
+    };
+    let (above, below) = ([0.0, 0.6, 0.8], [0.0, -0.6, 0.8]);
+    for (which, mesh) in [("generated tangents", generated), ("glTF tangents", explicit)] {
+        let (a, b) = (lit(&mut gpu, mesh, up, above), lit(&mut gpu, mesh, up, below));
+        eprintln!("{test}: {which}: leaning-up texel lit {a} by a sun above, {b} by a sun below");
+        assert!(a > b + 40, "{test}: {which}: a normal leaning to the image top faces a sun above ({a} vs {b})");
+        let (fa, fb) = (lit(&mut gpu, mesh, flat, above), lit(&mut gpu, mesh, flat, below));
+        assert!(fa.abs_diff(fb) <= 1, "{test}: {which}: a flat map is symmetric ({fa} vs {fb})");
+    }
+    let errors = validation_errors(&test, gpu);
+    assert!(errors.is_empty(), "{test}: {errors:#?}");
+}
+
+#[test]
+fn normal_maps_follow_the_gltf_convention_on_every_adapter() {
+    let Ok(adapters) = specula_gpu::enumerate_adapters() else {
+        eprintln!("normal_map_convention: SKIPPED — Vulkan is not available");
+        return;
+    };
+    for a in adapters {
+        normal_map_convention_on(AdapterPreference::Index(a.index), &format!("{}", a.index));
+    }
+}
+
 /// Keep `Gpu` in the imports used when every test skips.
 #[allow(dead_code)]
 fn _uses(_: &Gpu) {}

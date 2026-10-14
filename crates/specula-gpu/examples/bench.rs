@@ -229,7 +229,8 @@ fn tile_textures() -> [Vec<u8>; 3] {
             base.extend_from_slice(&[tone, (tone as f32 * 0.95) as u8, (tone as f32 * 0.88) as u8, 255]);
             let dx = height(x + 1, y) - height(x + N - 1, y);
             let dy = height(x, y + 1) - height(x, y + N - 1);
-            let n = normalize([-dx * 2.0, -dy * 2.0, 1.0]);
+            // +Y is the image top (glTF): the slope along +Y is −dy.
+            let n = normalize([-dx * 2.0, dy * 2.0, 1.0]);
             normal.extend_from_slice(&[((n[0] * 0.5 + 0.5) * 255.0) as u8, ((n[1] * 0.5 + 0.5) * 255.0) as u8, ((n[2] * 0.5 + 0.5) * 255.0) as u8, 255]);
             mr.extend_from_slice(&[255, (255.0 * (0.5 + 0.5 * h)) as u8, if h < 0.5 { 200 } else { 0 }, 255]);
         }

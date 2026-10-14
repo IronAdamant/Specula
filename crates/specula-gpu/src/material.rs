@@ -84,12 +84,15 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-/// Per-vertex tangents for normal mapping: xyz along +U on the surface (orthogonal to the
-/// normal, unit length), w the bitangent's sign (bitangent = cross(normal, tangent) × w, along
-/// +V), from the triangles' UV gradients, area-weighted (the MikkTSpace idea without its seam
-/// splitting: vertices shared across a UV mirror get an average). Vertices without a usable UV
-/// gradient get any unit vector orthogonal to their normal. Lengths must agree (`positions`,
-/// `normals`, `uvs`); indices out of range are skipped.
+/// Per-vertex tangents for normal mapping, in glTF's convention: xyz along +U on the surface
+/// (orthogonal to the normal, unit length), w the bitangent's sign, where bitangent =
+/// cross(normal, tangent) × w points along **−V**. glTF UVs have v growing down the image while
+/// a normal map's +Y (green) means "towards the image's top row", so the bitangent follows −V
+/// (what MikkTSpace gives when fed glTF's flipped V, as glTF viewers do). From the triangles' UV
+/// gradients, area-weighted (the MikkTSpace idea without its seam splitting: vertices shared
+/// across a UV mirror get an average). Vertices without a usable UV gradient get any unit vector
+/// orthogonal to their normal. Lengths must agree (`positions`, `normals`, `uvs`); indices out
+/// of range are skipped.
 pub fn generate_tangents(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u32]) -> Vec<[f32; 4]> {
     let n = positions.len().min(normals.len()).min(uvs.len());
     let mut tan = vec![[0.0f32; 3]; positions.len()];
@@ -134,7 +137,8 @@ pub fn generate_tangents(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f
                 let l = dot(o, o).sqrt().max(1e-20);
                 o.map(|v| v / l)
             };
-            let w = if dot(cross(nrm, t), bit[i]) < 0.0 { -1.0 } else { 1.0 };
+            // `bit` follows +V; the bitangent must follow −V.
+            let w = if dot(cross(nrm, t), bit[i]) > 0.0 { -1.0 } else { 1.0 };
             [t[0], t[1], t[2], w]
         })
         .collect()
@@ -192,12 +196,13 @@ mod tests {
         let t = generate_tangents(&positions, &normals, &uvs, &indices);
         for v in &t {
             assert!((v[0] - 1.0).abs() < 1e-6 && v[1].abs() < 1e-6 && v[2].abs() < 1e-6, "{v:?}");
-            // cross(+Y, +X) = −Z, but V runs along +Z: the bitangent sign is −1.
-            assert_eq!(v[3], -1.0);
+            // V runs along +Z, so the bitangent (−V) must point along −Z: cross(+Y, +X) = −Z
+            // already does, so the sign is +1.
+            assert_eq!(v[3], 1.0);
         }
-        // Mirrored V: the sign flips.
+        // Mirrored V (along −Z): the bitangent must point along +Z, so the sign flips.
         let flipped: Vec<[f32; 2]> = uvs.iter().map(|uv| [uv[0], 1.0 - uv[1]]).collect();
-        assert!(generate_tangents(&positions, &normals, &flipped, &indices).iter().all(|v| v[3] == 1.0));
+        assert!(generate_tangents(&positions, &normals, &flipped, &indices).iter().all(|v| v[3] == -1.0));
         // No UV gradient: still a unit vector orthogonal to the normal.
         let t = generate_tangents(&positions, &normals, &[[0.5, 0.5]; 4], &indices);
         for v in &t {
