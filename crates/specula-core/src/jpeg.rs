@@ -322,6 +322,17 @@ impl<'a> Bits<'a> {
 
     #[inline]
     fn fill(&mut self) {
+        // Fast path: four bytes at once when none of them is 0xFF (no stuffing, no marker).
+        if self.n <= 32 && !self.at_marker {
+            if let Some(b) = self.d.get(self.pos..self.pos + 4) {
+                if !b.contains(&0xFF) {
+                    let w = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as u64;
+                    self.acc |= w << (32 - self.n);
+                    self.n += 32;
+                    self.pos += 4;
+                }
+            }
+        }
         while self.n <= 56 {
             let mut byte = 0u8;
             if !self.at_marker {
@@ -802,7 +813,17 @@ impl Decoder<'_> {
                     for bx in 0..c.cbw {
                         let i = (by * c.bw + bx) * 64;
                         block.copy_from_slice(&c.coeffs[i..i + 64]);
-                        idct_block(&block, &q, &mut plane[by * 8 * stride + bx * 8..], stride);
+                        let dst = &mut plane[by * 8 * stride + bx * 8..];
+                        if block[1..].iter().all(|&v| v == 0) {
+                            // DC only (common in smooth areas): what the full IDCT's shortcuts give.
+                            let dc = (block[0] as i64 * q[0] as i64) << PASS1_BITS;
+                            let v = (descale(dc, PASS1_BITS + 3) + 128).clamp(0, 255) as u8;
+                            for r in 0..8 {
+                                dst[r * stride..r * stride + 8].fill(v);
+                            }
+                        } else {
+                            idct_block(&block, &q, dst, stride);
+                        }
                     }
                 }
             }
@@ -822,45 +843,59 @@ impl Decoder<'_> {
             _ => self.adobe.unwrap_or(0),
         };
         let mut rgba = vec![0u8; w * h * 4];
-        // Per component: source column of each output column, and row mapping.
-        let xmaps: Vec<Vec<usize>> = frame.comps.iter().map(|c| (0..w).map(|x| x * c.h / frame.hmax).collect()).collect();
-        let mut row: [&[u8]; 4] = [&[], &[], &[], &[]];
+        // Per component: source column of each output column (subsampled components only).
+        let xmaps: Vec<Option<Vec<usize>>> = frame.comps.iter().map(|c| (c.h != frame.hmax).then(|| (0..w).map(|x| x * c.h / frame.hmax).collect())).collect();
+        let mut expanded: Vec<Vec<u8>> = frame.comps.iter().map(|_| vec![0u8; w]).collect();
         for y in 0..h {
+            // Each component's samples for this row at full width (replicated when subsampled).
             for (k, c) in frame.comps.iter().enumerate() {
-                let sy = y * c.v / frame.vmax;
-                let (p, stride) = &planes[k];
-                row[k] = &p[sy * stride..(sy + 1) * stride];
+                if let Some(map) = &xmaps[k] {
+                    let sy = y * c.v / frame.vmax;
+                    let (p, stride) = &planes[k];
+                    let src = &p[sy * stride..(sy + 1) * stride];
+                    for (d, &sx) in expanded[k].iter_mut().zip(map) {
+                        *d = src[sx];
+                    }
+                }
+            }
+            let mut row: [&[u8]; 4] = [&[], &[], &[], &[]];
+            for (k, c) in frame.comps.iter().enumerate() {
+                row[k] = if xmaps[k].is_some() {
+                    &expanded[k]
+                } else {
+                    let sy = y * c.v / frame.vmax;
+                    let (p, stride) = &planes[k];
+                    &p[sy * stride..sy * stride + w]
+                };
             }
             let out = &mut rgba[y * w * 4..(y + 1) * w * 4];
+            let px = out.chunks_exact_mut(4);
             match (ncomp, transform) {
                 (1, _) => {
-                    for (x, px) in out.chunks_exact_mut(4).enumerate() {
-                        let g = row[0][x];
+                    for (px, &g) in px.zip(row[0]) {
                         px.copy_from_slice(&[g, g, g, 255]);
                     }
                 }
                 (3, 0) => {
-                    for (x, px) in out.chunks_exact_mut(4).enumerate() {
-                        px.copy_from_slice(&[row[0][xmaps[0][x]], row[1][xmaps[1][x]], row[2][xmaps[2][x]], 255]);
+                    for (((px, &r), &g), &b) in px.zip(row[0]).zip(row[1]).zip(row[2]) {
+                        px.copy_from_slice(&[r, g, b, 255]);
                     }
                 }
                 (3, _) => {
-                    for (x, px) in out.chunks_exact_mut(4).enumerate() {
-                        let [r, g, b] = ycc_to_rgb(row[0][xmaps[0][x]], row[1][xmaps[1][x]], row[2][xmaps[2][x]]);
+                    for (((px, &y), &cb), &cr) in px.zip(row[0]).zip(row[1]).zip(row[2]) {
+                        let [r, g, b] = ycc_to_rgb(y, cb, cr);
                         px.copy_from_slice(&[r, g, b, 255]);
                     }
                 }
                 (_, 2) => {
-                    for (x, px) in out.chunks_exact_mut(4).enumerate() {
-                        let [r, g, b] = ycc_to_rgb(row[0][xmaps[0][x]], row[1][xmaps[1][x]], row[2][xmaps[2][x]]);
-                        let k = row[3][xmaps[3][x]];
+                    for ((((px, &y), &cb), &cr), &k) in px.zip(row[0]).zip(row[1]).zip(row[2]).zip(row[3]) {
+                        let [r, g, b] = ycc_to_rgb(y, cb, cr);
                         px.copy_from_slice(&[mul8(255 - r, k), mul8(255 - g, k), mul8(255 - b, k), 255]);
                     }
                 }
                 _ => {
-                    for (x, px) in out.chunks_exact_mut(4).enumerate() {
-                        let k = row[3][xmaps[3][x]];
-                        px.copy_from_slice(&[mul8(row[0][xmaps[0][x]], k), mul8(row[1][xmaps[1][x]], k), mul8(row[2][xmaps[2][x]], k), 255]);
+                    for ((((px, &c), &m), &yy), &k) in px.zip(row[0]).zip(row[1]).zip(row[2]).zip(row[3]) {
+                        px.copy_from_slice(&[mul8(c, k), mul8(m, k), mul8(yy, k), 255]);
                     }
                 }
             }
@@ -876,13 +911,38 @@ fn mul8(a: u8, b: u8) -> u8 {
     ((t + (t >> 8)) >> 8) as u8
 }
 
-/// JFIF YCbCr → RGB in 16-bit fixed point (as IJG libjpeg's `jdcolor.c`).
+/// Per-chroma-value terms of the YCbCr → RGB conversion (16-bit fixed point, as IJG libjpeg's
+/// `jdcolor.c`): R = Y + CR_R[cr], G = Y + (CB_G[cb] + CR_G[cr]) >> 16, B = Y + CB_B[cb].
+struct YccTables {
+    cr_r: [i32; 256],
+    cb_b: [i32; 256],
+    cb_g: [i32; 256],
+    cr_g: [i32; 256],
+}
+
+const YCC: YccTables = ycc_tables();
+
+const fn ycc_tables() -> YccTables {
+    let mut t = YccTables { cr_r: [0; 256], cb_b: [0; 256], cb_g: [0; 256], cr_g: [0; 256] };
+    let mut i = 0;
+    while i < 256 {
+        let c = i as i32 - 128;
+        t.cr_r[i] = (91_881 * c + 32_768) >> 16;
+        t.cb_b[i] = (116_130 * c + 32_768) >> 16;
+        t.cb_g[i] = -22_554 * c;
+        t.cr_g[i] = -46_802 * c + 32_768;
+        i += 1;
+    }
+    t
+}
+
+/// JFIF YCbCr → RGB.
 #[inline]
 fn ycc_to_rgb(y: u8, cb: u8, cr: u8) -> [u8; 3] {
-    let (y, cb, cr) = (y as i32, cb as i32 - 128, cr as i32 - 128);
-    let r = y + ((91_881 * cr + 32_768) >> 16);
-    let g = y + ((-22_554 * cb - 46_802 * cr + 32_768) >> 16);
-    let b = y + ((116_130 * cb + 32_768) >> 16);
+    let y = y as i32;
+    let r = y + YCC.cr_r[cr as usize];
+    let g = y + ((YCC.cb_g[cb as usize] + YCC.cr_g[cr as usize]) >> 16);
+    let b = y + YCC.cb_b[cb as usize];
     [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8]
 }
 

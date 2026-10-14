@@ -561,6 +561,30 @@ fn limits_are_enforced() {
 }
 
 #[test]
+fn channels_specula_cannot_hold_are_dropped_with_a_warning() {
+    let mut g = Gltf::new();
+    let (p, n, i) = quad(&mut g);
+    let mesh = g.mesh(&[("POSITION", p), ("NORMAL", n)], Some(i), None, None);
+    let node = g.node(vec![("name", Json::Str("flip".into())), ("mesh", Json::from(mesh))]);
+    let times = g.floats(&[0.0, 1.0], "SCALAR");
+    let scales = g.floats(&[1.0, 1.0, 1.0, -1.0, 1.0, 1.0], "VEC3");
+    let moves = g.floats(&[0.0, 0.0, 0.0, 0.0, 5.0, 0.0], "VEC3");
+    let ch = |s: u32, path: &str| Json::obj([("sampler", Json::from(s)), ("target", Json::obj([("node", Json::from(node)), ("path", Json::Str(path.into()))]))]);
+    g.push(
+        "animations",
+        Json::obj([
+            ("samplers", Json::arr([Json::obj([("input", Json::from(times)), ("output", Json::from(scales))]), Json::obj([("input", Json::from(times)), ("output", Json::from(moves))])])),
+            ("channels", Json::arr([ch(0, "scale"), ch(1, "translation")])),
+        ]),
+    );
+    g.scene(&[node]);
+    let imp = import(&g);
+    assert_eq!(codes(&imp), vec!["channel_out_of_range"]);
+    assert_eq!(imp.clips[0].tracks.len(), 1);
+    assert_eq!(imp.clips[0].tracks[0].channel, specula_anim::Channel::Translation);
+}
+
+#[test]
 fn zero_scale_nodes_and_the_warning_cap() {
     let mut g = Gltf::new();
     let (p, n, i) = quad(&mut g);

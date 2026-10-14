@@ -66,6 +66,12 @@ pub fn encode_baseline(width: u32, height: u32, rgba: &[u8], quality: u8) -> Vec
 
 /// Encodes RGBA8 pixels (top row first) as a JPEG.
 pub fn encode(width: u32, height: u32, rgba: &[u8], opts: &EncodeOptions) -> Result<Vec<u8>, JpegError> {
+    encode_with(width, height, rgba, opts, true)
+}
+
+/// [`encode`]; `interleaved: false` writes a sequential image as one scan per component
+/// (legal, rare in the wild, and a separate decoder path worth testing).
+pub(super) fn encode_with(width: u32, height: u32, rgba: &[u8], opts: &EncodeOptions, interleaved: bool) -> Result<Vec<u8>, JpegError> {
     let fail = |m: String| JpegError::new(JpegErrorCode::Limit, 0, m);
     if !(1..=65535).contains(&width) || !(1..=65535).contains(&height) {
         return Err(fail(format!("{width}x{height}: JPEG dimensions are 1..=65535")));
@@ -195,6 +201,8 @@ pub fn encode(width: u32, height: u32, rgba: &[u8], opts: &EncodeOptions) -> Res
             s.push(ScanDef { comps: vec![c], ss: 1, se: 63, ah: 1, al: 0 });
         }
         s
+    } else if !interleaved {
+        (0..nc).map(|c| ScanDef { comps: vec![c], ss: 0, se: 63, ah: 0, al: 0 }).collect()
     } else {
         vec![ScanDef { comps: all, ss: 0, se: 63, ah: 0, al: 0 }]
     };

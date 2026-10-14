@@ -1004,6 +1004,17 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
                 }
             });
         }
+        // Values Specula clips can't hold (huge offsets, negative or huge scales) drop the track.
+        let max_off = specula_anim::clip::MAX_OFFSET_M;
+        let bad = rel.iter().position(|v| match r.channel {
+            Channel::Translation => v[..3].iter().any(|x| x.abs() > max_off),
+            Channel::Scale => v[..3].iter().any(|x| !(0.0..=100.0).contains(x)),
+            Channel::Rotation => false,
+        });
+        if let Some(k) = bad {
+            warn(w, "channel_out_of_range", &r.path, format!("key {k} is {:?} relative to the rest pose; Specula clips hold offsets within {max_off} m and scales 0..=100; channel dropped", &rel[k][..3]));
+            continue;
+        }
         *keys_total += times.len();
         if *keys_total > opts.limits.max_total_keys {
             return Err(gerr(C::Limit, &r.path, format!("more than {} animation keys in total", opts.limits.max_total_keys)).with_numbers(*keys_total as f64, opts.limits.max_total_keys as f64));

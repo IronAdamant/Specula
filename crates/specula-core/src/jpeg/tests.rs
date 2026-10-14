@@ -128,6 +128,9 @@ fn progressive_decodes_bit_identical_to_baseline() {
                     let a = decode(&encode(w, h, &src, &base).unwrap()).unwrap();
                     let b = decode(&encode(w, h, &src, &EncodeOptions { progressive: true, ..base }).unwrap()).unwrap();
                     assert!(a.rgba == b.rgba, "{w}x{h} q{quality} {sub:?} ri{restart}");
+                    // One sequential scan per component decodes the same too.
+                    let c = decode(&super::encode::encode_with(w, h, &src, &base, false).unwrap()).unwrap();
+                    assert!(a.rgba == c.rgba, "non-interleaved {w}x{h} q{quality} {sub:?} ri{restart}");
                 }
             }
         }
