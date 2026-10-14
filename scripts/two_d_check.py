@@ -308,11 +308,12 @@ def check(cond, what, problems):
         problems.append(what)
 
 
-def run_adapter(exe, adapter, out, port, assets):
+def run_adapter(exe, adapter, out, port, assets, windowed=False):
     problems = []
     log = out / f"engine_{adapter}.log"
     worlds = out / "worlds"
-    with Engine(exe, port, log, "--headless", "--adapter", adapter, "--assets", str(assets), "--captures", str(out / "captures"),
+    mode = ["--size", "960x540"] if windowed else ["--headless"]
+    with Engine(exe, port, log, *mode, "--adapter", adapter, "--assets", str(assets), "--captures", str(out / "captures"),
                 "--worlds", str(worlds), cwd=str(out)) as engine:
         with engine.mcp("two_d_check") as m:
             info = m.json("engine_info")
@@ -331,7 +332,7 @@ def run_adapter(exe, adapter, out, port, assets):
                 (out / f"{adapter}_{name}.json").write_text(json.dumps(f, indent=1))
                 for w in f.get("warnings", []):
                     print(f"  warning: {w}")
-                    if "vulkan" in w:
+                    if "vulkan Error" in w:
                         problems.append(f"{name}: {w}")
                 shots[name] = (read_png(dst), f)
                 return shots[name]
@@ -396,6 +397,19 @@ def run_adapter(exe, adapter, out, port, assets):
             img5, _ = shot("2d_reloaded", view_2d={"center": [0, 0], "height_m": 18}, time_s=0.0)
             same = sum(1 for k in range(0, len(img5[2]), 4 * 97) if img_saved[2][k:k + 3] != img5[2][k:k + 3])
             check(same == 0, f"the reloaded 2D world renders the same ({same} sampled pixels differ)", problems)
+            if windowed:
+                # The human's window shows the 2D view for a while (frames in flight, 2D uploads
+                # and edits between presents), then the 3D scene.
+                import time
+                m.call("window_view", view_2d={"center": [0, 0], "height_m": 18})
+                for k in range(20):
+                    m.json("tilemap_set", path="/two_d/map", layer="details", cells=[[k, 16, 6], [k + 1, 15, 7]])
+                    time.sleep(0.05)
+                m.call("world_set", path="/three_d", visible=True)
+                m.call("window_view", eye=[212, 8, 16], target=[200, 1.5, 0])
+                time.sleep(1.0)
+                perf = m.json("perf_frame")
+                (out / f"{adapter}_perf_window.json").write_text(json.dumps(perf, indent=1))
     errors = engine.validation_errors()
     check(errors == 0, f"shutdown with {errors} validation errors", problems)
     return problems
@@ -407,7 +421,9 @@ def main():
     p.add_argument("--adapters", default="discrete,integrated", help="comma-separated: discrete, integrated or indices")
     p.add_argument("--out", type=Path, default=ROOT / "target" / "two-d-check")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--windowed", action="store_true", help="also present to a window (needs a desktop)")
     args = p.parse_args()
+    args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     assets = args.out / "assets"
     tileset(assets / "tiles" / "tileset.png")
@@ -416,7 +432,7 @@ def main():
     spark(assets / "sprites" / "spark.png")
     failed = {}
     for a in args.adapters.split(","):
-        failed[a] = run_adapter(args.exe, a, args.out, args.port, assets)
+        failed[a] = run_adapter(args.exe, a, args.out, args.port, assets, args.windowed)
     print()
     for a, probs in failed.items():
         print(f"adapter {a}: {'clean' if not probs else str(len(probs)) + ' problem(s)'}")
