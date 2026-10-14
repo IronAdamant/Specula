@@ -14,6 +14,7 @@ pub mod claims;
 pub mod effects;
 pub mod game;
 pub mod journal;
+mod luts;
 mod meshes;
 pub mod models;
 mod perf;
@@ -349,6 +350,8 @@ struct Engine {
     /// When builds nobody waits for were last cancelled, at which `World::model_drops`.
     last_unwanted: (Instant, u64),
     world: World,
+    /// The grading LUT the world names, loaded from the assets root.
+    luts: luts::Luts,
     /// Animation time zero.
     started: Instant,
     /// The human's window camera; `None` = auto-frame the world.
@@ -450,6 +453,7 @@ impl Engine {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
+        let luts = luts::Luts::new(library.root());
         let library = Arc::new(SharedLibrary::new(library));
         let mut world = World::default();
         world.set_recording(Recording::Full);
@@ -459,6 +463,7 @@ impl Engine {
             meshes,
             lathes: LatheMeshes::default(),
             library,
+            luts,
             models: GpuModels::default(),
             lod_levels: BTreeMap::new(),
             lod_window: LodStats::default(),
@@ -1010,7 +1015,8 @@ impl Engine {
             self.lod_window = stats;
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
-            let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            self.luts.apply(&mut self.gpu, self.world.env(), &mut frame);
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
             let present = profile::zone("present");
@@ -1153,7 +1159,12 @@ impl Engine {
                 Err(e) => world_error(&e),
             },
             Command::Frame(_) => unreachable!("answered by handle_capture"),
-            Command::Env(patch) => match self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)) {
+            Command::Env(patch) => match patch
+                .grading
+                .and_then(|g| g.lut)
+                .map_or(Ok(()), |lut| self.luts.check(&lut))
+                .and_then(|()| self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)))
+            {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
                     env.set("journal", Json::from(seq));
@@ -1518,7 +1529,8 @@ impl Engine {
             )));
         }
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
-        let frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
+        let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
+        self.luts.apply(&mut self.gpu, self.world.env(), &mut frame);
 
         let rendered = {
             let _z = profile::zone("sight.render");

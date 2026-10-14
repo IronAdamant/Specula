@@ -412,6 +412,7 @@ pub fn night(world: &mut World) {
             sun_scatter: Some(0.15),
             ..Default::default()
         }),
+        ..Default::default()
     };
     if let Err(e) = world.set_env(&patch) {
         eprintln!("sepulcra: lighting: {e}");

@@ -941,6 +941,9 @@ mod tests {
         let mut w = World::default();
         w.set_env(&EnvPatch { sun_color: Some([0.123_456_79, 1.0 / 3.0, 0.0]), tonemap: Some(true), ..Default::default() })
             .unwrap();
+        let effects = r#"{"grading":{"enabled":true,"temperature":-0.15,"lift":[-0.01,0,0.0234567],"lut":"luts/night.png"},
+                          "ssao":{"enabled":true,"radius":0.6,"samples":6}}"#;
+        w.set_env(&crate::tools::parse_env(&Json::parse(effects).unwrap()).unwrap()).unwrap();
         let mut slab = SpawnSpec::new(Shape::Group);
         slab.name = Some("slab".into());
         slab.position = Vec3::new(0.1, -0.0, 1.0e-7);
@@ -1014,6 +1017,8 @@ mod tests {
         let saved = files(&w);
         let back = reload(&saved).unwrap();
         assert_eq!(back.state_hash(), w.state_hash());
+        assert_eq!(back.env(), w.env(), "lighting and effects (grading, its LUT path, SSAO) come back exactly");
+        assert_eq!(back.env().grading_lut.as_str(), "luts/night.png");
         assert_eq!(back.len(), w.len());
         assert_eq!(back.next_id(), w.next_id());
         for e in w.entities() {
