@@ -35,7 +35,7 @@ const uint GRADE_VIGNETTE = 32u;
 const uint GRADE_GRAIN = 64u;
 const uint GRADE_LUT_SRGB = 128u;
 const uint GRADE_GAMMA = 256u;
-const uint GRADE_DISPLAY = GRADE_LGG | GRADE_LUT | GRADE_VIGNETTE | GRADE_GRAIN;
+const uint GRADE_DISPLAY = GRADE_SATURATION | GRADE_LGG | GRADE_LUT | GRADE_VIGNETTE | GRADE_GRAIN;
 
 uint pcg(uint v) {
     uint state = v * 747796405u + 2891336453u;
@@ -110,30 +110,38 @@ void main() {
         float y = max(luma(c), 1e-10);
         c *= exp2(pc.balance.w * log2(y / 0.18)) * 0.18 / y;
     }
+    float amount = 1.0; // saturation and vibrance, applied on display values below
     if ((steps & GRADE_SATURATION) != 0u) {
-        float y = luma(c);
-        // Saturation as the eye sees it (on roughly gamma-encoded values, not linear light).
+        // How saturated the light is, as the eye sees it (on roughly gamma-encoded scene light:
+        // the tone curve would make a bright rune and dim stone look alike). Vibrance spares
+        // saturated colours; applied after tone mapping, where a bright colour's dim channel isn't
+        // amplified by the curve.
         vec3 p = sqrt(max(c, vec3(0.0)));
         float hi = max(p.r, max(p.g, p.b));
         float sat = (hi - min(p.r, min(p.g, p.b))) / max(hi, 1e-6);
-        float muted = (1.0 - sat) * (1.0 - sat) * (1.0 - sat); // vibrance spares saturated colours
-        float amount = pc.lift.w * max(1.0 + pc.gamma.w * muted, 0.0);
-        c = max(vec3(y) + (c - vec3(y)) * amount, vec3(0.0));
+        float muted = (1.0 - sat) * (1.0 - sat) * (1.0 - sat);
+        amount = pc.lift.w * max(1.0 + pc.gamma.w * muted, 0.0);
     }
     bool tonemap = pc.frame.sky.w > 0.5;
     if (tonemap) {
         c = aces(c);
     }
-    // Display-referred grading. Lift/gamma/gain and grain work on gamma-2 encoded values
+    // Display-referred grading. Saturation, lift/gamma/gain and grain work on gamma-2 encoded values
     // (sqrt: close to the display's encoding, and cheap); the LUT on exact sRGB values, the
     // encoding LUT strips are authored in; the vignette scales linear light by its square.
     if ((steps & GRADE_DISPLAY) != 0u) {
         c = clamp(c, 0.0, 1.0);
-        if ((steps & GRADE_LGG) != 0u) {
+        if ((steps & (GRADE_SATURATION | GRADE_LGG)) != 0u) {
             vec3 e = sqrt(c);
-            e = max(pc.gain.xyz * (e + pc.lift.xyz * (1.0 - e)), vec3(0.0));
-            if ((steps & GRADE_GAMMA) != 0u) {
-                e = pow(e, pc.gamma.xyz);
+            if ((steps & GRADE_SATURATION) != 0u) {
+                float y = luma(e);
+                e = max(vec3(y) + (e - vec3(y)) * amount, vec3(0.0));
+            }
+            if ((steps & GRADE_LGG) != 0u) {
+                e = max(pc.gain.xyz * (e + pc.lift.xyz * (1.0 - e)), vec3(0.0));
+                if ((steps & GRADE_GAMMA) != 0u) {
+                    e = pow(e, pc.gamma.xyz);
+                }
             }
             c = e * e;
         }

@@ -597,8 +597,8 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
     if with("grading") {
         // The Sepulcra grade (games/sepulcra-app night()).
         let g = &mut environment.grading;
-        (g.enabled, g.contrast, g.vibrance, g.lift, g.gain, g.vignette, g.vignette_radius) =
-            (true, 1.08, -1.0, [-0.006, 0.0, 0.014], [1.04, 1.01, 0.97], 0.25, 0.55);
+        (g.enabled, g.vibrance, g.lift, g.gain, g.vignette, g.vignette_radius) =
+            (true, -1.0, [-0.01, -0.004, 0.012], [1.03, 1.0, 0.97], 0.25, 0.55);
     }
     let overlay: &[OverlayQuad] = if off("overlay") { &[] } else { &scene.overlay };
     for i in 0..WARMUP_FRAMES + args.frames {
