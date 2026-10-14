@@ -14,8 +14,9 @@ use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
-    CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Limit, Material, MemoryKind, PipelineCacheLoad, PipelineStats,
-    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_BLOOM, PASS_FXAA, PASS_OVERLAY, PASS_SCENE, PASS_SHADOW, PASS_TONEMAP,
+    CacheRejection, DrawItem, DrawStats, ErrorReason, FrameDesc, GpuError, IdKind, Limit, Material, MemoryKind, PipelineCacheLoad,
+    PipelineStats, SkinVertex, TextureId, Vertex, MAX_BONE_MATRICES, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_BLOOM, PASS_FXAA,
+    PASS_OVERLAY, PASS_SCENE, PASS_SHADOW, PASS_TONEMAP,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -24,7 +25,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 14] = [
+static SHADERS: [(&str, &[u8]); 22] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -37,6 +38,14 @@ static SHADERS: [(&str, &[u8]); 14] = [
     ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
     ("overlay.vert", include_bytes!("../shaders/overlay.vert.spv")),
     ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
+    ("mesh_skin.vert", include_bytes!("../shaders/mesh_skin.vert.spv")),
+    ("mesh_tex.vert", include_bytes!("../shaders/mesh_tex.vert.spv")),
+    ("mesh_skin_tex.vert", include_bytes!("../shaders/mesh_skin_tex.vert.spv")),
+    ("mesh_tex.frag", include_bytes!("../shaders/mesh_tex.frag.spv")),
+    ("shadow_skin.vert", include_bytes!("../shaders/shadow_skin.vert.spv")),
+    ("shadow_mask.vert", include_bytes!("../shaders/shadow_mask.vert.spv")),
+    ("shadow_skin_mask.vert", include_bytes!("../shaders/shadow_skin_mask.vert.spv")),
+    ("shadow_mask.frag", include_bytes!("../shaders/shadow_mask.frag.spv")),
     ("ssao.frag", include_bytes!("../shaders/ssao.frag.spv")),
     ("ssao_blur.frag", include_bytes!("../shaders/ssao_blur.frag.spv")),
 ];
@@ -55,8 +64,16 @@ enum Shader {
     SkyFrag = 9,
     OverlayVert = 10,
     OverlayFrag = 11,
-    SsaoFrag = 12,
-    SsaoBlurFrag = 13,
+    MeshSkinVert = 12,
+    MeshTexVert = 13,
+    MeshSkinTexVert = 14,
+    MeshTexFrag = 15,
+    ShadowSkinVert = 16,
+    ShadowMaskVert = 17,
+    ShadowSkinMaskVert = 18,
+    ShadowMaskFrag = 19,
+    SsaoFrag = 20,
+    SsaoBlurFrag = 21,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -74,7 +91,7 @@ pub const FEAT_FOG: u32 = 2;
 pub const FEAT_HDR: u32 = 4;
 /// The opaque pipeline: Lit only (the other materials' code is specialized away).
 pub const FEAT_OPAQUE: u32 = 8;
-/// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh.frag`).
+/// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh_frag.glsl`).
 pub const FEAT_BLENDED: u32 = 16;
 /// Screen-space ambient occlusion: the HDR scene's alpha carries the luminance of each pixel's
 /// ambient light (the tonemap pass scales that part by the occlusion); see `ssao.rs`.
@@ -86,6 +103,48 @@ pub const COMPOSITE_SSAO: u32 = 2;
 
 fn composite_features(mode: PostMode) -> u32 {
     (if mode.grading { COMPOSITE_GRADING } else { 0 }) | if mode.ssao { COMPOSITE_SSAO } else { 0 }
+}
+
+/// Skinned pipelines (their fragment stage leaves the lava lamp's ray marcher out).
+pub const FEAT_SKINNED: u32 = 64;
+/// Vertex stream variants of the scene pipelines: (skinned, textured). Blended materials are
+/// never textured (a textured mesh drawn blended uses the untextured variant). Shadow casters
+/// come in the same four: (skinned, alpha-masked).
+const OPAQUE_VARIANTS: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
+const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
+
+/// Which stream variants of the pipelines exist. The plain ones are built at start; skinned and
+/// textured ones on a worker thread when the first mesh with those streams is uploaded (or by
+/// `prepare_variants` while loading), so a game without skinned or textured meshes never pays
+/// for compiling them and no frame ever waits for one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Variants {
+    pub skinned: bool,
+    pub textured: bool,
+}
+
+impl Variants {
+    fn has(self, skinned: bool, textured: bool) -> bool {
+        (!skinned || self.skinned) && (!textured || self.textured)
+    }
+}
+
+/// The scene pipelines built for `format`, of the stream variants `include` accepts.
+fn scene_keys(format: VkFormat, include: impl Fn(bool, bool) -> bool) -> Vec<PipelineKey> {
+    let mut keys = Vec::new();
+    for blended in [false, true] {
+        let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
+        for features in FEATURE_SETS {
+            for &(skinned, textured) in variants.iter().filter(|(s, t)| include(*s, *t)) {
+                keys.push(PipelineKey::Mesh { format, blended, features, skinned, textured });
+                if format == HDR_FORMAT {
+                    // SSAO always renders the scene in HDR (its ambient luminance rides in alpha).
+                    keys.push(PipelineKey::Mesh { format, blended, features: features | FEAT_SSAO, skinned, textured });
+                }
+            }
+        }
+    }
+    keys
 }
 
 /// Feature combinations built for every colour format.
@@ -108,6 +167,8 @@ pub struct PushConstants {
     pub material: u32,
     /// Glass: 0 = back faces, 1 = front faces.
     pub pass: u32,
+    /// Device address of this frame's bone matrices (skinned draws read their palette there).
+    pub bones: u64,
 }
 
 /// Per-draw data as the shaders read it; must match `Draw` in `shaders/mesh.*` (std430).
@@ -122,7 +183,15 @@ pub struct DrawRecord {
     pub color2: [f32; 4],
     /// emissive, metallic, roughness, specular.
     pub params: [f32; 4],
+    /// Texture slots + 1 (0 = none): base | normal << 16, metallic-roughness | emissive << 16;
+    /// the first bone matrix; flags (`EXT_*`) | alpha cutoff (unorm8) << 8.
+    pub ext: [u32; 4],
 }
+
+/// [`DrawRecord::ext`]`[3]`: alpha masking on (cutoff in bits 8..16).
+pub const EXT_ALPHA_MASK: u32 = 1;
+/// [`DrawRecord::ext`]`[3]`: `color2` holds an emissive colour of the material's own.
+pub const EXT_EMISSIVE_COLOR: u32 = 2;
 
 /// One point light as the shader reads it.
 #[repr(C)]
@@ -304,18 +373,42 @@ pub fn camera_position(view_proj: &[f32; 16]) -> [f32; 3] {
 /// The shader-side record of a draw (colours converted to linear, parameters clamped).
 #[cfg(test)]
 pub fn draw_record(draw: &DrawItem) -> DrawRecord {
-    draw_record_with(draw, &mut |rgb| rgb.map(srgb_to_linear))
+    draw_record_with(draw, &mut |rgb| rgb.map(srgb_to_linear), &|_| None)
 }
 
-fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 3]) -> DrawRecord {
+fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 3], slot: &impl Fn(TextureId) -> Option<u32>) -> DrawRecord {
     let s = &draw.surface;
     let c = linear([draw.color[0], draw.color[1], draw.color[2]]);
-    let c2 = linear(s.color2);
+    let mut c2 = linear(s.color2);
+    let mut color2_a = s.seed;
+    let emissive = s.emissive.max(0.0);
+    let mut ext = [0, 0, draw.skin.unwrap_or(0), 0];
+    let t = &s.textures;
+    if draw.material == Material::Lit && *t != crate::MaterialTextures::NONE {
+        // Slot + 1 in 16 bits (slots are below MAX_TEXTURE_SLOTS = 4096).
+        let id = |t: Option<TextureId>| t.and_then(slot).map_or(0, |s| (s + 1) & 0xffff);
+        ext[0] = id(t.base_color) | id(t.normal) << 16;
+        ext[1] = id(t.metallic_roughness) | id(t.emissive) << 16;
+        // Lit reads color2 only as a textured material: the emissive colour and normal scale.
+        color2_a = if t.normal_scale.is_finite() { t.normal_scale } else { 1.0 };
+        // An emissive texture without a colour of its own is lit by white (× `emissive`).
+        if let Some(e) = t.emissive_color.or(t.emissive.map(|_| [1.0; 3])) {
+            let l = linear(e);
+            c2 = [l[0] * emissive, l[1] * emissive, l[2] * emissive];
+            ext[3] |= EXT_EMISSIVE_COLOR;
+        } else {
+            c2 = [0.0; 3];
+        }
+        if t.alpha_cutoff > 0.0 {
+            ext[3] |= EXT_ALPHA_MASK | ((t.alpha_cutoff.min(1.0) * 255.0).round() as u32) << 8;
+        }
+    }
     DrawRecord {
         model: draw.model,
         color: [c[0], c[1], c[2], draw.color[3]],
-        color2: [c2[0], c2[1], c2[2], s.seed],
-        params: [s.emissive.max(0.0), s.metallic.clamp(0.0, 1.0), s.roughness.clamp(0.0, 1.0), s.specular.max(0.0)],
+        color2: [c2[0], c2[1], c2[2], color2_a],
+        params: [emissive, s.metallic.clamp(0.0, 1.0), s.roughness.clamp(0.0, 1.0), s.specular.max(0.0)],
+        ext,
     }
 }
 
@@ -369,30 +462,38 @@ impl LinearCache {
 }
 
 /// Fill `out` with the records of `plan.entries`, in order. Runs of equal looks (common in
-/// batches) convert once; other colours come from `cache`.
-pub fn build_records(frame: &FrameDesc, plan: &Plan, cache: &mut LinearCache, out: &mut Vec<DrawRecord>) {
+/// batches) convert once; other colours come from `cache`; texture ids become `textures`' slots.
+pub fn build_records(frame: &FrameDesc, plan: &Plan, textures: &Textures, cache: &mut LinearCache, out: &mut Vec<DrawRecord>) {
     out.clear();
     out.reserve(plan.entries.len());
     let mut last: Option<(&DrawItem, DrawRecord)> = None;
+    let slot = |t: TextureId| textures.slot(t);
     for &(i, _) in &plan.entries {
         let d = &frame.draws[i];
         let record = match last {
-            Some((prev, r)) if prev.color == d.color && prev.surface == d.surface => DrawRecord { model: d.model, ..r },
-            _ => draw_record_with(d, &mut |rgb| cache.get(rgb)),
+            Some((prev, r)) if prev.color == d.color && prev.surface == d.surface && prev.material == d.material => {
+                DrawRecord { model: d.model, ext: [r.ext[0], r.ext[1], d.skin.unwrap_or(0), r.ext[3]], ..r }
+            }
+            _ => draw_record_with(d, &mut |rgb| cache.get(rgb), &slot),
         };
         last = Some((d, record));
         out.push(record);
     }
 }
 
-/// Append one record per shadow caster entry (only the model matters to the shadow pass).
-pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, out: &mut Vec<DrawRecord>) {
+/// Append one record per shadow caster entry: its model, its palette, and for alpha-masked
+/// casters the base colour slot and cutoff (all the shadow pass reads).
+pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, textures: &Textures, out: &mut Vec<DrawRecord>) {
     out.reserve(shadow.entries.len());
-    out.extend(shadow.entries.iter().map(|&i| DrawRecord {
-        model: frame.draws[i].model,
-        color: [0.0; 4],
-        color2: [0.0; 4],
-        params: [0.0; 4],
+    out.extend(shadow.entries.iter().map(|&i| {
+        let d = &frame.draws[i];
+        let mut ext = [0, 0, d.skin.unwrap_or(0), 0];
+        if crate::shadow::masked(d) {
+            let t = &d.surface.textures;
+            ext[0] = t.base_color.and_then(|id| textures.slot(id)).map_or(0, |s| (s + 1) & 0xffff);
+            ext[3] = EXT_ALPHA_MASK | ((t.alpha_cutoff.min(1.0) * 255.0).round() as u32) << 8;
+        }
+        DrawRecord { model: d.model, color: [0.0; 4], color2: [0.0; 4], params: [0.0; 4], ext }
     }));
 }
 
@@ -529,10 +630,11 @@ impl FrameUpload {
         }
     }
 
-    /// Write the frame's data, records and overlay quads (after the records), all within the
-    /// reserved capacity.
-    pub fn write(&self, data: &FrameData, records: &[DrawRecord], overlay: &[OverlayRecord]) {
-        let units = records.len() + overlay_units(overlay.len(), RECORD_SIZE as usize);
+    /// Write the frame's data, records, overlay quads (after the records) and bone matrices
+    /// (after the overlay, see [`FrameUpload::bones_address`]), all within the reserved capacity.
+    pub fn write(&self, data: &FrameData, records: &[DrawRecord], overlay: &[OverlayRecord], bones: &[[f32; 16]]) {
+        let overlay_end = records.len() + overlay_units(overlay.len(), RECORD_SIZE as usize);
+        let units = overlay_end + bone_units(bones.len());
         assert!(units <= self.sizing.capacity as usize, "reserve() before write()");
         // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE bytes
         // that the GPU no longer reads (see `reserve`); both copies stay in bounds and the types
@@ -550,7 +652,18 @@ impl FrameUpload {
                 base.add(RECORDS_OFFSET as usize + std::mem::size_of_val(records)),
                 std::mem::size_of_val(overlay),
             );
+            ptr::copy_nonoverlapping(
+                bones.as_ptr() as *const u8,
+                base.add(RECORDS_OFFSET as usize + overlay_end * RECORD_SIZE as usize),
+                std::mem::size_of_val(bones),
+            );
         }
+    }
+
+    /// Device address of the bone matrices written after `records` draw records and `overlay`
+    /// overlay quads (16-byte aligned: records start 256-aligned and are 128 bytes).
+    pub fn bones_address(&self, records: usize, overlay: usize) -> u64 {
+        self.records_address() + ((records + overlay_units(overlay, RECORD_SIZE as usize)) as u64) * RECORD_SIZE
     }
 
     pub fn frame_address(&self) -> u64 {
@@ -570,16 +683,58 @@ impl FrameUpload {
     }
 }
 
+/// Record units (of [`DrawRecord`]'s size) that `bones` matrices take in the upload buffer.
+pub fn bone_units(bones: usize) -> usize {
+    (bones * size_of::<[f32; 16]>()).div_ceil(RECORD_SIZE as usize)
+}
+
 pub const PUSH_STAGES: VkFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-/// An uploaded mesh: vertices at offset 0, `u32` indices at `index_offset`, one device-local buffer.
+/// One vertex of a mesh's surface stream (binding 2): UV and tangent (snorm16 xyz + sign).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceVertex {
+    pub uv: [f32; 2],
+    pub tangent: [i16; 4],
+}
+
+/// An uploaded mesh in one device-local buffer: vertices at offset 0, the optional skin
+/// ([`SkinVertex`]) and surface ([`SurfaceVertex`]) streams after them, `u32` indices at
+/// `index_offset`.
 pub struct Mesh {
     pub buffer: Buffer,
     pub index_offset: u64,
     pub index_count: u32,
     /// Object-space bounding sphere, for frustum culling.
     pub bounds: Bounds,
+    /// Offset of the skin stream (vertex binding 1).
+    pub skin_offset: Option<u64>,
+    /// Offset of the surface stream (vertex binding 2).
+    pub surface_offset: Option<u64>,
+    /// Bone matrices a skinned draw's palette needs: the highest joint the shader reads + 1
+    /// (joints without weight are stored as 0).
+    pub joints: u32,
 }
+
+impl Mesh {
+    /// Bind this mesh's index buffer and every vertex stream it has (bindings 0, 1, 2).
+    ///
+    /// # Safety
+    /// `cmd` is recording and the buffer outlives the commands.
+    pub unsafe fn bind(&self, dev: &Device, cmd: VkCommandBuffer) {
+        let offset: VkDeviceSize = 0;
+        (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &self.buffer.handle, &offset);
+        if let Some(o) = self.skin_offset {
+            (dev.fns.cmd_bind_vertex_buffers)(cmd, 1, 1, &self.buffer.handle, &o);
+        }
+        if let Some(o) = self.surface_offset {
+            (dev.fns.cmd_bind_vertex_buffers)(cmd, 2, 1, &self.buffer.handle, &o);
+        }
+        (dev.fns.cmd_bind_index_buffer)(cmd, self.buffer.handle, self.index_offset, VK_INDEX_TYPE_UINT32);
+    }
+}
+
+const _: () = assert!(size_of::<SkinVertex>() == 8 && size_of::<SurfaceVertex>() == 16);
 
 /// Identity of the device a pipeline cache blob must come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -616,10 +771,12 @@ pub fn check_cache_header(blob: &[u8], id: &CacheIdentity) -> Result<(), CacheRe
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PipelineKey {
     /// Scene draws into `format` (+ D32 depth, compare op dynamic): opaque or blended, with the
-    /// specialization constant `features` (`FEAT_*`).
-    Mesh { format: VkFormat, blended: bool, features: u32 },
-    /// Depth-only shadow casters into a D16 layer.
-    Shadow,
+    /// specialization constant `features` (`FEAT_*`), for skinned meshes (skin stream) and
+    /// textured ones (surface stream; opaque only).
+    Mesh { format: VkFormat, blended: bool, features: u32, skinned: bool, textured: bool },
+    /// Depth-only shadow casters into a D16 layer (skinned or not; alpha-masked ones read their
+    /// UVs and cut by the base colour's alpha).
+    Shadow { skinned: bool, masked: bool },
     /// Bloom downsample (and bright pass) into an HDR level.
     BloomDown,
     /// Bloom upsample: the blur below, tent-filtered, plus this level.
@@ -644,10 +801,11 @@ pub enum PipelineKey {
 enum VertexInput {
     /// None (full-screen triangles, overlay quads).
     None,
-    /// [`Vertex`]: position, normal, colour.
-    Mesh,
-    /// [`Vertex`]'s position only.
-    Position,
+    /// [`Vertex`]: position, normal, colour; plus the skin stream (binding 1) and the surface
+    /// stream (binding 2) when asked.
+    Mesh { skinned: bool, textured: bool },
+    /// [`Vertex`]'s position only (plus the skin stream, and the UVs of the surface stream).
+    Position { skinned: bool, uv: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -682,11 +840,19 @@ struct PipelineDesc {
 impl PipelineKey {
     fn desc(self) -> PipelineDesc {
         match self {
-            PipelineKey::Mesh { format, blended, features } => PipelineDesc {
-                vert: Shader::MeshVert,
-                frag: Some(Shader::MeshFrag),
-                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if blended { FEAT_BLENDED } else { FEAT_OPAQUE },
-                vertex: VertexInput::Mesh,
+            PipelineKey::Mesh { format, blended, features, skinned, textured } => PipelineDesc {
+                vert: match (skinned, textured) {
+                    (false, false) => Shader::MeshVert,
+                    (true, false) => Shader::MeshSkinVert,
+                    (false, true) => Shader::MeshTexVert,
+                    (true, true) => Shader::MeshSkinTexVert,
+                },
+                frag: Some(if textured { Shader::MeshTexFrag } else { Shader::MeshFrag }),
+                spec: features
+                    | if format == HDR_FORMAT { FEAT_HDR } else { 0 }
+                    | if blended { FEAT_BLENDED } else { FEAT_OPAQUE }
+                    | if skinned { FEAT_SKINNED } else { 0 },
+                vertex: VertexInput::Mesh { skinned, textured },
                 color: Some(format),
                 depth: Some(DEPTH_FORMAT),
                 depth_test: true,
@@ -700,11 +866,16 @@ impl PipelineKey {
                 },
                 depth_bias: false,
             },
-            PipelineKey::Shadow => PipelineDesc {
-                vert: Shader::ShadowVert,
-                frag: None,
+            PipelineKey::Shadow { skinned, masked } => PipelineDesc {
+                vert: match (skinned, masked) {
+                    (false, false) => Shader::ShadowVert,
+                    (true, false) => Shader::ShadowSkinVert,
+                    (false, true) => Shader::ShadowMaskVert,
+                    (true, true) => Shader::ShadowSkinMaskVert,
+                },
+                frag: masked.then_some(Shader::ShadowMaskFrag),
                 spec: 0,
-                vertex: VertexInput::Position,
+                vertex: VertexInput::Position { skinned, uv: masked },
                 color: None,
                 depth: Some(SHADOW_FORMAT),
                 depth_test: true,
@@ -783,15 +954,99 @@ pub struct Pipelines {
     warm_at: Option<u32>,
     create_ms: f64,
     cache_load: PipelineCacheLoad,
+    /// Stream variants built (see [`Variants`]).
+    pub variants: Variants,
+    /// Variants being built on a worker thread, and what that has built so far.
+    background: Background,
+}
+
+/// What `vkCreateGraphicsPipelines` needs, detached from [`Pipelines`] so a worker thread can
+/// create pipelines.
+#[derive(Clone)]
+struct CreateCtx {
+    device: VkDevice,
+    create: unsafe extern "system" fn(VkDevice, u64, u32, *const VkGraphicsPipelineCreateInfo, *const c_void, *mut VkPipeline) -> VkResult,
+    modules: Vec<VkShaderModule>,
+    layout: VkPipelineLayout,
+    cache: VkPipelineCache,
+}
+
+// SAFETY: a VkDevice may be used from any thread; vkCreateGraphicsPipelines externally
+// synchronizes none of its parameters here (the pipeline cache was created without
+// VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT, so the driver synchronizes it), and the
+// shader modules and layout are only read. `Pipelines` joins the worker before destroying any
+// of them (`destroy` → `poll_background(true)`).
+unsafe impl Send for CreateCtx {}
+
+/// What a background build's worker hands back, pipeline by pipeline as it goes (so a worker
+/// that panics part way still hands back what it created, to be owned and destroyed here).
+type BuildResults = std::sync::Arc<std::sync::Mutex<Vec<(PipelineKey, Result<VkPipeline, GpuError>)>>>;
+
+/// A background build of pipeline variants.
+struct BackgroundBuild {
+    want: Variants,
+    formats: Vec<VkFormat>,
+    results: BuildResults,
+    job: std::thread::JoinHandle<()>,
+    started: Instant,
+}
+
+/// A fault injected into the next background build (tests of the failure path).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundFault {
+    /// The worker's first pipeline fails with `VK_ERROR_OUT_OF_DEVICE_MEMORY`.
+    Error,
+    /// The worker panics after creating its first pipeline.
+    Panic,
+}
+
+#[derive(Default)]
+struct Background {
+    pending: Option<BackgroundBuild>,
+    /// Variants asked for while a build ran.
+    queued: Variants,
+    /// Queued variants to request once the running build finished.
+    requeue: Option<(Variants, Vec<VkFormat>)>,
+    /// The last build's failure, until a request retries those variants.
+    failure: Option<VariantFailure>,
+    inject: Option<BackgroundFault>,
+    created: u32,
+    failed: u32,
+    ms: f64,
+}
+
+/// Pipeline variants ready to draw with, and those a background build failed to make.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PipelineVariants {
+    pub skinned: bool,
+    pub textured: bool,
+    /// The last background build's failure: its variants are not ready and won't be until a
+    /// retry ([`crate::Gpu::retry_failed_variants`], or uploading a mesh needing them).
+    pub failed: Option<VariantFailure>,
+}
+
+/// Variants a background build could not make, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantFailure {
+    /// The variants that are unavailable because of it.
+    pub skinned: bool,
+    pub textured: bool,
+    /// The pipeline that failed (its key), or `worker thread panicked`.
+    pub pipeline: String,
+    pub error: GpuError,
 }
 
 /// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
 #[derive(Clone, Copy)]
 pub struct FramePipelines {
     pub layout: VkPipelineLayout,
-    pub opaque: VkPipeline,
-    pub blended: VkPipeline,
-    pub shadow: VkPipeline,
+    /// By vertex streams: `skinned as usize | (textured as usize) << 1`.
+    pub opaque: [VkPipeline; 4],
+    /// By `skinned as usize`.
+    pub blended: [VkPipeline; 2],
+    /// By caster streams: `skinned as usize | (masked as usize) << 1`.
+    pub shadow: [VkPipeline; 4],
     pub sky: VkPipeline,
     pub bloom_down: VkPipeline,
     pub bloom_up: VkPipeline,
@@ -861,6 +1116,8 @@ impl Pipelines {
             warm_at: None,
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
+            variants: Variants::default(),
+            background: Background::default(),
         };
         let result = (|| {
             for (name, spv) in SHADERS {
@@ -929,14 +1186,9 @@ impl Pipelines {
     }
 
     fn prebuild_scene(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
-        for blended in [false, true] {
-            for features in FEATURE_SETS {
-                self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
-                if color_format == HDR_FORMAT {
-                    // SSAO always renders the scene in HDR (its ambient luminance rides in alpha).
-                    self.get(dev, PipelineKey::Mesh { format: color_format, blended, features: features | FEAT_SSAO })?;
-                }
-            }
+        let built = self.variants;
+        for key in scene_keys(color_format, |s, t| built.has(s, t)) {
+            self.get(dev, key)?;
         }
         for fog in [false, true] {
             self.get(dev, PipelineKey::Sky { format: color_format, fog })?;
@@ -946,7 +1198,10 @@ impl Pipelines {
 
     /// Pipelines that don't depend on the output format: shadows, the HDR scene, bloom.
     pub fn prebuild_common(&mut self, dev: &Device) -> Result<(), GpuError> {
-        self.get(dev, PipelineKey::Shadow)?;
+        let built = self.variants;
+        for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| built.has(*s, *m)) {
+            self.get(dev, PipelineKey::Shadow { skinned, masked })?;
+        }
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
@@ -974,13 +1229,30 @@ impl Pipelines {
             final_format
         };
         let layout = self.layout;
+        let built = self.variants;
         let mut get = |want: bool, key: PipelineKey| if want { self.get(dev, key) } else { Ok(VK_NULL_HANDLE) };
         let composite_format = if mode.fxaa { LDR_FORMAT } else { final_format };
+        let shadows = features & FEAT_SHADOWS != 0;
+        // Only the variants built: a frame never compiles one (meshes needing the others don't
+        // exist yet).
+        let mut opaque = [VK_NULL_HANDLE; 4];
+        let mut shadow = [VK_NULL_HANDLE; 4];
+        for (a, b) in OPAQUE_VARIANTS {
+            let have = built.has(a, b);
+            let key = PipelineKey::Mesh { format: scene_format, blended: false, features, skinned: a, textured: b };
+            opaque[a as usize | (b as usize) << 1] = get(have, key)?;
+            shadow[a as usize | (b as usize) << 1] = get(have && shadows, PipelineKey::Shadow { skinned: a, masked: b })?;
+        }
+        let mut blended = [VK_NULL_HANDLE; 2];
+        for (skinned, _) in BLENDED_VARIANTS {
+            let key = PipelineKey::Mesh { format: scene_format, blended: true, features, skinned, textured: false };
+            blended[skinned as usize] = get(built.has(skinned, false), key)?;
+        }
         Ok(FramePipelines {
             layout,
-            opaque: get(true, PipelineKey::Mesh { format: scene_format, blended: false, features })?,
-            blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features })?,
-            shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::Shadow)?,
+            opaque,
+            blended,
+            shadow,
             sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
@@ -1017,7 +1289,165 @@ impl Pipelines {
             warm: self.warm_at.is_some(),
             create_ms: self.create_ms,
             cache: self.cache_load,
+            created_background: self.background.created,
+            background_ms: self.background.ms,
+            background_pending: self.background.pending.is_some(),
+            background_failed: self.background.failed,
         }
+    }
+
+    /// The pipelines of the variants in `want` (beyond those built) for every format in
+    /// `formats` (scene) and the shadow pass, not yet created.
+    fn variant_keys(&self, want: Variants, formats: &[VkFormat]) -> Vec<PipelineKey> {
+        let new = |s: bool, t: bool| want.has(s, t);
+        let mut keys: Vec<PipelineKey> = formats.iter().flat_map(|&f| scene_keys(f, new)).collect();
+        for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| new(*s, *m)) {
+            keys.push(PipelineKey::Shadow { skinned, masked });
+        }
+        keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
+        keys
+    }
+
+    /// Builds the variants `want` now, on this thread, for `formats` (loading time: counted as
+    /// ordinary creation). `variants` changes only when every pipeline was created.
+    pub fn build_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) -> Result<(), GpuError> {
+        self.poll_background(true);
+        let want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        for key in self.variant_keys(want, formats) {
+            self.get(dev, key)?;
+        }
+        self.variants = want;
+        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured)) {
+            self.background.failure = None; // built after all
+        }
+        Ok(())
+    }
+
+    /// Starts building the variants `want` on a worker thread (pipeline creation is thread safe
+    /// with the shared, internally synchronized pipeline cache), unless they exist or are being
+    /// built; a request arriving while a build runs is queued after it. Frames never wait:
+    /// draws needing a variant not built yet are skipped until [`Pipelines::poll_background`]
+    /// hands the pipelines back. These don't count as created after warm (no frame stalls).
+    pub fn request_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) {
+        let mut want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        if want == self.variants {
+            return;
+        }
+        if let Some(p) = &self.background.pending {
+            // Only what the running build won't make waits for it.
+            let q = &mut self.background.queued;
+            q.skinned |= want.skinned && !p.want.skinned;
+            q.textured |= want.textured && !p.want.textured;
+            return;
+        }
+        // A build that starts retries what failed before, once (the failure is folded into it,
+        // never just dropped: a later failure reports it again).
+        if let Some(f) = self.background.failure.take() {
+            want.skinned |= f.skinned;
+            want.textured |= f.textured;
+        }
+        let keys = self.variant_keys(want, formats);
+        if keys.is_empty() {
+            self.variants = want;
+            return;
+        }
+        let ctx = self.ctx(dev);
+        let started = Instant::now();
+        let results: BuildResults = Default::default();
+        let out = std::sync::Arc::clone(&results);
+        let fault = self.background.inject.take();
+        let spawned = std::thread::Builder::new().name("specula-pipelines".into()).spawn(move || {
+            for (n, k) in keys.into_iter().enumerate() {
+                let r = match fault {
+                    Some(BackgroundFault::Error) if n == 0 => {
+                        Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({k:?})"), VK_ERROR_OUT_OF_DEVICE_MEMORY))
+                    }
+                    Some(BackgroundFault::Panic) if n == 1 => panic!("injected background pipeline build panic"),
+                    _ => Pipelines::create_with(&ctx, k),
+                };
+                out.lock().unwrap_or_else(|e| e.into_inner()).push((k, r));
+            }
+        });
+        match spawned {
+            Ok(job) => self.background.pending = Some(BackgroundBuild { want, formats: formats.to_vec(), results, job, started }),
+            Err(_) => {
+                // No thread: build here rather than never.
+                if self.build_variants(dev, want, formats).is_err() {
+                    self.background.failed += 1;
+                }
+            }
+        }
+    }
+
+    /// Takes a finished background build's pipelines (with `wait`: waits for one still running).
+    /// Returns true when variants became available.
+    pub fn poll_background(&mut self, wait: bool) -> bool {
+        let Some(p) = self.background.pending.take() else { return false };
+        if !wait && !p.job.is_finished() {
+            self.background.pending = Some(p);
+            return false;
+        }
+        let panicked = p.job.join().is_err();
+        let results = std::mem::take(&mut *p.results.lock().unwrap_or_else(|e| e.into_inner()));
+        // Variants unavailable: those a failed pipeline belongs to (all new ones if the worker died).
+        let new = Variants { skinned: p.want.skinned && !self.variants.skinned, textured: p.want.textured && !self.variants.textured };
+        let mut lost = if panicked { new } else { Variants::default() };
+        let mut failure = panicked.then(|| (String::from("worker thread panicked"), GpuError::new("background pipeline build: the worker thread panicked")));
+        for (key, r) in results {
+            match r {
+                // Pipelines created before a failure (or a panic) are kept: this owns and
+                // destroys them, and a retry reuses them.
+                Ok(pipeline) => {
+                    self.by_key.push((key, pipeline));
+                    self.background.created += 1;
+                }
+                Err(e) => {
+                    self.background.failed += 1;
+                    let (skinned, textured) = match key {
+                        PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured),
+                        PipelineKey::Shadow { skinned, masked } => (skinned, masked),
+                        _ => (new.skinned, new.textured),
+                    };
+                    lost.skinned |= skinned && new.skinned;
+                    lost.textured |= textured && new.textured;
+                    failure.get_or_insert((format!("{key:?}"), e));
+                }
+            }
+        }
+        if panicked {
+            self.background.failed += 1;
+        }
+        self.background.ms += p.started.elapsed().as_secs_f64() * 1e3;
+        let ok = failure.is_none();
+        // What did get built becomes usable (every pipeline of a variant set not touched by a
+        // failure exists).
+        self.variants = Variants { skinned: p.want.skinned && !lost.skinned, textured: p.want.textured && !lost.textured };
+        if let Some((pipeline, error)) = failure {
+            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, pipeline, error });
+        }
+        let queued = std::mem::take(&mut self.background.queued);
+        if queued != Variants::default() {
+            // More was asked for while this ran: the caller starts it (`take_requeue`), since
+            // starting needs the device. (A failed build isn't retried here: the next upload
+            // with those streams asks again, and `background_failed` reports it.)
+            self.background.requeue = Some((queued, p.formats));
+        }
+        ok
+    }
+
+    /// A request queued behind a finished background build, to start now.
+    pub fn take_requeue(&mut self) -> Option<(Variants, Vec<VkFormat>)> {
+        self.background.requeue.take()
+    }
+
+    /// The variants ready to draw with, and the last background failure.
+    pub fn ready(&self) -> PipelineVariants {
+        PipelineVariants { skinned: self.variants.skinned, textured: self.variants.textured, failed: self.background.failure.clone() }
+    }
+
+    /// Makes the next background build fail (tests).
+    pub fn inject_background_fault(&mut self, fault: BackgroundFault) {
+        self.background.inject = Some(fault);
     }
 
     /// The pipeline cache's contents, to persist and pass back as `GpuOptions::pipeline_cache`.
@@ -1046,6 +1476,21 @@ impl Pipelines {
     }
 
     fn create(&self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
+        Pipelines::create_with(&self.ctx(dev), key)
+    }
+
+    /// What creating pipelines needs, for this thread or a worker.
+    fn ctx(&self, dev: &Device) -> CreateCtx {
+        CreateCtx {
+            device: dev.handle,
+            create: dev.fns.create_graphics_pipelines,
+            modules: self.modules.clone(),
+            layout: self.layout,
+            cache: self.cache,
+        }
+    }
+
+    fn create_with(ctx: &CreateCtx, key: PipelineKey) -> Result<VkPipeline, GpuError> {
         let d = key.desc();
         let entry = c"main";
         let spec_entry = VkSpecializationMapEntry { constant_id: 0, offset: 0, size: size_of::<u32>() };
@@ -1060,7 +1505,7 @@ impl Pipelines {
             p_next: ptr::null(),
             flags: 0,
             stage,
-            module: self.modules[shader as usize],
+            module: ctx.modules[shader as usize],
             p_name: entry.as_ptr(),
             p_specialization_info: &spec as *const VkSpecializationInfo as *const c_void,
         };
@@ -1068,43 +1513,52 @@ impl Pipelines {
         if let Some(frag) = d.frag {
             stages.push(stage(VK_SHADER_STAGE_FRAGMENT_BIT, frag));
         }
-        let binding = VkVertexInputBindingDescription {
-            binding: 0,
-            stride: size_of::<Vertex>() as u32,
+        let binding = |binding: u32, stride: usize| VkVertexInputBindingDescription {
+            binding,
+            stride: stride as u32,
             input_rate: VK_VERTEX_INPUT_RATE_VERTEX,
         };
-        let attributes = [
-            VkVertexInputAttributeDescription {
-                location: 0,
-                binding: 0,
-                format: VK_FORMAT_R32G32B32_SFLOAT,
-                offset: offset_of!(Vertex, position) as u32,
-            },
-            VkVertexInputAttributeDescription {
-                location: 1,
-                binding: 0,
-                format: VK_FORMAT_R32G32B32_SFLOAT,
-                offset: offset_of!(Vertex, normal) as u32,
-            },
-            VkVertexInputAttributeDescription {
-                location: 2,
-                binding: 0,
-                format: VK_FORMAT_R8G8B8A8_UNORM,
-                offset: offset_of!(Vertex, color) as u32,
-            },
-        ];
-        let (binding_count, attribute_count) = match d.vertex {
-            VertexInput::None => (0, 0),
-            VertexInput::Mesh => (1, attributes.len() as u32),
-            VertexInput::Position => (1, 1),
+        let attribute = |location: u32, binding: u32, format: VkFormat, offset: usize| VkVertexInputAttributeDescription {
+            location,
+            binding,
+            format,
+            offset: offset as u32,
         };
+        let mut bindings = Vec::new();
+        let mut attributes = Vec::new();
+        let (skinned, textured, full) = match d.vertex {
+            VertexInput::None => (false, false, None),
+            VertexInput::Mesh { skinned, textured } => (skinned, textured, Some(true)),
+            VertexInput::Position { skinned, .. } => (skinned, false, Some(false)),
+        };
+        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. });
+        if let Some(full) = full {
+            bindings.push(binding(0, size_of::<Vertex>()));
+            attributes.push(attribute(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, position)));
+            if full {
+                attributes.push(attribute(1, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, normal)));
+                attributes.push(attribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, offset_of!(Vertex, color)));
+            }
+        }
+        if skinned {
+            bindings.push(binding(1, size_of::<SkinVertex>()));
+            attributes.push(attribute(3, 1, VK_FORMAT_R8G8B8A8_UINT, offset_of!(SkinVertex, joints)));
+            attributes.push(attribute(4, 1, VK_FORMAT_R8G8B8A8_UNORM, offset_of!(SkinVertex, weights)));
+        }
+        if textured || uv_only {
+            bindings.push(binding(2, size_of::<SurfaceVertex>()));
+            attributes.push(attribute(5, 2, VK_FORMAT_R32G32_SFLOAT, offset_of!(SurfaceVertex, uv)));
+        }
+        if textured {
+            attributes.push(attribute(6, 2, VK_FORMAT_R16G16B16A16_SNORM, offset_of!(SurfaceVertex, tangent)));
+        }
         let vertex_input = VkPipelineVertexInputStateCreateInfo {
             s_type: ST_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
-            vertex_binding_description_count: binding_count,
-            p_vertex_binding_descriptions: &binding,
-            vertex_attribute_description_count: attribute_count,
+            vertex_binding_description_count: bindings.len() as u32,
+            p_vertex_binding_descriptions: bindings.as_ptr(),
+            vertex_attribute_description_count: attributes.len() as u32,
             p_vertex_attribute_descriptions: attributes.as_ptr(),
         };
         let input_assembly = VkPipelineInputAssemblyStateCreateInfo {
@@ -1239,7 +1693,7 @@ impl Pipelines {
             p_depth_stencil_state: if d.depth.is_some() { &depth_stencil } else { ptr::null() },
             p_color_blend_state: if d.color.is_some() { &blend } else { ptr::null() },
             p_dynamic_state: &dynamic,
-            layout: self.layout,
+            layout: ctx.layout,
             render_pass: VK_NULL_HANDLE,
             subpass: 0,
             base_pipeline_handle: VK_NULL_HANDLE,
@@ -1247,8 +1701,10 @@ impl Pipelines {
         };
         let mut pipeline = VK_NULL_HANDLE;
         // SAFETY: every state struct referenced by `info` is a local alive for the call; `cache`
-        // is this device's pipeline cache, used from this thread only.
-        let r = unsafe { (dev.fns.create_graphics_pipelines)(dev.handle, self.cache, 1, &info, ptr::null(), &mut pipeline) };
+        // is this device's pipeline cache, created with flags 0 (not externally synchronized),
+        // so the driver synchronizes it internally and the engine thread and a background
+        // worker may create pipelines with it at the same time.
+        let r = unsafe { (ctx.create)(ctx.device, ctx.cache, 1, &info, ptr::null(), &mut pipeline) };
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({key:?})"), r));
         }
@@ -1256,6 +1712,8 @@ impl Pipelines {
     }
 
     pub fn destroy(&mut self, dev: &Device) {
+        // A background build still running uses the modules, layout and cache: finish it first.
+        self.poll_background(true);
         // SAFETY: the device is idle; every object is destroyed once (null handles are ignored).
         unsafe {
             for (_, p) in self.by_key.drain(..) {
@@ -1272,18 +1730,39 @@ impl Pipelines {
     }
 }
 
-/// Fail early (before recording) if a draw names a mesh that does not exist or there are too
-/// many lights.
+/// Fail early (before recording) if a draw names a mesh or texture that does not exist, a
+/// skinned draw's palette leaves the frame's bone matrices, or there are too many lights or bones.
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
     check_overlay(frame.overlay, textures)?;
     crate::post::check_lut(&frame.environment, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
-    match frame.draws.iter().find(|d| !meshes.contains_key(&d.mesh.0)) {
-        Some(d) => Err(GpuError::unknown(crate::IdKind::Mesh, d.mesh.0, " in draw list")),
-        None => Ok(()),
+    if frame.bones.len() > MAX_BONE_MATRICES {
+        return Err(GpuError::limit(Limit::BoneMatrices, frame.bones.len() as u64, MAX_BONE_MATRICES as u64));
     }
+    for (i, d) in frame.draws.iter().enumerate() {
+        let Some(mesh) = meshes.get(&d.mesh.0) else {
+            return Err(GpuError::unknown(IdKind::Mesh, d.mesh.0, " in draw list"));
+        };
+        if let Some(t) = d.surface.textures.ids().find(|t| textures.slot(*t).is_none()) {
+            return Err(GpuError::unknown(IdKind::Texture, t.0, " in draw list (material textures)"));
+        }
+        if let (Some(first), Some(_)) = (d.skin, mesh.skin_offset) {
+            if first as u64 + mesh.joints as u64 > frame.bones.len() as u64 {
+                let reason = ErrorReason::PaletteOutside { draw: i as u32, first, joints: mesh.joints, bones: frame.bones.len() as u32 };
+                return Err(GpuError::rejected(
+                    reason,
+                    format!(
+                        "draw {i}: its palette starts at bone matrix {first} and its mesh needs {} matrices, but the frame has {}",
+                        mesh.joints,
+                        frame.bones.len()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Cull and batch `frame` against `meshes`, plan its shadow casters, then write its frame data
@@ -1301,11 +1780,12 @@ pub fn prepare_frame(
     let bounds = |m: crate::MeshId| meshes.get(&m.0).map(|mesh| mesh.bounds);
     crate::batch::plan_into(frame, bounds, &mut scratch.plan);
     plan_shadows(frame, &scratch.plan, bounds, &mut scratch.shadow);
-    build_records(frame, &scratch.plan, &mut scratch.linear, &mut scratch.records);
-    append_shadow_records(frame, &scratch.shadow, &mut scratch.records);
+    build_records(frame, &scratch.plan, textures, &mut scratch.linear, &mut scratch.records);
+    append_shadow_records(frame, &scratch.shadow, textures, &mut scratch.records);
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
-    upload.reserve(dev, scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize))?;
-    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay);
+    let units = scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len());
+    upload.reserve(dev, units)?;
+    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay, frame.bones);
     Ok(())
 }
 
@@ -1605,6 +2085,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                         &ctx.scratch.shadow,
                         ctx.scratch.shadow_first_record(),
                         ctx.upload,
+                        ctx.upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len()),
                         env.shadow.bias,
                         &mut shadow_stats,
                     );
@@ -1693,6 +2174,7 @@ pub fn record_scene(
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
         let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
+        let bones = upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len());
         let draw_sky = |cmd: VkCommandBuffer| {
             // Behind everything opaque, before anything blended (glass shows the sky through it).
             (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.sky);
@@ -1726,7 +2208,18 @@ pub fn record_scene(
                 stats.pipeline_binds += 1;
             }
             let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
-            let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
+            let skinned = batch.skinned && mesh.skin_offset.is_some();
+            // Textured only when the draws have textures (a mesh with UVs drawn without them
+            // keeps its vertex colours in the plain pipeline).
+            let textured = batch.textured && mesh.surface_offset.is_some();
+            let pipeline = if batch.material.blended() {
+                pipelines.blended[skinned as usize]
+            } else {
+                pipelines.opaque[skinned as usize | (textured as usize) << 1]
+            };
+            if pipeline == VK_NULL_HANDLE {
+                continue; // a variant not built: no mesh with those streams was ever uploaded
+            }
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                 bound = pipeline;
@@ -1737,6 +2230,7 @@ pub fn record_scene(
                 draws: upload.records_address(),
                 material: material_id(batch.material),
                 pass: batch.pass,
+                bones,
             };
             (dev.fns.cmd_push_constants)(
                 cmd,
@@ -1747,9 +2241,7 @@ pub fn record_scene(
                 &pc as *const PushConstants as *const c_void,
             );
             if bound_mesh != Some(batch.mesh) {
-                let offset: VkDeviceSize = 0;
-                (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &mesh.buffer.handle, &offset);
-                (dev.fns.cmd_bind_index_buffer)(cmd, mesh.buffer.handle, mesh.index_offset, VK_INDEX_TYPE_UINT32);
+                mesh.bind(dev, cmd);
                 bound_mesh = Some(batch.mesh);
             }
             (dev.fns.cmd_draw_indexed)(cmd, mesh.index_count, batch.count, 0, 0, batch.first);
@@ -1794,21 +2286,25 @@ mod tests {
 
     #[test]
     fn push_constants_match_shader_layout() {
-        assert_eq!(size_of::<PushConstants>(), 24);
+        assert_eq!(size_of::<PushConstants>(), 32);
         assert_eq!(offset_of!(PushConstants, draws), 8);
         assert_eq!(offset_of!(PushConstants, material), 16);
         assert_eq!(offset_of!(PushConstants, pass), 20);
+        assert_eq!(offset_of!(PushConstants, bones), 24);
+        assert_eq!(offset_of!(SurfaceVertex, tangent), 8);
+        assert_eq!(offset_of!(SkinVertex, weights), 4);
         assert_eq!(size_of::<Vertex>(), 28);
         assert_eq!(offset_of!(Vertex, color), 24);
     }
 
     #[test]
     fn draw_record_matches_shader_layout() {
-        // std430 `Draw` in shaders/mesh.*: mat4 + 3 × vec4, array stride 112.
+        // std430 `Draw` in shaders/frame.glsl: mat4 + 3 × vec4 + uvec4, array stride 128.
         assert_eq!(offset_of!(DrawRecord, color), 64);
         assert_eq!(offset_of!(DrawRecord, color2), 80);
         assert_eq!(offset_of!(DrawRecord, params), 96);
-        assert_eq!(size_of::<DrawRecord>(), 112);
+        assert_eq!(offset_of!(DrawRecord, ext), 112);
+        assert_eq!(size_of::<DrawRecord>(), 128);
         assert_eq!(RECORDS_OFFSET, 1280);
     }
 
@@ -1857,19 +2353,22 @@ mod tests {
         model[0] = 1.0;
         model[15] = 1.0;
         let mut a = DrawItem::new(MeshId(1), model, [0.5, 0.25, 1.0, 0.3]);
-        a.surface = Surface { emissive: -1.0, metallic: 2.0, roughness: 0.4, specular: 0.5, color2: [1.0, 0.5, 0.0], seed: 7.0 };
+        a.surface = Surface { emissive: -1.0, metallic: 2.0, roughness: 0.4, specular: 0.5, color2: [1.0, 0.5, 0.0], seed: 7.0, ..Surface::default() };
         let mut b = a;
         b.model[12] = 3.0;
+        b.skin = Some(40);
         let c = DrawItem::new(MeshId(1), model, [0.0, 0.0, 0.0, 1.0]);
         let draws = [a, b, c];
         let frame = FrameDesc { draws: &draws, ..Default::default() };
         let mut plan = Plan::default();
         plan.entries = vec![(2, 0), (1, 0), (0, 0), (0, 1)];
         let mut out = Vec::new();
-        build_records(&frame, &plan, &mut LinearCache::default(), &mut out);
+        build_records(&frame, &plan, &Textures::default(), &mut LinearCache::default(), &mut out);
         assert_eq!(out.len(), 4);
         assert_eq!(out[0], draw_record(&c));
         assert_eq!(out[1], draw_record(&b));
+        assert_eq!(out[1].ext, [0, 0, 40, 0], "each draw keeps its own palette");
+        assert_eq!(out[2].ext, [0; 4]);
         assert_eq!(out[2], draw_record(&a));
         assert_eq!(out[3], draw_record(&a));
         assert_eq!(out[1].model[12], 3.0, "the memo keeps each draw's own model");

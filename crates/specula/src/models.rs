@@ -56,6 +56,30 @@
 //! opacity, tinted by the part's mean vertex colour times the entity's colour (blended materials
 //! don't read vertex colours).
 //!
+//! # glTF assets
+//!
+//! A model entity whose `recipe` ends in `.glb` or `.gltf` imports that asset (`specula-gltf`,
+//! textures kept, not baked into vertex colours) on a worker thread instead of building a recipe;
+//! it takes no `params` and no `seed`. Its key is the file's path, size and modification time
+//! (cheap to check at spawn), so editing the file rebuilds it like a recipe. Images are decoded
+//! and their mip chains made on the worker; the GPU side uploads each texture once per build and
+//! every entity of the build shares them. A part whose material has a texture draws with its
+//! UVs (and tangents) and the glTF material: base colour factor and texture, normal, metallic-
+//! roughness and emissive maps, alpha masking. Textured parts ignore vertex colours (`COLOR_0`):
+//! see `specula-gpu`.
+//!
+//! # Animation
+//!
+//! A build may carry an anim set: a rigged recipe's `anims/<recipe name>.json` (in the folder
+//! next to the recipe folder, as Sepulcra keeps them; part of the build's content, so editing it
+//! rebuilds), or a glTF asset's skin and animations. An entity's [`crate::world::AnimSpec`]
+//! names a clip; its pose is evaluated at the frame's render time by a [`specula_anim::Animator`]
+//! kept per entity (reused, so steady frames allocate nothing), turned into skinning matrices
+//! written into the frame's bone list, and drawn by the GPU's skinned pipelines (every part of
+//! the chosen LOD shares the palette). Rigged models without an `anim` (or naming a clip the set
+//! lacks) draw their bind pose. [`GpuModels::bone_positions`] gives an entity's bones in world
+//! space at a render time (the sight skeleton overlay).
+//!
 //! # Levels of detail
 //!
 //! The size on screen is the projected diameter of the model's bounding sphere in pixels. LOD 0
@@ -64,12 +88,27 @@
 //! [`LOD_HYSTERESIS`] (±15% around each threshold) so a model at a boundary doesn't flicker;
 //! captures choose without memory, so a capture is reproducible.
 
-use crate::world::{Entity, ModelSource, ModelSpec, ModelState, ResolvedModel, World, WorldError};
+use crate::world::{is_gltf_path, AnimSpec, Entity, ModelSource, ModelSpec, ModelState, ResolvedModel, World, WorldError};
+use specula_anim::math::Affine;
+use specula_anim::{AnimSet, Animator, LoopMode, Playback, Skeleton};
 use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
-use specula_gpu::{DrawItem, Gpu, Material, MeshId, Surface, Vertex};
+use specula_gpu::{
+    DrawItem, Gpu, Material, MaterialTextures, MeshId, MeshStreams, PipelineVariants, SkinVertex, Surface, TextureFilter, TextureFormat,
+    TextureId, TextureSampler, TextureWrap, VariantFailure, Vertex,
+};
+
+/// "skinned", "textured" or "skinned and textured".
+fn variant_names(f: &VariantFailure) -> &'static str {
+    match (f.skinned, f.textured) {
+        (true, true) => "skinned and textured",
+        (true, false) => "skinned",
+        _ => "textured",
+    }
+}
 use specula_model::{build, BuildParams, ErrorCode, MaterialKind, MaterialPreset, MeshData, Model, Recipe, RecipeError, Style};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -101,11 +140,73 @@ pub struct Built {
     /// Unique per build: the GPU cache's key.
     pub id: u64,
     pub model: Model,
-    /// Content hash of the recipe, its includes and its style.
+    /// Content hash of the recipe, its includes and its style (or of a glTF file's path, size
+    /// and modification time).
     pub content: u64,
     pub build_ms: f64,
-    /// The style file it was built with.
+    /// The style file it was built with (empty for glTF assets).
     pub style: PathBuf,
+    /// The model's skeleton and clips, when it has both.
+    pub anims: Option<Arc<AnimSet>>,
+    /// Why a rigged model has no anim set (no anims file, or it failed to load).
+    pub anim_note: Option<String>,
+    /// Material textures, ready to upload (glTF assets).
+    pub textures: Vec<TextureData>,
+    /// Material textures and factors by part material name (glTF assets).
+    pub materials: BTreeMap<String, PartMaterial>,
+    /// What the import or the anim set warned about (bounded).
+    pub warnings: Vec<String>,
+}
+
+/// A material texture with its mip chain, made on a worker thread. The pixels are taken by the
+/// first upload (the CPU copy would double texture memory); a build uploaded again later (its
+/// entities were all deleted, then one came back while the build was still cached) is imported
+/// afresh ([`Library::reimport`]).
+pub struct TextureData {
+    pub width: u32,
+    pub height: u32,
+    pub format: TextureFormat,
+    /// Mip levels in the chain.
+    pub mips: usize,
+    /// `levels[0]` is the image; each next level half the size. Empty once uploaded.
+    pub levels: Mutex<Vec<Vec<u8>>>,
+    pub sampler: TextureSampler,
+}
+
+/// A glTF material as a part draws it (texture fields index [`Built::textures`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartMaterial {
+    /// sRGB colour and alpha (the base colour factor).
+    pub color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    pub base: Option<usize>,
+    pub normal: Option<usize>,
+    pub normal_scale: f32,
+    pub metallic_roughness: Option<usize>,
+    pub emissive: Option<usize>,
+    /// sRGB emissive colour and its strength (0 = none).
+    pub emissive_color: [f32; 3],
+    pub emissive_strength: f32,
+    /// Alpha masking cutoff (0 = opaque).
+    pub alpha_cutoff: f32,
+}
+
+impl PartMaterial {
+    /// Draws with textures (UVs needed).
+    pub fn textured(&self) -> bool {
+        self.base.is_some() || self.normal.is_some() || self.metallic_roughness.is_some() || self.emissive.is_some()
+    }
+}
+
+/// What a worker made besides the model.
+#[derive(Default)]
+pub struct Extras {
+    pub anims: Option<AnimSet>,
+    pub anim_note: Option<String>,
+    pub textures: Vec<TextureData>,
+    pub materials: BTreeMap<String, PartMaterial>,
+    pub warnings: Vec<String>,
 }
 
 impl Built {
@@ -147,6 +248,11 @@ struct RecipeInfo {
     style: Arc<Style>,
     style_path: PathBuf,
     recipe: Recipe,
+    /// Where its anim set would be, and that file's time when read (polled for changes).
+    anims_path: PathBuf,
+    anims_mtime: Option<SystemTime>,
+    /// The anim-set text (rigged recipes with an anims file).
+    anims: Option<Arc<str>>,
 }
 
 /// A spec's slot: what it draws now and what it waits for.
@@ -186,6 +292,10 @@ struct Job {
     style_path: PathBuf,
     params: Vec<(String, f64)>,
     seed: Option<u64>,
+    /// A glTF asset to import (its full path) instead of a recipe to build.
+    gltf: Option<PathBuf>,
+    /// A rigged recipe's anim-set file text.
+    anims: Option<Arc<str>>,
 }
 
 /// A worker's answer.
@@ -200,7 +310,7 @@ struct Done {
 
 /// How a job ended.
 enum Outcome {
-    Built(Model),
+    Built(Model, Box<Extras>),
     /// The recipe failed to build (budget, geometry, a missing include...).
     Failed(RecipeError),
     /// `specula-model` panicked (a bug there, not in the recipe).
@@ -340,14 +450,21 @@ impl Workers {
 /// The build function workers call (`specula_model::build`; tests pass others).
 type BuildFn = fn(&str, &BuildParams) -> Result<Model, RecipeError>;
 
-/// Builds one job with `build`; a panic becomes [`Outcome::Panicked`] instead of a dead worker.
+/// Builds one job with `build` (or imports its glTF asset); a panic becomes
+/// [`Outcome::Panicked`] instead of a dead worker.
 fn run(job: &Job, build: BuildFn) -> Outcome {
     let values: Vec<(&str, f64)> = job.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
-    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&job.text, &params)));
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &job.gltf {
+        Some(path) => import_gltf(path),
+        None => build(&job.text, &params).map(|model| {
+            let extras = recipe_extras(&model, job.anims.as_deref());
+            (model, extras)
+        }),
+    }));
     match built {
-        Ok(Ok(model)) => match check_uploadable(&model) {
-            Ok(()) => Outcome::Built(model),
+        Ok(Ok((model, extras))) => match check_uploadable(&model) {
+            Ok(()) => Outcome::Built(model, Box::new(extras)),
             Err(m) => Outcome::Failed(RecipeError::new("", ErrorCode::InvalidMesh, m)),
         },
         Ok(Err(e)) => Outcome::Failed(e),
@@ -360,6 +477,173 @@ fn run(job: &Job, build: BuildFn) -> Outcome {
             Outcome::Panicked(why)
         }
     }
+}
+
+/// The anim set of a rigged recipe model (from its anims file), or why there is none.
+fn recipe_extras(model: &Model, anims: Option<&str>) -> Extras {
+    let mut x = Extras::default();
+    let Some(rig) = &model.rig else { return x };
+    match anims {
+        None => x.anim_note = Some("rigged, but there is no anims/<name>.json for it: drawn in its bind pose".into()),
+        Some(text) => match Skeleton::from_rig(rig).and_then(|s| AnimSet::load(text, s)) {
+            Ok(set) => x.anims = Some(set),
+            Err(e) => x.anim_note = Some(format!("the anim set failed to load ({e}): drawn in its bind pose")),
+        },
+    }
+    x
+}
+
+/// A glTF sampler as the GPU's.
+fn gltf_sampler(s: &specula_gltf::Sampler) -> TextureSampler {
+    let nearest = |f: Option<u32>| f.is_some_and(|f| f == 9728 || f == 9984 || f == 9986);
+    let wrap = |w: u32| match w {
+        33071 => TextureWrap::ClampToEdge,
+        33648 => TextureWrap::MirroredRepeat,
+        _ => TextureWrap::Repeat,
+    };
+    let filter = |n: bool| if n { TextureFilter::Nearest } else { TextureFilter::Linear };
+    // NEAREST_MIPMAP_NEAREST (9984) and LINEAR_MIPMAP_NEAREST (9985) step between mip levels.
+    let mip_nearest = s.min_filter.is_some_and(|f| f == 9984 || f == 9985);
+    TextureSampler {
+        mag: filter(nearest(s.mag_filter)),
+        min: filter(nearest(s.min_filter)),
+        mipmap: filter(mip_nearest),
+        wrap_u: wrap(s.wrap_s),
+        wrap_v: wrap(s.wrap_t),
+        anisotropy: true,
+    }
+}
+
+/// sRGB from linear (for API colours).
+fn linear_to_srgb(c: f32) -> f32 {
+    let c = if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) };
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Most warnings a build keeps.
+const MAX_WARNINGS: usize = 16;
+
+/// Imports a glTF asset: the model, its anim set, its material textures (mip chains made here)
+/// and materials.
+fn import_gltf(path: &Path) -> Result<(Model, Extras), RecipeError> {
+    let opts = specula_gltf::ImportOptions { bake_texture_colors: false, ..Default::default() };
+    let mut import = specula_gltf::import_file(path, &opts)
+        .map_err(|e| RecipeError::new(&e.path, ErrorCode::Geometry, format!("glTF import: {e}")))?;
+    let mut x = Extras { warnings: import.warnings.iter().take(MAX_WARNINGS).map(|w| format!("{}: {}", w.code, w.message)).collect(), ..Default::default() };
+    match import.anim_set() {
+        Some(Ok(set)) => x.anims = Some(set),
+        Some(Err(e)) => x.anim_note = Some(format!("the asset's clips failed to load ({e}): drawn in its bind pose")),
+        None => {}
+    }
+    // Textures by (glTF texture index, sRGB): a texture used as colour and as data uploads twice.
+    // The image's decoded pixels become level 0 of the (last) chain made from them: no copy.
+    let key = |t: Option<specula_gltf::TextureRef>, srgb: bool| t.filter(|t| t.tex_coord == 0).map(|t| (t.texture, srgb));
+    let image_of = |texture: usize| -> Option<usize> {
+        let i = import.textures.get(texture)?.image?;
+        let i = import.images.get(i)?.duplicate_of.unwrap_or(i);
+        (!import.images.get(i)?.rgba.is_empty()).then_some(i)
+    };
+    let mut wanted: Vec<(usize, bool)> = Vec::new();
+    for m in &import.materials {
+        let keys = [key(m.base_color_texture, true), key(m.normal_texture, false), key(m.metallic_roughness_texture, false), key(m.emissive_texture, true)];
+        for k in keys.into_iter().flatten() {
+            if !wanted.contains(&k) && image_of(k.0).is_some() {
+                wanted.push(k);
+            }
+        }
+    }
+    let mut uses: BTreeMap<usize, usize> = BTreeMap::new();
+    for &(t, _) in &wanted {
+        *uses.entry(image_of(t).expect("checked")).or_default() += 1;
+    }
+    let samplers: Vec<TextureSampler> = wanted.iter().map(|&(t, _)| gltf_sampler(&import.textures[t].sampler)).collect();
+    let mut images = std::mem::take(&mut import.images);
+    let mut index: BTreeMap<(usize, bool), usize> = BTreeMap::new();
+    for (&(t, srgb), sampler) in wanted.iter().zip(samplers) {
+        let i = import.textures[t].image.map(|i| images[i].duplicate_of.unwrap_or(i)).expect("checked");
+        let left = uses.get_mut(&i).expect("counted");
+        *left -= 1;
+        let (width, height) = (images[i].width, images[i].height);
+        let rgba = if *left == 0 { std::mem::take(&mut images[i].rgba) } else { images[i].rgba.clone() };
+        let format = if srgb { TextureFormat::Rgba8Srgb } else { TextureFormat::Rgba8Unorm };
+        let Ok(levels) = specula_gpu::generate_mips_owned(width, height, format, rgba) else { continue };
+        x.textures.push(TextureData { width, height, format, mips: levels.len(), levels: Mutex::new(levels), sampler });
+        index.insert((t, srgb), x.textures.len() - 1);
+    }
+    drop(images);
+    let tex = |t: Option<specula_gltf::TextureRef>, srgb: bool| key(t, srgb).and_then(|k| index.get(&k).copied());
+    for m in &import.materials {
+        let c = m.base_color;
+        let alpha_cutoff = match m.alpha_mode {
+            specula_gltf::AlphaMode::Mask => m.alpha_cutoff.clamp(0.0, 1.0),
+            specula_gltf::AlphaMode::Blend if m.preset.kind == MaterialKind::Standard && m.base_color_texture.is_some() => {
+                if x.warnings.len() < MAX_WARNINGS {
+                    x.warnings.push(format!(
+                        "material '{}' uses alpha BLEND: blended textured materials aren't supported, so it is alpha-masked at 0.5",
+                        m.name
+                    ));
+                }
+                0.5
+            }
+            _ => 0.0,
+        };
+        let pm = PartMaterial {
+            color: [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), c[3]],
+            metallic: m.metallic,
+            roughness: m.roughness,
+            base: tex(m.base_color_texture, true),
+            normal: tex(m.normal_texture, false),
+            normal_scale: m.normal_texture.map_or(1.0, |t| t.scale),
+            metallic_roughness: tex(m.metallic_roughness_texture, false),
+            emissive: tex(m.emissive_texture, true),
+            emissive_color: m.emissive.map(linear_to_srgb),
+            emissive_strength: if m.emissive.iter().any(|v| *v > 0.0) { m.emissive_strength.max(0.0) } else { 0.0 },
+            alpha_cutoff,
+        };
+        x.materials.insert(m.name.clone(), pm);
+    }
+    Ok((import.model, x))
+}
+
+/// Whether an assets root holds models that need the GPU's skinned pipelines (anim sets, glTF
+/// assets) and textured ones (glTF assets): looked for in the root and two folders down, so the
+/// engine builds those pipelines while loading instead of at the first spawn.
+pub fn asset_streams(root: &Path) -> (bool, bool) {
+    fn walk(dir: &Path, depth: u32, found: &mut (bool, bool)) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if path.file_name().is_some_and(|n| n == "anims") {
+                    found.0 = true;
+                }
+                if depth > 0 {
+                    walk(&path, depth - 1, found);
+                }
+            } else if kind.is_file() && is_gltf_path(&path.to_string_lossy()) {
+                *found = (true, true);
+            }
+            if *found == (true, true) {
+                return;
+            }
+        }
+    }
+    let mut found = (false, false);
+    walk(root, 2, &mut found);
+    found
+}
+
+/// What a glTF source's key was made from (checked again by [`Library::poll`]).
+struct GltfInfo {
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+    len: u64,
+    content: u64,
 }
 
 /// Recipe files, styles, builds and handles (see the module docs).
@@ -376,6 +660,8 @@ pub struct Library {
     recipes: BTreeMap<String, RecipeInfo>,
     /// Recipes that failed to parse (or whose style did), until their files change.
     failed: BTreeMap<String, WorldError>,
+    /// glTF sources by path.
+    gltfs: BTreeMap<String, GltfInfo>,
     builds: BTreeMap<BuildKey, Arc<Built>>,
     in_flight: BTreeMap<BuildKey, InFlight>,
     /// Build key → the handles waiting for it.
@@ -436,6 +722,7 @@ impl Library {
             styles: BTreeMap::new(),
             recipes: BTreeMap::new(),
             failed: BTreeMap::new(),
+            gltfs: BTreeMap::new(),
             builds: BTreeMap::new(),
             in_flight: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -544,6 +831,8 @@ impl Library {
         spec.check()?;
         let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
         self.refresh_folder(&folder);
+        // A glTF source is looked at afresh (its size and time).
+        self.gltfs.remove(&spec.recipe);
         let key = self.key_for(spec, false)?;
         if let Some(b) = self.builds.get(&key) {
             self.cache_hits += 1;
@@ -598,20 +887,39 @@ impl Library {
             f.pinned |= pin;
             return f.job;
         }
-        let info = &self.recipes[recipe];
         let id = self.next_id;
         self.next_id += 1;
         self.cache_misses += 1;
-        let job = Job {
-            id,
-            key: key.clone(),
-            recipe: recipe.to_owned(),
-            text: Arc::clone(&info.text),
-            library: Arc::clone(&info.library),
-            style: Arc::clone(&info.style),
-            style_path: info.style_path.clone(),
-            params: spec.params.clone(),
-            seed: spec.seed,
+        let job = match self.gltfs.get(recipe) {
+            Some(g) => Job {
+                id,
+                key: key.clone(),
+                recipe: recipe.to_owned(),
+                text: Arc::from(""),
+                library: Arc::new(BTreeMap::new()),
+                style: Arc::new(Style::default()),
+                style_path: PathBuf::new(),
+                params: Vec::new(),
+                seed: None,
+                gltf: Some(g.path.clone()),
+                anims: None,
+            },
+            None => {
+                let info = &self.recipes[recipe];
+                Job {
+                    id,
+                    key: key.clone(),
+                    recipe: recipe.to_owned(),
+                    text: Arc::clone(&info.text),
+                    library: Arc::clone(&info.library),
+                    style: Arc::clone(&info.style),
+                    style_path: info.style_path.clone(),
+                    params: spec.params.clone(),
+                    seed: spec.seed,
+                    gltf: None,
+                    anims: info.anims.clone(),
+                }
+            }
         };
         self.in_flight.insert(key.clone(), InFlight { job: id, pinned: pin });
         if let Some(tx) = &self.workers.jobs {
@@ -626,6 +934,9 @@ impl Library {
     /// `retry`: a recipe missing from its cached folder is looked for again (it may be new).
     fn key_for(&mut self, spec: &ModelSpec, retry: bool) -> Result<BuildKey, WorldError> {
         spec.check()?;
+        if is_gltf_path(&spec.recipe) {
+            return self.gltf_key(spec);
+        }
         let rel = Path::new(&spec.recipe);
         let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
         let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
@@ -660,6 +971,43 @@ impl Library {
         info.recipe.check_values(&values).map_err(|e| recipe_error(&spec.recipe, &e))?;
         let params: String = spec.params.iter().map(|(k, v)| format!("{k}={:016x};", v.to_bits())).collect();
         Ok((info.content, params, spec.seed))
+    }
+
+    /// A glTF source's key: its path, size and modification time (no reading: spawns stay cheap).
+    fn gltf_key(&mut self, spec: &ModelSpec) -> Result<BuildKey, WorldError> {
+        if !spec.params.is_empty() || spec.seed.is_some() {
+            let field = if spec.params.is_empty() { "seed" } else { "params" };
+            return Err(WorldError::new("invalid_value", format!("{} is a glTF asset: it takes no params and no seed", spec.recipe))
+                .with("field", field)
+                .with("recipe", spec.recipe.as_str()));
+        }
+        if let Some(g) = self.gltfs.get(&spec.recipe) {
+            return Ok((g.content, String::new(), None));
+        }
+        let rel = Path::new(&spec.recipe);
+        let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
+        self.check_inside(&folder, spec)?;
+        let path = self.root.join(rel);
+        let meta = std::fs::symlink_metadata(&path).ok().filter(|m| m.file_type().is_file()).ok_or_else(|| not_found(spec, &self.root))?;
+        let mtime = meta.modified().ok();
+        let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0002);
+        h.write_str(&spec.recipe);
+        h.write_u64(meta.len());
+        h.write_u64(mtime.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64));
+        let content = h.finish();
+        self.gltfs.insert(spec.recipe.clone(), GltfInfo { path, mtime, len: meta.len(), content });
+        Ok((content, String::new(), None))
+    }
+
+    /// The source's key inputs are known (a recipe's info or a glTF file's size and time).
+    fn known(&self, recipe: &str) -> bool {
+        self.recipes.contains_key(recipe) || self.gltfs.contains_key(recipe)
+    }
+
+    /// Where a recipe's anim set lives: `anims/<stem>.json` beside the recipe's folder (or inside
+    /// it, for a recipe at the assets root).
+    fn anims_path(&self, folder: &Path, stem: &str) -> PathBuf {
+        self.root.join(folder.parent().unwrap_or(Path::new(""))).join("anims").join(format!("{stem}.json"))
     }
 
     /// Reads, parses and hashes a recipe with its transitive includes and style.
@@ -707,6 +1055,20 @@ impl Library {
             h.write_str(t);
         }
         h.write_u64(style_hash);
+        // A rig's anim set is part of the build (generated clips depend on the skeleton).
+        let anims_path = self.anims_path(folder, stem);
+        let anims_mtime = mtime(&anims_path);
+        let anims = is_regular(&anims_path)
+            .then(|| std::fs::read_to_string(&anims_path).ok())
+            .flatten()
+            .map(|t| (Arc::<str>::from(t), anims_path.clone()));
+        match &anims {
+            Some((t, _)) => {
+                h.write_str("anims");
+                h.write_str(t);
+            }
+            None => h.write_u8(0),
+        }
         Ok(RecipeInfo {
             folder: folder.to_owned(),
             content: h.finish(),
@@ -715,6 +1077,9 @@ impl Library {
             style,
             style_path,
             recipe: parsed,
+            anims_path,
+            anims_mtime,
+            anims: anims.map(|(t, _)| t),
         })
     }
 
@@ -856,6 +1221,11 @@ impl Library {
         for f in folders {
             report.files_changed += self.refresh_folder(&f);
         }
+        // Anim sets and glTF assets that changed (or appeared, or went): their keys are worked out again.
+        let before = self.recipes.len() + self.gltfs.len();
+        self.recipes.retain(|_, r| mtime(&r.anims_path) == r.anims_mtime);
+        self.gltfs.retain(|_, g| std::fs::symlink_metadata(&g.path).ok().is_some_and(|m| m.modified().ok() == g.mtime && m.len() == g.len));
+        report.files_changed += before - self.recipes.len() - self.gltfs.len();
         let stale_styles: Vec<PathBuf> = self.styles.iter().filter(|(p, s)| mtime(p) != s.mtime).map(|(p, _)| p.clone()).collect();
         for p in stale_styles {
             let file = read_style(&p);
@@ -889,7 +1259,7 @@ impl Library {
         // Handles whose recipe was forgotten above get their key worked out again.
         for h in 0..self.handles.len() {
             let Some(slot) = &self.handles[h] else { continue };
-            if self.recipes.contains_key(&slot.spec.recipe) {
+            if self.known(&slot.spec.recipe) {
                 continue;
             }
             let spec = slot.spec.clone();
@@ -949,13 +1319,19 @@ impl Library {
             // Ids of jobs cancelled while already running would otherwise stay in the set.
             self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&done.id);
             let result = match done.outcome {
-                Outcome::Built(model) => {
+                Outcome::Built(model, extras) => {
+                    let Extras { anims, anim_note, textures, materials, warnings } = *extras;
                     let built = Arc::new(Built {
                         id: self.next_id,
                         model,
                         content: done.key.0,
                         build_ms: done.build_ms,
                         style: done.style_path,
+                        anims: anims.map(Arc::new),
+                        anim_note,
+                        textures,
+                        materials,
+                        warnings,
                     });
                     self.next_id += 1;
                     self.builds.insert(done.key.clone(), Arc::clone(&built));
@@ -1008,6 +1384,41 @@ impl Library {
         (finished, changed)
     }
 
+    /// Builds `id` again (its texture pixels were released by an earlier upload): it leaves the
+    /// cache and every handle drawing it waits for a fresh build of the same key.
+    pub fn reimport(&mut self, id: u64) {
+        self.builds.retain(|_, b| b.id != id);
+        self.recent.retain(|r| *r != id);
+        for h in 0..self.handles.len() {
+            let Some(slot) = self.handles[h].as_mut() else { continue };
+            if slot.built.as_ref().is_none_or(|b| b.id != id) {
+                continue;
+            }
+            slot.built = None;
+            let key = slot.built_key.take();
+            if let Some(key) = key {
+                self.want(h as u32, key, false);
+            }
+        }
+        self.generation += 1;
+    }
+
+    /// Forgets build `id` (its textures left the CPU with an upload that has now been freed):
+    /// handles drawing it work their key out again when next used, so a respawn waits for a
+    /// fresh import instead of finding a build that can't be uploaded.
+    pub fn forget_build(&mut self, id: u64) {
+        self.builds.retain(|_, b| b.id != id);
+        self.recent.retain(|r| *r != id);
+        for slot in self.handles.iter_mut().flatten() {
+            if slot.built.as_ref().is_some_and(|b| b.id == id) {
+                slot.built = None;
+                slot.built_key = None;
+                slot.verify = true;
+            }
+        }
+        self.generation += 1;
+    }
+
     /// Keeps `id` (a `model_build` result) among the builds kept without an entity.
     fn remember(&mut self, id: u64) {
         self.recent.retain(|r| *r != id);
@@ -1048,6 +1459,7 @@ impl Library {
         let recipes: BTreeSet<&str> = handles.iter().map(|h| h.spec.recipe.as_str()).collect();
         let folders: BTreeSet<&Path> = recipes.iter().map(|r| Path::new(*r).parent().unwrap_or(Path::new(""))).collect();
         self.recipes.retain(|r, _| recipes.contains(r.as_str()));
+        self.gltfs.retain(|r, _| recipes.contains(r.as_str()));
         self.failed.retain(|r, _| recipes.contains(r.as_str()));
         self.folders.retain(|f, _| folders.contains(f.as_path()));
         let styles: BTreeSet<&PathBuf> = self.recipes.values().map(|r| &r.style_path).collect();
@@ -1162,6 +1574,21 @@ fn check_uploadable(model: &Model) -> Result<(), String> {
     Ok(())
 }
 
+/// Why entity `e`'s `anim` can't play (it draws its bind pose), once its model is built: the
+/// model has no anim set, or the clip (or the clip it fades from) isn't in it. `None` when it
+/// plays, has no anim, or its model is still building.
+pub fn anim_problem(lib: &Library, e: &Entity) -> Option<String> {
+    let a = e.anim.as_ref()?;
+    let built = lib.built(e.resolved_model()?.handle)?;
+    let Some(set) = &built.anims else {
+        let why = built.anim_note.clone().unwrap_or_else(|| "the model has no rig".into());
+        return Some(format!("'{}' has anim '{}' but no clips to play: {why}", e.name, a.clip));
+    };
+    let missing = [Some(a.clip.as_str()), a.from.as_ref().map(|f| f.clip.as_str())].into_iter().flatten().find(|c| set.id(c).is_none())?;
+    let clips: Vec<&str> = set.clips().map(|(_, c)| c.name.as_str()).take(32).collect();
+    Some(format!("'{}' plays clip '{missing}', which its anim set lacks: drawn in its bind pose (clips: {})", e.name, clips.join(", ")))
+}
+
 /// The model handles the world's model entities use.
 pub fn live_handles(world: &World) -> BTreeSet<u32> {
     world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect()
@@ -1201,6 +1628,43 @@ pub fn report(spec: &ModelSpec, built: &Built, cached: bool) -> Json {
     let (min, max) = built.model.budget;
     r.set("budget", Json::obj([("min_triangles", Json::from(min)), ("max_triangles", Json::from(max))]));
     r.set("lod_pixels", Json::arr(LOD_PIXELS.map(Json::from)));
+    r.set("source", Json::from(if is_gltf_path(&spec.recipe) { "gltf" } else { "recipe" }));
+    if let Some(set) = &built.anims {
+        r.set("bones", Json::from(set.skeleton.len()));
+        r.set(
+            "clips",
+            Json::arr(set.clips().take(64).map(|(_, c)| {
+                let looping = match c.looping {
+                    LoopMode::Once => "once",
+                    LoopMode::Loop => "loop",
+                    LoopMode::PingPong => "ping_pong",
+                };
+                Json::obj([("name", Json::from(c.name.as_str())), ("duration", Json::from(c.duration)), ("loop", Json::from(looping))])
+            })),
+        );
+    } else if let Some(rig) = &built.model.rig {
+        r.set("bones", Json::from(rig.len()));
+        r.set("clips", Json::arr([]));
+    }
+    if let Some(n) = &built.anim_note {
+        r.set("anim_note", Json::from(n.as_str()));
+    }
+    if !built.textures.is_empty() {
+        r.set(
+            "textures",
+            Json::arr(built.textures.iter().map(|t| {
+                Json::obj([
+                    ("width", Json::from(t.width)),
+                    ("height", Json::from(t.height)),
+                    ("srgb", Json::from(t.format == TextureFormat::Rgba8Srgb)),
+                    ("mips", Json::from(t.mips)),
+                ])
+            })),
+        );
+    }
+    if !built.warnings.is_empty() {
+        r.set("import_warnings", Json::arr(built.warnings.iter().map(|w| Json::from(w.as_str()))));
+    }
     r
 }
 
@@ -1267,6 +1731,8 @@ pub struct LodStats {
     pub histogram: [u32; LOD_BUCKETS],
     /// Model entities with nothing uploaded to draw (an unresolved or failed recipe).
     pub missing: u32,
+    /// Model entities not drawn because their pipeline variant failed to build.
+    pub pipeline_failed: u32,
     pub triangles: u64,
 }
 
@@ -1275,6 +1741,7 @@ impl LodStats {
         Json::obj([
             ("lod_histogram", Json::arr(self.histogram.map(Json::from))),
             ("missing", Json::from(self.missing)),
+            ("pipeline_failed", Json::from(self.pipeline_failed)),
             ("triangles", Json::from(self.triangles)),
         ])
     }
@@ -1301,6 +1768,63 @@ struct PartDraw {
     /// Multiplied by the entity's colour; alpha is the opacity of glass.
     color: [f32; 4],
     triangles: u32,
+    /// Skinned parts: each bone the part's vertices are weighted to, and their farthest
+    /// distance from it in bone space (see [`posed_sphere`]).
+    influence: Vec<(u16, f32)>,
+}
+
+/// The largest factor by which the linear part of `cols` (three columns) can stretch a vector:
+/// σ_max² ≤ min(Gershgorin row bound of MᵀM, ‖M‖_F²) — exact for rotation × scale.
+fn stretch(cols: [[f32; 3]; 3]) -> f32 {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let [a, b, c] = cols;
+    let (ab, bc, ac) = (dot(a, b).abs(), dot(b, c).abs(), dot(a, c).abs());
+    let gershgorin = (dot(a, a) + ab + ac).max(dot(b, b) + ab + bc).max(dot(c, c) + ac + bc);
+    gershgorin.min(dot(a, a) + dot(b, b) + dot(c, c)).sqrt()
+}
+
+/// Each bone a part's skinned vertices are weighted to, with the farthest such vertex's
+/// distance from the bone's origin in bone space (`inverse_bind · v`).
+pub fn part_influence(skeleton: &Skeleton, vertices: &[Vertex], skin: &[SkinVertex]) -> Vec<(u16, f32)> {
+    let mut reach = vec![-1.0f32; skeleton.len()];
+    for (v, s) in vertices.iter().zip(skin) {
+        for k in 0..4 {
+            let b = s.joints[k] as usize;
+            if s.weights[k] > 0 && b < reach.len() {
+                let p = skeleton.inverse_bind[b].apply_point(v.position);
+                reach[b] = reach[b].max((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt());
+            }
+        }
+    }
+    reach.iter().enumerate().filter(|(_, r)| **r >= 0.0).map(|(b, r)| (b as u16, *r)).collect()
+}
+
+/// A model-space sphere holding every vertex of a part posed by `model` (the bones' posed
+/// model-space transforms). A vertex weighted to bone b lies within `reach_b × stretch(b)` of
+/// the bone's posed origin under that bone alone, and linear blend skinning puts it in the convex
+/// hull of those points: inside the sphere around the union of the bones' spheres.
+pub fn posed_sphere(influence: &[(u16, f32)], model: &[Affine]) -> Option<([f32; 3], f32)> {
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for &(b, r) in influence {
+        let m = model.get(b as usize)?;
+        let rad = r * stretch(m.cols);
+        for k in 0..3 {
+            lo[k] = lo[k].min(m.t[k] - rad);
+            hi[k] = hi[k].max(m.t[k] + rad);
+        }
+    }
+    if lo[0] > hi[0] {
+        return None;
+    }
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let mut radius = 0.0f32;
+    for &(b, r) in influence {
+        let m = &model[b as usize];
+        let d = [m.t[0] - c[0], m.t[1] - c[1], m.t[2] - c[2]];
+        radius = radius.max((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() + r * stretch(m.cols));
+    }
+    // A hair of slack for rounding in the GPU's own skinning.
+    (radius.is_finite()).then_some((c, radius * 1.001 + 1e-4))
 }
 
 struct GpuModel {
@@ -1308,6 +1832,103 @@ struct GpuModel {
     /// Bounding sphere in object space.
     center: Vec3,
     radius: f32,
+    /// Material textures, shared by every entity of the build.
+    textures: Vec<TextureId>,
+    /// The build's anim set (rigged models with clips).
+    anims: Option<Arc<AnimSet>>,
+    /// Pipeline variants its draws use: skinned (its meshes carry skin, when animated) and
+    /// textured (a part has textures).
+    needs: Needs,
+}
+
+/// Pipeline variants a model's draws use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Needs {
+    skinned: bool,
+    textured: bool,
+}
+
+/// Why an uploaded model isn't drawn yet.
+enum Held<'a> {
+    /// Its pipeline variant is being built on a worker thread.
+    Waiting,
+    /// That build failed: it won't be drawn until a retry succeeds.
+    Failed(&'a VariantFailure),
+}
+
+/// An entity's animator, kept across frames (seeked to each frame's time: no per-frame state).
+struct EntityAnim {
+    build: u64,
+    animator: Animator,
+    /// The frame it was last used in.
+    used: u64,
+}
+
+/// Animators unused this many frames go back to their build's pool.
+const ANIMATOR_IDLE_FRAMES: u64 = 120;
+/// Spare animators kept per build (game entities come and go: reuse, don't allocate).
+const ANIMATOR_POOL: usize = 64;
+
+/// Per-frame animation state: the render time, the frame's bone matrices and the animators.
+#[derive(Default)]
+struct AnimFrame {
+    time: f64,
+    frame: u64,
+    bones: Vec<[f32; 16]>,
+    entities: BTreeMap<u64, EntityAnim>,
+    pool: BTreeMap<u64, Vec<Animator>>,
+    model: Vec<Affine>,
+    skin: Vec<Affine>,
+}
+
+/// The playback of `a` at render time `t` in `set` (`None`: no such clip).
+fn playback(set: &AnimSet, a: &AnimSpec, t: f64) -> Option<Playback> {
+    let clip = set.id(&a.clip)?;
+    let c = set.clip(clip);
+    let d = c.duration as f64;
+    let mut u = a.clip_time(t);
+    match (a.looping, c.looping) {
+        // Hold the last pose (just short of the end, where a loop wraps to its start).
+        (Some(false), LoopMode::Loop | LoopMode::PingPong) => u = u.min(d * (1.0 - 1e-6)),
+        (Some(true), LoopMode::Once) if d > 0.0 => u -= (u / d).floor() * d,
+        _ => {}
+    }
+    Some(Playback { clip, time: u, rate: 1.0 })
+}
+
+impl AnimFrame {
+    /// Leaves entity `e`'s pose at the frame's time in `self.model` / `self.skin`. False when it
+    /// has no clip of `set` to play (it draws the bind pose).
+    fn evaluate(&mut self, e: &Entity, build: u64, set: &AnimSet) -> bool {
+        let Some(a) = &e.anim else { return false };
+        let t = self.time;
+        let Some(base) = playback(set, a, t) else { return false };
+        let fade = a
+            .from
+            .as_deref()
+            .filter(|_| a.crossfade > 0.0)
+            .and_then(|f| playback(set, f, t))
+            .map(|p| (p, (t - a.start.unwrap_or(0.0)) as f32, a.crossfade));
+        let frame = self.frame;
+        let entry = match self.entities.get_mut(&e.id) {
+            Some(x) if x.build == build => x,
+            _ => {
+                if let Some(old) = self.entities.remove(&e.id) {
+                    let pool = self.pool.entry(old.build).or_default();
+                    if pool.len() < ANIMATOR_POOL {
+                        pool.push(old.animator);
+                    }
+                }
+                let animator = self.pool.get_mut(&build).and_then(Vec::pop).unwrap_or_else(|| Animator::new(set, base.clip));
+                self.entities.entry(e.id).or_insert(EntityAnim { build, animator, used: frame })
+            }
+        };
+        entry.used = frame;
+        entry.animator.seek(base, fade);
+        entry.animator.evaluate(set);
+        entry.animator.skin(set, &mut self.model, &mut self.skin);
+        true
+    }
 }
 
 /// Uploaded builds and the handle → build map the renderer reads (see the module docs).
@@ -1320,12 +1941,18 @@ pub struct GpuModels {
     failed: BTreeMap<u64, String>,
     /// `(world mesh epoch, library generation, world generation)` of the last sync.
     synced: Option<(u64, u64, u64)>,
+    /// Animation state, written while drawing (drawing takes `&self`).
+    anim: RefCell<AnimFrame>,
+    /// The GPU's pipeline variants as of the last sync: a model needing one not built yet (it is
+    /// being built on a worker thread) is held back like a model still building.
+    ready: PipelineVariants,
 }
 
 impl GpuModels {
     /// Uploads the builds live model entities use and frees the rest, when the world's model
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
+        self.ready = gpu.pipeline_variants();
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
@@ -1345,11 +1972,26 @@ impl GpuModels {
         }
         drop(lib);
         let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id)).collect();
+        let mut released = Vec::new();
         for id in stale {
             if let Some(m) = self.uploaded.remove(&id) {
                 for mesh in m.lods.iter().flatten().map(|p| p.mesh) {
                     gpu.destroy_mesh(mesh);
                 }
+                if !m.textures.is_empty() {
+                    released.push(id);
+                }
+                for t in m.textures {
+                    gpu.destroy_texture(t);
+                }
+            }
+            self.anim.get_mut().pool.remove(&id);
+        }
+        if !released.is_empty() {
+            // Their texture pixels are gone from the CPU too: the library forgets those builds.
+            let mut lib = library.lock();
+            for id in released {
+                lib.forget_build(id);
             }
         }
         self.failed.retain(|id, _| wanted.contains_key(id));
@@ -1358,11 +2000,16 @@ impl GpuModels {
             if self.uploaded.contains_key(&id) || self.failed.contains_key(&id) {
                 continue;
             }
-            match upload(gpu, &built.model) {
+            match upload(gpu, &built) {
                 Ok(m) => {
                     self.uploaded.insert(id, m);
                 }
-                Err(e) => {
+                Err(UploadError::Released) => {
+                    // Its textures left the CPU with an earlier upload: build it again (its
+                    // entities show as building meanwhile).
+                    library.lock().reimport(id);
+                }
+                Err(UploadError::Gpu(e)) => {
                     let msg = format!("model '{}' not drawn: {e}", built.model.name);
                     errors.push(msg.clone());
                     self.failed.insert(id, msg);
@@ -1380,15 +2027,129 @@ impl GpuModels {
     /// Builds and meshes on the GPU.
     pub fn stats_json(&self) -> Json {
         let meshes: usize = self.uploaded.values().map(|m| m.lods.iter().map(Vec::len).sum::<usize>()).sum();
+        let textures: usize = self.uploaded.values().map(|m| m.textures.len()).sum();
+        let anim = self.anim.borrow();
         Json::obj([
             ("builds_uploaded", Json::from(self.uploaded.len())),
             ("meshes", Json::from(meshes)),
+            ("textures", Json::from(textures)),
             ("failed_uploads", Json::from(self.failed.len())),
+            ("animated_entities", Json::from(anim.entities.len())),
+            ("bone_matrices_last_frame", Json::from(anim.bones.len())),
         ])
     }
 
+    /// Starts a frame's draw list at render time `time_s` (engine clock seconds, or a capture's
+    /// `time_s`): animated entities are posed at that time. Clears the frame's bone matrices.
+    pub fn begin_frame(&self, time_s: f64) {
+        let mut a = self.anim.borrow_mut();
+        a.time = if time_s.is_finite() { time_s } else { 0.0 };
+        a.frame += 1;
+        a.bones.clear();
+        if a.frame % 64 == 0 {
+            // Entities not drawn for a while (deleted, hidden, off screen) give their animators back.
+            let frame = a.frame;
+            let AnimFrame { entities, pool, .. } = &mut *a;
+            let idle: Vec<u64> = entities.iter().filter(|(_, x)| x.used + ANIMATOR_IDLE_FRAMES < frame).map(|(id, _)| *id).collect();
+            for id in idle {
+                if let Some(x) = entities.remove(&id) {
+                    let p = pool.entry(x.build).or_default();
+                    if p.len() < ANIMATOR_POOL {
+                        p.push(x.animator);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The frame's bone matrices (for [`specula_gpu::FrameDesc::bones`]); give them back with
+    /// [`GpuModels::put_bones`] so their storage is reused.
+    pub fn take_bones(&self) -> Vec<[f32; 16]> {
+        std::mem::take(&mut self.anim.borrow_mut().bones)
+    }
+
+    pub fn put_bones(&self, bones: Vec<[f32; 16]>) {
+        self.anim.borrow_mut().bones = bones;
+    }
+
+    /// Takes the GPU's pipeline variants (a finished background build) without a full sync.
+    pub fn refresh_ready(&mut self, gpu: &mut Gpu) {
+        self.ready = gpu.pipeline_variants();
+    }
+
+    /// Entity `e` has an uploaded model whose pipeline variant is still being built: it isn't
+    /// drawn yet (captures wait for it as for a build).
+    pub fn waiting(&self, e: &Entity) -> bool {
+        self.model_of(e).is_some_and(|(_, m)| matches!(self.held_back(e, m), Some(Held::Waiting)))
+    }
+
+    /// Entity `e` isn't drawn because the build of its pipeline variant failed: the warning
+    /// (with the failing pipeline and its VkResult).
+    pub fn pipeline_problem(&self, e: &Entity) -> Option<String> {
+        let (_, m) = self.model_of(e)?;
+        let Some(Held::Failed(f)) = self.held_back(e, m) else { return None };
+        Some(format!(
+            "'{}' is not drawn: building its {} pipelines failed ({}; pipeline {}); model_reload retries",
+            e.name,
+            variant_names(f),
+            f.error,
+            f.pipeline
+        ))
+    }
+
+    /// The last failed background pipeline build, structured (perf_frame and sight_frame
+    /// `problems`), until a retry (model_reload) starts.
+    pub fn pipeline_failure_json(&self) -> Option<Json> {
+        let f = self.ready.failed.as_ref()?;
+        Some(Json::obj([
+            ("code", Json::from("pipeline_variant_failed")),
+            ("variants", Json::from(variant_names(f))),
+            ("pipeline", Json::from(f.pipeline.as_str())),
+            ("vk_result", f.error.vk_result.map_or(Json::Null, Json::from)),
+            ("message", Json::from(f.error.to_string())),
+        ]))
+    }
+
+    fn held_back(&self, e: &Entity, m: &GpuModel) -> Option<Held<'_>> {
+        let skinned = m.needs.skinned && e.anim.is_some() && !self.ready.skinned;
+        let textured = m.needs.textured && !self.ready.textured;
+        if !skinned && !textured {
+            return None;
+        }
+        match &self.ready.failed {
+            Some(f) if (skinned && f.skinned) || (textured && f.textured) => Some(Held::Failed(f)),
+            _ => Some(Held::Waiting),
+        }
+    }
+
+    fn model_of(&self, e: &Entity) -> Option<(u64, &GpuModel)> {
+        let id = self.by_handle.get(e.resolved_model().map_or(usize::MAX, |r| r.handle as usize)).copied().flatten()?;
+        self.uploaded.get(&id).map(|m| (id, m))
+    }
+
+    /// Entity `e`'s bones in world space at render time `time_s` (its animation's pose, or the
+    /// bind pose), as (name, joint position), parents before children: for the sight skeleton
+    /// overlay. `None` for entities without an uploaded rigged model with an anim set.
+    pub fn bone_positions(&self, e: &Entity, time_s: f64) -> Option<Vec<(String, Vec3)>> {
+        let (id, model) = self.model_of(e)?;
+        let set = model.anims.as_ref()?;
+        let mut a = self.anim.borrow_mut();
+        let saved = a.time;
+        a.time = time_s;
+        let posed = a.evaluate(e, id, set);
+        a.time = saved;
+        let world = e.model();
+        let heads: Vec<Vec3> = if posed {
+            a.model.iter().map(|m| Vec3::new(m.t[0], m.t[1], m.t[2])).collect()
+        } else {
+            set.skeleton.heads.iter().map(|h| Vec3::new(h[0], h[1], h[2])).collect()
+        };
+        Some(set.skeleton.names.iter().zip(heads).map(|(n, p)| (n.clone(), world.transform_point(p))).collect())
+    }
+
     /// Appends `e`'s draws (one per material part of the chosen LOD). `eye`, `fov_y_deg` and
-    /// `viewport_h` size it on screen.
+    /// `viewport_h` size it on screen. An animated entity's palette goes into the frame's bone
+    /// matrices (see [`GpuModels::begin_frame`]).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -1400,16 +2161,21 @@ impl GpuModels {
         stats: &mut LodStats,
         out: &mut Vec<DrawItem>,
     ) {
-        let model = self
-            .by_handle
-            .get(e.resolved_model().map_or(usize::MAX, |r| r.handle as usize))
-            .copied()
-            .flatten()
-            .and_then(|id| self.uploaded.get(&id));
-        let Some(model) = model else {
+        let Some((id, model)) = self.model_of(e) else {
             stats.missing += 1;
             return;
         };
+        match self.held_back(e, model) {
+            None => {}
+            Some(Held::Waiting) => {
+                stats.missing += 1;
+                return;
+            }
+            Some(Held::Failed(_)) => {
+                stats.pipeline_failed += 1;
+                return;
+            }
+        }
         let world = e.model();
         let count = model.lods.len();
         let level = match choice {
@@ -1426,16 +2192,42 @@ impl GpuModels {
             }
         };
         stats.histogram[level.min(LOD_BUCKETS - 1)] += 1;
+        // Every part of the LOD shares the entity's palette; each part is culled by its posed
+        // sphere.
+        let mut posed = None;
+        let skin = match (&model.anims, &e.anim) {
+            (Some(set), Some(_)) => {
+                let mut a = self.anim.borrow_mut();
+                if a.evaluate(e, id, set) {
+                    let AnimFrame { bones, skin, .. } = &mut *a;
+                    let first = bones.len() as u32;
+                    bones.extend(skin.iter().map(Affine::to_cols_array));
+                    posed = Some(a);
+                    Some(first)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let cols = world.to_cols_array();
+        let c = &world.cols;
+        let world_stretch = stretch([[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]]);
         let tint = e.color;
         for p in &model.lods[level] {
             stats.triangles += u64::from(p.triangles);
+            let bounds = posed.as_ref().and_then(|a| posed_sphere(&p.influence, &a.model)).map(|(centre, r)| {
+                let w = world.transform_point(Vec3::new(centre[0], centre[1], centre[2]));
+                [w.x, w.y, w.z, r * world_stretch]
+            });
             out.push(DrawItem {
                 mesh: p.mesh,
                 model: cols,
                 color: [p.color[0] * tint[0], p.color[1] * tint[1], p.color[2] * tint[2], p.color[3]],
                 material: p.material,
                 surface: p.surface,
+                skin,
+                bounds,
             });
         }
     }
@@ -1449,59 +2241,136 @@ fn sphere_px(world: &Mat4, model: &GpuModel, eye: Vec3, fov_y_deg: f32, viewport
     screen_px(model.radius * scale, (center - eye).length(), fov_y_deg, viewport_h)
 }
 
-/// One mesh per LOD per material part.
-fn upload(gpu: &mut Gpu, model: &Model) -> Result<GpuModel, String> {
+/// Why a build could not be uploaded.
+enum UploadError {
+    /// Its texture pixels went to the GPU in an earlier upload: import it again.
+    Released,
+    Gpu(String),
+}
+
+/// One mesh per LOD per material part (with its skin stream when rigged, and UVs when its
+/// material is textured), and the build's textures, once.
+fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
+    let model = &built.model;
+    let mut textures: Vec<TextureId> = Vec::with_capacity(built.textures.len());
+    let mut meshes: Vec<MeshId> = Vec::new();
+    let undo = |gpu: &mut Gpu, meshes: &[MeshId], textures: &[TextureId]| {
+        meshes.iter().for_each(|m| gpu.destroy_mesh(*m));
+        textures.iter().for_each(|t| gpu.destroy_texture(*t));
+    };
+    for t in &built.textures {
+        // The pixels go to the GPU and leave the CPU (see `TextureData`).
+        let data = std::mem::take(&mut *t.levels.lock().unwrap_or_else(PoisonError::into_inner));
+        if data.is_empty() {
+            undo(gpu, &meshes, &textures);
+            return Err(UploadError::Released);
+        }
+        let levels: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+        match gpu.upload_texture_levels(t.width, t.height, t.format, &levels, t.sampler) {
+            Ok(id) => textures.push(id),
+            Err(e) => {
+                undo(gpu, &meshes, &textures);
+                return Err(UploadError::Gpu(e.to_string()));
+            }
+        }
+    }
     let mut lods = Vec::with_capacity(model.lods.len());
-    let mut uploaded: Vec<MeshId> = Vec::new();
     for lod in &model.lods {
         let mut parts = Vec::with_capacity(lod.parts.len());
         for (i, part) in lod.parts.iter().enumerate() {
             let preset = &model.materials.iter().find(|(n, _)| *n == part.material).expect("checked when built").1;
-            let (vertices, indices, mean) = part_mesh(lod, i);
-            if indices.is_empty() {
+            let textured = built
+                .materials
+                .get(&part.material)
+                .filter(|m| m.textured() && !lod.uvs.is_empty() && preset.kind == MaterialKind::Standard);
+            let p = part_mesh(lod, i, textured.is_some());
+            if p.indices.is_empty() {
                 continue;
             }
-            let mesh = match gpu.upload_mesh(&vertices, &indices) {
+            let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
+            let mesh = match gpu.upload_mesh_with(&p.vertices, &p.indices, &streams) {
                 Ok(m) => m,
                 Err(e) => {
-                    for m in uploaded {
-                        gpu.destroy_mesh(m);
-                    }
-                    return Err(e.to_string());
+                    undo(gpu, &meshes, &textures);
+                    return Err(UploadError::Gpu(e.to_string()));
                 }
             };
-            uploaded.push(mesh);
-            let (material, surface, color) = part_look(preset, mean);
-            parts.push(PartDraw { mesh, material, surface, color, triangles: (indices.len() / 3) as u32 });
+            meshes.push(mesh);
+            let (material, surface, color) = match textured {
+                Some(m) => textured_look(m, &textures),
+                None => part_look(preset, p.mean),
+            };
+            let influence = match (&built.anims, &p.skin) {
+                (Some(set), Some(skin)) => part_influence(&set.skeleton, &p.vertices, skin),
+                _ => Vec::new(),
+            };
+            parts.push(PartDraw { mesh, material, surface, color, triangles: (p.indices.len() / 3) as u32, influence });
         }
         lods.push(parts);
     }
     let b = model.bounds;
     let (lo, hi) = (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]));
-    Ok(GpuModel { lods, center: (lo + hi) * 0.5, radius: ((hi - lo).length() * 0.5).max(1e-3) })
+    let needs = Needs {
+        skinned: built.anims.is_some() && model.lods.iter().any(MeshData::is_skinned),
+        textured: lods.iter().flatten().any(|p: &PartDraw| p.surface.textures != MaterialTextures::NONE),
+    };
+    Ok(GpuModel { lods, center: (lo + hi) * 0.5, radius: ((hi - lo).length() * 0.5).max(1e-3), textures, anims: built.anims.clone(), needs })
 }
 
-/// The vertices and indices of part `i` alone (re-indexed), and its mean vertex colour (sRGB).
-pub fn part_mesh(m: &MeshData, i: usize) -> (Vec<Vertex>, Vec<u32>, [f32; 3]) {
+/// One part of a mesh alone (re-indexed): vertices, indices, mean vertex colour (sRGB), and its
+/// skin stream (rigged meshes), UVs (when asked and present) and the file's tangents (when every
+/// vertex of the part has one; otherwise the GPU generates them).
+pub struct PartMesh {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub mean: [f32; 3],
+    pub skin: Option<Vec<SkinVertex>>,
+    pub uvs: Option<Vec<[f32; 2]>>,
+    pub tangents: Option<Vec<[f32; 4]>>,
+}
+
+/// Part `i` of `m` alone (see [`PartMesh`]).
+pub fn part_mesh(m: &MeshData, i: usize, with_uvs: bool) -> PartMesh {
     let src = m.part_indices(i);
     let mut remap = vec![u32::MAX; m.positions.len()];
     let mut vertices = Vec::new();
     let mut indices = Vec::with_capacity(src.len());
+    let skinned = m.is_skinned();
+    let with_uvs = with_uvs && m.uvs.len() == m.positions.len();
+    let with_tangents = with_uvs && m.tangents.len() == m.positions.len();
+    let (mut skin, mut uvs, mut tangents) = (Vec::new(), Vec::new(), Vec::new());
     let mut sum = [0.0f64; 3];
     for &v in src {
         let slot = &mut remap[v as usize];
         if *slot == u32::MAX {
             *slot = vertices.len() as u32;
-            let c = m.colors[v as usize];
+            let v = v as usize;
+            let c = m.colors[v];
             for k in 0..3 {
                 sum[k] += f64::from(c[k]);
             }
-            vertices.push(Vertex::with_color(m.positions[v as usize], m.normals[v as usize], c));
+            vertices.push(Vertex::with_color(m.positions[v], m.normals[v], c));
+            if skinned {
+                skin.push(SkinVertex { joints: m.joints[v], weights: m.weights[v] });
+            }
+            if with_uvs {
+                uvs.push(m.uvs[v]);
+            }
+            if with_tangents {
+                tangents.push(m.tangents[v]);
+            }
         }
         indices.push(*slot);
     }
     let n = vertices.len().max(1) as f64;
-    (vertices, indices, sum.map(|s| (s / n / 255.0) as f32))
+    PartMesh {
+        vertices,
+        indices,
+        mean: sum.map(|s| (s / n / 255.0) as f32),
+        skin: skinned.then_some(skin),
+        uvs: with_uvs.then_some(uvs),
+        tangents: (with_tangents && tangents.iter().all(|t| t[0] != 0.0 || t[1] != 0.0 || t[2] != 0.0)).then_some(tangents),
+    }
 }
 
 /// A style preset as the engine's material (see the module docs).
@@ -1511,6 +2380,28 @@ pub fn part_look(p: &MaterialPreset, mean: [f32; 3]) -> (Material, Surface, [f32
         MaterialKind::Standard => (Material::Lit, surface, [1.0; 4]),
         MaterialKind::Glass => (Material::Glass, surface, [mean[0], mean[1], mean[2], p.opacity]),
     }
+}
+
+/// A textured glTF material as the engine's (`textures`: the build's uploaded textures).
+fn textured_look(m: &PartMaterial, textures: &[TextureId]) -> (Material, Surface, [f32; 4]) {
+    let tex = |i: Option<usize>| i.and_then(|i| textures.get(i).copied());
+    let surface = Surface {
+        emissive: m.emissive_strength,
+        metallic: m.metallic.clamp(0.0, 1.0),
+        roughness: m.roughness.clamp(0.0, 1.0),
+        specular: 1.0,
+        textures: MaterialTextures {
+            base_color: tex(m.base),
+            normal: tex(m.normal),
+            normal_scale: m.normal_scale,
+            metallic_roughness: tex(m.metallic_roughness),
+            emissive: tex(m.emissive),
+            emissive_color: (m.emissive_strength > 0.0).then_some(m.emissive_color),
+            alpha_cutoff: m.alpha_cutoff,
+        },
+        ..Surface::default()
+    };
+    (Material::Lit, surface, [m.color[0], m.color[1], m.color[2], 1.0])
 }
 
 #[cfg(test)]
@@ -1833,7 +2724,7 @@ mod tests {
         // The real build lands.
         let style = Style::parse(&std::fs::read_to_string(root.join(STYLE_FILE)).unwrap()).unwrap();
         let model = || build(&block(1.0), &BuildParams::new(&style)).unwrap();
-        deliver(&mut lib, second, Outcome::Built(model()));
+        deliver(&mut lib, second, Outcome::Built(model(), Box::default()));
         assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
         // Again, but this time the old job's good result arrives first: it serves the entity and
         // the replacement is cancelled.
@@ -1843,7 +2734,7 @@ mod tests {
         lib.builds.clear();
         lib.resolve(&spec).unwrap();
         let replacement = lib.in_flight[&key].job;
-        deliver(&mut lib, first, Outcome::Built(model()));
+        deliver(&mut lib, first, Outcome::Built(model(), Box::default()));
         assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
         assert_eq!(lib.in_flight(), 0, "the replacement is dropped");
         assert!(lib.workers.cancelled.lock().unwrap().contains(&replacement));
@@ -1929,6 +2820,8 @@ mod tests {
             style_path: PathBuf::new(),
             params: Vec::new(),
             seed: None,
+            gltf: None,
+            anims: None,
         };
         match run(&job, boom) {
             Outcome::Panicked(why) => assert!(why.contains("kaboom"), "{why}"),
@@ -2062,5 +2955,324 @@ mod tests {
         drop(models);
         let msgs = gpu.close();
         assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
+    }
+
+    #[test]
+    fn rigged_recipes_carry_their_anim_sets() {
+        let mut lib = Library::new(&sepulcra(), None);
+        let creature = lib.resolve(&ModelSpec::new("recipes/shambler.json")).unwrap().handle;
+        let stone = lib.resolve(&ModelSpec::new("recipes/warding_stone.json")).unwrap().handle;
+        settle(&mut lib);
+        let b = lib.built(creature).unwrap();
+        let set = b.anims.as_ref().expect("anims/shambler.json loads");
+        let names: Vec<&str> = set.clips().map(|(_, c)| c.name.as_str()).collect();
+        assert_eq!(names, ["idle", "walk", "attack", "death"]);
+        assert_eq!(set.skeleton.len(), b.model.rig.as_ref().unwrap().len());
+        let r = report(&ModelSpec::new("recipes/shambler.json"), b, false);
+        assert_eq!(r.get("clips").and_then(Json::as_array).map(|a| a.len()), Some(4));
+        assert_eq!(r.get("bones").and_then(Json::as_u64), Some(set.skeleton.len() as u64));
+        let s = lib.built(stone).unwrap();
+        assert!(s.anims.is_none() && s.anim_note.is_none(), "unrigged: no anim set, nothing to say");
+    }
+
+    #[test]
+    fn gltf_sources_import_on_workers_and_refuse_params() {
+        let root = scratch("gltf", &[]);
+        // A Sepulcra creature exported with its rig and clips.
+        let style = Style::parse(&std::fs::read_to_string(sepulcra().join(STYLE_FILE)).unwrap()).unwrap();
+        let mut lib_files = BTreeMap::new();
+        for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
+            let p = e.unwrap().path();
+            lib_files.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+        let model = build(&lib_files["wraith"], &BuildParams { library: Some(&lib_files), ..BuildParams::new(&style) }).unwrap();
+        let skel = Skeleton::from_rig(model.rig.as_ref().unwrap()).unwrap();
+        let set = AnimSet::load(&std::fs::read_to_string(sepulcra().join("anims/wraith.json")).unwrap(), skel).unwrap();
+        let clips: Vec<_> = set.clips().map(|(_, c)| c.clone()).collect();
+        let glb = specula_gltf::export_glb(&specula_gltf::ExportInput { model: &model, lod: 0, skeleton: Some(&set.skeleton), clips: &clips }).unwrap();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/wraith.glb"), &glb).unwrap();
+        let mut lib = Library::new(&root, None);
+        let spec = ModelSpec::new("assets/wraith.glb");
+        let e = lib.resolve(&spec.clone().with_param("tier", 2.0)).unwrap_err();
+        assert_eq!((e.code, e.detail("field")), ("invalid_value", Some(&Json::from("params"))));
+        let missing = lib.resolve(&ModelSpec::new("assets/nope.glb")).unwrap_err();
+        assert_eq!(missing.code, "recipe_not_found");
+        let h = lib.resolve(&spec).unwrap();
+        assert_eq!(h.state, ModelState::Building, "imports never run on the engine thread");
+        settle(&mut lib);
+        let b = lib.built(h.handle).unwrap_or_else(|| panic!("{:?}", lib.handle_error(h.handle)));
+        assert!(b.model.lods[0].is_skinned());
+        let anims = b.anims.as_ref().expect("the asset's clips");
+        assert_eq!(anims.clips().map(|(_, c)| c.name.clone()).collect::<Vec<_>>(), ["float", "swoop", "death"]);
+        assert_eq!(report(&spec, b, false).get("source"), Some(&Json::from("gltf")));
+        // Unchanged file: same key, same build; a rewritten file rebuilds.
+        let first = b.id;
+        assert!(lib.poll(true).is_some_and(|r| r.jobs.is_empty()));
+        assert_eq!(lib.built(h.handle).unwrap().id, first);
+        std::thread::sleep(Duration::from_millis(20));
+        // Another export (without its clips) over the same file.
+        let changed = specula_gltf::export_glb(&specula_gltf::ExportInput { model: &model, lod: 0, skeleton: Some(&set.skeleton), clips: &clips[..1] }).unwrap();
+        std::fs::write(root.join("assets/wraith.glb"), &changed).unwrap();
+        let reload = lib.poll(true).unwrap();
+        assert!(reload.files_changed >= 1, "{}", reload.to_json());
+        settle(&mut lib);
+        let rebuilt = lib.built(h.handle).unwrap_or_else(|| panic!("{:?}", lib.handle_error(h.handle)));
+        assert_ne!(rebuilt.id, first, "rebuilt from the new file: {:?}", lib.handle_error(h.handle));
+        assert_eq!(rebuilt.anims.as_ref().unwrap().len(), 1);
+        // A build whose texture pixels went to the GPU is imported again when uploaded again.
+        let before = rebuilt.id;
+        lib.reimport(before);
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Building, "waits for a fresh import");
+        settle(&mut lib);
+        let again = lib.built(h.handle).unwrap();
+        assert_ne!(again.id, before, "a new build of the same file");
+        assert!(again.textures.iter().all(|t| !t.levels.lock().unwrap().is_empty()));
+        // A build whose upload was freed (no entity used it) is forgotten: the next use of its
+        // spec waits for a fresh import instead of finding a build without pixels.
+        let id = again.id;
+        lib.forget_build(id);
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Building);
+        settle(&mut lib);
+        assert_ne!(lib.built(h.handle).unwrap().id, id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn playback_follows_render_time_speed_offset_and_loop_override() {
+        let mut lib = Library::new(&sepulcra(), None);
+        let h = lib.resolve(&ModelSpec::new("recipes/shambler.json")).unwrap().handle;
+        settle(&mut lib);
+        let set = Arc::clone(lib.built(h).unwrap().anims.as_ref().unwrap());
+        let walk = set.clip(set.id("walk").unwrap()).clone();
+        let mut a = AnimSpec::new("walk");
+        a.start = Some(10.0);
+        a.speed = 2.0;
+        a.time_offset = 0.25;
+        assert_eq!(playback(&set, &a, 11.0).unwrap().time, 2.25);
+        assert_eq!(playback(&set, &a, 5.0).unwrap().time, 0.0, "before the start: the first pose");
+        // Hold a looping clip's last pose.
+        a.looping = Some(false);
+        let held = playback(&set, &a, 1000.0).unwrap().time;
+        assert!(held < walk.duration as f64 && held > walk.duration as f64 * 0.99, "{held}");
+        // Loop a play-once clip.
+        let death = set.clip(set.id("death").unwrap()).duration as f64;
+        let mut d = AnimSpec::new("death");
+        d.start = Some(0.0);
+        d.looping = Some(true);
+        let t = playback(&set, &d, death * 2.5).unwrap().time;
+        assert!((t - death * 0.5).abs() < 1e-9, "{t}");
+        assert!(playback(&set, &AnimSpec::new("moonwalk"), 1.0).is_none(), "an unknown clip plays nothing");
+    }
+
+    /// The skinned pipelines' background build fails (injected): the animated model is reported
+    /// as failed (stats, warning with the VkResult and pipeline, structured problem), not as
+    /// waiting (so captures don't park on it); a retry builds them and it draws.
+    #[test]
+    fn failed_pipeline_builds_are_failures_not_waits() {
+        if !specula_gpu::is_available() {
+            eprintln!("SKIPPED: Vulkan is not available");
+            return;
+        }
+        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("SKIPPED: {e}");
+                return;
+            }
+        };
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let mut walker = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        walker.anim = Some(AnimSpec::new("walk"));
+        let walker = world.spawn(walker, "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        gpu.inject_background_fault(specula_gpu::BackgroundFault::Error);
+        let mut models = GpuModels::default();
+        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(std::time::Instant::now() < deadline, "the build never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
+        let e = world.get(walker).unwrap();
+        let warning = models.pipeline_problem(e).expect("a failed build is reported");
+        assert!(warning.contains("skinned") && warning.contains("VkResult -2") && warning.contains("Mesh"), "{warning}");
+        let problem = models.pipeline_failure_json().unwrap();
+        assert_eq!(problem.get("vk_result").and_then(Json::as_f64), Some(-2.0), "{problem:?}");
+        let mut stats = LodStats::default();
+        let mut out = Vec::new();
+        models.begin_frame(0.5);
+        models.draw(e, Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut stats, &mut out);
+        assert_eq!((stats.pipeline_failed, stats.missing, out.len()), (1, 0, 0));
+        let _ = models.take_bones();
+        // The retry (model_reload does this) builds them.
+        assert!(gpu.retry_failed_variants());
+        models.refresh_ready(&mut gpu);
+        assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none(), "retrying: waiting again, not failed");
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(std::time::Instant::now() < deadline, "the retry never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
+        assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none() && models.pipeline_failure_json().is_none());
+        let mut stats = LodStats::default();
+        models.begin_frame(0.5);
+        models.draw(world.get(walker).unwrap(), Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut stats, &mut out);
+        assert!(stats.pipeline_failed == 0 && !out.is_empty(), "drawn after the retry");
+        let _ = models.take_bones();
+    }
+
+    #[test]
+    fn animated_entities_get_palettes_and_posed_bones() {
+        if !specula_gpu::is_available() {
+            eprintln!("SKIPPED: Vulkan is not available");
+            return;
+        }
+        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("SKIPPED: {e}");
+                return;
+            }
+        };
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let mut walker = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        walker.anim = Some(AnimSpec::new("walk"));
+        let walker = world.spawn(walker, "t").unwrap().id;
+        let still = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/shambler.json")), "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        let mut models = GpuModels::default();
+        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        // The skinned pipelines are built on a worker: the walker is held back (not drawn,
+        // captures wait) until they exist; the still one, unanimated, draws at once.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(!models.waiting(world.get(still).unwrap()), "an unanimated model needs no skinned pipeline");
+            assert!(std::time::Instant::now() < deadline, "the skinned pipelines were never built");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
+        let bones_of = |models: &GpuModels, t: f64| {
+            models.begin_frame(t);
+            let mut out = Vec::new();
+            let mut st = LodStats::default();
+            for id in [walker, still] {
+                models.draw(world.get(id).unwrap(), Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut st, &mut out);
+            }
+            (out, models.take_bones())
+        };
+        let (draws, bones) = bones_of(&models, 0.3);
+        let set = Arc::clone(shared.lock().built(world.get(walker).unwrap().resolved_model().unwrap().handle).unwrap().anims.as_ref().unwrap());
+        assert_eq!(bones.len(), set.skeleton.len(), "one palette: the walker's");
+        let parts = draws.len() / 2;
+        assert!(draws[..parts].iter().all(|d| d.skin == Some(0)), "every part of the walker shares its palette");
+        assert!(draws[..parts].iter().all(|d| d.bounds.is_some_and(|b| b[3] > 0.0 && b[3] < 3.0)), "posed parts carry posed bounds");
+        assert!(draws[parts..].iter().all(|d| d.bounds.is_none()), "the bind pose culls by its mesh");
+        assert!(draws[parts..].iter().all(|d| d.skin.is_none()), "no anim: the bind pose");
+        models.put_bones(bones);
+        // The same time gives the same pose; another time another.
+        let (_, again) = bones_of(&models, 0.3);
+        let (_, later) = bones_of(&models, 0.55);
+        assert_eq!(again.len(), later.len());
+        assert_ne!(again, later, "the walk moves");
+        let (_, same) = bones_of(&models, 0.3);
+        assert_eq!(same, again, "a pose is a function of render time");
+        let e = world.get(walker).unwrap();
+        let a = models.bone_positions(e, 0.3).unwrap();
+        let b = models.bone_positions(e, 0.55).unwrap();
+        assert_eq!(a.len(), set.skeleton.len());
+        assert_eq!(a[0].0, set.skeleton.names[0]);
+        assert!(a.iter().zip(&b).any(|(p, q)| (p.1 - q.1).length() > 0.01), "bones move between the times");
+        let rest = models.bone_positions(world.get(still).unwrap(), 0.3).unwrap();
+        let head = set.skeleton.heads[1];
+        assert!((rest[1].1 - Vec3::new(head[0], head[1], head[2])).length() < 1e-5, "unanimated: the rest pose");
+        drop(models);
+        let msgs = gpu.close();
+        assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
+    }
+
+    #[test]
+    fn anims_that_cannot_play_are_reported() {
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let spawn = |world: &mut World, recipe: &str, clip: &str| {
+            let mut s = SpawnSpec::model(ModelSpec::new(recipe));
+            s.anim = Some(AnimSpec::new(clip));
+            world.spawn(s, "t").unwrap().id
+        };
+        let walker = spawn(&mut world, "recipes/shambler.json", "walk");
+        let typo = spawn(&mut world, "recipes/shambler.json", "moonwalk");
+        let stone = spawn(&mut world, "recipes/warding_stone.json", "walk");
+        assert!(anim_problem(&shared.lock(), world.get(typo).unwrap()).is_none(), "nothing to say while building");
+        settle_shared(&shared, &mut world);
+        let lib = shared.lock();
+        assert_eq!(anim_problem(&lib, world.get(walker).unwrap()), None);
+        let p = anim_problem(&lib, world.get(typo).unwrap()).unwrap();
+        assert!(p.contains("'moonwalk'") && p.contains("walk, attack"), "{p}");
+        let p = anim_problem(&lib, world.get(stone).unwrap()).unwrap();
+        assert!(p.contains("no clips") && p.contains("no rig"), "{p}");
+    }
+
+    /// Every part of every Sepulcra creature, posed through every clip (30 samples a second, on
+    /// every LOD): each skinned vertex lies inside the part's posed sphere, so a posed part (or
+    /// its shadow) is never culled while visible. The probe that found the old 2× rest-sphere
+    /// bound wrong (a runner's leaping eye 38× outside its part's rest radius).
+    #[test]
+    fn posed_spheres_hold_every_posed_vertex() {
+        let style = Style::parse(&std::fs::read_to_string(sepulcra().join(STYLE_FILE)).unwrap()).unwrap();
+        let mut files = BTreeMap::new();
+        for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
+            let p = e.unwrap().path();
+            files.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+        let mut checked = 0usize;
+        for name in ["shambler", "skeleton_runner", "wraith", "bone_colossus", "brazier_fire"] {
+            let model = build(&files[name], &BuildParams { library: Some(&files), ..BuildParams::new(&style) }).unwrap();
+            let skel = Skeleton::from_rig(model.rig.as_ref().unwrap()).unwrap();
+            let set = AnimSet::load(&std::fs::read_to_string(sepulcra().join(format!("anims/{name}.json"))).unwrap(), skel).unwrap();
+            let parts: Vec<(PartMesh, Vec<(u16, f32)>)> = model
+                .lods
+                .iter()
+                .flat_map(|lod| (0..lod.parts.len()).map(move |i| part_mesh(lod, i, false)))
+                .map(|p| {
+                    let infl = part_influence(&set.skeleton, &p.vertices, p.skin.as_ref().unwrap());
+                    (p, infl)
+                })
+                .collect();
+            for (clip, c) in set.clips() {
+                let mut animator = Animator::new(&set, clip);
+                let (mut posed, mut skin) = (Vec::new(), Vec::new());
+                let steps = (c.duration * 30.0).ceil() as u32 + 1;
+                for s in 0..=steps {
+                    let t = s as f64 / 30.0;
+                    animator.seek(Playback { clip, time: t, rate: 1.0 }, None);
+                    animator.evaluate(&set);
+                    animator.skin(&set, &mut posed, &mut skin);
+                    for (k, (p, infl)) in parts.iter().enumerate() {
+                        let (centre, r) = posed_sphere(infl, &posed).unwrap();
+                        for (v, sv) in p.vertices.iter().zip(p.skin.as_ref().unwrap()) {
+                            let mut q = [0.0f32; 3];
+                            for j in 0..4 {
+                                let w = sv.weights[j] as f32 / 255.0;
+                                if w > 0.0 {
+                                    let x = skin[sv.joints[j] as usize].apply_point(v.position);
+                                    (0..3).for_each(|a| q[a] += w * x[a]);
+                                }
+                            }
+                            let d = ((q[0] - centre[0]).powi(2) + (q[1] - centre[1]).powi(2) + (q[2] - centre[2]).powi(2)).sqrt();
+                            assert!(d <= r, "{name}/{} t={t:.2} part {k}: a vertex {d:.4} m from the centre, sphere {r:.4} m", c.name);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked} posed vertices checked");
     }
 }

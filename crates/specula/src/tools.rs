@@ -65,7 +65,7 @@ pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags"
 // Arguments each tool accepts. Anything else is rejected (with the closest valid name), so a typo
 // like `rotation` for `rotation_deg` is an error instead of a silently ignored value.
 const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light"];
-const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body"];
+const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim"];
 pub(crate) const SPAWN_KEYS: &[&str] = &[
     "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
     "params", "visible", "layer", "transient",
@@ -745,6 +745,7 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     spec.props = props_arg(args)?.unwrap_or(Json::Null);
     spec.collider = collider_arg(args)?.flatten();
     spec.body = body_arg(args)?.flatten();
+    spec.anim = anim_arg(args)?.flatten();
     // Value ranges are the world's to decide (the same checks guard in-process game code).
     world::check_spawn(&spec).map_err(value_error)?;
     Ok(spec)
@@ -833,6 +834,16 @@ fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
         is_trigger: bool_arg(c, "is_trigger")?.unwrap_or(false),
         layer: string_arg(c, "layer")?.unwrap_or("default").to_owned(),
     })))
+}
+
+/// `anim`: a clip name, `{clip, speed?, loop?, time_offset?, start?, crossfade?}`, or `false` to
+/// stop animating (see [`world::AnimSpec`]).
+fn anim_arg(args: &Json) -> Result<Option<Option<world::AnimSpec>>, String> {
+    match args.get("anim") {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Bool(false)) => Ok(Some(None)),
+        Some(v) => world::AnimSpec::from_json(v).map(|a| Some(Some(a))),
+    }
 }
 
 /// `body`: `"static"|"kinematic"|"dynamic"`, `{kind, mass?}`, or `false` to remove it.
@@ -1009,6 +1020,7 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
         props: props_arg(args)?,
         collider: collider_arg(args)?,
         body: body_arg(args)?,
+        anim: anim_arg(args)?,
         recipe: string_arg(args, "recipe")?.map(str::to_owned),
         params: params_arg(args)?,
         visible: bool_arg(args, "visible")?,
@@ -1018,7 +1030,7 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     if change.is_empty() {
         return Err("world_set needs at least one change: rename, parent, position, rotation_deg, scale, color, a \
                     look field (material, opacity, emissive, metallic, roughness, specular, color2, seed), light, \
-                    profile, tags, add_tags, remove_tags, props, collider, body, recipe, params, visible or layer"
+                    profile, tags, add_tags, remove_tags, props, collider, body, anim, recipe, params, visible or layer"
             .into());
     }
     world::check_update(&change).map_err(value_error)?;
@@ -1364,6 +1376,18 @@ fn definitions() -> Vec<ToolDef> {
                      {kind, mass (kg, default 1)}; false removes it",
                 ),
             ),
+            (
+                "anim",
+                described(
+                    "model only (rigged recipes with anims/<name>.json, or glTF assets with animations): a clip name \
+                     or {clip, speed (0..8, default 1), loop (true/false; default the clip's own), time_offset (s), \
+                     start (world time s or \"now\"; default 0 at spawn, now on world_set), crossfade (s: blend \
+                     from the previous clip; world_set)}; false stops animating. The pose is a function of render \
+                     time T, in world time (time_control / engine_info clock.world_time_s; world_load resumes it \
+                     from the save): clip time = (T - start) x speed + time_offset, so sight_frame time_s 0, 0.25, \
+                     ... is a filmstrip. model_build lists the clips",
+                ),
+            ),
         ]);
     };
     // Model, visibility and layer fields shared by world_spawn and world_set.
@@ -1374,7 +1398,8 @@ fn definitions() -> Vec<ToolDef> {
                 string(
                     "model only: recipe file relative to the engine's assets root (--assets), e.g. \
                      \"recipes/warding_stone.json\"; built with the style.json found next to it (or --style). \
-                     A broken recipe is refused with its error path and code (model_build to iterate)",
+                     A broken recipe is refused with its error path and code (model_build to iterate). \
+                     A .glb/.gltf path imports a glTF asset instead (textures, skin and animations; no params)",
                 ),
             ),
             ("params", object("model only: recipe parameters, e.g. {\"tier\": 2} (unset ones take the recipe's defaults)")),
@@ -1475,7 +1500,7 @@ fn definitions() -> Vec<ToolDef> {
                           transform is kept, so it moves with its new parent), position, rotation_deg, scale, color, \
                           the look fields, light, a lathe's profile/segments, a model's recipe / params (replaces all) \
                           / seed, visible, layer, tags / add_tags / remove_tags, props (merged key by key; a null \
-                          value removes a key), collider, body."
+                          value removes a key), collider, body, anim (a new clip; crossfade blends from the old)."
                 .into(),
             input_schema: schema(
                 {
@@ -1647,7 +1672,7 @@ fn definitions() -> Vec<ToolDef> {
                     ("max_subjects", integer("Subjects to include in the response, 1..500 (default 50)")),
                     (
                         "time_s",
-                        number("Animation time to render in seconds (default: now). Fix it to get reproducible frames."),
+                        number("Animation time to render, in world-time seconds (default: now, clock.world_time_s). Fix it to get reproducible frames."),
                     ),
                     (
                         "include_ui",
@@ -1665,9 +1690,10 @@ fn definitions() -> Vec<ToolDef> {
             name: "model_build".into(),
             description: "Build a model recipe (read fresh from disk) with params and seed, without spawning it, and \
                           report: triangles and vertices per LOD, bounds, materials, budget, collider, notes, build \
-                          time and whether the build cache already had it. Recipe errors come back structured (code, \
-                          path into the recipe, message). Iterate on a recipe file with this, then world_spawn it as \
-                          shape \"model\"."
+                          time and whether the build cache already had it, and for animated models the bones and \
+                          clips (name, duration, loop). Recipe errors come back structured (code, path into the \
+                          recipe, message). A .glb/.gltf path imports a glTF asset (textures, materials, skin, \
+                          clips). Iterate on a recipe file with this, then world_spawn it as shape \"model\"."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1682,7 +1708,9 @@ fn definitions() -> Vec<ToolDef> {
             name: "model_reload".into(),
             description: "Re-read every recipe and style file now and rebuild the models that changed (the engine \
                           also notices edits on its own within a second). Returns what was rebuilt and any errors; \
-                          a model whose recipe broke keeps its last good build."
+                          a model whose recipe broke keeps its last good build. Also builds again the skinned or \
+                          textured pipelines a background build failed to make (problems code \
+                          pipeline_variant_failed)."
                 .into(),
             input_schema: schema(vec![], &[]),
         },
@@ -1799,7 +1827,9 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "time_control".into(),
             description: "The simulation clock (fixed ticks): action pause, resume, step (run `ticks` then stay \
-                          paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock."
+                          paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock, \
+                          with world_time_s: the world's time (animation starts, sight_frame's default time_s), \
+                          which world_load resumes from the save."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1977,6 +2007,18 @@ mod tests {
 
     fn args(text: &str) -> Json {
         Json::parse(text).unwrap()
+    }
+
+    /// A string continued on the next line without `\` keeps the indentation as a run of
+    /// spaces: no tool description (or schema text) has one.
+    #[test]
+    fn tool_texts_have_no_runs_of_spaces() {
+        for t in definitions() {
+            let schema = t.input_schema.to_string();
+            for text in [&t.description, &schema] {
+                assert!(!text.contains("   "), "{}: a run of spaces in {text:?}", t.name);
+            }
+        }
     }
 
     #[test]

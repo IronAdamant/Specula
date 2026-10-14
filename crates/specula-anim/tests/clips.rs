@@ -379,6 +379,7 @@ fn skinning_bind_pose_is_the_rest_mesh() {
         weights: vec![[255, 0, 0, 0], [255, 0, 0, 0], [128, 127, 0, 0], [200, 55, 0, 0]],
         positions,
         uvs: Vec::new(),
+        tangents: Vec::new(),
     };
     mesh.validate().unwrap();
     let (mut model, mut sk) = (Vec::new(), Vec::new());

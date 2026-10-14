@@ -128,9 +128,19 @@ pub struct PipelineStats {
     pub created_after_warm: u32,
     /// `mark_warm` has been called.
     pub warm: bool,
-    /// Total time spent in `vkCreateGraphicsPipelines`.
+    /// Total time spent in `vkCreateGraphicsPipelines` (on the engine thread).
     pub create_ms: f64,
     pub cache: PipelineCacheLoad,
+    /// Pipelines created on a worker thread (skinned and textured variants asked for by the
+    /// first upload with those streams): no frame waits for them, so they are not budget
+    /// errors. Not counted in `created`.
+    pub created_background: u32,
+    /// Wall time of those background builds.
+    pub background_ms: f64,
+    /// A background build is running (draws needing it are skipped meanwhile).
+    pub background_pending: bool,
+    /// Pipelines a background build failed to create.
+    pub background_failed: u32,
 }
 
 /// What a block of memory held by Specula's allocator is used for.

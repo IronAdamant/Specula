@@ -27,6 +27,8 @@ pub struct Texture {
     pub format: TextureFormat,
     pub width: u32,
     pub height: u32,
+    /// Mip levels (1 for overlay textures).
+    pub levels: u32,
 }
 
 /// Live textures by id.
@@ -176,7 +178,7 @@ pub fn record_overlay(dev: &Device, cmd: VkCommandBuffer, draw: &OverlayDraw, ti
     }
     let mut timer = timer;
     let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_OVERLAY));
-    let pc = PushConstants { frame: draw.frame, draws: draw.quads, material: 0, pass: 0 };
+    let pc = PushConstants { frame: draw.frame, draws: draw.quads, material: 0, pass: 0, bones: 0 };
     // SAFETY: `cmd` is recording inside a rendering instance compatible with the pipeline; the
     // global set is bound with `layout`; `quads` holds `count` records in the frame's upload buffer.
     unsafe {
