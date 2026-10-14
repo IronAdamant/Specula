@@ -243,7 +243,8 @@ impl Path {
         })
     }
 
-    /// `[min x, min y, max x, max y]` of the control points, arcs as their centre ± radii: every
+    /// `[min x, min y, max x, max y]` of the control points, arcs as their centre ± radii, and the
+    /// origin when a line or curve comes before any move or arc (it starts there): every
     /// flattened point lies inside (Béziers stay within their control points' hull). `None` for
     /// an empty path.
     pub fn control_bounds(&self) -> Option<[f64; 4]> {
@@ -252,7 +253,17 @@ impl Path {
             b = [b[0].min(p[0] - r[0]), b[1].min(p[1] - r[1]), b[2].max(p[0] + r[0]), b[3].max(p[1] + r[1])];
         };
         let f = |p: &[f32; 2]| [p[0] as f64, p[1] as f64];
+        // As in flattening: a line or curve before any move or arc starts at the origin.
+        let mut from_origin = true;
         for c in &self.cmds {
+            match c {
+                PathCmd::LineTo(_) | PathCmd::QuadTo(..) | PathCmd::CubicTo(..) if from_origin => {
+                    add([0.0; 2], [0.0; 2]);
+                    from_origin = false;
+                }
+                PathCmd::MoveTo(_) | PathCmd::Arc { .. } => from_origin = false,
+                _ => {}
+            }
             match c {
                 PathCmd::MoveTo(p) | PathCmd::LineTo(p) => add(f(p), [0.0; 2]),
                 PathCmd::QuadTo(a, p) => {
@@ -1146,33 +1157,53 @@ pub fn vertex_bound(contours: &[Contour], filled: bool, style: Option<&StrokeSty
     if !(hw > 0.0 && hw.is_finite() && tolerance.is_finite() && tolerance > 0.0) {
         return n;
     }
+    // The cross-sections `stroke` makes, counted the same way (same cleanup, same corners).
     let tol = (tolerance as f64).max(hw * 1e-3);
     let quarter = arc_segments(hw, std::f64::consts::FRAC_PI_2, tol).min(MAX_ROUND_SEGMENTS);
-    // Cross-sections per corner: a round join turns at most half a turn; miter (or its bevel
-    // fallback) and bevel take at most two.
-    let join = match s.join {
-        LineJoin::Round => arc_segments(hw, std::f64::consts::PI, tol).min(MAX_ROUND_SEGMENTS) + 1,
-        _ => 2,
-    };
     let cap = match s.cap {
         LineCap::Round => quarter + 1,
-        _ => 2,
+        LineCap::Butt | LineCap::Square => if aa { 2 } else { 1 },
     };
     let per_pair = 2 * per;
     for c in contours {
-        let more = match c.points.len() {
+        let pts = dedup(&c.points, c.closed);
+        let more = match pts.len() {
             0 => 0,
             1 => match s.cap {
                 LineCap::Butt => 0,
                 LineCap::Round => 1 + 4 * quarter * per,
                 LineCap::Square => 1 + 4 * per,
             },
-            // Open: two caps and a join per inner point; closed: a join per point and one more.
-            k => k.saturating_mul(join).saturating_add(2 * cap + 1).saturating_mul(per_pair),
+            n => {
+                let closed = c.closed && n > 2;
+                let dir = |i: usize| unit(sub(pts[(i + 1) % n], pts[i]));
+                let (first, last) = if closed { (0, n) } else { (1, n - 1) };
+                let joins = (first..last).map(|i| join_steps(dir((i + n - 1) % n), dir(i), hw, s.join, tol).map_or(1, |k| k + 1)).fold(0usize, usize::saturating_add);
+                let ends = if closed { 1 } else { 2 * cap };
+                joins.saturating_add(ends).saturating_mul(per_pair)
+            }
         };
         n = n.saturating_add(more);
     }
     n
+}
+
+/// How a corner turning from direction `d0` to `d1` is joined: `None`, one cross-section (a
+/// miter within its limit, or no turn); `Some(steps)`, `steps + 1` around the outside (bevel:
+/// 1 step, round: enough for `tol`).
+fn join_steps(d0: P2, d1: P2, hw: f64, join: LineJoin, tol: f64) -> Option<usize> {
+    let m = miter(left(d0), left(d1), f64::INFINITY);
+    let miter_ok = match join {
+        LineJoin::Miter { limit } => len(m) <= (limit as f64).max(1.0),
+        _ => false,
+    };
+    if miter_ok || dot(d0, d1) > 1.0 - 1e-12 {
+        return None;
+    }
+    Some(match join {
+        LineJoin::Round => arc_segments(hw, dmath::atan2_f64(cross(d0, d1), dot(d0, d1)), tol).min(MAX_ROUND_SEGMENTS),
+        _ => 1,
+    })
 }
 
 /// How far past its points (in units of the stroke's half width) a stroke with `join` can reach:
@@ -1190,23 +1221,16 @@ fn join_pairs(out: &mut Vec<Pair>, p: P2, d0: P2, d1: P2, hw: f64, join: LineJoi
     let (l0, l1) = (left(d0), left(d1));
     let turn = cross(d0, d1);
     let m = miter(l0, l1, f64::INFINITY);
-    let miter_ok = match join {
-        LineJoin::Miter { limit } => len(m) <= (limit as f64).max(1.0),
-        _ => false,
-    };
-    if miter_ok || dot(d0, d1) > 1.0 - 1e-12 {
+    // Counted by `vertex_bound` through the same function.
+    let Some(steps) = join_steps(d0, d1, hw, join, tol) else {
         out.push(pair(p, m, scale(m, -1.0), hw));
         return;
-    }
+    };
     // The inner side meets at the (clamped) miter point; the outer side goes around.
     let reach = (hw * hw + shortest * shortest).sqrt();
     let inner_len = len(m) * hw;
     let inner = if inner_len > reach { scale(m, reach / inner_len) } else { m };
     let angle = dmath::atan2_f64(turn, dot(d0, d1)); // signed turn
-    let steps = match join {
-        LineJoin::Round => arc_segments(hw, angle, tol).min(MAX_ROUND_SEGMENTS),
-        _ => 1,
-    };
     for k in 0..=steps {
         let (s, c) = dmath::sin_cos_f64(angle * (k as f64 / steps as f64));
         if turn >= 0.0 {
@@ -1704,6 +1728,13 @@ mod tests {
         }
         let spike = Path::polyline(&[[-1.0, 0.0], [0.0, 0.0], [-1.0, 0.03]]);
         let zigzag = Path::polyline(&(0..40).map(|k| [k as f32 * 0.1, (k % 2) as f32]).collect::<Vec<_>>());
+        // No move first: lines and curves start at the origin.
+        let mut leading_l = Path::new();
+        leading_l.line_to([100.0, 0.0]).line_to([101.0, 0.0]);
+        let mut leading_q = Path::new();
+        leading_q.quad_to([5.0, 9.0], [10.0, 3.0]).line_to([12.0, 8.0]);
+        let mut close_then_c = Path::new();
+        close_then_c.close().cubic_to([-4.0, 1.0], [-3.0, -6.0], [-8.0, -2.0]);
         let paths = [
             ("star", star),
             ("glyph", glyph),
@@ -1714,6 +1745,9 @@ mod tests {
             ("ellipse", Path::ellipse([3.0, -2.0], [5.0, 0.5])),
             ("rounded", Path::rounded_rect(0.0, 0.0, 4.0, 1.0, 0.5)),
             ("arc", Path::arc([1.0, 1.0], 2.0, 0.3, 4.0)),
+            ("leading L", leading_l),
+            ("leading Q", leading_q),
+            ("close then C", close_then_c),
         ];
         let joins = [LineJoin::Miter { limit: 4.0 }, LineJoin::Miter { limit: 100.0 }, LineJoin::Round, LineJoin::Bevel];
         let caps = [LineCap::Butt, LineCap::Square, LineCap::Round];
@@ -1733,7 +1767,8 @@ mod tests {
                                 let mut m = ShapeMesh::default();
                                 stroke(&contours, &style, tol, aa, &mut m).unwrap();
                                 let bound = vertex_bound(&contours, false, Some(&style), tol, aa);
-                                assert!(m.vertices.len() <= bound, "{name} {join:?} {cap:?} {width}: {} > {bound}", m.vertices.len());
+                                // Strokes are counted exactly (the same cleanup and corners).
+                                assert_eq!(m.vertices.len(), bound, "{name} {join:?} {cap:?} {width}");
                                 let pad = width as f64 * 0.5 * stroke_reach(join) + 1e-5;
                                 for v in &m.vertices {
                                     let [x, y, _] = v.position.map(|c| c as f64);

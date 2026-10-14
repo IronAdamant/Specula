@@ -201,6 +201,31 @@ fn bounds_come_from_the_description_and_never_change() {
     let c = spec_of(&deferred(r##"{"items":[{"circle":[100,50,2],"fill":"#fff"}]}"##));
     let (lo, hi) = c.bounds();
     assert!((lo.x - 98.0).abs() < 1e-3 && (hi.x - 102.0).abs() < 1e-3 && (lo.y - 48.0).abs() < 1e-3 && (hi.y - 52.0).abs() < 1e-3, "{lo:?} {hi:?}");
+    // A path that draws before any move starts at the origin: its box includes it.
+    for text in [
+        r##"{"items":[{"path":[["L",100,0],["L",101,0]],"stroke":{"width":1}}]}"##,
+        r##"{"items":[{"path":[["Q",5,9,10,3],["L",12,8]],"stroke":{"width":0.2,"join":"round"}}]}"##,
+    ] {
+        let s = spec_of(&deferred(text));
+        let (lo, hi) = s.bounds();
+        assert!(lo.x <= 0.0 && lo.y <= 0.0 && hi.x > 0.0, "{text}: {lo:?} {hi:?}");
+        let mesh = Arc::clone(s.ensure().unwrap());
+        assert!(s.vertices >= mesh.vertices.len());
+        for v in &mesh.vertices {
+            let p = v.position;
+            assert!(p[0] >= lo.x && p[0] <= hi.x && p[1] >= lo.y && p[1] <= hi.y, "{text}: {p:?} outside {lo:?}..{hi:?}");
+        }
+    }
+    // Round joins are charged per corner, by how far each turns: a stroked circle costs what it
+    // draws.
+    for text in [
+        r##"{"items":[{"circle":[0,0,10],"stroke":{"width":2,"join":"round"}}]}"##,
+        r##"{"items":[{"circle":[0,0,10],"stroke":{"width":2,"join":"round"}}],"tolerance":0.0005}"##,
+    ] {
+        let s = spec_of(&deferred(text));
+        let actual = s.ensure().unwrap().vertices.len();
+        assert_eq!(s.vertices, actual, "{text}");
+    }
     // What a world reports is that box, drawn or not.
     let mut w = World::default();
     let id = spawn(&mut w, "c", TwoD::Shape2d(Arc::clone(&c))).unwrap();
