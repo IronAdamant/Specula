@@ -1,8 +1,8 @@
 #version 460
 // Screen-space ambient occlusion (src/ssao.rs): McGuire's Scalable Ambient Obscurance estimator
 // on the scene's depth (src, full resolution; this target is params.w times smaller), with the
-// normal reconstructed from depth and the sample spiral rotated per pixel by a 4x4 interleaved
-// pattern (deterministic). texel: 1 / the depth's size. mode: samples (bits 0..7), reversed Z
+// normal reconstructed from depth and the sample spiral rotated and scaled per pixel by
+// interleaved gradient noise (deterministic). texel: 1 / the depth's size. mode: samples (bits 0..7), reversed Z
 // (bit 8). params: radius (m), intensity, depth pixels per metre at a view depth of 1 m, depth
 // pixels per target pixel. Out: r = ambient visibility (1 = open), g = view depth (m; FAR = sky).
 // Compile with shaders/build.sh.
@@ -11,8 +11,10 @@
 const float FAR = 65000.0;
 const float TAU = 6.2831853;
 const float TURNS = 7.0; // turns of the sample spiral
-// 4x4 Bayer order: neighbouring pixels get well-spread rotations, every 4x4 block all 16.
-const uint BAYER[16] = uint[](0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
+// Interleaved gradient noise in [0, 1): neighbouring pixels get well-spread values, no tile.
+float ign(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
 
 ivec2 g_size;
 bool g_reverse;
@@ -75,12 +77,15 @@ void main() {
         return;
     }
     uint samples = pc.mode & 255u;
-    float rot = (float(BAYER[(uint(own.y) & 3u) * 4u + (uint(own.x) & 3u)]) + 0.5) / 16.0 * TAU;
+    // Interleaved gradient noise (Jimenez 2014) rotates the spiral and shifts its radii per pixel.
+    vec2 o = vec2(own);
+    float rot = ign(o) * TAU;
+    float jitter = ign(o + vec2(5.588238, 5.588238));
     float bias = 0.02 * radius;
     float eps = 0.01 * r2;
     float sum = 0.0;
     for (uint i = 0u; i < samples; i++) {
-        float alpha = (float(i) + 0.5) / float(samples);
+        float alpha = (float(i) + jitter) / float(samples);
         float angle = alpha * TURNS * TAU + rot;
         ivec2 q = c + ivec2(round(vec2(cos(angle), sin(angle)) * (alpha * screen)));
         float dq = depth_at(q);

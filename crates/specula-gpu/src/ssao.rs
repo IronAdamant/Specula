@@ -9,11 +9,15 @@
 //! 2. `ssao` (`shaders/ssao.frag`), at `resolution` × the frame (half by default: a quarter of
 //!    the pixels): per pixel, the position from the scene's depth, the normal from the nearer of
 //!    each pair of full-resolution neighbours (no normals target: tile GPUs would have to store
-//!    one), then `samples` taps on a screen-space spiral scaled to `radius` metres, rotated per
-//!    pixel by a 4×4 interleaved pattern (deterministic: pixel coordinates only). The estimator
-//!    is McGuire's Scalable Ambient Obscurance (2012). Writes visibility + view depth (RG16F).
-//! 3. `ssao_blur` (`shaders/ssao_blur.frag`): a 4×4 blur (exactly one period of the pattern)
-//!    whose taps are weighted by depth similarity, so occlusion doesn't bleed across edges.
+//!    one), then `samples` taps on a screen-space spiral scaled to `radius` metres, rotated and
+//!    scaled per pixel by interleaved gradient noise (Jimenez 2014: deterministic, pixel
+//!    coordinates only, no repeating tile for the eye to lock onto). The estimator is McGuire's
+//!    Scalable Ambient Obscurance (2012). Writes visibility + view depth (RG16F).
+//! 3. `ssao_blur_x`, `ssao_blur_y` (`shaders/ssao_blur.frag`): a separable 9-tap Gaussian, each
+//!    tap weighted by how far its depth is from the plane through this pixel (so occlusion doesn't
+//!    bleed across edges, yet slanted surfaces still blur). Wide enough to average the noise into
+//!    a smooth result that doesn't crawl when the camera moves (an earlier 4×4 rotation tile plus
+//!    a 4×4 box left a mottle that did).
 //! 4. The tonemap pass (`shaders/composite.frag`) upsamples the visibility bilinearly and scales
 //!    only the ambient part: `c × (1 − (1 − visibility) × ambient_fraction)`. (A depth-aware
 //!    upsample would read the full-resolution depth again, +0.35 ms on the Intel iGPU, to
@@ -62,9 +66,11 @@ pub fn ssao_extent(env: &Environment, extent: VkExtent2D) -> Option<VkExtent2D> 
 pub fn declare(g: &mut FrameGraph, r: &mut FrameRes, size: VkExtent2D) {
     let (w, h) = (size.width, size.height);
     r.ao_raw = g.transient("ao_raw", ImageDesc::color(AO_FORMAT, w, h, MemoryKind::PostTargets));
+    r.ao_across = g.transient("ao_across", ImageDesc::color(AO_FORMAT, w, h, MemoryKind::PostTargets));
     r.ao = g.transient("ao", ImageDesc::color(AO_FORMAT, w, h, MemoryKind::PostTargets));
     g.pass("ssao", FramePass::Ssao).sampled(r.depth).color(r.ao_raw, Load::DontCare);
-    g.pass("ssao_blur", FramePass::SsaoBlur).sampled(r.ao_raw).color(r.ao, Load::DontCare);
+    g.pass("ssao_blur_x", FramePass::SsaoBlur(0)).sampled(r.ao_raw).color(r.ao_across, Load::DontCare);
+    g.pass("ssao_blur_y", FramePass::SsaoBlur(1)).sampled(r.ao_across).color(r.ao, Load::DontCare);
 }
 
 /// Pixels per metre at view depth 1 m in an image `height` pixels tall: half the height times
@@ -93,7 +99,14 @@ pub fn record_pass(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: 
             let texel = [1.0 / full.width as f32, 1.0 / full.height as f32];
             (ctx.pipelines.ssao, res.depth, res.ao_raw, texel, mode, [radius, intensity, scale, k])
         }
-        _ => (ctx.pipelines.ssao_blur, res.ao_raw, res.ao, [1.0 / size.width as f32, 1.0 / size.height as f32], 0, [0.0; 4]),
+        FramePass::SsaoBlur(axis) => {
+            let (src, out) = if axis == 0 { (res.ao_raw, res.ao_across) } else { (res.ao_across, res.ao) };
+            (ctx.pipelines.ssao_blur, src, out, [1.0 / size.width as f32, 1.0 / size.height as f32], axis as u32, [0.0; 4])
+        }
+        other => {
+            debug_assert!(false, "not an SSAO pass: {other:?}");
+            return;
+        }
     };
     let push =
         PostPush { frame: ctx.upload.frame_address(), src: g.image(src).slot, src2: u32::MAX, texel, mode, pad: 0, params };

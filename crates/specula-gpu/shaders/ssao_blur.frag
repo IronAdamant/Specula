@@ -1,30 +1,41 @@
 #version 460
-// SSAO blur (src/ssao.rs): a 4x4 box (one period of ssao.frag's interleaved pattern, so the
-// pattern averages out) over src (r = visibility, g = view depth), each tap weighted by how close
-// its depth is to this pixel's, so occlusion doesn't bleed across depth edges.
+// SSAO blur (src/ssao.rs), one direction of a separable 9-tap Gaussian (mode 0: across, 1: down)
+// over src (r = visibility, g = view depth). Each tap is weighted by how far its depth lies from
+// the plane through this pixel (the depth slope along the blur, from the two neighbours), so
+// occlusion doesn't bleed across depth edges while slanted surfaces still blur fully.
 // Compile with shaders/build.sh.
 #include "post.glsl"
 
 const float FAR = 65000.0;
+// Gaussian, sigma 2.5 texels, taps 0..4.
+const float WEIGHTS[5] = float[](0.1592, 0.1468, 0.1153, 0.0771, 0.0439);
 
 void main() {
     ivec2 size = textureSize(textures[pc.src], 0);
     ivec2 c = ivec2(gl_FragCoord.xy);
+    ivec2 axis = pc.mode == 0u ? ivec2(1, 0) : ivec2(0, 1);
     vec2 center = texelFetch(textures[pc.src], c, 0).rg;
     if (center.g >= 0.5 * FAR) {
         out_color = vec4(1.0, center.g, 0.0, 1.0);
         return;
     }
-    float tolerance = 0.04 * center.g;
-    float sum = 0.0;
-    float weight = 0.0;
-    for (int y = -2; y < 2; y++) {
-        for (int x = -2; x < 2; x++) {
-            vec2 s = texelFetch(textures[pc.src], clamp(c + ivec2(x, y), ivec2(0), size - 1), 0).rg;
-            float w = max(0.0, 1.0 - abs(s.g - center.g) / tolerance);
+    float z = center.g;
+    float zl = texelFetch(textures[pc.src], clamp(c - axis, ivec2(0), size - 1), 0).g;
+    float zr = texelFetch(textures[pc.src], clamp(c + axis, ivec2(0), size - 1), 0).g;
+    // The slope of the nearer side (a silhouette's far side would tilt the plane).
+    float slope = abs(zr - z) < abs(z - zl) ? zr - z : z - zl;
+    float tolerance = 0.02 * z;
+    float sum = center.r * WEIGHTS[0];
+    float weight = WEIGHTS[0];
+    for (int i = 1; i <= 4; i++) {
+        for (int side = -1; side <= 1; side += 2) {
+            int k = i * side;
+            vec2 s = texelFetch(textures[pc.src], clamp(c + axis * k, ivec2(0), size - 1), 0).rg;
+            float off_plane = abs(s.g - (z + slope * float(k)));
+            float w = WEIGHTS[i] * max(0.0, 1.0 - off_plane / tolerance);
             sum += s.r * w;
             weight += w;
         }
     }
-    out_color = vec4(sum / weight, center.g, 0.0, 1.0); // weight >= 1: the centre is a tap
+    out_color = vec4(sum / weight, z, 0.0, 1.0); // weight >= the centre's
 }

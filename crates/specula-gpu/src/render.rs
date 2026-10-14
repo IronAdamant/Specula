@@ -626,7 +626,7 @@ pub enum PipelineKey {
     Overlay { format: VkFormat, depth: bool },
     /// Ambient occlusion (+ view depth) from the SSAO depth.
     Ssao,
-    /// The depth-aware 4×4 blur of the occlusion.
+    /// One direction of the depth-aware separable blur of the occlusion.
     SsaoBlur,
 }
 
@@ -1327,9 +1327,9 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FramePass {
     Shadow,
-    /// SSAO from the scene's depth: the occlusion, its blur.
+    /// SSAO from the scene's depth: the occlusion, its blur across (0) then down (1).
     Ssao,
-    SsaoBlur,
+    SsaoBlur(u8),
     Scene,
     /// Bloom bright pass / downsample into level `n`.
     BloomDown(u8),
@@ -1346,7 +1346,7 @@ impl FramePass {
     pub fn timing(self) -> &'static str {
         match self {
             FramePass::Shadow => PASS_SHADOW,
-            FramePass::Ssao | FramePass::SsaoBlur => crate::PASS_SSAO,
+            FramePass::Ssao | FramePass::SsaoBlur(_) => crate::PASS_SSAO,
             FramePass::Scene => PASS_SCENE,
             FramePass::BloomDown(_) | FramePass::BloomUp(_) => PASS_BLOOM,
             FramePass::Tonemap => PASS_TONEMAP,
@@ -1379,6 +1379,7 @@ pub struct FrameRes {
     /// SSAO: raw and blurred occlusion (`Some` size when on).
     pub ssao: Option<VkExtent2D>,
     pub ao_raw: Res,
+    pub ao_across: Res,
     pub ao: Res,
 }
 
@@ -1600,7 +1601,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 let clear = if res.post_hdr { hdr_clear(clear, env.tonemap) } else { clear };
                 stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
             }
-            FramePass::Ssao | FramePass::SsaoBlur => crate::ssao::record_pass(ctx, cmd, g, p, res),
+            FramePass::Ssao | FramePass::SsaoBlur(_) => crate::ssao::record_pass(ctx, cmd, g, p, res),
             FramePass::Overlay => {} // inline: recorded by the pass before it
             _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.textures, ctx.upload.frame_address(), &mut inline),
         }
