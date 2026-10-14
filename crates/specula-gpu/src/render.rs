@@ -223,7 +223,14 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
         let p = l.position;
         *slot = GpuPointLight { pos_range: [p[0], p[1], p[2], l.range.max(1e-3)], color: lin(l.color, l.intensity.max(0.0)) };
     }
-    let c = camera_position(&frame.view_proj);
+    // An orthographic view has no eye: highlights and fog measure from the centre of its near
+    // plane instead (perspective frames are unchanged).
+    let vp = &frame.view_proj;
+    let c = if vp[3] == 0.0 && vp[7] == 0.0 && vp[11] == 0.0 {
+        crate::sprite::view_2d(vp, frame.reverse_z).position
+    } else {
+        camera_position(vp)
+    };
     let (fog, sky_s) = (&env.fog, &env.sky);
     let sky_k = sky_s.intensity.max(0.0);
     const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
@@ -1926,6 +1933,16 @@ mod tests {
         let p = camera_position(&vp);
         assert!((p[0]).abs() < 1e-5 && (p[1]).abs() < 1e-5 && (p[2] - 5.0).abs() < 1e-5, "{p:?}");
         assert_eq!(camera_position(&[0.0; 16]), [0.0; 3], "singular falls back to the origin");
+    }
+
+    #[test]
+    fn orthographic_frames_measure_from_the_near_plane() {
+        // Reversed-Z orthographic, 10 x 10 m, eye at z = 20 looking down -Z, near 0.05, far 100.
+        let d = 100.0 - 0.05;
+        let vp = [0.2, 0.0, 0.0, 0.0, 0.0, -0.2, 0.0, 0.0, 0.0, 0.0, 1.0 / d, 0.0, 0.0, 0.0, 100.0 / d - 20.0 / d, 1.0];
+        let frame = FrameDesc { view_proj: vp, reverse_z: true, ..Default::default() };
+        let c = frame_data(&frame, VkExtent2D { width: 4, height: 4 }, &ShadowData::default()).camera_time;
+        assert!(c[0].abs() < 1e-4 && c[1].abs() < 1e-4 && (c[2] - 19.95).abs() < 1e-3, "{c:?}");
     }
 
     #[test]
