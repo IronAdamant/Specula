@@ -969,6 +969,7 @@ mod tests {
             mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false },
             shadow: Some(shadow_desc(&ShadowSettings { enabled: true, resolution, ..Default::default() })),
             overlay: false,
+            two_d: false,
         };
         let mut g = FrameGraph::new(77);
         let shadow_view = |gpu: &GpuInner| gpu.descriptors.shadow_view;
