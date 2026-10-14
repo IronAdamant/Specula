@@ -38,10 +38,16 @@ fn linear_lut() -> &'static [u8] {
 /// alpha and other formats as stored. Deterministic: the same bytes everywhere.
 pub fn generate_mips(width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<Vec<Vec<u8>>, GpuError> {
     check_pixels("generate_mips", width, height, format, pixels)?;
+    generate_mips_owned(width, height, format, pixels.to_vec())
+}
+
+/// [`generate_mips`] taking the image itself as level 0 (no copy: the chain adds a third).
+pub fn generate_mips_owned(width: u32, height: u32, format: TextureFormat, pixels: Vec<u8>) -> Result<Vec<Vec<u8>>, GpuError> {
+    check_pixels("generate_mips", width, height, format, &pixels)?;
     let bpp = format.bytes_per_pixel();
     let count = mip_count(width, height) as usize;
     let mut levels = Vec::with_capacity(count);
-    levels.push(pixels.to_vec());
+    levels.push(pixels);
     let (mut w, mut h) = (width as usize, height as usize);
     let (to_lin, to_srgb) = (srgb_lut(), linear_lut());
     for _ in 1..count {

@@ -149,13 +149,18 @@ pub struct Built {
     pub warnings: Vec<String>,
 }
 
-/// A material texture with its mip chain, made on a worker thread.
+/// A material texture with its mip chain, made on a worker thread. The pixels are taken by the
+/// first upload (the CPU copy would double texture memory); a build uploaded again later (its
+/// entities were all deleted, then one came back while the build was still cached) is imported
+/// afresh ([`Library::reimport`]).
 pub struct TextureData {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
-    /// `levels[0]` is the image; each next level half the size.
-    pub levels: Vec<Vec<u8>>,
+    /// Mip levels in the chain.
+    pub mips: usize,
+    /// `levels[0]` is the image; each next level half the size. Empty once uploaded.
+    pub levels: Mutex<Vec<Vec<u8>>>,
     pub sampler: TextureSampler,
 }
 
@@ -517,7 +522,7 @@ const MAX_WARNINGS: usize = 16;
 /// and materials.
 fn import_gltf(path: &Path) -> Result<(Model, Extras), RecipeError> {
     let opts = specula_gltf::ImportOptions { bake_texture_colors: false, ..Default::default() };
-    let import = specula_gltf::import_file(path, &opts)
+    let mut import = specula_gltf::import_file(path, &opts)
         .map_err(|e| RecipeError::new(&e.path, ErrorCode::Geometry, format!("glTF import: {e}")))?;
     let mut x = Extras { warnings: import.warnings.iter().take(MAX_WARNINGS).map(|w| format!("{}: {}", w.code, w.message)).collect(), ..Default::default() };
     match import.anim_set() {
@@ -526,43 +531,69 @@ fn import_gltf(path: &Path) -> Result<(Model, Extras), RecipeError> {
         None => {}
     }
     // Textures by (glTF texture index, sRGB): a texture used as colour and as data uploads twice.
-    let mut uploaded: BTreeMap<(usize, bool), usize> = BTreeMap::new();
-    let mut texture = |t: Option<specula_gltf::TextureRef>, srgb: bool, x: &mut Extras| -> Option<usize> {
-        let t = t?;
-        if t.tex_coord != 0 {
-            return None; // only TEXCOORD_0 is kept
-        }
-        if let Some(&i) = uploaded.get(&(t.texture, srgb)) {
-            return Some(i);
-        }
-        let tex = import.textures.get(t.texture)?;
-        let mut image = import.images.get(tex.image?)?;
-        if let Some(d) = image.duplicate_of {
-            image = import.images.get(d)?;
-        }
-        if image.rgba.is_empty() {
-            return None;
-        }
-        let format = if srgb { TextureFormat::Rgba8Srgb } else { TextureFormat::Rgba8Unorm };
-        let levels = specula_gpu::generate_mips(image.width, image.height, format, &image.rgba).ok()?;
-        x.textures.push(TextureData { width: image.width, height: image.height, format, levels, sampler: gltf_sampler(&tex.sampler) });
-        uploaded.insert((t.texture, srgb), x.textures.len() - 1);
-        Some(x.textures.len() - 1)
+    // The image's decoded pixels become level 0 of the (last) chain made from them: no copy.
+    let key = |t: Option<specula_gltf::TextureRef>, srgb: bool| t.filter(|t| t.tex_coord == 0).map(|t| (t.texture, srgb));
+    let image_of = |texture: usize| -> Option<usize> {
+        let i = import.textures.get(texture)?.image?;
+        let i = import.images.get(i)?.duplicate_of.unwrap_or(i);
+        (!import.images.get(i)?.rgba.is_empty()).then_some(i)
     };
+    let mut wanted: Vec<(usize, bool)> = Vec::new();
+    for m in &import.materials {
+        let keys = [key(m.base_color_texture, true), key(m.normal_texture, false), key(m.metallic_roughness_texture, false), key(m.emissive_texture, true)];
+        for k in keys.into_iter().flatten() {
+            if !wanted.contains(&k) && image_of(k.0).is_some() {
+                wanted.push(k);
+            }
+        }
+    }
+    let mut uses: BTreeMap<usize, usize> = BTreeMap::new();
+    for &(t, _) in &wanted {
+        *uses.entry(image_of(t).expect("checked")).or_default() += 1;
+    }
+    let samplers: Vec<TextureSampler> = wanted.iter().map(|&(t, _)| gltf_sampler(&import.textures[t].sampler)).collect();
+    let mut images = std::mem::take(&mut import.images);
+    let mut index: BTreeMap<(usize, bool), usize> = BTreeMap::new();
+    for (&(t, srgb), sampler) in wanted.iter().zip(samplers) {
+        let i = import.textures[t].image.map(|i| images[i].duplicate_of.unwrap_or(i)).expect("checked");
+        let left = uses.get_mut(&i).expect("counted");
+        *left -= 1;
+        let (width, height) = (images[i].width, images[i].height);
+        let rgba = if *left == 0 { std::mem::take(&mut images[i].rgba) } else { images[i].rgba.clone() };
+        let format = if srgb { TextureFormat::Rgba8Srgb } else { TextureFormat::Rgba8Unorm };
+        let Ok(levels) = specula_gpu::generate_mips_owned(width, height, format, rgba) else { continue };
+        x.textures.push(TextureData { width, height, format, mips: levels.len(), levels: Mutex::new(levels), sampler });
+        index.insert((t, srgb), x.textures.len() - 1);
+    }
+    drop(images);
+    let tex = |t: Option<specula_gltf::TextureRef>, srgb: bool| key(t, srgb).and_then(|k| index.get(&k).copied());
     for m in &import.materials {
         let c = m.base_color;
+        let alpha_cutoff = match m.alpha_mode {
+            specula_gltf::AlphaMode::Mask => m.alpha_cutoff.clamp(0.0, 1.0),
+            specula_gltf::AlphaMode::Blend if m.preset.kind == MaterialKind::Standard && m.base_color_texture.is_some() => {
+                if x.warnings.len() < MAX_WARNINGS {
+                    x.warnings.push(format!(
+                        "material '{}' uses alpha BLEND: blended textured materials aren't supported, so it is alpha-masked at 0.5",
+                        m.name
+                    ));
+                }
+                0.5
+            }
+            _ => 0.0,
+        };
         let pm = PartMaterial {
             color: [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2]), c[3]],
             metallic: m.metallic,
             roughness: m.roughness,
-            base: texture(m.base_color_texture, true, &mut x),
-            normal: texture(m.normal_texture, false, &mut x),
+            base: tex(m.base_color_texture, true),
+            normal: tex(m.normal_texture, false),
             normal_scale: m.normal_texture.map_or(1.0, |t| t.scale),
-            metallic_roughness: texture(m.metallic_roughness_texture, false, &mut x),
-            emissive: texture(m.emissive_texture, true, &mut x),
+            metallic_roughness: tex(m.metallic_roughness_texture, false),
+            emissive: tex(m.emissive_texture, true),
             emissive_color: m.emissive.map(linear_to_srgb),
             emissive_strength: if m.emissive.iter().any(|v| *v > 0.0) { m.emissive_strength.max(0.0) } else { 0.0 },
-            alpha_cutoff: if m.alpha_mode == specula_gltf::AlphaMode::Mask { m.alpha_cutoff.clamp(0.0, 1.0) } else { 0.0 },
+            alpha_cutoff,
         };
         x.materials.insert(m.name.clone(), pm);
     }
@@ -1315,6 +1346,25 @@ impl Library {
         (finished, changed)
     }
 
+    /// Builds `id` again (its texture pixels were released by an earlier upload): it leaves the
+    /// cache and every handle drawing it waits for a fresh build of the same key.
+    pub fn reimport(&mut self, id: u64) {
+        self.builds.retain(|_, b| b.id != id);
+        self.recent.retain(|r| *r != id);
+        for h in 0..self.handles.len() {
+            let Some(slot) = self.handles[h].as_mut() else { continue };
+            if slot.built.as_ref().is_none_or(|b| b.id != id) {
+                continue;
+            }
+            slot.built = None;
+            let key = slot.built_key.take();
+            if let Some(key) = key {
+                self.want(h as u32, key, false);
+            }
+        }
+        self.generation += 1;
+    }
+
     /// Keeps `id` (a `model_build` result) among the builds kept without an entity.
     fn remember(&mut self, id: u64) {
         self.recent.retain(|r| *r != id);
@@ -1538,7 +1588,7 @@ pub fn report(spec: &ModelSpec, built: &Built, cached: bool) -> Json {
                     ("width", Json::from(t.width)),
                     ("height", Json::from(t.height)),
                     ("srgb", Json::from(t.format == TextureFormat::Rgba8Srgb)),
-                    ("mips", Json::from(t.levels.len())),
+                    ("mips", Json::from(t.mips)),
                 ])
             })),
         );
@@ -1849,7 +1899,12 @@ impl GpuModels {
                 Ok(m) => {
                     self.uploaded.insert(id, m);
                 }
-                Err(e) => {
+                Err(UploadError::Released) => {
+                    // Its textures left the CPU with an earlier upload: build it again (its
+                    // entities show as building meanwhile).
+                    library.lock().reimport(id);
+                }
+                Err(UploadError::Gpu(e)) => {
                     let msg = format!("model '{}' not drawn: {e}", built.model.name);
                     errors.push(msg.clone());
                     self.failed.insert(id, msg);
@@ -2020,9 +2075,16 @@ fn sphere_px(world: &Mat4, model: &GpuModel, eye: Vec3, fov_y_deg: f32, viewport
     screen_px(model.radius * scale, (center - eye).length(), fov_y_deg, viewport_h)
 }
 
+/// Why a build could not be uploaded.
+enum UploadError {
+    /// Its texture pixels went to the GPU in an earlier upload: import it again.
+    Released,
+    Gpu(String),
+}
+
 /// One mesh per LOD per material part (with its skin stream when rigged, and UVs when its
 /// material is textured), and the build's textures, once.
-fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
+fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
     let model = &built.model;
     let mut textures: Vec<TextureId> = Vec::with_capacity(built.textures.len());
     let mut meshes: Vec<MeshId> = Vec::new();
@@ -2031,12 +2093,18 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
         textures.iter().for_each(|t| gpu.destroy_texture(*t));
     };
     for t in &built.textures {
-        let levels: Vec<&[u8]> = t.levels.iter().map(Vec::as_slice).collect();
+        // The pixels go to the GPU and leave the CPU (see `TextureData`).
+        let data = std::mem::take(&mut *t.levels.lock().unwrap_or_else(PoisonError::into_inner));
+        if data.is_empty() {
+            undo(gpu, &meshes, &textures);
+            return Err(UploadError::Released);
+        }
+        let levels: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
         match gpu.upload_texture_levels(t.width, t.height, t.format, &levels, t.sampler) {
             Ok(id) => textures.push(id),
             Err(e) => {
                 undo(gpu, &meshes, &textures);
-                return Err(e.to_string());
+                return Err(UploadError::Gpu(e.to_string()));
             }
         }
     }
@@ -2058,7 +2126,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
                 Ok(m) => m,
                 Err(e) => {
                     undo(gpu, &meshes, &textures);
-                    return Err(e.to_string());
+                    return Err(UploadError::Gpu(e.to_string()));
                 }
             };
             meshes.push(mesh);
@@ -2782,6 +2850,14 @@ mod tests {
         let rebuilt = lib.built(h.handle).unwrap_or_else(|| panic!("{:?}", lib.handle_error(h.handle)));
         assert_ne!(rebuilt.id, first, "rebuilt from the new file: {:?}", lib.handle_error(h.handle));
         assert_eq!(rebuilt.anims.as_ref().unwrap().len(), 1);
+        // A build whose texture pixels went to the GPU is imported again when uploaded again.
+        let before = rebuilt.id;
+        lib.reimport(before);
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Building, "waits for a fresh import");
+        settle(&mut lib);
+        let again = lib.built(h.handle).unwrap();
+        assert_ne!(again.id, before, "a new build of the same file");
+        assert!(again.textures.iter().all(|t| !t.levels.lock().unwrap().is_empty()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

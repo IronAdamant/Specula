@@ -272,6 +272,20 @@ def main():
         d_after = box_diff(cf["mid_fade"], cf["after"], box)
         check(d_mid > 0.01 and d_after > 0.01, f"the crossfade moves the shambler (before->mid {d_mid:.3f}, mid->after {d_after:.3f})")
 
+        # The imported creature deleted (its build and GPU textures go) and spawned again: its
+        # texture pixels left the CPU with the first upload, so the asset is imported afresh
+        # and draws exactly as before.
+        first_close = next(f for f in summary["filmstrip"] if f.get("closeup") and f["time_s"] == 0.2)
+        mcp.call("world_delete", path="/scene/gltf_shambler")
+        mcp.frame(time_s=0.2, **close)
+        g_name, g_src, g_clip, g_speed, g_pos, g_yaw = CREATURES[0]
+        mcp.call("world_spawn", shape="model", path=f"/scene/{g_name}", recipe=g_src, position=g_pos,
+                 rotation_deg=[0, g_yaw, 0], anim={"clip": g_clip, "speed": g_speed})
+        back = mcp.frame(time_s=0.2, **close)
+        d = box_diff(decode_png(first_close["png"]), decode_png(back["image"]["path"]), [0, 0, close["width"] - 1, close["height"] - 1])
+        check(back["models"]["missing"] == 0 and d < 0.002,
+              f"the textured asset spawned again draws as before ({d:.4f} of pixels differ): {back['image']['path']}")
+
         # 5. Save and load keep the anim component.
         mcp.call("world_save", name="anim_check")
         mcp.call("world_load", name="anim_check")

@@ -117,7 +117,7 @@ mod timing;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
-pub use material::{generate_mips, generate_tangents, mip_count};
+pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
