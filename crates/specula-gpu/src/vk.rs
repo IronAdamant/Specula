@@ -187,9 +187,13 @@ pub const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;
 pub const VK_FORMAT_R16G16B16A16_SFLOAT: VkFormat = 97;
 pub const VK_FORMAT_D16_UNORM: VkFormat = 124;
 pub const VK_FORMAT_D32_SFLOAT: VkFormat = 126;
+#[cfg_attr(not(test), allow(dead_code))] // the ID buffer (tests today)
+pub const VK_FORMAT_R32_UINT: VkFormat = 98;
+pub const VK_FORMAT_D32_SFLOAT_S8_UINT: VkFormat = 130;
 
 // VkImageLayout
 pub const VK_IMAGE_LAYOUT_UNDEFINED: VkImageLayout = 0;
+pub const VK_IMAGE_LAYOUT_GENERAL: VkImageLayout = 1;
 pub const VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: VkImageLayout = 2;
 pub const VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: VkImageLayout = 5;
 pub const VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: VkImageLayout = 6;
@@ -257,6 +261,7 @@ pub const VK_QUERY_RESULT_64_BIT: VkFlags = 0x1;
 pub const VK_QUERY_RESULT_WITH_AVAILABILITY_BIT: VkFlags = 0x4;
 pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: VkFlags = 0x2;
+pub const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: VkFlags = 0x20;
 pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: VkFlags = 0x40;
 pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: VkFlags = 0x80;
 pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: VkFlags = 0x2_0000;
@@ -264,6 +269,7 @@ pub const VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT: VkFlags = 0x2;
 pub const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: VkFlags = 0x1;
 pub const VK_IMAGE_USAGE_TRANSFER_DST_BIT: VkFlags = 0x2;
 pub const VK_IMAGE_USAGE_SAMPLED_BIT: VkFlags = 0x4;
+pub const VK_IMAGE_USAGE_STORAGE_BIT: VkFlags = 0x8;
 pub const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: VkFlags = 0x10;
 pub const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkFlags = 0x20;
 pub const VK_IMAGE_ASPECT_COLOR_BIT: VkFlags = 0x1;
@@ -301,6 +307,7 @@ pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkFlags64 = 0x80;
 pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkFlags64 = 0x100;
 pub const VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT: VkFlags64 = 0x200;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkFlags64 = 0x400;
+pub const VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT: VkFlags64 = 0x800;
 pub const VK_PIPELINE_STAGE_2_HOST_BIT: VkFlags64 = 0x4000;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkFlags64 = 0x10000;
 pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkFlags64 = 0x1_0000_0000;
@@ -317,6 +324,8 @@ pub const VK_ACCESS_2_TRANSFER_READ_BIT: VkFlags64 = 0x800;
 pub const VK_ACCESS_2_TRANSFER_WRITE_BIT: VkFlags64 = 0x1000;
 pub const VK_ACCESS_2_HOST_READ_BIT: VkFlags64 = 0x2000;
 pub const VK_ACCESS_2_SHADER_SAMPLED_READ_BIT: VkFlags64 = 0x1_0000_0000;
+pub const VK_ACCESS_2_SHADER_STORAGE_READ_BIT: VkFlags64 = 0x2_0000_0000;
+pub const VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT: VkFlags64 = 0x4_0000_0000;
 
 // ---------------------------------------------------------------------------------------------
 // Structs

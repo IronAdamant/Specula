@@ -1,24 +1,27 @@
 //! Window surface + swapchain (FIFO), frames in flight, present.
 
-use crate::device::{image_barrier, Device, Image, FENCE_TIMEOUT_NS};
+use crate::device::{Device, FENCE_TIMEOUT_NS};
 use crate::instance::{enumerate, Instance};
 use crate::descriptors::Descriptors;
+use crate::graph::{Final, Prior, TransientPool};
 use crate::render::{
-    check_frame, frame_features, prepare_frame, record_frame, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines, RenderTarget,
-    DEPTH_FORMAT,
+    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, FrameContext, FrameGraph, FrameScratch,
+    FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::Textures;
-use crate::post::{PostMode, PostTargets};
-use crate::shadow::ShadowMap;
+use crate::post::PostMode;
+use crate::shadow::shadow_desc;
 use crate::timing::PassTimer;
 use crate::vk::*;
-use crate::{CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, MemoryKind};
+use crate::{CpuTiming, FrameDesc, FramePath, FrameStats, GpuError};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::time::Instant;
 
 const FRAMES_IN_FLIGHT: usize = 2;
+/// Owner of the window graph's transient images.
+pub const WINDOW_OWNER: u32 = u32::MAX;
 
 /// Per-frame-in-flight objects. `acquired`, `upload` and `timer` are reused once `fence` shows
 /// the frame finished.
@@ -30,6 +33,8 @@ struct Frame {
     upload: Option<FrameUpload>,
     /// `None` without timestamp support.
     timer: Option<PassTimer>,
+    /// Number of the frame last submitted from this slot (complete once `fence` signals).
+    frame_no: u64,
 }
 
 fn ms(from: Instant, to: Instant) -> f64 {
@@ -46,15 +51,15 @@ pub struct Window {
     /// One per swapchain image: signalled by the frame's submit, waited on by present. Indexed by
     /// image so it is never re-signalled while a present may still be waiting on it.
     render_done: Vec<VkSemaphore>,
-    depth: Option<Image>,
     frames: Vec<Frame>,
     frame_index: usize,
     /// Client size requested by the application.
     wanted: (u32, u32),
     /// Swapchain must be (re)built before the next present.
     stale: bool,
-    /// Post-chain images at the swapchain's size (the owner frees them before `destroy`).
-    pub post: PostTargets,
+    /// The window's frame graph; its depth buffer and post-chain images are the graph's
+    /// transients (owner [`WINDOW_OWNER`]; the owner of the pool frees them before `destroy`).
+    pub graph: FrameGraph,
 }
 
 fn surface_fns(inst: &Instance) -> Result<&SurfaceFns, GpuError> {
@@ -103,12 +108,11 @@ impl Window {
             images: Vec::new(),
             views: Vec::new(),
             render_done: Vec::new(),
-            depth: None,
             frames: Vec::new(),
             frame_index: 0,
             wanted: (width, height),
             stale: true,
-            post: PostTargets::default(),
+            graph: FrameGraph::new(WINDOW_OWNER),
         };
         match window.init(inst, dev, pool) {
             Ok(()) => Ok(window),
@@ -141,7 +145,7 @@ impl Window {
 
         for _ in 0..FRAMES_IN_FLIGHT {
             let cmd = dev.allocate_command_buffer(pool)?;
-            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, upload: None, timer: None };
+            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, upload: None, timer: None, frame_no: 0 };
             self.frames.push(frame);
             let f = self.frames.last_mut().expect("just pushed");
             f.fence = dev.create_fence(true)?;
@@ -192,7 +196,7 @@ impl Window {
             return Ok(false);
         }
 
-        // Nothing may still use the old images, views, depth buffer or semaphores.
+        // Nothing may still use the old images, views or semaphores.
         dev.wait_idle();
 
         let mut min_images = caps.min_image_count + 1;
@@ -256,15 +260,6 @@ impl Window {
             self.views.push(dev.create_view(image, self.format.format, VK_IMAGE_ASPECT_COLOR_BIT)?);
             self.render_done.push(dev.create_semaphore()?);
         }
-        self.depth = Some(dev.create_image(
-            DEPTH_FORMAT,
-            extent.width,
-            extent.height,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            MemoryKind::RenderTargets,
-            "swapchain depth",
-        )?);
         self.stale = false;
         Ok(true)
     }
@@ -278,9 +273,6 @@ impl Window {
             for semaphore in self.render_done.drain(..) {
                 (dev.fns.destroy_semaphore)(dev.handle, semaphore, ptr::null());
             }
-        }
-        if let Some(depth) = self.depth.take() {
-            dev.destroy_image(&depth);
         }
         self.images.clear();
     }
@@ -305,7 +297,8 @@ impl Window {
         dev: &Device,
         pipelines: &mut Pipelines,
         descriptors: &mut Descriptors,
-        shadow_map: Option<&ShadowMap>,
+        pool: &mut TransientPool,
+        completed: &mut u64,
         meshes: &HashMap<u32, Mesh>,
         textures: &Textures,
         frame: &FrameDesc,
@@ -329,8 +322,9 @@ impl Window {
             ));
         }
         dev.wait_fence(f.fence)?;
-        // The fence shows the GPU finished the frame that last used this slot: its timestamps are
-        // ready and its upload buffer is free.
+        // The fence shows the GPU finished the frame that last used this slot (and every frame
+        // submitted before it): its timestamps are ready and its upload buffer is free.
+        *completed = (*completed).max(f.frame_no);
         if let Some(t) = f.timer.as_mut() {
             match t.read_into(dev, &mut stats.gpu) {
                 Ok(true) => stats.timestamp_error = None,
@@ -341,12 +335,28 @@ impl Window {
         let t1 = Instant::now();
         let upload = f.upload.as_mut().expect("created in init");
         prepare_frame(dev, meshes, textures, frame, self.extent, upload, scratch)?;
-        let features = frame_features(frame, scratch, shadow_map.is_some());
-        let mode = PostMode::of(&frame.environment).fit(self.extent);
-        let pipelines =
-            pipelines.frame(dev, self.format.format, features, mode, frame.environment.sky.enabled, !frame.overlay.is_empty())?;
-        // Resized or re-configured images may still be used by frames in flight: wait for them.
-        self.post.ensure(dev, descriptors, self.extent, mode, || dev.wait_idle())?;
+        let env = &frame.environment;
+        let shadow = (env.shadow.enabled && scratch.shadow.data.count > 0).then(|| shadow_desc(&env.shadow));
+        let features = frame_features(frame, scratch, shadow.is_some());
+        let mode = PostMode::of(env).fit(self.extent);
+        let pipelines = pipelines.frame(dev, self.format.format, features, mode, env.sky.enabled, !frame.overlay.is_empty())?;
+        // Graph images replaced (resized, re-configured) or long unused are freed once no frame in
+        // flight can use them.
+        pool.collect(dev, descriptors, *completed);
+        let shape = FrameShape {
+            out_name: "swapchain",
+            format: self.format.format,
+            extent: self.extent,
+            // The acquire semaphore is waited at COLOR_ATTACHMENT_OUTPUT, so the first transition is
+            // ordered after the presentation engine released the image.
+            prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT },
+            fin: Final::Present,
+            mode,
+            shadow,
+            overlay: !frame.overlay.is_empty(),
+        };
+        let res = declare_frame(&mut self.graph, &shape);
+        prepare_graph(dev, descriptors, pool, &mut self.graph, &res)?;
         let descriptors = &*descriptors;
         let t2 = Instant::now();
 
@@ -367,53 +377,16 @@ impl Window {
         }
         let t3 = Instant::now();
         let i = index as usize;
-        let image = self.images[i];
-        let depth = self.depth.as_ref().expect("swapchain has a depth image");
-        let target = RenderTarget {
-            color_view: self.views[i],
-            depth_view: depth.view,
-            depth_image: depth.handle,
-            extent: self.extent,
-        };
+        self.graph.bind_image(res.out, self.images[i], self.views[i]);
 
         dev.begin(f.cmd)?;
         if let Some(t) = f.timer.as_mut() {
             t.begin_frame(dev, f.cmd, frame_no);
         }
-        // The acquire semaphore is waited at COLOR_ATTACHMENT_OUTPUT, so the transition is
-        // ordered after the presentation engine released the image.
-        dev.barrier(
-            f.cmd,
-            &[],
-            &[image_barrier(
-                image,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_NONE,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            )],
-        );
         let upload = f.upload.as_ref().expect("created in init");
-        let ctx = FrameContext { dev, pipelines, descriptors, meshes, shadow_map, frame, scratch, upload, post: &self.post, mode };
-        let draws = record_frame(&ctx, f.cmd, &target, f.timer.as_mut());
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload };
+        let draws = record_frame(&ctx, f.cmd, &mut self.graph, &res, f.timer.as_mut());
         let upload_bytes = upload.bytes();
-        dev.barrier(
-            f.cmd,
-            &[],
-            &[image_barrier(
-                image,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_NONE,
-                VK_ACCESS_2_NONE,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            )],
-        );
         dev.end(f.cmd)?;
         let t4 = Instant::now();
         dev.reset_fence(f.fence)?;
@@ -430,6 +403,8 @@ impl Window {
         if let Some(t) = f.timer.as_mut() {
             t.submitted();
         }
+        f.frame_no = frame_no;
+        pool.note_used(&self.graph, frame_no);
 
         let present = VkPresentInfoKHR {
             s_type: ST_PRESENT_INFO_KHR,
@@ -457,6 +432,7 @@ impl Window {
         stats.cpu = CpuTiming { wait_ms: ms(t0, t1) + ms(t2, t3), record_ms: ms(t1, t2) + ms(t3, t4), submit_ms: ms(t4, t5) };
         stats.timestamps_supported = self.frames.iter().all(|f| f.timer.is_some());
         stats.draws = draws;
+        stats.graph = self.graph.frame_stats();
         stats.draw_buffer_bytes = upload_bytes;
         Ok(true)
     }

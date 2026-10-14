@@ -35,6 +35,12 @@
 //! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
 //! straight to the target (no intermediate images: cheapest, and tile-GPU friendly).
 //!
+//! The passes run through a **render graph** (`graph.rs`): each declares the images it reads and
+//! writes; the graph records every barrier and layout transition, picks load/store ops (an
+//! attachment nothing reads later is never stored), and owns the intermediate images, depth
+//! buffers and the shadow map. [`Gpu::last_graph`] shows a frame's graph as data, and
+//! [`FrameStats::graph`] counts its barriers.
+//!
 //! # Performance
 //!
 //! - **Culling:** a draw whose mesh's bounding sphere lies outside the view frustum is skipped
@@ -68,6 +74,7 @@ mod batch;
 mod descriptors;
 mod device;
 mod gpu;
+mod graph;
 mod instance;
 mod loader;
 mod overlay;
@@ -79,6 +86,7 @@ mod swapchain;
 mod timing;
 mod vk;
 
+pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +192,8 @@ pub enum ErrorReason {
     DataLength { given: u64, expected: u64 },
     /// A region that leaves the texture.
     RegionOutside { x: u32, y: u32, width: u32, height: u32, texture_width: u32, texture_height: u32 },
+    /// A render graph declaration was rejected (a renderer bug: passes declared inconsistently).
+    Graph(GraphError),
 }
 
 /// A limit of the GPU layer.
@@ -855,6 +865,14 @@ impl Gpu {
     /// ran last), with the current pipeline and memory state. `frame == 0` before any frame.
     pub fn last_frame_stats(&self) -> FrameStats {
         self.inner.last_frame_stats(None)
+    }
+
+    /// The render graph of the most recent frame from [`Gpu::render`] or [`Gpu::present`]: every
+    /// pass with what it reads and writes (and the load/store ops chosen), and the barriers the
+    /// graph inserts. `None` before any frame (or once that frame's target is destroyed). Its
+    /// `Display` is compact, one line per pass.
+    pub fn last_graph(&self) -> Option<GraphInfo> {
+        self.inner.last_graph()
     }
 
     /// Like [`Gpu::last_frame_stats`], but the latest frame of one path (`None` if it has none

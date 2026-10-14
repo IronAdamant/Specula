@@ -4,14 +4,15 @@ use crate::batch::mesh_bounds;
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
 use crate::descriptors::Descriptors;
+use crate::graph::{Final, GraphInfo, Prior, TransientPool};
 use crate::render::{
-    check_frame, frame_features, prepare_frame, record_frame, CacheIdentity, FrameContext, FrameScratch, FrameUpload, Mesh, Pipelines,
-    RenderTarget, DEPTH_FORMAT,
+    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
+    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
-use crate::post::{PostMode, PostTargets};
-use crate::shadow::{clamp_resolution, ShadowMap};
-use crate::swapchain::Window;
+use crate::post::PostMode;
+use crate::shadow::shadow_desc;
+use crate::swapchain::{Window, WINDOW_OWNER};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
@@ -37,19 +38,25 @@ struct SyncTimes {
 
 struct Target {
     color: Image,
-    depth: Image,
     readback: Buffer,
     extent: VkExtent2D,
-    /// Post-chain images, created when a frame first needs them.
-    post: PostTargets,
+    /// Its frame graph; the depth buffer and post-chain images are the graph's transients.
+    graph: FrameGraph,
     /// False until the first `render`; the colour image then sits in TRANSFER_SRC_OPTIMAL.
     rendered: bool,
+}
+
+/// Whose graph rendered the latest frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphSource {
+    Window,
+    Target(u32),
 }
 
 pub struct GpuInner {
     adapter: AdapterInfo,
     max_image_dimension_2d: u32,
-    pool: VkCommandPool,
+    cmd_pool: VkCommandPool,
     /// Command buffer + fence for synchronous work (uploads, offscreen renders, readback).
     sync_cmd: VkCommandBuffer,
     sync_fence: VkFence,
@@ -62,8 +69,11 @@ pub struct GpuInner {
     pipelines: Pipelines,
     /// The global descriptor set (shadow map, bindless textures).
     descriptors: Descriptors,
-    /// The sun's shadow map, created when a frame first enables shadows.
-    shadow_map: Option<ShadowMap>,
+    /// Images the frame graphs own: depth buffers, post-chain images, the shadow map.
+    pool: TransientPool,
+    /// Every frame numbered this or lower has finished on the GPU.
+    completed: u64,
+    last_graph: Option<GraphSource>,
     meshes: HashMap<u32, Mesh>,
     textures: Textures,
     targets: HashMap<u32, Target>,
@@ -121,6 +131,29 @@ fn select_adapter(instance: &Instance, pref: AdapterPreference) -> Result<(usize
     Err(GpuError::new(format!("no suitable Vulkan 1.3 adapter: {}", reasons.join("; "))))
 }
 
+/// Record into `cmd` with `record`, submit with `fence`, and wait for completion (see
+/// [`GpuInner::run_sync`]).
+fn run_sync(dev: &Device, cmd: VkCommandBuffer, fence: VkFence, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<SyncTimes, GpuError> {
+    let t0 = Instant::now();
+    dev.begin(cmd)?;
+    record(dev, cmd);
+    dev.end(cmd)?;
+    let t1 = Instant::now();
+    // A failed submit queues nothing and leaves the fence untouched.
+    dev.submit(cmd, None, None, fence)?;
+    let t2 = Instant::now();
+    let waited = dev.wait_fence(fence);
+    if waited.is_err() {
+        // Timed out (work may still be running) or the device was lost: drain the queue before
+        // anyone frees the resources this work touches.
+        dev.wait_idle();
+    }
+    let t3 = Instant::now();
+    let reset = dev.reset_fence(fence);
+    let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+    waited.and(reset).map(|()| SyncTimes { record_ms: ms(t0, t1), submit_ms: ms(t1, t2), wait_ms: ms(t2, t3) })
+}
+
 impl GpuInner {
     pub fn new(options: &GpuOptions) -> Result<GpuInner, GpuError> {
         let instance = Instance::new(options.validation, true)?;
@@ -145,7 +178,7 @@ impl GpuInner {
         let mut gpu = GpuInner {
             adapter,
             max_image_dimension_2d,
-            pool: VK_NULL_HANDLE,
+            cmd_pool: VK_NULL_HANDLE,
             sync_cmd: ptr::null_mut(),
             sync_fence: VK_NULL_HANDLE,
             upload: None,
@@ -153,7 +186,9 @@ impl GpuInner {
             scratch: FrameScratch::default(),
             pipelines,
             descriptors,
-            shadow_map: None,
+            pool: TransientPool::default(),
+            completed: 0,
+            last_graph: None,
             meshes: HashMap::new(),
             textures: Textures::default(),
             targets: HashMap::new(),
@@ -166,8 +201,8 @@ impl GpuInner {
             instance,
         };
         // On error `gpu` drops and releases whatever was created.
-        gpu.pool = gpu.device.create_command_pool()?;
-        gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.pool)?;
+        gpu.cmd_pool = gpu.device.create_command_pool()?;
+        gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
         gpu.upload = Some(FrameUpload::new(&gpu.device)?);
         gpu.timer = PassTimer::new(&gpu.device)?;
@@ -207,25 +242,7 @@ impl GpuInner {
     /// On return — success or error — nothing submitted here is still running, so callers may free
     /// what the commands used, and the fence is unsignaled for the next call.
     fn run_sync(&self, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<SyncTimes, GpuError> {
-        let dev = &self.device;
-        let t0 = Instant::now();
-        dev.begin(self.sync_cmd)?;
-        record(dev, self.sync_cmd);
-        dev.end(self.sync_cmd)?;
-        let t1 = Instant::now();
-        // A failed submit queues nothing and leaves the fence untouched.
-        dev.submit(self.sync_cmd, None, None, self.sync_fence)?;
-        let t2 = Instant::now();
-        let waited = dev.wait_fence(self.sync_fence);
-        if waited.is_err() {
-            // Timed out (work may still be running) or the device was lost: drain the queue
-            // before anyone frees the resources this work touches.
-            dev.wait_idle();
-        }
-        let t3 = Instant::now();
-        let reset = dev.reset_fence(self.sync_fence);
-        let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
-        waited.and(reset).map(|()| SyncTimes { record_ms: ms(t0, t1), submit_ms: ms(t1, t2), wait_ms: ms(t2, t3) })
+        run_sync(&self.device, self.sync_cmd, self.sync_fence, record)
     }
 
     pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Result<MeshId, GpuError> {
@@ -481,21 +498,6 @@ impl GpuInner {
             MemoryKind::RenderTargets,
             "target colour",
         )?;
-        let depth = match dev.create_image(
-            DEPTH_FORMAT,
-            width,
-            height,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            MemoryKind::RenderTargets,
-            "target depth",
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                dev.destroy_image(&color);
-                return Err(e);
-            }
-        };
         let readback = match dev.create_buffer(
             width as u64 * height as u64 * 4,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -506,126 +508,79 @@ impl GpuInner {
         ) {
             Ok(b) => b,
             Err(e) => {
-                dev.destroy_image(&depth);
                 dev.destroy_image(&color);
                 return Err(e);
             }
         };
         let id = self.next_id();
-        self.targets
-            .insert(id, Target { color, depth, readback, extent: VkExtent2D { width, height }, post: PostTargets::default(), rendered: false });
+        let graph = FrameGraph::new(id);
+        self.targets.insert(id, Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false });
         Ok(TargetId(id))
     }
 
     pub fn destroy_target(&mut self, target: TargetId) {
-        let Some(mut t) = self.targets.remove(&target.0) else { return };
-        // Offscreen work is synchronous, so nothing on the GPU still uses the target.
-        t.post.destroy(&self.device, &mut self.descriptors);
+        let Some(t) = self.targets.remove(&target.0) else { return };
+        // Offscreen work is synchronous, so nothing on the GPU still uses the target or its
+        // graph's images.
+        self.pool.release_owner(&self.device, &mut self.descriptors, target.0);
         self.device.destroy_buffer(&t.readback);
-        self.device.destroy_image(&t.depth);
         self.device.destroy_image(&t.color);
-    }
-
-    /// Make sure the shadow map matches `frame`'s settings (created on first use; recreated,
-    /// after the GPU goes idle, when its resolution or cascade count changes).
-    fn ensure_frame_resources(&mut self, frame: &FrameDesc) -> Result<(), GpuError> {
-        let s = &frame.environment.shadow;
-        if !s.enabled {
-            return Ok(());
+        if self.last_graph == Some(GraphSource::Target(target.0)) {
+            self.last_graph = None;
         }
-        let (resolution, layers) = (clamp_resolution(s.resolution), s.cascades.clamp(1, crate::MAX_SHADOW_CASCADES));
-        if let Some(map) = &self.shadow_map {
-            if map.resolution == resolution && map.layer_count() == layers {
-                return Ok(());
-            }
-            // In-flight frames may still sample it.
-            self.device.wait_idle();
-            let mut old = self.shadow_map.take().expect("checked");
-            old.destroy(&self.device);
-        }
-        let map = ShadowMap::new(&self.device, resolution, layers)?;
-        self.descriptors.write_shadow(&self.device, map.array_view);
-        self.shadow_map = Some(map);
-        Ok(())
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
-        if !self.targets.contains_key(&target.0) {
+        let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
-        }
-        self.ensure_frame_resources(frame)?;
-        let t = self.targets.get_mut(&target.0).expect("checked");
-        let mode = PostMode::of(&frame.environment).fit(t.extent);
-        // Offscreen work is synchronous: nothing pending uses the images.
-        t.post.ensure(&self.device, &mut self.descriptors, t.extent, mode, || {})?;
-        let t = &self.targets[&target.0];
+        };
+        let extent = t.extent;
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
-        prepare_frame(&self.device, &self.meshes, &self.textures, frame, t.extent, upload, &mut self.scratch)?;
-        let features = frame_features(frame, &self.scratch, self.shadow_map.is_some());
-        let pipelines =
-            self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, frame.environment.sky.enabled, !frame.overlay.is_empty())?;
+        prepare_frame(&self.device, &self.meshes, &self.textures, frame, extent, upload, &mut self.scratch)?;
+        let env = &frame.environment;
+        let shadow = (env.shadow.enabled && self.scratch.shadow.data.count > 0).then(|| shadow_desc(&env.shadow));
+        let features = frame_features(frame, &self.scratch, shadow.is_some());
+        let mode = PostMode::of(env).fit(extent);
+        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, env.sky.enabled, !frame.overlay.is_empty())?;
+        // Graph images replaced (or long unused) are freed once no pending frame can use them.
+        self.pool.collect(&self.device, &mut self.descriptors, self.completed);
+        let shape = FrameShape {
+            out_name: "target",
+            format: TARGET_FORMAT,
+            extent,
+            // Its contents are rendered anew; wait for the last readback's copy.
+            prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COPY_BIT },
+            fin: Final::TransferSrc,
+            mode,
+            shadow,
+            overlay: !frame.overlay.is_empty(),
+        };
+        let res = declare_frame(&mut t.graph, &shape);
+        prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
+        t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
         let mut timer = self.timer.take();
         let mut draws = Default::default();
-        let rt = RenderTarget {
-            color_view: t.color.view,
-            depth_view: t.depth.view,
-            depth_image: t.depth.handle,
-            extent: t.extent,
-        };
-        let extent = t.extent;
-        let color = t.color.handle;
         let ctx = FrameContext {
             dev: &self.device,
             pipelines,
             descriptors: &self.descriptors,
             meshes: &self.meshes,
-            shadow_map: self.shadow_map.as_ref(),
             frame,
             scratch: &self.scratch,
             upload,
-            post: &t.post,
-            mode,
         };
-        let ran = self.run_sync(|dev, cmd| {
+        let graph = &mut t.graph;
+        let ran = run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| {
             if let Some(t) = timer.as_mut() {
                 t.begin_frame(dev, cmd, frame_no);
             }
-            // Previous contents are discarded; order after any earlier copy-out of this image.
-            dev.barrier(
-                cmd,
-                &[],
-                &[image_barrier(
-                    color,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_NONE,
-                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                )],
-            );
-            draws = record_frame(&ctx, cmd, &rt, timer.as_mut());
-            dev.barrier(
-                cmd,
-                &[],
-                &[image_barrier(
-                    color,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_READ_BIT,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                )],
-            );
+            draws = record_frame(&ctx, cmd, graph, &res, timer.as_mut());
         });
         // The render completed (or failed with nothing pending): its timestamps are readable.
         // Stats are updated in place, reusing their storage.
@@ -640,10 +595,12 @@ impl GpuInner {
         }
         self.timer = timer;
         let times = ran?;
-        if let Some(t) = self.targets.get_mut(&target.0) {
-            t.rendered = true;
-        }
+        // Synchronous: this frame and every one before it finished.
+        self.completed = frame_no;
+        self.pool.note_used(&t.graph, frame_no);
+        t.rendered = true;
         self.frame_no = frame_no;
+        self.last_graph = Some(GraphSource::Target(target.0));
         let stats = &mut self.last_offscreen;
         stats.frame = frame_no;
         stats.path = FramePath::Offscreen;
@@ -652,6 +609,7 @@ impl GpuInner {
         stats.cpu = CpuTiming { wait_ms: times.wait_ms, record_ms: prepare_ms + times.record_ms, submit_ms: times.submit_ms };
         stats.timestamps_supported = self.timer.is_some();
         stats.draws = draws;
+        stats.graph = t.graph.frame_stats();
         stats.draw_buffer_bytes = self.upload.as_ref().map_or(0, |u| u.bytes());
         Ok(())
     }
@@ -704,14 +662,17 @@ impl GpuInner {
     pub fn attach_window(&mut self, hinstance: *mut c_void, hwnd: *mut c_void, width: u32, height: u32) -> Result<(), GpuError> {
         if let Some(mut old) = self.window.take() {
             self.device.wait_idle();
-            old.post.destroy(&self.device, &mut self.descriptors);
-            old.destroy(&self.instance, &self.device, self.pool);
+            self.pool.release_owner(&self.device, &mut self.descriptors, WINDOW_OWNER);
+            old.destroy(&self.instance, &self.device, self.cmd_pool);
+            if self.last_graph == Some(GraphSource::Window) {
+                self.last_graph = None;
+            }
         }
-        let window = Window::new(&self.instance, &self.device, self.pool, hinstance, hwnd, width, height)?;
+        let window = Window::new(&self.instance, &self.device, self.cmd_pool, hinstance, hwnd, width, height)?;
         // Every variant for the window's format now, so presenting never waits for a pipeline.
         if let Err(e) = self.pipelines.prebuild(&self.device, window.format()) {
             let mut window = window;
-            window.destroy(&self.instance, &self.device, self.pool);
+            window.destroy(&self.instance, &self.device, self.cmd_pool);
             return Err(e);
         }
         self.window = Some(window);
@@ -728,7 +689,6 @@ impl GpuInner {
             return Err(GpuError::new("present: no window attached"));
         }
         check_frame(&self.meshes, &self.textures, frame)?;
-        self.ensure_frame_resources(frame)?;
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(
@@ -736,7 +696,8 @@ impl GpuInner {
             &self.device,
             &mut self.pipelines,
             &mut self.descriptors,
-            self.shadow_map.as_ref(),
+            &mut self.pool,
+            &mut self.completed,
             &self.meshes,
             &self.textures,
             frame,
@@ -746,6 +707,7 @@ impl GpuInner {
         )?;
         if presented {
             self.frame_no = frame_no;
+            self.last_graph = Some(GraphSource::Window);
         }
         Ok(())
     }
@@ -769,6 +731,13 @@ impl GpuInner {
         self.pipelines.mark_warm();
     }
 
+    pub fn last_graph(&self) -> Option<GraphInfo> {
+        match self.last_graph? {
+            GraphSource::Window => self.window.as_ref().map(|w| w.graph.info().clone()),
+            GraphSource::Target(id) => self.targets.get(&id).map(|t| t.graph.info().clone()),
+        }
+    }
+
     pub fn pipeline_cache_data(&self) -> Result<Vec<u8>, GpuError> {
         self.pipelines.cache_data(&self.device)
     }
@@ -779,8 +748,7 @@ impl Drop for GpuInner {
         let dev = &self.device;
         dev.wait_idle();
         if let Some(mut w) = self.window.take() {
-            w.post.destroy(dev, &mut self.descriptors);
-            w.destroy(&self.instance, dev, self.pool);
+            w.destroy(&self.instance, dev, self.cmd_pool);
         }
         for (_, m) in self.meshes.drain() {
             dev.destroy_buffer(&m.buffer);
@@ -788,27 +756,23 @@ impl Drop for GpuInner {
         for (_, t) in self.textures.map.drain() {
             dev.destroy_image(&t.image);
         }
-        for (_, mut t) in self.targets.drain() {
-            t.post.destroy(dev, &mut self.descriptors);
+        for (_, t) in self.targets.drain() {
             dev.destroy_buffer(&t.readback);
-            dev.destroy_image(&t.depth);
             dev.destroy_image(&t.color);
         }
+        self.pool.destroy(dev, &mut self.descriptors);
         if let Some(u) = self.upload.take() {
             u.destroy(dev);
         }
         if let Some(mut t) = self.timer.take() {
             t.destroy(dev);
         }
-        if let Some(mut m) = self.shadow_map.take() {
-            m.destroy(dev);
-        }
         self.pipelines.destroy(dev);
         self.descriptors.destroy(dev);
         // SAFETY: device idle; objects belong to `dev` and are destroyed once (null is ignored).
         unsafe {
             (dev.fns.destroy_fence)(dev.handle, self.sync_fence, ptr::null());
-            (dev.fns.destroy_command_pool)(dev.handle, self.pool, ptr::null()); // frees sync_cmd
+            (dev.fns.destroy_command_pool)(dev.handle, self.cmd_pool, ptr::null()); // frees sync_cmd
         }
         // `device`, then `instance` drop next (field order).
     }
@@ -838,6 +802,130 @@ mod tests {
             assert!((128..=65536).contains(&push), "maxPushConstantsSize {push}");
             assert!(max_index >= (1 << 24) - 1, "maxDrawIndexedIndexValue {max_index}");
             assert!(period.is_finite() && period > 0.0 && period < 1e6, "timestampPeriod {period}");
+        }
+    }
+
+    /// The add-a-pass recipe of `graph.rs`, run on the GPU: a depth pass, an `R32_UINT` id pass
+    /// that depth-tests against it, and a copy of the ids into a host-visible buffer, every barrier
+    /// from the graph — under validation including synchronization validation. Repeated frames
+    /// reuse the compiled graph and its images; a new size replaces them.
+    #[test]
+    fn graph_runs_an_id_buffer_pass() {
+        use crate::graph::{Final, ImageDesc, Load, Prior, RenderGraph};
+        if !crate::is_available() {
+            eprintln!("graph_runs_an_id_buffer_pass: SKIPPED — Vulkan is not available");
+            return;
+        }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum P {
+            Scene,
+            Ids,
+            Copy,
+        }
+        for a in crate::enumerate_adapters().unwrap() {
+            let options = GpuOptions { validation: Validation::On, adapter: crate::AdapterPreference::Index(a.index), ..Default::default() };
+            let mut gpu = match GpuInner::new(&options) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("graph_runs_an_id_buffer_pass: SKIPPED on adapter {} — {e}", a.index);
+                    continue;
+                }
+            };
+            gpu.take_validation_messages();
+            let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            let readback =
+                gpu.device.create_buffer(64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, 0, MemoryKind::Readback, "ids").unwrap();
+            let mut g = RenderGraph::<P>::new(4242);
+            for (round, (w, h)) in [(16u32, 8u32), (16, 8), (16, 8), (32, 4)].into_iter().enumerate() {
+                let frame_no = round as u64 + 1;
+                let id = 0x1234_5600 + round as u32;
+                gpu.pool.collect(&gpu.device, &mut gpu.descriptors, gpu.completed);
+                g.begin();
+                let depth = g.transient("depth", ImageDesc::depth(crate::render::DEPTH_FORMAT, w, h, MemoryKind::RenderTargets));
+                g.pass("scene", P::Scene).depth(depth, Load::Clear);
+                let ids = g.transient("ids", ImageDesc::color(VK_FORMAT_R32_UINT, w, h, MemoryKind::RenderTargets));
+                g.pass("id_buffer", P::Ids).color(ids, Load::Clear).depth_read(depth);
+                let bytes = w as u64 * h as u64 * 4;
+                let buf = g.import_buffer("id_readback", bytes, Prior::Discard { after: VK_PIPELINE_STAGE_2_HOST_BIT }, Final::HostRead);
+                g.pass("id_copy", P::Copy).transfer_src(ids).transfer_dst(buf);
+                g.prepare(&gpu.device, &mut gpu.descriptors, &mut gpu.pool).unwrap();
+                g.bind_buffer(buf, readback.handle);
+                let graph = &mut g;
+                run_sync(&gpu.device, gpu.sync_cmd, gpu.sync_fence, |dev, cmd| {
+                    for p in 0..graph.pass_count() {
+                        graph.barriers(dev, cmd, p);
+                        let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent: VkExtent2D { width: w, height: h } };
+                        let tag = graph.tag(p);
+                        if tag == P::Copy {
+                            let region = VkBufferImageCopy {
+                                buffer_offset: 0,
+                                buffer_row_length: 0,
+                                buffer_image_height: 0,
+                                image_subresource: VkImageSubresourceLayers {
+                                    aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
+                                    mip_level: 0,
+                                    base_array_layer: 0,
+                                    layer_count: 1,
+                                },
+                                image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+                                image_extent: VkExtent3D { width: w, height: h, depth: 1 },
+                            };
+                            let image = graph.image(ids).image;
+                            // SAFETY: recording; the graph moved `ids` to TRANSFER_SRC_OPTIMAL; the
+                            // buffer holds at least w*h*4 bytes.
+                            unsafe {
+                                (dev.fns.cmd_copy_image_to_buffer)(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.handle, 1, &region)
+                            };
+                            continue;
+                        }
+                        let depth_att = graph.depth_attachment(p, depth, 0.25, None);
+                        let color_att = (tag == P::Ids).then(|| graph.color_attachment(p, ids, [f32::from_bits(id), 0.0, 0.0, 0.0]));
+                        let rendering = VkRenderingInfo {
+                            s_type: ST_RENDERING_INFO,
+                            p_next: ptr::null(),
+                            flags: 0,
+                            render_area: area,
+                            layer_count: 1,
+                            view_mask: 0,
+                            color_attachment_count: color_att.is_some() as u32,
+                            p_color_attachments: color_att.as_ref().map_or(ptr::null(), |c| c as *const _),
+                            p_depth_attachment: &depth_att,
+                            p_stencil_attachment: ptr::null(),
+                        };
+                        // SAFETY: recording; the attachments are the graph's, in the layouts it set.
+                        unsafe {
+                            (dev.fns.cmd_begin_rendering)(cmd, &rendering);
+                            (dev.fns.cmd_end_rendering)(cmd);
+                        }
+                    }
+                    graph.finish(dev, cmd);
+                })
+                .unwrap();
+                gpu.completed = frame_no;
+                gpu.pool.note_used(&g, frame_no);
+                let n = (w * h) as usize;
+                let mut out = vec![0u32; n];
+                // SAFETY: coherent mapped memory of at least n u32s; the copy finished (fence) and
+                // the graph recorded the transfer → host barrier.
+                unsafe { ptr::copy_nonoverlapping(readback.mapped as *const u32, out.as_mut_ptr(), n) };
+                assert!(out.iter().all(|&v| v == id), "adapter {}: round {round}: {:x?}", a.index, &out[..4]);
+                let stats = g.frame_stats();
+                assert_eq!(stats.recompiled, round == 0 || round == 3, "round {round}: recompile only when the declaration changes");
+                assert_eq!(stats.barriers, g.info().barrier_count() as u32);
+                if round == 0 {
+                    eprintln!("{}", g.info());
+                }
+            }
+            // The 16x8 images were replaced by 32x4 ones; collecting frees them (all finished).
+            assert_eq!(gpu.pool.len(), 4);
+            gpu.pool.collect(&gpu.device, &mut gpu.descriptors, gpu.completed);
+            assert_eq!(gpu.pool.len(), 2);
+            gpu.pool.release_owner(&gpu.device, &mut gpu.descriptors, 4242);
+            assert_eq!(gpu.pool.len(), 0);
+            gpu.device.destroy_buffer(&readback);
+            let messages = gpu.take_validation_messages();
+            let errors: Vec<_> = messages.iter().filter(|m| m.severity == Severity::Error).collect();
+            assert!(errors.is_empty(), "adapter {}: {errors:#?}", a.index);
         }
     }
 
