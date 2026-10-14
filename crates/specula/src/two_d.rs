@@ -155,26 +155,32 @@ pub struct TilemapSpec {
     pub layers: Vec<TileLayer>,
 }
 
-/// A vector shape: its canonical description, and its tessellation (made once, shared by every
-/// entity with an identical shape; deferred while world files load, see [`deferred`]).
+/// A vector shape: its canonical description, what it costs, where it is, and its tessellation
+/// (made once, shared by every entity with an identical shape; deferred while world files load,
+/// see [`deferred`]).
+///
+/// Everything but the tessellation is worked out from the description alone when it is parsed,
+/// so it is the same on every machine whatever has been drawn: the vertex bound a world charges
+/// against [`MAX_WORLD_SHAPE_VERTICES`] and the bounds that queries, sight and culling use.
 #[derive(Debug)]
 pub struct Shape2dSpec {
     /// The canonical description (what is saved and hashed).
     pub json: Json,
     pub z_layer: i32,
-    /// Identifies the shape (hash of the canonical JSON).
+    /// Hash of the canonical JSON. Not unique on its own: shapes are the same only when their
+    /// JSON is ([`Shape2dSpec::same`]).
     pub key: u64,
+    /// Upper bound of the tessellation's vertices (at most [`vector::MAX_SHAPE_VERTICES`]).
+    pub vertices: usize,
     items: Vec<ShapeItem>,
     tolerance: f32,
     aa: bool,
-    /// Conservative local bounds from the input, until tessellated.
-    rough: (Vec3, Vec3),
-    /// The tessellation (local XY plane) and its bounds, or why it failed.
-    mesh: std::sync::OnceLock<Result<Built, String>>,
+    /// Local bounds from the control points (arcs as centre ± radii) widened by each stroke's
+    /// reach. Every tessellated vertex lies inside (the one-pixel AA fringe aside).
+    bounds: (Vec3, Vec3),
+    /// The tessellation (local XY plane), or why the geometry can't be tessellated.
+    mesh: std::sync::OnceLock<Result<Arc<ShapeMesh>, String>>,
 }
-
-/// A shape's tessellation and its local bounds.
-type Built = (Arc<ShapeMesh>, (Vec3, Vec3));
 
 impl PartialEq for Shape2dSpec {
     fn eq(&self, other: &Shape2dSpec) -> bool {
@@ -929,24 +935,82 @@ struct ShapeItem {
     stroke: Option<StrokeStyle>,
 }
 
-/// Most vertices of all distinct shape2d meshes alive at once (identical shapes share one).
+/// Most vertices (by [`Shape2dSpec::vertices`], their upper bounds) of the distinct shape2d
+/// shapes in one world (identical shapes share one mesh, so count once). See [`ShapeBudget`].
 pub const MAX_WORLD_SHAPE_VERTICES: usize = 2_000_000;
 
-fn mesh_bounds(m: &ShapeMesh) -> Option<(Vec3, Vec3)> {
-    if m.vertices.is_empty() {
-        return None;
-    }
-    let (mut lo, mut hi) = (Vec3::new(f32::INFINITY, f32::INFINITY, 0.0), Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, 0.0));
-    for v in &m.vertices {
-        let p = Vec3::new(v.position[0], v.position[1], 0.0);
-        lo = lo.min(p);
-        hi = hi.max(p);
-    }
-    Some((lo, hi))
+/// The distinct shapes in a world and their vertex bounds: world state, charged when an entity
+/// with a shape enters the world (spawn, set, load, undo, rollback) and released when it leaves,
+/// so whether a shape fits depends only on what is in the world, never on what has been drawn.
+/// The journal's copies of old states don't count.
+#[derive(Clone, Debug, Default)]
+pub struct ShapeBudget {
+    /// Key → the distinct shapes with that key (almost always one) and how many entities use each.
+    shapes: BTreeMap<u64, Vec<(Arc<Shape2dSpec>, usize)>>,
+    vertices: usize,
 }
 
-/// Distinct shapes by canonical key: identical shape2d components share one spec (and one
-/// tessellation), and the world-wide vertex budget is counted over them.
+impl ShapeBudget {
+    /// The vertex bounds of the distinct shapes in the world, summed.
+    pub fn vertices(&self) -> usize {
+        self.vertices
+    }
+
+    /// Distinct shapes in the world.
+    pub fn distinct(&self) -> usize {
+        self.shapes.values().map(Vec::len).sum()
+    }
+
+    fn uses(&self, s: &Shape2dSpec) -> usize {
+        self.shapes.get(&s.key).and_then(|v| v.iter().find(|(o, _)| o.same(s))).map_or(0, |(_, n)| *n)
+    }
+
+    /// One more entity uses `s`.
+    pub fn charge(&mut self, s: &Arc<Shape2dSpec>) {
+        let list = self.shapes.entry(s.key).or_default();
+        match list.iter_mut().find(|(o, _)| o.same(s)) {
+            Some((_, n)) => *n += 1,
+            None => {
+                list.push((Arc::clone(s), 1));
+                self.vertices += s.vertices;
+            }
+        }
+    }
+
+    /// One entity fewer uses `s`.
+    pub fn release(&mut self, s: &Shape2dSpec) {
+        let Some(list) = self.shapes.get_mut(&s.key) else { return };
+        let Some(i) = list.iter().position(|(o, _)| o.same(s)) else { return };
+        list[i].1 -= 1;
+        if list[i].1 == 0 {
+            list.swap_remove(i);
+            self.vertices -= s.vertices;
+            if list.is_empty() {
+                self.shapes.remove(&s.key);
+            }
+        }
+    }
+
+    /// The sum after an entity's shape goes from `old` to `new` (`None`: no shape).
+    pub fn after(&self, new: Option<&Shape2dSpec>, old: Option<&Shape2dSpec>) -> usize {
+        let mut total = self.vertices;
+        match (new, old) {
+            (Some(n), Some(o)) if n.same(o) => {}
+            (n, o) => {
+                if let Some(o) = o.filter(|o| self.uses(o) == 1) {
+                    total -= o.vertices;
+                }
+                if let Some(n) = n.filter(|n| self.uses(n) == 0) {
+                    total += n.vertices;
+                }
+            }
+        }
+        total
+    }
+}
+
+/// Distinct shapes by key (their JSON compared on a hit): identical shape2d components share one
+/// spec and one tessellation. Only an index for sharing; budgets are per world ([`ShapeBudget`]).
 static SHAPES: std::sync::Mutex<BTreeMap<u64, std::sync::Weak<Shape2dSpec>>> = std::sync::Mutex::new(BTreeMap::new());
 
 thread_local! {
@@ -968,34 +1032,47 @@ fn registry() -> std::sync::MutexGuard<'static, BTreeMap<u64, std::sync::Weak<Sh
     SHAPES.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Vertices of the distinct shapes alive and tessellated.
-pub fn live_shape_vertices() -> usize {
-    registry().values().filter_map(std::sync::Weak::upgrade).filter_map(|s| s.mesh().map(|m| m.vertices.len())).sum()
-}
-
 impl Shape2dSpec {
-    /// Parses, validates and tessellates `v`, or returns the live spec of an identical shape
-    /// (no second tessellation). Refused past [`MAX_WORLD_SHAPE_VERTICES`] of distinct shapes.
-    /// Inside [`deferred`], only validates the description (tessellation happens later).
+    /// Parses and validates `v`, works out its vertex bound and bounds, and tessellates it, or
+    /// returns the live spec of an identical shape (no second tessellation). Inside
+    /// [`deferred`], doesn't tessellate (that happens when it is first drawn).
     pub fn parse(v: &Json) -> Result<Arc<Shape2dSpec>, String> {
-        let spec = Shape2dSpec::prepare(v)?;
+        let mut spec = Shape2dSpec::prepare(v)?;
         let hit = registry().get(&spec.key).and_then(std::sync::Weak::upgrade);
-        if let Some(live) = hit.filter(|s| s.json == spec.json) {
-            if !DEFERRED.with(|d| d.get()) {
-                live.ensure()?;
+        let spec = match hit.filter(|s| s.same(&spec)) {
+            Some(live) => live,
+            None => {
+                spec.vertices = spec.vertex_bound()?;
+                let spec = Arc::new(spec);
+                let mut reg = registry();
+                if reg.len() >= 64 && reg.len().is_power_of_two() {
+                    reg.retain(|_, w| w.strong_count() > 0);
+                }
+                reg.insert(spec.key, Arc::downgrade(&spec));
+                spec
             }
-            return Ok(live);
-        }
+        };
         if !DEFERRED.with(|d| d.get()) {
             spec.ensure()?;
         }
-        let spec = Arc::new(spec);
-        let mut reg = registry();
-        if reg.len() >= 64 && reg.len().is_power_of_two() {
-            reg.retain(|_, w| w.strong_count() > 0);
-        }
-        reg.insert(spec.key, Arc::downgrade(&spec));
         Ok(spec)
+    }
+
+    /// The same shape: equal canonical JSON (the key only rules most others out quickly).
+    pub fn same(&self, other: &Shape2dSpec) -> bool {
+        std::ptr::eq(self, other) || (self.key == other.key && self.json == other.json)
+    }
+
+    /// The upper bound of the tessellation's vertices, from the flattened outlines' point counts
+    /// (flattening is cheap and deterministic; nothing is triangulated).
+    fn vertex_bound(&self) -> Result<usize, String> {
+        let mut points = vector::MAX_SHAPE_POINTS;
+        let mut n = 0usize;
+        for (i, item) in self.items.iter().enumerate() {
+            let contours = item.path.flatten_budgeted(self.tolerance, &mut points).map_err(|e| format!("'shape2d.items[{i}]': {e}"))?;
+            n = n.saturating_add(vector::vertex_bound(&contours, item.fill.is_some(), item.stroke.as_ref(), self.tolerance, self.aa));
+        }
+        Ok(n.min(vector::MAX_SHAPE_VERTICES))
     }
 
     /// Parses and validates the description, without tessellating.
@@ -1012,7 +1089,7 @@ impl Shape2dSpec {
         let mut budget = MAX_SHAPE_INPUT;
         let mut items = Vec::with_capacity(list.len());
         let mut canon_items = Vec::with_capacity(list.len());
-        let mut extent = 0.0f64;
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
         for (i, item) in list.iter().enumerate() {
             let what = format!("shape2d.items[{i}]");
             keys(item, &what, ITEM_KEYS)?;
@@ -1130,7 +1207,10 @@ impl Shape2dSpec {
                 }
                 canon.push(("stroke", Json::obj(sf)));
             }
-            extent = extent.max(path.extent() + stroke.map_or(0.0, |s| s.width as f64));
+            if let Some(c) = path.control_bounds() {
+                let pad = stroke.map_or(0.0, |s| s.width as f64 * 0.5 * vector::stroke_reach(s.join));
+                b = [b[0].min(c[0] - pad), b[1].min(c[1] - pad), b[2].max(c[2] + pad), b[3].max(c[3] + pad)];
+            }
             canon_items.push(Json::obj(canon));
             items.push(ShapeItem { path, fill, stroke });
         }
@@ -1146,17 +1226,16 @@ impl Shape2dSpec {
         }
         let json = Json::obj(cf);
         let key = specula_core::hash::hash_str(&json.to_string());
-        let e = extent as f32;
-        Ok(Shape2dSpec {
-            json,
-            z_layer,
-            key,
-            items,
-            tolerance,
-            aa,
-            rough: (Vec3::new(-e, -e, 0.0), Vec3::new(e, e, 0.0)),
-            mesh: std::sync::OnceLock::new(),
-        })
+        // f32 rounding of the flattened points: a hair of slack, outward.
+        let bounds = if b[0] <= b[2] {
+            let slack = 1e-6 * b.iter().fold(1e-3f64, |m, v| m.max(v.abs()));
+            let lo = |v: f64| (v - slack) as f32;
+            let hi = |v: f64| (v + slack) as f32;
+            (Vec3::new(lo(b[0]), lo(b[1]), 0.0), Vec3::new(hi(b[2]), hi(b[3]), 0.0))
+        } else {
+            (Vec3::ZERO, Vec3::ZERO)
+        };
+        Ok(Shape2dSpec { json, z_layer, key, vertices: 0, items, tolerance, aa, bounds, mesh: std::sync::OnceLock::new() })
     }
 
     /// The tessellation of the items (one point budget for the whole shape).
@@ -1180,34 +1259,26 @@ impl Shape2dSpec {
                 vector::stroke(&contours, &s, self.tolerance, self.aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
             }
         }
-        let live = live_shape_vertices();
-        if live + mesh.vertices.len() > MAX_WORLD_SHAPE_VERTICES {
-            return Err(format!(
-                "shape2d_budget: distinct shape2d meshes would hold {} vertices; at most {MAX_WORLD_SHAPE_VERTICES} \
-                 (identical shapes share one; delete unused ones or simplify)",
-                live + mesh.vertices.len()
-            ));
-        }
+        debug_assert!(mesh.vertices.len() <= self.vertices.max(1), "vertex bound {} < {}", self.vertices, mesh.vertices.len());
         Ok(mesh)
     }
 
-    /// The mesh, tessellating now if no one has yet (blocks while another thread does).
+    /// The mesh, tessellating now if no one has yet (blocks while another thread does). Its
+    /// result is kept: it depends on nothing but the description, so an error is the geometry's
+    /// own (a panic, an engine bug, is kept as an error too rather than retried every frame).
     pub fn ensure(&self) -> Result<&Arc<ShapeMesh>, String> {
         self.mesh
-            .get_or_init(|| {
-                self.tessellate().map(|m| {
-                    let bounds = mesh_bounds(&m).unwrap_or(self.rough);
-                    (Arc::new(m), bounds)
-                })
+            .get_or_init(|| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.tessellate())) {
+                Ok(r) => r.map(Arc::new),
+                Err(panic) => Err(format!("tessellation failed unexpectedly (an engine bug, please report it): {}", panic_text(&*panic))),
             })
             .as_ref()
-            .map(|(m, _)| m)
             .map_err(Clone::clone)
     }
 
     /// The mesh if it is tessellated (`None` while deferred or failed).
     pub fn mesh(&self) -> Option<&Arc<ShapeMesh>> {
-        self.mesh.get().and_then(|m| m.as_ref().ok()).map(|(m, _)| m)
+        self.mesh.get().and_then(|m| m.as_ref().ok())
     }
 
     /// Why tessellation failed, once tried.
@@ -1215,13 +1286,19 @@ impl Shape2dSpec {
         self.mesh.get().and_then(|m| m.as_ref().err()).map(String::as_str)
     }
 
-    /// Local bounds: of the mesh once tessellated, otherwise a conservative box from the input.
+    /// Local bounds, from the description (see [`Shape2dSpec`]): the same before and after
+    /// tessellation.
     pub fn bounds(&self) -> (Vec3, Vec3) {
-        match self.mesh.get() {
-            Some(Ok((_, b))) => *b,
-            _ => self.rough,
-        }
+        self.bounds
     }
+}
+
+/// A panic payload's message.
+fn panic_text(p: &(dyn std::any::Any + Send)) -> &str {
+    p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("no message")
+}
+
+impl Shape2dSpec {
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1417,7 +1494,22 @@ enum Job {
 enum Done {
     Texture { key: String, stamp: Stamp, image: Result<png::Image, String> },
     Unchanged(String),
-    Shape(u64),
+    /// A deferred shape is tessellated (or failed); by [`shape_slot`].
+    Shape(usize),
+}
+
+/// A shape's GPU mesh (or why it couldn't be uploaded), with the shape it was made from.
+type ShapeMeshEntry = (Arc<Shape2dSpec>, Result<MeshId, String>);
+
+/// Identifies a shape spec while the loader holds it (its address: keys alone may collide).
+fn shape_slot(spec: &Arc<Shape2dSpec>) -> usize {
+    Arc::as_ptr(spec) as usize
+}
+
+/// Runs a loader job, turning a panic (an engine bug) into an error for `what`.
+fn guarded<T>(what: &str, job: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+        .unwrap_or_else(|p| Err(format!("{what}: the loader failed unexpectedly (an engine bug, please report it): {}", panic_text(&*p))))
 }
 
 type Loader = (std::sync::mpsc::Sender<Job>, std::sync::mpsc::Receiver<Done>);
@@ -1471,9 +1563,10 @@ pub struct TwoDGpu {
     assets: PathBuf,
     textures: BTreeMap<String, TexEntry>,
     cells: BTreeMap<(u64, usize), LayerTexture>,
-    shapes: BTreeMap<u64, Result<MeshId, String>>,
-    /// Deferred shapes being tessellated on the loader thread.
-    pending_shapes: BTreeSet<u64>,
+    /// Shape meshes by key; each key's distinct shapes (almost always one) told apart by JSON.
+    shapes: BTreeMap<u64, Vec<ShapeMeshEntry>>,
+    /// Deferred shapes being tessellated on the loader thread, by [`shape_slot`].
+    pending_shapes: BTreeSet<usize>,
     loader: Option<Loader>,
     last_poll: std::time::Instant,
     /// Reused per-frame scratch.
@@ -1532,18 +1625,21 @@ impl TwoDGpu {
             let spawned = std::thread::Builder::new().name("specula-2d-loader".into()).spawn(move || {
                 for job in job_rx {
                     let done = match job {
-                        Job::Load { key, file } => Done::Texture { stamp: stamp_of(&file), image: read_texture(&key, &file), key },
+                        Job::Load { key, file } => {
+                            Done::Texture { stamp: stamp_of(&file), image: guarded(&key, || read_texture(&key, &file)), key }
+                        }
                         Job::Check { key, file, stamp } => {
                             let now = stamp_of(&file);
                             if now == stamp {
                                 Done::Unchanged(key)
                             } else {
-                                Done::Texture { stamp: now, image: read_texture(&key, &file), key }
+                                Done::Texture { stamp: now, image: guarded(&key, || read_texture(&key, &file)), key }
                             }
                         }
                         Job::Shape(spec) => {
+                            // `ensure` keeps a panic as the shape's error.
                             let _ = spec.ensure();
-                            Done::Shape(spec.key)
+                            Done::Shape(shape_slot(&spec))
                         }
                     };
                     if done_tx.send(done).is_err() {
@@ -1589,10 +1685,25 @@ impl TwoDGpu {
         if spec.mesh().is_some() || spec.mesh_error().is_some() {
             return false;
         }
-        if !self.pending_shapes.contains(&spec.key) && self.send(Job::Shape(Arc::clone(spec))) {
-            self.pending_shapes.insert(spec.key);
+        let slot = shape_slot(spec);
+        if !self.pending_shapes.contains(&slot) && self.send(Job::Shape(Arc::clone(spec))) {
+            self.pending_shapes.insert(slot);
         }
-        self.pending_shapes.contains(&spec.key)
+        self.pending_shapes.contains(&slot)
+    }
+
+    /// The loader thread is gone (it can only stop by panicking outside a job): forget what was
+    /// in flight with a reason, so nothing waits for it, and start a new one on the next request.
+    fn loader_stopped(&mut self) {
+        self.loader = None;
+        self.pending_shapes.clear();
+        for (key, t) in self.textures.iter_mut() {
+            if t.loading {
+                self.errors.insert(key.clone(), format!("texture {key}: the loader thread stopped; retrying when the file changes"));
+            }
+            t.loading = false;
+            t.checking = false;
+        }
     }
 
     /// Uploads whatever the loader finished.
@@ -1601,7 +1712,11 @@ impl TwoDGpu {
             let done = match &self.loader {
                 Some((_, rx)) => match rx.try_recv() {
                     Ok(d) => d,
-                    Err(_) => return,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.loader_stopped();
+                        return;
+                    }
                 },
                 None => return,
             };
@@ -1611,8 +1726,8 @@ impl TwoDGpu {
                         e.checking = false;
                     }
                 }
-                Done::Shape(key) => {
-                    self.pending_shapes.remove(&key);
+                Done::Shape(slot) => {
+                    self.pending_shapes.remove(&slot);
                 }
                 Done::Texture { key, stamp, image } => {
                     let Some(entry) = self.textures.get_mut(&key) else { continue }; // collected meanwhile
@@ -1736,29 +1851,34 @@ impl TwoDGpu {
         }
     }
 
-    fn shape(&mut self, gpu: &mut Gpu, s: &Arc<Shape2dSpec>) -> Option<MeshId> {
+    /// The mesh of entity `id`'s shape `s`, uploaded on first use.
+    fn shape(&mut self, gpu: &mut Gpu, id: u64, s: &Arc<Shape2dSpec>) -> Option<MeshId> {
         let Some(mesh) = s.mesh() else {
             // Deferred (loaded from a world file): tessellated on the loader thread.
             if self.request_shape(s) {
-                self.problem(format_args!("shape2d {:016x}: still tessellating", s.key));
+                self.problem(format_args!("shape2d {id}: still tessellating"));
             } else if let Some(e) = s.mesh_error() {
-                self.problem(format_args!("{e}"));
+                push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("shape2d {id}: {e}"));
             }
             return None;
         };
         if mesh.is_empty() {
             return None;
         }
-        self.shapes
-            .entry(s.key)
-            .or_insert_with(|| gpu.upload_mesh(&mesh.vertices, &mesh.indices).map_err(|e| format!("shape2d: {e}")));
-        match self.shapes.get(&s.key) {
-            Some(Ok(m)) => Some(*m),
-            Some(Err(e)) => {
-                push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("{e}"));
+        let list = self.shapes.entry(s.key).or_default();
+        let at = match list.iter().position(|(o, _)| Arc::ptr_eq(o, s) || o.same(s)) {
+            Some(at) => at,
+            None => {
+                list.push((Arc::clone(s), gpu.upload_mesh(&mesh.vertices, &mesh.indices).map_err(|e| e.to_string())));
+                list.len() - 1
+            }
+        };
+        match &list[at].1 {
+            Ok(m) => Some(*m),
+            Err(e) => {
+                push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("shape2d {id}: {e}"));
                 None
             }
-            None => None,
         }
     }
 
@@ -1834,7 +1954,7 @@ impl TwoDGpu {
                 }
             }
             TwoD::Shape2d(s) => {
-                if let Some(mesh) = self.shape(gpu, s) {
+                if let Some(mesh) = self.shape(gpu, id, s) {
                     out.push(Draw2d::Shape(ShapeDraw { mesh, model: cols, color: tint, layer: s.z_layer }));
                 }
             }
@@ -1847,7 +1967,7 @@ impl TwoDGpu {
     pub fn collect(&mut self, gpu: &mut Gpu, live: &[(u64, &TwoD)]) {
         let mut paths = BTreeSet::new();
         let mut layers = BTreeSet::new();
-        let mut shapes = BTreeSet::new();
+        let mut shapes: BTreeMap<u64, Vec<&Arc<Shape2dSpec>>> = BTreeMap::new();
         for (id, t) in live {
             match t {
                 TwoD::Sprite(s) => {
@@ -1860,7 +1980,7 @@ impl TwoDGpu {
                     layers.extend((0..m.layers.len()).map(|i| (*id, i)));
                 }
                 TwoD::Shape2d(s) => {
-                    shapes.insert(s.key);
+                    shapes.entry(s.key).or_default().push(s);
                 }
             }
         }
@@ -1878,12 +1998,17 @@ impl TwoDGpu {
             }
         }
         self.errors.retain(|k, _| !k.starts_with("tilemap ") || layers.iter().any(|(id, li)| *k == format!("tilemap {id} layer {li}")));
-        let dead: Vec<u64> = self.shapes.keys().filter(|k| !shapes.contains(k)).copied().collect();
-        for k in dead {
-            if let Some(Ok(m)) = self.shapes.remove(&k) {
-                gpu.destroy_mesh(m);
-            }
+        for (key, list) in self.shapes.iter_mut() {
+            let users = shapes.get(key).map_or(&[][..], Vec::as_slice);
+            list.retain(|(s, mesh)| {
+                let used = users.iter().any(|u| Arc::ptr_eq(u, s) || u.same(s));
+                if let (false, Ok(m)) = (used, mesh) {
+                    gpu.destroy_mesh(*m);
+                }
+                used
+            });
         }
+        self.shapes.retain(|_, list| !list.is_empty());
     }
 
     pub fn stats_json(&self) -> Json {
@@ -1892,7 +2017,7 @@ impl TwoDGpu {
             ("textures_loading", Json::from(self.loading())),
             ("texture_loads", Json::from(self.texture_loads)),
             ("tile_layers", Json::from(self.cells.len())),
-            ("shape_meshes", Json::from(self.shapes.values().filter(|s| s.is_ok()).count())),
+            ("shape_meshes", Json::from(self.shapes.values().flatten().filter(|(_, m)| m.is_ok()).count())),
             ("chunk_uploads", Json::from(self.chunk_uploads)),
             ("errors", Json::arr(self.errors.values().take(MAX_FRAME_PROBLEMS).map(|e| Json::from(e.as_str())))),
         ])
@@ -2170,5 +2295,65 @@ mod tests {
         ] {
             assert!(Shape2dSpec::parse(&json(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn budgets_tell_colliding_keys_apart() {
+        let a = Shape2dSpec::parse(&json(r##"{"items":[{"rect":[0,0,1,1],"fill":"#ff0000"}],"z_layer":-77}"##)).unwrap();
+        // A forged hash collision: the same key, another description.
+        let other = Shape2dSpec::prepare(&json(r##"{"items":[{"rect":[0,0,2,1],"fill":"#ff0000"}],"z_layer":-77}"##)).unwrap();
+        let b = Arc::new(Shape2dSpec { key: a.key, vertices: 1000, ..other });
+        assert!(!a.same(&b) && a.same(&a));
+        let mut budget = ShapeBudget::default();
+        budget.charge(&a);
+        assert_eq!(budget.after(Some(&b), None), a.vertices + 1000, "a collision is still a new shape");
+        budget.charge(&b);
+        budget.charge(&a);
+        assert_eq!((budget.distinct(), budget.vertices()), (2, a.vertices + 1000));
+        assert_eq!(budget.after(Some(&b), Some(&a)), budget.vertices(), "b is in already; a has another user");
+        budget.release(&a);
+        assert_eq!(budget.after(Some(&b), Some(&a)), 1000, "a's last user switches to b");
+        budget.release(&b);
+        assert_eq!((budget.distinct(), budget.vertices()), (1, a.vertices));
+        budget.release(&a);
+        budget.release(&a); // more releases than charges: ignored
+        assert_eq!((budget.distinct(), budget.vertices()), (0, 0));
+    }
+
+    #[test]
+    fn undo_and_restore_are_checked_against_the_budget() {
+        use crate::world::{EntityKey, Shape, SpawnSpec, World};
+        let heavy = |tag: u32| {
+            let items = vec![r##"{"circle":[0,0,100],"fill":"#ffffff"}"##; 90].join(",");
+            let text = format!(r#"{{"items":[{items}],"tolerance":0.001,"z_layer":{tag}}}"#);
+            deferred(|| parse("shape2d", &json(&text))).unwrap()
+        };
+        let spawn = |w: &mut World, name: &str, t: TwoD| {
+            let mut s = SpawnSpec::new(Shape::Shape2d);
+            s.name = Some(name.into());
+            s.two_d = Some(t);
+            w.spawn(s, "test").map(|e| e.id)
+        };
+        let mut w = World::default();
+        spawn(&mut w, "gone", heavy(10_000)).unwrap();
+        let removed = w.delete(&EntityKey::Path("/gone".into()), None).unwrap().removed.remove(0);
+        let mut k = 0;
+        while spawn(&mut w, &format!("h{k}"), heavy(k)).is_ok() {
+            k += 1;
+        }
+        // Putting the deleted entity back (journal undo) would pass the budget: refused.
+        let e = w.check_put(&removed).unwrap_err();
+        assert_eq!((e.code, e.detail("field").and_then(Json::as_str)), ("limit", Some("shape2d")));
+        w.delete(&EntityKey::Path("/h0".into()), None).unwrap();
+        w.check_put(&removed).unwrap();
+        // A put that keeps its own shape costs nothing.
+        let h1 = w.get(w.find_path("/h1").unwrap()).unwrap().clone();
+        w.check_put(&h1).unwrap();
+    }
+
+    #[test]
+    fn loader_panics_become_errors() {
+        let r = guarded::<()>("tiles/a.png", || panic!("boom"));
+        assert!(r.is_err_and(|e| e.starts_with("tiles/a.png") && e.contains("boom")));
     }
 }

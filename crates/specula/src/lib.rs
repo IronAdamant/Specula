@@ -674,13 +674,7 @@ impl Engine {
         };
         let result = match received {
             Some(r) => r,
-            None => Err(persist::PersistError {
-                code: "io",
-                message: "the autosave thread stopped without reporting".into(),
-                file: None,
-                entity: None,
-                field: None,
-            }),
+            None => Err(persist::PersistError::new("io", "the autosave thread stopped without reporting")),
         };
         let revision = job.revision;
         self.autosave_job = None;

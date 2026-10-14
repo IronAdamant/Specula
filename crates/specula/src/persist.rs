@@ -60,11 +60,13 @@ pub struct PersistError {
     pub file: Option<String>,
     pub entity: Option<String>,
     pub field: Option<String>,
+    /// More machine-readable details (a world limit's `limit` and `value`); boxed, as they are rare.
+    pub details: Option<Box<Vec<(&'static str, Json)>>>,
 }
 
 impl PersistError {
-    fn new(code: &'static str, message: impl Into<String>) -> PersistError {
-        PersistError { code, message: message.into(), file: None, entity: None, field: None }
+    pub fn new(code: &'static str, message: impl Into<String>) -> PersistError {
+        PersistError { code, message: message.into(), file: None, entity: None, field: None, details: None }
     }
 
     fn in_file(mut self, file: &str) -> PersistError {
@@ -92,6 +94,7 @@ impl PersistError {
         let mut f = vec![("error", Json::from(self.code)), ("message", Json::from(self.message.as_str()))];
         let opt = |v: &Option<String>| v.as_deref().map_or(Json::Null, Json::from);
         f.extend([("file", opt(&self.file)), ("entity", opt(&self.entity)), ("field", opt(&self.field))]);
+        f.extend(self.details.iter().flat_map(|d| d.iter()).filter(|(k, _)| *k != "field").cloned());
         Json::obj(f)
     }
 }
@@ -885,9 +888,13 @@ fn quoted_field(message: &str) -> Option<String> {
     message.split('\'').nth(1).filter(|f| !f.is_empty() && !f.contains(' ')).map(str::to_owned)
 }
 
+/// A world error while loading: the file is invalid, except that a world limit (a `limit` error,
+/// e.g. too many distinct shape2d vertices) keeps its code and details, so the whole load is
+/// refused for that reason and nothing loaded can later be broken by someone else's change.
 fn from_world(e: WorldError, file: &str, entity: Option<&str>) -> PersistError {
     let field = e.detail("field").and_then(Json::as_str).map(str::to_owned);
-    PersistError { code: "invalid_world", message: e.message, file: Some(file.to_owned()), entity: entity.map(str::to_owned), field }
+    let (code, details) = if e.code == "limit" { ("limit", Some(Box::new(e.details))) } else { ("invalid_world", None) };
+    PersistError { code, message: e.message, file: Some(file.to_owned()), entity: entity.map(str::to_owned), field, details }
 }
 
 fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) -> Result<(), PersistError> {
@@ -903,6 +910,7 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             file: Some(file.to_owned()),
             entity: Some(path.map_or_else(|| format!("entities[{i}]"), str::to_owned)),
             field,
+            details: None,
         };
         let Some(path) = path else { return Err(fail(Some("path".into()), "every entity needs a 'path'".into())) };
         let fields = rec.as_object().ok_or_else(|| fail(None, "entities must be objects".into()))?;

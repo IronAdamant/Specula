@@ -394,6 +394,40 @@ def probes(m, assets, worlds, problems):
     t = time.time()
     p = m.frame(width=64, height=64, view_2d={"center": [0, 2000], "height_m": 300}, max_subjects=3)
     check(time.time() - t < 5 and not p.get("warnings"), f"after loading, they draw (tessellated on the loader) {p.get('warnings')}", problems)
+    # Round 3: the shape budget is world state, charged from each description when it enters the
+    # world. Distinct heavy shapes fill it and the next is refused with a structured error; a
+    # reloaded world keeps its charge (later spawns can't break it); bounds never depend on what
+    # has been drawn.
+    def heavy(tag):
+        return {"items": [{"circle": [0, 0, 100], "fill": "#ffffff"}] * 90, "tolerance": 0.001, "z_layer": tag}
+
+    def err(text):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {}
+
+    refused = None
+    for k in range(1, 40):
+        bad, text = raw("world_spawn", shape="shape2d", name=f"probe_d{k}", position=[k * 1000.0, 5000, 0], shape2d=heavy(k))
+        if bad:
+            refused = (k, err(text))
+            break
+    e = refused[1] if refused else {}
+    check(refused is not None and e.get("error") == "limit" and e.get("field") == "shape2d" and e.get("limit") == 2000000 and e.get("value", 0) > 2000000,
+          f"distinct heavy shapes fill the world budget, then a structured refusal: {refused and (refused[0], e.get('error'), e.get('value'))}", problems)
+    q = lambda: m.json("world_query", path_prefix="/probe_d", fields=["bounds"])
+    bounds_before = q()
+    m.json("world_save", name="probe_budget", overwrite=True)
+    m.json("world_load", name="probe_budget", force=True)
+    bounds_loaded = q()
+    bad, text = raw("world_spawn", shape="shape2d", name="probe_late", shape2d=heavy(999))
+    check(bad and err(text).get("error") == "limit", f"after a reload, the loaded shapes keep their budget: {text[:80]!r}", problems)
+    m.frame(width=64, height=64, view_2d={"center": [1000, 5000], "height_m": 300}, max_subjects=3)
+    check(bounds_before == bounds_loaded == q(), "shape bounds are the same saved, loaded, and drawn", problems)
+    bad, text = raw("world_delete", path="/probe_d1")
+    m.call("world_spawn", shape="shape2d", name="probe_late", shape2d=heavy(999))
+    check(not bad, "deleting a shape frees its budget for another", problems)
 
 
 def check(cond, what, problems):

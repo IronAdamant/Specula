@@ -243,6 +243,34 @@ impl Path {
         })
     }
 
+    /// `[min x, min y, max x, max y]` of the control points, arcs as their centre ± radii: every
+    /// flattened point lies inside (Béziers stay within their control points' hull). `None` for
+    /// an empty path.
+    pub fn control_bounds(&self) -> Option<[f64; 4]> {
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        let mut add = |p: [f64; 2], r: [f64; 2]| {
+            b = [b[0].min(p[0] - r[0]), b[1].min(p[1] - r[1]), b[2].max(p[0] + r[0]), b[3].max(p[1] + r[1])];
+        };
+        let f = |p: &[f32; 2]| [p[0] as f64, p[1] as f64];
+        for c in &self.cmds {
+            match c {
+                PathCmd::MoveTo(p) | PathCmd::LineTo(p) => add(f(p), [0.0; 2]),
+                PathCmd::QuadTo(a, p) => {
+                    add(f(a), [0.0; 2]);
+                    add(f(p), [0.0; 2]);
+                }
+                PathCmd::CubicTo(a, b2, p) => {
+                    add(f(a), [0.0; 2]);
+                    add(f(b2), [0.0; 2]);
+                    add(f(p), [0.0; 2]);
+                }
+                PathCmd::Arc { center, radii, .. } => add(f(center), f(radii)),
+                PathCmd::Close => {}
+            }
+        }
+        (b[0] <= b[2] && b.iter().all(|v| v.is_finite())).then_some(b)
+    }
+
     /// Flatten into contours, each curve split so no point of it is farther than `tolerance`
     /// (metres) from the polyline (raised to [`MIN_RELATIVE_TOLERANCE`] × the path's extent;
     /// at most [`MAX_CURVE_SEGMENTS`] per curve). Consecutive duplicate points are dropped.
@@ -1102,6 +1130,60 @@ pub fn stroke(contours: &[Contour], style: &StrokeStyle, tolerance: f32, aa: boo
     Ok(())
 }
 
+/// An upper bound of the vertices [`fill`] (if `filled`) and [`stroke`] (with `style`) add for
+/// `contours`, from their point counts alone: no tessellation, so it is cheap and depends on
+/// nothing but its arguments (what a world charges a shape against its budget).
+pub fn vertex_bound(contours: &[Contour], filled: bool, style: Option<&StrokeStyle>, tolerance: f32, aa: bool) -> usize {
+    let per = if aa { 2 } else { 1 };
+    let mut n = 0usize;
+    if filled {
+        // One vertex per ring point (rings only ever lose points), doubled by the fringe.
+        let points = contours.iter().map(|c| c.points.len()).fold(0usize, usize::saturating_add);
+        n = n.saturating_add(points.saturating_mul(per));
+    }
+    let Some(s) = style else { return n };
+    let hw = s.width as f64 * 0.5;
+    if !(hw > 0.0 && hw.is_finite() && tolerance.is_finite() && tolerance > 0.0) {
+        return n;
+    }
+    let tol = (tolerance as f64).max(hw * 1e-3);
+    let quarter = arc_segments(hw, std::f64::consts::FRAC_PI_2, tol).min(MAX_ROUND_SEGMENTS);
+    // Cross-sections per corner: a round join turns at most half a turn; miter (or its bevel
+    // fallback) and bevel take at most two.
+    let join = match s.join {
+        LineJoin::Round => arc_segments(hw, std::f64::consts::PI, tol).min(MAX_ROUND_SEGMENTS) + 1,
+        _ => 2,
+    };
+    let cap = match s.cap {
+        LineCap::Round => quarter + 1,
+        _ => 2,
+    };
+    let per_pair = 2 * per;
+    for c in contours {
+        let more = match c.points.len() {
+            0 => 0,
+            1 => match s.cap {
+                LineCap::Butt => 0,
+                LineCap::Round => 1 + 4 * quarter * per,
+                LineCap::Square => 1 + 4 * per,
+            },
+            // Open: two caps and a join per inner point; closed: a join per point and one more.
+            k => k.saturating_mul(join).saturating_add(2 * cap + 1).saturating_mul(per_pair),
+        };
+        n = n.saturating_add(more);
+    }
+    n
+}
+
+/// How far past its points (in units of the stroke's half width) a stroke with `join` can reach:
+/// a miter's tip, else a square cap's corner or a clamped inner corner (√2).
+pub fn stroke_reach(join: LineJoin) -> f64 {
+    match join {
+        LineJoin::Miter { limit } => (limit as f64).max(std::f64::consts::SQRT_2),
+        _ => std::f64::consts::SQRT_2,
+    }
+}
+
 /// Cross-sections at a corner: one for a miter, several around the outside for bevel and round.
 #[allow(clippy::too_many_arguments)]
 fn join_pairs(out: &mut Vec<Pair>, p: P2, d0: P2, d1: P2, hw: f64, join: LineJoin, tol: f64, shortest: f64) {
@@ -1597,5 +1679,74 @@ mod tests {
         }
         assert!(matches!(many.flatten(0.1), Err(VectorError::TooManyPoints { .. })));
         assert!(matches!(Path::polygon(&[[f32::NAN, 0.0]]).flatten(0.1), Err(VectorError::NotFinite { .. })));
+    }
+
+    #[test]
+    fn vertex_bounds_and_control_bounds_hold_for_every_join_and_cap() {
+        let mut star = Path::new();
+        for k in 0..10 {
+            let (s, c) = dmath::sin_cos_f64(k as f64 * std::f64::consts::TAU / 10.0);
+            let r = if k % 2 == 0 { 1.0 } else { 0.3 };
+            if k == 0 {
+                star.move_to([(r * c) as f32, (r * s) as f32]);
+            } else {
+                star.line_to([(r * c) as f32, (r * s) as f32]);
+            }
+        }
+        star.close();
+        let mut glyph = Path::rect(0.0, 0.0, 4.0, 4.0);
+        glyph.cmds.extend(Path::rect(1.0, 1.0, 2.0, 2.0).cmds);
+        let mut curves = Path::new();
+        curves.move_to([0.0, 0.0]).quad_to([5.0, 9.0], [10.0, 0.0]).cubic_to([12.0, -8.0], [-3.0, -9.0], [1.0, 2.0]);
+        let mut dots = Path::new();
+        for k in 0..5 {
+            dots.move_to([k as f32, 0.0]);
+        }
+        let spike = Path::polyline(&[[-1.0, 0.0], [0.0, 0.0], [-1.0, 0.03]]);
+        let zigzag = Path::polyline(&(0..40).map(|k| [k as f32 * 0.1, (k % 2) as f32]).collect::<Vec<_>>());
+        let paths = [
+            ("star", star),
+            ("glyph", glyph),
+            ("curves", curves),
+            ("dots", dots),
+            ("spike", spike),
+            ("zigzag", zigzag),
+            ("ellipse", Path::ellipse([3.0, -2.0], [5.0, 0.5])),
+            ("rounded", Path::rounded_rect(0.0, 0.0, 4.0, 1.0, 0.5)),
+            ("arc", Path::arc([1.0, 1.0], 2.0, 0.3, 4.0)),
+        ];
+        let joins = [LineJoin::Miter { limit: 4.0 }, LineJoin::Miter { limit: 100.0 }, LineJoin::Round, LineJoin::Bevel];
+        let caps = [LineCap::Butt, LineCap::Square, LineCap::Round];
+        for (name, path) in &paths {
+            let b = path.control_bounds().unwrap();
+            for tol in [0.0005f32, 0.05] {
+                let contours = path.flatten(tol).unwrap();
+                for aa in [true, false] {
+                    let mut m = ShapeMesh::default();
+                    if fill(&contours, [255; 4], aa, &mut m).is_ok() {
+                        assert!(m.vertices.len() <= vertex_bound(&contours, true, None, tol, aa), "{name} fill");
+                    }
+                    for &join in &joins {
+                        for &cap in &caps {
+                            for width in [0.01f32, 0.3, 2.0] {
+                                let style = StrokeStyle { width, join, cap, ..Default::default() };
+                                let mut m = ShapeMesh::default();
+                                stroke(&contours, &style, tol, aa, &mut m).unwrap();
+                                let bound = vertex_bound(&contours, false, Some(&style), tol, aa);
+                                assert!(m.vertices.len() <= bound, "{name} {join:?} {cap:?} {width}: {} > {bound}", m.vertices.len());
+                                let pad = width as f64 * 0.5 * stroke_reach(join) + 1e-5;
+                                for v in &m.vertices {
+                                    let [x, y, _] = v.position.map(|c| c as f64);
+                                    assert!(
+                                        x >= b[0] - pad && x <= b[2] + pad && y >= b[1] - pad && y <= b[3] + pad,
+                                        "{name} {join:?} {cap:?} {width}: ({x}, {y}) outside {b:?} + {pad}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -1774,6 +1774,16 @@ pub struct World {
     model_drops: u64,
     /// Builds model entities' models (the engine's model library).
     models: SourceSlot,
+    /// The distinct vector shapes of the entities in the world, against their vertex budget.
+    shapes: crate::two_d::ShapeBudget,
+}
+
+/// The shape2d spec of an entity's 2D component, if it has one.
+fn shape_spec(t: Option<&TwoD>) -> Option<&crate::two_d::Shape2dSpec> {
+    match t {
+        Some(TwoD::Shape2d(s)) => Some(s),
+        _ => None,
+    }
 }
 
 impl World {
@@ -2136,6 +2146,7 @@ impl World {
     /// Inserts a checked entity under `id` (`None`: the next free id of its kind). Returns its id.
     fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
         check_spawn(&spec)?;
+        self.check_shapes(shape_spec(spec.two_d.as_ref()), None)?;
         let props = canonical_props(spec.props)?;
         let parent = match &spec.parent {
             Some(key) => Some(self.resolve(key).map_err(|e| e.with("field", "parent"))?),
@@ -2315,6 +2326,7 @@ impl World {
                     _ => return Err(wrong("only tilemap entities have tiles")),
                 }
             }
+            self.check_shapes(shape_spec(Some(&next)), shape_spec(e.two_d.as_ref()))?;
             new_two_d = Some(next);
         }
         // A model's new spec, resolved before anything changes (a broken recipe changes nothing).
@@ -2457,6 +2469,12 @@ impl World {
             e.layer = l;
         }
         if let Some(t) = new_two_d {
+            if let Some(TwoD::Shape2d(s)) = &e.two_d {
+                self.shapes.release(s);
+            }
+            if let TwoD::Shape2d(s) = &t {
+                self.shapes.charge(s);
+            }
             e.two_d = Some(t);
         }
         e.version += 1;
@@ -2610,6 +2628,9 @@ impl World {
         if e.transient {
             self.transient_count += 1;
         }
+        if let Some(TwoD::Shape2d(s)) = &e.two_d {
+            self.shapes.charge(s);
+        }
         self.entities.insert(e.id, e);
     }
 
@@ -2621,7 +2642,38 @@ impl World {
         if e.transient {
             self.transient_count -= 1;
         }
+        if let Some(s) = shape_spec(e.two_d.as_ref()) {
+            self.shapes.release(s);
+        }
         Some(e)
+    }
+
+    /// The distinct vector shapes in the world and their vertex bounds.
+    pub fn shape_budget(&self) -> &crate::two_d::ShapeBudget {
+        &self.shapes
+    }
+
+    /// Refuses an entity's shape going from `old` to `new` when the world's distinct shapes
+    /// would pass [`crate::two_d::MAX_WORLD_SHAPE_VERTICES`] (identical shapes count once).
+    fn check_shapes(&self, new: Option<&crate::two_d::Shape2dSpec>, old: Option<&crate::two_d::Shape2dSpec>) -> Result<(), WorldError> {
+        let max = crate::two_d::MAX_WORLD_SHAPE_VERTICES;
+        let Some(n) = new else { return Ok(()) };
+        let total = self.shapes.after(new, old);
+        if total <= max || total <= self.shapes.vertices() {
+            return Ok(());
+        }
+        Err(WorldError::new(
+            "limit",
+            format!(
+                "the world's distinct shape2d shapes would need up to {total} vertices; at most {max} (this one: up to {}; \
+                 identical shapes count once: reuse one, delete unused ones, or use fewer items or a larger tolerance)",
+                n.vertices
+            ),
+        )
+        .with("field", "shape2d")
+        .with("limit", max)
+        .with("value", total)
+        .with("shape_vertices", n.vertices))
     }
 
     /// Recomputes the world transforms (and the inherited visibility and layer) of `id` and
@@ -2980,6 +3032,9 @@ impl World {
         if e.transient {
             self.transient_count -= 1;
         }
+        if let Some(s) = shape_spec(e.two_d.as_ref()) {
+            self.shapes.release(s);
+        }
         Some(e)
     }
 
@@ -3008,9 +3063,11 @@ impl World {
             }
         }
         match self.children.get(&(e.parent.unwrap_or(ROOT), e.name.clone())) {
-            Some(&other) if other != e.id => Err(self.name_taken(&e.name, other)),
-            _ => Ok(()),
+            Some(&other) if other != e.id => return Err(self.name_taken(&e.name, other)),
+            _ => {}
         }
+        let old = self.entities.get(&e.id).and_then(|o| shape_spec(o.two_d.as_ref()));
+        self.check_shapes(shape_spec(e.two_d.as_ref()), old)
     }
 
     /// Ids of `id` and everything below it, children before their parents.
