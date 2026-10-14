@@ -1793,6 +1793,11 @@ mod tests {
         settle(&mut lib);
         let r = lib.resolve(&heavies[5]).unwrap();
         assert_eq!(r.state, ModelState::Ready, "{:?}", lib.handle_error(r.handle));
+        // A cancelled job may still be running on a worker: its id is pruned when it ends.
+        let waited = Instant::now();
+        while !lib.workers.cancelled.lock().unwrap().is_empty() && waited.elapsed() < Duration::from_secs(20) {
+            lib.finish(Some(Duration::from_millis(20)));
+        }
         assert!(lib.workers.cancelled.lock().unwrap().is_empty(), "cancelled ids are pruned as their jobs end");
         let _ = std::fs::remove_dir_all(&root);
     }
