@@ -898,7 +898,8 @@ impl Engine {
             return;
         }
         let by = self.swarm.agent_name(&request.session);
-        let session = request.session.id.clone();
+        // Ownership (claims, undo) goes by identity key, which a resumed agent keeps.
+        let session = self.swarm.key(&request.session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
         let output = match request.command {
@@ -962,7 +963,7 @@ impl Engine {
                 Ok(()) => self.load(name, force),
                 Err(e) => world_error(&e),
             },
-            Command::Hello { name, role } => match self.swarm.hello(&request.session, name, role, &server.all_sessions()) {
+            Command::Hello { name, role, resume } => match self.swarm.hello(&request.session, name, role, resume, &server.all_sessions()) {
                 Ok(reply) => ToolOutput::text(reply.to_pretty()),
                 Err(e) => world_error(&e),
             },

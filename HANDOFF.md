@@ -10,6 +10,31 @@ memory of the earlier ones. Last updated **2026-10-13**.
   where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
   [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
   How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
+- **Paused 2026-10-13 (owner: "I'll look into M2 tomorrow").** State at the pause:
+  - **M1 done** (exit proof with four Claude subagents; only the msvc replay check is left to CI).
+  - **Merged:** capture speed, GPU stats/instancing, world + persistence, dmath, journal/claims/identity
+    (resume tokens), render (shadows, bloom, FXAA, sky, fog, overlay), text, input, procedural modelling,
+    animation, audio, UI (GPU overlay), engine effects in `world_env`, Sepulcra sim + app (playable greybox).
+  - **Unmerged lane: Engine-for-games** (`model` entities with shared GPU meshes and LOD, visibility, transient
+    entities, UI layer, game hooks). Branch `worktree-agent-aebd4fb01086d5366` at 688ecb6, worktree in
+    `.claude/worktrees/agent-aebd4fb01086d5366` (merges cleanly with main). Round 1's 4 majors are fixed; round 2
+    says **do not merge** until these are fixed (all in the new model build workers, `crates/specula/src/`):
+    1. `lib.rs` `wait_for_models` (from sight_frame): the ≤10 s wait blocks the engine thread, freezing all
+       agents, the game and the window (other agents' calls time out). Park the capture as a waiter (like
+       `BuildWaiter`), counting only visible in-frame models, and keep serving requests.
+    2. `models.rs` `collect_garbage`: queued builds for deleted entities aren't cancelled (handles keep their
+       `want`), starving live agents' builds. Clear `want` for handles not in `live` on each GC.
+    3. `models.rs` `finish`: a cancelled job's result is applied to a respawned entity waiting on the same key
+       (permanently `failed`). Ignore results whose job id isn't `in_flight[key]`; give cancellation its own
+       result kind (not `recipe_invalid`/`Limit`); prune `cancelled` ids; test the `catch_unwind` path.
+    4. (minor) restoring a broken recipe's exact old text keeps the stale error in `models.library.broken`.
+    5. (minor) a recipe folder removed and restored is never polled again.
+    The lane's agent context is likely gone next session: start a fresh lane from the branch with this list.
+  - **Next, in order:** (1) the Sepulcra integration lane: real procedural models, `specula-anim` creatures,
+    the `specula-ui` HUD through `GpuOverlay`, `specula-audio` sound, `--seed` via `Game::configure`;
+    (2) the M2 exit proof; (3) M3 pieces the game needs: save games, module host (hot reload), desync detector.
+  - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
+    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages.
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).

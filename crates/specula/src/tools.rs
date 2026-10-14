@@ -138,7 +138,8 @@ pub enum Command {
     Save { name: Option<String>, overwrite: bool },
     /// Replace the world with a saved one; `force` discards unsaved changes.
     Load { name: String, force: bool },
-    Hello { name: String, role: String },
+    /// `resume`: a resume_token from an earlier agent_hello (see `swarm`).
+    Hello { name: String, role: String, resume: Option<String> },
     Frame(FrameSpec),
     Env(EnvPatch),
     /// `None` returns the window to auto-framing.
@@ -1083,14 +1084,19 @@ fn world_name_arg(args: &Json, required: bool) -> Result<Option<String>, String>
 }
 
 fn parse_hello(args: &Json) -> Result<Command, String> {
-    check_keys(args, "agent_hello", &[&["name", "role"]])?;
+    check_keys(args, "agent_hello", &[&["name", "role", "resume_token"]])?;
     let name = name_arg(args.get("name"))?.ok_or("'name' is required: how this agent appears in attribution")?;
     if name.chars().count() > 64 {
         return Err("'name' must be at most 64 characters".into());
     }
     let role = string_arg(args, "role")?.unwrap_or("builder").to_owned();
     world::validate_tag(&role).map_err(|_| "'role' must be a short word like builder, reviewer or playtester".to_string())?;
-    Ok(Command::Hello { name, role })
+    let resume = match string_arg(args, "resume_token")? {
+        Some(t) if t.len() == 32 && t.bytes().all(|b| b.is_ascii_hexdigit()) => Some(t.to_ascii_lowercase()),
+        Some(_) => return Err("'resume_token' must be the 32 hex characters an earlier agent_hello returned".into()),
+        None => None,
+    };
+    Ok(Command::Hello { name, role, resume })
 }
 
 fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
@@ -1554,12 +1560,15 @@ fn definitions() -> Vec<ToolDef> {
                           Names are unique among open sessions, idle ones included (error name_taken with a \
                           suggestion), and the hosted game's name is reserved (error name_reserved). Default: \
                           '<MCP client name>-<6 characters of your session id>', role builder. A session holding \
-                          claims can't change its name."
+                          claims can't change its name. The reply has a resume_token: a later session (your next \
+                          script run) sends agent_hello {name, resume_token} to continue as you, with your claims \
+                          and undo history; claims then last until their lease ends, not until a session closes."
                 .into(),
             input_schema: schema(
                 vec![
                     ("name", string("Your agent name, up to 64 characters")),
                     ("role", string(&format!("builder (default), reviewer, playtester, director, ...; {tag_rule}"))),
+                    ("resume_token", string("The resume_token an earlier agent_hello returned: continue as that agent")),
                 ],
                 &["name"],
             ),

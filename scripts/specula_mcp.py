@@ -61,6 +61,44 @@ class Mcp:
     def frame(self, **args):
         return self.json("sight_frame", **args)
 
+    def hello(self, name, role="builder", token_file=None):
+        """agent_hello that survives script restarts: with `token_file`, the resume token from the
+        first run is stored there and later runs resume the same identity (claims and undo come
+        along) instead of being refused as name_taken."""
+        token = None
+        if token_file and os.path.exists(token_file):
+            token = open(token_file).read().strip() or None
+        try:
+            reply = self.json("agent_hello", name=name, role=role, **({"resume_token": token} if token else {}))
+        except RuntimeError as e:
+            if token and "bad_resume_token" in str(e):  # a new engine run: start a new identity
+                reply = self.json("agent_hello", name=name, role=role)
+            else:
+                raise
+        if token_file and reply.get("resume_token"):
+            with open(token_file, "w") as f:
+                f.write(reply["resume_token"])
+        return reply
+
+    def close(self):
+        """Ends the MCP session (DELETE), so its name is free at once. Claims stay with the
+        identity while another session carries it (see hello's token_file)."""
+        if not self.session:
+            return
+        req = urllib.request.Request(self.url, method="DELETE", headers={"Mcp-Session-Id": self.session})
+        try:
+            urllib.request.urlopen(req, timeout=10).read()
+        except OSError:
+            pass
+        self.session = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
     def tools(self):
         return [t["name"] for t in self.request("tools/list", {})["tools"]]
 

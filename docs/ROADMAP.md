@@ -301,7 +301,11 @@ claims and versions more agents just means more collisions.
   *Done 2026-10-13:* 503 with Retry-After; `scripts/swarm_drill.py` at 16 and 64 agents with a 22-case attack phase (0 leaked).
 
 **Exit proof:**
-- [ ] 4+ agents (Claude Code subagents) build separate districts at once.
+- [x] 4+ agents (Claude Code subagents) build separate districts at once.
+  *Done 2026-10-13:* four Claude subagents built a chapel, a market, a farm and a watchtower (297 entities) in
+  one world with claims; one tried five intrusions into another's district (all refused, incl. a rename-then-delete
+  batch and moving the shared parent); save → restart → load gave the same hash and identical pixels. It also
+  found that scripted agents locked themselves out of their own claims → resume tokens (identity-keyed claims).
 - [x] A deliberately conflicting write is rejected cleanly.
 - [x] Save → restart → load gives a pixel-identical render and the same `world_hash`.
   *Done 2026-10-13:* `scripts/world_roundtrip.py`: identical hash, subjects and PNG bytes.
