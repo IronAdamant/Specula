@@ -409,7 +409,8 @@ fn ssao_treats_skinned_textured_meshes_like_plain_ones() {
             gpu.render(target, &frame).unwrap();
             let rgba = gpu.read_rgba8(target).unwrap();
             gpu.destroy_target(target);
-            write_png(&format!("post_{name}.png"), &rgba, W, H);
+            let label: String = gpu.adapter().name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+            write_png(&format!("post_{name}_{label}.png"), &rgba, W, H);
             rgba
         };
         let mut env = scene.environment();
@@ -432,7 +433,7 @@ fn ssao_treats_skinned_textured_meshes_like_plain_ones() {
         let (n_off, most_off) = diff(&plain.1, &skinned.1);
         let (n_on, most_on) = diff(&plain.2, &skinned.2);
         eprintln!("{test}: plain vs skinned+textured: off {n_off} px (max {most_off}), on {n_on} px (max {most_on})");
-        assert!(most_off <= 3 && most_on <= 3, "{test}: off max {most_off}, on max {most_on}");
+        assert_eq!((n_off, n_on), (0, 0), "{test}: identical images expected (off max {most_off}, on max {most_on})");
         check_clean(test, gpu);
     });
 }
