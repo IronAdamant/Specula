@@ -13,6 +13,17 @@
 //! - **Components.** Besides the look, entities carry `tags`, free-form `props` (game data until
 //!   game modules define real components) and the reserved physics components `collider` and
 //!   `body` (F4): stored, validated and saved, not simulated yet.
+//! - **Models.** [`Shape::Model`] entities name a recipe file ([`ModelSpec`]); the world asks its
+//!   [`ModelSource`] (the engine's model library) to build it on spawn and on change, so broken
+//!   recipes are refused up front, and keeps the built model's handle and bounds on the entity
+//!   (derived: not saved or hashed).
+//! - **Presentation.** `visible: false` hides an entity and its subtree (not drawn, not a sight
+//!   subject, not in [`World::bounds`]); [`Layer::Ui`] marks a game's interface, which captures
+//!   leave out. **Transient** entities ([`Entity::transient`]) are game presentation derived from
+//!   the game's own state: they take ids from [`TRANSIENT_ID_BASE`] up, are never saved,
+//!   journaled or hashed, and never move the revision (so they never trigger an autosave). They
+//!   are recorded while a command runs, so a rejected command still rolls them back, and nothing
+//!   persistent may sit below one.
 //!
 //! Game code running in-process calls [`World::spawn`], [`World::update`], [`World::delete`],
 //! [`World::get`] and [`World::query`] directly; the MCP tools are thin parsers over the same calls.
@@ -189,6 +200,15 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
         return Err(invalid("profile", "'profile' is required for shape 'lathe' and only allowed for it".into()));
     }
     s.profile.as_ref().map_or(Ok(()), check_profile)?;
+    if (s.shape == Shape::Model) != s.model.is_some() {
+        return Err(invalid("recipe", "'recipe' is required for shape 'model' and only allowed for it".into()));
+    }
+    if let Some(m) = &s.model {
+        m.check()?;
+        if s.look.surface.seed != 0.0 {
+            return Err(invalid("seed", "a model's 'seed' is its model seed (ModelSpec::seed), not a surface seed".into()));
+        }
+    }
     check_tags(&s.tags)?;
     if s.tags.len() > MAX_TAGS {
         return Err(invalid("tags", format!("'tags': at most {MAX_TAGS}")));
@@ -214,6 +234,12 @@ pub fn check_update(u: &UpdateSpec) -> Result<(), WorldError> {
         check_light(l)?;
     }
     u.profile.as_ref().map_or(Ok(()), check_profile)?;
+    if let Some(r) = &u.recipe {
+        validate_recipe_path(r)?;
+    }
+    if let Some(p) = &u.params {
+        ModelSpec { recipe: "x.json".into(), params: p.clone(), seed: None }.check()?;
+    }
     check_tags(u.tags.iter().flatten().chain(&u.add_tags))?;
     if u.props.as_ref().is_some_and(|p| !matches!(p, Json::Obj(_))) {
         return Err(invalid("props", "'props' must be a JSON object".into()));
@@ -263,10 +289,12 @@ pub enum Shape {
     Sphere,
     /// A profile spun around +Y (see [`Profile`]).
     Lathe,
+    /// A procedural model built from a recipe file (see [`ModelSpec`]).
+    Model,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 5] = [Shape::Group, Shape::Cube, Shape::Quad, Shape::Sphere, Shape::Lathe];
+    pub const ALL: [Shape; 6] = [Shape::Group, Shape::Cube, Shape::Quad, Shape::Sphere, Shape::Lathe, Shape::Model];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -275,6 +303,7 @@ impl Shape {
             Shape::Quad => "quad",
             Shape::Sphere => "sphere",
             Shape::Lathe => "lathe",
+            Shape::Model => "model",
         }
     }
 
@@ -323,6 +352,211 @@ impl Profile {
         ])
     }
 }
+
+/// Most recipe parameters a model entity may set.
+pub const MAX_MODEL_PARAMS: usize = 32;
+/// Largest model seed (seeds share the `seed` argument with the lava lamp's, so they stay exact
+/// in an `f32`).
+pub const MAX_MODEL_SEED: u64 = 1_000_000;
+/// Longest recipe path, in bytes.
+pub const MAX_RECIPE_PATH: usize = 256;
+
+/// Which recipe a [`Shape::Model`] entity is built from, with what parameters and seed. The engine
+/// builds it (see the `models` module): same recipe file content, parameters and seed ⇒ the same
+/// model, shared by every entity that uses it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelSpec {
+    /// The recipe file, relative to the engine's assets root (`--assets`), e.g.
+    /// `"recipes/warding_stone.json"`. Forward slashes; no `..`, no absolute paths.
+    pub recipe: String,
+    /// Recipe parameter values by name, sorted by name (`[("tier", 2.0)]`). Unset parameters take
+    /// the recipe's defaults.
+    pub params: Vec<(String, f64)>,
+    /// Variant seed (overrides the recipe's own seed), 0..=[`MAX_MODEL_SEED`].
+    pub seed: Option<u64>,
+}
+
+impl ModelSpec {
+    pub fn new(recipe: impl Into<String>) -> ModelSpec {
+        ModelSpec { recipe: recipe.into(), params: Vec::new(), seed: None }
+    }
+
+    /// Sets parameter `name` (kept sorted).
+    pub fn with_param(mut self, name: &str, value: f64) -> ModelSpec {
+        self.set_param(name, value);
+        self
+    }
+
+    pub fn with_seed(mut self, seed: u64) -> ModelSpec {
+        self.seed = Some(seed);
+        self
+    }
+
+    pub fn set_param(&mut self, name: &str, value: f64) {
+        match self.params.binary_search_by(|(k, _)| k.as_str().cmp(name)) {
+            Ok(i) => self.params[i].1 = value,
+            Err(i) => self.params.insert(i, (name.to_owned(), value)),
+        }
+    }
+
+    /// A string naming exactly this spec (exact bits): the model library's key for it.
+    pub fn key(&self) -> String {
+        let mut k = self.recipe.clone();
+        for (name, v) in &self.params {
+            k.push_str(&format!("|{name}={:016x}", v.to_bits()));
+        }
+        if let Some(s) = self.seed {
+            k.push_str(&format!("|#{s}"));
+        }
+        k
+    }
+
+    pub fn params_json(&self) -> Json {
+        Json::obj(self.params.iter().map(|(k, v)| (k.clone(), Json::from(*v))))
+    }
+
+    pub fn to_json(&self) -> Json {
+        let mut f = vec![("recipe", Json::from(self.recipe.as_str()))];
+        if !self.params.is_empty() {
+            f.push(("params", self.params_json()));
+        }
+        if let Some(s) = self.seed {
+            f.push(("seed", Json::from(s)));
+        }
+        Json::obj(f)
+    }
+
+    /// The recipe path is safe, parameters are named, finite and sorted, the seed in range.
+    pub fn check(&self) -> Result<(), WorldError> {
+        validate_recipe_path(&self.recipe)?;
+        if self.params.len() > MAX_MODEL_PARAMS {
+            return Err(invalid("params", format!("'params': at most {MAX_MODEL_PARAMS} parameters")));
+        }
+        for (i, (name, v)) in self.params.iter().enumerate() {
+            let named = !name.is_empty()
+                && name.len() <= 64
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+            if !named {
+                return Err(invalid("params", format!("'params': '{name}' is not a parameter name (A-Z a-z 0-9 _)")));
+            }
+            if !v.is_finite() || v.abs() > 1.0e9 {
+                return Err(invalid("params", format!("'params': '{name}' must be a finite number within ±1e9")));
+            }
+            if i > 0 && self.params[i - 1].0 >= *name {
+                return Err(invalid("params", "'params' must be sorted by name, each name once".into()));
+            }
+        }
+        match self.seed {
+            Some(s) if s > MAX_MODEL_SEED => Err(invalid("seed", format!("'seed' of a model must be an integer 0..{MAX_MODEL_SEED}"))),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A recipe path relative to the assets root: 1..256 bytes of `A-Z a-z 0-9 _ - . /`, segments
+/// separated by single `/`, none empty or starting or ending with `.`, ending in `.json`.
+pub fn validate_recipe_path(path: &str) -> Result<(), WorldError> {
+    let ok = !path.is_empty()
+        && path.len() <= MAX_RECIPE_PATH
+        && path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/'))
+        // No empty, dot-led or dot-ended segments: covers `.` and `..`, hidden files, and the
+        // trailing dots Windows strips (which would let two keys name one file).
+        && path.split('/').all(|seg| !seg.is_empty() && !seg.starts_with('.') && !seg.ends_with('.'))
+        && path.ends_with(".json");
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(
+            "recipe",
+            format!(
+                "'recipe' must be a .json path relative to the assets root, like \"recipes/warding_stone.json\" \
+                 (A-Z a-z 0-9 _ - . /, no '..', at most {MAX_RECIPE_PATH} bytes); got {path:?}"
+            ),
+        ))
+    }
+}
+
+/// Where a model entity's build stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModelState {
+    /// Being built (off the engine thread); drawn once it is ready.
+    #[default]
+    Building,
+    Ready,
+    /// The build failed (budget, geometry...): nothing to draw until the recipe is fixed.
+    Failed,
+}
+
+impl ModelState {
+    pub fn name(self) -> &'static str {
+        match self {
+            ModelState::Building => "building",
+            ModelState::Ready => "ready",
+            ModelState::Failed => "failed",
+        }
+    }
+}
+
+/// What the engine knows about a model entity's built model: its slot in the model library, its
+/// state and (once built) its object-space bounds. Derived data: not saved, not hashed, refreshed
+/// when builds finish and when recipes change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedModel {
+    pub handle: u32,
+    pub state: ModelState,
+    /// `None` until a build is ready.
+    pub bounds: Option<(Vec3, Vec3)>,
+}
+
+/// Builds models for the world (the engine's model library). The world asks it whenever a model
+/// entity is spawned or its recipe, parameters or seed change. It answers at once: what can be
+/// checked without building (the path, the file, the style, the recipe's structure, parameter
+/// names and ranges) is refused with a structured error; the build itself may still be running
+/// (state [`ModelState::Building`]).
+pub trait ModelSource: Send + Sync {
+    fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError>;
+}
+
+/// The world's model source, if any (`Debug` for the world's derive).
+#[derive(Clone, Default)]
+struct SourceSlot(Option<Arc<dyn ModelSource>>);
+
+impl fmt::Debug for SourceSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() { "ModelSource" } else { "None" })
+    }
+}
+
+/// Which pass an entity belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Layer {
+    /// The scene: in the window and in every capture.
+    #[default]
+    World,
+    /// A game's interface in the scene (cursors, range rings, selection marks): drawn in the
+    /// window, left out of `sight_frame` captures (unless `include_ui`), of the world's bounds
+    /// and of auto-framing. Children of a `ui` entity are `ui` too.
+    Ui,
+}
+
+impl Layer {
+    pub const ALL: [Layer; 2] = [Layer::World, Layer::Ui];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Layer::World => "world",
+            Layer::Ui => "ui",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Layer> {
+        Layer::ALL.into_iter().find(|l| l.name() == s)
+    }
+}
+
+/// Transient entities take ids from here up, so they never move the persistent id counter
+/// (which world files and state hashes include). Still exact in a JSON number.
+pub const TRANSIENT_ID_BASE: u64 = 1 << 40;
 
 pub const MATERIAL_NAMES: [&str; 4] = ["standard", "glass", "blob_shadow", "lava_lamp"];
 
@@ -733,6 +967,17 @@ pub struct Entity {
     pub props: Json,
     pub collider: Option<Collider>,
     pub body: Option<Body>,
+    /// Present exactly when `shape` is [`Shape::Model`].
+    pub model: Option<ModelSpec>,
+    /// `false` hides the entity and everything below it: not drawn, not a sight subject, not in
+    /// the world's bounds. Still saved, queried, journaled and claimed like any field.
+    pub visible: bool,
+    /// See [`Layer`]; children of a `ui` entity are `ui` too.
+    pub layer: Layer,
+    /// Set at spawn (inherited from a transient parent), never changed: game presentation derived
+    /// from the game's own state. Not saved, not journaled, not in the state hash, never marks
+    /// the world unsaved; drawn, queried and seen like any entity (see [`World`]).
+    pub transient: bool,
     /// 1 when spawned, +1 on every change.
     pub version: u64,
     /// Agent name (shared: see [`World`]'s interning).
@@ -741,6 +986,12 @@ pub struct Entity {
     pub modified_by: Arc<str>,
     /// Cached world transform: parent's world × local. Kept current by [`World`].
     world: Mat4,
+    /// Cached: visible itself and every ancestor visible.
+    shown: bool,
+    /// Cached: on the `ui` layer itself or below a `ui` ancestor.
+    in_ui: bool,
+    /// The engine's built model (model entities, when a model source resolved it).
+    resolved: Option<ResolvedModel>,
     /// Cached [`Entity::content_hash`]; cleared by every change to what it covers.
     hash: HashCache,
 }
@@ -772,10 +1023,43 @@ impl Entity {
         self.world.transform_point(Vec3::ZERO)
     }
 
-    /// Object-space bounding box; `None` for groups, which have no geometry.
+    /// Draws with a mesh of its own making (a lathe's profile, a model's build) that the engine
+    /// uploads and frees.
+    pub fn owns_mesh(&self) -> bool {
+        matches!(self.shape, Shape::Lathe | Shape::Model)
+    }
+
+    /// Drawn: visible, and every ancestor visible.
+    pub fn shown(&self) -> bool {
+        self.shown
+    }
+
+    /// On the `ui` layer, itself or through an ancestor.
+    pub fn in_ui(&self) -> bool {
+        self.in_ui
+    }
+
+    /// The engine's built model for a model entity (`None` until a model source resolved it).
+    pub fn resolved_model(&self) -> Option<ResolvedModel> {
+        self.resolved
+    }
+
+    /// A model entity's build: `building`, `ready`, `failed`, or `unresolved` (no model source,
+    /// or its recipe was refused when the world was loaded). Empty for other shapes.
+    pub fn model_state(&self) -> &'static str {
+        match (&self.model, self.resolved) {
+            (None, _) => "",
+            (Some(_), None) => "unresolved",
+            (Some(_), Some(r)) => r.state.name(),
+        }
+    }
+
+    /// Object-space bounding box; `None` for groups, which have no geometry (and for a model the
+    /// engine could not build).
     pub fn local_bounds(&self) -> Option<(Vec3, Vec3)> {
         match (self.shape, &self.profile) {
             (Shape::Group, _) => None,
+            (Shape::Model, _) => self.resolved.and_then(|r| r.bounds),
             (Shape::Lathe, Some(p)) => Some(p.bounds()),
             (Shape::Quad, _) => Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5))),
             _ => Some((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))),
@@ -841,6 +1125,24 @@ impl Entity {
         }
         if let Some(p) = &self.profile {
             fields.push(("profile", p.to_json()));
+        }
+        if let Some(m) = &self.model {
+            fields.push(("recipe", Json::from(m.recipe.as_str())));
+            fields.push(("params", m.params_json()));
+            fields.push(("seed", Json::from(m.seed)));
+            let state = self.model_state();
+            if state != "ready" {
+                fields.push(("model_state", Json::from(state)));
+            }
+        }
+        if !self.visible {
+            fields.push(("visible", Json::from(false)));
+        }
+        if self.layer != Layer::World {
+            fields.push(("layer", Json::from(self.layer.name())));
+        }
+        if self.transient {
+            fields.push(("transient", Json::from(true)));
         }
         if !self.tags.is_empty() {
             fields.push(("tags", tags_json(&self.tags)));
@@ -919,6 +1221,18 @@ impl Entity {
                 h.write_f32(b.mass);
             }
         }
+        // Fields added after the first hash format: written only when not default, so worlds
+        // without them keep their hashes.
+        if let Some(m) = &self.model {
+            h.write_str("model");
+            h.write_str(&m.key());
+        }
+        if !self.visible {
+            h.write_str("hidden");
+        }
+        if self.layer != Layer::World {
+            h.write_str(self.layer.name());
+        }
     }
 }
 
@@ -966,10 +1280,17 @@ pub struct SpawnSpec {
     pub props: Json,
     pub collider: Option<Collider>,
     pub body: Option<Body>,
+    /// Required for [`Shape::Model`], refused for other shapes.
+    pub model: Option<ModelSpec>,
+    pub visible: bool,
+    pub layer: Layer,
+    /// See [`Entity::transient`]. A child of a transient parent is transient whatever this says.
+    pub transient: bool,
 }
 
 impl SpawnSpec {
-    /// A light-grey matte top-level `shape` at the origin.
+    /// A light-grey matte top-level `shape` at the origin (models: white, so they show as
+    /// authored).
     pub fn new(shape: Shape) -> SpawnSpec {
         SpawnSpec {
             shape,
@@ -978,7 +1299,7 @@ impl SpawnSpec {
             position: Vec3::ZERO,
             rotation_deg: Vec3::ZERO,
             scale: Vec3::ONE,
-            color: [0.8, 0.8, 0.8],
+            color: if shape == Shape::Model { [1.0; 3] } else { [0.8, 0.8, 0.8] },
             look: Look::default(),
             light: None,
             profile: None,
@@ -986,7 +1307,16 @@ impl SpawnSpec {
             props: Json::Null,
             collider: None,
             body: None,
+            model: None,
+            visible: true,
+            layer: Layer::World,
+            transient: false,
         }
+    }
+
+    /// A model entity built from `spec` (white: as authored).
+    pub fn model(spec: ModelSpec) -> SpawnSpec {
+        SpawnSpec { model: Some(spec), ..SpawnSpec::new(Shape::Model) }
     }
 }
 
@@ -1015,6 +1345,12 @@ pub struct UpdateSpec {
     pub props: Option<Json>,
     pub collider: Option<Option<Collider>>,
     pub body: Option<Option<Body>>,
+    /// Model entities only: a new recipe path.
+    pub recipe: Option<String>,
+    /// Model entities only: replaces every parameter (sorted by name).
+    pub params: Option<Vec<(String, f64)>>,
+    pub visible: Option<bool>,
+    pub layer: Option<Layer>,
     /// Reject the change unless the entity is still at this version.
     pub expect_version: Option<u64>,
 }
@@ -1033,6 +1369,10 @@ impl UpdateSpec {
             && self.props.is_none()
             && self.collider.is_none()
             && self.body.is_none()
+            && self.recipe.is_none()
+            && self.params.is_none()
+            && self.visible.is_none()
+            && self.layer.is_none()
     }
 
     /// No field would change (`expect_version` alone is not a change).
@@ -1052,6 +1392,10 @@ impl UpdateSpec {
             && self.props.is_none()
             && self.collider.is_none()
             && self.body.is_none()
+            && self.recipe.is_none()
+            && self.params.is_none()
+            && self.visible.is_none()
+            && self.layer.is_none()
     }
 }
 
@@ -1180,6 +1524,15 @@ enum Dirty {
 }
 
 impl Change {
+    /// A change to a transient entity (never journaled).
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Change::Spawn { after, .. } | Change::Set { after, .. } => after.transient,
+            Change::Delete { before, .. } => before.transient,
+            Change::Env { .. } | Change::Pose { .. } => false,
+        }
+    }
+
     /// The entity's id; 0 for the environment.
     pub fn id(&self) -> u64 {
         match self {
@@ -1228,6 +1581,9 @@ impl Change {
                 + e.profile.as_ref().map_or(0, |p| ALLOC + p.points.len() * 8)
                 + json_heap(&e.props)
                 + e.collider.as_ref().map_or(0, |c| heap(&c.layer))
+                + e.model.as_ref().map_or(0, |m| {
+                    heap(&m.recipe) + ALLOC + m.params.iter().map(|(k, _)| std::mem::size_of::<(String, f64)>() + heap(k)).sum::<usize>()
+                })
         };
         std::mem::size_of::<Change>()
             + match self {
@@ -1311,10 +1667,11 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 29] = [
+pub const FIELDS: [&str; 35] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
-    "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds",
+    "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
+    "params", "visible", "layer", "transient", "model_state",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -1349,6 +1706,17 @@ pub struct World {
     dirty_removed: Vec<(String, Entity)>,
     /// [`Recording::Snapshot`]: the environment before its first change.
     dirty_env: Option<Env>,
+    /// Transient ids handed out so far (the next is `TRANSIENT_ID_BASE + transient_seq + 1`).
+    transient_seq: u64,
+    /// Transient entities alive.
+    transient_count: usize,
+    /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
+    /// mesh, so the engine re-syncs GPU meshes only then.
+    mesh_epoch: u64,
+    /// See [`World::model_drops`].
+    model_drops: u64,
+    /// Builds model entities' models (the engine's model library).
+    models: SourceSlot,
 }
 
 impl World {
@@ -1371,8 +1739,12 @@ impl World {
         Some(at.id)
     }
 
-    /// Records a change in `id`'s top-level subtree.
+    /// Records a change in `id`'s top-level subtree (transient entities are never saved, so
+    /// their changes touch nothing).
     fn touch(&mut self, id: u64) {
+        if self.entities.get(&id).is_none_or(|e| e.transient) {
+            return;
+        }
         if let Some(top) = self.top_of(id) {
             self.stamp += 1;
             self.touched.insert(top, self.stamp);
@@ -1396,8 +1768,93 @@ impl World {
     pub fn subtree_stamp(&self, top: u64) -> u64 {
         self.touched.get(&top).copied().unwrap_or(0)
     }
+    /// Every entity, transient ones included.
     pub fn len(&self) -> usize {
         self.entities.len()
+    }
+
+    /// Entities that are saved and hashed (not transient).
+    pub fn persistent_len(&self) -> usize {
+        self.entities.len() - self.transient_count
+    }
+
+    pub fn transient_len(&self) -> usize {
+        self.transient_count
+    }
+
+    /// See the field: changes whenever GPU meshes may need building or freeing.
+    pub fn mesh_epoch(&self) -> u64 {
+        self.mesh_epoch
+    }
+
+    /// Bumped whenever a model entity may have stopped using its model (removed, its spec
+    /// changed, an old state put back, a batch rolled back): when the engine looks for builds
+    /// nobody waits for any more.
+    pub fn model_drops(&self) -> u64 {
+        self.model_drops
+    }
+
+    /// The model library model entities are built with (`None`: model entities spawn
+    /// unresolved, with no bounds, and draw nothing).
+    pub fn model_source(&self) -> Option<&Arc<dyn ModelSource>> {
+        self.models.0.as_ref()
+    }
+
+    /// Sets the model library and resolves every model entity with it. Returns the entities it
+    /// could not build (they keep their spec and draw nothing until their recipe is fixed).
+    pub fn set_model_source(&mut self, source: Option<Arc<dyn ModelSource>>) -> Vec<(u64, WorldError)> {
+        self.models = SourceSlot(source);
+        self.refresh_models()
+    }
+
+    /// Re-resolves every model entity (after recipes changed on disk): new bounds, same specs.
+    /// Derived data only: nothing is recorded and the world isn't marked changed.
+    pub fn refresh_models(&mut self) -> Vec<(u64, WorldError)> {
+        self.mesh_epoch += 1;
+        let Some(source) = self.models.0.clone() else {
+            for e in self.entities.values_mut() {
+                e.resolved = None;
+            }
+            return Vec::new();
+        };
+        let mut failed = Vec::new();
+        for e in self.entities.values_mut() {
+            let Some(spec) = &e.model else { continue };
+            match source.resolve(spec) {
+                Ok(r) => e.resolved = Some(r),
+                Err(err) => {
+                    // An old handle may name another spec by now.
+                    e.resolved = None;
+                    failed.push((e.id, err));
+                }
+            }
+        }
+        failed
+    }
+
+    /// Re-resolves only the model entities whose handle is in `handles` (their builds just
+    /// finished or changed). Derived data only, like [`World::refresh_models`].
+    pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
+        let Some(source) = self.models.0.clone() else { return };
+        let mut touched = false;
+        for e in self.entities.values_mut() {
+            let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
+            if handles.contains(&r.handle) {
+                e.resolved = source.resolve(spec).ok();
+                touched = true;
+            }
+        }
+        if touched {
+            self.mesh_epoch += 1;
+        }
+    }
+
+    /// Resolves `spec` with the model source, if there is one.
+    fn resolve_model(&self, spec: &ModelSpec) -> Result<Option<ResolvedModel>, WorldError> {
+        match &self.models.0 {
+            Some(source) => source.resolve(spec).map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1439,7 +1896,7 @@ impl World {
     /// Restores the id counter from a world file. Never below an existing id, so a stale counter
     /// can't hand out an id twice.
     pub(crate) fn set_next_id(&mut self, next_id: u64) {
-        let max = self.entities.keys().next_back().copied().unwrap_or(0);
+        let max = self.entities.range(..TRANSIENT_ID_BASE).next_back().map_or(0, |(id, _)| *id);
         self.next_id = next_id.max(max);
     }
 
@@ -1590,11 +2047,12 @@ impl World {
         }
     }
 
+    /// Adds an entity. Persistent entities take the next id; transient ones (see
+    /// [`Entity::transient`]) take theirs from [`TRANSIENT_ID_BASE`] up, so presentation never
+    /// moves the saved id counter.
     pub fn spawn(&mut self, spec: SpawnSpec, by: &str) -> Result<&Entity, WorldError> {
         // Ids are only used up by spawns that succeed.
-        let id = self.next_id + 1;
-        self.insert(spec, id, 1, by, by)?;
-        self.next_id = id;
+        let id = self.insert(spec, None, 1, by, by)?;
         Ok(&self.entities[&id])
     }
 
@@ -1607,15 +2065,19 @@ impl World {
         created_by: &str,
         modified_by: &str,
     ) -> Result<(), WorldError> {
-        if id == ROOT || self.entities.contains_key(&id) {
-            return Err(WorldError::new("invalid_world", format!("entity id {id} is 0 or used twice")).with("field", "id"));
+        if id == ROOT || id >= TRANSIENT_ID_BASE || self.entities.contains_key(&id) {
+            return Err(WorldError::new("invalid_world", format!("entity id {id} is 0, out of range or used twice")).with("field", "id"));
         }
-        self.insert(spec, id, version.max(1), created_by, modified_by)?;
+        if spec.transient {
+            return Err(invalid("transient", "transient entities are never saved, so none can be restored".into()));
+        }
+        self.insert(spec, Some(id), version.max(1), created_by, modified_by)?;
         self.next_id = self.next_id.max(id);
         Ok(())
     }
 
-    fn insert(&mut self, spec: SpawnSpec, id: u64, version: u64, created_by: &str, modified_by: &str) -> Result<(), WorldError> {
+    /// Inserts a checked entity under `id` (`None`: the next free id of its kind). Returns its id.
+    fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
         check_spawn(&spec)?;
         let props = canonical_props(spec.props)?;
         let parent = match &spec.parent {
@@ -1628,6 +2090,18 @@ impl World {
                 return Err(too_deep(&self.path_of(p)));
             }
         }
+        // Below a transient parent everything is transient (it is never saved, so neither could
+        // its children be).
+        let transient = spec.transient || parent.is_some_and(|p| self.entities[&p].transient);
+        let resolved = match &spec.model {
+            Some(m) => self.resolve_model(m)?,
+            None => None,
+        };
+        let id = match id {
+            Some(id) => id,
+            None if transient => TRANSIENT_ID_BASE + self.transient_seq + 1,
+            None => self.next_id + 1,
+        };
         let name = match spec.name {
             Some(n) => {
                 validate_name(&n)?;
@@ -1664,17 +2138,34 @@ impl World {
             props,
             collider: spec.collider,
             body: spec.body,
+            model: spec.model,
+            visible: spec.visible,
+            layer: spec.layer,
+            transient,
             version,
             created_by,
             modified_by,
             world: Mat4::IDENTITY,
+            shown: true,
+            in_ui: false,
+            resolved,
             hash: HashCache::default(),
         });
+        if transient {
+            self.transient_seq = id - TRANSIENT_ID_BASE;
+        } else {
+            self.next_id = self.next_id.max(id);
+        }
         self.refresh(id);
         self.touch(id);
-        self.revision += 1;
+        self.bump(transient);
+        if matches!(spec.shape, Shape::Lathe | Shape::Model) {
+            self.mesh_epoch += 1;
+        }
         match self.recording {
             Recording::Off => {}
+            // Game presentation runs every tick: transient entities cost no record at all.
+            Recording::Snapshot if transient => {}
             Recording::Snapshot => {
                 self.dirty.entry(id).or_insert(Dirty::Spawned);
             }
@@ -1683,7 +2174,15 @@ impl World {
                 self.changes.push(Change::Spawn { path, after: Box::new(self.entities[&id].clone()) });
             }
         }
-        Ok(())
+        Ok(id)
+    }
+
+    /// Counts a change: the revision (what autosave and the state-hash cache key on) moves only
+    /// for persistent state.
+    fn bump(&mut self, transient: bool) {
+        if !transient {
+            self.revision += 1;
+        }
     }
 
     fn name_taken(&self, name: &str, other: u64) -> WorldError {
@@ -1714,7 +2213,11 @@ impl World {
     }
 
     /// Changes an existing entity; its id never changes and its version goes up by one.
+    ///
+    /// For model entities, `look.seed` (the `seed` argument) sets the **model** seed: it must be
+    /// an integer 0..=[`MAX_MODEL_SEED`].
     pub fn update(&mut self, key: &EntityKey, change: UpdateSpec, by: &str) -> Result<&Entity, WorldError> {
+        let mut change = change;
         check_update(&change)?;
         let id = self.resolve(key)?;
         self.check_version(id, change.expect_version)?;
@@ -1726,6 +2229,40 @@ impl World {
             )
             .with("field", "profile"));
         }
+        if (change.recipe.is_some() || change.params.is_some()) && e.shape != Shape::Model {
+            let field = if change.recipe.is_some() { "recipe" } else { "params" };
+            return Err(WorldError::new(
+                "invalid_component",
+                format!("'{}' is a {}; only model entities have a recipe and params", e.name, e.shape.name()),
+            )
+            .with("field", field));
+        }
+        // A model's new spec, resolved before anything changes (a broken recipe changes nothing).
+        let mut new_model = None;
+        if let Some(current) = &e.model {
+            let seed = match change.look.seed.take() {
+                None => None,
+                Some(s) if s >= 0.0 && s.fract() == 0.0 && s <= MAX_MODEL_SEED as f32 => Some(s as u64),
+                Some(_) => {
+                    return Err(invalid("seed", format!("'seed' of a model must be an integer 0..{MAX_MODEL_SEED}")));
+                }
+            };
+            let mut spec = current.clone();
+            if let Some(r) = change.recipe.take() {
+                spec.recipe = r;
+            }
+            if let Some(p) = change.params.take() {
+                spec.params = p;
+            }
+            if seed.is_some() {
+                spec.seed = seed;
+            }
+            if spec != *current {
+                spec.check()?;
+                let resolved = self.resolve_model(&spec)?;
+                new_model = Some((spec, resolved));
+            }
+        }
         let new_parent = match &change.parent {
             None => e.parent,
             Some(None) => None,
@@ -1734,6 +2271,15 @@ impl World {
         let reparent = new_parent != e.parent;
         if reparent {
             if let Some(p) = new_parent {
+                if !e.transient && self.entities[&p].transient {
+                    let (me, there) = (self.path_of(id), self.path_of(p));
+                    return Err(WorldError::new(
+                        "transient_parent",
+                        format!("{me} is saved, so it can't move under {there}, which is transient (never saved)"),
+                    )
+                    .with("path", me)
+                    .with("parent", there));
+                }
                 if self.is_ancestor_or_self(id, p) {
                     let (me, there) = (self.path_of(id), self.path_of(p));
                     return Err(WorldError::new("cycle", format!("{me} cannot move under {there}: that is itself or inside it"))
@@ -1776,11 +2322,14 @@ impl World {
         let pose_only = change.pose_only();
         let prev_path = (self.recording == Recording::Full && relink).then(|| self.path_of(id));
         let old = relink.then(|| (e.parent.unwrap_or(ROOT), e.name.clone()));
+        let restyled = change.visible.is_some_and(|v| v != e.visible) || change.layer.is_some_and(|l| l != e.layer);
+        let transient = e.transient;
         if reparent {
             self.touch(id); // the subtree it leaves
         }
         let by = self.intern(by);
-        let moved = reparent || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
+        let moved = reparent || restyled || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
+        let remeshed = change.profile.is_some() || new_model.is_some();
         let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some(name) = change.name {
             e.name = name;
@@ -1817,6 +2366,16 @@ impl World {
         if let Some(b) = change.body {
             e.body = b;
         }
+        if let Some((spec, resolved)) = new_model {
+            e.model = Some(spec);
+            e.resolved = resolved;
+        }
+        if let Some(v) = change.visible {
+            e.visible = v;
+        }
+        if let Some(l) = change.layer {
+            e.layer = l;
+        }
         e.version += 1;
         e.hash.0.set(None);
         e.modified_by = by;
@@ -1831,9 +2390,14 @@ impl World {
             self.refresh(id);
         }
         self.touch(id);
-        self.revision += 1;
+        self.bump(transient);
+        if remeshed {
+            self.mesh_epoch += 1;
+            self.model_drops += 1;
+        }
         match self.recording {
             Recording::Off => {}
+            Recording::Snapshot if transient => {}
             Recording::Snapshot => {
                 let mark = if pose_only { Dirty::Pose } else { Dirty::Changed };
                 let slot = self.dirty.entry(id).or_insert(mark);
@@ -1866,7 +2430,14 @@ impl World {
         let paths: Vec<String> =
             if self.recording == Recording::Off { Vec::new() } else { order.iter().map(|&i| self.path_of(i)).collect() };
         let removed: Vec<Entity> = order.into_iter().map(|i| self.unlink(i).expect("in the subtree")).collect();
-        self.revision += 1;
+        // A transient root has only transient descendants.
+        self.bump(removed[0].transient);
+        if removed.iter().any(|e| e.shape == Shape::Model) {
+            self.model_drops += 1;
+        }
+        if removed.iter().any(Entity::owns_mesh) {
+            self.mesh_epoch += 1;
+        }
         // Children first, so undoing the changes in reverse puts parents back before children.
         for (e, p) in removed.iter().zip(paths).rev() {
             self.record_removal(p, e);
@@ -1879,7 +2450,7 @@ impl World {
     /// returned.
     /// Later ops can address entities spawned earlier in the batch by path.
     pub fn apply_batch(&mut self, ops: Vec<Op>, by: &str) -> Result<Vec<OpResult>, (usize, WorldError)> {
-        let (next_id, revision, recorded) = (self.next_id, self.revision, self.changes.len());
+        let (next_id, revision, recorded, transient_seq) = (self.next_id, self.revision, self.changes.len(), self.transient_seq);
         let mut undo = Vec::with_capacity(ops.len());
         let mut results = Vec::with_capacity(ops.len());
         for (index, op) in ops.into_iter().enumerate() {
@@ -1905,7 +2476,10 @@ impl World {
                 Err(error) => {
                     self.rollback(undo);
                     self.next_id = next_id;
+                    self.transient_seq = transient_seq;
                     self.revision = revision;
+                    self.mesh_epoch += 1;
+                    self.model_drops += 1;
                     self.changes.truncate(recorded);
                     return Err((index, error));
                 }
@@ -1946,9 +2520,13 @@ impl World {
         }
     }
 
+    /// Indexes `e` (its id must not be in the world).
     fn link(&mut self, e: Entity) {
         self.children.insert((e.parent.unwrap_or(ROOT), e.name.clone()), e.id);
         self.names.insert((e.name.clone(), e.id));
+        if e.transient {
+            self.transient_count += 1;
+        }
         self.entities.insert(e.id, e);
     }
 
@@ -1957,21 +2535,42 @@ impl World {
         let e = self.entities.remove(&id)?;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
+        if e.transient {
+            self.transient_count -= 1;
+        }
         Some(e)
     }
 
-    /// Recomputes the world transforms of `id` and everything below it.
+    /// Recomputes the world transforms (and the inherited visibility and layer) of `id` and
+    /// everything below it. A leaf costs no allocation: games move hundreds of them every tick.
     fn refresh(&mut self, id: u64) {
-        let mut stack = vec![id];
-        while let Some(at) = stack.pop() {
-            let Some(parent) = self.entities.get(&at).map(|e| e.parent) else { continue };
-            let parent_world = parent.and_then(|p| self.entities.get(&p)).map(|p| p.world);
-            let e = self.entities.get_mut(&at).expect("checked above");
-            let local = e.local_matrix();
-            // Top-level entities use their local matrix as is (no identity multiply to round).
-            e.world = parent_world.map_or(local, |pw| pw * local);
-            stack.extend(self.child_range(at).map(|(_, &c)| c));
+        if !self.refresh_one(id) {
+            return;
         }
+        let mut stack: Vec<u64> = self.child_range(id).map(|(_, &c)| c).collect();
+        while let Some(at) = stack.pop() {
+            if self.refresh_one(at) {
+                stack.extend(self.child_range(at).map(|(_, &c)| c));
+            }
+        }
+    }
+
+    /// Recomputes one entity's cached world state from its parent's; returns whether it has
+    /// children.
+    fn refresh_one(&mut self, at: u64) -> bool {
+        let Some(parent) = self.entities.get(&at).map(|e| e.parent) else { return false };
+        let inherited = parent.and_then(|p| self.entities.get(&p)).map(|p| (p.world, p.shown, p.in_ui));
+        let e = self.entities.get_mut(&at).expect("checked above");
+        let local = e.local_matrix();
+        // Top-level entities use their local matrix as is (no identity multiply to round).
+        let (world, shown, in_ui) = match inherited {
+            Some((pw, shown, in_ui)) => (pw * local, shown, in_ui),
+            None => (local, true, false),
+        };
+        e.world = world;
+        e.shown = shown && e.visible;
+        e.in_ui = in_ui || e.layer == Layer::Ui;
+        self.child_range(at).next().is_some()
     }
 
     /// What the world records about its changes from now on.
@@ -1986,8 +2585,12 @@ impl World {
     /// The changes recorded since the last call, oldest first. With [`Recording::Snapshot`]:
     /// one change per entity that changed, as it is now (spawns and sets by id, then removals
     /// children first, then the environment).
+    ///
+    /// Transient entities' changes are left out: they are recorded while a command runs (so a
+    /// rejected command rolls them back like anything else), but they are never journaled.
     pub fn take_changes(&mut self) -> Vec<Change> {
         let mut out = std::mem::take(&mut self.changes);
+        out.retain(|c| !c.is_transient());
         if self.dirty.is_empty() && self.dirty_env.is_none() && self.dirty_removed.is_empty() {
             return out;
         }
@@ -2022,6 +2625,7 @@ impl World {
     fn record_removal(&mut self, path: String, e: &Entity) {
         match self.recording {
             Recording::Off => {}
+            Recording::Snapshot if e.transient => {}
             Recording::Snapshot => {
                 if *self.dirty.entry(e.id).or_insert(Dirty::Changed) != Dirty::Spawned {
                     self.dirty_removed.push((path, e.clone()));
@@ -2176,10 +2780,21 @@ impl World {
                 && bits(o.position) == bits(e.position)
                 && bits(o.rotation_deg) == bits(e.rotation_deg)
                 && bits(o.scale) == bits(e.scale)
+                && o.visible == e.visible
+                && o.layer == e.layer
         });
         if let Some(o) = unmoved {
             e.world = o.world;
+            e.shown = o.shown;
+            e.in_ui = o.in_ui;
         }
+        // A state from the journal carries the handle and bounds of its time; recipes may have
+        // changed since, and the handle may have been reused for another spec: never keep it.
+        if let (Some(spec), Some(source)) = (&e.model, &self.models.0) {
+            e.resolved = source.resolve(spec).ok();
+        }
+        let transient = e.transient;
+        let remeshed = e.owns_mesh() || old.is_some_and(Entity::owns_mesh);
         let unmoved = unmoved.is_some();
         let before = match (recording, old) {
             (Recording::Full, Some(o)) => Some(Box::new(o.clone())),
@@ -2195,9 +2810,17 @@ impl World {
             self.refresh(id);
         }
         self.touch(id);
-        self.next_id = self.next_id.max(id);
-        self.revision += 1;
-        if recording == Recording::Snapshot {
+        if transient {
+            self.transient_seq = self.transient_seq.max(id - TRANSIENT_ID_BASE);
+        } else {
+            self.next_id = self.next_id.max(id);
+        }
+        self.bump(transient);
+        if remeshed {
+            self.mesh_epoch += 1;
+            self.model_drops += 1;
+        }
+        if recording == Recording::Snapshot && !transient {
             let mark = if existed { Dirty::Changed } else { Dirty::Spawned };
             let slot = self.dirty.entry(id).or_insert(mark);
             if *slot == Dirty::Pose {
@@ -2223,7 +2846,13 @@ impl World {
         let path = (self.recording != Recording::Off && self.entities.contains_key(&id)).then(|| self.path_of(id));
         self.touch_removal(id);
         let e = self.unlink_exact(id)?;
-        self.revision += 1;
+        self.bump(e.transient);
+        if e.shape == Shape::Model {
+            self.model_drops += 1;
+        }
+        if e.owns_mesh() {
+            self.mesh_epoch += 1;
+        }
         if let Some(path) = path {
             self.record_removal(path, &e);
         }
@@ -2245,9 +2874,10 @@ impl World {
         let Some(e) = self.entities.get_mut(&pose.id) else { return };
         pose.apply_to(e);
         e.modified_by = by;
+        let transient = e.transient;
         self.refresh(pose.id);
         self.touch(pose.id);
-        self.revision += 1;
+        self.bump(transient);
     }
 
     /// Restores the id counter as a replayed change left it (never below an existing id).
@@ -2264,6 +2894,9 @@ impl World {
             self.children.remove(&key);
         }
         self.names.remove(&(e.name.clone(), id));
+        if e.transient {
+            self.transient_count -= 1;
+        }
         Some(e)
     }
 
@@ -2317,6 +2950,12 @@ impl World {
         self.child_range(id).next().is_some()
     }
 
+    /// Whether the entity has children that are not transient (game presentation the game may
+    /// have hung under it doesn't count).
+    pub fn has_persistent_children(&self, id: u64) -> bool {
+        self.child_range(id).any(|(_, c)| self.entities.get(c).is_some_and(|e| !e.transient))
+    }
+
     /// Matching entities in path order, paged.
     pub fn query(&self, q: &Query) -> Result<QueryPage<'_>, WorldError> {
         let root = match &q.path_prefix {
@@ -2362,7 +3001,14 @@ impl World {
                 "metallic" => Json::from(s.metallic),
                 "roughness" => Json::from(s.roughness),
                 "specular" => Json::from(s.specular),
-                "seed" => Json::from(s.seed),
+                "seed" => match &e.model {
+                    Some(m) => Json::from(m.seed),
+                    None => Json::from(s.seed),
+                },
+                "visible" => Json::from(e.visible),
+                "layer" => Json::from(e.layer.name()),
+                "transient" => Json::from(e.transient),
+                "model_state" => if e.model.is_some() { Json::from(e.model_state()) } else { Json::Null },
                 "color2" => Json::from(color_hex(s.color2)),
                 "tags" => tags_json(&e.tags),
                 "props" => e.props.clone(),
@@ -2377,15 +3023,19 @@ impl World {
         }))
     }
 
-    /// World-space bounds of everything with geometry, or `None` when there is none.
+    /// World-space bounds of everything shown with geometry (hidden and `ui` entities left out),
+    /// or `None` when there is none.
     pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
-        let mut corners = self.entities.values().filter_map(|e| e.world_corners()).flatten();
+        let mut corners = self.entities.values().filter(|e| e.shown && !e.in_ui).filter_map(|e| e.world_corners()).flatten();
         let first = corners.next()?;
         Some(corners.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p))))
     }
 
     /// A hash of everything that defines the world (entities by id, the environment, the id
-    /// counter), stable across runs and platforms. Versions and attribution are left out.
+    /// counter), stable across runs and platforms. Versions and attribution are left out, and so
+    /// are transient entities: they are game presentation, derived from the game's own state
+    /// (which the game hashes itself), so two runs of the same game agree whatever frame rate
+    /// drew them.
     pub fn state_hash(&self) -> u64 {
         let mut h = StableHasher::with_seed(0x5370_6563_756c_6131);
         h.write_u64(self.next_id);
@@ -2403,8 +3053,8 @@ impl World {
         h.write_bool(l.fxaa);
         crate::effects::SkyPatch::hash(&l.sky, &mut h);
         crate::effects::FogPatch::hash(&l.fog, &mut h);
-        h.write_u64(self.entities.len() as u64);
-        for e in self.entities.values() {
+        h.write_u64(self.persistent_len() as u64);
+        for e in self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e) {
             h.write_u64(e.content_hash());
         }
         h.finish()
@@ -3073,6 +3723,188 @@ mod tests {
         assert_eq!(color_json_exact([1.0, 0.0, 136.0 / 255.0]), Json::from("#ff0088"));
         assert_eq!(color_json_exact([0.8, 0.8, 0.8]), Json::from("#cccccc"), "204/255 rounds to 0.8f32");
         assert_eq!(color_json_exact([0.81, 0.8, 0.8]), Json::arr([0.81f32, 0.8, 0.8].map(Json::from)));
+    }
+
+    /// A model source that builds anything not named "broken": tier n is n metres tall.
+    struct FakeModels;
+
+    impl ModelSource for FakeModels {
+        fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
+            if spec.recipe.contains("broken") {
+                return Err(WorldError::new("recipe_invalid", "broken on purpose").with("field", "recipe"));
+            }
+            let tier = spec.params.iter().find(|(k, _)| k == "tier").map_or(1.0, |p| p.1) as f32;
+            Ok(ResolvedModel { handle: tier as u32, state: ModelState::Ready, bounds: Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, tier, 0.5))) })
+        }
+    }
+
+    fn with_models() -> World {
+        let mut w = World::default();
+        w.set_model_source(Some(Arc::new(FakeModels)));
+        w
+    }
+
+    #[test]
+    fn model_entities_resolve_bounds_and_refuse_broken_recipes() {
+        let mut w = with_models();
+        let spec = ModelSpec::new("recipes/stone.json").with_param("tier", 2.0).with_seed(7);
+        let id = w.spawn(SpawnSpec::model(spec.clone()), "t").unwrap().id;
+        let e = w.get(id).unwrap();
+        assert_eq!(e.color, [1.0; 3], "models default to white: as authored");
+        assert_eq!(e.local_bounds(), Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 2.0, 0.5))));
+        assert_eq!(e.resolved_model().unwrap().handle, 2);
+        let json = e.to_json("/x");
+        assert_eq!((json.get("recipe"), json.get("seed")), (Some(&Json::from("recipes/stone.json")), Some(&Json::from(7))));
+        // A broken recipe is refused at spawn and changes nothing (no id used).
+        let next = w.next_id();
+        let err = w.spawn(SpawnSpec::model(ModelSpec::new("broken.json")), "t").err().unwrap();
+        assert_eq!((err.code, w.next_id()), ("recipe_invalid", next));
+        // Updates re-resolve; `seed` on a model is the model seed; a broken update changes nothing.
+        let up = UpdateSpec { params: Some(vec![("tier".into(), 3.0)]), ..Default::default() };
+        let e = w.update(&EntityKey::Id(id), up, "t").unwrap();
+        assert_eq!(e.local_bounds().unwrap().1.y, 3.0);
+        let seed = UpdateSpec { look: LookPatch { seed: Some(12.0), ..Default::default() }, ..Default::default() };
+        let e = w.update(&EntityKey::Id(id), seed, "t").unwrap();
+        assert_eq!((e.model.as_ref().unwrap().seed, e.look.surface.seed), (Some(12), 0.0));
+        let version = e.version;
+        let bad = UpdateSpec { recipe: Some("broken.json".into()), ..Default::default() };
+        assert_eq!(w.update(&EntityKey::Id(id), bad, "t").err().unwrap().code, "recipe_invalid");
+        let frac = UpdateSpec { look: LookPatch { seed: Some(1.5), ..Default::default() }, ..Default::default() };
+        assert_eq!(w.update(&EntityKey::Id(id), frac, "t").err().unwrap().detail("field"), Some(&Json::from("seed")));
+        assert_eq!(w.get(id).unwrap().version, version, "rejected updates change nothing");
+        // Only models take recipes; a model needs one; paths can't escape the assets root.
+        let cube = put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
+        let up = UpdateSpec { recipe: Some("a.json".into()), ..Default::default() };
+        assert_eq!(w.update(&EntityKey::Id(cube), up, "t").err().unwrap().code, "invalid_component");
+        assert!(w.spawn(SpawnSpec::new(Shape::Model), "t").is_err());
+        for bad in ["../up.json", "/abs.json", "a//b.json", "a/./b.json", "x.txt", "c:\\x.json", ""] {
+            assert!(validate_recipe_path(bad).is_err(), "{bad}");
+        }
+        let unsorted = ModelSpec { recipe: "a.json".into(), params: vec![("b".into(), 1.0), ("a".into(), 1.0)], seed: None };
+        assert!(unsorted.check().is_err());
+        assert!(ModelSpec::new("a.json").with_seed(MAX_MODEL_SEED + 1).check().is_err());
+        // The spec is part of the state; the derived bounds are not.
+        let before = w.state_hash();
+        let failed = w.set_model_source(None);
+        assert!(failed.is_empty() && w.get(id).unwrap().local_bounds().is_none());
+        assert_eq!(w.state_hash(), before);
+    }
+
+    /// Reviewer finding: a journal state put back whose spec no longer resolves kept its old
+    /// handle, which may name another spec's model by then.
+    #[test]
+    fn put_back_states_never_keep_a_stale_model_handle() {
+        let mut w = with_models();
+        let id = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/ok.json").with_param("tier", 3.0)), "t").unwrap().id;
+        let mut old = w.get(id).unwrap().clone();
+        assert_eq!(old.resolved_model().unwrap().handle, 3);
+        old.model = Some(ModelSpec::new("recipes/broken.json"));
+        w.put_raw(old);
+        let e = w.get(id).unwrap();
+        assert_eq!((e.resolved_model(), e.model_state(), e.local_bounds()), (None, "unresolved", None));
+        assert_eq!(e.to_json("/x").get("model_state"), Some(&Json::from("unresolved")));
+    }
+
+    #[test]
+    fn hidden_entities_and_their_subtrees_are_not_shown() {
+        let mut w = World::default();
+        let g = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let kid = put(&mut w, Shape::Cube, "kid", Some("/g"), Vec3::new(10.0, 0.0, 0.0));
+        put(&mut w, Shape::Cube, "other", None, Vec3::ZERO);
+        let all = w.bounds().unwrap();
+        let hash = w.state_hash();
+        let hide = |v: bool| UpdateSpec { visible: Some(v), ..Default::default() };
+        w.set_recording(Recording::Full);
+        w.update(&EntityKey::Id(g), hide(false), "t").unwrap();
+        assert_eq!(w.take_changes().len(), 1, "journaled like any change");
+        assert!(!w.get(kid).unwrap().shown(), "children of a hidden entity are hidden");
+        assert!(w.get(kid).unwrap().visible, "their own flag stays");
+        assert!(w.bounds().unwrap().1.x < 1.0, "hidden entities leave the world's bounds: {:?}", w.bounds());
+        assert_ne!(w.state_hash(), hash, "visibility is state");
+        // A new child of a hidden parent is hidden too; showing the parent shows the subtree.
+        let late = put(&mut w, Shape::Cube, "late", Some("/g"), Vec3::ZERO);
+        assert!(!w.get(late).unwrap().shown());
+        w.update(&EntityKey::Id(g), hide(true), "t").unwrap();
+        assert!(w.get(kid).unwrap().shown() && w.get(late).unwrap().shown());
+        assert_eq!(w.bounds().unwrap(), all);
+        assert_eq!(w.get(g).unwrap().to_json("/g").get("visible"), None, "defaults stay out of listings");
+    }
+
+    #[test]
+    fn ui_layer_is_inherited_and_left_out_of_bounds() {
+        let mut w = World::default();
+        let mut ui = SpawnSpec::new(Shape::Group);
+        ui.name = Some("ui".into());
+        ui.layer = Layer::Ui;
+        w.spawn(ui, "game").unwrap();
+        let cursor = put(&mut w, Shape::Cube, "cursor", Some("/ui"), Vec3::new(0.0, -50.0, 0.0));
+        put(&mut w, Shape::Cube, "stone", None, Vec3::ZERO);
+        assert!(w.get(cursor).unwrap().in_ui() && w.get(cursor).unwrap().layer == Layer::World);
+        assert!(w.bounds().unwrap().0.y > -1.0, "the parked cursor doesn't stretch the auto camera");
+        // Moving it out of the ui group puts it back in the world.
+        w.update(&EntityKey::Id(cursor), UpdateSpec { parent: Some(None), ..Default::default() }, "t").unwrap();
+        assert!(!w.get(cursor).unwrap().in_ui());
+        assert!(w.bounds().unwrap().0.y < -40.0);
+    }
+
+    #[test]
+    fn transient_entities_never_touch_saved_state() {
+        let mut w = World::default();
+        let base = put(&mut w, Shape::Group, "enemies", None, Vec3::ZERO);
+        w.set_recording(Recording::Full);
+        w.take_changes();
+        let (revision, next_id, hash, stamp) = (w.revision(), w.next_id(), w.state_hash(), w.subtree_stamp(base));
+        let mut s = SpawnSpec::new(Shape::Sphere);
+        s.name = Some("shambler".into());
+        s.parent = Some(EntityKey::Id(base));
+        s.transient = true;
+        let id = w.spawn(s, "game").unwrap().id;
+        assert!(id > TRANSIENT_ID_BASE, "transient ids come from their own range");
+        let kid = put(&mut w, Shape::Cube, "eye", Some("/enemies/shambler"), Vec3::ZERO);
+        assert!(w.get(kid).unwrap().transient, "children of transient entities are transient");
+        for x in 0..10 {
+            let mv = UpdateSpec { position: Some(Vec3::new(x as f32, 0.0, 0.0)), ..Default::default() };
+            w.update(&EntityKey::Id(id), mv, "game").unwrap();
+        }
+        assert!(w.take_changes().is_empty(), "never journaled");
+        assert_eq!((w.revision(), w.next_id(), w.state_hash(), w.subtree_stamp(base)), (revision, next_id, hash, stamp));
+        assert_eq!((w.len(), w.persistent_len(), w.transient_len()), (3, 1, 2));
+        // Visible to queries and sight like anything else.
+        let page = w.query(&Query { path_prefix: Some("/enemies".into()), limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(page.total, 3);
+        assert_eq!(w.get(id).unwrap().to_json("/enemies/shambler").get("transient"), Some(&Json::from(true)));
+        // Saved entities can't hide under transient ones (they would vanish from the files).
+        let saved = put(&mut w, Shape::Cube, "loot", None, Vec3::ZERO);
+        let under = UpdateSpec { parent: Some(Some(EntityKey::Id(id))), ..Default::default() };
+        assert_eq!(w.update(&EntityKey::Id(saved), under, "t").err().unwrap().code, "transient_parent");
+        w.take_changes();
+        // Snapshot recording (game ticks) costs nothing for them; deleting them is invisible too.
+        w.set_recording(Recording::Snapshot);
+        let revision = w.revision();
+        w.update(&EntityKey::Id(id), UpdateSpec { scale: Some(Vec3::ONE * 2.0), ..Default::default() }, "game").unwrap();
+        w.delete(&EntityKey::Id(id), None).unwrap();
+        assert!(w.dirty.is_empty() && w.dirty_removed.is_empty());
+        assert!(w.take_changes().is_empty());
+        assert_eq!((w.revision(), w.transient_len()), (revision, 0));
+        // A failed batch takes its transient spawns back with it.
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.transient = true;
+        let ops = vec![Op::Spawn(t), Op::Delete(EntityKey::Path("/nope".into()), None)];
+        assert!(w.apply_batch(ops, "t").is_err());
+        assert_eq!(w.transient_len(), 0);
+        assert!(w.restore(SpawnSpec { transient: true, ..SpawnSpec::new(Shape::Cube) }, 50, 1, "t", "t").is_err());
+    }
+
+    #[test]
+    fn moving_a_leaf_allocates_nothing_but_subtrees_still_follow() {
+        let mut w = World::default();
+        let g = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let kid = put(&mut w, Shape::Cube, "kid", Some("/g"), Vec3::new(1.0, 0.0, 0.0));
+        let deep = put(&mut w, Shape::Cube, "deep", Some("/g/kid"), Vec3::new(1.0, 0.0, 0.0));
+        w.update(&EntityKey::Id(g), UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 0.0)), ..Default::default() }, "t").unwrap();
+        assert!(close(w.get(deep).unwrap().world_position(), Vec3::new(7.0, 0.0, 0.0)));
+        w.update(&EntityKey::Id(kid), UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() }, "t").unwrap();
+        assert!(close(w.get(deep).unwrap().world_position(), Vec3::new(6.0, 0.0, 0.0)));
     }
 
     #[test]

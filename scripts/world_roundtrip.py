@@ -132,7 +132,8 @@ def stop(proc, log, log_path, run):
 
 def build(m):
     hello = m.call("agent_hello", name="mason", role="builder")
-    assert hello == {"agent": "mason", "role": "builder"}, hello
+    # (The reply also carries a resume_token and a note since resumable identities.)
+    assert (hello["agent"], hello["role"]) == ("mason", "builder"), hello
     vase = [[0.0, 0.0], [0.12, 0.0], [0.16, 0.18], [0.07, 0.42], [0.09, 0.5]]
     ops = [
         {"op": "spawn", "shape": "group", "path": "/slab", "position": [0.1, 0.0, -0.2], "rotation_deg": [0, 12.5, 0]},

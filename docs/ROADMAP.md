@@ -353,7 +353,8 @@ shapes?"
 - [ ] **ID buffer**: per-entity visible-pixel counts and exact screen extents. Fixes occlusion and loose boxes.
 - [ ] **Per-agent persistent cameras**; `sight_orbit` (turntable) and `sight_compare` (before/after).
 - [ ] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
-- [ ] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
+- [x] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
+  *Done 2026-10-14:* `--perf FILE` / `./perf.toml` (`perf.example.toml` documents every budget, per-adapter overrides); misses are structured errors in `perf_frame` and `perf_capture`.
 - [ ] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
   *Progress 2026-10-13:* HDR bloom, ACES tonemap, FXAA (colour grading and SSAO still to do).
 - [x] ➕ **Analytic sky and height fog.**
@@ -362,7 +363,8 @@ shapes?"
   with an on-disk Vulkan pipeline cache, and a pipeline created mid-game is a `perf_frame` error.
   *Why:* this avoids Unreal-style shader stutter by design (survey §3).
   *Done 2026-10-13:* all pipelines built at load with a validated on-disk pipeline cache; `pipelines.created_after_warm` is a perf_frame error.
-- [ ] ➕ **Profiling tools**: CPU zones, frame capture and memory tracker, exposed as tools.
+- [x] ➕ **Profiling tools**: CPU zones, frame capture and memory tracker, exposed as tools.
+  *Done 2026-10-14:* CPU zones (`perf_zones`), frame capture with a Chrome trace (`perf_capture`), memory tracker (`perf_memory`).
 
 **Exit proof:**
 - [ ] A lit, shadowed scene with imported and procedural assets and an animated character.

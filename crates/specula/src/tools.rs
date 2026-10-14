@@ -6,6 +6,7 @@
 
 use crate::claims::{self, ClaimSpec, Scope};
 use crate::journal::{self, ChangesQuery, Cursor, HistoryQuery, Kind, UndoRequest};
+use crate::perf::{CaptureSpec, ZonesQuery, MAX_CAPTURE_FRAMES};
 use crate::sight::Camera;
 use crate::world::{
     self, parse_material, Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
@@ -25,11 +26,14 @@ once, all-or-nothing, with world_batch), change them with world_set, remove subt
 them with world_query (filters, paged) or world_list. Address an entity by id, path, or a bare name that is \
 unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
-newer change. LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
+newer change. Shape 'model' builds a procedural model from a recipe file (model_build reports on one without \
+spawning). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
+game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
-frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
+frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
+perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
@@ -62,15 +66,18 @@ pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags"
 // like `rotation` for `rotation_deg` is an error instead of a silently ignored value.
 const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light"];
 const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body"];
-pub(crate) const SPAWN_KEYS: &[&str] =
-    &["shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments"];
+pub(crate) const SPAWN_KEYS: &[&str] = &[
+    "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
+    "params", "visible", "layer", "transient",
+];
 const SET_KEYS: &[&str] = &[
     "id", "path", "name", "expect_version", "rename", "parent", "position", "rotation_deg", "scale", "color", "profile",
-    "segments", "add_tags", "remove_tags",
+    "segments", "add_tags", "remove_tags", "recipe", "params", "visible", "layer",
 ];
+const SHAPE_LIST: &str = "group, cube, quad, sphere, lathe or model";
 const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
 const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
-const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s"];
+const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s", "include_ui", "lod"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
     "background", "shadow", "bloom", "fxaa", "sky", "fog",
@@ -140,8 +147,13 @@ pub enum Command {
     /// `None` returns the window to auto-framing.
     View(Option<Camera>),
     Info,
-    /// perf_frame; `None` = the default budget.
+    /// perf_frame; `None` = the frame budget from perf.toml.
     Perf { budget_ms: Option<f64> },
+    PerfZones(ZonesQuery),
+    /// perf_memory: top zones by allocation.
+    PerfMemory { limit: usize },
+    /// perf_capture: answered once the frames are recorded.
+    PerfCapture(CaptureSpec),
     Time(TimeOp),
     /// A tool the hosted game added.
     Game { name: String, args: Json },
@@ -157,6 +169,10 @@ pub enum Command {
     ClaimRelease { id: Option<u64> },
     ClaimShare { id: u64, with: String, revoke: bool },
     ClaimList { owner: Option<String>, mine: bool, path_prefix: Option<String>, after: Option<u64>, limit: usize },
+    /// model_build: build a recipe (fresh from disk) and report on it, without spawning.
+    ModelBuild(world::ModelSpec),
+    /// model_reload: re-read every recipe and style now.
+    ModelReload,
 }
 
 /// time_control's actions on the simulation clock.
@@ -193,6 +209,10 @@ pub struct FrameSpec {
     pub max_subjects: usize,
     /// Animation time to render; `None` = the engine's current time.
     pub time_s: Option<f32>,
+    /// Draw (and list) `ui`-layer entities too.
+    pub include_ui: bool,
+    /// Draw every model at this LOD (clamped to the model's last) instead of choosing by size.
+    pub lod: Option<usize>,
 }
 
 pub struct Request {
@@ -303,6 +323,12 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             };
             Ok(Command::Perf { budget_ms })
         }
+        "perf_zones" => parse_perf_zones(args).map(Command::PerfZones),
+        "perf_memory" => {
+            check_keys(args, name, &[&["limit"]])?;
+            Ok(Command::PerfMemory { limit: int_arg(args, "limit", 1, 50)?.unwrap_or(10) as usize })
+        }
+        "perf_capture" => parse_perf_capture(args).map(Command::PerfCapture),
         "time_control" => {
             check_keys(args, name, &[&["action", "ticks", "scale"]])?;
             parse_time(args).map(Command::Time)
@@ -347,12 +373,58 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 limit: int_arg(args, "limit", 1, 200)?.unwrap_or(50) as usize,
             })
         }
+        "model_build" => {
+            check_keys(args, name, &[&["recipe", "params", "seed"]])?;
+            let recipe = string_arg(args, "recipe")?.ok_or("'recipe' is required: a recipe file under the assets root")?;
+            let seed = int_arg(args, "seed", 0, world::MAX_MODEL_SEED)?;
+            let spec = world::ModelSpec { recipe: recipe.to_owned(), params: params_arg(args)?.unwrap_or_default(), seed };
+            spec.check().map_err(value_error)?;
+            Ok(Command::ModelBuild(spec))
+        }
+        "model_reload" => check_keys(args, name, &[]).map(|()| Command::ModelReload),
         other => Err(format!("unknown tool '{other}'")),
     }
 }
 
 /// Recent per-tick hashes world_hash may return.
 pub const MAX_HASH_RECENT: u64 = 256;
+
+fn parse_perf_zones(args: &Json) -> Result<ZonesQuery, String> {
+    check_keys(args, "perf_zones", &[&["thread", "min_ms", "limit", "cursor", "enabled"]])?;
+    let min_ms = match args.get("min_ms") {
+        None | Some(Json::Null) => 0.0,
+        Some(v) => match v.as_f64() {
+            Some(x) if (0.0..=10_000.0).contains(&x) => x,
+            _ => return Err("'min_ms' must be a number of milliseconds, 0..10000".into()),
+        },
+    };
+    let offset = match string_arg(args, "cursor")? {
+        None => 0,
+        Some(c) => c.parse().map_err(|_| "'cursor' must be the next_cursor of an earlier perf_zones answer".to_string())?,
+    };
+    Ok(ZonesQuery {
+        thread: string_arg(args, "thread")?.map(str::to_owned),
+        min_ms,
+        limit: int_arg(args, "limit", 1, 500)?.unwrap_or(60) as usize,
+        offset,
+        enabled: bool_arg(args, "enabled")?,
+    })
+}
+
+fn parse_perf_capture(args: &Json) -> Result<CaptureSpec, String> {
+    check_keys(args, "perf_capture", &[&["frames", "trace", "label"]])?;
+    let label = string_arg(args, "label")?.map(str::to_owned);
+    if let Some(l) = &label {
+        if l.is_empty() || l.len() > 32 || !l.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+            return Err("'label' must be 1..32 characters of A-Z a-z 0-9 _ -".into());
+        }
+    }
+    Ok(CaptureSpec {
+        frames: int_arg(args, "frames", 1, MAX_CAPTURE_FRAMES)?.unwrap_or(60),
+        trace: bool_arg(args, "trace")?.unwrap_or(true),
+        label,
+    })
+}
 
 /// An optional integer within `lo..=hi`.
 fn int_arg(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
@@ -605,13 +677,20 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     let shape_name = match args.get("shape") {
         None | Some(Json::Null) => return Err("'shape' is required".into()),
         Some(Json::Str(s)) => s,
-        Some(_) => return Err("'shape' must be a string: group, cube, quad, sphere or lathe".into()),
+        Some(_) => return Err(format!("'shape' must be a string: {SHAPE_LIST}")),
     };
-    let shape = Shape::parse(shape_name)
-        .ok_or_else(|| format!("'shape' must be group, cube, quad, sphere or lathe, not '{shape_name}'"))?;
+    let shape = Shape::parse(shape_name).ok_or_else(|| format!("'shape' must be {SHAPE_LIST}, not '{shape_name}'"))?;
     let profile = profile_arg(args)?;
     if (shape == Shape::Lathe) != profile.is_some() {
         return Err("'profile' is required for shape 'lathe' and only allowed for it".into());
+    }
+    let recipe = string_arg(args, "recipe")?;
+    let params = params_arg(args)?;
+    if (shape == Shape::Model) != recipe.is_some() {
+        return Err("'recipe' is required for shape 'model' and only allowed for it".into());
+    }
+    if params.is_some() && shape != Shape::Model {
+        return Err("'params' is only for shape 'model'".into());
     }
     let mut spec = SpawnSpec::new(shape);
     spec.name = name_arg(args.get("name"))?;
@@ -630,8 +709,29 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     spec.position = vec3_arg(args, "position")?.unwrap_or(Vec3::ZERO);
     spec.rotation_deg = vec3_arg(args, "rotation_deg")?.unwrap_or(Vec3::ZERO);
     spec.scale = scale_arg(args)?.unwrap_or(Vec3::ONE);
-    spec.color = color_arg(args, "color")?.unwrap_or([0.8, 0.8, 0.8]);
-    look_arg(args)?.apply(&mut spec.look);
+    if let Some(c) = color_arg(args, "color")? {
+        spec.color = c;
+    }
+    let mut look = look_arg(args)?;
+    if let Some(recipe) = recipe {
+        // A model's `seed` is its model seed.
+        let seed = match args.get("seed") {
+            None | Some(Json::Null) => None,
+            Some(v) => Some(v.as_u64().filter(|s| *s <= world::MAX_MODEL_SEED).ok_or_else(|| {
+                format!("'seed' of a model must be an integer 0..{}", world::MAX_MODEL_SEED)
+            })?),
+        };
+        look.seed = None;
+        spec.model = Some(world::ModelSpec { recipe: recipe.to_owned(), params: params.unwrap_or_default(), seed });
+    }
+    look.apply(&mut spec.look);
+    spec.visible = bool_arg(args, "visible")?.unwrap_or(true);
+    spec.layer = layer_arg(args)?.unwrap_or_default();
+    if bool_arg(args, "transient")? == Some(true) {
+        return Err("'transient' is reserved for the hosted game's presentation (its in-process API): agents' \
+                    entities are always saved and journaled"
+            .into());
+    }
     if spec.look.material != specula_gpu::Material::Lit && args.get("opacity").is_none() {
         spec.look.opacity = match spec.look.material {
             specula_gpu::Material::Glass => 0.15,
@@ -665,6 +765,29 @@ fn tags_arg(args: &Json, key: &str) -> Result<Option<Vec<String>>, String> {
         tags.push(t.to_owned());
     }
     Ok(Some(tags))
+}
+
+/// `params`: an object of numbers (`{"tier": 2}`), sorted by name.
+fn params_arg(args: &Json) -> Result<Option<Vec<(String, f64)>>, String> {
+    const ERR: &str = "'params' must be an object of recipe parameters to numbers, e.g. {\"tier\": 2}";
+    let Some(v) = args.get("params").filter(|v| !v.is_null()) else { return Ok(None) };
+    let pairs = v.as_object().ok_or(ERR)?;
+    let mut sorted = std::collections::BTreeMap::new();
+    for (k, v) in pairs {
+        let n = v.as_f64().filter(|n| n.is_finite()).ok_or(ERR)?;
+        if sorted.insert(k.clone(), n).is_some() {
+            return Err(format!("'params': '{k}' is given twice"));
+        }
+    }
+    Ok(Some(sorted.into_iter().collect()))
+}
+
+/// `layer`: "world" or "ui".
+fn layer_arg(args: &Json) -> Result<Option<world::Layer>, String> {
+    match string_arg(args, "layer")? {
+        None => Ok(None),
+        Some(l) => world::Layer::parse(l).map(Some).ok_or_else(|| format!("'layer' must be \"world\" or \"ui\", not '{l}'")),
+    }
 }
 
 fn props_arg(args: &Json) -> Result<Option<Json>, String> {
@@ -884,12 +1007,16 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
         props: props_arg(args)?,
         collider: collider_arg(args)?,
         body: body_arg(args)?,
+        recipe: string_arg(args, "recipe")?.map(str::to_owned),
+        params: params_arg(args)?,
+        visible: bool_arg(args, "visible")?,
+        layer: layer_arg(args)?,
         expect_version: version_arg(args)?,
     };
     if change.is_empty() {
         return Err("world_set needs at least one change: rename, parent, position, rotation_deg, scale, color, a \
                     look field (material, opacity, emissive, metallic, roughness, specular, color2, seed), light, \
-                    profile, tags, add_tags, remove_tags, props, collider or body"
+                    profile, tags, add_tags, remove_tags, props, collider, body, recipe, params, visible or layer"
             .into());
     }
     world::check_update(&change).map_err(value_error)?;
@@ -948,7 +1075,7 @@ fn parse_query(args: &Json, list: bool) -> Result<QuerySpec, String> {
     }
     let shape = match string_arg(args, "shape")? {
         None => None,
-        Some(s) => Some(Shape::parse(s).ok_or_else(|| format!("'shape' must be group, cube, quad, sphere or lathe, not '{s}'"))?),
+        Some(s) => Some(Shape::parse(s).ok_or_else(|| format!("'shape' must be {SHAPE_LIST}, not '{s}'"))?),
     };
     let material = match string_arg(args, "material")? {
         None => None,
@@ -1058,6 +1185,8 @@ fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         fov_y_deg,
         max_subjects: int("max_subjects", 50, 1..=500)? as usize,
         time_s: num_in(args, "time_s", 0.0..=1.0e6)?,
+        include_ui: bool_arg(args, "include_ui")?.unwrap_or(false),
+        lod: int_arg(args, "lod", 0, 7)?.map(|l| l as usize),
     })
 }
 
@@ -1180,7 +1309,7 @@ fn definitions() -> Vec<ToolDef> {
             ("roughness", number("standard: 0 = mirror-sharp .. 1 = broad highlights (default 0.5)")),
             ("specular", number("standard: highlight and reflection strength 0..10 (default 0 = matte)")),
             ("color2", described(&format!("Secondary colour (lava_lamp liquid), {color}"))),
-            ("seed", number("Variation seed (lava_lamp wax motion)")),
+            ("seed", number("Variation seed: a model's variant seed (integer 0..1000000), or the lava_lamp's wax motion")),
             (
                 "light",
                 described(
@@ -1235,6 +1364,31 @@ fn definitions() -> Vec<ToolDef> {
             ),
         ]);
     };
+    // Model, visibility and layer fields shared by world_spawn and world_set.
+    let presentation = |props: &mut Vec<(&str, Json)>| {
+        props.extend([
+            (
+                "recipe",
+                string(
+                    "model only: recipe file relative to the engine's assets root (--assets), e.g. \
+                     \"recipes/warding_stone.json\"; built with the style.json found next to it (or --style). \
+                     A broken recipe is refused with its error path and code (model_build to iterate)",
+                ),
+            ),
+            ("params", object("model only: recipe parameters, e.g. {\"tier\": 2} (unset ones take the recipe's defaults)")),
+            (
+                "visible",
+                boolean("false hides it and everything below it: not drawn, not a sight subject, not in auto-framing (default true)"),
+            ),
+            (
+                "layer",
+                string(
+                    "\"world\" (default) or \"ui\": game interface in the scene (cursors, range rings) - drawn in the \
+                     window but left out of sight_frame captures unless include_ui; children inherit it",
+                ),
+            ),
+        ]);
+    };
     let filters = |props: &mut Vec<(&str, Json)>| {
         props.extend([
             ("path_prefix", string("Only this entity and everything below it, e.g. \"/slab\"")),
@@ -1249,9 +1403,12 @@ fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "world_spawn".into(),
-            description: "Add an entity to the live world: a shape with an optional parent, material, point light, \
-                          tags, props and reserved physics components. Returns the new entity (id, path, transform, \
-                          look, version)."
+            description: "Add an entity to the live world: a shape (or a procedural model built from a recipe file) \
+                          with an optional parent, material, point light, tags, props and reserved physics \
+                          components. Returns the new entity (id, path, transform, look, version). A model may \
+                          still be building when this returns (model_state \"building\"); sight_frame waits for \
+                          it. Entities the hosted game marks transient (its presentation) can't be spawned under, \
+                          changed or deleted by agents."
                 .into(),
             input_schema: schema(
                 {
@@ -1266,7 +1423,9 @@ fn definitions() -> Vec<ToolDef> {
                                     Json::from(
                                         "group draws nothing and holds children (districts, rooms, an object's parts); \
                                          cube and sphere are 1 m across; quad is a 1×1 m floor tile in XZ facing up; \
-                                         lathe spins 'profile' around +Y (vases, bottles, lamp bases)",
+                                         lathe spins 'profile' around +Y (vases, bottles, lamp bases); model builds \
+                                         'recipe' (with 'params' and 'seed') into a mesh with LODs and its style's \
+                                         materials, resting on y = 0; its color tints it (default white = as authored)",
                                     ),
                                 ),
                             ]),
@@ -1289,8 +1448,18 @@ fn definitions() -> Vec<ToolDef> {
                             ),
                         ),
                         ("segments", integer("lathe only: steps around the axis, 3..256 (default 32)")),
+                        (
+                            "transient",
+                            boolean(
+                                "Reserved for the hosted game: its presentation (moving enemies, effects) is \
+                                 transient - not saved, journaled or in world_hash, drawn and queryable like \
+                                 anything. Agents can't create, change or delete transient entities (error \
+                                 transient_entity); true is refused here",
+                            ),
+                        ),
                     ];
                     look(&mut props);
+                    presentation(&mut props);
                     components(&mut props);
                     props
                 },
@@ -1302,8 +1471,9 @@ fn definitions() -> Vec<ToolDef> {
             description: "Change an existing entity (by id, path or unique name) in place; its id stays the same and \
                           its version goes up by one. Give any of: rename, parent (null = top level; the local \
                           transform is kept, so it moves with its new parent), position, rotation_deg, scale, color, \
-                          the look fields, light, a lathe's profile/segments, tags / add_tags / remove_tags, props \
-                          (merged key by key; a null value removes a key), collider, body."
+                          the look fields, light, a lathe's profile/segments, a model's recipe / params (replaces all) \
+                          / seed, visible, layer, tags / add_tags / remove_tags, props (merged key by key; a null \
+                          value removes a key), collider, body."
                 .into(),
             input_schema: schema(
                 {
@@ -1322,6 +1492,7 @@ fn definitions() -> Vec<ToolDef> {
                         ("remove_tags", string_array("Tags to remove")),
                     ]);
                     look(&mut props);
+                    presentation(&mut props);
                     components(&mut props);
                     props
                 },
@@ -1458,7 +1629,10 @@ fn definitions() -> Vec<ToolDef> {
                           on-screen rectangle [x, y, w, h] (pixels, origin top-left): the engine's projection of its \
                           bounding box, clipped to the view; occlusion is not considered. Without eye/target the camera \
                           frames the whole world from a three-quarter view. Large worlds return the biggest on-screen \
-                          subjects first (max_subjects); the full list is saved at packet_path."
+                          subjects first (max_subjects); the full list is saved at packet_path. If models in view are \
+                          still building, it waits for them (up to 10 s, other calls go on meanwhile) and then \
+                          renders the world as it is at that moment; packet 'models' and 'warnings' say what wasn't \
+                          drawn."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1472,9 +1646,42 @@ fn definitions() -> Vec<ToolDef> {
                         "time_s",
                         number("Animation time to render in seconds (default: now). Fix it to get reproducible frames."),
                     ),
+                    (
+                        "include_ui",
+                        boolean("Also draw and list layer \"ui\" entities (the game's cursor, range rings); default false"),
+                    ),
+                    (
+                        "lod",
+                        integer("Draw every model at this LOD (0 = full detail; clamped to each model's last) instead of by on-screen size"),
+                    ),
                 ],
                 &[],
             ),
+        },
+        ToolDef {
+            name: "model_build".into(),
+            description: "Build a model recipe (read fresh from disk) with params and seed, without spawning it, and \
+                          report: triangles and vertices per LOD, bounds, materials, budget, collider, notes, build \
+                          time and whether the build cache already had it. Recipe errors come back structured (code, \
+                          path into the recipe, message). Iterate on a recipe file with this, then world_spawn it as \
+                          shape \"model\"."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("recipe", string("Recipe file relative to the assets root, e.g. \"recipes/warding_stone.json\"")),
+                    ("params", object("Recipe parameters, e.g. {\"tier\": 3}")),
+                    ("seed", integer("Variant seed 0..1000000 (default: the recipe's)")),
+                ],
+                &["recipe"],
+            ),
+        },
+        ToolDef {
+            name: "model_reload".into(),
+            description: "Re-read every recipe and style file now and rebuild the models that changed (the engine \
+                          also notices edits on its own within a second). Returns what was rebuilt and any errors; \
+                          a model whose recipe broke keeps its last good build."
+                .into(),
+            input_schema: schema(vec![], &[]),
         },
         ToolDef {
             name: "world_env".into(),
@@ -1526,10 +1733,56 @@ fn definitions() -> Vec<ToolDef> {
             name: "perf_frame".into(),
             description: "Performance of the last frames (foundation F3): GPU ms per pass, CPU record/submit, draw \
                           calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
-                          heap budgets, frame pacing (mean/p95/max), simulation tick cost, and `errors` listing \
-                          budget misses. The window and the last capture are reported separately."
+                          heap budgets, frame pacing (mean/p95/max), simulation tick cost, CPU frame time and heap, \
+                          and `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}. \
+                          Budgets come from perf.toml (per adapter kind). The window and the last capture are \
+                          reported separately."
                 .into(),
-            input_schema: schema(vec![("budget_ms", number("Frame budget to check against (default 16.67 = 60 fps)"))], &[]),
+            input_schema: schema(
+                vec![("budget_ms", number("Check frame, GPU, CPU and pacing against this frame time instead of perf.toml's"))],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "perf_zones".into(),
+            description: "CPU profiler zones (named, nested spans around the engine loop's phases and worker threads): \
+                          per zone path its latest-frame calls, ms, self ms and allocations, plus rolling mean/p95 over \
+                          the history. Paged; sorted engine thread first, then by path."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("thread", string("Only this thread (\"main\" = the engine thread)")),
+                    ("min_ms", number("Hide zones whose rolling p95 is below this many ms")),
+                    ("limit", integer("Zones per page, 1..500 (default 60)")),
+                    ("cursor", string("next_cursor from the previous page")),
+                    ("enabled", boolean("Turn zone recording on or off first")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "perf_memory".into(),
+            description: "Heap use from the counting allocator: current and peak MB, allocations per frame \
+                          (mean/p95/max), the zones that allocate most per frame, and GPU memory."
+                .into(),
+            input_schema: schema(vec![("limit", integer("Top zones to list, 1..50 (default 10)"))], &[]),
+        },
+        ToolDef {
+            name: "perf_capture".into(),
+            description: "Frame capture: records the next `frames` frames (CPU zones of every thread, GPU passes, \
+                          draws, memory), writes them to a JSON file in the captures folder plus a Chrome trace-event \
+                          file (open in chrome://tracing or ui.perfetto.dev), and answers with a summary: frame and \
+                          GPU ms, top zones by self time, allocations per frame and budget errors. Answers when done \
+                          (or at about 23 s with what it has)."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("frames", integer(&format!("Frames to record, 1..{MAX_CAPTURE_FRAMES} (default 60)"))),
+                    ("trace", boolean("Also write the trace-event timeline (default true)")),
+                    ("label", string("Added to the file names: 1..32 of A-Z a-z 0-9 _ -")),
+                ],
+                &[],
+            ),
         },
         ToolDef {
             name: "time_control".into(),
@@ -1747,7 +2000,7 @@ mod tests {
         ] {
             assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere or lathe");
+        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere, lathe or model");
     }
 
     #[test]
@@ -1993,6 +2246,44 @@ mod tests {
     }
 
     #[test]
+    fn profiling_tool_arguments() {
+        let Ok(Command::PerfZones(q)) = parse("perf_zones", &args("{}")) else { panic!() };
+        assert_eq!(q, ZonesQuery { thread: None, min_ms: 0.0, limit: 60, offset: 0, enabled: None });
+        let Ok(Command::PerfZones(q)) =
+            parse("perf_zones", &args(r#"{"thread":"main","min_ms":0.5,"limit":5,"cursor":"10","enabled":false}"#))
+        else {
+            panic!()
+        };
+        assert_eq!(q, ZonesQuery { thread: Some("main".into()), min_ms: 0.5, limit: 5, offset: 10, enabled: Some(false) });
+        assert!(matches!(parse("perf_memory", &args("{}")), Ok(Command::PerfMemory { limit: 10 })));
+        assert!(matches!(parse("perf_memory", &args(r#"{"limit":3}"#)), Ok(Command::PerfMemory { limit: 3 })));
+        let Ok(Command::PerfCapture(c)) = parse("perf_capture", &args("{}")) else { panic!() };
+        assert_eq!(c, CaptureSpec { frames: 60, trace: true, label: None });
+        let Ok(Command::PerfCapture(c)) = parse("perf_capture", &args(r#"{"frames":600,"trace":false,"label":"wave-6"}"#)) else {
+            panic!()
+        };
+        assert_eq!(c, CaptureSpec { frames: 600, trace: false, label: Some("wave-6".into()) });
+        for (tool, bad) in [
+            ("perf_zones", r#"{"limit":0}"#),
+            ("perf_zones", r#"{"limit":501}"#),
+            ("perf_zones", r#"{"min_ms":-1}"#),
+            ("perf_zones", r#"{"cursor":"abc"}"#),
+            ("perf_zones", r#"{"enabled":"yes"}"#),
+            ("perf_zones", r#"{"threads":"main"}"#),
+            ("perf_memory", r#"{"limit":51}"#),
+            ("perf_capture", r#"{"frames":0}"#),
+            ("perf_capture", r#"{"frames":601}"#),
+            ("perf_capture", r#"{"label":"../x"}"#),
+            ("perf_capture", r#"{"label":""}"#),
+            ("perf_capture", r#"{"frame":10}"#),
+        ] {
+            assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
+        }
+        let e = parse("perf_capture", &args(r#"{"frame":10}"#)).err().unwrap();
+        assert!(e.contains("did you mean 'frames'"), "{e}");
+    }
+
+    #[test]
     fn game_tools_cannot_shadow_engine_tools() {
         let (tx, _rx) = mpsc::channel();
         let def = |name: &str| ToolDef { name: name.into(), description: String::new(), input_schema: Json::obj::<&str>([]) };
@@ -2061,6 +2352,53 @@ mod tests {
         ] {
             assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
         }
+    }
+
+    #[test]
+    fn model_and_presentation_arguments() {
+        let s = parse_spawn(&args(
+            r#"{"shape":"model","recipe":"recipes/warding_stone.json","params":{"tier":2,"glow":0.5},"seed":7,
+                "visible":false,"layer":"ui","transient":false}"#,
+        ))
+        .unwrap();
+        let m = s.model.as_ref().unwrap();
+        assert_eq!((m.recipe.as_str(), m.seed), ("recipes/warding_stone.json", Some(7)));
+        assert_eq!(m.params, vec![("glow".to_string(), 0.5), ("tier".to_string(), 2.0)], "sorted by name");
+        assert_eq!((s.look.surface.seed, s.color), (0.0, [1.0; 3]), "a model's seed is its model seed; white by default");
+        assert_eq!((s.visible, s.layer, s.transient), (false, world::Layer::Ui, false));
+        let e = parse_spawn(&args(r#"{"shape":"cube","transient":true}"#)).err().unwrap();
+        assert!(e.contains("reserved for the hosted game"), "{e}");
+        let s = parse_spawn(&args(r#"{"shape":"cube","seed":2.5,"layer":"world"}"#)).unwrap();
+        assert_eq!(s.look.surface.seed, 2.5, "other shapes keep the surface seed");
+        for bad in [
+            r#"{"shape":"model"}"#,
+            r#"{"shape":"cube","recipe":"a.json"}"#,
+            r#"{"shape":"cube","params":{"tier":1}}"#,
+            r#"{"shape":"model","recipe":"../a.json"}"#,
+            r#"{"shape":"model","recipe":"a.json","seed":1.5}"#,
+            r#"{"shape":"model","recipe":"a.json","seed":2000000}"#,
+            r#"{"shape":"model","recipe":"a.json","params":[1]}"#,
+            r#"{"shape":"model","recipe":"a.json","params":{"tier":"two"}}"#,
+            r#"{"shape":"model","recipe":"a.json","params":{"bad name":1}}"#,
+            r#"{"shape":"cube","layer":"hud"}"#,
+            r#"{"shape":"cube","visible":"no"}"#,
+        ] {
+            assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
+        }
+        let (_, c) = parse_set(&args(r#"{"id":1,"params":{"tier":3},"recipe":"r/b.json","visible":true,"layer":"ui"}"#)).unwrap();
+        assert_eq!((c.params, c.recipe.as_deref(), c.visible, c.layer), (Some(vec![("tier".into(), 3.0)]), Some("r/b.json"), Some(true), Some(world::Layer::Ui)));
+        assert!(parse_set(&args(r#"{"id":1,"visible":false}"#)).is_ok(), "visibility alone is a change");
+        let f = parse_frame(&args(r#"{"include_ui":true,"lod":2}"#)).unwrap();
+        assert_eq!((f.include_ui, f.lod), (true, Some(2)));
+        assert!(!parse_frame(&args("{}")).unwrap().include_ui);
+        assert!(parse("sight_frame", &args(r#"{"lod":9}"#)).is_err());
+        match parse("model_build", &args(r#"{"recipe":"recipes/tombstone.json","params":{"tier":1},"seed":3}"#)) {
+            Ok(Command::ModelBuild(spec)) => assert_eq!((spec.seed, spec.params.len()), (Some(3), 1)),
+            _ => panic!("model_build"),
+        }
+        assert!(parse("model_build", &args("{}")).is_err());
+        assert!(parse("model_build", &args(r#"{"recipe":"/abs.json"}"#)).is_err());
+        assert!(matches!(parse("model_reload", &args("{}")), Ok(Command::ModelReload)));
     }
 
     #[test]

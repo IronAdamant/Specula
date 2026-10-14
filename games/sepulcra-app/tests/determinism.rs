@@ -53,18 +53,18 @@ impl Host {
         let mut game = SepulcraGame::new(content, seed);
         let mut world = World::default();
         let clock = Clock::new(game.tick_hz());
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra" });
+        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
         Host { game, world, clock }
     }
 
     fn call(&mut self, name: &str, args: &Json) -> specula_protocol::ToolOutput {
         let Host { game, world, clock } = self;
-        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra" }, name, args)
+        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, name, args)
     }
 
     fn tick(&mut self) {
         let Host { game, world, clock } = self;
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra" });
+        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
         self.clock.finish_tick();
     }
 }
