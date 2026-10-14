@@ -16,8 +16,11 @@ const bool OPAQUE = (FEATURES & 8u) != 0u;
 // The blended pipeline never draws Lit: leaving the Lit path out means nothing there reads the
 // vertex colour (see `tint`).
 const bool BLENDED = (FEATURES & 16u) != 0u;
+// Screen-space ambient occlusion (src/ssao.rs): Lit writes the exposed luminance of its ambient
+// light into alpha (HDR targets only), for the tonemap pass to scale by the occlusion.
+const bool SSAO = (FEATURES & 32u) != 0u;
 // Skinned meshes are never lava lamps: their pipelines leave the ray marcher out.
-const bool SKINNED = (FEATURES & 32u) != 0u;
+const bool SKINNED = (FEATURES & 64u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
@@ -292,11 +295,16 @@ vec4 shade_lit() {
     vec3 diffuse, specular;
     gather_light(v_world, n, v, rough, diffuse, specular);
     vec3 c = albedo * (1.0 - metallic) * diffuse;
+    // The ambient part (gather_light started `diffuse` at ambient): what occlusion may take.
+    vec3 ambient = SSAO ? albedo * (1.0 - metallic) * pc.frame.ambient.rgb : vec3(0.0);
     if (spec_weight > 0.0) {
         vec3 f0 = mix(vec3(0.04), albedo, metallic);
         vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
         vec3 reflected = mix(env_radiance(reflect(-v, n)), pc.frame.ambient.rgb, rough);
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
+        if (SSAO) {
+            ambient += spec_weight * fresnel * reflected * (1.0 - 0.7 * rough); // the surroundings' reflection
+        }
     }
 #ifdef TEXTURED
     if ((ext.w & EXT_EMISSIVE_COLOR) != 0u) {
@@ -313,7 +321,23 @@ vec4 shade_lit() {
     c += albedo * emissive;
 #endif
     if (FOG) {
-        c = fogged(c, 1.0);
+        if (SSAO) {
+            // As fogged(c, 1.0), keeping the transmittance for the ambient part.
+            vec3 d = v_world - camera_pos();
+            float dist = length(d);
+            vec3 dir = d / max(dist, 1e-6);
+            float t = fog_transmittance(pc.frame, dir, dist, false);
+            ambient *= t;
+            c = c * t + fog_radiance(pc.frame, dir) * (1.0 - t);
+        } else {
+            c = fogged(c, 1.0);
+        }
+    }
+    if (SSAO && HDR) {
+        // Alpha: the exposed luminance of the ambient part. Blended layers above scale it by
+        // what they leave visible (dst.a × (1 − src.a)), exactly as they scale the colour.
+        const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+        return vec4(display(c), clamp(dot(ambient, LUMA) * pc.frame.ambient.w, 0.0, 60000.0));
     }
     return vec4(display(c), 1.0);
 }

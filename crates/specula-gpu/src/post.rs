@@ -5,13 +5,18 @@
 //! - nothing on: the scene renders straight into the final image, tone mapped in the forward
 //!   pass (the M0/M1 path, bit for bit);
 //! - FXAA only: scene (tone mapped) → LDR image → FXAA → final;
-//! - bloom: scene (exposed linear) → HDR image → bloom chain → tonemap → final, or → LDR image
-//!   → FXAA → final.
+//! - bloom and/or grading: scene (exposed linear) → HDR image → bloom chain (if on) → tonemap
+//!   (+ grading) → final, or → LDR image → FXAA → final.
+//!
+//! Grading ([`crate::GradingSettings`]) runs inside the tonemap pass (`shaders/composite.frag`):
+//! its numbers, its LUT slot and the steps that are not neutral travel in the pass's push
+//! constants ([`TonemapPush`]; each neutral step is skipped, so neutral grading changes nothing,
+//! bit for bit).
 
 use crate::device::Device;
-use crate::render::{FrameGraph, FramePass, FramePipelines, FrameRes, PUSH_STAGES};
+use crate::render::{FrameGraph, FramePass, FramePipelines, FrameRes, PUSH_BYTES, PUSH_STAGES};
 use crate::vk::*;
-use crate::Environment;
+use crate::{Environment, GradingSettings};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
@@ -36,12 +41,40 @@ pub struct PostPush {
 
 const _: () = assert!(size_of::<PostPush>() == 48);
 
+/// Push constants of the tonemap pass (bloom, SSAO, grading); must match `Push` in
+/// `shaders/composite.frag`. Exactly the 128 bytes every device guarantees.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TonemapPush {
+    pub frame: u64,
+    /// The HDR scene, and the bloom blur ([`NO_TEXTURE`] without bloom).
+    pub src: u32,
+    pub src2: u32,
+    pub texel: [f32; 2],
+    /// Grading steps to run (bits 0..16, `GRADE_*`) and the LUT's size (bits 16..24).
+    pub steps: u32,
+    pub lut: u32,
+    /// SSAO visibility ([`NO_TEXTURE`] without SSAO).
+    pub ao: u32,
+    pub bloom_intensity: f32,
+    pub pad: [u32; 2],
+    /// [`grading_data`]: balance + contrast, lift + saturation, 1/gamma + vibrance,
+    /// gain + LUT strength, vignette / radius / grain.
+    pub grade: [[f32; 4]; 5],
+}
+
+const _: () = assert!(size_of::<TonemapPush>() == 128);
+
 /// Which post passes a frame runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PostMode {
     /// Bloom levels (0 = no bloom).
     pub bloom_levels: u32,
     pub fxaa: bool,
+    /// Grading with at least one step that isn't neutral.
+    pub grading: bool,
+    /// Screen-space ambient occlusion (passes before the scene; see `ssao.rs`).
+    pub ssao: bool,
 }
 
 impl PostMode {
@@ -49,7 +82,14 @@ impl PostMode {
         PostMode {
             bloom_levels: if env.bloom.enabled { env.bloom.levels.clamp(1, MAX_BLOOM_LEVELS) } else { 0 },
             fxaa: env.fxaa,
+            grading: env.grading.active(),
+            ssao: env.ssao.enabled,
         }
+    }
+
+    /// The scene renders exposed linear light into an HDR image and a tonemap pass follows.
+    pub fn hdr(self) -> bool {
+        self.bloom() || self.grading || self.ssao
     }
 
     /// The mode as it applies to a target of `extent` (bloom needs at least one level to fit).
@@ -63,7 +103,7 @@ impl PostMode {
 
     /// The scene goes straight into the final image.
     pub fn direct(self) -> bool {
-        !self.bloom() && !self.fxaa
+        !self.hdr() && !self.fxaa
     }
 }
 
@@ -113,16 +153,17 @@ pub fn hdr_clear(clear_linear: [f32; 4], tonemap: bool) -> [f32; 4] {
 /// One full-screen pass into `color` (from the graph: view, layout, load/store ops): begin
 /// rendering, draw the triangle, run `extra` (e.g. the overlay) in the same rendering instance, end.
 #[allow(clippy::too_many_arguments)]
-pub fn fullscreen(
+pub fn fullscreen<P>(
     dev: &Device,
     cmd: VkCommandBuffer,
     pipeline: VkPipeline,
     layout: VkPipelineLayout,
     color: &VkRenderingAttachmentInfo,
     extent: VkExtent2D,
-    push: &PostPush,
+    push: &P,
     extra: &mut dyn FnMut(VkCommandBuffer),
 ) {
+    const { assert!(size_of::<P>() <= PUSH_BYTES as usize, "push constants beyond the guaranteed 128 bytes") };
     let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent };
     let rendering = VkRenderingInfo {
         s_type: ST_RENDERING_INFO,
@@ -139,13 +180,13 @@ pub fn fullscreen(
     let viewport = VkViewport { x: 0.0, y: 0.0, width: extent.width as f32, height: extent.height as f32, min_depth: 0.0, max_depth: 1.0 };
     // SAFETY: `cmd` is recording outside a rendering instance; the pipeline renders one colour
     // attachment of `color`'s format with no depth; the global set is bound with `layout`; the
-    // push range covers `PostPush`.
+    // push range covers `P` (at most 128 bytes: `PostPush` or `TonemapPush`).
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
-        (dev.fns.cmd_push_constants)(cmd, layout, PUSH_STAGES, 0, size_of::<PostPush>() as u32, push as *const PostPush as *const c_void);
+        (dev.fns.cmd_push_constants)(cmd, layout, PUSH_STAGES, 0, size_of::<P>() as u32, push as *const P as *const c_void);
         (dev.fns.cmd_draw)(cmd, 3, 1, 0, 0);
     }
     extra(cmd);
@@ -164,6 +205,7 @@ pub fn record_post_pass(
     res: &FrameRes,
     pipelines: &FramePipelines,
     env: &Environment,
+    textures: &crate::overlay::Textures,
     frame_address: u64,
     extra: &mut dyn FnMut(VkCommandBuffer),
 ) {
@@ -201,9 +243,26 @@ pub fn record_post_pass(
             fullscreen(dev, cmd, pipelines.bloom_up, layout, &out, bloom_level_size(extent, i as u32 - 1), &pc, none);
         }
         FramePass::Tonemap => {
-            let blur = if n > 1 { res.blurs[0] } else { res.levels[0] };
-            let intensity = b.intensity.max(0.0) / n as f32;
-            let pc = push(slot(res.hdr), slot(blur), extent, 0, [intensity, 0.0, 0.0, 0.0]);
+            let (src2, bloom_intensity) = if n > 0 {
+                let blur = if n > 1 { res.blurs[0] } else { res.levels[0] };
+                (slot(blur), b.intensity.max(0.0) / n as f32)
+            } else {
+                (NO_TEXTURE, 0.0) // grading or SSAO without bloom
+            };
+            let mode = PostMode { bloom_levels: res.bloom_levels, fxaa: res.fxaa, grading: env.grading.active(), ssao: res.ssao.is_some() };
+            let (steps, lut) = grading_steps(env, textures, mode);
+            let pc = TonemapPush {
+                frame: frame_address,
+                src: slot(res.hdr),
+                src2,
+                texel: [1.0 / extent.width as f32, 1.0 / extent.height as f32],
+                steps,
+                lut,
+                ao: if res.ssao.is_some() { slot(res.ao) } else { NO_TEXTURE },
+                bloom_intensity,
+                pad: [0; 2],
+                grade: grading_data(&env.grading),
+            };
             let target = if res.fxaa { res.ldr } else { res.out };
             let out = g.color_attachment(p, target, [0.0; 4]);
             fullscreen(dev, cmd, pipelines.composite, layout, &out, extent, &pc, extra);
@@ -215,6 +274,94 @@ pub fn record_post_pass(
         }
         other => debug_assert!(false, "not a post pass: {other:?}"),
     }
+}
+
+/// Grading step bits (`TonemapPush::steps`, `GRADE_*` in `shaders/composite.frag`; the others
+/// come from [`GradingSettings::steps`]).
+pub const GRADE_LUT: u32 = 16;
+/// The LUT texture is `Rgba8Srgb` (the sampler decoded it: encode again).
+pub const GRADE_LUT_SRGB: u32 = 128;
+
+/// LMS gains of a white balance (the model of Unity's post stack): the white point moves along
+/// the daylight locus by `temperature` (− bluer, + more amber: the image is corrected the other
+/// way round, so + warms it) and off it by `tint` (+ a greener white point: the image turns
+/// magenta), and each cone response is scaled to map that white to D65.
+pub fn white_balance(temperature: f32, tint: f32) -> [f32; 3] {
+    let (t1, t2) = (temperature as f64, tint as f64);
+    let x = 0.31271 - t1 * if t1 < 0.0 { 0.1 } else { 0.05 };
+    let standard_y = 2.87 * x - 3.0 * x * x - 0.275_095_07;
+    let y = standard_y + t2 * 0.05;
+    let lms = |x: f64, y: f64| {
+        let (big_x, big_y, big_z) = (x / y, 1.0, (1.0 - x - y) / y);
+        [
+            0.7328 * big_x + 0.4296 * big_y - 0.1624 * big_z,
+            -0.7036 * big_x + 1.6975 * big_y + 0.0061 * big_z,
+            0.0030 * big_x + 0.0136 * big_y + 0.9834 * big_z,
+        ]
+    };
+    let d65 = [0.949_237, 1.035_42, 1.087_28];
+    let w = lms(x, y);
+    [(d65[0] / w[0]) as f32, (d65[1] / w[1]) as f32, (d65[2] / w[2]) as f32]
+}
+
+/// The grading numbers of the frame data: balance (+ contrast), lift (+ saturation),
+/// 1 / gamma (+ vibrance), gain (+ LUT strength), effects (vignette, radius, grain, unused).
+pub fn grading_data(g: &GradingSettings) -> [[f32; 4]; 5] {
+    let wb = white_balance(g.temperature.clamp(-1.0, 1.0), g.tint.clamp(-1.0, 1.0));
+    let inv_gamma = g.gamma.map(|v| 1.0 / v.max(1e-3));
+    [
+        [wb[0], wb[1], wb[2], g.contrast.max(0.0)],
+        [g.lift[0], g.lift[1], g.lift[2], g.saturation.max(0.0)],
+        [inv_gamma[0], inv_gamma[1], inv_gamma[2], g.vibrance],
+        [g.gain[0].max(0.0), g.gain[1].max(0.0), g.gain[2].max(0.0), g.lut_strength.clamp(0.0, 1.0)],
+        [g.vignette.clamp(0.0, 1.0), g.vignette_radius.clamp(0.0, 0.99), g.grain.max(0.0), 0.0],
+    ]
+}
+
+/// The grading steps a frame runs (none unless it grades) with the LUT's size in bits 16..24,
+/// and the LUT's slot.
+pub fn grading_steps(env: &Environment, textures: &crate::overlay::Textures, mode: PostMode) -> (u32, u32) {
+    let mut lut = crate::graph::NO_SLOT;
+    if !mode.grading {
+        return (0, lut);
+    }
+    let mut steps = env.grading.steps();
+    match env.grading.lut.and_then(|id| textures.map.get(&id.0)) {
+        Some(t) if steps & GRADE_LUT != 0 => {
+            lut = t.slot;
+            steps |= t.height << 16;
+            if t.format == crate::TextureFormat::Rgba8Srgb {
+                steps |= GRADE_LUT_SRGB;
+            }
+        }
+        _ => steps &= !GRADE_LUT,
+    }
+    (steps, lut)
+}
+
+/// Check the grading LUT, if one is set: a live `N² × N` RGBA8 texture.
+pub fn check_lut(env: &Environment, textures: &crate::overlay::Textures) -> Result<(), crate::GpuError> {
+    let g = &env.grading;
+    let Some(id) = g.lut.filter(|_| g.enabled) else { return Ok(()) };
+    let Some(t) = textures.map.get(&id.0) else {
+        return Err(crate::GpuError::unknown(crate::IdKind::Texture, id.0, " (grading LUT)"));
+    };
+    let n = t.height;
+    let rgba = matches!(t.format, crate::TextureFormat::Rgba8Unorm | crate::TextureFormat::Rgba8Srgb);
+    if !rgba || !(2..=crate::MAX_LUT_SIZE).contains(&n) || t.width != n * n {
+        return Err(crate::GpuError::rejected(
+            crate::ErrorReason::BadLut { width: t.width, height: t.height },
+            format!(
+                "grading LUT texture {} is {}x{} {:?}; a 3D LUT is an RGBA8 strip N*N x N with N 2..={}",
+                id.0,
+                t.width,
+                t.height,
+                t.format,
+                crate::MAX_LUT_SIZE
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -251,6 +398,52 @@ mod tests {
         env.bloom.enabled = false;
         env.fxaa = true;
         let m = PostMode::of(&env);
-        assert!(!m.bloom() && !m.direct());
+        assert!(!m.bloom() && !m.direct() && !m.hdr());
+        env.fxaa = false;
+        env.grading.enabled = true;
+        assert!(PostMode::of(&env).direct(), "neutral grading adds no pass");
+        env.grading.vignette = 0.3;
+        let m = PostMode::of(&env);
+        assert!(m.grading && m.hdr() && !m.direct());
+    }
+
+    #[test]
+    fn white_balance_is_neutral_at_zero_and_warms_with_temperature() {
+        let g = white_balance(0.0, 0.0);
+        for c in g {
+            assert!((c - 1.0).abs() < 2e-3, "{g:?}");
+        }
+        // Grey through the shader's LMS matrices (shaders/composite.frag).
+        let apply = |wb: [f32; 3]| -> [f32; 3] {
+            let rgb = [0.5f32, 0.5, 0.5];
+            let to_lms = [
+                [3.90405e-1, 5.49941e-1, 8.92632e-3],
+                [7.08416e-2, 9.63172e-1, 1.35775e-3],
+                [2.31082e-2, 1.28021e-1, 9.36245e-1],
+            ];
+            let to_rgb = [[2.85847, -1.62879, -2.48910e-2], [-2.10182e-1, 1.15820, 3.24281e-4], [-4.18120e-2, -1.18169e-1, 1.06867]];
+            let lms: [f32; 3] = std::array::from_fn(|r| (0..3).map(|k| to_lms[r][k] * rgb[k]).sum::<f32>() * wb[r]);
+            std::array::from_fn(|r| (0..3).map(|k| to_rgb[r][k] * lms[k]).sum())
+        };
+        let warm = apply(white_balance(0.5, 0.0));
+        assert!(warm[0] > warm[2] + 0.02, "warmer: more red than blue {warm:?}");
+        let cool = apply(white_balance(-0.5, 0.0));
+        assert!(cool[2] > cool[0] + 0.02, "cooler {cool:?}");
+        let magenta = apply(white_balance(0.0, 0.5));
+        assert!(magenta[1] < magenta[0] && magenta[1] < magenta[2], "+tint is magenta {magenta:?}");
+    }
+
+    #[test]
+    fn grading_steps_are_neutral_by_default() {
+        let mut g = GradingSettings::default();
+        assert_eq!(g.steps(), 0);
+        g.enabled = true;
+        assert!(!g.active());
+        g.lut_strength = 0.5; // no LUT: still neutral
+        assert!(!g.active());
+        g.gamma = [1.0, 1.1, 1.0];
+        assert_eq!(g.steps(), 8 | 256, "lift/gamma/gain, and the gamma power");
+        let d = grading_data(&g);
+        assert!((d[2][1] - 1.0 / 1.1).abs() < 1e-6);
     }
 }

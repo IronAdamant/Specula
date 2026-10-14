@@ -101,6 +101,14 @@ fn warm_frames_do_not_allocate() {
     environment.bloom.enabled = true;
     environment.sky.enabled = true;
     environment.fog.enabled = true;
+    // Grading (every step, with a LUT) and SSAO.
+    let lut_pixels: Vec<u8> = (0..4 * 4 * 4).flat_map(|i| [(i % 4 * 85) as u8, (i / 16 * 85) as u8, (i / 4 % 4 * 85) as u8, 255]).collect();
+    let lut = gpu.upload_texture(16, 4, TextureFormat::Rgba8Unorm, &lut_pixels).unwrap();
+    let g = &mut environment.grading;
+    (g.enabled, g.temperature, g.contrast, g.vibrance, g.lift, g.lut, g.vignette, g.grain) =
+        (true, -0.2, 1.1, -0.3, [0.0, 0.0, 0.02], Some(lut), 0.3, 0.2);
+    environment.ssao.enabled = true;
+    gpu.mark_warm();
     let frame = FrameDesc {
         view_proj,
         clear_color: [0.1, 0.1, 0.2, 1.0],
@@ -126,12 +134,14 @@ fn warm_frames_do_not_allocate() {
     assert_eq!(n, 0, "warm frames allocate");
     assert!(!stats.graph.recompiled, "an unchanged frame reuses the compiled graph");
     assert_eq!(stats.graph.compiles, compiles, "no recompiles while warm");
+    assert_eq!(stats.pipelines.created_after_warm, 0, "every pipeline was prebuilt: {:?}", stats.pipelines);
     let graph = gpu.last_graph().expect("a frame was rendered");
     assert_eq!(stats.graph.barriers as usize, graph.barrier_count());
     assert!(graph.passes.iter().any(|p| p.name == "overlay" && p.inline), "{graph}");
     gpu.destroy_target(target);
     gpu.destroy_texture(texture);
     gpu.destroy_texture(material);
+    gpu.destroy_texture(lut);
     gpu.destroy_mesh(mesh);
     gpu.destroy_mesh(posed);
     let errors = validation_errors(test, gpu);
