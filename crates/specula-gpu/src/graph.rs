@@ -11,19 +11,28 @@
 //! # A frame, step by step
 //!
 //! ```text
+//! // `completed`: the newest pool submission number known finished on the GPU (0 at start).
+//! pool.collect(dev, descriptors, completed);       // free replaced / stale images no frame uses
 //! g.begin();                                       // forget last frame's declaration (keeps storage)
 //! let out = g.import_image("target", fmt, w, h, Prior::Discard { after: COPY }, Final::TransferSrc);
 //! let depth = g.transient("depth", ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets));
 //! g.pass("scene", FramePass::Scene).color(out, Load::Clear).depth(depth, Load::Clear);
-//! g.prepare(dev, descriptors, pool, frame_no)?;    // compile if changed, find/create transients
-//! g.bind_image(out, image, view);                  // imported handles, every frame
-//! for p in 0..g.pass_count() {
+//! g.prepare(dev, descriptors, pool)?;              // compile if changed, find/create transients
+//! g.bind_image(out, image, view);                  // imported handles, every frame, after prepare
+//! for p in 0..g.pass_count() {                     // (record into cmd)
 //!     g.barriers(dev, cmd, p);                     // everything pass p needs, in one vkCmdPipelineBarrier2
 //!     match g.tag(p) { FramePass::Scene => record_scene(…), … }
 //! }
 //! g.finish(dev, cmd);                              // final transitions (present, readback)
-//! pool.note_used(&g, frame_no);                    // after the submit
+//! // submit cmd, then:
+//! let n = pool.note_used(&g);                      // this submission's number
+//! // once its fence signals (offscreen: right away; window: when the slot is reused):
+//! completed = completed.max(n);
 //! ```
+//!
+//! No `collect` may run between `prepare` and `note_used` (the frame's images must stay alive).
+//! The frame code in `render.rs` (`declare_frame`, `prepare_graph`, `record_frame`) and its two
+//! callers (`GpuInner::render`, `Window::present`) follow exactly this.
 //!
 //! # Accesses
 //!
@@ -379,6 +388,9 @@ pub enum GraphError {
     SizeMismatch { pass: &'static str, resource: &'static str, width: u32, height: u32, expected: (u32, u32) },
     /// `pass` declares `resource` twice.
     DuplicateUse { pass: &'static str, resource: &'static str },
+    /// Two transients of one owner (or two shared ones) are named `resource`: they would get the
+    /// same pool image.
+    DuplicateName { resource: &'static str },
     /// `access` doesn't apply to `resource` (e.g. a buffer as an attachment).
     WrongAccess { pass: &'static str, resource: &'static str, access: Access },
     /// A resource id that this declaration doesn't have (from another graph or an earlier frame).
@@ -412,6 +424,7 @@ impl fmt::Display for GraphError {
                 expected.0, expected.1
             ),
             GraphError::DuplicateUse { pass, resource } => write!(f, "pass '{pass}' declares '{resource}' twice"),
+            GraphError::DuplicateName { resource } => write!(f, "two transients are named '{resource}' (they would share one image)"),
             GraphError::WrongAccess { pass, resource, access } => write!(f, "pass '{pass}': {access:?} doesn't apply to '{resource}'"),
             GraphError::UnknownResource { pass, index } => write!(f, "pass '{pass}' uses resource #{index}, which this graph doesn't declare"),
             GraphError::InlineNeedsBarrier { pass, resource } => {
@@ -718,7 +731,13 @@ impl<T: Copy + PartialEq> Plan<T> {
         check("passes", decl.passes.len(), MAX_GRAPH_PASSES)?;
         check("resources", decl.resources.len(), MAX_GRAPH_RESOURCES)?;
         check("uses", decl.uses.len(), MAX_GRAPH_USES)?;
-        for r in &decl.resources {
+        for (i, r) in decl.resources.iter().enumerate() {
+            if let Kind::Transient { shared, .. } = r.kind {
+                let clash = decl.resources[..i].iter().any(|o| matches!(o.kind, Kind::Transient { shared: s, .. } if s == shared) && o.name == r.name);
+                if clash {
+                    return Err(GraphError::DuplicateName { resource: r.name });
+                }
+            }
             let bad = match r.kind {
                 Kind::Transient { desc, .. } => {
                     desc.width == 0 || desc.height == 0 || desc.layers == 0 || desc.layers as usize > MAX_LAYERS
@@ -1266,6 +1285,12 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
                 Kind::Buffer { .. } => {}
             }
         }
+        // Every transient was found or created: only now retire the images they replace.
+        for (i, r) in self.plan.decl.resources.iter().enumerate() {
+            if let Kind::Transient { .. } = r.kind {
+                pool.commit(self.bound[i].entry);
+            }
+        }
         Ok(())
     }
 
@@ -1449,6 +1474,9 @@ pub struct TransientPool {
     owners: Vec<(u32, u64)>,
     /// Frames submitted (all graphs).
     submissions: u64,
+    /// Tests: fail the creation after this many more succeed.
+    #[cfg(test)]
+    pub fail_creates: Option<u32>,
 }
 
 impl TransientPool {
@@ -1468,21 +1496,33 @@ impl TransientPool {
     ) -> Result<usize, GpuError> {
         let same_name = |e: &Entry| e.owner == owner && (ptr::eq(e.name, name) || e.name == name);
         let found = self.entries.iter().position(|e| e.desc == desc && e.usage == usage && same_name(e));
-        let i = match found {
-            Some(i) if !self.entries[i].replaced => return Ok(i),
-            Some(i) => i, // wanted again (e.g. a window resized back) before it was freed
+        match found {
+            Some(i) => Ok(i),
             None => {
+                #[cfg(test)]
+                if self.fail_creates == Some(0) {
+                    return Err(GpuError::new("injected transient creation failure"));
+                } else if let Some(n) = self.fail_creates.as_mut() {
+                    *n -= 1;
+                }
                 self.entries.push(create_entry(dev, descriptors, owner, name, desc, usage)?);
-                self.entries.len() - 1
+                Ok(self.entries.len() - 1)
             }
-        };
-        // Every other image of this owner and name is now replaced.
+        }
+    }
+
+    /// Entry `i` is what its owner and name stand for now: every other image of that owner and
+    /// name is replaced (freed once idle), and `i` is not (an image wanted again, e.g. a window
+    /// resized back, before it was freed). Called only once a whole frame's transients were
+    /// found, so a failed frame never retires an image that is still in use (or still bound in a
+    /// descriptor, like the shadow map).
+    fn commit(&mut self, i: usize) {
+        let (owner, name) = (self.entries[i].owner, self.entries[i].name);
         for (k, e) in self.entries.iter_mut().enumerate() {
-            if same_name(e) {
+            if e.owner == owner && (ptr::eq(e.name, name) || e.name == name) {
                 e.replaced = k != i;
             }
         }
-        Ok(i)
     }
 
     /// `graph`'s frame was submitted: remember when and how its transients were last used.
@@ -1541,6 +1581,12 @@ impl TransientPool {
             }
         }
         self.owners.retain(|o| o.0 != owner);
+    }
+
+    /// An image with `view` as one of its views is alive.
+    #[cfg(test)]
+    pub fn has_view(&self, view: VkImageView) -> bool {
+        self.entries.iter().any(|e| e.bound.view == view || e.bound.array_view == view)
     }
 
     /// Free everything (the device is idle).
@@ -1641,6 +1687,11 @@ fn destroy_entry(dev: &Device, descriptors: &mut Descriptors, e: Entry) {
     dev.destroy_image(&e.image);
     if e.bound.slot != NO_SLOT {
         descriptors.free_slot(e.bound.slot);
+    }
+    // Binding 0 points at a view that no longer exists: forget it, so the next frame with shadows
+    // rewrites it even if the driver hands the new view the same handle.
+    if e.bound.array_view != VK_NULL_HANDLE && descriptors.shadow_view == e.bound.array_view {
+        descriptors.shadow_view = VK_NULL_HANDLE;
     }
 }
 
@@ -1821,6 +1872,19 @@ mod tests {
         g.begin();
         g.transient("z", ImageDesc::color(LDR, 0, 4, MemoryKind::PostTargets));
         assert_eq!(plan(&g).err(), Some(GraphError::BadDesc { resource: "z" }));
+
+        // Same name and description: one pool image for two resources (garbage sampling).
+        let (a, _, out) = t(&mut g);
+        let a2 = g.transient("a", ImageDesc::color(LDR, W, H, MemoryKind::PostTargets));
+        g.pass("scene", P::Scene).color(a, Load::Clear).color(a2, Load::Clear);
+        g.pass("fxaa", P::Fxaa).sampled(a).sampled(a2).color(out, Load::Clear);
+        assert_eq!(plan(&g).err(), Some(GraphError::DuplicateName { resource: "a" }));
+        // A shared and a private transient may share a name (different owners).
+        let (a, _, out) = t(&mut g);
+        let s = g.shared("a", ImageDesc::color(LDR, W, H, MemoryKind::PostTargets));
+        g.pass("scene", P::Scene).color(a, Load::Clear).color(s, Load::Clear);
+        g.pass("fxaa", P::Fxaa).sampled(a).sampled(s).color(out, Load::Clear);
+        assert!(plan(&g).is_ok());
 
         // Inside a GpuError: machine-readable reason plus words.
         let e = graph_error(GraphError::ReadBeforeWrite { pass: "fxaa", resource: "a" });
