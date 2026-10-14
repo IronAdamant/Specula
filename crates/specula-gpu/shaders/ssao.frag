@@ -2,9 +2,12 @@
 // Screen-space ambient occlusion (src/ssao.rs): McGuire's Scalable Ambient Obscurance estimator
 // on the scene's depth (src, full resolution; this target is params.w times smaller), with the
 // normal reconstructed from depth and the sample spiral rotated and scaled per pixel by
-// interleaved gradient noise (deterministic). texel: 1 / the depth's size. mode: samples (bits 0..7), reversed Z
-// (bit 8). params: radius (m), intensity, depth pixels per metre at a view depth of 1 m, depth
-// pixels per target pixel. Out: r = ambient visibility (1 = open), g = view depth (m; FAR = sky).
+// interleaved gradient noise (deterministic). texel: 1 / the depth's size. mode: samples (bits
+// 0..7), reversed Z (bit 8). params: radius (m), intensity, depth pixels per metre (at a view
+// depth of 1 m for perspective; everywhere for orthographic), depth pixels per target pixel.
+// pad: 0 for a perspective projection; for an orthographic one, the float bits of NDC depth per
+// metre. Out: r = ambient visibility (1 = open), g = view depth (m from the camera, or from the
+// near plane for orthographic; FAR = sky).
 // Compile with shaders/build.sh.
 #include "post.glsl"
 
@@ -18,14 +21,19 @@ float ign(vec2 p) {
 
 ivec2 g_size;
 bool g_reverse;
+float g_ortho; // NDC depth per metre of an orthographic projection, 0 for perspective
 
 float depth_at(ivec2 p) {
     return texelFetch(textures[pc.src], clamp(p, ivec2(0), g_size - 1), 0).r;
 }
 
-// View depth (clip w, metres in front of the camera) of the point at `ndc` with depth `d`: the
-// homogeneous point inv_view_proj * (ndc, d, 1) has w = 1 / clip w, so only its last row is needed.
+// View depth in metres of the point at `ndc` with depth `d`. Perspective: clip w (the homogeneous
+// point inv_view_proj * (ndc, d, 1) has w = 1 / clip w, so only its last row is needed).
+// Orthographic: clip w is 1 everywhere; depth is linear, so the distance from the near plane.
 float view_depth_at(Frame f, vec2 ndc, float d) {
+    if (g_ortho > 0.0) {
+        return abs(d - (g_reverse ? 1.0 : 0.0)) / g_ortho;
+    }
     mat4 m = f.inv_view_proj;
     return 1.0 / (m[0][3] * ndc.x + m[1][3] * ndc.y + m[2][3] * d + m[3][3]);
 }
@@ -43,6 +51,7 @@ vec3 world_at(ivec2 p, float d) {
 void main() {
     g_size = textureSize(textures[pc.src], 0);
     g_reverse = (pc.mode & 256u) != 0u;
+    g_ortho = uintBitsToFloat(pc.pad);
     ivec2 own = ivec2(gl_FragCoord.xy); // this target's pixel (picks the pattern)
     ivec2 c = ivec2(gl_FragCoord.xy * pc.params.w); // the depth pixel under its centre
     float d = depth_at(c);
@@ -65,13 +74,15 @@ void main() {
         return;
     }
     n /= len;
-    if (dot(n, pc.frame.camera_time.xyz - p) < 0.0) {
+    // Towards the camera: the point of this pixel's ray on the near plane (any projection).
+    if (dot(n, world_at(c, g_reverse ? 1.0 : 0.0) - p) < 0.0) {
         n = -n;
     }
 
     float radius = pc.params.x;
     float r2 = radius * radius;
-    float screen = min(radius * pc.params.z / max(z, 1e-4), 128.0); // sample disc radius in depth pixels
+    // Sample disc radius in depth pixels (orthographic: the same at every depth).
+    float screen = min(radius * pc.params.z / (g_ortho > 0.0 ? 1.0 : max(z, 1e-4)), 128.0);
     if (screen < 1.0) {
         out_color = vec4(1.0, z, 0.0, 1.0);
         return;

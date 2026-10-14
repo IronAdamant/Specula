@@ -2,7 +2,9 @@
 // SSAO blur (src/ssao.rs), one direction of a separable 9-tap Gaussian (mode 0: across, 1: down)
 // over src (r = visibility, g = view depth). Each tap is weighted by how far its depth lies from
 // the plane through this pixel (the depth slope along the blur, from the two neighbours), so
-// occlusion doesn't bleed across depth edges while slanted surfaces still blur fully.
+// occlusion doesn't bleed across depth edges while slanted surfaces still blur fully. The
+// tolerance is 2% of the depth, or params.x metres when set (orthographic: depth is measured
+// from the near plane, so a relative tolerance means nothing).
 // Compile with shaders/build.sh.
 #include "post.glsl"
 
@@ -24,7 +26,7 @@ void main() {
     float zr = texelFetch(textures[pc.src], clamp(c + axis, ivec2(0), size - 1), 0).g;
     // The slope of the nearer side (a silhouette's far side would tilt the plane).
     float slope = abs(zr - z) < abs(z - zl) ? zr - z : z - zl;
-    float tolerance = 0.02 * z;
+    float tolerance = pc.params.x > 0.0 ? pc.params.x : 0.02 * z;
     float sum = center.r * WEIGHTS[0];
     float weight = WEIGHTS[0];
     for (int i = 1; i <= 4; i++) {

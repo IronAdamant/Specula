@@ -1,6 +1,8 @@
 //! Grading LUTs: the world names a PNG strip under the assets root (`world_env` `grading.lut`);
-//! the engine checks it before the change is committed, loads it once, uploads it as a texture
-//! and points the frame's grading at it.
+//! the engine checks it before the change is committed (and keeps what it decoded), uploads it
+//! as a texture and points the frame's grading at it. The file in use is checked for changes once
+//! a second; a LUT that can't be loaded is reported as a structured warning (`sight_frame`,
+//! `perf_frame`, `world_env`) and retried when its file changes or `world_env` names it again.
 //!
 //! A LUT strip is `N² × N` pixels (N = 2..=64; 32 → 1024 × 32): N slices of N × N side by side,
 //! red across each slice, green down the rows, blue from slice to slice — the layout Unreal
@@ -10,8 +12,10 @@
 
 use crate::effects::AssetPath;
 use crate::world::{Env, WorldError};
+use specula_core::Json;
 use specula_gpu::{FrameDesc, Gpu, TextureFormat, TextureId, MAX_LUT_SIZE};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Largest LUT file read (a 64³ strip is about 1 MB as PNG at worst).
 const MAX_FILE_BYTES: u64 = 16 << 20;
@@ -48,79 +52,146 @@ pub fn load(root: &Path, path: &AssetPath) -> Result<Lut, WorldError> {
         return Err(lut_error("lut_invalid", path, format!("{} is {} bytes; a LUT file is at most {MAX_FILE_BYTES}", path.as_str(), meta.len())));
     }
     let bytes = std::fs::read(&full).map_err(|e| lut_error("lut_not_found", path, format!("{}: {e}", path.as_str())))?;
-    let image = specula_core::png::decode(&bytes).map_err(|e| lut_error("lut_invalid", path, format!("{}: {e}", path.as_str())))?;
-    let n = image.height;
-    if !(2..=MAX_LUT_SIZE).contains(&n) || image.width != n * n {
-        return Err(lut_error(
-            "lut_invalid",
-            path,
-            format!(
-                "{} is {}x{}; a 3D LUT strip is N*N x N with N 2..={MAX_LUT_SIZE} (32: 1024x32)",
-                path.as_str(),
-                image.width,
-                image.height
-            ),
-        )
-        .with("width", image.width)
-        .with("height", image.height));
-    }
+    let invalid = |e: String| lut_error("lut_invalid", path, format!("{}: {e}", path.as_str()));
+    let (width, height) = header_size(&bytes).ok_or_else(|| invalid("not a PNG file".into()))?;
+    check_size(path, width, height)?;
+    let image = specula_core::png::decode(&bytes).map_err(|e| invalid(e.to_string()))?;
+    check_size(path, image.width, image.height)?;
     Ok(Lut { width: image.width, height: image.height, rgba: image.rgba })
 }
 
-/// The engine's loaded LUT (one at a time: the world has one grading).
+/// The strip's size from the PNG header, before anything is decoded: a small file can claim a
+/// huge image (a 1 MB PNG of zeros decodes to gigabytes).
+fn header_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    (bytes.len() >= 24 && bytes[..8] == *b"\x89PNG\r\n\x1a\n" && bytes[12..16] == *b"IHDR").then(|| (be(16), be(20)))
+}
+
+fn check_size(path: &AssetPath, width: u32, height: u32) -> Result<(), WorldError> {
+    let n = height;
+    if (2..=MAX_LUT_SIZE).contains(&n) && width == n * n {
+        return Ok(());
+    }
+    Err(lut_error(
+        "lut_invalid",
+        path,
+        format!("{} is {width}x{height}; a 3D LUT strip is N*N x N with N 2..={MAX_LUT_SIZE} (32: 1024x32)", path.as_str()),
+    )
+    .with("width", width)
+    .with("height", height))
+}
+
+/// What identifies a version of a file: modification time and length (`None`: unreadable).
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(root: &Path, path: &AssetPath) -> Stamp {
+    let meta = std::fs::metadata(root.join(path.as_str())).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// How often the file in use is checked for changes.
+const POLL: Duration = Duration::from_secs(1);
+
+enum State {
+    Loaded(TextureId),
+    Failed(WorldError),
+}
+
+/// The LUT the frames use: which file, which version of it, and the result.
+struct Current {
+    path: AssetPath,
+    stamp: Stamp,
+    state: State,
+}
+
+/// The engine's LUT (one at a time: the world has one grading). Keyed on the path and the file's
+/// version (modification time + length), so a LUT edited in place is picked up within a second,
+/// and a LUT that failed is retried when its file changes or a `world_env` names it again.
 pub struct Luts {
     root: PathBuf,
-    loaded: Option<(AssetPath, TextureId)>,
-    /// A path that failed to load (reported once, not retried every frame).
-    failed: Option<AssetPath>,
+    current: Option<Current>,
+    /// Decoded by `check` (a `world_env` naming it), uploaded by the next frame: one decode.
+    pending: Option<(AssetPath, Stamp, Lut)>,
+    last_poll: Instant,
 }
 
 impl Luts {
     pub fn new(root: &Path) -> Luts {
-        Luts { root: root.to_path_buf(), loaded: None, failed: None }
+        Luts { root: root.to_path_buf(), current: None, pending: None, last_poll: Instant::now() }
     }
 
-    /// Check a LUT a `world_env` call names before the change is committed.
-    pub fn check(&self, path: &AssetPath) -> Result<(), WorldError> {
+    /// Check a LUT a `world_env` call names before the change is committed. The decoded LUT is
+    /// kept for the next frame (naming the same path again reloads it: an explicit retry).
+    pub fn check(&mut self, path: &AssetPath) -> Result<(), WorldError> {
         if path.is_none() {
             return Ok(());
         }
-        load(&self.root, path).map(|_| ())
+        let version = stamp(&self.root, path);
+        let lut = load(&self.root, path)?;
+        self.pending = Some((*path, version, lut));
+        Ok(())
     }
 
-    /// Point `frame`'s grading at the texture of the world's LUT, loading it first if it changed
-    /// (and freeing the old one). A LUT that can't be loaded (a world file naming a missing file)
-    /// is reported once and the frame is graded without it.
+    /// Point `frame`'s grading at the texture of the world's LUT, loading it first if the path or
+    /// the file changed (and freeing the old texture). A LUT that can't be loaded (a world file or
+    /// a game naming a missing file, say) leaves the frame graded without it; [`Luts::warning`]
+    /// says why.
     pub fn apply(&mut self, gpu: &mut Gpu, env: &Env, frame: &mut FrameDesc) {
-        frame.environment.grading.lut = self.texture(gpu, &env.grading_lut);
+        let want = env.grading_lut;
+        if want.is_none() {
+            self.drop_current(gpu);
+            self.pending = None;
+        } else if let Some((path, version, lut)) = self.pending.take().filter(|(p, _, _)| *p == want) {
+            self.install(gpu, path, version, Ok(lut));
+        } else if self.current.as_ref().is_none_or(|c| c.path != want) {
+            self.reload(gpu, want);
+        } else if self.last_poll.elapsed() >= POLL {
+            self.last_poll = Instant::now();
+            let changed = self.current.as_ref().is_some_and(|c| c.stamp != stamp(&self.root, &want));
+            if changed {
+                self.reload(gpu, want);
+            }
+        }
+        frame.environment.grading.lut = match &self.current {
+            Some(Current { path, state: State::Loaded(id), .. }) if *path == want => Some(*id),
+            _ => None,
+        };
     }
 
-    fn texture(&mut self, gpu: &mut Gpu, want: &AssetPath) -> Option<TextureId> {
-        match self.loaded {
-            Some((path, id)) if path == *want => return Some(id),
-            Some((_, id)) => {
-                gpu.destroy_texture(id);
-                self.loaded = None;
-            }
-            None => {}
+    /// Why the world's LUT isn't applied, if it isn't (a structured error as JSON).
+    pub fn warning(&self, env: &Env) -> Option<Json> {
+        match &self.current {
+            Some(Current { path, state: State::Failed(e), .. }) if *path == env.grading_lut => Some(e.to_json()),
+            _ => None,
         }
-        if want.is_none() || self.failed == Some(*want) {
-            return None;
-        }
-        let uploaded = load(&self.root, want)
-            .map_err(|e| e.to_string())
-            .and_then(|lut| gpu.upload_texture(lut.width, lut.height, TextureFormat::Rgba8Unorm, &lut.rgba).map_err(|e| e.to_string()));
-        match uploaded {
-            Ok(id) => {
-                self.loaded = Some((*want, id));
-                self.failed = None;
-                Some(id)
-            }
+    }
+
+    fn reload(&mut self, gpu: &mut Gpu, path: AssetPath) {
+        let version = stamp(&self.root, &path);
+        let lut = load(&self.root, &path);
+        self.install(gpu, path, version, lut);
+    }
+
+    fn install(&mut self, gpu: &mut Gpu, path: AssetPath, version: Stamp, lut: Result<Lut, WorldError>) {
+        self.drop_current(gpu);
+        let uploaded = lut.and_then(|lut| {
+            gpu.upload_texture(lut.width, lut.height, TextureFormat::Rgba8Unorm, &lut.rgba)
+                .map_err(|e| lut_error("lut_upload_failed", &path, format!("{}: {e}", path.as_str())))
+        });
+        let state = match uploaded {
+            Ok(id) => State::Loaded(id),
             Err(e) => {
-                eprintln!("specula: grading LUT {}: {e} (grading without it)", want.as_str());
-                self.failed = Some(*want);
-                None
+                eprintln!("specula: grading LUT {}: {e} (grading without it)", path.as_str());
+                State::Failed(e)
             }
+        };
+        self.current = Some(Current { path, stamp: version, state });
+        self.last_poll = Instant::now();
+    }
+
+    fn drop_current(&mut self, gpu: &mut Gpu) {
+        if let Some(Current { state: State::Loaded(id), .. }) = self.current.take() {
+            gpu.destroy_texture(id);
         }
     }
 }
@@ -156,9 +227,39 @@ mod tests {
         assert_eq!((e.code, e.detail("field")), ("lut_not_found", Some(&specula_core::Json::from("grading.lut"))));
         std::fs::create_dir_all(root.join("luts/dir.png")).unwrap();
         assert_eq!(load(&root, &p("luts/dir.png")).unwrap_err().code, "lut_not_found", "a folder is not a LUT");
-        let luts = Luts::new(&root);
+        let mut luts = Luts::new(&root);
         assert!(luts.check(&AssetPath::NONE).is_ok());
         assert!(luts.check(&p("luts/id.png")).is_ok());
+        assert!(luts.pending.is_some(), "the checked LUT is kept for the next frame (decoded once)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_oversized_strip_is_refused_from_its_header() {
+        // A 1 MB file claiming a 16384 x 16384 image: refused before any decoding.
+        let root = scratch("huge");
+        let mut png = strip(2);
+        png[16..20].copy_from_slice(&16384u32.to_be_bytes());
+        png[20..24].copy_from_slice(&16384u32.to_be_bytes());
+        png.resize(1 << 20, 0);
+        std::fs::write(root.join("luts/huge.png"), png).unwrap();
+        let start = Instant::now();
+        let e = load(&root, &AssetPath::new("luts/huge.png").unwrap()).unwrap_err();
+        assert_eq!((e.code, e.detail("width")), ("lut_invalid", Some(&Json::from(16384u32))));
+        assert!(start.elapsed() < Duration::from_millis(500), "{:?}", start.elapsed());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_rewritten_in_place_has_a_new_version() {
+        let root = scratch("stamp");
+        let p = AssetPath::new("luts/id.png").unwrap();
+        assert_eq!(stamp(&root, &p), None, "missing");
+        std::fs::write(root.join("luts/id.png"), strip(4)).unwrap();
+        let first = stamp(&root, &p);
+        assert!(first.is_some());
+        std::fs::write(root.join("luts/id.png"), strip(8)).unwrap();
+        assert_ne!(stamp(&root, &p), first, "a different length is a different version");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

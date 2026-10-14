@@ -27,10 +27,11 @@
 //!
 //! # Frame passes
 //!
-//! `shadow` (sun shadow map, [`ShadowSettings`]) → `ssao` (opaque depth, occlusion, blur:
-//! [`SsaoSettings`]) → `scene` (forward, all materials, the sky [`SkySettings`], height fog
-//! [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`], colour grading
-//! [`GradingSettings`]) → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
+//! `shadow` (sun shadow map, [`ShadowSettings`]) → `scene` (forward, all materials, the sky
+//! [`SkySettings`], height fog [`FogSettings`]) → `ssao` (occlusion from the scene's depth and its
+//! two blur passes: [`SsaoSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`], the
+//! occlusion applied, colour grading [`GradingSettings`]) → `post_fxaa` ([`Environment::fxaa`]) →
+//! `overlay` ([`FrameDesc::overlay`]). Every feature is
 //! **off by default**, and each one off is specialized out of the shaders (or its pass skipped),
 //! so a frame without it renders exactly — bit for bit — what it rendered before the feature
 //! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
@@ -655,10 +656,11 @@ impl Default for FogSettings {
 /// value is neutral.
 ///
 /// Order (each step skipped when neutral): on the exposed scene light, before tone mapping —
-/// white balance (`temperature`, `tint`, in LMS cone space), `contrast` (in log space around
-/// mid grey 0.18), `saturation` and `vibrance` (around Rec. 709 luminance); then tone mapping
-/// (ACES when [`Environment::tonemap`], else a clamp); then on display values (0..1) —
-/// `lift` / `gamma` / `gain` (shadows / midtones / highlights per channel:
+/// white balance (`temperature`, `tint`, in LMS cone space), `contrast` (of the luminance, in
+/// log space around mid grey 0.18); then tone mapping (ACES when [`Environment::tonemap`], else a
+/// clamp); then on display values (0..1) — `saturation` and `vibrance` (around Rec. 709
+/// luminance; vibrance judges how saturated a colour is from the scene light, so a bright rune and
+/// dim stone are told apart), `lift` / `gamma` / `gain` (shadows / midtones / highlights per channel:
 /// `(gain · (x + lift · (1 − x)))^(1 / gamma)` on gamma-2 encoded values, close to the display's
 /// own encoding and cheap on small GPUs), the 3D `lut` (on exact sRGB values), `vignette`,
 /// `grain`.
@@ -765,9 +767,10 @@ impl GradingSettings {
 /// by default.
 ///
 /// Occlusion is estimated from the scene's depth at `resolution` × the frame's size (normals
-/// reconstructed from depth, `samples` per pixel on a per-pixel rotated spiral, a fixed 4×4
-/// interleaved pattern: deterministic), blurred 4×4 with depth-aware weights, and applied in the
-/// tonemap pass with a depth-aware upsample. It darkens **only the ambient light** (and the
+/// reconstructed from depth, `samples` per pixel on a spiral rotated and scaled per pixel by
+/// interleaved gradient noise: deterministic), blurred by a separable plane-aware Gaussian, and
+/// applied in the tonemap pass with a bilinear upsample. Perspective and orthographic projections
+/// both work. It darkens **only the ambient light** (and the
 /// ambient reflections) of `Lit` surfaces, which the scene pass reports per pixel; the sun, point
 /// lights and emission are untouched, so a lit face never goes grey. SSAO always takes the HDR
 /// post path (free when bloom or grading is on). Details and trade-offs: `src/ssao.rs`.

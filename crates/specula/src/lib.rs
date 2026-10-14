@@ -1168,6 +1168,12 @@ impl Engine {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
                     env.set("journal", Json::from(seq));
+                    // The world's LUT as the last frame found it (a world_env that names it
+                    // was checked above; one that doesn't may still carry a broken one).
+                    let named = patch.grading.and_then(|g| g.lut).is_some();
+                    if let Some(w) = self.luts.warning(self.world.env()).filter(|_| !named) {
+                        env.set("warnings", Json::arr([w]));
+                    }
                     ToolOutput::text(env.to_pretty())
                 }
                 Err(e) => world_error(&e),
@@ -1531,6 +1537,7 @@ impl Engine {
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
         let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame);
+        warnings.extend(self.luts.warning(self.world.env()));
 
         let rendered = {
             let _z = profile::zone("sight.render");
@@ -1673,6 +1680,8 @@ impl Engine {
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
             ("models", self.models_json()),
+            // Effects that can't apply (a grading LUT that failed to load), structured.
+            ("warnings", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
         ]);
         ToolOutput::text(out.to_pretty())
     }

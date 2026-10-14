@@ -90,12 +90,15 @@ void main() {
     vec4 scene = texture(textures[pc.src], v_uv);
     vec3 c = scene.rgb;
     if (pc.ao != 0xffffffffu) {
-        // SSAO: alpha is the fraction of this pixel's light that is ambient (src/ssao.rs). The
-        // occlusion (blurred depth-aware at its own resolution) is upsampled bilinearly: a
-        // depth-aware upsample here would read the full-resolution depth (+0.35 ms on the Intel
-        // iGPU at 1600x900) to sharpen an edge one occlusion texel wide.
+        // SSAO: alpha is the luminance of this pixel's ambient light (src/ssao.rs); the occlusion
+        // takes that part, as a fraction of the pixel's luminance. The occlusion (blurred
+        // depth-aware at its own resolution) is upsampled bilinearly: a depth-aware upsample here
+        // would read the full-resolution depth (+0.35 ms on the Intel iGPU at 1600x900) to
+        // sharpen an edge one occlusion texel wide.
         float visibility = textureLod(textures[pc.ao], v_uv, 0.0).r;
-        c *= 1.0 - (1.0 - visibility) * clamp(scene.a, 0.0, 1.0);
+        float y = luma(c);
+        float ambient = y > 1e-6 ? clamp(scene.a / y, 0.0, 1.0) : 0.0;
+        c *= 1.0 - (1.0 - visibility) * ambient;
     }
     if (pc.src2 != 0xffffffffu) {
         c += texture(textures[pc.src2], v_uv).rgb * pc.bloom;

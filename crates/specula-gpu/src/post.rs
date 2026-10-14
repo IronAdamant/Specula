@@ -14,7 +14,7 @@
 //! bit for bit).
 
 use crate::device::Device;
-use crate::render::{FrameGraph, FramePass, FramePipelines, FrameRes, PUSH_STAGES};
+use crate::render::{FrameGraph, FramePass, FramePipelines, FrameRes, PUSH_BYTES, PUSH_STAGES};
 use crate::vk::*;
 use crate::{Environment, GradingSettings};
 use std::ffi::c_void;
@@ -163,6 +163,7 @@ pub fn fullscreen<P>(
     push: &P,
     extra: &mut dyn FnMut(VkCommandBuffer),
 ) {
+    const { assert!(size_of::<P>() <= PUSH_BYTES as usize, "push constants beyond the guaranteed 128 bytes") };
     let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent };
     let rendering = VkRenderingInfo {
         s_type: ST_RENDERING_INFO,

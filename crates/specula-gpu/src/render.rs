@@ -76,14 +76,14 @@ pub const FEAT_HDR: u32 = 4;
 pub const FEAT_OPAQUE: u32 = 8;
 /// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh.frag`).
 pub const FEAT_BLENDED: u32 = 16;
-/// Screen-space ambient occlusion: the HDR scene's alpha carries the fraction of each pixel's
-/// light that is ambient (the tonemap pass scales that part by the occlusion); see `ssao.rs`.
+/// Screen-space ambient occlusion: the HDR scene's alpha carries the luminance of each pixel's
+/// ambient light (the tonemap pass scales that part by the occlusion); see `ssao.rs`.
 pub const FEAT_SSAO: u32 = 32;
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 
 /// Push constant bytes every pipeline layout reserves (the minimum every device supports).
-const PUSH_BYTES: u32 = 128;
+pub const PUSH_BYTES: u32 = 128;
 
 /// Push constants shared by both stages, set once per batch; must match the `Push` block in
 /// `shaders/mesh.*`. Far below the 128 bytes every device guarantees.
@@ -646,8 +646,9 @@ enum Blend {
     Off,
     /// dst = src + dst × (1 − src.a).
     Premultiplied,
-    /// Colour as `Premultiplied`; alpha (SSAO's ambient fraction) dst.a × (1 − src.a): what a
-    /// blended layer covers is less occludable.
+    /// Colour as `Premultiplied`; alpha (SSAO's ambient luminance) dst.a × (1 − src.a): the
+    /// ambient light behind a layer is attenuated exactly like the rest of the light behind it,
+    /// and the layer's own light adds none.
     PremultipliedKeepAlpha,
 }
 
@@ -1598,7 +1599,13 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
             }
             FramePass::Scene => {
                 let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
-                let clear = if res.post_hdr { hdr_clear(clear, env.tonemap) } else { clear };
+                // HDR alpha is SSAO's ambient luminance: the background has none.
+                let clear = if res.post_hdr {
+                    let c = hdr_clear(clear, env.tonemap);
+                    [c[0], c[1], c[2], 0.0]
+                } else {
+                    clear
+                };
                 stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
             }
             FramePass::Ssao | FramePass::SsaoBlur(_) => crate::ssao::record_pass(ctx, cmd, g, p, res),

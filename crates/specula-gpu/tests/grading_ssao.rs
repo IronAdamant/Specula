@@ -5,7 +5,8 @@ mod common;
 
 use common::*;
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, MeshId, Surface, TextureFormat, TextureId, Vertex,
+    AdapterPreference, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, Material, MeshId, Surface, TextureFormat, TextureId,
+    Vertex,
 };
 
 const W: u32 = 480;
@@ -76,12 +77,23 @@ impl Scene {
     }
 
     fn render_at(&self, gpu: &mut Gpu, env: Environment, name: &str, time_s: f32) -> Result<Vec<u8>, specula_gpu::GpuError> {
+        self.render_with(gpu, self.view_proj, &self.draws(), env, name, time_s)
+    }
+
+    fn render_with(
+        &self,
+        gpu: &mut Gpu,
+        view_proj: [f32; 16],
+        draws: &[DrawItem],
+        env: Environment,
+        name: &str,
+        time_s: f32,
+    ) -> Result<Vec<u8>, specula_gpu::GpuError> {
         let target = gpu.create_target(W, H).unwrap();
-        let draws = self.draws();
         let frame = FrameDesc {
-            view_proj: self.view_proj,
+            view_proj,
             clear_color: [0.04, 0.06, 0.13, 1.0],
-            draws: &draws,
+            draws,
             reverse_z: true,
             environment: env,
             time_s,
@@ -320,6 +332,95 @@ fn ssao_darkens_creases_not_open_surfaces() {
             e.grading.enabled = true;
             e.grading.contrast = 1.1;
             scene.render(&mut gpu, e, &format!("ssao_{res}_{samples}"));
+        }
+        check_clean(test, gpu);
+    });
+}
+
+/// Linear luminance of an sRGB pixel (tone mapping off: output = scene light, clamped).
+fn linear_luma(p: [u8; 4]) -> f32 {
+    let c = |k: usize| srgb_to_linear(p[k] as f32 / 255.0);
+    0.2126 * c(0) + 0.7152 * c(1) + 0.0722 * c(2)
+}
+
+#[test]
+fn ssao_under_a_blob_shadow_takes_the_same_share() {
+    // A blob shadow (black, premultiplied) over a crease darkens everything under it alike, so
+    // SSAO must take the same share of the light with or without it.
+    every_adapter("ssao_blob", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let mut env = scene.environment();
+        env.tonemap = false; // linear output: shares compare directly
+        env.ambient_intensity = 0.5;
+        env.sun_intensity = 0.2;
+        let mut on = env;
+        on.ssao.enabled = true;
+        let crease = [0.0, 0.04, 1.08];
+        let mut with_blob = scene.draws();
+        let mut blob = DrawItem::new(scene.ground, scale3([3.0, 1.0, 3.0], [0.0, 0.005, 1.3]), [0.0, 0.0, 0.0, 0.6]);
+        blob.material = Material::BlobShadow;
+        with_blob.push(blob);
+        let mut shares = Vec::new();
+        for (name, draws) in [("plain", scene.draws()), ("blob", with_blob)] {
+            let off_img = scene.render_with(&mut gpu, scene.view_proj, &draws, env, &format!("blob_{name}_off"), 0.0).unwrap();
+            let on_img = scene.render_with(&mut gpu, scene.view_proj, &draws, on, &format!("blob_{name}_on"), 0.0).unwrap();
+            let (a, b) = (scene.px(&off_img, crease), scene.px(&on_img, crease));
+            let share = linear_luma(b) / linear_luma(a).max(1e-6);
+            eprintln!("{test}: {name}: crease {a:?} -> {b:?}, keeps {share:.3}");
+            shares.push(share);
+        }
+        assert!(shares[0] < 0.9, "SSAO darkens the crease: {shares:?}");
+        assert!((shares[0] - shares[1]).abs() < 0.04, "a blob shadow doesn't change SSAO's share: {shares:?}");
+        check_clean(test, gpu);
+    });
+}
+
+/// Reversed-Z orthographic projection (depth 1 at `near`, 0 at `far`), Vulkan clip (y down).
+fn orthographic_vk_reverse_z(half_height: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    let mut m = [0.0; 16];
+    m[0] = 1.0 / (half_height * aspect);
+    m[5] = -1.0 / half_height;
+    m[10] = 1.0 / (far - near);
+    m[14] = far / (far - near);
+    m[15] = 1.0;
+    m
+}
+
+#[test]
+fn ssao_works_with_an_orthographic_camera() {
+    every_adapter("ssao_ortho", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let view = look_at_rh([6.0, 6.0, 9.0], [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]);
+        let view_proj = mul(&orthographic_vk_reverse_z(4.0, W as f32 / H as f32, 0.1, 60.0), &view);
+        let env = scene.environment();
+        let mut on = env;
+        on.ssao.enabled = true;
+        // A long low box whose ground crease shows on screen right behind the big cube's top
+        // edge, about 3.5 m further away: a blur that can't tell orthographic depths apart
+        // smears that crease onto the top.
+        let mut draws = scene.draws();
+        draws.push(DrawItem::new(scene.cube, scale3([2.4, 0.8, 0.8], [-2.2, 0.4, -4.85]), [0.6, 0.55, 0.5, 1.0]));
+        let off_img = scene.render_with(&mut gpu, view_proj, &draws, env, "ortho_off", 0.0).unwrap();
+        let on_img = scene.render_with(&mut gpu, view_proj, &draws, on, "ortho_on", 0.0).unwrap();
+        let px = |rgba: &[u8], p: V3| {
+            let (x, y) = project(&view_proj, p, W, H);
+            pixel(rgba, W, x as u32, y as u32)
+        };
+        for p in [[0.0, 0.04, 1.08], [1.08, 0.04, 0.0]] {
+            let (a, b) = (px(&off_img, p), px(&on_img, p));
+            eprintln!("{test}: crease {p:?} {a:?} -> {b:?}");
+            assert!(luma(b) * 100 < luma(a) * 90, "{p:?}: the crease loses ambient light {a:?} -> {b:?}");
+        }
+        // Open ground and the cube's top, including a few pixels inside its back edge, where the
+        // long box's crease shows right behind it on screen: the blur must not carry it across the
+        // depth edge (orthographic depth taken as 1 everywhere did: those pixels lost 8 levels).
+        // Within one occlusion texel of the edge the bilinear upsample still mixes (by design).
+        for p in [[-3.0, 0.01, 3.5], [3.5, 0.01, -2.0], [0.0, 2.0, 0.0], [-0.88, 2.0, 0.0], [-0.6, 2.0, -0.75], [0.0, 2.0, -0.75], [0.6, 2.0, -0.75]] {
+            let (a, b) = (px(&off_img, p), px(&on_img, p));
+            eprintln!("{test}: open {p:?} {a:?} -> {b:?}");
+            assert!(luma(a).abs_diff(luma(b)) <= 6, "{p:?}: open surfaces keep their light {a:?} -> {b:?}");
         }
         check_clean(test, gpu);
     });

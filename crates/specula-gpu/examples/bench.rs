@@ -474,10 +474,8 @@ fn parse_args() -> Result<Args, String> {
             "--softness" => args.softness = Some(value()?.parse().map_err(|_| format!("bad softness\n{USAGE}"))?),
             "--bloom-levels" => args.bloom_levels = Some(value()?.parse().map_err(|_| format!("bad levels\n{USAGE}"))?),
             "--with" => args.with = value()?.split(',').map(str::to_string).collect(),
-            "--ssao-res" => args.ssao_res = Some(value()?.parse().map_err(|_| format!("bad SSAO resolution
-{USAGE}"))?),
-            "--ssao-samples" => args.ssao_samples = Some(value()?.parse().map_err(|_| format!("bad SSAO samples
-{USAGE}"))?),
+            "--ssao-res" => args.ssao_res = Some(value()?.parse().map_err(|_| format!("bad SSAO resolution\n{USAGE}"))?),
+            "--ssao-samples" => args.ssao_samples = Some(value()?.parse().map_err(|_| format!("bad SSAO samples\n{USAGE}"))?),
             "--help" | "-h" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
         }

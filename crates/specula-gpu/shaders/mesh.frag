@@ -18,8 +18,8 @@ const bool OPAQUE = (FEATURES & 8u) != 0u;
 // The blended pipeline never draws Lit: leaving the Lit path out means nothing there reads the
 // vertex colour (see `tint`).
 const bool BLENDED = (FEATURES & 16u) != 0u;
-// Screen-space ambient occlusion (src/ssao.rs): Lit writes the fraction of its light that is
-// ambient into alpha (HDR targets only), for the tonemap pass to scale by the occlusion.
+// Screen-space ambient occlusion (src/ssao.rs): Lit writes the exposed luminance of its ambient
+// light into alpha (HDR targets only), for the tonemap pass to scale by the occlusion.
 const bool SSAO = (FEATURES & 32u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
@@ -260,8 +260,10 @@ vec4 shade_lit() {
         }
     }
     if (SSAO && HDR) {
+        // Alpha: the exposed luminance of the ambient part. Blended layers above scale it by
+        // what they leave visible (dst.a × (1 − src.a)), exactly as they scale the colour.
         const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-        return vec4(display(c), clamp(dot(ambient, LUMA) / max(dot(c, LUMA), 1e-8), 0.0, 1.0));
+        return vec4(display(c), clamp(dot(ambient, LUMA) * pc.frame.ambient.w, 0.0, 60000.0));
     }
     return vec4(display(c), 1.0);
 }
