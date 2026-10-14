@@ -978,12 +978,27 @@ struct CreateCtx {
 // of them (`destroy` → `poll_background(true)`).
 unsafe impl Send for CreateCtx {}
 
+/// What a background build's worker hands back, pipeline by pipeline as it goes (so a worker
+/// that panics part way still hands back what it created, to be owned and destroyed here).
+type BuildResults = std::sync::Arc<std::sync::Mutex<Vec<(PipelineKey, Result<VkPipeline, GpuError>)>>>;
+
 /// A background build of pipeline variants.
 struct BackgroundBuild {
     want: Variants,
     formats: Vec<VkFormat>,
-    job: std::thread::JoinHandle<Vec<(PipelineKey, Result<VkPipeline, GpuError>)>>,
+    results: BuildResults,
+    job: std::thread::JoinHandle<()>,
     started: Instant,
+}
+
+/// A fault injected into the next background build (tests of the failure path).
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundFault {
+    /// The worker's first pipeline fails with `VK_ERROR_OUT_OF_DEVICE_MEMORY`.
+    Error,
+    /// The worker panics after creating its first pipeline.
+    Panic,
 }
 
 #[derive(Default)]
@@ -993,9 +1008,33 @@ struct Background {
     queued: Variants,
     /// Queued variants to request once the running build finished.
     requeue: Option<(Variants, Vec<VkFormat>)>,
+    /// The last build's failure, until a request retries those variants.
+    failure: Option<VariantFailure>,
+    inject: Option<BackgroundFault>,
     created: u32,
     failed: u32,
     ms: f64,
+}
+
+/// Pipeline variants ready to draw with, and those a background build failed to make.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PipelineVariants {
+    pub skinned: bool,
+    pub textured: bool,
+    /// The last background build's failure: its variants are not ready and won't be until a
+    /// retry ([`crate::Gpu::retry_failed_variants`], or uploading a mesh needing them).
+    pub failed: Option<VariantFailure>,
+}
+
+/// Variants a background build could not make, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantFailure {
+    /// The variants that are unavailable because of it.
+    pub skinned: bool,
+    pub textured: bool,
+    /// The pipeline that failed (its key), or `worker thread panicked`.
+    pub pipeline: String,
+    pub error: GpuError,
 }
 
 /// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
@@ -1278,6 +1317,9 @@ impl Pipelines {
             self.get(dev, key)?;
         }
         self.variants = want;
+        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured)) {
+            self.background.failure = None; // built after all
+        }
         Ok(())
     }
 
@@ -1298,6 +1340,8 @@ impl Pipelines {
             q.textured |= want.textured && !p.want.textured;
             return;
         }
+        // A request is a retry of what failed before.
+        self.background.failure = None;
         let keys = self.variant_keys(want, formats);
         if keys.is_empty() {
             self.variants = want;
@@ -1305,11 +1349,23 @@ impl Pipelines {
         }
         let ctx = self.ctx(dev);
         let started = Instant::now();
+        let results: BuildResults = Default::default();
+        let out = std::sync::Arc::clone(&results);
+        let fault = self.background.inject.take();
         let spawned = std::thread::Builder::new().name("specula-pipelines".into()).spawn(move || {
-            keys.into_iter().map(|k| (k, Pipelines::create_with(&ctx, k))).collect::<Vec<_>>()
+            for (n, k) in keys.into_iter().enumerate() {
+                let r = match fault {
+                    Some(BackgroundFault::Error) if n == 0 => {
+                        Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({k:?})"), VK_ERROR_OUT_OF_DEVICE_MEMORY))
+                    }
+                    Some(BackgroundFault::Panic) if n == 1 => panic!("injected background pipeline build panic"),
+                    _ => Pipelines::create_with(&ctx, k),
+                };
+                out.lock().unwrap_or_else(|e| e.into_inner()).push((k, r));
+            }
         });
         match spawned {
-            Ok(job) => self.background.pending = Some(BackgroundBuild { want, formats: formats.to_vec(), job, started }),
+            Ok(job) => self.background.pending = Some(BackgroundBuild { want, formats: formats.to_vec(), results, job, started }),
             Err(_) => {
                 // No thread: build here rather than never.
                 if self.build_variants(dev, want, formats).is_err() {
@@ -1327,23 +1383,43 @@ impl Pipelines {
             self.background.pending = Some(p);
             return false;
         }
-        let results = p.job.join().unwrap_or_default();
-        let mut ok = true;
+        let panicked = p.job.join().is_err();
+        let results = std::mem::take(&mut *p.results.lock().unwrap_or_else(|e| e.into_inner()));
+        // Variants unavailable: those a failed pipeline belongs to (all new ones if the worker died).
+        let new = Variants { skinned: p.want.skinned && !self.variants.skinned, textured: p.want.textured && !self.variants.textured };
+        let mut lost = if panicked { new } else { Variants::default() };
+        let mut failure = panicked.then(|| (String::from("worker thread panicked"), GpuError::new("background pipeline build: the worker thread panicked")));
         for (key, r) in results {
             match r {
+                // Pipelines created before a failure (or a panic) are kept: this owns and
+                // destroys them, and a retry reuses them.
                 Ok(pipeline) => {
                     self.by_key.push((key, pipeline));
                     self.background.created += 1;
                 }
-                Err(_) => {
-                    ok = false;
+                Err(e) => {
                     self.background.failed += 1;
+                    let (skinned, textured) = match key {
+                        PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured),
+                        PipelineKey::Shadow { skinned, masked } => (skinned, masked),
+                        _ => (new.skinned, new.textured),
+                    };
+                    lost.skinned |= skinned && new.skinned;
+                    lost.textured |= textured && new.textured;
+                    failure.get_or_insert((format!("{key:?}"), e));
                 }
             }
         }
+        if panicked {
+            self.background.failed += 1;
+        }
         self.background.ms += p.started.elapsed().as_secs_f64() * 1e3;
-        if ok {
-            self.variants = p.want;
+        let ok = failure.is_none();
+        // What did get built becomes usable (every pipeline of a variant set not touched by a
+        // failure exists).
+        self.variants = Variants { skinned: p.want.skinned && !lost.skinned, textured: p.want.textured && !lost.textured };
+        if let Some((pipeline, error)) = failure {
+            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, pipeline, error });
         }
         let queued = std::mem::take(&mut self.background.queued);
         if queued != Variants::default() {
@@ -1358,6 +1434,16 @@ impl Pipelines {
     /// A request queued behind a finished background build, to start now.
     pub fn take_requeue(&mut self) -> Option<(Variants, Vec<VkFormat>)> {
         self.background.requeue.take()
+    }
+
+    /// The variants ready to draw with, and the last background failure.
+    pub fn ready(&self) -> PipelineVariants {
+        PipelineVariants { skinned: self.variants.skinned, textured: self.variants.textured, failed: self.background.failure.clone() }
+    }
+
+    /// Makes the next background build fail (tests).
+    pub fn inject_background_fault(&mut self, fault: BackgroundFault) {
+        self.background.inject = Some(fault);
     }
 
     /// The pipeline cache's contents, to persist and pass back as `GpuOptions::pipeline_cache`.
@@ -1611,7 +1697,9 @@ impl Pipelines {
         };
         let mut pipeline = VK_NULL_HANDLE;
         // SAFETY: every state struct referenced by `info` is a local alive for the call; `cache`
-        // is this device's pipeline cache, used from this thread only.
+        // is this device's pipeline cache, created with flags 0 (not externally synchronized),
+        // so the driver synchronizes it internally and the engine thread and a background
+        // worker may create pipelines with it at the same time.
         let r = unsafe { (ctx.create)(ctx.device, ctx.cache, 1, &info, ptr::null(), &mut pipeline) };
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({key:?})"), r));

@@ -109,6 +109,7 @@ def start(exe, out, port, run):
         [str(exe), "--headless", "--port", str(port), "--worlds", str(out / "worlds"), "--world", "e2e",
          "--captures", str(out / "captures")],
         stderr=log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        cwd=str(ROOT),  # the walker's recipe path is relative to the repository
     )
     url = f"http://127.0.0.1:{port}/mcp"
     for _ in range(150):

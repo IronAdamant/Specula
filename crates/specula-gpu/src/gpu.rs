@@ -413,9 +413,21 @@ impl GpuInner {
     }
 
     /// The pipeline variants ready to draw with (a finished background build is taken first).
-    pub fn pipeline_variants(&mut self) -> Variants {
+    pub fn pipeline_variants(&mut self) -> crate::PipelineVariants {
         self.poll_pipelines();
-        self.pipelines.variants
+        self.pipelines.ready()
+    }
+
+    pub fn retry_failed_variants(&mut self) -> bool {
+        self.poll_pipelines();
+        let Some(f) = self.pipelines.ready().failed else { return false };
+        let formats = self.formats();
+        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured }, &formats);
+        true
+    }
+
+    pub fn inject_background_fault(&mut self, fault: crate::BackgroundFault) {
+        self.pipelines.inject_background_fault(fault);
     }
 
     /// Takes finished background pipelines; starts a queued request.

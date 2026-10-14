@@ -720,6 +720,15 @@ impl Engine {
     /// Render time when a capture gives none: world time (the engine clock in whole ticks, plus
     /// a loaded world's offset), so animation and the lava lamp follow time_control, resume
     /// after a load, and a capture's time is reproducible.
+    /// The simulation clock, plus `world_time_s`: the world's time (what animation starts and
+    /// sight_frame's default time_s are in; it carries on across world_save / world_load, while
+    /// the clock's seconds count from this engine's start).
+    fn clock_json(&self) -> Json {
+        let mut j = self.clock.to_json();
+        j.set("world_time_s", Json::from(self.world.world_time()));
+        j
+    }
+
     fn time_s(&self) -> f64 {
         self.world.world_time()
     }
@@ -957,6 +966,8 @@ impl Engine {
                 }
             }
             Command::ModelReload => {
+                // Pipeline variants a background build failed to make are built again too.
+                self.gpu.retry_failed_variants();
                 let reload = self.poll_assets(true).unwrap_or_default();
                 waiter.jobs = reload.jobs.clone();
                 waiter.reload = reload;
@@ -1253,7 +1264,7 @@ impl Engine {
                     TimeOp::Scale(x) => self.clock.set_scale(x),
                     TimeOp::Info => {}
                 }
-                ToolOutput::text(self.clock.to_json().to_pretty())
+                ToolOutput::text(self.clock_json().to_pretty())
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
@@ -1577,6 +1588,8 @@ impl Engine {
             let problems = self.world.entities().filter(|e| e.anim.is_some()).filter_map(|e| models::anim_problem(&lib, e));
             warnings.extend(problems.take(5).map(Json::from));
         }
+        // Models held back because their pipeline variant failed to build.
+        warnings.extend(self.world.entities().filter_map(|e| self.models.pipeline_problem(e)).take(5).map(Json::from));
         let (lights, dropped) = sight::lights(&self.world, spec.include_ui);
         if dropped > 0 {
             warnings.push(Json::from(format!(
@@ -1588,7 +1601,7 @@ impl Engine {
         let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
         // Structured problems (objects), next to the plain-text warnings.
-        let problems: Vec<Json> = self.luts.warning(self.world.env()).into_iter().collect();
+        let problems: Vec<Json> = self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect();
 
         let rendered = {
             let _z = profile::zone("sight.render");
@@ -1729,12 +1742,13 @@ impl Engine {
             ("cpu", perf::cpu_json(&self.profiler)),
             ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),
-            ("clock", self.clock.to_json()),
+            ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
             ("models", self.models_json()),
             // Effects that can't apply (a grading LUT that failed to load), structured.
-            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
+            // and pipeline variants a background build failed to make.
+            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
         ]);
         ToolOutput::text(out.to_pretty())
     }
@@ -1787,7 +1801,7 @@ impl Engine {
             ("frames_captured", Json::from(self.frames_captured)),
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
-            ("clock", self.clock.to_json()),
+            ("clock", self.clock_json()),
             ("swarm", self.swarm.stats_json()),
             ("models", self.models_json()),
         ]);

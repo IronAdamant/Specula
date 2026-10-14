@@ -337,6 +337,11 @@ def main():
         print(f"after restart: anim {loaded}; captures at clock {times}; shambler changed {[round(m, 3) for m in moved]}")
         check(all(m > 0.01 for m in moved), "after a restart and world_load the walk keeps moving (no freeze)")
         check(times[0] >= start, f"world time resumes from the save (capture at {times[0]:.2f} s, the crossfade started at {start:.2f} s)")
+        clock = mcp.json("time_control", action="info")
+        info_clock = mcp.json("engine_info")["clock"]
+        check(clock["world_time_s"] >= times[-1] and info_clock["world_time_s"] >= clock["world_time_s"]
+              and clock["seconds"] < clock["world_time_s"],
+              f"time_control and engine_info report world time ({clock['world_time_s']:.2f} s; engine clock {clock['seconds']:.2f} s)")
         summary["restart"] = [s["image"]["path"] for s in shots]
         # An edit elsewhere (outside /scene, whose file is kept as it is) and another save.
         mcp.call("world_spawn", shape="cube", path="/marker", position=[0, -40, 0])

@@ -96,8 +96,17 @@ use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
 use specula_gpu::{
     DrawItem, Gpu, Material, MaterialTextures, MeshId, MeshStreams, PipelineVariants, SkinVertex, Surface, TextureFilter, TextureFormat,
-    TextureId, TextureSampler, TextureWrap, Vertex,
+    TextureId, TextureSampler, TextureWrap, VariantFailure, Vertex,
 };
+
+/// "skinned", "textured" or "skinned and textured".
+fn variant_names(f: &VariantFailure) -> &'static str {
+    match (f.skinned, f.textured) {
+        (true, true) => "skinned and textured",
+        (true, false) => "skinned",
+        _ => "textured",
+    }
+}
 use specula_model::{build, BuildParams, ErrorCode, MaterialKind, MaterialPreset, MeshData, Model, Recipe, RecipeError, Style};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1722,6 +1731,8 @@ pub struct LodStats {
     pub histogram: [u32; LOD_BUCKETS],
     /// Model entities with nothing uploaded to draw (an unresolved or failed recipe).
     pub missing: u32,
+    /// Model entities not drawn because their pipeline variant failed to build.
+    pub pipeline_failed: u32,
     pub triangles: u64,
 }
 
@@ -1730,6 +1741,7 @@ impl LodStats {
         Json::obj([
             ("lod_histogram", Json::arr(self.histogram.map(Json::from))),
             ("missing", Json::from(self.missing)),
+            ("pipeline_failed", Json::from(self.pipeline_failed)),
             ("triangles", Json::from(self.triangles)),
         ])
     }
@@ -1826,7 +1838,22 @@ struct GpuModel {
     anims: Option<Arc<AnimSet>>,
     /// Pipeline variants its draws use: skinned (its meshes carry skin, when animated) and
     /// textured (a part has textures).
-    needs: PipelineVariants,
+    needs: Needs,
+}
+
+/// Pipeline variants a model's draws use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Needs {
+    skinned: bool,
+    textured: bool,
+}
+
+/// Why an uploaded model isn't drawn yet.
+enum Held<'a> {
+    /// Its pipeline variant is being built on a worker thread.
+    Waiting,
+    /// That build failed: it won't be drawn until a retry succeeds.
+    Failed(&'a VariantFailure),
 }
 
 /// An entity's animator, kept across frames (seeked to each frame's time: no per-frame state).
@@ -2053,11 +2080,46 @@ impl GpuModels {
     /// Entity `e` has an uploaded model whose pipeline variant is still being built: it isn't
     /// drawn yet (captures wait for it as for a build).
     pub fn waiting(&self, e: &Entity) -> bool {
-        self.model_of(e).is_some_and(|(_, m)| self.held_back(e, m))
+        self.model_of(e).is_some_and(|(_, m)| matches!(self.held_back(e, m), Some(Held::Waiting)))
     }
 
-    fn held_back(&self, e: &Entity, m: &GpuModel) -> bool {
-        (m.needs.skinned && e.anim.is_some() && !self.ready.skinned) || (m.needs.textured && !self.ready.textured)
+    /// Entity `e` isn't drawn because the build of its pipeline variant failed: the warning
+    /// (with the failing pipeline and its VkResult).
+    pub fn pipeline_problem(&self, e: &Entity) -> Option<String> {
+        let (_, m) = self.model_of(e)?;
+        let Some(Held::Failed(f)) = self.held_back(e, m) else { return None };
+        Some(format!(
+            "'{}' is not drawn: building its {} pipelines failed ({}; pipeline {}); model_reload retries",
+            e.name,
+            variant_names(f),
+            f.error,
+            f.pipeline
+        ))
+    }
+
+    /// The last failed background pipeline build, structured (perf_frame and sight_frame
+    /// `problems`), until a retry (model_reload) starts.
+    pub fn pipeline_failure_json(&self) -> Option<Json> {
+        let f = self.ready.failed.as_ref()?;
+        Some(Json::obj([
+            ("code", Json::from("pipeline_variant_failed")),
+            ("variants", Json::from(variant_names(f))),
+            ("pipeline", Json::from(f.pipeline.as_str())),
+            ("vk_result", f.error.vk_result.map_or(Json::Null, Json::from)),
+            ("message", Json::from(f.error.to_string())),
+        ]))
+    }
+
+    fn held_back(&self, e: &Entity, m: &GpuModel) -> Option<Held<'_>> {
+        let skinned = m.needs.skinned && e.anim.is_some() && !self.ready.skinned;
+        let textured = m.needs.textured && !self.ready.textured;
+        if !skinned && !textured {
+            return None;
+        }
+        match &self.ready.failed {
+            Some(f) if (skinned && f.skinned) || (textured && f.textured) => Some(Held::Failed(f)),
+            _ => Some(Held::Waiting),
+        }
     }
 
     fn model_of(&self, e: &Entity) -> Option<(u64, &GpuModel)> {
@@ -2103,9 +2165,16 @@ impl GpuModels {
             stats.missing += 1;
             return;
         };
-        if self.held_back(e, model) {
-            stats.missing += 1;
-            return;
+        match self.held_back(e, model) {
+            None => {}
+            Some(Held::Waiting) => {
+                stats.missing += 1;
+                return;
+            }
+            Some(Held::Failed(_)) => {
+                stats.pipeline_failed += 1;
+                return;
+            }
         }
         let world = e.model();
         let count = model.lods.len();
@@ -2241,7 +2310,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
     }
     let b = model.bounds;
     let (lo, hi) = (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]));
-    let needs = PipelineVariants {
+    let needs = Needs {
         skinned: built.anims.is_some() && model.lods.iter().any(MeshData::is_skinned),
         textured: lods.iter().flatten().any(|p: &PartDraw| p.surface.textures != MaterialTextures::NONE),
     };
@@ -2994,6 +3063,66 @@ mod tests {
         let t = playback(&set, &d, death * 2.5).unwrap().time;
         assert!((t - death * 0.5).abs() < 1e-9, "{t}");
         assert!(playback(&set, &AnimSpec::new("moonwalk"), 1.0).is_none(), "an unknown clip plays nothing");
+    }
+
+    /// The skinned pipelines' background build fails (injected): the animated model is reported
+    /// as failed (stats, warning with the VkResult and pipeline, structured problem), not as
+    /// waiting (so captures don't park on it); a retry builds them and it draws.
+    #[test]
+    fn failed_pipeline_builds_are_failures_not_waits() {
+        if !specula_gpu::is_available() {
+            eprintln!("SKIPPED: Vulkan is not available");
+            return;
+        }
+        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("SKIPPED: {e}");
+                return;
+            }
+        };
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let mut walker = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        walker.anim = Some(AnimSpec::new("walk"));
+        let walker = world.spawn(walker, "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        gpu.inject_background_fault(specula_gpu::BackgroundFault::Error);
+        let mut models = GpuModels::default();
+        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(std::time::Instant::now() < deadline, "the build never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
+        let e = world.get(walker).unwrap();
+        let warning = models.pipeline_problem(e).expect("a failed build is reported");
+        assert!(warning.contains("skinned") && warning.contains("VkResult -2") && warning.contains("Mesh"), "{warning}");
+        let problem = models.pipeline_failure_json().unwrap();
+        assert_eq!(problem.get("vk_result").and_then(Json::as_f64), Some(-2.0), "{problem:?}");
+        let mut stats = LodStats::default();
+        let mut out = Vec::new();
+        models.begin_frame(0.5);
+        models.draw(e, Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut stats, &mut out);
+        assert_eq!((stats.pipeline_failed, stats.missing, out.len()), (1, 0, 0));
+        let _ = models.take_bones();
+        // The retry (model_reload does this) builds them.
+        assert!(gpu.retry_failed_variants());
+        models.refresh_ready(&mut gpu);
+        assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none(), "retrying: waiting again, not failed");
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(std::time::Instant::now() < deadline, "the retry never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
+        assert!(models.pipeline_problem(world.get(walker).unwrap()).is_none() && models.pipeline_failure_json().is_none());
+        let mut stats = LodStats::default();
+        models.begin_frame(0.5);
+        models.draw(world.get(walker).unwrap(), Vec3::new(0.0, 1.0, 4.0), 50.0, 1080, &mut LodChoice::Fixed(0), &mut stats, &mut out);
+        assert!(stats.pipeline_failed == 0 && !out.is_empty(), "drawn after the retry");
+        let _ = models.take_bones();
     }
 
     #[test]

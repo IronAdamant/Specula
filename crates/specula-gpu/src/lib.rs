@@ -126,7 +126,7 @@ mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
-pub use render::Variants as PipelineVariants;
+pub use render::{BackgroundFault, PipelineVariants, VariantFailure};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1285,6 +1285,18 @@ impl Gpu {
     /// until its variant is here.
     pub fn pipeline_variants(&mut self) -> PipelineVariants {
         self.inner.pipeline_variants()
+    }
+
+    /// Starts building again, in the background, the variants the last background build failed
+    /// to make ([`PipelineVariants::failed`]). Returns false when nothing had failed.
+    pub fn retry_failed_variants(&mut self) -> bool {
+        self.inner.retry_failed_variants()
+    }
+
+    /// Makes the next background pipeline build fail (for tests of that path).
+    #[doc(hidden)]
+    pub fn inject_background_fault(&mut self, fault: BackgroundFault) {
+        self.inner.inject_background_fault(fault);
     }
 
     /// The pipeline cache's contents, to save (e.g. at shutdown) and pass back through

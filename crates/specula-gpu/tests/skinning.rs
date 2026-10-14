@@ -8,7 +8,8 @@ mod common;
 
 use common::*;
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, IdKind, MaterialTextures, MeshStream, MeshStreams, SkinVertex,
+    AdapterPreference, BackgroundFault, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, IdKind, MaterialTextures, MeshStream, MeshStreams,
+    SkinVertex,
     Surface, TextureFilter, TextureFormat, TextureSampler, Vertex,
 };
 
@@ -454,6 +455,71 @@ fn variant_requests_queue_behind_a_running_build() {
         other.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
         drop(other); // the build is still running: destroying the GPU waits for it
     }
+}
+
+/// Waits (up to a minute) for the running background build to finish, whatever its outcome.
+fn settle(gpu: &mut Gpu) -> specula_gpu::PipelineVariants {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let v = gpu.pipeline_variants();
+        if !gpu.last_frame_stats().pipelines.background_pending || std::time::Instant::now() > deadline {
+            return v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A background build that fails (a pipeline error, or its worker panicking part way) reports
+/// the failure with the pipeline and VkResult, leaves the variant unavailable (draws needing it
+/// skipped, nothing compiled on the frame's thread), keeps and later destroys what it did
+/// create, and is built again by a retry.
+#[test]
+fn failed_background_builds_are_reported_and_retried() {
+    let test = "variant_failure";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::LowPower) else { return };
+    gpu.mark_warm();
+    let target = gpu.create_target(16, 16).unwrap();
+    let (v, i, skin) = bar();
+    gpu.inject_background_fault(BackgroundFault::Error);
+    let mesh = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    let ready = settle(&mut gpu);
+    let f = ready.failed.clone().expect("the injected failure is reported");
+    assert!(!ready.skinned && f.skinned && !f.textured, "{test}: {ready:?}");
+    assert_eq!(f.error.vk_result, Some(-2), "{test}: VK_ERROR_OUT_OF_DEVICE_MEMORY: {f:?}");
+    assert!(f.pipeline.contains("skinned: true"), "{test}: the failing pipeline's key: {}", f.pipeline);
+    // The skinned draw is skipped; nothing is compiled on this thread.
+    let mut d = DrawItem::new(mesh, IDENTITY, [1.0; 4]);
+    d.skin = Some(0);
+    let bones = [IDENTITY; 2];
+    let draws = [d];
+    gpu.render(target, &FrameDesc { bones: &bones, ..flat_frame(&draws, 4.0) }).unwrap();
+    let s = gpu.last_frame_stats();
+    assert_eq!((s.draws.instances, s.pipelines.created_after_warm, s.pipelines.background_failed), (0, 0, 1), "{test}: {s:?}");
+    assert!(s.pipelines.created_background > 0, "{test}: what the worker did create is kept: {:?}", s.pipelines);
+    // A retry builds it.
+    assert!(gpu.retry_failed_variants());
+    let ready = settle(&mut gpu);
+    assert!(ready.skinned && ready.failed.is_none(), "{test}: {ready:?}");
+    gpu.render(target, &FrameDesc { bones: &bones, ..flat_frame(&draws, 4.0) }).unwrap();
+    assert_eq!(gpu.last_frame_stats().draws.instances, 1);
+    assert!(!gpu.retry_failed_variants(), "nothing left to retry");
+
+    // A worker that panics part way: reported, its pipelines kept; uploading again retries.
+    let (qv, qi, quv) = quad_uv();
+    gpu.inject_background_fault(BackgroundFault::Panic);
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    let ready = settle(&mut gpu);
+    let f = ready.failed.clone().expect("a panicked worker is a failure");
+    assert!(!ready.textured && f.textured && f.pipeline.contains("panicked"), "{test}: {ready:?}");
+    let s = gpu.last_frame_stats().pipelines;
+    assert_eq!((s.created_after_warm, s.background_failed), (0, 2), "{test}: {s:?}");
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    let ready = settle(&mut gpu);
+    assert!(ready.textured && ready.skinned && ready.failed.is_none(), "{test}: {ready:?}");
+    gpu.destroy_target(target);
+    // Every pipeline (the panicked worker's included) is destroyed with the device.
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
 
 /// Keep `Gpu` in the imports used when every test skips.

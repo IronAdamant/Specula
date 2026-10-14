@@ -1381,10 +1381,11 @@ fn definitions() -> Vec<ToolDef> {
                 described(
                     "model only (rigged recipes with anims/<name>.json, or glTF assets with animations): a clip name \
                      or {clip, speed (0..8, default 1), loop (true/false; default the clip's own), time_offset (s), \
-                     start (engine clock s or \"now\"; default 0 at spawn, now on world_set), crossfade (s: blend \
+                     start (world time s or \"now\"; default 0 at spawn, now on world_set), crossfade (s: blend \
                      from the previous clip; world_set)}; false stops animating. The pose is a function of render \
-                     time: clip time = (T - start) x speed + time_offset, so sight_frame time_s 0, 0.25, ... is a \
-                     filmstrip. model_build lists the clips",
+                     time T, in world time (time_control / engine_info clock.world_time_s; world_load resumes it \
+                     from the save): clip time = (T - start) x speed + time_offset, so sight_frame time_s 0, 0.25, \
+                     ... is a filmstrip. model_build lists the clips",
                 ),
             ),
         ]);
@@ -1671,7 +1672,7 @@ fn definitions() -> Vec<ToolDef> {
                     ("max_subjects", integer("Subjects to include in the response, 1..500 (default 50)")),
                     (
                         "time_s",
-                        number("Animation time to render in seconds (default: now). Fix it to get reproducible frames."),
+                        number("Animation time to render, in world-time seconds (default: now, clock.world_time_s). Fix it to get reproducible frames."),
                     ),
                     (
                         "include_ui",
@@ -1707,7 +1708,7 @@ fn definitions() -> Vec<ToolDef> {
             name: "model_reload".into(),
             description: "Re-read every recipe and style file now and rebuild the models that changed (the engine \
                           also notices edits on its own within a second). Returns what was rebuilt and any errors; \
-                          a model whose recipe broke keeps its last good build."
+                          a model whose recipe broke keeps its last good build. Also builds again the skinned or                           textured pipelines a background build failed to make (problems code                           pipeline_variant_failed)."
                 .into(),
             input_schema: schema(vec![], &[]),
         },
@@ -1824,7 +1825,9 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "time_control".into(),
             description: "The simulation clock (fixed ticks): action pause, resume, step (run `ticks` then stay \
-                          paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock."
+                          paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock, \
+                          with world_time_s: the world's time (animation starts, sight_frame's default time_s), \
+                          which world_load resumes from the save."
                 .into(),
             input_schema: schema(
                 vec![
