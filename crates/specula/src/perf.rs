@@ -709,7 +709,11 @@ impl Profiler {
         self.frame += 1;
         let fp = self.collector.collect(self.frame);
         let Some(cap) = &mut self.capture else { return };
+        // The capture's own copies are not the frames' allocations.
+        let before = alloc::thread_counts();
         cap.frames.push(CapturedFrame { profile: fp.clone(), gpu: gpu_stats(), dt_ms });
+        let after = alloc::thread_counts();
+        self.collector.discount_allocations(after.0 - before.0, after.1 - before.1);
         let done = cap.frames.len() as u64 >= cap.spec.frames;
         if done || now >= cap.deadline {
             let cap = self.capture.take().expect("checked above");

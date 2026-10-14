@@ -65,6 +65,8 @@ impl std::error::Error for TomlError {}
 
 /// Parses a TOML document into a JSON object.
 pub fn parse(text: &str) -> Result<Json, TomlError> {
+    // A byte-order mark (some Windows editors write one) is not part of the document.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut p = Parser { s: text, b: text.as_bytes(), i: 0, root: Table::new(Kind::Header), current: Vec::new() };
     p.document()?;
     Ok(p.root.into_json())
@@ -877,6 +879,7 @@ mod tests {
         assert_eq!(ok("").to_string(), "{}");
         assert_eq!(ok("\r\n\r\n# only comments\r\n").to_string(), "{}");
         assert_eq!(ok("x=1").to_string(), r#"{"x":1}"#);
+        assert_eq!(ok("\u{feff}x = 1\r\n").to_string(), r#"{"x":1}"#);
     }
 
     #[test]

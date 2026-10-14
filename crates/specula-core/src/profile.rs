@@ -661,6 +661,13 @@ impl Collector {
         self.history.back()
     }
 
+    /// Leaves allocations the caller made for its own bookkeeping (e.g. recording a capture
+    /// right after a collect) out of the next frame's [`MemorySample`].
+    pub fn discount_allocations(&mut self, count: u64, bytes: u64) {
+        self.last_alloc.allocations += count;
+        self.last_alloc.allocated_bytes += bytes;
+    }
+
     /// Oldest first.
     pub fn history(&self) -> impl DoubleEndedIterator<Item = &FrameProfile> + ExactSizeIterator {
         self.history.iter()
