@@ -416,7 +416,9 @@ def probes(m, assets, worlds, problems):
     e = refused[1] if refused else {}
     check(refused is not None and e.get("error") == "limit" and e.get("field") == "shape2d" and e.get("limit") == 2000000 and e.get("value", 0) > 2000000,
           f"distinct heavy shapes fill the world budget, then a structured refusal: {refused and (refused[0], e.get('error'), e.get('value'))}", problems)
-    q = lambda: m.json("world_query", path_prefix="/probe_d", fields=["bounds"])
+    def q():
+        page = m.json("world_query", shape="shape2d", fields=["path", "bounds"], limit=200)
+        return sorted((i["path"], i["bounds"]) for i in page["items"] if i["path"].startswith("/probe_d"))
     bounds_before = q()
     m.json("world_save", name="probe_budget", overwrite=True)
     m.json("world_load", name="probe_budget", force=True)
