@@ -269,21 +269,30 @@ impl GpuInner {
             GpuError::rejected(ErrorReason::BadStream { stream, vertex: vertex as u32 }, format!("upload_mesh: {why}"))
         };
         let mut joints = 0u32;
-        if let Some(skin) = streams.skin {
-            if skin.len() != n {
-                return Err(bad(MeshStream::Skin, skin.len(), format!("{} skin entries for {n} vertices", skin.len())));
-            }
-            for (i, s) in skin.iter().enumerate() {
-                for k in 0..4 {
-                    if s.weights[k] > 0 {
-                        if s.joints[k] == 255 {
+        // The shader reads all four joints (a zero weight multiplies, it doesn't skip): joints
+        // without weight are stored as 0, so every joint read lies inside the draw's palette.
+        let skin: Option<Vec<SkinVertex>> = match streams.skin {
+            None => None,
+            Some(skin) => {
+                if skin.len() != n {
+                    return Err(bad(MeshStream::Skin, skin.len(), format!("{} skin entries for {n} vertices", skin.len())));
+                }
+                let mut clean = Vec::with_capacity(n);
+                for (i, s) in skin.iter().enumerate() {
+                    let mut c = *s;
+                    for k in 0..4 {
+                        if s.weights[k] == 0 {
+                            c.joints[k] = 0;
+                        } else if s.joints[k] == 255 {
                             return Err(bad(MeshStream::Skin, i, format!("vertex {i} gives weight to joint 255 (joints are 0..=254)")));
                         }
-                        joints = joints.max(s.joints[k] as u32 + 1);
+                        joints = joints.max(c.joints[k] as u32 + 1);
                     }
+                    clean.push(c);
                 }
+                Some(clean)
             }
-        }
+        };
         let surface: Option<Vec<SurfaceVertex>> = match streams.uvs {
             None => None,
             Some(uvs) => {
@@ -307,7 +316,7 @@ impl GpuInner {
             }
         };
         let vb_bytes = std::mem::size_of_val(vertices) as u64;
-        let skin_bytes = streams.skin.map_or(0, |s| std::mem::size_of_val(s) as u64);
+        let skin_bytes = skin.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
         let surface_bytes = surface.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
         let ib_bytes = std::mem::size_of_val(indices) as u64;
         let skin_offset = vb_bytes;
@@ -330,7 +339,7 @@ impl GpuInner {
         unsafe {
             let dst = staging.mapped as *mut u8;
             ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, dst, vb_bytes as usize);
-            if let Some(skin) = streams.skin {
+            if let Some(skin) = &skin {
                 ptr::copy_nonoverlapping(skin.as_ptr() as *const u8, dst.add(skin_offset as usize), skin_bytes as usize);
             }
             if let Some(s) = &surface {
@@ -382,7 +391,7 @@ impl GpuInner {
                 index_offset,
                 index_count: indices.len() as u32,
                 bounds,
-                skin_offset: streams.skin.map(|_| skin_offset),
+                skin_offset: skin.as_ref().map(|_| skin_offset),
                 surface_offset: surface.as_ref().map(|_| surface_offset),
                 joints,
             },

@@ -651,7 +651,8 @@ pub struct Mesh {
     pub skin_offset: Option<u64>,
     /// Offset of the surface stream (vertex binding 2).
     pub surface_offset: Option<u64>,
-    /// Bone matrices a skinned draw's palette needs: the highest joint used (by weight) + 1.
+    /// Bone matrices a skinned draw's palette needs: the highest joint the shader reads + 1
+    /// (joints without weight are stored as 0).
     pub joints: u32,
 }
 
