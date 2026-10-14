@@ -42,10 +42,11 @@ pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 29] = [
+const RECORD_KEYS: [&str; 32] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
-    "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer",
+    "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "sprite",
+    "tilemap", "shape2d",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "env", "subtrees", "entities"];
 const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
@@ -379,6 +380,9 @@ fn record(e: &Entity, path: &str) -> Json {
         if let Some(s) = m.seed {
             f.push(("seed", Json::from(s)));
         }
+    }
+    if let Some(t) = &e.two_d {
+        f.push((t.key(), t.to_json()));
     }
     if !e.visible {
         f.push(("visible", Json::from(false)));
@@ -1022,6 +1026,46 @@ mod tests {
             assert_eq!(b.model().to_cols_array().map(f32::to_bits), e.model().to_cols_array().map(f32::to_bits));
         }
         assert_eq!(files(&back), saved, "saving the loaded world gives the same bytes");
+    }
+
+    #[test]
+    fn two_d_entities_save_load_and_edit_bit_exact() {
+        use crate::tools::parse_spawn_fields;
+        let mut w = sample();
+        let spawn = |w: &mut World, text: &str| {
+            let spec = parse_spawn_fields(&Json::parse(text).unwrap()).unwrap();
+            w.spawn(spec, "erin").unwrap().id
+        };
+        spawn(&mut w, r#"{"shape":"sprite","name":"hero","position":[1,2,0],"sprite":{"texture":"sprites/hero.png","sheet":{"frame_px":[16,16]},"anim":{"count":4,"fps":8},"filter":"nearest","blend":"cutout","z_layer":2}}"#);
+        let map = spawn(
+            &mut w,
+            r#"{"shape":"tilemap","name":"map","tilemap":{"tileset":"tiles/set.png","tile_px":[16,16],"size":[40,40],
+                "animations":[{"tile":9,"frames":2,"frame_ms":200}],
+                "layers":[{"name":"ground","rows":["1*40","2,3h,4r1"]},{"name":"top","blend":"blended","rows":["","0,9"]}]}}"#,
+        );
+        spawn(&mut w, r##"{"shape":"shape2d","name":"badge","shape2d":{"items":[{"circle":[0,0,0.5],"fill":"#ff000080","stroke":{"width":0.05}}]}}"##);
+        spawn(&mut w, r#"{"shape":"sprite","name":"dot"}"#);
+        let edits = crate::two_d::parse_tile_edits("top", &Json::parse(r#"[[39,39,"5h"],[0,0,7]]"#).unwrap()).unwrap();
+        let before = w.state_hash();
+        w.update(&EntityKey::Id(map), UpdateSpec { tiles: Some(edits), ..Default::default() }, "erin").unwrap();
+        assert_ne!(w.state_hash(), before, "tile edits change the state hash");
+        let saved = files(&w);
+        let back = reload(&saved).unwrap();
+        assert_eq!(back.state_hash(), w.state_hash());
+        assert_eq!(files(&back), saved, "saving the loaded world gives the same bytes");
+        let m = back.get(map).unwrap();
+        let Some(crate::two_d::TwoD::Tilemap(t)) = &m.two_d else { panic!("tilemap") };
+        assert_eq!(t.layers[1].cells.get(39, 39).orient, specula_gpu::ORIENT_FLIP_X);
+        assert_eq!(t.layers[1].cells.get(1, 1).frames, 2, "animation re-derived on load");
+        // Listings are bounded: no cells.
+        assert!(!m.to_json("/map").to_string().contains("rows"));
+        assert!(m.local_bounds().is_some());
+        // Edits to a non-tilemap or a missing layer are refused and change nothing.
+        let bad = crate::two_d::parse_tile_edits("nope", &Json::parse("[[0,0,1]]").unwrap()).unwrap();
+        assert!(w.update(&EntityKey::Id(map), UpdateSpec { tiles: Some(bad), ..Default::default() }, "erin").is_err());
+        let hero = EntityKey::Path("/hero".into());
+        let ok = crate::two_d::parse_tile_edits("ground", &Json::parse("[[0,0,1]]").unwrap()).unwrap();
+        assert!(w.update(&hero, UpdateSpec { tiles: Some(ok), ..Default::default() }, "erin").is_err());
     }
 
     #[test]

@@ -82,7 +82,7 @@ impl Orbit {
     pub fn camera(&self) -> Camera {
         let (y, p) = (self.yaw.to_radians(), self.pitch.to_radians());
         let dir = Vec3::new(p.cos() * y.sin(), p.sin(), p.cos() * y.cos());
-        Camera { eye: self.target + dir * self.dist, target: self.target, fov_y_deg: self.fov_y_deg }
+        Camera::new(self.target + dir * self.dist, self.target, self.fov_y_deg)
     }
 
     /// Takes over a camera set from outside (an agent's `window_view`).
@@ -332,7 +332,7 @@ mod tests {
         let mut c = Controls::new();
         let mut slot = None;
         c.sync_camera(&mut slot);
-        let agent = Camera { eye: Vec3::new(0.0, 40.0, 1.0), target: Vec3::ZERO, fov_y_deg: 50.0 };
+        let agent = Camera::new(Vec3::new(0.0, 40.0, 1.0), Vec3::ZERO, 50.0);
         slot = Some(agent);
         c.sync_camera(&mut slot);
         let now = slot.unwrap();

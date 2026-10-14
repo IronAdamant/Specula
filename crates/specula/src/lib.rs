@@ -21,6 +21,7 @@ pub mod persist;
 pub mod sight;
 pub mod swarm;
 mod tools;
+pub mod two_d;
 mod ui;
 pub mod world;
 
@@ -31,7 +32,7 @@ use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::{base64, png, profile, Json};
-use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -336,6 +337,12 @@ struct Engine {
     lod_capture: LodStats,
     /// The window frame's draw list (reused: no allocation per frame once warm).
     draws: Vec<DrawItem>,
+    /// Textures, tile cell textures and shape meshes of 2D entities.
+    two_d: two_d::TwoDGpu,
+    /// The window frame's 2D draws (reused).
+    draws_2d: Vec<Draw2d>,
+    /// When 2D GPU resources nobody uses were last freed, at which world revision.
+    last_2d_gc: (Instant, u64),
     /// A human's window is open.
     windowed: bool,
     /// The world mesh epoch `lod_levels` was last pruned at.
@@ -448,6 +455,7 @@ struct AutosaveJob {
 impl Engine {
     fn new(mut gpu: Gpu, captures_root: &Path, library: Library) -> Result<Engine, String> {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
+        let two_d = two_d::TwoDGpu::new(library.root());
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
         let library = Arc::new(SharedLibrary::new(library));
@@ -464,6 +472,9 @@ impl Engine {
             lod_window: LodStats::default(),
             lod_capture: LodStats::default(),
             draws: Vec::new(),
+            two_d,
+            draws_2d: Vec::new(),
+            last_2d_gc: (Instant::now(), 0),
             windowed: false,
             lod_epoch: 0,
             build_waiters: Vec::new(),
@@ -833,10 +844,70 @@ impl Engine {
 
     /// The camera a capture uses: its own, or framing the whole world.
     fn capture_camera(&self, spec: &FrameSpec) -> Camera {
-        match (spec.eye, spec.target) {
-            (Some(eye), Some(target)) => Camera { eye, target, fov_y_deg: spec.fov_y_deg },
+        let mut camera = match (spec.eye, spec.target, spec.ortho) {
+            (Some(eye), Some(target), _) => Camera::new(eye, target, spec.fov_y_deg),
+            // Orthographic without a camera: the 2D view of the whole XY plane.
+            (_, _, Some(h)) => sight::auto_camera_2d(&self.world, Some(h), spec.width as f32 / spec.height.max(1) as f32),
             _ => sight::auto_camera(&self.world, spec.fov_y_deg),
+        };
+        if let Some(height_m) = spec.ortho {
+            camera.projection = sight::Projection::Ortho { height_m };
         }
+        camera
+    }
+
+    /// The 2D draws of shown entities (`ui` ones when `include_ui`) at `time_s`, into `out`, and
+    /// now and then frees 2D GPU resources no entity uses any more.
+    fn build_draws_2d(&mut self, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>) {
+        out.clear();
+        for e in self.world.entities() {
+            let Some(t) = &e.two_d else { continue };
+            if !sight::in_frame(e, include_ui) {
+                continue;
+            }
+            let c = e.color;
+            self.two_d.draws(&mut self.gpu, e.id, t, &e.model(), [c[0], c[1], c[2], e.look.opacity], time_s, out);
+        }
+        let revision = self.world.revision();
+        if revision != self.last_2d_gc.1 && self.last_2d_gc.0.elapsed() >= GC_EVERY {
+            let live: Vec<(u64, &two_d::TwoD)> = self.world.entities().filter_map(|e| e.two_d.as_ref().map(|t| (e.id, t))).collect();
+            self.two_d.collect(&mut self.gpu, &live);
+            self.last_2d_gc = (Instant::now(), revision);
+        }
+    }
+
+    /// tilemap_get: rows of run-length cell tokens.
+    fn tile_get(&self, key: &world::EntityKey, layer: Option<&str>, region: Option<[u32; 4]>) -> ToolOutput {
+        let id = match self.world.resolve(key) {
+            Ok(id) => id,
+            Err(e) => return world_error(&e),
+        };
+        let e = self.world.get(id).expect("resolved");
+        let Some(two_d::TwoD::Tilemap(t)) = &e.two_d else {
+            return world_error(&WorldError::new("invalid_component", format!("'{}' is a {}, not a tilemap", e.name, e.shape.name())));
+        };
+        let layers = Json::arr(t.layers.iter().map(|l| {
+            Json::obj([("name", Json::from(l.name.as_str())), ("z_layer", Json::from(l.z_layer)), ("filled", Json::from(l.cells.filled()))])
+        }));
+        let Some(name) = layer else {
+            return ToolOutput::text(Json::obj([("size", Json::arr(t.size.map(Json::from))), ("layers", layers)]).to_string());
+        };
+        let Some(l) = t.layers.iter().find(|l| l.name == name) else {
+            return world_error(&WorldError::new("invalid_value", format!("no layer '{name}'")).with("field", "layer").with("layers", layers));
+        };
+        let [x, y, w, h] = region.unwrap_or([0, 0, 64.min(t.size[0]), 64.min(t.size[1])]);
+        let (w, h) = (w.min(t.size[0].saturating_sub(x)), h.min(t.size[1].saturating_sub(y)));
+        let rows = (y..y + h).map(|row| Json::from(two_d::format_row(&l.cells, row, x, w)));
+        ToolOutput::text(
+            Json::obj([
+                ("path", Json::from(self.world.path_of(id))),
+                ("version", Json::from(e.version)),
+                ("layer", Json::from(name)),
+                ("region", Json::arr([x, y, w, h].map(Json::from))),
+                ("rows", Json::arr(rows)),
+            ])
+            .to_string(),
+        )
     }
 
     /// Model entities still building that the capture would show: drawn (visible, on a layer
@@ -1010,13 +1081,17 @@ impl Engine {
             self.lod_window = stats;
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
-            let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            let time_s = self.time_s();
+            let mut draws_2d = std::mem::take(&mut self.draws_2d);
+            self.build_draws_2d(true, time_s, &mut draws_2d);
+            let frame = FrameDesc { draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s) };
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
             let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
             drop(present);
             self.draws = draws;
+            self.draws_2d = draws_2d;
             presented?;
             self.pacing.frame.push(dt);
         }
@@ -1111,6 +1186,7 @@ impl Engine {
                 Err(e) => world_error(&e),
             },
             Command::Query(spec) => self.query(&spec),
+            Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
@@ -1518,7 +1594,10 @@ impl Engine {
             )));
         }
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
-        let frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
+        let mut draws_2d = Vec::new();
+        self.build_draws_2d(spec.include_ui, time_s, &mut draws_2d);
+        warnings.extend(self.two_d.errors.iter().take(5).map(|m| Json::from(m.as_str())));
+        let frame = FrameDesc { draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s) };
 
         let rendered = {
             let _z = profile::zone("sight.render");
