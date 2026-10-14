@@ -26,6 +26,16 @@ pub trait Game {
         30
     }
 
+    /// The command-line arguments after `--` (or `--game-args`), before anything starts: e.g.
+    /// `sepulcra -- --seed 7`. An error stops the engine with that message. The default accepts
+    /// none.
+    fn configure(&mut self, args: &[String]) -> Result<(), String> {
+        match args.first() {
+            None => Ok(()),
+            Some(a) => Err(format!("takes no arguments (got '{a}')")),
+        }
+    }
+
     /// Once, after the engine, window and world are ready (a loaded world may already hold
     /// the scene).
     fn start(&mut self, _ctx: &mut Ctx) {}
@@ -36,6 +46,11 @@ pub trait Game {
     /// Once per window frame, after the ticks it caused and before rendering: read input, move
     /// the camera, update presentation. Headless engines never call it.
     fn frame(&mut self, _ctx: &mut Ctx, _frame: &mut Frame) {}
+
+    /// Right before `sight_frame` renders a capture (headless too): bring presentation up to the
+    /// current tick (a headless engine never calls [`Game::frame`], and a paused window may not
+    /// have drawn since the last step). Changes are journaled like a frame's.
+    fn before_capture(&mut self, _ctx: &mut Ctx) {}
 
     /// Extra MCP tools (by convention `play_*`), answered by [`Game::call_tool`].
     fn tools(&self) -> Vec<ToolDef> {
@@ -82,6 +97,15 @@ pub struct Ctx<'a> {
     pub clock: &'a Clock,
     /// Attribution for world changes: the game's name.
     pub agent: &'a str,
+    /// A human's window is open (false headless): e.g. skip presentation only people see.
+    pub windowed: bool,
+}
+
+impl Ctx<'_> {
+    /// Whether the engine clock is paused (`time_control`); ticks don't run while it is.
+    pub fn paused(&self) -> bool {
+        self.clock.paused()
+    }
 }
 
 /// Per-frame input and presentation state.

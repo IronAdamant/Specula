@@ -56,7 +56,7 @@ impl Host {
         let mut swarm = Swarm::default();
         swarm.reserve(game.name());
         world.set_recording(Recording::Snapshot);
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra" });
+        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
         world.set_recording(Recording::Full);
         swarm.game_changes(&mut world, 0, "sepulcra", Kind::GameStart);
         let (ann, bob) = (session("aaaaaa11"), session("bbbbbb22"));
@@ -69,7 +69,7 @@ impl Host {
     fn tool(&mut self, who: Writer, name: &str, args: Json) -> Result<ToolOutput, WorldError> {
         let Host { game, world, swarm, clock, .. } = self;
         let checkpoint = if swarm.claims.is_empty() { None } else { game.checkpoint() };
-        let call = |w: &mut World| game.call_tool(&mut Ctx { world: w, clock, agent: "sepulcra" }, name, &args);
+        let call = |w: &mut World| game.call_tool(&mut Ctx { world: w, clock, agent: "sepulcra", windowed: false }, name, &args);
         let result = swarm.game_tool(world, clock.tick(), "sepulcra", who, call);
         if result.is_err() {
             game.restore(checkpoint.expect("sepulcra checkpoints"));
@@ -80,7 +80,7 @@ impl Host {
     fn tick(&mut self) {
         let Host { game, world, swarm, clock, .. } = self;
         world.set_recording(Recording::Snapshot);
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra" });
+        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
         world.set_recording(Recording::Full);
         swarm.game_changes(world, clock.tick(), "sepulcra", Kind::GameTick);
         clock.finish_tick();

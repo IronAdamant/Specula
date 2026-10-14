@@ -12,5 +12,6 @@ rust-version.workspace = true
 specula-core = { workspace = true }
 specula-platform = { workspace = true }
 specula-gpu = { workspace = true }
+specula-model = { workspace = true }
 specula-protocol = { workspace = true }
 specula-sys = { workspace = true }
