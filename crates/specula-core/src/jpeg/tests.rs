@@ -220,10 +220,12 @@ fn fuzz_mutations_never_panic() {
         encode(48, 40, &src, &EncodeOptions { color: ColorModel::AdobeCmyk, subsampling: Subsampling::S422, optimize: true, ..EncodeOptions::default() }).unwrap(),
         encode(48, 40, &src, &EncodeOptions { color: ColorModel::Gray, progressive: true, ..EncodeOptions::default() }).unwrap(),
     ];
-    let mut rng = Rng::new(0x1234, 7);
+    // `SPECULA_FUZZ_SCALE=100` runs a hundred times as many mutants.
+    let scale: usize = std::env::var("SPECULA_FUZZ_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let mut rng = Rng::new(0x1234 + scale as u64 - 1, 7);
     let limits = Limits { max_pixels: 1 << 20 };
     let mut ok = 0;
-    for i in 0..6000 {
+    for i in 0..6000 * scale {
         let mut m = seeds[i % seeds.len()].clone();
         for _ in 0..1 + rng.below(4) {
             let at = rng.below(m.len() as u32) as usize;

@@ -83,6 +83,8 @@ pub struct Limits {
     pub max_file_bytes: u64,
     /// Largest sum of all buffers.
     pub max_total_bytes: u64,
+    /// Largest JSON text (`.gltf` file or GLB JSON chunk); parsed JSON takes several times this.
+    pub max_json_bytes: u64,
     /// Most entries in any top-level array (nodes, meshes, accessors, ...) or nested list.
     pub max_items: usize,
     /// Most elements in one accessor.
@@ -92,6 +94,8 @@ pub struct Limits {
     pub max_triangles: usize,
     /// Deepest node hierarchy.
     pub max_node_depth: usize,
+    /// Most animation keys over every imported clip (after resampling).
+    pub max_total_keys: usize,
     /// Largest decoded image (`width × height`).
     pub max_image_pixels: u64,
 }
@@ -101,11 +105,13 @@ impl Default for Limits {
         Limits {
             max_file_bytes: 256 << 20,
             max_total_bytes: 512 << 20,
+            max_json_bytes: 64 << 20,
             max_items: 1 << 16,
             max_accessor_count: 1 << 22,
             max_vertices: 1 << 22,
             max_triangles: 1 << 23,
             max_node_depth: 128,
+            max_total_keys: 1 << 22,
             max_image_pixels: 1 << 26,
         }
     }

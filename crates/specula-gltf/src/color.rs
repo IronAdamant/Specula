@@ -46,7 +46,7 @@ pub fn srgb8_to_linear(c: u8) -> f32 {
 /// The sRGB8 code of a linear value (clamped to 0..1; NaN → 0).
 pub fn linear_to_srgb8(x: f32) -> u8 {
     // NaN fails this test too.
-    if !(x > 0.0) {
+    if x.is_nan() || x <= 0.0 {
         return 0;
     }
     tables().thresholds.partition_point(|&t| t <= x) as u8
@@ -59,7 +59,7 @@ pub fn linear_to_srgb_unit(x: f32) -> f32 {
 
 /// A linear (alpha, normalized) value in 0..1 to unorm8, rounded to nearest.
 pub fn unorm8(x: f32) -> u8 {
-    if !(x > 0.0) {
+    if x.is_nan() || x <= 0.0 {
         return 0;
     }
     dmath::round(x.min(1.0) * 255.0) as u8

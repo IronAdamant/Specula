@@ -7,7 +7,7 @@
 //! Specula specifics travel in `extras.specula`: material presets, bone tails, clip loop modes,
 //! durations, distances, events and curves.
 
-use specula_anim::math::{qdot, qmul, qneg, QID};
+use specula_anim::math::{qdot, qmul, qneg, qnorm, QID};
 use specula_anim::{Channel, Clip, Interp, Skeleton};
 use specula_core::{base64, Json};
 use specula_model::{MaterialKind, MaterialPreset, Model};
@@ -318,6 +318,8 @@ fn animation_json(out: &mut Out, s: &Skeleton, clip: &Clip, ci: usize) -> Result
                 Channel::Translation => [rest.t[0] + v[0], rest.t[1] + v[1], rest.t[2] + v[2], 0.0],
                 Channel::Rotation => {
                     let q = if rest.r == QID { *v } else { qmul(rest.r, *v) };
+                    // glTF validators want unit quaternions (Specula accepts |q|² within 1e-3).
+                    let q = if (qdot(q, q) - 1.0).abs() > 1e-6 { qnorm(q) } else { q };
                     match abs.last() {
                         Some(p) if qdot(*p, q) < 0.0 => qneg(q),
                         _ => q,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use specula_core::{base64, Json};
 
-use crate::error::{gerr, GltfError, GltfErrorCode as C, Warning};
+use crate::error::{gerr, push_warning, GltfError, GltfErrorCode as C, Warning};
 use crate::Limits;
 
 /// GLB magic `glTF`, chunk types `JSON` and `BIN\0`.
@@ -533,11 +533,14 @@ pub fn load(bytes: &[u8], base: Option<&Path>, limits: &Limits, warnings: &mut V
     }
     let is_glb = bytes.starts_with(b"glTF");
     let (json_bytes, bin) = if is_glb { split_glb(bytes)? } else { (bytes, None) };
+    if json_bytes.len() as u64 > limits.max_json_bytes {
+        return Err(gerr(C::Limit, "", format!("JSON is {} bytes; the limit is {}", json_bytes.len(), limits.max_json_bytes)).with_numbers(json_bytes.len() as f64, limits.max_json_bytes as f64));
+    }
     let json_start = if is_glb { 20 } else { 0 };
     let text = std::str::from_utf8(json_bytes).map_err(|e| gerr(C::Json, "", format!("JSON is not UTF-8: {e}")).at_offset((json_start + e.valid_up_to()) as u64))?;
     let text = match text.strip_prefix('\u{feff}') {
         Some(t) => {
-            warnings.push(Warning { code: "byte_order_mark", path: String::new(), message: "the JSON starts with a byte-order mark (not allowed by glTF; ignored)".into() });
+            push_warning(warnings, Warning { code: "byte_order_mark", path: String::new(), message: "the JSON starts with a byte-order mark (not allowed by glTF; ignored)".into() });
             t
         }
         None => text,
@@ -559,7 +562,7 @@ pub fn load(bytes: &[u8], base: Option<&Path>, limits: &Limits, warnings: &mut V
             (Some(uri), _, _) => read_uri(uri, base.as_deref(), &format!("{path}.uri"), limits)?,
             (None, 0, Some(bin)) if is_glb => {
                 if bin.len() > b.byte_length + 3 {
-                    warnings.push(Warning { code: "bin_chunk_padding", path: path.clone(), message: format!("BIN chunk is {} bytes for a {}-byte buffer", bin.len(), b.byte_length) });
+                    push_warning(warnings, Warning { code: "bin_chunk_padding", path: path.clone(), message: format!("BIN chunk is {} bytes for a {}-byte buffer", bin.len(), b.byte_length) });
                 }
                 bin.to_vec()
             }
@@ -686,7 +689,7 @@ pub fn parse(json: &Json, limits: &Limits, warnings: &mut Vec<Warning>) -> Resul
     }
     for e in &d.extensions_used {
         if !SUPPORTED_REQUIRED.contains(&e.as_str()) && !d.extensions_required.contains(e) {
-            warnings.push(Warning { code: "ignored_extension", path: "extensionsUsed".into(), message: format!("{e} is not supported; its data is ignored") });
+            push_warning(warnings, Warning { code: "ignored_extension", path: "extensionsUsed".into(), message: format!("{e} is not supported; its data is ignored") });
         }
     }
 
@@ -755,7 +758,7 @@ pub fn parse(json: &Json, limits: &Limits, warnings: &mut Vec<Warning>) -> Resul
         obj(t, &p)?;
         let source = idx(t, "source", &p, d.images.len(), "image")?;
         if source.is_none() && t.get("extensions").is_some() {
-            warnings.push(Warning { code: "texture_without_source", path: p.clone(), message: "texture images only through extensions (e.g. KTX2/WebP) are not supported; ignored".into() });
+            push_warning(warnings, Warning { code: "texture_without_source", path: p.clone(), message: "texture images only through extensions (e.g. KTX2/WebP) are not supported; ignored".into() });
         }
         d.textures.push(Texture { name: name(t, &p)?, source, sampler: idx(t, "sampler", &p, d.samplers.len(), "sampler")? });
     }
@@ -834,12 +837,12 @@ pub fn parse(json: &Json, limits: &Limits, warnings: &mut Vec<Warning>) -> Resul
         } else {
             let r: [f32; 4] = vecn(n, "rotation", &p, [0.0, 0.0, 0.0, 1.0])?;
             let l2 = r.iter().map(|x| x * x).sum::<f32>();
-            if !(l2 > 1e-12) {
+            if l2.is_nan() || l2 <= 1e-12 {
                 return Err(gerr(C::InvalidData, &field(&p, "rotation"), "a zero quaternion is not a rotation"));
             }
             let r = if (l2 - 1.0).abs() > 1e-6 {
                 if (l2 - 1.0).abs() > 1e-2 {
-                    warnings.push(Warning { code: "rotation_not_unit", path: field(&p, "rotation"), message: format!("|q|^2 = {l2}; normalised") });
+                    push_warning(warnings, Warning { code: "rotation_not_unit", path: field(&p, "rotation"), message: format!("|q|^2 = {l2}; normalised") });
                 }
                 let k = 1.0 / l2.sqrt();
                 r.map(|x| x * k)
@@ -980,7 +983,7 @@ fn parse_texref(m: &Json, k: &str, p: &str, textures: usize, scale_key: Option<&
         None => 1.0,
     };
     if t.get("extensions").and_then(|e| e.get("KHR_texture_transform")).is_some() {
-        warnings.push(Warning { code: "ignored_extension", path: tp.clone(), message: "KHR_texture_transform is not applied".into() });
+        push_warning(warnings, Warning { code: "ignored_extension", path: tp.clone(), message: "KHR_texture_transform is not applied".into() });
     }
     Ok(Some(TexRef { texture, tex_coord, scale }))
 }

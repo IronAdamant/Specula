@@ -103,6 +103,19 @@ pub(crate) fn gerr(code: GltfErrorCode, path: &str, message: impl Into<String>) 
     GltfError::new(code, path, message)
 }
 
+/// Most warnings kept; later ones are dropped behind one `warnings_truncated` (hostile files
+/// can't grow the list without bound).
+pub const MAX_WARNINGS: usize = 256;
+
+/// Appends `warning` unless the list is full.
+pub(crate) fn push_warning(list: &mut Vec<Warning>, warning: Warning) {
+    match list.len() {
+        n if n < MAX_WARNINGS => list.push(warning),
+        MAX_WARNINGS => list.push(Warning { code: "warnings_truncated", path: String::new(), message: format!("more than {MAX_WARNINGS} warnings; the rest were dropped") }),
+        _ => {}
+    }
+}
+
 /// Something the importer ignored, approximated or repaired. Imports succeed with warnings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warning {

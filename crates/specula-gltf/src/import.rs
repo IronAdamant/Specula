@@ -14,14 +14,14 @@ use specula_model::{collider, Bone, Collider, MaterialKind, MaterialPreset, Mesh
 use crate::accessor::{expect_type, floats, uints};
 use crate::color::{linear_to_srgb8, linear_to_srgb_unit, srgb8_to_linear, unorm8};
 use crate::doc::{AlphaMode, ComponentType, Document, ElemType, Interpolation, Loaded, Local, Path3, TexRef};
-use crate::error::{gerr, GltfError, GltfErrorCode as C, Warning};
+use crate::error::{gerr, push_warning, GltfError, GltfErrorCode as C, Warning};
 use crate::{Import, ImportOptions, ImportedImage, ImportedMaterial, ImportedTexture, Stats, TextureRef};
 
 /// Linear rotation keys further apart than this get slerp-sampled keys in between.
 const MAX_ROTATION_STEP_RAD: f32 = 0.349_065_85; // 20°
 
 fn warn(w: &mut Vec<Warning>, code: &'static str, path: impl Into<String>, message: impl Into<String>) {
-    w.push(Warning { code, path: path.into(), message: message.into() });
+    push_warning(w, Warning { code, path: path.into(), message: message.into() });
 }
 
 /// A node's local transform as an affine matrix.
@@ -341,7 +341,7 @@ fn top4(js: &[u32], ws: &[f32]) -> Option<[(u32, f32); 4]> {
         v.truncate(4);
     }
     let sum: f32 = v.iter().map(|x| x.1).sum();
-    if !(sum > 0.0) {
+    if sum.is_nan() || sum <= 0.0 {
         return None;
     }
     let mut out = [(0u32, 0.0f32); 4];
@@ -609,7 +609,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                         } else {
                             [0.0; 3]
                         });
-                        if !(l > 1e-12) {
+                        if l.is_nan() || l <= 1e-12 {
                             bad += 1;
                         }
                         inst.mesh.colors.push(color_of(i));
@@ -628,13 +628,12 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                                 acc[v as usize] = math3::add(acc[v as usize], fnorm);
                             }
                         }
-                        for i in 0..n {
-                            let slot = &mut inst.mesh.normals[b as usize + i];
+                        for (slot, a) in inst.mesh.normals[b as usize..].iter_mut().zip(&acc) {
                             if *slot == [0.0; 3] {
-                                *slot = if math3::length(acc[i]) > 1e-20 { math3::normalize(acc[i]) } else { [0.0, 1.0, 0.0] };
+                                *slot = if math3::length(*a) > 1e-20 { math3::normalize(*a) } else { [0.0, 1.0, 0.0] };
                             }
                         }
-                        warn(w, "zero_normals", &format!("{path}.attributes.NORMAL"), format!("{bad} zero-length normals replaced"));
+                        warn(w, "zero_normals", format!("{path}.attributes.NORMAL"), format!("{bad} zero-length normals replaced"));
                     }
                     cache.insert(key, b);
                     b
@@ -796,7 +795,7 @@ struct RawChannel {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone_of: &[Option<usize>], in_scene: &[bool], names: &mut BTreeSet<String>, opts: &ImportOptions, w: &mut Vec<Warning>) -> Result<Option<Clip>, GltfError> {
+fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone_of: &[Option<usize>], in_scene: &[bool], names: &mut BTreeSet<String>, keys_total: &mut usize, opts: &ImportOptions, w: &mut Vec<Warning>) -> Result<Option<Clip>, GltfError> {
     let a = &doc.animations[ai];
     let apath = format!("animations[{ai}]");
     let mut raw: Vec<RawChannel> = Vec::new();
@@ -880,7 +879,7 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
         if rotation {
             for (k, q) in values.iter_mut().enumerate() {
                 let l2 = qdot(*q, *q);
-                if !(l2 > 1e-12) {
+                if l2.is_nan() || l2 <= 1e-12 {
                     return Err(gerr(C::InvalidData, &format!("{sp}.output"), format!("key {k} is a zero quaternion")));
                 }
                 if (l2 - 1.0).abs() > 1e-6 {
@@ -1004,6 +1003,10 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
                     [v[0] / rest.s[0], v[1] / rest.s[1], v[2] / rest.s[2], 0.0]
                 }
             });
+        }
+        *keys_total += times.len();
+        if *keys_total > opts.limits.max_total_keys {
+            return Err(gerr(C::Limit, &r.path, format!("more than {} animation keys in total", opts.limits.max_total_keys)).with_numbers(*keys_total as f64, opts.limits.max_total_keys as f64));
         }
         clip.tracks.push(Track { bone: skel.names[r.bone].clone(), channel: r.channel, keys: Keys { interp, times, values: rel } });
     }
@@ -1373,6 +1376,13 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
                 }
             }
         }
+        // Degenerate transforms (zero scale) leave non-finite normals: give them a valid one.
+        for nrm in &mut inst.mesh.normals {
+            if nrm.iter().any(|v| !v.is_finite()) || (math3::length(*nrm) - 1.0).abs() > 1e-3 {
+                let l = math3::length(*nrm);
+                *nrm = if l.is_finite() && l > 1e-12 { math3::scale(*nrm, 1.0 / l) } else { [0.0, 1.0, 0.0] };
+            }
+        }
         let dropped = drop_degenerate(&mut inst.mesh);
         if dropped > 0 {
             stats.degenerate_triangles += dropped;
@@ -1408,8 +1418,9 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
     let mut clips = Vec::new();
     if let Some(s) = &skeleton {
         let mut names = BTreeSet::new();
+        let mut keys_total = 0;
         for ai in 0..doc.animations.len() {
-            if let Some(c) = build_clip(doc, bufs, ai, s, &bone_of, &in_scene, &mut names, opts, w)? {
+            if let Some(c) = build_clip(doc, bufs, ai, s, &bone_of, &in_scene, &mut names, &mut keys_total, opts, w)? {
                 clips.push(c);
             }
         }
