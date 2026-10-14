@@ -43,8 +43,19 @@ memory of the earlier ones. Last updated **2026-10-15**.
     minimum window width > 200 px (platform tests use bigger windows). Usage limits interrupt lanes: resume each
     with SendMessage, the work is saved.
   - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
-    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages. New: should
-    transient 2D shapes get a separate budget (currently shared, 2M vertices); should cameras persist with worlds.
+    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages. 
+  - **Owner decisions 2026-10-15:**
+    - **Cameras persist with the world** (owner: "both human developers and AI developers can corroborate
+      easily"). Sight lane task: save named cameras in the world folder (e.g. `cameras.json`, keyed by agent
+      *name* since identity keys don't outlive a run; follow targets by entity path), load them with the world, keep
+      them out of `world_hash`, journal `camera_set`/`camera_delete` so undo and other agents see them, and show them
+      to humans (`window_view {camera}`) so a developer can look through an agent's camera.
+    - **Transient 2D shapes get their own budget** (owner delegated: "you decide ... optimisation matters just as
+      much as making it look good"). Claude's decision: game-spawned transient shapes draw from a separate, smaller
+      allowance (default 250,000 vertices; persistent world shapes keep 2,000,000), both set in `perf.toml` beside
+      the frame budgets. Why: effects must never crowd out authored content, a refusal tells the game designer
+      exactly what a spawned effect costs, and a small default keeps effects cheap on the iGPU. 2D lane task, with
+      a test that a transient flood can't block a persistent spawn.
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).
