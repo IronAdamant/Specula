@@ -28,6 +28,11 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// A perspective camera at `eye` looking at `target`.
+    pub fn new(eye: Vec3, target: Vec3, fov_y_deg: f32) -> Camera {
+        Camera { eye, target, fov_y_deg }
+    }
+
     /// Reversed-Z, infinite-far projection × view (pair it with `FrameDesc::reverse_z = true`).
     pub fn view_proj(&self, width: u32, height: u32) -> Mat4 {
         let aspect = width.max(1) as f32 / height.max(1) as f32;

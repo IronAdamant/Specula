@@ -215,7 +215,7 @@ impl Cameras {
         let spec = &cam.spec;
         let Some(f) = &spec.follow else {
             let (eye, target) = (spec.eye.expect("checked at set"), spec.target.expect("checked at set"));
-            return Ok(Resolved { camera: Camera { eye, target, fov_y_deg: spec.fov_y_deg }, warning: None, version });
+            return Ok(Resolved { camera: Camera::new(eye, target, spec.fov_y_deg), warning: None, version });
         };
         match world.find_path(&f.path).ok().and_then(|id| world.get(id)) {
             Some(e) => {
@@ -232,7 +232,7 @@ impl Cameras {
                 };
                 let (eye, target) = (origin + turn(f.offset), origin + turn(f.look_offset));
                 let target = if (target - eye).length() < 1e-4 { target + Vec3::new(0.0, 0.0, -1.0) } else { target };
-                let camera = Camera { eye, target, fov_y_deg: spec.fov_y_deg };
+                let camera = Camera::new(eye, target, spec.fov_y_deg);
                 cam.last = Some(camera);
                 Ok(Resolved { camera, warning: None, version })
             }

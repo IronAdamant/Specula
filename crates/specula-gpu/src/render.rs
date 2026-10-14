@@ -569,9 +569,6 @@ pub struct Mesh {
     pub index_count: u32,
     /// Object-space bounding sphere, for frustum culling.
     pub bounds: Bounds,
-    /// Every edge is shared by an even number of triangles (by position): a closed shell, which
-    /// covers each pixel with one front face (sight's ID buffer counts glass by it).
-    pub closed: bool,
 }
 
 /// Identity of the device a pipeline cache blob must come from.

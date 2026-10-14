@@ -600,7 +600,7 @@ mod tests {
     use crate::sight::Camera;
 
     fn painter() -> (Painter, Camera) {
-        let cam = Camera { eye: Vec3::new(0.0, 2.0, 10.0), target: Vec3::new(0.0, 0.0, 0.0), fov_y_deg: 50.0 };
+        let cam = Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 0.0, 0.0), 50.0);
         (Painter::new(cam.view_proj(800, 600), 800, 600), cam)
     }
 

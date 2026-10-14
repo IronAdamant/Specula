@@ -274,6 +274,69 @@ mod tests {
         assert_ne!(v[5].normal, v[10].normal);
     }
 
+    /// Reviewer finding (round 3): counting glass by mesh topology double-counted the engine's
+    /// sphere and lathes (seams that don't weld bit-exactly) and missed glass seen from inside.
+    /// A glass mesh must count the pixels its opaque twin covers (its silhouette), whatever its
+    /// shape: closed, capped, concave (cup, torus); on every adapter.
+    #[test]
+    fn glass_counts_like_its_opaque_twin() {
+        use specula_gpu::{DrawItem, FrameDesc, Gpu, GpuOptions, Material, Validation};
+        if !specula_gpu::is_available() {
+            eprintln!("glass_counts_like_its_opaque_twin: SKIPPED — Vulkan is not available");
+            return;
+        }
+        let circle: Vec<[f32; 2]> = (0..=16).map(|k| {
+            let a = TAU * k as f32 / 16.0;
+            [0.3 + 0.12 * a.cos(), 0.12 * a.sin()]
+        }).collect();
+        type Named = (&'static str, (Vec<Vertex>, Vec<u32>));
+        let shapes: Vec<Named> = vec![
+            ("sphere", sphere(32, 16)),
+            ("vase (closed profile)", lathe(&[[0.0, -0.5], [0.3, -0.45], [0.4, -0.1], [0.15, 0.3], [0.25, 0.5], [0.0, 0.5]], 24)),
+            ("tube (open profile, capped)", lathe(&[[0.3, -0.5], [0.35, 0.0], [0.3, 0.5]], 24)),
+            ("cup (concave)", lathe(&[[0.0, -0.5], [0.4, -0.5], [0.45, 0.5], [0.4, 0.5], [0.35, -0.4], [0.0, -0.4]], 24)),
+            ("torus (concave)", lathe(&circle, 32)),
+        ];
+        for a in specula_gpu::enumerate_adapters().unwrap() {
+            let options = GpuOptions { validation: Validation::On, adapter: specula_gpu::AdapterPreference::Index(a.index), ..Default::default() };
+            let mut gpu = match Gpu::new(&options) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("glass_counts_like_its_opaque_twin: SKIPPED on adapter {} — {e}", a.index);
+                    continue;
+                }
+            };
+            if !gpu.ids_count_blended() {
+                eprintln!("glass_counts_like_its_opaque_twin: SKIPPED on adapter {} — no fragment atomics", a.index);
+                continue;
+            }
+            let (w, h) = (320u32, 240u32);
+            let target = gpu.create_target(w, h).unwrap();
+            // Looking down at 35 degrees, so concave insides and rims show.
+            let cam = crate::sight::Camera::new(specula_core::math::Vec3::new(0.0, 1.4, 2.0), specula_core::math::Vec3::ZERO, 45.0);
+            let vp = cam.view_proj(w, h).to_cols_array();
+            let model = specula_core::math::Mat4::from_trs(specula_core::math::Vec3::ZERO, specula_core::math::Quat::IDENTITY, specula_core::math::Vec3::new(1.5, 1.5, 1.5)).to_cols_array();
+            for (name, (v, i)) in &shapes {
+                let mesh = gpu.upload_mesh(v, i).unwrap();
+                let mut count = |material: Material| {
+                    let draw = [DrawItem { material, ..DrawItem::new(mesh, model, [0.8, 0.9, 1.0, if material == Material::Lit { 1.0 } else { 0.2 }]) }];
+                    let frame = FrameDesc { view_proj: vp, draws: &draw, reverse_z: true, ..Default::default() };
+                    gpu.render_with_ids(target, &frame, &[1]).unwrap();
+                    gpu.id_coverage(target, 1).unwrap().per_id[0]
+                };
+                let (opaque, glass) = (count(Material::Lit), count(Material::Glass));
+                let ratio = glass.blended_pixels as f64 / opaque.opaque_pixels as f64;
+                assert!(opaque.opaque_pixels > 1000, "adapter {}: {name}: {opaque:?}", a.index);
+                assert!((0.97..=1.03).contains(&ratio), "adapter {}: {name}: glass {} px vs opaque {} px ({ratio:.3})", a.index, glass.blended_pixels, opaque.opaque_pixels);
+                assert_eq!((glass.min, glass.max), (opaque.min, opaque.max), "adapter {}: {name}: same exact box", a.index);
+                gpu.destroy_mesh(mesh);
+            }
+            gpu.destroy_target(target);
+            let warnings: Vec<_> = gpu.take_validation_messages().into_iter().filter(|m| m.severity >= specula_gpu::Severity::Warning).collect();
+            assert!(warnings.is_empty(), "adapter {}: {warnings:#?}", a.index);
+        }
+    }
+
     #[test]
     fn cube_faces_sit_on_their_normals() {
         let (v, _) = cube();

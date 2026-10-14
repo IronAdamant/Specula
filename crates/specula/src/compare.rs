@@ -575,7 +575,7 @@ mod tests {
 
     fn view() -> MarkView {
         MarkView {
-            camera: Camera { eye: specula_core::math::Vec3::ONE, target: specula_core::math::Vec3::ZERO, fov_y_deg: 50.0 },
+            camera: Camera::new(specula_core::math::Vec3::ONE, specula_core::math::Vec3::ZERO, 50.0),
             width: 4,
             height: 4,
             include_ui: false,

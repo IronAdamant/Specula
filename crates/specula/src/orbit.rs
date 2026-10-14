@@ -21,7 +21,7 @@ pub fn view(center: Vec3, distance: f32, elevation_deg: f32, start_deg: f32, i: 
     let az = start_deg + 360.0 * i as f32 / n as f32;
     let (a, e) = (az.to_radians(), elevation_deg.to_radians());
     let dir = Vec3::new(a.sin() * e.cos(), e.sin(), a.cos() * e.cos());
-    (Camera { eye: center + dir * distance, target: center, fov_y_deg }, az.rem_euclid(360.0))
+    (Camera::new(center + dir * distance, center, fov_y_deg), az.rem_euclid(360.0))
 }
 
 /// The distance at which a sphere of `radius` fills about 80% of the view's height.

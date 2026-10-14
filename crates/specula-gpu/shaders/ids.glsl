@@ -16,17 +16,27 @@ layout(buffer_reference, std430, buffer_reference_align = 4) buffer Stats {
 };
 const uint STATS_STRIDE = 6u;
 
+// Per pixel, SEEN_SLOTS blended ids already counted there, each (epoch << SEEN_ID_BITS) | id;
+// a slot of another capture's epoch is free. Must match `SEEN_SLOTS` / `SEEN_ID_BITS`.
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Seen {
+    uint slot[];
+};
+const uint SEEN_SLOTS = 2u;
+const uint SEEN_ID_BITS = 20u;
+
 // Must match `IdPush` in src/idbuffer.rs.
 layout(push_constant) uniform Push {
     Frame frame;
     Draws draws;   // instance i reads items[gl_InstanceIndex]
     Ids ids;       // and ids.items[gl_InstanceIndex]
     Stats stats;
-    uint faces;    // counting passes: which faces count (FACES_*), set per batch
+    Seen seen;     // SEEN_SLOTS ids per pixel already counted there (cleared each capture)
+    uint faces;    // counting passes: which fragments the scene shows (FACES_*), set per batch
+    uint width;    // pixels per row (indexes `seen`)
+    uint epoch;    // this capture's tag in `seen` (1..4095)
     uint pad;
 } pc;
 
-// Which fragments of a draw count, as mesh.frag shades them (see src/idbuffer.rs `FACES_*`).
-const uint FACES_ALL = 0u;   // every fragment: blob shadows, open glass, opaque draws
-const uint FACES_FRONT = 1u; // front faces by normal: closed glass shells (one per pixel)
+// Which fragments of a draw the scene shows, mirroring mesh.frag's discards (src/idbuffer.rs).
+const uint FACES_ALL = 0u;   // every fragment: opaque draws, glass (both passes), blob shadows
 const uint FACES_LAVA = 2u;  // the lava lamp's proxy: near faces, or far faces from inside it

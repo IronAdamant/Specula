@@ -324,8 +324,7 @@ impl GpuInner {
         }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
-        let closed = crate::idbuffer::closed_mesh(vertices, indices);
-        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds, closed });
+        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds });
         Ok(MeshId(id))
     }
 

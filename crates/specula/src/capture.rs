@@ -226,7 +226,7 @@ impl Engine {
                 s.push(("camera_version", Json::from(r.version)));
                 (r.camera, Json::obj(s), r.warning)
             }
-            (None, Some(eye), Some(target)) => (Camera { eye, target, fov_y_deg: spec.fov_y_deg }, source("explicit"), None),
+            (None, Some(eye), Some(target)) => (Camera::new(eye, target, spec.fov_y_deg), source("explicit"), None),
             _ => (sight::auto_camera(&self.world, spec.fov_y_deg), source("auto"), None),
         };
         Ok(ViewReq { camera, width: spec.width, height: spec.height, include_ui: spec.include_ui, source, warning })
