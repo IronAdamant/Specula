@@ -323,7 +323,8 @@ claims and versions more agents just means more collisions.
 **Why here:** after M1 the bottleneck becomes "does it look right, is it really visible, and can agents make real
 shapes?"
 
-- [ ] **Render graph** that owns barriers and transitions.
+- [x] **Render graph** that owns barriers and transitions.
+  *Done 2026-10-14:* `specula-gpu::graph`; every pass declares its reads/writes; sync-validation clean.
 - [x] **Materials** (PBR-lite plus a stylised/vertex-colour path), **directional and point lights**, **shadow maps**.
   *Started 2026-10-13 for the lava-lamp benchmark:*
   - per-frame data through a buffer device address
@@ -339,7 +340,8 @@ shapes?"
   *Done 2026-10-13:* instancing (10k cubes in 1 draw call; 2.7 ms GPU on the Intel iGPU) and CPU frustum culling. LOD selection still to do.
 - [ ] **2D**: sprites, tilemaps, vector shapes, orthographic cameras.
 - [x] PNG decode (done early, in M0).
-- [ ] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
+- [x] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
+  *Done 2026-10-14:* `specula-gltf` import/export, our own JPEG codec in `specula-core`; skins → rigs, animations → clips.
 - [ ] **Skeletal animation, stages A1–A2** ([design/ANIMATION.md](design/ANIMATION.md)): GPU skinning, clip playback,
   crossfades, filmstrip sight.
   *Progress 2026-10-13:* rigs in recipes, `specula-anim` clips/blending/generators/IK, CPU skinning with GPU-ready matrices, filmstrip sight. GPU skinning still to do.

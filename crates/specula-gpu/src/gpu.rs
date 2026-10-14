@@ -1032,6 +1032,75 @@ mod tests {
         }
     }
 
+    /// Changing the shadow map is atomic: a frame whose graph fails to prepare after the new map
+    /// was created leaves the old map alive and in descriptor binding 0; the next good frame
+    /// swaps it; freeing a map binding 0 points at makes the next frame rewrite the binding.
+    #[test]
+    fn shadow_map_swap_survives_a_failed_frame() {
+        use crate::graph::SHARED_OWNER;
+        use crate::render::{declare_frame, prepare_graph, FrameShape};
+        use crate::ShadowSettings;
+        let test = "shadow_map_swap_survives_a_failed_frame";
+        if !crate::is_available() {
+            eprintln!("{test}: SKIPPED — Vulkan is not available");
+            return;
+        }
+        let options = GpuOptions { validation: Validation::On, ..Default::default() };
+        let mut gpu = match GpuInner::new(&options) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("{test}: SKIPPED — {e}");
+                return;
+            }
+        };
+        let extent = VkExtent2D { width: 64, height: 32 };
+        let shape = |resolution: u32, bloom: bool| FrameShape {
+            out_name: "target",
+            format: TARGET_FORMAT,
+            extent,
+            prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COPY_BIT },
+            fin: Final::TransferSrc,
+            mode: PostMode { bloom_levels: if bloom { 2 } else { 0 }, fxaa: false },
+            shadow: Some(shadow_desc(&ShadowSettings { enabled: true, resolution, ..Default::default() })),
+            overlay: false,
+        };
+        let mut g = FrameGraph::new(77);
+        let shadow_view = |gpu: &GpuInner| gpu.descriptors.shadow_view;
+        // Frame 1: a 256² map, bound in binding 0.
+        let res = declare_frame(&mut g, &shape(256, false));
+        prepare_graph(&gpu.device, &mut gpu.descriptors, &mut gpu.pool, &mut g, &res).unwrap();
+        let old = g.image(res.shadow.unwrap()).array_view;
+        assert_eq!(shadow_view(&gpu), old);
+        // Frame 2: a 512² map is created, then a later image (the HDR target) fails.
+        gpu.pool.fail_creates = Some(1);
+        let res = declare_frame(&mut g, &shape(512, true));
+        let err = prepare_graph(&gpu.device, &mut gpu.descriptors, &mut gpu.pool, &mut g, &res).unwrap_err();
+        assert!(err.message.contains("injected"), "{err}");
+        gpu.pool.fail_creates = None;
+        // Nothing pending: collect everything collectable. The old map must survive.
+        gpu.pool.collect(&gpu.device, &mut gpu.descriptors, u64::MAX);
+        assert_eq!(shadow_view(&gpu), old, "binding 0 still points at the old map");
+        assert!(gpu.pool.has_view(old), "the old map is still alive");
+        // Frame 3: the swap completes; the old map is freed.
+        let res = declare_frame(&mut g, &shape(512, true));
+        prepare_graph(&gpu.device, &mut gpu.descriptors, &mut gpu.pool, &mut g, &res).unwrap();
+        let new = g.image(res.shadow.unwrap()).array_view;
+        assert_eq!(shadow_view(&gpu), new);
+        gpu.pool.collect(&gpu.device, &mut gpu.descriptors, u64::MAX);
+        assert!(!gpu.pool.has_view(old) && gpu.pool.has_view(new));
+        assert_eq!(shadow_view(&gpu), new);
+        // Freeing the bound map forgets it, so the next frame rewrites binding 0.
+        gpu.pool.release_owner(&gpu.device, &mut gpu.descriptors, SHARED_OWNER);
+        assert_eq!(shadow_view(&gpu), VK_NULL_HANDLE);
+        let res = declare_frame(&mut g, &shape(512, true));
+        prepare_graph(&gpu.device, &mut gpu.descriptors, &mut gpu.pool, &mut g, &res).unwrap();
+        assert_eq!(shadow_view(&gpu), g.image(res.shadow.unwrap()).array_view);
+        gpu.pool.release_owner(&gpu.device, &mut gpu.descriptors, 77);
+        let messages = gpu.take_validation_messages();
+        let errors: Vec<_> = messages.iter().filter(|m| m.severity == Severity::Error).collect();
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
     /// Proves the debug messenger really delivers errors (so "zero errors" elsewhere means something).
     #[test]
     fn validation_errors_are_captured() {

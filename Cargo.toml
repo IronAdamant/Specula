@@ -5,6 +5,7 @@ members = [
     "crates/specula-core",
     "crates/specula-model",
     "crates/specula-anim",
+    "crates/specula-gltf",
     "crates/specula-platform",
     "crates/specula-input",
     "crates/specula-gpu",
@@ -32,6 +33,7 @@ specula-sys = { path = "crates/specula-sys" }
 specula-core = { path = "crates/specula-core" }
 specula-model = { path = "crates/specula-model" }
 specula-anim = { path = "crates/specula-anim" }
+specula-gltf = { path = "crates/specula-gltf" }
 specula-platform = { path = "crates/specula-platform" }
 specula-input = { path = "crates/specula-input" }
 specula-gpu = { path = "crates/specula-gpu" }
