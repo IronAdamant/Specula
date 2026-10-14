@@ -1087,7 +1087,7 @@ fn passes(s: &Subject, f: SubjectFilter) -> bool {
 /// A subject trimmed to what an orbit view needs.
 fn compact_subject(j: Json) -> Json {
     let mut out = Json::obj::<&str>([]);
-    for key in ["id", "path", "screen", "screen_box_exact", "visible_px", "distance_m"] {
+    for key in ["id", "path", "screen", "screen_box_exact", "visible_px", "no_pixels", "occluded", "distance_m"] {
         if let Some(v) = j.get(key) {
             out.set(key, v.clone());
         }
