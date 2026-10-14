@@ -4,7 +4,7 @@
 //! which order, and how consecutive entries merge into instanced draw calls. Per-draw records are
 //! written to the GPU in `entries` order, so a batch is a contiguous range of records.
 
-use crate::render::{camera_position, SKINNED_BOUNDS_SCALE};
+use crate::render::camera_position;
 use crate::{FrameDesc, Material, MeshId, Vertex};
 
 /// A bounding sphere in a mesh's object space.
@@ -132,11 +132,17 @@ fn opaque_key(material: Material, mesh: MeshId, skinned: bool, dist2: f32, index
     (material as u32, mesh.0, skinned, dist2.to_bits(), index)
 }
 
-/// `bounds` (a draw's mesh sphere) placed by the draw: a skinned draw's sphere is
-/// [`SKINNED_BOUNDS_SCALE`] times larger (poses reach beyond the bind pose).
+/// The world-space sphere a draw is culled (and cast as a shadow) with: its own
+/// [`crate::DrawItem::bounds`] when given; else its mesh's sphere `bounds` placed by its model
+/// matrix, except for skinned draws, whose pose can reach anywhere: never culled.
 pub fn draw_sphere(d: &crate::DrawItem, bounds: Bounds) -> ([f32; 3], f32) {
+    if let Some(b) = d.bounds {
+        if b.iter().all(|v| v.is_finite()) && b[3] >= 0.0 {
+            return ([b[0], b[1], b[2]], b[3]);
+        }
+    }
     let (c, r) = world_sphere(&d.model, bounds);
-    (c, if d.skin.is_some() { r * SKINNED_BOUNDS_SCALE } else { r })
+    (c, if d.skin.is_some() { f32::INFINITY } else { r })
 }
 
 /// Cull, order and batch `frame`'s draws. `bounds` gives a mesh's object-space sphere (`None` =
@@ -414,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn skinned_draws_batch_apart_and_cull_with_wider_bounds() {
+    fn skinned_draws_batch_apart_and_cull_by_their_posed_bounds() {
         let mut posed = draw(1, at(0.0, 0.0, -5.0), Material::Lit);
         posed.skin = Some(0);
         let mut posed2 = draw(1, at(1.0, 0.0, -5.0), Material::Lit);
@@ -424,11 +430,19 @@ mod tests {
         let p = plan(&frame, |_| Some(UNIT));
         let shape: Vec<_> = p.batches.iter().map(|b| (b.skinned, b.count)).collect();
         assert_eq!(shape, vec![(false, 1), (true, 2)], "one mesh, two batches: plain and skinned");
-        // Just outside the right plane at rest size, inside at twice the size.
-        let mut edge = draw(1, at(5.8, 0.0, -5.0), Material::Lit);
-        assert_eq!(plan(&FrameDesc { draws: &[edge], view_proj: camera(0.0, true), ..Default::default() }, |_| Some(Bounds { center: [0.0; 3], radius: 0.5 })).culled, 1);
+        let small = |_| Some(Bounds { center: [0.0; 3], radius: 0.5 });
+        let culled = |d: DrawItem| plan(&FrameDesc { draws: &[d], view_proj: camera(0.0, true), ..Default::default() }, small).culled;
+        // Far outside the right plane at rest: culled.
+        let mut edge = draw(1, at(30.0, 0.0, -5.0), Material::Lit);
+        assert_eq!(culled(edge), 1);
+        // Skinned without bounds: its pose could be anywhere, so it is never culled.
         edge.skin = Some(0);
-        assert_eq!(plan(&FrameDesc { draws: &[edge], view_proj: camera(0.0, true), ..Default::default() }, |_| Some(Bounds { center: [0.0; 3], radius: 0.5 })).culled, 0);
+        assert_eq!(culled(edge), 0);
+        // With posed bounds: culled or drawn by those (the pose reached back into view).
+        edge.bounds = Some([30.0, 0.0, -5.0, 0.5]);
+        assert_eq!(culled(edge), 1);
+        edge.bounds = Some([0.0, 0.0, -5.0, 0.5]);
+        assert_eq!(culled(edge), 0);
     }
 
     #[test]

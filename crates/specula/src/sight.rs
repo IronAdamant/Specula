@@ -118,6 +118,7 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
             material: e.look.material,
             surface: e.look.surface,
             skin: None,
+            bounds: None,
         });
     }
     stats

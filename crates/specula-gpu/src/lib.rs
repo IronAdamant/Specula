@@ -35,8 +35,8 @@
 //! matrices are copied into the frame's upload buffer and read through its device address, so an
 //! instanced batch of one creature mesh draws every instance with its own pose. Skinned variants
 //! of the scene and shadow pipelines are built with the others; meshes without a skin stream (and
-//! draws without a palette) use the plain pipelines, unchanged. Skinned draws are culled against
-//! twice their rest bounds (poses reach beyond the bind pose).
+//! draws without a palette) use the plain pipelines, unchanged. Skinned draws are culled with
+//! the posed bounds they give ([`DrawItem::bounds`]); without them they are never culled.
 //!
 //! # Textured materials
 //!
@@ -651,12 +651,16 @@ pub struct DrawItem {
     /// mesh's joint indices count from it). `None` draws the bind pose. Ignored for meshes
     /// without a skin stream.
     pub skin: Option<u32>,
+    /// A world-space bounding sphere (centre xyz, radius) for culling and shadow casting,
+    /// replacing the mesh's. Skinned draws should give one that covers their pose: without it a
+    /// skinned draw is never culled.
+    pub bounds: Option<[f32; 4]>,
 }
 
 impl DrawItem {
     /// A matte (M0-style) draw.
     pub fn new(mesh: MeshId, model: [f32; 16], color: [f32; 4]) -> DrawItem {
-        DrawItem { mesh, model, color, material: Material::Lit, surface: Surface::default(), skin: None }
+        DrawItem { mesh, model, color, material: Material::Lit, surface: Surface::default(), skin: None, bounds: None }
     }
 }
 

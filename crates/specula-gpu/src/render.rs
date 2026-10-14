@@ -89,9 +89,7 @@ pub const FEAT_SKINNED: u32 = 32;
 /// never textured (a textured mesh drawn blended uses the untextured variant).
 const OPAQUE_VARIANTS: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
 const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
-/// Culling and shadow casting treat a skinned draw's rest bounds as this many times larger:
-/// poses reach beyond the bind pose.
-pub const SKINNED_BOUNDS_SCALE: f32 = 2.0;
+
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 

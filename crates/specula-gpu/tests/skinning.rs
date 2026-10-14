@@ -106,10 +106,13 @@ fn skinned_bar_on(adapter: AdapterPreference, label: &str) {
     let right = translation([1.0, 0.0, 0.0]);
     let (pa, pb) = (palette(0.9), palette(-0.6));
     let bones: Vec<[f32; 16]> = pa.iter().chain(pb.iter()).copied().collect();
+    // Posed bounds (the bar reaches at most 2 m from its base), as the engine gives them.
     let mut a = DrawItem::new(mesh, left, colour);
     a.skin = Some(0);
+    a.bounds = Some([-1.0, 1.0, 0.0, 1.5]);
     let mut b = DrawItem::new(mesh, right, colour);
     b.skin = Some(2);
+    b.bounds = Some([1.0, 1.0, 0.0, 1.5]);
     for shadows in [false, true] {
         let gpu_draws = [floor, a, b];
         gpu.render(target, &scene_frame(&gpu_draws, &bones, shadows)).unwrap();

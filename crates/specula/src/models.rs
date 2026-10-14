@@ -1646,6 +1646,63 @@ struct PartDraw {
     /// Multiplied by the entity's colour; alpha is the opacity of glass.
     color: [f32; 4],
     triangles: u32,
+    /// Skinned parts: each bone the part's vertices are weighted to, and their farthest
+    /// distance from it in bone space (see [`posed_sphere`]).
+    influence: Vec<(u16, f32)>,
+}
+
+/// The largest factor by which the linear part of `cols` (three columns) can stretch a vector:
+/// σ_max² ≤ min(Gershgorin row bound of MᵀM, ‖M‖_F²) — exact for rotation × scale.
+fn stretch(cols: [[f32; 3]; 3]) -> f32 {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let [a, b, c] = cols;
+    let (ab, bc, ac) = (dot(a, b).abs(), dot(b, c).abs(), dot(a, c).abs());
+    let gershgorin = (dot(a, a) + ab + ac).max(dot(b, b) + ab + bc).max(dot(c, c) + ac + bc);
+    gershgorin.min(dot(a, a) + dot(b, b) + dot(c, c)).sqrt()
+}
+
+/// Each bone a part's skinned vertices are weighted to, with the farthest such vertex's
+/// distance from the bone's origin in bone space (`inverse_bind · v`).
+pub fn part_influence(skeleton: &Skeleton, vertices: &[Vertex], skin: &[SkinVertex]) -> Vec<(u16, f32)> {
+    let mut reach = vec![-1.0f32; skeleton.len()];
+    for (v, s) in vertices.iter().zip(skin) {
+        for k in 0..4 {
+            let b = s.joints[k] as usize;
+            if s.weights[k] > 0 && b < reach.len() {
+                let p = skeleton.inverse_bind[b].apply_point(v.position);
+                reach[b] = reach[b].max((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt());
+            }
+        }
+    }
+    reach.iter().enumerate().filter(|(_, r)| **r >= 0.0).map(|(b, r)| (b as u16, *r)).collect()
+}
+
+/// A model-space sphere holding every vertex of a part posed by `model` (the bones' posed
+/// model-space transforms). A vertex weighted to bone b lies within `reach_b × stretch(b)` of
+/// the bone's posed origin under that bone alone, and linear blend skinning puts it in the convex
+/// hull of those points: inside the sphere around the union of the bones' spheres.
+pub fn posed_sphere(influence: &[(u16, f32)], model: &[Affine]) -> Option<([f32; 3], f32)> {
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for &(b, r) in influence {
+        let m = model.get(b as usize)?;
+        let rad = r * stretch(m.cols);
+        for k in 0..3 {
+            lo[k] = lo[k].min(m.t[k] - rad);
+            hi[k] = hi[k].max(m.t[k] + rad);
+        }
+    }
+    if lo[0] > hi[0] {
+        return None;
+    }
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let mut radius = 0.0f32;
+    for &(b, r) in influence {
+        let m = &model[b as usize];
+        let d = [m.t[0] - c[0], m.t[1] - c[1], m.t[2] - c[2]];
+        radius = radius.max((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() + r * stretch(m.cols));
+    }
+    // A hair of slack for rounding in the GPU's own skinning.
+    (radius.is_finite()).then_some((c, radius * 1.001 + 1e-4))
 }
 
 struct GpuModel {
@@ -1914,7 +1971,9 @@ impl GpuModels {
             }
         };
         stats.histogram[level.min(LOD_BUCKETS - 1)] += 1;
-        // Every part of the LOD shares the entity's palette.
+        // Every part of the LOD shares the entity's palette; each part is culled by its posed
+        // sphere.
+        let mut posed = None;
         let skin = match (&model.anims, &e.anim) {
             (Some(set), Some(_)) => {
                 let mut a = self.anim.borrow_mut();
@@ -1922,6 +1981,7 @@ impl GpuModels {
                     let AnimFrame { bones, skin, .. } = &mut *a;
                     let first = bones.len() as u32;
                     bones.extend(skin.iter().map(Affine::to_cols_array));
+                    posed = Some(a);
                     Some(first)
                 } else {
                     None
@@ -1930,9 +1990,15 @@ impl GpuModels {
             _ => None,
         };
         let cols = world.to_cols_array();
+        let c = &world.cols;
+        let world_stretch = stretch([[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]]);
         let tint = e.color;
         for p in &model.lods[level] {
             stats.triangles += u64::from(p.triangles);
+            let bounds = posed.as_ref().and_then(|a| posed_sphere(&p.influence, &a.model)).map(|(centre, r)| {
+                let w = world.transform_point(Vec3::new(centre[0], centre[1], centre[2]));
+                [w.x, w.y, w.z, r * world_stretch]
+            });
             out.push(DrawItem {
                 mesh: p.mesh,
                 model: cols,
@@ -1940,6 +2006,7 @@ impl GpuModels {
                 material: p.material,
                 surface: p.surface,
                 skin,
+                bounds,
             });
         }
     }
@@ -1999,7 +2066,11 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, String> {
                 Some(m) => textured_look(m, &textures),
                 None => part_look(preset, p.mean),
             };
-            parts.push(PartDraw { mesh, material, surface, color, triangles: (p.indices.len() / 3) as u32 });
+            let influence = match (&built.anims, &p.skin) {
+                (Some(set), Some(skin)) => part_influence(&set.skeleton, &p.vertices, skin),
+                _ => Vec::new(),
+            };
+            parts.push(PartDraw { mesh, material, surface, color, triangles: (p.indices.len() / 3) as u32, influence });
         }
         lods.push(parts);
     }
@@ -2778,6 +2849,8 @@ mod tests {
         assert_eq!(bones.len(), set.skeleton.len(), "one palette: the walker's");
         let parts = draws.len() / 2;
         assert!(draws[..parts].iter().all(|d| d.skin == Some(0)), "every part of the walker shares its palette");
+        assert!(draws[..parts].iter().all(|d| d.bounds.is_some_and(|b| b[3] > 0.0 && b[3] < 3.0)), "posed parts carry posed bounds");
+        assert!(draws[parts..].iter().all(|d| d.bounds.is_none()), "the bind pose culls by its mesh");
         assert!(draws[parts..].iter().all(|d| d.skin.is_none()), "no anim: the bind pose");
         models.put_bones(bones);
         // The same time gives the same pose; another time another.
@@ -2799,5 +2872,62 @@ mod tests {
         drop(models);
         let msgs = gpu.close();
         assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
+    }
+
+    /// Every part of every Sepulcra creature, posed through every clip (30 samples a second, on
+    /// every LOD): each skinned vertex lies inside the part's posed sphere, so a posed part (or
+    /// its shadow) is never culled while visible. The probe that found the old 2× rest-sphere
+    /// bound wrong (a runner's leaping eye 38× outside its part's rest radius).
+    #[test]
+    fn posed_spheres_hold_every_posed_vertex() {
+        let style = Style::parse(&std::fs::read_to_string(sepulcra().join(STYLE_FILE)).unwrap()).unwrap();
+        let mut files = BTreeMap::new();
+        for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
+            let p = e.unwrap().path();
+            files.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+        let mut checked = 0usize;
+        for name in ["shambler", "skeleton_runner", "wraith", "bone_colossus", "brazier_fire"] {
+            let model = build(&files[name], &BuildParams { library: Some(&files), ..BuildParams::new(&style) }).unwrap();
+            let skel = Skeleton::from_rig(model.rig.as_ref().unwrap()).unwrap();
+            let set = AnimSet::load(&std::fs::read_to_string(sepulcra().join(format!("anims/{name}.json"))).unwrap(), skel).unwrap();
+            let parts: Vec<(PartMesh, Vec<(u16, f32)>)> = model
+                .lods
+                .iter()
+                .flat_map(|lod| (0..lod.parts.len()).map(move |i| part_mesh(lod, i, false)))
+                .map(|p| {
+                    let infl = part_influence(&set.skeleton, &p.vertices, p.skin.as_ref().unwrap());
+                    (p, infl)
+                })
+                .collect();
+            for (clip, c) in set.clips() {
+                let mut animator = Animator::new(&set, clip);
+                let (mut posed, mut skin) = (Vec::new(), Vec::new());
+                let steps = (c.duration * 30.0).ceil() as u32 + 1;
+                for s in 0..=steps {
+                    let t = s as f64 / 30.0;
+                    animator.seek(Playback { clip, time: t, rate: 1.0 }, None);
+                    animator.evaluate(&set);
+                    animator.skin(&set, &mut posed, &mut skin);
+                    for (k, (p, infl)) in parts.iter().enumerate() {
+                        let (centre, r) = posed_sphere(infl, &posed).unwrap();
+                        for (v, sv) in p.vertices.iter().zip(p.skin.as_ref().unwrap()) {
+                            let mut q = [0.0f32; 3];
+                            for j in 0..4 {
+                                let w = sv.weights[j] as f32 / 255.0;
+                                if w > 0.0 {
+                                    let x = skin[sv.joints[j] as usize].apply_point(v.position);
+                                    (0..3).for_each(|a| q[a] += w * x[a]);
+                                }
+                            }
+                            let d = ((q[0] - centre[0]).powi(2) + (q[1] - centre[1]).powi(2) + (q[2] - centre[2]).powi(2)).sqrt();
+                            assert!(d <= r, "{name}/{} t={t:.2} part {k}: a vertex {d:.4} m from the centre, sphere {r:.4} m", c.name);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked} posed vertices checked");
     }
 }

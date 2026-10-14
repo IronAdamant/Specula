@@ -266,6 +266,8 @@ fn skinned_300(m: &Meshes) -> Scene {
         let mut d = DrawItem::new(m.creature, trs(p, rng.range(0.0, TAU), [1.0; 3]), hex(0xd8cfb8));
         d.surface = Surface { roughness: 0.6, specular: 0.4, ..Default::default() };
         d.skin = Some(bones.len() as u32);
+        // The chain reaches at most 2.4 m from its root: a posed bound for culling and shadows.
+        d.bounds = Some([p[0], 1.2, p[2], 2.6]);
         creature_pose(rng.range(0.0, TAU), &mut bones);
         draws.push(d);
     }
