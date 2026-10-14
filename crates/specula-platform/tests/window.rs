@@ -62,11 +62,12 @@ fn poll_events_returns_promptly() {
 
 #[test]
 fn set_title_and_hide_keep_the_window_usable() {
-    let Some(mut window) = try_window(&hidden(200, 100)) else { return };
+    // Comfortably above any OS minimum window width (themes and DPI raise it past 200 px).
+    let Some(mut window) = try_window(&hidden(480, 320)) else { return };
     window.set_title("renamed \u{1F600}");
     window.set_visible(false);
     let _ = window.poll_events();
-    assert_eq!(window.client_size(), (200, 100));
+    assert_eq!(window.client_size(), (480, 320));
 }
 
 #[test]
@@ -74,14 +75,15 @@ fn set_title_and_hide_keep_the_window_usable() {
 // explicit drops (which document the order) are no-ops.
 #[cfg_attr(not(windows), allow(clippy::drop_non_drop))]
 fn several_windows_and_clean_drop() {
-    let Some(a) = try_window(&hidden(160, 100)) else { return };
-    let Some(mut b) = try_window(&hidden(150, 120)) else { return };
+    // Sizes stay above any OS minimum window width (themes and DPI raise it past 200 px).
+    let Some(a) = try_window(&hidden(460, 300)) else { return };
+    let Some(mut b) = try_window(&hidden(450, 320)) else { return };
     drop(a);
     // The survivor keeps working after its sibling is gone.
     let _ = b.poll_events();
-    assert_eq!(b.client_size(), (150, 120));
+    assert_eq!(b.client_size(), (450, 320));
     drop(b);
     // Creating again after drops reuses the registered class.
-    let Some(c) = try_window(&hidden(180, 90)) else { return };
-    assert_eq!(c.client_size(), (180, 90));
+    let Some(c) = try_window(&hidden(480, 290)) else { return };
+    assert_eq!(c.client_size(), (480, 290));
 }
