@@ -697,14 +697,19 @@ impl Profiler {
     /// Ends a frame: collects every thread's zones, and records them for a capture in progress
     /// (replying once it has its frames or runs out of time).
     pub fn end_frame(&mut self, gpu: &Gpu) {
+        self.end_frame_with(|| {
+            gpu.last_frame_stats_of(FramePath::Window).or_else(|| gpu.last_frame_stats_of(FramePath::Offscreen))
+        });
+    }
+
+    fn end_frame_with(&mut self, gpu_stats: impl FnOnce() -> Option<FrameStats>) {
         let now = Instant::now();
         let dt_ms = (now - self.last_collect).as_secs_f64() * 1000.0;
         self.last_collect = now;
         self.frame += 1;
         let fp = self.collector.collect(self.frame);
         let Some(cap) = &mut self.capture else { return };
-        let stats = gpu.last_frame_stats_of(FramePath::Window).or_else(|| gpu.last_frame_stats_of(FramePath::Offscreen));
-        cap.frames.push(CapturedFrame { profile: fp.clone(), gpu: stats, dt_ms });
+        cap.frames.push(CapturedFrame { profile: fp.clone(), gpu: gpu_stats(), dt_ms });
         let done = cap.frames.len() as u64 >= cap.spec.frames;
         if done || now >= cap.deadline {
             let cap = self.capture.take().expect("checked above");
@@ -924,7 +929,9 @@ struct CaptureParts {
 
 fn capture_parts(frames: &[CapturedFrame]) -> CaptureParts {
     let zones = profile::rolling(frames.iter().map(|f| &f.profile));
-    let pacing = Stats::of(frames.iter().skip(1).map(|f| f.dt_ms)).map(|s| s.p95);
+    // Loop iterations are paced by the display only with a window (headless they are wake-ups).
+    let windowed = frames.iter().any(|f| f.gpu.as_ref().is_some_and(|s| s.path == FramePath::Window));
+    let pacing = Stats::of(frames.iter().skip(1).map(|f| f.dt_ms)).map(|s| s.p95).filter(|_| windowed);
     let cpu = Stats::of(frames.iter().filter_map(|f| cpu_frame_ms(&f.profile))).map(|s| s.p95);
     let engine = |f: &CapturedFrame, path: &str| f.profile.thread(ENGINE_THREAD).and_then(|t| t.find(path)).copied();
     let tick = Stats::of(frames.iter().filter_map(|f| engine(f, "frame/sim/tick")).map(|z| z.max_ms())).map(|s| s.p95);
@@ -1340,10 +1347,78 @@ mod tests {
         assert_eq!(pipeline_cache_path(Path::new("c"), "../x"), Path::new("c").join("pipelines-___x.bin"));
     }
 
+    /// Tests that collect the process-wide profiler run one at a time.
+    static PROFILER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        PROFILER.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn capture_records_frames_writes_files_and_answers() {
+        let _s = serial();
+        let dir = std::env::temp_dir().join(format!("specula-perf-capture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = || CaptureContext { dir: dir.clone(), budgets: Budgets::default(), adapter: "integrated".into() };
+        let later = Instant::now() + Duration::from_secs(60);
+        let mut p = Profiler::new(8);
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(!profile::enabled());
+        p.start_capture(CaptureSpec { frames: 3, trace: true, label: Some("t".into()) }, tx, later, ctx());
+        assert!(profile::enabled() && profile::tracing() && p.capturing());
+        let (tx2, rx2) = std::sync::mpsc::channel();
+        p.start_capture(CaptureSpec { frames: 3, trace: false, label: None }, tx2, later, ctx());
+        let refused = rx2.try_recv().unwrap();
+        assert!(refused.is_error && format!("{:?}", refused.content).contains("capture_in_progress"));
+        let slow_gpu = || {
+            let passes = vec![PassTiming { name: "scene", gpu_ms: 20.0 }];
+            Some(FrameStats { gpu: Some(GpuTiming { frame: 1, total_ms: 20.0, passes }), ..FrameStats::default() })
+        };
+        for _ in 0..3 {
+            assert!(rx.try_recv().is_err(), "answered before its frames were recorded");
+            {
+                let _f = profile::zone("frame");
+                let _s = profile::zone("sim");
+            }
+            p.end_frame_with(slow_gpu);
+        }
+        let reply = rx.try_recv().expect("answered after the last frame");
+        let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
+        let out = Json::parse(text).unwrap();
+        assert_eq!(out.get("frames"), Some(&Json::from(3)));
+        assert_eq!(out.get("stopped_early"), Some(&Json::Null));
+        let errors = out.get("budget_errors").and_then(Json::as_array).unwrap();
+        assert_eq!(codes(errors), ["gpu_over_budget"]);
+        // Profiling goes back to how it was.
+        assert!(!profile::enabled() && !profile::tracing() && !p.capturing());
+        let data = Json::parse(&std::fs::read_to_string(out.get("path").and_then(Json::as_str).unwrap()).unwrap()).unwrap();
+        assert_eq!(data.get("schema"), Some(&Json::from("specula.perf_capture/v1")));
+        assert_eq!(data.get("frames").and_then(Json::as_array).map(<[Json]>::len), Some(3));
+        let trace_path = out.get("trace_path").and_then(Json::as_str).unwrap();
+        assert!(trace_path.ends_with("perf-capture-001-t.trace.json"), "{trace_path}");
+        let trace = Json::parse(&std::fs::read_to_string(trace_path).unwrap()).unwrap();
+        let events = trace.get("traceEvents").and_then(Json::as_array).unwrap();
+        assert_eq!(out.get("trace_events"), Some(&Json::from(events.len())));
+        assert!(events.iter().any(|e| e.get("name") == Some(&Json::from("sim"))));
+        assert_eq!(events.iter().filter(|e| e.get("name") == Some(&Json::from("scene"))).count(), 3);
+
+        // Out of time: answers with what it has.
+        let (tx, rx) = std::sync::mpsc::channel();
+        p.start_capture(CaptureSpec { frames: 100, trace: false, label: None }, tx, Instant::now(), ctx());
+        p.end_frame_with(|| None);
+        let reply = rx.try_recv().expect("answered at the deadline");
+        let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
+        let out = Json::parse(text).unwrap();
+        assert_eq!((out.get("frames"), out.get("stopped_early")), (Some(&Json::from(1)), Some(&Json::from("time_limit"))));
+        assert_eq!(out.get("trace_path"), Some(&Json::Null));
+        assert!(out.get("path").and_then(Json::as_str).unwrap().ends_with("perf-capture-002.json"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn chrome_trace_has_threads_zones_and_gpu() {
         use specula_core::profile::{zone as z, set_enabled, set_tracing};
-        // Uses the process-wide profiler: only this test in this binary collects.
+        let _s = serial();
         set_enabled(true);
         set_tracing(true);
         let mut c = Collector::new(4);

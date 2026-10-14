@@ -983,6 +983,44 @@ mod tests {
         set_enabled(false);
     }
 
+    /// Cost of one zone (open + close), enabled and disabled. A measurement, not a check:
+    /// `cargo test --release -p specula-core --lib zone_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zone_cost() {
+        let _s = serial();
+        const N: u32 = 1_000_000;
+        let mut c = Collector::new(2);
+        let run = || {
+            let t = Instant::now();
+            for _ in 0..N / 1000 {
+                let _f = zone("frame");
+                for _ in 0..999 {
+                    let _z = zone("phase");
+                }
+            }
+            t.elapsed().as_nanos() as f64 / f64::from(N)
+        };
+        set_enabled(false);
+        let off = run();
+        set_enabled(true);
+        run();
+        c.collect(0);
+        let on = run();
+        set_tracing(true);
+        let traced = run();
+        set_tracing(false);
+        set_enabled(false);
+        c.collect(1);
+        let t = Instant::now();
+        let mut last = t;
+        for _ in 0..N {
+            last = std::hint::black_box(Instant::now());
+        }
+        let clock = (last - t).as_nanos() as f64 / f64::from(N);
+        println!("zone cost: disabled {off:.1} ns, enabled {on:.1} ns, enabled+tracing {traced:.1} ns (Instant::now {clock:.1} ns)");
+    }
+
     #[test]
     fn rolling_statistics_span_the_history() {
         let _s = serial();

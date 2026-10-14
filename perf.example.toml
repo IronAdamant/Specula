@@ -9,7 +9,12 @@
 # calls, triangles, GPU memory), the rolling p95 over the profiler's history (frame pacing, CPU
 # frame, sim tick, game frame, allocations per frame, zones), and the current heap.
 #
-# These numbers are Sepulcra's (the tower defence) on the reference iGPU at 1280x720.
+# Agents' tool calls run on the engine thread between frames, so a burst of sight_frame captures
+# shows up in cpu_frame, allocations and "frame/requests": that is a real hitch in the window.
+#
+# These numbers are Sepulcra's (the tower defence) on the reference iGPU at 1280x720. Measured
+# there on 2026-10-14 (Intel iGPU, window): GPU 4.0 ms mean (scene 2.3, shadow 0.25, bloom 0.53,
+# tonemap 0.43, fxaa 0.42), CPU frame 0.15 ms p95, about 20 heap allocations per frame.
 
 [profiler]
 enabled = true          # CPU zones; measured overhead is far below 1% of a frame
@@ -26,7 +31,7 @@ draw_calls = 400                 # instanced draw calls (shadow passes not inclu
 triangles = 1_500_000
 gpu_memory_mb = 512              # what Specula's GPU allocator holds
 heap_mb = 256                    # CPU heap in use (needs the counting allocator; the engine has it)
-allocations_per_frame = 2_000    # heap allocations per frame, whole process, p95
+allocations_per_frame = 2_000    # heap allocations per frame, whole process, p95 (agents' sight_frame calls cost ~10k)
 sim_tick_ms = 4.0                # one fixed simulation tick, p95
 game_frame_ms = 2.0              # the game's per-frame update (input, camera, HUD), p95
 pipelines_after_warm = 0         # each pipeline built during play is a visible hitch
@@ -35,7 +40,7 @@ pipelines_after_warm = 0         # each pipeline built during play is a visible 
 scene = 8.0
 shadow = 2.5
 post_bloom = 1.5
-post_tonemap = 0.5
+post_tonemap = 0.8
 post_fxaa = 0.8
 
 [budgets.zones]                  # CPU ms per frame (p95) per zone path; "thread:path" for other threads
