@@ -794,7 +794,9 @@ impl Gpu {
         self.inner.destroy_mesh(mesh)
     }
 
-    /// Offscreen colour (`R8G8B8A8_SRGB`) + depth target.
+    /// Offscreen colour target (`R8G8B8A8_SRGB`) with its readback buffer. Its depth buffer and
+    /// post-chain images belong to its render graph: created by the first frame that needs them,
+    /// reused while sizes and settings hold, freed with the target.
     pub fn create_target(&mut self, width: u32, height: u32) -> Result<TargetId, GpuError> {
         self.inner.create_target(width, height)
     }

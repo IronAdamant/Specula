@@ -405,6 +405,14 @@ mod win {
                     println!("present: PROBLEM pipelines created after warm-up or wrong draw count");
                     problems += 1;
                 }
+                // The window's render graph: its barriers are the ones the frame recorded.
+                match gpu.last_graph() {
+                    Some(g) if g.barrier_count() == s.graph.barriers as usize => print!("present: {g}"),
+                    other => {
+                        println!("present: PROBLEM render graph missing or inconsistent with the stats: {other:?} vs {:?}", s.graph);
+                        problems += 1;
+                    }
+                }
             }
         }
         gpu.destroy_mesh(mesh);

@@ -1458,15 +1458,23 @@ impl TransientPool {
         desc: ImageDesc,
         usage: VkFlags,
     ) -> Result<usize, GpuError> {
-        if let Some(i) = self.entries.iter().position(|e| e.owner == owner && e.name == name && e.desc == desc && e.usage == usage) {
-            return Ok(i);
+        let same_name = |e: &Entry| e.owner == owner && (ptr::eq(e.name, name) || e.name == name);
+        let found = self.entries.iter().position(|e| e.desc == desc && e.usage == usage && same_name(e));
+        let i = match found {
+            Some(i) if !self.entries[i].replaced => return Ok(i),
+            Some(i) => i, // wanted again (e.g. a window resized back) before it was freed
+            None => {
+                self.entries.push(create_entry(dev, descriptors, owner, name, desc, usage)?);
+                self.entries.len() - 1
+            }
+        };
+        // Every other image of this owner and name is now replaced.
+        for (k, e) in self.entries.iter_mut().enumerate() {
+            if same_name(e) {
+                e.replaced = k != i;
+            }
         }
-        let entry = create_entry(dev, descriptors, owner, name, desc, usage)?;
-        for e in self.entries.iter_mut().filter(|e| e.owner == owner && e.name == name) {
-            e.replaced = true;
-        }
-        self.entries.push(entry);
-        Ok(self.entries.len() - 1)
+        Ok(i)
     }
 
     /// `graph` recorded frame `frame_no`: remember when and how its transients were last used.
