@@ -730,7 +730,8 @@ mod tests {
 
     #[test]
     fn set_title_round_trips() {
-        let Some(mut window) = try_window(&hidden(200, 100)) else { return };
+        // Comfortably above any OS minimum window width (themes and DPI raise it past 200 px).
+        let Some(mut window) = try_window(&hidden(480, 320)) else { return };
         let title = "Specula \u{2713} \u{1F600} title";
         window.set_title(title);
         let mut buf = [0u16; 64];
@@ -768,13 +769,14 @@ mod tests {
 
     #[test]
     fn close_request_does_not_destroy() {
-        let Some(mut window) = try_window(&hidden(200, 100)) else { return };
+        // Comfortably above any OS minimum window width (themes and DPI raise it past 200 px).
+        let Some(mut window) = try_window(&hidden(480, 320)) else { return };
         post(&window, WM_CLOSE, 0, 0);
         let events = window.poll_events();
         assert!(events.contains(&Event::CloseRequested), "{events:?}");
         // SAFETY: query only.
         assert_ne!(unsafe { IsWindow(window.raw().hwnd) }, 0, "window must survive WM_CLOSE");
-        assert_eq!(window.client_size(), (200, 100));
+        assert_eq!(window.client_size(), (480, 320));
     }
 
     #[test]
