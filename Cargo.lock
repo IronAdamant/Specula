@@ -32,6 +32,7 @@ dependencies = [
  "specula-platform",
  "specula-protocol",
  "specula-sys",
+ "specula-text",
 ]
 
 [[package]]

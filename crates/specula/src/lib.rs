@@ -10,15 +10,21 @@
 //! and replies. The human's window is pumped by its own thread (see `ui`), so dragging it never
 //! stalls agents.
 
+pub mod cameras;
+mod capture;
 pub mod claims;
+pub mod compare;
 pub mod effects;
 pub mod game;
 pub mod journal;
 mod meshes;
 pub mod models;
+pub mod orbit;
 mod perf;
 pub mod persist;
 pub mod sight;
+pub mod sight_overlay;
+mod sight_tools;
 pub mod swarm;
 mod tools;
 mod ui;
@@ -327,7 +333,13 @@ struct Engine {
     /// Calls waiting for model builds.
     build_waiters: Vec<BuildWaiter>,
     /// Captures waiting for models they show.
-    capture_waiters: Vec<CaptureWaiter>,
+    capture_waiters: Vec<capture::CaptureWaiter>,
+    /// Agents' named cameras (camera_set).
+    cameras: cameras::Cameras,
+    /// sight_compare's "before" captures.
+    marks: compare::Marks,
+    /// Font and glyph atlas for overlay text.
+    labeler: sight_overlay::Labeler,
     /// When the model library last dropped what no entity uses, at which world mesh epoch.
     last_gc: (Instant, u64),
     /// When builds nobody waits for were last cancelled, at which `World::model_drops`.
@@ -385,27 +397,6 @@ struct Engine {
     last_claim_sweep: Instant,
 }
 
-/// A sight_frame call parked until the models it would show are built.
-struct CaptureWaiter {
-    spec: FrameSpec,
-    session: SessionInfo,
-    reply: std::sync::mpsc::Sender<ToolOutput>,
-    /// Rendered then whatever is still building.
-    until: Instant,
-    wait: CaptureWait,
-}
-
-/// How a capture waited for models, for its packet.
-#[derive(Clone, Copy)]
-struct CaptureWait {
-    /// The tick the game last brought its presentation up to (`before_capture`).
-    presented_at: Option<u64>,
-    /// When it was parked (`None`: rendered at once).
-    parked_at: Option<Instant>,
-    /// It renders because the caller's deadline came, not after the usual wait.
-    cut_by_deadline: bool,
-}
-
 /// A model_build or model_reload call waiting for builds on the worker threads.
 struct BuildWaiter {
     /// Jobs still running.
@@ -448,6 +439,9 @@ impl Engine {
             lod_epoch: 0,
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
+            cameras: cameras::Cameras::default(),
+            marks: compare::Marks::default(),
+            labeler: sight_overlay::Labeler::default(),
             last_gc: (Instant::now(), 0),
             last_unwanted: (Instant::now(), 0),
             world,
@@ -796,52 +790,6 @@ impl Engine {
         self.build_waiters.extend(waiters);
     }
 
-    /// The camera a capture uses: its own, or framing the whole world.
-    fn capture_camera(&self, spec: &FrameSpec) -> Camera {
-        match (spec.eye, spec.target) {
-            (Some(eye), Some(target)) => Camera { eye, target, fov_y_deg: spec.fov_y_deg },
-            _ => sight::auto_camera(&self.world, spec.fov_y_deg),
-        }
-    }
-
-    /// Model entities still building that the capture would show: drawn (visible, on a layer
-    /// it includes) and with their origin in view (with a margin: their bounds aren't known
-    /// until they are built).
-    fn building_in_frame(&self, spec: &FrameSpec) -> usize {
-        let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
-        self.world
-            .entities()
-            .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building))
-            .filter(|e| sight::in_frame(e, spec.include_ui))
-            .filter(|e| {
-                let p = view_proj.mul_vec4(e.world_position().extend(1.0));
-                p.w > 0.0 && p.x.abs() <= p.w * 1.5 && p.y.abs() <= p.w * 1.5
-            })
-            .count()
-    }
-
-    /// sight_frame: rendered now, or (when models it would show are still building) parked
-    /// until they are built or its wait runs out, while the engine goes on serving everyone.
-    fn handle_capture(&mut self, request: Request) {
-        let Request { command: Command::Frame(spec), session, reply, deadline } = request else {
-            unreachable!("only captures come here")
-        };
-        // The game brings its presentation up to date first, so models it spawns for this
-        // capture are waited for too.
-        let presented_at = self.before_capture();
-        let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
-        if self.building_in_frame(&spec) == 0 {
-            let _ = reply.send(self.capture(&spec, &session, wait));
-            return;
-        }
-        // Answer before the caller's own deadline, building or not.
-        let usual = Instant::now() + CAPTURE_BUILD_WAIT;
-        let latest = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline);
-        wait.parked_at = Some(Instant::now());
-        wait.cut_by_deadline = latest < usual;
-        self.capture_waiters.push(CaptureWaiter { spec, session, reply, until: usual.min(latest), wait });
-    }
-
     /// Answers every parked call: the engine is stopping.
     fn answer_waiters_shutting_down(&mut self) {
         let out = || ToolOutput::error("the engine is shutting down; the call was not completed");
@@ -850,23 +798,6 @@ impl Engine {
         }
         for w in self.build_waiters.drain(..) {
             let _ = w.reply.send(out());
-        }
-    }
-
-    /// Renders parked captures whose models are built (or whose wait ran out).
-    fn serve_captures(&mut self) {
-        if self.capture_waiters.is_empty() {
-            return;
-        }
-        let now = Instant::now();
-        let waiters = std::mem::take(&mut self.capture_waiters);
-        for w in waiters {
-            if now >= w.until || self.building_in_frame(&w.spec) == 0 {
-                let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
-                let _ = w.reply.send(self.capture(&w.spec, &w.session, wait));
-            } else {
-                self.capture_waiters.push(w);
-            }
         }
     }
 
@@ -1006,8 +937,8 @@ impl Engine {
             self.handle_model_call(request);
             return;
         }
-        if matches!(request.command, Command::Frame(_)) {
-            self.handle_capture(request);
+        if matches!(request.command, Command::Frame(_) | Command::Sight(_)) {
+            self.handle_sight(request);
             return;
         }
         let by = self.swarm.agent_name(&request.session);
@@ -1080,7 +1011,7 @@ impl Engine {
                 Ok(reply) => ToolOutput::text(reply.to_pretty()),
                 Err(e) => world_error(&e),
             },
-            Command::Frame(_) => unreachable!("answered by handle_capture"),
+            Command::Frame(_) | Command::Sight(_) => unreachable!("answered by handle_sight"),
             Command::Env(patch) => match self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)) {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
@@ -1396,107 +1327,6 @@ impl Engine {
         self.world.set_recording(Recording::Full);
         self.journal_game(Kind::GameFrame);
         Some(self.clock.tick())
-    }
-
-    /// Renders the world as it is now (a parked capture: after its wait).
-    fn capture(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait) -> ToolOutput {
-        // Presentation again only if the simulation moved on while the capture was parked.
-        if self.game.is_some() && wait.presented_at != Some(self.clock.tick()) {
-            self.before_capture();
-        }
-        self.pump_builds(None);
-        let building = self.building_in_frame(spec);
-        let camera = self.capture_camera(spec);
-        let (w, h) = (spec.width, spec.height);
-        let view_proj = camera.view_proj(w, h);
-        let mut draws = Vec::new();
-        let (stats, _) = self.build_draws(camera, h, spec.include_ui, spec.lod, false, &mut draws);
-        self.lod_capture = stats;
-        let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
-        if stats.missing > 0 {
-            let waited = match (wait.parked_at, wait.cut_by_deadline) {
-                (None, _) => "none was in frame when the call came".to_owned(),
-                (Some(t), false) => format!("waited {:.1} s", t.elapsed().as_secs_f64()),
-                (Some(t), true) => format!("waited {:.1} s, cut short by the call's deadline", t.elapsed().as_secs_f64()),
-            };
-            warnings.push(Json::from(format!(
-                "{} model entit{} not drawn: {building} in frame still building ({waited}), others failed or \
-                 started building since (world_query fields model_state, engine_info models.library.broken)",
-                stats.missing,
-                if stats.missing == 1 { "y" } else { "ies" },
-            )));
-        }
-        let (lights, dropped) = sight::lights(&self.world, spec.include_ui);
-        if dropped > 0 {
-            warnings.push(Json::from(format!(
-                "{dropped} point light(s) not rendered: at most {} per frame",
-                specula_gpu::MAX_POINT_LIGHTS
-            )));
-        }
-        let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
-        let frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
-
-        let rgba = match self.render_offscreen(w, h, &frame) {
-            Ok(rgba) => rgba,
-            Err(e) => return ToolOutput::error(e),
-        };
-        let png_bytes = png::encode_rgba8(w, h, &rgba, Level::Fastest);
-        self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes);
-
-        for m in self.gpu.take_validation_messages() {
-            if m.severity >= Severity::Warning {
-                warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
-            }
-        }
-        if let Err(e) = &png_path {
-            warnings.push(Json::from(format!("capture not saved to disk: {e}")));
-        }
-        // The full packet is saved next to its PNG so a verifier can re-check both later.
-        let png_file = png_path.as_ref().ok();
-        let packet_path = png_file.map(|p| p.with_extension("json"));
-        let show = |p: Option<&PathBuf>| -> Json { p.map(|p| p.display().to_string()).into() };
-        let image = Json::obj([
-            ("width", Json::from(w)),
-            ("height", Json::from(h)),
-            ("png_bytes", Json::from(png_bytes.len())),
-            ("path", show(png_file)),
-            ("packet_path", show(packet_path.as_ref())),
-        ]);
-        let subjects = sight::subjects(&self.world, &view_proj, w, h, spec.include_ui);
-        let on_screen = subjects.iter().filter(|s| s.on_screen).count();
-        let (chosen, omitted) = sight::most_relevant(&subjects, spec.max_subjects);
-        let mut packet = Json::obj([
-            ("schema", Json::from(sight::SCHEMA)),
-            ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(self.swarm.agent_name(session))),
-            ("image", image),
-            ("camera", camera.to_json()),
-            ("time_s", Json::from(time_s)),
-            ("include_ui", Json::from(spec.include_ui)),
-            ("models", stats.to_json()),
-            ("lights", Json::from(lights.len())),
-            ("subjects_total", Json::from(subjects.len())),
-            ("subjects_on_screen", Json::from(on_screen)),
-            ("subjects", Json::arr(subjects.iter().map(|s| s.json.clone()))),
-            ("warnings", Json::Arr(warnings.clone())),
-        ]);
-        if let Some(path) = &packet_path {
-            if let Err(e) = std::fs::write(path, packet.to_pretty()) {
-                warnings.push(Json::from(format!("packet not saved to disk: {e}")));
-                packet.set("warnings", Json::Arr(warnings));
-            }
-        }
-        // The response carries the most relevant subjects only; agents' context is precious.
-        packet.set("subjects", Json::Arr(chosen));
-        packet.set("subjects_omitted", Json::from(omitted));
-        ToolOutput {
-            content: vec![
-                Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) },
-                Content::Text(packet.to_pretty()),
-            ],
-            is_error: false,
-        }
     }
 
     fn render_offscreen(&mut self, w: u32, h: u32, frame: &FrameDesc) -> Result<Vec<u8>, String> {

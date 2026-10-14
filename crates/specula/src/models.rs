@@ -1387,6 +1387,19 @@ impl GpuModels {
         ])
     }
 
+    /// The LOD a capture (no hysteresis) draws `e` at: `(level, levels, triangles at that
+    /// level)`, or `None` when nothing is uploaded for it. `fixed` forces a level (clamped).
+    pub fn lod_of(&self, e: &Entity, eye: Vec3, fov_y_deg: f32, viewport_h: u32, fixed: Option<usize>) -> Option<(usize, usize, u64)> {
+        let id = (*self.by_handle.get(e.resolved_model()?.handle as usize)?)?;
+        let model = self.uploaded.get(&id)?;
+        let count = model.lods.len();
+        let level = match fixed {
+            Some(l) => l.min(count - 1),
+            None => select_lod(sphere_px(&e.model(), model, eye, fov_y_deg, viewport_h), count, None),
+        };
+        Some((level, count, model.lods[level].iter().map(|p| u64::from(p.triangles)).sum()))
+    }
+
     /// Appends `e`'s draws (one per material part of the chosen LOD). `eye`, `fov_y_deg` and
     /// `viewport_h` size it on screen.
     #[allow(clippy::too_many_arguments)]

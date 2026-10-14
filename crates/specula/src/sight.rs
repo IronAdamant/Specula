@@ -147,7 +147,9 @@ pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights:
 }
 
 /// Where one entity landed in a frame.
+#[derive(Clone, Debug)]
 pub struct Subject {
+    pub id: u64,
     pub json: Json,
     pub on_screen: bool,
     /// Pixel area of the clipped rectangle (0 when off screen).
@@ -195,7 +197,7 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, includ
             }
             let json = Json::obj(fields);
             let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
-            Subject { json, on_screen: screen.is_some(), area }
+            Subject { id: e.id, json, on_screen: screen.is_some(), area }
         })
         .collect()
 }
