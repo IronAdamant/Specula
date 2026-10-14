@@ -1651,7 +1651,10 @@ fn definitions() -> Vec<ToolDef> {
             name: "sight_frame".into(),
             description: "Render the world from a camera and return the PNG image plus JSON with each entity's \
                           on-screen rectangle [x, y, w, h] (pixels, origin top-left): the engine's projection of its \
-                          bounding box, clipped to the view. Without eye/target (or a named camera from camera_set) \
+                          bounding box, clipped to the view (loose, blind to occlusion), and from the GPU ID buffer \
+                          visible_px (pixels actually drawn; glass shows but hides nothing), screen_box_exact (the \
+                          tight box of those pixels) and occluded: true (in view, yet no pixel shows). Without \
+                          eye/target (or a named camera from camera_set) \
                           the camera frames the whole world from a three-quarter view. overlays draws debug aids \
                           into the image (grid, axes, bounds, labels, claims, skeletons, lods). Large worlds return \
                           the biggest on-screen subjects first (max_subjects; subjects: \"on_screen\" or \"visible\" \

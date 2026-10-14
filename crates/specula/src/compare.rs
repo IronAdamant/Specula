@@ -474,6 +474,26 @@ mod tests {
     }
 
     #[test]
+    fn subject_changes_stay_bounded() {
+        let s = |i: u64, x: f32| SubjectState { path: format!("/district/house_{i:05}"), rect: Some([0, 0, 4, 4]), visible_px: Some(16), position: [x, 0.0, 0.0] };
+        let before: BTreeMap<u64, SubjectState> = (0..2000).map(|i| (i, s(i, 0.0))).collect();
+        let after: BTreeMap<u64, SubjectState> = (1000..3000).map(|i| (i, s(i, 1.0))).collect();
+        let j = subject_diff(&before, &after, 2, 10);
+        for kind in ["added", "removed", "moved"] {
+            let k = j.get(kind).unwrap();
+            assert_eq!(k.get("count").and_then(Json::as_u64), Some(1000), "{kind}");
+            assert_eq!(k.get("items").and_then(Json::as_array).map(|a| a.len()), Some(10), "{kind}");
+        }
+        assert!(j.to_string().len() < 4096, "{} bytes", j.to_string().len());
+        // Changed regions are capped too.
+        let (w, h) = (256u32, 256u32);
+        let before = vec![0u8; (w * h * 4) as usize];
+        let after: Vec<u8> = (0..w * h).flat_map(|i| if (i % w) % 16 == 0 && (i / w) % 16 == 0 { [255, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+        let d = diff(&before, &after, w, h, 8);
+        assert_eq!((d.regions.len(), d.regions_total), (MAX_REGIONS, 256));
+    }
+
+    #[test]
     fn marks_are_bounded_per_agent() {
         let view = MarkView {
             camera: Camera { eye: specula_core::math::Vec3::ONE, target: specula_core::math::Vec3::ZERO, fov_y_deg: 50.0 },

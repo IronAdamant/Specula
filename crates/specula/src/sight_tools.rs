@@ -260,7 +260,7 @@ fn parse_orbit(args: &Json) -> Result<OrbitSpec, String> {
         start_deg: num_in(args, "start_deg", -360.0..=360.0)?.unwrap_or(0.0),
         tile: (size("tile_width", 320)?, size("tile_height", 240)?),
         fov_y_deg: fov_arg(args)?,
-        max_subjects: int_arg(args, "max_subjects", 0, 50)?.map_or(8, |n| n as usize),
+        max_subjects: int_arg(args, "max_subjects", 0, 20)?.map_or(8, |n| n as usize),
         time_s: num_in(args, "time_s", 0.0..=1.0e6)?,
         include_ui: bool_arg(args, "include_ui")?.unwrap_or(false),
         lod: int_arg(args, "lod", 0, 7)?.map(|l| l as usize),
@@ -284,7 +284,7 @@ fn parse_compare(args: &Json) -> Result<CompareCall, String> {
             Ok(CompareCall::Diff {
                 name: label_arg(args, "name", true)?.expect("required"),
                 threshold: int_arg(args, "threshold", 0, 254)?.map_or(16, |t| t as u8),
-                max_subjects: int_arg(args, "max_subjects", 0, 100)?.map_or(25, |n| n as usize),
+                max_subjects: int_arg(args, "max_subjects", 0, 50)?.map_or(25, |n| n as usize),
             })
         }
         "list" => check_keys(args, "sight_compare list", &[&["action"]]).map(|()| CompareCall::List),
@@ -457,7 +457,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("tile_width", t("integer", "Tile width 64..1024 (default 320)")),
                         ("tile_height", t("integer", "Tile height 64..1024 (default 240)")),
                         ("fov_y_deg", t("number", "Vertical field of view, 10..120 (default 50)")),
-                        ("max_subjects", t("integer", "Subjects listed per view, 0..50 (default 8)")),
+                        ("max_subjects", t("integer", "Subjects listed per view, 0..20 (default 8)")),
                         ("time_s", t("number", "Animation time (default: now)")),
                         ("include_ui", t("boolean", "Also draw ui-layer entities")),
                         ("lod", t("integer", "Draw every model at this LOD")),
@@ -487,7 +487,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ),
                         ("name", t("string", "Mark name, 1..64 of A-Z a-z 0-9 _ - .")),
                         ("threshold", t("integer", "diff: a pixel changed when a channel differs by more than this, 0..254 (default 16)")),
-                        ("max_subjects", t("integer", "diff: subject changes listed per kind, 0..100 (default 25)")),
+                        ("max_subjects", t("integer", "diff: subject changes listed per kind, 0..50 (default 25)")),
                         ("all", t("boolean", "delete: every mark of yours")),
                     ],
                     view_props(),
