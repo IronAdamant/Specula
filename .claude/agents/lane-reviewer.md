@@ -19,7 +19,8 @@ You receive: the worktree path or branch, the lane's brief, and the lane's repor
    - `cargo test --workspace`
    - `RUSTFLAGS="-Dwarnings -C link-self-contained=yes" cargo clippy --workspace --all-targets -- -D warnings`
    - If GPU or window code changed: `cargo build -p specula && python scripts/window_check.py`, and open its PNGs.
-   Use your own ports (7497–7499), never 7471.
+   Use your own ports (7497–7499), never 7471. Stop engines you started **by PID only** — never
+   `taskkill /IM specula.exe` or similar: other lanes and the owner run engines at the same time.
    Put probes and scratch crates in a **new directory named after the lane and commit**
    (e.g. `<scratchpad>/review-<lane>-<commit>/`). Never write into an existing directory: several reviewers
    run at once and share the scratchpad.
