@@ -7,6 +7,7 @@ pub mod checksum;
 pub mod deflate;
 pub mod dmath;
 pub mod hash;
+pub mod jpeg;
 pub mod json;
 pub mod math;
 pub mod png;
