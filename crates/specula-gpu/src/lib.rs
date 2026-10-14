@@ -256,6 +256,12 @@ impl GpuError {
         GpuError::rejected(ErrorReason::UnknownId { kind, id }, format!("unknown {name} id {id}{context}"))
     }
 
+    /// The device was lost (`VK_ERROR_DEVICE_LOST`): a hung or faulting submission. Nothing on
+    /// this `Gpu` works afterwards (Vulkan has no way back short of a new device).
+    pub fn device_lost(&self) -> bool {
+        self.vk_result == Some(vk::VK_ERROR_DEVICE_LOST)
+    }
+
     /// `what` failed with `result`.
     pub(crate) fn vk(what: &str, result: i32) -> GpuError {
         GpuError { message: format!("{what} failed: {}", vk::result_name(result)), vk_result: Some(result), limit: None, reason: None }

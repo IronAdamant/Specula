@@ -12,26 +12,30 @@
 //!   2. **insert**: blended draws (glass, blob shadows, lava lamps), depth tested against that
 //!      opaque depth and never writing it, put the id of every fragment the scene shows
 //!      ([`faces_for`]: all of them, except the lava lamp's, which mirror `shade_lava_lamp`'s only
-//!      `discard`) into their pixel's **sorted set of the [`SEEN_SLOTS`] smallest ids**: slots
-//!      `(capture epoch << SEEN_ID_BITS) | id`, ascending, inserted with `atomicCompSwap`; a value
-//!      displaced by a smaller one is carried on to the next slot, and one pushed past the last
-//!      raises a global *overflow* flag. A slot only ever decreases within a capture, so the final
-//!      set is the K smallest ids whatever order the GPU runs the fragments in. Slots tagged with
-//!      another capture's epoch count as free, so they are never cleared between captures (only
-//!      when new or when the 12-bit epoch wraps: clearing 16 bytes a pixel costs an iGPU many
-//!      milliseconds at 2048²). Frames without blended draws skip all of this;
+//!      `discard`) into their pixel's **set of the [`SEEN_SLOTS`] smallest ids**: unordered slots
+//!      `(capture epoch << SEEN_ID_BITS) | id`, changed only by `atomicCompSwap`, at most one
+//!      successful swap per id and pixel whatever the arrival order: an id claims the first free
+//!      slot, or replaces the largest of a full set when smaller (the replaced id is out for
+//!      good), or is out itself; ids out of a set are marked *incomplete* (a plain flag store, no
+//!      counting). A slot only ever decreases within a capture, so the final set is the K smallest
+//!      ids whatever order the GPU runs the fragments in. Slots tagged with another capture's epoch
+//!      count as free, so they are never cleared between captures (only when new or when the
+//!      12-bit epoch wraps: clearing 16 bytes a pixel costs an iGPU many milliseconds at 2048²).
+//!      Frames without blended draws skip all of this;
 //!   3. **raster**, every draw again with no depth test and the same face rules, marks each id
 //!      rasterized at all (one flag): an id with no visible pixel but rasterized fragments was
 //!      hidden by something (`occluded`); one never rasterized was sub-pixel or culled.
 //! - `id_resolve` (depth only, read): a full-screen pass counts each id of each pixel's final set
 //!   once (pixels and min/max box, with atomics: sums and extremes don't depend on order; only
 //!   pixels on the edge of an id's region touch the atomics, as runs and extremes, because
-//!   contended atomics are what iGPUs are slowest at: see `perf/README.md`). If the
-//!   overflow flag is up, the blended draws are drawn again and every fragment of an id that is
-//!   *not* in its pixel's final set counts that pixel (every layer: an upper bound), and those ids
-//!   are marked `approx` (and clamped to their exact box's area). The final sets are fixed by
-//!   then, so this is reproducible too. Ids at or above 2^[`SEEN_ID_BITS`] never fit a slot and
-//!   are always counted this way.
+//!   contended atomics are what iGPUs are slowest at: see `perf/README.md`). An *incomplete* id
+//!   (more than [`SEEN_SLOTS`] blended ids overlapped at some pixel and it wasn't among the
+//!   smallest) keeps the count and box of the pixels where it is in the set: **lower bounds**,
+//!   reported `approx`. Which ids those are, and their counts, follow from the final sets, so this
+//!   is reproducible too, and no pass counts per fragment or contends on one address per
+//!   fragment: the cost grows with layers × pixels like the scene's own blended overdraw (about
+//!   as much again), never serialised. Ids at or above 2^[`SEEN_ID_BITS`] never fit a slot:
+//!   0 pixels, approx.
 //! - `id_copy` copies the opaque ids to one shared host-visible buffer, and the stats to a small
 //!   host buffer. The opaque ids are counted on the CPU in place, run-length per row, in parallel
 //!   for big images ([`IdCounts`]).
@@ -53,7 +57,8 @@
 //! Memory: the id image and its depth are graph images *shared by every target*, sized up to a
 //! bucket ([`bucket_for`]: the largest capture so far, rounded up to 256 px) and rendered with a
 //! render area of the capture's size; the readback is one buffer for all targets, and so are the
-//! slots (16 bytes per pixel of the bucket, only once a capture has blended draws). So caching
+//! slots (16 bytes per pixel of the bucket, exactly, once a capture has blended draws; counted
+//! as render targets, for the `Gpu`'s life). So caching
 //! four capture sizes costs one set, not four.
 //!
 //! The stats buffer and the slots are private to these passes (the graph has no fragment-storage
@@ -86,8 +91,6 @@ pub const ID_FORMAT: VkFormat = VK_FORMAT_R32_UINT;
 pub const BYTES_PER_PIXEL: u64 = 4;
 /// `u32`s per id in the stats buffer; must match `STATS_STRIDE` in `shaders/ids.glsl`.
 pub const STATS_STRIDE: usize = 7;
-/// `u32`s before the per-id stats: the overflow flag.
-pub const STATS_HEADER: usize = 1;
 /// Shared id images grow in steps of this many pixels per side.
 pub const BUCKET: u32 = 256;
 /// `VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT` (copies and fills).
@@ -104,12 +107,10 @@ pub enum IdPass {
     Raster,
     /// `id_resolve`: counts the sets (full screen).
     Resolve,
-    /// `id_resolve`: recounts ids that overflowed the sets.
-    Overflow,
 }
 
 impl IdPass {
-    pub const ALL: [IdPass; 5] = [IdPass::Opaque, IdPass::Insert, IdPass::Raster, IdPass::Resolve, IdPass::Overflow];
+    pub const ALL: [IdPass; 4] = [IdPass::Opaque, IdPass::Insert, IdPass::Raster, IdPass::Resolve];
 }
 
 /// Push constants of the ID pipelines; must match `Push` in `shaders/ids.glsl`.
@@ -189,11 +190,10 @@ pub fn declare(g: &mut FrameGraph, extent: VkExtent2D, bucket: (u32, u32)) -> Id
 pub struct IdFrame {
     pub opaque: VkPipeline,
     /// The blended passes' pipelines (`VK_NULL_HANDLE` when they don't run: no fragment atomics,
-    /// or no blended draws for insert, resolve and overflow).
+    /// or no blended draws for insert and resolve).
     pub insert: VkPipeline,
     pub raster: VkPipeline,
     pub resolve: VkPipeline,
-    pub overflow: VkPipeline,
     pub layout: VkPipelineLayout,
     /// Device address of the per-record ids.
     pub ids_address: u64,
@@ -230,7 +230,8 @@ fn fragment_to_fragment(buffer: VkBuffer) -> VkBufferMemoryBarrier2 {
     )
 }
 
-/// Records ID pass `p` (the graph recorded its barriers; the storage buffers' are recorded here).
+/// Records ID pass `p` (the graph recorded its barriers; the storage buffers' are recorded here:
+/// only fragment shaders access them, so their barriers name the fragment stage only).
 pub fn record(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize, tag: FramePass, f: &IdFrame) {
     let dev = ctx.dev;
     match tag {
@@ -264,7 +265,7 @@ pub fn record(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize
         }
         FramePass::IdResolve => {
             if f.resolve != VK_NULL_HANDLE {
-                // The inserts (and the overflow flag) are complete before anything reads them.
+                // The inserts (and incomplete flags) are complete before the resolve reads them.
                 dev.barrier(cmd, &[fragment_to_fragment(f.stats), fragment_to_fragment(f.seen)], &[]);
                 record_id_resolve(ctx, cmd, g, p, f);
             }
@@ -407,8 +408,7 @@ fn record_id_buffer(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p:
     }
 }
 
-/// `id_resolve`: the full-screen resolve of the per-pixel sets, then the overflow recount of the
-/// blended draws (rasterizing nothing unless the overflow flag is up: see `ids.vert`).
+/// `id_resolve`: the full-screen resolve of the per-pixel sets.
 fn record_id_resolve(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize, f: &IdFrame) {
     let (dev, frame) = (ctx.dev, ctx.frame);
     let depth = g.depth_attachment(p, f.res.depth, if frame.reverse_z { 0.0 } else { 1.0 }, None);
@@ -427,10 +427,9 @@ fn record_id_resolve(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p
     };
     let viewport = VkViewport { x: 0.0, y: 0.0, width: f.extent.width as f32, height: f.extent.height as f32, min_depth: 0.0, max_depth: 1.0 };
     let push = push_for(ctx, f);
-    // SAFETY: `cmd` is recording; every referenced struct outlives its call; both pipelines use
-    // `f.layout` and render depth-only (the graph put the depth in DEPTH_ATTACHMENT for reading);
-    // the overflow one declares the depth compare op dynamic; see `draw_batches` for its draws.
-    // The resolve's full-screen triangle covers exactly the render area.
+    // SAFETY: `cmd` is recording; every referenced struct outlives its call; the pipeline uses
+    // `f.layout` and renders depth-only (the graph put the depth in DEPTH_ATTACHMENT for reading,
+    // untested); its full-screen triangle covers exactly the render area.
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
@@ -438,9 +437,6 @@ fn record_id_resolve(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p
         (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, f.resolve);
         (dev.fns.cmd_push_constants)(cmd, f.layout, PUSH_STAGES, 0, size_of::<IdPush>() as u32, &push as *const IdPush as *const c_void);
         (dev.fns.cmd_draw)(cmd, 3, 1, 0, 0);
-        (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, f.overflow);
-        (dev.fns.cmd_set_depth_compare_op)(cmd, if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS });
-        draw_batches(ctx, cmd, f, false, |b| b);
         (dev.fns.cmd_end_rendering)(cmd);
     }
 }
@@ -454,9 +450,13 @@ enum Memory {
     Device,
     /// GPU-written, host-read (cached when possible).
     Readback,
+    /// GPU only, sized exactly (no doubling), for the life of the `Gpu` like the shared id images
+    /// it shadows (the per-pixel sets: sized by the bucket, which only grows in big steps).
+    Shared,
 }
 
-/// A buffer (with a device address when its usage asks), grown on demand (at least doubling).
+/// A buffer (with a device address when its usage asks), grown on demand (at least doubling,
+/// except [`Memory::Shared`]).
 struct Grown {
     buffer: Buffer,
     address: u64,
@@ -467,7 +467,10 @@ impl Grown {
     /// never in use when replaced.
     fn ensure<'a>(slot: &'a mut Option<Grown>, dev: &Device, bytes: u64, usage: VkFlags, memory: Memory, what: &str) -> Result<&'a Grown, GpuError> {
         if slot.as_ref().is_none_or(|g| g.buffer.bytes < bytes) {
-            let want = bytes.max(slot.as_ref().map_or(1024, |g| g.buffer.bytes * 2));
+            let want = match memory {
+                Memory::Shared => bytes,
+                _ => bytes.max(slot.as_ref().map_or(1024, |g| g.buffer.bytes * 2)),
+            };
             let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             let buffer = match memory {
                 // Written by the host, read by shaders: device-local when the device allows it.
@@ -476,6 +479,7 @@ impl Grown {
                     .or_else(|_| dev.create_buffer(want, usage, host, 0, MemoryKind::PerFrame, what))?,
                 Memory::Device => dev.create_buffer(want, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, MemoryKind::PerFrame, what)?,
                 Memory::Readback => dev.create_buffer(want, usage, host, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemoryKind::Readback, what)?,
+                Memory::Shared => dev.create_buffer(want, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, MemoryKind::RenderTargets, what)?,
             };
             let address = if usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0 { dev.buffer_address(&buffer) } else { 0 };
             if let Some(old) = slot.replace(Grown { buffer, address }) {
@@ -561,9 +565,9 @@ impl IdResources {
         let count_blended = dev.fragment_atomics && !self.blended_disabled;
         let (mut stats, mut stats_address, mut stats_host, mut stats_bytes) = (VK_NULL_HANDLE, 0, VK_NULL_HANDLE, 0);
         let (mut seen, mut seen_address, mut seen_clear) = (VK_NULL_HANDLE, 0, false);
-        let (mut insert, mut raster, mut resolve, mut overflow) = (VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        let (mut insert, mut raster, mut resolve) = (VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
         if count_blended {
-            stats_bytes = ((STATS_HEADER + max_id.max(1) as usize * STATS_STRIDE) * 4) as u64;
+            stats_bytes = (max_id.max(1) as usize * STATS_STRIDE * 4) as u64;
             let usage = addr | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             let s = Grown::ensure(&mut self.stats, dev, stats_bytes, usage, Memory::Device, "id stats")?;
             (stats, stats_address) = (s.buffer.handle, s.address);
@@ -574,7 +578,7 @@ impl IdResources {
                 let bucket_bytes = (self.bucket.0 as u64 * self.bucket.1 as u64).max(pixels) * SEEN_SLOTS * 4;
                 let usage = addr | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
                 let before = self.seen.as_ref().map(|g| g.buffer.handle);
-                let s = Grown::ensure(&mut self.seen, dev, bucket_bytes, usage, Memory::Device, "id sets")?;
+                let s = Grown::ensure(&mut self.seen, dev, bucket_bytes, usage, Memory::Shared, "id sets")?;
                 (seen, seen_address) = (s.buffer.handle, s.address);
                 if before != Some(seen) {
                     self.seen_dirty = true; // new memory: undefined contents
@@ -582,7 +586,6 @@ impl IdResources {
                 seen_clear = self.next_epoch();
                 insert = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Insert })?;
                 resolve = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Resolve })?;
-                overflow = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Overflow })?;
             }
             stats_host = Grown::ensure(&mut self.stats_host, dev, stats_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id stats readback")?.buffer.handle;
             raster = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Raster })?;
@@ -593,7 +596,6 @@ impl IdResources {
             insert,
             raster,
             resolve,
-            overflow,
             layout: pipelines.layout,
             ids_address,
             stats,
@@ -682,12 +684,11 @@ impl IdResources {
         let rendered_max = last.max_id;
         if let (Some(host), true) = (&self.stats_host, last.blended_counted && rendered_max > 0) {
             let n = rendered_max.min(max_id) as usize;
-            let len = STATS_HEADER + rendered_max as usize * STATS_STRIDE;
-            // SAFETY: coherent mapped memory holding at least the header and rendered_max ×
-            // STATS_STRIDE u32s, written by the finished render's copy (copy → host barrier
-            // recorded).
+            let len = rendered_max as usize * STATS_STRIDE;
+            // SAFETY: coherent mapped memory holding at least rendered_max × STATS_STRIDE u32s,
+            // written by the finished render's copy (copy → host barrier recorded).
             let stats = unsafe { std::slice::from_raw_parts(host.buffer.mapped as *const u32, len) };
-            for (c, s) in per_id.iter_mut().zip(stats[STATS_HEADER..].chunks_exact(STATS_STRIDE)).take(n) {
+            for (c, s) in per_id.iter_mut().zip(stats.chunks_exact(STATS_STRIDE)).take(n) {
                 c.add_blended(s);
             }
         }
@@ -725,9 +726,9 @@ pub struct IdCoverage {
     /// All of its draws were counted. False for ids with blended draws when blended draws aren't
     /// counted (no fragment atomics): then its pixels are unknown, not zero.
     pub counted: bool,
-    /// Its blended pixels are an upper bound: at some pixel more than [`SEEN_SLOTS`] blended ids
-    /// overlapped and it wasn't among the smallest, so every layer of it there counted (clamped
-    /// to its exact box's area). Reproducible all the same.
+    /// Its blended pixels and box are **lower bounds**: at some pixel more than [`SEEN_SLOTS`]
+    /// blended ids overlapped and it wasn't among the smallest, so that pixel isn't counted for
+    /// it (nor are any of an id at or above 2^[`SEEN_ID_BITS`]). Reproducible all the same.
     pub approx: bool,
 }
 
@@ -767,19 +768,16 @@ impl IdCoverage {
 
     /// Adds one id's stats record (see `shaders/ids.glsl`).
     fn add_blended(&mut self, s: &[u32]) {
-        let mut px = u64::from(s[0]);
+        let px = u64::from(s[0]);
         self.approx |= s[6] != 0;
         if px > 0 {
             let (min, max) = ([!s[1], !s[2]], [s[3], s[4]]);
-            // Never more than its exact box holds (only possible for approximate counts).
-            let box_area = u64::from(max[0].saturating_sub(min[0]) + 1) * u64::from(max[1].saturating_sub(min[1]) + 1);
-            px = px.min(box_area);
             self.pixels += px;
             self.blended_pixels += px;
             self.min = [self.min[0].min(min[0]), self.min[1].min(min[1])];
             self.max = [self.max[0].max(max[0]), self.max[1].max(max[1])];
         }
-        if s[5] != 0 || px > 0 {
+        if s[5] != 0 || px > 0 || s[6] != 0 {
             self.rasterized = Some(true);
         }
     }
@@ -998,10 +996,10 @@ mod tests {
     fn face_rules_mirror_the_scene() {
         use crate::Material::*;
         assert_eq!([faces_for(Glass), faces_for(BlobShadow), faces_for(LavaLamp), faces_for(Lit)], [FACES_ALL, FACES_ALL, FACES_LAVA, FACES_ALL]);
-        // More blended pixels than the exact box holds (overflowing slots): clamped.
+        // Pushed out of some pixel's set: a lower bound, reported as counted.
         let mut c = IdCoverage::default();
-        c.add_blended(&[500, !10, !10, 19, 19, 1, 1]);
-        assert_eq!((c.blended_pixels, c.pixels, c.approx), (100, 100, true));
+        c.add_blended(&[60, !10, !10, 19, 19, 0, 1]);
+        assert_eq!((c.blended_pixels, c.pixels, c.approx, c.rasterized), (60, 60, true, Some(true)));
     }
 
     fn trs(t: [f32; 3], s: [f32; 3]) -> [f32; 16] {

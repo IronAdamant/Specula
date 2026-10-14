@@ -30,7 +30,7 @@ void main() {
     for (uint k = 0u; k < SEEN_SLOTS; k++) {
         uint v = pc.seen.slot[at + k];
         if (!seen_current(v)) {
-            return; // free slots sort last
+            return; // claimed slots form a prefix
         }
         uint id = v & ((1u << SEEN_ID_BITS) - 1u);
         bvec4 edges = bvec4(

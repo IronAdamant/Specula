@@ -1661,8 +1661,9 @@ fn definitions() -> Vec<ToolDef> {
                           visible_px (pixels actually drawn; glass shows but hides nothing), screen_box_exact (the \
                           tight box of those pixels), no_pixels: true (in view, yet no pixel shows) and \
                           occluded: true (besides, something in front hid it; without it, it was sub-pixel). \
-                          visible_px_approx: true marks an upper bound: more than 4 glass-like (blended) entities \
-                          overlapped at some of its pixels (counts stay reproducible either way). \
+                          visible_px_approx: true means \"at least\": more than 4 glass-like (blended) entities \
+                          overlapped at some of its pixels, so visible_px and screen_box_exact are lower bounds \
+                          (reproducible either way). \
                           ids: false skips the ID buffer. Without \
                           eye/target (or a named camera from camera_set) \
                           the camera frames the whole world from a three-quarter view. overlays draws debug aids \

@@ -251,6 +251,9 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
 ///   (without it the entity was sub-pixel, or off the image after all). Unknown (left out) on
 ///   GPUs without fragment atomics; there, entities with blended draws (glass, blob shadows, lava
 ///   lamps) get `visible_px: null` and none of the other fields: their pixels weren't counted.
+/// - `visible_px_approx: true` when more blended entities overlapped at some of its pixels than
+///   the ID buffer's per-pixel sets hold: `visible_px` and `screen_box_exact` are then lower
+///   bounds (it shows at least that much), and it is never `no_pixels`/`occluded`.
 ///
 /// Its `area` (for ranking) becomes the exact box's.
 pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
@@ -267,11 +270,13 @@ pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[
         let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
         s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
         s.json.set("screen_box_exact", exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
-        if cov.is_some_and(|c| c.approx) {
-            // More blended ids overlapped at some of its pixels than the ID buffer's sets hold.
+        let approx = drawn.is_some_and(|c| c.approx);
+        if approx {
+            // More blended ids overlapped at some of its pixels than the ID buffer's sets hold:
+            // visible_px and screen_box_exact are lower bounds (it shows at least that much).
             s.json.set("visible_px_approx", Json::from(true));
         }
-        if let (true, Some(c), None) = (s.on_screen, drawn, cov) {
+        if let (true, Some(c), None, false) = (s.on_screen, drawn, cov, approx) {
             s.json.set("no_pixels", Json::from(true));
             if c.rasterized == Some(true) {
                 s.json.set("occluded", Json::from(true));
@@ -599,6 +604,13 @@ mod tests {
         assert_eq!(s[0].json.get("visible_px"), Some(&Json::Null));
         assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("screen_box_exact").is_none() && s[0].json.get("occluded").is_none());
         assert_eq!(s[0].area, s[0].projected_area);
+        // Approximate with nothing counted (pushed out of every set it was drawn in): at least 0,
+        // but it did show, so neither no_pixels nor occluded.
+        let mut s = frame(&world, cam, 640, 480);
+        let pushed_out = IdCoverage { approx: true, rasterized: Some(true), ..IdCoverage::default() };
+        apply_visibility(&mut s, &[1], &[pushed_out]);
+        assert_eq!((s[0].json.get("visible_px"), s[0].json.get("visible_px_approx")), (Some(&Json::from(0)), Some(&Json::from(true))));
+        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("occluded").is_none());
     }
 
     #[test]

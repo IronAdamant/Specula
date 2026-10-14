@@ -7,27 +7,27 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Ids
     uint items[];
 };
 
-// Cleared to 0 each capture. v[0]: 1 when some pixel had more blended ids than SEEN_SLOTS (the
-// overflow pass then runs). Then per id, STATS_STRIDE uints from stats_base(id):
-//   [0] blended pixels
+// Cleared to 0 each capture. Per id, STATS_STRIDE uints from stats_base(id):
+//   [0] blended pixels (resolve)
 //   [1] ~min x, [2] ~min y (stored inverted, so atomicMax finds the minimum), [3] max x, [4] max y
 //   [5] 1 when any fragment of the id was rasterized (no depth test)
-//   [6] 1 when its count is approximate (counted by the overflow pass)
+//   [6] 1 when the id was pushed out of some pixel's set it was drawn in (or can't enter one):
+//       its count and box are then lower bounds (plain stores of 1: same-value races are benign)
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer Stats {
     uint v[];
 };
 const uint STATS_STRIDE = 7u;
 uint stats_base(uint id) {
-    return 1u + (id - 1u) * STATS_STRIDE;
+    return (id - 1u) * STATS_STRIDE;
 }
 
-// Per pixel, the SEEN_SLOTS smallest blended ids drawn there this capture, ascending, each
-// (epoch << SEEN_ID_BITS) | id; a slot of another capture's epoch is free (sorts last). Must
-// match `SEEN_SLOTS` / `SEEN_ID_BITS`.
+// Per pixel, the SEEN_SLOTS smallest blended ids drawn there this capture (unordered; claimed
+// slots form a prefix), each (epoch << SEEN_ID_BITS) | id; a slot of another capture's epoch is
+// free. Must match `SEEN_SLOTS` / `SEEN_ID_BITS`.
 // Not `coherent`: within a pass every write is an atomic and a plain read may be stale (the
-// insert re-checks with atomicCompSwap; a slot only decreases, so a stale "smaller id here" or
-// "already here" stays true); between passes the barriers make writes visible. Coherent loads
-// cost an iGPU dearly.
+// insert swaps with atomicCompSwap against what it read; claims are permanent and a slot only
+// decreases, so a stale read only ever shows a slot free or larger than it is); between passes
+// the barriers make writes visible. Coherent loads cost an iGPU dearly.
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer Seen {
     uint slot[];
 };
@@ -59,19 +59,13 @@ bool seen_current(uint v) {
     return (v >> SEEN_ID_BITS) == pc.epoch;
 }
 
-// Counts pixel `p` for `id`: its pixel count and box, all with atomics. Only the overflow pass
-// uses the box part per fragment (`count_pixel`); the resolve raises the box only from pixels on
-// the edge of an id's region (`ids_resolve.frag`): contended atomics on one address are what
-// iGPUs are slowest at, and a region's edges are far fewer than its pixels.
+// Raises `id`'s box to pixel `p` on the sides `edges` marks (the resolve calls it only for
+// pixels on the edge of the id's region: contended atomics on one address are what iGPUs are
+// slowest at, and a region's edges are far fewer than its pixels).
 void count_box(uint id, uvec2 p, bvec4 edges) {
     uint base = stats_base(id);
     if (edges.x) atomicMax(pc.stats.v[base + 1u], ~p.x); // left edge
     if (edges.y) atomicMax(pc.stats.v[base + 2u], ~p.y); // top edge
     if (edges.z) atomicMax(pc.stats.v[base + 3u], p.x);  // right edge
     if (edges.w) atomicMax(pc.stats.v[base + 4u], p.y);  // bottom edge
-}
-
-void count_pixel(uint id, uvec2 p) {
-    atomicAdd(pc.stats.v[stats_base(id)], 1u);
-    count_box(id, p, bvec4(true));
 }

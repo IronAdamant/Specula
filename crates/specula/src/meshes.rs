@@ -340,7 +340,7 @@ mod tests {
     /// Reviewer finding (round 4): with more blended ids at a pixel than the per-pixel sets hold,
     /// counts depended on fragment order (NVIDIA varied between identical frames). Now: identical
     /// frames give identical counts; ids within the sets are exact; only ids past them are
-    /// approximate (and at least their true coverage).
+    /// approximate (lower bounds: never more than their true coverage).
     #[test]
     fn nested_glass_counts_are_reproducible() {
         use specula_core::math::{Mat4, Quat, Vec3};
@@ -391,8 +391,70 @@ mod tests {
                     if k < 4 {
                         assert!(!got.approx && (0.97..=1.03).contains(&ratio), "adapter {}: {n} spheres, #{}: {got:?} vs {truth} ({ratio:.3})", a.index, k + 1);
                     } else {
-                        assert!(got.approx && ratio >= 0.97, "adapter {}: {n} spheres, #{}: approximate, at least its silhouette: {got:?} vs {truth}", a.index, k + 1);
+                        assert!(got.approx && ratio <= 1.03, "adapter {}: {n} spheres, #{}: approximate, a lower bound: {got:?} vs {truth}", a.index, k + 1);
                     }
+                }
+            }
+            gpu.destroy_target(target);
+            gpu.destroy_mesh(mesh);
+            let warnings: Vec<_> = gpu.take_validation_messages().into_iter().filter(|m| m.severity >= specula_gpu::Severity::Warning).collect();
+            assert!(warnings.is_empty(), "adapter {}: {warnings:#?}", a.index);
+        }
+    }
+
+    /// Reviewer finding (round 5): the overflow path counted every layer with contended atomics,
+    /// so 12 full-view glass panes took 0.6 s at 720p on the iGPU and 16 at 2048² lost the
+    /// device. Now nothing counts per fragment: 24 full-view layers at 2048² stay fast, the 4
+    /// smallest ids are exact, the rest approximate lower bounds.
+    #[test]
+    fn many_glass_layers_stay_cheap() {
+        use specula_core::math::{Mat4, Quat, Vec3};
+        use specula_gpu::{DrawItem, FrameDesc, Gpu, GpuOptions, Material, Validation};
+        if !specula_gpu::is_available() {
+            eprintln!("many_glass_layers_stay_cheap: SKIPPED — Vulkan is not available");
+            return;
+        }
+        for a in specula_gpu::enumerate_adapters().unwrap() {
+            let options = GpuOptions { validation: Validation::On, adapter: specula_gpu::AdapterPreference::Index(a.index), ..Default::default() };
+            let mut gpu = match Gpu::new(&options) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("many_glass_layers_stay_cheap: SKIPPED on adapter {} — {e}", a.index);
+                    continue;
+                }
+            };
+            if !gpu.ids_count_blended() {
+                eprintln!("many_glass_layers_stay_cheap: SKIPPED on adapter {} — no fragment atomics", a.index);
+                continue;
+            }
+            let (v, i) = sphere(32, 16);
+            let mesh = gpu.upload_mesh(&v, &i).unwrap();
+            let (w, h) = (2048u32, 2048u32);
+            let target = gpu.create_target(w, h).unwrap();
+            // The camera inside 24 concentric glass spheres: every pixel has 24 layers.
+            let cam = crate::sight::Camera::new(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 60.0);
+            let vp = cam.view_proj(w, h).to_cols_array();
+            let n = 24u32;
+            let glass: Vec<DrawItem> = (0..n)
+                .map(|k| {
+                    let s = 4.0 + k as f32;
+                    let model = Mat4::from_trs(Vec3::ZERO, Quat::IDENTITY, Vec3::new(s, s, s)).to_cols_array();
+                    DrawItem { material: Material::Glass, ..DrawItem::new(mesh, model, [0.9, 0.9, 1.0, 0.1]) }
+                })
+                .collect();
+            let ids: Vec<u32> = (1..=n).collect();
+            let frame = FrameDesc { view_proj: vp, draws: &glass, reverse_z: true, ..Default::default() };
+            gpu.render_with_ids(target, &frame, &ids).unwrap(); // warm-up (pipelines, buffers)
+            let t = std::time::Instant::now();
+            gpu.render_with_ids(target, &frame, &ids).unwrap();
+            let per_id = gpu.id_coverage(target, n).unwrap().per_id;
+            let took = t.elapsed();
+            assert!(took.as_secs_f64() < 0.5, "adapter {}: {n} full-view layers at 2048² took {took:?}", a.index);
+            for (k, c) in per_id.iter().enumerate() {
+                if k < 4 {
+                    assert_eq!((c.blended_pixels, c.approx), (u64::from(w * h), false), "adapter {}: id {}", a.index, k + 1);
+                } else {
+                    assert_eq!((c.blended_pixels, c.approx, c.rasterized), (0, true, Some(true)), "adapter {}: id {}", a.index, k + 1);
                 }
             }
             gpu.destroy_target(target);

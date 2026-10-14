@@ -1,12 +1,12 @@
 #version 460
 // Specula ID buffer, blended draws (no colour output; needs fragmentStoresAndAtomics).
 // MODE 0, insert: depth tested against the opaque depth (never written); the fragment's id joins
-//   its pixel's sorted set of the SEEN_SLOTS smallest ids. The final sets don't depend on the
+//   its pixel's set of the SEEN_SLOTS smallest ids. The final sets don't depend on the
 //   order fragments run in; ids_resolve.frag counts them afterwards (one count per id per pixel).
+//   An id pushed out of a set (more than SEEN_SLOTS ids at the pixel) is marked incomplete: its
+//   resolved count and box are then lower bounds. Equally reproducible, and nothing is counted
+//   here (no contended atomics, whatever the number of layers).
 // MODE 1, raster: every draw, no depth test: marks each id rasterized at all.
-// MODE 2, overflow (only when some pixel had more ids than slots): depth tested again; each
-//   fragment of an id missing from its pixel's final set counts that pixel (every layer: an upper
-//   bound, marked approximate). The final sets are fixed by then, so this is reproducible too.
 // See src/idbuffer.rs. Compile with shaders/build.sh.
 #include "ids.glsl"
 
@@ -36,54 +36,78 @@ bool shown() {
     return true;
 }
 
-void overflowed() {
-    pc.stats.v[0] = 1u; // idempotent
+// Sets flag word `i` (idempotent, so no atomic). Every fragment of an id targets the same word;
+// iGPUs serialise stores to one address, so it is read first and written only while still 0
+// (once set, the readers share the cached line).
+void set_flag(uint i) {
+    if (pc.stats.v[i] == 0u) {
+        pc.stats.v[i] = 1u;
+    }
 }
 
-// Inserts `id` into the pixel's ascending set of the SEEN_SLOTS smallest ids (free slots sort
-// last). A slot's value only ever decreases within a capture; a value pushed out of a slot by a
-// smaller one is carried on to the next slot, and one pushed past the last slot overflows. So
-// the final set is the SEEN_SLOTS smallest ids, whatever the order.
+// `id` is missing from some pixel's final set although drawn there.
+void incomplete(uint id) {
+    set_flag(stats_base(id) + 6u);
+}
+
+// Inserts `id` into the pixel's set of the SEEN_SLOTS smallest ids, with at most one successful
+// atomic whatever order the ids arrive in (blended draws come back to front, so often largest
+// first). The set is unordered; claimed slots always form a prefix (a fragment claims the first
+// free slot only). Per attempt, from one read of the slots:
+// - the id is there: done;
+// - a slot is free: claim the first free one (atomicCompSwap);
+// - the set is full and the id is smaller than its largest: replace the largest
+//   (atomicCompSwap), which is out for good: SEEN_SLOTS smaller ids hold the slots, and a slot
+//   only ever decreases within a capture (a stale read only ever shows larger values, so a
+//   successful swap really did replace the largest);
+// - otherwise the id is out for good (SEEN_SLOTS smaller ids are there).
+// A failed swap means a slot was claimed or decreased meanwhile: decide again with the value it
+// returned (this ends: each slot changes at most once per id at the pixel). So the final set is
+// the SEEN_SLOTS smallest ids drawn at the pixel, whatever the order; an id out of it is incomplete.
 void insert(uint id, uvec2 p) {
     if (id >= (1u << SEEN_ID_BITS)) {
-        overflowed(); // beyond the slots' id range: the overflow pass counts it
+        incomplete(id); // beyond the slots' id range: never in a set (0 pixels, at least)
         return;
     }
+    const uint mask = (1u << SEEN_ID_BITS) - 1u;
     uint v = (pc.epoch << SEEN_ID_BITS) | id;
     uint at = seen_at(p);
+    // One plain read; afterwards a failed swap's returned value refreshes that slot (a plain
+    // re-read could keep returning the same stale cached value, and spin forever).
+    uint s[SEEN_SLOTS];
     for (uint k = 0u; k < SEEN_SLOTS; k++) {
-        uint cur = pc.seen.slot[at + k];
-        for (uint tries = 0u; tries < 64u; tries++) {
-            bool free = !seen_current(cur);
-            if (!free && cur == v) {
+        s[k] = pc.seen.slot[at + k];
+    }
+    // Ends within (ids at the pixel) x SEEN_SLOTS failures; the cap only guards the GPU against
+    // a hang (a hung shader loses the device) and is never reached.
+    for (uint tries = 0u; tries < 1024u; tries++) {
+        uint free_at = SEEN_SLOTS;
+        uint max_at = 0u;
+        for (uint k = 0u; k < SEEN_SLOTS; k++) {
+            if (s[k] == v) {
                 return; // already in the set
             }
-            if (!free && cur < v) {
-                break; // a smaller id holds this slot: try the next one
+            if (!seen_current(s[k])) {
+                free_at = min(free_at, k);
+            } else if (s[k] > s[max_at]) { // (only used when every slot is claimed)
+                max_at = k;
             }
-            uint prev = atomicCompSwap(pc.seen.slot[at + k], cur, v);
-            if (prev == cur) {
-                if (free) {
-                    return;
-                }
-                v = cur; // pushed a larger id out: carry it on
-                break;
+        }
+        uint j = free_at < SEEN_SLOTS ? free_at : max_at;
+        if (free_at == SEEN_SLOTS && v > s[max_at]) {
+            incomplete(id); // SEEN_SLOTS smaller ids hold the slots
+            return;
+        }
+        uint prev = atomicCompSwap(pc.seen.slot[at + j], s[j], v);
+        if (prev == s[j]) {
+            if (free_at == SEEN_SLOTS) {
+                incomplete(prev & mask); // replaced the largest: out for good
             }
-            cur = prev; // the slot changed under us: look again
+            return;
         }
+        s[j] = prev;
     }
-    overflowed();
-}
-
-bool in_set(uint id, uvec2 p) {
-    uint v = (pc.epoch << SEEN_ID_BITS) | id;
-    uint at = seen_at(p);
-    for (uint k = 0u; k < SEEN_SLOTS; k++) {
-        if (pc.seen.slot[at + k] == v) {
-            return true;
-        }
-    }
-    return false;
+    incomplete(id);
 }
 
 void main() {
@@ -91,13 +115,9 @@ void main() {
     if (id == 0u || !shown()) {
         return;
     }
-    uvec2 p = uvec2(gl_FragCoord.xy);
     if (MODE == 1u) {
-        pc.stats.v[stats_base(id) + 5u] = 1u; // idempotent: no atomic needed
-    } else if (MODE == 0u) {
-        insert(id, p);
-    } else if (id >= (1u << SEEN_ID_BITS) || !in_set(id, p)) {
-        count_pixel(id, p);
-        pc.stats.v[stats_base(id) + 6u] = 1u;
+        set_flag(stats_base(id) + 5u);
+    } else {
+        insert(id, uvec2(gl_FragCoord.xy));
     }
 }

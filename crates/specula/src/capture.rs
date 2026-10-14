@@ -83,6 +83,27 @@ pub(crate) struct Rendered {
     pub(crate) ids: Json,
 }
 
+/// A GPU failure during a capture's `step`, as a structured error (the tool's error text): a lost
+/// device (`gpu_device_lost`: a hung or faulting submission) says so and that it is permanent
+/// for this engine run, since Vulkan has no way back short of a new device; anything else is
+/// `gpu_failed`. Both carry the `VkResult` when there is one.
+fn gpu_failure(step: &str, e: &specula_gpu::GpuError) -> String {
+    let lost = e.device_lost();
+    let mut out = Json::obj([
+        ("error", Json::from(if lost { "gpu_device_lost" } else { "gpu_failed" })),
+        ("step", Json::from(step)),
+        ("message", Json::from(e.message.as_str())),
+        ("vk_result", e.vk_result.map_or(Json::Null, Json::from)),
+    ]);
+    if lost {
+        out.set(
+            "recovery",
+            Json::from("none in this run: every later render (captures and the window) fails; restart the engine"),
+        );
+    }
+    out.to_pretty()
+}
+
 fn camera_error(e: CameraError) -> ToolOutput {
     ToolOutput::error(e.to_json().to_pretty())
 }
@@ -426,7 +447,7 @@ impl Engine {
         {
             let _z = profile::zone("sight.render");
             let rendered = if opts.ids { self.gpu.render_with_ids(target, &frame, &ids) } else { self.gpu.render(target, &frame) };
-            rendered.map_err(|e| format!("render: {e}"))?;
+            rendered.map_err(|e| gpu_failure("render", &e))?;
         }
         let ids_json = if opts.ids {
             let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
@@ -436,7 +457,7 @@ impl Engine {
             let counted = Instant::now();
             let counts = {
                 let _z = profile::zone("sight.ids");
-                self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| format!("id readback: {e}"))?
+                self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| gpu_failure("id readback", &e))?
             };
             sight::apply_visibility(&mut subjects, &entities, &counts.per_id);
             let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
@@ -455,9 +476,9 @@ impl Engine {
             overlays = (!opts.overlays.is_empty()).then_some(report);
             frame.overlay = &q;
             let _z = profile::zone("sight.render");
-            self.gpu.render(target, &frame).map_err(|e| format!("render: {e}"))?;
+            self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e))?;
         }
-        let rgba = self.gpu.read_rgba8(target).map_err(|e| format!("readback: {e}"))?;
+        let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e))?;
         Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json })
     }
 
@@ -1109,5 +1130,22 @@ fn tri_text(t: u64) -> String {
         format!("{:.1}k tri", t as f64 / 1000.0)
     } else {
         format!("{t} tri")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_failures_are_structured() {
+        let lost = specula_gpu::GpuError { message: "vkQueueSubmit failed: VK_ERROR_DEVICE_LOST".into(), vk_result: Some(-4), limit: None, reason: None };
+        assert!(lost.device_lost());
+        let j = Json::parse(&gpu_failure("render", &lost)).unwrap();
+        assert_eq!((j.get("error"), j.get("step"), j.get("vk_result")), (Some(&Json::from("gpu_device_lost")), Some(&Json::from("render")), Some(&Json::from(-4))));
+        assert!(j.get("recovery").is_some());
+        let other = specula_gpu::GpuError { message: "out of memory".into(), vk_result: Some(-2), limit: None, reason: None };
+        let j = Json::parse(&gpu_failure("readback", &other)).unwrap();
+        assert_eq!((j.get("error"), j.get("recovery")), (Some(&Json::from("gpu_failed")), None));
     }
 }

@@ -765,7 +765,7 @@ impl PipelineKey {
             PipelineKey::Ids { pass } => {
                 use crate::idbuffer::IdPass;
                 // `id_buffer` (opaque, insert, raster) renders with the id image and its depth;
-                // `id_resolve` (resolve, overflow) with the depth only.
+                // `id_resolve` (resolve) with the depth only.
                 let in_id_buffer = matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Raster);
                 PipelineDesc {
                     vert: if pass == IdPass::Resolve { Shader::FullscreenVert } else { Shader::IdsVert },
@@ -774,16 +774,12 @@ impl PipelineKey {
                         IdPass::Resolve => Shader::IdsResolveFrag,
                         _ => Shader::IdsCountFrag,
                     }),
-                    // ids_count.frag's MODE.
-                    spec: match pass {
-                        IdPass::Raster => 1,
-                        IdPass::Overflow => 2,
-                        _ => 0,
-                    },
+                    // ids_count.frag's MODE: 0 insert, 1 raster.
+                    spec: (pass == IdPass::Raster) as u32,
                     vertex: if pass == IdPass::Resolve { VertexInput::None } else { VertexInput::PositionNormal },
                     color: in_id_buffer.then_some(crate::idbuffer::ID_FORMAT),
                     depth: Some(DEPTH_FORMAT),
-                    depth_test: matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Overflow),
+                    depth_test: matches!(pass, IdPass::Opaque | IdPass::Insert),
                     // As in the scene: blended surfaces never hide what is behind them.
                     depth_write: pass == IdPass::Opaque,
                     compare: if matches!(pass, IdPass::Raster | IdPass::Resolve) { Some(VK_COMPARE_OP_LESS) } else { None },
@@ -1412,7 +1408,7 @@ pub enum FramePass {
     IdBuffer,
     /// The ids copied to the host-readable buffer.
     IdCopy,
-    /// Sight's blended counts resolved from the per-pixel id sets (and the overflow recount).
+    /// Sight's blended counts resolved from the per-pixel id sets.
     IdResolve,
 }
 

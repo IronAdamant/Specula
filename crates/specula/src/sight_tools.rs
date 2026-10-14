@@ -518,8 +518,8 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "One entity's on-screen facts through a camera, without an image (cheap for checks): \
                           on_screen, screen (projected box), distance_m and, from the ID buffer, visible_px, \
                           screen_box_exact, no_pixels (in view, nothing shows) and occluded (hidden by something in front); \
-                          visible_px_approx: true when visible_px is an upper bound (more than 4 blended entities \
-                          overlapped at some of its pixels)."
+                          visible_px_approx: true when visible_px and screen_box_exact are lower bounds (more than \
+                          4 blended entities overlapped at some of its pixels)."
                 .into(),
             input_schema: schema(
                 [

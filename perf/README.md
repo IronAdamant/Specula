@@ -68,22 +68,36 @@ Memory: the id image, its depth and the readback are shared by every capture siz
 largest capture so far, in 256 px steps): four cached 2048² targets went from 200.6 to 250.7 MB of
 GPU memory with the ID buffer on (it was 529 MB with per-target ID images).
 
-**Blended (glass-like) draws cost by their coverage.** They insert their ids into per-pixel sets of
-the 4 smallest ids, a full-screen pass resolves the sets (atomics only on each id's region edges),
-and only when more than 4 blended ids overlap at a pixel does an overflow pass recount the extra ids
-per fragment (`visible_px_approx: true`). Measured 2026-10-15, release, `id_buffer` GPU ms (copy
-included); 7 opaque cubes plus:
+**Blended (glass-like) draws cost by their coverage and layers.** Every blended fragment puts its
+id into its pixel's set of the 4 smallest ids (reads plus at most one successful compare-and-swap
+per id and pixel), and a full-screen pass resolves the sets (atomics only on each id's region
+edges). Ids pushed out of a set (more than 4 blended ids at a pixel) are only flagged: their counts
+are lower bounds (`visible_px_approx: true`). Nothing counts per fragment, so nothing contends on
+one address: the cost grows linearly with layers × pixels, like the scene's own blended overdraw
+(16 full-view panes at 2048² on Intel: `id_buffer` 170 ms next to the scene's own 177 ms).
+Measured 2026-10-15, release, `id_buffer` GPU ms (copy included); 7 opaque cubes plus:
 
 | Scene | Intel iGPU 720p | Intel iGPU 2048² | RTX 4090 Laptop 720p | RTX 4090 Laptop 2048² |
 |---|---|---|---|---|
-| no blended draws | 0.29 | 0.92 | 0.16 | 0.67 |
-| 7 overlapping glass spheres (≤ 4 per pixel) | 1.19 | 5.44 | 0.20 | 0.90 |
-| 7 concentric glass spheres (overflow: 3 ids approximate) | 6.12 | 41.7 | 0.51 | 3.37 |
+| no blended draws | 0.30 | 0.93 | 0.16 | 0.67 |
+| 7 overlapping glass spheres (≤ 4 per pixel) | 1.23 | 5.65 | 0.19 | 0.88 |
+| 7 concentric glass spheres (3 ids approximate) | 1.61 | 8.97 | 0.21 | 0.96 |
 
-(The previous, order-dependent scheme measured 2.67 / 16.5 ms on Intel for 7 overlapping spheres.)
-The overflow pass is the expensive path: each overflowing fragment updates its id's count and box
-with atomics on shared addresses, which an iGPU serialises. CPU readback + count stays 1.2-1.6 ms.
+Full-view glass panes (each a thin box: 2 layers), `id_buffer` GPU ms:
 
-Memory: the per-pixel sets take 16 bytes per pixel of the shared bucket (64 MB at 2048², 15 MB for
-a 1280×720 capture's bucket), allocated once a capture has blended draws and never cleared between
-captures (only when new or every 4095 captures). The stats buffer takes 28 bytes per id.
+| Panes | Intel iGPU 720p | Intel iGPU 2048² | RTX 4090 Laptop 720p | RTX 4090 Laptop 2048² |
+|---|---|---|---|---|
+| 4 | 24.6 | - | 0.5 | - |
+| 8 | 36.6 | 101 | - | 3.1 |
+| 16 | 43.3 | 147 | 1.1 | 5.0 |
+| 32 | 70.6 | 286 | 2.0 | 8.9 |
+
+(Round 4's per-fragment overflow recount took 624 ms for 12 panes at 720p and lost the device with
+16 at 2048²; the first, order-dependent scheme took 2.67 / 16.5 ms on Intel for the 7 overlapping
+spheres.) CPU readback + count stays 0.8-1.7 ms. A lost device (`VK_ERROR_DEVICE_LOST`) comes back
+from a capture as `{"error": "gpu_device_lost", ...}`; the engine can't recover in that run.
+
+Memory: the per-pixel sets take exactly 16 bytes per pixel of the shared bucket (64 MB at 2048²,
+15 MB for a 1280×720 capture's bucket), counted as render targets, allocated once a capture has
+blended draws and never cleared between captures (only when new or every 4095 captures). The
+stats buffer takes 28 bytes per id.
