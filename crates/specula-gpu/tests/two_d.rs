@@ -434,13 +434,16 @@ fn ssao_takes_ambient_light_from_lit_cutouts_and_keeps_it_under_blended_items() 
         write_png(&format!("two_d_ssao_flat_{}.png", gpu.adapter().index), &b, 64, 64);
         let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
         assert!(worst <= 2, "a flat 2D map is unchanged by SSAO (worst {worst} levels)");
-        // Every item is drawn: the blue shape over the red quadrant (world (0.4, 2.25): px 35, 14),
-        // the green cutout (world (-1, -1): px 24, 40), the white veil over yellow (world (1.5, 0.5): px 44, 28).
+        // Every item is drawn: the blue shape (world (0.4, 2.25): px 35, 14, over the green
+        // quadrant), the green cutout (world (-1, -1): px 24, 40, over blue) and the half-white
+        // veil (world (1.5, 0.5): px 44, 28, paler than the open green quadrant at px 52, 12).
         let shape_px = pixel(&b, 64, 35, 14);
         assert!(shape_px[2] > 200 && shape_px[0] < 120, "the shape is drawn: {shape_px:?}");
         let green = pixel(&b, 64, 24, 40);
         assert!(green[1] > 150 && green[0] < 150, "the green cutout is drawn: {green:?}");
         assert_eq!(pixel(&b, 64, 12, 12)[..3], [255, 0, 0], "the red quadrant, open");
+        let (veiled, open) = (pixel(&b, 64, 44, 28), pixel(&b, 64, 52, 12));
+        assert!(open[..3] == [0, 255, 0] && veiled[0] > 100 && veiled[1] > 200, "the veil is drawn: {veiled:?} over {open:?}");
         assert!(gpu.last_frame_stats().gpu.is_none_or(|t| t.passes.iter().any(|p| p.name == specula_gpu::PASS_SSAO)));
         finish(test, gpu);
     }
