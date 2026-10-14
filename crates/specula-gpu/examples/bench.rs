@@ -423,11 +423,15 @@ struct Args {
     shadow_res: Option<u32>,
     softness: Option<f32>,
     bloom_levels: Option<u32>,
+    /// Effects to add: `ssao`, `grading`.
+    with: Vec<String>,
+    ssao_res: Option<f32>,
+    ssao_samples: Option<u32>,
 }
 
 const USAGE: &str =
     "usage: bench [--adapter discrete|integrated|<index>] [--frames N] [--size WxH] [--validation] [--png DIR] [--scenes a,b] [--without shadow,bloom,fog,sky,fxaa,overlay]\n\
-     [--cascades N] [--shadow-res N] [--softness F] [--bloom-levels N]";
+     [--cascades N] [--shadow-res N] [--softness F] [--bloom-levels N] [--with ssao,grading] [--ssao-res F] [--ssao-samples N]";
 
 fn parse_args() -> Result<Args, String> {
     let mut args =
@@ -438,6 +442,9 @@ fn parse_args() -> Result<Args, String> {
         shadow_res: None,
         softness: None,
         bloom_levels: None,
+        with: Vec::new(),
+        ssao_res: None,
+        ssao_samples: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -466,6 +473,11 @@ fn parse_args() -> Result<Args, String> {
             "--shadow-res" => args.shadow_res = Some(value()?.parse().map_err(|_| format!("bad resolution\n{USAGE}"))?),
             "--softness" => args.softness = Some(value()?.parse().map_err(|_| format!("bad softness\n{USAGE}"))?),
             "--bloom-levels" => args.bloom_levels = Some(value()?.parse().map_err(|_| format!("bad levels\n{USAGE}"))?),
+            "--with" => args.with = value()?.split(',').map(str::to_string).collect(),
+            "--ssao-res" => args.ssao_res = Some(value()?.parse().map_err(|_| format!("bad SSAO resolution
+{USAGE}"))?),
+            "--ssao-samples" => args.ssao_samples = Some(value()?.parse().map_err(|_| format!("bad SSAO samples
+{USAGE}"))?),
             "--help" | "-h" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
         }
@@ -575,6 +587,19 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
     s.resolution = args.shadow_res.unwrap_or(s.resolution);
     s.softness = args.softness.unwrap_or(s.softness);
     environment.bloom.levels = args.bloom_levels.unwrap_or(environment.bloom.levels);
+    let with = |f: &str| args.with.iter().any(|w| w == f);
+    if with("ssao") {
+        let s = &mut environment.ssao;
+        s.enabled = true;
+        s.resolution = args.ssao_res.unwrap_or(s.resolution);
+        s.samples = args.ssao_samples.unwrap_or(s.samples);
+    }
+    if with("grading") {
+        // The Sepulcra grade (games/sepulcra-app night()).
+        let g = &mut environment.grading;
+        (g.enabled, g.contrast, g.vibrance, g.lift, g.gain, g.vignette, g.vignette_radius) =
+            (true, 1.08, -1.0, [-0.006, 0.0, 0.014], [1.04, 1.01, 0.97], 0.25, 0.55);
+    }
     let overlay: &[OverlayQuad] = if off("overlay") { &[] } else { &scene.overlay };
     for i in 0..WARMUP_FRAMES + args.frames {
         let frame = FrameDesc {

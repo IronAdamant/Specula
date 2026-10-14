@@ -657,9 +657,11 @@ impl Default for FogSettings {
 /// Order (each step skipped when neutral): on the exposed scene light, before tone mapping —
 /// white balance (`temperature`, `tint`, in LMS cone space), `contrast` (in log space around
 /// mid grey 0.18), `saturation` and `vibrance` (around Rec. 709 luminance); then tone mapping
-/// (ACES when [`Environment::tonemap`], else a clamp); then on display values (sRGB-encoded, 0..1)
-/// — `lift` / `gamma` / `gain` (shadows / midtones / highlights per channel:
-/// `(gain · (x + lift · (1 − x)))^(1 / gamma)`), the 3D `lut`, `vignette`, `grain`.
+/// (ACES when [`Environment::tonemap`], else a clamp); then on display values (0..1) —
+/// `lift` / `gamma` / `gain` (shadows / midtones / highlights per channel:
+/// `(gain · (x + lift · (1 − x)))^(1 / gamma)` on gamma-2 encoded values, close to the display's
+/// own encoding and cheap on small GPUs), the 3D `lut` (on exact sRGB values), `vignette`,
+/// `grain`.
 ///
 /// With grading on, a frame that would otherwise tone map in the forward pass renders its scene
 /// to a 16-bit float image and tone maps in a post pass (as bloom does; with bloom on grading
@@ -743,6 +745,9 @@ impl GradingSettings {
         if self.lift != [0.0; 3] || self.gamma != [1.0; 3] || self.gain != [1.0; 3] {
             f |= 8;
         }
+        if self.gamma != [1.0; 3] {
+            f |= 256;
+        }
         if self.lut.is_some() && self.lut_strength != 0.0 {
             f |= 16;
         }
@@ -759,13 +764,13 @@ impl GradingSettings {
 /// Screen-space ambient occlusion: creases, corners and contact points lose ambient light. Off
 /// by default.
 ///
-/// Opaque (`Lit`) geometry is drawn depth-only at `resolution` × the frame's size; ambient
-/// occlusion is estimated from that depth (normals reconstructed from it, `samples` per pixel
-/// in a per-pixel rotated spiral, a fixed 4×4 interleaved pattern: deterministic), blurred 4×4
-/// with depth-aware weights, and read back in the scene pass with a depth-aware upsample. It
-/// darkens **only the ambient light** (and the ambient reflections) of `Lit` surfaces; the sun,
-/// point lights and emission are untouched, so a lit face never goes grey. Blended materials
-/// are not occluded.
+/// Occlusion is estimated from the scene's depth at `resolution` × the frame's size (normals
+/// reconstructed from depth, `samples` per pixel on a per-pixel rotated spiral, a fixed 4×4
+/// interleaved pattern: deterministic), blurred 4×4 with depth-aware weights, and applied in the
+/// tonemap pass with a depth-aware upsample. It darkens **only the ambient light** (and the
+/// ambient reflections) of `Lit` surfaces, which the scene pass reports per pixel; the sun, point
+/// lights and emission are untouched, so a lit face never goes grey. SSAO always takes the HDR
+/// post path (free when bloom or grading is on). Details and trade-offs: `src/ssao.rs`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SsaoSettings {
     pub enabled: bool,

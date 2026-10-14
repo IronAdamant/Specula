@@ -231,8 +231,14 @@ fn grading_steps_do_what_they_say() {
         vib.grading.vibrance = -0.8;
         let img = scene.render(&mut gpu, vib, "vibrance");
         let spread = |p: [u8; 4]| p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
-        let (a, b) = (scene.px(&plain, glow), scene.px(&img, glow));
-        assert!(spread(b) as i32 >= spread(a) as i32 - 6, "saturated colour keeps its saturation: {a:?} -> {b:?}");
+        let kept = |p: V3| {
+            let (a, b) = (scene.px(&plain, p), scene.px(&img, p));
+            eprintln!("{test}: vibrance at {p:?}: {a:?} -> {b:?}");
+            spread(b) as f32 / spread(a).max(1) as f32
+        };
+        let (glow_kept, ground_kept) = (kept(glow), kept([-3.0, 0.01, 3.5]));
+        assert!(glow_kept >= 0.85, "the saturated colour keeps most of its saturation: {glow_kept}");
+        assert!(ground_kept < glow_kept - 0.1, "the muted ground loses more: {ground_kept} vs {glow_kept}");
 
         let mut vig = env;
         vig.grading.enabled = true;

@@ -1,9 +1,10 @@
 #version 460
 // Screen-space ambient occlusion (src/ssao.rs): McGuire's Scalable Ambient Obscurance estimator
-// on the SSAO depth image (src, same size as this target), with the normal reconstructed from
-// depth and the sample spiral rotated per pixel by a 4x4 interleaved pattern (deterministic).
-// mode: samples (bits 0..7), reversed Z (bit 8). params: radius (m), intensity, pixels per metre
-// at a view depth of 1 m. Out: r = ambient visibility (1 = open), g = view depth (m; FAR = sky).
+// on the scene's depth (src, full resolution; this target is params.w times smaller), with the
+// normal reconstructed from depth and the sample spiral rotated per pixel by a 4x4 interleaved
+// pattern (deterministic). texel: 1 / the depth's size. mode: samples (bits 0..7), reversed Z
+// (bit 8). params: radius (m), intensity, depth pixels per metre at a view depth of 1 m, depth
+// pixels per target pixel. Out: r = ambient visibility (1 = open), g = view depth (m; FAR = sky).
 // Compile with shaders/build.sh.
 #include "post.glsl"
 
@@ -20,6 +21,13 @@ float depth_at(ivec2 p) {
     return texelFetch(textures[pc.src], clamp(p, ivec2(0), g_size - 1), 0).r;
 }
 
+// View depth (clip w, metres in front of the camera) of the point at `ndc` with depth `d`: the
+// homogeneous point inv_view_proj * (ndc, d, 1) has w = 1 / clip w, so only its last row is needed.
+float view_depth_at(Frame f, vec2 ndc, float d) {
+    mat4 m = f.inv_view_proj;
+    return 1.0 / (m[0][3] * ndc.x + m[1][3] * ndc.y + m[2][3] * d + m[3][3]);
+}
+
 bool is_sky(float d) {
     return g_reverse ? d <= 0.0 : d >= 1.0;
 }
@@ -33,14 +41,15 @@ vec3 world_at(ivec2 p, float d) {
 void main() {
     g_size = textureSize(textures[pc.src], 0);
     g_reverse = (pc.mode & 256u) != 0u;
-    ivec2 c = ivec2(gl_FragCoord.xy);
+    ivec2 own = ivec2(gl_FragCoord.xy); // this target's pixel (picks the pattern)
+    ivec2 c = ivec2(gl_FragCoord.xy * pc.params.w); // the depth pixel under its centre
     float d = depth_at(c);
     if (is_sky(d)) {
         out_color = vec4(1.0, FAR, 0.0, 1.0);
         return;
     }
     vec3 p = world_at(c, d);
-    float z = (pc.frame.view_proj * vec4(p, 1.0)).w;
+    float z = view_depth_at(pc.frame, (vec2(c) + 0.5) * pc.texel * 2.0 - 1.0, d);
 
     // Normal from the nearer neighbour on each axis (no smearing across silhouettes).
     float dl = depth_at(c - ivec2(1, 0)), dr = depth_at(c + ivec2(1, 0));
@@ -60,13 +69,13 @@ void main() {
 
     float radius = pc.params.x;
     float r2 = radius * radius;
-    float screen = min(radius * pc.params.z / max(z, 1e-4), 96.0); // sample disc radius in pixels
+    float screen = min(radius * pc.params.z / max(z, 1e-4), 128.0); // sample disc radius in depth pixels
     if (screen < 1.0) {
         out_color = vec4(1.0, z, 0.0, 1.0);
         return;
     }
     uint samples = pc.mode & 255u;
-    float rot = (float(BAYER[(uint(c.y) & 3u) * 4u + (uint(c.x) & 3u)]) + 0.5) / 16.0 * TAU;
+    float rot = (float(BAYER[(uint(own.y) & 3u) * 4u + (uint(own.x) & 3u)]) + 0.5) / 16.0 * TAU;
     float bias = 0.02 * radius;
     float eps = 0.01 * r2;
     float sum = 0.0;

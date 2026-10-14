@@ -1,10 +1,30 @@
 #version 460
-// Tone mapping: the exposed HDR scene plus bloom (src2, scaled by params.x) -> display values,
+// Tone mapping: the exposed HDR scene plus bloom (src2, scaled by pc.bloom) -> display values,
 // with the same ACES curve and dither as the forward path (shaders/mesh.frag `display`), and
 // colour grading around it (src/lib.rs GradingSettings; src/post.rs). Each grading step runs only
-// when its bit is set in frame.post_slots.w, so neutral steps change nothing.
+// when its bit is set in pc.steps, so neutral steps change nothing.
 // Compile with shaders/build.sh.
+#define CUSTOM_PUSH
 #include "post.glsl"
+
+// Must match `TonemapPush` in src/post.rs.
+layout(push_constant) uniform Push {
+    Frame frame;
+    uint src;       // the HDR scene (alpha: SSAO's ambient fraction)
+    uint src2;      // the bloom blur (0xffffffff = none)
+    vec2 texel;     // 1 / the frame's size
+    uint steps;     // GRADE_* bits, the LUT's size in bits 16..24
+    uint lut;       // the LUT's slot
+    uint ao;        // SSAO visibility (0xffffffff = none)
+    float bloom;    // bloom intensity
+    uint pad0;
+    uint pad1;
+    vec4 balance;   // white balance LMS gains, w contrast
+    vec4 lift;      // lift per channel, w saturation
+    vec4 gamma;     // 1 / gamma per channel, w vibrance
+    vec4 gain;      // gain per channel, w LUT strength
+    vec4 fx;        // vignette, vignette radius, grain, unused
+} pc;
 
 const uint GRADE_BALANCE = 1u;
 const uint GRADE_CONTRAST = 2u;
@@ -14,6 +34,7 @@ const uint GRADE_LUT = 16u;
 const uint GRADE_VIGNETTE = 32u;
 const uint GRADE_GRAIN = 64u;
 const uint GRADE_LUT_SRGB = 128u;
+const uint GRADE_GAMMA = 256u;
 const uint GRADE_DISPLAY = GRADE_LGG | GRADE_LUT | GRADE_VIGNETTE | GRADE_GRAIN;
 
 uint pcg(uint v) {
@@ -65,58 +86,79 @@ vec3 lut(vec3 e, uint slot, float n, bool srgb) {
 }
 
 void main() {
-    Frame f = pc.frame;
-    uint steps = f.post_slots.w;
-    vec3 c = texture(textures[pc.src], v_uv).rgb;
+    uint steps = pc.steps & 0xffffu;
+    vec4 scene = texture(textures[pc.src], v_uv);
+    vec3 c = scene.rgb;
+    if (pc.ao != 0xffffffffu) {
+        // SSAO: alpha is the fraction of this pixel's light that is ambient (src/ssao.rs). The
+        // occlusion (blurred depth-aware at its own resolution) is upsampled bilinearly: a
+        // depth-aware upsample here would read the full-resolution depth (+0.35 ms on the Intel
+        // iGPU at 1600x900) to sharpen an edge one occlusion texel wide.
+        float visibility = textureLod(textures[pc.ao], v_uv, 0.0).r;
+        c *= 1.0 - (1.0 - visibility) * clamp(scene.a, 0.0, 1.0);
+    }
     if (pc.src2 != 0xffffffffu) {
-        c += texture(textures[pc.src2], v_uv).rgb * pc.params.x;
+        c += texture(textures[pc.src2], v_uv).rgb * pc.bloom;
     }
     // Scene-referred grading (exposed linear light).
     if ((steps & GRADE_BALANCE) != 0u) {
-        c = max(white_balance(c, f.grade_balance.xyz), vec3(0.0));
+        c = max(white_balance(c, pc.balance.xyz), vec3(0.0));
     }
     if ((steps & GRADE_CONTRAST) != 0u) {
-        // Log-space contrast around mid grey: log2(c / 0.18) scales by `contrast`.
-        c = 0.18 * pow(max(c, vec3(1e-10)) / 0.18, vec3(f.grade_balance.w));
+        // Log-space contrast of the luminance around mid grey (log2(y / 0.18) scales by
+        // `contrast`), colours scaled along: hue and saturation stay, two transcendentals.
+        float y = max(luma(c), 1e-10);
+        c *= exp2(pc.balance.w * log2(y / 0.18)) * 0.18 / y;
     }
     if ((steps & GRADE_SATURATION) != 0u) {
         float y = luma(c);
-        float hi = max(c.r, max(c.g, c.b));
-        float sat = (hi - min(c.r, min(c.g, c.b))) / max(hi, 1e-6);
-        float muted = (1.0 - sat) * (1.0 - sat); // vibrance spares saturated colours
-        float amount = f.grade_lift.w * max(1.0 + f.grade_gamma.w * muted, 0.0);
+        // Saturation as the eye sees it (on roughly gamma-encoded values, not linear light).
+        vec3 p = sqrt(max(c, vec3(0.0)));
+        float hi = max(p.r, max(p.g, p.b));
+        float sat = (hi - min(p.r, min(p.g, p.b))) / max(hi, 1e-6);
+        float muted = (1.0 - sat) * (1.0 - sat) * (1.0 - sat); // vibrance spares saturated colours
+        float amount = pc.lift.w * max(1.0 + pc.gamma.w * muted, 0.0);
         c = max(vec3(y) + (c - vec3(y)) * amount, vec3(0.0));
     }
-    bool tonemap = f.sky.w > 0.5;
+    bool tonemap = pc.frame.sky.w > 0.5;
     if (tonemap) {
         c = aces(c);
     }
-    // Display-referred grading (sRGB-encoded values).
+    // Display-referred grading. Lift/gamma/gain and grain work on gamma-2 encoded values
+    // (sqrt: close to the display's encoding, and cheap); the LUT on exact sRGB values, the
+    // encoding LUT strips are authored in; the vignette scales linear light by its square.
     if ((steps & GRADE_DISPLAY) != 0u) {
-        vec3 e = srgb_encode(c);
+        c = clamp(c, 0.0, 1.0);
         if ((steps & GRADE_LGG) != 0u) {
-            e = f.grade_gain.xyz * (e + f.grade_lift.xyz * (1.0 - e));
-            e = pow(max(e, vec3(0.0)), f.grade_gamma.xyz);
+            vec3 e = sqrt(c);
+            e = max(pc.gain.xyz * (e + pc.lift.xyz * (1.0 - e)), vec3(0.0));
+            if ((steps & GRADE_GAMMA) != 0u) {
+                e = pow(e, pc.gamma.xyz);
+            }
+            c = e * e;
         }
         if ((steps & GRADE_LUT) != 0u) {
-            vec3 l = lut(e, f.post_slots.x, float(f.post_slots.y), (steps & GRADE_LUT_SRGB) != 0u);
-            e = mix(e, l, f.grade_gain.w);
+            vec3 e = srgb_encode(c);
+            vec3 l = lut(e, pc.lut, float(pc.steps >> 16), (steps & GRADE_LUT_SRGB) != 0u);
+            c = srgb_decode(mix(e, l, pc.gain.w));
         }
         if ((steps & GRADE_VIGNETTE) != 0u) {
             float aspect = pc.texel.y / pc.texel.x;
             vec2 d = (v_uv - 0.5) * vec2(aspect, 1.0);
             float r = length(d) / length(vec2(aspect, 1.0) * 0.5); // 1 at the corners
-            float start = f.grade_fx.y;
+            float start = pc.fx.y;
             float t = clamp((r - start) / (1.0 - start), 0.0, 1.0);
-            e *= 1.0 - f.grade_fx.x * t * t * (3.0 - 2.0 * t);
+            float v = 1.0 - pc.fx.x * t * t * (3.0 - 2.0 * t);
+            c *= v * v;
         }
         if ((steps & GRADE_GRAIN) != 0u) {
-            uint seed = pcg(floatBitsToUint(f.camera_time.w));
+            uint seed = pcg(floatBitsToUint(pc.frame.camera_time.w));
             float n = hash_u(uint(gl_FragCoord.x) ^ seed, uint(gl_FragCoord.y) + seed) - 0.5;
+            vec3 e = sqrt(c);
             float y = clamp(luma(e), 0.0, 1.0);
-            e += n * f.grade_fx.z * 0.1 * (0.3 + 2.8 * y * (1.0 - y));
+            e = max(e + n * pc.fx.z * 0.1 * (0.3 + 2.8 * y * (1.0 - y)), vec3(0.0));
+            c = e * e;
         }
-        c = srgb_decode(e);
     }
     if (tonemap) {
         float n = hash_u(uint(gl_FragCoord.x), uint(gl_FragCoord.y)) - 0.5;

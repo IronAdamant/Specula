@@ -5,7 +5,7 @@ use crate::instance::{enumerate, Instance};
 use crate::descriptors::Descriptors;
 use crate::graph::{Final, Prior, TransientPool};
 use crate::render::{
-    check_frame, declare_frame, frame_features, write_post_slots, prepare_frame, prepare_graph, record_frame, FrameContext, FrameGraph, FrameScratch,
+    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, FrameContext, FrameGraph, FrameScratch,
     FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::Textures;
@@ -364,7 +364,6 @@ impl Window {
         };
         let res = declare_frame(&mut self.graph, &shape);
         prepare_graph(dev, descriptors, pool, &mut self.graph, &res)?;
-        write_post_slots(f.upload.as_ref().expect("created in init"), &self.graph, &res, frame, textures, mode);
         let descriptors = &*descriptors;
         let t2 = Instant::now();
 
@@ -392,7 +391,7 @@ impl Window {
             t.begin_frame(dev, f.cmd, frame_no);
         }
         let upload = f.upload.as_ref().expect("created in init");
-        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload };
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload, textures };
         let draws = record_frame(&ctx, f.cmd, &mut self.graph, &res, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.end(f.cmd)?;
