@@ -1329,7 +1329,7 @@ impl Pipelines {
     /// draws needing a variant not built yet are skipped until [`Pipelines::poll_background`]
     /// hands the pipelines back. These don't count as created after warm (no frame stalls).
     pub fn request_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) {
-        let want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        let mut want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
         if want == self.variants {
             return;
         }
@@ -1340,8 +1340,12 @@ impl Pipelines {
             q.textured |= want.textured && !p.want.textured;
             return;
         }
-        // A request is a retry of what failed before.
-        self.background.failure = None;
+        // A build that starts retries what failed before, once (the failure is folded into it,
+        // never just dropped: a later failure reports it again).
+        if let Some(f) = self.background.failure.take() {
+            want.skinned |= f.skinned;
+            want.textured |= f.textured;
+        }
         let keys = self.variant_keys(want, formats);
         if keys.is_empty() {
             self.variants = want;

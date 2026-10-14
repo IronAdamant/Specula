@@ -1708,7 +1708,9 @@ fn definitions() -> Vec<ToolDef> {
             name: "model_reload".into(),
             description: "Re-read every recipe and style file now and rebuild the models that changed (the engine \
                           also notices edits on its own within a second). Returns what was rebuilt and any errors; \
-                          a model whose recipe broke keeps its last good build. Also builds again the skinned or                           textured pipelines a background build failed to make (problems code                           pipeline_variant_failed)."
+                          a model whose recipe broke keeps its last good build. Also builds again the skinned or \
+                          textured pipelines a background build failed to make (problems code \
+                          pipeline_variant_failed)."
                 .into(),
             input_schema: schema(vec![], &[]),
         },
@@ -2005,6 +2007,18 @@ mod tests {
 
     fn args(text: &str) -> Json {
         Json::parse(text).unwrap()
+    }
+
+    /// A string continued on the next line without `\` keeps the indentation as a run of
+    /// spaces: no tool description (or schema text) has one.
+    #[test]
+    fn tool_texts_have_no_runs_of_spaces() {
+        for t in definitions() {
+            let schema = t.input_schema.to_string();
+            for text in [&t.description, &schema] {
+                assert!(!text.contains("   "), "{}: a run of spaces in {text:?}", t.name);
+            }
+        }
     }
 
     #[test]

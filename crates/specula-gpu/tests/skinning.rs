@@ -522,6 +522,53 @@ fn failed_background_builds_are_reported_and_retried() {
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
 
+/// A failed skinned build is never forgotten by an unrelated request: queued behind the
+/// failing build, or made after it (a later UV upload), the request retries the failed variant
+/// with its own, and at every settled step the skinned variant is either ready or reported.
+#[test]
+fn unrelated_requests_retry_a_failure_instead_of_dropping_it() {
+    let test = "variant_failure_kept";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::LowPower) else { return };
+    gpu.mark_warm();
+    let (v, i, skin) = bar();
+    let (qv, qi, quv) = quad_uv();
+    let reported = |r: &specula_gpu::PipelineVariants, step: &str| {
+        assert!(r.skinned || r.failed.as_ref().is_some_and(|f| f.skinned), "{test}: {step}: skinned neither ready nor failed: {r:?}");
+    };
+    // Queued: the UV upload arrives while the failing skinned build runs.
+    gpu.inject_background_fault(BackgroundFault::Error);
+    gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    for step in 0..4 {
+        let r = settle(&mut gpu);
+        reported(&r, &format!("queued, settle {step}"));
+    }
+    let r = settle(&mut gpu);
+    assert!(r.skinned && r.textured && r.failed.is_none(), "{test}: the queued request retried the skinned build: {r:?}");
+    drop(gpu);
+
+    // Sequential: the failure is settled, then a UV upload (whose build fails again, then succeeds).
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::LowPower) else { return };
+    gpu.mark_warm();
+    gpu.inject_background_fault(BackgroundFault::Error);
+    gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    let r = settle(&mut gpu);
+    assert!(r.failed.is_some(), "{test}: {r:?}");
+    gpu.inject_background_fault(BackgroundFault::Panic);
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    let r = settle(&mut gpu);
+    reported(&r, "after a UV upload whose build panicked");
+    assert!(r.failed.as_ref().is_some_and(|f| f.skinned && f.textured), "{test}: both reported: {r:?}");
+    let r = settle(&mut gpu);
+    reported(&r, "settled again (no retry without a request)");
+    assert!(!r.skinned, "{test}: retries are bounded: one per request");
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    let r = settle(&mut gpu);
+    assert!(r.skinned && r.textured && r.failed.is_none(), "{test}: the next UV upload retried both: {r:?}");
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+}
+
 /// Keep `Gpu` in the imports used when every test skips.
 #[allow(dead_code)]
 fn _uses(_: &Gpu) {}
