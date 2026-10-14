@@ -1436,6 +1436,7 @@ impl GpuModels {
                 color: [p.color[0] * tint[0], p.color[1] * tint[1], p.color[2] * tint[2], p.color[3]],
                 material: p.material,
                 surface: p.surface,
+                skin: None,
             });
         }
     }

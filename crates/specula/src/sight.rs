@@ -117,6 +117,7 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
             color: [c[0], c[1], c[2], e.look.opacity],
             material: e.look.material,
             surface: e.look.surface,
+            skin: None,
         });
     }
     stats

@@ -9,7 +9,7 @@
 
 use crate::device::Device;
 use crate::vk::*;
-use crate::{GpuError, Limit};
+use crate::{GpuError, Limit, TextureFilter, TextureSampler, TextureWrap};
 use std::ptr;
 
 /// Slots in the bindless texture array.
@@ -29,9 +29,17 @@ pub struct Descriptors {
     pub shadow: VkSampler,
     /// The view binding 0 points at (null until a frame first renders shadows).
     pub shadow_view: VkImageView,
+    /// Material texture samplers, made on first use (a handful of glTF combinations).
+    samplers: Vec<(TextureSampler, VkSampler)>,
     free: Vec<u32>,
     next: u32,
 }
+
+/// Most anisotropy a material sampler asks for.
+pub const MAX_ANISOTROPY: f32 = 8.0;
+
+/// Most distinct material samplers (glTF has 2 × 4 filter × 3 × 3 wrap combinations).
+const MAX_SAMPLERS: usize = 128;
 
 fn create_sampler(dev: &Device, compare: bool, linear: bool) -> Result<VkSampler, GpuError> {
     let address = if compare { VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER } else { VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE };
@@ -75,6 +83,7 @@ impl Descriptors {
             linear: VK_NULL_HANDLE,
             shadow: VK_NULL_HANDLE,
             shadow_view: VK_NULL_HANDLE,
+            samplers: Vec::new(),
             free: Vec::new(),
             next: 0,
         };
@@ -181,6 +190,60 @@ impl Descriptors {
         self.write(dev, BINDING_TEXTURES, slot, self.linear, view);
     }
 
+    /// Like [`Descriptors::write_texture`], sampled with `sampler`.
+    pub fn write_texture_with(&self, dev: &Device, slot: u32, view: VkImageView, sampler: VkSampler) {
+        self.write(dev, BINDING_TEXTURES, slot, sampler, view);
+    }
+
+    /// The sampler for `s` (made once, kept until the descriptors are destroyed): every mip
+    /// level, anisotropy up to [`MAX_ANISOTROPY`] where the device has it.
+    pub fn sampler(&mut self, dev: &Device, s: TextureSampler) -> Result<VkSampler, GpuError> {
+        if let Some(&(_, v)) = self.samplers.iter().find(|(k, _)| *k == s) {
+            return Ok(v);
+        }
+        if self.samplers.len() >= MAX_SAMPLERS {
+            return Err(GpuError::new(format!("more than {MAX_SAMPLERS} distinct texture samplers")));
+        }
+        let filter = |f: TextureFilter| if f == TextureFilter::Linear { VK_FILTER_LINEAR } else { VK_FILTER_NEAREST };
+        let wrap = |w: TextureWrap| match w {
+            TextureWrap::Repeat => VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            TextureWrap::MirroredRepeat => VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
+            TextureWrap::ClampToEdge => VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        };
+        // Anisotropic filtering is a linear filter (drivers ignore NEAREST with it): only for linear
+        // samplers, so nearest-filtered textures (pixel art) stay crisp.
+        let linear = s.mag == TextureFilter::Linear && s.min == TextureFilter::Linear;
+        let anisotropy = (s.anisotropy && linear && dev.max_anisotropy > 1.0).then(|| dev.max_anisotropy.min(MAX_ANISOTROPY));
+        let info = VkSamplerCreateInfo {
+            s_type: ST_SAMPLER_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            mag_filter: filter(s.mag),
+            min_filter: filter(s.min),
+            mipmap_mode: if s.mipmap == TextureFilter::Linear { VK_SAMPLER_MIPMAP_MODE_LINEAR } else { VK_SAMPLER_MIPMAP_MODE_NEAREST },
+            address_mode_u: wrap(s.wrap_u),
+            address_mode_v: wrap(s.wrap_v),
+            address_mode_w: wrap(s.wrap_u),
+            mip_lod_bias: 0.0,
+            anisotropy_enable: anisotropy.is_some() as VkBool32,
+            max_anisotropy: anisotropy.unwrap_or(1.0),
+            compare_enable: VK_FALSE,
+            compare_op: VK_COMPARE_OP_LESS_OR_EQUAL,
+            min_lod: 0.0,
+            max_lod: 1000.0, // VK_LOD_CLAMP_NONE
+            border_color: VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+            unnormalized_coordinates: VK_FALSE,
+        };
+        let mut sampler = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info; anisotropy only when the feature is enabled.
+        let r = unsafe { (dev.fns.create_sampler)(dev.handle, &info, ptr::null(), &mut sampler) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateSampler", r));
+        }
+        self.samplers.push((s, sampler));
+        Ok(sampler)
+    }
+
     /// Point binding 0 at the shadow map's array view. No pending frame may use it.
     pub fn write_shadow(&mut self, dev: &Device, view: VkImageView) {
         self.write(dev, BINDING_SHADOW, 0, self.shadow, view);
@@ -220,6 +283,9 @@ impl Descriptors {
             (dev.fns.destroy_descriptor_set_layout)(dev.handle, self.layout, ptr::null());
             (dev.fns.destroy_sampler)(dev.handle, self.linear, ptr::null());
             (dev.fns.destroy_sampler)(dev.handle, self.shadow, ptr::null());
+            for (_, s) in self.samplers.drain(..) {
+                (dev.fns.destroy_sampler)(dev.handle, s, ptr::null());
+            }
         }
         self.pool = VK_NULL_HANDLE;
         self.layout = VK_NULL_HANDLE;

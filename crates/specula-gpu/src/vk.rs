@@ -181,9 +181,15 @@ pub const ST_VALIDATION_FEATURES_EXT: VkStructureType = 1_000_247_000;
 // VkFormat
 pub const VK_FORMAT_R8_UNORM: VkFormat = 9;
 pub const VK_FORMAT_R8G8B8A8_UNORM: VkFormat = 37;
+/// Skin joints (vertex attribute).
+pub const VK_FORMAT_R8G8B8A8_UINT: VkFormat = 41;
 pub const VK_FORMAT_R8G8B8A8_SRGB: VkFormat = 43;
 pub const VK_FORMAT_B8G8R8A8_SRGB: VkFormat = 50;
 pub const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;
+/// Texture coordinates (vertex attribute).
+pub const VK_FORMAT_R32G32_SFLOAT: VkFormat = 103;
+/// Tangents (vertex attribute).
+pub const VK_FORMAT_R16G16B16A16_SNORM: VkFormat = 92;
 pub const VK_FORMAT_R16G16B16A16_SFLOAT: VkFormat = 97;
 pub const VK_FORMAT_D16_UNORM: VkFormat = 124;
 pub const VK_FORMAT_D32_SFLOAT: VkFormat = 126;
@@ -230,6 +236,9 @@ pub const VK_DYNAMIC_STATE_DEPTH_COMPARE_OP: i32 = 1_000_267_008;
 pub const VK_FILTER_NEAREST: i32 = 0;
 pub const VK_FILTER_LINEAR: i32 = 1;
 pub const VK_SAMPLER_MIPMAP_MODE_NEAREST: i32 = 0;
+pub const VK_SAMPLER_MIPMAP_MODE_LINEAR: i32 = 1;
+pub const VK_SAMPLER_ADDRESS_MODE_REPEAT: i32 = 0;
+pub const VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: i32 = 1;
 pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: i32 = 2;
 pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: i32 = 3;
 pub const VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE: i32 = 4;
@@ -489,6 +498,8 @@ impl VkPhysicalDeviceLimits {
     #[cfg(test)]
     pub const MAX_DRAW_INDEXED_INDEX_VALUE: usize = 260;
     pub const TIMESTAMP_PERIOD: usize = 424;
+    /// `maxSamplerAnisotropy` (a float).
+    pub const MAX_SAMPLER_ANISOTROPY: usize = 272;
 
     /// The 32-bit member at byte `offset` (one of the constants above, so at least 8).
     pub fn word(&self, offset: usize) -> u32 {
@@ -501,6 +512,11 @@ impl VkPhysicalDeviceLimits {
     /// Nanoseconds per timestamp tick.
     pub fn timestamp_period(&self) -> f32 {
         f32::from_bits(self.word(Self::TIMESTAMP_PERIOD))
+    }
+
+    /// The largest anisotropy a sampler may ask for (1 = none).
+    pub fn max_sampler_anisotropy(&self) -> f32 {
+        f32::from_bits(self.word(Self::MAX_SAMPLER_ANISOTROPY))
     }
 }
 
@@ -603,11 +619,17 @@ pub struct VkFormatProperties {
     pub buffer_features: VkFlags,
 }
 
-/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures` (we enable none of them).
+/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures` (we enable only `samplerAnisotropy`,
+/// when the device has it).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkPhysicalDeviceFeatures {
     pub flags: [VkBool32; 55],
+}
+
+impl VkPhysicalDeviceFeatures {
+    /// Index of `samplerAnisotropy`.
+    pub const SAMPLER_ANISOTROPY: usize = 19;
 }
 
 #[repr(C)]

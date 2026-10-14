@@ -65,9 +65,26 @@ vec3 fog_radiance(Frame f, vec3 dir) {
 struct Draw {
     mat4 model;  // object -> world
     vec4 color;  // linear RGB, a opacity
-    vec4 color2; // linear RGB, a seed
+    vec4 color2; // linear RGB, a seed (textured Lit: emissive colour x strength, a normal scale)
     vec4 params; // emissive, metallic, roughness, specular
+    uvec4 ext;   // texture slots + 1 (x: base | normal << 16, y: metal-rough | emissive << 16),
+                 // z: first bone matrix, w: flags (EXT_*) | alpha cutoff (unorm8) << 8
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Draws {
     Draw items[];
 };
+
+// `Draw.ext.w` flags.
+const uint EXT_ALPHA_MASK = 1u;
+const uint EXT_EMISSIVE_COLOR = 2u;
+
+// Skinning matrices of the frame's skinned draws, palettes one after another.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Bones {
+    mat4 m[];
+};
+
+// Skinning matrix of a vertex: its (up to) four bones' matrices by weight.
+mat4 skin_matrix(Bones bones, uint first, uvec4 joints, vec4 weights) {
+    return bones.m[first + joints.x] * weights.x + bones.m[first + joints.y] * weights.y +
+           bones.m[first + joints.z] * weights.z + bones.m[first + joints.w] * weights.w;
+}
