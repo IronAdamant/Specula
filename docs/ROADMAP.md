@@ -357,8 +357,13 @@ shapes?"
 - [ ] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
 - [x] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
   *Done 2026-10-14:* `--perf FILE` / `./perf.toml` (`perf.example.toml` documents every budget, per-adapter overrides); misses are structured errors in `perf_frame` and `perf_capture`.
-- [ ] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
-  *Progress 2026-10-13:* HDR bloom, ACES tonemap, FXAA (colour grading and SSAO still to do).
+- [x] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
+  *Progress 2026-10-13:* HDR bloom, ACES tonemap, FXAA.
+  *2026-10-15:* colour grading (white balance, contrast, saturation/vibrance, lift/gamma/gain,
+  3D LUT strips from the assets root, vignette, grain; neutral = bit-identical) and SSAO (from the
+  scene's depth, ambient light only), both in `world_env`; Intel iGPU game bench at 1600×900:
+  SSAO +0.98 ms (half res, 8 samples; +0.59 ms at a quarter), the Sepulcra grade +0.40 ms.
+  SMAA not done (FXAA covers it for now).
 - [x] ➕ **Analytic sky and height fog.**
   *Done 2026-10-13:* analytic sky with a moon disc, exponential height fog.
 - [x] ➕ **Fixed pipeline set**: materials are parameters into a few uber-shaders, all pipelines are built at load
