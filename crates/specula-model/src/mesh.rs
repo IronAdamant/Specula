@@ -29,6 +29,9 @@ pub struct Part {
 /// - `joints`/`weights`: skinning data for rigged models (see [`crate::rig`]), one entry per
 ///   vertex, or both empty. Up to 4 bone indices into the model's rig, and unorm8 weights that
 ///   sum to exactly 255 (a GPU reads them as `R8G8B8A8_UINT` + `R8G8B8A8_UNORM`).
+/// - `uvs`: texture coordinates (`[u, v]`, origin at the image's top-left, as glTF), one per
+///   vertex, or empty. Recipe meshes have none; imported meshes (`specula-gltf`) keep theirs for
+///   textured materials.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshData {
     pub positions: Vec<V3>,
@@ -38,6 +41,7 @@ pub struct MeshData {
     pub parts: Vec<Part>,
     pub joints: Vec<[u8; 4]>,
     pub weights: Vec<[u8; 4]>,
+    pub uvs: Vec<[f32; 2]>,
 }
 
 /// Axis-aligned bounds.
@@ -81,7 +85,7 @@ impl Bounds {
 /// What a mesh check found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeshErrorCode {
-    /// Buffer lengths disagree (normals/colours vs positions, indices not a multiple of 3).
+    /// Buffer lengths disagree (normals/colours/UVs vs positions, indices not a multiple of 3).
     LengthMismatch,
     /// A position or normal is NaN or infinite.
     NonFinite,
@@ -158,6 +162,12 @@ impl MeshData {
         if self.joints.len() != self.weights.len() || !(self.joints.is_empty() || self.joints.len() == n) {
             return Err(err(MeshErrorCode::BadSkin, None, format!("{n} positions, {} joints, {} weights", self.joints.len(), self.weights.len())));
         }
+        if !(self.uvs.is_empty() || self.uvs.len() == n) {
+            return Err(err(MeshErrorCode::LengthMismatch, None, format!("{n} positions, {} UVs", self.uvs.len())));
+        }
+        if let Some(i) = self.uvs.iter().position(|uv| !uv[0].is_finite() || !uv[1].is_finite()) {
+            return Err(err(MeshErrorCode::NonFinite, Some(i), format!("vertex {i}: UV {:?}", self.uvs[i])));
+        }
         if let Some(i) = self.weights.iter().position(|w| w.iter().map(|x| *x as u32).sum::<u32>() != 255) {
             return Err(err(MeshErrorCode::BadSkin, Some(i), format!("vertex {i}: weights {:?} don't sum to 255", self.weights[i])));
         }
@@ -219,9 +229,17 @@ impl MeshData {
 
     /// Appends `other` (its parts follow ours). Call [`MeshData::group_by_material`] to merge
     /// parts that share a material. If only one side is skinned, the other side's vertices are
-    /// bound to bone 0 so the buffers stay aligned.
+    /// bound to bone 0 so the buffers stay aligned; likewise a side without UVs gets `[0, 0]`.
     pub fn merge(&mut self, other: &MeshData) {
         let base = self.positions.len() as u32;
+        if !self.uvs.is_empty() || !other.uvs.is_empty() {
+            self.uvs.resize(self.positions.len(), [0.0; 2]);
+            if other.uvs.is_empty() {
+                self.uvs.extend(std::iter::repeat_n([0.0f32; 2], other.positions.len()));
+            } else {
+                self.uvs.extend_from_slice(&other.uvs);
+            }
+        }
         if self.is_skinned() || other.is_skinned() {
             let rigid = ([0u8; 4], [255u8, 0, 0, 0]);
             if !self.is_skinned() {
@@ -348,6 +366,14 @@ impl MeshData {
                 h.write_bytes(w);
             }
         }
+        // Likewise meshes without UVs (every recipe mesh).
+        if !self.uvs.is_empty() {
+            h.write_u64(self.uvs.len() as u64 | 1 << 63);
+            for uv in &self.uvs {
+                h.write_f32(uv[0]);
+                h.write_f32(uv[1]);
+            }
+        }
         h.finish()
     }
 
@@ -448,5 +474,24 @@ mod tests {
         assert_eq!(skinned.validate().unwrap_err().code, MeshErrorCode::BadSkin);
         skinned.weights.pop();
         assert_eq!(skinned.validate().unwrap_err().code, MeshErrorCode::BadSkin);
+    }
+
+    #[test]
+    fn uvs_are_optional_and_merge_aligned() {
+        let plain = tetra();
+        let mut uv = tetra();
+        uv.uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        uv.validate().unwrap();
+        assert_ne!(uv.content_hash(), plain.content_hash());
+        let mut a = plain.clone();
+        a.merge(&uv);
+        a.merge(&plain);
+        a.validate().unwrap();
+        assert_eq!(a.uvs.len(), 12);
+        assert_eq!((a.uvs[0], a.uvs[5], a.uvs[11]), ([0.0, 0.0], [1.0, 0.0], [0.0, 0.0]));
+        uv.uvs.pop();
+        assert_eq!(uv.validate().unwrap_err().code, MeshErrorCode::LengthMismatch);
+        uv.uvs.push([f32::NAN, 0.0]);
+        assert_eq!(uv.validate().unwrap_err().code, MeshErrorCode::NonFinite);
     }
 }
