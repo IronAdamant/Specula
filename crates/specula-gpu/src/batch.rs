@@ -107,8 +107,16 @@ pub struct Batch {
     pub pass: u32,
     /// Its draws name bone palettes ([`crate::DrawItem::skin`]).
     pub skinned: bool,
+    /// Its draws are `Lit` with material textures ([`textured`]).
+    pub textured: bool,
     pub first: u32,
     pub count: u32,
+}
+
+/// A draw that uses the textured pipeline (on a mesh with UVs): `Lit` with any material texture
+/// set. Other draws of the same mesh keep the plain pipeline (and their vertex colours).
+pub fn textured(d: &crate::DrawItem) -> bool {
+    d.material == Material::Lit && d.surface.textures != crate::MaterialTextures::NONE
 }
 
 /// What to draw this frame. Reuse one `Plan` across frames ([`plan_into`]): its vectors keep
@@ -121,15 +129,15 @@ pub struct Plan {
     /// Draws skipped by frustum culling.
     pub culled: u32,
     /// Sort scratch: visible opaque draws as keys, visible blended draws as (distance², index).
-    opaque_keys: Vec<(u32, u32, bool, u32, usize)>,
+    opaque_keys: Vec<(u32, u32, bool, bool, u32, usize)>,
     blended_keys: Vec<(f32, usize)>,
 }
 
 /// Sort key for opaque draws: material (and so pipeline), mesh, skinned or not, then near to far
 /// (early depth rejection hides what is behind instead of shading it twice), then list position.
 /// `dist2` is non-negative or NaN, so its bits order like its value (NaN last).
-fn opaque_key(material: Material, mesh: MeshId, skinned: bool, dist2: f32, index: usize) -> (u32, u32, bool, u32, usize) {
-    (material as u32, mesh.0, skinned, dist2.to_bits(), index)
+fn opaque_key(material: Material, mesh: MeshId, skinned: bool, textured: bool, dist2: f32, index: usize) -> (u32, u32, bool, bool, u32, usize) {
+    (material as u32, mesh.0, skinned, textured, dist2.to_bits(), index)
 }
 
 /// The world-space sphere a draw is culled (and cast as a shadow) with: its own
@@ -191,14 +199,14 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
             let v = [center[0] - c[0], center[1] - c[1], center[2] - c[2]];
             // `abs` only clears the sign of a NaN, so every NaN sorts last.
             let dist2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).abs();
-            opaque.push(opaque_key(d.material, d.mesh, d.skin.is_some(), dist2, i));
+            opaque.push(opaque_key(d.material, d.mesh, d.skin.is_some(), textured(d), dist2, i));
         }
     }
 
     // Both sorts are in place (no allocation) and total: keys end in the list index, so equal
     // distances keep list order exactly as a stable sort would.
     opaque.sort_unstable();
-    entries.extend(opaque.iter().map(|k| (k.4, 0)));
+    entries.extend(opaque.iter().map(|k| (k.5, 0)));
     blended.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))); // far to near
     for group in blended.chunk_by(|a, b| a.0 == b.0) {
         entries.extend(group.iter().map(|&(_, i)| (i, 0)));
@@ -208,10 +216,12 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
 
     for (n, &(i, pass)) in entries.iter().enumerate() {
         let d = &frame.draws[i];
-        let skinned = d.skin.is_some();
+        let (skinned, tex) = (d.skin.is_some(), textured(d));
         match batches.last_mut() {
-            Some(b) if b.mesh == d.mesh && b.material == d.material && b.pass == pass && b.skinned == skinned => b.count += 1,
-            _ => batches.push(Batch { mesh: d.mesh, material: d.material, pass, skinned, first: n as u32, count: 1 }),
+            Some(b) if b.mesh == d.mesh && b.material == d.material && b.pass == pass && b.skinned == skinned && b.textured == tex => {
+                b.count += 1
+            }
+            _ => batches.push(Batch { mesh: d.mesh, material: d.material, pass, skinned, textured: tex, first: n as u32, count: 1 }),
         }
     }
     out.culled = culled;
@@ -331,8 +341,8 @@ mod tests {
         assert_eq!(
             p.batches,
             vec![
-                Batch { mesh: MeshId(1), material: Material::Lit, pass: 0, skinned: false, first: 0, count: 2 },
-                Batch { mesh: MeshId(2), material: Material::Lit, pass: 0, skinned: false, first: 2, count: 2 },
+                Batch { mesh: MeshId(1), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 0, count: 2 },
+                Batch { mesh: MeshId(2), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 2, count: 2 },
             ]
         );
         // Without bounds nothing is culled.

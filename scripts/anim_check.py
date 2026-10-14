@@ -295,6 +295,12 @@ def main():
         from_shift = after["from"]["start"] - anim["from"]["start"]
         check(same and 0 <= shift < 30 and abs(from_shift - shift) < 1e-9,
               f"anim survives save/load, moved onto the clock by the time between save and load ({shift:.3f} s): {after}")
+        # A clip the creature lacks is a warning in the reply and in captures (it draws its bind pose).
+        reply = mcp.json("world_set", path="/scene/fallen", anim="moonwalk")
+        warn = mcp.frame(time_s=1.0, **cam)["warnings"]
+        check("moonwalk" in reply.get("anim_warning", "") and any("moonwalk" in w for w in warn),
+              f"an unknown clip is reported: {reply.get('anim_warning')} / {warn}")
+        mcp.call("world_set", path="/scene/fallen", anim={"clip": "death", "start": 0})
         perf = mcp.json("perf_frame")
         print(f"perf models: {perf['models']}")
         summary["models"] = perf["models"]

@@ -277,6 +277,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.gpu.attach_window(ui.raw.hinstance, ui.raw.hwnd, w, h).map_err(|e| format!("swapchain: {e}"))?;
         Some(ui)
     };
+    // Assets that will need skinned or textured pipelines get them now, not at their first spawn.
+    let (skinned, textured) = models::asset_streams(engine.library.lock().root());
+    engine.gpu.prepare_variants(skinned, textured).map_err(|e| format!("pipelines: {e}"))?;
     // Loading is done: from here on, building a pipeline is a visible hitch and a budget error.
     engine.gpu.mark_warm();
     engine.game = game.take();
@@ -1293,6 +1296,9 @@ impl Engine {
         let e = self.world.get(id).expect("just written");
         let mut out = e.to_json(&self.world.path_of(id));
         out.set("journal", Json::from(journal));
+        if let Some(problem) = models::anim_problem(&self.library.lock(), e) {
+            out.set("anim_warning", Json::from(problem));
+        }
         ToolOutput::text(out.to_pretty())
     }
 
@@ -1535,6 +1541,11 @@ impl Engine {
                 stats.missing,
                 if stats.missing == 1 { "y" } else { "ies" },
             )));
+        }
+        {
+            let lib = self.library.lock();
+            let problems = self.world.entities().filter(|e| e.anim.is_some()).filter_map(|e| models::anim_problem(&lib, e));
+            warnings.extend(problems.take(5).map(Json::from));
         }
         let (lights, dropped) = sight::lights(&self.world, spec.include_ui);
         if dropped > 0 {

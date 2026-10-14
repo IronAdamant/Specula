@@ -25,7 +25,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 17] = [
+static SHADERS: [(&str, &[u8]); 20] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -43,6 +43,9 @@ static SHADERS: [(&str, &[u8]); 17] = [
     ("mesh_skin_tex.vert", include_bytes!("../shaders/mesh_skin_tex.vert.spv")),
     ("mesh_tex.frag", include_bytes!("../shaders/mesh_tex.frag.spv")),
     ("shadow_skin.vert", include_bytes!("../shaders/shadow_skin.vert.spv")),
+    ("shadow_mask.vert", include_bytes!("../shaders/shadow_mask.vert.spv")),
+    ("shadow_skin_mask.vert", include_bytes!("../shaders/shadow_skin_mask.vert.spv")),
+    ("shadow_mask.frag", include_bytes!("../shaders/shadow_mask.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +67,9 @@ enum Shader {
     MeshSkinTexVert = 14,
     MeshTexFrag = 15,
     ShadowSkinVert = 16,
+    ShadowMaskVert = 17,
+    ShadowSkinMaskVert = 18,
+    ShadowMaskFrag = 19,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -86,9 +92,25 @@ pub const FEAT_BLENDED: u32 = 16;
 /// Skinned pipelines (their fragment stage leaves the lava lamp's ray marcher out).
 pub const FEAT_SKINNED: u32 = 32;
 /// Vertex stream variants of the scene pipelines: (skinned, textured). Blended materials are
-/// never textured (a textured mesh drawn blended uses the untextured variant).
+/// never textured (a textured mesh drawn blended uses the untextured variant). Shadow casters
+/// come in the same four: (skinned, alpha-masked).
 const OPAQUE_VARIANTS: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
 const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
+
+/// Which stream variants of the pipelines exist. The plain ones are built at start; skinned and
+/// textured ones by the first upload of a mesh with those streams (loading time, never a frame),
+/// so a game without skinned or textured meshes never pays for compiling them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Variants {
+    pub skinned: bool,
+    pub textured: bool,
+}
+
+impl Variants {
+    fn has(self, skinned: bool, textured: bool) -> bool {
+        (!skinned || self.skinned) && (!textured || self.textured)
+    }
+}
 
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
@@ -334,7 +356,8 @@ fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 
         ext[1] = id(t.metallic_roughness) | id(t.emissive) << 16;
         // Lit reads color2 only as a textured material: the emissive colour and normal scale.
         color2_a = if t.normal_scale.is_finite() { t.normal_scale } else { 1.0 };
-        if let Some(e) = t.emissive_color {
+        // An emissive texture without a colour of its own is lit by white (× `emissive`).
+        if let Some(e) = t.emissive_color.or(t.emissive.map(|_| [1.0; 3])) {
             let l = linear(e);
             c2 = [l[0] * emissive, l[1] * emissive, l[2] * emissive];
             ext[3] |= EXT_EMISSIVE_COLOR;
@@ -423,15 +446,19 @@ pub fn build_records(frame: &FrameDesc, plan: &Plan, textures: &Textures, cache:
     }
 }
 
-/// Append one record per shadow caster entry (only the model matters to the shadow pass).
-pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, out: &mut Vec<DrawRecord>) {
+/// Append one record per shadow caster entry: its model, its palette, and for alpha-masked
+/// casters the base colour slot and cutoff (all the shadow pass reads).
+pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, textures: &Textures, out: &mut Vec<DrawRecord>) {
     out.reserve(shadow.entries.len());
-    out.extend(shadow.entries.iter().map(|&i| DrawRecord {
-        model: frame.draws[i].model,
-        color: [0.0; 4],
-        color2: [0.0; 4],
-        params: [0.0; 4],
-        ext: [0, 0, frame.draws[i].skin.unwrap_or(0), 0],
+    out.extend(shadow.entries.iter().map(|&i| {
+        let d = &frame.draws[i];
+        let mut ext = [0, 0, d.skin.unwrap_or(0), 0];
+        if crate::shadow::masked(d) {
+            let t = &d.surface.textures;
+            ext[0] = t.base_color.and_then(|id| textures.slot(id)).map_or(0, |s| (s + 1) & 0xffff);
+            ext[3] = EXT_ALPHA_MASK | ((t.alpha_cutoff.min(1.0) * 255.0).round() as u32) << 8;
+        }
+        DrawRecord { model: d.model, color: [0.0; 4], color2: [0.0; 4], params: [0.0; 4], ext }
     }));
 }
 
@@ -712,8 +739,9 @@ pub enum PipelineKey {
     /// specialization constant `features` (`FEAT_*`), for skinned meshes (skin stream) and
     /// textured ones (surface stream; opaque only).
     Mesh { format: VkFormat, blended: bool, features: u32, skinned: bool, textured: bool },
-    /// Depth-only shadow casters into a D16 layer (skinned or not).
-    Shadow { skinned: bool },
+    /// Depth-only shadow casters into a D16 layer (skinned or not; alpha-masked ones read their
+    /// UVs and cut by the base colour's alpha).
+    Shadow { skinned: bool, masked: bool },
     /// Bloom downsample (and bright pass) into an HDR level.
     BloomDown,
     /// Bloom upsample: the blur below, tent-filtered, plus this level.
@@ -737,8 +765,8 @@ enum VertexInput {
     /// [`Vertex`]: position, normal, colour; plus the skin stream (binding 1) and the surface
     /// stream (binding 2) when asked.
     Mesh { skinned: bool, textured: bool },
-    /// [`Vertex`]'s position only (plus the skin stream).
-    Position { skinned: bool },
+    /// [`Vertex`]'s position only (plus the skin stream, and the UVs of the surface stream).
+    Position { skinned: bool, uv: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -791,11 +819,16 @@ impl PipelineKey {
                 blend: if blended { Blend::Premultiplied } else { Blend::Off },
                 depth_bias: false,
             },
-            PipelineKey::Shadow { skinned } => PipelineDesc {
-                vert: if skinned { Shader::ShadowSkinVert } else { Shader::ShadowVert },
-                frag: None,
+            PipelineKey::Shadow { skinned, masked } => PipelineDesc {
+                vert: match (skinned, masked) {
+                    (false, false) => Shader::ShadowVert,
+                    (true, false) => Shader::ShadowSkinVert,
+                    (false, true) => Shader::ShadowMaskVert,
+                    (true, true) => Shader::ShadowSkinMaskVert,
+                },
+                frag: masked.then_some(Shader::ShadowMaskFrag),
                 spec: 0,
-                vertex: VertexInput::Position { skinned },
+                vertex: VertexInput::Position { skinned, uv: masked },
                 color: None,
                 depth: Some(SHADOW_FORMAT),
                 depth_test: true,
@@ -870,6 +903,8 @@ pub struct Pipelines {
     warm_at: Option<u32>,
     create_ms: f64,
     cache_load: PipelineCacheLoad,
+    /// Stream variants built (see [`Variants`]).
+    pub variants: Variants,
 }
 
 /// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
@@ -880,8 +915,8 @@ pub struct FramePipelines {
     pub opaque: [VkPipeline; 4],
     /// By `skinned as usize`.
     pub blended: [VkPipeline; 2],
-    /// By `skinned as usize`.
-    pub shadow: [VkPipeline; 2],
+    /// By caster streams: `skinned as usize | (masked as usize) << 1`.
+    pub shadow: [VkPipeline; 4],
     pub sky: VkPipeline,
     pub bloom_down: VkPipeline,
     pub bloom_up: VkPipeline,
@@ -949,6 +984,7 @@ impl Pipelines {
             warm_at: None,
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
+            variants: Variants::default(),
         };
         let result = (|| {
             for (name, spv) in SHADERS {
@@ -1018,7 +1054,8 @@ impl Pipelines {
         for blended in [false, true] {
             let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
             for features in FEATURE_SETS {
-                for &(skinned, textured) in variants {
+                let built = self.variants;
+                for &(skinned, textured) in variants.iter().filter(|(s, t)| built.has(*s, *t)) {
                     self.get(dev, PipelineKey::Mesh { format: color_format, blended, features, skinned, textured })?;
                 }
             }
@@ -1031,8 +1068,10 @@ impl Pipelines {
 
     /// Pipelines that don't depend on the output format: shadows, the HDR scene, bloom.
     pub fn prebuild_common(&mut self, dev: &Device) -> Result<(), GpuError> {
-        self.get(dev, PipelineKey::Shadow { skinned: false })?;
-        self.get(dev, PipelineKey::Shadow { skinned: true })?;
+        let built = self.variants;
+        for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| built.has(*s, *m)) {
+            self.get(dev, PipelineKey::Shadow { skinned, masked })?;
+        }
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
@@ -1058,23 +1097,30 @@ impl Pipelines {
             final_format
         };
         let layout = self.layout;
+        let built = self.variants;
         let mut get = |want: bool, key: PipelineKey| if want { self.get(dev, key) } else { Ok(VK_NULL_HANDLE) };
         let composite_format = if mode.fxaa { LDR_FORMAT } else { final_format };
         let shadows = features & FEAT_SHADOWS != 0;
+        // Only the variants built: a frame never compiles one (meshes needing the others don't
+        // exist yet).
         let mut opaque = [VK_NULL_HANDLE; 4];
-        for (skinned, textured) in OPAQUE_VARIANTS {
-            let key = PipelineKey::Mesh { format: scene_format, blended: false, features, skinned, textured };
-            opaque[skinned as usize | (textured as usize) << 1] = get(true, key)?;
+        let mut shadow = [VK_NULL_HANDLE; 4];
+        for (a, b) in OPAQUE_VARIANTS {
+            let have = built.has(a, b);
+            let key = PipelineKey::Mesh { format: scene_format, blended: false, features, skinned: a, textured: b };
+            opaque[a as usize | (b as usize) << 1] = get(have, key)?;
+            shadow[a as usize | (b as usize) << 1] = get(have && shadows, PipelineKey::Shadow { skinned: a, masked: b })?;
         }
         let mut blended = [VK_NULL_HANDLE; 2];
         for (skinned, _) in BLENDED_VARIANTS {
-            blended[skinned as usize] = get(true, PipelineKey::Mesh { format: scene_format, blended: true, features, skinned, textured: false })?;
+            let key = PipelineKey::Mesh { format: scene_format, blended: true, features, skinned, textured: false };
+            blended[skinned as usize] = get(built.has(skinned, false), key)?;
         }
         Ok(FramePipelines {
             layout,
             opaque,
             blended,
-            shadow: [get(shadows, PipelineKey::Shadow { skinned: false })?, get(shadows, PipelineKey::Shadow { skinned: true })?],
+            shadow,
             sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
@@ -1176,8 +1222,9 @@ impl Pipelines {
         let (skinned, textured, full) = match d.vertex {
             VertexInput::None => (false, false, None),
             VertexInput::Mesh { skinned, textured } => (skinned, textured, Some(true)),
-            VertexInput::Position { skinned } => (skinned, false, Some(false)),
+            VertexInput::Position { skinned, .. } => (skinned, false, Some(false)),
         };
+        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. });
         if let Some(full) = full {
             bindings.push(binding(0, size_of::<Vertex>()));
             attributes.push(attribute(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, position)));
@@ -1191,9 +1238,11 @@ impl Pipelines {
             attributes.push(attribute(3, 1, VK_FORMAT_R8G8B8A8_UINT, offset_of!(SkinVertex, joints)));
             attributes.push(attribute(4, 1, VK_FORMAT_R8G8B8A8_UNORM, offset_of!(SkinVertex, weights)));
         }
-        if textured {
+        if textured || uv_only {
             bindings.push(binding(2, size_of::<SurfaceVertex>()));
             attributes.push(attribute(5, 2, VK_FORMAT_R32G32_SFLOAT, offset_of!(SurfaceVertex, uv)));
+        }
+        if textured {
             attributes.push(attribute(6, 2, VK_FORMAT_R16G16B16A16_SNORM, offset_of!(SurfaceVertex, tangent)));
         }
         let vertex_input = VkPipelineVertexInputStateCreateInfo {
@@ -1410,7 +1459,7 @@ pub fn prepare_frame(
     crate::batch::plan_into(frame, bounds, &mut scratch.plan);
     plan_shadows(frame, &scratch.plan, bounds, &mut scratch.shadow);
     build_records(frame, &scratch.plan, textures, &mut scratch.linear, &mut scratch.records);
-    append_shadow_records(frame, &scratch.shadow, &mut scratch.records);
+    append_shadow_records(frame, &scratch.shadow, textures, &mut scratch.records);
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
     let units = scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len());
     upload.reserve(dev, units)?;
@@ -1792,11 +1841,17 @@ pub fn record_scene(
             }
             let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
             let skinned = batch.skinned && mesh.skin_offset.is_some();
+            // Textured only when the draws have textures (a mesh with UVs drawn without them
+            // keeps its vertex colours in the plain pipeline).
+            let textured = batch.textured && mesh.surface_offset.is_some();
             let pipeline = if batch.material.blended() {
                 pipelines.blended[skinned as usize]
             } else {
-                pipelines.opaque[skinned as usize | (mesh.surface_offset.is_some() as usize) << 1]
+                pipelines.opaque[skinned as usize | (textured as usize) << 1]
             };
+            if pipeline == VK_NULL_HANDLE {
+                continue; // a variant not built: no mesh with those streams was ever uploaded
+            }
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                 bound = pipeline;

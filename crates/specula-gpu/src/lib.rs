@@ -47,8 +47,11 @@
 //! [`Gpu::upload_material_texture`]: a full mip chain ([`generate_mips`], in linear light for sRGB
 //! data) and a sampler per [`TextureSampler`] (glTF filters and wrap modes, anisotropic filtering
 //! when the device has it). Meshes without UVs and every other material are drawn as before.
-//! Textured materials don't multiply in the vertex colour (that hangs the Intel RaptorLake driver,
-//! see `shaders/mesh_frag.glsl`): texture the colour instead.
+//! Draws with textures don't multiply in the vertex colour (that hangs the Intel RaptorLake
+//! driver, see `shaders/mesh_frag.glsl`): texture the colour instead. Draws of the same mesh
+//! without textures use the plain pipeline and keep their vertex colours. Alpha-masked draws cut
+//! their shadows too. Skinned and textured pipeline variants are built by the first upload of a
+//! mesh with those streams (at loading time, never in a frame).
 //!
 //! # Frame passes
 //!
@@ -443,12 +446,15 @@ pub struct MaterialTextures {
     pub normal_scale: f32,
     /// Roughness (G) and metalness (B), multiplying the surface's (`Rgba8Unorm`).
     pub metallic_roughness: Option<TextureId>,
-    /// Emissive colour (sRGB) multiplying `emissive_color`.
+    /// Emissive colour (sRGB) multiplying `emissive_color` (white when that is `None`) times
+    /// [`Surface::emissive`].
     pub emissive: Option<TextureId>,
-    /// An emissive colour of the material's own (sRGB) times [`Surface::emissive`]; `None` keeps
-    /// the default (the surface colour times `emissive`).
+    /// An emissive colour of the material's own (sRGB) times [`Surface::emissive`] (and the
+    /// emissive texture). `None` without an emissive texture keeps the default: the surface
+    /// colour times `emissive`.
     pub emissive_color: Option<[f32; 3]>,
-    /// Alpha masking: fragments whose base colour alpha is below this are cut (0 = opaque).
+    /// Alpha masking: fragments whose base colour alpha is below this are cut (0 = opaque), in
+    /// the scene and in the sun's shadow.
     pub alpha_cutoff: f32,
 }
 
@@ -1102,6 +1108,13 @@ impl Gpu {
     /// this are counted in [`PipelineStats::created_after_warm`] (a budget error: each is a hitch).
     pub fn mark_warm(&mut self) {
         self.inner.mark_warm()
+    }
+
+    /// Builds the skinned and/or textured pipeline variants now (they are otherwise built by the
+    /// first upload of a mesh with skin or UV streams). Call it while loading, before
+    /// [`Gpu::mark_warm`], when the game will use such meshes.
+    pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
+        self.inner.prepare_variants(skinned, textured)
     }
 
     /// The pipeline cache's contents, to save (e.g. at shutdown) and pass back through

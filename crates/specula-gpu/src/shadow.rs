@@ -285,6 +285,8 @@ pub struct ShadowBatch {
     pub mesh: MeshId,
     /// Its draws name bone palettes.
     pub skinned: bool,
+    /// Its draws are alpha-masked ([`masked`]): cut by their base colour's alpha.
+    pub masked: bool,
     pub first: u32,
     pub count: u32,
 }
@@ -316,7 +318,13 @@ pub struct ShadowPlan {
     pub batches: Vec<ShadowBatch>,
     /// Light-space sphere of every draw (`None` = doesn't cast), scratch.
     spheres: Vec<Option<([f32; 3], f32)>>,
-    keys: Vec<(u32, bool, u32, usize)>,
+    keys: Vec<(u32, bool, bool, u32, usize)>,
+}
+
+/// A shadow caster cut by its base colour's alpha (an alpha-masked textured `Lit` draw).
+pub fn masked(d: &crate::DrawItem) -> bool {
+    let t = &d.surface.textures;
+    d.material == Material::Lit && t.alpha_cutoff > 0.0 && t.base_color.is_some()
 }
 
 /// Plan the shadow pass for `frame` after its camera `plan`: fit the cascades to what the camera
@@ -382,17 +390,18 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
                 z_near = z_near.min(l[2] - r);
                 // Near the light first (early depth rejection), batched by mesh.
                 let depth = (l[2] - r - cascade.z_near + MAX_CASTER_REACH).max(0.0);
-                out.keys.push((frame.draws[i].mesh.0, frame.draws[i].skin.is_some(), depth.to_bits(), i));
+                let d = &frame.draws[i];
+                out.keys.push((d.mesh.0, d.skin.is_some(), masked(d), depth.to_bits(), i));
             }
         }
         cascade.z_near = z_near.max(cascade.z_far - 2.0 * cascade.radius - MAX_CASTER_REACH);
         out.keys.sort_unstable();
         let base = out.entries.len() as u32;
-        for (n, &(mesh, skinned, _, i)) in out.keys.iter().enumerate() {
+        for (n, &(mesh, skinned, masked, _, i)) in out.keys.iter().enumerate() {
             out.entries.push(i);
             match out.batches.last_mut() {
-                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned => b.count += 1,
-                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, first: base + n as u32, count: 1 }),
+                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned && b.masked == masked => b.count += 1,
+                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, masked, first: base + n as u32, count: 1 }),
             }
         }
     }
@@ -441,7 +450,7 @@ pub fn depth_bias(bias: f32) -> (f32, f32) {
 pub fn record_shadow_pass(
     dev: &Device,
     cmd: VkCommandBuffer,
-    pipeline: [VkPipeline; 2],
+    pipeline: [VkPipeline; 4],
     layout: VkPipelineLayout,
     meshes: &HashMap<u32, Mesh>,
     g: &FrameGraph,
@@ -498,7 +507,12 @@ pub fn record_shadow_pass(
             let mut bound = None;
             for b in plan.batches.iter().filter(|b| b.cascade == k) {
                 let Some(mesh) = meshes.get(&b.mesh.0) else { continue };
-                let want = pipeline[(b.skinned && mesh.skin_offset.is_some()) as usize];
+                let skinned = b.skinned && mesh.skin_offset.is_some();
+                let masked = b.masked && mesh.surface_offset.is_some();
+                let mut want = pipeline[skinned as usize | (masked as usize) << 1];
+                if want == VK_NULL_HANDLE {
+                    want = pipeline[skinned as usize]; // not built: cast solid
+                }
                 if want != bound_pipeline {
                     (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
                     bound_pipeline = want;

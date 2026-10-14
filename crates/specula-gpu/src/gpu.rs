@@ -7,7 +7,7 @@ use crate::descriptors::Descriptors;
 use crate::graph::{Final, GraphInfo, Prior, TransientPool};
 use crate::render::{
     check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
-    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines, SurfaceVertex,
+    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines, SurfaceVertex, Variants,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
 use crate::post::PostMode;
@@ -382,6 +382,15 @@ impl GpuInner {
             self.device.destroy_buffer(&buffer);
             return Err(e);
         }
+        // The first mesh with skin or UVs builds those pipeline variants (loading time).
+        let current = self.pipelines.variants;
+        let wanted = Variants { skinned: current.skinned || skin.is_some(), textured: current.textured || surface.is_some() };
+        if wanted != current {
+            if let Err(e) = self.build_variants(wanted) {
+                self.device.destroy_buffer(&buffer);
+                return Err(e);
+            }
+        }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
         self.meshes.insert(
@@ -397,6 +406,27 @@ impl GpuInner {
             },
         );
         Ok(MeshId(id))
+    }
+
+    pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
+        let current = self.pipelines.variants;
+        let wanted = Variants { skinned: current.skinned || skinned, textured: current.textured || textured };
+        if wanted == current {
+            return Ok(());
+        }
+        self.build_variants(wanted)
+    }
+
+    /// Builds the pipelines of the stream variants `v` for every format in use (offscreen, HDR,
+    /// the window's).
+    fn build_variants(&mut self, v: Variants) -> Result<(), GpuError> {
+        self.pipelines.variants = v;
+        self.pipelines.prebuild(&self.device, TARGET_FORMAT)?;
+        self.pipelines.prebuild_common(&self.device)?;
+        if let Some(w) = &self.window {
+            self.pipelines.prebuild(&self.device, w.format())?;
+        }
+        Ok(())
     }
 
     pub fn destroy_mesh(&mut self, mesh: MeshId) {

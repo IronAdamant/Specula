@@ -337,6 +337,86 @@ fn normal_maps_follow_the_gltf_convention_on_every_adapter() {
     }
 }
 
+/// Skinned and textured pipeline variants are built by the first upload with those streams (or
+/// `prepare_variants`), never by a frame; a mesh with UVs drawn without textures keeps its
+/// vertex colour; an emissive texture without a colour glows white; an alpha-masked caster's
+/// cut-out casts no shadow.
+#[test]
+fn variants_vertex_colours_emission_and_masked_shadows() {
+    let test = "material_rules";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let created = |gpu: &Gpu| gpu.last_frame_stats().pipelines.created;
+    let plain = created(&gpu);
+    let (cv, ci) = cube();
+    let cube_mesh = gpu.upload_mesh(&cv, &ci).unwrap();
+    assert_eq!(created(&gpu), plain, "plain meshes need no new pipelines");
+    let (v, i, skin) = bar();
+    gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    let skinned = created(&gpu);
+    assert!(skinned > plain, "the first skinned mesh builds the skinned variants");
+    // A red-tinted quad with UVs.
+    let (mut qv, qi, quv) = quad_uv();
+    for vert in &mut qv {
+        vert.color = [255, 0, 0, 255];
+    }
+    let quad = gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    let textured = created(&gpu);
+    assert!(textured > skinned, "the first mesh with UVs builds the textured variants");
+    gpu.prepare_variants(true, true).unwrap();
+    assert_eq!(created(&gpu), textured, "already built");
+    gpu.mark_warm();
+    let target = gpu.create_target(W, H).unwrap();
+    // Without textures the quad keeps its vertex colour (the plain pipeline).
+    gpu.render(target, &flat_frame(&[DrawItem::new(quad, IDENTITY, [1.0; 4])], 1.0)).unwrap();
+    let p = pixel(&gpu.read_rgba8(target).unwrap(), W, W / 2, H / 2);
+    assert!(p[0] > 200 && p[1] < 30 && p[2] < 30, "{test}: vertex colour kept: {p:?}");
+    // An emissive texture without an emissive colour glows white × emissive, in the dark.
+    let white: Vec<u8> = vec![255; 16];
+    let glow = gpu.upload_material_texture(2, 2, TextureFormat::Rgba8Srgb, &white, TextureSampler::default()).unwrap();
+    let mut d = DrawItem::new(quad, IDENTITY, [0.0, 0.0, 0.0, 1.0]);
+    d.surface = Surface { emissive: 1.0, textures: MaterialTextures { emissive: Some(glow), ..Default::default() }, ..Default::default() };
+    let draws = [d];
+    let mut dark = flat_frame(&draws, 1.0);
+    dark.environment.ambient_intensity = 0.0;
+    gpu.render(target, &dark).unwrap();
+    let p = pixel(&gpu.read_rgba8(target).unwrap(), W, W / 2, H / 2);
+    assert!(p[..3].iter().all(|&c| c > 240), "{test}: a black surface glows white: {p:?}");
+    // Masked shadows: a quad lying 1 m above a floor (x −1.5..1.5) under a sun 45° from +X, so
+    // its shadow falls 1 m towards −X: the floor at x = −2 is in it but not under the quad. A
+    // fully transparent texture masked at 0.5 casts nothing there.
+    let clear: Vec<u8> = [255, 255, 255, 0].repeat(4);
+    let cut = gpu.upload_material_texture(2, 2, TextureFormat::Rgba8Srgb, &clear, TextureSampler::default()).unwrap();
+    let solid = gpu.upload_material_texture(2, 2, TextureFormat::Rgba8Srgb, &white, TextureSampler::default()).unwrap();
+    let floor = DrawItem::new(cube_mesh, mul(&translation([0.0, -0.5, 0.0]), &scale_xyz([8.0, 1.0, 8.0])), [0.8, 0.8, 0.8, 1.0]);
+    // The XY quad turned to lie flat (facing +Y) at y = 1, 3 m across.
+    let lying = [3.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0];
+    let view = look_at_rh([0.0, 6.0, 0.01], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let view_proj = mul(&perspective_vk_reverse_z(40f32.to_radians(), 1.0, 0.05), &view);
+    let mut floor_lit = |texture, cutoff: f32| {
+        let mut q = DrawItem::new(quad, lying, [1.0; 4]);
+        q.surface.textures = MaterialTextures { base_color: Some(texture), alpha_cutoff: cutoff, ..Default::default() };
+        let mut environment = Environment { sun_direction: [1.0, 1.0, 0.0], ..Default::default() };
+        environment.shadow.enabled = true;
+        let draws = [floor, q];
+        gpu.render(target, &FrameDesc { view_proj, draws: &draws, reverse_z: true, environment, ..Default::default() }).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        let (x, y) = project(&view_proj, [-2.0, 0.0, 0.0], W, H);
+        pixel(&rgba, W, x as u32, y as u32)[0]
+    };
+    let shaded = floor_lit(solid, 0.5);
+    let open = floor_lit(cut, 0.5);
+    eprintln!("{test}: under an opaque caster {shaded}, under a cut-out one {open}");
+    assert!(open as u32 > shaded as u32 + 40, "{test}: the cut-out casts no shadow ({open} vs {shaded})");
+    let stats = gpu.last_frame_stats();
+    assert_eq!(stats.pipelines.created_after_warm, 0, "no frame built a pipeline");
+    let errors = validation_errors(test, gpu);
+    assert!(errors.is_empty(), "{test}: {errors:#?}");
+}
+
+fn scale_xyz(s: V3) -> [f32; 16] {
+    [s[0], 0.0, 0.0, 0.0, 0.0, s[1], 0.0, 0.0, 0.0, 0.0, s[2], 0.0, 0.0, 0.0, 0.0, 1.0]
+}
+
 /// Keep `Gpu` in the imports used when every test skips.
 #[allow(dead_code)]
 fn _uses(_: &Gpu) {}

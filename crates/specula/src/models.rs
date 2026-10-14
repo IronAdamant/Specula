@@ -600,6 +600,35 @@ fn import_gltf(path: &Path) -> Result<(Model, Extras), RecipeError> {
     Ok((import.model, x))
 }
 
+/// Whether an assets root holds models that need the GPU's skinned pipelines (anim sets, glTF
+/// assets) and textured ones (glTF assets): looked for in the root and two folders down, so the
+/// engine builds those pipelines while loading instead of at the first spawn.
+pub fn asset_streams(root: &Path) -> (bool, bool) {
+    fn walk(dir: &Path, depth: u32, found: &mut (bool, bool)) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if path.file_name().is_some_and(|n| n == "anims") {
+                    found.0 = true;
+                }
+                if depth > 0 {
+                    walk(&path, depth - 1, found);
+                }
+            } else if kind.is_file() && is_gltf_path(&path.to_string_lossy()) {
+                *found = (true, true);
+            }
+            if *found == (true, true) {
+                return;
+            }
+        }
+    }
+    let mut found = (false, false);
+    walk(root, 2, &mut found);
+    found
+}
+
 /// What a glTF source's key was made from (checked again by [`Library::poll`]).
 struct GltfInfo {
     path: PathBuf,
@@ -1518,6 +1547,21 @@ fn check_uploadable(model: &Model) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Why entity `e`'s `anim` can't play (it draws its bind pose), once its model is built: the
+/// model has no anim set, or the clip (or the clip it fades from) isn't in it. `None` when it
+/// plays, has no anim, or its model is still building.
+pub fn anim_problem(lib: &Library, e: &Entity) -> Option<String> {
+    let a = e.anim.as_ref()?;
+    let built = lib.built(e.resolved_model()?.handle)?;
+    let Some(set) = &built.anims else {
+        let why = built.anim_note.clone().unwrap_or_else(|| "the model has no rig".into());
+        return Some(format!("'{}' has anim '{}' but no clips to play: {why}", e.name, a.clip));
+    };
+    let missing = [Some(a.clip.as_str()), a.from.as_ref().map(|f| f.clip.as_str())].into_iter().flatten().find(|c| set.id(c).is_none())?;
+    let clips: Vec<&str> = set.clips().map(|(_, c)| c.name.as_str()).take(32).collect();
+    Some(format!("'{}' plays clip '{missing}', which its anim set lacks: drawn in its bind pose (clips: {})", e.name, clips.join(", ")))
 }
 
 /// The model handles the world's model entities use.
@@ -2948,6 +2992,29 @@ mod tests {
         drop(models);
         let msgs = gpu.close();
         assert!(msgs.iter().all(|m| m.severity < specula_gpu::Severity::Warning), "{msgs:?}");
+    }
+
+    #[test]
+    fn anims_that_cannot_play_are_reported() {
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let spawn = |world: &mut World, recipe: &str, clip: &str| {
+            let mut s = SpawnSpec::model(ModelSpec::new(recipe));
+            s.anim = Some(AnimSpec::new(clip));
+            world.spawn(s, "t").unwrap().id
+        };
+        let walker = spawn(&mut world, "recipes/shambler.json", "walk");
+        let typo = spawn(&mut world, "recipes/shambler.json", "moonwalk");
+        let stone = spawn(&mut world, "recipes/warding_stone.json", "walk");
+        assert!(anim_problem(&shared.lock(), world.get(typo).unwrap()).is_none(), "nothing to say while building");
+        settle_shared(&shared, &mut world);
+        let lib = shared.lock();
+        assert_eq!(anim_problem(&lib, world.get(walker).unwrap()), None);
+        let p = anim_problem(&lib, world.get(typo).unwrap()).unwrap();
+        assert!(p.contains("'moonwalk'") && p.contains("walk, attack"), "{p}");
+        let p = anim_problem(&lib, world.get(stone).unwrap()).unwrap();
+        assert!(p.contains("no clips") && p.contains("no rig"), "{p}");
     }
 
     /// Every part of every Sepulcra creature, posed through every clip (30 samples a second, on
