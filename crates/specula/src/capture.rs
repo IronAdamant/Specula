@@ -589,7 +589,7 @@ impl Engine {
                 total += 1;
                 if list.len() < 64 {
                     let at = centre(&p, e, s);
-                    p.label(&format!("LOD {level}/{} {}", count - 1, tri_text(tris)), at, [0.6, 1.0, 0.6, 1.0], (1 << 40) + s.area);
+                    p.label(&format!("LOD {level} (0-{}) {}", count - 1, tri_text(tris)), at, [0.6, 1.0, 0.6, 1.0], (1 << 40) + s.area);
                     list.push(Json::obj([
                         ("path", Json::from(path.as_str())),
                         ("lod", Json::from(level)),
@@ -736,14 +736,16 @@ impl Engine {
             };
             if i == 0 {
                 warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, building, v);
-                overlays = r.overlays.clone();
+            }
+            if overlays.is_none() {
+                overlays = r.overlays.as_ref().and_then(|j| j.get("drawn")).map(|d| Json::obj([("drawn", d.clone()), ("per_view", Json::from("each view's own counts are in views[].overlays"))]));
             }
             let (x, y) = orbit::tile_origin(i as u32, o.views, tw, th);
             compare::blit(&mut sheet, sw, &r.rgba, tw, th, x, y);
             let on: Vec<Subject> = r.subjects.iter().filter(|s| s.on_screen).cloned().collect();
             let (chosen, omitted) = sight::most_relevant(&on, o.max_subjects.max(1));
             let chosen: Vec<Json> = if o.max_subjects == 0 { Vec::new() } else { chosen.into_iter().map(compact_subject).collect() };
-            out_views.push(Json::obj([
+            let mut view = Json::obj([
                 ("view", Json::from(i + 1)),
                 ("azimuth_deg", Json::from(az)),
                 ("tile", Json::arr([x, y, tw, th].map(Json::from))),
@@ -751,7 +753,15 @@ impl Engine {
                 ("subjects_on_screen", Json::from(on.len())),
                 ("subjects", Json::Arr(chosen)),
                 ("subjects_omitted", Json::from(if o.max_subjects == 0 { on.len() } else { omitted })),
-            ]));
+            ]);
+            if let Some(mut ov) = r.overlays {
+                // The list of what was drawn is shared (top-level `overlays`); the counts are this view's.
+                if let Json::Obj(fields) = &mut ov {
+                    fields.retain(|(k, _)| k != "drawn");
+                }
+                view.set("overlays", ov);
+            }
+            out_views.push(view);
         }
         let png_bytes = encode_png(sw, sh, &sheet);
         self.frames_captured += 1;

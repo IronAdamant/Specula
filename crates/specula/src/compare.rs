@@ -304,7 +304,7 @@ pub fn subject_diff(before: &BTreeMap<u64, SubjectState>, after: &BTreeMap<u64, 
                     (Some(r0), Some(r1)) => (0..4).any(|i| r0[i].abs_diff(r1[i]) > move_px),
                     _ => false,
                 };
-                let d = (0..3).map(|i| (a.position[i] - b.position[i]).abs()).fold(0.0f32, f32::max);
+                let d = (0..3).map(|i| (a.position[i] - b.position[i]).powi(2)).sum::<f32>().sqrt();
                 if screen_moved || d > 1e-3 {
                     moved.push(Json::obj([
                         ("path", path(a)),

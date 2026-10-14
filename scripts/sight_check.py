@@ -175,6 +175,7 @@ def main():
         check(subj["added"]["items"] == ["/newcomer"], f"added: {subj['added']}", failures)
         check(subj["removed"]["items"] == ["/hidden_box"], f"removed: {subj['removed']}", failures)
         check([m_["path"] for m_ in subj["moved"]["items"]] == ["/marker"], f"moved: {subj['moved']}", failures)
+        check(abs(subj["moved"]["items"][0]["world_moved_m"] - 5 ** 0.5) < 0.01, "...by sqrt(5) m (2 along x, 1 along z)", failures)
         check(diff["pixels"]["changed_pct"] > 0.1 and len(diff["pixels"]["regions"]) >= 2,
               f"changed pixels and regions: {diff['pixels']['changed_pct']}% in {diff['pixels']['regions_total']} regions", failures)
         same, _ = save("compare_diff_again", builder.call("sight_compare", action="diff", name="before"))
