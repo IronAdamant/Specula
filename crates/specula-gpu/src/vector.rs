@@ -34,6 +34,8 @@ pub const MAX_SHAPE_VERTICES: usize = 262_144;
 /// Most points of one filled polygon (a solid contour with its holes bridged in): ear clipping
 /// is quadratic, so this bounds a fill's time.
 pub const MAX_FILL_POLYGON: usize = 4096;
+/// Most contours of one fill (nesting is worked out between every pair).
+pub const MAX_FILL_RINGS: usize = 1024;
 /// Most segments of one round join or cap.
 pub const MAX_ROUND_SEGMENTS: usize = 64;
 /// Most segments of one flattened curve or arc.
@@ -77,8 +79,14 @@ pub enum VectorError {
     TooManyPoints { points: usize, max: usize },
     /// The mesh would pass [`MAX_SHAPE_VERTICES`] vertices.
     TooManyVertices { vertices: usize, max: usize },
-    /// A filled polygon (holes bridged in) has more than [`MAX_FILL_POLYGON`] points.
+    /// A filled polygon (holes bridged in) has more than [`MAX_FILL_POLYGON`] points, or the
+    /// fill would take more than its share of work ([`MAX_FILL_WORK`]).
     FillTooComplex { points: usize, max: usize },
+    /// A filled contour crosses itself (its outline turns other than once around: a pentagram,
+    /// a loop drawn twice).
+    SelfIntersecting { contour: usize },
+    /// More than [`MAX_FILL_RINGS`] contours in one fill.
+    TooManyContours { contours: usize, max: usize },
     /// A coordinate, size or tolerance is not finite (or a size is negative).
     NotFinite { what: &'static str },
 }
@@ -97,8 +105,17 @@ impl fmt::Display for VectorError {
             ),
             VectorError::FillTooComplex { points, max } => write!(
                 f,
-                "a filled contour (with its holes) has {points} points; at most {max} (raise the tolerance or split it)"
+                "a filled contour (with its holes) has {points} points; at most {max} (raise the tolerance or split it), \
+                 and a shape's fills together at most twice that much work"
             ),
+            VectorError::SelfIntersecting { contour } => write!(
+                f,
+                "filled contour {contour} crosses itself (its outline turns more or less than once around); fill each \
+                 loop as its own polygon"
+            ),
+            VectorError::TooManyContours { contours, max } => {
+                write!(f, "the fill has {contours} contours; at most {max} (split it into several items)")
+            }
         }
     }
 }
@@ -230,6 +247,20 @@ impl Path {
     /// (metres) from the polyline (raised to [`MIN_RELATIVE_TOLERANCE`] × the path's extent;
     /// at most [`MAX_CURVE_SEGMENTS`] per curve). Consecutive duplicate points are dropped.
     pub fn flatten(&self, tolerance: f32) -> Result<Vec<Contour>, VectorError> {
+        let mut budget = MAX_SHAPE_POINTS;
+        self.flatten_budgeted(tolerance, &mut budget)
+    }
+
+    /// [`Path::flatten`] taking its points from `budget` (shared by every path of a shape): an
+    /// error as soon as it runs out, before any more work.
+    pub fn flatten_budgeted(&self, tolerance: f32, budget: &mut usize) -> Result<Vec<Contour>, VectorError> {
+        let max_points = *budget;
+        let flattened = self.flatten_within(tolerance, max_points)?;
+        *budget -= flattened.iter().map(|c| c.points.len()).sum::<usize>().min(max_points);
+        Ok(flattened)
+    }
+
+    fn flatten_within(&self, tolerance: f32, max_points: usize) -> Result<Vec<Contour>, VectorError> {
         if !(tolerance.is_finite() && tolerance > 0.0) {
             return Err(VectorError::NotFinite { what: "tolerance (> 0)" });
         }
@@ -257,8 +288,8 @@ impl Path {
             if cur.last() != Some(&p) {
                 cur.push(p);
                 *total += 1;
-                if *total > MAX_SHAPE_POINTS {
-                    return Err(VectorError::TooManyPoints { points: *total, max: MAX_SHAPE_POINTS });
+                if *total > max_points {
+                    return Err(VectorError::TooManyPoints { points: *total, max: max_points });
                 }
             }
             Ok(())
@@ -317,7 +348,8 @@ impl Path {
                     if !(rx.is_finite() && ry.is_finite() && start.is_finite() && sweep.is_finite()) || rx < 0.0 || ry < 0.0 {
                         return Err(VectorError::NotFinite { what: "arc radii and angles (radii >= 0)" });
                     }
-                    let (start, mut sweep) = (start as f64, sweep as f64);
+                    // More than a full turn would only draw over itself.
+                    let (start, mut sweep) = (start as f64, (sweep as f64).clamp(-std::f64::consts::TAU, std::f64::consts::TAU));
                     // A full turn given in f32 (TAU rounds) closes exactly on its first point.
                     let full = (sweep.abs() - std::f64::consts::TAU).abs() < 1e-5;
                     if full {
@@ -529,10 +561,37 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
     if total > MAX_SHAPE_POINTS {
         return Err(VectorError::TooManyPoints { points: total, max: MAX_SHAPE_POINTS });
     }
+    if rings.len() > MAX_FILL_RINGS {
+        return Err(VectorError::TooManyContours { contours: rings.len(), max: MAX_FILL_RINGS });
+    }
+    // A simple outline turns exactly once around; anything else crosses itself.
+    for (k, r) in rings.iter().enumerate() {
+        let n = r.len();
+        let turning: f64 = (0..n)
+            .map(|i| {
+                let (u, v) = (sub(r[(i + 1) % n], r[i]), sub(r[(i + 2) % n], r[(i + 1) % n]));
+                dmath::atan2_f64(cross(u, v), dot(u, v))
+            })
+            .sum();
+        if (turning.abs() - std::f64::consts::TAU).abs() > 1e-3 {
+            return Err(VectorError::SelfIntersecting { contour: k });
+        }
+    }
+    // Nesting (every ring against every other, then holes against solids) is charged as work
+    // before it is done.
+    mesh.fill_work = mesh.fill_work.saturating_add(2 * rings.len() as u64 * total as u64);
+    if mesh.fill_work > MAX_FILL_WORK {
+        return Err(VectorError::FillTooComplex { points: total, max: MAX_FILL_POLYGON });
+    }
+    let boxes: Vec<[f64; 4]> = rings
+        .iter()
+        .map(|r| r.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
+            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+        }))
+        .collect();
     // Nesting depth: how many other rings contain each ring (tested at its first edge's middle).
     let probe: Vec<P2> = rings.iter().map(|r| scale(add(r[0], r[1]), 0.5)).collect();
-    let depth: Vec<usize> =
-        (0..rings.len()).map(|i| (0..rings.len()).filter(|&j| j != i && inside(&rings[j], probe[i])).count()).collect();
+    let depth: Vec<usize> = (0..rings.len()).map(|i| (0..rings.len()).filter(|&j| j != i && in_ring(&rings, &boxes, j, probe[i])).count()).collect();
     // Solid rings counter-clockwise, holes clockwise: the filled side is always on the left.
     for (r, &d) in rings.iter_mut().zip(&depth) {
         if (area2(r) > 0.0) != (d % 2 == 0) {
@@ -550,9 +609,7 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     for (i, _) in rings.iter().enumerate().filter(|(i, _)| depth[*i] % 2 == 0) {
         // Holes: odd rings whose innermost container is ring i.
-        let mut holes: Vec<usize> = (0..rings.len())
-            .filter(|&h| depth[h] == depth[i] + 1 && inside(&rings[i], probe[h]))
-            .collect();
+        let mut holes: Vec<usize> = (0..rings.len()).filter(|&h| depth[h] == depth[i] + 1 && in_ring(&rings, &boxes, i, probe[h])).collect();
         holes.sort_by(|&a, &b| {
             let mx = |h: usize| rings[h].iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
             mx(b).total_cmp(&mx(a)).then(a.cmp(&b))
@@ -605,6 +662,12 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
         }
     }
     Ok(())
+}
+
+/// `p` inside ring `j` (its bounding box first: most pairs of rings are far apart).
+fn in_ring(rings: &[Vec<P2>], boxes: &[[f64; 4]], j: usize, p: P2) -> bool {
+    let b = boxes[j];
+    p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3] && inside(&rings[j], p)
 }
 
 /// Outward miter vectors (unit perpendicular distance to both edges, at most 4 long) of every
@@ -1469,6 +1532,46 @@ mod tests {
             stroke(&many.flatten(1e-5)?, &wide, 1e-5, true, &mut m).map(|()| m)
         });
         assert!(r.is_ok());
+    }
+
+    /// Round 2 of the review: self-crossing fills, many contours, endless arcs.
+    #[test]
+    fn crossing_fills_and_contour_floods_are_refused() {
+        let tips: Vec<[f32; 2]> = (0..5)
+            .map(|k| {
+                let a = std::f32::consts::FRAC_PI_2 + k as f32 * 2.0 * std::f32::consts::TAU / 5.0;
+                [a.cos(), a.sin()]
+            })
+            .collect();
+        let mut m = ShapeMesh::default();
+        assert_eq!(fill(&Path::polygon(&tips).flatten(0.001).unwrap(), [255; 4], false, &mut m), Err(VectorError::SelfIntersecting { contour: 0 }));
+        // A 720-degree arc is clamped to one turn: a plain disc.
+        let mut twice = Path::new();
+        twice.arc_to([0.0, 0.0], [1.0, 1.0], 0.0, 4.0 * std::f32::consts::PI);
+        twice.close();
+        let mut m = ShapeMesh::default();
+        fill(&twice.flatten(0.01).unwrap(), [255; 4], false, &mut m).unwrap();
+        let area: f64 = tris(&m).iter().map(|t| tri_area(t).abs()).sum();
+        assert!((area - std::f64::consts::PI).abs() < 0.05, "{area}");
+        // 7,280 circles in one fill: refused at once.
+        let mut rings = Path::new();
+        for i in 0..7280 {
+            rings.arc_to([(i % 86) as f32 * 3.0, (i / 86) as f32 * 3.0], [1.0, 1.0], 0.0, std::f32::consts::TAU);
+            rings.close();
+        }
+        let t = std::time::Instant::now();
+        let r = rings.flatten(0.05).and_then(|c| {
+            let mut m = ShapeMesh::default();
+            fill(&c, [255; 4], false, &mut m)
+        });
+        eprintln!("7280 rings: {r:?} in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        assert!(matches!(r, Err(VectorError::TooManyPoints { .. } | VectorError::TooManyContours { .. })), "{r:?}");
+        // A shared point budget across paths.
+        let mut budget = 100;
+        assert!(Path::circle([0.0, 0.0], 1.0).flatten_budgeted(0.0001, &mut budget).is_err());
+        let mut budget = 10_000;
+        let c = Path::circle([0.0, 0.0], 1.0).flatten_budgeted(0.001, &mut budget).unwrap();
+        assert_eq!(budget, 10_000 - c[0].points.len());
     }
 
     #[test]

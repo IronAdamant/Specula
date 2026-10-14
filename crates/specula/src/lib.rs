@@ -31,6 +31,7 @@ use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
+use specula_core::math::Mat4;
 use specula_core::{base64, png, profile, Json};
 use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
@@ -861,14 +862,20 @@ impl Engine {
         camera
     }
 
-    /// The 2D draws of shown entities (`ui` ones when `include_ui`) at `time_s`, into `out`, and
-    /// now and then frees 2D GPU resources no entity uses any more.
-    fn build_draws_2d(&mut self, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>) {
+    /// The 2D draws of shown entities (`ui` ones when `include_ui`) in view of `view_proj` (and
+    /// shadow-casting sprites anywhere) at `time_s`, into `out`, and now and then frees 2D GPU
+    /// resources no entity uses any more. Only what is drawn loads, and only its problems are
+    /// reported.
+    fn build_draws_2d(&mut self, view_proj: &Mat4, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>) {
         out.clear();
         self.two_d.begin_frame(&mut self.gpu);
         for e in self.world.entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) {
+                continue;
+            }
+            let casts = matches!(t, two_d::TwoD::Sprite(s) if s.cast_shadows);
+            if !casts && !sight::in_view(e, view_proj) {
                 continue;
             }
             let c = e.color;
@@ -882,25 +889,33 @@ impl Engine {
         }
     }
 
-    /// Texture loads a capture should wait for: every texture of the 2D entities it would draw
-    /// is asked for (loads start), finished ones are uploaded, and those still loading counted.
-    fn two_d_loading(&mut self, include_ui: bool) -> usize {
+    /// What a capture should wait for: the textures and deferred shapes of the 2D entities in its
+    /// view (loads start; finished ones are uploaded), counted while still in flight. Entities
+    /// off screen neither hold it up nor appear in its warnings.
+    fn two_d_loading(&mut self, spec: &FrameSpec) -> usize {
+        self.two_d.pump(&mut self.gpu);
+        let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
+        let mut waiting = 0;
         for e in self.world.entities() {
-            if !sight::in_frame(e, include_ui) {
+            let Some(t) = &e.two_d else { continue };
+            if !sight::in_frame(e, spec.include_ui) || !sight::in_view(e, &view_proj) {
                 continue;
             }
-            match &e.two_d {
-                Some(two_d::TwoD::Sprite(s)) => {
+            match t {
+                two_d::TwoD::Sprite(s) => {
                     if let Some(p) = &s.texture {
                         self.two_d.request(p);
+                        waiting += self.two_d.is_loading(p) as usize;
                     }
                 }
-                Some(two_d::TwoD::Tilemap(t)) => self.two_d.request(&t.tileset),
-                _ => {}
+                two_d::TwoD::Tilemap(m) => {
+                    self.two_d.request(&m.tileset);
+                    waiting += self.two_d.is_loading(&m.tileset) as usize;
+                }
+                two_d::TwoD::Shape2d(s) => waiting += self.two_d.request_shape(s) as usize,
             }
         }
-        self.two_d.pump(&mut self.gpu);
-        self.two_d.loading()
+        waiting
     }
 
     /// tilemap_get: rows of run-length cell tokens.
@@ -963,7 +978,7 @@ impl Engine {
         // capture are waited for too.
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
-        if self.building_in_frame(&spec) == 0 && self.two_d_loading(spec.include_ui) == 0 {
+        if self.building_in_frame(&spec) == 0 && self.two_d_loading(&spec) == 0 {
             let _ = reply.send(self.capture(&spec, &session, wait));
             return;
         }
@@ -997,7 +1012,7 @@ impl Engine {
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
-            if now >= w.until || (self.building_in_frame(&w.spec) == 0 && self.two_d_loading(w.spec.include_ui) == 0) {
+            if now >= w.until || (self.building_in_frame(&w.spec) == 0 && self.two_d_loading(&w.spec) == 0) {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
                 let _ = w.reply.send(self.capture(&w.spec, &w.session, wait));
             } else {
@@ -1110,7 +1125,7 @@ impl Engine {
             let view_proj = camera.view_proj(size.0, size.1);
             let time_s = self.time_s();
             let mut draws_2d = std::mem::take(&mut self.draws_2d);
-            self.build_draws_2d(true, time_s, &mut draws_2d);
+            self.build_draws_2d(&view_proj, true, time_s, &mut draws_2d);
             let frame = FrameDesc { draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s) };
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
@@ -1622,9 +1637,9 @@ impl Engine {
         }
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
         let mut draws_2d = Vec::new();
-        self.build_draws_2d(spec.include_ui, time_s, &mut draws_2d);
+        self.build_draws_2d(&view_proj, spec.include_ui, time_s, &mut draws_2d);
         // Only problems of what this frame draws (missing textures, frames past a sheet, …).
-        warnings.extend(self.two_d.frame_problems.iter().map(|m| Json::from(m.as_str())));
+        warnings.extend(self.two_d.problems().iter().map(|m| Json::from(m.as_str())));
         let frame = FrameDesc { draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s) };
 
         let rendered = {

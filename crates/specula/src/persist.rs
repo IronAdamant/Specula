@@ -929,7 +929,8 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             _ => Err(fail(Some(key.into()), format!("'{key}' must be a string"))),
         };
         let (created_by, modified_by) = (text("created_by")?, text("modified_by")?);
-        let spec = parse_spawn_fields(rec).map_err(|m| fail(quoted_field(&m), m))?;
+        // Shapes are tessellated later, off the engine thread (and identical ones only once).
+        let spec = crate::two_d::deferred(|| parse_spawn_fields(rec)).map_err(|m| fail(quoted_field(&m), m))?;
         world.restore(spec, id, version, &created_by, &modified_by).map_err(|e| from_world(e, file, Some(path)))?;
     }
     Ok(())

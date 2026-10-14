@@ -330,14 +330,26 @@ def probes(m, assets, worlds, problems):
     px, warn = centre()
     check(px == (0, 0, 0) and any("probe/a.png" in w for w in warn), f"a missing texture draws nothing and says so {px} {warn}", problems)
     tex.write_bytes(png_bytes(2, 2, [255, 0, 0, 255] * 4))
-    time.sleep(1.5)
+    time.sleep(2.5)  # two polls: one may catch the file half-written
     px, warn = centre()
     check(px == (255, 0, 0) and not warn, f"once written it is drawn {px} {warn}", problems)
     time.sleep(0.05)
     tex.write_bytes(png_bytes(2, 2, [0, 0, 255, 255] * 4))
-    time.sleep(1.5)
+    time.sleep(2.5)
     px, _ = centre()
     check(px == (0, 0, 255), f"an edited texture reloads {px}", problems)
+    # Round 2: an off-screen sprite whose texture is huge (refused from its header) or missing
+    # neither holds a capture up nor shows in its warnings; on screen it is reported.
+    head = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR" + (16384).to_bytes(4, "big") * 2 + bytes([8, 6, 0, 0, 0, 0, 0, 0, 0])
+    (probe / "huge.png").write_bytes(head)
+    m.call("world_spawn", shape="sprite", name="probe_far", position=[10000, 0, 0], sprite={"texture": "probe/huge.png"})
+    m.call("world_spawn", shape="sprite", name="probe_far2", position=[-10000, 0, 0], sprite={"texture": "probe/nowhere.png"})
+    t = time.time()
+    px, warn = centre()
+    took = time.time() - t
+    check(took < 2 and not any("probe/huge" in w or "nowhere" in w for w in warn), f"off-screen textures don't hold up or warn ({took:.2f} s) {warn}", problems)
+    _, warn = centre((10000, 0))
+    check(any("16384x16384" in w for w in warn), f"on screen, a huge texture is refused from its header: {warn}", problems)
     bad, text = raw("world_spawn", shape="shape2d", shape2d={"items": [{"rect": [0, 0, 1, 1], "fill": "#12345\u00e9a"}]})
     check(bad and "fill" in text, "a non-ASCII colour is an argument error", problems)
     m.call("world_spawn", shape="tilemap", name="probe_map", tilemap={"tileset": "probe/a.png", "tile_px": [1, 1], "size": [1024, 1024], "layers": [{"name": "g"}]})
@@ -365,6 +377,23 @@ def probes(m, assets, worlds, problems):
     bad, text = raw("world_load", name="probe_world", force=True)
     check(bad, f"loading the edited world fails cleanly: {text[:120]}", problems)
     check("specula" in m.text("engine_info").lower(), "the engine is still running", problems)
+    # 100 entities sharing one heavy shape: one tessellation; save and load stay quick (shapes
+    # loaded from files are tessellated off the engine thread when first drawn).
+    shape = {"items": [{"circle": [0, 0, 100], "fill": "#ffffff"}] * 90, "tolerance": 0.001}
+    ops = [{"op": "spawn", "shape": "shape2d", "name": f"probe_heavy_{i}", "position": [i * 300.0, 2000, 0], "shape2d": shape} for i in range(100)]
+    t = time.time()
+    m.call("world_batch", ops=ops)
+    batch_s = time.time() - t
+    t = time.time()
+    m.json("world_save", name="probe_heavy", overwrite=True)
+    save_s = time.time() - t
+    t = time.time()
+    m.json("world_load", name="probe_heavy", force=True)
+    load_s = time.time() - t
+    check(batch_s < 3 and save_s < 3 and load_s < 3, f"100 shared heavy shapes: batch {batch_s:.2f} s, save {save_s:.2f} s, load {load_s:.2f} s", problems)
+    t = time.time()
+    p = m.frame(width=64, height=64, view_2d={"center": [0, 2000], "height_m": 300}, max_subjects=3)
+    check(time.time() - t < 5 and not p.get("warnings"), f"after loading, they draw (tessellated on the loader) {p.get('warnings')}", problems)
 
 
 def check(cond, what, problems):

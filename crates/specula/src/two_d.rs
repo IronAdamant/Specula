@@ -155,18 +155,26 @@ pub struct TilemapSpec {
     pub layers: Vec<TileLayer>,
 }
 
-#[derive(Clone, Debug)]
+/// A vector shape: its canonical description, and its tessellation (made once, shared by every
+/// entity with an identical shape; deferred while world files load, see [`deferred`]).
+#[derive(Debug)]
 pub struct Shape2dSpec {
     /// The canonical description (what is saved and hashed).
     pub json: Json,
     pub z_layer: i32,
-    /// The tessellation (local XY plane).
-    pub mesh: Arc<ShapeMesh>,
-    /// Identifies the mesh (hash of the canonical JSON).
+    /// Identifies the shape (hash of the canonical JSON).
     pub key: u64,
-    /// Local bounds of the mesh.
-    pub bounds: (Vec3, Vec3),
+    items: Vec<ShapeItem>,
+    tolerance: f32,
+    aa: bool,
+    /// Conservative local bounds from the input, until tessellated.
+    rough: (Vec3, Vec3),
+    /// The tessellation (local XY plane) and its bounds, or why it failed.
+    mesh: std::sync::OnceLock<Result<Built, String>>,
 }
+
+/// A shape's tessellation and its local bounds.
+type Built = (Arc<ShapeMesh>, (Vec3, Vec3));
 
 impl PartialEq for Shape2dSpec {
     fn eq(&self, other: &Shape2dSpec) -> bool {
@@ -913,21 +921,99 @@ fn path_cmds(v: &Json, budget: &mut usize) -> Result<Path, String> {
     Ok(path)
 }
 
+/// One shape2d item, parsed and ready to tessellate.
+#[derive(Clone, Debug)]
+struct ShapeItem {
+    path: Path,
+    fill: Option<[u8; 4]>,
+    stroke: Option<StrokeStyle>,
+}
+
+/// Most vertices of all distinct shape2d meshes alive at once (identical shapes share one).
+pub const MAX_WORLD_SHAPE_VERTICES: usize = 2_000_000;
+
+fn mesh_bounds(m: &ShapeMesh) -> Option<(Vec3, Vec3)> {
+    if m.vertices.is_empty() {
+        return None;
+    }
+    let (mut lo, mut hi) = (Vec3::new(f32::INFINITY, f32::INFINITY, 0.0), Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, 0.0));
+    for v in &m.vertices {
+        let p = Vec3::new(v.position[0], v.position[1], 0.0);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    Some((lo, hi))
+}
+
+/// Distinct shapes by canonical key: identical shape2d components share one spec (and one
+/// tessellation), and the world-wide vertex budget is counted over them.
+static SHAPES: std::sync::Mutex<BTreeMap<u64, std::sync::Weak<Shape2dSpec>>> = std::sync::Mutex::new(BTreeMap::new());
+
+thread_local! {
+    /// Set while world files load: shapes are tessellated later, off the engine thread.
+    static DEFERRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with shape2d tessellation deferred (world files: their shapes were valid when saved;
+/// the renderer tessellates them on a worker, and a hand-edited bad one draws nothing and says
+/// why instead of stalling the load).
+pub fn deferred<T>(f: impl FnOnce() -> T) -> T {
+    let was = DEFERRED.with(|d| d.replace(true));
+    let out = f();
+    DEFERRED.with(|d| d.set(was));
+    out
+}
+
+fn registry() -> std::sync::MutexGuard<'static, BTreeMap<u64, std::sync::Weak<Shape2dSpec>>> {
+    SHAPES.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Vertices of the distinct shapes alive and tessellated.
+pub fn live_shape_vertices() -> usize {
+    registry().values().filter_map(std::sync::Weak::upgrade).filter_map(|s| s.mesh().map(|m| m.vertices.len())).sum()
+}
+
 impl Shape2dSpec {
-    pub fn parse(v: &Json) -> Result<Shape2dSpec, String> {
+    /// Parses, validates and tessellates `v`, or returns the live spec of an identical shape
+    /// (no second tessellation). Refused past [`MAX_WORLD_SHAPE_VERTICES`] of distinct shapes.
+    /// Inside [`deferred`], only validates the description (tessellation happens later).
+    pub fn parse(v: &Json) -> Result<Arc<Shape2dSpec>, String> {
+        let spec = Shape2dSpec::prepare(v)?;
+        let hit = registry().get(&spec.key).and_then(std::sync::Weak::upgrade);
+        if let Some(live) = hit.filter(|s| s.json == spec.json) {
+            if !DEFERRED.with(|d| d.get()) {
+                live.ensure()?;
+            }
+            return Ok(live);
+        }
+        if !DEFERRED.with(|d| d.get()) {
+            spec.ensure()?;
+        }
+        let spec = Arc::new(spec);
+        let mut reg = registry();
+        if reg.len() >= 64 && reg.len().is_power_of_two() {
+            reg.retain(|_, w| w.strong_count() > 0);
+        }
+        reg.insert(spec.key, Arc::downgrade(&spec));
+        Ok(spec)
+    }
+
+    /// Parses and validates the description, without tessellating.
+    fn prepare(v: &Json) -> Result<Shape2dSpec, String> {
         let w = "shape2d";
         keys(v, w, SHAPE_KEYS)?;
         let tolerance = num(v, "tolerance", w, 1e-5, 10.0)?.unwrap_or(0.005);
         let aa = boolean(v, "aa", w)?.unwrap_or(true);
         let z_layer = int(v, "z_layer", w, -1_000_000, 1_000_000)?.unwrap_or(0) as i32;
-        let items = opt(v, "items").and_then(Json::as_array).ok_or("'shape2d.items' (a list of shapes) is required")?;
-        if items.is_empty() || items.len() > MAX_SHAPE_ITEMS {
+        let list = opt(v, "items").and_then(Json::as_array).ok_or("'shape2d.items' (a list of shapes) is required")?;
+        if list.is_empty() || list.len() > MAX_SHAPE_ITEMS {
             return Err(format!("'shape2d.items' must hold 1..{MAX_SHAPE_ITEMS} items"));
         }
-        let mut mesh = ShapeMesh::default();
         let mut budget = MAX_SHAPE_INPUT;
-        let mut canon_items = Vec::with_capacity(items.len());
-        for (i, item) in items.iter().enumerate() {
+        let mut items = Vec::with_capacity(list.len());
+        let mut canon_items = Vec::with_capacity(list.len());
+        let mut extent = 0.0f64;
+        for (i, item) in list.iter().enumerate() {
             let what = format!("shape2d.items[{i}]");
             keys(item, &what, ITEM_KEYS)?;
             let geometry: Vec<&str> = ["rect", "circle", "ellipse", "polygon", "polyline", "path"].into_iter().filter(|k| opt(item, k).is_some()).collect();
@@ -996,15 +1082,19 @@ impl Shape2dSpec {
                     p
                 }
             };
-            let fill_color = opt(item, "fill").map(|c| rgba(c, &format!("{what}.fill"))).transpose()?;
-            let stroke_style = match opt(item, "stroke") {
+            let fill = opt(item, "fill").map(|c| rgba(c, &format!("{what}.fill"))).transpose()?;
+            let stroke = match opt(item, "stroke") {
                 None => None,
                 Some(s) => {
                     let sw = format!("{what}.stroke");
                     keys(s, &sw, STROKE_KEYS)?;
                     let limit = num(s, "miter_limit", &sw, 1.0, 100.0)?.unwrap_or(4.0);
+                    let width = num(s, "width", &sw, 0.0, 1e5)?.unwrap_or(0.05);
+                    if width <= 0.0 {
+                        return Err(format!("'{sw}.width' must be above 0 (leave the stroke out to draw none)"));
+                    }
                     Some(StrokeStyle {
-                        width: num(s, "width", &sw, 0.0, 1e5)?.unwrap_or(0.05),
+                        width,
                         color: opt(s, "color").map(|c| rgba(c, &format!("{sw}.color"))).transpose()?.unwrap_or([255; 4]),
                         join: choice(s, "join", &sw, &[("miter", LineJoin::Miter { limit }), ("round", LineJoin::Round), ("bevel", LineJoin::Bevel)])?
                             .unwrap_or(LineJoin::Miter { limit }),
@@ -1013,26 +1103,16 @@ impl Shape2dSpec {
                     })
                 }
             };
-            if fill_color.is_none() && stroke_style.is_none() {
+            if fill.is_none() && stroke.is_none() {
                 return Err(format!("'{what}' needs a 'fill' colour, a 'stroke', or both"));
             }
-            if kind == "polyline" && fill_color.is_some() {
+            if kind == "polyline" && fill.is_some() {
                 return Err(format!("'{what}': a polyline is open; stroke it (or use polygon to fill)"));
             }
-            let contours = path.flatten(tolerance).map_err(|e| format!("'{what}': {e}"))?;
-            if let Some(c) = fill_color {
-                let before = mesh.indices.len();
-                vector::fill(&contours, c, aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
-                if mesh.indices.len() == before {
-                    return Err(format!(
-                        "'{what}': the fill covers no area (a degenerate or self-intersecting outline whose parts cancel, \
-                         like a bow-tie); fill each loop as its own polygon"
-                    ));
-                }
+            if let Some(c) = fill {
                 canon.push(("fill", rgba_json(c)));
             }
-            if let Some(s) = stroke_style {
-                vector::stroke(&contours, &s, tolerance, aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
+            if let Some(s) = stroke {
                 let mut sf = vec![("width", Json::from(s.width)), ("color", rgba_json(s.color))];
                 match s.join {
                     LineJoin::Miter { limit } => {
@@ -1050,7 +1130,9 @@ impl Shape2dSpec {
                 }
                 canon.push(("stroke", Json::obj(sf)));
             }
+            extent = extent.max(path.extent() + stroke.map_or(0.0, |s| s.width as f64));
             canon_items.push(Json::obj(canon));
+            items.push(ShapeItem { path, fill, stroke });
         }
         let mut cf: Vec<(&'static str, Json)> = vec![("items", Json::arr(canon_items))];
         if tolerance != 0.005 {
@@ -1064,16 +1146,81 @@ impl Shape2dSpec {
         }
         let json = Json::obj(cf);
         let key = specula_core::hash::hash_str(&json.to_string());
-        let (mut lo, mut hi) = (Vec3::new(f32::INFINITY, f32::INFINITY, 0.0), Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, 0.0));
-        for vtx in &mesh.vertices {
-            let p = Vec3::new(vtx.position[0], vtx.position[1], 0.0);
-            lo = lo.min(p);
-            hi = hi.max(p);
+        let e = extent as f32;
+        Ok(Shape2dSpec {
+            json,
+            z_layer,
+            key,
+            items,
+            tolerance,
+            aa,
+            rough: (Vec3::new(-e, -e, 0.0), Vec3::new(e, e, 0.0)),
+            mesh: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// The tessellation of the items (one point budget for the whole shape).
+    fn tessellate(&self) -> Result<ShapeMesh, String> {
+        let mut mesh = ShapeMesh::default();
+        let mut points = vector::MAX_SHAPE_POINTS;
+        for (i, item) in self.items.iter().enumerate() {
+            let what = format!("shape2d.items[{i}]");
+            let contours = item.path.flatten_budgeted(self.tolerance, &mut points).map_err(|e| format!("'{what}': {e}"))?;
+            if let Some(c) = item.fill {
+                let before = mesh.indices.len();
+                vector::fill(&contours, c, self.aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
+                if mesh.indices.len() == before {
+                    return Err(format!(
+                        "'{what}': the fill covers no area (a degenerate or self-intersecting outline whose parts cancel, \
+                         like a bow-tie); fill each loop as its own polygon"
+                    ));
+                }
+            }
+            if let Some(s) = item.stroke {
+                vector::stroke(&contours, &s, self.tolerance, self.aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
+            }
         }
-        if mesh.is_empty() {
-            (lo, hi) = (Vec3::ZERO, Vec3::ZERO);
+        let live = live_shape_vertices();
+        if live + mesh.vertices.len() > MAX_WORLD_SHAPE_VERTICES {
+            return Err(format!(
+                "shape2d_budget: distinct shape2d meshes would hold {} vertices; at most {MAX_WORLD_SHAPE_VERTICES} \
+                 (identical shapes share one; delete unused ones or simplify)",
+                live + mesh.vertices.len()
+            ));
         }
-        Ok(Shape2dSpec { json, z_layer, mesh: Arc::new(mesh), key, bounds: (lo, hi) })
+        Ok(mesh)
+    }
+
+    /// The mesh, tessellating now if no one has yet (blocks while another thread does).
+    pub fn ensure(&self) -> Result<&Arc<ShapeMesh>, String> {
+        self.mesh
+            .get_or_init(|| {
+                self.tessellate().map(|m| {
+                    let bounds = mesh_bounds(&m).unwrap_or(self.rough);
+                    (Arc::new(m), bounds)
+                })
+            })
+            .as_ref()
+            .map(|(m, _)| m)
+            .map_err(Clone::clone)
+    }
+
+    /// The mesh if it is tessellated (`None` while deferred or failed).
+    pub fn mesh(&self) -> Option<&Arc<ShapeMesh>> {
+        self.mesh.get().and_then(|m| m.as_ref().ok()).map(|(m, _)| m)
+    }
+
+    /// Why tessellation failed, once tried.
+    pub fn mesh_error(&self) -> Option<&str> {
+        self.mesh.get().and_then(|m| m.as_ref().err()).map(String::as_str)
+    }
+
+    /// Local bounds: of the mesh once tessellated, otherwise a conservative box from the input.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        match self.mesh.get() {
+            Some(Ok((_, b))) => *b,
+            _ => self.rough,
+        }
     }
 }
 
@@ -1112,7 +1259,7 @@ impl TwoD {
         match self {
             TwoD::Sprite(s) => s.bounds(),
             TwoD::Tilemap(t) => t.bounds(),
-            TwoD::Shape2d(s) => s.bounds,
+            TwoD::Shape2d(s) => s.bounds(),
         }
     }
 
@@ -1134,7 +1281,7 @@ impl TwoD {
                     / Arc::strong_count(t).max(1)
             }
             TwoD::Shape2d(s) => {
-                let mesh = s.mesh.vertices.len() * 28 + s.mesh.indices.len() * 4;
+                let mesh = s.mesh().map_or(0, |m| m.vertices.len() * 28 + m.indices.len() * 4);
                 (s.json.to_string().len() + mesh) / Arc::strong_count(s).max(1)
             }
         }
@@ -1157,7 +1304,10 @@ impl TwoD {
                 ("size", Json::arr(t.size.map(Json::from))),
                 ("tiles", Json::from(t.layers.iter().map(|l| l.cells.filled()).sum::<u64>())),
             ]),
-            TwoD::Shape2d(s) => Json::obj([("z_layer", Json::from(s.z_layer as i64)), ("triangles", Json::from(s.mesh.indices.len() / 3))]),
+            TwoD::Shape2d(s) => Json::obj([
+                ("z_layer", Json::from(s.z_layer as i64)),
+                ("triangles", s.mesh().map_or(Json::Null, |m| Json::from(m.indices.len() / 3))),
+            ]),
         }
     }
 }
@@ -1167,7 +1317,7 @@ pub fn parse(shape: &str, v: &Json) -> Result<TwoD, String> {
     match shape {
         "sprite" => SpriteSpec::parse(v).map(|s| TwoD::Sprite(Box::new(s))),
         "tilemap" => TilemapSpec::parse(v).map(|t| TwoD::Tilemap(Arc::new(t))),
-        "shape2d" => Shape2dSpec::parse(v).map(|s| TwoD::Shape2d(Arc::new(s))),
+        "shape2d" => Shape2dSpec::parse(v).map(TwoD::Shape2d),
         _ => Err(format!("'{shape}' has no 2D component")),
     }
 }
@@ -1223,19 +1373,54 @@ fn stamp_of(file: &FsPath) -> Stamp {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// Largest sprite or tileset texture side, pixels (checked from the PNG header, before decoding).
+pub const MAX_TEXTURE_SIDE: u32 = 8192;
+
+/// Reads and decodes a PNG, refusing one larger than [`MAX_TEXTURE_SIDE`] from its header alone.
+fn read_texture(key: &str, file: &FsPath) -> Result<png::Image, String> {
+    use std::io::Read as _;
+    let mut head = [0u8; 24];
+    let mut f = std::fs::File::open(file).map_err(|e| format!("{key}: {e}"))?;
+    if f.read_exact(&mut head).is_err() || head[..8] != *b"\x89PNG\r\n\x1a\n" || head[12..16] != *b"IHDR" {
+        return Err(format!("{key}: not a PNG"));
+    }
+    let (w, h) = (u32::from_be_bytes([head[16], head[17], head[18], head[19]]), u32::from_be_bytes([head[20], head[21], head[22], head[23]]));
+    if w > MAX_TEXTURE_SIDE || h > MAX_TEXTURE_SIDE {
+        return Err(format!("{key}: {w}x{h} pixels; sprite and tileset textures may be at most {MAX_TEXTURE_SIDE} per side"));
+    }
+    let bytes = std::fs::read(file).map_err(|e| format!("{key}: {e}"))?;
+    png::decode(&bytes).map_err(|e| format!("{key}: not a readable PNG ({e:?})"))
+}
+
 /// One texture path: what is shown (the last good upload) and what is in flight.
 struct TexEntry {
     current: Option<LoadedTexture>,
     /// A load (or reload) is on the loader thread.
     loading: bool,
-    /// The file as of the last load started.
+    /// A change check is on the loader thread.
+    checking: bool,
+    /// The file as of the last load.
     stamp: Stamp,
 }
 
-/// A file read and decoded on the loader thread.
-type Loaded = (String, Stamp, Result<png::Image, String>);
-/// Requests to the loader thread (key, file) and its results.
-type Loader = (std::sync::mpsc::Sender<(String, PathBuf)>, std::sync::mpsc::Receiver<Loaded>);
+/// Work for the loader thread.
+enum Job {
+    /// Read and decode a texture.
+    Load { key: String, file: PathBuf },
+    /// Reload a texture only if its file no longer matches `stamp` (the stat happens there).
+    Check { key: String, file: PathBuf, stamp: Stamp },
+    /// Tessellate a deferred shape.
+    Shape(Arc<Shape2dSpec>),
+}
+
+/// What the loader thread sends back.
+enum Done {
+    Texture { key: String, stamp: Stamp, image: Result<png::Image, String> },
+    Unchanged(String),
+    Shape(u64),
+}
+
+type Loader = (std::sync::mpsc::Sender<Job>, std::sync::mpsc::Receiver<Done>);
 
 /// One tile map layer's cell texture, and the grid it holds (to upload only changed chunks).
 struct LayerTexture {
@@ -1245,6 +1430,24 @@ struct LayerTexture {
 
 /// Most problems listed for one frame (missing textures, frames past a sheet, …).
 const MAX_FRAME_PROBLEMS: usize = 16;
+
+/// Writes a problem into the next reused string of `buf` (deduplicated, at most
+/// [`MAX_FRAME_PROBLEMS`]); allocates only while the buffer grows.
+fn push_problem(buf: &mut Vec<String>, count: &mut usize, args: std::fmt::Arguments) {
+    use std::fmt::Write as _;
+    if *count >= MAX_FRAME_PROBLEMS {
+        return;
+    }
+    if *count == buf.len() {
+        buf.push(String::with_capacity(160));
+    }
+    let slot = &mut buf[*count];
+    slot.clear();
+    let _ = slot.write_fmt(args);
+    if !buf[..*count].contains(&buf[*count]) {
+        *count += 1;
+    }
+}
 /// How often in-use texture files are checked for changes.
 const TEXTURE_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -1252,20 +1455,25 @@ const TEXTURE_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1
 /// entity, shape meshes by shape key. Everything is created on first use and freed when no
 /// entity uses it any more ([`TwoDGpu::collect`]).
 ///
-/// - **Textures** are read and decoded on a loader thread (the engine thread only uploads), and
-///   their files are polled ([`TwoDGpu::poll_files`]): an edited PNG is reloaded (the old one
-///   stays on screen until the new one is up), a missing or broken one is retried once its file
-///   changes. Problems are kept per path and cleared when a load succeeds.
+/// - **Textures** are read (after a header check against [`MAX_TEXTURE_SIDE`]) and decoded on a
+///   loader thread; the engine thread only uploads. Their files are polled there too
+///   ([`TwoDGpu::poll_files`]): an edited PNG is reloaded (the old one stays on screen until the
+///   new one is up), a missing or broken one is retried once its file changes. Problems are kept
+///   per path and cleared when a load succeeds.
+/// - **Shapes** loaded from world files are tessellated on the loader thread when first drawn.
+///   Identical shapes share one spec and one mesh; a shape whose content changes every tick
+///   uploads a new mesh every tick (the old ones are freed by the next collection): animate
+///   shapes by their transform or colour instead.
 /// - **Tile cells** re-upload only the chunks that changed since the last frame.
-/// - **Shapes** are uploaded once per distinct content (the canonical JSON's hash) and shared;
-///   a shape whose content changes every tick uploads a new mesh every tick (the old ones are
-///   freed by the next collection): animate shapes by their transform or colour instead.
+/// - **Problems** of the frame being drawn ([`TwoDGpu::problems`]) reuse their strings: a warm
+///   frame allocates nothing, problems or not.
 pub struct TwoDGpu {
     assets: PathBuf,
     textures: BTreeMap<String, TexEntry>,
     cells: BTreeMap<(u64, usize), LayerTexture>,
     shapes: BTreeMap<u64, Result<MeshId, String>>,
-    /// Requests to the loader thread (started on first use) and its results.
+    /// Deferred shapes being tessellated on the loader thread.
+    pending_shapes: BTreeSet<u64>,
     loader: Option<Loader>,
     last_poll: std::time::Instant,
     /// Reused per-frame scratch.
@@ -1273,8 +1481,9 @@ pub struct TwoDGpu {
     /// The latest problem per texture path or resource (cleared by a success, dropped with the
     /// resource).
     pub errors: BTreeMap<String, String>,
-    /// Problems of the items drawn since [`TwoDGpu::begin_frame`], at most 16.
-    pub frame_problems: Vec<String>,
+    /// This frame's problems: the first `problem_count` strings (the rest are spare capacity).
+    problem_buf: Vec<String>,
+    problem_count: usize,
     /// Cell chunks uploaded since start-up (edits cost only the chunks they touch).
     pub chunk_uploads: u64,
     /// Textures loaded or reloaded since start-up.
@@ -1288,55 +1497,74 @@ impl TwoDGpu {
             textures: BTreeMap::new(),
             cells: BTreeMap::new(),
             shapes: BTreeMap::new(),
+            pending_shapes: BTreeSet::new(),
             loader: None,
             last_poll: std::time::Instant::now(),
             bytes: Vec::new(),
             errors: BTreeMap::new(),
-            frame_problems: Vec::new(),
+            problem_buf: Vec::new(),
+            problem_count: 0,
             chunk_uploads: 0,
             texture_loads: 0,
         }
     }
 
-    /// Starts a frame: the problems list empties and finished loads are uploaded.
+    /// Starts a frame: the problems list empties and finished work is uploaded.
     pub fn begin_frame(&mut self, gpu: &mut Gpu) {
-        self.frame_problems.clear();
+        self.problem_count = 0;
         self.pump(gpu);
     }
 
-    fn problem(&mut self, p: String) {
-        if self.frame_problems.len() < MAX_FRAME_PROBLEMS && !self.frame_problems.contains(&p) {
-            self.frame_problems.push(p);
-        }
+    /// The problems of the items drawn since [`TwoDGpu::begin_frame`] (at most 16).
+    pub fn problems(&self) -> &[String] {
+        &self.problem_buf[..self.problem_count]
     }
 
-    /// Queues `path` for loading on the loader thread (started on first use).
-    fn start_load(&mut self, path: &str) {
-        let file = self.assets.join(path);
-        let entry = self.textures.entry(path.to_owned()).or_insert(TexEntry { current: None, loading: false, stamp: None });
-        entry.loading = true;
-        entry.stamp = stamp_of(&file);
+    /// Notes a problem, written into a reused string (no allocation once warm).
+    fn problem(&mut self, args: std::fmt::Arguments) {
+        push_problem(&mut self.problem_buf, &mut self.problem_count, args);
+    }
+
+    fn send(&mut self, job: Job) -> bool {
         let (tx, _) = self.loader.get_or_insert_with(|| {
-            let (req_tx, req_rx) = std::sync::mpsc::channel::<(String, PathBuf)>();
-            let (res_tx, res_rx) = std::sync::mpsc::channel::<Loaded>();
-            let spawned = std::thread::Builder::new().name("specula-2d-textures".into()).spawn(move || {
-                for (key, file) in req_rx {
-                    let stamp = stamp_of(&file);
-                    let image = std::fs::read(&file)
-                        .map_err(|e| format!("{key}: {e}"))
-                        .and_then(|bytes| png::decode(&bytes).map_err(|e| format!("{key}: not a readable PNG ({e:?})")));
-                    if res_tx.send((key, stamp, image)).is_err() {
+            let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
+            let spawned = std::thread::Builder::new().name("specula-2d-loader".into()).spawn(move || {
+                for job in job_rx {
+                    let done = match job {
+                        Job::Load { key, file } => Done::Texture { stamp: stamp_of(&file), image: read_texture(&key, &file), key },
+                        Job::Check { key, file, stamp } => {
+                            let now = stamp_of(&file);
+                            if now == stamp {
+                                Done::Unchanged(key)
+                            } else {
+                                Done::Texture { stamp: now, image: read_texture(&key, &file), key }
+                            }
+                        }
+                        Job::Shape(spec) => {
+                            let _ = spec.ensure();
+                            Done::Shape(spec.key)
+                        }
+                    };
+                    if done_tx.send(done).is_err() {
                         break;
                     }
                 }
             });
             if let Err(e) = spawned {
-                eprintln!("specula: 2D texture loader thread: {e}");
+                eprintln!("specula: 2D loader thread: {e}");
             }
-            (req_tx, res_rx)
+            (job_tx, done_rx)
         });
-        if tx.send((path.to_owned(), file)).is_err() {
-            // The loader is gone (it failed to start): report instead of waiting forever.
+        tx.send(job).is_ok()
+    }
+
+    /// Queues `path` for loading on the loader thread (started on first use).
+    fn start_load(&mut self, path: &str) {
+        let file = self.assets.join(path);
+        let entry = self.textures.entry(path.to_owned()).or_insert(TexEntry { current: None, loading: false, checking: false, stamp: None });
+        entry.loading = true;
+        if !self.send(Job::Load { key: path.to_owned(), file }) {
             if let Some(e) = self.textures.get_mut(path) {
                 e.loading = false;
             }
@@ -1351,67 +1579,107 @@ impl TwoDGpu {
         }
     }
 
+    /// `path` is being loaded (not merely checked for changes).
+    pub fn is_loading(&self, path: &str) -> bool {
+        self.textures.get(path).is_some_and(|t| t.loading)
+    }
+
+    /// Asks for a deferred shape's tessellation; true while it is in flight.
+    pub fn request_shape(&mut self, spec: &Arc<Shape2dSpec>) -> bool {
+        if spec.mesh().is_some() || spec.mesh_error().is_some() {
+            return false;
+        }
+        if !self.pending_shapes.contains(&spec.key) && self.send(Job::Shape(Arc::clone(spec))) {
+            self.pending_shapes.insert(spec.key);
+        }
+        self.pending_shapes.contains(&spec.key)
+    }
+
     /// Uploads whatever the loader finished.
     pub fn pump(&mut self, gpu: &mut Gpu) {
-        let done: Vec<Loaded> = match &self.loader {
-            Some((_, rx)) => rx.try_iter().collect(),
-            None => return,
-        };
-        for (key, stamp, image) in done {
-            let Some(entry) = self.textures.get_mut(&key) else { continue }; // collected meanwhile
-            entry.loading = false;
-            entry.stamp = stamp;
-            let uploaded = image.and_then(|img| {
-                gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
-                    .map(|id| LoadedTexture { id, size: [img.width, img.height] })
-                    .map_err(|e| format!("{key}: {e}"))
-            });
-            match uploaded {
-                Ok(t) => {
-                    if let Some(old) = entry.current.replace(t) {
-                        gpu.destroy_texture(old.id);
+        loop {
+            let done = match &self.loader {
+                Some((_, rx)) => match rx.try_recv() {
+                    Ok(d) => d,
+                    Err(_) => return,
+                },
+                None => return,
+            };
+            match done {
+                Done::Unchanged(key) => {
+                    if let Some(e) = self.textures.get_mut(&key) {
+                        e.checking = false;
                     }
-                    self.texture_loads += 1;
-                    self.errors.remove(&key);
                 }
-                // The last good texture (if any) stays on screen.
-                Err(e) => {
-                    self.errors.insert(key, format!("texture {e}"));
+                Done::Shape(key) => {
+                    self.pending_shapes.remove(&key);
+                }
+                Done::Texture { key, stamp, image } => {
+                    let Some(entry) = self.textures.get_mut(&key) else { continue }; // collected meanwhile
+                    entry.loading = false;
+                    entry.checking = false;
+                    entry.stamp = stamp;
+                    let uploaded = image.and_then(|img| {
+                        gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
+                            .map(|id| LoadedTexture { id, size: [img.width, img.height] })
+                            .map_err(|e| format!("{key}: {e}"))
+                    });
+                    match uploaded {
+                        Ok(t) => {
+                            if let Some(old) = entry.current.replace(t) {
+                                gpu.destroy_texture(old.id);
+                            }
+                            self.texture_loads += 1;
+                            self.errors.remove(&key);
+                        }
+                        // The last good texture (if any) stays on screen.
+                        Err(e) => {
+                            self.errors.insert(key, format!("texture {e}"));
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// Texture loads in flight.
-    pub fn loading(&self) -> usize {
-        self.textures.values().filter(|t| t.loading).count()
+    /// Change checks in flight on the loader thread.
+    pub fn checking(&self) -> usize {
+        self.textures.values().filter(|t| t.checking).count()
     }
 
-    /// Reloads textures whose files changed (and retries failed ones whose files changed), at
-    /// most every second. Call it from the engine's asset polling.
+    /// Loads in flight: textures and deferred shapes.
+    pub fn loading(&self) -> usize {
+        self.textures.values().filter(|t| t.loading).count() + self.pending_shapes.len()
+    }
+
+    /// Asks the loader thread to check every texture in use for changes (it stats the files;
+    /// changed ones are reloaded, failed ones retried), at most every second.
     pub fn poll_files(&mut self, force: bool) {
         if !force && self.last_poll.elapsed() < TEXTURE_POLL_EVERY {
             return;
         }
         self.last_poll = std::time::Instant::now();
-        let changed: Vec<String> = self
-            .textures
-            .iter()
-            .filter(|(path, t)| !t.loading && stamp_of(&self.assets.join(path.as_str())) != t.stamp)
-            .map(|(path, _)| path.clone())
-            .collect();
-        for path in changed {
-            self.start_load(&path);
+        let idle: Vec<(String, Stamp)> =
+            self.textures.iter().filter(|(_, t)| !t.loading && !t.checking).map(|(k, t)| (k.clone(), t.stamp)).collect();
+        for (key, stamp) in idle {
+            let file = self.assets.join(&key);
+            if self.send(Job::Check { key: key.clone(), file, stamp }) {
+                if let Some(e) = self.textures.get_mut(&key) {
+                    e.checking = true;
+                }
+            }
         }
     }
 
     fn texture(&mut self, path: &str) -> Option<(TextureId, [u32; 2])> {
         self.request(path);
-        let shown = self.textures.get(path).and_then(|t| t.current.as_ref()).map(|t| (t.id, t.size));
-        if let Some(e) = self.errors.get(path).cloned() {
-            self.problem(e);
-        } else if shown.is_none() && self.textures.get(path).is_some_and(|t| t.loading) {
-            self.problem(format!("texture {path}: still loading"));
+        let entry = self.textures.get(path);
+        let shown = entry.and_then(|t| t.current.as_ref()).map(|t| (t.id, t.size));
+        let loading = entry.is_some_and(|t| t.loading);
+        if let Some(e) = self.errors.get(path) {
+            push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("{e}"));
+        } else if shown.is_none() && loading {
+            self.problem(format_args!("texture {path}: still loading"));
         }
         shown
     }
@@ -1438,7 +1706,7 @@ impl TwoDGpu {
                 Err(e) => {
                     let msg = format!("{}: {e}", name());
                     self.errors.insert(name(), msg.clone());
-                    self.problem(msg);
+                    self.problem(format_args!("{msg}"));
                     None
                 }
             },
@@ -1461,25 +1729,33 @@ impl TwoDGpu {
                 let id = layer.id;
                 if let Some(msg) = failed {
                     self.errors.insert(name(), msg.clone());
-                    self.problem(msg);
+                    self.problem(format_args!("{msg}"));
                 }
                 Some(id)
             }
         }
     }
 
-    fn shape(&mut self, gpu: &mut Gpu, s: &Shape2dSpec) -> Option<MeshId> {
-        if s.mesh.is_empty() {
+    fn shape(&mut self, gpu: &mut Gpu, s: &Arc<Shape2dSpec>) -> Option<MeshId> {
+        let Some(mesh) = s.mesh() else {
+            // Deferred (loaded from a world file): tessellated on the loader thread.
+            if self.request_shape(s) {
+                self.problem(format_args!("shape2d {:016x}: still tessellating", s.key));
+            } else if let Some(e) = s.mesh_error() {
+                self.problem(format_args!("{e}"));
+            }
+            return None;
+        };
+        if mesh.is_empty() {
             return None;
         }
         self.shapes
             .entry(s.key)
-            .or_insert_with(|| gpu.upload_mesh(&s.mesh.vertices, &s.mesh.indices).map_err(|e| format!("shape2d: {e}")));
+            .or_insert_with(|| gpu.upload_mesh(&mesh.vertices, &mesh.indices).map_err(|e| format!("shape2d: {e}")));
         match self.shapes.get(&s.key) {
             Some(Ok(m)) => Some(*m),
             Some(Err(e)) => {
-                let e = e.clone();
-                self.problem(e);
+                push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("{e}"));
                 None
             }
             None => None,
@@ -1519,7 +1795,7 @@ impl TwoDGpu {
                     let (uv, problem) = sprite_uv(s, size, time_s as f64);
                     sprite.uv = uv;
                     if let Some(p) = problem {
-                        self.problem(format!("sprite {id}: {p}"));
+                        self.problem(format_args!("sprite {id}: {p}"));
                     }
                 }
                 out.push(Draw2d::Sprite(sprite));
@@ -1623,9 +1899,29 @@ impl TwoDGpu {
     }
 }
 
+/// Why a sprite can't show the sheet frame it asks for (formatted only when reported).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UvProblem {
+    /// The texture holds no whole frame.
+    NoFrame { size: [u32; 2], frame_px: [u32; 2] },
+    /// The frame is past the sheet's last; the last is shown.
+    PastSheet { frame: u32, count: u32, shown: u32 },
+}
+
+impl std::fmt::Display for UvProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            UvProblem::NoFrame { size, frame_px } => {
+                write!(f, "its {}x{} texture holds no {}x{} frame", size[0], size[1], frame_px[0], frame_px[1])
+            }
+            UvProblem::PastSheet { frame, count, shown } => write!(f, "frame {frame} is past the sheet's {count} frames (showing {shown})"),
+        }
+    }
+}
+
 /// The texture rect a sprite shows at `time_s` on a texture of `size` pixels, and a problem to
 /// report (a frame past the sheet is clamped to its last frame). No allocation.
-pub fn sprite_uv(s: &SpriteSpec, size: [u32; 2], time_s: f64) -> ([f32; 4], Option<String>) {
+pub fn sprite_uv(s: &SpriteSpec, size: [u32; 2], time_s: f64) -> ([f32; 4], Option<UvProblem>) {
     match (s.uv, s.sheet) {
         (Some(uv), _) => (uv, None),
         (None, None) => ([0.0, 0.0, 1.0, 1.0], None),
@@ -1636,13 +1932,11 @@ pub fn sprite_uv(s: &SpriteSpec, size: [u32; 2], time_s: f64) -> ([f32; 4], Opti
             };
             let count = Flipbook::grid_len(size, sheet.frame_px, sheet.margin, sheet.spacing);
             if count == 0 {
-                let msg = format!("its {}x{} texture holds no {}x{} frame", size[0], size[1], sheet.frame_px[0], sheet.frame_px[1]);
-                return ([0.0, 0.0, 1.0, 1.0], Some(msg));
+                return ([0.0, 0.0, 1.0, 1.0], Some(UvProblem::NoFrame { size, frame_px: sheet.frame_px }));
             }
             let shown = frame.min(count - 1);
             let rect = Flipbook::grid_rect(size, sheet.frame_px, shown, sheet.margin, sheet.spacing).unwrap_or([0.0, 0.0, 1.0, 1.0]);
-            let problem = (frame >= count).then(|| format!("frame {frame} is past the sheet's {count} frames (showing {shown})"));
-            (rect, problem)
+            (rect, (frame >= count).then_some(UvProblem::PastSheet { frame, count, shown }))
         }
     }
 }
@@ -1742,7 +2036,7 @@ mod tests {
     fn hostile_shape2d_input_is_refused_quickly() {
         let timed = |what: &str, text: String| {
             let t = std::time::Instant::now();
-            let r = std::panic::catch_unwind(|| Shape2dSpec::parse(&Json::parse(&text).unwrap()).map(|s| s.mesh.vertices.len()));
+            let r = std::panic::catch_unwind(|| Shape2dSpec::parse(&Json::parse(&text).unwrap()).map(|s| s.mesh().map_or(0, |m| m.vertices.len())));
             let ms = t.elapsed().as_secs_f64() * 1e3;
             eprintln!("{what}: {:?} in {ms:.1} ms", r.as_ref().map(|r| r.as_ref().map_err(|e| &e[..e.len().min(90)])));
             assert!(ms < 1000.0, "{what} took {ms:.0} ms");
@@ -1774,6 +2068,30 @@ mod tests {
         };
         assert!(timed("comb over the cap", comb(1400)).is_err_and(|e| e.contains("points")));
         assert!(timed("comb at the cap", comb(1364)).is_ok());
+        // Round 2: zero-width strokes, endless arcs, thousands of rings, shared point budget.
+        let endless = |width: &str| {
+            let arcs = vec![r#"["A",0,0,1000000,1000000,0,36000]"#; 63].join(",");
+            let items: Vec<String> = (0..256).map(|_| format!(r#"{{"path":[["M",0,0],{arcs}],"stroke":{{"width":{width}}}}}"#)).collect();
+            format!(r#"{{"items":[{}],"tolerance":0.00001}}"#, items.join(","))
+        };
+        assert!(timed("zero-width strokes", endless("0")).is_err_and(|e| e.contains("width")));
+        assert!(timed("36000-degree arcs", endless("0.00001")).is_err_and(|e| e.contains("points")));
+        let rings: Vec<String> = (0..7280).map(|i| format!(r#"["A",{},{},1,1,0,360],["Z"]"#, (i % 86) * 3, (i / 86) * 3)).collect();
+        let r = timed("7280 rings in one fill", format!(r##"{{"items":[{{"path":[{}],"fill":"#ffffff"}}],"tolerance":0.05,"aa":false}}"##, rings.join(",")));
+        assert!(r.is_err());
+        // The worst shape accepted: two fills at the ear-clipping cap plus convex fills up to
+        // the shape's point budget.
+        let comb_items = |n: usize| {
+            let mut pts = Vec::new();
+            for i in 0..n {
+                pts.push(format!("[{i},0],[{}.25,10],[{}.5,0.1]", i, i));
+            }
+            format!(r##"{{"polygon":[{},[{n},-5],[0,-5]],"fill":"#ffffff"}}"##, pts.join(","))
+        };
+        let mut items = vec![comb_items(1360), comb_items(1360)];
+        items.extend((0..80).map(|_| r##"{"circle":[0,0,100],"fill":"#ffffff"}"##.to_owned()));
+        let r = timed("worst accepted shape", format!(r#"{{"items":[{}],"tolerance":0.001}}"#, items.join(",")));
+        assert!(r.is_ok());
         // Odd geometry: errors or meshes, never panics.
         for (t, ok) in [
             (r##"{"items":[{"polygon":[[0,0],[1,1],[1,0],[0,1]],"fill":"#fff"}]}"##, false), // bow-tie: no net area
@@ -1817,14 +2135,14 @@ mod tests {
         let s = SpriteSpec::parse(&json(r#"{"texture":"a.png","sheet":{"frame_px":[16,16]},"frame":9}"#)).unwrap();
         let (uv, problem) = sprite_uv(&s, [64, 32], 0.0);
         assert_eq!(uv, [0.75, 0.5, 1.0, 1.0], "frame 9 of 8 shows the last (7: column 3, row 1)");
-        assert!(problem.is_some_and(|p| p.contains("past the sheet's 8 frames")));
+        assert!(problem.is_some_and(|p| p.to_string().contains("past the sheet's 8 frames")));
         let (uv, problem) = sprite_uv(&SpriteSpec { frame: 5, ..s.clone() }, [64, 32], 0.0);
         assert_eq!((uv, problem), ([0.25, 0.5, 0.5, 1.0], None));
         let a = SpriteSpec::parse(&json(r#"{"texture":"a.png","sheet":{"frame_px":[16,16]},"anim":{"first":4,"count":4,"fps":10}}"#)).unwrap();
         assert_eq!(sprite_uv(&a, [64, 32], 0.25).0, [0.5, 0.5, 0.75, 1.0], "frame 4 + 2");
         let (uv, problem) = sprite_uv(&s, [8, 8], 0.0);
         assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
-        assert!(problem.is_some_and(|p| p.contains("holds no 16x16 frame")));
+        assert!(problem.is_some_and(|p| p.to_string().contains("holds no 16x16 frame")));
     }
 
     #[test]
@@ -1836,11 +2154,11 @@ mod tests {
                         {"path":[["M",0,0],["Q",1,1,2,0],["A",3,0,1,1,180,-180],["Z"]],"fill":"#123456"}]}"##,
         );
         let s = Shape2dSpec::parse(&v).unwrap();
-        assert!(s.mesh.indices.len() > 300);
-        assert!(s.bounds.0.x < 0.0 && s.bounds.1.x > 3.4 && s.bounds.1.y > 3.0);
+        assert!(s.mesh().unwrap().indices.len() > 300);
+        assert!(s.bounds().0.x < 0.0 && s.bounds().1.x > 3.4 && s.bounds().1.y > 3.0);
         let again = Shape2dSpec::parse(&s.json).unwrap();
         assert_eq!(again, s, "canonical JSON reads back to the same shape");
-        assert_eq!(again.mesh, s.mesh);
+        assert!(Arc::ptr_eq(&again, &s), "an identical shape is the same spec (interned)");
         for bad in [
             r#"{"items":[]}"#,
             r#"{"items":[{"rect":[0,0,1,1]}]}"#,

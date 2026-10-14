@@ -94,7 +94,7 @@ fn wait_loaded(t: &mut TwoDGpu, gpu: &mut Gpu) {
     let start = Instant::now();
     loop {
         t.pump(gpu);
-        if t.loading() == 0 || start.elapsed() > Duration::from_secs(10) {
+        if (t.loading() == 0 && t.checking() == 0) || start.elapsed() > Duration::from_secs(10) {
             return;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -139,14 +139,14 @@ fn textures_load_appear_and_reload() {
     wait_loaded(&mut t, &mut gpu);
     draw(&mut t, &mut gpu, &mut out);
     assert!(out.is_empty());
-    assert!(t.frame_problems.iter().any(|p| p.contains("s/a.png")), "{:?}", t.frame_problems);
+    assert!(t.problems().iter().any(|p| p.contains("s/a.png")), "{:?}", t.problems());
     // Written: picked up by the file poll, drawn red.
     write_png(&file, 2, 2, |_, _| [255, 0, 0, 255]);
     t.poll_files(true);
     wait_loaded(&mut t, &mut gpu);
     draw(&mut t, &mut gpu, &mut out);
-    assert_eq!(out.len(), 1, "{:?}", t.frame_problems);
-    assert!(t.frame_problems.is_empty() && t.errors.is_empty(), "problems clear once it loads: {:?}", t.errors);
+    assert_eq!(out.len(), 1, "{:?}", t.problems());
+    assert!(t.problems().is_empty() && t.errors.is_empty(), "problems clear once it loads: {:?}", t.errors);
     assert_eq!(&centre_pixel(&mut gpu, &out)[..3], &[255, 0, 0]);
     // Edited (same size, so only the time stamp changes): blue replaces red.
     std::thread::sleep(Duration::from_millis(30));
@@ -161,12 +161,74 @@ fn textures_load_appear_and_reload() {
     wait_loaded(&mut t, &mut gpu);
     draw(&mut t, &mut gpu, &mut out);
     assert_eq!(out.len(), 1);
-    assert!(t.frame_problems.iter().any(|p| p.contains("PNG")), "{:?}", t.frame_problems);
+    assert!(t.problems().iter().any(|p| p.contains("PNG")), "{:?}", t.problems());
     t.collect(&mut gpu, &[]);
     assert!(t.errors.is_empty(), "problems go with the texture");
     let _ = std::fs::remove_dir_all(&dir);
     let errors = gpu.close().into_iter().filter(|m| m.severity == specula_gpu::Severity::Error).count();
     assert_eq!(errors, 0, "{test}: validation errors");
+}
+
+#[test]
+fn oversized_textures_are_refused_from_the_header_and_problems_do_not_allocate() {
+    let test = "oversized_textures";
+    let Some(mut gpu) = gpu_or_skip(test) else { return };
+    let dir = temp_assets("big");
+    // Just a header claiming 16384 x 16384: refused before any decoding.
+    let mut head = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    head.extend_from_slice(&16384u32.to_be_bytes());
+    head.extend_from_slice(&16384u32.to_be_bytes());
+    head.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    std::fs::write(dir.join("s/big.png"), &head).unwrap();
+    let mut t = TwoDGpu::new(&dir);
+    let items = [sprite(r#"{"texture":"s/big.png"}"#), sprite(r#"{"texture":"s/missing.png","sheet":{"frame_px":[4,4]},"frame":3}"#)];
+    let mut out = Vec::with_capacity(8);
+    let frame = |t: &mut TwoDGpu, gpu: &mut Gpu, out: &mut Vec<Draw2d>| {
+        out.clear();
+        t.begin_frame(gpu);
+        for (i, item) in items.iter().enumerate() {
+            t.draws(gpu, i as u64, item, &Mat4::IDENTITY, [1.0; 4], 0.0, out);
+        }
+    };
+    let start = Instant::now();
+    frame(&mut t, &mut gpu, &mut out);
+    wait_loaded(&mut t, &mut gpu);
+    frame(&mut t, &mut gpu, &mut out);
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(t.problems().iter().any(|p| p.contains("16384x16384") && p.contains("8192")), "{:?}", t.problems());
+    assert_eq!(t.problems().len(), 2, "{:?}", t.problems());
+    let n = allocations_during(|| {
+        for _ in 0..20 {
+            frame(&mut t, &mut gpu, &mut out);
+        }
+    });
+    assert_eq!(n, 0, "frames with problems allocate nothing once warm");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deferred_shapes_tessellate_on_the_loader_and_are_shared() {
+    let test = "deferred_shapes";
+    let Some(mut gpu) = gpu_or_skip(test) else { return };
+    let text = r##"{"items":[{"circle":[0,0,1.25],"fill":"#00ff00"},{"rect":[-0.2,-0.2,0.4,0.4],"fill":"#ff00ff"}],"z_layer":7}"##;
+    let a = two_d::deferred(|| two_d::parse("shape2d", &Json::parse(text).unwrap())).unwrap();
+    let b = two_d::deferred(|| two_d::parse("shape2d", &Json::parse(text).unwrap())).unwrap();
+    let (TwoD::Shape2d(sa), TwoD::Shape2d(sb)) = (&a, &b) else { panic!("shape2d") };
+    assert!(std::sync::Arc::ptr_eq(sa, sb), "identical shapes share one spec");
+    assert!(sa.mesh().is_none(), "deferred: not tessellated while loading");
+    let mut t = TwoDGpu::new(&temp_assets("shapes"));
+    let mut out = Vec::new();
+    t.begin_frame(&mut gpu);
+    t.draws(&mut gpu, 1, &a, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
+    assert!(out.is_empty() && t.loading() == 1, "drawn once tessellated: {:?}", t.problems());
+    wait_loaded(&mut t, &mut gpu);
+    assert!(sa.mesh().is_some(), "tessellated on the loader thread");
+    out.clear();
+    t.begin_frame(&mut gpu);
+    t.draws(&mut gpu, 1, &a, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
+    t.draws(&mut gpu, 2, &b, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
+    assert_eq!(out.len(), 2);
+    assert_eq!(&centre_pixel(&mut gpu, &out)[..3], &[255, 0, 255]);
 }
 
 #[test]
@@ -202,7 +264,7 @@ fn warm_two_d_frames_allocate_nothing() {
     for k in 0..5 {
         frame(&mut t, &mut gpu, &mut out, k as f32 * 0.1);
     }
-    assert!(t.frame_problems.is_empty(), "{:?}", t.frame_problems);
+    assert!(t.problems().is_empty(), "{:?}", t.problems());
     assert_eq!(out.len(), 2 + 2 + 1, "two sprites, two tile chunks, one shape");
     let n = allocations_during(|| {
         for k in 0..20 {

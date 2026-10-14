@@ -221,6 +221,16 @@ pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights:
     }
 }
 
+/// Whether any of `e`'s bounding box can be in view of `view_proj` (conservative: false only
+/// when every corner is beyond one side of the view, or behind it). Entities without bounds count
+/// as in view.
+pub fn in_view(e: &Entity, view_proj: &Mat4) -> bool {
+    let Some(corners) = e.world_corners() else { return true };
+    let clip = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
+    let all = |f: &dyn Fn(&Vec4) -> bool| clip.iter().all(f);
+    !(all(&|p| p.w <= 0.0) || all(&|p| p.x < -p.w) || all(&|p| p.x > p.w) || all(&|p| p.y < -p.w) || all(&|p| p.y > p.w))
+}
+
 /// Where one entity landed in a frame.
 pub struct Subject {
     pub json: Json,
