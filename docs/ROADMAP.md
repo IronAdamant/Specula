@@ -215,8 +215,9 @@ top of it.
   list is in ENGINE_PLAN.md.
 
 **Carried forward from M0** (known limitations, not bugs):
-- [ ] **No occlusion.** A hidden object still reports a screen box. → M2 ID buffer.
-- [ ] **Sphere boxes are about 30% loose**, because the boxes are projected bounding boxes. → M2.
+- [x] **No occlusion.** A hidden object still reports a screen box. → M2 ID buffer (done: `visible_px`, `occluded`).
+- [x] **Sphere boxes are about 30% loose**, because the boxes are projected bounding boxes. → M2 (done:
+  `screen_box_exact`).
 - [ ] **One far-away object shrinks an auto-framed view to a dot.** → M2: frame by clusters or ignore outliers.
 - [ ] **Throughput is vsync-paced** (about 60 calls/s per agent with a window open). → M1: batch tool, and commands
   applied separately from present.
@@ -350,9 +351,17 @@ shapes?"
   *Done 2026-10-13:* `specula-model` recipes with hard limits and fidelity-checked auto-LOD; 21 Sepulcra assets (contact sheet in docs/fidelity).
 
   *Why pulled forward from M4:* the game needs real shapes early, and tier 1 is small.
-- [ ] **ID buffer**: per-entity visible-pixel counts and exact screen extents. Fixes occlusion and loose boxes.
-- [ ] **Per-agent persistent cameras**; `sight_orbit` (turntable) and `sight_compare` (before/after).
-- [ ] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
+- [x] **ID buffer**: per-entity visible-pixel counts and exact screen extents. Fixes occlusion and loose boxes.
+  *Done 2026-10-14:* `id_buffer` graph pass on every capture (opaque ids with depth, glass shows but never hides);
+  subjects carry `visible_px`, `screen_box_exact`, `occluded`; `sight_query`; `subjects: "visible"`. 0.36 ms GPU +
+  1.1 ms readback/count at 1280×720 on the Intel iGPU; never on the window path.
+- [x] **Per-agent persistent cameras**; `sight_orbit` (turntable) and `sight_compare` (before/after).
+  *Done 2026-10-14:* `camera_set/list/delete` (fixed or following an entity, owned by the agent's identity, others may
+  look through them; run-scoped, not saved with the world); `sight_orbit` contact sheets; `sight_compare` mark/diff
+  with a before|after|heat image, changed regions and subject changes.
+- [x] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
+  *Done 2026-10-14:* `sight_frame {overlays}`: grid, axes, bounds (hidden ones red), labels (no overlaps, capped),
+  claims, skeletons (rest pose), lods; text through `specula-text` with a system font.
 - [x] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
   *Done 2026-10-14:* `--perf FILE` / `./perf.toml` (`perf.example.toml` documents every budget, per-adapter overrides); misses are structured errors in `perf_frame` and `perf_capture`.
 - [ ] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
@@ -368,7 +377,9 @@ shapes?"
 
 **Exit proof:**
 - [ ] A lit, shadowed scene with imported and procedural assets and an animated character.
-- [ ] Sight reports 0 visible pixels for a fully hidden object.
+- [x] Sight reports 0 visible pixels for a fully hidden object.
+  *Done 2026-10-14:* `scripts/sight_check.py` (box behind a wall: `visible_px` 0, `occluded`; a sphere half behind a
+  low wall: 0.47 of its disc) on the NVIDIA and Intel GPUs.
 - [ ] A 10k-instance world holds its budget on the Intel integrated GPU.
 
 ---
