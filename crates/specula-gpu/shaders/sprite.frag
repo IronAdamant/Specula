@@ -11,7 +11,10 @@ layout(constant_id = 0) const uint FEATURES = 0u;
 const bool SHADOWS = (FEATURES & 1u) != 0u;
 const bool FOG = (FEATURES & 2u) != 0u;
 const bool HDR = (FEATURES & 4u) != 0u;
-const bool CUTOUT = (FEATURES & 32u) != 0u;
+// SSAO (src/ssao.rs): cutouts write the exposed luminance of their ambient light in alpha, as
+// the mesh pipeline's Lit does; blended items keep the alpha below (their blend state).
+const bool SSAO = (FEATURES & 32u) != 0u;
+const bool CUTOUT = (FEATURES & 64u) != 0u;
 
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 layout(set = 0, binding = 1) uniform sampler2D textures[];
@@ -175,13 +178,22 @@ void main() {
     } else if (a <= 0.0) {
         discard;
     }
-    vec3 c = (v_info.y & FLAG_LIT) != 0u ? albedo * card_light(v_world) : albedo;
+    bool lit = (v_info.y & FLAG_LIT) != 0u;
+    vec3 c = lit ? albedo * card_light(v_world) : albedo;
+    // The ambient part (what occlusion may take): none for unlit items.
+    vec3 ambient = SSAO && lit ? albedo * pc.frame.ambient.rgb : vec3(0.0);
     if (FOG) {
         vec3 d = v_world - pc.frame.camera_time.xyz;
         float dist = length(d);
         vec3 dir = d / max(dist, 1e-6);
         float t = fog_transmittance(pc.frame, dir, dist, false);
         c = c * t + fog_radiance(pc.frame, dir) * (1.0 - t);
+        ambient *= t;
+    }
+    if (SSAO && HDR && CUTOUT) {
+        const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+        out_color = vec4(display(c), clamp(dot(ambient, LUMA) * pc.frame.ambient.w, 0.0, 60000.0));
+        return;
     }
     out_color = vec4(display(c) * a, a);
 }

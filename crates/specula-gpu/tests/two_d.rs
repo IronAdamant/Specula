@@ -320,3 +320,118 @@ fn cutout_sprites_cast_shadows_and_lit_sprites_receive_light() {
     assert!(under[0] + 30 < open[0], "shadow {under:?} vs lit {open:?}");
     finish("sprite_shadows", gpu);
 }
+
+/// Mostly ambient light (where occlusion shows), linear output (shares compare directly).
+fn ssao_env(ssao: bool) -> Environment {
+    let mut env = Environment {
+        sun_direction: [-0.7, 0.6, 0.2],
+        sun_intensity: 0.2,
+        ambient_color: [0.8, 0.85, 1.0],
+        ambient_intensity: 0.8,
+        tonemap: false,
+        ..Default::default()
+    };
+    env.ssao.enabled = ssao;
+    env
+}
+
+fn linear_luma(p: [u8; 4]) -> f32 {
+    let c = |k: usize| srgb_to_linear(p[k] as f32 / 255.0);
+    0.2126 * c(0) + 0.7152 * c(1) + 0.0722 * c(2)
+}
+
+#[test]
+fn ssao_takes_ambient_light_from_lit_cutouts_and_keeps_it_under_blended_items() {
+    for adapter in [AdapterPreference::HighPerformance, AdapterPreference::LowPower] {
+        let test = "two_d_ssao";
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let (v, i) = cube();
+        let cube_mesh = gpu.upload_mesh(&v, &i).unwrap();
+        let (w, h) = (192u32, 128u32);
+        let view_proj = mul(&perspective_vk_reverse_z(45f32.to_radians(), w as f32 / h as f32, 0.05), &look_at_rh([0.0, 1.6, 5.0], [0.0, 0.6, 0.0], [0.0, 1.0, 0.0]));
+        let mut ground = IDENTITY;
+        ground[0] = 40.0;
+        ground[5] = 0.1;
+        ground[10] = 40.0;
+        ground[13] = -0.05;
+        let mesh_draws = [DrawItem::new(cube_mesh, ground, [0.6, 0.6, 0.6, 1.0])];
+        // Two upright 2 m cards standing on the ground: lit (left) and unlit (right).
+        let card = |x: f32, lit: bool| {
+            Draw2d::Sprite(Sprite {
+                position: [x, 1.0, 0.0],
+                size: [2.0, 2.0],
+                color: [0.6, 0.6, 0.6, 1.0],
+                blend: SpriteBlend::Cutout { threshold: 0.5 },
+                lit,
+                ..Default::default()
+            })
+        };
+        let cards = [card(-1.2, true), card(1.2, false)];
+        let render_env = |gpu: &mut Gpu, draws: &[Draw2d], ssao: bool, name: &str| {
+            let frame = FrameDesc { view_proj, clear_color: CLEAR, reverse_z: true, draws: &mesh_draws, draws_2d: draws, environment: ssao_env(ssao), ..Default::default() };
+            let px = render(gpu, w, h, &frame);
+            write_png(&format!("two_d_ssao_{name}_{}.png", gpu.adapter().index), &px, w, h);
+            px
+        };
+        let at = |px: &[u8], p: [f32; 3]| {
+            let (x, y) = project(&view_proj, p, w, h);
+            pixel(px, w, x as u32, y as u32)
+        };
+        let off = render_env(&mut gpu, &cards, false, "off");
+        let on = render_env(&mut gpu, &cards, true, "on");
+        let share = |p: [f32; 3], a: &[u8], b: &[u8]| linear_luma(at(b, p)) / linear_luma(at(a, p)).max(1e-6);
+        // The ground at the lit card's foot is occluded by the card (cutouts write depth).
+        let ground_foot = [-1.2, 0.0, 0.08];
+        // The lit card's own foot: its ambient light rides in alpha, so occlusion takes some.
+        let lit_foot = [-1.2, 0.06, 0.0];
+        // The unlit card has no ambient light to lose; open ground keeps its light.
+        let unlit_foot = [1.2, 0.06, 0.0];
+        let open = [0.0, 0.0, 2.5];
+        for (what, p) in [("ground foot", ground_foot), ("lit foot", lit_foot), ("unlit foot", unlit_foot), ("open", open)] {
+            eprintln!("{test}: {what} {:?} -> {:?} keeps {:.3}", at(&off, p), at(&on, p), share(p, &off, &on));
+        }
+        assert!(share(ground_foot, &off, &on) < 0.92, "the ground at a card's foot loses ambient light");
+        assert!(share(lit_foot, &off, &on) < 0.95, "a lit cutout's foot loses ambient light");
+        assert!(at(&off, unlit_foot)[..3].iter().zip(&at(&on, unlit_foot)[..3]).all(|(a, b)| a.abs_diff(*b) <= 2), "unlit cards keep their colour");
+        assert!((share(open, &off, &on) - 1.0).abs() < 0.03, "open ground keeps its light");
+        // A black half-transparent veil (sprite or shape) over the crease darkens everything under
+        // it alike, so SSAO must take the same share with it (blended layers keep the alpha).
+        let veil_sprite = Draw2d::Sprite(Sprite {
+            position: [-1.2, 0.3, 0.5],
+            size: [1.5, 1.0],
+            color: [0.0, 0.0, 0.0, 0.6],
+            blend: SpriteBlend::Blended,
+            ..Default::default()
+        });
+        let mut m = ShapeMesh::default();
+        fill(&Path::rect(-0.75, -0.5, 1.5, 1.0).flatten(0.01).unwrap(), [0, 0, 0, 153], false, &mut m).unwrap();
+        let veil_mesh = gpu.upload_mesh(&m.vertices, &m.indices).unwrap();
+        let veil_shape = Draw2d::Shape(ShapeDraw { mesh: veil_mesh, model: translation([-1.2, 0.3, 0.5]), color: [1.0; 4], layer: 0 });
+        for (name, veil) in [("sprite", veil_sprite), ("shape", veil_shape)] {
+            let draws = [cards[0], cards[1], veil];
+            let (a, b) = (render_env(&mut gpu, &draws, false, &format!("{name}_off")), render_env(&mut gpu, &draws, true, &format!("{name}_on")));
+            for p in [ground_foot, lit_foot] {
+                let (plain, veiled) = (share(p, &off, &on), share(p, &a, &b));
+                eprintln!("{test}: {name} veil at {p:?}: share {plain:.3} -> {veiled:.3} ({:?} -> {:?})", at(&a, p), at(&b, p));
+                assert!(linear_luma(at(&a, p)) < linear_luma(at(&off, p)) * 0.6, "the veil covers {p:?}");
+                assert!((plain - veiled).abs() < 0.05, "{name}: a blended veil doesn't change SSAO's share at {p:?}: {plain} vs {veiled}");
+            }
+        }
+        // The flat 2D view (orthographic, looking down -Z): one depth, nothing occluded, so the
+        // map renders as without SSAO.
+        let tiles = texture(&mut gpu, 4, |x, y| quadrant(x, y, 4));
+        let flat = [
+            Draw2d::Sprite(Sprite { size: [6.0, 6.0], texture: Some(tiles), blend: SpriteBlend::Cutout { threshold: 0.5 }, filter: TextureFilter::Nearest, ..Default::default() }),
+            Draw2d::Sprite(Sprite { position: [1.0, 1.0, 0.0], size: [2.0, 2.0], color: [1.0, 1.0, 1.0, 0.5], lit: true, layer: 1, ..Default::default() }),
+            Draw2d::Sprite(Sprite { position: [-1.0, -1.0, 0.0], size: [2.0, 2.0], color: [0.3, 0.9, 0.4, 1.0], blend: SpriteBlend::Cutout { threshold: 0.5 }, lit: true, layer: 2, ..Default::default() }),
+            Draw2d::Shape(ShapeDraw { mesh: veil_mesh, model: translation([0.0, 2.0, 0.0]), color: [1.0, 0.2, 0.2, 1.0], layer: 3 }),
+        ];
+        let flat_frame = |ssao: bool| FrameDesc { view_proj: ortho(0.0, 0.0, 8.0, 8.0), clear_color: CLEAR, reverse_z: true, draws_2d: &flat, environment: ssao_env(ssao), ..Default::default() };
+        let (a, b) = (render(&mut gpu, 64, 64, &flat_frame(false)), render(&mut gpu, 64, 64, &flat_frame(true)));
+        write_png(&format!("two_d_ssao_flat_{}.png", gpu.adapter().index), &b, 64, 64);
+        let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+        assert!(worst <= 2, "a flat 2D map is unchanged by SSAO (worst {worst} levels)");
+        assert!(gpu.last_frame_stats().gpu.is_none_or(|t| t.passes.iter().any(|p| p.name == specula_gpu::PASS_SSAO)));
+        finish(test, gpu);
+    }
+}

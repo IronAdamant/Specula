@@ -241,7 +241,7 @@ pub const FLAG_LIT: u32 = 64;
 pub const FLAG_CUTOUT: u32 = 128;
 
 /// Specialization bit of the cutout sprite pipeline (`CUTOUT` in `shaders/sprite.frag`).
-pub const FEAT_CUTOUT: u32 = 32;
+pub const FEAT_CUTOUT: u32 = 64;
 
 /// One item as the 2D shaders read it; must match `Item` in `shaders/sprite.glsl`.
 #[repr(C)]

@@ -361,6 +361,7 @@ impl Window {
             shadow,
             overlay: !frame.overlay.is_empty(),
             two_d: !frame.draws_2d.is_empty(),
+            ssao: crate::ssao::ssao_extent(env, self.extent),
         };
         let res = declare_frame(&mut self.graph, &shape);
         prepare_graph(dev, descriptors, pool, &mut self.graph, &res)?;
@@ -391,7 +392,7 @@ impl Window {
             t.begin_frame(dev, f.cmd, frame_no);
         }
         let upload = f.upload.as_ref().expect("created in init");
-        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload };
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload, textures };
         let draws = record_frame(&ctx, f.cmd, &mut self.graph, &res, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.end(f.cmd)?;

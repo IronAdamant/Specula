@@ -160,7 +160,7 @@ def screenshot(hwnd, path):
 GPU_AV_NOTICES = ("VALIDATION-SETTINGS", "WARNING-Setting-Limit-Adjusted")
 
 
-def check_adapter(exe, adapter, out, port, gpu_av=False):
+def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
     """Returns True (clean), False (problem) or None (no such adapter)."""
     log_path = out / f"engine_adapter{adapter}.log"
     env = dict(os.environ)
@@ -204,6 +204,11 @@ def check_adapter(exe, adapter, out, port, gpu_av=False):
             x, z = (i % 20) * 0.3 - 2.85, (i // 20) * 0.3 - 2.85
             look = {"material": "glass", "opacity": 0.3, "color": "#9fd8ff"} if i % 5 == 0 else {"color": "#c8b070"}
             mcp.call("world_spawn", shape="cube", name=f"stud_{i}", position=[x, 0.06, z], scale=0.12, **look)
+        if effects:
+            # Every pass of the window path: shadows, SSAO, HDR scene, bloom, grading, FXAA.
+            mcp.call("world_env", tonemap=True, shadow={"enabled": True}, ssao={"enabled": True},
+                     bloom={"enabled": True}, fxaa=True,
+                     grading={"enabled": True, "vibrance": -0.5, "lift": [-0.01, 0, 0.01], "vignette": 0.3, "grain": 0.2})
         warnings = mcp.frame_warnings()
 
         time.sleep(1.0)  # let the window present a few frames
@@ -264,6 +269,7 @@ def main():
     parser.add_argument("--out", type=Path, default=ROOT / "target" / "window-check")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"engine port (default {DEFAULT_PORT})")
     parser.add_argument("--gpu-av", action="store_true", help="also run GPU-assisted validation (slower)")
+    parser.add_argument("--effects", action="store_true", help="render with every effect on (shadows, SSAO, bloom, grading, FXAA)")
     args = parser.parse_args()
     global URL
     URL = f"http://127.0.0.1:{args.port}/mcp"
@@ -276,7 +282,7 @@ def main():
     indices = range(16) if args.adapters == "all" else [int(i) for i in args.adapters.split(",")]
     results = {}
     for i in indices:
-        result = check_adapter(args.exe, i, args.out, args.port, args.gpu_av)
+        result = check_adapter(args.exe, i, args.out, args.port, args.gpu_av, args.effects)
         if result is None:
             if args.adapters != "all":
                 results[i] = False

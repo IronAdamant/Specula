@@ -284,6 +284,8 @@ pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
         p.bloom.map(|e| e.check()),
         p.sky.map(|e| e.check()),
         p.fog.map(|e| e.check()),
+        p.grading.map(|e| e.check()),
+        p.ssao.map(|e| e.check()),
     ];
     for result in effects.into_iter().flatten() {
         result.map_err(|(field, message)| invalid(&field, message))?;
@@ -826,11 +828,14 @@ pub struct Env {
     pub light: Environment,
     /// sRGB background (and the sky colour reflections pick up).
     pub background: [f32; 3],
+    /// The grading LUT, a PNG strip under the assets root (none by default). The engine loads it
+    /// and sets `light.grading.lut`; the world keeps only the path.
+    pub grading_lut: crate::effects::AssetPath,
 }
 
 impl Default for Env {
     fn default() -> Self {
-        Env { light: Environment::default(), background: [0.10, 0.11, 0.13] }
+        Env { light: Environment::default(), background: [0.10, 0.11, 0.13], grading_lut: crate::effects::AssetPath::NONE }
     }
 }
 
@@ -851,6 +856,8 @@ impl Env {
             ("fxaa", Json::from(l.fxaa)),
             ("sky", crate::effects::SkyPatch::to_json(&l.sky, false)),
             ("fog", crate::effects::FogPatch::to_json(&l.fog, false)),
+            ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, false)),
+            ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, false)),
         ])
     }
 
@@ -872,6 +879,8 @@ impl Env {
             ("fxaa", Json::from(l.fxaa)),
             ("sky", crate::effects::SkyPatch::to_json(&l.sky, true)),
             ("fog", crate::effects::FogPatch::to_json(&l.fog, true)),
+            ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, true)),
+            ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, true)),
         ])
     }
 }
@@ -892,6 +901,8 @@ pub struct EnvPatch {
     pub fxaa: Option<bool>,
     pub sky: Option<crate::effects::SkyPatch>,
     pub fog: Option<crate::effects::FogPatch>,
+    pub grading: Option<crate::effects::GradingPatch>,
+    pub ssao: Option<crate::effects::SsaoPatch>,
 }
 
 impl EnvPatch {
@@ -936,6 +947,12 @@ impl EnvPatch {
         }
         if let Some(p) = &self.fog {
             p.apply(&mut l.fog);
+        }
+        if let Some(p) = &self.grading {
+            p.apply(&mut l.grading, &mut env.grading_lut);
+        }
+        if let Some(p) = &self.ssao {
+            p.apply(&mut env.light.ssao);
         }
     }
 }
@@ -3193,6 +3210,8 @@ impl World {
         h.write_bool(l.fxaa);
         crate::effects::SkyPatch::hash(&l.sky, &mut h);
         crate::effects::FogPatch::hash(&l.fog, &mut h);
+        crate::effects::GradingPatch::hash(&l.grading, &self.env.grading_lut, &mut h);
+        crate::effects::SsaoPatch::hash_if_set(&l.ssao, &mut h);
         h.write_u64(self.persistent_len() as u64);
         for e in self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e) {
             h.write_u64(e.content_hash());
