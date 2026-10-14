@@ -30,10 +30,7 @@ memory of the earlier ones. Last updated **2026-10-15**.
        adapters, window_check, lava `--plain`) and merge. Integrator verification is enough for (a); give (b) one
        narrow `lane-reviewer` round.
     2. **2D** (`agent-abab6399ffa467652`): sprites, tilemaps, vector shapes, orthographic cameras, SSAO-aware.
-       Four review rounds. Left: `Path::control_bounds` must include the origin when a path starts with L/Q/C
-       (culling bug; the reviewer's fuzz probe is in the scratchpad `review-2d-d826b0c/probe`), round-join vertex
-       charge per actual turn; then merge main (Skinning: FEAT bit 64 may collide with `FEAT_CUTOUT`; DrawRecord
-       128 B), and after Sight lands register 2D draws with the ID pass. Then verify and merge.
+       Four review rounds; round-4 fixes done at 0e89bc3 (origin in control bounds, exact stroke charge; fuzz 0 failures on 9 seeds). Left: re-run `two_d_check` on NVIDIA (the texture-reload probe failed once — known timing flake, investigate if it repeats); merge main (Skinning: `FEAT_CUTOUT` → 128 if it shares a spec space with `FEAT_SKINNED` = 64; DrawRecord 128 B; rebuild .spv), and after Sight lands register 2D draws with the ID pass. Then verify and merge.
   - **Then, in order:** (1) M2 exit proof: a lit, shadowed scene with imported + procedural assets and an animated
     character; 0 visible px for a hidden object (passes on the Sight branch); 10k instances within budget on the
     Intel iGPU (measured ~1.5–2.7 ms earlier — re-run on final main). (2) `perf_frame` exposing the render graph
