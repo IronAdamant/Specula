@@ -337,6 +337,71 @@ mod tests {
         }
     }
 
+    /// Reviewer finding (round 4): with more blended ids at a pixel than the per-pixel sets hold,
+    /// counts depended on fragment order (NVIDIA varied between identical frames). Now: identical
+    /// frames give identical counts; ids within the sets are exact; only ids past them are
+    /// approximate (and at least their true coverage).
+    #[test]
+    fn nested_glass_counts_are_reproducible() {
+        use specula_core::math::{Mat4, Quat, Vec3};
+        use specula_gpu::{DrawItem, FrameDesc, Gpu, GpuOptions, Material, Validation};
+        if !specula_gpu::is_available() {
+            eprintln!("nested_glass_counts_are_reproducible: SKIPPED — Vulkan is not available");
+            return;
+        }
+        for a in specula_gpu::enumerate_adapters().unwrap() {
+            let options = GpuOptions { validation: Validation::On, adapter: specula_gpu::AdapterPreference::Index(a.index), ..Default::default() };
+            let mut gpu = match Gpu::new(&options) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("nested_glass_counts_are_reproducible: SKIPPED on adapter {} — {e}", a.index);
+                    continue;
+                }
+            };
+            if !gpu.ids_count_blended() {
+                eprintln!("nested_glass_counts_are_reproducible: SKIPPED on adapter {} — no fragment atomics", a.index);
+                continue;
+            }
+            let (v, i) = sphere(32, 16);
+            let mesh = gpu.upload_mesh(&v, &i).unwrap();
+            let (w, h) = (320u32, 240u32);
+            let target = gpu.create_target(w, h).unwrap();
+            let cam = crate::sight::Camera::new(Vec3::new(0.0, 0.5, 3.0), Vec3::ZERO, 45.0);
+            let vp = cam.view_proj(w, h).to_cols_array();
+            let model = |s: f32| Mat4::from_trs(Vec3::ZERO, Quat::IDENTITY, Vec3::new(s, s, s)).to_cols_array();
+            for n in [3usize, 5] {
+                // Concentric spheres, the largest first (id 1).
+                let scales: Vec<f32> = (0..n).map(|k| 1.6 - 0.25 * k as f32).collect();
+                let glass: Vec<DrawItem> = scales.iter().map(|&s| DrawItem { material: Material::Glass, ..DrawItem::new(mesh, model(s), [0.9, 0.9, 1.0, 0.2]) }).collect();
+                let ids: Vec<u32> = (1..=n as u32).collect();
+                let frame = FrameDesc { view_proj: vp, draws: &glass, reverse_z: true, ..Default::default() };
+                let mut runs = Vec::new();
+                for _ in 0..8 {
+                    gpu.render_with_ids(target, &frame, &ids).unwrap();
+                    runs.push(gpu.id_coverage(target, n as u32).unwrap().per_id);
+                }
+                assert!(runs.windows(2).all(|r| r[0] == r[1]), "adapter {}: {n} spheres: counts differ between identical frames: {runs:?}", a.index);
+                for (k, &s) in scales.iter().enumerate() {
+                    // Its silhouette alone, opaque.
+                    let twin = [DrawItem::new(mesh, model(s), [1.0; 4])];
+                    gpu.render_with_ids(target, &FrameDesc { view_proj: vp, draws: &twin, reverse_z: true, ..Default::default() }, &[1]).unwrap();
+                    let truth = gpu.id_coverage(target, 1).unwrap().per_id[0].opaque_pixels as f64;
+                    let got = &runs[0][k];
+                    let ratio = got.blended_pixels as f64 / truth;
+                    if k < 4 {
+                        assert!(!got.approx && (0.97..=1.03).contains(&ratio), "adapter {}: {n} spheres, #{}: {got:?} vs {truth} ({ratio:.3})", a.index, k + 1);
+                    } else {
+                        assert!(got.approx && ratio >= 0.97, "adapter {}: {n} spheres, #{}: approximate, at least its silhouette: {got:?} vs {truth}", a.index, k + 1);
+                    }
+                }
+            }
+            gpu.destroy_target(target);
+            gpu.destroy_mesh(mesh);
+            let warnings: Vec<_> = gpu.take_validation_messages().into_iter().filter(|m| m.severity >= specula_gpu::Severity::Warning).collect();
+            assert!(warnings.is_empty(), "adapter {}: {warnings:#?}", a.index);
+        }
+    }
+
     #[test]
     fn cube_faces_sit_on_their_normals() {
         let (v, _) = cube();

@@ -267,6 +267,10 @@ pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[
         let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
         s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
         s.json.set("screen_box_exact", exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
+        if cov.is_some_and(|c| c.approx) {
+            // More blended ids overlapped at some of its pixels than the ID buffer's sets hold.
+            s.json.set("visible_px_approx", Json::from(true));
+        }
         if let (true, Some(c), None) = (s.on_screen, drawn, cov) {
             s.json.set("no_pixels", Json::from(true));
             if c.rasterized == Some(true) {
@@ -572,6 +576,7 @@ mod tests {
             max: [339, 259],
             rasterized: Some(true),
             counted: true,
+            approx: true,
         };
         let hidden = IdCoverage { rasterized: Some(true), ..IdCoverage::default() };
         let projected = s[0].area;
@@ -579,6 +584,8 @@ mod tests {
         assert_eq!(s[0].projected_area, projected, "overlays keep ranking by the projected box");
         let get = |i: usize, k: &str| s[i].json.get(k).cloned();
         assert_eq!(get(0, "visible_px"), Some(Json::from(1200)));
+        assert_eq!(get(0, "visible_px_approx"), Some(Json::from(true)));
+        assert_eq!(get(1, "visible_px_approx"), None);
         assert_eq!(get(0, "screen_box_exact"), Some(Json::arr([300, 220, 40, 40].map(Json::from))));
         assert_eq!((get(0, "no_pixels"), get(0, "occluded"), s[0].area), (None, None, 1600));
         assert_eq!((get(1, "visible_px"), get(1, "no_pixels"), get(1, "occluded")), (Some(Json::from(0)), Some(Json::from(true)), Some(Json::from(true))));

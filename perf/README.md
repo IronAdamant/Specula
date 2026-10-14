@@ -67,3 +67,23 @@ Measured 2026-10-15, release build, Intel RaptorLake iGPU (`--adapter integrated
 Memory: the id image, its depth and the readback are shared by every capture size (sized to the
 largest capture so far, in 256 px steps): four cached 2048² targets went from 200.6 to 250.7 MB of
 GPU memory with the ID buffer on (it was 529 MB with per-target ID images).
+
+**Blended (glass-like) draws cost by their coverage.** They insert their ids into per-pixel sets of
+the 4 smallest ids, a full-screen pass resolves the sets (atomics only on each id's region edges),
+and only when more than 4 blended ids overlap at a pixel does an overflow pass recount the extra ids
+per fragment (`visible_px_approx: true`). Measured 2026-10-15, release, `id_buffer` GPU ms (copy
+included); 7 opaque cubes plus:
+
+| Scene | Intel iGPU 720p | Intel iGPU 2048² | RTX 4090 Laptop 720p | RTX 4090 Laptop 2048² |
+|---|---|---|---|---|
+| no blended draws | 0.29 | 0.92 | 0.16 | 0.67 |
+| 7 overlapping glass spheres (≤ 4 per pixel) | 1.19 | 5.44 | 0.20 | 0.90 |
+| 7 concentric glass spheres (overflow: 3 ids approximate) | 6.12 | 41.7 | 0.51 | 3.37 |
+
+(The previous, order-dependent scheme measured 2.67 / 16.5 ms on Intel for 7 overlapping spheres.)
+The overflow pass is the expensive path: each overflowing fragment updates its id's count and box
+with atomics on shared addresses, which an iGPU serialises. CPU readback + count stays 1.2-1.6 ms.
+
+Memory: the per-pixel sets take 16 bytes per pixel of the shared bucket (64 MB at 2048², 15 MB for
+a 1280×720 capture's bucket), allocated once a capture has blended draws and never cleared between
+captures (only when new or every 4095 captures). The stats buffer takes 28 bytes per id.

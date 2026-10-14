@@ -997,7 +997,7 @@ impl Engine {
             return ToolOutput::error(format!("{path} was not in the frame it was queried in"));
         };
         out.set("drawn", Json::from(true));
-        for key in ["on_screen", "screen", "distance_m", "visible_px", "screen_box_exact", "no_pixels", "occluded"] {
+        for key in ["on_screen", "screen", "distance_m", "visible_px", "visible_px_approx", "screen_box_exact", "no_pixels", "occluded"] {
             if let Some(v) = s.json.get(key) {
                 out.set(key, v.clone());
             }
@@ -1091,7 +1091,7 @@ fn passes(s: &Subject, f: SubjectFilter) -> bool {
 /// A subject trimmed to what an orbit view needs.
 fn compact_subject(j: Json) -> Json {
     let mut out = Json::obj::<&str>([]);
-    for key in ["id", "path", "screen", "screen_box_exact", "visible_px", "no_pixels", "occluded", "distance_m"] {
+    for key in ["id", "path", "screen", "screen_box_exact", "visible_px", "visible_px_approx", "no_pixels", "occluded", "distance_m"] {
         if let Some(v) = j.get(key) {
             out.set(key, v.clone());
         }

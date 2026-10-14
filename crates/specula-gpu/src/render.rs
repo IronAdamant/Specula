@@ -24,7 +24,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 15] = [
+static SHADERS: [(&str, &[u8]); 16] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -40,6 +40,7 @@ static SHADERS: [(&str, &[u8]); 15] = [
     ("ids.vert", include_bytes!("../shaders/ids.vert.spv")),
     ("ids.frag", include_bytes!("../shaders/ids.frag.spv")),
     ("ids_count.frag", include_bytes!("../shaders/ids_count.frag.spv")),
+    ("ids_resolve.frag", include_bytes!("../shaders/ids_resolve.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +60,7 @@ enum Shader {
     IdsVert = 12,
     IdsFrag = 13,
     IdsCountFrag = 14,
+    IdsResolveFrag = 15,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -730,18 +732,30 @@ impl PipelineKey {
             },
             PipelineKey::Ids { pass } => {
                 use crate::idbuffer::IdPass;
+                // `id_buffer` (opaque, insert, raster) renders with the id image and its depth;
+                // `id_resolve` (resolve, overflow) with the depth only.
+                let in_id_buffer = matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Raster);
                 PipelineDesc {
-                    vert: Shader::IdsVert,
-                    frag: Some(if pass == IdPass::Opaque { Shader::IdsFrag } else { Shader::IdsCountFrag }),
-                    spec: (pass == IdPass::Raster) as u32,
-                    vertex: VertexInput::PositionNormal,
-                    color: Some(crate::idbuffer::ID_FORMAT),
+                    vert: if pass == IdPass::Resolve { Shader::FullscreenVert } else { Shader::IdsVert },
+                    frag: Some(match pass {
+                        IdPass::Opaque => Shader::IdsFrag,
+                        IdPass::Resolve => Shader::IdsResolveFrag,
+                        _ => Shader::IdsCountFrag,
+                    }),
+                    // ids_count.frag's MODE.
+                    spec: match pass {
+                        IdPass::Raster => 1,
+                        IdPass::Overflow => 2,
+                        _ => 0,
+                    },
+                    vertex: if pass == IdPass::Resolve { VertexInput::None } else { VertexInput::PositionNormal },
+                    color: in_id_buffer.then_some(crate::idbuffer::ID_FORMAT),
                     depth: Some(DEPTH_FORMAT),
-                    depth_test: pass != IdPass::Raster,
+                    depth_test: matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Overflow),
                     // As in the scene: blended surfaces never hide what is behind them.
                     depth_write: pass == IdPass::Opaque,
-                    compare: if pass == IdPass::Raster { Some(VK_COMPARE_OP_LESS) } else { None },
-                    // Only opaque draws write ids; the counting passes write the storage buffer.
+                    compare: if matches!(pass, IdPass::Raster | IdPass::Resolve) { Some(VK_COMPARE_OP_LESS) } else { None },
+                    // Only opaque draws write ids; the others write the storage buffers.
                     blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
                     depth_bias: false,
                 }
@@ -1335,6 +1349,8 @@ pub enum FramePass {
     IdBuffer,
     /// The ids copied to the host-readable buffer.
     IdCopy,
+    /// Sight's blended counts resolved from the per-pixel id sets (and the overflow recount).
+    IdResolve,
 }
 
 impl FramePass {
@@ -1347,7 +1363,7 @@ impl FramePass {
             FramePass::Tonemap => PASS_TONEMAP,
             FramePass::Fxaa => PASS_FXAA,
             FramePass::Overlay => PASS_OVERLAY,
-            FramePass::IdBuffer | FramePass::IdCopy => crate::PASS_ID_BUFFER,
+            FramePass::IdBuffer | FramePass::IdCopy | FramePass::IdResolve => crate::PASS_ID_BUFFER,
         }
     }
 }
@@ -1568,7 +1584,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
             }
             FramePass::Overlay => {} // inline: recorded by the pass before it
-            FramePass::IdBuffer | FramePass::IdCopy => {
+            FramePass::IdBuffer | FramePass::IdCopy | FramePass::IdResolve => {
                 if let Some(ids) = &ctx.ids {
                     crate::idbuffer::record(ctx, cmd, g, p, tag, ids);
                 }

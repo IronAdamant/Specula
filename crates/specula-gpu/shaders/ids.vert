@@ -23,9 +23,16 @@ vec4 id_world_position() {
     return id_model() * vec4(in_position, 1.0);
 }
 
+// The fragment stage's mode (ids_count.frag); 2 = the overflow pass.
+layout(constant_id = 0) const uint MODE = 0u;
+
 void main() {
     vec4 world = id_world_position();
     gl_Position = pc.frame.view_proj * world;
+    if (MODE == 2u && pc.stats.v[0] == 0u) {
+        // No pixel overflowed its slots: nothing to recount, so rasterize nothing.
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    }
     v_ids = uvec2(pc.ids.items[gl_InstanceIndex], uint(gl_InstanceIndex));
     v_world = world.xyz;
     // Inverse-transpose of the model's 3x3 via cofactors, as mesh.vert (only the sign matters).
