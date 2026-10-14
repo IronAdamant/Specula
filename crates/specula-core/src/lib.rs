@@ -2,6 +2,7 @@
 //!
 //! Zero third-party crates (see `AGENTS.md`). Everything here is pure Rust and unit-tested.
 
+pub mod alloc;
 pub mod base64;
 pub mod checksum;
 pub mod deflate;
@@ -10,6 +11,8 @@ pub mod hash;
 pub mod json;
 pub mod math;
 pub mod png;
+pub mod profile;
 pub mod rng;
+pub mod toml;
 
 pub use json::{Json, JsonError};
