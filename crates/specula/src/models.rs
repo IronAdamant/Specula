@@ -1394,6 +1394,22 @@ impl Library {
         self.generation += 1;
     }
 
+    /// Forgets build `id` (its textures left the CPU with an upload that has now been freed):
+    /// handles drawing it work their key out again when next used, so a respawn waits for a
+    /// fresh import instead of finding a build that can't be uploaded.
+    pub fn forget_build(&mut self, id: u64) {
+        self.builds.retain(|_, b| b.id != id);
+        self.recent.retain(|r| *r != id);
+        for slot in self.handles.iter_mut().flatten() {
+            if slot.built.as_ref().is_some_and(|b| b.id == id) {
+                slot.built = None;
+                slot.built_key = None;
+                slot.verify = true;
+            }
+        }
+        self.generation += 1;
+    }
+
     /// Keeps `id` (a `model_build` result) among the builds kept without an entity.
     fn remember(&mut self, id: u64) {
         self.recent.retain(|r| *r != id);
@@ -1922,16 +1938,27 @@ impl GpuModels {
         }
         drop(lib);
         let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id)).collect();
+        let mut released = Vec::new();
         for id in stale {
             if let Some(m) = self.uploaded.remove(&id) {
                 for mesh in m.lods.iter().flatten().map(|p| p.mesh) {
                     gpu.destroy_mesh(mesh);
+                }
+                if !m.textures.is_empty() {
+                    released.push(id);
                 }
                 for t in m.textures {
                     gpu.destroy_texture(t);
                 }
             }
             self.anim.get_mut().pool.remove(&id);
+        }
+        if !released.is_empty() {
+            // Their texture pixels are gone from the CPU too: the library forgets those builds.
+            let mut lib = library.lock();
+            for id in released {
+                lib.forget_build(id);
+            }
         }
         self.failed.retain(|id, _| wanted.contains_key(id));
         let mut errors = Vec::new();
@@ -2902,6 +2929,13 @@ mod tests {
         let again = lib.built(h.handle).unwrap();
         assert_ne!(again.id, before, "a new build of the same file");
         assert!(again.textures.iter().all(|t| !t.levels.lock().unwrap().is_empty()));
+        // A build whose upload was freed (no entity used it) is forgotten: the next use of its
+        // spec waits for a fresh import instead of finding a build without pixels.
+        let id = again.id;
+        lib.forget_build(id);
+        assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Building);
+        settle(&mut lib);
+        assert_ne!(lib.built(h.handle).unwrap().id, id);
         let _ = std::fs::remove_dir_all(&root);
     }
 
