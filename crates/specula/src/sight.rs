@@ -282,8 +282,19 @@ pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[
                 s.json.set("occluded", Json::from(true));
             }
         }
-        s.area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
+        let exact_area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
+        // An approximate box is a lower bound (possibly empty): rank by what it may cover.
+        s.area = if approx { exact_area.max(s.projected_area) } else { exact_area };
     }
+}
+
+/// Whether the ID buffer says a subject (its packet JSON) shows at all: `Some(true)` when it has
+/// visible pixels or an approximate count (a lower bound: it showed, maybe all of it, even at 0);
+/// `None` when the ID buffer didn't count it (`visible_px` null or missing). Every consumer of
+/// visibility (filters, compare, overlays, totals) goes through this.
+pub fn shows(j: &Json) -> Option<bool> {
+    let px = j.get("visible_px")?.as_u64()?;
+    Some(px > 0 || j.get("visible_px_approx").and_then(Json::as_bool) == Some(true))
 }
 
 /// The subjects to send back to the agent: everything when it fits in `max`, otherwise the
@@ -592,7 +603,8 @@ mod tests {
         assert_eq!(get(0, "visible_px_approx"), Some(Json::from(true)));
         assert_eq!(get(1, "visible_px_approx"), None);
         assert_eq!(get(0, "screen_box_exact"), Some(Json::arr([300, 220, 40, 40].map(Json::from))));
-        assert_eq!((get(0, "no_pixels"), get(0, "occluded"), s[0].area), (None, None, 1600));
+        // Approximate: ranked by the larger of its (lower-bound) exact box and its projected box.
+        assert_eq!((get(0, "no_pixels"), get(0, "occluded"), s[0].area), (None, None, projected.max(1600)));
         assert_eq!((get(1, "visible_px"), get(1, "no_pixels"), get(1, "occluded")), (Some(Json::from(0)), Some(Json::from(true)), Some(Json::from(true))));
         assert_eq!((get(1, "screen_box_exact"), s[1].area), (Some(Json::Null), 0));
         assert_eq!(get(2, "no_pixels"), None, "behind the camera: not in view at all");

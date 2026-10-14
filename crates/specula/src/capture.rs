@@ -83,11 +83,14 @@ pub(crate) struct Rendered {
     pub(crate) ids: Json,
 }
 
+/// Set once the first lost device has been logged.
+static LOSS_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A GPU failure during a capture's `step`, as a structured error (the tool's error text): a lost
 /// device (`gpu_device_lost`: a hung or faulting submission) says so and that it is permanent
 /// for this engine run, since Vulkan has no way back short of a new device; anything else is
-/// `gpu_failed`. Both carry the `VkResult` when there is one.
-fn gpu_failure(step: &str, e: &specula_gpu::GpuError) -> String {
+/// `gpu_failed`. Both carry the `VkResult` when there is one. The first loss is also logged.
+pub(crate) fn gpu_failure(step: &str, e: &specula_gpu::GpuError, windowed: bool) -> String {
     let lost = e.device_lost();
     let mut out = Json::obj([
         ("error", Json::from(if lost { "gpu_device_lost" } else { "gpu_failed" })),
@@ -96,10 +99,16 @@ fn gpu_failure(step: &str, e: &specula_gpu::GpuError) -> String {
         ("vk_result", e.vk_result.map_or(Json::Null, Json::from)),
     ]);
     if lost {
-        out.set(
-            "recovery",
-            Json::from("none in this run: every later render (captures and the window) fails; restart the engine"),
-        );
+        // The window loop autosaves and exits (code 1) on its next frame; headless keeps serving.
+        let recovery = if windowed {
+            "none: the engine stops (it autosaves the world first); restart it"
+        } else {
+            "none in this run: every later render fails; restart the engine"
+        };
+        out.set("recovery", Json::from(recovery));
+        if !LOSS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("specula: GPU device lost during a capture ({step}): {}; {recovery}", e.message);
+        }
     }
     out.to_pretty()
 }
@@ -447,7 +456,7 @@ impl Engine {
         {
             let _z = profile::zone("sight.render");
             let rendered = if opts.ids { self.gpu.render_with_ids(target, &frame, &ids) } else { self.gpu.render(target, &frame) };
-            rendered.map_err(|e| gpu_failure("render", &e))?;
+            rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
         let ids_json = if opts.ids {
             let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
@@ -457,13 +466,13 @@ impl Engine {
             let counted = Instant::now();
             let counts = {
                 let _z = profile::zone("sight.ids");
-                self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| gpu_failure("id readback", &e))?
+                self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| gpu_failure("id readback", &e, self.windowed))?
             };
             sight::apply_visibility(&mut subjects, &entities, &counts.per_id);
             let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
             Json::obj([
                 ("entities", Json::from(entities.len())),
-                ("visible", Json::from(counts.per_id.iter().filter(|c| c.pixels > 0).count())),
+                ("visible", Json::from(counts.per_id.iter().filter(|c| c.pixels > 0 || c.approx).count())),
                 ("blended_counted", Json::from(counts.blended_counted)),
                 ("gpu_ms", Json::from(gpu_ms)),
                 ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
@@ -476,9 +485,9 @@ impl Engine {
             overlays = (!opts.overlays.is_empty()).then_some(report);
             frame.overlay = &q;
             let _z = profile::zone("sight.render");
-            self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e))?;
+            self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
-        let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e))?;
+        let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
         Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json })
     }
 
@@ -567,18 +576,20 @@ impl Engine {
             report.details.push(("grid", Json::obj([("y", Json::from(0.0)), ("step_m", Json::from(step)), ("lines", Json::from(lines))])));
         }
         if spec.has(Kind::Bounds) {
-            let mut boxes = 0;
+            let (mut boxes, mut hidden_boxes) = (0, 0);
             for (s, e, _) in shown.iter().take(ov::MAX_BOXES) {
                 let Some(corners) = e.world_corners() else { continue };
-                let hidden = s.json.get("visible_px").and_then(Json::as_u64) == Some(0);
+                let hidden = sight::shows(&s.json) == Some(false);
                 p.box_edges(&corners, if hidden { ov::OCCLUDED } else { ov::VISIBLE }, 1.5);
                 boxes += 1;
+                hidden_boxes += usize::from(hidden);
             }
             report.drawn.push("bounds");
             report.details.push((
                 "bounds",
                 Json::obj([
                     ("boxes", Json::from(boxes)),
+                    ("fully_hidden", Json::from(hidden_boxes)),
                     ("omitted", Json::from(shown.len().saturating_sub(ov::MAX_BOXES))),
                     ("kind", Json::from("oriented")),
                     ("legend", Json::obj([("visible", Json::from(ov::hex(ov::VISIBLE))), ("fully_hidden", Json::from(ov::hex(ov::OCCLUDED)))])),
@@ -1105,10 +1116,7 @@ fn passes(s: &Subject, f: SubjectFilter) -> bool {
     match f {
         SubjectFilter::All => true,
         SubjectFilter::OnScreen => s.on_screen,
-        SubjectFilter::Visible => match s.json.get("visible_px").and_then(Json::as_u64) {
-            Some(px) => px > 0,
-            None => s.on_screen,
-        },
+        SubjectFilter::Visible => sight::shows(&s.json).unwrap_or(s.on_screen),
     }
 }
 
@@ -1137,15 +1145,31 @@ fn tri_text(t: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Reviewer finding (round 6): approximate counts are lower bounds (possibly 0 for an entity
+    /// in plain view); the "visible" filter, overlays and totals must treat them as showing.
+    #[test]
+    fn approximate_subjects_count_as_visible() {
+        let subject = |json: &str| Subject { id: 1, json: Json::parse(json).unwrap(), on_screen: true, area: 0, projected_area: 400 };
+        let approx = subject(r#"{"visible_px":0,"visible_px_approx":true}"#);
+        let hidden = subject(r#"{"visible_px":0,"no_pixels":true,"occluded":true}"#);
+        let uncounted = subject(r#"{"visible_px":null}"#);
+        assert!(passes(&approx, SubjectFilter::Visible));
+        assert!(!passes(&hidden, SubjectFilter::Visible));
+        assert!(passes(&uncounted, SubjectFilter::Visible), "unknown: falls back to on_screen");
+        assert_eq!([&approx, &hidden, &uncounted].map(|s| sight::shows(&s.json)), [Some(true), Some(false), None]);
+    }
+
     #[test]
     fn gpu_failures_are_structured() {
         let lost = specula_gpu::GpuError { message: "vkQueueSubmit failed: VK_ERROR_DEVICE_LOST".into(), vk_result: Some(-4), limit: None, reason: None };
         assert!(lost.device_lost());
-        let j = Json::parse(&gpu_failure("render", &lost)).unwrap();
+        let j = Json::parse(&gpu_failure("render", &lost, false)).unwrap();
         assert_eq!((j.get("error"), j.get("step"), j.get("vk_result")), (Some(&Json::from("gpu_device_lost")), Some(&Json::from("render")), Some(&Json::from(-4))));
-        assert!(j.get("recovery").is_some());
+        assert!(j.get("recovery").and_then(Json::as_str).is_some_and(|r| r.contains("every later render fails")));
+        let j = Json::parse(&gpu_failure("render", &lost, true)).unwrap();
+        assert!(j.get("recovery").and_then(Json::as_str).is_some_and(|r| r.contains("the engine stops")));
         let other = specula_gpu::GpuError { message: "out of memory".into(), vk_result: Some(-2), limit: None, reason: None };
-        let j = Json::parse(&gpu_failure("readback", &other)).unwrap();
+        let j = Json::parse(&gpu_failure("readback", &other, false)).unwrap();
         assert_eq!((j.get("error"), j.get("recovery")), (Some(&Json::from("gpu_failed")), None));
     }
 }

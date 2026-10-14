@@ -242,7 +242,8 @@ def main():
             check(q["visible_px"] == 0 and q["occluded"] is True, "sight_query: the hidden box is occluded", failures)
             vis, _ = save("frame_front_visible_only", builder.call("sight_frame", camera="front", width=1280, height=720,
                                                                   time_s=1, subjects="visible"))
-            check(all(s.get("visible_px", 0) > 0 for s in vis["subjects"]), "subjects: visible lists only visible ones", failures)
+            check(all(s.get("visible_px", 0) > 0 or s.get("visible_px_approx") for s in vis["subjects"]),
+                  "subjects: visible lists only visible ones", failures)
             check(not any(s["path"] == "/hidden_box" for s in vis["subjects"]), "...and not the hidden box", failures)
             summary["query_hidden_box"] = q
         off = builder.frame(camera="front", width=640, height=360, time_s=1, ids=False, max_subjects=50)
@@ -258,6 +259,33 @@ def main():
         check(subj2["added"]["items"] == ["/screen"] and "/marker" in subj2["became_hidden"]["items"],
               f"the screen was added and the marker became hidden ({subj2['added']}, {subj2['became_hidden']})", failures)
         builder.json("world_delete", path="/screen")
+
+        print("approximate counts: at least, never hidden")
+        # Four big glass panes far away (smaller ids), then a red one in front of the camera (the
+        # largest id). Moved behind it, the four fill its pixels' sets: its count becomes a lower
+        # bound (0 here), yet it is in plain view.
+        cam = dict(eye=[0, 30, 60], target=[0, 30, 0], width=320, height=240, time_s=1)
+        builder.json("world_batch", ops=[{"op": "spawn", "shape": "cube", "name": f"layer_{i}", "position": [60, 30, -2.0 - 0.1 * i],
+                                          "scale": [20, 20, 0.01], "material": "glass", "color": "#ffffff"} for i in range(4)])
+        builder.json("world_spawn", shape="cube", name="front_glass", position=[0, 30, 5], scale=[2, 2, 0.01],
+                     material="glass", color="#ff3030")
+        builder.json("sight_compare", action="mark", name="layers", **cam)
+        builder.json("world_batch", ops=[{"op": "set", "path": f"/layer_{i}", "position": [0, 30, -2.0 - 0.1 * i]} for i in range(4)])
+        fg = subject(builder.frame(**cam, max_subjects=50), "/front_glass")
+        check(fg is not None and fg.get("visible_px_approx") is True and not fg.get("no_pixels") and not fg.get("occluded"),
+              f"the front pane's count is approximate, not hidden ({fg and {k: fg.get(k) for k in ('visible_px', 'visible_px_approx', 'no_pixels')}})",
+              failures)
+        vis = builder.frame(**cam, max_subjects=50, subjects="visible")
+        check(subject(vis, "/front_glass") is not None, "subjects: visible keeps it", failures)
+        check(vis["id_buffer"]["visible"] >= 5, f"id_buffer.visible counts it ({vis['id_buffer']['visible']})", failures)
+        ov_, _ = save("frame_layers_bounds", builder.call("sight_frame", **cam, max_subjects=50, overlays=["bounds"]))
+        truly_hidden = sum(1 for s in ov_["subjects"] if s.get("no_pixels"))
+        check(ov_["overlays"]["bounds"]["fully_hidden"] == truly_hidden,
+              f"the bounds overlay draws only the truly hidden boxes red ({ov_['overlays']['bounds']['fully_hidden']} of "
+              f"{ov_['overlays']['bounds']['boxes']}, {truly_hidden} with no_pixels), not the front pane", failures)
+        ld, _ = save("compare_layers", builder.call("sight_compare", action="diff", name="layers"))
+        check("/front_glass" not in ld["subjects"]["became_hidden"]["items"], f"compare: not became_hidden ({ld['subjects']['became_hidden']})", failures)
+        builder.json("world_batch", ops=[{"op": "delete", "path": p} for p in ["/front_glass"] + [f"/layer_{i}" for i in range(4)]])
 
         print("ID buffer cost at 1280x720")
         costs = []

@@ -80,6 +80,8 @@ pub struct SubjectState {
     /// The ID buffer's exact box (`screen_box_exact`).
     pub exact: Option<[u32; 4]>,
     pub visible_px: Option<u64>,
+    /// `visible_px` is a lower bound (`visible_px_approx`): it showed, even at 0.
+    pub approx: bool,
     pub position: [f32; 3],
 }
 
@@ -105,6 +107,7 @@ impl SubjectState {
                 projected: rect("screen"),
                 exact: rect("screen_box_exact"),
                 visible_px: j.get("visible_px").and_then(Json::as_u64),
+                approx: j.get("visible_px_approx").and_then(Json::as_bool) == Some(true),
                 position: pos.unwrap_or([0.0; 3]),
             },
         ))
@@ -112,7 +115,7 @@ impl SubjectState {
 
     fn seen(&self) -> bool {
         match self.visible_px {
-            Some(px) => px > 0,
+            Some(px) => px > 0 || self.approx,
             None => self.projected.is_some(),
         }
     }
@@ -508,7 +511,7 @@ mod tests {
 
 
     fn st(path: &str, projected: Option<[u32; 4]>, exact: Option<[u32; 4]>, px: Option<u64>, x: f32) -> SubjectState {
-        SubjectState { path: path.into(), projected, exact, visible_px: px, position: [x, 0.0, 0.0] }
+        SubjectState { path: path.into(), projected, exact, visible_px: px, approx: false, position: [x, 0.0, 0.0] }
     }
 
     #[test]
@@ -550,6 +553,20 @@ mod tests {
         let gone_from_view = subject_diff(&before, &ids, &BTreeMap::new(), &|_| true, 2, 10);
         assert_eq!(gone_from_view.get("removed").unwrap().get("count").and_then(Json::as_u64), Some(0));
         assert_eq!(gone_from_view.get("became_hidden").unwrap().get("count").and_then(Json::as_u64), Some(5));
+    }
+
+    /// Reviewer finding (round 6): an approximate count is a lower bound and may be 0 for an
+    /// entity in plain view (a glass pane in front of 4 others): never "became hidden".
+    #[test]
+    fn approximate_counts_are_not_hidden() {
+        let r = Some([10, 10, 20, 20]);
+        let before = BTreeMap::from([(1, st("/pane", r, r, Some(400), 0.0))]);
+        let approx = SubjectState { approx: true, ..st("/pane", r, None, Some(0), 0.0) };
+        let after = BTreeMap::from([(1, approx.clone())]);
+        let j = subject_diff(&before, &[1], &after, &|_| true, 2, 10);
+        assert_eq!(j.get("became_hidden").unwrap().get("count").and_then(Json::as_u64), Some(0));
+        let (_, parsed) = SubjectState::from_json(&Json::parse(r#"{"id":1,"path":"/pane","visible_px":0,"visible_px_approx":true}"#).unwrap()).unwrap();
+        assert!(parsed.approx && parsed.seen());
     }
 
     #[test]

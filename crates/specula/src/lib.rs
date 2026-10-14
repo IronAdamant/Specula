@@ -1442,7 +1442,7 @@ impl Engine {
                     let (_, oldest) = self.targets.remove(0);
                     self.gpu.destroy_target(oldest);
                 }
-                let t = self.gpu.create_target(w, h).map_err(|e| format!("create target: {e}"))?;
+                let t = self.gpu.create_target(w, h).map_err(|e| capture::gpu_failure("create target", &e, self.windowed))?;
                 self.targets.push(((w, h), t));
                 t
             }
