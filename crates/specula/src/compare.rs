@@ -22,6 +22,9 @@ pub const MAX_MARKS_PER_AGENT: usize = 8;
 pub const MAX_MARK_OWNERS: usize = 32;
 /// Every agent's marks together: pixels, subjects and entity ids (bytes, estimated).
 pub const MAX_MARK_BYTES: usize = 256 * 1024 * 1024;
+/// Heap bytes per stored subject besides its path: the record (about 100 bytes), the map node
+/// around it and the allocators' rounding (measured: about 1.4x the record, rounded up).
+const SUBJECT_BYTES: usize = 176;
 /// Changed regions reported.
 pub const MAX_REGIONS: usize = 16;
 /// Subject changes listed per kind.
@@ -65,7 +68,7 @@ impl Mark {
     /// Memory it holds, estimated.
     fn bytes(&self) -> usize {
         let d = &self.data;
-        d.rgba.len() + d.ids.len() * 8 + d.subjects.values().map(|s| s.path.len() + 96).sum::<usize>()
+        d.rgba.len() + d.ids.len() * 8 + d.subjects.values().map(|s| s.path.len() + SUBJECT_BYTES).sum::<usize>()
     }
 }
 
@@ -613,7 +616,7 @@ mod tests {
         let subjects: BTreeMap<u64, SubjectState> =
             (1..=100).map(|i| (i, st(&format!("/district_{i}/building_with_a_long_name_{i:05}"), None, None, None, 0.0))).collect();
         let one = Mark { view: view(), data: data(64 * 64, subjects.clone(), ids.clone()), used: 0 }.bytes();
-        assert!(one >= 64 * 64 * 4 + 20_000 * 8 + 100 * 40, "{one}");
+        assert!(one >= 64 * 64 * 4 + 20_000 * 8 + 100 * (40 + SUBJECT_BYTES), "{one}");
         for owner in 0..(MAX_MARK_OWNERS + 10) {
             for k in 0..MAX_MARKS_PER_AGENT {
                 m.put(&format!("agent_{owner}"), &format!("m{k}"), view(), data(64 * 64, subjects.clone(), ids.clone()));

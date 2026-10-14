@@ -1170,7 +1170,7 @@ fn parse_hello(args: &Json) -> Result<Command, String> {
 
 pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
     crate::sight_tools::check_camera_conflict(args)?;
-    let int =|key: &str, default: u32, range: std::ops::RangeInclusive<u32>| -> Result<u32, String> {
+    let int = |key: &str, default: u32, range: std::ops::RangeInclusive<u32>| -> Result<u32, String> {
         match args.get(key) {
             None | Some(Json::Null) => Ok(default),
             Some(v) => match v.as_u64() {

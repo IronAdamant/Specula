@@ -324,7 +324,8 @@ impl GpuInner {
         }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
-        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds });
+        let closed = crate::idbuffer::closed_mesh(vertices, indices);
+        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds, closed });
         Ok(MeshId(id))
     }
 
@@ -531,9 +532,7 @@ impl GpuInner {
         // Offscreen work is synchronous, so nothing on the GPU still uses the target or its
         // graph's images.
         self.pool.release_owner(&self.device, &mut self.descriptors, target.0);
-        if self.ids.last.is_some_and(|(owner, _, _)| owner == target.0) {
-            self.ids.last = None;
-        }
+        self.ids.forget(target.0);
         self.device.destroy_buffer(&t.readback);
         self.device.destroy_image(&t.color);
         if self.last_graph == Some(GraphSource::Target(target.0)) {
@@ -569,9 +568,15 @@ impl GpuInner {
         self.ids.counts(target.0, max_id)
     }
 
-    /// Whether ID renders count blended draws (`fragmentStoresAndAtomics`).
+    /// Whether ID renders count blended draws (`fragmentStoresAndAtomics`, not switched off).
     pub fn ids_count_blended(&self) -> bool {
-        self.device.fragment_atomics
+        self.device.fragment_atomics && !self.ids.blended_disabled
+    }
+
+    /// Switch blended counting off (or back on, where the device can): tests and comparisons of
+    /// the path devices without fragment atomics take.
+    pub fn set_ids_count_blended(&mut self, on: bool) {
+        self.ids.blended_disabled = !on;
     }
 
     fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<&[u32]>) -> Result<(), GpuError> {
@@ -581,9 +586,7 @@ impl GpuInner {
         };
         let extent = t.extent;
         // Whatever happens, the shared ID buffers no longer describe an earlier render.
-        if ids.is_some() || self.ids.last.is_some_and(|(owner, _, _)| owner == target.0) {
-            self.ids.last = None;
-        }
+        self.ids.starting(target.0, ids.is_some());
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
@@ -616,7 +619,7 @@ impl GpuInner {
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let id_frame = match (ids, id_res) {
             (Some(ids), Some(id_res)) => {
-                Some(self.ids.frame(&self.device, &mut self.pipelines, &self.scratch.plan, ids, id_res, extent, &mut t.graph)?)
+                Some(self.ids.frame(&self.device, &mut self.pipelines, &self.scratch.plan, frame.draws, ids, id_res, target.0, extent, &mut t.graph)?)
             }
             _ => None,
         };
@@ -658,7 +661,7 @@ impl GpuInner {
         // Synchronous: this frame and every one before it finished.
         self.completed = self.pool.note_used(&t.graph);
         t.rendered = true;
-        self.ids.last = id_res.map(|_| (target.0, extent, ids.and_then(|i| i.iter().copied().max()).unwrap_or(0)));
+        self.ids.finished();
         self.frame_no = frame_no;
         self.last_graph = Some(GraphSource::Target(target.0));
         let stats = &mut self.last_offscreen;

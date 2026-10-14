@@ -12,22 +12,39 @@ layout(early_fragment_tests) in;
 
 layout(constant_id = 0) const uint MODE = 0u;
 
-layout(location = 0) flat in uint v_id;
+layout(location = 0) flat in uvec2 v_ids; // x: the id, y: the record index
 layout(location = 1) in vec3 v_world;
 layout(location = 2) in vec3 v_normal;
 
+// Whether this fragment is one the scene shows, by the batch's face rule (both modes).
+bool counted_face() {
+    vec3 cam = pc.frame.camera_time.xyz;
+    // Faces chosen by normal, as mesh.frag does (winding varies by mesh).
+    bool front = dot(v_normal, cam - v_world) > 0.0;
+    if (pc.faces == FACES_FRONT) {
+        return front;
+    }
+    if (pc.faces == FACES_LAVA) {
+        // mesh.frag shade_lava_lamp: shaded on the near faces, or on the far faces when the
+        // camera is inside the proxy box.
+        mat4 m = pc.draws.items[v_ids.y].model;
+        vec3 scale = vec3(length(m[0].xyz), length(m[1].xyz), length(m[2].xyz));
+        mat3 rot = mat3(m[0].xyz / scale.x, m[1].xyz / scale.y, m[2].xyz / scale.z);
+        vec3 ro = transpose(rot) * (cam - m[3].xyz);
+        bool inside_box = all(lessThan(abs(ro), 0.5 * scale));
+        return front != inside_box;
+    }
+    return true;
+}
+
 void main() {
-    if (v_id == 0u) {
+    uint v_id = v_ids.x;
+    if (v_id == 0u || !counted_face()) {
         return;
     }
     uint base = (v_id - 1u) * STATS_STRIDE;
     if (MODE == 1u) {
         pc.stats.v[base + 5u] = 1u; // idempotent: no atomic needed
-        return;
-    }
-    // Front faces only, chosen by normal like glass in mesh.frag (winding varies by mesh): a
-    // closed shell covers each pixel with exactly one of them.
-    if (dot(v_normal, pc.frame.camera_time.xyz - v_world) <= 0.0) {
         return;
     }
     uvec2 p = uvec2(gl_FragCoord.xy);

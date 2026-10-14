@@ -866,6 +866,13 @@ impl Gpu {
         self.inner.ids_count_blended()
     }
 
+    /// Switch blended counting off (`false`) or back on where the device supports it: for tests
+    /// and comparisons of the path GPUs without fragment atomics take (blended ids then report
+    /// `counted: false`).
+    pub fn set_ids_count_blended(&mut self, on: bool) {
+        self.inner.set_ids_count_blended(on)
+    }
+
     /// Create a surface + swapchain for a native window (Windows: `HINSTANCE`, `HWND`).
     ///
     /// Replaces a previously attached window. Fails if the instance has no surface support or

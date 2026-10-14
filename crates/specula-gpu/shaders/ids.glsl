@@ -22,4 +22,11 @@ layout(push_constant) uniform Push {
     Draws draws;   // instance i reads items[gl_InstanceIndex]
     Ids ids;       // and ids.items[gl_InstanceIndex]
     Stats stats;
+    uint faces;    // counting passes: which faces count (FACES_*), set per batch
+    uint pad;
 } pc;
+
+// Which fragments of a draw count, as mesh.frag shades them (see src/idbuffer.rs `FACES_*`).
+const uint FACES_ALL = 0u;   // every fragment: blob shadows, open glass, opaque draws
+const uint FACES_FRONT = 1u; // front faces by normal: closed glass shells (one per pixel)
+const uint FACES_LAVA = 2u;  // the lava lamp's proxy: near faces, or far faces from inside it

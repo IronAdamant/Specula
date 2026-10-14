@@ -193,18 +193,22 @@ impl Engine {
             .count()
     }
 
-    /// The identity whose cameras to use: the caller's, or the one now going by agent name `of`
-    /// (the swarm's current holder of the name, never an earlier session that used it).
+    /// The identity whose cameras to use: the caller's, or the one now going by agent name `of`:
+    /// the swarm's current holder of the name (never an earlier session that used it), or, for a
+    /// name no agent_hello took, the unnamed session that goes by it (its default name, as
+    /// `camera_list` shows it).
     fn owner_key(&self, session: &SessionInfo, of: Option<&str>) -> Result<String, ToolOutput> {
-        match of {
-            None => Ok(self.swarm.key(session)),
-            Some(name) => self.swarm.key_of_name(name).map(str::to_owned).ok_or_else(|| {
-                camera_error(CameraError {
-                    code: "agent_not_found",
-                    message: format!("no agent has said agent_hello as '{name}' (engine_info lists the agents)"),
-                })
-            }),
+        let Some(name) = of else { return Ok(self.swarm.key(session)) };
+        if let Some(key) = self.swarm.key_of_name(name) {
+            return Ok(key.to_owned());
         }
+        let unnamed = self.cameras.keys_named(name).into_iter().find(|k| !self.swarm.is_named_key(k));
+        unnamed.map(str::to_owned).ok_or_else(|| {
+            camera_error(CameraError {
+                code: "agent_not_found",
+                message: format!("no agent goes by '{name}' (engine_info lists the agents; camera_list {{all: true}} the camera owners)"),
+            })
+        })
     }
 
     /// The camera of a sight_frame-style spec: a named camera, eye/target, or auto-framing.
@@ -471,7 +475,7 @@ impl Engine {
                 (spec.selects(&path)).then(|| world.get(s.id).map(|e| (s, e, path))).flatten()
             })
             .collect();
-        shown.sort_by(|a, b| b.0.area.cmp(&a.0.area).then(a.0.id.cmp(&b.0.id)));
+        shown.sort_by(|a, b| b.0.projected_area.cmp(&a.0.projected_area).then(a.0.id.cmp(&b.0.id)));
         let centre = |p: &Painter, e: &world::Entity, s: &Subject| -> [f32; 2] {
             let (lo, hi) = e.world_aabb();
             let c = p.project((lo + hi) * 0.5);
@@ -630,7 +634,7 @@ impl Engine {
                 total += 1;
                 if list.len() < 64 {
                     let at = centre(&p, e, s);
-                    p.label(&format!("LOD {level} (0-{}) {}", count - 1, tri_text(tris)), at, [0.6, 1.0, 0.6, 1.0], (1 << 40) + s.area);
+                    p.label(&format!("LOD {level} (0-{}) {}", count - 1, tri_text(tris)), at, [0.6, 1.0, 0.6, 1.0], (1 << 40) + s.projected_area);
                     list.push(Json::obj([
                         ("path", Json::from(path.as_str())),
                         ("lod", Json::from(level)),
@@ -645,7 +649,7 @@ impl Engine {
         if spec.has(Kind::Labels) {
             for (s, e, _) in shown.iter().take(spec.max_labels * 4) {
                 let at = centre(&p, e, s);
-                p.label(&e.name, at, ov::WHITE, s.area);
+                p.label(&e.name, at, ov::WHITE, s.projected_area);
             }
             report.drawn.push("labels");
         }

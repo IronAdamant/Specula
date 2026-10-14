@@ -102,6 +102,11 @@ impl Swarm {
         self.named.get(name).map(String::as_str)
     }
 
+    /// Whether `key` is an identity some agent_hello named (else it is an unnamed session's).
+    pub fn is_named_key(&self, key: &str) -> bool {
+        self.named.values().any(|k| k == key)
+    }
+
     pub fn role(&self, session_id: &str) -> &str {
         self.agents.get(session_id).map_or("builder", |a| a.role.as_str())
     }

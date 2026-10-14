@@ -7,7 +7,7 @@
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 
-layout(location = 0) flat out uint v_id;
+layout(location = 0) flat out uvec2 v_ids; // x: the id, y: the record index (the lava lamp face rule reads its model)
 layout(location = 1) out vec3 v_world;
 layout(location = 2) out vec3 v_normal; // not normalized
 
@@ -26,7 +26,7 @@ vec4 id_world_position() {
 void main() {
     vec4 world = id_world_position();
     gl_Position = pc.frame.view_proj * world;
-    v_id = pc.ids.items[gl_InstanceIndex];
+    v_ids = uvec2(pc.ids.items[gl_InstanceIndex], uint(gl_InstanceIndex));
     v_world = world.xyz;
     // Inverse-transpose of the model's 3x3 via cofactors, as mesh.vert (only the sign matters).
     mat3 m = mat3(id_model());

@@ -175,6 +175,13 @@ impl Cameras {
     }
 
     /// The identity key of the agent called `agent` (the one that most recently set a camera).
+    /// The identities whose cameras were last set under agent name `name` (most recent first).
+    pub fn keys_named(&self, name: &str) -> Vec<&str> {
+        let mut owners: Vec<(&String, &Owned)> = self.owners.iter().filter(|(_, o)| o.name == name).collect();
+        owners.sort_by_key(|o| std::cmp::Reverse(o.1.touched));
+        owners.into_iter().map(|(k, _)| k.as_str()).collect()
+    }
+
     /// The identity `key`'s cameras, in name order.
     pub fn list(&self, key: &str) -> Vec<&NamedCamera> {
         self.owners.get(key).map(|o| o.cameras.values().collect()).unwrap_or_default()
@@ -289,6 +296,7 @@ mod tests {
         // Reviewer finding: a later session taking the name "ann" is a different identity; its
         // camera never answers for the old ann's (callers resolve names through the swarm).
         c.set("key-impostor", "ann", fixed("overview", [99.0, 5.0, 5.0])).unwrap();
+        assert_eq!(c.keys_named("ann"), ["key-impostor", "key-ann"], "most recent first; the swarm decides which is meant");
         assert_eq!(c.resolve("key-ann", "overview", Some("ann"), &world).unwrap().camera.eye, ann.eye);
         // Replacing bumps the version; the list is in name order and round-trips camera_set's form.
         c.set("key-ann", "ann", fixed("overview", [1.0, 2.0, 3.0])).unwrap();

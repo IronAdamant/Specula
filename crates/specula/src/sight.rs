@@ -167,7 +167,11 @@ pub struct Subject {
     pub json: Json,
     pub on_screen: bool,
     /// Pixel area of the clipped rectangle (0 when off screen).
+    /// Becomes the exact box's area once the ID buffer ran ([`apply_visibility`]): ranks the response.
     pub area: u64,
+    /// Pixel area of the projected rectangle, always (overlays rank by it, so their picks never
+    /// depend on whether the ID buffer ran first).
+    pub projected_area: u64,
 }
 
 /// One entry per entity with geometry in the frame, in id order: groups draw nothing, hidden
@@ -211,7 +215,7 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, includ
             }
             let json = Json::obj(fields);
             let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
-            Subject { id: e.id, json, on_screen: screen.is_some(), area }
+            Subject { id: e.id, json, on_screen: screen.is_some(), area, projected_area: area }
         })
         .collect()
 }
@@ -240,7 +244,8 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
 /// - `no_pixels: true` when its box is in view and it was drawn, yet no pixel shows;
 /// - `occluded: true` when, besides, its fragments were rasterized: something in front hid them
 ///   (without it the entity was sub-pixel, or off the image after all). Unknown (left out) on
-///   GPUs without fragment atomics.
+///   GPUs without fragment atomics; there, entities with blended draws (glass, blob shadows, lava
+///   lamps) get `visible_px: null` and none of the other fields: their pixels weren't counted.
 ///
 /// Its `area` (for ranking) becomes the exact box's.
 pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
@@ -248,6 +253,11 @@ pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[
         entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect();
     for s in subjects {
         let drawn = by_entity.get(&s.id);
+        if drawn.is_some_and(|c| !c.counted) {
+            // Blended draws went uncounted (no fragment atomics): its pixels are unknown, not 0.
+            s.json.set("visible_px", Json::Null);
+            continue;
+        }
         let cov = drawn.filter(|c| c.pixels > 0);
         let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
         s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
@@ -549,9 +559,19 @@ mod tests {
         let mut s = frame(&world, cam, 640, 480);
         // Drawn: front (visible), behind (rasterized, hidden) and speck (never rasterized);
         // `away` was culled (never drawn).
-        let seen = IdCoverage { pixels: 1200, opaque_pixels: 1000, blended_pixels: 200, min: [300, 220], max: [339, 259], rasterized: Some(true) };
+        let seen = IdCoverage {
+            pixels: 1200,
+            opaque_pixels: 1000,
+            blended_pixels: 200,
+            min: [300, 220],
+            max: [339, 259],
+            rasterized: Some(true),
+            counted: true,
+        };
         let hidden = IdCoverage { rasterized: Some(true), ..IdCoverage::default() };
+        let projected = s[0].area;
         apply_visibility(&mut s, &[1, 2, 4], &[seen, hidden, IdCoverage::default()]);
+        assert_eq!(s[0].projected_area, projected, "overlays keep ranking by the projected box");
         let get = |i: usize, k: &str| s[i].json.get(k).cloned();
         assert_eq!(get(0, "visible_px"), Some(Json::from(1200)));
         assert_eq!(get(0, "screen_box_exact"), Some(Json::arr([300, 220, 40, 40].map(Json::from))));
@@ -560,6 +580,13 @@ mod tests {
         assert_eq!((get(1, "screen_box_exact"), s[1].area), (Some(Json::Null), 0));
         assert_eq!(get(2, "no_pixels"), None, "behind the camera: not in view at all");
         assert_eq!((get(3, "no_pixels"), get(3, "occluded")), (Some(Json::from(true)), None), "nothing hid it: it rasterized nothing");
+        // Uncounted (glass without fragment atomics): unknown, not "no pixels".
+        let mut s = frame(&world, cam, 640, 480);
+        let uncounted = IdCoverage { counted: false, rasterized: None, ..IdCoverage::default() };
+        apply_visibility(&mut s, &[1], &[uncounted]);
+        assert_eq!(s[0].json.get("visible_px"), Some(&Json::Null));
+        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("screen_box_exact").is_none() && s[0].json.get("occluded").is_none());
+        assert_eq!(s[0].area, s[0].projected_area);
     }
 
     #[test]
