@@ -1,5 +1,5 @@
 //! The sun's cascaded shadow map: fitting cascades to the view (pure maths), choosing casters per
-//! cascade (instanced batches), the shadow-map image and the depth-only pass.
+//! cascade (instanced batches), the shadow map's description and the depth-only pass.
 //!
 //! Light space: `x = right·p`, `y = up·p`, `z = forward·p` with `forward` the direction the light
 //! travels (−sun direction), so depth grows away from the light. A cascade is a square of half
@@ -7,11 +7,11 @@
 //! moving camera slides the texel grid by whole texels only (no shimmer).
 
 use crate::batch::{world_sphere, Bounds, Plan};
-use crate::device::{image_barrier, Device, Image};
-use crate::render::{FrameUpload, Mesh, PushConstants, PUSH_STAGES};
-use crate::timing::PassTimer;
+use crate::device::Device;
+use crate::graph::{ImageDesc, Res};
+use crate::render::{FrameGraph, FrameUpload, Mesh, PushConstants, PUSH_STAGES};
 use crate::vk::*;
-use crate::{DrawStats, FrameDesc, GpuError, Material, MemoryKind, MeshId, ShadowSettings, MAX_SHADOW_CASCADES, PASS_SHADOW};
+use crate::{DrawStats, FrameDesc, Material, MemoryKind, MeshId, ShadowSettings, MAX_SHADOW_CASCADES};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -409,67 +409,21 @@ pub fn clamp_resolution(r: u32) -> u32 {
     r.clamp(256, 8192)
 }
 
-/// The shadow map: a D16 2D array (one layer per cascade), with a view per layer to render into
-/// and an array view (descriptor binding 0) to sample.
-pub struct ShadowMap {
-    pub image: Image,
-    pub layers: Vec<VkImageView>,
-    /// `2D_ARRAY` over every layer, even when there is only one: the shaders sample it as
-    /// `sampler2DArrayShadow`, and a `2D` view there is undefined behaviour (GPU-assisted
-    /// validation: VUID-vkCmdDrawIndexed-viewType-07752).
-    pub array_view: VkImageView,
-    pub resolution: u32,
-}
-
-impl ShadowMap {
-    pub fn new(dev: &Device, resolution: u32, layers: u32) -> Result<ShadowMap, GpuError> {
-        let image = dev.create_image_with(
-            SHADOW_FORMAT,
-            resolution,
-            resolution,
-            1,
-            layers,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            MemoryKind::ShadowMaps,
-            "shadow map",
-        )?;
-        let mut map = ShadowMap { image, layers: Vec::new(), array_view: VK_NULL_HANDLE, resolution };
-        let array = dev.create_view_range(map.image.handle, SHADOW_FORMAT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, (0, 1), (0, layers));
-        match array {
-            Ok(v) => map.array_view = v,
-            Err(e) => {
-                map.destroy(dev);
-                return Err(e);
-            }
-        }
-        for l in 0..layers {
-            match dev.create_view_range(map.image.handle, SHADOW_FORMAT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D, (0, 1), (l, 1)) {
-                Ok(v) => map.layers.push(v),
-                Err(e) => {
-                    map.destroy(dev);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(map)
-    }
-
-    pub fn layer_count(&self) -> u32 {
-        self.layers.len() as u32
-    }
-
-    /// The device must be idle (or no pending work may use the map).
-    pub fn destroy(&mut self, dev: &Device) {
-        // SAFETY: views of this device, unused by pending work, destroyed once.
-        unsafe {
-            for v in self.layers.drain(..) {
-                (dev.fns.destroy_image_view)(dev.handle, v, ptr::null());
-            }
-            (dev.fns.destroy_image_view)(dev.handle, self.array_view, ptr::null());
-        }
-        self.array_view = VK_NULL_HANDLE;
-        dev.destroy_image(&self.image);
+/// The shadow map, a transient every graph shares: a D16 2D array (one layer per cascade), with a
+/// view per layer to render into and an array view (descriptor binding 0) to sample. The array
+/// view is `2D_ARRAY` over every layer, even when there is only one: the shaders sample it as
+/// `sampler2DArrayShadow`, and a `2D` view there is undefined behaviour (GPU-assisted validation:
+/// VUID-vkCmdDrawIndexed-viewType-07752).
+pub fn shadow_desc(s: &ShadowSettings) -> ImageDesc {
+    let resolution = clamp_resolution(s.resolution);
+    ImageDesc {
+        format: SHADOW_FORMAT,
+        width: resolution,
+        height: resolution,
+        layers: s.cascades.clamp(1, MAX_SHADOW_CASCADES),
+        array_view: true,
+        bindless: false,
+        memory: MemoryKind::ShadowMaps,
     }
 }
 
@@ -479,8 +433,8 @@ pub fn depth_bias(bias: f32) -> (f32, f32) {
     (1.25 * b, 1.75 * b)
 }
 
-/// Record the shadow pass: every cascade's layer cleared and drawn depth-only, then the whole map
-/// made readable by fragment shaders. Updates `stats`' shadow counters.
+/// Record the shadow pass `p` of `g` into `map`: every cascade's layer cleared and drawn
+/// depth-only (the graph owns the barriers around it). Updates `stats`' shadow counters.
 #[allow(clippy::too_many_arguments)]
 pub fn record_shadow_pass(
     dev: &Device,
@@ -488,51 +442,24 @@ pub fn record_shadow_pass(
     pipeline: VkPipeline,
     layout: VkPipelineLayout,
     meshes: &HashMap<u32, Mesh>,
-    map: &ShadowMap,
+    g: &FrameGraph,
+    p: usize,
+    map: Res,
     plan: &ShadowPlan,
     first_record: u32,
     upload: &FrameUpload,
     bias: f32,
-    timer: Option<&mut PassTimer>,
     stats: &mut DrawStats,
 ) {
-    let mut timer = timer;
-    let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_SHADOW));
-    let tests = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    // Earlier frames' reads (still in flight on the same queue) finish before the map is overwritten.
-    dev.barrier(
-        cmd,
-        &[],
-        &[image_barrier(
-            map.image.handle,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | tests,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            tests,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        )],
-    );
-    let size = map.resolution;
+    let img = g.image(map);
+    let size = img.width;
     let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent: VkExtent2D { width: size, height: size } };
     let viewport = VkViewport { x: 0.0, y: 0.0, width: size as f32, height: size as f32, min_depth: 0.0, max_depth: 1.0 };
     let (constant, slope) = depth_bias(bias);
-    let count = plan.data.count.min(map.layer_count());
+    let count = plan.data.count.min(img.layers);
     stats.shadow_cascades = count;
     for k in 0..count {
-        let depth = VkRenderingAttachmentInfo {
-            s_type: ST_RENDERING_ATTACHMENT_INFO,
-            p_next: ptr::null(),
-            image_view: map.layers[k as usize],
-            image_layout: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            resolve_mode: VK_RESOLVE_MODE_NONE,
-            resolve_image_view: VK_NULL_HANDLE,
-            resolve_image_layout: VK_IMAGE_LAYOUT_UNDEFINED,
-            load_op: VK_ATTACHMENT_LOAD_OP_CLEAR,
-            store_op: VK_ATTACHMENT_STORE_OP_STORE,
-            clear_value: VkClearValue { float32: [1.0, 0.0, 0.0, 0.0] },
-        };
+        let depth = g.depth_attachment(p, map, 1.0, Some(k));
         let rendering = VkRenderingInfo {
             s_type: ST_RENDERING_INFO,
             p_next: ptr::null(),
@@ -578,23 +505,6 @@ pub fn record_shadow_pass(
             }
             (dev.fns.cmd_end_rendering)(cmd);
         }
-    }
-    dev.barrier(
-        cmd,
-        &[],
-        &[image_barrier(
-            map.image.handle,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            tests,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        )],
-    );
-    if let Some(t) = timer {
-        t.end_pass(dev, cmd, pass);
     }
 }
 

@@ -1,17 +1,21 @@
-//! The mesh pipelines: shaders, pipeline creation and caching, per-frame data, per-draw records
-//! and scene recording (instanced batches).
+//! The mesh pipelines: shaders, pipeline creation and caching, per-frame data, per-draw records,
+//! the frame's render graph (`declare_frame`, `record_frame`) and scene recording (instanced batches).
 
 use crate::batch::{Bounds, Plan};
 use crate::descriptors::Descriptors;
-use crate::device::{image_barrier, Buffer, Device};
+use crate::device::{Buffer, Device};
+use crate::graph::{Final, ImageDesc, Load, Prior, RenderGraph, Res, TransientPool};
 use crate::overlay::{build_overlay, check_overlay, overlay_units, record_overlay, OverlayDraw, OverlayRecord, Textures};
-use crate::post::{color_barrier, hdr_clear, record_post, FinalImage, PostMode, PostTargets};
+use crate::post::{
+    bloom_level_size, hdr_clear, record_post_pass, PostMode, BLOOM_BLURS, BLOOM_DOWN_PASSES, BLOOM_LEVELS, BLOOM_UP_PASSES,
+    MAX_BLOOM_LEVELS,
+};
 use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
     CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Limit, Material, MemoryKind, PipelineCacheLoad, PipelineStats,
-    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_SCENE,
+    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_BLOOM, PASS_FXAA, PASS_OVERLAY, PASS_SCENE, PASS_SHADOW, PASS_TONEMAP,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -1250,23 +1254,18 @@ pub fn prepare_frame(
     Ok(())
 }
 
-/// Everything recording a frame needs besides the command buffer, target and timer.
+/// Everything recording a frame needs besides the command buffer, its graph and the timer.
 pub struct FrameContext<'a> {
     pub dev: &'a Device,
     pub pipelines: FramePipelines,
     pub descriptors: &'a Descriptors,
     pub meshes: &'a HashMap<u32, Mesh>,
-    /// Present when the frame has a shadow pass (`pipelines.shadow` set).
-    pub shadow_map: Option<&'a crate::shadow::ShadowMap>,
     pub frame: &'a FrameDesc<'a>,
     pub scratch: &'a FrameScratch,
     pub upload: &'a FrameUpload,
-    /// The target's post images (ensured for `mode`).
-    pub post: &'a PostTargets,
-    pub mode: PostMode,
 }
 
-/// The scene features a frame prepared in `scratch` uses, given whether a shadow map exists.
+/// The scene features a frame prepared in `scratch` uses, given whether it renders a shadow map.
 pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map: bool) -> u32 {
     let mut f = 0;
     if have_shadow_map && scratch.shadow.data.count > 0 {
@@ -1278,45 +1277,201 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
     f
 }
 
-/// Record a whole frame into `target`: the shadow pass (if any), the scene, then the post chain.
-/// The final colour image must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its
-/// transitions).
-pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTarget, timer: Option<&mut PassTimer>) -> DrawStats {
-    let mut timer = timer;
-    let mut shadow_stats = DrawStats::default();
-    ctx.descriptors.bind(ctx.dev, cmd, ctx.pipelines.layout);
-    if let (Some(map), true) = (ctx.shadow_map, ctx.pipelines.shadow != VK_NULL_HANDLE) {
-        crate::shadow::record_shadow_pass(
-            ctx.dev,
-            cmd,
-            ctx.pipelines.shadow,
-            ctx.pipelines.layout,
-            ctx.meshes,
-            map,
-            &ctx.scratch.shadow,
-            ctx.scratch.shadow_first_record(),
-            ctx.upload,
-            ctx.frame.environment.shadow.bias,
-            timer.as_deref_mut(),
-            &mut shadow_stats,
-        );
-    }
-    let env = &ctx.frame.environment;
-    let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
-    let mut scene = RenderTarget { color_view: target.color_view, ..*target };
-    let mut scene_clear = clear;
-    let intermediate = match (ctx.mode.bloom(), ctx.mode.fxaa) {
-        (true, _) => ctx.post.hdr.as_ref(),
-        (false, true) => ctx.post.ldr.as_ref(),
-        _ => None,
-    };
-    if let Some(img) = intermediate {
-        color_barrier(ctx.dev, cmd, img.image.handle, false);
-        scene.color_view = img.image.view;
-        if ctx.mode.bloom() {
-            scene_clear = hdr_clear(clear, env.tonemap);
+/// A pass of the frame graph (the tag `record_frame` dispatches on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePass {
+    Shadow,
+    Scene,
+    /// Bloom bright pass / downsample into level `n`.
+    BloomDown(u8),
+    /// Bloom blur into `blur[n - 1]` from level `n`.
+    BloomUp(u8),
+    Tonemap,
+    Fxaa,
+    /// The overlay quads, inline in the pass that writes the final image.
+    Overlay,
+}
+
+impl FramePass {
+    /// The timing ([`crate::PassTiming::name`]) the pass counts towards.
+    pub fn timing(self) -> &'static str {
+        match self {
+            FramePass::Shadow => PASS_SHADOW,
+            FramePass::Scene => PASS_SCENE,
+            FramePass::BloomDown(_) | FramePass::BloomUp(_) => PASS_BLOOM,
+            FramePass::Tonemap => PASS_TONEMAP,
+            FramePass::Fxaa => PASS_FXAA,
+            FramePass::Overlay => PASS_OVERLAY,
         }
     }
+}
+
+pub type FrameGraph = RenderGraph<FramePass>;
+
+/// The resources of a declared frame in its graph (unused ones are `Res::default()`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameRes {
+    pub extent: VkExtent2D,
+    /// The final image (offscreen target or swapchain image).
+    pub out: Res,
+    pub depth: Res,
+    pub shadow: Option<Res>,
+    /// What the scene renders into: `out`, `hdr` (bloom) or `ldr` (FXAA only).
+    pub scene: Res,
+    pub hdr: Res,
+    pub ldr: Res,
+    pub levels: [Res; MAX_BLOOM_LEVELS as usize],
+    pub blurs: [Res; MAX_BLOOM_LEVELS as usize - 1],
+    pub bloom_levels: u32,
+    pub fxaa: bool,
+}
+
+/// What a frame renders into and which passes it runs.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameShape {
+    /// Name of the final image in the graph ("target", "swapchain").
+    pub out_name: &'static str,
+    pub format: VkFormat,
+    pub extent: VkExtent2D,
+    pub prior: Prior,
+    pub fin: Final,
+    pub mode: PostMode,
+    /// The shadow map, when the frame renders shadows.
+    pub shadow: Option<ImageDesc>,
+    pub overlay: bool,
+}
+
+/// Declare a frame's passes into `g`: shadow → scene (+ overlay inline when the scene writes the
+/// final image) → bloom chain → tonemap → FXAA, the overlay inline in whichever writes last.
+pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
+    g.begin();
+    let (w, h) = (s.extent.width, s.extent.height);
+    let mode = s.mode;
+    let mut r = FrameRes { extent: s.extent, bloom_levels: mode.bloom_levels, fxaa: mode.fxaa, ..Default::default() };
+    r.out = g.import_image(s.out_name, s.format, w, h, s.prior, s.fin);
+    r.depth = g.transient("depth", ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets));
+    if let Some(desc) = s.shadow {
+        let map = g.shared("shadow", desc);
+        g.pass("shadow", FramePass::Shadow).depth(map, Load::Clear);
+        r.shadow = Some(map);
+    }
+    if mode.bloom() {
+        r.hdr = g.transient("hdr", ImageDesc::color(HDR_FORMAT, w, h, MemoryKind::PostTargets));
+    }
+    if mode.fxaa {
+        r.ldr = g.transient("ldr", ImageDesc::color(LDR_FORMAT, w, h, MemoryKind::PostTargets));
+    }
+    r.scene = if mode.bloom() {
+        r.hdr
+    } else if mode.fxaa {
+        r.ldr
+    } else {
+        r.out
+    };
+    let scene = g.pass("scene", FramePass::Scene).color(r.scene, Load::Clear).depth(r.depth, Load::Clear);
+    if let Some(map) = r.shadow {
+        scene.sampled(map);
+    }
+    let overlay = |g: &mut FrameGraph, out| {
+        if s.overlay {
+            g.pass("overlay", FramePass::Overlay).inline().color(out, Load::Keep);
+        }
+    };
+    if mode.direct() {
+        overlay(g, r.out);
+    }
+    if mode.bloom() {
+        let n = mode.bloom_levels as usize;
+        for i in 0..n {
+            let size = bloom_level_size(s.extent, i as u32);
+            r.levels[i] = g.transient(BLOOM_LEVELS[i], ImageDesc::color(HDR_FORMAT, size.width, size.height, MemoryKind::PostTargets));
+            if i + 1 < n {
+                r.blurs[i] = g.transient(BLOOM_BLURS[i], ImageDesc::color(HDR_FORMAT, size.width, size.height, MemoryKind::PostTargets));
+            }
+        }
+        for (i, name) in BLOOM_DOWN_PASSES.iter().enumerate().take(n) {
+            let src = if i == 0 { r.hdr } else { r.levels[i - 1] };
+            g.pass(name, FramePass::BloomDown(i as u8)).sampled(src).color(r.levels[i], Load::DontCare);
+        }
+        for i in (1..n).rev() {
+            let smaller = if i == n - 1 { r.levels[i] } else { r.blurs[i] };
+            g.pass(BLOOM_UP_PASSES[i - 1], FramePass::BloomUp(i as u8))
+                .sampled(smaller)
+                .sampled(r.levels[i - 1])
+                .color(r.blurs[i - 1], Load::DontCare);
+        }
+        let blur = if n > 1 { r.blurs[0] } else { r.levels[0] };
+        let dst = if mode.fxaa { r.ldr } else { r.out };
+        g.pass("post_tonemap", FramePass::Tonemap).sampled(r.hdr).sampled(blur).color(dst, Load::DontCare);
+        if !mode.fxaa {
+            overlay(g, r.out);
+        }
+    }
+    if mode.fxaa {
+        g.pass("post_fxaa", FramePass::Fxaa).sampled(r.ldr).color(r.out, Load::DontCare);
+        overlay(g, r.out);
+    }
+    r
+}
+
+/// Compile (if changed) and resolve a declared frame graph, and point descriptor binding 0 at the
+/// frame's shadow map. Rewriting it waits for the GPU first (frames in flight may sample the old
+/// map): that only happens when the shadow settings change.
+pub fn prepare_graph(
+    dev: &Device,
+    descriptors: &mut Descriptors,
+    pool: &mut TransientPool,
+    g: &mut FrameGraph,
+    res: &FrameRes,
+) -> Result<(), GpuError> {
+    g.prepare(dev, descriptors, pool)?;
+    if let Some(map) = res.shadow {
+        let view = g.image(map).array_view;
+        if descriptors.shadow_view != view {
+            if descriptors.shadow_view != VK_NULL_HANDLE {
+                dev.wait_idle();
+            }
+            descriptors.write_shadow(dev, view);
+        }
+    }
+    Ok(())
+}
+
+/// The pass timer, begun and ended as the frame moves between timings.
+struct Timing<'t> {
+    timer: Option<&'t mut PassTimer>,
+    name: Option<&'static str>,
+    pass: Option<usize>,
+}
+
+impl Timing<'_> {
+    fn enter(&mut self, dev: &Device, cmd: VkCommandBuffer, name: &'static str) {
+        if self.name == Some(name) {
+            return;
+        }
+        self.end(dev, cmd);
+        self.name = Some(name);
+        self.pass = self.timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, name));
+    }
+
+    fn end(&mut self, dev: &Device, cmd: VkCommandBuffer) {
+        if let Some(t) = self.timer.as_mut() {
+            t.end_pass(dev, cmd, self.pass.take());
+        }
+        self.name = None;
+        self.pass = None;
+    }
+}
+
+/// Record a whole frame: every pass of `g` in order, each after the barriers the graph computed
+/// for it, then the graph's final transitions. `g` is prepared and its imported images bound.
+pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph, res: &FrameRes, timer: Option<&mut PassTimer>) -> DrawStats {
+    let dev = ctx.dev;
+    let mut timing = Timing { timer, name: None, pass: None };
+    let mut shadow_stats = DrawStats::default();
+    let mut stats = DrawStats::default();
+    ctx.descriptors.bind(dev, cmd, ctx.pipelines.layout);
+    let env = &ctx.frame.environment;
     let overlay = OverlayDraw {
         pipeline: ctx.pipelines.overlay,
         layout: ctx.pipelines.layout,
@@ -1324,36 +1479,55 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTar
         quads: ctx.upload.overlay_address(ctx.scratch.records.len()),
         count: ctx.scratch.overlay.len() as u32,
     };
-    let mut stats = record_scene(
-        ctx.dev,
-        cmd,
-        &ctx.pipelines,
-        ctx.descriptors,
-        ctx.meshes,
-        &scene,
-        scene_clear,
-        ctx.frame,
-        &ctx.scratch.plan,
-        ctx.upload,
-        intermediate.is_none().then_some(&overlay),
-        timer.as_deref_mut(),
-    );
-    stats.overlay_quads = overlay.count;
-    if intermediate.is_some() {
-        let out = FinalImage { view: target.color_view, extent: target.extent };
-        record_post(
-            ctx.dev,
-            cmd,
-            &ctx.pipelines,
-            env,
-            ctx.upload.frame_address(),
-            ctx.post,
-            ctx.mode,
-            &out,
-            timer,
-            &overlay,
-        );
+    for p in 0..g.pass_count() {
+        if g.is_inline(p) {
+            continue;
+        }
+        let tag = g.tag(p);
+        timing.enter(dev, cmd, tag.timing());
+        g.barriers(dev, cmd, p);
+        let g = &*g;
+        // The overlay draws inside the rendering instance of the pass that writes the final
+        // image, and is timed on its own.
+        let with_overlay = g.inline_after(p).is_some() && overlay.count > 0;
+        let mut inline = |cmd: VkCommandBuffer| {
+            if with_overlay {
+                timing.end(dev, cmd);
+                record_overlay(dev, cmd, &overlay, timing.timer.as_deref_mut());
+            }
+        };
+        match tag {
+            FramePass::Shadow => {
+                if let Some(map) = res.shadow {
+                    crate::shadow::record_shadow_pass(
+                        dev,
+                        cmd,
+                        ctx.pipelines.shadow,
+                        ctx.pipelines.layout,
+                        ctx.meshes,
+                        g,
+                        p,
+                        map,
+                        &ctx.scratch.shadow,
+                        ctx.scratch.shadow_first_record(),
+                        ctx.upload,
+                        env.shadow.bias,
+                        &mut shadow_stats,
+                    );
+                }
+            }
+            FramePass::Scene => {
+                let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
+                let clear = if res.bloom_levels > 0 { hdr_clear(clear, env.tonemap) } else { clear };
+                stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
+            }
+            FramePass::Overlay => {} // inline: recorded by the pass before it
+            _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.upload.frame_address(), &mut inline),
+        }
     }
+    timing.end(dev, cmd);
+    g.finish(dev, cmd);
+    stats.overlay_quads = overlay.count;
     stats.shadow_cascades = shadow_stats.shadow_cascades;
     stats.shadow_draw_calls = shadow_stats.shadow_draw_calls;
     stats.shadow_instances = shadow_stats.shadow_instances;
@@ -1361,80 +1535,24 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, target: &RenderTar
     stats
 }
 
-/// Where a frame is drawn: colour + depth views of `extent`.
-#[derive(Clone, Copy)]
-pub struct RenderTarget {
-    pub color_view: VkImageView,
-    pub depth_view: VkImageView,
-    pub depth_image: VkImage,
-    pub extent: VkExtent2D,
-}
-
-/// Record the scene pass: depth layout transition, clear, one instanced draw per batch of `plan`.
-/// The colour image must already be in `COLOR_ATTACHMENT_OPTIMAL` (the caller owns its
-/// transitions); it stays there. `upload` holds the frame's data and records (`prepare_frame`).
-/// With a `timer` (already reset for this frame) the pass is timestamped.
-#[allow(clippy::too_many_arguments)]
+/// Record the scene pass `p` of `g` (the graph recorded its barriers): clear, one instanced draw
+/// per batch of the frame's plan, the sky between the opaque and blended draws, then `inline`
+/// (the overlay) inside the same rendering instance.
 pub fn record_scene(
-    dev: &Device,
+    ctx: &FrameContext,
     cmd: VkCommandBuffer,
-    pipelines: &FramePipelines,
-    descriptors: &Descriptors,
-    meshes: &HashMap<u32, Mesh>,
-    target: &RenderTarget,
+    g: &FrameGraph,
+    p: usize,
+    res: &FrameRes,
     clear: [f32; 4],
-    frame: &FrameDesc,
-    plan: &Plan,
-    upload: &FrameUpload,
-    overlay: Option<&OverlayDraw>,
-    timer: Option<&mut PassTimer>,
+    inline: &mut dyn FnMut(VkCommandBuffer),
 ) -> DrawStats {
-    let mut timer = timer;
-    let mut pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_SCENE));
-    // Depth contents are never kept between frames: discard them, but order the transition after
-    // the previous frame's depth reads/writes (same image, possibly still in flight).
-    let depth_stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    dev.barrier(
-        cmd,
-        &[],
-        &[image_barrier(
-            target.depth_image,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            depth_stages,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            depth_stages,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        )],
-    );
-
-    let color_attachment = VkRenderingAttachmentInfo {
-        s_type: ST_RENDERING_ATTACHMENT_INFO,
-        p_next: ptr::null(),
-        image_view: target.color_view,
-        image_layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        resolve_mode: VK_RESOLVE_MODE_NONE,
-        resolve_image_view: VK_NULL_HANDLE,
-        resolve_image_layout: VK_IMAGE_LAYOUT_UNDEFINED,
-        load_op: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        store_op: VK_ATTACHMENT_STORE_OP_STORE,
-        clear_value: VkClearValue { float32: clear },
-    };
-    let depth_attachment = VkRenderingAttachmentInfo {
-        s_type: ST_RENDERING_ATTACHMENT_INFO,
-        p_next: ptr::null(),
-        image_view: target.depth_view,
-        image_layout: VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        resolve_mode: VK_RESOLVE_MODE_NONE,
-        resolve_image_view: VK_NULL_HANDLE,
-        resolve_image_layout: VK_IMAGE_LAYOUT_UNDEFINED,
-        load_op: VK_ATTACHMENT_LOAD_OP_CLEAR,
-        store_op: VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        // VkClearDepthStencilValue { depth, stencil: 0 }: the farthest depth of the mode.
-        clear_value: VkClearValue { float32: [if frame.reverse_z { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0] },
-    };
-    let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent: target.extent };
+    let (dev, pipelines, frame, upload) = (ctx.dev, &ctx.pipelines, ctx.frame, ctx.upload);
+    let plan = &ctx.scratch.plan;
+    let color_attachment = g.color_attachment(p, res.scene, clear);
+    // The farthest depth of the mode.
+    let depth_attachment = g.depth_attachment(p, res.depth, if frame.reverse_z { 0.0 } else { 1.0 }, None);
+    let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent: res.extent };
     let rendering = VkRenderingInfo {
         s_type: ST_RENDERING_INFO,
         p_next: ptr::null(),
@@ -1450,8 +1568,8 @@ pub fn record_scene(
     let viewport = VkViewport {
         x: 0.0,
         y: 0.0,
-        width: target.extent.width as f32,
-        height: target.extent.height as f32,
+        width: res.extent.width as f32,
+        height: res.extent.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
     };
@@ -1470,7 +1588,7 @@ pub fn record_scene(
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
         (dev.fns.cmd_set_depth_compare_op)(cmd, if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS });
-        descriptors.bind(dev, cmd, pipelines.layout);
+        ctx.descriptors.bind(dev, cmd, pipelines.layout);
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
         let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
@@ -1506,7 +1624,7 @@ pub fn record_scene(
                 bound = pipelines.sky;
                 stats.pipeline_binds += 1;
             }
-            let Some(mesh) = meshes.get(&batch.mesh.0) else { continue };
+            let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
             let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -1542,18 +1660,10 @@ pub fn record_scene(
             draw_sky(cmd);
             stats.pipeline_binds += 1;
         }
-        if let Some(o) = overlay.filter(|o| o.count > 0) {
-            // The overlay is timed on its own.
-            if let Some(t) = timer.as_mut() {
-                t.end_pass(dev, cmd, pass.take());
-            }
-            record_overlay(dev, cmd, o, timer.as_deref_mut());
-        }
-        (dev.fns.cmd_end_rendering)(cmd);
     }
-    if let Some(t) = timer {
-        t.end_pass(dev, cmd, pass);
-    }
+    inline(cmd);
+    // SAFETY: ends the rendering instance begun above.
+    unsafe { (dev.fns.cmd_end_rendering)(cmd) };
     stats
 }
 
