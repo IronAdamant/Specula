@@ -322,7 +322,8 @@ claims and versions more agents just means more collisions.
 **Why here:** after M1 the bottleneck becomes "does it look right, is it really visible, and can agents make real
 shapes?"
 
-- [ ] **Render graph** that owns barriers and transitions.
+- [x] **Render graph** that owns barriers and transitions.
+  *Done 2026-10-14:* `specula-gpu::graph`; every pass declares its reads/writes; sync-validation clean.
 - [x] **Materials** (PBR-lite plus a stylised/vertex-colour path), **directional and point lights**, **shadow maps**.
   *Started 2026-10-13 for the lava-lamp benchmark:*
   - per-frame data through a buffer device address
