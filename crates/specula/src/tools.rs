@@ -6,6 +6,7 @@
 
 use crate::claims::{self, ClaimSpec, Scope};
 use crate::journal::{self, ChangesQuery, Cursor, HistoryQuery, Kind, UndoRequest};
+use crate::perf::{CaptureSpec, ZonesQuery, MAX_CAPTURE_FRAMES};
 use crate::sight::Camera;
 use crate::world::{
     self, parse_material, Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
@@ -29,7 +30,8 @@ newer change. LOOK with sight_frame: it returns the rendered image plus a subjec
 on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
-frame pacing and budget errors; time_control pauses, steps or speeds up the simulation clock. A game running in \
+frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
+perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
@@ -140,8 +142,13 @@ pub enum Command {
     /// `None` returns the window to auto-framing.
     View(Option<Camera>),
     Info,
-    /// perf_frame; `None` = the default budget.
+    /// perf_frame; `None` = the frame budget from perf.toml.
     Perf { budget_ms: Option<f64> },
+    PerfZones(ZonesQuery),
+    /// perf_memory: top zones by allocation.
+    PerfMemory { limit: usize },
+    /// perf_capture: answered once the frames are recorded.
+    PerfCapture(CaptureSpec),
     Time(TimeOp),
     /// A tool the hosted game added.
     Game { name: String, args: Json },
@@ -303,6 +310,12 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             };
             Ok(Command::Perf { budget_ms })
         }
+        "perf_zones" => parse_perf_zones(args).map(Command::PerfZones),
+        "perf_memory" => {
+            check_keys(args, name, &[&["limit"]])?;
+            Ok(Command::PerfMemory { limit: int_arg(args, "limit", 1, 50)?.unwrap_or(10) as usize })
+        }
+        "perf_capture" => parse_perf_capture(args).map(Command::PerfCapture),
         "time_control" => {
             check_keys(args, name, &[&["action", "ticks", "scale"]])?;
             parse_time(args).map(Command::Time)
@@ -353,6 +366,43 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
 
 /// Recent per-tick hashes world_hash may return.
 pub const MAX_HASH_RECENT: u64 = 256;
+
+fn parse_perf_zones(args: &Json) -> Result<ZonesQuery, String> {
+    check_keys(args, "perf_zones", &[&["thread", "min_ms", "limit", "cursor", "enabled"]])?;
+    let min_ms = match args.get("min_ms") {
+        None | Some(Json::Null) => 0.0,
+        Some(v) => match v.as_f64() {
+            Some(x) if (0.0..=10_000.0).contains(&x) => x,
+            _ => return Err("'min_ms' must be a number of milliseconds, 0..10000".into()),
+        },
+    };
+    let offset = match string_arg(args, "cursor")? {
+        None => 0,
+        Some(c) => c.parse().map_err(|_| "'cursor' must be the next_cursor of an earlier perf_zones answer".to_string())?,
+    };
+    Ok(ZonesQuery {
+        thread: string_arg(args, "thread")?.map(str::to_owned),
+        min_ms,
+        limit: int_arg(args, "limit", 1, 500)?.unwrap_or(60) as usize,
+        offset,
+        enabled: bool_arg(args, "enabled")?,
+    })
+}
+
+fn parse_perf_capture(args: &Json) -> Result<CaptureSpec, String> {
+    check_keys(args, "perf_capture", &[&["frames", "trace", "label"]])?;
+    let label = string_arg(args, "label")?.map(str::to_owned);
+    if let Some(l) = &label {
+        if l.is_empty() || l.len() > 32 || !l.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+            return Err("'label' must be 1..32 characters of A-Z a-z 0-9 _ -".into());
+        }
+    }
+    Ok(CaptureSpec {
+        frames: int_arg(args, "frames", 1, MAX_CAPTURE_FRAMES)?.unwrap_or(60),
+        trace: bool_arg(args, "trace")?.unwrap_or(true),
+        label,
+    })
+}
 
 /// An optional integer within `lo..=hi`.
 fn int_arg(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
@@ -1526,10 +1576,56 @@ fn definitions() -> Vec<ToolDef> {
             name: "perf_frame".into(),
             description: "Performance of the last frames (foundation F3): GPU ms per pass, CPU record/submit, draw \
                           calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
-                          heap budgets, frame pacing (mean/p95/max), simulation tick cost, and `errors` listing \
-                          budget misses. The window and the last capture are reported separately."
+                          heap budgets, frame pacing (mean/p95/max), simulation tick cost, CPU frame time and heap, \
+                          and `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}. \
+                          Budgets come from perf.toml (per adapter kind). The window and the last capture are \
+                          reported separately."
                 .into(),
-            input_schema: schema(vec![("budget_ms", number("Frame budget to check against (default 16.67 = 60 fps)"))], &[]),
+            input_schema: schema(
+                vec![("budget_ms", number("Check frame, GPU, CPU and pacing against this frame time instead of perf.toml's"))],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "perf_zones".into(),
+            description: "CPU profiler zones (named, nested spans around the engine loop's phases and worker threads): \
+                          per zone path its latest-frame calls, ms, self ms and allocations, plus rolling mean/p95 over \
+                          the history. Paged; sorted engine thread first, then by path."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("thread", string("Only this thread (\"main\" = the engine thread)")),
+                    ("min_ms", number("Hide zones whose rolling p95 is below this many ms")),
+                    ("limit", integer("Zones per page, 1..500 (default 60)")),
+                    ("cursor", string("next_cursor from the previous page")),
+                    ("enabled", boolean("Turn zone recording on or off first")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "perf_memory".into(),
+            description: "Heap use from the counting allocator: current and peak MB, allocations per frame \
+                          (mean/p95/max), the zones that allocate most per frame, and GPU memory."
+                .into(),
+            input_schema: schema(vec![("limit", integer("Top zones to list, 1..50 (default 10)"))], &[]),
+        },
+        ToolDef {
+            name: "perf_capture".into(),
+            description: "Frame capture: records the next `frames` frames (CPU zones of every thread, GPU passes, \
+                          draws, memory), writes them to a JSON file in the captures folder plus a Chrome trace-event \
+                          file (open in chrome://tracing or ui.perfetto.dev), and answers with a summary: frame and \
+                          GPU ms, top zones by self time, allocations per frame and budget errors. Answers when done \
+                          (or at about 23 s with what it has)."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("frames", integer(&format!("Frames to record, 1..{MAX_CAPTURE_FRAMES} (default 60)"))),
+                    ("trace", boolean("Also write the trace-event timeline (default true)")),
+                    ("label", string("Added to the file names: 1..32 of A-Z a-z 0-9 _ -")),
+                ],
+                &[],
+            ),
         },
         ToolDef {
             name: "time_control".into(),
@@ -1990,6 +2086,44 @@ mod tests {
         assert!(matches!(t(r#"{"action":"scale","scale":4}"#), Ok(Command::Time(TimeOp::Scale(x))) if x == 4.0));
         assert!(matches!(parse("perf_frame", &args("{}")), Ok(Command::Perf { budget_ms: None })));
         assert!(matches!(parse("perf_frame", &args(r#"{"budget_ms":33.3}"#)), Ok(Command::Perf { budget_ms: Some(_) })));
+    }
+
+    #[test]
+    fn profiling_tool_arguments() {
+        let Ok(Command::PerfZones(q)) = parse("perf_zones", &args("{}")) else { panic!() };
+        assert_eq!(q, ZonesQuery { thread: None, min_ms: 0.0, limit: 60, offset: 0, enabled: None });
+        let Ok(Command::PerfZones(q)) =
+            parse("perf_zones", &args(r#"{"thread":"main","min_ms":0.5,"limit":5,"cursor":"10","enabled":false}"#))
+        else {
+            panic!()
+        };
+        assert_eq!(q, ZonesQuery { thread: Some("main".into()), min_ms: 0.5, limit: 5, offset: 10, enabled: Some(false) });
+        assert!(matches!(parse("perf_memory", &args("{}")), Ok(Command::PerfMemory { limit: 10 })));
+        assert!(matches!(parse("perf_memory", &args(r#"{"limit":3}"#)), Ok(Command::PerfMemory { limit: 3 })));
+        let Ok(Command::PerfCapture(c)) = parse("perf_capture", &args("{}")) else { panic!() };
+        assert_eq!(c, CaptureSpec { frames: 60, trace: true, label: None });
+        let Ok(Command::PerfCapture(c)) = parse("perf_capture", &args(r#"{"frames":600,"trace":false,"label":"wave-6"}"#)) else {
+            panic!()
+        };
+        assert_eq!(c, CaptureSpec { frames: 600, trace: false, label: Some("wave-6".into()) });
+        for (tool, bad) in [
+            ("perf_zones", r#"{"limit":0}"#),
+            ("perf_zones", r#"{"limit":501}"#),
+            ("perf_zones", r#"{"min_ms":-1}"#),
+            ("perf_zones", r#"{"cursor":"abc"}"#),
+            ("perf_zones", r#"{"enabled":"yes"}"#),
+            ("perf_zones", r#"{"threads":"main"}"#),
+            ("perf_memory", r#"{"limit":51}"#),
+            ("perf_capture", r#"{"frames":0}"#),
+            ("perf_capture", r#"{"frames":601}"#),
+            ("perf_capture", r#"{"label":"../x"}"#),
+            ("perf_capture", r#"{"label":""}"#),
+            ("perf_capture", r#"{"frame":10}"#),
+        ] {
+            assert!(parse(tool, &args(bad)).is_err(), "{tool} {bad}");
+        }
+        let e = parse("perf_capture", &args(r#"{"frame":10}"#)).err().unwrap();
+        assert!(e.contains("did you mean 'frames'"), "{e}");
     }
 
     #[test]

@@ -1,0 +1,63 @@
+# Specula performance budgets (foundation F3: the Intel iGPU is the reference device).
+#
+# Copy to `perf.toml` in the engine's working directory, or pass `--perf FILE`. Without either the
+# engine checks only the built-in frame budget (16.67 ms) and pipelines built after warm-up.
+# Every budget miss is reported by `perf_frame` (and in `perf_capture`'s summary) as a structured
+# error: {error, metric, value, budget, unit, adapter}.
+#
+# Budgets are checked against: the latest frame's renderer statistics (GPU ms per pass, draw
+# calls, triangles, GPU memory), the rolling p95 over the profiler's history (frame pacing, CPU
+# frame, sim tick, game frame, allocations per frame, zones), and the current heap.
+#
+# These numbers are Sepulcra's (the tower defence) on the reference iGPU at 1280x720.
+
+[profiler]
+enabled = true          # CPU zones; measured overhead is far below 1% of a frame
+history_frames = 120    # rolling window for p95s (about two seconds at 60 Hz)
+
+# Defaults for every GPU. `[adapter.<kind>]` below overrides them per adapter kind
+# (integrated, discrete, virtual, cpu, other), key by key.
+[budgets]
+frame_ms = 16.7                  # 60 fps
+gpu_ms = 14.0                    # GPU time per frame, first pass start to last pass end
+cpu_frame_ms = 8.0               # engine-thread work per frame, `present` (vsync wait) excluded; p95
+frame_pacing_p95_ms = 20.9       # window frame to frame, p95 (above this, frames are being missed)
+draw_calls = 400                 # instanced draw calls (shadow passes not included)
+triangles = 1_500_000
+gpu_memory_mb = 512              # what Specula's GPU allocator holds
+heap_mb = 256                    # CPU heap in use (needs the counting allocator; the engine has it)
+allocations_per_frame = 2_000    # heap allocations per frame, whole process, p95
+sim_tick_ms = 4.0                # one fixed simulation tick, p95
+game_frame_ms = 2.0              # the game's per-frame update (input, camera, HUD), p95
+pipelines_after_warm = 0         # each pipeline built during play is a visible hitch
+
+[budgets.gpu_passes]             # GPU ms per pass
+scene = 8.0
+shadow = 2.5
+post_bloom = 1.5
+post_tonemap = 0.5
+post_fxaa = 0.8
+
+[budgets.zones]                  # CPU ms per frame (p95) per zone path; "thread:path" for other threads
+"frame/requests" = 6.0           # agents' tool calls (sight_frame renders count here)
+"frame/sim" = 4.0                # fixed ticks run this frame
+"frame/game_frame" = 2.0
+"frame/sync_lathes" = 1.0
+"frame/draw_list" = 1.5
+"frame/autosave" = 2.0           # the engine thread's part of an autosave (the plan)
+"specula-autosave:autosave.write" = 200.0   # the worker writing world files
+
+# The reference device: Intel iGPU.
+[adapter.integrated]
+gpu_ms = 14.0
+
+# A discrete GPU has no excuse: tighter GPU budgets, same CPU budgets.
+[adapter.discrete]
+gpu_ms = 6.0
+
+[adapter.discrete.gpu_passes]
+scene = 3.5
+shadow = 1.0
+post_bloom = 0.6
+post_tonemap = 0.2
+post_fxaa = 0.3
