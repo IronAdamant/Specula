@@ -112,5 +112,6 @@ vec4 snap_to_pixels(vec4 clip, vec3 anchor) {
     return clip;
 }
 
-// The six corners of a quad (two triangles).
-const vec2 QUAD[6] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
+// The four corners of a quad, drawn indexed (0 1 2, 0 2 3) so the post-transform cache shades
+// each corner once.
+const vec2 QUAD[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));

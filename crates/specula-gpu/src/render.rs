@@ -356,6 +356,8 @@ impl std::hash::Hasher for FastHasher {
 #[derive(Default)]
 pub struct LinearCache {
     map: HashMap<[u32; 3], [f32; 3], std::hash::BuildHasherDefault<FastHasher>>,
+    /// The last conversion (runs of one colour skip the hash lookup).
+    last: Option<([u32; 3], [f32; 3])>,
 }
 
 impl LinearCache {
@@ -363,7 +365,13 @@ impl LinearCache {
 
     pub fn get(&mut self, rgb: [f32; 3]) -> [f32; 3] {
         let key = rgb.map(f32::to_bits);
+        if let Some((k, v)) = self.last {
+            if k == key {
+                return v;
+            }
+        }
         if let Some(&v) = self.map.get(&key) {
+            self.last = Some((key, v));
             return v;
         }
         if self.map.len() >= Self::MAX_ENTRIES {
@@ -371,6 +379,7 @@ impl LinearCache {
         }
         let v = rgb.map(srgb_to_linear);
         self.map.insert(key, v);
+        self.last = Some((key, v));
         v
     }
 }
@@ -1639,9 +1648,15 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
             FramePass::Shadow => {
                 if let Some(map) = res.shadow {
                     let mut push = draw_2d.push;
-                    let casters = (two_d.casters > 0 && ctx.pipelines.sprite_shadow != VK_NULL_HANDLE).then(|| {
+                    let quad = ctx.meshes.get(&crate::sprite::QUAD_MESH);
+                    let casters = quad.filter(|_| two_d.casters > 0 && ctx.pipelines.sprite_shadow != VK_NULL_HANDLE).map(|q| {
                         push.items += two_d.drawn as u64 * RECORD_SIZE;
-                        crate::shadow::SpriteCasters { pipeline: ctx.pipelines.sprite_shadow, push, count: two_d.casters }
+                        crate::shadow::SpriteCasters {
+                            pipeline: ctx.pipelines.sprite_shadow,
+                            quad: (q.buffer.handle, q.index_offset),
+                            push,
+                            count: two_d.casters,
+                        }
                     });
                     crate::shadow::record_shadow_pass(
                         dev,

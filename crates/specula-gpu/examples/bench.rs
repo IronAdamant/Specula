@@ -16,6 +16,11 @@
 //!   at 1600×900.
 //! - `game_low`: the same scene with the cheaper settings (a 1024² shadow map, 3 bloom levels,
 //!   no FXAA): the fallback when `game` is over budget.
+//! - `sprites_50k`: 50,000 small rotated sprites (four textures, half cutout pixel art, half
+//!   blended) in an orthographic 2D view.
+//! - `tilemap_256`: a 256 × 256 tile map, three layers (full ground with rotated and animated
+//!   tiles, sparse cutout details, a sparse blended overlay), 192 chunk draws, the whole map in
+//!   view; `tilemap_256_game`: the same map at a game-like zoom (28 m tall), culled by chunk.
 //!
 //! Each line has `passes`: median and p95 GPU ms per pass (shadow, scene, post_bloom, …), and the
 //! render graph's passes, barriers per frame and compilations (`graph_*`; one compile per scene).
@@ -25,7 +30,7 @@
 
 use specula_gpu::{
     AdapterPreference, Draw2d, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, OverlayKind, OverlayQuad, PointLight,
-    Severity, Surface, TextureFormat, TextureId, Validation, Vertex,
+    Severity, Sprite, SpriteBlend, Surface, TextureFilter, TextureFormat, TextureId, TileCell, TileChunk, TileGrid, Validation, Vertex,
 };
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
@@ -177,6 +182,8 @@ struct Scene {
     eye: [f32; 3],
     target: [f32; 3],
     fov_y_deg: f32,
+    /// Orthographic view of this height (m) instead of the perspective.
+    ortho: Option<f32>,
 }
 
 fn with(mut d: DrawItem, material: Material, surface: Surface) -> DrawItem {
@@ -204,6 +211,7 @@ fn cubes_10k(m: &Meshes) -> Scene {
         eye: [0.0, 22.0, 62.0],
         target: [0.0, 0.0, -5.0],
         fov_y_deg: 55.0,
+        ortho: None,
     }
 }
 
@@ -264,6 +272,7 @@ fn mixed_1000(m: &Meshes) -> Scene {
         eye: [0.0, 14.0, 30.0],
         target: [0.0, 0.0, 0.0],
         fov_y_deg: 55.0,
+        ortho: None,
     }
 }
 
@@ -350,7 +359,131 @@ fn game(m: &Meshes, atlas: TextureId, low: bool) -> Scene {
         eye: [0.0, 32.0, 42.0],
         target: [0.0, 0.0, 2.0],
         fov_y_deg: 50.0,
+        ortho: None,
     }
+}
+
+/// Reversed-Z orthographic projection of `h` metres (the engine's `view_2d`), Vulkan clip.
+fn ortho_reverse_z(h: f32, aspect: f32) -> M4 {
+    let (w, near, far) = (h * aspect, 0.05f32, 10_000.0f32);
+    let d = far - near;
+    [2.0 / w, 0.0, 0.0, 0.0, 0.0, -2.0 / h, 0.0, 0.0, 0.0, 0.0, 1.0 / d, 0.0, 0.0, 0.0, far / d, 1.0]
+}
+
+/// 2D textures: four 16 x 16 sprites with transparent corners, and a 128 x 32 tileset of 16 tiles.
+struct Art {
+    sprites: [TextureId; 4],
+    tileset: TextureId,
+}
+
+fn art(gpu: &mut Gpu) -> Result<Art, specula_gpu::GpuError> {
+    let mut sprites = [TextureId(0); 4];
+    for (k, s) in sprites.iter_mut().enumerate() {
+        let mut px = Vec::with_capacity(16 * 16 * 4);
+        for y in 0..16i32 {
+            for x in 0..16i32 {
+                let inside = (x - 8) * (x - 8) + (y - 8) * (y - 8) < 56;
+                px.extend_from_slice(&[(60 * k) as u8 + 40, (x * 12) as u8, (y * 12) as u8, if inside { 255 } else { 0 }]);
+            }
+        }
+        *s = gpu.upload_texture(16, 16, TextureFormat::Rgba8Srgb, &px)?;
+    }
+    let mut px = Vec::with_capacity(128 * 32 * 4);
+    for y in 0..32u32 {
+        for x in 0..128u32 {
+            let t = (y / 16) * 8 + x / 16;
+            let edge = x % 16 == 0 || y % 16 == 0;
+            px.extend_from_slice(&[(t * 15) as u8, 200 - (t * 9) as u8, if edge { 40 } else { 120 }, if t >= 12 && (x + y) % 3 == 0 { 0 } else { 255 }]);
+        }
+    }
+    Ok(Art { sprites, tileset: gpu.upload_texture(128, 32, TextureFormat::Rgba8Srgb, &px)? })
+}
+
+/// 50,000 sprites over a 2D view (orthographic): four textures, half cutout pixel art and half
+/// blended, on alternating layers, 0.25 m each over a 60 x 34 m field.
+fn sprites_50k(art: &Art) -> Scene {
+    let mut rng = Rng(6);
+    let draws_2d = (0..50_000)
+        .map(|i| {
+            let cutout = i % 2 == 0;
+            Draw2d::Sprite(Sprite {
+                position: [rng.range(-30.0, 30.0), rng.range(-17.0, 17.0), 0.0],
+                size: [0.25, 0.25],
+                rotation: rng.range(0.0, TAU),
+                texture: Some(art.sprites[0]),
+                layer: (i % 2) as i32,
+                blend: if cutout { SpriteBlend::Cutout { threshold: 0.5 } } else { SpriteBlend::Blended },
+                filter: if cutout { TextureFilter::Nearest } else { TextureFilter::Linear },
+                ..Default::default()
+            })
+        })
+        .collect();
+    Scene {
+        name: "sprites_50k",
+        draws: Vec::new(),
+        overlay: Vec::new(),
+        draws_2d,
+        lights: Vec::new(),
+        environment: Environment::default(),
+        clear: [0.1, 0.1, 0.12, 1.0],
+        eye: [0.0, 0.0, 100.0],
+        target: [0.0, 0.0, 0.0],
+        fov_y_deg: 50.0,
+        ortho: Some(36.0),
+    }
+}
+
+/// A 256 x 256 tile map with three layers (a full ground, a sparse cutout detail layer, a
+/// blended overlay), drawn one chunk per 32 x 32 cells: `zoom` = the whole map in view, or a
+/// game-like close view (28 m tall) where chunk culling keeps it cheap.
+fn tilemap_256(gpu: &mut Gpu, art: &Art, whole: bool) -> Result<Scene, specula_gpu::GpuError> {
+    let mut rng = Rng(7);
+    let mut draws_2d = Vec::new();
+    for layer in 0..3u32 {
+        let mut grid = TileGrid::new(256, 256);
+        for y in 0..256 {
+            for x in 0..256 {
+                let fill = match layer {
+                    0 => true,
+                    1 => rng.next() < 0.2,
+                    _ => rng.next() < 0.05,
+                };
+                if fill {
+                    let tile = match layer {
+                        0 => 1 + (rng.next() * 8.0) as u16,
+                        1 => 13 + (rng.next() * 3.0) as u16,
+                        _ => 9 + (rng.next() * 3.0) as u16,
+                    };
+                    let cell = if layer == 0 && tile == 3 { TileCell::animated(3, 2, 20) } else { TileCell::new(tile).rotated_cw((x + y) % 4) };
+                    grid.set(x, y, cell);
+                }
+            }
+        }
+        let cells = gpu.upload_texture(256, 256, TextureFormat::Rgba8Unorm, &grid.encode())?;
+        for i in 0..grid.chunk_count() {
+            let mut chunk = TileChunk::new(art.tileset, [16, 16], cells, grid.chunk_region(i));
+            chunk.origin = [-128.0, 128.0, 0.0];
+            chunk.layer = layer as i32;
+            if layer == 2 {
+                chunk.blend = SpriteBlend::Blended;
+                chunk.color = [1.0, 1.0, 1.0, 0.6];
+            }
+            draws_2d.push(Draw2d::Tiles(chunk));
+        }
+    }
+    Ok(Scene {
+        name: if whole { "tilemap_256" } else { "tilemap_256_game" },
+        draws: Vec::new(),
+        overlay: Vec::new(),
+        draws_2d,
+        lights: Vec::new(),
+        environment: Environment::default(),
+        clear: [0.0, 0.0, 0.0, 1.0],
+        eye: [10.0, -20.0, 100.0],
+        target: [10.0, -20.0, 0.0],
+        fov_y_deg: 50.0,
+        ortho: Some(if whole { 260.0 } else { 28.0 }),
+    })
 }
 
 /// A 256 × 256 R8 "glyph atlas": 16 × 16 cells of blocky shapes.
@@ -405,6 +538,7 @@ fn lights_16(m: &Meshes) -> Scene {
         eye: [0.0, 6.0, 16.0],
         target: [0.0, 0.5, -2.0],
         fov_y_deg: 60.0,
+        ortho: None,
     }
 }
 
@@ -563,7 +697,12 @@ fn num(x: f64) -> String {
 fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specula_gpu::GpuError> {
     let (w, h) = args.size;
     let target = gpu.create_target(w, h)?;
-    let view_proj = mul(&perspective_reverse_z(scene.fov_y_deg, w as f32 / h as f32), &look_at_rh(scene.eye, scene.target));
+    let aspect = w as f32 / h as f32;
+    let proj = match scene.ortho {
+        Some(height) => ortho_reverse_z(height, aspect),
+        None => perspective_reverse_z(scene.fov_y_deg, aspect),
+    };
+    let view_proj = mul(&proj, &look_at_rh(scene.eye, scene.target));
     let (mut gpu_ms, mut record_ms, mut wall_ms) = (Vec::new(), Vec::new(), Vec::new());
     // Per pass name, in first-seen order.
     let mut passes: Vec<(&'static str, Vec<f64>)> = Vec::new();
@@ -642,6 +781,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             "\"gpu_ms_median\":{},\"gpu_ms_p95\":{},\"cpu_record_ms_median\":{},\"wall_ms_median\":{},\"wall_ms_p95\":{},",
             "\"draw_buffer_bytes\":{},\"gpu_memory_bytes\":{},\"pipelines_created\":{},\"pipelines_created_after_warm\":{},",
             "\"pipeline_create_ms\":{},\"shadow_draw_calls\":{},\"shadow_instances\":{},\"overlay_quads\":{},",
+            "\"items_2d\":{},\"sprites\":{},\"tile_chunks\":{},\"culled_2d\":{},\"draw_calls_2d\":{},",
             "\"graph_passes\":{},\"graph_barriers\":{},\"graph_compiles\":{},\"passes\":{{{}}}}}"
         ),
         json_str(scene.name),
@@ -673,6 +813,11 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
         d.shadow_draw_calls,
         d.shadow_instances,
         d.overlay_quads,
+        scene.draws_2d.len(),
+        d.sprites,
+        d.tile_chunks,
+        d.culled_2d,
+        d.draw_calls_2d,
         s.graph.passes,
         s.graph.barriers,
         s.graph.compiles,
@@ -705,7 +850,17 @@ fn main() {
         let meshes = Meshes { cube: upload(&mut gpu, cube())?, sphere: upload(&mut gpu, sphere(32, 16))?, quad: upload(&mut gpu, quad())? };
         gpu.mark_warm();
         let atlas = gpu.upload_texture(256, 256, TextureFormat::R8, &atlas())?;
-        let scenes = [cubes_10k(&meshes), mixed_1000(&meshes), lights_16(&meshes), game(&meshes, atlas, false), game(&meshes, atlas, true)];
+        let art = art(&mut gpu)?;
+        let scenes = [
+            cubes_10k(&meshes),
+            mixed_1000(&meshes),
+            lights_16(&meshes),
+            game(&meshes, atlas, false),
+            game(&meshes, atlas, true),
+            sprites_50k(&art),
+            tilemap_256(&mut gpu, &art, true)?,
+            tilemap_256(&mut gpu, &art, false)?,
+        ];
         for scene in scenes.iter().filter(|s| args.scenes.as_ref().is_none_or(|only| only.iter().any(|n| n == s.name))) {
             println!("{}", run_scene(&mut gpu, &args, scene)?);
         }

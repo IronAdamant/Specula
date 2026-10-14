@@ -223,6 +223,10 @@ impl Draw2d {
     }
 }
 
+/// The mesh id of the shared quad whose index buffer (0 1 2, 0 2 3) every sprite and tile chunk
+/// draw uses (its vertices are made in the vertex shader). Never handed out by `upload_mesh`.
+pub const QUAD_MESH: u32 = u32::MAX;
+
 pub const KIND_SPRITE: u32 = 0;
 pub const KIND_TILES: u32 = 1;
 pub const KIND_SHAPE: u32 = 2;
@@ -368,8 +372,8 @@ pub struct Plan2d {
     pub tile_chunks: u32,
     pub shapes: u32,
     pub view: View2d,
-    /// Sort scratch: (layer key, depth key, item index).
-    keys: Vec<(u32, u32, u32)>,
+    /// Sort scratch: layer key, depth key and item index packed high to low.
+    keys: Vec<u128>,
 }
 
 /// Ascending order of `f` as unsigned bits (NaN as 0).
@@ -497,11 +501,33 @@ pub fn shape_record(s: &ShapeDraw, cache: &mut LinearCache) -> ItemRecord {
 }
 
 /// Fail early: a 2D item names a texture or mesh that does not exist.
+/// Texture slots with the last lookup remembered: runs of one texture (the usual case) skip the
+/// hash map.
+struct Slots<'a> {
+    textures: &'a Textures,
+    last: Option<(TextureId, Option<u32>)>,
+}
+
+impl Slots<'_> {
+    fn get(&mut self, t: TextureId) -> Option<u32> {
+        match self.last {
+            Some((id, slot)) if id == t => slot,
+            _ => {
+                let slot = self.textures.slot(t);
+                self.last = Some((t, slot));
+                slot
+            }
+        }
+    }
+}
+
 pub fn check_2d(draws: &[Draw2d], meshes: &HashMap<u32, Mesh>, textures: &Textures) -> Result<(), GpuError> {
-    let texture = |t: TextureId| if textures.slot(t).is_some() { Ok(()) } else { Err(GpuError::unknown(IdKind::Texture, t.0, " in draws_2d")) };
+    let mut slots = Slots { textures, last: None };
+    let mut texture =
+        |t: TextureId| if slots.get(t).is_some() { Ok(()) } else { Err(GpuError::unknown(IdKind::Texture, t.0, " in draws_2d")) };
     for d in draws {
         match d {
-            Draw2d::Sprite(s) => s.texture.map_or(Ok(()), texture)?,
+            Draw2d::Sprite(s) => s.texture.map_or(Ok(()), &mut texture)?,
             Draw2d::Tiles(t) => {
                 texture(t.tileset)?;
                 texture(t.cells)?;
@@ -559,22 +585,24 @@ pub fn plan_2d(
         }
         let depth = dot(sub(center, view.position), view.forward);
         // Layer ascending, then far to near, then list order.
-        keys.push(((d.layer() as u32) ^ 0x8000_0000, !order_bits(depth), i as u32));
+        let layer = ((d.layer() as u32) ^ 0x8000_0000) as u128;
+        keys.push(layer << 64 | (!order_bits(depth) as u128) << 32 | i as u128);
     }
     keys.sort_unstable();
-    let slot = |t: TextureId| textures.slot(t).unwrap_or(0);
-    for &(_, _, i) in keys.iter() {
+    let mut slots = Slots { textures, last: None };
+    for &key in keys.iter() {
+        let i = key as u32;
         let d = &frame.draws_2d[i as usize];
         let (record, kind) = match d {
             Draw2d::Sprite(s) => {
                 out.sprites += 1;
                 let kind = if matches!(s.blend, SpriteBlend::Cutout { .. }) { BatchKind::Cutout } else { BatchKind::Blended };
-                (sprite_record(s, s.texture.and_then(|t| textures.slot(t)), cache), kind)
+                (sprite_record(s, s.texture.and_then(|t| slots.get(t)), cache), kind)
             }
             Draw2d::Tiles(t) => {
                 out.tile_chunks += 1;
                 let kind = if matches!(t.blend, SpriteBlend::Cutout { .. }) { BatchKind::Cutout } else { BatchKind::Blended };
-                (tiles_record(t, slot(t.tileset), slot(t.cells), cache), kind)
+                (tiles_record(t, slots.get(t.tileset).unwrap_or(0), slots.get(t.cells).unwrap_or(0), cache), kind)
             }
             Draw2d::Shape(s) => {
                 out.shapes += 1;
@@ -594,7 +622,7 @@ pub fn plan_2d(
         for d in frame.draws_2d {
             if let Draw2d::Sprite(s) = d {
                 if s.cast_shadows && matches!(s.blend, SpriteBlend::Cutout { .. }) {
-                    records.push(sprite_record(s, s.texture.and_then(|t| textures.slot(t)), cache));
+                    records.push(sprite_record(s, s.texture.and_then(|t| slots.get(t)), cache));
                 }
             }
         }
@@ -682,7 +710,12 @@ pub fn record_2d(dev: &Device, cmd: VkCommandBuffer, ctx: &Draw2dContext, plan: 
                     stats.triangles_2d += (m.index_count / 3) as u64 * b.count as u64;
                 }
                 _ => {
-                    (dev.fns.cmd_draw)(cmd, 6, b.count, 0, b.first);
+                    let Some(q) = ctx.meshes.get(&QUAD_MESH) else { continue };
+                    if bound_mesh != Some(MeshId(QUAD_MESH)) {
+                        (dev.fns.cmd_bind_index_buffer)(cmd, q.buffer.handle, q.index_offset, VK_INDEX_TYPE_UINT32);
+                        bound_mesh = Some(MeshId(QUAD_MESH));
+                    }
+                    (dev.fns.cmd_draw_indexed)(cmd, 6, b.count, 0, 0, b.first);
                     stats.triangles_2d += 2 * b.count as u64;
                 }
             }
@@ -849,6 +882,38 @@ mod tests {
         let draws = [Draw2d::Shape(ShapeDraw { mesh: MeshId(5), model: IDENTITY, color: [1.0; 4], layer: 0 })];
         let err = check_2d(&draws, &HashMap::new(), &Textures::default()).unwrap_err();
         assert_eq!(err.reason, Some(crate::ErrorReason::UnknownId { kind: IdKind::Mesh, id: 5 }));
+    }
+
+    /// Timing report: `cargo test --release -p specula-gpu --lib plan_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing report"]
+    fn plan_cost_of_50k_sprites() {
+        let mut x = 1u32;
+        let mut r = || {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / 16_777_216.0
+        };
+        let draws: Vec<Draw2d> = (0..50_000)
+            .map(|i| {
+                Draw2d::Sprite(Sprite {
+                    position: [r() * 60.0 - 30.0, r() * 34.0 - 17.0, 0.0],
+                    size: [0.25, 0.25],
+                    rotation: r() * 6.0,
+                    layer: i % 2,
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let frame = FrameDesc { view_proj: ortho_2d(1.6), reverse_z: true, draws_2d: &draws, ..Default::default() };
+        let (mut plan, mut cache) = (Plan2d::default(), LinearCache::default());
+        for _ in 0..3 {
+            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, &mut plan);
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, &mut plan);
+        }
+        eprintln!("plan_2d, 50k sprites: {:.3} ms", t.elapsed().as_secs_f64() * 1e3 / 20.0);
     }
 
     #[test]

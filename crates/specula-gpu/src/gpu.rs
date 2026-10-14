@@ -207,6 +207,11 @@ impl GpuInner {
         gpu.sync_fence = gpu.device.create_fence(false)?;
         gpu.upload = Some(FrameUpload::new(&gpu.device)?);
         gpu.timer = PassTimer::new(&gpu.device)?;
+        // The quad every sprite and tile chunk is drawn with (indices only; the shader makes the
+        // corners), under an id `upload_mesh` never hands out.
+        let quad = gpu.upload_mesh(&[Vertex::default(); 4], &[0, 1, 2, 0, 2, 3])?;
+        let mesh = gpu.meshes.remove(&quad.0).expect("just uploaded");
+        gpu.meshes.insert(crate::sprite::QUAD_MESH, mesh);
         // Every offscreen pipeline variant now, so no frame ever waits for one.
         gpu.pipelines.prebuild(&gpu.device, TARGET_FORMAT)?;
         gpu.pipelines.prebuild_common(&gpu.device)?;
@@ -234,7 +239,8 @@ impl GpuInner {
 
     fn next_id(&mut self) -> u32 {
         let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
+        // Ids run 1 ..= u32::MAX - 1 (u32::MAX is the shared sprite quad).
+        self.next_id = if self.next_id >= crate::sprite::QUAD_MESH - 1 { 1 } else { self.next_id + 1 };
         id
     }
 
@@ -325,6 +331,9 @@ impl GpuInner {
     }
 
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
+        if mesh.0 == crate::sprite::QUAD_MESH {
+            return; // the shared sprite quad lives as long as the GPU
+        }
         let Some(m) = self.meshes.remove(&mesh.0) else { return };
         // A presented frame may still read the mesh.
         if let Some(w) = &self.window {

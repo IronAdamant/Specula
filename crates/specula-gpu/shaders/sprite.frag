@@ -20,9 +20,9 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec3 v_world;
 layout(location = 2) flat in vec4 v_tint;
 layout(location = 3) flat in uvec4 v_info;
-layout(location = 4) flat in vec4 v_rect;
-layout(location = 5) flat in vec4 v_params;
-layout(location = 6) flat in vec4 v_tile;
+layout(location = 4) flat in vec4 v_rect;   // sprite: texel bounds | tiles: cells x0, y0, x1, y1
+layout(location = 5) flat in vec4 v_params; // cutoff | tiles: margin, spacing, columns
+layout(location = 6) flat in vec4 v_tile;   // tiles: tile size (px) | 1 / texture size
 layout(location = 7) flat in vec3 v_normal;
 
 layout(location = 0) out vec4 out_color;
@@ -110,26 +110,18 @@ vec3 card_light(vec3 p) {
     return diffuse;
 }
 
-// The sprite's texel at v_uv, kept inside its uv rect.
+// The sprite's texel at v_uv (texel units), kept inside the bounds the vertex stage set.
 vec4 sprite_texel() {
     if (v_info.x == 0u) {
         return vec4(1.0);
     }
-    uint slot = v_info.x - 1u;
-    vec2 size = vec2(textureSize(textures[nonuniformEXT(slot)], 0));
-    vec2 lo = min(v_rect.xy, v_rect.zw) * size;
-    vec2 hi = max(v_rect.xy, v_rect.zw) * size;
-    vec2 t = v_uv * size;
+    vec2 t = v_uv;
     if ((v_info.y & FLAG_NEAREST) != 0u) {
-        vec2 first = floor(lo + 1e-3);
-        vec2 last = max(ceil(hi - 1e-3) - 1.0, first);
-        t = clamp(floor(t), first, last) + 0.5;
+        t = clamp(floor(t), v_rect.xy, v_rect.zw) + 0.5;
     } else {
-        vec2 a = lo + 0.5;
-        vec2 b = max(hi - 0.5, a);
-        t = clamp(t, a, b);
+        t = clamp(t, v_rect.xy, v_rect.zw);
     }
-    return textureLod(textures[nonuniformEXT(slot)], t / size, 0.0);
+    return textureLod(textures[nonuniformEXT(v_info.x - 1u)], t * v_tile.zw, 0.0);
 }
 
 // The tile chunk's texel. Cells (RGBA8 in the cell texture): r + 256 g = tile (1-based, 0 =
@@ -158,21 +150,17 @@ vec4 tile_texel() {
     if ((b.b & 2u) != 0u) {
         f.y = 1.0 - f.y;
     }
-    uint slot = v_info.x - 1u;
-    vec2 size = vec2(textureSize(textures[nonuniformEXT(slot)], 0));
-    vec2 tpx = max(v_tile.xy, vec2(1.0));
-    float margin = v_params.y;
-    float spacing = v_params.z;
-    uint cols = max(uint((size.x - 2.0 * margin + spacing) / (tpx.x + spacing)), 1u);
+    vec2 tpx = v_tile.xy;
+    uint cols = uint(v_params.w);
     uint k = id - 1u;
-    vec2 origin = vec2(margin) + vec2(float(k % cols), float(k / cols)) * (tpx + spacing);
+    vec2 origin = vec2(v_params.y) + vec2(float(k % cols), float(k / cols)) * (tpx + v_params.z);
     vec2 t = origin + f * tpx;
     if ((v_info.y & FLAG_NEAREST) != 0u) {
         t = clamp(floor(t), origin, origin + tpx - 1.0) + 0.5;
     } else {
         t = clamp(t, origin + 0.5, origin + tpx - 0.5);
     }
-    return textureLod(textures[nonuniformEXT(slot)], t / size, 0.0);
+    return textureLod(textures[nonuniformEXT(v_info.x - 1u)], t * v_tile.zw, 0.0);
 }
 
 void main() {

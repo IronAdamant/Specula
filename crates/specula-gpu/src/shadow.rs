@@ -437,6 +437,8 @@ pub fn depth_bias(bias: f32) -> (f32, f32) {
 #[derive(Clone, Copy)]
 pub struct SpriteCasters {
     pub pipeline: VkPipeline,
+    /// The shared quad's index buffer and offset (see `sprite::QUAD_MESH`).
+    pub quad: (VkBuffer, VkDeviceSize),
     pub push: crate::sprite::SpritePush,
     pub count: u32,
 }
@@ -526,7 +528,8 @@ pub fn record_shadow_pass(
                     size_of::<crate::sprite::SpritePush>() as u32,
                     &push as *const crate::sprite::SpritePush as *const c_void,
                 );
-                (dev.fns.cmd_draw)(cmd, 6, s.count, 0, 0);
+                (dev.fns.cmd_bind_index_buffer)(cmd, s.quad.0, s.quad.1, VK_INDEX_TYPE_UINT32);
+                (dev.fns.cmd_draw_indexed)(cmd, 6, s.count, 0, 0, 0);
                 stats.shadow_draw_calls += 1;
                 stats.shadow_instances += s.count;
                 stats.shadow_triangles += 2 * s.count as u64;
