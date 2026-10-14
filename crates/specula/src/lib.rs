@@ -38,7 +38,7 @@ use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::{base64, png, profile, Json};
-use specula_gpu::{AdapterPreference, DrawItem, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -284,6 +284,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.gpu.attach_window(ui.raw.hinstance, ui.raw.hwnd, w, h).map_err(|e| format!("swapchain: {e}"))?;
         Some(ui)
     };
+    // Assets that will need skinned or textured pipelines get them now, not at their first spawn.
+    let (skinned, textured) = models::asset_streams(engine.library.lock().root());
+    engine.gpu.prepare_variants(skinned, textured).map_err(|e| format!("pipelines: {e}"))?;
     // Loading is done: from here on, building a pipeline is a visible hitch and a budget error.
     engine.gpu.mark_warm();
     engine.game = game.take();
@@ -364,8 +367,6 @@ struct Engine {
     world: World,
     /// The grading LUT the world names, loaded from the assets root.
     luts: luts::Luts,
-    /// Animation time zero.
-    started: Instant,
     /// The human's window camera; `None` = auto-frame the world.
     window_camera: Option<Camera>,
     /// Offscreen targets by size, most recently used last; at most [`MAX_CACHED_TARGETS`].
@@ -470,7 +471,6 @@ impl Engine {
             last_gc: (Instant::now(), 0),
             last_unwanted: (Instant::now(), 0),
             world,
-            started: Instant::now(),
             window_camera: None,
             targets: Vec::new(),
             frames_captured: 0,
@@ -505,6 +505,8 @@ impl Engine {
     /// engine's library, and the journal starts over from it. Returns a message per model entity
     /// whose recipe failed (it loads anyway and draws nothing until fixed).
     fn replace_world(&mut self, mut world: World, name: &str) -> Vec<String> {
+        // World time resumes where it was saved; the engine's clock joins it.
+        world.adopt_clock(self.clock.seconds());
         world.set_recording(Recording::Full);
         let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
         let problems =
@@ -569,6 +571,8 @@ impl Engine {
         self.last_advance = now;
         let _z = profile::zone("sim");
         for _ in 0..ticks {
+            // Animations set during the tick start at its time.
+            self.world.set_clock_s(self.clock.seconds());
             if let Some(game) = self.game.as_mut() {
                 let _t = profile::zone("tick");
                 let start = Instant::now();
@@ -583,6 +587,7 @@ impl Engine {
             let _h = profile::zone("tick_hash");
             self.record_tick_hash();
         }
+        self.world.set_clock_s(self.clock.seconds());
     }
 
     /// The game's per-frame update: input, camera, title.
@@ -706,8 +711,26 @@ impl Engine {
         self.leftovers = report.leftovers.clone();
     }
 
-    fn time_s(&self) -> f32 {
-        self.started.elapsed().as_secs_f32()
+    /// Render time when a capture gives none: world time (the engine clock in whole ticks, plus
+    /// a loaded world's offset), so animation and the lava lamp follow time_control, resume
+    /// after a load, and a capture's time is reproducible.
+    /// The simulation clock, plus `world_time_s`: the world's time (what animation starts and
+    /// sight_frame's default time_s are in; it carries on across world_save / world_load, while
+    /// the clock's seconds count from this engine's start).
+    fn clock_json(&self) -> Json {
+        let mut j = self.clock.to_json();
+        j.set("world_time_s", Json::from(self.world.world_time()));
+        j
+    }
+
+    fn time_s(&self) -> f64 {
+        self.world.world_time()
+    }
+
+    /// The window's render time: world time plus the elapsed part of the next tick (smooth
+    /// motion).
+    fn window_time_s(&self) -> f64 {
+        self.world.world_time() + f64::from(self.clock.alpha()) / f64::from(self.clock.hz())
     }
 
     /// Builds meshes for new or changed lathe profiles and models and frees unused ones — only
@@ -862,6 +885,8 @@ impl Engine {
                 }
             }
             Command::ModelReload => {
+                // Pipeline variants a background build failed to make are built again too.
+                self.gpu.retry_failed_variants();
                 let reload = self.poll_assets(true).unwrap_or_default();
                 waiter.jobs = reload.jobs.clone();
                 waiter.reload = reload;
@@ -872,10 +897,23 @@ impl Engine {
         self.pump_builds(None);
     }
 
-    /// The draws for a frame through `camera` at `size`, into `out`: meshes synced first.
+    /// The draws for a frame through `camera` into `out` (meshes synced first), and, in
+    /// `self.models`, the bone matrices of animated models posed at render time `time_s` (take
+    /// them with `take_bones`); `owners` gets each draw's entity.
     #[allow(clippy::too_many_arguments)]
-    fn build_draws(&mut self, camera: Camera, viewport_h: u32, include_ui: bool, lod: Option<usize>, window: bool, out: &mut Vec<DrawItem>, owners: Option<&mut Vec<u64>>) -> (LodStats, Vec<String>) {
+    fn build_draws(
+        &mut self,
+        camera: Camera,
+        viewport_h: u32,
+        include_ui: bool,
+        lod: Option<usize>,
+        window: bool,
+        time_s: f64,
+        out: &mut Vec<DrawItem>,
+        owners: Option<&mut Vec<u64>>,
+    ) -> (LodStats, Vec<String>) {
         let errors = self.sync_meshes();
+        self.models.begin_frame(time_s);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         let lod = match (lod, window) {
             (Some(l), _) => LodChoice::Fixed(l),
@@ -937,7 +975,8 @@ impl Engine {
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
-            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, &mut draws, None);
+            let time_s = self.window_time_s();
+            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, time_s, &mut draws, None);
             self.pacing.draw_list.push(started.elapsed());
             for e in errors {
                 eprintln!("specula: {e}");
@@ -945,12 +984,14 @@ impl Engine {
             self.lod_window = stats;
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
-            let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            let bones = self.models.take_bones();
+            let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
             let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
             presented?;
@@ -1142,7 +1183,7 @@ impl Engine {
                     TimeOp::Scale(x) => self.clock.set_scale(x),
                     TimeOp::Info => {}
                 }
-                ToolOutput::text(self.clock.to_json().to_pretty())
+                ToolOutput::text(self.clock_json().to_pretty())
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {
@@ -1215,6 +1256,9 @@ impl Engine {
         let e = self.world.get(id).expect("just written");
         let mut out = e.to_json(&self.world.path_of(id));
         out.set("journal", Json::from(journal));
+        if let Some(problem) = models::anim_problem(&self.library.lock(), e) {
+            out.set("anim_warning", Json::from(problem));
+        }
         ToolOutput::text(out.to_pretty())
     }
 
@@ -1492,12 +1536,13 @@ impl Engine {
             ("cpu", perf::cpu_json(&self.profiler)),
             ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),
-            ("clock", self.clock.to_json()),
+            ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
             ("models", self.models_json()),
             // Effects that can't apply (a grading LUT that failed to load), structured.
-            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
+            // and pipeline variants a background build failed to make.
+            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
         ]);
         ToolOutput::text(out.to_pretty())
     }
@@ -1550,7 +1595,7 @@ impl Engine {
             ("frames_captured", Json::from(self.frames_captured)),
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
-            ("clock", self.clock.to_json()),
+            ("clock", self.clock_json()),
             ("swarm", self.swarm.stats_json()),
             ("models", self.models_json()),
         ]);

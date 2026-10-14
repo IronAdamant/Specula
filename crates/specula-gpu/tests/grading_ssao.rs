@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, Material, MeshId, Surface, TextureFormat, TextureId,
-    Vertex,
+    AdapterPreference, DrawItem, Environment, ErrorReason, FrameDesc, Gpu, Material, MaterialTextures, MeshId, MeshStreams, SkinVertex, Surface,
+    TextureFormat, TextureId, TextureSampler, Vertex,
 };
 
 const W: u32 = 480;
@@ -372,6 +372,68 @@ fn ssao_under_a_blob_shadow_takes_the_same_share() {
         }
         assert!(shares[0] < 0.9, "SSAO darkens the crease: {shares:?}");
         assert!((shares[0] - shares[1]).abs() < 0.04, "a blob shadow doesn't change SSAO's share: {shares:?}");
+        check_clean(test, gpu);
+    });
+}
+
+/// The skinned and textured scene paths write the ambient luminance into HDR alpha like the
+/// plain one: the stone cube drawn skinned (identity palette) with a white base texture renders
+/// the same image as the plain cube, SSAO on (crease included) and off.
+#[test]
+fn ssao_treats_skinned_textured_meshes_like_plain_ones() {
+    every_adapter("ssao_skinned", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        let scene = Scene::new(&mut gpu);
+        let (v, i) = cube();
+        let uvs: Vec<[f32; 2]> = v.iter().map(|p| [p.position[0] + 0.5, p.position[1] + 0.5]).collect();
+        let skin = vec![SkinVertex { joints: [0, 0, 0, 0], weights: [255, 0, 0, 0] }; v.len()];
+        let posed = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), uvs: Some(&uvs), tangents: None }).unwrap();
+        let white = gpu.upload_material_texture(1, 1, TextureFormat::Rgba8Srgb, &[255; 4], TextureSampler::default()).unwrap();
+        wait_variants(&mut gpu, true, true);
+        let mut creature = scene.draws();
+        creature[1].mesh = posed;
+        creature[1].skin = Some(0);
+        creature[1].surface.textures = MaterialTextures { base_color: Some(white), ..Default::default() };
+        let bones = [IDENTITY];
+        let render = |gpu: &mut Gpu, draws: &[DrawItem], env: Environment, name: &str| {
+            let target = gpu.create_target(W, H).unwrap();
+            let frame = FrameDesc {
+                view_proj: scene.view_proj,
+                clear_color: [0.04, 0.06, 0.13, 1.0],
+                draws,
+                bones: &bones,
+                reverse_z: true,
+                environment: env,
+                ..Default::default()
+            };
+            gpu.render(target, &frame).unwrap();
+            let rgba = gpu.read_rgba8(target).unwrap();
+            gpu.destroy_target(target);
+            let label: String = gpu.adapter().name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+            write_png(&format!("post_{name}_{label}.png"), &rgba, W, H);
+            rgba
+        };
+        let mut env = scene.environment();
+        env.tonemap = false;
+        let mut on = env;
+        on.ssao.enabled = true;
+        let crease = [0.0, 0.12, 1.0];
+        let mut shares = Vec::new();
+        for (name, draws) in [("plain", scene.draws()), ("skinned", creature)] {
+            let off_img = render(&mut gpu, &draws, env, &format!("ssao_skin_{name}_off"));
+            let on_img = render(&mut gpu, &draws, on, &format!("ssao_skin_{name}_on"));
+            let (a, b) = (scene.px(&off_img, crease), scene.px(&on_img, crease));
+            let share = linear_luma(b) / linear_luma(a).max(1e-6);
+            eprintln!("{test}: {name}: crease on the cube {a:?} -> {b:?}, keeps {share:.3}");
+            shares.push((share, off_img, on_img));
+        }
+        let (plain, skinned) = (&shares[0], &shares[1]);
+        assert!(plain.0 < 0.95, "{test}: SSAO darkens the cube's foot: {}", plain.0);
+        assert!((plain.0 - skinned.0).abs() < 0.02, "{test}: the same share of light: {} vs {}", plain.0, skinned.0);
+        let (n_off, most_off) = diff(&plain.1, &skinned.1);
+        let (n_on, most_on) = diff(&plain.2, &skinned.2);
+        eprintln!("{test}: plain vs skinned+textured: off {n_off} px (max {most_off}), on {n_on} px (max {most_on})");
+        assert_eq!((n_off, n_on), (0, 0), "{test}: identical images expected (off max {most_off}, on max {most_on})");
         check_clean(test, gpu);
     });
 }

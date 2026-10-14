@@ -62,7 +62,7 @@ struct ViewReq {
 pub(crate) struct ViewOpts<'a> {
     pub(crate) include_ui: bool,
     pub(crate) lod: Option<usize>,
-    pub(crate) time_s: f32,
+    pub(crate) time_s: f64,
     pub(crate) overlays: &'a ov::Spec,
     /// Text in the top-left corner (orbit tiles).
     pub(crate) caption: Option<String>,
@@ -159,6 +159,11 @@ impl Engine {
         // capture are waited for too.
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
+        // Upload what is built, so models that start a pipeline variant build are waited for.
+        for e in self.sync_meshes() {
+            eprintln!("specula: {e}");
+        }
+        self.models.refresh_ready(&mut self.gpu);
         let views = match self.job_views(&job, &session) {
             Ok(v) => v,
             Err(out) => {
@@ -184,6 +189,10 @@ impl Engine {
             return;
         }
         let _z = profile::zone("parked_captures");
+        for e in self.sync_meshes() {
+            eprintln!("specula: {e}");
+        }
+        self.models.refresh_ready(&mut self.gpu);
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
@@ -208,7 +217,12 @@ impl Engine {
     /// until they are built).
     fn building_in(&self, views: &[ViewReq]) -> usize {
         let building: Vec<&world::Entity> =
-            self.world.entities().filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building)).collect();
+            // Building, or built and uploaded but waiting for its pipeline variant (built on a
+            // worker thread when the first such model arrives).
+            self.world
+                .entities()
+                .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building) || self.models.waiting(e))
+                .collect();
         if building.is_empty() {
             return 0;
         }
@@ -406,6 +420,13 @@ impl Engine {
                 if r.stats.missing == 1 { "y" } else { "ies" },
             )));
         }
+        {
+            let lib = self.library.lock();
+            let problems = self.world.entities().filter(|e| e.anim.is_some()).filter_map(|e| models::anim_problem(&lib, e));
+            warnings.extend(problems.take(5).map(Json::from));
+        }
+        // Models held back because their pipeline variant failed to build.
+        warnings.extend(self.world.entities().filter_map(|e| self.models.pipeline_problem(e)).take(5).map(Json::from));
         if r.dropped_lights > 0 {
             warnings.push(Json::from(format!(
                 "{} point light(s) not rendered: at most {} per frame",
@@ -435,13 +456,16 @@ impl Engine {
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
         let mut owners = Vec::new();
-        let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, &mut draws, Some(&mut owners));
+        let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, opts.time_s, &mut draws, Some(&mut owners));
         self.lod_capture = stats;
         let (lights, dropped_lights) = sight::lights(&self.world, opts.include_ui);
         let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
         let (ids, entities) = sight::dense_ids(&owners);
         let target = self.offscreen_target(w, h)?;
-        let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s);
+        // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
+        // error path just drops them).
+        let bones = self.models.take_bones();
+        let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32) };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
@@ -488,6 +512,7 @@ impl Engine {
             self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
         let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
+        self.models.put_bones(bones);
         Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json })
     }
 
@@ -715,7 +740,7 @@ impl Engine {
     /// sight_frame.
     fn capture_frame(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait, view: &ViewReq, building: usize) -> ToolOutput {
         let (w, h) = (spec.width, spec.height);
-        let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
+        let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids };
         let r = match self.render_view(view.camera, w, h, &opts) {
             Ok(r) => r,
@@ -762,7 +787,7 @@ impl Engine {
             ("subjects", Json::arr(r.subjects.iter().map(|s| s.json.clone()))),
             ("warnings", Json::Arr(warnings.clone())),
             // Structured problems (objects), next to the plain-text warnings.
-            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
+            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
         ]);
         if let Some(o) = &r.overlays {
             packet.set("overlays", o.clone());
@@ -798,7 +823,7 @@ impl Engine {
         };
         let distance = o.distance.unwrap_or_else(|| orbit::fit_distance(radius, o.fov_y_deg));
         let (tw, th, sw, sh) = orbit::layout(o.views, o.tile);
-        let time_s = o.time_s.unwrap_or_else(|| self.time_s());
+        let time_s = o.time_s.map_or_else(|| self.time_s(), f64::from);
         let mut sheet = vec![0u8; (sw * sh * 4) as usize];
         for px in sheet.chunks_exact_mut(4) {
             px.copy_from_slice(&[24, 26, 30, 255]);
@@ -890,7 +915,7 @@ impl Engine {
 
     /// sight_compare mark.
     fn compare_mark(&mut self, name: &str, spec: &FrameSpec, session: &SessionInfo, view: &ViewReq) -> ToolOutput {
-        let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
+        let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids };
         let r = match self.render_view(view.camera, spec.width, spec.height, &opts) {
             Ok(r) => r,
@@ -938,7 +963,7 @@ impl Engine {
         let Some(mark) = self.marks.get(&key, name) else { return mark_missing(name) };
         let view = mark.view.clone();
         let (marked_frame, marked_tick) = (mark.data.frame, mark.data.tick);
-        let time_s = view.time_s.unwrap_or_else(|| self.time_s());
+        let time_s = view.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: view.include_ui, lod: view.lod, time_s, overlays: &view.overlays, caption: None, ids: view.ids };
         let r = match self.render_view(view.camera, view.width, view.height, &opts) {
             Ok(r) => r,
@@ -1021,7 +1046,7 @@ impl Engine {
             return ToolOutput::text(out.to_string());
         }
         // The ID buffer needs the frame rendered (no PNG is made or sent).
-        let time_s = q.frame.time_s.unwrap_or_else(|| self.time_s());
+        let time_s = q.frame.time_s.map_or_else(|| self.time_s(), f64::from);
         let none = ov::Spec::default();
         let opts = ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s, overlays: &none, caption: None, ids: true };
         let r = match self.render_view(view.camera, view.width, view.height, &opts) {

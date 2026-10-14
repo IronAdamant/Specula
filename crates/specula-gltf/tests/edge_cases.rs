@@ -612,3 +612,36 @@ fn zero_scale_nodes_and_the_warning_cap() {
     let anim = cubic(&|_| [0.0; 3]);
     assert_eq!(import_bytes(&anim.glb(), None, &lim(Limits { max_total_keys: 50, ..Limits::default() })).unwrap_err().code, C::Limit);
 }
+
+/// A quad with TANGENT (1, 0, 0, +1) on every vertex under a node with `fields`.
+fn tangent_quad(fields: Vec<(&str, Json)>) -> Import {
+    let mut g = Gltf::new();
+    let (p, n, i) = quad(&mut g);
+    let t = g.floats(&[1.0, 0.0, 0.0, 1.0].repeat(4), "VEC4");
+    let mesh = g.mesh(&[("POSITION", p), ("NORMAL", n), ("TANGENT", t)], Some(i), None, None);
+    let mut fields = fields;
+    fields.push(("mesh", Json::from(mesh)));
+    let node = g.node(fields);
+    g.scene(&[node]);
+    import(&g)
+}
+
+#[test]
+fn tangents_are_kept_and_follow_the_node_transform() {
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let rotated = tangent_quad(vec![("rotation", Json::arr([0.0, s, 0.0, s].map(Json::from)))]);
+    let m = &rotated.model.lods[0];
+    assert_eq!(m.tangents.len(), 4, "TANGENT is kept");
+    // +X rotated 90° about +Y is −Z.
+    assert!(m.tangents.iter().all(|t| (t[2] + 1.0).abs() < 1e-5 && t[0].abs() < 1e-5 && t[3] == 1.0), "{:?}", m.tangents);
+    let mirrored = tangent_quad(vec![("scale", Json::arr([-1.0f32, 1.0, 1.0].map(Json::from)))]);
+    let m = &mirrored.model.lods[0];
+    assert!(m.tangents.iter().all(|t| (t[0] + 1.0).abs() < 1e-5 && t[3] == -1.0), "a mirror flips the bitangent sign: {:?}", m.tangents);
+    // Without TANGENT there are none.
+    let mut g = Gltf::new();
+    let (p, n, i) = quad(&mut g);
+    let mesh = g.mesh(&[("POSITION", p), ("NORMAL", n)], Some(i), None, None);
+    let node = g.node(vec![("mesh", Json::from(mesh))]);
+    g.scene(&[node]);
+    assert!(import(&g).model.lods[0].tangents.is_empty());
+}

@@ -16,6 +16,12 @@
 //!   at 1600×900.
 //! - `game_low`: the same scene with the cheaper settings (a 1024² shadow map, 3 bloom levels,
 //!   no FXAA): the fallback when `game` is over budget.
+//! - `skinned_300`: 300 GPU-skinned creatures (20 bones, ~1.9k triangles each, every one in its
+//!   own pose) on a ground under a low moon with a 2048² shadow map, fog and tone mapping: the
+//!   M2 animation budget (300 creatures × 20 bones on the Intel iGPU).
+//! - `textured_1000`: 1,000 textured cubes and spheres (base colour, normal and
+//!   metallic-roughness maps with mip chains, trilinear + anisotropic sampling) under the same
+//!   light and shadow.
 //!
 //! Each line has `passes`: median and p95 GPU ms per pass (shadow, scene, post_bloom, …), and the
 //! render graph's passes, barriers per frame and compilations (`graph_*`; one compile per scene).
@@ -24,8 +30,8 @@
 //! CPU timings); `--validation` turns it on and reports the error count.
 
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, OverlayKind, OverlayQuad, PointLight,
-    Severity, Surface, TextureFormat, TextureId, Validation, Vertex,
+    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, MeshStreams, OverlayKind, OverlayQuad,
+    PointLight, Severity, SkinVertex, Surface, TextureFormat, TextureId, TextureSampler, Validation, Vertex,
 };
 use std::f32::consts::{PI, TAU};
 use std::time::Instant;
@@ -135,6 +141,180 @@ fn quad() -> (Vec<Vertex>, Vec<u32>) {
     (vertices.to_vec(), vec![0, 1, 2, 0, 2, 3])
 }
 
+/// Bones of the bench creature, one above the other.
+const CREATURE_BONES: usize = 20;
+const SEGMENT: f32 = 0.12;
+
+/// A skinned creature: a tapering tube up a chain of [`CREATURE_BONES`] bones (bone i's joint at
+/// y = i × SEGMENT), 16 sides, 3 rings per bone, each ring blending the bones around it.
+fn creature() -> (Vec<Vertex>, Vec<u32>, Vec<SkinVertex>) {
+    let (sides, rings) = (16usize, CREATURE_BONES * 3 + 1);
+    let mut vertices = Vec::new();
+    let mut skin = Vec::new();
+    for r in 0..rings {
+        let y = r as f32 / 3.0 * SEGMENT;
+        let t = r as f32 / (rings - 1) as f32;
+        let radius = 0.16 * (1.0 - 0.7 * t) + 0.04 * (t * 12.0).sin().abs();
+        // Between joint b and b + 1: blend linearly by height.
+        let f = y / SEGMENT;
+        let b = (f.floor() as usize).min(CREATURE_BONES - 1);
+        let w1 = ((f - b as f32) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let (joints, weights) = if b + 1 < CREATURE_BONES { ([b as u8, b as u8 + 1, 0, 0], [255 - w1, w1, 0, 0]) } else { ([b as u8, 0, 0, 0], [255, 0, 0, 0]) };
+        for s in 0..=sides {
+            let a = TAU * s as f32 / sides as f32;
+            let n = [a.cos(), 0.0, a.sin()];
+            vertices.push(Vertex::with_color([n[0] * radius, y, n[2] * radius], n, [220, 210, 190, 255]));
+            skin.push(SkinVertex { joints, weights });
+        }
+    }
+    let row = (sides + 1) as u32;
+    let mut indices = Vec::new();
+    for r in 0..rings as u32 - 1 {
+        for s in 0..sides as u32 {
+            let a = r * row + s;
+            let b = a + row;
+            indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    (vertices, indices, skin)
+}
+
+/// The skinning matrices of a creature swaying with `phase`: bone i bends by a travelling wave
+/// about X and Z; matrix = pose · rest⁻¹ (rest = translation up the chain).
+fn creature_pose(phase: f32, out: &mut Vec<[f32; 16]>) {
+    let mut world: M4 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    for i in 0..CREATURE_BONES {
+        let (ax, az) = ((phase + i as f32 * 0.45).sin() * 0.16, (phase * 0.7 + i as f32 * 0.3).cos() * 0.1);
+        let (sx, cx) = ax.sin_cos();
+        let (sz, cz) = az.sin_cos();
+        let rx: M4 = [1.0, 0.0, 0.0, 0.0, 0.0, cx, sx, 0.0, 0.0, -sx, cx, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let rz: M4 = [cz, sz, 0.0, 0.0, -sz, cz, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let up = if i == 0 { 0.0 } else { SEGMENT };
+        let t: M4 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, up, 0.0, 1.0];
+        world = mul(&mul(&world, &t), &mul(&rx, &rz));
+        let rest_inv: M4 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -(i as f32) * SEGMENT, 0.0, 1.0];
+        out.push(mul(&world, &rest_inv));
+    }
+}
+
+/// The cube with per-face UVs (0..1 on every face).
+fn cube_uv() -> (Vec<Vertex>, Vec<u32>, Vec<[f32; 2]>) {
+    let (vertices, indices) = cube();
+    let uvs = (0..vertices.len()).map(|i| [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]][i % 4]).collect();
+    (vertices, indices, uvs)
+}
+
+/// The UV sphere with its longitude/latitude UVs (2 × around, 1 × down).
+fn sphere_uv(segments: u32, rings: u32) -> (Vec<Vertex>, Vec<u32>, Vec<[f32; 2]>) {
+    let (vertices, indices) = sphere(segments, rings);
+    let uvs = (0..=rings).flat_map(|r| (0..=segments).map(move |s| [2.0 * s as f32 / segments as f32, r as f32 / rings as f32])).collect();
+    (vertices, indices, uvs)
+}
+
+/// 256² stone tiles: base colour (sRGB), a matching normal map and metallic-roughness (Unorm).
+fn tile_textures() -> [Vec<u8>; 3] {
+    const N: usize = 256;
+    let mut rng = Rng(9);
+    let noise: Vec<f32> = (0..N * N).map(|_| rng.next()).collect();
+    let height = |x: usize, y: usize| {
+        let (tx, ty) = (x % 64, y % 64);
+        let edge = (tx.min(63 - tx).min(ty.min(63 - ty)) as f32 / 4.0).min(1.0);
+        edge * (0.8 + 0.2 * noise[(y % N) * N + (x % N)])
+    };
+    let (mut base, mut normal, mut mr) = (Vec::with_capacity(N * N * 4), Vec::with_capacity(N * N * 4), Vec::with_capacity(N * N * 4));
+    for y in 0..N {
+        for x in 0..N {
+            let h = height(x, y);
+            let tone = (110.0 + 90.0 * h) as u8;
+            base.extend_from_slice(&[tone, (tone as f32 * 0.95) as u8, (tone as f32 * 0.88) as u8, 255]);
+            let dx = height(x + 1, y) - height(x + N - 1, y);
+            let dy = height(x, y + 1) - height(x, y + N - 1);
+            // +Y is the image top (glTF): the slope along +Y is −dy.
+            let n = normalize([-dx * 2.0, dy * 2.0, 1.0]);
+            normal.extend_from_slice(&[((n[0] * 0.5 + 0.5) * 255.0) as u8, ((n[1] * 0.5 + 0.5) * 255.0) as u8, ((n[2] * 0.5 + 0.5) * 255.0) as u8, 255]);
+            mr.extend_from_slice(&[255, (255.0 * (0.5 + 0.5 * h)) as u8, if h < 0.5 { 200 } else { 0 }, 255]);
+        }
+    }
+    [base, normal, mr]
+}
+
+fn moonlit() -> Environment {
+    let mut environment = Environment {
+        sun_direction: [-0.6, 0.5, 0.35],
+        sun_color: [0.79, 0.84, 1.0],
+        sun_intensity: 0.9,
+        ambient_color: [0.165, 0.204, 0.282],
+        ambient_intensity: 1.0,
+        exposure: 1.1,
+        tonemap: true,
+        ..Default::default()
+    };
+    environment.shadow.enabled = true;
+    environment.fog.enabled = true;
+    environment.fog.height = -4.0;
+    environment.fog.density = 0.04;
+    environment.fog.falloff = 0.3;
+    environment
+}
+
+fn skinned_300(m: &Meshes) -> Scene {
+    let mut rng = Rng(6);
+    let mut draws = vec![DrawItem::new(m.quad, trs([0.0; 3], 0.0, [40.0, 1.0, 40.0]), hex(0x5b6470))];
+    let mut bones = Vec::with_capacity(300 * CREATURE_BONES);
+    for i in 0..300 {
+        let p = [(i % 20) as f32 * 1.6 - 15.2 + rng.range(-0.3, 0.3), 0.0, (i / 20) as f32 * 1.6 - 11.2 + rng.range(-0.3, 0.3)];
+        let mut d = DrawItem::new(m.creature, trs(p, rng.range(0.0, TAU), [1.0; 3]), hex(0xd8cfb8));
+        d.surface = Surface { roughness: 0.6, specular: 0.4, ..Default::default() };
+        d.skin = Some(bones.len() as u32);
+        // The chain reaches at most 2.4 m from its root: a posed bound for culling and shadows.
+        d.bounds = Some([p[0], 1.2, p[2], 2.6]);
+        creature_pose(rng.range(0.0, TAU), &mut bones);
+        draws.push(d);
+    }
+    Scene {
+        name: "skinned_300",
+        draws,
+        overlay: Vec::new(),
+        lights: Vec::new(),
+        environment: moonlit(),
+        clear: [0.04, 0.06, 0.13, 1.0],
+        eye: [0.0, 20.0, 26.0],
+        target: [0.0, 0.0, 0.0],
+        bones,
+        fov_y_deg: 50.0,
+    }
+}
+
+fn textured_1000(m: &Meshes) -> Scene {
+    let mut rng = Rng(7);
+    let [base, normal, mr] = m.textures;
+    let textures = specula_gpu::MaterialTextures { base_color: Some(base), normal: Some(normal), metallic_roughness: Some(mr), ..Default::default() };
+    let look = Surface { roughness: 1.0, metallic: 1.0, specular: 1.0, textures, ..Default::default() };
+    let mut ground = DrawItem::new(m.cube_uv, trs([0.0, -0.5, 0.0], 0.0, [40.0, 1.0, 40.0]), [1.0; 4]);
+    ground.surface = look;
+    let mut draws = vec![ground];
+    for i in 0..1000 {
+        let p = [rng.range(-19.0, 19.0), 0.0, rng.range(-19.0, 19.0)];
+        let s = rng.range(0.5, 1.4);
+        let mesh = if i % 2 == 0 { m.cube_uv } else { m.sphere_uv };
+        let mut d = DrawItem::new(mesh, trs([p[0], s / 2.0, p[2]], rng.range(0.0, TAU), [s; 3]), rng.colour());
+        d.surface = look;
+        draws.push(d);
+    }
+    Scene {
+        name: "textured_1000",
+        draws,
+        overlay: Vec::new(),
+        lights: Vec::new(),
+        environment: moonlit(),
+        clear: [0.04, 0.06, 0.13, 1.0],
+        eye: [0.0, 14.0, 28.0],
+        target: [0.0, 0.0, 0.0],
+        bones: Vec::new(),
+        fov_y_deg: 50.0,
+    }
+}
+
 /// Deterministic values in [0, 1) (SplitMix64).
 struct Rng(u64);
 
@@ -164,6 +344,13 @@ struct Meshes {
     cube: MeshId,
     sphere: MeshId,
     quad: MeshId,
+    /// A 20-bone skinned creature (`creature()`).
+    creature: MeshId,
+    /// The cube and sphere with UVs (textured draws).
+    cube_uv: MeshId,
+    sphere_uv: MeshId,
+    /// Base colour, normal and metallic-roughness textures for `textured_1000`.
+    textures: [TextureId; 3],
 }
 
 struct Scene {
@@ -176,6 +363,8 @@ struct Scene {
     eye: [f32; 3],
     target: [f32; 3],
     fov_y_deg: f32,
+    /// Skinning matrices of the skinned draws.
+    bones: Vec<[f32; 16]>,
 }
 
 fn with(mut d: DrawItem, material: Material, surface: Surface) -> DrawItem {
@@ -201,6 +390,7 @@ fn cubes_10k(m: &Meshes) -> Scene {
         clear: [0.55, 0.65, 0.8, 1.0],
         eye: [0.0, 22.0, 62.0],
         target: [0.0, 0.0, -5.0],
+        bones: Vec::new(),
         fov_y_deg: 55.0,
     }
 }
@@ -260,6 +450,7 @@ fn mixed_1000(m: &Meshes) -> Scene {
         clear: [0.1, 0.12, 0.16, 1.0],
         eye: [0.0, 14.0, 30.0],
         target: [0.0, 0.0, 0.0],
+        bones: Vec::new(),
         fov_y_deg: 55.0,
     }
 }
@@ -345,6 +536,7 @@ fn game(m: &Meshes, atlas: TextureId, low: bool) -> Scene {
         clear: [0.04, 0.06, 0.13, 1.0],
         eye: [0.0, 32.0, 42.0],
         target: [0.0, 0.0, 2.0],
+        bones: Vec::new(),
         fov_y_deg: 50.0,
     }
 }
@@ -399,6 +591,7 @@ fn lights_16(m: &Meshes) -> Scene {
         clear: [0.02, 0.02, 0.03, 1.0],
         eye: [0.0, 6.0, 16.0],
         target: [0.0, 0.5, -2.0],
+        bones: Vec::new(),
         fov_y_deg: 60.0,
     }
 }
@@ -416,7 +609,7 @@ struct Args {
     png: Option<std::path::PathBuf>,
     /// Only these scenes (comma-separated names).
     scenes: Option<Vec<String>>,
-    /// Features to switch off in every scene: shadow, bloom, fog, sky, fxaa, overlay.
+    /// Features to switch off in every scene: shadow, bloom, fog, sky, fxaa, overlay, skinning, textures, anisotropy.
     without: Vec<String>,
     /// Shadow overrides for scenes with shadows: cascades, resolution, softness.
     cascades: Option<u32>,
@@ -430,7 +623,7 @@ struct Args {
 }
 
 const USAGE: &str =
-    "usage: bench [--adapter discrete|integrated|<index>] [--frames N] [--size WxH] [--validation] [--png DIR] [--scenes a,b] [--without shadow,bloom,fog,sky,fxaa,overlay]\n\
+    "usage: bench [--adapter discrete|integrated|<index>] [--frames N] [--size WxH] [--validation] [--png DIR] [--scenes a,b] [--without shadow,bloom,fog,sky,fxaa,overlay,skinning,textures,anisotropy]\n\
      [--cascades N] [--shadow-res N] [--softness F] [--bloom-levels N] [--with ssao,grading] [--ssao-res F] [--ssao-samples N]";
 
 fn parse_args() -> Result<Args, String> {
@@ -599,16 +792,38 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             (true, -1.0, [-0.01, -0.004, 0.012], [1.03, 1.0, 0.97], 0.25, 0.55);
     }
     let overlay: &[OverlayQuad] = if off("overlay") { &[] } else { &scene.overlay };
+    // Without skinning every creature draws its bind pose; without textures every material is flat.
+    let stripped: Vec<DrawItem>;
+    let draws: &[DrawItem] = if off("skinning") || off("textures") {
+        stripped = scene
+            .draws
+            .iter()
+            .map(|d| {
+                let mut d = *d;
+                if off("skinning") {
+                    d.skin = None;
+                }
+                if off("textures") {
+                    d.surface.textures = specula_gpu::MaterialTextures::NONE;
+                }
+                d
+            })
+            .collect();
+        &stripped
+    } else {
+        &scene.draws
+    };
     for i in 0..WARMUP_FRAMES + args.frames {
         let frame = FrameDesc {
             view_proj,
             clear_color: scene.clear,
-            draws: &scene.draws,
+            draws,
             reverse_z: true,
             environment,
             lights: &scene.lights,
             time_s: 1.0,
             overlay,
+            bones: &scene.bones,
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;
@@ -719,10 +934,38 @@ fn main() {
     };
     let result = (|| {
         let upload = |gpu: &mut Gpu, (v, i): (Vec<Vertex>, Vec<u32>)| gpu.upload_mesh(&v, &i);
-        let meshes = Meshes { cube: upload(&mut gpu, cube())?, sphere: upload(&mut gpu, sphere(32, 16))?, quad: upload(&mut gpu, quad())? };
+        let with_uvs = |gpu: &mut Gpu, (v, i, uvs): (Vec<Vertex>, Vec<u32>, Vec<[f32; 2]>)| {
+            gpu.upload_mesh_with(&v, &i, &MeshStreams { uvs: Some(&uvs), ..Default::default() })
+        };
+        let (cv, ci, cs) = creature();
+        // The skinned and textured scenes' pipelines at loading time, as a game would.
+        gpu.prepare_variants(true, true)?;
+        let [base, normal, mr] = tile_textures();
+        let sampler = TextureSampler { anisotropy: !args.without.iter().any(|w| w == "anisotropy"), ..Default::default() };
+        let meshes = Meshes {
+            cube: upload(&mut gpu, cube())?,
+            sphere: upload(&mut gpu, sphere(32, 16))?,
+            quad: upload(&mut gpu, quad())?,
+            creature: gpu.upload_mesh_with(&cv, &ci, &MeshStreams { skin: Some(&cs), ..Default::default() })?,
+            cube_uv: with_uvs(&mut gpu, cube_uv())?,
+            sphere_uv: with_uvs(&mut gpu, sphere_uv(32, 16))?,
+            textures: [
+                gpu.upload_material_texture(256, 256, TextureFormat::Rgba8Srgb, &base, sampler)?,
+                gpu.upload_material_texture(256, 256, TextureFormat::Rgba8Unorm, &normal, sampler)?,
+                gpu.upload_material_texture(256, 256, TextureFormat::Rgba8Unorm, &mr, sampler)?,
+            ],
+        };
         gpu.mark_warm();
         let atlas = gpu.upload_texture(256, 256, TextureFormat::R8, &atlas())?;
-        let scenes = [cubes_10k(&meshes), mixed_1000(&meshes), lights_16(&meshes), game(&meshes, atlas, false), game(&meshes, atlas, true)];
+        let scenes = [
+            cubes_10k(&meshes),
+            mixed_1000(&meshes),
+            lights_16(&meshes),
+            game(&meshes, atlas, false),
+            game(&meshes, atlas, true),
+            skinned_300(&meshes),
+            textured_1000(&meshes),
+        ];
         for scene in scenes.iter().filter(|s| args.scenes.as_ref().is_none_or(|only| only.iter().any(|n| n == s.name))) {
             println!("{}", run_scene(&mut gpu, &args, scene)?);
         }
