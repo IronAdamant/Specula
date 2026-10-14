@@ -237,11 +237,14 @@ pub struct Subject {
 /// `distance_m` is the distance along the view axis to the nearest visible part of the box.
 /// `position` is the world position. Models carry their `recipe`; transient entities say so.
 pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
+    // Billboards turn to the camera: their subject is the card as drawn.
+    let view = specula_gpu::view_2d(&view_proj.to_cols_array(), true);
     world
         .entities()
         .filter(|e| e.local_bounds().is_some() && in_frame(e, include_ui))
         .map(|e| {
-            let clip = clip_box(e, view_proj);
+            let card = e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view));
+            let clip = clip_box(e, card, view_proj);
             let screen = screen_rect(&clip, width, height);
             let distance = clip.iter().map(|p| p.w).fold(f32::INFINITY, f32::min);
             let mut fields = vec![
@@ -294,8 +297,15 @@ pub fn most_relevant(subjects: &[Subject], max: usize) -> (Vec<Json>, usize) {
 /// corners in range plus every point where a box edge crosses one of those planes. Those are
 /// exactly the vertices of the clipped box, so their projection bounds its image. With the
 /// reversed-Z infinite projection, z ≤ w is the near plane and z ≥ 0 holds for everything in front.
-fn clip_box(e: &Entity, view_proj: &Mat4) -> Vec<Vec4> {
-    let Some(corners) = e.world_corners() else { return Vec::new() };
+fn clip_box(e: &Entity, card: Option<[Vec3; 4]>, view_proj: &Mat4) -> Vec<Vec4> {
+    let corners = match card {
+        // A flat card: its four corners twice make the "box" (zero depth).
+        Some(c) => [c[0], c[1], c[3], c[2], c[0], c[1], c[3], c[2]],
+        None => match e.world_corners() {
+            Some(c) => c,
+            None => return Vec::new(),
+        },
+    };
     let corners = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
     let inside = |p: &Vec4| p.z >= 0.0 && p.z <= p.w;
     let mut points: Vec<Vec4> = corners.iter().copied().filter(inside).collect();
@@ -546,6 +556,23 @@ mod tests {
         assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
         assert_eq!(lights(&world, false).0.len(), 0);
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
+    }
+
+    #[test]
+    fn billboard_subjects_are_the_card_as_drawn() {
+        let mut world = World::default();
+        let mut tree = SpawnSpec::new(Shape::Sprite);
+        tree.name = Some("tree".into());
+        tree.position = Vec3::new(0.0, 0.0, 0.0);
+        let spec = crate::two_d::parse("sprite", &Json::parse(r#"{"size":[2,4],"pivot":[0.5,0],"billboard":"cylindrical"}"#).unwrap());
+        tree.two_d = Some(spec.unwrap());
+        world.spawn(tree, "t").unwrap();
+        // Orthographic, 20 m tall at 400 x 400: 20 px per metre, seen from the side at 45 degrees.
+        let cam = Camera { projection: Projection::Ortho { height_m: 20.0 }, ..Camera::new(Vec3::new(10.0, 0.0, 10.0), Vec3::ZERO, 50.0) };
+        let s = subjects(&world, &cam.view_proj(400, 400), 400, 400, false);
+        let [x, y, w, h] = rect(&s[0]);
+        assert!((w as i64 - 40).abs() <= 2 && (h as i64 - 80).abs() <= 2, "the card faces the camera: {:?}", [x, y, w, h]);
+        assert!((x as i64 - 180).abs() <= 1 && (y as i64 + h as i64 - 200).abs() <= 1, "feet at the centre: {:?}", [x, y, w, h]);
     }
 
     #[test]

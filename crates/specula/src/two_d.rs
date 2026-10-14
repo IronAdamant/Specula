@@ -1163,6 +1163,33 @@ pub fn invalid(field: &str, message: String) -> WorldError {
     WorldError::new("invalid_value", message).with("field", field)
 }
 
+/// The four world corners of a billboard sprite's card as `view` sees it (the same orientation
+/// the renderer gives it), for sight subjects; `None` for sprites fixed in the world (their local
+/// bounds are exact) and for other components.
+pub fn billboard_corners(two_d: &TwoD, model: &Mat4, view: &specula_gpu::View2d) -> Option<[Vec3; 4]> {
+    let TwoD::Sprite(s) = two_d else { return None };
+    if s.billboard == Billboard::None {
+        return None;
+    }
+    let cols = model.to_cols_array();
+    let col = |i: usize| Vec3::new(cols[i * 4], cols[i * 4 + 1], cols[i * 4 + 2]);
+    let pos = Vec3::new(cols[12], cols[13], cols[14]);
+    let (ax, ay) = (col(0), col(1));
+    let size = [s.size[0] * ax.length(), s.size[1] * ay.length()];
+    let v3 = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
+    let (right, up) = match s.billboard {
+        Billboard::Spherical => (v3(view.right), v3(view.up)),
+        _ => {
+            let up = if ay.length() > 1e-12 { ay.normalize() } else { Vec3::Y };
+            let to_cam = if view.ortho { v3(view.forward) * -1.0 } else { v3(view.position) - pos };
+            let r = up.cross(to_cam);
+            (if r.length() > 1e-6 { r.normalize() } else { v3(view.right) }, up)
+        }
+    };
+    let corner = |qx: f32, qy: f32| pos + right * ((qx - s.pivot[0]) * size[0]) + up * ((qy - s.pivot[1]) * size[1]);
+    Some([corner(0.0, 0.0), corner(1.0, 0.0), corner(1.0, 1.0), corner(0.0, 1.0)])
+}
+
 // ---------------------------------------------------------------------------------------------
 // GPU side
 // ---------------------------------------------------------------------------------------------

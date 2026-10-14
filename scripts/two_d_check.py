@@ -257,7 +257,7 @@ def build_2d(m):
     m.call("world_spawn", shape="sprite", path="/two_d/hero", position=[0, 0, 0], color=[1, 1, 1],
            sprite=dict(common, anim={"count": 4, "fps": 6}))
     # A walker under the canopy (layer 2 < 3: the trees hide its top), and a mirrored one.
-    m.call("world_spawn", shape="sprite", path="/two_d/villager", position=[-10, 3.5, 0], color=[1, 0.8, 0.8],
+    m.call("world_spawn", shape="sprite", path="/two_d/villager", position=[-7.5, 2.4, 0], color=[1, 0.8, 0.8],
            sprite=dict(common, frame=1))
     m.call("world_spawn", shape="sprite", path="/two_d/twin", position=[6, -4, 0], color=[0.8, 1, 0.8],
            sprite=dict(common, frame=2, flip=[True, False]))
@@ -381,10 +381,16 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
             trees = [s for n, s in subs.items() if n.startswith("tree_") and s.get("on_screen")]
             check(len(trees) >= 8, f"{len(trees)} trees on screen", problems)
             check(all(s.get("two_d", {}).get("billboard") == "cylindrical" for s in trees), "tree subjects say cylindrical", problems)
-            shot("3d_ortho", eye=[215, 12, 15], target=[200, 0, 0], ortho={"height_m": 22}, time_s=0.0)
+            _, f5 = shot("3d_ortho", eye=[215, 12, 15], target=[200, 0, 0], ortho={"height_m": 22}, time_s=0.0)
+            # A 3 m card at 576 / 22 px per metre: about 79 px wide, whichever way it turned.
+            widths = [s["screen"][2] for s in f5["subjects"] if s["name"].startswith("tree_") and s.get("screen")]
+            check(widths and all(70 <= w_ <= 90 for w_ in widths), f"billboard subject rects are the drawn card: widths {sorted(set(widths))}", problems)
             perf = m.json("perf_frame")
             (out / f"{adapter}_perf.json").write_text(json.dumps(perf, indent=1))
-            # Persistence through the engine: the 2D scene, saved, loaded, renders the same.
+            # Persistence through the engine: the 2D scene, saved, loaded, renders the same. The
+            # environment is world-wide: the 3D scene's height fog (density by world Y) would
+            # shade the XY-plane map by row, so it goes off for the 2D view.
+            m.call("world_env", fog={"enabled": False}, shadow={"enabled": False})
             m.call("world_set", path="/two_d", visible=True)
             m.call("world_set", path="/three_d", visible=False)
             img_saved, _ = shot("2d_saved", view_2d={"center": [0, 0], "height_m": 18}, time_s=0.0)
