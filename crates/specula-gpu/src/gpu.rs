@@ -71,7 +71,8 @@ pub struct GpuInner {
     descriptors: Descriptors,
     /// Images the frame graphs own: depth buffers, post-chain images, the shadow map.
     pool: TransientPool,
-    /// Every frame numbered this or lower has finished on the GPU.
+    /// Every frame graph submission numbered this or lower ([`TransientPool::note_used`]) has
+    /// finished on the GPU.
     completed: u64,
     last_graph: Option<GraphSource>,
     meshes: HashMap<u32, Mesh>,
@@ -596,8 +597,7 @@ impl GpuInner {
         self.timer = timer;
         let times = ran?;
         // Synchronous: this frame and every one before it finished.
-        self.completed = frame_no;
-        self.pool.note_used(&t.graph, frame_no);
+        self.completed = self.pool.note_used(&t.graph);
         t.rendered = true;
         self.frame_no = frame_no;
         self.last_graph = Some(GraphSource::Target(target.0));
@@ -836,10 +836,14 @@ mod tests {
             let readback =
                 gpu.device.create_buffer(64 * 64 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, 0, MemoryKind::Readback, "ids").unwrap();
             let mut g = RenderGraph::<P>::new(4242);
-            for (round, (w, h)) in [(16u32, 8u32), (16, 8), (16, 8), (32, 4)].into_iter().enumerate() {
-                let frame_no = round as u64 + 1;
+            let mut first_ids = VK_NULL_HANDLE;
+            // Round 4 goes back to the first size before anything was collected: the replaced
+            // images are taken back, not recreated.
+            for (round, (w, h)) in [(16u32, 8u32), (16, 8), (16, 8), (32, 4), (16, 8)].into_iter().enumerate() {
                 let id = 0x1234_5600 + round as u32;
-                gpu.pool.collect(&gpu.device, &mut gpu.descriptors, gpu.completed);
+                if round != 4 {
+                    gpu.pool.collect(&gpu.device, &mut gpu.descriptors, gpu.completed);
+                }
                 g.begin();
                 let depth = g.transient("depth", ImageDesc::depth(crate::render::DEPTH_FORMAT, w, h, MemoryKind::RenderTargets));
                 g.pass("scene", P::Scene).depth(depth, Load::Clear);
@@ -850,6 +854,11 @@ mod tests {
                 g.pass("id_copy", P::Copy).transfer_src(ids).transfer_dst(buf);
                 g.prepare(&gpu.device, &mut gpu.descriptors, &mut gpu.pool).unwrap();
                 g.bind_buffer(buf, readback.handle);
+                match round {
+                    0 => first_ids = g.image(ids).image,
+                    4 => assert_eq!(g.image(ids).image, first_ids, "the 16x8 image is reused"),
+                    _ => {}
+                }
                 let graph = &mut g;
                 run_sync(&gpu.device, gpu.sync_cmd, gpu.sync_fence, |dev, cmd| {
                     for p in 0..graph.pass_count() {
@@ -901,8 +910,7 @@ mod tests {
                     graph.finish(dev, cmd);
                 })
                 .unwrap();
-                gpu.completed = frame_no;
-                gpu.pool.note_used(&g, frame_no);
+                gpu.completed = gpu.pool.note_used(&g);
                 let n = (w * h) as usize;
                 let mut out = vec![0u32; n];
                 // SAFETY: coherent mapped memory of at least n u32s; the copy finished (fence) and
@@ -910,13 +918,13 @@ mod tests {
                 unsafe { ptr::copy_nonoverlapping(readback.mapped as *const u32, out.as_mut_ptr(), n) };
                 assert!(out.iter().all(|&v| v == id), "adapter {}: round {round}: {:x?}", a.index, &out[..4]);
                 let stats = g.frame_stats();
-                assert_eq!(stats.recompiled, round == 0 || round == 3, "round {round}: recompile only when the declaration changes");
+                assert_eq!(stats.recompiled, round == 0 || round >= 3, "round {round}: recompile only when the declaration changes");
                 assert_eq!(stats.barriers, g.info().barrier_count() as u32);
                 if round == 0 {
                     eprintln!("{}", g.info());
                 }
             }
-            // The 16x8 images were replaced by 32x4 ones; collecting frees them (all finished).
+            // The 32x4 images were replaced by the 16x8 ones again; collecting frees them.
             assert_eq!(gpu.pool.len(), 4);
             gpu.pool.collect(&gpu.device, &mut gpu.descriptors, gpu.completed);
             assert_eq!(gpu.pool.len(), 2);

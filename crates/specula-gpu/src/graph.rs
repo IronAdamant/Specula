@@ -1425,7 +1425,7 @@ struct Entry {
     usage: VkFlags,
     image: Image,
     bound: BoundImage,
-    /// Frame number of the last use, and the count of frames the using graph had rendered then
+    /// Submission number of the last use, and the count of frames the using graph had rendered then
     /// (shared images never go stale).
     last_used: u64,
     owner_frame: u64,
@@ -1441,6 +1441,8 @@ pub struct TransientPool {
     entries: Vec<Entry>,
     /// Frames each graph owner has rendered.
     owners: Vec<(u32, u64)>,
+    /// Frames submitted (all graphs).
+    submissions: u64,
 }
 
 impl TransientPool {
@@ -1477,8 +1479,12 @@ impl TransientPool {
         Ok(i)
     }
 
-    /// `graph` recorded frame `frame_no`: remember when and how its transients were last used.
-    pub fn note_used<T: Copy + PartialEq + fmt::Debug>(&mut self, graph: &RenderGraph<T>, frame_no: u64) {
+    /// `graph`'s frame was submitted: remember when and how its transients were last used.
+    /// Returns the submission's number (they count up in submission order): once the GPU finished
+    /// it, pass it (or a later one) to [`TransientPool::collect`].
+    pub fn note_used<T: Copy + PartialEq + fmt::Debug>(&mut self, graph: &RenderGraph<T>) -> u64 {
+        self.submissions += 1;
+        let frame_no = self.submissions;
         let owner_frame = match self.owners.iter_mut().find(|o| o.0 == graph.owner) {
             Some(o) => {
                 o.1 += 1;
@@ -1497,10 +1503,12 @@ impl TransientPool {
                 e.last = graph.plan.last[i];
             }
         }
+        frame_no
     }
 
     /// Free images that were replaced, or that their owner stopped using long ago, once no frame
-    /// that may use them is pending: every frame numbered `completed` or lower has finished.
+    /// that may use them is pending: every submission numbered `completed` or lower (see
+    /// [`TransientPool::note_used`]) has finished.
     pub fn collect(&mut self, dev: &Device, descriptors: &mut Descriptors, completed: u64) {
         let mut i = 0;
         while i < self.entries.len() {

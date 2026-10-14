@@ -33,8 +33,9 @@ struct Frame {
     upload: Option<FrameUpload>,
     /// `None` without timestamp support.
     timer: Option<PassTimer>,
-    /// Number of the frame last submitted from this slot (complete once `fence` signals).
-    frame_no: u64,
+    /// Transient-pool number of the frame last submitted from this slot (complete, with every
+    /// submission before it, once `fence` signals).
+    submission: u64,
 }
 
 fn ms(from: Instant, to: Instant) -> f64 {
@@ -145,7 +146,7 @@ impl Window {
 
         for _ in 0..FRAMES_IN_FLIGHT {
             let cmd = dev.allocate_command_buffer(pool)?;
-            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, upload: None, timer: None, frame_no: 0 };
+            let frame = Frame { cmd, fence: VK_NULL_HANDLE, acquired: VK_NULL_HANDLE, upload: None, timer: None, submission: 0 };
             self.frames.push(frame);
             let f = self.frames.last_mut().expect("just pushed");
             f.fence = dev.create_fence(true)?;
@@ -324,7 +325,7 @@ impl Window {
         dev.wait_fence(f.fence)?;
         // The fence shows the GPU finished the frame that last used this slot (and every frame
         // submitted before it): its timestamps are ready and its upload buffer is free.
-        *completed = (*completed).max(f.frame_no);
+        *completed = (*completed).max(f.submission);
         if let Some(t) = f.timer.as_mut() {
             match t.read_into(dev, &mut stats.gpu) {
                 Ok(true) => stats.timestamp_error = None,
@@ -403,8 +404,7 @@ impl Window {
         if let Some(t) = f.timer.as_mut() {
             t.submitted();
         }
-        f.frame_no = frame_no;
-        pool.note_used(&self.graph, frame_no);
+        f.submission = pool.note_used(&self.graph);
 
         let present = VkPresentInfoKHR {
             s_type: ST_PRESENT_INFO_KHR,
