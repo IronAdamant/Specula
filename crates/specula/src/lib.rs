@@ -37,7 +37,7 @@ use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::{base64, png, profile, Json};
-use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, DrawItem, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -869,7 +869,7 @@ impl Engine {
 
     /// The draws for a frame through `camera` at `size`, into `out`: meshes synced first.
     #[allow(clippy::too_many_arguments)]
-    fn build_draws(&mut self, camera: Camera, viewport_h: u32, include_ui: bool, lod: Option<usize>, window: bool, out: &mut Vec<DrawItem>) -> (LodStats, Vec<String>) {
+    fn build_draws(&mut self, camera: Camera, viewport_h: u32, include_ui: bool, lod: Option<usize>, window: bool, out: &mut Vec<DrawItem>, owners: Option<&mut Vec<u64>>) -> (LodStats, Vec<String>) {
         let errors = self.sync_meshes();
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         let lod = match (lod, window) {
@@ -878,7 +878,7 @@ impl Engine {
             (None, false) => LodChoice::Fresh,
         };
         let mut view = View { camera, viewport_h, include_ui, lod };
-        let stats = sight::draw_list(&self.world, &meshes, &mut view, out);
+        let stats = sight::draw_list(&self.world, &meshes, &mut view, out, owners);
         (stats, errors)
     }
 
@@ -932,7 +932,7 @@ impl Engine {
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
-            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, &mut draws);
+            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, &mut draws, None);
             self.pacing.draw_list.push(started.elapsed());
             for e in errors {
                 eprintln!("specula: {e}");
@@ -1412,8 +1412,9 @@ impl Engine {
         Some(self.clock.tick())
     }
 
-    fn render_offscreen(&mut self, w: u32, h: u32, frame: &FrameDesc) -> Result<Vec<u8>, String> {
-        let target = match self.targets.iter().position(|(size, _)| *size == (w, h)) {
+    /// A cached offscreen target of `w` × `h` (most recently used last).
+    fn offscreen_target(&mut self, w: u32, h: u32) -> Result<TargetId, String> {
+        Ok(match self.targets.iter().position(|(size, _)| *size == (w, h)) {
             Some(i) => {
                 let entry = self.targets.remove(i);
                 self.targets.push(entry);
@@ -1428,9 +1429,7 @@ impl Engine {
                 self.targets.push(((w, h), t));
                 t
             }
-        };
-        self.gpu.render(target, frame).map_err(|e| format!("render: {e}"))?;
-        self.gpu.read_rgba8(target).map_err(|e| format!("readback: {e}"))
+        })
     }
 
     fn save_capture(&self, extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {

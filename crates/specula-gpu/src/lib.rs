@@ -29,7 +29,8 @@
 //!
 //! `shadow` (sun shadow map, [`ShadowSettings`]) → `scene` (forward, all materials, the sky
 //! [`SkySettings`], height fog [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`])
-//! → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
+//! → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]), then, for offscreen
+//! captures that ask ([`Gpu::render_with_ids`]), `id_buffer` (sight's per-pixel entity ids). Every feature is
 //! **off by default**, and each one off is specialized out of the shaders (or its pass skipped),
 //! so a frame without it renders exactly — bit for bit — what it rendered before the feature
 //! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
@@ -75,6 +76,7 @@ mod descriptors;
 mod device;
 mod gpu;
 mod graph;
+mod idbuffer;
 mod instance;
 mod loader;
 mod overlay;
@@ -87,6 +89,7 @@ mod timing;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
+pub use idbuffer::{IdCoverage, IdImage};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,6 +837,26 @@ impl Gpu {
     /// Errors if the target has never been rendered.
     pub fn read_rgba8(&mut self, target: TargetId) -> Result<Vec<u8>, GpuError> {
         self.inner.read_rgba8(target)
+    }
+
+    /// [`Gpu::render`] plus sight's **ID buffer**: `ids` gives each draw of `frame` an id (0 = not
+    /// counted; one per draw, else a structured `DataLength` error). After it, [`Gpu::read_ids`]
+    /// returns which id covers each pixel: the nearest opaque draw, and the front-most blended
+    /// draw in front of it (glass is visible but never hides what is behind it). The rendered
+    /// image is identical to `render`'s. Offscreen only: the window never runs these passes.
+    pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32]) -> Result<(), GpuError> {
+        self.inner.render_with_ids(target, frame, ids)
+    }
+
+    /// The ID buffer of the target's last render; errors when that render had none.
+    pub fn read_ids(&mut self, target: TargetId) -> Result<IdImage, GpuError> {
+        self.inner.read_ids(target)
+    }
+
+    /// [`IdImage::coverage`] of the target's last ID buffer (pixels and exact extent per id
+    /// `1..=max_id`), counted where the GPU wrote it, without copying the image.
+    pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<Vec<Option<IdCoverage>>, GpuError> {
+        self.inner.id_coverage(target, max_id)
     }
 
     /// Create a surface + swapchain for a native window (Windows: `HINSTANCE`, `HWND`).

@@ -385,7 +385,7 @@ impl Window {
             t.begin_frame(dev, f.cmd, frame_no);
         }
         let upload = f.upload.as_ref().expect("created in init");
-        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload };
+        let ctx = FrameContext { dev, pipelines, descriptors, meshes, frame, scratch, upload, ids: None };
         let draws = record_frame(&ctx, f.cmd, &mut self.graph, &res, f.timer.as_mut());
         let upload_bytes = upload.bytes();
         dev.end(f.cmd)?;

@@ -24,7 +24,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 12] = [
+static SHADERS: [(&str, &[u8]); 14] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -37,6 +37,8 @@ static SHADERS: [(&str, &[u8]); 12] = [
     ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
     ("overlay.vert", include_bytes!("../shaders/overlay.vert.spv")),
     ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
+    ("ids.vert", include_bytes!("../shaders/ids.vert.spv")),
+    ("ids.frag", include_bytes!("../shaders/ids.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,8 @@ enum Shader {
     SkyFrag = 9,
     OverlayVert = 10,
     OverlayFrag = 11,
+    IdsVert = 12,
+    IdsFrag = 13,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -617,6 +621,9 @@ pub enum PipelineKey {
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
     /// or the last post pass (no depth).
     Overlay { format: VkFormat, depth: bool },
+    /// Sight's ID buffer (`idbuffer.rs`): draw ids into R32G32_UINT + D32 (compare op dynamic);
+    /// opaque draws write R and depth, blended ones write G and test depth only.
+    Ids { blended: bool },
 }
 
 /// What vertex data a pipeline reads.
@@ -635,6 +642,8 @@ enum Blend {
     Off,
     /// dst = src + dst × (1 − src.a).
     Premultiplied,
+    /// No blending; only these colour components (`VK_COLOR_COMPONENT_*`) are written.
+    Mask(VkFlags),
 }
 
 /// How a pipeline is built.
@@ -713,6 +722,20 @@ impl PipelineKey {
                 depth_write: false,
                 compare: Some(VK_COMPARE_OP_LESS),
                 blend: Blend::Premultiplied,
+                depth_bias: false,
+            },
+            PipelineKey::Ids { blended } => PipelineDesc {
+                vert: Shader::IdsVert,
+                frag: Some(Shader::IdsFrag),
+                spec: 0,
+                vertex: VertexInput::Position,
+                color: Some(crate::idbuffer::ID_FORMAT),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                // As in the scene: blended surfaces never hide what is behind them.
+                depth_write: !blended,
+                compare: None,
+                blend: Blend::Mask(if blended { crate::idbuffer::WRITE_G } else { crate::idbuffer::WRITE_R }),
                 depth_bias: false,
             },
         }
@@ -910,6 +933,9 @@ impl Pipelines {
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
+        for blended in [false, true] {
+            self.get(dev, PipelineKey::Ids { blended })?;
+        }
         Ok(())
     }
 
@@ -1135,6 +1161,7 @@ impl Pipelines {
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: VK_COLOR_COMPONENT_RGBA,
             },
+            Blend::Mask(mask) => VkPipelineColorBlendAttachmentState { blend_enable: VK_FALSE, color_write_mask: mask, ..Default::default() },
         };
         let blend = VkPipelineColorBlendStateCreateInfo {
             s_type: ST_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1263,6 +1290,8 @@ pub struct FrameContext<'a> {
     pub frame: &'a FrameDesc<'a>,
     pub scratch: &'a FrameScratch,
     pub upload: &'a FrameUpload,
+    /// The ID buffer passes' pipelines, resources and ids (captures that ask for them).
+    pub ids: Option<crate::idbuffer::IdFrame>,
 }
 
 /// The scene features a frame prepared in `scratch` uses, given whether it renders a shadow map.
@@ -1290,6 +1319,10 @@ pub enum FramePass {
     Fxaa,
     /// The overlay quads, inline in the pass that writes the final image.
     Overlay,
+    /// Sight's entity ids (offscreen captures that ask for them; see `idbuffer.rs`).
+    IdBuffer,
+    /// The ids copied to the host-readable buffer.
+    IdCopy,
 }
 
 impl FramePass {
@@ -1302,6 +1335,7 @@ impl FramePass {
             FramePass::Tonemap => PASS_TONEMAP,
             FramePass::Fxaa => PASS_FXAA,
             FramePass::Overlay => PASS_OVERLAY,
+            FramePass::IdBuffer | FramePass::IdCopy => crate::PASS_ID_BUFFER,
         }
     }
 }
@@ -1522,6 +1556,11 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
             }
             FramePass::Overlay => {} // inline: recorded by the pass before it
+            FramePass::IdBuffer | FramePass::IdCopy => {
+                if let Some(ids) = &ctx.ids {
+                    crate::idbuffer::record(ctx, cmd, g, p, tag, ids);
+                }
+            }
             _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.upload.frame_address(), &mut inline),
         }
     }

@@ -18,6 +18,7 @@ Standard library only; output is ASCII.
 import argparse
 import base64
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -79,18 +80,25 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=7494)
     ap.add_argument("--windowed", action="store_true")
+    ap.add_argument("--adapter", help="discrete, integrated or an index (the engine's --adapter)")
     ap.add_argument("--exe", default=str(ROOT / "target" / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("sight_check: never on 7471 (that's the engine you work in)")
     OUT.mkdir(parents=True, exist_ok=True)
-    for f in OUT.glob("*"):
-        f.unlink()
+    # Fresh outputs every run (the engine's pipeline cache, .specula-cache, is kept).
+    for f in OUT.iterdir():
+        if f.is_file():
+            f.unlink()
+        elif f.name == "captures":
+            shutil.rmtree(f)
     failures = []
     summary = {}
     engine_args = ["--assets", str(ROOT / "games" / "sepulcra" / "assets"), "--captures", str(OUT / "captures")]
     if not args.windowed:
         engine_args.append("--headless")
+    if args.adapter:
+        engine_args += ["--adapter", args.adapter]
     with Engine(args.exe, args.port, OUT / "engine.log", *engine_args, cwd=str(OUT)) as eng:
         builder = eng.mcp("sight-check")
         builder.json("agent_hello", name="builder_a", role="builder")
@@ -176,8 +184,10 @@ def main():
             check(False, "marks are per agent", failures)
         except RuntimeError as e:
             check("mark_not_found" in str(e), "marks are per agent", failures)
-        # Put the hidden box back for the ID buffer checks.
+        # Put the hidden box back, and the newcomer away (it stands in front of the low wall), for
+        # the ID buffer checks.
         builder.json("world_spawn", shape="cube", name="hidden_box", position=[0, 0.5, -2.5], color="#d94f3d")
+        builder.json("world_delete", path="/newcomer")
         summary["compare"] = {"pixels": diff["pixels"], "subjects": subj}
 
         print("visibility (ID buffer)")
@@ -187,7 +197,14 @@ def main():
         summary["front"] = {"hidden_box": hb, "peeking_sphere": ps, "marker": mk}
         if hb is not None and "visible_px" in hb:
             check(hb["visible_px"] == 0 and hb.get("occluded") is True, f"the box behind the wall: 0 visible px ({hb['visible_px']})", failures)
-            check(ps["visible_px"] > 0, f"the peeking sphere is visible ({ps['visible_px']} px)", failures)
+            # Its top half shows over the low wall: about half a disc as wide as its exact box.
+            d = ps["screen_box_exact"][2]
+            ratio = ps["visible_px"] / (3.14159 * (d / 2) ** 2)
+            check(0.4 < ratio < 0.6 and abs(ps["screen_box_exact"][3] - d / 2) <= 2,
+                  f"the peeking sphere shows its top half ({ps['visible_px']} px = {ratio:.2f} of its disc, box {ps['screen_box_exact']})",
+                  failures)
+            mk_exact, mk_proj = mk["screen_box_exact"], mk["screen"]
+            check(mk_exact[2] * mk_exact[3] <= mk_proj[2] * mk_proj[3], "exact boxes are never bigger than projected ones", failures)
             q = builder.json("sight_query", path="/hidden_box", camera="front")
             check(q["visible_px"] == 0 and q["occluded"] is True, "sight_query: the hidden box is occluded", failures)
             vis, _ = save("frame_front_visible_only", builder.call("sight_frame", camera="front", width=1280, height=720,
@@ -197,6 +214,19 @@ def main():
             summary["query_hidden_box"] = q
         else:
             print("  skip ID buffer checks: subjects carry no visible_px")
+
+        print("ID buffer cost at 1280x720")
+        costs = []
+        for _ in range(6):
+            costs.append(builder.frame(camera="front", width=1280, height=720, time_s=1, max_subjects=1)["id_buffer"])
+        costs = costs[1:]  # the first warms caches
+        gpu = sorted(c["gpu_ms"] or 0 for c in costs)
+        cpu = sorted(c["readback_count_ms"] for c in costs)
+        info = builder.json("engine_info")
+        summary["id_buffer_cost"] = {"gpu": info["gpu"]["name"], "gpu_ms_median": gpu[len(gpu) // 2],
+                                     "readback_count_ms_median": cpu[len(cpu) // 2], "samples": costs}
+        print(f"  {info['gpu']['name']}: gpu {gpu[len(gpu) // 2]:.3f} ms, readback + count {cpu[len(cpu) // 2]:.3f} ms"
+              f" (median of {len(costs)})")
 
         for m_ in (builder, other, reviewer):
             m_.close()

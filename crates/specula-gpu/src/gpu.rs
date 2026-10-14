@@ -5,8 +5,9 @@ use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::instance::Instance;
 use crate::descriptors::Descriptors;
 use crate::graph::{Final, GraphInfo, Prior, TransientPool};
+use crate::idbuffer::{IdFrame, IdImage, IdUpload};
 use crate::render::{
-    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
+    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph, PipelineKey,
     FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
@@ -16,7 +17,7 @@ use crate::swapchain::{Window, WINDOW_OWNER};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
-    AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions, MemoryKind, MeshId,
+    AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, ErrorReason, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions, MemoryKind, MeshId,
     TargetId, TextureFormat, TextureId, ValidationMessage, Vertex,
 };
 use std::collections::HashMap;
@@ -44,6 +45,10 @@ struct Target {
     graph: FrameGraph,
     /// False until the first `render`; the colour image then sits in TRANSFER_SRC_OPTIMAL.
     rendered: bool,
+    /// Host-readable ID buffer copy (`render_with_ids`), made on first use.
+    ids: Option<Buffer>,
+    /// The last render wrote `ids`.
+    ids_valid: bool,
 }
 
 /// Whose graph rendered the latest frame.
@@ -62,6 +67,9 @@ pub struct GpuInner {
     sync_fence: VkFence,
     /// Frame data and draw records for offscreen renders (synchronous, so one buffer suffices).
     upload: Option<FrameUpload>,
+    /// Per-record ids for the ID buffer (`render_with_ids`), and their scratch.
+    id_upload: Option<IdUpload>,
+    id_scratch: Vec<u32>,
     /// Timestamps for offscreen renders (`None` without timestamp support).
     timer: Option<PassTimer>,
     /// Draw-record scratch and the sRGB conversion cache, shared by both paths.
@@ -183,6 +191,8 @@ impl GpuInner {
             sync_cmd: ptr::null_mut(),
             sync_fence: VK_NULL_HANDLE,
             upload: None,
+            id_upload: None,
+            id_scratch: Vec::new(),
             timer: None,
             scratch: FrameScratch::default(),
             pipelines,
@@ -515,7 +525,10 @@ impl GpuInner {
         };
         let id = self.next_id();
         let graph = FrameGraph::new(id);
-        self.targets.insert(id, Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false });
+        self.targets.insert(
+            id,
+            Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false, ids: None, ids_valid: false },
+        );
         Ok(TargetId(id))
     }
 
@@ -524,6 +537,9 @@ impl GpuInner {
         // Offscreen work is synchronous, so nothing on the GPU still uses the target or its
         // graph's images.
         self.pool.release_owner(&self.device, &mut self.descriptors, target.0);
+        if let Some(ids) = &t.ids {
+            self.device.destroy_buffer(ids);
+        }
         self.device.destroy_buffer(&t.readback);
         self.device.destroy_image(&t.color);
         if self.last_graph == Some(GraphSource::Target(target.0)) {
@@ -532,11 +548,62 @@ impl GpuInner {
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
+        self.render_frame(target, frame, None)
+    }
+
+    /// `render`, plus sight's ID buffer: `ids` holds one id per draw of `frame` (0 = not
+    /// counted); read it back with [`GpuInner::read_ids`].
+    pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32]) -> Result<(), GpuError> {
+        if ids.len() != frame.draws.len() {
+            return Err(GpuError::rejected(
+                ErrorReason::DataLength { given: ids.len() as u64, expected: frame.draws.len() as u64 },
+                format!("render_with_ids: {} ids for {} draws (one per draw)", ids.len(), frame.draws.len()),
+            ));
+        }
+        self.render_frame(target, frame, Some(ids))
+    }
+
+    /// The ID buffer of the target's last render (`render_with_ids`).
+    pub fn read_ids(&mut self, target: TargetId) -> Result<IdImage, GpuError> {
+        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
+        let (Some(buffer), true) = (&t.ids, t.ids_valid) else {
+            return Err(GpuError::new(format!("read_ids: target {}'s last render had no ID buffer (use render_with_ids)", target.0)));
+        };
+        let n = t.extent.width as usize * t.extent.height as usize;
+        let mut ids = vec![[0u32; 2]; n];
+        // SAFETY: the buffer is persistently mapped coherent memory of at least n × 8 bytes; the
+        // render that filled it finished (fence waited) and the graph recorded the transfer →
+        // host barrier; `[u32; 2]` is plain data.
+        unsafe { ptr::copy_nonoverlapping(buffer.mapped as *const u8, ids.as_mut_ptr() as *mut u8, n * 8) };
+        Ok(IdImage { width: t.extent.width, height: t.extent.height, ids })
+    }
+
+    /// [`IdImage::coverage`] of the target's last ID buffer, counted in place (no copy).
+    pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<Vec<Option<crate::IdCoverage>>, GpuError> {
+        let t = self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
+        let (Some(buffer), true) = (&t.ids, t.ids_valid) else {
+            return Err(GpuError::new(format!("id_coverage: target {}'s last render had no ID buffer (use render_with_ids)", target.0)));
+        };
+        let n = t.extent.width as usize * t.extent.height as usize;
+        // SAFETY: as in `read_ids`; the mapping is 8-byte aligned (`minMemoryMapAlignment` is at
+        // least 64) and nothing writes it while this borrow of `self` lives (renders take `&mut`).
+        let ids = unsafe { std::slice::from_raw_parts(buffer.mapped as *const [u32; 2], n) };
+        Ok(crate::idbuffer::coverage(ids, t.extent.width, max_id))
+    }
+
+    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<&[u32]>) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         };
         let extent = t.extent;
+        t.ids_valid = false;
+        if ids.is_some() && t.ids.is_none() {
+            let bytes = extent.width as u64 * extent.height as u64 * crate::idbuffer::BYTES_PER_PIXEL;
+            let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            let buffer = self.device.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemoryKind::Readback, "id readback")?;
+            t.ids = Some(buffer);
+        }
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
@@ -560,8 +627,28 @@ impl GpuInner {
             overlay: !frame.overlay.is_empty(),
         };
         let res = declare_frame(&mut t.graph, &shape);
+        // Sight's ID passes come after the frame's own, so the image is the same with or without.
+        let id_res = ids.map(|_| crate::idbuffer::declare(&mut t.graph, extent));
         prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
+        let id_frame = match (ids, id_res) {
+            (Some(ids), Some(id_res)) => {
+                let readback = t.ids.as_ref().expect("made above").handle;
+                t.graph.bind_buffer(id_res.readback, readback);
+                crate::idbuffer::record_ids(&self.scratch.plan, ids, &mut self.id_scratch);
+                let ids_address = IdUpload::write(&mut self.id_upload, &self.device, &self.id_scratch)?;
+                Some(IdFrame {
+                    opaque: self.pipelines.get(&self.device, PipelineKey::Ids { blended: false })?,
+                    blended: self.pipelines.get(&self.device, PipelineKey::Ids { blended: true })?,
+                    layout: self.pipelines.layout,
+                    ids_address,
+                    res: id_res,
+                    readback,
+                    extent,
+                })
+            }
+            _ => None,
+        };
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
@@ -575,6 +662,7 @@ impl GpuInner {
             frame,
             scratch: &self.scratch,
             upload,
+            ids: id_frame,
         };
         let graph = &mut t.graph;
         let ran = run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| {
@@ -599,6 +687,7 @@ impl GpuInner {
         // Synchronous: this frame and every one before it finished.
         self.completed = self.pool.note_used(&t.graph);
         t.rendered = true;
+        t.ids_valid = id_res.is_some();
         self.frame_no = frame_no;
         self.last_graph = Some(GraphSource::Target(target.0));
         let stats = &mut self.last_offscreen;
@@ -757,11 +846,17 @@ impl Drop for GpuInner {
             dev.destroy_image(&t.image);
         }
         for (_, t) in self.targets.drain() {
+            if let Some(ids) = &t.ids {
+                dev.destroy_buffer(ids);
+            }
             dev.destroy_buffer(&t.readback);
             dev.destroy_image(&t.color);
         }
         self.pool.destroy(dev, &mut self.descriptors);
         if let Some(u) = self.upload.take() {
+            u.destroy(dev);
+        }
+        if let Some(u) = self.id_upload.take() {
             u.destroy(dev);
         }
         if let Some(mut t) = self.timer.take() {

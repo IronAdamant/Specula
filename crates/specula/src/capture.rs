@@ -77,6 +77,8 @@ pub(crate) struct Rendered {
     pub(crate) dropped_lights: usize,
     /// What the overlays drew (`None`: none asked for).
     pub(crate) overlays: Option<Json>,
+    /// The ID buffer's entity count and cost.
+    pub(crate) ids: Json,
 }
 
 fn camera_error(e: CameraError) -> ToolOutput {
@@ -365,26 +367,52 @@ impl Engine {
     }
 
     /// Renders one view (see the module docs).
+    ///
+    /// The frame renders with the ID buffer, whose counts go into the subjects. Overlays need
+    /// those counts (a hidden box is drawn red), so with overlays the frame renders a second time,
+    /// overlays on top and without the ID passes (the scene is the same, bit for bit).
     pub(crate) fn render_view(&mut self, camera: Camera, w: u32, h: u32, opts: &ViewOpts) -> Result<Rendered, String> {
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
-        let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, &mut draws);
+        let mut owners = Vec::new();
+        let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, &mut draws, Some(&mut owners));
         self.lod_capture = stats;
         let (lights, dropped_lights) = sight::lights(&self.world, opts.include_ui);
-        let subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
-        let (quads, overlays) = if opts.overlays.is_empty() && opts.caption.is_none() {
-            (Vec::new(), None)
-        } else {
-            let (quads, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
-            (quads, (!opts.overlays.is_empty()).then_some(report))
-        };
+        let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
+        let (ids, entities) = sight::dense_ids(&owners);
+        let target = self.offscreen_target(w, h)?;
         let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s);
-        frame.overlay = &quads;
-        let rgba = {
+        {
             let _z = profile::zone("sight.render");
-            self.render_offscreen(w, h, &frame)?
+            self.gpu.render_with_ids(target, &frame, &ids).map_err(|e| format!("render: {e}"))?;
+        }
+        let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
+            let ms: f64 = g.passes.iter().filter(|p| p.name == specula_gpu::PASS_ID_BUFFER).map(|p| p.gpu_ms).sum();
+            (ms > 0.0).then_some(ms)
+        });
+        let counted = Instant::now();
+        let coverage = {
+            let _z = profile::zone("sight.ids");
+            self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| format!("id readback: {e}"))?
         };
-        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays })
+        sight::apply_visibility(&mut subjects, &entities, &coverage);
+        let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
+        let ids_json = Json::obj([
+            ("entities", Json::from(entities.len())),
+            ("visible", Json::from(coverage.iter().filter(|c| c.is_some()).count())),
+            ("gpu_ms", Json::from(gpu_ms)),
+            ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
+        ]);
+        let mut overlays = None;
+        if !opts.overlays.is_empty() || opts.caption.is_some() {
+            let (quads, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
+            overlays = (!opts.overlays.is_empty()).then_some(report);
+            frame.overlay = &quads;
+            let _z = profile::zone("sight.render");
+            self.gpu.render(target, &frame).map_err(|e| format!("render: {e}"))?;
+        }
+        let rgba = self.gpu.read_rgba8(target).map_err(|e| format!("readback: {e}"))?;
+        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json })
     }
 
     /// The overlay records for one view and what they drew.
@@ -650,6 +678,7 @@ impl Engine {
             ("include_ui", Json::from(spec.include_ui)),
             ("models", r.stats.to_json()),
             ("lights", Json::from(r.lights)),
+            ("id_buffer", r.ids.clone()),
             ("subjects_total", Json::from(r.subjects.len())),
             ("subjects_on_screen", Json::from(on_screen)),
             ("subjects", Json::arr(r.subjects.iter().map(|s| s.json.clone()))),
@@ -901,9 +930,17 @@ impl Engine {
             out.set("camera", view.camera.to_json());
             return ToolOutput::text(out.to_string());
         }
-        let vp = view.camera.view_proj(view.width, view.height);
-        let subjects = sight::subjects(&self.world, &vp, view.width, view.height, view.include_ui);
-        let s = subjects.into_iter().find(|s| s.id == id).expect("in frame");
+        // The ID buffer needs the frame rendered (no PNG is made or sent).
+        let time_s = q.frame.time_s.unwrap_or_else(|| self.time_s());
+        let none = ov::Spec::default();
+        let opts = ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s, overlays: &none, caption: None };
+        let r = match self.render_view(view.camera, view.width, view.height, &opts) {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::error(e),
+        };
+        let Some(s) = r.subjects.into_iter().find(|s| s.id == id) else {
+            return ToolOutput::error(format!("{path} was not in the frame it was queried in"));
+        };
         out.set("drawn", Json::from(true));
         for key in ["on_screen", "screen", "distance_m", "visible_px", "screen_box_exact", "occluded"] {
             if let Some(v) = s.json.get(key) {
