@@ -21,14 +21,14 @@ memory of the earlier ones. Last updated **2026-10-15**.
     1. **Sight** (`agent-a71aac62f395c00c8`): per-agent cameras, `sight_orbit`, `sight_compare`, `sight_query`,
        debug overlays, ID buffer (exact `visible_px`, `occluded`/`no_pixels`, glass counted with per-pixel sorted
        id sets, reproducible; `visible_px_approx` = lower bound past 4 blended ids per pixel). Six review rounds; the
-       algorithm is verified. Left: (a) round-6 fix: consumers must treat `visible_px_approx` as *seen*
-       (compare `seen()`, `subjects:"visible"`, bounds overlay colour, `id_buffer.visible`, ranking); device-lost
-       `recovery` text per mode + log once; GPU-ms (not wall-clock) assert in `many_glass_layers_stay_cheap`;
-       (b) merge main and add **skinning** to the ID pass (skinned id pipeline variant built in the background like
-       the scene variants; DrawRecord is 128 B now — rebuild ids*.spv) and the **alpha-mask** rule in `shown()`;
-       skeleton overlay from posed bones. Then verify (cargo test, clippy, `scripts/sight_check.py` on both
-       adapters, window_check, lava `--plain`) and merge. Integrator verification is enough for (a); give (b) one
-       narrow `lane-reviewer` round.
+       algorithm is verified. Round-6 fixes done and verified at 6a0e6ef (approx counts as seen via
+       `sight::shows()`, device-loss text per mode, GPU-ms stress assert). Head 1a65ec8 is a **WIP** merge of main
+       (Skinning): it builds and ids*.spv are rebuilt for the 128 B DrawRecord, but no tests ran since. Left: run
+       the full checks on the merge; add the **skinned** ID pipeline variant (built in the background like the
+       scene variants), the **alpha-mask** rule in `shown()` and the opaque ID pass, posed bones in the skeleton
+       overlay, with tests (a posed arm's visible_px follows the pose; cut-out pixels aren't counted). Then verify
+       (cargo test, clippy, `scripts/sight_check.py` on both adapters, window_check, lava `--plain`, anim_check),
+       one narrow `lane-reviewer` round on the integration, and merge.
     2. **2D** (`agent-abab6399ffa467652`): sprites, tilemaps, vector shapes, orthographic cameras, SSAO-aware.
        Four review rounds; round-4 fixes done at 0e89bc3 (origin in control bounds, exact stroke charge; fuzz 0 failures on 9 seeds). Left: re-run `two_d_check` on NVIDIA (the texture-reload probe failed once — known timing flake, investigate if it repeats); merge main (Skinning: `FEAT_CUTOUT` → 128 if it shares a spec space with `FEAT_SKINNED` = 64; DrawRecord 128 B; rebuild .spv), and after Sight lands register 2D draws with the ID pass. Then verify and merge.
   - **Then, in order:** (1) M2 exit proof: a lit, shadowed scene with imported + procedural assets and an animated
