@@ -3,7 +3,8 @@
 Measures, on every GPU (release build, headless engine on its own port):
   - start-up time until MCP answers, MCP round trip, spawn cost, batched spawn when available
   - sight_frame capture time (render + readback + PNG) for the lava-lamp scene at 720p and 1080p
-  - GPU frame statistics from perf_frame, when the engine has it
+  - GPU frame statistics from perf_frame (budgets: perf.example.toml), when the engine has it
+  - CPU zone p95s (perf_zones) and heap use (perf_memory), when the engine has them
   - engine memory (working set) and validation errors at shutdown
 And the loop agents live in: clean and incremental debug builds, and the workspace test run.
 
@@ -30,6 +31,7 @@ from specula_mcp import ROOT, Engine
 import lava_lamps
 
 PORT = 7495
+PERF_TOML = ROOT / "perf.example.toml"
 ADAPTERS = {"discrete": "discrete", "integrated": "integrated"}
 
 
@@ -134,7 +136,10 @@ def measure_build(results):
 def measure_engine(exe, adapter, out_dir, quick):
     res = {}
     log = out_dir / f"engine_{adapter}.log"
-    with Engine(exe, PORT, log, "--headless", "--adapter", adapter, "--captures", str(out_dir / "captures")) as eng:
+    # Budgets: the documented example (perf_frame's errors then use the iGPU numbers).
+    budgets = ["--perf", str(PERF_TOML)] if PERF_TOML.exists() else []
+    with Engine(exe, PORT, log, "--headless", "--adapter", adapter, "--captures", str(out_dir / "captures"),
+                *budgets) as eng:
         res["startup_s"] = round(eng.startup_s, 3)
         m = eng.mcp("perf-baseline")
         info = m.json("engine_info")
@@ -175,6 +180,13 @@ def measure_engine(exe, adapter, out_dir, quick):
             res[f"capture_lava_{name}_ms"] = stats_ms([timed_frame(m, shot) for _ in range(3 if quick else 8)])
         if "perf_frame" in tools:
             res["perf_frame_lava"] = m.json("perf_frame")
+        if "perf_memory" in tools:
+            mem = m.json("perf_memory", limit=5)
+            res["heap_lava"] = {k: mem.get(k) for k in ("heap_mb", "peak_mb", "per_frame", "top_zones")}
+        if "perf_zones" in tools:
+            # The CPU zones of the capture frames above (requests/sight.render, .encode, .save).
+            zones = m.json("perf_zones", min_ms=0.01, limit=40)
+            res["cpu_zones_lava_p95_ms"] = {f"{z['thread']}:{z['path']}": z["p95_ms"] for z in zones["zones"]}
         res["working_set_mb"] = working_set_mb(eng.proc.pid)
     res["validation_errors"] = eng.validation_errors()
     res["clean_exit"] = eng.exit_code == 0

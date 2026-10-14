@@ -149,6 +149,7 @@ impl Engine {
         if self.capture_waiters.is_empty() {
             return;
         }
+        let _z = profile::zone("parked_captures");
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
@@ -379,7 +380,10 @@ impl Engine {
         };
         let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s);
         frame.overlay = &quads;
-        let rgba = self.render_offscreen(w, h, &frame)?;
+        let rgba = {
+            let _z = profile::zone("sight.render");
+            self.render_offscreen(w, h, &frame)?
+        };
         Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays })
     }
 
@@ -612,9 +616,9 @@ impl Engine {
             Err(e) => return ToolOutput::error(e),
         };
         let mut warnings = self.capture_warnings(&r, wait, building, view);
-        let png_bytes = png::encode_rgba8(w, h, &r.rgba, Level::Fastest);
+        let png_bytes = encode_png(w, h, &r.rgba);
         self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes);
+        let png_path = self.save_png(&png_bytes);
         if let Err(e) = &png_path {
             warnings.push(Json::from(format!("capture not saved to disk: {e}")));
         }
@@ -720,9 +724,9 @@ impl Engine {
                 ("subjects_omitted", Json::from(if o.max_subjects == 0 { on.len() } else { omitted })),
             ]));
         }
-        let png_bytes = png::encode_rgba8(sw, sh, &sheet, Level::Fastest);
+        let png_bytes = encode_png(sw, sh, &sheet);
         self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes);
+        let png_path = self.save_png(&png_bytes);
         if let Err(e) = &png_path {
             warnings.push(Json::from(format!("capture not saved to disk: {e}")));
         }
@@ -779,9 +783,9 @@ impl Engine {
             Err(e) => return ToolOutput::error(e),
         };
         let warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, 0, view);
-        let png_bytes = png::encode_rgba8(spec.width, spec.height, &r.rgba, Level::Fastest);
+        let png_bytes = encode_png(spec.width, spec.height, &r.rgba);
         self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes).ok().map(|p| p.display().to_string());
+        let png_path = self.save_png(&png_bytes).ok().map(|p| p.display().to_string());
         let subjects = r.subjects.iter().filter_map(|s| SubjectState::from_json(&s.json)).collect();
         let mark_view = MarkView {
             camera: view.camera,
@@ -830,9 +834,9 @@ impl Engine {
         let after: BTreeMap<u64, SubjectState> = r.subjects.iter().filter_map(|s| SubjectState::from_json(&s.json)).collect();
         let subjects = compare::subject_diff(&mark.subjects, &after, 2, max_subjects);
         let (sheet, sw, sh, factor) = compare::side_by_side(&[&mark.rgba, &r.rgba, &heat], w, h, 4, orbit::MAX_SHEET);
-        let png_bytes = png::encode_rgba8(sw, sh, &sheet, Level::Fastest);
+        let png_bytes = encode_png(sw, sh, &sheet);
         self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes);
+        let png_path = self.save_png(&png_bytes);
         if let Err(e) = &png_path {
             warnings.push(Json::from(format!("capture not saved to disk: {e}")));
         }
@@ -918,6 +922,18 @@ impl Engine {
             out.set("warning", Json::from(w.as_str()));
         }
         ToolOutput::text(out.to_string())
+    }
+}
+
+fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let _z = profile::zone("sight.encode");
+    png::encode_rgba8(w, h, rgba, Level::Fastest)
+}
+
+impl Engine {
+    fn save_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
+        let _z = profile::zone("sight.save");
+        self.save_capture("png", bytes)
     }
 }
 

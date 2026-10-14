@@ -36,7 +36,7 @@ use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
-use specula_core::{base64, png, Json};
+use specula_core::{base64, png, profile, Json};
 use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
@@ -66,7 +66,8 @@ const MAX_LISTING_BYTES: usize = 128 * 1024;
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [-- GAME ARGS...]";
+[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
+[-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -96,6 +97,8 @@ struct Args {
     cache: Option<PathBuf>,
     /// How `--adapter` was given, to name the pipeline cache file.
     adapter_label: String,
+    /// Budgets file (`--perf`, default `./perf.toml` when present).
+    perf: Option<PathBuf>,
     /// Where model recipes live (`--assets`, default the working directory).
     assets: Option<PathBuf>,
     /// One style for every recipe (`--style`; default: the `style.json` next to each recipe).
@@ -119,6 +122,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         world: None,
         cache: None,
         adapter_label: "discrete".into(),
+        perf: None,
         assets: None,
         style: None,
         game_args: Vec::new(),
@@ -151,6 +155,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--captures" => args.captures = Some(PathBuf::from(value()?)),
             "--cache" => args.cache = Some(PathBuf::from(value()?)),
+            "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
             "--world" => {
                 let name = value()?;
@@ -192,6 +197,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let perf_cfg = perf::PerfConfig::load(args.perf.as_deref(), &cwd).map_err(|e| format!("perf budgets: {e}"))?;
+    profile::set_enabled(perf_cfg.profiler);
     // A cached pipeline blob skips shader compilation at start-up. The GPU crate rejects one made
     // by another GPU or driver, so a stale file only costs a cache miss.
     let cache_dir = args.cache.clone().unwrap_or_else(|| cwd.join(".specula-cache"));
@@ -204,6 +211,15 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
+    engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
+    let kind = perf::adapter_kind(engine.gpu.adapter().kind);
+    eprintln!(
+        "specula: perf budgets from {} ({} adapter{})",
+        perf_cfg.source.as_ref().map_or("built-in defaults".into(), |p| p.display().to_string()),
+        kind,
+        if perf_cfg.has_adapter_section(kind) { ", with its own section" } else { "" }
+    );
+    engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
@@ -379,6 +395,10 @@ struct Engine {
     game_name: String,
     /// Frame pacing and simulation cost, for perf_frame.
     pacing: perf::Pacing,
+    /// CPU zones per frame and perf_capture (see [`specula_core::profile`]).
+    profiler: perf::Profiler,
+    /// Budgets (perf.toml).
+    perf_cfg: perf::PerfConfig,
     /// When the clock was last advanced.
     last_advance: Instant,
     /// Window input gathered for the game each frame (reused).
@@ -463,6 +483,8 @@ impl Engine {
             game: None,
             game_name: String::new(),
             pacing: perf::Pacing::default(),
+            profiler: perf::Profiler::new(120),
+            perf_cfg: perf::PerfConfig::default(),
             last_advance: Instant::now(),
             input: Vec::new(),
             game_title: None,
@@ -540,8 +562,10 @@ impl Engine {
         let now = Instant::now();
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
+        let _z = profile::zone("sim");
         for _ in 0..ticks {
             if let Some(game) = self.game.as_mut() {
+                let _t = profile::zone("tick");
                 let start = Instant::now();
                 // Game updates are journaled replay-only and coalesced per tick (F3).
                 self.world.set_recording(Recording::Snapshot);
@@ -551,6 +575,7 @@ impl Engine {
                 self.pacing.tick.push(start.elapsed());
             }
             self.clock.finish_tick();
+            let _h = profile::zone("tick_hash");
             self.record_tick_hash();
         }
     }
@@ -560,6 +585,7 @@ impl Engine {
         self.input.clear();
         ui.drain_events(&mut self.input);
         let Some(game) = self.game.as_mut() else { return };
+        let _z = profile::zone("game_frame");
         let start = Instant::now();
         let mut frame = game::Frame {
             input: &self.input,
@@ -592,10 +618,17 @@ impl Engine {
         if self.autosave_job.is_some() || !self.dirty() {
             return;
         }
-        let plan = persist::plan(&self.world, &self.worlds_dir.join(&name), self.saved.as_ref());
+        let plan = {
+            let _z = profile::zone("autosave.plan");
+            persist::plan(&self.world, &self.worlds_dir.join(&name), self.saved.as_ref())
+        };
         let (tx, done) = mpsc::channel();
         let job = move || {
-            let _ = tx.send(persist::execute(plan));
+            let result = {
+                let _z = profile::zone("autosave.write");
+                persist::execute(plan)
+            };
+            let _ = tx.send(result);
         };
         let revision = self.world.revision();
         if wait {
@@ -653,6 +686,7 @@ impl Engine {
     }
 
     fn autosave_if_due(&mut self) {
+        let _z = profile::zone("autosave");
         self.finish_autosave(false);
         if self.last_autosave.elapsed() >= AUTOSAVE_EVERY {
             self.autosave(false);
@@ -675,6 +709,7 @@ impl Engine {
     /// when the world's meshes or the model library changed since the last call. Returns a
     /// message per failed upload (those entities aren't drawn).
     fn sync_meshes(&mut self) -> Vec<String> {
+        let _z = profile::zone("sync_meshes");
         let generation = self.world_generation;
         let mut errors = self.lathes.sync(&mut self.gpu, &self.world, generation);
         errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
@@ -799,6 +834,8 @@ impl Engine {
         for w in self.build_waiters.drain(..) {
             let _ = w.reply.send(out());
         }
+        // A perf_capture in progress answers with the frames it has.
+        self.profiler.abort_capture();
     }
 
     /// model_build and model_reload: answered when their builds finish (other calls go on).
@@ -850,8 +887,14 @@ impl Engine {
         let mut size = client_size_of(ui.raw);
         let mut last_frame = Instant::now();
         while !interrupt::requested() && !ui.close_requested() {
-            while let Ok(request) = requests.try_recv() {
-                self.handle(request, server);
+            // Everything recorded during the previous iteration is that frame's profile.
+            self.profiler.end_frame(&self.gpu);
+            let frame_zone = profile::zone("frame");
+            {
+                let _z = profile::zone("requests");
+                while let Ok(request) = requests.try_recv() {
+                    self.handle(request, server);
+                }
             }
             self.autosave_if_due();
             self.sweep_claims(server);
@@ -879,10 +922,13 @@ impl Engine {
                 self.gpu.resize_window(size.0, size.1).map_err(|e| format!("resize: {e}"))?;
             }
             if size.0 == 0 || size.1 == 0 {
-                // Minimized: keep serving agents without a frame to present.
+                // Minimized: keep serving agents without a frame to present. The wait is not frame
+                // work, so it is outside the frame zone.
+                drop(frame_zone);
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
+            let draw_list = profile::zone("draw_list");
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
@@ -895,8 +941,11 @@ impl Engine {
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
             let frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
+            drop(draw_list);
             // FIFO present paces the loop to the display refresh.
+            let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            drop(present);
             self.draws = draws;
             presented?;
             self.pacing.frame.push(dt);
@@ -906,14 +955,22 @@ impl Engine {
 
     fn run_headless(&mut self, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
         while !interrupt::requested() {
-            // Wake for the next tick at the latest, so a hosted game keeps real time headless too.
-            let mut wait = self.clock.until_next().min(Duration::from_millis(100));
+            // Wake for the next tick at the latest, so a hosted game keeps real time headless too
+            // (and about 60 times a second while perf_capture records frames).
+            let most = if self.profiler.capturing() { Duration::from_millis(16) } else { Duration::from_millis(100) };
+            let mut wait = self.clock.until_next().min(most);
             if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
-            match requests.recv_timeout(wait) {
-                Ok(request) => self.handle(request, server),
+            let received = requests.recv_timeout(wait);
+            self.profiler.end_frame(&self.gpu);
+            let _frame = profile::zone("frame");
+            match received {
+                Ok(request) => {
+                    let _z = profile::zone("requests");
+                    self.handle(request, server);
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
@@ -933,6 +990,20 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
+        // perf_capture answers once its frames are recorded (see perf::Profiler::end_frame).
+        let request = match request.command {
+            Command::PerfCapture(spec) => {
+                let kind = perf::adapter_kind(self.gpu.adapter().kind);
+                let ctx = perf::CaptureContext {
+                    dir: self.capture_dir.clone(),
+                    budgets: self.perf_cfg.budgets(kind),
+                    adapter: kind.to_owned(),
+                };
+                self.profiler.start_capture(spec, request.reply, request.deadline, ctx);
+                return;
+            }
+            command => Request { command, ..request },
+        };
         if matches!(request.command, Command::ModelBuild(_) | Command::ModelReload) {
             self.handle_model_call(request);
             return;
@@ -1029,6 +1100,18 @@ impl Engine {
             }
             Command::Info => self.info(&server.sessions()),
             Command::Perf { budget_ms } => self.perf(budget_ms),
+            Command::PerfZones(q) => {
+                if let Some(on) = q.enabled {
+                    profile::set_enabled(on);
+                }
+                ToolOutput::text(perf::zones_json(&self.profiler, &q).to_string())
+            }
+            Command::PerfMemory { limit } => {
+                let stats = self.gpu.last_frame_stats_of(FramePath::Window);
+                let stats = stats.or_else(|| self.gpu.last_frame_stats_of(FramePath::Offscreen));
+                ToolOutput::text(perf::memory_json(&self.profiler, stats.as_ref(), limit).to_string())
+            }
+            Command::PerfCapture(_) => unreachable!("answered above"),
             Command::Time(op) => {
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
@@ -1358,23 +1441,40 @@ impl Engine {
     }
 
     fn perf(&self, budget_ms: Option<f64>) -> ToolOutput {
-        let budget = budget_ms.unwrap_or(perf::DEFAULT_BUDGET_MS);
+        let kind = perf::adapter_kind(self.gpu.adapter().kind);
+        let mut budgets = self.perf_cfg.budgets(kind);
+        if let Some(ms) = budget_ms {
+            budgets = budgets.with_frame(ms);
+        }
         let window = self.gpu.last_frame_stats_of(FramePath::Window);
         let offscreen = self.gpu.last_frame_stats_of(FramePath::Offscreen);
         let pacing = &self.pacing;
-        let p95 = pacing.frame.to_json().get("p95_ms").and_then(Json::as_f64);
-        let errors = match window.as_ref().or(offscreen.as_ref()) {
-            Some(s) => perf::budget_errors(s, budget, p95),
-            None => Vec::new(),
+        let zones = self.profiler.rolling();
+        let heap = specula_core::alloc::stats();
+        let sample = perf::Sample {
+            stats: window.as_ref().or(offscreen.as_ref()),
+            pacing_p95_ms: pacing.frame.p95(),
+            cpu_frame_p95_ms: self.profiler.cpu_frame_p95(),
+            tick_p95_ms: pacing.tick.p95(),
+            game_frame_p95_ms: pacing.game_frame.p95(),
+            zones: &zones,
+            heap_bytes: heap.installed.then_some(heap.current_bytes),
+            allocations_per_frame_p95: self.profiler.allocations_p95(),
         };
+        let errors = perf::evaluate(&budgets, &sample, kind);
+        let source = self.perf_cfg.source.as_ref().map_or(Json::Null, |p| Json::from(p.display().to_string()));
+        let heap_mb = (heap.current_bytes as f64 / 1_048_576.0 * 10.0).round() / 10.0;
         let out = Json::obj([
-            ("budget_ms", Json::from(budget)),
+            ("budget_ms", Json::from(budgets.frame_ms)),
+            ("budgets", Json::obj([("source", source), ("adapter", Json::from(kind)), ("checked", budgets.to_json())])),
             ("errors", Json::Arr(errors)),
             ("window", window.as_ref().map_or(Json::Null, perf::stats_json)),
             ("offscreen", offscreen.as_ref().map_or(Json::Null, perf::stats_json)),
             ("frame_pacing", pacing.frame.to_json()),
             ("sim_tick", pacing.tick.to_json()),
             ("game_frame", pacing.game_frame.to_json()),
+            ("cpu", perf::cpu_json(&self.profiler)),
+            ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),
             ("clock", self.clock.to_json()),
             ("entities", Json::from(self.world.len())),
