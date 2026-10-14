@@ -348,6 +348,35 @@ pub struct Loaded {
     pub buffers: Vec<Vec<u8>>,
     pub base: Option<PathBuf>,
     pub is_glb: bool,
+    /// Bytes read so far (buffers; images add theirs), against `Limits::max_total_bytes`.
+    pub budget: ByteBudget,
+}
+
+/// A running count of bytes read from URIs and chunks, checked before each read.
+#[derive(Clone, Copy, Debug)]
+pub struct ByteBudget {
+    pub used: u64,
+    pub limit: u64,
+}
+
+impl ByteBudget {
+    /// Charges `n` bytes, or fails with a `Limit` error at `path`.
+    pub fn charge(&mut self, n: u64, path: &str) -> Result<(), GltfError> {
+        let used = self.used.saturating_add(n);
+        if used > self.limit {
+            return Err(gerr(C::Limit, path, format!("{used} bytes of buffers and images; the limit is {}", self.limit)).with_numbers(used as f64, self.limit as f64));
+        }
+        self.used = used;
+        Ok(())
+    }
+}
+
+/// Where a URI's bytes are, before anything is read.
+pub(crate) enum UriSource<'a> {
+    /// The base64 payload of a `data:` URI and its offset in the URI.
+    Data { payload: &'a str, offset: usize },
+    /// A canonical path inside the asset folder, and the file's size.
+    File { real: PathBuf, len: u64 },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -550,29 +579,58 @@ pub fn load(bytes: &[u8], base: Option<&Path>, limits: &Limits, warnings: &mut V
     let json = Json::parse(text).map_err(|e| gerr(C::Json, "", e.message).at_offset((json_start + e.offset) as u64))?;
     let doc = parse(&json, limits, warnings)?;
     let base = base.map(Path::to_path_buf);
-    let mut buffers = Vec::with_capacity(doc.buffers.len());
-    let mut total: u64 = 0;
+    let declared: u64 = doc.buffers.iter().map(|b| b.byte_length as u64).sum();
+    if declared > limits.max_total_bytes {
+        return Err(gerr(C::Limit, "buffers", format!("buffers declare {declared} bytes; the limit is {}", limits.max_total_bytes)).with_numbers(declared as f64, limits.max_total_bytes as f64));
+    }
+    let mut budget = ByteBudget { used: 0, limit: limits.max_total_bytes };
+    let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(doc.buffers.len());
+    // External files already read (canonical path → buffer index): each is read once.
+    let mut files: Vec<(PathBuf, usize)> = Vec::new();
     for (i, b) in doc.buffers.iter().enumerate() {
         let path = format!("buffers[{i}]");
-        total += b.byte_length as u64;
-        if total > limits.max_total_bytes {
-            return Err(gerr(C::Limit, &path, format!("buffers total {total} bytes; the limit is {}", limits.max_total_bytes)).with_numbers(total as f64, limits.max_total_bytes as f64));
-        }
+        let want = b.byte_length;
+        let short = |have: usize| gerr(C::Bounds, &format!("{path}.byteLength"), format!("{want} bytes declared, {have} available")).with_numbers(have as f64, want as f64);
+        budget.charge(want as u64, &path)?;
         let data = match (&b.uri, i, bin) {
-            (Some(uri), _, _) => read_uri(uri, base.as_deref(), &format!("{path}.uri"), limits)?,
-            (None, 0, Some(bin)) if is_glb => {
-                if bin.len() > b.byte_length + 3 {
-                    push_warning(warnings, Warning { code: "bin_chunk_padding", path: path.clone(), message: format!("BIN chunk is {} bytes for a {}-byte buffer", bin.len(), b.byte_length) });
+            (Some(uri), _, _) => {
+                let up = format!("{path}.uri");
+                match resolve_uri(uri, base.as_deref(), &up, limits)? {
+                    UriSource::Data { payload, offset } => {
+                        let mut d = decode_data(payload, offset, &up)?;
+                        if d.len() < want {
+                            return Err(short(d.len()));
+                        }
+                        d.truncate(want);
+                        d.shrink_to_fit();
+                        d
+                    }
+                    UriSource::File { real, len } => {
+                        if len < want as u64 {
+                            return Err(short(len as usize));
+                        }
+                        match files.iter().find(|(p, k)| *p == real && buffers[*k].len() >= want) {
+                            Some(&(_, k)) => buffers[k][..want].to_vec(),
+                            None => {
+                                let d = read_file(&real, Some(want as u64), &up)?;
+                                files.push((real, i));
+                                d
+                            }
+                        }
+                    }
                 }
-                bin.to_vec()
+            }
+            (None, 0, Some(bin)) if is_glb => {
+                if bin.len() > want + 3 {
+                    push_warning(warnings, Warning { code: "bin_chunk_padding", path: path.clone(), message: format!("BIN chunk is {} bytes for a {want}-byte buffer", bin.len()) });
+                }
+                if bin.len() < want {
+                    return Err(short(bin.len()));
+                }
+                bin[..want].to_vec()
             }
             (None, _, _) => return Err(gerr(C::MissingField, &format!("{path}.uri"), "only the first buffer of a GLB may omit its uri")),
         };
-        if data.len() < b.byte_length {
-            return Err(gerr(C::Bounds, &format!("{path}.byteLength"), format!("{} bytes declared, {} available", b.byte_length, data.len())).with_numbers(data.len() as f64, b.byte_length as f64));
-        }
-        let mut data = data;
-        data.truncate(b.byte_length);
         buffers.push(data);
     }
     // Every view must lie inside its buffer.
@@ -582,22 +640,28 @@ pub fn load(bytes: &[u8], base: Option<&Path>, limits: &Limits, warnings: &mut V
             return Err(gerr(C::Bounds, &format!("bufferViews[{i}]"), format!("bytes {}..+{} exceed buffer {} ({} bytes)", v.offset, v.length, v.buffer, buffers[v.buffer].len())).at_offset(v.offset as u64));
         }
     }
-    Ok(Loaded { doc, buffers, base, is_glb })
+    Ok(Loaded { doc, buffers, base, is_glb, budget })
 }
 
-/// Reads a buffer or image URI: a base64 `data:` URI, or a relative path inside `base`.
-pub(crate) fn read_uri(uri: &str, base: Option<&Path>, path: &str, limits: &Limits) -> Result<Vec<u8>, GltfError> {
+/// Resolves a buffer or image URI without reading it: a base64 `data:` URI, or a relative path
+/// that must stay inside `base` (links followed).
+///
+/// Containment is checked on the canonical path, and that canonical path is what gets read, so
+/// a link swapped *between* this check and the read (a time-of-check/time-of-use race by
+/// someone who can write inside the asset folder while the import runs) could still redirect
+/// the read. Importing from a folder an attacker can modify concurrently is out of scope.
+pub(crate) fn resolve_uri<'a>(uri: &'a str, base: Option<&Path>, path: &str, limits: &Limits) -> Result<UriSource<'a>, GltfError> {
     if let Some(rest) = uri.strip_prefix("data:") {
         let comma = rest.find(',').ok_or_else(|| gerr(C::Uri, path, "data URI without a comma"))?;
         if !rest[..comma].ends_with(";base64") {
             return Err(gerr(C::Unsupported, path, "only base64 data URIs are supported"));
         }
-        let data = &rest[comma + 1..];
-        let size = data.len() as u64 / 4 * 3;
+        let payload = &rest[comma + 1..];
+        let size = payload.len() as u64 / 4 * 3;
         if size > limits.max_file_bytes {
             return Err(gerr(C::Limit, path, format!("data URI holds about {size} bytes; the limit is {}", limits.max_file_bytes)).with_numbers(size as f64, limits.max_file_bytes as f64));
         }
-        return base64::decode(data).map_err(|e| gerr(C::Uri, path, format!("bad base64: {}", e.message)).at_offset((5 + comma + 1 + e.offset) as u64));
+        return Ok(UriSource::Data { payload, offset: 5 + comma + 1 });
     }
     let rel = relative_path(uri, path)?;
     let Some(base) = base else {
@@ -605,7 +669,6 @@ pub(crate) fn read_uri(uri: &str, base: Option<&Path>, path: &str, limits: &Limi
     };
     let full = base.join(&rel);
     let io = |e: std::io::Error, what: &str| gerr(C::Io, path, format!("{what} '{}': {e}", full.display()));
-    // Containment: the resolved file (links followed) must be inside the resolved base folder.
     let base_real = base.canonicalize().map_err(|e| io(e, "resolving the asset folder for"))?;
     let real = full.canonicalize().map_err(|e| io(e, "resolving"))?;
     if !real.starts_with(&base_real) {
@@ -618,7 +681,29 @@ pub(crate) fn read_uri(uri: &str, base: Option<&Path>, path: &str, limits: &Limi
     if meta.len() > limits.max_file_bytes {
         return Err(gerr(C::Limit, path, format!("'{uri}' is {} bytes; the limit is {}", meta.len(), limits.max_file_bytes)).with_numbers(meta.len() as f64, limits.max_file_bytes as f64));
     }
-    std::fs::read(&real).map_err(|e| io(e, "reading"))
+    Ok(UriSource::File { real, len: meta.len() })
+}
+
+/// Decodes a data URI's base64 payload (`offset` = its position in the URI, for errors).
+pub(crate) fn decode_data(payload: &str, offset: usize, path: &str) -> Result<Vec<u8>, GltfError> {
+    base64::decode(payload).map_err(|e| gerr(C::Uri, path, format!("bad base64: {}", e.message)).at_offset((offset + e.offset) as u64))
+}
+
+/// Reads at most `want` bytes (all of it when `None`) of a resolved file.
+pub(crate) fn read_file(real: &Path, want: Option<u64>, path: &str) -> Result<Vec<u8>, GltfError> {
+    use std::io::Read;
+    let io = |e: std::io::Error| gerr(C::Io, path, format!("reading '{}': {e}", real.display()));
+    let f = std::fs::File::open(real).map_err(io)?;
+    let mut out = Vec::with_capacity(want.unwrap_or(0).min(1 << 30) as usize);
+    match want {
+        Some(n) => f.take(n).read_to_end(&mut out),
+        None => (&f).read_to_end(&mut out),
+    }
+    .map_err(io)?;
+    if want.is_some_and(|n| (out.len() as u64) < n) {
+        return Err(gerr(C::Bounds, path, format!("'{}' shrank while reading: {} of {} bytes", real.display(), out.len(), want.unwrap_or(0))));
+    }
+    Ok(out)
 }
 
 /// A URI as a safe relative path: percent-decoded, `/`-separated, no scheme, no absolute

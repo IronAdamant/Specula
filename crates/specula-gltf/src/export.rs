@@ -149,6 +149,10 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
     let model = input.model;
     let mesh = model.lods.get(input.lod).ok_or_else(|| gerr(C::BadReference, "lod", format!("LOD {} doesn't exist ({} LODs)", input.lod, model.lods.len())))?;
     mesh.validate().map_err(|e| gerr(C::InvalidData, "mesh", format!("the mesh is invalid: {e}")))?;
+    if mesh.triangle_count() == 0 {
+        // glTF needs at least one primitive per mesh and no empty buffer views.
+        return Err(gerr(C::InvalidData, "mesh", "the mesh has no triangles; there is nothing to export"));
+    }
     let derived;
     let skel = match (input.skeleton, &model.rig) {
         (Some(s), _) => Some(s),

@@ -18,8 +18,9 @@ use specula_core::Json;
 
 use crate::math3::{self, V3};
 
-/// Most bones a rig may have (joint indices are `u8`; crowd budget from docs/design/ANIMATION.md).
-pub const MAX_BONES: usize = 64;
+/// Most bones a rig may have: joint indices are `u8`. How many bones a creature *should* have is a
+/// performance budget (docs/design/ANIMATION.md: e.g. 64 for crowd NPCs), not this limit.
+pub const MAX_BONES: usize = 255;
 
 /// One bone, in the model's rest pose.
 #[derive(Clone, Debug, PartialEq)]

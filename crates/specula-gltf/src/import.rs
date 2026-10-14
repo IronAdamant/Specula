@@ -93,70 +93,157 @@ fn unique(names: &mut BTreeSet<String>, want: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // Images and textures.
 
+/// The dimensions a PNG (IHDR) or JPEG (SOF) declares, read without decoding.
+fn declared_size(bytes: &[u8]) -> Option<(u64, u64)> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) && bytes.len() >= 24 && &bytes[12..16] == b"IHDR" {
+        let wd = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as u64;
+        let ht = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as u64;
+        return Some((wd, ht));
+    }
+    jpeg::info(bytes).ok().map(|i| (i.width as u64, i.height as u64))
+}
+
+/// Where an image's bytes come from; equal sources are read and decoded once.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ImageSource {
+    View(usize),
+    File(std::path::PathBuf),
+    /// A data URI, by the stable hash of its text (equal text confirmed before sharing).
+    Data(u64),
+}
+
+/// Decodes every image a material slot uses (through a texture), each distinct source once.
+/// Size limits are errors, checked from the PNG/JPEG header before decoding; unreadable or
+/// undecodable images are warnings.
 fn decode_images(l: &Loaded, opts: &ImportOptions, w: &mut Vec<Warning>) -> Result<Vec<ImportedImage>, GltfError> {
     let doc = &l.doc;
-    let needed: BTreeSet<usize> = doc.textures.iter().filter_map(|t| t.source).collect();
+    let lim = &opts.limits;
+    let mut used_textures = BTreeSet::new();
+    for m in &doc.materials {
+        for t in [m.base_color_texture, m.metallic_roughness_texture, m.normal_texture, m.occlusion_texture, m.emissive_texture].into_iter().flatten() {
+            used_textures.insert(t.texture);
+        }
+    }
+    let needed: BTreeSet<usize> = used_textures.iter().filter_map(|&t| doc.textures[t].source).collect();
+    let mut budget = l.budget;
+    let mut decoded_bytes: u64 = 0;
+    let mut sources: BTreeMap<ImageSource, usize> = BTreeMap::new();
     let mut out = Vec::with_capacity(doc.images.len());
     for (i, im) in doc.images.iter().enumerate() {
         let path = format!("images[{i}]");
-        let mut img = ImportedImage { name: im.name.clone(), mime: im.mime.clone().unwrap_or_default(), width: 0, height: 0, rgba: Vec::new(), error: None };
+        let mut img = ImportedImage { name: im.name.clone(), mime: im.mime.clone().unwrap_or_default(), width: 0, height: 0, rgba: Vec::new(), error: None, duplicate_of: None };
         if !needed.contains(&i) {
-            img.error = Some("not used by any texture".into());
+            img.error = Some("not used by any material".into());
             out.push(img);
             continue;
         }
-        let bytes: Vec<u8> = match (&im.uri, im.view) {
-            (Some(uri), _) => crate::doc::read_uri(uri, l.base.as_deref(), &format!("{path}.uri"), &opts.limits)?,
-            (None, Some(v)) => {
-                let v = &doc.views[v];
-                l.buffers[v.buffer][v.offset..v.offset + v.length].to_vec()
-            }
+        // Resolve the source; failures to reach it are warnings.
+        let source = match (&im.uri, im.view) {
+            (Some(uri), _) => match crate::doc::resolve_uri(uri, l.base.as_deref(), &format!("{path}.uri"), lim) {
+                Ok(crate::doc::UriSource::File { real, .. }) => Ok(ImageSource::File(real)),
+                Ok(crate::doc::UriSource::Data { .. }) => Ok(ImageSource::Data(specula_core::hash::hash_str(uri))),
+                Err(e) if e.code == C::Limit => return Err(e),
+                Err(e) => Err(e),
+            },
+            (None, Some(v)) => Ok(ImageSource::View(v)),
             (None, None) => unreachable!("checked when parsing"),
         };
-        if !opts.decode_images {
-            img.error = Some("image decoding is off".into());
+        let source = match source {
+            Ok(s) => s,
+            Err(e) => {
+                warn(w, "image_unreadable", e.path.clone(), format!("{:?}: {}", e.code, e.message));
+                img.error = Some(e.to_string());
+                out.push(img);
+                continue;
+            }
+        };
+        // Equal data URIs (same hash and text) are the same source too.
+        let same = sources.get(&source).copied().filter(|&k| !matches!(source, ImageSource::Data(_)) || doc.images[k].uri == im.uri);
+        if let Some(k) = same {
+            img.duplicate_of = Some(k);
+            img.mime = out[k].mime.clone();
+            img.width = out[k].width;
+            img.height = out[k].height;
+            img.error = out[k].error.clone();
             out.push(img);
             continue;
         }
-        let max = opts.limits.max_image_pixels;
-        let too_big = |wd: u64, ht: u64| gerr(C::Limit, &path, format!("{wd}x{ht} image exceeds {max} pixels")).with_numbers((wd * ht) as f64, max as f64);
-        if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        if !opts.decode_images {
+            img.error = Some("image decoding is off".into());
+            sources.entry(source.clone()).or_insert(i);
+            out.push(img);
+            continue;
+        }
+        let owned;
+        let bytes: &[u8] = match (&source, &im.uri) {
+            (ImageSource::View(v), _) => {
+                let v = &doc.views[*v];
+                &l.buffers[v.buffer][v.offset..v.offset + v.length]
+            }
+            (ImageSource::File(real), _) => {
+                let len = std::fs::metadata(real).map(|m| m.len()).unwrap_or(0);
+                budget.charge(len, &format!("{path}.uri"))?;
+                owned = match crate::doc::read_file(real, None, &format!("{path}.uri")) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn(w, "image_unreadable", e.path.clone(), e.message.clone());
+                        img.error = Some(e.to_string());
+                        sources.entry(source.clone()).or_insert(i);
+                        out.push(img);
+                        continue;
+                    }
+                };
+                &owned
+            }
+            (ImageSource::Data(_), Some(uri)) => {
+                let up = format!("{path}.uri");
+                let Ok(crate::doc::UriSource::Data { payload, offset }) = crate::doc::resolve_uri(uri, None, &up, lim) else { unreachable!("resolved above") };
+                budget.charge(payload.len() as u64 / 4 * 3, &up)?;
+                owned = match crate::doc::decode_data(payload, offset, &up) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn(w, "image_unreadable", e.path.clone(), e.message.clone());
+                        img.error = Some(e.to_string());
+                        sources.entry(source.clone()).or_insert(i);
+                        out.push(img);
+                        continue;
+                    }
+                };
+                &owned
+            }
+            (ImageSource::Data(_), None) => unreachable!("data sources have a uri"),
+        };
+        sources.entry(source.clone()).or_insert(i);
+        // Limits from the header, before any pixel memory is committed.
+        if let Some((wd, ht)) = declared_size(bytes) {
+            let px = wd.saturating_mul(ht);
+            if px > lim.max_image_pixels {
+                return Err(gerr(C::Limit, &path, format!("{wd}x{ht} image exceeds {} pixels", lim.max_image_pixels)).with_numbers(px as f64, lim.max_image_pixels as f64));
+            }
+            decoded_bytes = decoded_bytes.saturating_add(px.saturating_mul(4));
+            if decoded_bytes > lim.max_image_bytes {
+                return Err(gerr(C::Limit, &path, format!("decoded images total {decoded_bytes} bytes; the limit is {}", lim.max_image_bytes)).with_numbers(decoded_bytes as f64, lim.max_image_bytes as f64));
+            }
+        }
+        let result = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
             img.mime = "image/png".into();
-            if bytes.len() >= 24 && &bytes[12..16] == b"IHDR" {
-                let wd = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as u64;
-                let ht = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as u64;
-                if wd * ht > max {
-                    return Err(too_big(wd, ht));
-                }
-            }
-            match png::decode(&bytes) {
-                Ok(p) => {
-                    img.width = p.width;
-                    img.height = p.height;
-                    img.rgba = p.rgba;
-                }
-                Err(e) => img.error = Some(e.message),
-            }
+            png::decode(bytes).map_err(|e| e.message)
         } else if bytes.starts_with(&[0xFF, 0xD8]) {
             img.mime = "image/jpeg".into();
-            if let Ok(info) = jpeg::info(&bytes) {
-                if info.width as u64 * info.height as u64 > max {
-                    return Err(too_big(info.width as u64, info.height as u64));
-                }
-            }
-            match jpeg::decode_with_limits(&bytes, &jpeg::Limits { max_pixels: max }) {
-                Ok(p) => {
-                    img.width = p.width;
-                    img.height = p.height;
-                    img.rgba = p.rgba;
-                }
-                Err(e) => img.error = Some(e.to_string()),
-            }
+            jpeg::decode_with_limits(bytes, &jpeg::Limits { max_pixels: lim.max_image_pixels }).map_err(|e| e.to_string())
         } else {
-            img.error = Some(format!("unsupported image format (declared {:?}); PNG and JPEG are supported", im.mime));
-        }
-        if let Some(e) = &img.error {
-            warn(w, "image_not_decoded", path, e.clone());
+            Err(format!("unsupported image format (declared {:?}); PNG and JPEG are supported", im.mime))
+        };
+        match result {
+            Ok(p) => {
+                img.width = p.width;
+                img.height = p.height;
+                img.rgba = p.rgba;
+            }
+            Err(e) => {
+                warn(w, "image_not_decoded", path, e.clone());
+                img.error = Some(e);
+            }
         }
         out.push(img);
     }
@@ -794,11 +881,63 @@ struct RawChannel {
     path: String,
 }
 
+/// Reads one channel's keys (absolute values; tangents for cubic splines).
 #[allow(clippy::too_many_arguments)]
-fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone_of: &[Option<usize>], in_scene: &[bool], names: &mut BTreeSet<String>, keys_total: &mut usize, opts: &ImportOptions, w: &mut Vec<Warning>) -> Result<Option<Clip>, GltfError> {
+fn read_channel(doc: &Document, bufs: &[Vec<u8>], a: &crate::doc::Animation, apath: &str, bone: usize, channel: Channel, si: usize, cp: String, times_of: &BTreeMap<usize, Vec<f32>>) -> Result<RawChannel, GltfError> {
+    let s = &a.samplers[si];
+    let sp = format!("{apath}.samplers[{si}]");
+    let times = times_of[&s.input].clone();
+    let rotation = channel == Channel::Rotation;
+    expect_type(doc, s.output, &format!("{sp}.output"), &[if rotation { ElemType::Vec4 } else { ElemType::Vec3 }])?;
+    let out = floats(doc, bufs, s.output, &format!("{sp}.output"))?;
+    let dims = if rotation { 4 } else { 3 };
+    let n = times.len();
+    let per = if s.interpolation == Interpolation::CubicSpline { 3 } else { 1 };
+    if out.len() != n * dims * per {
+        return Err(gerr(C::InvalidData, &format!("{sp}.output"), format!("{} values for {n} keys ({} expected)", out.len() / dims, n * per)));
+    }
+    if per == 3 && n < 2 {
+        return Err(gerr(C::InvalidData, &format!("{sp}.input"), "CUBICSPLINE needs at least two keys"));
+    }
+    let vec4 = |k: usize| -> [f32; 4] {
+        let o = &out[k * dims..k * dims + dims];
+        if rotation {
+            [o[0], o[1], o[2], o[3]]
+        } else {
+            [o[0], o[1], o[2], 0.0]
+        }
+    };
+    let (mut values, mut in_tan, mut out_tan) = (Vec::with_capacity(n), Vec::new(), Vec::new());
+    for k in 0..n {
+        if per == 3 {
+            in_tan.push(vec4(3 * k));
+            values.push(vec4(3 * k + 1));
+            out_tan.push(vec4(3 * k + 2));
+        } else {
+            values.push(vec4(k));
+        }
+    }
+    if rotation {
+        for (k, q) in values.iter_mut().enumerate() {
+            let l2 = qdot(*q, *q);
+            if l2.is_nan() || l2 <= 1e-12 {
+                return Err(gerr(C::InvalidData, &format!("{sp}.output"), format!("key {k} is a zero quaternion")));
+            }
+            if (l2 - 1.0).abs() > 1e-6 {
+                *q = qnorm(*q);
+            }
+        }
+    }
+    Ok(RawChannel { bone, channel, interp: s.interpolation, times, values, in_tan, out_tan, path: cp })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone_of: &[Option<usize>], in_scene: &[bool], names: &mut BTreeSet<String>, keys_total: &mut [usize; 2], opts: &ImportOptions, w: &mut Vec<Warning>) -> Result<Option<Clip>, GltfError> {
     let a = &doc.animations[ai];
     let apath = format!("animations[{ai}]");
-    let mut raw: Vec<RawChannel> = Vec::new();
+    // Pass 1: which channels to import, and their raw key count against the budget, before
+    // any key data is read. Channels are then read and converted one at a time.
+    let mut plan: Vec<(usize, Channel, usize, String)> = Vec::new();
     let mut seen: BTreeSet<(usize, u8)> = BTreeSet::new();
     let mut morph_warned = false;
     for (ci, c) in a.channels.iter().enumerate() {
@@ -840,60 +979,34 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
         if doc.accessors[s.input].ctype != ComponentType::F32 {
             return Err(gerr(C::WrongType, &format!("{sp}.input"), "key times are FLOAT"));
         }
-        let times = floats(doc, bufs, s.input, &format!("{sp}.input"))?;
-        for (k, t) in times.iter().enumerate() {
-            if *t < 0.0 || (k > 0 && times[k - 1] >= *t) {
-                return Err(gerr(C::InvalidData, &format!("{sp}.input"), format!("key {k} at {t} s: times must be non-negative and strictly increasing")));
-            }
-        }
-        let rotation = channel == Channel::Rotation;
-        expect_type(doc, s.output, &format!("{sp}.output"), &[if rotation { ElemType::Vec4 } else { ElemType::Vec3 }])?;
-        let out = floats(doc, bufs, s.output, &format!("{sp}.output"))?;
-        let dims = if rotation { 4 } else { 3 };
-        let n = times.len();
         let per = if s.interpolation == Interpolation::CubicSpline { 3 } else { 1 };
-        if out.len() != n * dims * per {
-            return Err(gerr(C::InvalidData, &format!("{sp}.output"), format!("{} values for {n} keys ({} expected)", out.len() / dims, n * per)));
+        keys_total[1] = keys_total[1].saturating_add(doc.accessors[s.input].count.saturating_mul(per));
+        if keys_total[1] > opts.limits.max_total_keys {
+            return Err(gerr(C::Limit, &cp, format!("animations hold more than {} keys (counting every channel)", opts.limits.max_total_keys)).with_numbers(keys_total[1] as f64, opts.limits.max_total_keys as f64));
         }
-        if per == 3 && n < 2 {
-            return Err(gerr(C::InvalidData, &format!("{sp}.input"), "CUBICSPLINE needs at least two keys"));
-        }
-        let vec4 = |k: usize| -> [f32; 4] {
-            let o = &out[k * dims..k * dims + dims];
-            if rotation {
-                [o[0], o[1], o[2], o[3]]
-            } else {
-                [o[0], o[1], o[2], 0.0]
-            }
-        };
-        let (mut values, mut in_tan, mut out_tan) = (Vec::with_capacity(n), Vec::new(), Vec::new());
-        for k in 0..n {
-            if per == 3 {
-                in_tan.push(vec4(3 * k));
-                values.push(vec4(3 * k + 1));
-                out_tan.push(vec4(3 * k + 2));
-            } else {
-                values.push(vec4(k));
-            }
-        }
-        if rotation {
-            for (k, q) in values.iter_mut().enumerate() {
-                let l2 = qdot(*q, *q);
-                if l2.is_nan() || l2 <= 1e-12 {
-                    return Err(gerr(C::InvalidData, &format!("{sp}.output"), format!("key {k} is a zero quaternion")));
-                }
-                if (l2 - 1.0).abs() > 1e-6 {
-                    *q = qnorm(*q);
-                }
-            }
-        }
-        raw.push(RawChannel { bone, channel, interp: s.interpolation, times, values, in_tan, out_tan, path: cp });
+        plan.push((bone, channel, c.sampler, cp));
     }
-    if raw.is_empty() {
+    if plan.is_empty() {
         warn(w, "empty_animation", &apath, "no usable channels; skipped");
         return Ok(None);
     }
-    let last = raw.iter().map(|r| *r.times.last().expect("at least one key")).fold(0.0f32, f32::max);
+    // Key times, read once per input accessor.
+    let mut times_of: BTreeMap<usize, Vec<f32>> = BTreeMap::new();
+    for (_, _, si, _) in &plan {
+        let input = a.samplers[*si].input;
+        if times_of.contains_key(&input) {
+            continue;
+        }
+        let ip = format!("{apath}.samplers[{si}].input");
+        let times = floats(doc, bufs, input, &ip)?;
+        for (k, t) in times.iter().enumerate() {
+            if *t < 0.0 || (k > 0 && times[k - 1] >= *t) {
+                return Err(gerr(C::InvalidData, &ip, format!("key {k} at {t} s: times must be non-negative and strictly increasing")));
+            }
+        }
+        times_of.insert(input, times);
+    }
+    let last = times_of.values().map(|t| *t.last().expect("at least one key")).fold(0.0f32, f32::max);
     if last > specula_anim::clip::MAX_DURATION_S {
         return Err(gerr(C::Limit, &apath, format!("{last} s long; clips are at most {} s", specula_anim::clip::MAX_DURATION_S)).with_numbers(last as f64, specula_anim::clip::MAX_DURATION_S as f64));
     }
@@ -916,7 +1029,8 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
     let mut clip = Clip::from_json(&Json::obj(meta), "").map_err(|e| gerr(C::InvalidData, &format!("{apath}.extras.specula{}", if e.path.is_empty() { String::new() } else { format!(".{}", e.path) }), e.message))?;
     let wrap = clip.wrap();
     let max_keys = specula_anim::clip::MAX_KEYS;
-    for r in raw {
+    for (bone, channel, si, cp) in plan {
+        let r = read_channel(doc, bufs, a, &apath, bone, channel, si, cp, &times_of)?;
         let rest = skel.rest[r.bone];
         let rotation = r.channel == Channel::Rotation;
         // Absolute keys → (interp, times, absolute values) in Specula's interpolation terms.
@@ -1015,9 +1129,9 @@ fn build_clip(doc: &Document, bufs: &[Vec<u8>], ai: usize, skel: &Skeleton, bone
             warn(w, "channel_out_of_range", &r.path, format!("key {k} is {:?} relative to the rest pose; Specula clips hold offsets within {max_off} m and scales 0..=100; channel dropped", &rel[k][..3]));
             continue;
         }
-        *keys_total += times.len();
-        if *keys_total > opts.limits.max_total_keys {
-            return Err(gerr(C::Limit, &r.path, format!("more than {} animation keys in total", opts.limits.max_total_keys)).with_numbers(*keys_total as f64, opts.limits.max_total_keys as f64));
+        keys_total[0] += times.len();
+        if keys_total[0] > opts.limits.max_total_keys {
+            return Err(gerr(C::Limit, &r.path, format!("more than {} animation keys in total", opts.limits.max_total_keys)).with_numbers(keys_total[0] as f64, opts.limits.max_total_keys as f64));
         }
         clip.tracks.push(Track { bone: skel.names[r.bone].clone(), channel: r.channel, keys: Keys { interp, times, values: rel } });
     }
@@ -1089,7 +1203,12 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
     }
 
     let images = decode_images(l, opts, w)?;
-    let textures: Vec<ImportedTexture> = doc.textures.iter().map(|t| ImportedTexture { name: t.name.clone(), image: t.source, sampler: t.sampler.map(|s| doc.samplers[s]).unwrap_or_default() }).collect();
+    // Textures point at the image that holds the pixels (duplicates share the first copy).
+    let textures: Vec<ImportedTexture> = doc
+        .textures
+        .iter()
+        .map(|t| ImportedTexture { name: t.name.clone(), image: t.source.map(|k| images[k].duplicate_of.unwrap_or(k)), sampler: t.sampler.map(|s| doc.samplers[s]).unwrap_or_default() })
+        .collect();
 
     // Bones: skin joints and animated nodes, closed under ancestors.
     let insts: Vec<usize> = order.iter().copied().filter(|&i| doc.nodes[i].mesh.is_some()).collect();
@@ -1130,8 +1249,11 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
         for pr in &doc.meshes[m].primitives {
             let pv = pr.attributes.iter().find(|(k, _)| k == "POSITION").map_or(0, |(_, a)| doc.accessors[*a].count);
             let ic = pr.indices.map_or(pv, |a| doc.accessors[a].count);
-            est_v = est_v.saturating_add(if pr.attributes.iter().any(|(k, _)| k == "NORMAL") { pv } else { ic });
-            est_t = est_t.saturating_add(ic / 3 + 1);
+            // Triangles by mode (strips and fans make one per index after the first two); without
+            // normals every triangle corner becomes its own vertex.
+            let tris = if pr.mode == 4 { ic / 3 } else { ic.saturating_sub(2) };
+            est_v = est_v.saturating_add(if pr.attributes.iter().any(|(k, _)| k == "NORMAL") { pv } else { tris.saturating_mul(3) });
+            est_t = est_t.saturating_add(tris);
         }
     }
     if est_v > lim.max_vertices || est_t > lim.max_triangles {
@@ -1429,7 +1551,7 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
     let mut clips = Vec::new();
     if let Some(s) = &skeleton {
         let mut names = BTreeSet::new();
-        let mut keys_total = 0;
+        let mut keys_total = [0usize; 2];
         for ai in 0..doc.animations.len() {
             if let Some(c) = build_clip(doc, bufs, ai, s, &bone_of, &in_scene, &mut names, &mut keys_total, opts, w)? {
                 clips.push(c);

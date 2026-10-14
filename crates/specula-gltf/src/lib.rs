@@ -28,8 +28,17 @@
 //! **Not supported:** POINTS and LINES primitives (error), morph targets and `weights`
 //! animation (ignored with a warning), cameras, lights and other extensions (ignored with a
 //! warning; *required* unsupported extensions are an error: Draco, meshopt, KTX2/Basis, WebP),
-//! texture transforms, more than [`specula_model::rig::MAX_BONES`] bones after pruning unused
-//! leaves.
+//! texture transforms, more than [`specula_model::rig::MAX_BONES`] (255) bones after pruning
+//! unused leaves.
+//!
+//! **Images** are decoded only when a material slot uses them, each distinct source (buffer
+//! view, file, data URI) once; duplicates point at the first ([`ImportedImage::duplicate_of`]).
+//! Missing, unreadable or undecodable images are warnings; size limits are errors.
+//!
+//! **Memory:** every [`Limits`] budget is checked before the memory it guards is committed:
+//! buffers read only their declared `byteLength`, buffers and encoded images share
+//! `max_total_bytes`, decoded images share `max_image_bytes` (from their headers), animation
+//! keys are counted before key data is read, and vertex counts are estimated per primitive mode.
 //!
 //! # Conventions
 //!
@@ -81,7 +90,7 @@ pub use export::{export_glb, export_gltf, ExportInput};
 pub struct Limits {
     /// Largest `.glb`/`.gltf` file, external file or data URI payload.
     pub max_file_bytes: u64,
-    /// Largest sum of all buffers.
+    /// Most bytes read for buffers and (encoded) images together.
     pub max_total_bytes: u64,
     /// Largest JSON text (`.gltf` file or GLB JSON chunk); parsed JSON takes several times this.
     pub max_json_bytes: u64,
@@ -98,6 +107,8 @@ pub struct Limits {
     pub max_total_keys: usize,
     /// Largest decoded image (`width × height`).
     pub max_image_pixels: u64,
+    /// Most RGBA8 bytes all decoded images may hold together (checked from their headers).
+    pub max_image_bytes: u64,
 }
 
 impl Default for Limits {
@@ -113,6 +124,7 @@ impl Default for Limits {
             max_node_depth: 128,
             max_total_keys: 1 << 22,
             max_image_pixels: 1 << 26,
+            max_image_bytes: 256 << 20,
         }
     }
 }
@@ -209,8 +221,12 @@ pub struct ImportedImage {
     pub height: u32,
     /// RGBA8, top row first; empty when not decoded (see `error`).
     pub rgba: Vec<u8>,
-    /// Why the image wasn't decoded (unsupported format, decoder error, decoding off).
+    /// Why the image wasn't decoded (unused, unreadable, unsupported format, decoder error,
+    /// decoding off).
     pub error: Option<String>,
+    /// This image has the same source (buffer view, file or data URI) as an earlier one, whose
+    /// pixels textures use instead; `rgba` stays empty here.
+    pub duplicate_of: Option<usize>,
 }
 
 /// Counts for reports and budgets.
@@ -263,8 +279,8 @@ impl Import {
         let mesh = &m.lods[0];
         let s = &self.stats;
         Json::obj([
-            ("name", Json::Str(m.name.clone())),
-            ("generator", self.generator.clone().map_or(Json::Null, Json::Str)),
+            ("name", short(&m.name, 128)),
+            ("generator", self.generator.as_deref().map_or(Json::Null, |g| short(g, 128))),
             ("vertices", Json::from(mesh.vertex_count())),
             ("triangles", Json::from(mesh.triangle_count())),
             ("bounds", Json::obj([("min", Json::arr(m.bounds.min.iter().map(|v| Json::from(*v)))), ("max", Json::arr(m.bounds.max.iter().map(|v| Json::from(*v))))])),
@@ -285,19 +301,27 @@ impl Import {
                 "materials",
                 Json::arr(self.materials.iter().take(64).map(|mt| {
                     Json::obj([
-                        ("name", Json::Str(mt.name.clone())),
+                        ("name", short(&mt.name, 128)),
                         ("alpha", Json::Str(format!("{:?}", mt.alpha_mode).to_lowercase())),
                         ("textured", Json::Bool(mt.base_color_texture.is_some())),
                         ("from_specula", Json::Bool(mt.from_specula)),
                     ])
                 })),
             ),
-            ("images", Json::arr(self.images.iter().take(64).map(|i| Json::obj([("mime", Json::Str(i.mime.clone())), ("width", Json::from(i.width)), ("height", Json::from(i.height)), ("decoded", Json::Bool(!i.rgba.is_empty()))])))),
+            ("images", Json::arr(self.images.iter().take(64).map(|i| Json::obj([("mime", short(&i.mime, 64)), ("width", Json::from(i.width)), ("height", Json::from(i.height)), ("decoded", Json::Bool(!i.rgba.is_empty()))])))),
             ("bones", Json::from(self.skeleton.as_ref().map_or(0, |s| s.len()))),
-            ("clips", Json::arr(self.clips.iter().take(64).map(|c| Json::obj([("name", Json::Str(c.name.clone())), ("duration", Json::from(c.duration)), ("tracks", Json::from(c.tracks.len()))])))),
-            ("warnings", Json::arr(self.warnings.iter().take(32).map(Warning::to_json))),
+            ("clips", Json::arr(self.clips.iter().take(64).map(|c| Json::obj([("name", short(&c.name, 128)), ("duration", Json::from(c.duration)), ("tracks", Json::from(c.tracks.len()))])))),
+            ("warnings", Json::arr(self.warnings.iter().take(32).map(|w| Json::obj([("code", Json::Str(w.code.into())), ("path", short(&w.path, 128)), ("message", short(&w.message, 256))])))),
             ("warning_count", Json::from(self.warnings.len())),
         ])
+    }
+}
+
+/// At most `max` characters of `s` (an ellipsis marks a cut), so reports stay bounded.
+fn short(s: &str, max: usize) -> Json {
+    match s.char_indices().nth(max) {
+        None => Json::Str(s.to_string()),
+        Some((at, _)) => Json::Str(format!("{}…", &s[..at])),
     }
 }
 
