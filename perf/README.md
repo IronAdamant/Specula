@@ -32,7 +32,7 @@ start-up with the line and column. `perf_frame` (and `perf_capture`'s summary) r
 - **CPU zones** (`specula_core::profile`): `let _z = profile::zone("sim");` around a phase. The engine
   thread's frame is `frame` with children `requests` (agents' tool calls; `sight.render`, `sight.encode`,
   `sight.save` inside), `autosave` (`autosave.plan`), `sim` (`tick`, `tick_hash`), `game_frame`,
-  `sync_lathes`, `draw_list` and `present` (which waits for vsync). The autosave worker records
+  `draw_list` (with `sync_meshes`), `parked_captures` and `present` (which waits for vsync). The autosave worker records
   `autosave.write` on thread `specula-autosave`. `perf_zones` lists them (latest frame plus rolling
   mean/p95; paged; `enabled` switches recording).
 - **Memory** (`specula_core::alloc::Counting`): the `specula` and `sepulcra` binaries install the counting

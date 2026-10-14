@@ -47,8 +47,8 @@ post_fxaa = 0.8
 "frame/requests" = 6.0           # agents' tool calls (sight_frame renders count here)
 "frame/sim" = 4.0                # fixed ticks run this frame
 "frame/game_frame" = 2.0
-"frame/sync_lathes" = 1.0
-"frame/draw_list" = 1.5
+"frame/draw_list/sync_meshes" = 1.0   # lathe and model meshes uploaded for the window
+"frame/draw_list" = 1.5           # building the window's draws (mesh sync included)
 "frame/autosave" = 2.0           # the engine thread's part of an autosave (the plan)
 "specula-autosave:autosave.write" = 200.0   # the worker writing world files
 

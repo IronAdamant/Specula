@@ -100,6 +100,8 @@ pub struct Pacing {
     pub tick: Series,
     /// The game's per-frame presentation update.
     pub game_frame: Series,
+    /// Building the window frame's draw list (mesh sync, model LOD choice).
+    pub draw_list: Series,
 }
 
 fn ms(v: f64) -> Json {
@@ -718,7 +720,17 @@ impl Profiler {
         if done || now >= cap.deadline {
             let cap = self.capture.take().expect("checked above");
             self.captures += 1;
-            finish_capture(cap, self.captures, !done);
+            finish_capture(cap, self.captures, (!done).then_some("time_limit"));
+        }
+    }
+
+    /// The engine is stopping: a capture in progress answers now with the frames it has (and
+    /// drops its reply channel), so neither its caller nor the server's connection thread waits
+    /// out the timeout.
+    pub fn abort_capture(&mut self) {
+        if let Some(cap) = self.capture.take() {
+            self.captures += 1;
+            finish_capture(cap, self.captures, Some("shutting_down"));
         }
     }
 
@@ -884,7 +896,7 @@ fn gpu_memory_json(s: &FrameStats) -> Json {
 }
 
 /// Writes a finished capture and answers its caller.
-fn finish_capture(cap: PendingCapture, n: u32, stopped_early: bool) {
+fn finish_capture(cap: PendingCapture, n: u32, stopped_early: Option<&'static str>) {
     if cap.spec.trace {
         profile::set_tracing(false);
     }
@@ -944,14 +956,14 @@ fn capture_parts(frames: &[CapturedFrame]) -> CaptureParts {
     CaptureParts { zones, pacing, cpu, tick, game, allocs }
 }
 
-fn capture_summary(cap: &PendingCapture, stopped_early: bool) -> Json {
+fn capture_summary(cap: &PendingCapture, stopped_early: Option<&'static str>) -> Json {
     let frames = &cap.frames;
     let CaptureParts { zones, pacing, cpu, tick, game, allocs } = capture_parts(frames);
     let last = frames.last();
-    let stats = last.and_then(|f| f.gpu.as_ref());
+    let stats = capture_stats(frames);
     let heap = last.filter(|f| f.profile.memory.tracking).map(|f| f.profile.memory.current_bytes);
     let sample = Sample {
-        stats,
+        stats: stats.as_ref(),
         pacing_p95_ms: pacing,
         cpu_frame_p95_ms: cpu,
         tick_p95_ms: tick,
@@ -963,15 +975,11 @@ fn capture_summary(cap: &PendingCapture, stopped_early: bool) -> Json {
     let errors = evaluate(&cap.budgets, &sample, &cap.adapter);
     let dt = Stats::of(frames.iter().skip(1).map(|f| f.dt_ms));
     let gpu = Stats::of(frames.iter().filter_map(|f| f.gpu.as_ref()?.gpu.as_ref()).map(|g| g.total_ms));
-    let mut passes: Vec<(&'static str, Vec<f64>)> = Vec::new();
-    for g in frames.iter().filter_map(|f| f.gpu.as_ref()?.gpu.as_ref()) {
-        for p in &g.passes {
-            match passes.iter_mut().find(|(n, _)| *n == p.name) {
-                Some((_, v)) => v.push(p.gpu_ms),
-                None => passes.push((p.name, vec![p.gpu_ms])),
-            }
-        }
-    }
+    let passes = pass_times(frames);
+    let draws = |f: fn(&FrameStats) -> f64| Stats::of(frames.iter().filter_map(|c| c.gpu.as_ref()).map(f));
+    let draw_calls = draws(|s| f64::from(s.draws.draw_calls));
+    let triangles = draws(|s| s.draws.triangles as f64);
+    let gpu_memory = draws(|s| bytes_mb(s.memory.total_bytes));
     let mut top: Vec<&RollingZone> = zones.iter().collect();
     top.sort_by(|a, b| b.self_mean_ms.total_cmp(&a.self_mean_ms));
     let top = top.iter().take(10).map(|z| {
@@ -989,15 +997,18 @@ fn capture_summary(cap: &PendingCapture, stopped_early: bool) -> Json {
     Json::obj([
         ("frames", Json::from(frames.len())),
         ("requested_frames", Json::from(cap.spec.frames)),
-        ("stopped_early", if stopped_early { Json::from("time_limit") } else { Json::Null }),
+        ("stopped_early", stopped_early.map_or(Json::Null, Json::from)),
         ("seconds", ms(cap.started.elapsed().as_secs_f64())),
         ("adapter", Json::from(cap.adapter.as_str())),
         ("frame_ms", dt.map_or(Json::Null, |s| s.json(ms))),
         ("gpu_ms", gpu.map_or(Json::Null, |s| s.json(ms))),
         (
-            "gpu_passes_mean_ms",
-            Json::obj(passes.iter().map(|(n, v)| (*n, ms(v.iter().sum::<f64>() / v.len() as f64)))),
+            "gpu_passes_ms",
+            Json::obj(passes.iter().filter_map(|(n, v)| Some((*n, Stats::of(v.iter().copied())?.json(ms))))),
         ),
+        ("draw_calls", draw_calls.map_or(Json::Null, |s| s.json(one_decimal))),
+        ("triangles", triangles.map_or(Json::Null, |s| s.json(one_decimal))),
+        ("gpu_memory_mb", gpu_memory.map_or(Json::Null, |s| s.json(one_decimal))),
         ("top_zones_by_self_ms", Json::arr(top)),
         (
             "memory",
@@ -1008,8 +1019,50 @@ fn capture_summary(cap: &PendingCapture, stopped_early: bool) -> Json {
             ]),
         ),
         ("dropped_samples", Json::from(dropped)),
+        (
+            "budgets_checked_on",
+            Json::from("p95 over the captured frames (GPU memory and pipelines built after warm-up: their maximum)"),
+        ),
         ("budget_errors", Json::Arr(errors)),
     ])
+}
+
+/// GPU ms per pass over a capture's frames, in pass order.
+fn pass_times(frames: &[CapturedFrame]) -> Vec<(&'static str, Vec<f64>)> {
+    let mut passes: Vec<(&'static str, Vec<f64>)> = Vec::new();
+    for g in frames.iter().filter_map(|f| f.gpu.as_ref()?.gpu.as_ref()) {
+        for p in &g.passes {
+            match passes.iter_mut().find(|(n, _)| *n == p.name) {
+                Some((_, v)) => v.push(p.gpu_ms),
+                None => passes.push((p.name, vec![p.gpu_ms])),
+            }
+        }
+    }
+    passes
+}
+
+/// A capture's renderer statistics for the budget check: the p95 over its frames of GPU time,
+/// each pass, draw calls and triangles, and the maximum of GPU memory and pipelines built after
+/// warm-up (the rest from the last frame).
+fn capture_stats(frames: &[CapturedFrame]) -> Option<FrameStats> {
+    let all: Vec<&FrameStats> = frames.iter().filter_map(|f| f.gpu.as_ref()).collect();
+    let mut out = (*all.last()?).clone();
+    let p95 = |f: &dyn Fn(&FrameStats) -> f64| Stats::of(all.iter().map(|s| f(s))).map_or(0.0, |s| s.p95);
+    out.draws.draw_calls = p95(&|s| f64::from(s.draws.draw_calls)).round() as u32;
+    out.draws.triangles = p95(&|s| s.draws.triangles as f64).round() as u64;
+    out.memory.total_bytes = all.iter().map(|s| s.memory.total_bytes).max().unwrap_or(0);
+    out.pipelines.created_after_warm = all.iter().map(|s| s.pipelines.created_after_warm).max().unwrap_or(0);
+    let timed: Vec<&specula_gpu::GpuTiming> = all.iter().filter_map(|s| s.gpu.as_ref()).collect();
+    if let Some(g) = out.gpu.as_mut() {
+        g.total_ms = Stats::of(timed.iter().map(|t| t.total_ms)).map_or(g.total_ms, |s| s.p95);
+        let passes = pass_times(frames);
+        for p in &mut g.passes {
+            if let Some(st) = passes.iter().find(|(n, _)| *n == p.name).and_then(|(_, v)| Stats::of(v.iter().copied())) {
+                p.gpu_ms = st.p95;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The capture file: per frame, every thread's zones as rows plus GPU passes and memory.
@@ -1416,7 +1469,48 @@ mod tests {
         assert_eq!((out.get("frames"), out.get("stopped_early")), (Some(&Json::from(1)), Some(&Json::from("time_limit"))));
         assert_eq!(out.get("trace_path"), Some(&Json::Null));
         assert!(out.get("path").and_then(Json::as_str).unwrap().ends_with("perf-capture-002.json"));
+
+        // Shutting down: answers with what it has, then the reply channel is gone.
+        let (tx, rx) = std::sync::mpsc::channel();
+        p.start_capture(CaptureSpec { frames: 100, trace: true, label: None }, tx, later, ctx());
+        p.end_frame_with(|| None);
+        p.abort_capture();
+        let reply = rx.try_recv().expect("answered on abort");
+        let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
+        let out = Json::parse(text).unwrap();
+        assert_eq!((out.get("frames"), out.get("stopped_early")), (Some(&Json::from(1)), Some(&Json::from("shutting_down"))));
+        assert!(matches!(rx.recv(), Err(std::sync::mpsc::RecvError)), "the reply channel disconnects");
+        assert!(!p.capturing() && !profile::tracing() && !profile::enabled());
+        p.abort_capture(); // nothing to abort: no-op
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Budgets are checked against the capture's p95, not its last frame: one slow frame in 40
+    /// is reported in the maximum but is no budget error; a slow last frame isn't hidden either.
+    #[test]
+    fn capture_budgets_use_the_p95_over_its_frames() {
+        let frame = |gpu_ms: f64, draws: u32| CapturedFrame {
+            profile: FrameProfile::default(),
+            gpu: Some(FrameStats {
+                gpu: Some(GpuTiming { frame: 1, total_ms: gpu_ms, passes: vec![PassTiming { name: "scene", gpu_ms }] }),
+                draws: specula_gpu::DrawStats { draw_calls: draws, ..Default::default() },
+                ..FrameStats::default()
+            }),
+            dt_ms: 16.0,
+        };
+        let budgets = Budgets { gpu_passes: vec![("scene".into(), 10.0)], draw_calls: Some(100), ..Budgets::default().with_frame(16.0) };
+        let errors_for = |frames: Vec<CapturedFrame>| {
+            let s = capture_stats(&frames).unwrap();
+            evaluate(&budgets, &Sample { stats: Some(&s), ..Sample::default() }, "integrated")
+        };
+        // One spike, not last: within budget at p95.
+        let mut frames: Vec<CapturedFrame> = (0..40).map(|_| frame(5.0, 50)).collect();
+        frames[10] = frame(30.0, 500);
+        assert!(errors_for(frames).is_empty());
+        // Every frame slow except the last: the old last-frame check missed this.
+        let mut frames: Vec<CapturedFrame> = (0..40).map(|_| frame(30.0, 500)).collect();
+        frames.push(frame(5.0, 50));
+        assert_eq!(codes(&errors_for(frames)), ["gpu_over_budget", "gpu_pass_over_budget", "draw_calls_over_budget"]);
     }
 
     #[test]

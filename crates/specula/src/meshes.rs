@@ -1,8 +1,77 @@
 //! Built-in shape meshes (object space, metres, centred on the origin).
 
-use crate::world::Shape;
+use crate::world::{Shape, World};
 use specula_gpu::{Gpu, GpuError, MeshId, Vertex};
+use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
+
+/// Lathe meshes by profile key ([`crate::world::Profile::key`]): entities with identical
+/// profiles share one mesh, so they also instance together.
+#[derive(Default)]
+pub struct LatheMeshes {
+    meshes: BTreeMap<u64, MeshId>,
+    /// Profiles whose upload failed, with why (retried when the world's meshes change).
+    failed: BTreeMap<u64, String>,
+    /// The world mesh epoch and generation last synced to.
+    synced: Option<(u64, u64)>,
+}
+
+impl LatheMeshes {
+    /// Uploads meshes for profiles in use and frees the rest, when the world's meshes changed
+    /// since the last call. Returns a message per failed upload (those entities aren't drawn).
+    pub fn sync(&mut self, gpu: &mut Gpu, world: &World, world_generation: u64) -> Vec<String> {
+        let key = (world.mesh_epoch(), world_generation);
+        if self.synced == Some(key) {
+            return Vec::new();
+        }
+        self.synced = Some(key);
+        let mut live = BTreeMap::new();
+        for e in world.entities() {
+            if let Some(p) = &e.profile {
+                live.entry(p.key()).or_insert((p, e.name.as_str()));
+            }
+        }
+        let stale: Vec<u64> = self.meshes.keys().copied().filter(|k| !live.contains_key(k)).collect();
+        for k in stale {
+            if let Some(mesh) = self.meshes.remove(&k) {
+                gpu.destroy_mesh(mesh);
+            }
+        }
+        self.failed.clear();
+        let mut errors = Vec::new();
+        for (key, (profile, name)) in live {
+            if self.meshes.contains_key(&key) {
+                continue;
+            }
+            let (vertices, indices) = lathe(&profile.points, profile.segments);
+            match gpu.upload_mesh(&vertices, &indices) {
+                Ok(mesh) => {
+                    self.meshes.insert(key, mesh);
+                }
+                Err(err) => {
+                    let msg = format!("lathe '{name}' not drawn: {err}");
+                    errors.push(msg.clone());
+                    self.failed.insert(key, msg);
+                }
+            }
+        }
+        errors
+    }
+
+    pub fn get(&self, profile_key: u64) -> Option<MeshId> {
+        self.meshes.get(&profile_key).copied()
+    }
+
+    /// Meshes uploaded (one per distinct profile in use).
+    pub fn count(&self) -> usize {
+        self.meshes.len()
+    }
+
+    /// Messages for profiles whose upload failed.
+    pub fn failures(&self) -> impl Iterator<Item = &String> {
+        self.failed.values()
+    }
+}
 
 /// GPU mesh for each built-in shape (lathes have their own, built from their profile).
 pub struct ShapeMeshes {
@@ -28,7 +97,7 @@ impl ShapeMeshes {
             Shape::Cube => Some(self.cube),
             Shape::Quad => Some(self.quad),
             Shape::Sphere => Some(self.sphere),
-            Shape::Lathe | Shape::Group => None,
+            Shape::Lathe | Shape::Model | Shape::Group => None,
         }
     }
 }

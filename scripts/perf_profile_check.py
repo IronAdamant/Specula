@@ -9,7 +9,7 @@ numbers) with perf.example.toml, builds the lava-lamp scene, lets it render, the
   - overhead: sight_frame time with the profiler on vs off (alternating rounds)
 
 Usage:
-  python scripts/perf_profile_check.py [--adapter integrated] [--headless] [--frames 120] [--skip-build]
+  python scripts/perf_profile_check.py [--adapter integrated] [--port 7496] [--headless] [--frames 120] [--skip-build]
 Results go to target/perf-profile-check/<timestamp>/ (summary.json, engine log, capture files).
 Exit code 1 if a tool fails or a check does not hold. Output is ASCII.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 from specula_mcp import ROOT, Engine
 import lava_lamps
 
-PORT = 7496
+DEFAULT_PORT = 7496  # never 7471, the engine you work in
 
 
 def timed(m, shot):
@@ -37,6 +37,7 @@ def timed(m, shot):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--adapter", default="integrated")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="the engine's MCP port for this check")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--frames", type=int, default=120, help="frames for perf_capture")
     ap.add_argument("--rounds", type=int, default=6, help="on/off rounds for the overhead check")
@@ -58,7 +59,7 @@ def main():
         if not cond:
             failures.append(what)
 
-    with Engine(exe, PORT, out / "engine.log", *engine_args) as eng:
+    with Engine(exe, args.port, out / "engine.log", *engine_args) as eng:
         m = eng.mcp("perf-profile-check")
         tools = m.tools()
         for t in ("perf_frame", "perf_zones", "perf_memory", "perf_capture"):

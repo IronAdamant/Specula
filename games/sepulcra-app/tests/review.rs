@@ -29,18 +29,18 @@ impl Host {
         let mut game = SepulcraGame::new(Arc::new(Content::builtin()), seed);
         let mut world = World::default();
         let clock = Clock::new(game.tick_hz());
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra" });
+        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
         Host { game, world, clock }
     }
 
     fn call(&mut self, name: &str, args: &Json) -> specula_protocol::ToolOutput {
         let Host { game, world, clock } = self;
-        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra" }, name, args)
+        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, name, args)
     }
 
     fn tick(&mut self) {
         let Host { game, world, clock } = self;
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra" });
+        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
         self.clock.finish_tick();
     }
 
@@ -48,7 +48,7 @@ impl Host {
         let Host { game, world, clock } = self;
         let (mut cam, mut title) = (None, None);
         let mut f = Frame { input: &[], size, alpha, dt_s: 0.016, camera: &mut cam, title: &mut title };
-        game.frame(&mut Ctx { world, clock, agent: "sepulcra" }, &mut f);
+        game.frame(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 
     fn active_flashes(&self) -> usize {

@@ -25,11 +25,14 @@ static FREES: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    /// This thread's (allocations, bytes allocated). Const-initialised with no destructor, so
-    /// reading it from inside the allocator is sound. Where std keeps thread-locals behind OS keys
-    /// (windows-gnu, Android), the key's first use on a thread allocates; that nested allocation
-    /// finds the key still uninitialised, gets `AccessError` from `try_with`, and is simply not
-    /// counted per thread (it is counted globally).
+    /// This thread's (allocations, bytes allocated). Const-initialised with no destructor. On
+    /// targets with native thread-locals (Linux, macOS, windows-msvc) reading it never allocates.
+    /// Where std keeps thread-locals behind OS keys (windows-gnu and Android, checked in the
+    /// compiler output), the first access on each thread **does allocate** its slot, through this
+    /// very allocator: a re-entrant call. std tolerates that recursion (the nested access does not
+    /// recurse again; `try_with` only reads), so the nested allocation is counted globally but may
+    /// be missed per thread, and the outer allocation is counted normally once the slot exists.
+    /// `first_allocation_on_a_fresh_thread_is_counted` checks this on every test run.
     static THREAD: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
 }
 
@@ -66,7 +69,9 @@ fn on_free(size: usize) {
 // SAFETY: every method forwards to the wrapped allocator with the caller's arguments unchanged and
 // returns its result unchanged, so `A`'s guarantees are this allocator's guarantees. The counting
 // around the calls only touches atomics and a const-initialised, destructor-free thread-local
-// (never allocates, never unwinds).
+// (never unwinds: `try_with` reports failure instead of panicking). That thread-local's first
+// access on a thread may allocate re-entrantly on OS-key targets (see `THREAD`); the nested call
+// is an ordinary, complete `alloc` of the wrapped allocator, so re-entrancy is sound.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract (non-zero size); passed on.
@@ -182,6 +187,22 @@ mod tests {
         let after = thread_counts();
         assert_eq!(after.0 - before.0, 1);
         assert!(after.1 - before.1 >= 4096);
+    }
+
+    /// The first thing a fresh thread does is allocate: that allocation (whose counter update may
+    /// itself allocate the thread-local slot, re-entrantly) is counted for the thread.
+    #[test]
+    fn first_allocation_on_a_fresh_thread_is_counted() {
+        let total_before = stats().allocations;
+        let (counts, len) = std::thread::spawn(|| {
+            let v: Vec<u8> = Vec::with_capacity(4096);
+            (thread_counts(), v.capacity())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(len, 4096);
+        assert!(counts.0 >= 1 && counts.1 >= 4096, "{counts:?}");
+        assert!(stats().allocations > total_before);
     }
 
     #[test]

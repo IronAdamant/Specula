@@ -28,6 +28,7 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-gpu",
+ "specula-model",
  "specula-platform",
  "specula-protocol",
  "specula-sys",

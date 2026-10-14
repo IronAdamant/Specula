@@ -13,9 +13,10 @@
 //!
 //! **Cost.** Disabled, [`zone`] is one relaxed atomic load and the guard's drop a branch. Enabled,
 //! a zone reads the clock twice and, as it ends, adds its time to the thread's zone tree under a
-//! `try_lock` that only the collector ever contends. Once a thread has recorded its first zone
-//! (and, with tracing on, its first traced zone), recording never allocates: the zone stack, the
-//! tree and the trace ring have fixed capacities. Past them a sample is dropped and counted.
+//! `try_lock` that only the collector ever contends. Once a thread is registered (its first zone,
+//! or [`register_thread`]), recording never allocates: the zone stack, the tree and the trace ring
+//! (allocated by [`set_tracing`], never while recording) have fixed capacities. Past them a sample
+//! is dropped and counted.
 //!
 //! **Threads.** Each thread records into its own buffers. Recording never blocks: if the collector
 //! holds a thread's buffers at that instant, the sample is dropped and counted, so the profiler is
@@ -30,6 +31,7 @@
 
 use crate::alloc;
 use std::cell::RefCell;
+use std::marker::PhantomData;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
@@ -61,9 +63,18 @@ pub fn enabled() -> bool {
 }
 
 /// Also records every zone instance (start, duration) for a timeline (see [`TraceEvent`]).
+/// Turning it on gives every registered thread its trace ring here (threads registering later get
+/// theirs as they register), so recording itself never allocates; [`Collector::collect`] frees
+/// the rings once tracing is off again.
 pub fn set_tracing(on: bool) {
     epoch();
     TRACING.store(on, Relaxed);
+    if on {
+        let threads: Vec<Arc<Shared>> = lock(&REGISTRY).clone();
+        for t in threads {
+            t.reserve_trace();
+        }
+    }
 }
 
 pub fn tracing() -> bool {
@@ -80,22 +91,28 @@ pub fn epoch() -> Instant {
 #[inline]
 pub fn zone(name: &'static str) -> Zone {
     if !ENABLED.load(Relaxed) {
-        return Zone { armed: false };
+        return Zone { id: 0, _thread_bound: PhantomData };
     }
-    Zone { armed: begin(name) }
+    Zone { id: begin(name), _thread_bound: PhantomData }
 }
 
 /// An open zone. Keep it in a named binding (`let _z = ...`): `let _ = ...` closes it at once.
+///
+/// Bound to the thread that opened it (not `Send`). Guards dropped out of order are tolerated:
+/// closing a zone also discards zones opened inside it that are still open (counted as dropped),
+/// and their guards' later drops are ignored.
 #[must_use = "the zone closes when this guard drops"]
 pub struct Zone {
-    armed: bool,
+    /// This zone's id on its thread; 0 = not recording.
+    id: u64,
+    _thread_bound: PhantomData<*const ()>,
 }
 
 impl Drop for Zone {
     #[inline]
     fn drop(&mut self) {
-        if self.armed {
-            end();
+        if self.id != 0 {
+            end(self.id);
         }
     }
 }
@@ -113,6 +130,7 @@ pub fn register_thread() {
 
 #[derive(Clone, Copy)]
 struct Open {
+    id: u64,
     name: &'static str,
     start: Instant,
     allocs: (u64, u64),
@@ -124,6 +142,8 @@ struct Open {
 struct Local {
     stack: Vec<Open>,
     shared: Arc<Shared>,
+    /// Id of the next zone opened on this thread (never 0).
+    next_id: u64,
 }
 
 thread_local! {
@@ -134,17 +154,34 @@ struct Shared {
     tid: u32,
     name: String,
     data: Mutex<Data>,
-    /// Samples lost: zones too deep, a full tree, or the collector holding the buffers.
+    /// Samples lost: zones too deep, a full tree, the collector holding the buffers, or zones
+    /// discarded because a guard was dropped out of order.
     dropped: AtomicU64,
+}
+
+impl Shared {
+    /// Gives the thread its trace ring, allocated outside its lock.
+    fn reserve_trace(&self) {
+        if lock(&self.data).trace.capacity() != 0 {
+            return;
+        }
+        let ring = Vec::with_capacity(TRACE_CAPACITY);
+        let mut data = lock(&self.data);
+        if data.trace.capacity() == 0 {
+            data.trace = ring;
+        }
+    }
 }
 
 struct Data {
     /// Bumped by every collect, invalidating the node indices cached in zone stacks.
     generation: u64,
     tree: Tree,
+    /// The trace ring: allocated by [`set_tracing`] or registration, never while recording.
     trace: Vec<TraceEvent>,
     /// Next slot to overwrite once `trace` is full.
     trace_head: usize,
+    /// Trace events overwritten (ring full) or not recorded (no ring yet).
     trace_overwritten: u64,
 }
 
@@ -164,34 +201,47 @@ fn register() -> Local {
         dropped: AtomicU64::new(0),
     });
     lock(&REGISTRY).push(shared.clone());
-    Local { stack: Vec::with_capacity(MAX_DEPTH), shared }
+    if TRACING.load(Relaxed) {
+        shared.reserve_trace();
+    }
+    Local { stack: Vec::with_capacity(MAX_DEPTH), shared, next_id: 1 }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn begin(name: &'static str) -> bool {
+/// Opens a zone; returns its id (0 = not recorded).
+fn begin(name: &'static str) -> u64 {
     LOCAL
         .try_with(|cell| {
-            let Ok(mut slot) = cell.try_borrow_mut() else { return false };
+            let Ok(mut slot) = cell.try_borrow_mut() else { return 0 };
             let local = slot.get_or_insert_with(register);
             if local.stack.len() >= MAX_DEPTH {
                 local.shared.dropped.fetch_add(1, Relaxed);
-                return false;
+                return 0;
             }
+            let id = local.next_id;
+            local.next_id += 1;
             let allocs = alloc::thread_counts();
-            local.stack.push(Open { name, start: Instant::now(), allocs, node: NONE, generation: 0 });
-            true
+            local.stack.push(Open { id, name, start: Instant::now(), allocs, node: NONE, generation: 0 });
+            id
         })
-        .unwrap_or(false)
+        .unwrap_or(0)
 }
 
-fn end() {
+fn end(id: u64) {
     let _ = LOCAL.try_with(|cell| {
         let Ok(mut slot) = cell.try_borrow_mut() else { return };
-        let Some(Local { stack, shared }) = slot.as_mut() else { return };
-        let Some(&top) = stack.last() else { return };
+        let Some(Local { stack, shared, .. }) = slot.as_mut() else { return };
+        // Normally the top. Not found: it was discarded when an enclosing zone closed first.
+        let Some(at) = stack.iter().rposition(|o| o.id == id) else { return };
+        if at + 1 < stack.len() {
+            // Zones opened inside this one whose guards are still alive: discard them.
+            shared.dropped.fetch_add((stack.len() - at - 1) as u64, Relaxed);
+            stack.truncate(at + 1);
+        }
+        let top = stack[at];
         let now = Instant::now();
         let allocs = alloc::thread_counts();
         let mut data = match shared.data.try_lock() {
@@ -226,15 +276,16 @@ fn end() {
 }
 
 impl Data {
+    /// Never allocates: without a ring (tracing just turned on) the event is counted as lost.
     fn push_trace(&mut self, event: TraceEvent) {
-        if self.trace.capacity() == 0 {
-            self.trace.reserve_exact(TRACE_CAPACITY);
-        }
-        if self.trace.len() < TRACE_CAPACITY {
+        let cap = self.trace.capacity().min(TRACE_CAPACITY);
+        if cap == 0 {
+            self.trace_overwritten += 1;
+        } else if self.trace.len() < cap {
             self.trace.push(event);
         } else {
             self.trace[self.trace_head] = event;
-            self.trace_head = (self.trace_head + 1) % TRACE_CAPACITY;
+            self.trace_head = (self.trace_head + 1) % cap;
             self.trace_overwritten += 1;
         }
     }
@@ -577,6 +628,7 @@ impl Collector {
         {
             let mut registry = lock(&REGISTRY);
             for shared in registry.iter() {
+                let mut freed_ring = Vec::new();
                 let (overwritten, has_events) = {
                     let mut data = lock(&shared.data);
                     self.scratch.copy_from(&data.tree);
@@ -589,8 +641,12 @@ impl Collector {
                     data.trace.clear();
                     data.trace_head = 0;
                     let overwritten = std::mem::take(&mut data.trace_overwritten);
+                    if !tracing && data.trace.capacity() != 0 {
+                        freed_ring = std::mem::take(&mut data.trace);
+                    }
                     (overwritten, !self.trace_scratch.is_empty())
                 };
+                drop(freed_ring);
                 let dropped = shared.dropped.swap(0, Relaxed);
                 if self.scratch.nodes.is_empty() && !has_events && dropped == 0 && overwritten == 0 {
                     continue;
@@ -894,6 +950,61 @@ mod tests {
         assert!(mine.windows(2).all(|w| w[0].start_ns <= w[1].start_ns), "oldest first");
         assert_eq!(fp.thread_of(mine[0].tid), Some(me().as_str()));
         set_tracing(false);
+        set_enabled(false);
+    }
+
+    fn my_ring_capacity() -> usize {
+        let me = me();
+        let shared = lock(&REGISTRY).iter().find(|s| s.name == me).cloned().expect("registered");
+        let cap = lock(&shared.data).trace.capacity();
+        cap
+    }
+
+    /// The trace ring is allocated when tracing turns on (not while recording) and freed by the
+    /// first collect after it turns off.
+    #[test]
+    fn trace_ring_is_allocated_outside_recording_and_freed() {
+        let _s = serial();
+        set_enabled(true);
+        register_thread();
+        assert_eq!(my_ring_capacity(), 0);
+        set_tracing(true);
+        assert!(my_ring_capacity() >= TRACE_CAPACITY);
+        let before = alloc::thread_counts();
+        {
+            let _z = zone("first_traced");
+        }
+        assert_eq!(alloc::thread_counts(), before, "the first traced zone allocated");
+        let mut c = Collector::new(2);
+        assert_eq!(c.collect(1).events.iter().filter(|e| e.name == "first_traced").count(), 1);
+        assert!(my_ring_capacity() >= TRACE_CAPACITY, "kept while tracing");
+        set_tracing(false);
+        c.collect(2);
+        assert_eq!(my_ring_capacity(), 0, "freed once tracing is off");
+        set_enabled(false);
+    }
+
+    /// Guards dropped out of order: the enclosing zone closes and discards the inner one, whose
+    /// later drop is ignored; the thread's stack stays consistent.
+    #[test]
+    fn out_of_order_guards_keep_the_stack_consistent() {
+        let _s = serial();
+        set_enabled(true);
+        let mut c = Collector::new(2);
+        c.collect(0);
+        let a = zone("outer");
+        let b = zone("inner");
+        drop(a);
+        drop(b);
+        {
+            let _z = zone("after");
+        }
+        let fp = c.collect(1);
+        let t = fp.thread(&me()).unwrap();
+        assert_eq!(t.find("outer").unwrap().calls, 1);
+        assert!(t.find("outer/inner").is_none_or(|z| z.calls == 0));
+        assert_eq!(t.find("after").unwrap().calls, 1, "a later zone is top level again");
+        assert_eq!(t.dropped, 1);
         set_enabled(false);
     }
 

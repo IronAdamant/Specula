@@ -317,6 +317,9 @@ def attacks(url):
     dave.ok("agent_hello", name="attack_dave")
     dave.ok("claim_take", path="/dave_zone", lease_s=300)
     entry = dave.ok("world_spawn", shape="group", path="/dave_zone")["journal"]
+    # A name stays reserved while its identity holds live claims (resumable identities).
+    expect(Agent(url, "attack-squatter"), "name_taken", "hello as a claim holder's name", "agent_hello", name="attack_dave")
+    dave.ok("claim_release", all=True)
     dave.end()
     heir = Agent(url, "attack-heir")
     heir.ok("agent_hello", name="attack_dave")  # the name is free again...
