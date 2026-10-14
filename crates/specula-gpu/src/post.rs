@@ -8,13 +8,10 @@
 //! - bloom: scene (exposed linear) → HDR image → bloom chain → tonemap → final, or → LDR image
 //!   → FXAA → final.
 
-use crate::descriptors::Descriptors;
-use crate::device::{image_barrier, Device, Image};
-use crate::overlay::{record_overlay, OverlayDraw};
-use crate::render::{FramePipelines, LDR_FORMAT, HDR_FORMAT, PUSH_STAGES};
-use crate::timing::PassTimer;
+use crate::device::Device;
+use crate::render::{FrameGraph, FramePass, FramePipelines, FrameRes, PUSH_STAGES};
 use crate::vk::*;
-use crate::{Environment, GpuError, MemoryKind, PASS_BLOOM, PASS_FXAA, PASS_TONEMAP};
+use crate::Environment;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
@@ -70,30 +67,18 @@ impl PostMode {
     }
 }
 
-/// An intermediate image and its slot in the bindless array.
-pub struct PostImage {
-    pub image: Image,
-    pub slot: u32,
-}
-
-/// Bloom levels (level 0 = half the target's size): `levels` hold the downsampled bright pass,
-/// `up[i]` the blur of everything from level `i` down. Every pass writes a fresh image (no
-/// load-and-blend into an image read before: that corrupted on Intel, and it costs tile loads).
-pub struct BloomChain {
-    pub levels: Vec<PostImage>,
-    /// One fewer than `levels` (the smallest level is its own blur).
-    pub up: Vec<PostImage>,
-    pub sizes: Vec<VkExtent2D>,
-}
-
-/// A target's post images, created on first use and kept while the size and settings hold.
-#[derive(Default)]
-pub struct PostTargets {
-    extent: VkExtent2D,
-    pub hdr: Option<PostImage>,
-    pub ldr: Option<PostImage>,
-    pub bloom: Option<BloomChain>,
-}
+/// Names of the bloom images and passes, by level (level 0 = half the target's size): `levels`
+/// hold the downsampled bright pass, `blur[i]` the blur of everything from level `i` down. Every
+/// pass writes a fresh image (no load-and-blend into an image read before: that corrupted on
+/// Intel, and it costs tile loads).
+pub const BLOOM_LEVELS: [&str; MAX_BLOOM_LEVELS as usize] =
+    ["bloom_0", "bloom_1", "bloom_2", "bloom_3", "bloom_4", "bloom_5", "bloom_6", "bloom_7"];
+pub const BLOOM_BLURS: [&str; MAX_BLOOM_LEVELS as usize - 1] =
+    ["bloom_blur_0", "bloom_blur_1", "bloom_blur_2", "bloom_blur_3", "bloom_blur_4", "bloom_blur_5", "bloom_blur_6"];
+pub const BLOOM_DOWN_PASSES: [&str; MAX_BLOOM_LEVELS as usize] =
+    ["bloom_down_0", "bloom_down_1", "bloom_down_2", "bloom_down_3", "bloom_down_4", "bloom_down_5", "bloom_down_6", "bloom_down_7"];
+pub const BLOOM_UP_PASSES: [&str; MAX_BLOOM_LEVELS as usize - 1] =
+    ["bloom_up_0", "bloom_up_1", "bloom_up_2", "bloom_up_3", "bloom_up_4", "bloom_up_5", "bloom_up_6"];
 
 /// Levels that fit `extent` (each at least 1×1), up to `wanted`.
 pub fn bloom_level_count(extent: VkExtent2D, wanted: u32) -> u32 {
@@ -104,109 +89,9 @@ pub fn bloom_level_count(extent: VkExtent2D, wanted: u32) -> u32 {
     n
 }
 
-fn post_image(dev: &Device, descriptors: &mut Descriptors, format: VkFormat, extent: VkExtent2D, what: &str) -> Result<PostImage, GpuError> {
-    let slot = descriptors.alloc_slot()?;
-    let image = match dev.create_image(
-        format,
-        extent.width,
-        extent.height,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT,
-        MemoryKind::PostTargets,
-        what,
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            descriptors.free_slot(slot);
-            return Err(e);
-        }
-    };
-    descriptors.write_texture(dev, slot, image.view);
-    Ok(PostImage { image, slot })
-}
-
-impl BloomChain {
-    fn new(dev: &Device, descriptors: &mut Descriptors, extent: VkExtent2D, levels: u32) -> Result<BloomChain, GpuError> {
-        let mut chain = BloomChain { levels: Vec::new(), up: Vec::new(), sizes: Vec::new() };
-        for i in 1..=levels {
-            let size = VkExtent2D { width: (extent.width >> i).max(1), height: (extent.height >> i).max(1) };
-            let made = post_image(dev, descriptors, HDR_FORMAT, size, "bloom level").and_then(|down| {
-                chain.levels.push(down);
-                chain.sizes.push(size);
-                if i < levels {
-                    chain.up.push(post_image(dev, descriptors, HDR_FORMAT, size, "bloom blur")?);
-                }
-                Ok(())
-            });
-            if let Err(e) = made {
-                chain.destroy(dev, descriptors);
-                return Err(e);
-            }
-        }
-        Ok(chain)
-    }
-
-    fn count(&self) -> u32 {
-        self.levels.len() as u32
-    }
-
-    fn destroy(&mut self, dev: &Device, descriptors: &mut Descriptors) {
-        for img in self.levels.drain(..).chain(self.up.drain(..)) {
-            descriptors.free_slot(img.slot);
-            dev.destroy_image(&img.image);
-        }
-        self.sizes.clear();
-    }
-}
-
-impl PostTargets {
-    /// Have the images `mode` needs at `extent`. Images that pending frames may still use are only
-    /// destroyed (size or level count changed) after `wait_idle`.
-    pub fn ensure(
-        &mut self,
-        dev: &Device,
-        descriptors: &mut Descriptors,
-        extent: VkExtent2D,
-        mode: PostMode,
-        mut wait_idle: impl FnMut(),
-    ) -> Result<(), GpuError> {
-        if mode.direct() {
-            return Ok(());
-        }
-        let levels = mode.bloom_levels;
-        let any = self.hdr.is_some() || self.ldr.is_some() || self.bloom.is_some();
-        let chain_mismatch = self.bloom.as_ref().is_some_and(|c| mode.bloom() && c.count() != levels);
-        if any && (self.extent != extent || chain_mismatch) {
-            wait_idle();
-            if self.extent != extent {
-                self.destroy(dev, descriptors);
-            } else if let Some(mut c) = self.bloom.take() {
-                c.destroy(dev, descriptors);
-            }
-        }
-        self.extent = extent;
-        if mode.bloom() && self.hdr.is_none() {
-            self.hdr = Some(post_image(dev, descriptors, HDR_FORMAT, extent, "HDR scene")?);
-        }
-        if mode.bloom() && self.bloom.is_none() && levels > 0 {
-            self.bloom = Some(BloomChain::new(dev, descriptors, extent, levels)?);
-        }
-        if mode.fxaa && self.ldr.is_none() {
-            self.ldr = Some(post_image(dev, descriptors, LDR_FORMAT, extent, "tone mapped image")?);
-        }
-        Ok(())
-    }
-
-    /// Release everything. No pending frame may use the images.
-    pub fn destroy(&mut self, dev: &Device, descriptors: &mut Descriptors) {
-        for img in [self.hdr.take(), self.ldr.take()].into_iter().flatten() {
-            descriptors.free_slot(img.slot);
-            dev.destroy_image(&img.image);
-        }
-        if let Some(mut c) = self.bloom.take() {
-            c.destroy(dev, descriptors);
-        }
-    }
+/// Size of bloom level `i` of a target of `extent`.
+pub fn bloom_level_size(extent: VkExtent2D, i: u32) -> VkExtent2D {
+    VkExtent2D { width: (extent.width >> (i + 1)).max(1), height: (extent.height >> (i + 1)).max(1) }
 }
 
 /// The clear value of an HDR scene target such that, after the tonemap pass, the background shows
@@ -225,61 +110,19 @@ pub fn hdr_clear(clear_linear: [f32; 4], tonemap: bool) -> [f32; 4] {
     [inv(clear_linear[0]), inv(clear_linear[1]), inv(clear_linear[2]), clear_linear[3]]
 }
 
-/// Move a colour image between layouts for the post chain.
-pub fn color_barrier(dev: &Device, cmd: VkCommandBuffer, image: VkImage, to_read: bool) {
-    let b = if to_read {
-        image_barrier(
-            image,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        )
-    } else {
-        // Contents discarded; ordered after earlier frames' reads and writes of it.
-        image_barrier(
-            image,
-            VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        )
-    };
-    dev.barrier(cmd, &[], &[b]);
-}
-
-/// One full-screen pass into `view`: begin rendering (keep or discard what is there), draw the
-/// triangle, run `extra` (e.g. the overlay) in the same rendering instance, end.
+/// One full-screen pass into `color` (from the graph: view, layout, load/store ops): begin
+/// rendering, draw the triangle, run `extra` (e.g. the overlay) in the same rendering instance, end.
 #[allow(clippy::too_many_arguments)]
 pub fn fullscreen(
     dev: &Device,
     cmd: VkCommandBuffer,
     pipeline: VkPipeline,
     layout: VkPipelineLayout,
-    view: VkImageView,
+    color: &VkRenderingAttachmentInfo,
     extent: VkExtent2D,
-    load: bool,
     push: &PostPush,
     extra: &mut dyn FnMut(VkCommandBuffer),
 ) {
-    let color = VkRenderingAttachmentInfo {
-        s_type: ST_RENDERING_ATTACHMENT_INFO,
-        p_next: ptr::null(),
-        image_view: view,
-        image_layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        resolve_mode: VK_RESOLVE_MODE_NONE,
-        resolve_image_view: VK_NULL_HANDLE,
-        resolve_image_layout: VK_IMAGE_LAYOUT_UNDEFINED,
-        load_op: if load { VK_ATTACHMENT_LOAD_OP_LOAD } else { VK_ATTACHMENT_LOAD_OP_DONT_CARE },
-        store_op: VK_ATTACHMENT_STORE_OP_STORE,
-        clear_value: VkClearValue::default(),
-    };
     let area = VkRect2D { offset: VkOffset2D { x: 0, y: 0 }, extent };
     let rendering = VkRenderingInfo {
         s_type: ST_RENDERING_INFO,
@@ -289,13 +132,13 @@ pub fn fullscreen(
         layer_count: 1,
         view_mask: 0,
         color_attachment_count: 1,
-        p_color_attachments: &color,
+        p_color_attachments: color,
         p_depth_attachment: ptr::null(),
         p_stencil_attachment: ptr::null(),
     };
     let viewport = VkViewport { x: 0.0, y: 0.0, width: extent.width as f32, height: extent.height as f32, min_depth: 0.0, max_depth: 1.0 };
     // SAFETY: `cmd` is recording outside a rendering instance; the pipeline renders one colour
-    // attachment of `view`'s format with no depth; the global set is bound with `layout`; the
+    // attachment of `color`'s format with no depth; the global set is bound with `layout`; the
     // push range covers `PostPush`.
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
@@ -310,28 +153,20 @@ pub fn fullscreen(
     unsafe { (dev.fns.cmd_end_rendering)(cmd) };
 }
 
-/// Where the post chain ends.
-pub struct FinalImage {
-    pub view: VkImageView,
-    pub extent: VkExtent2D,
-}
-
-/// Record the post chain after the scene was rendered into the HDR image (bloom) or the LDR image
-/// (FXAA only). `last_pass` runs inside the final pass's rendering instance (the overlay).
+/// Record post pass `p` of `g` (a bloom level, the tonemap or FXAA). The graph recorded its
+/// barriers already. `extra` runs inside the pass's rendering instance (the inline overlay).
 #[allow(clippy::too_many_arguments)]
-pub fn record_post(
+pub fn record_post_pass(
     dev: &Device,
     cmd: VkCommandBuffer,
+    g: &FrameGraph,
+    p: usize,
+    res: &FrameRes,
     pipelines: &FramePipelines,
     env: &Environment,
     frame_address: u64,
-    post: &PostTargets,
-    mode: PostMode,
-    out: &FinalImage,
-    timer: Option<&mut PassTimer>,
-    overlay: &OverlayDraw,
+    extra: &mut dyn FnMut(VkCommandBuffer),
 ) {
-    let mut timer = timer;
     let layout = pipelines.layout;
     let push = |src: u32, src2: u32, size: VkExtent2D, mode: u32, params: [f32; 4]| PostPush {
         frame: frame_address,
@@ -342,85 +177,43 @@ pub fn record_post(
         pad: 0,
         params,
     };
+    let extent = res.extent;
+    let n = res.bloom_levels as usize;
+    let slot = |r| g.image(r).slot;
+    let b = &env.bloom;
     let none = &mut |_: VkCommandBuffer| {};
-    if let (true, Some(hdr), Some(chain)) = (mode.bloom(), post.hdr.as_ref(), post.bloom.as_ref()) {
-        let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_BLOOM));
-        color_barrier(dev, cmd, hdr.image.handle, true);
-        let n = chain.levels.len();
-        let b = &env.bloom;
-        let (threshold, knee) = (b.threshold.max(0.0), b.knee.max(0.0));
-        for i in 0..n {
-            let (src, size, first) = if i == 0 { (hdr.slot, post.extent, 1) } else { (chain.levels[i - 1].slot, chain.sizes[i - 1], 0) };
-            let p = push(src, NO_TEXTURE, size, first, [threshold, knee, 0.0, 0.0]);
-            color_barrier(dev, cmd, chain.levels[i].image.handle, false);
-            fullscreen(dev, cmd, pipelines.bloom_down, layout, chain.levels[i].image.view, chain.sizes[i], false, &p, none);
-            color_barrier(dev, cmd, chain.levels[i].image.handle, true);
+    match g.tag(p) {
+        FramePass::BloomDown(i) => {
+            let i = i as usize;
+            let (threshold, knee) = (b.threshold.max(0.0), b.knee.max(0.0));
+            let (src, size, first) =
+                if i == 0 { (slot(res.hdr), extent, 1) } else { (slot(res.levels[i - 1]), bloom_level_size(extent, i as u32 - 1), 0) };
+            let pc = push(src, NO_TEXTURE, size, first, [threshold, knee, 0.0, 0.0]);
+            let out = g.color_attachment(p, res.levels[i], [0.0; 4]);
+            fullscreen(dev, cmd, pipelines.bloom_down, layout, &out, bloom_level_size(extent, i as u32), &pc, none);
         }
-        // up[i] = tent(up[i + 1], or the smallest level) + level i.
-        for i in (1..n).rev() {
-            let smaller = if i == n - 1 { &chain.levels[i] } else { &chain.up[i] };
-            let out = &chain.up[i - 1];
-            color_barrier(dev, cmd, out.image.handle, false);
-            let p = push(smaller.slot, chain.levels[i - 1].slot, chain.sizes[i], 0, [1.0, 0.0, 0.0, 0.0]);
-            fullscreen(dev, cmd, pipelines.bloom_up, layout, out.image.view, chain.sizes[i - 1], false, &p, none);
-            color_barrier(dev, cmd, out.image.handle, true);
+        FramePass::BloomUp(i) => {
+            // blur[i - 1] = tent(blur[i], or the smallest level) + level i - 1.
+            let i = i as usize;
+            let smaller = if i == n - 1 { res.levels[i] } else { res.blurs[i] };
+            let pc = push(slot(smaller), slot(res.levels[i - 1]), bloom_level_size(extent, i as u32), 0, [1.0, 0.0, 0.0, 0.0]);
+            let out = g.color_attachment(p, res.blurs[i - 1], [0.0; 4]);
+            fullscreen(dev, cmd, pipelines.bloom_up, layout, &out, bloom_level_size(extent, i as u32 - 1), &pc, none);
         }
-        let blur = chain.up.first().unwrap_or(&chain.levels[0]);
-        if let Some(t) = timer.as_mut() {
-            t.end_pass(dev, cmd, pass);
+        FramePass::Tonemap => {
+            let blur = if n > 1 { res.blurs[0] } else { res.levels[0] };
+            let intensity = b.intensity.max(0.0) / n as f32;
+            let pc = push(slot(res.hdr), slot(blur), extent, 0, [intensity, 0.0, 0.0, 0.0]);
+            let target = if res.fxaa { res.ldr } else { res.out };
+            let out = g.color_attachment(p, target, [0.0; 4]);
+            fullscreen(dev, cmd, pipelines.composite, layout, &out, extent, &pc, extra);
         }
-
-        let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_TONEMAP));
-        let intensity = b.intensity.max(0.0) / n as f32;
-        let p = push(hdr.slot, blur.slot, post.extent, 0, [intensity, 0.0, 0.0, 0.0]);
-        match (mode.fxaa, post.ldr.as_ref()) {
-            (true, Some(ldr)) => {
-                color_barrier(dev, cmd, ldr.image.handle, false);
-                fullscreen(dev, cmd, pipelines.composite, layout, ldr.image.view, post.extent, false, &p, none);
-            }
-            _ => {
-                final_pass(dev, cmd, pipelines.composite, layout, out, &p, pass, overlay, timer.as_deref_mut());
-                return;
-            }
+        FramePass::Fxaa => {
+            let pc = push(slot(res.ldr), NO_TEXTURE, extent, 0, [0.0; 4]);
+            let out = g.color_attachment(p, res.out, [0.0; 4]);
+            fullscreen(dev, cmd, pipelines.fxaa, layout, &out, extent, &pc, extra);
         }
-        if let Some(t) = timer.as_mut() {
-            t.end_pass(dev, cmd, pass);
-        }
-    }
-    if let (true, Some(ldr)) = (mode.fxaa, post.ldr.as_ref()) {
-        let pass = timer.as_mut().and_then(|t| t.begin_pass(dev, cmd, PASS_FXAA));
-        color_barrier(dev, cmd, ldr.image.handle, true);
-        let p = push(ldr.slot, NO_TEXTURE, post.extent, 0, [0.0; 4]);
-        final_pass(dev, cmd, pipelines.fxaa, layout, out, &p, pass, overlay, timer);
-    }
-}
-
-/// The pass that writes the final image (timing already begun as `pass`), with the overlay drawn
-/// in the same rendering instance and timed on its own.
-#[allow(clippy::too_many_arguments)]
-fn final_pass(
-    dev: &Device,
-    cmd: VkCommandBuffer,
-    pipeline: VkPipeline,
-    layout: VkPipelineLayout,
-    out: &FinalImage,
-    push: &PostPush,
-    pass: Option<usize>,
-    overlay: &OverlayDraw,
-    timer: Option<&mut PassTimer>,
-) {
-    let mut timer = timer;
-    let mut pass = pass;
-    fullscreen(dev, cmd, pipeline, layout, out.view, out.extent, false, push, &mut |cmd| {
-        if overlay.count > 0 {
-            if let Some(t) = timer.as_mut() {
-                t.end_pass(dev, cmd, pass.take());
-            }
-            record_overlay(dev, cmd, overlay, timer.as_deref_mut());
-        }
-    });
-    if let Some(t) = timer {
-        t.end_pass(dev, cmd, pass);
+        other => debug_assert!(false, "not a post pass: {other:?}"),
     }
 }
 

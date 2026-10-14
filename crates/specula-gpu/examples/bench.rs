@@ -17,7 +17,8 @@
 //! - `game_low`: the same scene with the cheaper settings (a 1024² shadow map, 3 bloom levels,
 //!   no FXAA): the fallback when `game` is over budget.
 //!
-//! Each line has `passes`: median and p95 GPU ms per pass (shadow, scene, post_bloom, …).
+//! Each line has `passes`: median and p95 GPU ms per pass (shadow, scene, post_bloom, …), and the
+//! render graph's passes, barriers per frame and compilations (`graph_*`; one compile per scene).
 //!
 //! Without Vulkan it prints `{"skipped": …}` and exits 0. Validation is off by default (it skews
 //! CPU timings); `--validation` turns it on and reports the error count.
@@ -634,7 +635,8 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             "\"draw_calls_unbatched_visible\":{},\"instances\":{},\"triangles\":{},\"pipeline_binds\":{},",
             "\"gpu_ms_median\":{},\"gpu_ms_p95\":{},\"cpu_record_ms_median\":{},\"wall_ms_median\":{},\"wall_ms_p95\":{},",
             "\"draw_buffer_bytes\":{},\"gpu_memory_bytes\":{},\"pipelines_created\":{},\"pipelines_created_after_warm\":{},",
-            "\"pipeline_create_ms\":{},\"shadow_draw_calls\":{},\"shadow_instances\":{},\"overlay_quads\":{},\"passes\":{{{}}}}}"
+            "\"pipeline_create_ms\":{},\"shadow_draw_calls\":{},\"shadow_instances\":{},\"overlay_quads\":{},",
+            "\"graph_passes\":{},\"graph_barriers\":{},\"graph_compiles\":{},\"passes\":{{{}}}}}"
         ),
         json_str(scene.name),
         json_str(&gpu.adapter().name),
@@ -665,6 +667,9 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
         d.shadow_draw_calls,
         d.shadow_instances,
         d.overlay_quads,
+        s.graph.passes,
+        s.graph.barriers,
+        s.graph.compiles,
         pass_json.join(","),
     ))
 }

@@ -27,6 +27,8 @@ pub struct Descriptors {
     /// Depth comparison with a white border: bilinear (hardware 2×2 PCF) where the device can
     /// filter D16 linearly, nearest otherwise.
     pub shadow: VkSampler,
+    /// The view binding 0 points at (null until a frame first renders shadows).
+    pub shadow_view: VkImageView,
     free: Vec<u32>,
     next: u32,
 }
@@ -72,6 +74,7 @@ impl Descriptors {
             set: VK_NULL_HANDLE,
             linear: VK_NULL_HANDLE,
             shadow: VK_NULL_HANDLE,
+            shadow_view: VK_NULL_HANDLE,
             free: Vec::new(),
             next: 0,
         };
@@ -179,8 +182,9 @@ impl Descriptors {
     }
 
     /// Point binding 0 at the shadow map's array view. No pending frame may use it.
-    pub fn write_shadow(&self, dev: &Device, view: VkImageView) {
+    pub fn write_shadow(&mut self, dev: &Device, view: VkImageView) {
         self.write(dev, BINDING_SHADOW, 0, self.shadow, view);
+        self.shadow_view = view;
     }
 
     fn write(&self, dev: &Device, binding: u32, element: u32, sampler: VkSampler, view: VkImageView) {

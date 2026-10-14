@@ -200,6 +200,21 @@ impl MemoryStats {
     }
 }
 
+/// The frame's render graph (see [`crate::Gpu::last_graph`] for its passes and barriers).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GraphStats {
+    /// Passes in the graph (inline passes included).
+    pub passes: u32,
+    /// Image and buffer barriers recorded for the frame (batched into one
+    /// `vkCmdPipelineBarrier2` per pass at most).
+    pub barriers: u32,
+    /// The graph was compiled for this frame (its passes, formats or sizes changed); otherwise
+    /// the previous frame's plan was reused.
+    pub recompiled: bool,
+    /// Compilations of this path's graph so far.
+    pub compiles: u64,
+}
+
 /// Statistics for the most recent frame. Frame-specific fields describe that frame; `pipelines`
 /// and `memory` are the state when the stats were taken.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -218,6 +233,7 @@ pub struct FrameStats {
     /// = −4); `None` while reads succeed. `gpu` then keeps the last good timings.
     pub timestamp_error: Option<i32>,
     pub draws: DrawStats,
+    pub graph: GraphStats,
     /// Size of the per-frame buffer holding frame data and per-draw records; it grows as needed.
     pub draw_buffer_bytes: u64,
     pub pipelines: PipelineStats,
