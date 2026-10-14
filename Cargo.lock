@@ -68,6 +68,7 @@ dependencies = [
 name = "specula-gpu"
 version = "0.3.0"
 dependencies = [
+ "specula-core",
  "specula-sys",
 ]
 

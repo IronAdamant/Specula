@@ -355,6 +355,7 @@ impl Window {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            two_d: !frame.draws_2d.is_empty(),
         };
         let res = declare_frame(&mut self.graph, &shape);
         prepare_graph(dev, descriptors, pool, &mut self.graph, &res)?;

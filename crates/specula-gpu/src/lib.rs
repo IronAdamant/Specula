@@ -16,8 +16,9 @@
 //!   draw's colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0
 //!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
 //! - Opaque draws ([`Material::Lit`]) come first, with no face culling; then the sky (if on);
-//!   then blended draws (every other material), sorted far to near, with depth test on and depth
-//!   writes off; then the overlay, last, over everything, after post-processing.
+//!   then the 2D items ([`FrameDesc::draws_2d`]: sprites, tile chunks, vector shapes; see
+//!   [`Draw2d`]); then blended draws (every other material), sorted far to near, with depth test
+//!   on and depth writes off; then the overlay, last, over everything, after post-processing.
 //! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
 //! - Per-frame data (camera, environment, lights, time, shadow cascades, fog, sky) and one record
@@ -70,6 +71,7 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod atlas;
 mod batch;
 mod descriptors;
 mod device;
@@ -81,12 +83,18 @@ mod overlay;
 mod post;
 mod render;
 mod shadow;
+mod sprite;
 mod stats;
 mod swapchain;
+mod tilemap;
 mod timing;
+pub mod vector;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
+pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
+pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TextureFilter, TileChunk, View2d};
+pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -711,6 +719,9 @@ pub struct FrameDesc<'a> {
     pub time_s: f32,
     /// Drawn last, over everything, in list order (at most [`MAX_OVERLAY_QUADS`]).
     pub overlay: &'a [OverlayQuad],
+    /// Sprites, tile chunks and vector shapes in the world (see [`Draw2d`]): drawn in the scene
+    /// pass after the opaque meshes and the sky, sorted by layer, then far to near.
+    pub draws_2d: &'a [Draw2d],
 }
 
 impl Default for FrameDesc<'_> {
@@ -724,6 +735,7 @@ impl Default for FrameDesc<'_> {
             lights: &[],
             time_s: 0.0,
             overlay: &[],
+            draws_2d: &[],
         }
     }
 }

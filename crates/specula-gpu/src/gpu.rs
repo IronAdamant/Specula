@@ -558,6 +558,7 @@ impl GpuInner {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            two_d: !frame.draws_2d.is_empty(),
         };
         let res = declare_frame(&mut t.graph, &shape);
         prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;

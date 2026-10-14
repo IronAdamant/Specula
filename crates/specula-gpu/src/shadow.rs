@@ -433,8 +433,17 @@ pub fn depth_bias(bias: f32) -> (f32, f32) {
     (1.25 * b, 1.75 * b)
 }
 
+/// Cutout sprites that cast shadows: `count` records at `push.items` (see `sprite.rs`).
+#[derive(Clone, Copy)]
+pub struct SpriteCasters {
+    pub pipeline: VkPipeline,
+    pub push: crate::sprite::SpritePush,
+    pub count: u32,
+}
+
 /// Record the shadow pass `p` of `g` into `map`: every cascade's layer cleared and drawn
-/// depth-only (the graph owns the barriers around it). Updates `stats`' shadow counters.
+/// depth-only (the graph owns the barriers around it), meshes then shadow-casting sprites.
+/// Updates `stats`' shadow counters.
 #[allow(clippy::too_many_arguments)]
 pub fn record_shadow_pass(
     dev: &Device,
@@ -449,6 +458,7 @@ pub fn record_shadow_pass(
     first_record: u32,
     upload: &FrameUpload,
     bias: f32,
+    sprites: Option<SpriteCasters>,
     stats: &mut DrawStats,
 ) {
     let img = g.image(map);
@@ -502,6 +512,24 @@ pub fn record_shadow_pass(
                 stats.shadow_draw_calls += 1;
                 stats.shadow_instances += b.count;
                 stats.shadow_triangles += (mesh.index_count / 3) as u64 * b.count as u64;
+            }
+            if let Some(s) = sprites.filter(|s| s.count > 0) {
+                // Every caster into every cascade: cards are cheap, and their shadows may reach
+                // into view from anywhere.
+                (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipeline);
+                let push = crate::sprite::SpritePush { pass: k, ..s.push };
+                (dev.fns.cmd_push_constants)(
+                    cmd,
+                    layout,
+                    PUSH_STAGES,
+                    0,
+                    size_of::<crate::sprite::SpritePush>() as u32,
+                    &push as *const crate::sprite::SpritePush as *const c_void,
+                );
+                (dev.fns.cmd_draw)(cmd, 6, s.count, 0, 0);
+                stats.shadow_draw_calls += 1;
+                stats.shadow_instances += s.count;
+                stats.shadow_triangles += 2 * s.count as u64;
             }
             (dev.fns.cmd_end_rendering)(cmd);
         }

@@ -24,7 +24,7 @@
 //! CPU timings); `--validation` turns it on and reports the error count.
 
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, OverlayKind, OverlayQuad, PointLight,
+    AdapterPreference, Draw2d, DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, OverlayKind, OverlayQuad, PointLight,
     Severity, Surface, TextureFormat, TextureId, Validation, Vertex,
 };
 use std::f32::consts::{PI, TAU};
@@ -170,6 +170,7 @@ struct Scene {
     name: &'static str,
     draws: Vec<DrawItem>,
     overlay: Vec<OverlayQuad>,
+    draws_2d: Vec<Draw2d>,
     lights: Vec<PointLight>,
     environment: Environment,
     clear: [f32; 4],
@@ -196,6 +197,7 @@ fn cubes_10k(m: &Meshes) -> Scene {
         name: "cubes_10k",
         draws,
         overlay: Vec::new(),
+        draws_2d: Vec::new(),
         lights: Vec::new(),
         environment: Environment::default(),
         clear: [0.55, 0.65, 0.8, 1.0],
@@ -255,6 +257,7 @@ fn mixed_1000(m: &Meshes) -> Scene {
         name: "mixed_1000",
         draws,
         overlay: Vec::new(),
+        draws_2d: Vec::new(),
         lights,
         environment,
         clear: [0.1, 0.12, 0.16, 1.0],
@@ -340,6 +343,7 @@ fn game(m: &Meshes, atlas: TextureId, low: bool) -> Scene {
         name: if low { "game_low" } else { "game" },
         draws,
         overlay,
+        draws_2d: Vec::new(),
         lights: Vec::new(),
         environment,
         clear: [0.04, 0.06, 0.13, 1.0],
@@ -394,6 +398,7 @@ fn lights_16(m: &Meshes) -> Scene {
         name: "lights_16",
         draws,
         overlay: Vec::new(),
+        draws_2d: Vec::new(),
         lights,
         environment,
         clear: [0.02, 0.02, 0.03, 1.0],
@@ -586,6 +591,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             lights: &scene.lights,
             time_s: 1.0,
             overlay,
+            draws_2d: &scene.draws_2d,
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;

@@ -970,7 +970,13 @@ impl<T: Copy + PartialEq> Plan<T> {
                 continue;
             }
             let r = &decl.resources[use_.res.0 as usize];
-            let later = decl.uses[i + 1..].iter().any(|o| o.res == use_.res && o.access.reads());
+            // Inline passes joined to this rendering instance read the attachment in place: only
+            // a reader after the instance needs it stored.
+            let mut end = use_.pass as usize + 1;
+            while end < decl.passes.len() && decl.passes[end].inline {
+                end += 1;
+            }
+            let later = decl.uses[i + 1..].iter().any(|o| o.res == use_.res && o.access.reads() && o.pass as usize >= end);
             // An imported image is kept for whatever uses it after the frame.
             let after = !matches!(r.kind, Kind::Transient { .. });
             let store = if later || after { VK_ATTACHMENT_STORE_OP_STORE } else { VK_ATTACHMENT_STORE_OP_DONT_CARE };
@@ -1294,9 +1300,9 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
         self.plan.decl.passes[pass].inline
     }
 
-    /// The inline pass that joins `pass`, if any.
-    pub fn inline_after(&self, pass: usize) -> Option<usize> {
-        self.plan.decl.passes.get(pass + 1).filter(|p| p.inline).map(|_| pass + 1)
+    /// The inline passes that join `pass`'s rendering instance, in order.
+    pub fn joined(&self, pass: usize) -> impl Iterator<Item = usize> + '_ {
+        (pass + 1..self.plan.decl.passes.len()).take_while(|&q| self.plan.decl.passes[q].inline)
     }
 
     fn ops(&self, pass: usize, res: Res) -> Ops {

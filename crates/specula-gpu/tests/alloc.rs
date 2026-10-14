@@ -98,6 +98,7 @@ fn warm_frames_do_not_allocate() {
         lights: &lights,
         time_s: 1.0,
         overlay: &overlay,
+        draws_2d: &[],
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();

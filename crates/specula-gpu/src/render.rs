@@ -11,11 +11,13 @@ use crate::post::{
     MAX_BLOOM_LEVELS,
 };
 use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
+use crate::sprite::{check_2d, plan_2d, record_2d, Draw2dContext, ItemRecord, Plan2d, FEAT_CUTOUT};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
     CacheRejection, DrawItem, DrawStats, FrameDesc, GpuError, Limit, Material, MemoryKind, PipelineCacheLoad, PipelineStats,
-    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_BLOOM, PASS_FXAA, PASS_OVERLAY, PASS_SCENE, PASS_SHADOW, PASS_TONEMAP,
+    Vertex, MAX_POINT_LIGHTS, MAX_SHADOW_CASCADES, PASS_BLOOM, PASS_FXAA, PASS_OVERLAY, PASS_SCENE, PASS_SHADOW, PASS_SPRITES,
+    PASS_TONEMAP,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -24,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 12] = [
+static SHADERS: [(&str, &[u8]); 18] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -37,6 +39,12 @@ static SHADERS: [(&str, &[u8]); 12] = [
     ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
     ("overlay.vert", include_bytes!("../shaders/overlay.vert.spv")),
     ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
+    ("sprite.vert", include_bytes!("../shaders/sprite.vert.spv")),
+    ("sprite.frag", include_bytes!("../shaders/sprite.frag.spv")),
+    ("shape.vert", include_bytes!("../shaders/shape.vert.spv")),
+    ("shape.frag", include_bytes!("../shaders/shape.frag.spv")),
+    ("sprite_shadow.vert", include_bytes!("../shaders/sprite_shadow.vert.spv")),
+    ("sprite_shadow.frag", include_bytes!("../shaders/sprite_shadow.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +61,12 @@ enum Shader {
     SkyFrag = 9,
     OverlayVert = 10,
     OverlayFrag = 11,
+    SpriteVert = 12,
+    SpriteFrag = 13,
+    ShapeVert = 14,
+    ShapeFrag = 15,
+    SpriteShadowVert = 16,
+    SpriteShadowFrag = 17,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -173,6 +187,8 @@ const INITIAL_RECORDS: u32 = 256;
 // every device guarantees.
 const _: () = assert!(RECORDS_OFFSET >= FRAME_DATA_SIZE && RECORDS_OFFSET % 256 == 0);
 const _: () = assert!(size_of::<PushConstants>() <= 128);
+// 2D item records share the draw records' unit, so they start at a whole unit after the overlay.
+const _: () = assert!(size_of::<ItemRecord>() as u64 == RECORD_SIZE);
 
 const MAT_LIT: u32 = 0;
 const MAT_GLASS: u32 = 1;
@@ -388,6 +404,8 @@ pub struct FrameScratch {
     pub records: Vec<DrawRecord>,
     pub overlay: Vec<OverlayRecord>,
     pub linear: LinearCache,
+    /// The frame's sprites, tile chunks and shapes (records included).
+    pub two_d: Plan2d,
 }
 
 impl FrameScratch {
@@ -513,10 +531,11 @@ impl FrameUpload {
         }
     }
 
-    /// Write the frame's data, records and overlay quads (after the records), all within the
-    /// reserved capacity.
-    pub fn write(&self, data: &FrameData, records: &[DrawRecord], overlay: &[OverlayRecord]) {
-        let units = records.len() + overlay_units(overlay.len(), RECORD_SIZE as usize);
+    /// Write the frame's data, records, overlay quads (after the records) and 2D items (after the
+    /// overlay, at a whole record unit), all within the reserved capacity.
+    pub fn write(&self, data: &FrameData, records: &[DrawRecord], overlay: &[OverlayRecord], items: &[ItemRecord]) {
+        let before_items = records.len() + overlay_units(overlay.len(), RECORD_SIZE as usize);
+        let units = before_items + items.len();
         assert!(units <= self.sizing.capacity as usize, "reserve() before write()");
         // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE bytes
         // that the GPU no longer reads (see `reserve`); both copies stay in bounds and the types
@@ -534,7 +553,18 @@ impl FrameUpload {
                 base.add(RECORDS_OFFSET as usize + std::mem::size_of_val(records)),
                 std::mem::size_of_val(overlay),
             );
+            ptr::copy_nonoverlapping(
+                items.as_ptr() as *const u8,
+                base.add(RECORDS_OFFSET as usize + before_items * RECORD_SIZE as usize),
+                std::mem::size_of_val(items),
+            );
         }
+    }
+
+    /// Device address of the 2D item records that follow `records` draw records and `overlay`
+    /// overlay records.
+    pub fn items_address(&self, records: usize, overlay: usize) -> u64 {
+        self.records_address() + (records + overlay_units(overlay, RECORD_SIZE as usize)) as u64 * RECORD_SIZE
     }
 
     pub fn frame_address(&self) -> u64 {
@@ -617,6 +647,13 @@ pub enum PipelineKey {
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
     /// or the last post pass (no depth).
     Overlay { format: VkFormat, depth: bool },
+    /// Sprites and tile chunks into `format` (+ D32 depth, compare op dynamic): alpha tested
+    /// (depth written) or blended, with the scene `features` (shadows, fog).
+    Sprite { format: VkFormat, cutout: bool, features: u32 },
+    /// Vector shapes into `format` (+ D32 depth), blended, with or without fog.
+    Shape { format: VkFormat, fog: bool },
+    /// Cutout sprites into a shadow map layer (alpha tested, depth only).
+    SpriteShadow,
 }
 
 /// What vertex data a pipeline reads.
@@ -702,6 +739,45 @@ impl PipelineKey {
                 blend: Blend::Off,
                 depth_bias: false,
             },
+            PipelineKey::Sprite { format, cutout, features } => PipelineDesc {
+                vert: Shader::SpriteVert,
+                frag: Some(Shader::SpriteFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if cutout { FEAT_CUTOUT } else { 0 },
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: cutout,
+                compare: None,
+                blend: if cutout { Blend::Off } else { Blend::Premultiplied },
+                depth_bias: false,
+            },
+            PipelineKey::Shape { format, fog } => PipelineDesc {
+                vert: Shader::ShapeVert,
+                frag: Some(Shader::ShapeFrag),
+                spec: if fog { FEAT_FOG } else { 0 } | if format == HDR_FORMAT { FEAT_HDR } else { 0 },
+                vertex: VertexInput::Mesh,
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: false,
+                compare: None,
+                blend: Blend::Premultiplied,
+                depth_bias: false,
+            },
+            PipelineKey::SpriteShadow => PipelineDesc {
+                vert: Shader::SpriteShadowVert,
+                frag: Some(Shader::SpriteShadowFrag),
+                spec: 0,
+                vertex: VertexInput::None,
+                color: None,
+                depth: Some(SHADOW_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: Blend::Off,
+                depth_bias: true,
+            },
             PipelineKey::Overlay { format, depth } => PipelineDesc {
                 vert: Shader::OverlayVert,
                 frag: Some(Shader::OverlayFrag),
@@ -766,6 +842,11 @@ pub struct FramePipelines {
     pub composite: VkPipeline,
     pub fxaa: VkPipeline,
     pub overlay: VkPipeline,
+    /// 2D: cutout and blended sprites / tile chunks, vector shapes, sprite shadow casters.
+    pub sprite_cutout: VkPipeline,
+    pub sprite_blended: VkPipeline,
+    pub shape: VkPipeline,
+    pub sprite_shadow: VkPipeline,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -900,6 +981,12 @@ impl Pipelines {
         }
         for fog in [false, true] {
             self.get(dev, PipelineKey::Sky { format: color_format, fog })?;
+            self.get(dev, PipelineKey::Shape { format: color_format, fog })?;
+        }
+        for cutout in [false, true] {
+            for features in FEATURE_SETS {
+                self.get(dev, PipelineKey::Sprite { format: color_format, cutout, features })?;
+            }
         }
         Ok(())
     }
@@ -907,6 +994,7 @@ impl Pipelines {
     /// Pipelines that don't depend on the output format: shadows, the HDR scene, bloom.
     pub fn prebuild_common(&mut self, dev: &Device) -> Result<(), GpuError> {
         self.get(dev, PipelineKey::Shadow)?;
+        self.get(dev, PipelineKey::SpriteShadow)?;
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
@@ -945,6 +1033,11 @@ impl Pipelines {
             composite: get(mode.bloom(), PipelineKey::Composite { format: composite_format })?,
             fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
+            // Prebuilt with the scene's: a lookup, never a creation.
+            sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features })?,
+            sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features })?,
+            shape: get(true, PipelineKey::Shape { format: scene_format, fog: features & FEAT_FOG != 0 })?,
+            sprite_shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::SpriteShadow)?,
         })
     }
 
@@ -1222,6 +1315,7 @@ impl Pipelines {
 /// many lights.
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
     check_overlay(frame.overlay, textures)?;
+    check_2d(frame.draws_2d, meshes, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
@@ -1249,8 +1343,11 @@ pub fn prepare_frame(
     build_records(frame, &scratch.plan, &mut scratch.linear, &mut scratch.records);
     append_shadow_records(frame, &scratch.shadow, &mut scratch.records);
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
-    upload.reserve(dev, scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize))?;
-    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay);
+    let shadows = frame.environment.shadow.enabled;
+    plan_2d(frame, bounds, textures, &mut scratch.linear, shadows, &mut scratch.two_d);
+    let items = &scratch.two_d.records;
+    upload.reserve(dev, scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + items.len())?;
+    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay, items);
     Ok(())
 }
 
@@ -1290,6 +1387,9 @@ pub enum FramePass {
     Fxaa,
     /// The overlay quads, inline in the pass that writes the final image.
     Overlay,
+    /// Sprites, tile chunks and vector shapes: inline in the scene pass (recorded between the sky
+    /// and the blended meshes, see `sprite.rs`).
+    Sprites,
 }
 
 impl FramePass {
@@ -1302,6 +1402,7 @@ impl FramePass {
             FramePass::Tonemap => PASS_TONEMAP,
             FramePass::Fxaa => PASS_FXAA,
             FramePass::Overlay => PASS_OVERLAY,
+            FramePass::Sprites => PASS_SPRITES,
         }
     }
 }
@@ -1339,6 +1440,8 @@ pub struct FrameShape {
     /// The shadow map, when the frame renders shadows.
     pub shadow: Option<ImageDesc>,
     pub overlay: bool,
+    /// The frame has 2D items ([`FrameDesc::draws_2d`]).
+    pub two_d: bool,
 }
 
 /// Declare a frame's passes into `g`: shadow → scene (+ overlay inline when the scene writes the
@@ -1371,6 +1474,9 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
     let scene = g.pass("scene", FramePass::Scene).color(r.scene, Load::Clear).depth(r.depth, Load::Clear);
     if let Some(map) = r.shadow {
         scene.sampled(map);
+    }
+    if s.two_d {
+        g.pass("sprites", FramePass::Sprites).inline().color(r.scene, Load::Keep).depth(r.depth, Load::Keep);
     }
     let overlay = |g: &mut FrameGraph, out| {
         if s.overlay {
@@ -1479,6 +1585,18 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         quads: ctx.upload.overlay_address(ctx.scratch.records.len()),
         count: ctx.scratch.overlay.len() as u32,
     };
+    let two_d = &ctx.scratch.two_d;
+    let items = ctx.upload.items_address(ctx.scratch.records.len(), ctx.scratch.overlay.len());
+    let draw_2d = Draw2dContext {
+        layout: ctx.pipelines.layout,
+        cutout: ctx.pipelines.sprite_cutout,
+        blended: ctx.pipelines.sprite_blended,
+        shape: ctx.pipelines.shape,
+        meshes: ctx.meshes,
+        push: two_d.push(ctx.upload.frame_address(), items),
+        reverse_z: ctx.frame.reverse_z,
+    };
+    let mut stats_2d = DrawStats::default();
     for p in 0..g.pass_count() {
         if g.is_inline(p) {
             continue;
@@ -1488,17 +1606,36 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         g.barriers(dev, cmd, p);
         let g = &*g;
         // The overlay draws inside the rendering instance of the pass that writes the final
-        // image, and is timed on its own.
-        let with_overlay = g.inline_after(p).is_some() && overlay.count > 0;
-        let mut inline = |cmd: VkCommandBuffer| {
-            if with_overlay {
-                timing.end(dev, cmd);
-                record_overlay(dev, cmd, &overlay, timing.timer.as_deref_mut());
+        // image, and is timed on its own; so are the 2D items inside the scene's.
+        let with_overlay = overlay.count > 0 && joined_by(g, p, FramePass::Overlay);
+        let mut hook = |cmd: VkCommandBuffer, at: Hook| -> bool {
+            match at {
+                Hook::TwoD => {
+                    if two_d.batches.is_empty() {
+                        return false;
+                    }
+                    timing.enter(dev, cmd, PASS_SPRITES);
+                    record_2d(dev, cmd, &draw_2d, two_d, &mut stats_2d);
+                    timing.enter(dev, cmd, PASS_SCENE);
+                    true
+                }
+                Hook::End => {
+                    if with_overlay {
+                        timing.end(dev, cmd);
+                        record_overlay(dev, cmd, &overlay, timing.timer.as_deref_mut());
+                    }
+                    with_overlay
+                }
             }
         };
         match tag {
             FramePass::Shadow => {
                 if let Some(map) = res.shadow {
+                    let mut push = draw_2d.push;
+                    let casters = (two_d.casters > 0 && ctx.pipelines.sprite_shadow != VK_NULL_HANDLE).then(|| {
+                        push.items += two_d.drawn as u64 * RECORD_SIZE;
+                        crate::shadow::SpriteCasters { pipeline: ctx.pipelines.sprite_shadow, push, count: two_d.casters }
+                    });
                     crate::shadow::record_shadow_pass(
                         dev,
                         cmd,
@@ -1512,6 +1649,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                         ctx.scratch.shadow_first_record(),
                         ctx.upload,
                         env.shadow.bias,
+                        casters,
                         &mut shadow_stats,
                     );
                 }
@@ -1519,10 +1657,13 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
             FramePass::Scene => {
                 let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
                 let clear = if res.bloom_levels > 0 { hdr_clear(clear, env.tonemap) } else { clear };
-                stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
+                stats = record_scene(ctx, cmd, g, p, res, clear, &mut hook);
             }
-            FramePass::Overlay => {} // inline: recorded by the pass before it
-            _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.upload.frame_address(), &mut inline),
+            // Inline: recorded inside the scene's rendering / the pass before it.
+            FramePass::Sprites | FramePass::Overlay => {}
+            _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.upload.frame_address(), &mut |cmd| {
+                hook(cmd, Hook::End);
+            }),
         }
     }
     timing.end(dev, cmd);
@@ -1532,12 +1673,35 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
     stats.shadow_draw_calls = shadow_stats.shadow_draw_calls;
     stats.shadow_instances = shadow_stats.shadow_instances;
     stats.shadow_triangles = shadow_stats.shadow_triangles;
+    stats.sprites = two_d.sprites;
+    stats.tile_chunks = two_d.tile_chunks;
+    stats.shapes = two_d.shapes;
+    stats.culled_2d = two_d.culled;
+    stats.shadow_sprites = if stats.shadow_cascades > 0 { two_d.casters } else { 0 };
+    stats.draw_calls_2d = stats_2d.draw_calls_2d;
+    stats.triangles_2d = stats_2d.triangles_2d;
+    stats.pipeline_binds += stats_2d.pipeline_binds;
     stats
 }
 
+/// Where the scene pass hands over to other work inside its rendering instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// Between the sky and the blended meshes: the 2D items.
+    TwoD,
+    /// At the end of the pass's rendering: the overlay.
+    End,
+}
+
+/// An inline pass tagged `tag` joins pass `p`'s rendering instance.
+fn joined_by(g: &FrameGraph, p: usize, tag: FramePass) -> bool {
+    g.joined(p).any(|q| g.tag(q) == tag)
+}
+
 /// Record the scene pass `p` of `g` (the graph recorded its barriers): clear, one instanced draw
-/// per batch of the frame's plan, the sky between the opaque and blended draws, then `inline`
-/// (the overlay) inside the same rendering instance.
+/// per batch of the frame's plan, the sky and then `hook(Hook::TwoD)` (the 2D items) between the
+/// opaque and blended draws, then `hook(Hook::End)` (the overlay) inside the same rendering
+/// instance. `hook` says whether it drew anything.
 pub fn record_scene(
     ctx: &FrameContext,
     cmd: VkCommandBuffer,
@@ -1545,7 +1709,7 @@ pub fn record_scene(
     p: usize,
     res: &FrameRes,
     clear: [f32; 4],
-    inline: &mut dyn FnMut(VkCommandBuffer),
+    hook: &mut dyn FnMut(VkCommandBuffer, Hook) -> bool,
 ) -> DrawStats {
     let (dev, pipelines, frame, upload) = (ctx.dev, &ctx.pipelines, ctx.frame, ctx.upload);
     let plan = &ctx.scratch.plan;
@@ -1592,6 +1756,8 @@ pub fn record_scene(
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
         let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
+        let mut two_d_pending = true;
+        let mesh_compare = if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS };
         let draw_sky = |cmd: VkCommandBuffer| {
             // Behind everything opaque, before anything blended (glass shows the sky through it).
             (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.sky);
@@ -1619,10 +1785,19 @@ pub fn record_scene(
                 draw_sky(cmd);
                 // The sky pipeline's depth compare is static, so binding it invalidated the
                 // dynamic compare op the mesh pipelines use: set it again before their draws.
-                (dev.fns.cmd_set_depth_compare_op)(cmd, if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS });
+                (dev.fns.cmd_set_depth_compare_op)(cmd, mesh_compare);
                 sky_pending = false;
                 bound = pipelines.sky;
                 stats.pipeline_binds += 1;
+            }
+            if two_d_pending && batch.material.blended() {
+                two_d_pending = false;
+                if hook(cmd, Hook::TwoD) {
+                    // The 2D draws bound their own pipelines, buffers and compare op.
+                    (dev.fns.cmd_set_depth_compare_op)(cmd, mesh_compare);
+                    bound = VK_NULL_HANDLE;
+                    bound_mesh = None;
+                }
             }
             let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
             let pipeline = if batch.material.blended() { pipelines.blended } else { pipelines.opaque };
@@ -1660,8 +1835,11 @@ pub fn record_scene(
             draw_sky(cmd);
             stats.pipeline_binds += 1;
         }
+        if two_d_pending {
+            hook(cmd, Hook::TwoD);
+        }
     }
-    inline(cmd);
+    hook(cmd, Hook::End);
     // SAFETY: ends the rendering instance begun above.
     unsafe { (dev.fns.cmd_end_rendering)(cmd) };
     stats
