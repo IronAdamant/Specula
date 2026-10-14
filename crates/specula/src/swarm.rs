@@ -65,6 +65,9 @@ pub struct Swarm {
     pub claims: Claims,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
+    /// Agent name → the identity that most recently said agent_hello with it (its current holder:
+    /// names are unique among open sessions).
+    named: BTreeMap<String, String>,
     /// Names agents may not take: the hosted game's, in-process writers'.
     reserved: BTreeSet<String>,
 }
@@ -92,6 +95,11 @@ impl Swarm {
             Some(a) => a.key.clone(),
             None => session.id.clone(),
         }
+    }
+
+    /// The identity key now going by `name` (the last agent_hello with it), if any.
+    pub fn key_of_name(&self, name: &str) -> Option<&str> {
+        self.named.get(name).map(String::as_str)
     }
 
     pub fn role(&self, session_id: &str) -> &str {
@@ -173,6 +181,7 @@ impl Swarm {
             ("resume_token", Json::from(token.as_str())),
             ("note", Json::from("keep resume_token private; a later session continues as this agent (claims and undo included) with agent_hello {name, resume_token}")),
         ]);
+        self.named.insert(name.clone(), key.clone());
         self.agents.insert(session.id.clone(), Agent { name, role, key, token });
         Ok(reply)
     }
@@ -212,6 +221,7 @@ impl Swarm {
             ("resumed", Json::from(true)),
             ("claims", Json::arr(self.claims.owned_by(Writer::new(&agent.name, Some(&agent.key))).into_iter().map(Json::from))),
         ]);
+        self.named.insert(agent.name.clone(), agent.key.clone());
         self.agents.insert(session.id.clone(), agent);
         Ok(reply)
     }

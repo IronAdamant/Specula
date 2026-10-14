@@ -24,7 +24,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 14] = [
+static SHADERS: [(&str, &[u8]); 15] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -39,6 +39,7 @@ static SHADERS: [(&str, &[u8]); 14] = [
     ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
     ("ids.vert", include_bytes!("../shaders/ids.vert.spv")),
     ("ids.frag", include_bytes!("../shaders/ids.frag.spv")),
+    ("ids_count.frag", include_bytes!("../shaders/ids_count.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +58,7 @@ enum Shader {
     OverlayFrag = 11,
     IdsVert = 12,
     IdsFrag = 13,
+    IdsCountFrag = 14,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -621,9 +623,9 @@ pub enum PipelineKey {
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
     /// or the last post pass (no depth).
     Overlay { format: VkFormat, depth: bool },
-    /// Sight's ID buffer (`idbuffer.rs`): draw ids into R32G32_UINT + D32 (compare op dynamic);
-    /// opaque draws write R and depth, blended ones write G and test depth only.
-    Ids { blended: bool },
+    /// Sight's ID buffer (`idbuffer.rs`): opaque ids into R32_UINT + D32 (compare op dynamic), or
+    /// counted into a storage buffer (blended against the opaque depth; rasterized at all).
+    Ids { pass: crate::idbuffer::IdPass },
 }
 
 /// What vertex data a pipeline reads.
@@ -635,6 +637,8 @@ enum VertexInput {
     Mesh,
     /// [`Vertex`]'s position only.
     Position,
+    /// [`Vertex`]'s position and normal (the ID buffer).
+    PositionNormal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -724,20 +728,24 @@ impl PipelineKey {
                 blend: Blend::Premultiplied,
                 depth_bias: false,
             },
-            PipelineKey::Ids { blended } => PipelineDesc {
-                vert: Shader::IdsVert,
-                frag: Some(Shader::IdsFrag),
-                spec: 0,
-                vertex: VertexInput::Position,
-                color: Some(crate::idbuffer::ID_FORMAT),
-                depth: Some(DEPTH_FORMAT),
-                depth_test: true,
-                // As in the scene: blended surfaces never hide what is behind them.
-                depth_write: !blended,
-                compare: None,
-                blend: Blend::Mask(if blended { crate::idbuffer::WRITE_G } else { crate::idbuffer::WRITE_R }),
-                depth_bias: false,
-            },
+            PipelineKey::Ids { pass } => {
+                use crate::idbuffer::IdPass;
+                PipelineDesc {
+                    vert: Shader::IdsVert,
+                    frag: Some(if pass == IdPass::Opaque { Shader::IdsFrag } else { Shader::IdsCountFrag }),
+                    spec: (pass == IdPass::Raster) as u32,
+                    vertex: VertexInput::PositionNormal,
+                    color: Some(crate::idbuffer::ID_FORMAT),
+                    depth: Some(DEPTH_FORMAT),
+                    depth_test: pass != IdPass::Raster,
+                    // As in the scene: blended surfaces never hide what is behind them.
+                    depth_write: pass == IdPass::Opaque,
+                    compare: if pass == IdPass::Raster { Some(VK_COMPARE_OP_LESS) } else { None },
+                    // Only opaque draws write ids; the counting passes write the storage buffer.
+                    blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
+                    depth_bias: false,
+                }
+            }
         }
     }
 }
@@ -933,8 +941,11 @@ impl Pipelines {
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
-        for blended in [false, true] {
-            self.get(dev, PipelineKey::Ids { blended })?;
+        for pass in crate::idbuffer::IdPass::ALL {
+            // The counting passes need fragment atomics; without them blended draws go uncounted.
+            if pass == crate::idbuffer::IdPass::Opaque || dev.fragment_atomics {
+                self.get(dev, PipelineKey::Ids { pass })?;
+            }
         }
         Ok(())
     }
@@ -1079,6 +1090,7 @@ impl Pipelines {
             VertexInput::None => (0, 0),
             VertexInput::Mesh => (1, attributes.len() as u32),
             VertexInput::Position => (1, 1),
+            VertexInput::PositionNormal => (1, 2),
         };
         let vertex_input = VkPipelineVertexInputStateCreateInfo {
             s_type: ST_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,

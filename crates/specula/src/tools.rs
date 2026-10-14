@@ -83,7 +83,7 @@ const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
 const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
 const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s", "include_ui", "lod"];
 /// sight_frame's arguments beyond the view itself (cameras, overlays, subject filter).
-pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects"];
+pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
     "background", "shadow", "bloom", "fxaa", "sky", "fog",
@@ -227,6 +227,8 @@ pub struct FrameSpec {
     pub overlays: crate::sight_overlay::Spec,
     /// Which subjects the response lists.
     pub subjects: crate::sight_tools::SubjectFilter,
+    /// Render the ID buffer: per-subject visible pixels (default true; `ids: false` saves its cost).
+    pub ids: bool,
 }
 
 pub struct Request {
@@ -1167,7 +1169,8 @@ fn parse_hello(args: &Json) -> Result<Command, String> {
 }
 
 pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
-    let int = |key: &str, default: u32, range: std::ops::RangeInclusive<u32>| -> Result<u32, String> {
+    crate::sight_tools::check_camera_conflict(args)?;
+    let int =|key: &str, default: u32, range: std::ops::RangeInclusive<u32>| -> Result<u32, String> {
         match args.get(key) {
             None | Some(Json::Null) => Ok(default),
             Some(v) => match v.as_u64() {
@@ -1207,6 +1210,7 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         camera: None,
         overlays: crate::sight_overlay::Spec::default(),
         subjects: crate::sight_tools::SubjectFilter::All,
+        ids: true,
     })
     .and_then(|mut spec| {
         crate::sight_tools::frame_extras(args, &mut spec)?;
@@ -1653,7 +1657,9 @@ fn definitions() -> Vec<ToolDef> {
                           on-screen rectangle [x, y, w, h] (pixels, origin top-left): the engine's projection of its \
                           bounding box, clipped to the view (loose, blind to occlusion), and from the GPU ID buffer \
                           visible_px (pixels actually drawn; glass shows but hides nothing), screen_box_exact (the \
-                          tight box of those pixels) and occluded: true (in view, yet no pixel shows). Without \
+                          tight box of those pixels), no_pixels: true (in view, yet no pixel shows) and \
+                          occluded: true (besides, something in front hid it; without it, it was sub-pixel). \
+                          ids: false skips the ID buffer. Without \
                           eye/target (or a named camera from camera_set) \
                           the camera frames the whole world from a three-quarter view. overlays draws debug aids \
                           into the image (grid, axes, bounds, labels, claims, skeletons, lods). Large worlds return \

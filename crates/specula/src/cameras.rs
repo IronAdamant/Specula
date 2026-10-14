@@ -123,6 +123,8 @@ pub struct Resolved {
     pub camera: Camera,
     /// e.g. the followed entity is gone.
     pub warning: Option<String>,
+    /// The camera's version (bumped by every `camera_set`).
+    pub version: u64,
 }
 
 impl Cameras {
@@ -173,19 +175,8 @@ impl Cameras {
     }
 
     /// The identity key of the agent called `agent` (the one that most recently set a camera).
-    fn key_of(&self, agent: &str) -> Option<&str> {
-        self.owners.iter().filter(|(_, o)| o.name == agent).max_by_key(|(_, o)| o.touched).map(|(k, _)| k.as_str())
-    }
-
-    /// `key`'s cameras (or `agent`'s, by name), in name order.
-    pub fn list(&self, key: &str, agent: Option<&str>) -> Vec<&NamedCamera> {
-        let key = match agent {
-            Some(a) => match self.key_of(a) {
-                Some(k) => k,
-                None => return Vec::new(),
-            },
-            None => key,
-        };
+    /// The identity `key`'s cameras, in name order.
+    pub fn list(&self, key: &str) -> Vec<&NamedCamera> {
         self.owners.get(key).map(|o| o.cameras.values().collect()).unwrap_or_default()
     }
 
@@ -207,20 +198,17 @@ impl Cameras {
         (out, omitted)
     }
 
-    /// The view through camera `name` of `key` (or of the agent called `of`) in `world` now.
-    /// Follow cameras remember what they resolved to.
+    /// The view through camera `name` of the identity `key` in `world` now (`of`: that agent's
+    /// name, for messages, when it isn't the caller). Callers resolve another agent's name to its
+    /// *current* identity (the swarm's), never to whoever used the name before. Follow cameras
+    /// remember what they resolved to.
     pub fn resolve(&mut self, key: &str, name: &str, of: Option<&str>, world: &World) -> Result<Resolved, CameraError> {
-        let key = match of {
-            Some(agent) => self.key_of(agent).map(str::to_owned).ok_or_else(|| {
-                CameraError::new("camera_not_found", format!("agent '{agent}' has no cameras (camera_list {{all: true}} lists them)"))
-            })?,
-            None => key.to_owned(),
-        };
-        let cam = self.owners.get_mut(&key).and_then(|o| o.cameras.get_mut(name)).ok_or_else(|| not_found(name, of))?;
+        let cam = self.owners.get_mut(key).and_then(|o| o.cameras.get_mut(name)).ok_or_else(|| not_found(name, of))?;
+        let version = cam.version;
         let spec = &cam.spec;
         let Some(f) = &spec.follow else {
             let (eye, target) = (spec.eye.expect("checked at set"), spec.target.expect("checked at set"));
-            return Ok(Resolved { camera: Camera { eye, target, fov_y_deg: spec.fov_y_deg }, warning: None });
+            return Ok(Resolved { camera: Camera { eye, target, fov_y_deg: spec.fov_y_deg }, warning: None, version });
         };
         match world.find_path(&f.path).ok().and_then(|id| world.get(id)) {
             Some(e) => {
@@ -239,10 +227,11 @@ impl Cameras {
                 let target = if (target - eye).length() < 1e-4 { target + Vec3::new(0.0, 0.0, -1.0) } else { target };
                 let camera = Camera { eye, target, fov_y_deg: spec.fov_y_deg };
                 cam.last = Some(camera);
-                Ok(Resolved { camera, warning: None })
+                Ok(Resolved { camera, warning: None, version })
             }
             None => match cam.last {
                 Some(camera) => Ok(Resolved {
+                    version,
                     camera,
                     warning: Some(format!(
                         "camera '{name}' follows {} which no longer exists; it shows where it last saw it",
@@ -288,23 +277,29 @@ mod tests {
         let bob = c.resolve("key-bob", "overview", None, &world).unwrap().camera;
         assert_eq!(ann.eye, Vec3::new(0.0, 10.0, 10.0));
         assert_eq!(bob.eye, Vec3::new(5.0, 5.0, 5.0), "same name, separate cameras");
-        // Anyone may look through another's camera by agent name; nobody may delete it.
-        let through = c.resolve("key-bob", "overview", Some("ann"), &world).unwrap().camera;
-        assert_eq!(through.eye, ann.eye);
+        // Anyone may look through another's camera (by that agent's identity); nobody may
+        // delete it.
+        let through = c.resolve("key-ann", "overview", Some("ann"), &world).unwrap();
+        assert_eq!((through.camera.eye, through.version), (ann.eye, 1));
         assert_eq!(c.delete("key-bob", Some("overview")).unwrap(), 1);
         assert!(c.resolve("key-ann", "overview", None, &world).is_ok(), "bob deleted his own, not ann's");
         assert_eq!(c.resolve("key-bob", "overview", None, &world).err().unwrap().code, "camera_not_found");
-        assert_eq!(c.resolve("key-bob", "x", Some("nobody"), &world).err().unwrap().code, "camera_not_found");
+        let e = c.resolve("key-nobody", "x", Some("nobody"), &world).err().unwrap();
+        assert!(e.code == "camera_not_found" && e.message.contains("agent 'nobody'"), "{e:?}");
+        // Reviewer finding: a later session taking the name "ann" is a different identity; its
+        // camera never answers for the old ann's (callers resolve names through the swarm).
+        c.set("key-impostor", "ann", fixed("overview", [99.0, 5.0, 5.0])).unwrap();
+        assert_eq!(c.resolve("key-ann", "overview", Some("ann"), &world).unwrap().camera.eye, ann.eye);
         // Replacing bumps the version; the list is in name order and round-trips camera_set's form.
         c.set("key-ann", "ann", fixed("overview", [1.0, 2.0, 3.0])).unwrap();
         c.set("key-ann", "ann", fixed("a_close", [1.0, 1.0, 1.0])).unwrap();
-        let list = c.list("key-ann", None);
+        let list = c.list("key-ann");
         assert_eq!(list.iter().map(|n| n.spec.name.as_str()).collect::<Vec<_>>(), ["a_close", "overview"]);
         assert_eq!(list[1].version, 2);
         assert_eq!(list[1].to_json().get("eye"), Some(&vec3_json(Vec3::new(1.0, 2.0, 3.0))));
-        assert_eq!(c.list("whoever", Some("ann")).len(), 2);
+        assert_eq!(c.list("key-nobody").len(), 0);
         let (all, omitted) = c.list_all(10);
-        assert_eq!((all.len(), omitted), (1, 0), "bob has none left");
+        assert_eq!((all.len(), omitted), (2, 0), "ann and the impostor; bob has none left");
         assert_eq!(c.delete("key-ann", None).unwrap(), 2);
     }
 

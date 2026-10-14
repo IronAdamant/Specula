@@ -27,6 +27,8 @@ pub struct Device {
     pub timestamp_period: f32,
     /// `VK_EXT_memory_budget` is enabled.
     pub memory_budget: bool,
+    /// `fragmentStoresAndAtomics` is enabled (sight's ID buffer counts blended draws with it).
+    pub fragment_atomics: bool,
     memory: VkPhysicalDeviceMemoryProperties,
     /// Bytes allocated per [`MemoryKind`], and the live allocation count.
     allocated: Cell<[u64; MemoryKind::ALL.len()]>,
@@ -69,10 +71,21 @@ impl Device {
         for i in VkPhysicalDeviceVulkan12Features::BINDLESS {
             v12.flags[i] = VK_TRUE;
         }
+        // Optional: fragment shader buffer atomics (sight's ID buffer counts glass with them).
+        let mut supported = VkPhysicalDeviceFeatures2 {
+            s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
+            p_next: ptr::null_mut(),
+            features: VkPhysicalDeviceFeatures { flags: [0; 55] },
+        };
+        // SAFETY: `supported` is a valid, unchained features struct for the call.
+        unsafe { (instance.fns.get_physical_device_features2)(physical, &mut supported) };
+        let fragment_atomics = supported.features.flags[VkPhysicalDeviceFeatures::FRAGMENT_STORES_AND_ATOMICS] != 0;
+        let mut core = VkPhysicalDeviceFeatures { flags: [0; 55] };
+        core.flags[VkPhysicalDeviceFeatures::FRAGMENT_STORES_AND_ATOMICS] = fragment_atomics as VkBool32;
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
             p_next: &mut v12 as *mut _ as *mut c_void,
-            features: VkPhysicalDeviceFeatures { flags: [0; 55] },
+            features: core,
         };
         let info = VkDeviceCreateInfo {
             s_type: ST_DEVICE_CREATE_INFO,
@@ -126,6 +139,7 @@ impl Device {
             timestamp_valid_bits,
             timestamp_period: instance.properties(physical).limits.timestamp_period(),
             memory_budget,
+            fragment_atomics,
             memory: instance.memory_properties(physical),
             allocated: Cell::new([0; MemoryKind::ALL.len()]),
             allocations: Cell::new(0),

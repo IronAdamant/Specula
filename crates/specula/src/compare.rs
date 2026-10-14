@@ -8,15 +8,19 @@
 //! heat panel unchanged pixels show the "after" image dimmed to grey and changed ones glow from
 //! red (small) to yellow and white (large).
 //!
-//! Marks are kept per agent identity, at most [`MAX_MARKS_PER_AGENT`] each and
-//! [`MAX_MARK_BYTES`] in all; the least recently used goes first.
+//! Marks are kept per agent identity: at most [`MAX_MARKS_PER_AGENT`] each, for at most
+//! [`MAX_MARK_OWNERS`] identities, and [`MAX_MARK_BYTES`] in all (pixels, subjects and ids
+//! counted); the least recently used goes first. A mark keeps only its on-screen subjects, plus
+//! the ids of every entity at the time (8 bytes each), to tell new entities from old ones.
 
 use crate::sight::Camera;
 use specula_core::Json;
 use std::collections::BTreeMap;
 
 pub const MAX_MARKS_PER_AGENT: usize = 8;
-/// Pixels of every agent's marks together (RGBA8 bytes).
+/// Identities whose marks are kept (the least recently used identity's go first).
+pub const MAX_MARK_OWNERS: usize = 32;
+/// Every agent's marks together: pixels, subjects and entity ids (bytes, estimated).
 pub const MAX_MARK_BYTES: usize = 256 * 1024 * 1024;
 /// Changed regions reported.
 pub const MAX_REGIONS: usize = 16;
@@ -35,24 +39,43 @@ pub struct MarkView {
     pub lod: Option<usize>,
     pub time_s: Option<f32>,
     pub overlays: crate::sight_overlay::Spec,
+    pub ids: bool,
+}
+
+/// What a mark remembers besides its view.
+pub struct MarkData {
+    pub rgba: Vec<u8>,
+    /// The subjects on screen at the mark.
+    pub subjects: BTreeMap<u64, SubjectState>,
+    /// Every entity id at the mark, sorted.
+    pub ids: Vec<u64>,
+    pub frame: u64,
+    pub tick: u64,
+    pub png_path: Option<String>,
 }
 
 /// A remembered "before".
 pub struct Mark {
     pub view: MarkView,
-    pub rgba: Vec<u8>,
-    /// Compact subject records: id → (path, rect, on_screen, visible_px, world position).
-    pub subjects: BTreeMap<u64, SubjectState>,
-    pub frame: u64,
-    pub tick: u64,
-    pub png_path: Option<String>,
+    pub data: MarkData,
     used: u64,
+}
+
+impl Mark {
+    /// Memory it holds, estimated.
+    fn bytes(&self) -> usize {
+        let d = &self.data;
+        d.rgba.len() + d.ids.len() * 8 + d.subjects.values().map(|s| s.path.len() + 96).sum::<usize>()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubjectState {
     pub path: String,
-    pub rect: Option<[u32; 4]>,
+    /// The projected box (`screen`).
+    pub projected: Option<[u32; 4]>,
+    /// The ID buffer's exact box (`screen_box_exact`).
+    pub exact: Option<[u32; 4]>,
     pub visible_px: Option<u64>,
     pub position: [f32; 3],
 }
@@ -76,7 +99,8 @@ impl SubjectState {
             id,
             SubjectState {
                 path: j.get("path").and_then(Json::as_str).unwrap_or("").to_owned(),
-                rect: rect("screen_box_exact").or_else(|| rect("screen")),
+                projected: rect("screen"),
+                exact: rect("screen_box_exact"),
                 visible_px: j.get("visible_px").and_then(Json::as_u64),
                 position: pos.unwrap_or([0.0; 3]),
             },
@@ -86,7 +110,7 @@ impl SubjectState {
     fn seen(&self) -> bool {
         match self.visible_px {
             Some(px) => px > 0,
-            None => self.rect.is_some(),
+            None => self.projected.is_some(),
         }
     }
 }
@@ -100,10 +124,16 @@ pub struct Marks {
 
 impl Marks {
     /// Stores a mark (replacing one of the same name); returns the names evicted to make room.
-    #[allow(clippy::too_many_arguments)]
-    pub fn put(&mut self, owner: &str, name: &str, view: MarkView, rgba: Vec<u8>, subjects: BTreeMap<u64, SubjectState>, frame: u64, tick: u64, png_path: Option<String>) -> Vec<String> {
+    pub fn put(&mut self, owner: &str, name: &str, view: MarkView, data: MarkData) -> Vec<String> {
         self.clock += 1;
-        let mark = Mark { view, rgba, subjects, frame, tick, png_path, used: self.clock };
+        let mark = Mark { view, data, used: self.clock };
+        if !self.by_owner.contains_key(owner) && self.by_owner.len() >= MAX_MARK_OWNERS {
+            // Forget the identity whose marks were used longest ago.
+            let stale = self.by_owner.iter().map(|(o, ms)| (ms.values().map(|m| m.used).max().unwrap_or(0), o.clone())).min();
+            if let Some((_, o)) = stale {
+                self.by_owner.remove(&o);
+            }
+        }
         let mine = self.by_owner.entry(owner.to_owned()).or_default();
         mine.insert(name.to_owned(), mark);
         let mut evicted = Vec::new();
@@ -143,7 +173,7 @@ impl Marks {
     pub fn names(&self, owner: &str) -> Vec<(String, u64, [u32; 2])> {
         self.by_owner
             .get(owner)
-            .map(|ms| ms.iter().map(|(n, m)| (n.clone(), m.frame, [m.view.width, m.view.height])).collect())
+            .map(|ms| ms.iter().map(|(n, m)| (n.clone(), m.data.frame, [m.view.width, m.view.height])).collect())
             .unwrap_or_default()
     }
 
@@ -157,8 +187,13 @@ impl Marks {
         n
     }
 
-    fn bytes(&self) -> usize {
-        self.by_owner.values().flat_map(|ms| ms.values()).map(|m| m.rgba.len()).sum()
+    /// Memory every mark holds, estimated (what [`MAX_MARK_BYTES`] bounds).
+    pub fn bytes(&self) -> usize {
+        self.by_owner.values().flat_map(|ms| ms.values()).map(Mark::bytes).sum()
+    }
+
+    pub fn owners(&self) -> usize {
+        self.by_owner.len()
     }
 }
 
@@ -286,44 +321,62 @@ pub fn heat(after: &[u8], d: &PixelDiff, threshold: u8) -> Vec<u8> {
     out
 }
 
-/// Subject changes between two captures through the same camera: added, removed, moved (screen
-/// box shifted by more than `move_px` or world position by more than 1 mm), and visibility.
+/// Subject changes between a mark and now, through the same camera. `before` and `after` hold
+/// the on-screen subjects only; `before_ids` is every entity that existed at the mark (sorted)
+/// and `exists` says whether an entity exists now.
+/// - added: on screen now, and created since the mark;
+/// - removed: on screen at the mark, and deleted since;
+/// - moved: on screen both times, with its projected box shifted by more than `move_px` or its
+///   world position by more than 1 mm (projected boxes are compared, never an exact box with a
+///   projected one: a change of visibility alone is not a move);
+/// - became_visible / became_hidden: pixels showing (or, without the ID buffer, on screen) at
+///   one capture and not the other, for entities that exist both times.
+///
 /// At most `max` items are listed per kind (all are counted).
-pub fn subject_diff(before: &BTreeMap<u64, SubjectState>, after: &BTreeMap<u64, SubjectState>, move_px: u32, max: usize) -> Json {
+pub fn subject_diff(
+    before: &BTreeMap<u64, SubjectState>,
+    before_ids: &[u64],
+    after: &BTreeMap<u64, SubjectState>,
+    exists: &dyn Fn(u64) -> bool,
+    move_px: u32,
+    max: usize,
+) -> Json {
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut moved = Vec::new();
     let mut appeared = Vec::new();
     let mut disappeared = Vec::new();
     let path = |s: &SubjectState| Json::from(s.path.as_str());
+    let existed = |id: &u64| before_ids.binary_search(id).is_ok();
     for (id, a) in after {
-        match before.get(id) {
-            None => added.push(path(a)),
-            Some(b) => {
-                let screen_moved = match (b.rect, a.rect) {
-                    (Some(r0), Some(r1)) => (0..4).any(|i| r0[i].abs_diff(r1[i]) > move_px),
-                    _ => false,
-                };
-                let d = (0..3).map(|i| (a.position[i] - b.position[i]).powi(2)).sum::<f32>().sqrt();
-                if screen_moved || d > 1e-3 {
-                    moved.push(Json::obj([
-                        ("path", path(a)),
-                        ("from", b.rect.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
-                        ("to", a.rect.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
-                        ("world_moved_m", Json::from((d * 1000.0).round() / 1000.0)),
-                    ]));
-                }
-                match (b.seen(), a.seen()) {
-                    (false, true) => appeared.push(path(a)),
-                    (true, false) => disappeared.push(path(a)),
-                    _ => {}
-                }
+        if !existed(id) {
+            added.push(path(a));
+            continue;
+        }
+        if let Some(b) = before.get(id) {
+            let screen_moved = match (b.projected, a.projected) {
+                (Some(r0), Some(r1)) => (0..4).any(|i| r0[i].abs_diff(r1[i]) > move_px),
+                _ => false,
+            };
+            let d = (0..3).map(|i| (a.position[i] - b.position[i]).powi(2)).sum::<f32>().sqrt();
+            if screen_moved || d > 1e-3 {
+                moved.push(Json::obj([
+                    ("path", path(a)),
+                    ("from", b.projected.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
+                    ("to", a.projected.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
+                    ("world_moved_m", Json::from((d * 1000.0).round() / 1000.0)),
+                ]));
             }
+        }
+        if a.seen() && !before.get(id).is_some_and(SubjectState::seen) {
+            appeared.push(path(a));
         }
     }
     for (id, b) in before {
-        if !after.contains_key(id) {
+        if !exists(*id) {
             removed.push(path(b));
+        } else if b.seen() && !after.get(id).is_some_and(SubjectState::seen) {
+            disappeared.push(path(b));
         }
     }
     let list = |mut v: Vec<Json>| {
@@ -450,35 +503,59 @@ mod tests {
         assert_eq!(d.regions, vec![([0, 0, 40, 40], 40)]);
     }
 
+
+    fn st(path: &str, projected: Option<[u32; 4]>, exact: Option<[u32; 4]>, px: Option<u64>, x: f32) -> SubjectState {
+        SubjectState { path: path.into(), projected, exact, visible_px: px, position: [x, 0.0, 0.0] }
+    }
+
     #[test]
     fn subject_changes() {
-        let s = |path: &str, rect: Option<[u32; 4]>, px: Option<u64>, x: f32| SubjectState { path: path.into(), rect, visible_px: px, position: [x, 0.0, 0.0] };
+        let r = |x: u32, y: u32| Some([x, y, 20, 20]);
         let before = BTreeMap::from([
-            (1, s("/stay", Some([10, 10, 20, 20]), Some(400), 0.0)),
-            (2, s("/move", Some([50, 10, 20, 20]), Some(400), 3.0)),
-            (3, s("/gone", Some([90, 10, 20, 20]), Some(400), 6.0)),
-            (4, s("/hide", Some([90, 50, 20, 20]), Some(300), 9.0)),
+            (1, st("/stay", r(10, 10), r(10, 10), Some(400), 0.0)),
+            (2, st("/move", r(50, 10), r(50, 10), Some(400), 3.0)),
+            (3, st("/gone", r(90, 10), r(90, 10), Some(400), 6.0)),
+            (4, st("/hide", r(90, 50), r(90, 50), Some(300), 9.0)),
+            // A wall comes in front of it: its exact box shrinks to nothing, its projected box
+            // stays: hidden, not moved.
+            (6, st("/walled", r(130, 50), r(130, 50), Some(400), 12.0)),
         ]);
         let after = BTreeMap::from([
-            (1, s("/stay", Some([10, 11, 20, 20]), Some(400), 0.0)),
-            (2, s("/move", Some([60, 10, 20, 20]), Some(400), 3.5)),
-            (4, s("/hide", Some([90, 50, 20, 20]), Some(0), 9.0)),
-            (5, s("/new", Some([0, 0, 5, 5]), Some(25), 1.0)),
+            (1, st("/stay", r(10, 11), r(10, 11), Some(400), 0.0)),
+            (2, st("/move", r(60, 10), r(60, 10), Some(400), 3.5)),
+            (4, st("/hide", r(90, 50), None, Some(0), 9.0)),
+            (5, st("/new", Some([0, 0, 5, 5]), Some([0, 0, 5, 5]), Some(25), 1.0)),
+            (6, st("/walled", r(130, 50), Some([130, 50, 4, 20]), Some(80), 12.0)),
+            // It existed at the mark (off screen) and came into view: not new.
+            (7, st("/came_in", r(0, 100), r(0, 100), Some(400), 0.0)),
         ]);
-        let j = subject_diff(&before, &after, 2, MAX_SUBJECT_CHANGES);
-        let count = |k: &str| j.get(k).and_then(|v| v.get("count")).and_then(Json::as_u64).unwrap();
-        assert_eq!([count("added"), count("removed"), count("moved"), count("became_visible"), count("became_hidden")], [1, 1, 1, 0, 1]);
+        let ids = [1, 2, 3, 4, 6, 7, 8];
+        // 3 was deleted; 8 still exists but is off screen in both.
+        let exists = |id: u64| id != 3;
+        let j = subject_diff(&before, &ids, &after, &exists, 2, MAX_SUBJECT_CHANGES);
+        let items = |k: &str| -> Vec<String> {
+            j.get(k).unwrap().get("items").unwrap().as_array().unwrap().iter().map(|v| v.get("path").unwrap_or(v).as_str().unwrap().to_owned()).collect()
+        };
+        assert_eq!(items("added"), ["/new"]);
+        assert_eq!(items("removed"), ["/gone"]);
+        assert_eq!(items("moved"), ["/move"], "visibility alone (/walled, /hide) is no move");
+        assert_eq!(items("became_visible"), ["/came_in"]);
+        assert_eq!(items("became_hidden"), ["/hide"]);
         let moved = &j.get("moved").unwrap().get("items").unwrap().as_array().unwrap()[0];
-        assert_eq!(moved.get("path"), Some(&Json::from("/move")));
         assert_eq!(moved.get("world_moved_m").and_then(Json::as_f64), Some(0.5));
+        // Leaving the view is becoming hidden, not being removed.
+        let gone_from_view = subject_diff(&before, &ids, &BTreeMap::new(), &|_| true, 2, 10);
+        assert_eq!(gone_from_view.get("removed").unwrap().get("count").and_then(Json::as_u64), Some(0));
+        assert_eq!(gone_from_view.get("became_hidden").unwrap().get("count").and_then(Json::as_u64), Some(5));
     }
 
     #[test]
     fn subject_changes_stay_bounded() {
-        let s = |i: u64, x: f32| SubjectState { path: format!("/district/house_{i:05}"), rect: Some([0, 0, 4, 4]), visible_px: Some(16), position: [x, 0.0, 0.0] };
+        let s = |i: u64, x: f32| st(&format!("/district/house_{i:05}"), Some([0, 0, 4, 4]), Some([0, 0, 4, 4]), Some(16), x);
         let before: BTreeMap<u64, SubjectState> = (0..2000).map(|i| (i, s(i, 0.0))).collect();
+        let before_ids: Vec<u64> = (0..2000).collect();
         let after: BTreeMap<u64, SubjectState> = (1000..3000).map(|i| (i, s(i, 1.0))).collect();
-        let j = subject_diff(&before, &after, 2, 10);
+        let j = subject_diff(&before, &before_ids, &after, &|id| id >= 1000, 2, 10);
         for kind in ["added", "removed", "moved"] {
             let k = j.get(kind).unwrap();
             assert_eq!(k.get("count").and_then(Json::as_u64), Some(1000), "{kind}");
@@ -493,9 +570,8 @@ mod tests {
         assert_eq!((d.regions.len(), d.regions_total), (MAX_REGIONS, 256));
     }
 
-    #[test]
-    fn marks_are_bounded_per_agent() {
-        let view = MarkView {
+    fn view() -> MarkView {
+        MarkView {
             camera: Camera { eye: specula_core::math::Vec3::ONE, target: specula_core::math::Vec3::ZERO, fov_y_deg: 50.0 },
             width: 4,
             height: 4,
@@ -503,14 +579,23 @@ mod tests {
             lod: None,
             time_s: None,
             overlays: Default::default(),
-        };
+            ids: true,
+        }
+    }
+
+    fn data(pixels: usize, subjects: BTreeMap<u64, SubjectState>, ids: Vec<u64>) -> MarkData {
+        MarkData { rgba: vec![0; pixels * 4], subjects, ids, frame: 1, tick: 0, png_path: None }
+    }
+
+    #[test]
+    fn marks_are_bounded_per_agent() {
         let mut m = Marks::default();
         for i in 0..MAX_MARKS_PER_AGENT {
-            assert!(m.put("ann", &format!("m{i}"), view.clone(), vec![0; 64], BTreeMap::new(), 1, 0, None).is_empty());
+            assert!(m.put("ann", &format!("m{i}"), view(), data(16, BTreeMap::new(), Vec::new())).is_empty());
         }
         // Using m0 makes m1 the least recently used.
         assert!(m.get("ann", "m0").is_some());
-        let evicted = m.put("ann", "extra", view.clone(), vec![0; 64], BTreeMap::new(), 1, 0, None);
+        let evicted = m.put("ann", "extra", view(), data(16, BTreeMap::new(), Vec::new()));
         assert_eq!(evicted, ["m1"]);
         assert_eq!(m.names("ann").len(), MAX_MARKS_PER_AGENT);
         assert!(m.get("bob", "m0").is_none(), "marks are per agent");
@@ -518,6 +603,34 @@ mod tests {
         assert_eq!(m.remove("ann", None), MAX_MARKS_PER_AGENT - 1);
     }
 
+    /// Reviewer finding: the budget counted pixels only, while each mark kept the whole world's
+    /// subject list, and owners were unbounded (20k entities x 48 marks grew the process 184 MB).
+    #[test]
+    fn marks_count_subjects_and_ids_and_cap_owners() {
+        let mut m = Marks::default();
+        // 20k entities (ids only) and a hundred on-screen subjects per mark, 64x64 pixels.
+        let ids: Vec<u64> = (1..=20_000).collect();
+        let subjects: BTreeMap<u64, SubjectState> =
+            (1..=100).map(|i| (i, st(&format!("/district_{i}/building_with_a_long_name_{i:05}"), None, None, None, 0.0))).collect();
+        let one = Mark { view: view(), data: data(64 * 64, subjects.clone(), ids.clone()), used: 0 }.bytes();
+        assert!(one >= 64 * 64 * 4 + 20_000 * 8 + 100 * 40, "{one}");
+        for owner in 0..(MAX_MARK_OWNERS + 10) {
+            for k in 0..MAX_MARKS_PER_AGENT {
+                m.put(&format!("agent_{owner}"), &format!("m{k}"), view(), data(64 * 64, subjects.clone(), ids.clone()));
+            }
+        }
+        assert_eq!(m.owners(), MAX_MARK_OWNERS, "the oldest identities are forgotten");
+        assert_eq!(m.bytes(), MAX_MARK_OWNERS * MAX_MARKS_PER_AGENT * one);
+        assert!(m.get("agent_0", "m0").is_none() && m.get(&format!("agent_{}", MAX_MARK_OWNERS + 9), "m0").is_some());
+        // The byte budget evicts by everything a mark holds, not its pixels alone.
+        let mut big = Marks::default();
+        let huge_ids: Vec<u64> = (0..(MAX_MARK_BYTES / 8 / 3) as u64).collect();
+        big.put("a", "x", view(), data(16, BTreeMap::new(), huge_ids.clone()));
+        big.put("a", "y", view(), data(16, BTreeMap::new(), huge_ids.clone()));
+        let evicted = big.put("a", "z", view(), data(16, BTreeMap::new(), huge_ids));
+        assert_eq!(evicted, ["x"]);
+        assert!(big.bytes() <= MAX_MARK_BYTES);
+    }
     #[test]
     fn sheets_fit_their_width() {
         let a = image(100, 50, |_, _| [255, 0, 0, 255]);

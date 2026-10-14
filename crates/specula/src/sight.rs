@@ -4,7 +4,7 @@
 //! never guess where something is. `screen` is the projected **bounding box** of each entity
 //! (clipped to the camera's near/far planes and the image): loose, and blind to occlusion. Captures
 //! also render the GPU **ID buffer** (`specula_gpu::Gpu::render_with_ids`), which adds the truth
-//! per entity: `visible_px`, the exact `screen_box_exact` of its drawn pixels, and `occluded`
+//! per entity: `visible_px`, the exact `screen_box_exact` of its drawn pixels, `no_pixels` and `occluded`
 //! ([`apply_visibility`]).
 
 use crate::meshes::{LatheMeshes, ShapeMeshes};
@@ -233,21 +233,30 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
     (ids, entities)
 }
 
-/// Adds what the ID buffer saw to each subject: `visible_px` (pixels it covers after
-/// occlusion; glass counts but hides nothing), `screen_box_exact` (`[x, y, w, h]` of those
-/// pixels, null when none) and `occluded: true` when its box is in view and it was drawn but
-/// no pixel of it shows. Its `area` (for ranking) becomes the exact box's.
-pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[Option<specula_gpu::IdCoverage>]) {
-    let by_entity: std::collections::HashMap<u64, Option<specula_gpu::IdCoverage>> =
+/// Adds what the ID buffer saw to each subject:
+/// - `visible_px`: pixels it covers after occlusion (its nearest opaque pixels plus its blended
+///   pixels in front of the opaque depth; glass behind glass counts, glass hides nothing);
+/// - `screen_box_exact`: `[x, y, w, h]` of those pixels, null when none;
+/// - `no_pixels: true` when its box is in view and it was drawn, yet no pixel shows;
+/// - `occluded: true` when, besides, its fragments were rasterized: something in front hid them
+///   (without it the entity was sub-pixel, or off the image after all). Unknown (left out) on
+///   GPUs without fragment atomics.
+///
+/// Its `area` (for ranking) becomes the exact box's.
+pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
+    let by_entity: std::collections::HashMap<u64, specula_gpu::IdCoverage> =
         entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect();
     for s in subjects {
         let drawn = by_entity.get(&s.id);
-        let cov = drawn.copied().flatten();
+        let cov = drawn.filter(|c| c.pixels > 0);
         let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
         s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
         s.json.set("screen_box_exact", exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
-        if s.on_screen && drawn.is_some() && cov.is_none() {
-            s.json.set("occluded", Json::from(true));
+        if let (true, Some(c), None) = (s.on_screen, drawn, cov) {
+            s.json.set("no_pixels", Json::from(true));
+            if c.rasterized == Some(true) {
+                s.json.set("occluded", Json::from(true));
+            }
         }
         s.area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
     }
@@ -536,17 +545,21 @@ mod tests {
         spawn(&mut world, Shape::Cube, "behind", Vec3::new(0.0, 0.0, -3.0));
         spawn(&mut world, Shape::Cube, "away", Vec3::new(0.0, 0.0, 40.0));
         let cam = cam(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 50.0);
+        spawn(&mut world, Shape::Cube, "speck", Vec3::new(1.0, 0.0, 0.0));
         let mut s = frame(&world, cam, 640, 480);
-        // Drawn: front (visible) and behind (no pixels); `away` was culled (never drawn).
-        let coverage = [Some(IdCoverage { pixels: 1200, min: [300, 220], max: [339, 259] }), None];
-        apply_visibility(&mut s, &[1, 2], &coverage);
+        // Drawn: front (visible), behind (rasterized, hidden) and speck (never rasterized);
+        // `away` was culled (never drawn).
+        let seen = IdCoverage { pixels: 1200, opaque_pixels: 1000, blended_pixels: 200, min: [300, 220], max: [339, 259], rasterized: Some(true) };
+        let hidden = IdCoverage { rasterized: Some(true), ..IdCoverage::default() };
+        apply_visibility(&mut s, &[1, 2, 4], &[seen, hidden, IdCoverage::default()]);
         let get = |i: usize, k: &str| s[i].json.get(k).cloned();
         assert_eq!(get(0, "visible_px"), Some(Json::from(1200)));
         assert_eq!(get(0, "screen_box_exact"), Some(Json::arr([300, 220, 40, 40].map(Json::from))));
-        assert_eq!((get(0, "occluded"), s[0].area), (None, 1600));
-        assert_eq!((get(1, "visible_px"), get(1, "occluded")), (Some(Json::from(0)), Some(Json::from(true))));
+        assert_eq!((get(0, "no_pixels"), get(0, "occluded"), s[0].area), (None, None, 1600));
+        assert_eq!((get(1, "visible_px"), get(1, "no_pixels"), get(1, "occluded")), (Some(Json::from(0)), Some(Json::from(true)), Some(Json::from(true))));
         assert_eq!((get(1, "screen_box_exact"), s[1].area), (Some(Json::Null), 0));
-        assert_eq!(get(2, "occluded"), None, "behind the camera: not occluded, just not in view");
+        assert_eq!(get(2, "no_pixels"), None, "behind the camera: not in view at all");
+        assert_eq!((get(3, "no_pixels"), get(3, "occluded")), (Some(Json::from(true)), None), "nothing hid it: it rasterized nothing");
     }
 
     #[test]

@@ -89,7 +89,7 @@ mod timing;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
-pub use idbuffer::{IdCoverage, IdImage};
+pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -839,24 +839,31 @@ impl Gpu {
         self.inner.read_rgba8(target)
     }
 
-    /// [`Gpu::render`] plus sight's **ID buffer**: `ids` gives each draw of `frame` an id (0 = not
-    /// counted; one per draw, else a structured `DataLength` error). After it, [`Gpu::read_ids`]
-    /// returns which id covers each pixel: the nearest opaque draw, and the front-most blended
-    /// draw in front of it (glass is visible but never hides what is behind it). The rendered
-    /// image is identical to `render`'s. Offscreen only: the window never runs these passes.
+    /// [`Gpu::render`] plus sight's **ID buffer** (see `idbuffer.rs`): `ids` gives each draw of
+    /// `frame` an id, small and dense (0 = not counted; one per draw, else a structured
+    /// `DataLength` error). After it, [`Gpu::id_coverage`] says what each id covers: its nearest
+    /// opaque pixels, its blended pixels in front of the opaque depth (glass behind glass
+    /// included; glass hides nothing), their exact box, and whether it rasterized at all. The
+    /// rendered image is identical to `render`'s. Offscreen only: the window never runs these
+    /// passes. The results live in buffers shared by every target, valid until the next ID render.
     pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32]) -> Result<(), GpuError> {
         self.inner.render_with_ids(target, frame, ids)
     }
 
-    /// The ID buffer of the target's last render; errors when that render had none.
+    /// The opaque ids of the target's last render; errors when it was not the last ID render.
     pub fn read_ids(&mut self, target: TargetId) -> Result<IdImage, GpuError> {
         self.inner.read_ids(target)
     }
 
-    /// [`IdImage::coverage`] of the target's last ID buffer (pixels and exact extent per id
-    /// `1..=max_id`), counted where the GPU wrote it, without copying the image.
-    pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<Vec<Option<IdCoverage>>, GpuError> {
+    /// Per id `1..=max_id` of the target's last ID render: opaque pixels (counted where the GPU
+    /// wrote them, without copying), blended pixels, exact extent, rasterized.
+    pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<IdCounts, GpuError> {
         self.inner.id_coverage(target, max_id)
+    }
+
+    /// Whether ID renders count blended draws (they need `fragmentStoresAndAtomics`).
+    pub fn ids_count_blended(&self) -> bool {
+        self.inner.ids_count_blended()
     }
 
     /// Create a surface + swapchain for a native window (Windows: `HINSTANCE`, `HWND`).

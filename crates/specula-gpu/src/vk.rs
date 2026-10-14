@@ -603,11 +603,16 @@ pub struct VkFormatProperties {
     pub buffer_features: VkFlags,
 }
 
-/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures` (we enable none of them).
+/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures`, by index.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkPhysicalDeviceFeatures {
     pub flags: [VkBool32; 55],
+}
+
+impl VkPhysicalDeviceFeatures {
+    /// `fragmentStoresAndAtomics` (declaration order in vulkan_core.h).
+    pub const FRAGMENT_STORES_AND_ATOMICS: usize = 26;
 }
 
 #[repr(C)]
@@ -1553,6 +1558,7 @@ fn_table! {
         get_buffer_device_address = c"vkGetBufferDeviceAddress": fn(VkDevice, *const VkBufferDeviceAddressInfo) -> u64;
         cmd_copy_buffer = c"vkCmdCopyBuffer":
             fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
+        cmd_fill_buffer = c"vkCmdFillBuffer": fn(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32);
         cmd_copy_image_to_buffer = c"vkCmdCopyImageToBuffer":
             fn(VkCommandBuffer, VkImage, VkImageLayout, VkBuffer, u32, *const VkBufferImageCopy);
         create_query_pool = c"vkCreateQueryPool":

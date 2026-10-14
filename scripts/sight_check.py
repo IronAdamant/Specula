@@ -69,6 +69,11 @@ def build_scene(m):
          "rotation_deg": [0, 30, 0]},
         # A district another agent claims by subtree.
         {"op": "spawn", "shape": "group", "name": "district_east", "position": [8, 0, 6]},
+        # Glass behind glass, left of the wall: the back pane shows through the front one.
+        {"op": "spawn", "shape": "cube", "name": "front_pane", "position": [-5.5, 1.5, 3], "scale": [1.6, 1.6, 0.05],
+         "material": "glass", "color": "#cfe3ff"},
+        {"op": "spawn", "shape": "cube", "name": "back_pane", "position": [-5.5, 1.5, 1.5], "scale": [0.7, 0.7, 0.05],
+         "material": "glass", "color": "#ffd2a6"},
     ]
     for i in range(3):
         ops.append({"op": "spawn", "shape": "cube", "path": f"/district_east/house_{i}", "position": [i * 1.6 - 1.6, 0.6, 0],
@@ -135,6 +140,21 @@ def main():
         chase2, _ = save("frame_chase_after_move", builder.call("sight_frame", camera="chase", width=640, height=480, time_s=1))
         moved = [round(a - b, 3) for a, b in zip(chase2["camera"]["eye"], chase_pkt["camera"]["eye"])]
         check(moved == [-2.0, 0.0, -2.0], f"the chase camera moved with the runner {moved}", failures)
+        check(through["camera"].get("camera_version") == 1 and len(through["camera"].get("owner_id", "")) == 8,
+              "the packet names the owner identity and camera version", failures)
+        # Reviewer finding: after a session ends, another taking its name is another identity.
+        ann = eng.mcp("sight-check-ann")
+        ann.json("agent_hello", name="ann")
+        ann.json("camera_set", name="view", eye=[0, 5, 5], target=[0, 0, 0])
+        first = reviewer.frame(camera="view", camera_of="ann", width=64, height=64)["camera"]
+        ann.close()
+        mal = eng.mcp("sight-check-mal")
+        mal.json("agent_hello", name="ann")
+        mal.json("camera_set", name="view", eye=[99, 5, 5], target=[0, 0, 0])
+        second = reviewer.frame(camera="view", camera_of="ann", width=64, height=64)["camera"]
+        check(first["owner_id"] != second["owner_id"], f"a new holder of the name shows a new owner_id ({first['owner_id']} -> {second['owner_id']})",
+              failures)
+        mal.close()
         summary["cameras"] = {"list": listed, "chase_moved": moved}
 
         print("overlays")
@@ -162,6 +182,10 @@ def main():
         azs = [v["azimuth_deg"] for v in orb["views"]]
         check(azs == [0, 45, 90, 135, 180, 225, 270, 315], f"evenly spaced azimuths {azs}", failures)
         check(all(any(s["path"] == "/runner" for s in v["subjects"]) for v in orb["views"]), "the runner is in every view", failures)
+        big = builder.call("sight_orbit", target="/runner", views=12, max_subjects=20, time_s=1,
+                           overlays=["grid", "axes", "bounds", "labels", "claims", "skeletons", "lods"])
+        size = len(next(c["text"] for c in big["content"] if c["type"] == "text"))
+        check(size < 48 * 1024, f"a 12-view orbit with every overlay answers in {size} bytes", failures)
         summary["orbit"] = {k: orb[k] for k in ("image", "target", "distance_m")}
 
         print("compare")
@@ -195,9 +219,17 @@ def main():
         front, _ = save("frame_front_visible", builder.call("sight_frame", camera="front", width=1280, height=720, time_s=1,
                                                             overlays=["bounds", "labels"], max_subjects=50))
         hb, ps, mk = subject(front, "/hidden_box"), subject(front, "/peeking_sphere"), subject(front, "/marker")
-        summary["front"] = {"hidden_box": hb, "peeking_sphere": ps, "marker": mk}
+        fp, bp = subject(front, "/front_pane"), subject(front, "/back_pane")
+        summary["front"] = {"hidden_box": hb, "peeking_sphere": ps, "marker": mk, "front_pane": fp, "back_pane": bp}
+        check(hb is not None and "visible_px" in hb, "captures carry the ID buffer's visible_px", failures)
         if hb is not None and "visible_px" in hb:
-            check(hb["visible_px"] == 0 and hb.get("occluded") is True, f"the box behind the wall: 0 visible px ({hb['visible_px']})", failures)
+            check(hb["visible_px"] == 0 and hb.get("no_pixels") is True and hb.get("occluded") is True,
+                  f"the box behind the wall: 0 visible px, no_pixels, occluded ({hb})", failures)
+            # Glass behind glass: both panes count (the back one shows through the front one).
+            check(fp["visible_px"] > 0 and bp["visible_px"] > 0 and "occluded" not in bp,
+                  f"glass behind glass is visible (front {fp['visible_px']} px, back {bp['visible_px']} px)", failures)
+            bx = bp["screen_box_exact"]
+            check(bp["visible_px"] >= 0.9 * bx[2] * bx[3], "...counted over its whole face, once", failures)
             # Its top half shows over the low wall: about half a disc as wide as its exact box.
             d = ps["screen_box_exact"][2]
             ratio = ps["visible_px"] / (3.14159 * (d / 2) ** 2)
@@ -213,8 +245,19 @@ def main():
             check(all(s.get("visible_px", 0) > 0 for s in vis["subjects"]), "subjects: visible lists only visible ones", failures)
             check(not any(s["path"] == "/hidden_box" for s in vis["subjects"]), "...and not the hidden box", failures)
             summary["query_hidden_box"] = q
-        else:
-            print("  skip ID buffer checks: subjects carry no visible_px")
+        off = builder.frame(camera="front", width=640, height=360, time_s=1, ids=False, max_subjects=50)
+        check(off["id_buffer"] == {"off": True} and all("visible_px" not in s for s in off["subjects"]),
+              "ids: false skips the ID buffer", failures)
+
+        print("compare: visibility is not movement")
+        builder.json("sight_compare", action="mark", name="screen_test", camera="front", width=640, height=360, time_s=1)
+        builder.json("world_spawn", shape="cube", name="screen", position=[-1, 1, 7], scale=[2.5, 2.5, 0.2], color="#666a70")
+        sd, _ = save("compare_screen", builder.call("sight_compare", action="diff", name="screen_test"))
+        subj2 = sd["subjects"]
+        check(subj2["moved"]["count"] == 0, f"nothing moved when a screen hid the marker ({subj2['moved']})", failures)
+        check(subj2["added"]["items"] == ["/screen"] and "/marker" in subj2["became_hidden"]["items"],
+              f"the screen was added and the marker became hidden ({subj2['added']}, {subj2['became_hidden']})", failures)
+        builder.json("world_delete", path="/screen")
 
         print("ID buffer cost at 1280x720")
         costs = []

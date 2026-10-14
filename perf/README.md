@@ -47,3 +47,23 @@ start-up with the line and column. `perf_frame` (and `perf_capture`'s summary) r
 - **Zone cost**: `cargo test --release -p specula-core --lib zone_cost -- --ignored --nocapture`
   (measured 2026-10-14: about 3 ns disabled, 130–160 ns enabled, of which two `Instant::now` calls are
   about 120 ns on this machine; an engine frame records about 10 zones).
+
+# Sight captures (ID buffer)
+
+Every capture (`sight_frame`, `sight_orbit`, `sight_compare`, `sight_query`) renders the ID buffer
+for per-subject `visible_px`, `screen_box_exact`, `no_pixels` and `occluded`: an `id_buffer` GPU pass
+after the frame's own passes, a copy, and a CPU count of the opaque ids (run-length per row, in
+parallel row bands for big images). `sight_frame {ids: false}` skips all of it. Overlays are drawn in
+the same render; only the `bounds` overlay renders the frame a second time (its hidden boxes are red).
+The packet's `id_buffer` gives each capture's cost (`gpu_ms`, `readback_count_ms`).
+
+Measured 2026-10-15, release build, Intel RaptorLake iGPU (`--adapter integrated`), 400 cubes:
+
+| Capture | GPU (`id_buffer` pass + copy) | Readback + count (CPU) |
+|---|---|---|
+| 1280×720 | 0.43 ms | 1.4 ms |
+| 2048×2048 | 1.47 ms | 1.8 ms |
+
+Memory: the id image, its depth and the readback are shared by every capture size (sized to the
+largest capture so far, in 256 px steps): four cached 2048² targets went from 200.6 to 250.7 MB of
+GPU memory with the ID buffer on (it was 529 MB with per-target ID images).

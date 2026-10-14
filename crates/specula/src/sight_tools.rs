@@ -114,14 +114,22 @@ fn fov_arg(args: &Json) -> Result<f32, String> {
     Ok(num_in(args, "fov_y_deg", 10.0..=120.0)?.unwrap_or(50.0))
 }
 
-/// `sight_frame`'s `camera`, `camera_of`, `overlays`, `overlay_entities`, `max_labels` and
+/// A named camera excludes `eye` and `target` (either one).
+pub fn check_camera_conflict(args: &Json) -> Result<(), String> {
+    let given = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
+    if given("camera") && (given("eye") || given("target")) {
+        return Err("give 'camera' (a named camera) or 'eye' and 'target', not both".into());
+    }
+    Ok(())
+}
+
+/// `sight_frame`'s `camera`, `camera_of`, `overlays`, `overlay_entities`, `max_labels`, `ids` and
 /// `subjects` (also used by `sight_compare` and `sight_query`).
 pub fn frame_extras(args: &Json, spec: &mut FrameSpec) -> Result<(), String> {
+    check_camera_conflict(args)?;
+    spec.ids = bool_arg(args, "ids")?.unwrap_or(true);
     spec.camera = match label_arg(args, "camera", false)? {
         Some(name) => {
-            if spec.eye.is_some() {
-                return Err("give 'camera' or 'eye'/'target', not both".into());
-            }
             Some(CameraRef { name, of: agent_arg(args, "camera_of")? })
         }
         None if args.get("camera_of").is_some_and(|v| !v.is_null()) => {
@@ -353,6 +361,14 @@ pub fn frame_extra_schema() -> Vec<(&'static str, Json)> {
         ),
         ("max_labels", described("integer", "Most entity labels, 0..64 (default 32)")),
         (
+            "ids",
+            described(
+                "boolean",
+                "Render the ID buffer for visible_px / screen_box_exact / no_pixels / occluded (default true; \
+                 false saves its GPU pass and readback)",
+            ),
+        ),
+        (
             "subjects",
             described(
                 "string",
@@ -501,7 +517,7 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "sight_query".into(),
             description: "One entity's on-screen facts through a camera, without an image (cheap for checks): \
                           on_screen, screen (projected box), distance_m and, from the ID buffer, visible_px, \
-                          screen_box_exact and occluded."
+                          screen_box_exact, no_pixels (in view, nothing shows) and occluded (hidden by something in front)."
                 .into(),
             input_schema: schema(
                 [
@@ -567,6 +583,9 @@ mod tests {
         assert_eq!(parse_frame(&args("{}")).unwrap().overlays.max_labels, sight_overlay::LABELS.0);
         for bad in [
             r#"{"camera":"top","eye":[0,1,0],"target":[0,0,0]}"#,
+            r#"{"camera":"top","target":[0,0,0]}"#,
+            r#"{"camera":"top","eye":[0,0,1]}"#,
+            r#"{"ids":"no"}"#,
             r#"{"camera_of":"ann"}"#,
             r#"{"overlays":["heatmap"]}"#,
             r#"{"overlays":"grid"}"#,
