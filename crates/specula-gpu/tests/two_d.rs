@@ -420,17 +420,27 @@ fn ssao_takes_ambient_light_from_lit_cutouts_and_keeps_it_under_blended_items() 
         // The flat 2D view (orthographic, looking down -Z): one depth, nothing occluded, so the
         // map renders as without SSAO.
         let tiles = texture(&mut gpu, 4, |x, y| quadrant(x, y, 4));
+        let mut m = ShapeMesh::default();
+        fill(&Path::rect(-0.75, -0.5, 1.5, 1.0).flatten(0.01).unwrap(), [255; 4], false, &mut m).unwrap();
+        let badge = gpu.upload_mesh(&m.vertices, &m.indices).unwrap();
         let flat = [
             Draw2d::Sprite(Sprite { size: [6.0, 6.0], texture: Some(tiles), blend: SpriteBlend::Cutout { threshold: 0.5 }, filter: TextureFilter::Nearest, ..Default::default() }),
             Draw2d::Sprite(Sprite { position: [1.0, 1.0, 0.0], size: [2.0, 2.0], color: [1.0, 1.0, 1.0, 0.5], lit: true, layer: 1, ..Default::default() }),
             Draw2d::Sprite(Sprite { position: [-1.0, -1.0, 0.0], size: [2.0, 2.0], color: [0.3, 0.9, 0.4, 1.0], blend: SpriteBlend::Cutout { threshold: 0.5 }, lit: true, layer: 2, ..Default::default() }),
-            Draw2d::Shape(ShapeDraw { mesh: veil_mesh, model: translation([0.0, 2.0, 0.0]), color: [1.0, 0.2, 0.2, 1.0], layer: 3 }),
+            Draw2d::Shape(ShapeDraw { mesh: badge, model: translation([0.0, 2.0, 0.0]), color: [0.2, 0.2, 1.0, 1.0], layer: 3 }),
         ];
         let flat_frame = |ssao: bool| FrameDesc { view_proj: ortho(0.0, 0.0, 8.0, 8.0), clear_color: CLEAR, reverse_z: true, draws_2d: &flat, environment: ssao_env(ssao), ..Default::default() };
         let (a, b) = (render(&mut gpu, 64, 64, &flat_frame(false)), render(&mut gpu, 64, 64, &flat_frame(true)));
         write_png(&format!("two_d_ssao_flat_{}.png", gpu.adapter().index), &b, 64, 64);
         let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
         assert!(worst <= 2, "a flat 2D map is unchanged by SSAO (worst {worst} levels)");
+        // Every item is drawn: the blue shape over the red quadrant (world (0.4, 2.25): px 35, 14),
+        // the green cutout (world (-1, -1): px 24, 40), the white veil over yellow (world (1.5, 0.5): px 44, 28).
+        let shape_px = pixel(&b, 64, 35, 14);
+        assert!(shape_px[2] > 200 && shape_px[0] < 120, "the shape is drawn: {shape_px:?}");
+        let green = pixel(&b, 64, 24, 40);
+        assert!(green[1] > 150 && green[0] < 150, "the green cutout is drawn: {green:?}");
+        assert_eq!(pixel(&b, 64, 12, 12)[..3], [255, 0, 0], "the red quadrant, open");
         assert!(gpu.last_frame_stats().gpu.is_none_or(|t| t.passes.iter().any(|p| p.name == specula_gpu::PASS_SSAO)));
         finish(test, gpu);
     }
