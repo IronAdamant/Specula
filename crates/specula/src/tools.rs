@@ -27,7 +27,10 @@ them with world_query (filters, paged) or world_list. Address an entity by id, p
 unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
 newer change. Shape 'model' builds a procedural model from a recipe file (model_build reports on one without \
-spawning). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
+spawning). 2D: shapes sprite (textured quads, sheets, flipbook animation, billboards), tilemap (layered tile grids; \
+edit cells with tilemap_set, read them with tilemap_get) and shape2d (filled / stroked vector paths) live in the \
+entity's local XY plane (metres, +Y up); a 2D game looks at the world XY plane with sight_frame view_2d \
+(orthographic, down -Z). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
 game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \

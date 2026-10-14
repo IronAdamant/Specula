@@ -410,7 +410,7 @@ fn sprites_50k(art: &Art) -> Scene {
                 position: [rng.range(-30.0, 30.0), rng.range(-17.0, 17.0), 0.0],
                 size: [0.25, 0.25],
                 rotation: rng.range(0.0, TAU),
-                texture: Some(art.sprites[0]),
+                texture: Some(art.sprites[i % 4]),
                 layer: (i % 2) as i32,
                 blend: if cutout { SpriteBlend::Cutout { threshold: 0.5 } } else { SpriteBlend::Blended },
                 filter: if cutout { TextureFilter::Nearest } else { TextureFilter::Linear },
