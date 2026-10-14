@@ -249,13 +249,18 @@ impl Flipbook {
     /// The frame shown at `time_s` (0 before the start, and for a flipbook with no frames or no
     /// frame rate). Exact and platform-independent: one f64 multiply and a floor.
     pub fn frame_index(&self, time_s: f64) -> usize {
-        let n = self.frames.len();
-        let fps = self.fps as f64;
+        Flipbook::index(self.frames.len(), self.fps, self.playback, time_s)
+    }
+
+    /// [`Flipbook::frame_index`] of a flipbook of `count` frames, without one (no allocation).
+    pub fn index(count: usize, fps: f32, playback: Playback, time_s: f64) -> usize {
+        let n = count;
+        let fps = fps as f64;
         if n <= 1 || fps.is_nan() || fps <= 0.0 || time_s.is_nan() || time_s <= 0.0 || !fps.is_finite() {
             return 0;
         }
         let step = (time_s * fps).floor().min(u64::MAX as f64 / 2.0) as u64;
-        match self.playback {
+        match playback {
             Playback::Loop => (step % n as u64) as usize,
             Playback::Once => (step.min(n as u64 - 1)) as usize,
             Playback::PingPong => {
@@ -266,28 +271,40 @@ impl Flipbook {
         }
     }
 
+    /// How many whole frames of `frame` pixels a `sheet` holds (see [`Flipbook::grid`]).
+    pub fn grid_len(sheet: [u32; 2], frame: [u32; 2], margin: u32, spacing: u32) -> u32 {
+        if frame[0] == 0 || frame[1] == 0 {
+            return 0;
+        }
+        // As tilesets count (and the tile shader): `margin` on every side, `spacing` between.
+        let along = |s: u32, f: u32| (s.saturating_sub(margin.saturating_mul(2)).saturating_add(spacing)) / f.saturating_add(spacing);
+        along(sheet[0], frame[0]).saturating_mul(along(sheet[1], frame[1]))
+    }
+
+    /// Frame `index` of [`Flipbook::grid`] computed directly (no allocation); `None` past the
+    /// sheet.
+    pub fn grid_rect(sheet: [u32; 2], frame: [u32; 2], index: u32, margin: u32, spacing: u32) -> Option<[f32; 4]> {
+        if index >= Flipbook::grid_len(sheet, frame, margin, spacing) {
+            return None;
+        }
+        let cols = (sheet[0].saturating_sub(margin.saturating_mul(2)).saturating_add(spacing)) / frame[0].saturating_add(spacing);
+        let (col, row) = (index % cols, index / cols);
+        let (x, y) = (margin + col * (frame[0] + spacing), margin + row * (frame[1] + spacing));
+        let (sw, sh) = (sheet[0] as f32, sheet[1] as f32);
+        Some([x as f32 / sw, y as f32 / sh, (x + frame[0]) as f32 / sw, (y + frame[1]) as f32 / sh])
+    }
+
     /// The texture rect shown at `time_s` (the whole texture without frames).
     pub fn uv_at(&self, time_s: f64) -> [f32; 4] {
         self.frames.get(self.frame_index(time_s)).copied().unwrap_or([0.0, 0.0, 1.0, 1.0])
     }
 
     /// Frames cut from a sheet of `sheet` pixels (width, height): `count` frames of `frame`
-    /// pixels, left to right then top to bottom, starting `margin` pixels in and `spacing` apart.
-    /// Stops early at the sheet's edge.
+    /// pixels, left to right then top to bottom, with `margin` pixels on every side of the sheet
+    /// and `spacing` between frames (as tilesets are cut). Stops early at the sheet's edge.
     pub fn grid(sheet: [u32; 2], frame: [u32; 2], count: u32, margin: u32, spacing: u32) -> Vec<[f32; 4]> {
-        let (sw, sh) = (sheet[0] as f32, sheet[1] as f32);
-        let step = [frame[0] + spacing, frame[1] + spacing];
-        let cols = if frame[0] == 0 { 0 } else { (sheet[0].saturating_sub(2 * margin) + spacing) / step[0].max(1) };
-        let mut out = Vec::new();
-        for k in 0..count {
-            let (col, row) = (k % cols.max(1), k / cols.max(1));
-            let (x, y) = (margin + col * step[0], margin + row * step[1]);
-            if cols == 0 || x + frame[0] > sheet[0] || y + frame[1] > sheet[1] {
-                break;
-            }
-            out.push([x as f32 / sw, y as f32 / sh, (x + frame[0]) as f32 / sw, (y + frame[1]) as f32 / sh]);
-        }
-        out
+        let n = count.min(Flipbook::grid_len(sheet, frame, margin, spacing));
+        (0..n).filter_map(|k| Flipbook::grid_rect(sheet, frame, k, margin, spacing)).collect()
     }
 }
 
@@ -362,8 +379,14 @@ mod tests {
         assert_eq!(fb.frame_index(-3.0), 0);
         assert_eq!(Flipbook { frames: vec![], fps: 5.0, playback: Playback::Loop }.uv_at(1.0), [0.0, 0.0, 1.0, 1.0]);
         // Margin and spacing; stops at the sheet's edge.
-        let g = Flipbook::grid([40, 20], [8, 8], 10, 2, 2);
-        assert_eq!(g.len(), 6, "3 per row (2 + 3 * 10 <= 40), 2 rows");
+        let g = Flipbook::grid([40, 22], [8, 8], 10, 2, 2);
+        assert_eq!(g.len(), 6, "3 per row ((40 - 4 + 2) / 10), 2 rows ((22 - 4 + 2) / 10)");
         assert_eq!(g[1][0], 12.0 / 40.0);
+        assert_eq!(Flipbook::grid_len([40, 22], [8, 8], 2, 2), 6);
+        assert_eq!(Flipbook::grid_rect([40, 22], [8, 8], 5, 2, 2), Some(g[5]));
+        assert_eq!(Flipbook::grid_rect([40, 22], [8, 8], 6, 2, 2), None);
+        assert_eq!(Flipbook::grid_len([4, 4], [8, 8], 0, 0), 0);
+        assert_eq!(Flipbook::grid_len([u32::MAX, u32::MAX], [1, 1], 0, 0), u32::MAX, "saturates");
+        assert_eq!(Flipbook::index(6, 10.0, Playback::PingPong, 0.61), 4);
     }
 }

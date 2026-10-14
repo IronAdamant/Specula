@@ -408,7 +408,13 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 Some(r) => {
                     let v: Option<Vec<u64>> = r.as_array().and_then(|a| a.iter().map(Json::as_u64).collect());
                     match v.as_deref() {
-                        Some(&[x, y, w, h]) if w >= 1 && h >= 1 && w * h <= u64::from(crate::two_d::MAX_TILE_READ) && x < 1 << 20 && y < 1 << 20 => {
+                        Some(&[x, y, w, h])
+                            if (1..=u64::from(crate::two_d::MAX_TILEMAP_SIDE)).contains(&w)
+                                && (1..=u64::from(crate::two_d::MAX_TILEMAP_SIDE)).contains(&h)
+                                && w * h <= u64::from(crate::two_d::MAX_TILE_READ)
+                                && x < u64::from(crate::two_d::MAX_TILEMAP_SIDE)
+                                && y < u64::from(crate::two_d::MAX_TILEMAP_SIDE) =>
+                        {
                             Some([x as u32, y as u32, w as u32, h as u32])
                         }
                         _ => {
@@ -2175,6 +2181,26 @@ mod tests {
         assert_eq!(s.position, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(s.scale, Vec3::new(2.0, 2.0, 2.0));
         assert_eq!(s.color, [1.0, 136.0 / 255.0, 0.0]);
+    }
+
+    #[test]
+    fn tile_tools_check_their_arguments() {
+        for bad in [
+            r#"{"path":"/m","region":[0,0,4294967296,4294967296]}"#,
+            r#"{"path":"/m","region":[0,0,18446744073709551615,2]}"#,
+            r#"{"path":"/m","region":[0,0,65,64]}"#,
+            r#"{"path":"/m","region":[5000,0,1,1]}"#,
+            r#"{"path":"/m","region":[0,0,0,1]}"#,
+        ] {
+            assert!(parse("tilemap_get", &args(bad)).is_err(), "{bad}");
+        }
+        assert!(parse("tilemap_get", &args(r#"{"path":"/m","region":[1000,1000,64,64]}"#)).is_ok());
+        assert!(parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[0,0,"\u00e9"]]}"#)).is_err());
+        assert!(parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[2000,0,1]]}"#)).is_err());
+        match parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[1,2,"7h"]],"expect_version":3}"#)) {
+            Ok(Command::Set(_, u)) => assert_eq!((u.tiles.map(|t| t.cells.len()), u.expect_version), (Some(1), Some(3))),
+            _ => panic!("tilemap_set is a world_set of tiles"),
+        }
     }
 
     #[test]

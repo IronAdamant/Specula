@@ -743,6 +743,11 @@ impl Engine {
     /// `force`: now). Returns the reload report when something was checked and changed.
     fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
         let reload = self.library.lock().poll(force);
+        // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
+        self.two_d.poll_files(force);
+        if self.two_d.loading() > 0 {
+            self.two_d.pump(&mut self.gpu);
+        }
         // Garbage collection, whether or not anything is drawn (a headless engine never syncs
         // GPU meshes). Cheap part, every GC_UNWANTED_EVERY while builds are in flight after the
         // world's models changed: builds no entity waits for any more are cancelled. Full part,
@@ -860,6 +865,7 @@ impl Engine {
     /// now and then frees 2D GPU resources no entity uses any more.
     fn build_draws_2d(&mut self, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>) {
         out.clear();
+        self.two_d.begin_frame(&mut self.gpu);
         for e in self.world.entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) {
@@ -874,6 +880,27 @@ impl Engine {
             self.two_d.collect(&mut self.gpu, &live);
             self.last_2d_gc = (Instant::now(), revision);
         }
+    }
+
+    /// Texture loads a capture should wait for: every texture of the 2D entities it would draw
+    /// is asked for (loads start), finished ones are uploaded, and those still loading counted.
+    fn two_d_loading(&mut self, include_ui: bool) -> usize {
+        for e in self.world.entities() {
+            if !sight::in_frame(e, include_ui) {
+                continue;
+            }
+            match &e.two_d {
+                Some(two_d::TwoD::Sprite(s)) => {
+                    if let Some(p) = &s.texture {
+                        self.two_d.request(p);
+                    }
+                }
+                Some(two_d::TwoD::Tilemap(t)) => self.two_d.request(&t.tileset),
+                _ => {}
+            }
+        }
+        self.two_d.pump(&mut self.gpu);
+        self.two_d.loading()
     }
 
     /// tilemap_get: rows of run-length cell tokens.
@@ -936,7 +963,7 @@ impl Engine {
         // capture are waited for too.
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
-        if self.building_in_frame(&spec) == 0 {
+        if self.building_in_frame(&spec) == 0 && self.two_d_loading(spec.include_ui) == 0 {
             let _ = reply.send(self.capture(&spec, &session, wait));
             return;
         }
@@ -970,7 +997,7 @@ impl Engine {
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
-            if now >= w.until || self.building_in_frame(&w.spec) == 0 {
+            if now >= w.until || (self.building_in_frame(&w.spec) == 0 && self.two_d_loading(w.spec.include_ui) == 0) {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
                 let _ = w.reply.send(self.capture(&w.spec, &w.session, wait));
             } else {
@@ -1596,7 +1623,8 @@ impl Engine {
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
         let mut draws_2d = Vec::new();
         self.build_draws_2d(spec.include_ui, time_s, &mut draws_2d);
-        warnings.extend(self.two_d.errors.iter().take(5).map(|m| Json::from(m.as_str())));
+        // Only problems of what this frame draws (missing textures, frames past a sheet, …).
+        warnings.extend(self.two_d.frame_problems.iter().map(|m| Json::from(m.as_str())));
         let frame = FrameDesc { draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s) };
 
         let rendered = {

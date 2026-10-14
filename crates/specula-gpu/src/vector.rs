@@ -29,6 +29,18 @@ type P2 = [f64; 2];
 
 /// Most points (after flattening) one tessellation call accepts.
 pub const MAX_SHAPE_POINTS: usize = 65_536;
+/// Most vertices one [`ShapeMesh`] may hold (fills and strokes stop with an error before more).
+pub const MAX_SHAPE_VERTICES: usize = 262_144;
+/// Most points of one filled polygon (a solid contour with its holes bridged in): ear clipping
+/// is quadratic, so this bounds a fill's time.
+pub const MAX_FILL_POLYGON: usize = 4096;
+/// Most segments of one round join or cap.
+pub const MAX_ROUND_SEGMENTS: usize = 64;
+/// Most segments of one flattened curve or arc.
+pub const MAX_CURVE_SEGMENTS: usize = 1024;
+/// Tolerances below this fraction of a path's extent are raised to it (finer is invisible and
+/// only costs points).
+pub const MIN_RELATIVE_TOLERANCE: f64 = 1e-5;
 
 /// A path command. Coordinates are in the shape's plane (metres, y up).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,6 +75,10 @@ pub struct Contour {
 pub enum VectorError {
     /// More than [`MAX_SHAPE_POINTS`] points after flattening.
     TooManyPoints { points: usize, max: usize },
+    /// The mesh would pass [`MAX_SHAPE_VERTICES`] vertices.
+    TooManyVertices { vertices: usize, max: usize },
+    /// A filled polygon (holes bridged in) has more than [`MAX_FILL_POLYGON`] points.
+    FillTooComplex { points: usize, max: usize },
     /// A coordinate, size or tolerance is not finite (or a size is negative).
     NotFinite { what: &'static str },
 }
@@ -74,6 +90,15 @@ impl fmt::Display for VectorError {
                 write!(f, "the shape flattens to {points} points; at most {max} (raise the tolerance or simplify)")
             }
             VectorError::NotFinite { what } => write!(f, "{what} must be finite"),
+            VectorError::TooManyVertices { vertices, max } => write!(
+                f,
+                "the shape needs more than {max} vertices ({vertices} so far); use fewer or simpler items, thinner \
+                 strokes or a larger tolerance"
+            ),
+            VectorError::FillTooComplex { points, max } => write!(
+                f,
+                "a filled contour (with its holes) has {points} points; at most {max} (raise the tolerance or split it)"
+            ),
         }
     }
 }
@@ -186,13 +211,29 @@ impl Path {
         p
     }
 
+    /// The largest coordinate or radius magnitude in the path (0 for an empty path).
+    pub fn extent(&self) -> f64 {
+        let m = |p: &[f32; 2]| (p[0].abs() as f64).max(p[1].abs() as f64);
+        self.cmds.iter().fold(0.0f64, |acc, c| {
+            let v = match c {
+                PathCmd::MoveTo(p) | PathCmd::LineTo(p) => m(p),
+                PathCmd::QuadTo(a, b) => m(a).max(m(b)),
+                PathCmd::CubicTo(a, b, c) => m(a).max(m(b)).max(m(c)),
+                PathCmd::Arc { center, radii, .. } => m(center) + m(radii),
+                PathCmd::Close => 0.0,
+            };
+            if v.is_finite() { acc.max(v) } else { acc }
+        })
+    }
+
     /// Flatten into contours, each curve split so no point of it is farther than `tolerance`
-    /// (metres) from the polyline. Consecutive duplicate points are dropped.
+    /// (metres) from the polyline (raised to [`MIN_RELATIVE_TOLERANCE`] × the path's extent;
+    /// at most [`MAX_CURVE_SEGMENTS`] per curve). Consecutive duplicate points are dropped.
     pub fn flatten(&self, tolerance: f32) -> Result<Vec<Contour>, VectorError> {
         if !(tolerance.is_finite() && tolerance > 0.0) {
             return Err(VectorError::NotFinite { what: "tolerance (> 0)" });
         }
-        let tol = tolerance as f64;
+        let tol = (tolerance as f64).max(self.extent() * MIN_RELATIVE_TOLERANCE);
         let mut out: Vec<Contour> = Vec::new();
         let mut cur: Vec<P2> = Vec::new();
         let mut total = 0usize;
@@ -313,7 +354,7 @@ fn segments(k: f64) -> usize {
     if k.is_nan() || k <= 1.0 {
         return 1;
     }
-    (k.sqrt().ceil() as usize).clamp(1, 1024)
+    (k.sqrt().ceil() as usize).clamp(1, MAX_CURVE_SEGMENTS)
 }
 
 /// Segments for an arc of radius `r` sweeping `sweep` so the sagitta stays within `tol`.
@@ -322,7 +363,18 @@ fn arc_segments(r: f64, sweep: f64, tol: f64) -> usize {
         return 1.max((sweep.abs() / (std::f64::consts::PI / 2.0)).ceil() as usize);
     }
     let step = 2.0 * dmath::acos_f64(1.0 - tol / r);
-    ((sweep.abs() / step).ceil() as usize).clamp(1, 4096)
+    let n = sweep.abs() / step;
+    if n.is_finite() { (n.ceil() as usize).clamp(1, MAX_CURVE_SEGMENTS) } else { MAX_CURVE_SEGMENTS }
+}
+
+/// Room for `more` vertices in `mesh`, or the structured error.
+fn reserve(mesh: &ShapeMesh, more: usize) -> Result<(), VectorError> {
+    let vertices = mesh.vertices.len().saturating_add(more);
+    if vertices > MAX_SHAPE_VERTICES {
+        Err(VectorError::TooManyVertices { vertices, max: MAX_SHAPE_VERTICES })
+    } else {
+        Ok(())
+    }
 }
 
 fn add(a: P2, b: P2) -> P2 {
@@ -390,7 +442,14 @@ fn inside(ring: &[P2], p: P2) -> bool {
 pub struct ShapeMesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// Ear-clipping work so far: the sum of each clipped polygon's points squared (at most
+    /// [`MAX_FILL_WORK`] per mesh, so a shape of many big fills stays quick too).
+    pub fill_work: u64,
 }
+
+/// Most ear-clipping work (sum of polygon points squared) one mesh may take: about two of the
+/// largest fills ([`MAX_FILL_POLYGON`] points each).
+pub const MAX_FILL_WORK: u64 = 2 * (MAX_FILL_POLYGON as u64) * (MAX_FILL_POLYGON as u64);
 
 impl ShapeMesh {
     pub fn is_empty(&self) -> bool {
@@ -423,7 +482,7 @@ fn fill_rings(contours: &[Contour]) -> Vec<Vec<P2>> {
                 let (a, b, c) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
                 let (u, v) = (sub(b, a), sub(c, b));
                 let scale = len(u) * len(v);
-                if cross(u, v).abs() <= 1e-12 * scale && dot(u, v) >= 0.0 && scale > 0.0 || b == a || b == c {
+                if cross(u, v).abs() <= 1e-12 * scale && dot(u, v) >= 0.0 && scale > 0.0 || b == c {
                     changed = true;
                     continue; // straight through (or repeated): not a corner
                 }
@@ -487,6 +546,7 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
         ring_ids.push((pos.len() as u32..(pos.len() + r.len()) as u32).collect());
         pos.extend_from_slice(r);
     }
+    reserve(mesh, pos.len() * if aa { 2 } else { 1 })?;
     let mut triangles: Vec<[u32; 3]> = Vec::new();
     for (i, _) in rings.iter().enumerate().filter(|(i, _)| depth[*i] % 2 == 0) {
         // Holes: odd rings whose innermost container is ring i.
@@ -497,13 +557,28 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
             let mx = |h: usize| rings[h].iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
             mx(b).total_cmp(&mx(a)).then(a.cmp(&b))
         });
+        let points = ring_ids[i].len() + holes.iter().map(|&h| ring_ids[h].len() + 2).sum::<usize>();
+        if points > MAX_FILL_POLYGON {
+            return Err(VectorError::FillTooComplex { points, max: MAX_FILL_POLYGON });
+        }
         let mut poly = ring_ids[i].clone();
         for h in holes {
             bridge(&mut poly, &ring_ids[h], &pos);
         }
         let start = triangles.len();
-        ear_clip(&poly, &pos, &mut triangles);
-        delaunay_flips(&mut triangles[start..], &pos);
+        if poly.len() == ring_ids[i].len() && convex(&poly, &pos) {
+            // No holes and convex: a zigzag strip from both ends (linear time, no slivers to fix
+            // beyond what the outline forces).
+            strip(&poly, &mut triangles);
+            delaunay_flips(&mut triangles[start..], &pos);
+        } else {
+            mesh.fill_work = mesh.fill_work.saturating_add((poly.len() as u64).pow(2));
+            if mesh.fill_work > MAX_FILL_WORK {
+                return Err(VectorError::FillTooComplex { points: poly.len(), max: MAX_FILL_POLYGON });
+            }
+            ear_clip(&poly, &pos, &mut triangles);
+            delaunay_flips(&mut triangles[start..], &pos);
+        }
     }
     // Emit.
     let base = mesh.vertices.len() as u32;
@@ -631,6 +706,62 @@ fn bridge(poly: &mut Vec<u32>, hole: &[u32], pos: &[P2]) {
     *poly = spliced;
 }
 
+/// A convex counter-clockwise ring around `center` as a triangle fan (with its fringe): a dot of
+/// a round- or square-capped stroke, in linear time.
+fn disc_fan(center: P2, ring: &[P2], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh) -> Result<(), VectorError> {
+    let n = ring.len();
+    reserve(mesh, 1 + n * if aa { 2 } else { 1 })?;
+    let ids = vec![(0..n as u32).collect::<Vec<u32>>()];
+    let miters = if aa { ring_miters(&ids, ring) } else { vec![[0.0, 0.0]; n] };
+    let c = mesh.vertex(center, [0.0, 0.0], color);
+    let base = mesh.vertices.len() as u32;
+    for (p, m) in ring.iter().zip(&miters) {
+        mesh.vertex(*p, scale(*m, -0.5), color);
+    }
+    for k in 0..n as u32 {
+        mesh.indices.extend_from_slice(&[c, base + k, base + (k + 1) % n as u32]);
+    }
+    if aa {
+        let clear = [color[0], color[1], color[2], 0];
+        let outer = mesh.vertices.len() as u32;
+        for (p, m) in ring.iter().zip(&miters) {
+            mesh.vertex(*p, scale(*m, 0.5), clear);
+        }
+        for k in 0..n as u32 {
+            let j = (k + 1) % n as u32;
+            mesh.quad(base + k, outer + k, outer + j, base + j);
+        }
+    }
+    Ok(())
+}
+
+/// Every corner of the counter-clockwise polygon turns left (or goes straight).
+fn convex(poly: &[u32], pos: &[P2]) -> bool {
+    let n = poly.len();
+    let p = |k: usize| pos[poly[k % n] as usize];
+    (0..n).all(|k| cross(sub(p(k + 1), p(k)), sub(p(k + 2), p(k + 1))) >= 0.0)
+}
+
+/// Triangulates a convex counter-clockwise polygon as a strip zigzagging from both ends.
+fn strip(poly: &[u32], out: &mut Vec<[u32; 3]>) {
+    let n = poly.len();
+    if n < 3 {
+        return;
+    }
+    let (mut lo, mut hi) = (0usize, n - 1);
+    let mut from_lo = true;
+    while hi - lo >= 2 {
+        if from_lo {
+            out.push([poly[lo], poly[lo + 1], poly[hi]]);
+            lo += 1;
+        } else {
+            out.push([poly[lo], poly[hi - 1], poly[hi]]);
+            hi -= 1;
+        }
+        from_lo = !from_lo;
+    }
+}
+
 /// `p` in the closed triangle `a b c` (either orientation).
 fn point_in_triangle(p: P2, a: P2, b: P2, c: P2) -> bool {
     let (d1, d2, d3) = (cross(sub(b, a), sub(p, a)), cross(sub(c, b), sub(p, b)), cross(sub(a, c), sub(p, c)));
@@ -738,7 +869,11 @@ fn delaunay_flips(tris: &mut [[u32; 3]], pos: &[P2]) {
         }
         // t1 = (a, b, c) counter-clockwise; d is across a-b.
         let (pa, pb, pc, pd) = (p(a), p(b), p(c), p(d));
-        if in_circle(pa, pb, pc, pd).is_nan() || in_circle(pa, pb, pc, pd) <= 0.0 {
+        // Clearly inside only: points on one circle (every flattened arc) would otherwise flip
+        // back and forth on rounding noise.
+        let s = dot(sub(pa, pc), sub(pa, pc)).max(dot(sub(pb, pc), sub(pb, pc))).max(dot(sub(pd, pc), sub(pd, pc)));
+        let ic = in_circle(pa, pb, pc, pd);
+        if ic.is_nan() || ic <= 1e-9 * s * s {
             continue;
         }
         // The new edge c-d must lie inside the quad: a and b on opposite sides, strictly.
@@ -838,19 +973,42 @@ pub fn stroke(contours: &[Contour], style: &StrokeStyle, tolerance: f32, aa: boo
     if hw <= 0.0 {
         return Ok(());
     }
-    let tol = tolerance as f64;
+    // Round joins and caps: finer than a thousandth of the half width is invisible.
+    let tol = (tolerance as f64).max(hw * 1e-3);
+    let per_pair = if aa { 4 } else { 2 };
+    // A lower bound of what the strokes need, so a hopeless shape fails before any work.
+    let disc = 4 * arc_segments(hw, std::f64::consts::FRAC_PI_2, tol).min(MAX_ROUND_SEGMENTS);
+    let least: usize = contours
+        .iter()
+        .map(|c| match c.points.len() {
+            0 => 0,
+            1 if style.cap == LineCap::Butt => 0,
+            1 => disc * (per_pair / 2),
+            n => n * per_pair,
+        })
+        .fold(0usize, usize::saturating_add);
+    reserve(mesh, least)?;
     let mut pairs: Vec<Pair> = Vec::new();
     for c in contours {
         let pts = dedup(&c.points, c.closed);
         if pts.len() == 1 {
             // A dot: round and square caps still show.
             let p = pts[0];
-            let dot_path = match style.cap {
+            // A disc as round as a round cap (at most 4 × MAX_ROUND_SEGMENTS points), or a square.
+            let points: Vec<P2> = match style.cap {
                 LineCap::Butt => continue,
-                LineCap::Round => Path::circle([p[0] as f32, p[1] as f32], hw as f32),
-                LineCap::Square => Path::rect((p[0] - hw) as f32, (p[1] - hw) as f32, (2.0 * hw) as f32, (2.0 * hw) as f32),
+                LineCap::Round => {
+                    let n = disc;
+                    (0..n)
+                        .map(|k| {
+                            let (s, c) = dmath::sin_cos_f64(std::f64::consts::TAU * k as f64 / n as f64);
+                            [p[0] + hw * c, p[1] + hw * s]
+                        })
+                        .collect()
+                }
+                LineCap::Square => vec![[p[0] - hw, p[1] - hw], [p[0] + hw, p[1] - hw], [p[0] + hw, p[1] + hw], [p[0] - hw, p[1] + hw]],
             };
-            fill(&dot_path.flatten(tolerance)?, style.color, aa, mesh)?;
+            disc_fan(p, &points, style.color, aa, mesh)?;
             continue;
         }
         let closed = c.closed && pts.len() > 2;
@@ -866,6 +1024,7 @@ pub fn stroke(contours: &[Contour], style: &StrokeStyle, tolerance: f32, aa: boo
             let d_in = dir((i + n - 1) % n);
             let d_out = dir(i);
             join_pairs(&mut pairs, pts[i], d_in, d_out, hw, style.join, tol, len(sub(pts[i], pts[(i + n - 1) % n])).min(len(sub(pts[(i + 1) % n], pts[i]))));
+            reserve(mesh, (pairs.len() + 2 * MAX_ROUND_SEGMENTS) * per_pair)?;
         }
         if closed {
             let again = pairs[0];
@@ -874,6 +1033,7 @@ pub fn stroke(contours: &[Contour], style: &StrokeStyle, tolerance: f32, aa: boo
             let d = dir(n - 2);
             cap_pairs(&mut pairs, pts[n - 1], d, hw, style.cap, tol, aa, false);
         }
+        reserve(mesh, pairs.len() * per_pair)?;
         emit_strip(&pairs, style.color, aa, mesh);
     }
     Ok(())
@@ -899,7 +1059,7 @@ fn join_pairs(out: &mut Vec<Pair>, p: P2, d0: P2, d1: P2, hw: f64, join: LineJoi
     let inner = if inner_len > reach { scale(m, reach / inner_len) } else { m };
     let angle = dmath::atan2_f64(turn, dot(d0, d1)); // signed turn
     let steps = match join {
-        LineJoin::Round => arc_segments(hw, angle, tol),
+        LineJoin::Round => arc_segments(hw, angle, tol).min(MAX_ROUND_SEGMENTS),
         _ => 1,
     };
     for k in 0..=steps {
@@ -923,7 +1083,7 @@ fn cap_pairs(out: &mut Vec<Pair>, p: P2, d: P2, hw: f64, cap: LineCap, tol: f64,
     let back = if start { scale(d, -1.0) } else { d }; // away from the stroke
     match cap {
         LineCap::Round => {
-            let steps = arc_segments(hw, std::f64::consts::FRAC_PI_2, tol);
+            let steps = arc_segments(hw, std::f64::consts::FRAC_PI_2, tol).min(MAX_ROUND_SEGMENTS);
             let mut ring: Vec<Pair> = (0..=steps)
                 .map(|k| {
                     let (s, c) = dmath::sin_cos_f64(std::f64::consts::FRAC_PI_2 * (k as f64 / steps as f64));
@@ -1206,6 +1366,109 @@ mod tests {
         let mut none = ShapeMesh::default();
         stroke(&single, &style, 0.001, false, &mut none).unwrap();
         assert!(none.is_empty(), "a butt-capped point is nothing");
+    }
+
+    /// Hostile shapes (the review's probes) fail fast with a structured error, and the biggest
+    /// accepted ones stay quick.
+    #[test]
+    fn hostile_shapes_fail_fast_and_big_ones_stay_quick() {
+        let timed = |what: &str, f: &dyn Fn() -> Result<ShapeMesh, VectorError>| {
+            let t = std::time::Instant::now();
+            let r = f();
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            eprintln!("{what}: {:?} in {ms:.1} ms", r.as_ref().map(|m| m.vertices.len()));
+            assert!(ms < 1000.0, "{what} took {ms:.0} ms");
+            r
+        };
+        let wide = StrokeStyle { width: 100_000.0, join: LineJoin::Round, cap: LineCap::Round, color: [255; 4] };
+        // A 16,384-point zigzag with a 100 km round-joined stroke at a 10 µm tolerance.
+        let zig: Vec<[f32; 2]> = (0..16_384).map(|i| [i as f32, (i % 2) as f32 * 1000.0]).collect();
+        let r = timed("zigzag stroke", &|| {
+            let mut m = ShapeMesh::default();
+            stroke(&Path::polyline(&zig).flatten(1e-5)?, &wide, 1e-5, true, &mut m).map(|()| m)
+        });
+        assert!(matches!(r, Err(VectorError::TooManyVertices { .. })), "{r:?}");
+        // 16,384 separate dots with round caps.
+        let mut dots = Path::new();
+        for i in 0..16_384 {
+            dots.move_to([i as f32, 0.0]);
+        }
+        let r = timed("dots", &|| {
+            let mut m = ShapeMesh::default();
+            stroke(&dots.flatten(1e-5)?, &wide, 1e-5, true, &mut m).map(|()| m)
+        });
+        assert!(matches!(r, Err(VectorError::TooManyVertices { .. })), "{r:?}");
+        // One ring of 15 huge arcs at a tiny tolerance: the tolerance is raised to the extent.
+        let mut arcs = Path::new();
+        for i in 0..15 {
+            arcs.arc_to([0.0, 0.0], [1e6, 1e6], (i as f32 * 24.0).to_radians(), 24f32.to_radians());
+        }
+        arcs.close();
+        let r = timed("15 huge arcs", &|| {
+            let mut m = ShapeMesh::default();
+            fill(&arcs.flatten(1e-5)?, [255; 4], false, &mut m).map(|()| m)
+        });
+        assert!(r.is_ok_and(|m| m.vertices.len() < 4096));
+        // Combs: many reflex corners. Just over the polygon cap fails; just under it is the
+        // slowest fill accepted.
+        let comb = |n: usize| {
+            let mut pts = Vec::new();
+            for i in 0..n {
+                let x = i as f32;
+                pts.extend([[x, 0.0], [x + 0.25, 10.0], [x + 0.5, 0.1]]);
+            }
+            pts.extend([[n as f32, -5.0], [0.0, -5.0]]);
+            Path::polygon(&pts)
+        };
+        let over = comb(1400);
+        let r = timed("comb over the cap", &|| {
+            let mut m = ShapeMesh::default();
+            fill(&over.flatten(0.01)?, [255; 4], false, &mut m).map(|()| m)
+        });
+        assert!(matches!(r, Err(VectorError::FillTooComplex { .. })), "{r:?}");
+        let worst = comb((MAX_FILL_POLYGON - 2) / 3);
+        let r = timed("comb at the cap", &|| {
+            let mut m = ShapeMesh::default();
+            fill(&worst.flatten(0.01)?, [255; 4], true, &mut m).map(|()| m)
+        });
+        assert!(r.is_ok());
+        // Convex fills skip ear clipping: as many 1024-point circles as the vertex budget holds.
+        let circle = Path::circle([0.0, 0.0], 100.0);
+        let r = timed("128 1024-point circles (convex fills)", &|| {
+            let mut m = ShapeMesh::default();
+            for _ in 0..128 {
+                fill(&circle.flatten(1e-3)?, [255; 4], true, &mut m)?;
+            }
+            Ok(m)
+        });
+        assert!(r.is_ok_and(|m| m.vertices.len() > 150_000));
+        // Many big fills in one shape: the work budget stops the third.
+        let r = timed("three combs at the cap", &|| {
+            let mut m = ShapeMesh::default();
+            for _ in 0..3 {
+                fill(&worst.flatten(0.01)?, [255; 4], false, &mut m)?;
+            }
+            Ok(m)
+        });
+        assert!(matches!(r, Err(VectorError::FillTooComplex { .. })), "{r:?}");
+        let r = timed("two combs at the cap (worst accepted fill work)", &|| {
+            let mut m = ShapeMesh::default();
+            for _ in 0..2 {
+                fill(&worst.flatten(0.01)?, [255; 4], true, &mut m)?;
+            }
+            Ok(m)
+        });
+        assert!(r.is_ok());
+        // The most round-capped dots that fit the vertex budget (convex: no ear clipping).
+        let mut many = Path::new();
+        for i in 0..1800 {
+            many.move_to([i as f32 * 3.0e5, 0.0]);
+        }
+        let r = timed("1800 round dots (worst accepted stroke)", &|| {
+            let mut m = ShapeMesh::default();
+            stroke(&many.flatten(1e-5)?, &wide, 1e-5, true, &mut m).map(|()| m)
+        });
+        assert!(r.is_ok());
     }
 
     #[test]

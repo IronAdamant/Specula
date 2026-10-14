@@ -618,6 +618,14 @@ impl TilemapSpec {
                         .ok_or("an animation needs 'frames'")? as u8,
                     frame_ms: int(item, "frame_ms", "tilemap.animations", 17, 4250)?.unwrap_or(250) as u32,
                 };
+                if anim.tile as u32 + anim.frames as u32 - 1 > u16::MAX as u32 {
+                    return Err(format!(
+                        "'tilemap.animations': tile {} with {} frames runs past tile {}",
+                        anim.tile,
+                        anim.frames,
+                        u16::MAX
+                    ));
+                }
                 if animations.iter().any(|o: &TileAnim| o.tile == anim.tile) {
                     return Err(format!("'tilemap.animations': tile {} animated twice", anim.tile));
                 }
@@ -830,6 +838,8 @@ fn rgba(v: &Json, what: &str) -> Result<[u8; 4], String> {
     let err = || format!("'{what}' must be \"#rrggbb\", \"#rrggbbaa\" or [r, g, b(, a)] with components 0..1");
     let b = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
     match v {
+        // ASCII only: byte offsets below are then character boundaries.
+        Json::Str(s) if !s.is_ascii() => Err(err()),
         Json::Str(s) if s.len() == 9 => {
             let rgb = color_from_hex(&s[..7]).ok_or_else(err)?;
             let a = u8::from_str_radix(&s[7..], 16).map_err(|_| err())?;
@@ -1011,7 +1021,14 @@ impl Shape2dSpec {
             }
             let contours = path.flatten(tolerance).map_err(|e| format!("'{what}': {e}"))?;
             if let Some(c) = fill_color {
+                let before = mesh.indices.len();
                 vector::fill(&contours, c, aa, &mut mesh).map_err(|e| format!("'{what}': {e}"))?;
+                if mesh.indices.len() == before {
+                    return Err(format!(
+                        "'{what}': the fill covers no area (a degenerate or self-intersecting outline whose parts cancel, \
+                         like a bow-tie); fill each loop as its own polygon"
+                    ));
+                }
                 canon.push(("fill", rgba_json(c)));
             }
             if let Some(s) = stroke_style {
@@ -1032,9 +1049,6 @@ impl Shape2dSpec {
                     LineCap::Round => sf.push(("cap", Json::from("round"))),
                 }
                 canon.push(("stroke", Json::obj(sf)));
-            }
-            if mesh.vertices.len() > vector::MAX_SHAPE_POINTS * 8 {
-                return Err(format!("'{w}' tessellates to more than {} vertices; simplify it or raise 'tolerance'", vector::MAX_SHAPE_POINTS * 8));
             }
             canon_items.push(Json::obj(canon));
         }
@@ -1194,11 +1208,34 @@ pub fn billboard_corners(two_d: &TwoD, model: &Mat4, view: &specula_gpu::View2d)
 // GPU side
 // ---------------------------------------------------------------------------------------------
 
-/// A texture loaded from the assets root.
+/// A texture uploaded from the assets root.
 struct LoadedTexture {
     id: TextureId,
     size: [u32; 2],
 }
+
+/// What identifies a file's contents for change polling: modification time and length (`None`:
+/// the file can't be read).
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp_of(file: &FsPath) -> Stamp {
+    let m = std::fs::metadata(file).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// One texture path: what is shown (the last good upload) and what is in flight.
+struct TexEntry {
+    current: Option<LoadedTexture>,
+    /// A load (or reload) is on the loader thread.
+    loading: bool,
+    /// The file as of the last load started.
+    stamp: Stamp,
+}
+
+/// A file read and decoded on the loader thread.
+type Loaded = (String, Stamp, Result<png::Image, String>);
+/// Requests to the loader thread (key, file) and its results.
+type Loader = (std::sync::mpsc::Sender<(String, PathBuf)>, std::sync::mpsc::Receiver<Loaded>);
 
 /// One tile map layer's cell texture, and the grid it holds (to upload only changed chunks).
 struct LayerTexture {
@@ -1206,20 +1243,42 @@ struct LayerTexture {
     grid: TileGrid,
 }
 
+/// Most problems listed for one frame (missing textures, frames past a sheet, …).
+const MAX_FRAME_PROBLEMS: usize = 16;
+/// How often in-use texture files are checked for changes.
+const TEXTURE_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The GPU resources 2D entities draw with: textures by asset path, tile maps' cell textures by
 /// entity, shape meshes by shape key. Everything is created on first use and freed when no
 /// entity uses it any more ([`TwoDGpu::collect`]).
+///
+/// - **Textures** are read and decoded on a loader thread (the engine thread only uploads), and
+///   their files are polled ([`TwoDGpu::poll_files`]): an edited PNG is reloaded (the old one
+///   stays on screen until the new one is up), a missing or broken one is retried once its file
+///   changes. Problems are kept per path and cleared when a load succeeds.
+/// - **Tile cells** re-upload only the chunks that changed since the last frame.
+/// - **Shapes** are uploaded once per distinct content (the canonical JSON's hash) and shared;
+///   a shape whose content changes every tick uploads a new mesh every tick (the old ones are
+///   freed by the next collection): animate shapes by their transform or colour instead.
 pub struct TwoDGpu {
     assets: PathBuf,
-    textures: BTreeMap<String, Result<LoadedTexture, String>>,
+    textures: BTreeMap<String, TexEntry>,
     cells: BTreeMap<(u64, usize), LayerTexture>,
     shapes: BTreeMap<u64, Result<MeshId, String>>,
+    /// Requests to the loader thread (started on first use) and its results.
+    loader: Option<Loader>,
+    last_poll: std::time::Instant,
     /// Reused per-frame scratch.
     bytes: Vec<u8>,
-    /// Problems met (missing files, bad PNGs, GPU errors), newest last, at most 16.
-    pub errors: Vec<String>,
+    /// The latest problem per texture path or resource (cleared by a success, dropped with the
+    /// resource).
+    pub errors: BTreeMap<String, String>,
+    /// Problems of the items drawn since [`TwoDGpu::begin_frame`], at most 16.
+    pub frame_problems: Vec<String>,
     /// Cell chunks uploaded since start-up (edits cost only the chunks they touch).
     pub chunk_uploads: u64,
+    /// Textures loaded or reloaded since start-up.
+    pub texture_loads: u64,
 }
 
 impl TwoDGpu {
@@ -1229,45 +1288,132 @@ impl TwoDGpu {
             textures: BTreeMap::new(),
             cells: BTreeMap::new(),
             shapes: BTreeMap::new(),
+            loader: None,
+            last_poll: std::time::Instant::now(),
             bytes: Vec::new(),
-            errors: Vec::new(),
+            errors: BTreeMap::new(),
+            frame_problems: Vec::new(),
             chunk_uploads: 0,
+            texture_loads: 0,
         }
     }
 
-    fn note(&mut self, e: String) {
-        if !self.errors.contains(&e) {
-            if self.errors.len() >= 16 {
-                self.errors.remove(0);
+    /// Starts a frame: the problems list empties and finished loads are uploaded.
+    pub fn begin_frame(&mut self, gpu: &mut Gpu) {
+        self.frame_problems.clear();
+        self.pump(gpu);
+    }
+
+    fn problem(&mut self, p: String) {
+        if self.frame_problems.len() < MAX_FRAME_PROBLEMS && !self.frame_problems.contains(&p) {
+            self.frame_problems.push(p);
+        }
+    }
+
+    /// Queues `path` for loading on the loader thread (started on first use).
+    fn start_load(&mut self, path: &str) {
+        let file = self.assets.join(path);
+        let entry = self.textures.entry(path.to_owned()).or_insert(TexEntry { current: None, loading: false, stamp: None });
+        entry.loading = true;
+        entry.stamp = stamp_of(&file);
+        let (tx, _) = self.loader.get_or_insert_with(|| {
+            let (req_tx, req_rx) = std::sync::mpsc::channel::<(String, PathBuf)>();
+            let (res_tx, res_rx) = std::sync::mpsc::channel::<Loaded>();
+            let spawned = std::thread::Builder::new().name("specula-2d-textures".into()).spawn(move || {
+                for (key, file) in req_rx {
+                    let stamp = stamp_of(&file);
+                    let image = std::fs::read(&file)
+                        .map_err(|e| format!("{key}: {e}"))
+                        .and_then(|bytes| png::decode(&bytes).map_err(|e| format!("{key}: not a readable PNG ({e:?})")));
+                    if res_tx.send((key, stamp, image)).is_err() {
+                        break;
+                    }
+                }
+            });
+            if let Err(e) = spawned {
+                eprintln!("specula: 2D texture loader thread: {e}");
             }
-            self.errors.push(e);
+            (req_tx, res_rx)
+        });
+        if tx.send((path.to_owned(), file)).is_err() {
+            // The loader is gone (it failed to start): report instead of waiting forever.
+            if let Some(e) = self.textures.get_mut(path) {
+                e.loading = false;
+            }
+            self.errors.insert(path.to_owned(), format!("texture {path}: the loader thread is not running"));
         }
     }
 
-    fn texture(&mut self, gpu: &mut Gpu, path: &str) -> Option<(TextureId, [u32; 2])> {
+    /// Asks for `path` without drawing it (captures start loads before they render).
+    pub fn request(&mut self, path: &str) {
         if !self.textures.contains_key(path) {
-            let file = self.assets.join(path);
-            let loaded = std::fs::read(&file)
-                .map_err(|e| format!("{path}: {e}"))
-                .and_then(|bytes| png::decode(&bytes).map_err(|e| format!("{path}: not a readable PNG ({e:?})")))
-                .and_then(|img| {
-                    gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
-                        .map(|id| LoadedTexture { id, size: [img.width, img.height] })
-                        .map_err(|e| format!("{path}: {e}"))
-                });
-            if let Err(e) = &loaded {
-                self.note(format!("texture {e}"));
-            }
-            self.textures.insert(path.to_owned(), loaded);
+            self.start_load(path);
         }
-        self.textures.get(path).and_then(|t| t.as_ref().ok()).map(|t| (t.id, t.size))
     }
 
-    /// Forget a texture (its file changed): reloaded on next use.
-    pub fn reload_texture(&mut self, gpu: &mut Gpu, path: &str) {
-        if let Some(Ok(t)) = self.textures.remove(path) {
-            gpu.destroy_texture(t.id);
+    /// Uploads whatever the loader finished.
+    pub fn pump(&mut self, gpu: &mut Gpu) {
+        let done: Vec<Loaded> = match &self.loader {
+            Some((_, rx)) => rx.try_iter().collect(),
+            None => return,
+        };
+        for (key, stamp, image) in done {
+            let Some(entry) = self.textures.get_mut(&key) else { continue }; // collected meanwhile
+            entry.loading = false;
+            entry.stamp = stamp;
+            let uploaded = image.and_then(|img| {
+                gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
+                    .map(|id| LoadedTexture { id, size: [img.width, img.height] })
+                    .map_err(|e| format!("{key}: {e}"))
+            });
+            match uploaded {
+                Ok(t) => {
+                    if let Some(old) = entry.current.replace(t) {
+                        gpu.destroy_texture(old.id);
+                    }
+                    self.texture_loads += 1;
+                    self.errors.remove(&key);
+                }
+                // The last good texture (if any) stays on screen.
+                Err(e) => {
+                    self.errors.insert(key, format!("texture {e}"));
+                }
+            }
         }
+    }
+
+    /// Texture loads in flight.
+    pub fn loading(&self) -> usize {
+        self.textures.values().filter(|t| t.loading).count()
+    }
+
+    /// Reloads textures whose files changed (and retries failed ones whose files changed), at
+    /// most every second. Call it from the engine's asset polling.
+    pub fn poll_files(&mut self, force: bool) {
+        if !force && self.last_poll.elapsed() < TEXTURE_POLL_EVERY {
+            return;
+        }
+        self.last_poll = std::time::Instant::now();
+        let changed: Vec<String> = self
+            .textures
+            .iter()
+            .filter(|(path, t)| !t.loading && stamp_of(&self.assets.join(path.as_str())) != t.stamp)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in changed {
+            self.start_load(&path);
+        }
+    }
+
+    fn texture(&mut self, path: &str) -> Option<(TextureId, [u32; 2])> {
+        self.request(path);
+        let shown = self.textures.get(path).and_then(|t| t.current.as_ref()).map(|t| (t.id, t.size));
+        if let Some(e) = self.errors.get(path).cloned() {
+            self.problem(e);
+        } else if shown.is_none() && self.textures.get(path).is_some_and(|t| t.loading) {
+            self.problem(format!("texture {path}: still loading"));
+        }
+        shown
     }
 
     /// The cell texture of layer `li` of entity `id`, brought up to date with `grid` (only
@@ -1280,33 +1426,44 @@ impl TwoDGpu {
                 gpu.destroy_texture(l.id);
             }
         }
+        // Formatted only when needed: a warm frame allocates nothing here.
+        let name = || format!("tilemap {id} layer {li}");
         match self.cells.get_mut(&key) {
             None => match gpu.upload_texture(grid.width(), grid.height(), TextureFormat::Rgba8Unorm, &grid.encode()) {
                 Ok(tid) => {
                     self.cells.insert(key, LayerTexture { id: tid, grid: grid.clone() });
+                    self.errors.remove(&name());
                     Some(tid)
                 }
                 Err(e) => {
-                    self.note(format!("tile map {id}: {e}"));
+                    let msg = format!("{}: {e}", name());
+                    self.errors.insert(name(), msg.clone());
+                    self.problem(msg);
                     None
                 }
             },
             Some(layer) => {
-                if (0..grid.chunk_count()).any(|i| !grid.same_chunk(&layer.grid, i)) {
-                    for i in 0..grid.chunk_count() {
-                        if grid.same_chunk(&layer.grid, i) {
-                            continue;
-                        }
-                        let r = grid.chunk_region(i);
-                        grid.encode_region(r, &mut self.bytes);
-                        if let Err(e) = gpu.update_texture(layer.id, r[0], r[1], r[2], r[3], &self.bytes) {
-                            self.errors.push(format!("tile map {id}: {e}"));
-                        }
-                        self.chunk_uploads += 1;
+                let mut failed = None;
+                for i in 0..grid.chunk_count() {
+                    if grid.same_chunk(&layer.grid, i) {
+                        continue;
                     }
+                    let r = grid.chunk_region(i);
+                    grid.encode_region(r, &mut self.bytes);
+                    if let Err(e) = gpu.update_texture(layer.id, r[0], r[1], r[2], r[3], &self.bytes) {
+                        failed = Some(format!("{}: {e}", name()));
+                    }
+                    self.chunk_uploads += 1;
+                }
+                if !(0..grid.chunk_count()).all(|i| grid.same_chunk(&layer.grid, i)) {
                     layer.grid = grid.clone();
                 }
-                Some(layer.id)
+                let id = layer.id;
+                if let Some(msg) = failed {
+                    self.errors.insert(name(), msg.clone());
+                    self.problem(msg);
+                }
+                Some(id)
             }
         }
     }
@@ -1315,17 +1472,22 @@ impl TwoDGpu {
         if s.mesh.is_empty() {
             return None;
         }
-        if !self.shapes.contains_key(&s.key) {
-            let r = gpu.upload_mesh(&s.mesh.vertices, &s.mesh.indices).map_err(|e| format!("shape2d: {e}"));
-            if let Err(e) = &r {
-                self.note(e.clone());
+        self.shapes
+            .entry(s.key)
+            .or_insert_with(|| gpu.upload_mesh(&s.mesh.vertices, &s.mesh.indices).map_err(|e| format!("shape2d: {e}")));
+        match self.shapes.get(&s.key) {
+            Some(Ok(m)) => Some(*m),
+            Some(Err(e)) => {
+                let e = e.clone();
+                self.problem(e);
+                None
             }
-            self.shapes.insert(s.key, r);
+            None => None,
         }
-        self.shapes.get(&s.key).and_then(|r| r.as_ref().ok().copied())
     }
 
     /// Appends the draws of 2D entity `e` (world transform `model`, sRGB `tint`) at `time_s`.
+    /// Allocation-free once warm (sheet frames are computed, not listed).
     #[allow(clippy::too_many_arguments)]
     pub fn draws(&mut self, gpu: &mut Gpu, id: u64, two_d: &TwoD, model: &Mat4, tint: [f32; 4], time_s: f32, out: &mut Vec<Draw2d>) {
         let cols = model.to_cols_array();
@@ -1352,28 +1514,18 @@ impl TwoDGpu {
                     ..Default::default()
                 };
                 if let Some(path) = &s.texture {
-                    let Some((tex, size)) = self.texture(gpu, path) else { return };
+                    let Some((tex, size)) = self.texture(path) else { return };
                     sprite.texture = Some(tex);
-                    sprite.uv = match (s.uv, s.sheet) {
-                        (Some(uv), _) => uv,
-                        (None, Some(sheet)) => {
-                            let frame = match s.anim {
-                                Some(a) => {
-                                    let book = Flipbook { frames: vec![[0.0; 4]; a.count as usize], fps: a.fps, playback: a.playback };
-                                    a.first + book.frame_index(time_s as f64) as u32
-                                }
-                                None => s.frame,
-                            };
-                            let frames = Flipbook::grid(size, sheet.frame_px, frame + 1, sheet.margin, sheet.spacing);
-                            frames.get(frame as usize).copied().unwrap_or([0.0, 0.0, 1.0, 1.0])
-                        }
-                        (None, None) => [0.0, 0.0, 1.0, 1.0],
-                    };
+                    let (uv, problem) = sprite_uv(s, size, time_s as f64);
+                    sprite.uv = uv;
+                    if let Some(p) = problem {
+                        self.problem(format!("sprite {id}: {p}"));
+                    }
                 }
                 out.push(Draw2d::Sprite(sprite));
             }
             TwoD::Tilemap(t) => {
-                let Some((tileset, _)) = self.texture(gpu, &t.tileset) else { return };
+                let Some((tileset, _)) = self.texture(&t.tileset) else { return };
                 let down = [-ay.x / sy.max(1e-12), -ay.y / sy.max(1e-12), -ay.z / sy.max(1e-12)];
                 for (li, layer) in t.layers.iter().enumerate() {
                     if layer.cells.filled() == 0 {
@@ -1414,7 +1566,8 @@ impl TwoDGpu {
     }
 
     /// Frees what no entity in `live` uses: textures not named, cell textures of other entities
-    /// (or layers), shape meshes of other keys. Waits for the GPU where needed (Gpu does).
+    /// (or layers), shape meshes of other keys, and their problems. Waits for the GPU where
+    /// needed (Gpu does).
     pub fn collect(&mut self, gpu: &mut Gpu, live: &[(u64, &TwoD)]) {
         let mut paths = BTreeSet::new();
         let mut layers = BTreeSet::new();
@@ -1437,9 +1590,10 @@ impl TwoDGpu {
         }
         let dead: Vec<String> = self.textures.keys().filter(|k| !paths.contains(k.as_str())).cloned().collect();
         for k in dead {
-            if let Some(Ok(t)) = self.textures.remove(&k) {
+            if let Some(TexEntry { current: Some(t), .. }) = self.textures.remove(&k) {
                 gpu.destroy_texture(t.id);
             }
+            self.errors.remove(&k);
         }
         let dead: Vec<(u64, usize)> = self.cells.keys().filter(|k| !layers.contains(k)).copied().collect();
         for k in dead {
@@ -1447,6 +1601,7 @@ impl TwoDGpu {
                 gpu.destroy_texture(l.id);
             }
         }
+        self.errors.retain(|k, _| !k.starts_with("tilemap ") || layers.iter().any(|(id, li)| *k == format!("tilemap {id} layer {li}")));
         let dead: Vec<u64> = self.shapes.keys().filter(|k| !shapes.contains(k)).copied().collect();
         for k in dead {
             if let Some(Ok(m)) = self.shapes.remove(&k) {
@@ -1455,19 +1610,40 @@ impl TwoDGpu {
         }
     }
 
-    /// Paths of the textures in use (for change polling).
-    pub fn texture_paths(&self) -> impl Iterator<Item = &str> {
-        self.textures.keys().map(String::as_str)
-    }
-
     pub fn stats_json(&self) -> Json {
         Json::obj([
-            ("textures", Json::from(self.textures.values().filter(|t| t.is_ok()).count())),
+            ("textures", Json::from(self.textures.values().filter(|t| t.current.is_some()).count())),
+            ("textures_loading", Json::from(self.loading())),
+            ("texture_loads", Json::from(self.texture_loads)),
             ("tile_layers", Json::from(self.cells.len())),
             ("shape_meshes", Json::from(self.shapes.values().filter(|s| s.is_ok()).count())),
             ("chunk_uploads", Json::from(self.chunk_uploads)),
-            ("errors", Json::arr(self.errors.iter().map(|e| Json::from(e.as_str())))),
+            ("errors", Json::arr(self.errors.values().take(MAX_FRAME_PROBLEMS).map(|e| Json::from(e.as_str())))),
         ])
+    }
+}
+
+/// The texture rect a sprite shows at `time_s` on a texture of `size` pixels, and a problem to
+/// report (a frame past the sheet is clamped to its last frame). No allocation.
+pub fn sprite_uv(s: &SpriteSpec, size: [u32; 2], time_s: f64) -> ([f32; 4], Option<String>) {
+    match (s.uv, s.sheet) {
+        (Some(uv), _) => (uv, None),
+        (None, None) => ([0.0, 0.0, 1.0, 1.0], None),
+        (None, Some(sheet)) => {
+            let frame = match s.anim {
+                Some(a) => a.first.saturating_add(Flipbook::index(a.count as usize, a.fps, a.playback, time_s) as u32),
+                None => s.frame,
+            };
+            let count = Flipbook::grid_len(size, sheet.frame_px, sheet.margin, sheet.spacing);
+            if count == 0 {
+                let msg = format!("its {}x{} texture holds no {}x{} frame", size[0], size[1], sheet.frame_px[0], sheet.frame_px[1]);
+                return ([0.0, 0.0, 1.0, 1.0], Some(msg));
+            }
+            let shown = frame.min(count - 1);
+            let rect = Flipbook::grid_rect(size, sheet.frame_px, shown, sheet.margin, sheet.spacing).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+            let problem = (frame >= count).then(|| format!("frame {frame} is past the sheet's {count} frames (showing {shown})"));
+            (rect, problem)
+        }
     }
 }
 
@@ -1559,6 +1735,96 @@ mod tests {
         ] {
             assert!(SpriteSpec::parse(&json(bad)).is_err(), "{bad}");
         }
+    }
+
+    /// The review's probes: hostile input is refused (never a panic, never seconds of work).
+    #[test]
+    fn hostile_shape2d_input_is_refused_quickly() {
+        let timed = |what: &str, text: String| {
+            let t = std::time::Instant::now();
+            let r = std::panic::catch_unwind(|| Shape2dSpec::parse(&Json::parse(&text).unwrap()).map(|s| s.mesh.vertices.len()));
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            eprintln!("{what}: {:?} in {ms:.1} ms", r.as_ref().map(|r| r.as_ref().map_err(|e| &e[..e.len().min(90)])));
+            assert!(ms < 1000.0, "{what} took {ms:.0} ms");
+            r.unwrap_or_else(|_| panic!("{what} panicked"))
+        };
+        // Non-ASCII where a hex colour's alpha is sliced.
+        assert!(timed("utf-8 colour", "{\"items\":[{\"rect\":[0,0,1,1],\"fill\":\"#12345\u{e9}a\"}]}".into()).is_err());
+        let zig: Vec<String> = (0..16_384).map(|i| format!("[{},{}]", i, (i % 2) * 1000)).collect();
+        let r = timed(
+            "zigzag stroke",
+            format!(r#"{{"items":[{{"polyline":[{}],"stroke":{{"width":100000,"join":"round"}}}}],"tolerance":0.00001}}"#, zig.join(",")),
+        );
+        assert!(r.is_err_and(|e| e.contains("vertices")));
+        let dots: Vec<String> = (0..16_000).map(|i| format!(r#"["M",{i},0]"#)).collect();
+        let r = timed(
+            "16k dots",
+            format!(r#"{{"items":[{{"path":[{}],"stroke":{{"width":100000,"cap":"round"}}}}],"tolerance":0.00001}}"#, dots.join(",")),
+        );
+        assert!(r.is_err());
+        let arcs: Vec<String> = (0..15).map(|i| format!(r#"["A",0,0,1000000,1000000,{},24]"#, i * 24)).collect();
+        let r = timed("15 huge arcs", format!(r##"{{"items":[{{"path":[{},["Z"]],"fill":"#ffffff"}}],"tolerance":0.00001,"aa":false}}"##, arcs.join(",")));
+        assert!(r.is_ok());
+        let comb = |n: usize| {
+            let mut pts = Vec::new();
+            for i in 0..n {
+                pts.push(format!("[{i},0],[{}.25,10],[{}.5,0.1]", i, i));
+            }
+            format!(r##"{{"items":[{{"polygon":[{},[{n},-5],[0,-5]],"fill":"#ffffff"}}],"aa":false}}"##, pts.join(","))
+        };
+        assert!(timed("comb over the cap", comb(1400)).is_err_and(|e| e.contains("points")));
+        assert!(timed("comb at the cap", comb(1364)).is_ok());
+        // Odd geometry: errors or meshes, never panics.
+        for (t, ok) in [
+            (r##"{"items":[{"polygon":[[0,0],[1,1],[1,0],[0,1]],"fill":"#fff"}]}"##, false), // bow-tie: no net area
+            (r##"{"items":[{"polygon":[[0,0],[0,0],[0,0]],"fill":"#fff","stroke":{"width":0.1}}]}"##, false),
+            (r##"{"items":[{"polygon":[[0,0],[1,0],[2,0],[3,0]],"stroke":{"width":0.1,"join":"round"}}]}"##, true),
+            (r##"{"items":[{"path":[["M",0,0],["L",4,0],["L",4,4],["L",0,4],["Z"],["M",0,0],["L",2,0],["L",2,2],["Z"]],"fill":"#fff"}]}"##, true),
+            (r##"{"items":[{"path":[["M",0,0],["C",0,0,0,0,0,0],["Z"]],"stroke":{"width":1,"cap":"round"}}]}"##, true),
+            (r##"{"items":[{"path":[["A",0,0,1,1,0,1000000]],"stroke":{"width":0.1}}]}"##, true),
+            (r##"{"items":[{"polygon":[[1e6,1e6],[-1e6,-1e6],[1e6,-1e6],[1e6,1e6],[-1e6,1e6]],"fill":"#fff","stroke":{"width":100000,"join":"miter","miter_limit":100}}]}"##, true),
+            (r##"{"items":[{"polygon":[[0,0],[1,0],[0,0],[1,0]],"stroke":{"width":0.5,"join":"round"}}]}"##, true),
+        ] {
+            let r = timed("odd geometry", t.to_owned());
+            assert_eq!(r.is_ok(), ok, "{t}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn tilemap_extremes_are_refused_or_bounded() {
+        let t = std::time::Instant::now();
+        let rows: Vec<String> = (0..1024).map(|_| "\"1*1024\"".to_owned()).collect();
+        let layers: Vec<String> = (0..8).map(|i| format!(r#"{{"name":"l{i}","rows":[{}]}}"#, rows.join(","))).collect();
+        let text = format!(r#"{{"tileset":"a.png","tile_px":[8,8],"size":[1024,1024],"layers":[{}]}}"#, layers.join(","));
+        let spec = TilemapSpec::parse(&Json::parse(&text).unwrap()).unwrap();
+        let saved = spec.to_json().to_string();
+        eprintln!("8 full 1024 x 1024 layers: parse + save in {:.0} ms, {} bytes", t.elapsed().as_secs_f64() * 1e3, saved.len());
+        assert!(saved.len() < 200_000, "run-length rows stay small");
+        assert!(parse_row("1*4294967295", 1024).is_err());
+        assert!(parse_row("1*99999999999999999999", 1024).is_err());
+        assert!(parse_row(",,,", 1024).is_err());
+        assert!(parse_cell("\u{e9}").is_err());
+        let anim = |tile: u32, frames: u32| {
+            let t = format!(r#"{{"tileset":"a.png","tile_px":[8,8],"size":[2,2],"animations":[{{"tile":{tile},"frames":{frames}}}],"layers":[{{}}]}}"#);
+            TilemapSpec::parse(&Json::parse(&t).unwrap())
+        };
+        assert!(anim(65_534, 2).is_ok());
+        assert!(anim(65_535, 2).is_err_and(|e| e.contains("past tile 65535")));
+    }
+
+    #[test]
+    fn sheet_frames_are_computed_and_clamped() {
+        let s = SpriteSpec::parse(&json(r#"{"texture":"a.png","sheet":{"frame_px":[16,16]},"frame":9}"#)).unwrap();
+        let (uv, problem) = sprite_uv(&s, [64, 32], 0.0);
+        assert_eq!(uv, [0.75, 0.5, 1.0, 1.0], "frame 9 of 8 shows the last (7: column 3, row 1)");
+        assert!(problem.is_some_and(|p| p.contains("past the sheet's 8 frames")));
+        let (uv, problem) = sprite_uv(&SpriteSpec { frame: 5, ..s.clone() }, [64, 32], 0.0);
+        assert_eq!((uv, problem), ([0.25, 0.5, 0.5, 1.0], None));
+        let a = SpriteSpec::parse(&json(r#"{"texture":"a.png","sheet":{"frame_px":[16,16]},"anim":{"first":4,"count":4,"fps":10}}"#)).unwrap();
+        assert_eq!(sprite_uv(&a, [64, 32], 0.25).0, [0.5, 0.5, 0.75, 1.0], "frame 4 + 2");
+        let (uv, problem) = sprite_uv(&s, [8, 8], 0.0);
+        assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
+        assert!(problem.is_some_and(|p| p.contains("holds no 16x16 frame")));
     }
 
     #[test]

@@ -302,6 +302,71 @@ def build_3d(m):
                 "fill": "#f0e0a0c0"}]})
 
 
+def probes(m, assets, worlds, problems):
+    """The 2D review's live probes: textures appear and reload, hostile input is refused (the
+    engine survives), big tile edits are quick and undo exactly."""
+    import time
+
+    def raw(tool, **a):
+        r = m.request("tools/call", {"name": tool, "arguments": a})
+        return bool(r.get("isError")), r["content"][0].get("text", "")
+
+    def centre(c=(500, 0)):
+        p = m.frame(width=64, height=64, view_2d={"center": list(c), "height_m": 2}, max_subjects=3)
+        w, _, px = read_png(p["image"]["path"])
+        i = (32 * w + 32) * 4
+        return tuple(px[i:i + 3]), p.get("warnings", [])
+
+    m.call("world_set", path="/two_d", visible=False)
+    m.call("world_set", path="/three_d", visible=False)
+    m.call("world_env", tonemap=False, sky={"enabled": False}, background=[0, 0, 0])
+    probe = assets / "probe"
+    probe.mkdir(parents=True, exist_ok=True)
+    tex = probe / "a.png"
+    if tex.exists():
+        tex.unlink()
+    m.call("world_spawn", shape="sprite", name="probe_sprite", position=[500, 0, 0], color=[1, 1, 1],
+           sprite={"texture": "probe/a.png", "size": [2, 2]})
+    px, warn = centre()
+    check(px == (0, 0, 0) and any("probe/a.png" in w for w in warn), f"a missing texture draws nothing and says so {px} {warn}", problems)
+    tex.write_bytes(png_bytes(2, 2, [255, 0, 0, 255] * 4))
+    time.sleep(1.5)
+    px, warn = centre()
+    check(px == (255, 0, 0) and not warn, f"once written it is drawn {px} {warn}", problems)
+    time.sleep(0.05)
+    tex.write_bytes(png_bytes(2, 2, [0, 0, 255, 255] * 4))
+    time.sleep(1.5)
+    px, _ = centre()
+    check(px == (0, 0, 255), f"an edited texture reloads {px}", problems)
+    bad, text = raw("world_spawn", shape="shape2d", shape2d={"items": [{"rect": [0, 0, 1, 1], "fill": "#12345\u00e9a"}]})
+    check(bad and "fill" in text, "a non-ASCII colour is an argument error", problems)
+    m.call("world_spawn", shape="tilemap", name="probe_map", tilemap={"tileset": "probe/a.png", "tile_px": [1, 1], "size": [1024, 1024], "layers": [{"name": "g"}]})
+    bad, _ = raw("tilemap_get", name="probe_map", layer="g", region=[0, 0, 4294967296, 4294967296])
+    check(bad, "tilemap_get refuses an overflowing region", problems)
+    before = m.json("tilemap_get", name="probe_map", layer="g", region=[0, 0, 64, 64])["rows"]
+    cells = [[x, y, 1 + (x + y) % 3] for y in range(64) for x in range(1024)]
+    t = time.time()
+    m.call("tilemap_set", name="probe_map", layer="g", cells=cells)
+    set_s = time.time() - t
+    t = time.time()
+    centre((512, -32))
+    frame_s = time.time() - t
+    check(set_s < 5 and frame_s < 5, f"65,536-cell tilemap_set {set_s:.2f} s, next frame {frame_s:.2f} s", problems)
+    m.text("world_undo")
+    after = m.json("tilemap_get", name="probe_map", layer="g", region=[0, 0, 64, 64])["rows"]
+    check(after == before, "world_undo restores the cells exactly", problems)
+    # A world file with a hostile colour is refused on load; the engine keeps running.
+    m.call("world_spawn", shape="shape2d", name="probe_shape", shape2d={"items": [{"rect": [0, 0, 1, 1], "fill": "#123456"}]})
+    m.json("world_save", name="probe_world", overwrite=True)
+    for f in (worlds / "probe_world").glob("*.json"):
+        t = f.read_text(encoding="utf-8")
+        if "#123456" in t:
+            f.write_text(t.replace("#123456", "#12345\u00e9a"), encoding="utf-8")
+    bad, text = raw("world_load", name="probe_world", force=True)
+    check(bad, f"loading the edited world fails cleanly: {text[:120]}", problems)
+    check("specula" in m.text("engine_info").lower(), "the engine is still running", problems)
+
+
 def check(cond, what, problems):
     print(("  ok    " if cond else "  FAIL  ") + what)
     if not cond:
@@ -403,6 +468,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
             img5, _ = shot("2d_reloaded", view_2d={"center": [0, 0], "height_m": 18}, time_s=0.0)
             same = sum(1 for k in range(0, len(img5[2]), 4 * 97) if img_saved[2][k:k + 3] != img5[2][k:k + 3])
             check(same == 0, f"the reloaded 2D world renders the same ({same} sampled pixels differ)", problems)
+            probes(m, assets, worlds, problems)
             if windowed:
                 # The human's window shows the 2D view for a while (frames in flight, 2D uploads
                 # and edits between presents), then the 3D scene.
