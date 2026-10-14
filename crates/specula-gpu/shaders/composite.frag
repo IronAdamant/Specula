@@ -10,7 +10,7 @@
 // Must match `TonemapPush` in src/post.rs.
 layout(push_constant) uniform Push {
     Frame frame;
-    uint src;       // the HDR scene (alpha: SSAO's ambient fraction)
+    uint src;       // the HDR scene (alpha: SSAO's ambient luminance)
     uint src2;      // the bloom blur (0xffffffff = none)
     vec2 texel;     // 1 / the frame's size
     uint steps;     // GRADE_* bits, the LUT's size in bits 16..24
@@ -25,6 +25,11 @@ layout(push_constant) uniform Push {
     vec4 gain;      // gain per channel, w LUT strength
     vec4 fx;        // vignette, vignette radius, grain, unused
 } pc;
+
+// Specialized per pipeline (src/render.rs COMPOSITE_*): grading and SSAO compiled out when off.
+layout(constant_id = 0) const uint FEATURES = 0u;
+const bool GRADING = (FEATURES & 1u) != 0u;
+const bool SSAO = (FEATURES & 2u) != 0u;
 
 const uint GRADE_BALANCE = 1u;
 const uint GRADE_CONTRAST = 2u;
@@ -86,10 +91,10 @@ vec3 lut(vec3 e, uint slot, float n, bool srgb) {
 }
 
 void main() {
-    uint steps = pc.steps & 0xffffu;
+    uint steps = GRADING ? pc.steps & 0xffffu : 0u;
     vec4 scene = texture(textures[pc.src], v_uv);
     vec3 c = scene.rgb;
-    if (pc.ao != 0xffffffffu) {
+    if (SSAO && pc.ao != 0xffffffffu) {
         // SSAO: alpha is the luminance of this pixel's ambient light (src/ssao.rs); the occlusion
         // takes that part, as a fraction of the pixel's luminance. The occlusion (blurred
         // depth-aware at its own resolution) is upsampled bilinearly: a depth-aware upsample here

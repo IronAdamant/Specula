@@ -84,6 +84,28 @@ fn check_size(path: &AssetPath, width: u32, height: u32) -> Result<(), WorldErro
 /// What identifies a version of a file: modification time and length (`None`: unreadable).
 type Stamp = Option<(SystemTime, u64)>;
 
+/// A version of a file: its stamp, and a hash of its contents (an edit that keeps the length
+/// and the modification time still changes the hash). `None` hash: unreadable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Version {
+    stamp: Stamp,
+    hash: Option<u64>,
+}
+
+fn version(root: &Path, path: &AssetPath) -> Version {
+    let file = root.join(path.as_str());
+    let hash = std::fs::metadata(&file)
+        .ok()
+        .filter(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+        .and_then(|_| std::fs::read(&file).ok())
+        .map(|bytes| {
+            let mut h = specula_core::hash::StableHasher::new();
+            h.write_bytes(&bytes);
+            h.finish()
+        });
+    Version { stamp: stamp(root, path), hash }
+}
+
 fn stamp(root: &Path, path: &AssetPath) -> Stamp {
     let meta = std::fs::metadata(root.join(path.as_str())).ok()?;
     Some((meta.modified().ok()?, meta.len()))
@@ -100,18 +122,20 @@ enum State {
 /// The LUT the frames use: which file, which version of it, and the result.
 struct Current {
     path: AssetPath,
-    stamp: Stamp,
+    version: Version,
     state: State,
 }
 
 /// The engine's LUT (one at a time: the world has one grading). Keyed on the path and the file's
-/// version (modification time + length), so a LUT edited in place is picked up within a second,
-/// and a LUT that failed is retried when its file changes or a `world_env` names it again.
+/// version: every capture checks the file (modification time, length and a content hash), the
+/// window's frames check its time and length once a second, so a LUT edited in place shows in the
+/// next capture; a LUT that failed is retried when its file changes or a `world_env` names it
+/// again.
 pub struct Luts {
     root: PathBuf,
     current: Option<Current>,
     /// Decoded by `check` (a `world_env` naming it), uploaded by the next frame: one decode.
-    pending: Option<(AssetPath, Stamp, Lut)>,
+    pending: Option<(AssetPath, Version, Lut)>,
     last_poll: Instant,
 }
 
@@ -126,7 +150,7 @@ impl Luts {
         if path.is_none() {
             return Ok(());
         }
-        let version = stamp(&self.root, path);
+        let version = version(&self.root, path);
         let lut = load(&self.root, path)?;
         self.pending = Some((*path, version, lut));
         Ok(())
@@ -135,8 +159,9 @@ impl Luts {
     /// Point `frame`'s grading at the texture of the world's LUT, loading it first if the path or
     /// the file changed (and freeing the old texture). A LUT that can't be loaded (a world file or
     /// a game naming a missing file, say) leaves the frame graded without it; [`Luts::warning`]
-    /// says why.
-    pub fn apply(&mut self, gpu: &mut Gpu, env: &Env, frame: &mut FrameDesc) {
+    /// says why. `capture`: a sight_frame, which checks the file's full version every time (one
+    /// read of a small file); window frames check its time and length once a second.
+    pub fn apply(&mut self, gpu: &mut Gpu, env: &Env, frame: &mut FrameDesc, capture: bool) {
         let want = env.grading_lut;
         if want.is_none() {
             self.drop_current(gpu);
@@ -145,9 +170,14 @@ impl Luts {
             self.install(gpu, path, version, Ok(lut));
         } else if self.current.as_ref().is_none_or(|c| c.path != want) {
             self.reload(gpu, want);
+        } else if capture {
+            let changed = self.current.as_ref().is_some_and(|c| c.version != version(&self.root, &want));
+            if changed {
+                self.reload(gpu, want);
+            }
         } else if self.last_poll.elapsed() >= POLL {
             self.last_poll = Instant::now();
-            let changed = self.current.as_ref().is_some_and(|c| c.stamp != stamp(&self.root, &want));
+            let changed = self.current.as_ref().is_some_and(|c| c.version.stamp != stamp(&self.root, &want));
             if changed {
                 self.reload(gpu, want);
             }
@@ -167,12 +197,12 @@ impl Luts {
     }
 
     fn reload(&mut self, gpu: &mut Gpu, path: AssetPath) {
-        let version = stamp(&self.root, &path);
+        let version = version(&self.root, &path);
         let lut = load(&self.root, &path);
         self.install(gpu, path, version, lut);
     }
 
-    fn install(&mut self, gpu: &mut Gpu, path: AssetPath, version: Stamp, lut: Result<Lut, WorldError>) {
+    fn install(&mut self, gpu: &mut Gpu, path: AssetPath, version: Version, lut: Result<Lut, WorldError>) {
         self.drop_current(gpu);
         let uploaded = lut.and_then(|lut| {
             gpu.upload_texture(lut.width, lut.height, TextureFormat::Rgba8Unorm, &lut.rgba)
@@ -185,7 +215,7 @@ impl Luts {
                 State::Failed(e)
             }
         };
-        self.current = Some(Current { path, stamp: version, state });
+        self.current = Some(Current { path, version, state });
         self.last_poll = Instant::now();
     }
 
@@ -258,8 +288,23 @@ mod tests {
         std::fs::write(root.join("luts/id.png"), strip(4)).unwrap();
         let first = stamp(&root, &p);
         assert!(first.is_some());
+        let v1 = version(&root, &p);
         std::fs::write(root.join("luts/id.png"), strip(8)).unwrap();
         assert_ne!(stamp(&root, &p), first, "a different length is a different version");
+        // Same length, the modification time put back: only the content hash tells.
+        let mut bytes = strip(4);
+        let v_len = bytes.len();
+        std::fs::write(root.join("luts/id.png"), &bytes).unwrap();
+        let file = std::fs::File::options().write(true).open(root.join("luts/id.png")).unwrap();
+        let mtime = std::fs::metadata(root.join("luts/id.png")).unwrap().modified().unwrap();
+        let before = version(&root, &p);
+        assert_eq!(before.hash, v1.hash);
+        bytes[v_len - 13] ^= 0xff; // inside the IEND/IDAT tail: same length
+        std::fs::write(root.join("luts/id.png"), &bytes).unwrap();
+        file.set_modified(mtime).unwrap();
+        let after = version(&root, &p);
+        assert_eq!(after.stamp, before.stamp, "same length and time");
+        assert_ne!(after.hash, before.hash, "the content hash tells them apart");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1016,7 +1016,7 @@ impl Engine {
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
             let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, self.time_s());
-            self.luts.apply(&mut self.gpu, self.world.env(), &mut frame);
+            self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
             let present = profile::zone("present");
@@ -1172,7 +1172,7 @@ impl Engine {
                     // was checked above; one that doesn't may still carry a broken one).
                     let named = patch.grading.and_then(|g| g.lut).is_some();
                     if let Some(w) = self.luts.warning(self.world.env()).filter(|_| !named) {
-                        env.set("warnings", Json::arr([w]));
+                        env.set("problems", Json::arr([w]));
                     }
                     ToolOutput::text(env.to_pretty())
                 }
@@ -1536,8 +1536,9 @@ impl Engine {
         }
         let time_s = spec.time_s.unwrap_or_else(|| self.time_s());
         let mut frame = sight::frame(&self.world, &view_proj, &draws, &lights, time_s);
-        self.luts.apply(&mut self.gpu, self.world.env(), &mut frame);
-        warnings.extend(self.luts.warning(self.world.env()));
+        self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
+        // Structured problems (objects), next to the plain-text warnings.
+        let problems: Vec<Json> = self.luts.warning(self.world.env()).into_iter().collect();
 
         let rendered = {
             let _z = profile::zone("sight.render");
@@ -1593,6 +1594,7 @@ impl Engine {
             ("subjects_on_screen", Json::from(on_screen)),
             ("subjects", Json::arr(subjects.iter().map(|s| s.json.clone()))),
             ("warnings", Json::Arr(warnings.clone())),
+            ("problems", Json::Arr(problems)),
         ]);
         if let Some(path) = &packet_path {
             if let Err(e) = std::fs::write(path, packet.to_pretty()) {
@@ -1681,7 +1683,7 @@ impl Engine {
             ("transient_entities", Json::from(self.world.transient_len())),
             ("models", self.models_json()),
             // Effects that can't apply (a grading LUT that failed to load), structured.
-            ("warnings", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
+            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().collect())),
         ]);
         ToolOutput::text(out.to_pretty())
     }

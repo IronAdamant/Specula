@@ -79,6 +79,15 @@ pub const FEAT_BLENDED: u32 = 16;
 /// Screen-space ambient occlusion: the HDR scene's alpha carries the luminance of each pixel's
 /// ambient light (the tonemap pass scales that part by the occlusion); see `ssao.rs`.
 pub const FEAT_SSAO: u32 = 32;
+/// Bits of the tonemap pass's specialization constant (`shaders/composite.frag`): grading and
+/// SSAO are compiled out when off, so the pass then runs the code it ran before they existed.
+pub const COMPOSITE_GRADING: u32 = 1;
+pub const COMPOSITE_SSAO: u32 = 2;
+
+fn composite_features(mode: PostMode) -> u32 {
+    (if mode.grading { COMPOSITE_GRADING } else { 0 }) | if mode.ssao { COMPOSITE_SSAO } else { 0 }
+}
+
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 
@@ -616,7 +625,7 @@ pub enum PipelineKey {
     /// Bloom upsample: the blur below, tent-filtered, plus this level.
     BloomUp,
     /// HDR (+ bloom) → display values in `format`.
-    Composite { format: VkFormat },
+    Composite { format: VkFormat, features: u32 },
     /// FXAA into `format`.
     Fxaa { format: VkFormat },
     /// The sky behind the scene in `format` (+ D32 depth, EQUAL far plane), with or without fog.
@@ -706,7 +715,9 @@ impl PipelineKey {
             },
             PipelineKey::BloomDown => fullscreen(Shader::BloomDownFrag, HDR_FORMAT, Blend::Off),
             PipelineKey::BloomUp => fullscreen(Shader::BloomUpFrag, HDR_FORMAT, Blend::Off),
-            PipelineKey::Composite { format } => fullscreen(Shader::CompositeFrag, format, Blend::Off),
+            PipelineKey::Composite { format, features } => {
+                PipelineDesc { spec: features, ..fullscreen(Shader::CompositeFrag, format, Blend::Off) }
+            }
             PipelineKey::Fxaa { format } => fullscreen(Shader::FxaaFrag, format, Blend::Off),
             PipelineKey::Sky { format, fog } => PipelineDesc {
                 vert: Shader::SkyVert,
@@ -907,7 +918,9 @@ impl Pipelines {
     /// Every pipeline that renders into `color_format` (a target or window format).
     pub fn prebuild(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
         self.prebuild_scene(dev, color_format)?;
-        self.get(dev, PipelineKey::Composite { format: color_format })?;
+        for features in [0, COMPOSITE_GRADING, COMPOSITE_SSAO, COMPOSITE_GRADING | COMPOSITE_SSAO] {
+            self.get(dev, PipelineKey::Composite { format: color_format, features })?;
+        }
         self.get(dev, PipelineKey::Fxaa { format: color_format })?;
         for depth in [false, true] {
             self.get(dev, PipelineKey::Overlay { format: color_format, depth })?;
@@ -920,7 +933,7 @@ impl Pipelines {
             for features in FEATURE_SETS {
                 self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
                 if color_format == HDR_FORMAT {
-                    // SSAO always renders the scene in HDR (its ambient fraction rides in alpha).
+                    // SSAO always renders the scene in HDR (its ambient luminance rides in alpha).
                     self.get(dev, PipelineKey::Mesh { format: color_format, blended, features: features | FEAT_SSAO })?;
                 }
             }
@@ -971,7 +984,7 @@ impl Pipelines {
             sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
-            composite: get(mode.hdr(), PipelineKey::Composite { format: composite_format })?,
+            composite: get(mode.hdr(), PipelineKey::Composite { format: composite_format, features: composite_features(mode) })?,
             fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
             ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,

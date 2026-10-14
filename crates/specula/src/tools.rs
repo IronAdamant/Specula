@@ -1633,8 +1633,9 @@ fn definitions() -> Vec<ToolDef> {
                           frames the whole world from a three-quarter view. Large worlds return the biggest on-screen \
                           subjects first (max_subjects); the full list is saved at packet_path. If models in view are \
                           still building, it waits for them (up to 10 s, other calls go on meanwhile) and then \
-                          renders the world as it is at that moment; packet 'models' and 'warnings' say what wasn't \
-                          drawn."
+                          renders the world as it is at that moment; packet 'models' and 'warnings' (text) say what \
+                          wasn't drawn; 'problems' lists effects that can't apply as {error, message, ...} (a grading \
+                          LUT that failed to load). A grading LUT edited on disk is reloaded before each capture."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1697,7 +1698,8 @@ fn definitions() -> Vec<ToolDef> {
                           disc_intensity, glow} gradient with a sun/moon disc; fog {enabled, color, density, falloff, \
                           height, start_distance, sun_scatter} height fog; grading {enabled, temperature, tint, contrast, \
                           saturation, vibrance, lift, gamma, gain ([r,g,b] shadows/midtones/highlights), lut (PNG \
-                          strip N*N x N under the assets root, \"\" for none), lut_strength, vignette, \
+                          strip N*N x N under the assets root, \"\" for none; checked now, reloaded when the file \
+                          changes; a LUT that stops loading is listed in 'problems'), lut_strength, vignette, \
                           vignette_radius, grain} colour grading (neutral values change nothing); ssao {enabled, \
                           radius m, intensity, samples 4..16, resolution 0.25..1} ambient occlusion in creases \
                           (ambient light only). Each costs GPU time: check perf_frame."
@@ -1743,7 +1745,8 @@ fn definitions() -> Vec<ToolDef> {
             description: "Performance of the last frames (foundation F3): GPU ms per pass, CPU record/submit, draw \
                           calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
                           heap budgets, frame pacing (mean/p95/max), simulation tick cost, CPU frame time and heap, \
-                          and `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}. \
+                          `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}, and \
+                          `problems` listing effects that can't apply as {error, message, ...}. \
                           Budgets come from perf.toml (per adapter kind). The window and the last capture are \
                           reported separately."
                 .into(),
