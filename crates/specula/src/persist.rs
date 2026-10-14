@@ -47,7 +47,7 @@ const RECORD_KEYS: [&str; 30] = [
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
 ];
-const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "clock_s", "env", "subtrees", "entities"];
+const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "time_s", "env", "subtrees", "entities"];
 const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
 
 /// What went wrong reading or writing a world, with where: the file, the entity path and the
@@ -190,8 +190,8 @@ pub struct Plan {
     dir: PathBuf,
     next_id: u64,
     entity_count: usize,
-    /// The engine clock at the save: animation starts are on it (see `world::AnimSpec::start`).
-    clock_s: f64,
+    /// World time at the save (see `World::world_time`): a loaded world resumes from it.
+    time_s: f64,
     env: Json,
     /// Top-level entities without children (they live in `world.json`), and their `(id, stamp)`.
     loose: Loose,
@@ -246,7 +246,7 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
         dir: dir.to_owned(),
         next_id: world.next_id(),
         entity_count: world.persistent_len(),
-        clock_s: world.clock_s(),
+        time_s: world.world_time(),
         env: world.env().to_json_exact(),
         loose,
         loose_key,
@@ -309,7 +309,7 @@ impl Plan {
             ("generation", Json::from(generation)),
             ("next_id", Json::from(self.next_id)),
             ("entity_count", Json::from(self.entity_count)),
-            ("clock_s", Json::from(self.clock_s)),
+            ("time_s", Json::from(self.time_s)),
             ("env", self.env.clone()),
             ("subtrees", subtrees),
         ];
@@ -827,13 +827,13 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
         return Err(e);
     }
 
-    // Older files have no clock: their animations started on a clock at 0.
-    let clock_s = match index.get("clock_s") {
+    // World time at the save (older files: 0); the engine's clock joins it (`World::adopt_clock`).
+    let time_s = match index.get("time_s") {
         None => 0.0,
-        Some(v) => v.as_f64().filter(|c| c.is_finite() && *c >= 0.0).ok_or_else(|| bad("clock_s", "'clock_s' must be a number of seconds, at least 0"))?,
+        Some(v) => v.as_f64().filter(|c| c.is_finite() && c.abs() <= 1.0e9).ok_or_else(|| bad("time_s", "'time_s' must be a number of seconds"))?,
     };
     let mut world = World::default();
-    world.set_clock_s(clock_s);
+    world.set_clock_s(time_s);
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
     let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new(), loose: None };
@@ -1076,37 +1076,66 @@ mod tests {
         assert!(before["world.json"].contains(r#""entity_count": 9,"#), "{}", before["world.json"]);
     }
 
-    /// An animation set at clock 6 s, saved, then loaded by an engine whose clock restarted at 0:
-    /// it continues from the phase it was saved at instead of freezing for 6 s. Saving changes
-    /// nothing about the state (the hash doesn't depend on when a save happened).
+    /// World time across saves and restarts: an animation set at 6 s and saved at 6.5 s, loaded
+    /// by an engine whose clock restarted at 0.25, resumes half a second in (world time continues
+    /// from 6.5); starts are never rewritten, so the loaded world hashes exactly as saved (the
+    /// M1 guarantee); and a later save after edits elsewhere (that subtree's file kept) loads with
+    /// every creature still in phase.
     #[test]
-    fn animations_keep_their_phase_across_a_restart() {
+    fn world_time_resumes_and_hashes_survive_save_and_load() {
         use crate::world::{AnimSpec, ModelSpec};
         let mut w = sample();
-        let id = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/shambler.json")), "erin").unwrap().id;
+        let mut herd = SpawnSpec::new(Shape::Group);
+        herd.name = Some("herd".into());
+        w.spawn(herd, "erin").unwrap();
+        let mut walker = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        walker.parent = Some(EntityKey::Path("/herd".into()));
+        let walker = w.spawn(walker, "erin").unwrap().id;
+        let loner = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/shambler.json")), "erin").unwrap().id;
         w.set_clock_s(6.0);
-        w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "erin").unwrap();
+        for id in [walker, loner] {
+            w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "erin").unwrap();
+        }
         w.set_clock_s(6.5); // saved half a second into the walk
         let hash = w.state_hash();
-        let saved = files(&w);
+        let (dir, saved) = (temp_dir("world-time"), None);
+        let (saved, _) = save(&w, &dir, saved.as_ref()).unwrap();
         assert_eq!(w.state_hash(), hash, "saving changes nothing");
-        assert!(saved["world.json"].contains(r#""clock_s": 6.5,"#), "{}", saved["world.json"]);
-        assert_eq!(reload(&saved).unwrap().state_hash(), hash, "loaded on its own clock, it is the same state");
+        assert!(std::fs::read_to_string(dir.join("world.json")).unwrap().contains(r#""time_s": 6.5,"#));
         // A new run: the engine's clock is at 0.25 when it loads the world.
-        let mut back = reload(&saved).unwrap();
-        back.rebase_clock(0.25);
-        let a = back.get(id).unwrap().anim.clone().unwrap();
-        assert_eq!(a.start, Some(-0.25), "6 s on the old clock is -0.25 s on the new one");
-        assert!((a.clip_time(0.25) - 0.5).abs() < 1e-9, "at load it is half a second in, as when saved");
-        assert!(a.clip_time(1.25) > a.clip_time(0.25), "and it keeps moving");
-        // Saved again on the new clock and loaded once more: the phase still holds.
-        back.set_clock_s(1.25);
-        let mut again = reload(&files(&back)).unwrap();
-        again.rebase_clock(0.0);
-        assert!((again.get(id).unwrap().anim.as_ref().unwrap().clip_time(0.0) - 1.5).abs() < 1e-9);
-        // Older files without a clock: starts are on a clock at 0.
-        let old = saved.iter().map(|(k, v)| (k.clone(), v.replace("\"clock_s\": 6.5,", ""))).collect();
-        assert_eq!(reload(&old).unwrap().clock_s(), 0.0);
+        let (mut back, back_saved) = load(&dir).unwrap();
+        back.adopt_clock(0.25);
+        assert_eq!(back.state_hash(), hash, "a loaded world hashes exactly as saved");
+        assert_eq!(back.world_time(), 6.5, "world time resumes where it was saved");
+        let a = back.get(walker).unwrap().anim.clone().unwrap();
+        assert_eq!(a.start, Some(6.0), "never rewritten");
+        assert!((a.clip_time(back.world_time()) - 0.5).abs() < 1e-9, "half a second in, as when saved");
+        // Six seconds later an edit elsewhere (the /herd subtree file is kept), saved, loaded by a
+        // third run starting at 0.1: both creatures are still in phase with each other and time.
+        back.set_clock_s(6.25);
+        let mut marker = SpawnSpec::new(Shape::Cube);
+        marker.name = Some("marker".into());
+        back.spawn(marker, "erin").unwrap();
+        let t_save = back.world_time();
+        assert!((t_save - 12.5).abs() < 1e-9);
+        let hash2 = back.state_hash();
+        save(&back, &dir, Some(&back_saved)).unwrap();
+        let _ = saved;
+        let (mut third, _) = load(&dir).unwrap();
+        third.adopt_clock(0.1);
+        assert_eq!(third.state_hash(), hash2);
+        let now = third.world_time();
+        assert!((now - t_save).abs() < 1e-9);
+        for id in [walker, loner] {
+            let a = third.get(id).unwrap().anim.clone().unwrap();
+            assert!((a.clip_time(now) - 6.5).abs() < 1e-9, "in phase after the kept-file save: {}", a.clip_time(now));
+        }
+        // Older files without a time: world time 0.
+        let mut old = files(&w);
+        let index = old.get_mut("world.json").unwrap();
+        *index = index.replace("\"time_s\": 6.5,", "");
+        assert_eq!(reload(&old).unwrap().world_time(), 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

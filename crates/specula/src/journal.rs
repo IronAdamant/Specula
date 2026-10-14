@@ -1219,6 +1219,37 @@ mod tests {
         }
     }
 
+    /// A world with an animation, saved and loaded on another engine clock: the journal's
+    /// replay from the loaded base reproduces a crossfade set after the load, and undo restores
+    /// the animation exactly (world time, not the clock, is what starts are in).
+    #[test]
+    fn replay_and_undo_across_a_load_keep_animations() {
+        use crate::world::{AnimSpec, ModelSpec};
+        let mut w = World::default();
+        let id = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/shambler.json")), "ann").unwrap().id;
+        w.set_clock_s(6.0);
+        w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "ann").unwrap();
+        w.set_clock_s(6.5);
+        let files = crate::persist::render(&w);
+        let read = |f: &str| files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError { code: "not_found", message: f.into(), file: None, entity: None, field: None });
+        let (mut loaded, _) = crate::persist::load_with(read).unwrap();
+        loaded.adopt_clock(0.5);
+        assert_eq!(loaded.state_hash(), w.state_hash());
+        loaded.set_recording(Recording::Full);
+        let mut j = Journal::default();
+        j.rebase(&loaded, "world:t");
+        let before = loaded.state_hash();
+        let mut fade = AnimSpec::new("attack");
+        fade.crossfade = 0.3;
+        let path = loaded.path_of(id);
+        set(&mut loaded, &mut j, "ann", &path, UpdateSpec { anim: Some(Some(fade)), ..Default::default() });
+        let a = loaded.get(id).unwrap().anim.clone().unwrap();
+        assert_eq!((a.start, a.from.as_ref().and_then(|f| f.start)), (Some(6.5), Some(6.0)), "on world time");
+        assert_eq!(j.replay().unwrap().state_hash(), loaded.state_hash(), "replay from the loaded base");
+        undo(&mut loaded, &mut j, "ann", last(1)).unwrap();
+        assert_eq!(loaded.state_hash(), before, "undo restores the animation exactly");
+    }
+
     #[test]
     fn replay_reproduces_every_kind_of_change() {
         let (mut w, mut j) = live();

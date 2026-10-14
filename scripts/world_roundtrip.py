@@ -159,6 +159,9 @@ def build(m):
          "scale": [0.35, 0.9, 0.35], "color": "#b03a2e", "tags": ["unit"],
          "collider": {"shape": "capsule", "radius": 0.2, "height": 0.9, "layer": "units"},
          "body": {"kind": "kinematic", "mass": 70}},
+        # An animated model (anim starts are world time: they must survive save, restart, load).
+        {"op": "spawn", "shape": "model", "path": "/walker", "recipe": "games/sepulcra/assets/recipes/shambler.json",
+         "position": [-2.2, 0, -1.0], "anim": {"clip": "walk", "time_offset": 0.3}},
         {"op": "set", "path": "/slab/stones/ward_03", "parent": "/slab", "rename": "ward_lonely", "add_tags": ["moved"]},
     ]
     result = m.call("world_batch", ops=ops)
@@ -178,6 +181,10 @@ def build(m):
     assert stale["error"] == "stale_version" and stale["current"]["color"] == "#5b8fd6", stale
     m.call("world_env", sun_direction=[0.3, 0.9, 0.4], ambient_intensity=0.3, exposure=1.1, tonemap=True,
            background="#20242c")
+    # A crossfade started now (on world time): its start and fade source are saved with it.
+    time.sleep(1.0)
+    fade = m.call("world_set", path="/walker", anim={"clip": "attack", "crossfade": 0.5})
+    assert fade["anim"]["start"] > 0 and fade["anim"]["from"]["clip"] == "walk", fade["anim"]
 
     q = m.call("world_query", tags=["ward"], fields=["path", "version", "props"])
     assert q["total"] == 4 and [i["path"] for i in q["items"]] == [
@@ -207,7 +214,7 @@ def main():
         m = Mcp(url, "roundtrip")
         build(m)
         saved = m.call("world_save")
-        assert saved["saved"] == "e2e" and saved["entities"] == 12, saved
+        assert saved["saved"] == "e2e" and saved["entities"] == 13, saved
         # A change after the save, then the periodic autosave (worker thread, every 10 s) picks it up.
         m.call("world_set", path="/slab/stones/ward_00", props={"hp": 99})
         for _ in range(40):
@@ -257,7 +264,7 @@ def main():
             problems.append("deleting the lamp did not change the frame")
         # The copy is now the current world: saving over e2e by name must be refused.
         clash = m.fails("world_save", name="e2e")
-        if (clash["error"], clash["entities"]) != ("world_exists", 12):
+        if (clash["error"], clash["entities"]) != ("world_exists", 13):
             problems.append(f"world_save over another world: {clash}")
         refused = m.fails("world_load", name="e2e")
         if refused["error"] != "unsaved_changes":

@@ -506,8 +506,8 @@ impl Engine {
     /// engine's library, and the journal starts over from it. Returns a message per model entity
     /// whose recipe failed (it loads anyway and draws nothing until fixed).
     fn replace_world(&mut self, mut world: World, name: &str) -> Vec<String> {
-        // Its animations were on the clock it was saved at: they continue on ours.
-        world.rebase_clock(self.clock.seconds());
+        // World time resumes where it was saved; the engine's clock joins it.
+        world.adopt_clock(self.clock.seconds());
         world.set_recording(Recording::Full);
         let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
         let problems =
@@ -712,15 +712,17 @@ impl Engine {
         self.leftovers = report.leftovers.clone();
     }
 
-    /// Render time when a capture gives none: the engine clock (whole ticks), so animation and
-    /// the lava lamp follow time_control and a capture's time is reproducible.
+    /// Render time when a capture gives none: world time (the engine clock in whole ticks, plus
+    /// a loaded world's offset), so animation and the lava lamp follow time_control, resume
+    /// after a load, and a capture's time is reproducible.
     fn time_s(&self) -> f64 {
-        self.clock.seconds()
+        self.world.world_time()
     }
 
-    /// The window's render time: the clock plus the elapsed part of the next tick (smooth motion).
+    /// The window's render time: world time plus the elapsed part of the next tick (smooth
+    /// motion).
     fn window_time_s(&self) -> f64 {
-        self.clock.seconds() + f64::from(self.clock.alpha()) / f64::from(self.clock.hz())
+        self.world.world_time() + f64::from(self.clock.alpha()) / f64::from(self.clock.hz())
     }
 
     /// Builds meshes for new or changed lathe profiles and models and frees unused ones — only

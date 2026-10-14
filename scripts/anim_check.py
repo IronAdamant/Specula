@@ -290,11 +290,7 @@ def main():
         mcp.call("world_save", name="anim_check")
         mcp.call("world_load", name="anim_check")
         after = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
-        shift = after["start"] - anim["start"]
-        same = {k: v for k, v in after.items() if k not in ("start", "from")} == {k: v for k, v in anim.items() if k not in ("start", "from")}
-        from_shift = after["from"]["start"] - anim["from"]["start"]
-        check(same and 0 <= shift < 30 and abs(from_shift - shift) < 1e-9,
-              f"anim survives save/load, moved onto the clock by the time between save and load ({shift:.3f} s): {after}")
+        check(after == anim, f"anim survives save/load unchanged (starts are world time): {after}")
         # A clip the creature lacks is a warning in the reply and in captures (it draws its bind pose).
         reply = mcp.json("world_set", path="/scene/fallen", anim="moonwalk")
         warn = mcp.frame(time_s=1.0, **cam)["warnings"]

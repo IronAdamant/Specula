@@ -504,15 +504,14 @@ pub const ANIM_SPEED: RangeInclusive<f32> = 0.0..=8.0;
 pub const ANIM_OFFSET: RangeInclusive<f32> = -1.0e6..=1.0e6;
 /// Crossfade durations (seconds).
 pub const ANIM_CROSSFADE: RangeInclusive<f32> = 0.0..=60.0;
-/// Clip start times (engine clock seconds; negative after a world saved late in one run is
-/// loaded early in another, see [`World::rebase_clock`]).
+/// Clip start times (world time seconds, see [`World::world_time`]).
 pub const ANIM_START: RangeInclusive<f64> = -1.0e9..=1.0e9;
 
 /// The animation a model entity plays: one clip of its model's anim set (a recipe's
 /// `anims/<recipe name>.json`, or a glTF asset's own animations).
 ///
-/// The pose is a pure function of the render time `T` (engine clock seconds; a capture's
-/// `time_s`): clip time = `(T − start) × speed + time_offset`, never below 0, wrapped or held by
+/// The pose is a pure function of the render time `T` (world time, [`World::world_time`]; a
+/// capture's `time_s`): clip time = `(T − start) × speed + time_offset`, never below 0, wrapped or held by
 /// the clip's loop mode (or by `looping` when set). While `T` is less than `crossfade` seconds
 /// past `start`, the pose blends (smoothstep) from `from`, the animation it replaced, still
 /// playing on its own terms. So any frame can be rendered at any time with the same result, and
@@ -527,16 +526,12 @@ pub struct AnimSpec {
     pub looping: Option<bool>,
     /// Seconds of clip time added (phase: two entities on one clip out of step).
     pub time_offset: f32,
-    /// Engine clock seconds the clip starts. `None` in a request: 0 at spawn (phase-locked to the
-    /// clock, so a filmstrip at `time_s` 0, 0.25, … shows the clip from its start) and the
-    /// current clock time on update (it starts at once). Always set on an entity.
-    ///
-    /// The engine clock starts at 0 in every run, so `start` belongs to the clock the world
-    /// lives on: world files record that clock (`clock_s`) when saved, and loading a world moves
-    /// every `start` by the time between that clock and the loading engine's
-    /// ([`World::rebase_clock`]), so each animation continues from the phase it was saved at.
-    /// Saving changes nothing (the state hash doesn't depend on when a save happened); a load is
-    /// a new state on the new clock, journaled as such.
+    /// World time ([`World::world_time`]) the clip starts at. `None` in a request: 0 at spawn
+    /// (phase-locked to world time, so a filmstrip at `time_s` 0, 0.25, … shows the clip from its
+    /// start) and the current world time on update (it starts at once). Always set on an entity;
+    /// never rewritten: world time itself continues across saves and loads, so a loaded world
+    /// hashes and renders (at a given `time_s`) exactly as it did when saved, and every
+    /// animation resumes in phase.
     pub start: Option<f64>,
     /// Seconds to blend from the previous animation (0 = cut).
     pub crossfade: f32,
@@ -1923,9 +1918,12 @@ pub struct World {
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
-    /// The engine clock (seconds) as of its last tick: when an animation set without a `start`
-    /// starts. Not world state (never saved or hashed).
+    /// The engine clock (seconds) as of its last tick. World time = this + `time_offset`.
     clock_s: f64,
+    /// World time minus the engine clock: 0 for a world made in this run; for a loaded world,
+    /// the world time it was saved at minus the engine clock when loaded, so world time resumes
+    /// where it stopped. Not state (never hashed): saved as the world time it gives.
+    time_offset: f64,
     /// See [`World::model_drops`].
     model_drops: u64,
     /// Builds model entities' models (the engine's model library).
@@ -1996,43 +1994,28 @@ impl World {
     }
 
     /// See the field: changes whenever GPU meshes may need building or freeing.
-    /// The engine clock (seconds) new animations start at (see [`AnimSpec::start`]).
-    pub fn clock_s(&self) -> f64 {
-        self.clock_s
+    /// World time (seconds): the time animations live in ([`AnimSpec::start`]), what frames
+    /// render at and what new animations start at. It is the engine clock for a world made in
+    /// this run, and continues from where it was saved for a loaded one ([`World::adopt_clock`]).
+    pub fn world_time(&self) -> f64 {
+        self.clock_s + self.time_offset
     }
 
-    /// The engine sets this as its clock ticks (and a test as it likes).
+    /// The engine sets this as its clock ticks (and a test as it likes); world time follows.
     pub fn set_clock_s(&mut self, seconds: f64) {
         if seconds.is_finite() {
             self.clock_s = seconds.clamp(*ANIM_START.start(), *ANIM_START.end());
         }
     }
 
-    /// Moves the world onto another clock reading `to`: every animation's `start` (and its fade
-    /// source's) shifts by `to − clock_s`, so each keeps its phase, and the clock becomes `to`.
-    /// The engine calls it on a loaded world (whose clock is the one it was saved at).
-    pub fn rebase_clock(&mut self, to: f64) {
-        if !to.is_finite() {
-            return;
+    /// Joins the engine clock reading `engine_s` without moving world time: the engine calls it
+    /// on a loaded world, whose clock is the world time it was saved at.
+    pub fn adopt_clock(&mut self, engine_s: f64) {
+        if engine_s.is_finite() {
+            let now = self.world_time();
+            self.set_clock_s(engine_s);
+            self.time_offset = now - self.clock_s;
         }
-        let delta = to - self.clock_s;
-        if delta != 0.0 {
-            let shift = |s: &mut Option<f64>| {
-                if let Some(v) = s {
-                    *v = (*v + delta).clamp(*ANIM_START.start(), *ANIM_START.end());
-                }
-            };
-            for e in self.entities.values_mut() {
-                if let Some(a) = &mut e.anim {
-                    shift(&mut a.start);
-                    if let Some(f) = &mut a.from {
-                        shift(&mut f.start);
-                    }
-                    e.hash.0.set(None);
-                }
-            }
-        }
-        self.set_clock_s(to);
     }
 
     pub fn mesh_epoch(&self) -> u64 {
@@ -2494,7 +2477,7 @@ impl World {
         }
         // A new animation starts now (unless told when) and fades from the one it replaces.
         if let Some(Some(a)) = &mut change.anim {
-            a.start.get_or_insert(self.clock_s);
+            a.start.get_or_insert(self.world_time());
             a.from = match (&e.anim, a.crossfade > 0.0) {
                 (Some(old), true) => Some(Box::new(AnimSpec { from: None, ..old.clone() })),
                 _ => None,
