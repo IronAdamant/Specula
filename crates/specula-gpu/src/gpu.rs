@@ -382,14 +382,11 @@ impl GpuInner {
             self.device.destroy_buffer(&buffer);
             return Err(e);
         }
-        // The first mesh with skin or UVs builds those pipeline variants (loading time).
-        let current = self.pipelines.variants;
-        let wanted = Variants { skinned: current.skinned || skin.is_some(), textured: current.textured || surface.is_some() };
-        if wanted != current {
-            if let Err(e) = self.build_variants(wanted) {
-                self.device.destroy_buffer(&buffer);
-                return Err(e);
-            }
+        // The first mesh with skin or UVs starts building those pipeline variants on a worker;
+        // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
+        if skin.is_some() || surface.is_some() {
+            let formats = self.formats();
+            self.pipelines.request_variants(&self.device, Variants { skinned: skin.is_some(), textured: surface.is_some() }, &formats);
         }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
@@ -408,25 +405,37 @@ impl GpuInner {
         Ok(MeshId(id))
     }
 
+    /// Builds the variants now, on this thread (loading time; `variants` changes only once all
+    /// of them exist).
     pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
-        let current = self.pipelines.variants;
-        let wanted = Variants { skinned: current.skinned || skinned, textured: current.textured || textured };
-        if wanted == current {
-            return Ok(());
-        }
-        self.build_variants(wanted)
+        let formats = self.formats();
+        self.pipelines.build_variants(&self.device, Variants { skinned, textured }, &formats)
     }
 
-    /// Builds the pipelines of the stream variants `v` for every format in use (offscreen, HDR,
-    /// the window's).
-    fn build_variants(&mut self, v: Variants) -> Result<(), GpuError> {
-        self.pipelines.variants = v;
-        self.pipelines.prebuild(&self.device, TARGET_FORMAT)?;
-        self.pipelines.prebuild_common(&self.device)?;
-        if let Some(w) = &self.window {
-            self.pipelines.prebuild(&self.device, w.format())?;
+    /// The pipeline variants ready to draw with (a finished background build is taken first).
+    pub fn pipeline_variants(&mut self) -> Variants {
+        self.poll_pipelines();
+        self.pipelines.variants
+    }
+
+    /// Takes finished background pipelines; starts a queued request.
+    fn poll_pipelines(&mut self) {
+        self.pipelines.poll_background(false);
+        if let Some((want, _)) = self.pipelines.take_requeue() {
+            let formats = self.formats();
+            self.pipelines.request_variants(&self.device, want, &formats);
         }
-        Ok(())
+    }
+
+    /// Colour formats scene pipelines are built for: offscreen, HDR, and the window's.
+    fn formats(&self) -> Vec<VkFormat> {
+        let mut f = vec![TARGET_FORMAT, crate::render::HDR_FORMAT];
+        if let Some(w) = &self.window {
+            if !f.contains(&w.format()) {
+                f.push(w.format());
+            }
+        }
+        f
     }
 
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
@@ -791,6 +800,7 @@ impl GpuInner {
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
+        self.poll_pipelines();
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         };
@@ -927,6 +937,8 @@ impl GpuInner {
             }
         }
         let window = Window::new(&self.instance, &self.device, self.cmd_pool, hinstance, hwnd, width, height)?;
+        // A background build in flight doesn't know this format: finish it first.
+        self.pipelines.poll_background(true);
         // Every variant for the window's format now, so presenting never waits for a pipeline.
         if let Err(e) = self.pipelines.prebuild(&self.device, window.format()) {
             let mut window = window;
@@ -947,6 +959,7 @@ impl GpuInner {
             return Err(GpuError::new("present: no window attached"));
         }
         check_frame(&self.meshes, &self.textures, frame)?;
+        self.poll_pipelines();
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(

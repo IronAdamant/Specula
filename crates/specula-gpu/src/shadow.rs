@@ -511,7 +511,10 @@ pub fn record_shadow_pass(
                 let masked = b.masked && mesh.surface_offset.is_some();
                 let mut want = pipeline[skinned as usize | (masked as usize) << 1];
                 if want == VK_NULL_HANDLE {
-                    want = pipeline[skinned as usize]; // not built: cast solid
+                    want = pipeline[skinned as usize]; // masking not built yet: cast solid
+                }
+                if want == VK_NULL_HANDLE {
+                    continue; // skinning not built yet: the draw is skipped in the scene too
                 }
                 if want != bound_pipeline {
                     (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want);

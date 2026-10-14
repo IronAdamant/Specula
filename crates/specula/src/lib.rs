@@ -860,7 +860,9 @@ impl Engine {
         let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
         self.world
             .entities()
-            .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building))
+            // Building, or built and uploaded but waiting for its pipeline variant (built on a
+            // worker thread when the first such model arrives).
+            .filter(|e| e.resolved_model().is_some_and(|r| r.state == world::ModelState::Building) || self.models.waiting(e))
             .filter(|e| sight::in_frame(e, spec.include_ui))
             .filter(|e| {
                 let p = view_proj.mul_vec4(e.world_position().extend(1.0));
@@ -879,6 +881,11 @@ impl Engine {
         // capture are waited for too.
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
+        // Upload what is built, so models that start a pipeline variant build are waited for.
+        for e in self.sync_meshes() {
+            eprintln!("specula: {e}");
+        }
+        self.models.refresh_ready(&mut self.gpu);
         if self.building_in_frame(&spec) == 0 {
             let _ = reply.send(self.capture(&spec, &session, wait));
             return;
@@ -910,6 +917,10 @@ impl Engine {
             return;
         }
         let _z = profile::zone("parked_captures");
+        for e in self.sync_meshes() {
+            eprintln!("specula: {e}");
+        }
+        self.models.refresh_ready(&mut self.gpu);
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {

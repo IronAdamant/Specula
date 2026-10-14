@@ -915,6 +915,8 @@ fn main() {
             gpu.upload_mesh_with(&v, &i, &MeshStreams { uvs: Some(&uvs), ..Default::default() })
         };
         let (cv, ci, cs) = creature();
+        // The skinned and textured scenes' pipelines at loading time, as a game would.
+        gpu.prepare_variants(true, true)?;
         let [base, normal, mr] = tile_textures();
         let sampler = TextureSampler { anisotropy: !args.without.iter().any(|w| w == "anisotropy"), ..Default::default() };
         let meshes = Meshes {

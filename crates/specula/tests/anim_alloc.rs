@@ -76,6 +76,12 @@ fn drawing_300_animated_creatures_allocates_nothing() {
     }
     let mut models = GpuModels::default();
     assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+    // The skinned pipelines are built on a worker thread; creatures are held back until then.
+    while models.waiting(world.get(ids[0]).unwrap()) {
+        assert!(Instant::now() < deadline, "the skinned pipelines were never built");
+        std::thread::sleep(Duration::from_millis(5));
+        models.refresh_ready(&mut gpu);
+    }
     let mut out = Vec::with_capacity(4096);
     let frame = |models: &GpuModels, t: f64, out: &mut Vec<specula_gpu::DrawItem>| {
         out.clear();

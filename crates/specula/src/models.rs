@@ -95,8 +95,8 @@ use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
 use specula_gpu::{
-    DrawItem, Gpu, Material, MaterialTextures, MeshId, MeshStreams, SkinVertex, Surface, TextureFilter, TextureFormat, TextureId,
-    TextureSampler, TextureWrap, Vertex,
+    DrawItem, Gpu, Material, MaterialTextures, MeshId, MeshStreams, PipelineVariants, SkinVertex, Surface, TextureFilter, TextureFormat,
+    TextureId, TextureSampler, TextureWrap, Vertex,
 };
 use specula_model::{build, BuildParams, ErrorCode, MaterialKind, MaterialPreset, MeshData, Model, Recipe, RecipeError, Style};
 use std::cell::RefCell;
@@ -1824,6 +1824,9 @@ struct GpuModel {
     textures: Vec<TextureId>,
     /// The build's anim set (rigged models with clips).
     anims: Option<Arc<AnimSet>>,
+    /// Pipeline variants its draws use: skinned (its meshes carry skin, when animated) and
+    /// textured (a part has textures).
+    needs: PipelineVariants,
 }
 
 /// An entity's animator, kept across frames (seeked to each frame's time: no per-frame state).
@@ -1913,12 +1916,16 @@ pub struct GpuModels {
     synced: Option<(u64, u64, u64)>,
     /// Animation state, written while drawing (drawing takes `&self`).
     anim: RefCell<AnimFrame>,
+    /// The GPU's pipeline variants as of the last sync: a model needing one not built yet (it is
+    /// being built on a worker thread) is held back like a model still building.
+    ready: PipelineVariants,
 }
 
 impl GpuModels {
     /// Uploads the builds live model entities use and frees the rest, when the world's model
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
+        self.ready = gpu.pipeline_variants();
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
@@ -2038,6 +2045,21 @@ impl GpuModels {
         self.anim.borrow_mut().bones = bones;
     }
 
+    /// Takes the GPU's pipeline variants (a finished background build) without a full sync.
+    pub fn refresh_ready(&mut self, gpu: &mut Gpu) {
+        self.ready = gpu.pipeline_variants();
+    }
+
+    /// Entity `e` has an uploaded model whose pipeline variant is still being built: it isn't
+    /// drawn yet (captures wait for it as for a build).
+    pub fn waiting(&self, e: &Entity) -> bool {
+        self.model_of(e).is_some_and(|(_, m)| self.held_back(e, m))
+    }
+
+    fn held_back(&self, e: &Entity, m: &GpuModel) -> bool {
+        (m.needs.skinned && e.anim.is_some() && !self.ready.skinned) || (m.needs.textured && !self.ready.textured)
+    }
+
     fn model_of(&self, e: &Entity) -> Option<(u64, &GpuModel)> {
         let id = self.by_handle.get(e.resolved_model().map_or(usize::MAX, |r| r.handle as usize)).copied().flatten()?;
         self.uploaded.get(&id).map(|m| (id, m))
@@ -2081,6 +2103,10 @@ impl GpuModels {
             stats.missing += 1;
             return;
         };
+        if self.held_back(e, model) {
+            stats.missing += 1;
+            return;
+        }
         let world = e.model();
         let count = model.lods.len();
         let level = match choice {
@@ -2215,7 +2241,11 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
     }
     let b = model.bounds;
     let (lo, hi) = (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]));
-    Ok(GpuModel { lods, center: (lo + hi) * 0.5, radius: ((hi - lo).length() * 0.5).max(1e-3), textures, anims: built.anims.clone() })
+    let needs = PipelineVariants {
+        skinned: built.anims.is_some() && model.lods.iter().any(MeshData::is_skinned),
+        textured: lods.iter().flatten().any(|p: &PartDraw| p.surface.textures != MaterialTextures::NONE),
+    };
+    Ok(GpuModel { lods, center: (lo + hi) * 0.5, radius: ((hi - lo).length() * 0.5).max(1e-3), textures, anims: built.anims.clone(), needs })
 }
 
 /// One part of a mesh alone (re-indexed): vertices, indices, mean vertex colour (sRGB), and its
@@ -2989,6 +3019,15 @@ mod tests {
         settle_shared(&shared, &mut world);
         let mut models = GpuModels::default();
         assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        // The skinned pipelines are built on a worker: the walker is held back (not drawn,
+        // captures wait) until they exist; the still one, unanimated, draws at once.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while models.waiting(world.get(walker).unwrap()) {
+            assert!(!models.waiting(world.get(still).unwrap()), "an unanimated model needs no skinned pipeline");
+            assert!(std::time::Instant::now() < deadline, "the skinned pipelines were never built");
+            std::thread::sleep(Duration::from_millis(5));
+            models.refresh_ready(&mut gpu);
+        }
         let bones_of = |models: &GpuModels, t: f64| {
             models.begin_frame(t);
             let mut out = Vec::new();

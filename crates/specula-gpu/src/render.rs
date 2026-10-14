@@ -98,8 +98,9 @@ const OPAQUE_VARIANTS: [(bool, bool); 4] = [(false, false), (true, false), (fals
 const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
 
 /// Which stream variants of the pipelines exist. The plain ones are built at start; skinned and
-/// textured ones by the first upload of a mesh with those streams (loading time, never a frame),
-/// so a game without skinned or textured meshes never pays for compiling them.
+/// textured ones on a worker thread when the first mesh with those streams is uploaded (or by
+/// `prepare_variants` while loading), so a game without skinned or textured meshes never pays
+/// for compiling them and no frame ever waits for one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Variants {
     pub skinned: bool,
@@ -905,6 +906,46 @@ pub struct Pipelines {
     cache_load: PipelineCacheLoad,
     /// Stream variants built (see [`Variants`]).
     pub variants: Variants,
+    /// Variants being built on a worker thread, and what that has built so far.
+    background: Background,
+}
+
+/// What `vkCreateGraphicsPipelines` needs, detached from [`Pipelines`] so a worker thread can
+/// create pipelines.
+#[derive(Clone)]
+struct CreateCtx {
+    device: VkDevice,
+    create: unsafe extern "system" fn(VkDevice, u64, u32, *const VkGraphicsPipelineCreateInfo, *const c_void, *mut VkPipeline) -> VkResult,
+    modules: Vec<VkShaderModule>,
+    layout: VkPipelineLayout,
+    cache: VkPipelineCache,
+}
+
+// SAFETY: a VkDevice may be used from any thread; vkCreateGraphicsPipelines externally
+// synchronizes none of its parameters here (the pipeline cache was created without
+// VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT, so the driver synchronizes it), and the
+// shader modules and layout are only read. `Pipelines` joins the worker before destroying any
+// of them (`destroy` → `poll_background(true)`).
+unsafe impl Send for CreateCtx {}
+
+/// A background build of pipeline variants.
+struct BackgroundBuild {
+    want: Variants,
+    formats: Vec<VkFormat>,
+    job: std::thread::JoinHandle<Vec<(PipelineKey, Result<VkPipeline, GpuError>)>>,
+    started: Instant,
+}
+
+#[derive(Default)]
+struct Background {
+    pending: Option<BackgroundBuild>,
+    /// Variants asked for while a build ran.
+    queued: Variants,
+    /// Queued variants to request once the running build finished.
+    requeue: Option<(Variants, Vec<VkFormat>)>,
+    created: u32,
+    failed: u32,
+    ms: f64,
 }
 
 /// The pipelines one frame uses; `VK_NULL_HANDLE` for passes the frame doesn't run.
@@ -985,6 +1026,7 @@ impl Pipelines {
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
             variants: Variants::default(),
+            background: Background::default(),
         };
         let result = (|| {
             for (name, spv) in SHADERS {
@@ -1155,7 +1197,124 @@ impl Pipelines {
             warm: self.warm_at.is_some(),
             create_ms: self.create_ms,
             cache: self.cache_load,
+            created_background: self.background.created,
+            background_ms: self.background.ms,
+            background_pending: self.background.pending.is_some(),
+            background_failed: self.background.failed,
         }
+    }
+
+    /// The pipelines of the variants in `want` (beyond those built) for every format in
+    /// `formats` (scene) and the shadow pass, not yet created.
+    fn variant_keys(&self, want: Variants, formats: &[VkFormat]) -> Vec<PipelineKey> {
+        let mut keys = Vec::new();
+        let new = |s: bool, t: bool| want.has(s, t);
+        for &format in formats {
+            for blended in [false, true] {
+                let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
+                for features in FEATURE_SETS {
+                    for &(skinned, textured) in variants.iter().filter(|(s, t)| new(*s, *t)) {
+                        keys.push(PipelineKey::Mesh { format, blended, features, skinned, textured });
+                    }
+                }
+            }
+        }
+        for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| new(*s, *m)) {
+            keys.push(PipelineKey::Shadow { skinned, masked });
+        }
+        keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
+        keys
+    }
+
+    /// Builds the variants `want` now, on this thread, for `formats` (loading time: counted as
+    /// ordinary creation). `variants` changes only when every pipeline was created.
+    pub fn build_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) -> Result<(), GpuError> {
+        self.poll_background(true);
+        let want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        for key in self.variant_keys(want, formats) {
+            self.get(dev, key)?;
+        }
+        self.variants = want;
+        Ok(())
+    }
+
+    /// Starts building the variants `want` on a worker thread (pipeline creation is thread safe
+    /// with the shared, internally synchronized pipeline cache), unless they exist or are being
+    /// built; a request arriving while a build runs is queued after it. Frames never wait:
+    /// draws needing a variant not built yet are skipped until [`Pipelines::poll_background`]
+    /// hands the pipelines back. These don't count as created after warm (no frame stalls).
+    pub fn request_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) {
+        let want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        if want == self.variants {
+            return;
+        }
+        if let Some(p) = &self.background.pending {
+            // Only what the running build won't make waits for it.
+            let q = &mut self.background.queued;
+            q.skinned |= want.skinned && !p.want.skinned;
+            q.textured |= want.textured && !p.want.textured;
+            return;
+        }
+        let keys = self.variant_keys(want, formats);
+        if keys.is_empty() {
+            self.variants = want;
+            return;
+        }
+        let ctx = self.ctx(dev);
+        let started = Instant::now();
+        let spawned = std::thread::Builder::new().name("specula-pipelines".into()).spawn(move || {
+            keys.into_iter().map(|k| (k, Pipelines::create_with(&ctx, k))).collect::<Vec<_>>()
+        });
+        match spawned {
+            Ok(job) => self.background.pending = Some(BackgroundBuild { want, formats: formats.to_vec(), job, started }),
+            Err(_) => {
+                // No thread: build here rather than never.
+                if self.build_variants(dev, want, formats).is_err() {
+                    self.background.failed += 1;
+                }
+            }
+        }
+    }
+
+    /// Takes a finished background build's pipelines (with `wait`: waits for one still running).
+    /// Returns true when variants became available.
+    pub fn poll_background(&mut self, wait: bool) -> bool {
+        let Some(p) = self.background.pending.take() else { return false };
+        if !wait && !p.job.is_finished() {
+            self.background.pending = Some(p);
+            return false;
+        }
+        let results = p.job.join().unwrap_or_default();
+        let mut ok = true;
+        for (key, r) in results {
+            match r {
+                Ok(pipeline) => {
+                    self.by_key.push((key, pipeline));
+                    self.background.created += 1;
+                }
+                Err(_) => {
+                    ok = false;
+                    self.background.failed += 1;
+                }
+            }
+        }
+        self.background.ms += p.started.elapsed().as_secs_f64() * 1e3;
+        if ok {
+            self.variants = p.want;
+        }
+        let queued = std::mem::take(&mut self.background.queued);
+        if queued != Variants::default() {
+            // More was asked for while this ran: the caller starts it (`take_requeue`), since
+            // starting needs the device. (A failed build isn't retried here: the next upload
+            // with those streams asks again, and `background_failed` reports it.)
+            self.background.requeue = Some((queued, p.formats));
+        }
+        ok
+    }
+
+    /// A request queued behind a finished background build, to start now.
+    pub fn take_requeue(&mut self) -> Option<(Variants, Vec<VkFormat>)> {
+        self.background.requeue.take()
     }
 
     /// The pipeline cache's contents, to persist and pass back as `GpuOptions::pipeline_cache`.
@@ -1184,6 +1343,21 @@ impl Pipelines {
     }
 
     fn create(&self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
+        Pipelines::create_with(&self.ctx(dev), key)
+    }
+
+    /// What creating pipelines needs, for this thread or a worker.
+    fn ctx(&self, dev: &Device) -> CreateCtx {
+        CreateCtx {
+            device: dev.handle,
+            create: dev.fns.create_graphics_pipelines,
+            modules: self.modules.clone(),
+            layout: self.layout,
+            cache: self.cache,
+        }
+    }
+
+    fn create_with(ctx: &CreateCtx, key: PipelineKey) -> Result<VkPipeline, GpuError> {
         let d = key.desc();
         let entry = c"main";
         let spec_entry = VkSpecializationMapEntry { constant_id: 0, offset: 0, size: size_of::<u32>() };
@@ -1198,7 +1372,7 @@ impl Pipelines {
             p_next: ptr::null(),
             flags: 0,
             stage,
-            module: self.modules[shader as usize],
+            module: ctx.modules[shader as usize],
             p_name: entry.as_ptr(),
             p_specialization_info: &spec as *const VkSpecializationInfo as *const c_void,
         };
@@ -1376,7 +1550,7 @@ impl Pipelines {
             p_depth_stencil_state: if d.depth.is_some() { &depth_stencil } else { ptr::null() },
             p_color_blend_state: if d.color.is_some() { &blend } else { ptr::null() },
             p_dynamic_state: &dynamic,
-            layout: self.layout,
+            layout: ctx.layout,
             render_pass: VK_NULL_HANDLE,
             subpass: 0,
             base_pipeline_handle: VK_NULL_HANDLE,
@@ -1385,7 +1559,7 @@ impl Pipelines {
         let mut pipeline = VK_NULL_HANDLE;
         // SAFETY: every state struct referenced by `info` is a local alive for the call; `cache`
         // is this device's pipeline cache, used from this thread only.
-        let r = unsafe { (dev.fns.create_graphics_pipelines)(dev.handle, self.cache, 1, &info, ptr::null(), &mut pipeline) };
+        let r = unsafe { (ctx.create)(ctx.device, ctx.cache, 1, &info, ptr::null(), &mut pipeline) };
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateGraphicsPipelines ({key:?})"), r));
         }
@@ -1393,6 +1567,8 @@ impl Pipelines {
     }
 
     pub fn destroy(&mut self, dev: &Device) {
+        // A background build still running uses the modules, layout and cache: finish it first.
+        self.poll_background(true);
         // SAFETY: the device is idle; every object is destroyed once (null handles are ignored).
         unsafe {
             for (_, p) in self.by_key.drain(..) {

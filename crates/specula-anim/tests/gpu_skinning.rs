@@ -97,6 +97,8 @@ fn gpu_skinning_matches_cpu_skinning_for_every_creature() {
             .or_else(|_| Gpu::new(&GpuOptions { validation: Validation::Off, adapter: AdapterPreference::Index(adapter.index), ..Default::default() }))
             .unwrap();
         let target = gpu.create_target(SIZE, SIZE).unwrap();
+        // Skinned pipelines now (loading time), not on a worker after the first upload.
+        gpu.prepare_variants(true, false).unwrap();
         for ((name, clip, _), (mesh, bones, cpu)) in creatures.iter().zip(&posed) {
             let skin: Vec<SkinVertex> = mesh.joints.iter().zip(&mesh.weights).map(|(j, w)| SkinVertex { joints: *j, weights: *w }).collect();
             let gpu_mesh = gpu.upload_mesh_with(&vertices(mesh), &mesh.indices, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();

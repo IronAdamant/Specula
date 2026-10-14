@@ -13,7 +13,9 @@ What it checks:
   - every creature's screen box changes between filmstrip times (it moves),
   - a crossfade (world_set anim with crossfade) starts at the engine clock: mid-fade and
     after-fade captures differ from the pre-fade one,
-  - anim survives world_save / world_load,
+  - anim survives world_save / world_load unchanged, in the same session and after a restart:
+    the same world hash and pixels at a fixed time_s; after an edit elsewhere, a save and a
+    second restart, creatures stay in phase,
   - zero validation errors at shutdown.
 
 Captures (PNG + packet JSON) land in OUT/captures/run-*/; the filmstrip list in OUT/anim_check.json.
@@ -286,11 +288,20 @@ def main():
         check(back["models"]["missing"] == 0 and d < 0.002,
               f"the textured asset spawned again draws as before ({d:.4f} of pixels differ): {back['image']['path']}")
 
-        # 5. Save and load keep the anim component.
+        # 5. Save and load keep the anim component unchanged (starts are world time): the same
+        # world hash and the same pixels at a fixed time_s.
+        fixed_t = start + 1.3
+        saved_shot = mcp.frame(time_s=fixed_t, **cam)
+        saved_hash = mcp.json("engine_info")["world"]["state_hash"]
         mcp.call("world_save", name="anim_check")
-        mcp.call("world_load", name="anim_check")
+        loaded = mcp.json("world_load", name="anim_check")
         after = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
         check(after == anim, f"anim survives save/load unchanged (starts are world time): {after}")
+        check(loaded["state_hash"] == saved_hash, f"world_load gives the saved world hash ({loaded['state_hash']} vs {saved_hash})")
+        same_session = mcp.frame(time_s=fixed_t, **cam)
+        check(decode_png(same_session["image"]["path"]) == decode_png(saved_shot["image"]["path"]),
+              f"the same pixels at time_s {fixed_t:.2f} after world_load: {same_session['image']['path']}")
+        summary["save_load"] = {"time_s": fixed_t, "saved": saved_shot["image"]["path"], "loaded": same_session["image"]["path"]}
         # A clip the creature lacks is a warning in the reply and in captures (it draws its bind pose).
         reply = mcp.json("world_set", path="/scene/fallen", anim="moonwalk")
         warn = mcp.frame(time_s=1.0, **cam)["warnings"]
@@ -303,12 +314,18 @@ def main():
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
 
-    # 6. A restart: the new engine's clock starts at 0, the saved animations continue (the world
-    # file records the clock they were on).
+    # 6. A restart: the new engine's clock starts at 0, but the world file records the world
+    # time it was saved at and a load resumes from it, so the world hash and the pixels at a
+    # fixed time_s are the same, and the animations go on from where they were.
     with Engine(a.exe, a.port, out / "engine2.log", *args, cwd=str(ROOT)) as engine2:
         mcp = engine2.mcp("anim-check")
-        mcp.call("world_load", name="anim_check")
+        reloaded = mcp.json("world_load", name="anim_check")
+        check(reloaded["state_hash"] == saved_hash, f"after a restart world_load gives the saved hash ({reloaded['state_hash']} vs {saved_hash})")
         loaded = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
+        check(loaded == anim, f"after a restart the anim is unchanged: {loaded}")
+        restarted = mcp.frame(time_s=fixed_t, **cam)
+        check(decode_png(restarted["image"]["path"]) == decode_png(saved_shot["image"]["path"]),
+              f"after a restart the same pixels at time_s {fixed_t:.2f}: {restarted['image']['path']}")
         shots = []
         for _ in range(3):
             shots.append(mcp.frame(**cam))  # default time: the new engine's clock
@@ -319,8 +336,27 @@ def main():
         times = [s["time_s"] for s in shots]
         print(f"after restart: anim {loaded}; captures at clock {times}; shambler changed {[round(m, 3) for m in moved]}")
         check(all(m > 0.01 for m in moved), "after a restart and world_load the walk keeps moving (no freeze)")
+        check(times[0] >= start, f"world time resumes from the save (capture at {times[0]:.2f} s, the crossfade started at {start:.2f} s)")
         summary["restart"] = [s["image"]["path"] for s in shots]
+        # An edit elsewhere (outside /scene, whose file is kept as it is) and another save.
+        mcp.call("world_spawn", shape="cube", path="/marker", position=[0, -40, 0])
+        mcp.call("world_save", name="anim_check")
+        resaved_t = mcp.frame(**cam)["time_s"]
     check(engine2.validation_errors() == 0, f"validation errors at the second shutdown: {engine2.validation_errors()}")
+
+    # 7. Load that on a third engine: the creatures stay in phase (their starts and the world
+    # time match the kept /scene file; nothing jumps by the time between the two saves).
+    with Engine(a.exe, a.port, out / "engine3.log", *args, cwd=str(ROOT)) as engine3:
+        mcp = engine3.mcp("anim-check")
+        mcp.call("world_load", name="anim_check")
+        third = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
+        check(third == anim, f"after the second save and restart the anim is unchanged: {third}")
+        again = mcp.frame(time_s=fixed_t, **cam)
+        check(decode_png(again["image"]["path"]) == decode_png(saved_shot["image"]["path"]),
+              f"after an edit elsewhere, a save and a restart, the same pixels at time_s {fixed_t:.2f}: {again['image']['path']}")
+        now_t = mcp.frame(**cam)["time_s"]
+        check(now_t >= resaved_t, f"world time resumes from the second save ({now_t:.2f} >= {resaved_t:.2f})")
+    check(engine3.validation_errors() == 0, f"validation errors at the third shutdown: {engine3.validation_errors()}")
     (out / "anim_check.json").write_text(json.dumps(summary, indent=1))
     print(f"summary: {out / 'anim_check.json'}")
     if failures:

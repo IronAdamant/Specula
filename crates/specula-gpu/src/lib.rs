@@ -34,8 +34,8 @@
 //! another, column-major `bind pose → pose` matrices: `specula_anim::write_gpu_matrices`). The
 //! matrices are copied into the frame's upload buffer and read through its device address, so an
 //! instanced batch of one creature mesh draws every instance with its own pose. Skinned variants
-//! of the scene and shadow pipelines are built with the others; meshes without a skin stream (and
-//! draws without a palette) use the plain pipelines, unchanged. Skinned draws are culled with
+//! of the scene and shadow pipelines are built on demand (see Textured materials); meshes
+//! without a skin stream (and draws without a palette) use the plain pipelines, unchanged. Skinned draws are culled with
 //! the posed bounds they give ([`DrawItem::bounds`]); without them they are never culled.
 //!
 //! # Textured materials
@@ -50,8 +50,10 @@
 //! Draws with textures don't multiply in the vertex colour (that hangs the Intel RaptorLake
 //! driver, see `shaders/mesh_frag.glsl`): texture the colour instead. Draws of the same mesh
 //! without textures use the plain pipeline and keep their vertex colours. Alpha-masked draws cut
-//! their shadows too. Skinned and textured pipeline variants are built by the first upload of a
-//! mesh with those streams (at loading time, never in a frame).
+//! their shadows too. Skinned and textured pipeline variants are built on a worker thread when
+//! the first mesh with those streams is uploaded (or now, by [`Gpu::prepare_variants`]); until
+//! they exist their draws are skipped, never waited for ([`Gpu::pipeline_variants`],
+//! [`PipelineStats::created_background`]).
 //!
 //! # Frame passes
 //!
@@ -121,6 +123,7 @@ mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
+pub use render::Variants as PipelineVariants;
 pub use stats::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1110,11 +1113,20 @@ impl Gpu {
         self.inner.mark_warm()
     }
 
-    /// Builds the skinned and/or textured pipeline variants now (they are otherwise built by the
-    /// first upload of a mesh with skin or UV streams). Call it while loading, before
-    /// [`Gpu::mark_warm`], when the game will use such meshes.
+    /// Builds the skinned and/or textured pipeline variants now, on this thread. They are
+    /// otherwise built on a worker thread when the first mesh with skin or UV streams is
+    /// uploaded, and draws needing them are skipped until they exist (see
+    /// [`Gpu::pipeline_variants`]). Call it while loading, before [`Gpu::mark_warm`], when the
+    /// game will use such meshes from its first frame.
     pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
         self.inner.prepare_variants(skinned, textured)
+    }
+
+    /// The pipeline variants ready to draw with (a finished background build is taken first).
+    /// Renderers that must not show a model without its pose or textures hold its draws back
+    /// until its variant is here.
+    pub fn pipeline_variants(&mut self) -> PipelineVariants {
+        self.inner.pipeline_variants()
     }
 
     /// The pipeline cache's contents, to save (e.g. at shutdown) and pass back through

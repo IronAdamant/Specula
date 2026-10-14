@@ -30,6 +30,7 @@ fn unweighted_joints_never_read_outside_the_palette() {
         let skin: Vec<SkinVertex> = v.iter().map(|_| SkinVertex { joints: [0, 255, 200, 100], weights: [255, 0, 0, 0] }).collect();
         let mesh = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
         let target = gpu.create_target(128, 128).unwrap();
+        wait_variants(&mut gpu, true, false);
         let bones = vec![IDENTITY; 500];
         let mut d = DrawItem::new(mesh, translation([0.0, 0.0, -4.0]), [1.0, 0.5, 0.2, 1.0]);
         d.skin = Some(499);

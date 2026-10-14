@@ -98,6 +98,7 @@ fn skinned_bar_on(adapter: AdapterPreference, label: &str) {
     let (ground_v, ground_i) = cube();
     let ground = gpu.upload_mesh(&ground_v, &ground_i).unwrap();
     let target = gpu.create_target(W, H).unwrap();
+    wait_variants(&mut gpu, true, false);
     gpu.mark_warm();
     let floor = DrawItem::new(ground, mul(&translation([0.0, -0.05, 0.0]), &scale3([6.0, 0.1, 6.0])), [0.6, 0.6, 0.6, 1.0]);
     let colour = [0.9, 0.7, 0.4, 1.0];
@@ -187,6 +188,7 @@ fn bad_palettes_streams_and_textures_are_structured_errors() {
     let (_, _, skin) = bar();
     let mesh = gpu.upload_mesh_with(&vertices, &indices, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
     let target = gpu.create_target(16, 16).unwrap();
+    wait_variants(&mut gpu, true, false);
     let mut d = DrawItem::new(mesh, IDENTITY, [1.0; 4]);
     d.skin = Some(1);
     let bones = palette(0.3);
@@ -229,6 +231,7 @@ fn textures_on(adapter: AdapterPreference, label: &str) {
     let nearest = TextureSampler { mag: TextureFilter::Nearest, min: TextureFilter::Nearest, mipmap: TextureFilter::Nearest, ..Default::default() };
     let tex = gpu.upload_material_texture(2, 2, TextureFormat::Rgba8Srgb, &px, nearest).unwrap();
     let target = gpu.create_target(W, H).unwrap();
+    wait_variants(&mut gpu, false, true);
     let mut d = DrawItem::new(quad, IDENTITY, [1.0; 4]);
     d.surface = Surface { textures: MaterialTextures { base_color: Some(tex), ..Default::default() }, ..Default::default() };
     // The quad fills the middle half of the image.
@@ -305,6 +308,7 @@ fn normal_map_convention_on(adapter: AdapterPreference, label: &str) {
     let up = texture(&mut gpu, [128, 218, 218, 255]);
     let flat = texture(&mut gpu, [128, 128, 255, 255]);
     let target = gpu.create_target(64, 64).unwrap();
+    wait_variants(&mut gpu, false, true);
     let view = look_at_rh([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
     let view_proj = mul(&perspective_vk_reverse_z(50f32.to_radians(), 1.0, 0.05), &view);
     let lit = |gpu: &mut Gpu, mesh, map, sun: [f32; 3]| {
@@ -337,9 +341,10 @@ fn normal_maps_follow_the_gltf_convention_on_every_adapter() {
     }
 }
 
-/// Skinned and textured pipeline variants are built by the first upload with those streams (or
-/// `prepare_variants`), never by a frame; a mesh with UVs drawn without textures keeps its
-/// vertex colour; an emissive texture without a colour glows white; an alpha-masked caster's
+/// Skinned and textured pipeline variants are built on a worker thread when the first mesh with
+/// those streams is uploaded (or now, by `prepare_variants`), never by a frame: frames before
+/// they exist skip those draws and create nothing; a mesh with UVs drawn without textures keeps
+/// its vertex colour; an emissive texture without a colour glows white; an alpha-masked caster's
 /// cut-out casts no shadow.
 #[test]
 fn variants_vertex_colours_emission_and_masked_shadows() {
@@ -350,22 +355,35 @@ fn variants_vertex_colours_emission_and_masked_shadows() {
     let (cv, ci) = cube();
     let cube_mesh = gpu.upload_mesh(&cv, &ci).unwrap();
     assert_eq!(created(&gpu), plain, "plain meshes need no new pipelines");
+    gpu.mark_warm();
+    let target = gpu.create_target(W, H).unwrap();
     let (v, i, skin) = bar();
-    gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
-    let skinned = created(&gpu);
-    assert!(skinned > plain, "the first skinned mesh builds the skinned variants");
+    let bar_mesh = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    // Frames while the skinned variants build (after warm): the skinned draw is skipped, and no
+    // pipeline is created on this thread.
+    let mut posed = DrawItem::new(bar_mesh, IDENTITY, [1.0; 4]);
+    posed.skin = Some(0);
+    let bones = [IDENTITY; 2];
+    let draws = [posed];
+    let skinned_frame = FrameDesc { bones: &bones, ..flat_frame(&draws, 4.0) };
+    gpu.render(target, &skinned_frame).unwrap();
+    let early = gpu.last_frame_stats();
+    assert_eq!((early.pipelines.created, early.pipelines.created_after_warm), (plain, 0), "{test}: no pipeline built on the frame's thread");
+    wait_variants(&mut gpu, true, false);
+    gpu.render(target, &skinned_frame).unwrap();
+    let s = gpu.last_frame_stats();
+    assert_eq!(s.draws.instances, 1, "{test}: drawn once its variant exists");
+    assert!(s.pipelines.created_background > 0 && !s.pipelines.background_pending, "{:?}", s.pipelines);
+    assert_eq!((s.pipelines.created, s.pipelines.created_after_warm), (plain, 0));
     // A red-tinted quad with UVs.
     let (mut qv, qi, quv) = quad_uv();
     for vert in &mut qv {
         vert.color = [255, 0, 0, 255];
     }
     let quad = gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
-    let textured = created(&gpu);
-    assert!(textured > skinned, "the first mesh with UVs builds the textured variants");
+    wait_variants(&mut gpu, true, true);
     gpu.prepare_variants(true, true).unwrap();
-    assert_eq!(created(&gpu), textured, "already built");
-    gpu.mark_warm();
-    let target = gpu.create_target(W, H).unwrap();
+    assert_eq!(created(&gpu), plain, "already built: nothing more"); 
     // Without textures the quad keeps its vertex colour (the plain pipeline).
     gpu.render(target, &flat_frame(&[DrawItem::new(quad, IDENTITY, [1.0; 4])], 1.0)).unwrap();
     let p = pixel(&gpu.read_rgba8(target).unwrap(), W, W / 2, H / 2);
@@ -415,6 +433,27 @@ fn variants_vertex_colours_emission_and_masked_shadows() {
 
 fn scale_xyz(s: V3) -> [f32; 16] {
     [s[0], 0.0, 0.0, 0.0, 0.0, s[1], 0.0, 0.0, 0.0, 0.0, s[2], 0.0, 0.0, 0.0, 0.0, 1.0]
+}
+
+/// A textured mesh uploaded while the skinned variants are still being built is queued behind
+/// them, and both become ready; dropping the GPU mid-build joins the worker first.
+#[test]
+fn variant_requests_queue_behind_a_running_build() {
+    let test = "variant_queue";
+    let Some(mut gpu) = gpu_or_skip(test, AdapterPreference::LowPower) else { return };
+    gpu.mark_warm();
+    let (v, i, skin) = bar();
+    gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    let (qv, qi, quv) = quad_uv();
+    gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&quv), ..Default::default() }).unwrap();
+    wait_variants(&mut gpu, true, true);
+    let s = gpu.last_frame_stats().pipelines;
+    assert_eq!((s.created_after_warm, s.background_failed), (0, 0), "{test}: {s:?}");
+    drop(gpu);
+    if let Some(mut other) = gpu_or_skip(test, AdapterPreference::LowPower) {
+        other.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+        drop(other); // the build is still running: destroying the GPU waits for it
+    }
 }
 
 /// Keep `Gpu` in the imports used when every test skips.

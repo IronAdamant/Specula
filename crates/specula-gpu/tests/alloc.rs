@@ -83,6 +83,7 @@ fn warm_frames_do_not_allocate() {
     let uvs: Vec<[f32; 2]> = (0..v.len()).map(|k| [(k % 2) as f32, (k / 2 % 2) as f32]).collect();
     let skin = vec![SkinVertex { joints: [1, 0, 0, 0], weights: [255, 0, 0, 0] }; v.len()];
     let posed = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), uvs: Some(&uvs), tangents: None }).unwrap();
+    wait_variants(&mut gpu, true, true);
     let material = gpu.upload_material_texture(4, 4, TextureFormat::Rgba8Srgb, &[200; 64], TextureSampler::default()).unwrap();
     let mut creature = DrawItem::new(posed, translation([-1.0, 1.0, 0.0]), [1.0; 4]);
     creature.skin = Some(0);

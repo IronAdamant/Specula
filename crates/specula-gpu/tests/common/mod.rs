@@ -272,3 +272,17 @@ fn crc_and_adler_known_values() {
     assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
     assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
 }
+
+/// Waits (up to a minute) until the skinned and/or textured pipeline variants a background build
+/// is making are ready to draw with.
+pub fn wait_variants(gpu: &mut Gpu, skinned: bool, textured: bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let v = gpu.pipeline_variants();
+        if (!skinned || v.skinned) && (!textured || v.textured) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "pipeline variants never became ready: {v:?}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
