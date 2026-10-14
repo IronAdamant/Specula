@@ -503,6 +503,8 @@ impl Engine {
     /// engine's library, and the journal starts over from it. Returns a message per model entity
     /// whose recipe failed (it loads anyway and draws nothing until fixed).
     fn replace_world(&mut self, mut world: World, name: &str) -> Vec<String> {
+        // Its animations were on the clock it was saved at: they continue on ours.
+        world.rebase_clock(self.clock.seconds());
         world.set_recording(Recording::Full);
         let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
         let problems =

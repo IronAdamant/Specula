@@ -47,7 +47,7 @@ const RECORD_KEYS: [&str; 30] = [
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
 ];
-const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "env", "subtrees", "entities"];
+const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "clock_s", "env", "subtrees", "entities"];
 const SUBTREE_KEYS: &[&str] = &["format", "root", "entities"];
 
 /// What went wrong reading or writing a world, with where: the file, the entity path and the
@@ -190,6 +190,8 @@ pub struct Plan {
     dir: PathBuf,
     next_id: u64,
     entity_count: usize,
+    /// The engine clock at the save: animation starts are on it (see `world::AnimSpec::start`).
+    clock_s: f64,
     env: Json,
     /// Top-level entities without children (they live in `world.json`), and their `(id, stamp)`.
     loose: Loose,
@@ -244,6 +246,7 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
         dir: dir.to_owned(),
         next_id: world.next_id(),
         entity_count: world.persistent_len(),
+        clock_s: world.clock_s(),
         env: world.env().to_json_exact(),
         loose,
         loose_key,
@@ -306,6 +309,7 @@ impl Plan {
             ("generation", Json::from(generation)),
             ("next_id", Json::from(self.next_id)),
             ("entity_count", Json::from(self.entity_count)),
+            ("clock_s", Json::from(self.clock_s)),
             ("env", self.env.clone()),
             ("subtrees", subtrees),
         ];
@@ -823,7 +827,13 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
         return Err(e);
     }
 
+    // Older files have no clock: their animations started on a clock at 0.
+    let clock_s = match index.get("clock_s") {
+        None => 0.0,
+        Some(v) => v.as_f64().filter(|c| c.is_finite() && *c >= 0.0).ok_or_else(|| bad("clock_s", "'clock_s' must be a number of seconds, at least 0"))?,
+    };
     let mut world = World::default();
+    world.set_clock_s(clock_s);
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
     let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new(), loose: None };
@@ -1064,6 +1074,39 @@ mod tests {
         assert!(!m.visible && m.look.surface.seed == 0.0);
         assert_eq!(back.get(back.find_path("/ui").unwrap()).unwrap().layer, Layer::Ui);
         assert!(before["world.json"].contains(r#""entity_count": 9,"#), "{}", before["world.json"]);
+    }
+
+    /// An animation set at clock 6 s, saved, then loaded by an engine whose clock restarted at 0:
+    /// it continues from the phase it was saved at instead of freezing for 6 s. Saving changes
+    /// nothing about the state (the hash doesn't depend on when a save happened).
+    #[test]
+    fn animations_keep_their_phase_across_a_restart() {
+        use crate::world::{AnimSpec, ModelSpec};
+        let mut w = sample();
+        let id = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/shambler.json")), "erin").unwrap().id;
+        w.set_clock_s(6.0);
+        w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "erin").unwrap();
+        w.set_clock_s(6.5); // saved half a second into the walk
+        let hash = w.state_hash();
+        let saved = files(&w);
+        assert_eq!(w.state_hash(), hash, "saving changes nothing");
+        assert!(saved["world.json"].contains(r#""clock_s": 6.5,"#), "{}", saved["world.json"]);
+        assert_eq!(reload(&saved).unwrap().state_hash(), hash, "loaded on its own clock, it is the same state");
+        // A new run: the engine's clock is at 0.25 when it loads the world.
+        let mut back = reload(&saved).unwrap();
+        back.rebase_clock(0.25);
+        let a = back.get(id).unwrap().anim.clone().unwrap();
+        assert_eq!(a.start, Some(-0.25), "6 s on the old clock is -0.25 s on the new one");
+        assert!((a.clip_time(0.25) - 0.5).abs() < 1e-9, "at load it is half a second in, as when saved");
+        assert!(a.clip_time(1.25) > a.clip_time(0.25), "and it keeps moving");
+        // Saved again on the new clock and loaded once more: the phase still holds.
+        back.set_clock_s(1.25);
+        let mut again = reload(&files(&back)).unwrap();
+        again.rebase_clock(0.0);
+        assert!((again.get(id).unwrap().anim.as_ref().unwrap().clip_time(0.0) - 1.5).abs() < 1e-9);
+        // Older files without a clock: starts are on a clock at 0.
+        let old = saved.iter().map(|(k, v)| (k.clone(), v.replace("\"clock_s\": 6.5,", ""))).collect();
+        assert_eq!(reload(&old).unwrap().clock_s(), 0.0);
     }
 
     #[test]

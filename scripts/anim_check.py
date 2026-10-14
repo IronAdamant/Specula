@@ -29,6 +29,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -275,12 +276,35 @@ def main():
         mcp.call("world_save", name="anim_check")
         mcp.call("world_load", name="anim_check")
         after = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
-        check(after == anim, f"anim survives save/load: {after}")
+        shift = after["start"] - anim["start"]
+        same = {k: v for k, v in after.items() if k not in ("start", "from")} == {k: v for k, v in anim.items() if k not in ("start", "from")}
+        from_shift = after["from"]["start"] - anim["from"]["start"]
+        check(same and 0 <= shift < 30 and abs(from_shift - shift) < 1e-9,
+              f"anim survives save/load, moved onto the clock by the time between save and load ({shift:.3f} s): {after}")
         perf = mcp.json("perf_frame")
         print(f"perf models: {perf['models']}")
         summary["models"] = perf["models"]
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
+
+    # 6. A restart: the new engine's clock starts at 0, the saved animations continue (the world
+    # file records the clock they were on).
+    with Engine(a.exe, a.port, out / "engine2.log", *args, cwd=str(ROOT)) as engine2:
+        mcp = engine2.mcp("anim-check")
+        mcp.call("world_load", name="anim_check")
+        loaded = mcp.json("world_query", path_prefix="/scene/shambler", fields=["anim"])["items"][0]["anim"]
+        shots = []
+        for _ in range(3):
+            shots.append(mcp.frame(**cam))  # default time: the new engine's clock
+            time.sleep(0.4)
+        box = screen_box(next(q for q in shots[0]["subjects"] if q["name"] == "shambler"))
+        imgs = [decode_png(s["image"]["path"]) for s in shots]
+        moved = [box_diff(imgs[k], imgs[k + 1], box) for k in range(2)]
+        times = [s["time_s"] for s in shots]
+        print(f"after restart: anim {loaded}; captures at clock {times}; shambler changed {[round(m, 3) for m in moved]}")
+        check(all(m > 0.01 for m in moved), "after a restart and world_load the walk keeps moving (no freeze)")
+        summary["restart"] = [s["image"]["path"] for s in shots]
+    check(engine2.validation_errors() == 0, f"validation errors at the second shutdown: {engine2.validation_errors()}")
     (out / "anim_check.json").write_text(json.dumps(summary, indent=1))
     print(f"summary: {out / 'anim_check.json'}")
     if failures:

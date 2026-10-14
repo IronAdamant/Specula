@@ -504,8 +504,9 @@ pub const ANIM_SPEED: RangeInclusive<f32> = 0.0..=8.0;
 pub const ANIM_OFFSET: RangeInclusive<f32> = -1.0e6..=1.0e6;
 /// Crossfade durations (seconds).
 pub const ANIM_CROSSFADE: RangeInclusive<f32> = 0.0..=60.0;
-/// Clip start times (engine clock seconds).
-pub const ANIM_START: RangeInclusive<f64> = 0.0..=1.0e9;
+/// Clip start times (engine clock seconds; negative after a world saved late in one run is
+/// loaded early in another, see [`World::rebase_clock`]).
+pub const ANIM_START: RangeInclusive<f64> = -1.0e9..=1.0e9;
 
 /// The animation a model entity plays: one clip of its model's anim set (a recipe's
 /// `anims/<recipe name>.json`, or a glTF asset's own animations).
@@ -529,6 +530,13 @@ pub struct AnimSpec {
     /// Engine clock seconds the clip starts. `None` in a request: 0 at spawn (phase-locked to the
     /// clock, so a filmstrip at `time_s` 0, 0.25, … shows the clip from its start) and the
     /// current clock time on update (it starts at once). Always set on an entity.
+    ///
+    /// The engine clock starts at 0 in every run, so `start` belongs to the clock the world
+    /// lives on: world files record that clock (`clock_s`) when saved, and loading a world moves
+    /// every `start` by the time between that clock and the loading engine's
+    /// ([`World::rebase_clock`]), so each animation continues from the phase it was saved at.
+    /// Saving changes nothing (the state hash doesn't depend on when a save happened); a load is
+    /// a new state on the new clock, journaled as such.
     pub start: Option<f64>,
     /// Seconds to blend from the previous animation (0 = cut).
     pub crossfade: f32,
@@ -1998,6 +2006,33 @@ impl World {
         if seconds.is_finite() {
             self.clock_s = seconds.clamp(*ANIM_START.start(), *ANIM_START.end());
         }
+    }
+
+    /// Moves the world onto another clock reading `to`: every animation's `start` (and its fade
+    /// source's) shifts by `to − clock_s`, so each keeps its phase, and the clock becomes `to`.
+    /// The engine calls it on a loaded world (whose clock is the one it was saved at).
+    pub fn rebase_clock(&mut self, to: f64) {
+        if !to.is_finite() {
+            return;
+        }
+        let delta = to - self.clock_s;
+        if delta != 0.0 {
+            let shift = |s: &mut Option<f64>| {
+                if let Some(v) = s {
+                    *v = (*v + delta).clamp(*ANIM_START.start(), *ANIM_START.end());
+                }
+            };
+            for e in self.entities.values_mut() {
+                if let Some(a) = &mut e.anim {
+                    shift(&mut a.start);
+                    if let Some(f) = &mut a.from {
+                        shift(&mut f.start);
+                    }
+                    e.hash.0.set(None);
+                }
+            }
+        }
+        self.set_clock_s(to);
     }
 
     pub fn mesh_epoch(&self) -> u64 {
