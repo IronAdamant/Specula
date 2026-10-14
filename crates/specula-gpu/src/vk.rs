@@ -185,6 +185,7 @@ pub const VK_FORMAT_R8G8B8A8_SRGB: VkFormat = 43;
 pub const VK_FORMAT_B8G8R8A8_SRGB: VkFormat = 50;
 pub const VK_FORMAT_R32G32B32_SFLOAT: VkFormat = 106;
 pub const VK_FORMAT_R16G16B16A16_SFLOAT: VkFormat = 97;
+pub const VK_FORMAT_R16G16_SFLOAT: VkFormat = 83;
 pub const VK_FORMAT_D16_UNORM: VkFormat = 124;
 pub const VK_FORMAT_D32_SFLOAT: VkFormat = 126;
 #[cfg_attr(not(test), allow(dead_code))] // the ID buffer (tests today)

@@ -5,7 +5,7 @@ use crate::instance::{enumerate, Instance};
 use crate::descriptors::Descriptors;
 use crate::graph::{Final, Prior, TransientPool};
 use crate::render::{
-    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, FrameContext, FrameGraph, FrameScratch,
+    check_frame, declare_frame, frame_features, write_post_slots, prepare_frame, prepare_graph, record_frame, FrameContext, FrameGraph, FrameScratch,
     FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::Textures;
@@ -355,9 +355,11 @@ impl Window {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            ssao: crate::ssao::ssao_extent(env, self.extent),
         };
         let res = declare_frame(&mut self.graph, &shape);
         prepare_graph(dev, descriptors, pool, &mut self.graph, &res)?;
+        write_post_slots(f.upload.as_ref().expect("created in init"), &self.graph, &res, frame, textures, mode);
         let descriptors = &*descriptors;
         let t2 = Instant::now();
 

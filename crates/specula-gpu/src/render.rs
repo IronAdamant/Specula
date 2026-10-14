@@ -24,7 +24,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 12] = [
+static SHADERS: [(&str, &[u8]); 15] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -37,6 +37,9 @@ static SHADERS: [(&str, &[u8]); 12] = [
     ("sky.frag", include_bytes!("../shaders/sky.frag.spv")),
     ("overlay.vert", include_bytes!("../shaders/overlay.vert.spv")),
     ("overlay.frag", include_bytes!("../shaders/overlay.frag.spv")),
+    ("depth.vert", include_bytes!("../shaders/depth.vert.spv")),
+    ("ssao.frag", include_bytes!("../shaders/ssao.frag.spv")),
+    ("ssao_blur.frag", include_bytes!("../shaders/ssao_blur.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +56,9 @@ enum Shader {
     SkyFrag = 9,
     OverlayVert = 10,
     OverlayFrag = 11,
+    DepthVert = 12,
+    SsaoFrag = 13,
+    SsaoBlurFrag = 14,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -72,6 +78,8 @@ pub const FEAT_HDR: u32 = 4;
 pub const FEAT_OPAQUE: u32 = 8;
 /// The blended pipeline: no Lit path (see the Intel note at `tint` in `shaders/mesh.frag`).
 pub const FEAT_BLENDED: u32 = 16;
+/// Screen-space ambient occlusion darkens the ambient light (opaque pipeline only).
+pub const FEAT_SSAO: u32 = 32;
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
 
@@ -160,6 +168,19 @@ pub struct FrameData {
     pub sky_ground: [f32; 4],
     /// Horizon sharpness, unused ×3.
     pub sky_params: [f32; 4],
+    /// Grading (see `shaders/composite.frag`): white-balance gains in LMS space; w contrast.
+    pub grade_balance: [f32; 4],
+    /// Lift per channel; w saturation.
+    pub grade_lift: [f32; 4],
+    /// 1 / gamma per channel; w vibrance.
+    pub grade_gamma: [f32; 4],
+    /// Gain per channel; w LUT strength.
+    pub grade_gain: [f32; 4],
+    /// Vignette, vignette radius, grain, unused.
+    pub grade_fx: [f32; 4],
+    /// Bindless slots and flags, written once the frame's graph is prepared
+    /// ([`FrameUpload::write_post_slots`]): LUT slot, LUT size, SSAO slot, grading steps.
+    pub post_slots: [u32; 4],
 }
 
 pub const FRAME_DATA_SIZE: u64 = size_of::<FrameData>() as u64;
@@ -210,6 +231,7 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
     let c = camera_position(&frame.view_proj);
     let (fog, sky_s) = (&env.fog, &env.sky);
     let sky_k = sky_s.intensity.max(0.0);
+    let grade = crate::post::grading_data(&env.grading);
     const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
     FrameData {
         view_proj: frame.view_proj,
@@ -248,6 +270,12 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
             c
         },
         sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), 0.0, 0.0, 0.0],
+        grade_balance: grade[0],
+        grade_lift: grade[1],
+        grade_gamma: grade[2],
+        grade_gain: grade[3],
+        grade_fx: grade[4],
+        post_slots: [crate::graph::NO_SLOT, 0, crate::graph::NO_SLOT, 0],
     }
 }
 
@@ -537,6 +565,17 @@ impl FrameUpload {
         }
     }
 
+    /// Write [`FrameData::post_slots`] of the frame already written (slots of graph images are
+    /// known only once the graph is prepared).
+    pub fn write_post_slots(&self, slots: [u32; 4]) {
+        // SAFETY: `mapped` holds a whole FrameData at offset 0 that the GPU no longer reads (as
+        // for `write`); the copy stays inside its `post_slots` field.
+        unsafe {
+            let dst = (self.buffer.mapped as *mut u8).add(offset_of!(FrameData, post_slots));
+            ptr::copy_nonoverlapping(slots.as_ptr() as *const u8, dst, size_of::<[u32; 4]>());
+        }
+    }
+
     pub fn frame_address(&self) -> u64 {
         self.address
     }
@@ -617,6 +656,12 @@ pub enum PipelineKey {
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
     /// or the last post pass (no depth).
     Overlay { format: VkFormat, depth: bool },
+    /// Depth-only opaque draws for SSAO (D32, compare op dynamic).
+    AoDepth,
+    /// Ambient occlusion (+ view depth) from the SSAO depth.
+    Ssao,
+    /// The depth-aware 4×4 blur of the occlusion.
+    SsaoBlur,
 }
 
 /// What vertex data a pipeline reads.
@@ -715,6 +760,21 @@ impl PipelineKey {
                 blend: Blend::Premultiplied,
                 depth_bias: false,
             },
+            PipelineKey::AoDepth => PipelineDesc {
+                vert: Shader::DepthVert,
+                frag: None,
+                spec: 0,
+                vertex: VertexInput::Position,
+                color: None,
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: None,
+                blend: Blend::Off,
+                depth_bias: false,
+            },
+            PipelineKey::Ssao => fullscreen(Shader::SsaoFrag, crate::ssao::AO_FORMAT, Blend::Off),
+            PipelineKey::SsaoBlur => fullscreen(Shader::SsaoBlurFrag, crate::ssao::AO_FORMAT, Blend::Off),
         }
     }
 }
@@ -766,6 +826,9 @@ pub struct FramePipelines {
     pub composite: VkPipeline,
     pub fxaa: VkPipeline,
     pub overlay: VkPipeline,
+    pub ao_depth: VkPipeline,
+    pub ssao: VkPipeline,
+    pub ssao_blur: VkPipeline,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -896,6 +959,9 @@ impl Pipelines {
         for blended in [false, true] {
             for features in FEATURE_SETS {
                 self.get(dev, PipelineKey::Mesh { format: color_format, blended, features })?;
+                if !blended {
+                    self.get(dev, PipelineKey::Mesh { format: color_format, blended, features: features | FEAT_SSAO })?;
+                }
             }
         }
         for fog in [false, true] {
@@ -910,6 +976,9 @@ impl Pipelines {
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
         self.get(dev, PipelineKey::BloomUp)?;
+        self.get(dev, PipelineKey::AoDepth)?;
+        self.get(dev, PipelineKey::Ssao)?;
+        self.get(dev, PipelineKey::SsaoBlur)?;
         Ok(())
     }
 
@@ -924,7 +993,7 @@ impl Pipelines {
         sky: bool,
         overlay: bool,
     ) -> Result<FramePipelines, GpuError> {
-        let scene_format = if mode.bloom() {
+        let scene_format = if mode.hdr() {
             HDR_FORMAT
         } else if mode.fxaa {
             LDR_FORMAT
@@ -937,14 +1006,17 @@ impl Pipelines {
         Ok(FramePipelines {
             layout,
             opaque: get(true, PipelineKey::Mesh { format: scene_format, blended: false, features })?,
-            blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features })?,
+            blended: get(true, PipelineKey::Mesh { format: scene_format, blended: true, features: features & !FEAT_SSAO })?,
             shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::Shadow)?,
             sky: get(sky, PipelineKey::Sky { format: scene_format, fog: features & FEAT_FOG != 0 })?,
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
-            composite: get(mode.bloom(), PipelineKey::Composite { format: composite_format })?,
+            composite: get(mode.hdr(), PipelineKey::Composite { format: composite_format })?,
             fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
+            ao_depth: get(features & FEAT_SSAO != 0, PipelineKey::AoDepth)?,
+            ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,
+            ssao_blur: get(features & FEAT_SSAO != 0, PipelineKey::SsaoBlur)?,
         })
     }
 
@@ -1222,6 +1294,7 @@ impl Pipelines {
 /// many lights.
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
     check_overlay(frame.overlay, textures)?;
+    crate::post::check_lut(&frame.environment, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
     }
@@ -1274,6 +1347,9 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
     if frame.environment.fog.enabled {
         f |= FEAT_FOG;
     }
+    if frame.environment.ssao.enabled {
+        f |= FEAT_SSAO;
+    }
     f
 }
 
@@ -1281,6 +1357,10 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FramePass {
     Shadow,
+    /// SSAO: opaque depth at the occlusion's resolution, the occlusion, its blur.
+    AoDepth,
+    Ssao,
+    SsaoBlur,
     Scene,
     /// Bloom bright pass / downsample into level `n`.
     BloomDown(u8),
@@ -1297,6 +1377,7 @@ impl FramePass {
     pub fn timing(self) -> &'static str {
         match self {
             FramePass::Shadow => PASS_SHADOW,
+            FramePass::AoDepth | FramePass::Ssao | FramePass::SsaoBlur => crate::PASS_SSAO,
             FramePass::Scene => PASS_SCENE,
             FramePass::BloomDown(_) | FramePass::BloomUp(_) => PASS_BLOOM,
             FramePass::Tonemap => PASS_TONEMAP,
@@ -1324,6 +1405,13 @@ pub struct FrameRes {
     pub blurs: [Res; MAX_BLOOM_LEVELS as usize - 1],
     pub bloom_levels: u32,
     pub fxaa: bool,
+    /// The scene renders into `hdr` (bloom or grading follows).
+    pub post_hdr: bool,
+    /// SSAO: its depth, raw occlusion and blurred occlusion (`Some` size when on).
+    pub ssao: Option<VkExtent2D>,
+    pub ao_depth: Res,
+    pub ao_raw: Res,
+    pub ao: Res,
 }
 
 /// What a frame renders into and which passes it runs.
@@ -1339,6 +1427,8 @@ pub struct FrameShape {
     /// The shadow map, when the frame renders shadows.
     pub shadow: Option<ImageDesc>,
     pub overlay: bool,
+    /// The SSAO images' size, when the frame renders SSAO ([`crate::ssao::ssao_extent`]).
+    pub ssao: Option<VkExtent2D>,
 }
 
 /// Declare a frame's passes into `g`: shadow → scene (+ overlay inline when the scene writes the
@@ -1347,7 +1437,14 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
     g.begin();
     let (w, h) = (s.extent.width, s.extent.height);
     let mode = s.mode;
-    let mut r = FrameRes { extent: s.extent, bloom_levels: mode.bloom_levels, fxaa: mode.fxaa, ..Default::default() };
+    let mut r = FrameRes {
+        extent: s.extent,
+        bloom_levels: mode.bloom_levels,
+        fxaa: mode.fxaa,
+        post_hdr: mode.hdr(),
+        ssao: s.ssao,
+        ..Default::default()
+    };
     r.out = g.import_image(s.out_name, s.format, w, h, s.prior, s.fin);
     r.depth = g.transient("depth", ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets));
     if let Some(desc) = s.shadow {
@@ -1355,22 +1452,28 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
         g.pass("shadow", FramePass::Shadow).depth(map, Load::Clear);
         r.shadow = Some(map);
     }
-    if mode.bloom() {
+    if let Some(size) = s.ssao {
+        crate::ssao::declare(g, &mut r, size);
+    }
+    if mode.hdr() {
         r.hdr = g.transient("hdr", ImageDesc::color(HDR_FORMAT, w, h, MemoryKind::PostTargets));
     }
     if mode.fxaa {
         r.ldr = g.transient("ldr", ImageDesc::color(LDR_FORMAT, w, h, MemoryKind::PostTargets));
     }
-    r.scene = if mode.bloom() {
+    r.scene = if mode.hdr() {
         r.hdr
     } else if mode.fxaa {
         r.ldr
     } else {
         r.out
     };
-    let scene = g.pass("scene", FramePass::Scene).color(r.scene, Load::Clear).depth(r.depth, Load::Clear);
+    let mut scene = g.pass("scene", FramePass::Scene).color(r.scene, Load::Clear).depth(r.depth, Load::Clear);
     if let Some(map) = r.shadow {
-        scene.sampled(map);
+        scene = scene.sampled(map);
+    }
+    if r.ssao.is_some() {
+        scene.sampled(r.ao);
     }
     let overlay = |g: &mut FrameGraph, out| {
         if s.overlay {
@@ -1400,9 +1503,15 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
                 .sampled(r.levels[i - 1])
                 .color(r.blurs[i - 1], Load::DontCare);
         }
-        let blur = if n > 1 { r.blurs[0] } else { r.levels[0] };
+    }
+    if mode.hdr() {
         let dst = if mode.fxaa { r.ldr } else { r.out };
-        g.pass("post_tonemap", FramePass::Tonemap).sampled(r.hdr).sampled(blur).color(dst, Load::DontCare);
+        let mut tonemap = g.pass("post_tonemap", FramePass::Tonemap).sampled(r.hdr);
+        if mode.bloom() {
+            let n = mode.bloom_levels as usize;
+            tonemap = tonemap.sampled(if n > 1 { r.blurs[0] } else { r.levels[0] });
+        }
+        tonemap.color(dst, Load::DontCare);
         if !mode.fxaa {
             overlay(g, r.out);
         }
@@ -1435,6 +1544,12 @@ pub fn prepare_graph(
         }
     }
     Ok(())
+}
+
+/// Write the frame data's bindless slots (LUT, SSAO) and grading steps once `g` is prepared.
+pub fn write_post_slots(upload: &FrameUpload, g: &FrameGraph, res: &FrameRes, frame: &FrameDesc, textures: &Textures, mode: PostMode) {
+    let ao_slot = if res.ssao.is_some() { g.image(res.ao).slot } else { crate::graph::NO_SLOT };
+    upload.write_post_slots(crate::post::post_slots(&frame.environment, textures, ao_slot, mode));
 }
 
 /// The pass timer, begun and ended as the frame moves between timings.
@@ -1518,9 +1633,11 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
             }
             FramePass::Scene => {
                 let clear = srgb_to_linear_rgba(ctx.frame.clear_color);
-                let clear = if res.bloom_levels > 0 { hdr_clear(clear, env.tonemap) } else { clear };
+                let clear = if res.post_hdr { hdr_clear(clear, env.tonemap) } else { clear };
                 stats = record_scene(ctx, cmd, g, p, res, clear, &mut inline);
             }
+            FramePass::AoDepth => crate::ssao::record_depth(ctx, cmd, g, p, res),
+            FramePass::Ssao | FramePass::SsaoBlur => crate::ssao::record_pass(ctx, cmd, g, p, res),
             FramePass::Overlay => {} // inline: recorded by the pass before it
             _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.upload.frame_address(), &mut inline),
         }
@@ -1723,7 +1840,10 @@ mod tests {
         assert_eq!(offset_of!(FrameData, shadow_fade), 1040);
         assert_eq!(offset_of!(FrameData, fog_color), 1056);
         assert_eq!(offset_of!(FrameData, sky_params), 1136);
-        assert_eq!(size_of::<FrameData>(), 1152);
+        assert_eq!(offset_of!(FrameData, grade_balance), 1152);
+        assert_eq!(offset_of!(FrameData, grade_fx), 1216);
+        assert_eq!(offset_of!(FrameData, post_slots), 1232);
+        assert_eq!(size_of::<FrameData>(), 1248);
     }
 
     #[test]

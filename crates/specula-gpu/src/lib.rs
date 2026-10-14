@@ -27,9 +27,10 @@
 //!
 //! # Frame passes
 //!
-//! `shadow` (sun shadow map, [`ShadowSettings`]) → `scene` (forward, all materials, the sky
-//! [`SkySettings`], height fog [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`])
-//! → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
+//! `shadow` (sun shadow map, [`ShadowSettings`]) → `ssao` (opaque depth, occlusion, blur:
+//! [`SsaoSettings`]) → `scene` (forward, all materials, the sky [`SkySettings`], height fog
+//! [`FogSettings`]) → `post_bloom` → `post_tonemap` ([`BloomSettings`], colour grading
+//! [`GradingSettings`]) → `post_fxaa` ([`Environment::fxaa`]) → `overlay` ([`FrameDesc::overlay`]). Every feature is
 //! **off by default**, and each one off is specialized out of the shaders (or its pass skipped),
 //! so a frame without it renders exactly — bit for bit — what it rendered before the feature
 //! existed. With bloom off and FXAA off the scene is tone mapped in the forward pass and written
@@ -81,6 +82,7 @@ mod overlay;
 mod post;
 mod render;
 mod shadow;
+mod ssao;
 mod stats;
 mod swapchain;
 mod timing;
@@ -194,6 +196,8 @@ pub enum ErrorReason {
     RegionOutside { x: u32, y: u32, width: u32, height: u32, texture_width: u32, texture_height: u32 },
     /// A render graph declaration was rejected (a renderer bug: passes declared inconsistently).
     Graph(GraphError),
+    /// [`GradingSettings::lut`] isn't a 3D LUT strip: `N² × N` (N = 2..=[`MAX_LUT_SIZE`]), RGBA8.
+    BadLut { width: u32, height: u32 },
 }
 
 /// A limit of the GPU layer.
@@ -647,6 +651,146 @@ impl Default for FogSettings {
     }
 }
 
+/// Colour grading in the tonemap pass. Off by default; also skipped (bit for bit) while every
+/// value is neutral.
+///
+/// Order (each step skipped when neutral): on the exposed scene light, before tone mapping —
+/// white balance (`temperature`, `tint`, in LMS cone space), `contrast` (in log space around
+/// mid grey 0.18), `saturation` and `vibrance` (around Rec. 709 luminance); then tone mapping
+/// (ACES when [`Environment::tonemap`], else a clamp); then on display values (sRGB-encoded, 0..1)
+/// — `lift` / `gamma` / `gain` (shadows / midtones / highlights per channel:
+/// `(gain · (x + lift · (1 − x)))^(1 / gamma)`), the 3D `lut`, `vignette`, `grain`.
+///
+/// With grading on, a frame that would otherwise tone map in the forward pass renders its scene
+/// to a 16-bit float image and tone maps in a post pass (as bloom does; with bloom on grading
+/// adds no pass). The overlay is drawn after grading and is never graded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradingSettings {
+    pub enabled: bool,
+    /// White balance: + warms (towards amber), − cools (towards blue). −1..1, 0 = neutral.
+    pub temperature: f32,
+    /// White balance: + towards magenta, − towards green. −1..1, 0 = neutral.
+    pub tint: f32,
+    /// 1 = neutral; above 1 darkens shadows and brightens highlights around mid grey.
+    pub contrast: f32,
+    /// 1 = neutral, 0 = grey.
+    pub saturation: f32,
+    /// Saturation that spares colours already saturated: + boosts muted colours most, − mutes
+    /// muted colours (stone, mist) while strong colours (runes, fire) keep theirs. 0 = neutral.
+    pub vibrance: f32,
+    /// Added to the shadows per channel (display space). 0 = neutral.
+    pub lift: [f32; 3],
+    /// Midtone power per channel (above 1 brightens). 1 = neutral.
+    pub gamma: [f32; 3],
+    /// Multiplies the highlights per channel. 1 = neutral.
+    pub gain: [f32; 3],
+    /// A 3D lookup table applied to display values: an uploaded texture `N² × N` (N = 2..=64,
+    /// usually 32: 1024 × 32), N slices of N × N side by side; in each slice red grows to the
+    /// right and green down the rows, blue grows from slice to slice (the layout of Unreal's LUT
+    /// strips). `Rgba8Unorm` holds display (sRGB-encoded) values as they are; `Rgba8Srgb` is
+    /// decoded by the sampler and encoded again. An identity LUT changes nothing (within 1/255).
+    pub lut: Option<TextureId>,
+    /// Blend between the graded image (0) and the LUT's output (1).
+    pub lut_strength: f32,
+    /// Darkens towards the corners: 0 = none, 1 = black corners.
+    pub vignette: f32,
+    /// Where the vignette starts, as a fraction of the distance from the centre to a corner.
+    pub vignette_radius: f32,
+    /// Film grain strength (0 = none): monochrome noise, strongest in the midtones. The pattern
+    /// changes with the frame's `time_s`, so a capture at a fixed time is reproducible.
+    pub grain: f32,
+}
+
+impl Default for GradingSettings {
+    fn default() -> Self {
+        GradingSettings {
+            enabled: false,
+            temperature: 0.0,
+            tint: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            vibrance: 0.0,
+            lift: [0.0; 3],
+            gamma: [1.0; 3],
+            gain: [1.0; 3],
+            lut: None,
+            lut_strength: 1.0,
+            vignette: 0.0,
+            vignette_radius: 0.5,
+            grain: 0.0,
+        }
+    }
+}
+
+impl GradingSettings {
+    /// On, and at least one step would change the image.
+    pub fn active(&self) -> bool {
+        self.enabled && self.steps() != 0
+    }
+
+    /// Bits of the steps that change the image (`GRADE_*` in `shaders/composite.frag`).
+    pub(crate) fn steps(&self) -> u32 {
+        let mut f = 0;
+        if self.temperature != 0.0 || self.tint != 0.0 {
+            f |= 1;
+        }
+        if self.contrast != 1.0 {
+            f |= 2;
+        }
+        if self.saturation != 1.0 || self.vibrance != 0.0 {
+            f |= 4;
+        }
+        if self.lift != [0.0; 3] || self.gamma != [1.0; 3] || self.gain != [1.0; 3] {
+            f |= 8;
+        }
+        if self.lut.is_some() && self.lut_strength != 0.0 {
+            f |= 16;
+        }
+        if self.vignette != 0.0 {
+            f |= 32;
+        }
+        if self.grain != 0.0 {
+            f |= 64;
+        }
+        f
+    }
+}
+
+/// Screen-space ambient occlusion: creases, corners and contact points lose ambient light. Off
+/// by default.
+///
+/// Opaque (`Lit`) geometry is drawn depth-only at `resolution` × the frame's size; ambient
+/// occlusion is estimated from that depth (normals reconstructed from it, `samples` per pixel
+/// in a per-pixel rotated spiral, a fixed 4×4 interleaved pattern: deterministic), blurred 4×4
+/// with depth-aware weights, and read back in the scene pass with a depth-aware upsample. It
+/// darkens **only the ambient light** (and the ambient reflections) of `Lit` surfaces; the sun,
+/// point lights and emission are untouched, so a lit face never goes grey. Blended materials
+/// are not occluded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SsaoSettings {
+    pub enabled: bool,
+    /// World-space reach of the occlusion, in metres.
+    pub radius: f32,
+    /// Strength (0 = none; 1 = the physically plausible amount; up to 4 exaggerates).
+    pub intensity: f32,
+    /// Samples per pixel, 4..=16 (cost grows linearly).
+    pub samples: u32,
+    /// Fraction of the frame's width and height the occlusion is computed at, 0.25..=1
+    /// (0.5 = a quarter of the pixels; the cost falls with the square).
+    pub resolution: f32,
+}
+
+impl Default for SsaoSettings {
+    fn default() -> Self {
+        SsaoSettings { enabled: false, radius: 0.75, intensity: 1.0, samples: 8, resolution: 0.5 }
+    }
+}
+
+/// Most SSAO samples per pixel.
+pub const MAX_SSAO_SAMPLES: u32 = 16;
+/// Largest 3D LUT edge (N of an `N² × N` strip).
+pub const MAX_LUT_SIZE: u32 = 64;
+
 /// Scene-wide lighting. The default reproduces M0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Environment {
@@ -672,6 +816,10 @@ pub struct Environment {
     pub sky: SkySettings,
     /// Exponential height fog (off by default).
     pub fog: FogSettings,
+    /// Colour grading, vignette and grain (off by default).
+    pub grading: GradingSettings,
+    /// Screen-space ambient occlusion (off by default).
+    pub ssao: SsaoSettings,
 }
 
 impl Default for Environment {
@@ -689,6 +837,8 @@ impl Default for Environment {
             fxaa: false,
             sky: SkySettings::default(),
             fog: FogSettings::default(),
+            grading: GradingSettings::default(),
+            ssao: SsaoSettings::default(),
         }
     }
 }

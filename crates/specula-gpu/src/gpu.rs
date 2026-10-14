@@ -6,7 +6,7 @@ use crate::instance::Instance;
 use crate::descriptors::Descriptors;
 use crate::graph::{Final, GraphInfo, Prior, TransientPool};
 use crate::render::{
-    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
+    check_frame, declare_frame, frame_features, write_post_slots, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
     FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
@@ -558,9 +558,11 @@ impl GpuInner {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            ssao: crate::ssao::ssao_extent(env, extent),
         };
         let res = declare_frame(&mut t.graph, &shape);
         prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
+        write_post_slots(self.upload.as_ref().expect("created in new"), &t.graph, &res, frame, &self.textures, mode);
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
         let frame_no = self.frame_no + 1;

@@ -28,6 +28,12 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     vec4 sky_horizon;   // linear RGB x intensity, w disc intensity
     vec4 sky_ground;    // linear RGB x intensity, w glow strength
     vec4 sky_params;    // horizon sharpness
+    vec4 grade_balance; // white balance LMS gains, w contrast
+    vec4 grade_lift;    // lift per channel, w saturation
+    vec4 grade_gamma;   // 1 / gamma per channel, w vibrance
+    vec4 grade_gain;    // gain per channel, w LUT strength
+    vec4 grade_fx;      // vignette, vignette radius, grain, unused
+    uvec4 post_slots;   // LUT slot, LUT size, SSAO slot, grading steps (src/post.rs)
 };
 
 // Fraction of light that crosses the height fog from `dist` metres along `dir` to the camera

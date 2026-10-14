@@ -5,6 +5,7 @@
 //   spirv-val --target-env vulkan1.3 mesh.frag.spv
 
 #include "frame.glsl"
+#extension GL_EXT_nonuniform_qualifier : require
 
 // Features (src/render.rs FEAT_*), specialized per pipeline: a pipeline without a feature runs
 // exactly the code it ran before the feature existed.
@@ -18,9 +19,13 @@ const bool OPAQUE = (FEATURES & 8u) != 0u;
 // The blended pipeline never draws Lit: leaving the Lit path out means nothing there reads the
 // vertex colour (see `tint`).
 const bool BLENDED = (FEATURES & 16u) != 0u;
+// Screen-space ambient occlusion scales the ambient terms of Lit (src/ssao.rs).
+const bool SSAO = (FEATURES & 32u) != 0u;
 
 // The sun's shadow map: one layer per cascade, compared bilinearly (2x2 PCF per tap).
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
+// The bindless textures (the SSAO image when SSAO is on).
+layout(set = 0, binding = 1) uniform sampler2D textures[];
 
 // Set once per instanced batch; must match `PushConstants` in src/render.rs.
 layout(push_constant) uniform Push {
@@ -217,6 +222,30 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec
 // Lit: opaque surfaces
 // ---------------------------------------------------------------------------------------------
 
+// Ambient visibility from the SSAO image (r = visibility, g = view depth; a fraction of the
+// frame's size): bilinear over the four nearest texels, each weighted by how close its depth is
+// to this fragment's, so occlusion stays on its own surface. 1 where nothing matches.
+float ambient_visibility() {
+    uint slot = pc.frame.post_slots.z;
+    ivec2 size = textureSize(textures[slot], 0);
+    vec2 p = gl_FragCoord.xy * vec2(size) / pc.frame.viewport.xy - 0.5;
+    ivec2 base = ivec2(floor(p));
+    vec2 t = p - floor(p);
+    float z = 1.0 / gl_FragCoord.w; // view depth (clip w)
+    float tolerance = 0.05 * z;
+    float sum = 0.0;
+    float weight = 0.0;
+    for (int k = 0; k < 4; k++) {
+        ivec2 o = ivec2(k & 1, k >> 1);
+        vec2 s = texelFetch(textures[slot], clamp(base + o, ivec2(0), size - 1), 0).rg;
+        float w = (o.x == 1 ? t.x : 1.0 - t.x) * (o.y == 1 ? t.y : 1.0 - t.y);
+        w *= max(0.0, 1.0 - abs(s.g - z) / tolerance);
+        sum += s.r * w;
+        weight += w;
+    }
+    return weight > 1e-4 ? sum / weight : 1.0;
+}
+
 vec4 shade_lit() {
     vec3 albedo = DRAW.color.rgb * tint().rgb;
     float emissive = DRAW.params.x;
@@ -230,11 +259,20 @@ vec4 shade_lit() {
     }
     vec3 diffuse, specular;
     gather_light(v_world, n, v, rough, diffuse, specular);
+    float visibility = 1.0;
+    if (SSAO) {
+        // Occlusion takes away ambient light only: gather_light started `diffuse` at ambient.
+        visibility = ambient_visibility();
+        diffuse -= pc.frame.ambient.rgb * (1.0 - visibility);
+    }
     vec3 c = albedo * (1.0 - metallic) * diffuse;
     if (spec_weight > 0.0) {
         vec3 f0 = mix(vec3(0.04), albedo, metallic);
         vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
         vec3 reflected = mix(env_radiance(reflect(-v, n)), pc.frame.ambient.rgb, rough);
+        if (SSAO) {
+            reflected *= visibility; // the surroundings' reflection is ambient light too
+        }
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
     }
     c += albedo * emissive;
