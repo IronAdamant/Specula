@@ -540,7 +540,9 @@ def measure_field(mcp, engine, name, tomb_every, adapter, check):
     print(f"    {name}: window frames {cap.get('frames')}: frame ms {cap.get('frame_ms')}")
     print(f"    {name}: GPU ms {gpu}")
     print(f"    {name}: passes p95 { {k: v.get('p95') for k, v in (cap.get('gpu_passes_ms') or {}).items()} }")
-    print(f"    {name}: CPU frame/draw_list ms mean {draw_list.get('mean_ms')} p95 {draw_list.get('p95_ms')}")
+    result["draw_cache"] = frame.get("draw_cache")
+    print(f"    {name}: CPU frame/draw_list ms mean {draw_list.get('mean_ms')} p95 {draw_list.get('p95_ms')}; "
+          f"draw cache {frame.get('draw_cache')}")
     print(f"    {name}: last window frame ({win.get('size')} px): {result['window_last_frame']}; "
           f"model LODs {(result['models'] or {}).get('lod_histogram')}")
     print(f"    {name}: view through the capture camera: {shot['image']['path']}")

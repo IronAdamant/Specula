@@ -2210,9 +2210,9 @@ impl GpuModels {
         let count = model.lods.len();
         let level = match choice {
             LodChoice::Fixed(l) => (*l).min(count - 1),
-            LodChoice::Fresh => select_lod(sphere_px(world, model, eye, fov_y_deg, viewport_h), count, None),
+            LodChoice::Fresh => select_lod(sphere_px(world, m.scale, model, eye, fov_y_deg, viewport_h), count, None),
             LodChoice::Remembered(levels) => {
-                let px = sphere_px(world, model, eye, fov_y_deg, viewport_h);
+                let px = sphere_px(world, m.scale, model, eye, fov_y_deg, viewport_h);
                 let previous = levels.get(&m.id).map(|l| *l as usize);
                 let level = select_lod(px, count, previous);
                 if previous != Some(level) {
@@ -2221,7 +2221,7 @@ impl GpuModels {
                 level
             }
             LodChoice::Slot(slot) => {
-                let px = sphere_px(world, model, eye, fov_y_deg, viewport_h);
+                let px = sphere_px(world, m.scale, model, eye, fov_y_deg, viewport_h);
                 let previous = (**slot != u8::MAX).then_some(**slot as usize);
                 let level = select_lod(px, count, previous);
                 **slot = level as u8;
@@ -2278,6 +2278,8 @@ pub struct ModelDraw {
     pub cols: [f32; 16],
     /// How far the world transform stretches a unit vector at most (scales posed spheres).
     pub stretch: f32,
+    /// [`max_axis_scale`] of `world` (sizes the bounding sphere on screen for the LOD).
+    pub scale: f32,
     pub color: [f32; 3],
 }
 
@@ -2286,15 +2288,22 @@ impl ModelDraw {
         let world = e.model();
         let c = &world.cols;
         let stretch = stretch([[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]]);
-        ModelDraw { id: e.id, handle: e.resolved_model().map(|r| r.handle), world, cols: world.to_cols_array(), stretch, color: e.color }
+        let scale = max_axis_scale(&world);
+        ModelDraw { id: e.id, handle: e.resolved_model().map(|r| r.handle), world, cols: world.to_cols_array(), stretch, scale, color: e.color }
     }
 }
 
-fn sphere_px(world: &Mat4, model: &GpuModel, eye: Vec3, fov_y_deg: f32, viewport_h: u32) -> f32 {
+/// `scale`: [`max_axis_scale`] of `world`.
+fn sphere_px(world: &Mat4, scale: f32, model: &GpuModel, eye: Vec3, fov_y_deg: f32, viewport_h: u32) -> f32 {
     let center = world.transform_point(model.center);
-    let c = &world.cols;
-    let scale = [c[0], c[1], c[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max);
     screen_px(model.radius * scale, (center - eye).length(), fov_y_deg, viewport_h)
+}
+
+/// The longest of a transform's three axis columns: how much it scales a model's bounding
+/// sphere at most.
+fn max_axis_scale(world: &Mat4) -> f32 {
+    let c = &world.cols;
+    [c[0], c[1], c[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max)
 }
 
 /// Why a build could not be uploaded.
