@@ -97,7 +97,7 @@ PROPS = [
     ("brazier", "recipes/brazier_cairn.json", {"tier": 2}, [2.3, 0, -1.4], -20,
      {"light": {"intensity": 3.0, "range": 8.0, "color": "#ff9a4a", "offset": [0, 2.1, 0]}}),
     ("ward_gltf", "imported/warding_stone_t3.glb", {}, [5.6, 0, -8.5], -25, {}),
-    ("pillar", "recipes/rune_pillar.json", {"tier": 1}, [-7.0, 0, -9.5], 30, {}),
+    ("pillar", "recipes/rune_pillar.json", {"tier": 1}, [7.6, 0, -8.0], -30, {}),
 ]
 TOMBS = [  # (position, yaw, seed, tilt)
     ([-5.2, 0, -3.6], 8, 1, 0.6), ([-3.6, 0, -4.4], -6, 2, -0.4), ([-1.6, 0, -4.9], 4, 3, 1.0),
@@ -120,7 +120,7 @@ FILM_TIMES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 HERO_TIME = 0.45
 # Shadow check: props (name, height m) whose shadows are probed, and ground no shadow reaches.
 SHADOW_CASTERS = [("ward", 2.4), ("brazier", 2.27)]
-OPEN_GROUND = [[-2.0, 0.0, 1.0], [2.0, 0.0, 2.0]]
+OPEN_GROUND = [[-2.0, 0.0, 1.0], [3.0, 0.0, 2.0]]
 
 
 def scene_ops():
@@ -340,7 +340,7 @@ def criterion_scene(mcp, out, check, tag):
     print(f"    filmstrip: {', '.join(Path(p['image']['path']).name for p in film)}")
     imgs = [decode_png(p["image"]["path"]) for p in film]
     again = decode_png(mcp.frame(time_s=FILM_TIMES[2], max_subjects=1, **HERO)["image"]["path"])
-    check(box_diff(imgs[2], again, [0, 0, HERO["width"], HERO["height"]]) == 0.0, "the same time_s renders identical pixels")
+    check(imgs[2][3] == again[3], "the same time_s renders bit-identical pixels")
     subjects = {s["name"]: s for s in full_subjects(film[0])}
     motion = {}
     for name, *_ in CHARACTERS:
