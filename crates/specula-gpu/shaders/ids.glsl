@@ -6,37 +6,7 @@
 #endif
 #include "frame.glsl"
 
-// One id per draw record, in record order (0 = not counted).
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Ids {
-    uint items[];
-};
-
-// Cleared to 0 each capture. Per id, STATS_STRIDE uints from stats_base(id):
-//   [0] blended pixels (resolve)
-//   [1] ~min x, [2] ~min y (stored inverted, so atomicMax finds the minimum), [3] max x, [4] max y
-//   [5] 1 when any fragment of the id was rasterized (no depth test)
-//   [6] 1 when the id was pushed out of some pixel's set it was drawn in (or can't enter one):
-//       its count and box are then lower bounds (plain stores of 1: same-value races are benign)
-layout(buffer_reference, std430, buffer_reference_align = 4) buffer Stats {
-    uint v[];
-};
-const uint STATS_STRIDE = 7u;
-uint stats_base(uint id) {
-    return (id - 1u) * STATS_STRIDE;
-}
-
-// Per pixel, the SEEN_SLOTS smallest blended ids drawn there this capture (unordered; claimed
-// slots form a prefix), each (epoch << SEEN_ID_BITS) | id; a slot of another capture's epoch is
-// free. Must match `SEEN_SLOTS` / `SEEN_ID_BITS`.
-// Not `coherent`: within a pass every write is an atomic and a plain read may be stale (the
-// insert swaps with atomicCompSwap against what it read; claims are permanent and a slot only
-// decreases, so a stale read only ever shows a slot free or larger than it is); between passes
-// the barriers make writes visible. Coherent loads cost an iGPU dearly.
-layout(buffer_reference, std430, buffer_reference_align = 4) buffer Seen {
-    uint slot[];
-};
-const uint SEEN_SLOTS = 4u;
-const uint SEEN_ID_BITS = 20u;
+#include "ids_core.glsl"
 
 // Must match `IdPush` in src/idbuffer.rs.
 layout(push_constant) uniform Push {
@@ -56,12 +26,22 @@ layout(push_constant) uniform Push {
 const uint FACES_ALL = 0u;   // every fragment: opaque draws, glass (both passes), blob shadows
 const uint FACES_LAVA = 2u;  // the lava lamp's proxy: near faces, or far faces from inside it
 
+// This capture's counts (see ids_core.glsl).
+IdTarget id_target() {
+    IdTarget t;
+    t.stats = pc.stats;
+    t.seen = pc.seen;
+    t.width = pc.width;
+    t.epoch = pc.epoch;
+    return t;
+}
+
 uint seen_at(uvec2 p) {
-    return (p.y * pc.width + p.x) * SEEN_SLOTS;
+    return id_seen_at(id_target(), p);
 }
 
 bool seen_current(uint v) {
-    return (v >> SEEN_ID_BITS) == pc.epoch;
+    return id_seen_current(id_target(), v);
 }
 
 // Raises `id`'s box to pixel `p` on the sides `edges` marks (the resolve calls it only for

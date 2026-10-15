@@ -20,6 +20,9 @@ pub const PASS_OVERLAY: &str = "overlay";
 /// Sight's ID buffer (captures that ask for it): ids of every drawn entity, and their copy to
 /// host memory.
 pub const PASS_ID_BUFFER: &str = "id_buffer";
+/// Sprites, tile chunks and vector shapes, drawn inside the scene pass's rendering (between the
+/// sky and the blended meshes); the scene's time excludes it.
+pub const PASS_SPRITES: &str = "sprites";
 
 /// Which entry point produced a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,6 +93,18 @@ pub struct DrawStats {
     pub shadow_triangles: u64,
     /// Overlay quads drawn (one instanced draw call, not counted in `draw_calls`).
     pub overlay_quads: u32,
+    /// 2D items drawn ([`crate::FrameDesc::draws_2d`]): sprites, tile chunks, vector shapes.
+    pub sprites: u32,
+    pub tile_chunks: u32,
+    pub shapes: u32,
+    /// 2D items skipped by frustum culling.
+    pub culled_2d: u32,
+    /// Draw calls for the 2D items (instanced; not counted in `draw_calls`).
+    pub draw_calls_2d: u32,
+    /// Triangles of the 2D items (two per sprite or tile chunk).
+    pub triangles_2d: u64,
+    /// Sprites drawn into the shadow map (into every cascade).
+    pub shadow_sprites: u32,
 }
 
 /// Why a pipeline cache blob given in [`crate::GpuOptions::pipeline_cache`] was not used.

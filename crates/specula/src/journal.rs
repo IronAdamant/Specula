@@ -1252,7 +1252,7 @@ mod tests {
         w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "ann").unwrap();
         w.set_clock_s(6.5);
         let files = crate::persist::render(&w);
-        let read = |f: &str| files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError { code: "not_found", message: f.into(), file: None, entity: None, field: None });
+        let read = |f: &str| files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError::new("not_found", f));
         let (mut loaded, _) = crate::persist::load_with(read).unwrap();
         loaded.adopt_clock(0.5);
         assert_eq!(loaded.state_hash(), w.state_hash());
@@ -1434,7 +1434,7 @@ mod tests {
         let (mut w, mut j) = live();
         spawn(&mut w, &mut j, "bob", "/a");
         let hash = w.state_hash();
-        let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None, ortho: None };
         let set = |w: &mut World, j: &mut Journal, x: f32| {
             commit(w, j, 2, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(x), true).map(|c| c.version)).unwrap()
         };
@@ -1480,7 +1480,7 @@ mod tests {
         use crate::cameras::{CameraSpec, MAX_CAMERAS_PER_AGENT};
         use specula_core::math::Vec3;
         let (mut w, mut j) = live();
-        let cam = |n: &str| CameraSpec { name: n.into(), eye: Some(Vec3::new(1.0, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        let cam = |n: &str| CameraSpec { name: n.into(), eye: Some(Vec3::new(1.0, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None, ortho: None };
         for i in 0..MAX_CAMERAS_PER_AGENT {
             commit(&mut w, &mut j, 1, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(&format!("c{i}")), true).map(|_| ())).unwrap();
         }

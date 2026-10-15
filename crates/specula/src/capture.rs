@@ -81,6 +81,8 @@ pub(crate) struct Rendered {
     pub(crate) overlays: Option<Json>,
     /// The ID buffer's entity count and cost.
     pub(crate) ids: Json,
+    /// Problems of the 2D items drawn (missing textures, frames past a sheet, ...).
+    pub(crate) two_d_problems: Vec<String>,
 }
 
 /// Set once the first lost device has been logged.
@@ -171,7 +173,9 @@ impl Engine {
                 return;
             }
         };
-        if self.building_in(&views) == 0 {
+        // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
+        // shows them as they are at the request.
+        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 {
             let _ = reply.send(self.run_job(&job, &session, wait));
             return;
         }
@@ -197,7 +201,7 @@ impl Engine {
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
             let building = match self.job_views(&w.job, &w.session) {
-                Ok(views) => self.building_in(&views),
+                Ok(views) => self.building_in(&views) + self.two_d_waiting(&views, false),
                 Err(out) => {
                     let _ = w.reply.send(out);
                     continue;
@@ -210,6 +214,11 @@ impl Engine {
                 self.capture_waiters.push(w);
             }
         }
+    }
+
+    /// 2D textures and shapes still loading that `views` would show (see `two_d_loading`).
+    fn two_d_waiting(&mut self, views: &[ViewReq], fresh: bool) -> usize {
+        views.iter().map(|v| self.two_d_loading(&v.camera.view_proj(v.width, v.height), v.include_ui, fresh)).sum()
     }
 
     /// Model entities still building that `views` would show: drawn (visible, on a layer the
@@ -259,8 +268,17 @@ impl Engine {
                 (r.camera, Json::obj(s), r.warning)
             }
             (None, Some(eye), Some(target)) => (Camera::new(eye, target, spec.fov_y_deg), source("explicit"), None),
+            // Orthographic without a camera: the 2D view of the whole XY plane.
+            _ if spec.ortho.is_some() => {
+                let aspect = spec.width as f32 / spec.height.max(1) as f32;
+                (sight::auto_camera_2d(&self.world, spec.ortho, aspect), source("auto"), None)
+            }
             _ => (sight::auto_camera(&self.world, spec.fov_y_deg), source("auto"), None),
         };
+        let mut camera = camera;
+        if let (None, Some(height_m)) = (&spec.camera, spec.ortho) {
+            camera.projection = sight::Projection::Ortho { height_m };
+        }
         Ok(ViewReq { camera, width: spec.width, height: spec.height, include_ui: spec.include_ui, source, warning })
     }
 
@@ -436,6 +454,8 @@ impl Engine {
         }
         // Models held back because their pipeline variant failed to build.
         warnings.extend(self.world.entities().filter_map(|e| self.models.pipeline_problem(e)).take(5).map(Json::from));
+        // Only problems of what this frame draws.
+        warnings.extend(r.two_d_problems.iter().map(|m| Json::from(m.as_str())));
         if r.dropped_lights > 0 {
             warnings.push(Json::from(format!(
                 "{} point light(s) not rendered: at most {} per frame",
@@ -469,12 +489,20 @@ impl Engine {
         self.lod_capture = stats;
         let (lights, dropped_lights) = sight::lights(&self.world, opts.include_ui);
         let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
+        // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
+        // one id per mesh draw, then one per 2D draw).
+        let mut draws_2d = Vec::new();
+        let mut owners_2d = Vec::new();
+        self.build_draws_2d(&view_proj, opts.include_ui, opts.time_s as f32, &mut draws_2d, Some(&mut owners_2d));
+        let two_d_problems: Vec<String> = self.two_d.problems().to_vec();
+        owners.extend_from_slice(&owners_2d);
         let (ids, entities) = sight::dense_ids(&owners);
         let target = self.offscreen_target(w, h)?;
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
         // error path just drops them).
         let bones = self.models.take_bones();
-        let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32) };
+        let mut frame =
+            FrameDesc { bones: &bones, draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32) };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
@@ -522,7 +550,7 @@ impl Engine {
         }
         let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
         self.models.put_bones(bones);
-        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json })
+        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems })
     }
 
     /// The overlay records for one view and what they drew.

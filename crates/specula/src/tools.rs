@@ -27,7 +27,10 @@ them with world_query (filters, paged) or world_list. Address an entity by id, p
 unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
 newer change. Shape 'model' builds a procedural model from a recipe file (model_build reports on one without \
-spawning). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
+spawning). 2D: shapes sprite (textured quads, sheets, flipbook animation, billboards), tilemap (layered tile grids; \
+edit cells with tilemap_set, read them with tilemap_get) and shape2d (filled / stroked vector paths) live in the \
+entity's local XY plane (metres, +Y up); a 2D game looks at the world XY plane with sight_frame view_2d \
+(orthographic, down -Z). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
 game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine); overlays (grid, axes, bounds, labels, \
 claims, skeletons, lods) draw debug aids into it. Keep your own named cameras with camera_set (fixed, or following \
@@ -72,16 +75,19 @@ const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "rou
 const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim"];
 pub(crate) const SPAWN_KEYS: &[&str] = &[
     "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
-    "params", "visible", "layer", "transient",
+    "params", "visible", "layer", "transient", "sprite", "tilemap", "shape2d",
 ];
 const SET_KEYS: &[&str] = &[
     "id", "path", "name", "expect_version", "rename", "parent", "position", "rotation_deg", "scale", "color", "profile",
-    "segments", "add_tags", "remove_tags", "recipe", "params", "visible", "layer",
+    "segments", "add_tags", "remove_tags", "recipe", "params", "visible", "layer", "sprite", "tilemap", "shape2d",
 ];
-const SHAPE_LIST: &str = "group, cube, quad, sphere, lathe or model";
+const SHAPE_LIST: &str = "group, cube, quad, sphere, lathe, model, sprite, tilemap or shape2d";
+/// The 2D components (their keys are also their shapes' names).
+const TWO_D_KEYS: [&str; 3] = ["sprite", "tilemap", "shape2d"];
 const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
 const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
-const FRAME_KEYS: &[&str] = &["width", "height", "eye", "target", "fov_y_deg", "max_subjects", "time_s", "include_ui", "lod"];
+const FRAME_KEYS: &[&str] =
+    &["width", "height", "eye", "target", "fov_y_deg", "ortho", "view_2d", "max_subjects", "time_s", "include_ui", "lod"];
 /// sight_frame's arguments beyond the view itself (cameras, overlays, subject filter).
 pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
 pub(crate) const ENV_KEYS: &[&str] = &[
@@ -182,6 +188,8 @@ pub enum Command {
     ModelReload,
     /// Cameras, orbits, compares and queries (see [`crate::sight_tools`]).
     Sight(crate::sight_tools::SightCall),
+    /// tilemap_get: cells of one layer (all layers' names when `layer` is `None`) in `region`.
+    TileGet { key: EntityKey, layer: Option<String>, region: Option<[u32; 4]> },
 }
 
 /// time_control's actions on the simulation clock.
@@ -214,6 +222,8 @@ pub struct FrameSpec {
     pub eye: Option<Vec3>,
     pub target: Option<Vec3>,
     pub fov_y_deg: f32,
+    /// Orthographic view `height_m` tall (`ortho` or `view_2d`); `None` = perspective.
+    pub ortho: Option<f32>,
     /// Subjects returned in the response (the saved packet always has all of them).
     pub max_subjects: usize,
     /// Animation time to render; `None` = the engine's current time.
@@ -325,7 +335,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             parse_env(args).map(Command::Env)
         }
         "window_view" => {
-            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "auto", "camera", "of"]])?;
+            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "ortho", "view_2d", "auto", "camera", "of"]])?;
             parse_view(args).map(Command::View)
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
@@ -399,6 +409,42 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             Ok(Command::ModelBuild(spec))
         }
         "model_reload" => check_keys(args, name, &[]).map(|()| Command::ModelReload),
+        "tilemap_set" => {
+            check_keys(args, name, &[&["id", "path", "name", "expect_version", "layer", "cells"]])?;
+            let key = entity_key(args, name)?;
+            let layer = string_arg(args, "layer")?.ok_or("'layer' is required: the layer's name")?;
+            let cells = args.get("cells").filter(|c| !c.is_null()).ok_or("'cells' is required: [[x, y, tile], ...]")?;
+            let tiles = crate::two_d::parse_tile_edits(layer, cells)?;
+            Ok(Command::Set(key, UpdateSpec { tiles: Some(tiles), expect_version: version_arg(args)?, ..Default::default() }))
+        }
+        "tilemap_get" => {
+            check_keys(args, name, &[&["id", "path", "name", "layer", "region"]])?;
+            let key = entity_key(args, name)?;
+            let region = match args.get("region").filter(|r| !r.is_null()) {
+                None => None,
+                Some(r) => {
+                    let v: Option<Vec<u64>> = r.as_array().and_then(|a| a.iter().map(Json::as_u64).collect());
+                    match v.as_deref() {
+                        Some(&[x, y, w, h])
+                            if (1..=u64::from(crate::two_d::MAX_TILEMAP_SIDE)).contains(&w)
+                                && (1..=u64::from(crate::two_d::MAX_TILEMAP_SIDE)).contains(&h)
+                                && w * h <= u64::from(crate::two_d::MAX_TILE_READ)
+                                && x < u64::from(crate::two_d::MAX_TILEMAP_SIDE)
+                                && y < u64::from(crate::two_d::MAX_TILEMAP_SIDE) =>
+                        {
+                            Some([x as u32, y as u32, w as u32, h as u32])
+                        }
+                        _ => {
+                            return Err(format!(
+                                "'region' must be [x, y, width, height] covering at most {} cells",
+                                crate::two_d::MAX_TILE_READ
+                            ))
+                        }
+                    }
+                }
+            };
+            Ok(Command::TileGet { key, layer: string_arg(args, "layer")?.map(str::to_owned), region })
+        }
         other => match crate::sight_tools::parse(other, args) {
             Some(call) => call.map(Command::Sight),
             None => Err(format!("unknown tool '{other}'")),
@@ -712,7 +758,21 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     if params.is_some() && shape != Shape::Model {
         return Err("'params' is only for shape 'model'".into());
     }
+    let two_d = two_d_arg(args)?;
+    match (&two_d, shape.is_2d()) {
+        (Some(t), true) if t.key() == shape.name() => {}
+        (None, true) if shape == Shape::Sprite => {}
+        (None, true) => return Err(format!("shape '{0}' needs '{0}' (see the tool description)", shape.name())),
+        (Some(t), _) => return Err(format!("'{0}' is only for shape '{0}'", t.key())),
+        (None, false) => {}
+    }
     let mut spec = SpawnSpec::new(shape);
+    spec.two_d = match two_d {
+        Some(t) => Some(t),
+        // A bare sprite: a 1 m flat colour quad.
+        None if shape == Shape::Sprite => Some(crate::two_d::TwoD::Sprite(Box::default())),
+        None => None,
+    };
     spec.name = name_arg(args.get("name"))?;
     spec.parent = parent_arg(args)?.flatten();
     if let Some(path) = string_arg(args, "path")? {
@@ -1021,7 +1081,7 @@ fn parse_view(args: &Json) -> Result<ViewSpec, String> {
     let named = string_arg(args, "camera")?;
     let of = string_arg(args, "of")?;
     let auto = args.get("auto").and_then(Json::as_bool) == Some(true);
-    let fixed = args.get("eye").is_some() || args.get("target").is_some();
+    let fixed = ["eye", "target", "view_2d"].iter().any(|k| args.get(k).is_some_and(|v| !v.is_null()));
     if usize::from(named.is_some()) + usize::from(auto) + usize::from(fixed) > 1 {
         return Err("window_view takes one of: 'camera' (+ 'of'), 'eye' + 'target', or 'auto': true".into());
     }
@@ -1036,8 +1096,24 @@ fn parse_view(args: &Json) -> Result<ViewSpec, String> {
     }
     let frame = parse_frame(args)?;
     match (frame.eye, frame.target) {
-        (Some(eye), Some(target)) => Ok(ViewSpec::Fixed(Camera { eye, target, fov_y_deg: frame.fov_y_deg })),
-        _ => Err("window_view needs 'eye' and 'target', 'camera' (a named camera), or 'auto': true".into()),
+        (Some(eye), Some(target)) => {
+            let mut cam = Camera::new(eye, target, frame.fov_y_deg);
+            if let Some(height_m) = frame.ortho {
+                cam.projection = crate::sight::Projection::Ortho { height_m };
+            }
+            Ok(ViewSpec::Fixed(cam))
+        }
+        _ => Err("window_view needs 'eye' and 'target' (or 'view_2d'), 'camera' (a named camera), or 'auto': true".into()),
+    }
+}
+
+/// At most one of `sprite`, `tilemap`, `shape2d`, parsed.
+fn two_d_arg(args: &Json) -> Result<Option<crate::two_d::TwoD>, String> {
+    let present: Vec<&str> = TWO_D_KEYS.into_iter().filter(|k| args.get(k).is_some_and(|v| !v.is_null())).collect();
+    match present.as_slice() {
+        [] => Ok(None),
+        [k] => crate::two_d::parse(k, args.get(k).expect("present")).map(Some),
+        _ => Err(format!("give one 2D component, not {}", present.join(" and "))),
     }
 }
 
@@ -1069,6 +1145,8 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
         params: params_arg(args)?,
         visible: bool_arg(args, "visible")?,
         layer: layer_arg(args)?,
+        two_d: two_d_arg(args)?,
+        tiles: None,
         expect_version: version_arg(args)?,
     };
     if change.is_empty() {
@@ -1225,8 +1303,32 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
             _ => return Err("'fov_y_deg' must be a number from 10 to 120".into()),
         },
     };
-    let eye = position_arg(args, "eye")?;
-    let target = position_arg(args, "target")?;
+    let mut eye = position_arg(args, "eye")?;
+    let mut target = position_arg(args, "target")?;
+    let mut ortho = match args.get("ortho").filter(|v| !v.is_null()) {
+        None => None,
+        Some(o) => {
+            check_keys(o, "'ortho'", &[&["height_m"]])?;
+            Some(num_in(o, "height_m", 0.01..=1.0e5)?.ok_or("'ortho' needs 'height_m': metres of the view's height")?)
+        }
+    };
+    if let Some(v) = args.get("view_2d").filter(|v| !v.is_null()) {
+        check_keys(v, "'view_2d'", &[&["center", "height_m", "z"]])?;
+        if eye.is_some() || target.is_some() || ortho.is_some() {
+            return Err("'view_2d' sets the camera itself: give it without eye, target or ortho".into());
+        }
+        let c: Option<Vec<f64>> = v.get("center").and_then(Json::as_array).and_then(|a| a.iter().map(Json::as_f64).collect());
+        let c = match c.as_deref() {
+            Some(&[x, y]) if x.is_finite() && y.is_finite() && x.abs() <= 1e6 && y.abs() <= 1e6 => [x as f32, y as f32],
+            _ => return Err("'view_2d.center' must be [x, y] (metres)".into()),
+        };
+        let height_m = num_in(v, "height_m", 0.01..=1.0e5)?.ok_or("'view_2d' needs 'height_m': metres of the view's height")?;
+        let z = num_in(v, "z", -1.0e6..=1.0e6)?.unwrap_or(0.0);
+        let cam = Camera::view_2d(c[0], c[1], height_m);
+        eye = Some(Vec3::new(cam.eye.x, cam.eye.y, z + 100.0));
+        target = Some(Vec3::new(cam.target.x, cam.target.y, z));
+        ortho = Some(height_m);
+    }
     match (eye, target) {
         (Some(_), None) | (None, Some(_)) => {
             return Err("give both 'eye' and 'target', or neither (auto-framing)".into());
@@ -1242,6 +1344,7 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         eye,
         target,
         fov_y_deg,
+        ortho,
         max_subjects: int("max_subjects", 50, 1..=500)? as usize,
         time_s: num_in(args, "time_s", 0.0..=1.0e6)?,
         include_ui: bool_arg(args, "include_ui")?.unwrap_or(false),
@@ -1388,6 +1491,47 @@ fn definitions() -> Vec<ToolDef> {
         ]);
     };
     let boolean = |desc: &str| Json::obj([("type", Json::from("boolean")), ("description", Json::from(desc))]);
+    let two_d = |props: &mut Vec<(&str, Json)>| {
+        props.extend([
+            (
+                "sprite",
+                described(
+                    "sprite only: {texture (.png under the assets root; none = a flat colour quad), size [w,h] m \
+                     (default [1,1]), pivot [x,y] 0..1 ((0,0) bottom left, default centre), uv [u0,v0,u1,v1] or \
+                     sheet {frame_px [w,h], margin, spacing} + frame (index) or anim {first, count, fps, playback \
+                     loop|once|pingpong}, flip [x,y], billboard none|spherical|cylindrical, blend blended|cutout \
+                     (+ cutoff 0..1; cutout writes depth), filter linear|nearest (pixel art), pixel_snap \
+                     (orthographic views), lit, cast_shadows (cutout only), z_layer (higher draws over lower)}. The \
+                     quad lies in the entity's local XY plane facing +Z; color + opacity tint it",
+                ),
+            ),
+            (
+                "tilemap",
+                described(
+                    "tilemap only: {tileset (.png), tile_px [w,h] (tile size in the tileset; tiles numbered from 1, \
+                     left to right then top to bottom; 0 = empty), margin, spacing, tile_size [w,h] m (default \
+                     [1,1]), size [columns, rows] (at most 1024 each), filter nearest|linear (default nearest), \
+                     pixel_snap, lit, animations [{tile, frames, frame_ms}], layers [{name, z_layer, blend \
+                     cutout|blended, cutoff, opacity, rows: [\"1*10,0*3,7h\", ...]}] (up to 8)}. Row 0 is the \
+                     top row; the entity's origin is the map's top-left corner and rows go down local -Y. A cell \
+                     token is a tile number plus h (mirror x), v (mirror y), d (swap axes) or r1..r3 (quarter \
+                     turns clockwise); N*count repeats. Edit cells with tilemap_set; listings show a summary",
+                ),
+            ),
+            (
+                "shape2d",
+                described(
+                    "shape2d only: {items: [{one of rect [x,y,w,h] (+ radius), circle [cx,cy,r], ellipse \
+                     [cx,cy,rx,ry], polygon [[x,y],...], polyline [[x,y],...], path [[\"M\",x,y],[\"L\",x,y], \
+                     [\"Q\",cx,cy,x,y],[\"C\",c1x,c1y,c2x,c2y,x,y],[\"A\",cx,cy,rx,ry,start_deg,sweep_deg],[\"Z\"]]; \
+                     fill \"#rrggbb(aa)\" and/or stroke {width m, color, join miter|round|bevel, cap \
+                     butt|square|round, miter_limit}}], tolerance (m, default 0.005), aa (default true: one-pixel \
+                     soft edges), z_layer}. Coordinates are metres in the entity's local XY plane; contours \
+                     inside others are holes (even-odd)",
+                ),
+            ),
+        ]);
+    };
     let string_array = |desc: &str| {
         Json::obj([
             ("type", Json::from("array")),
@@ -1505,7 +1649,10 @@ fn definitions() -> Vec<ToolDef> {
                                          cube and sphere are 1 m across; quad is a 1×1 m floor tile in XZ facing up; \
                                          lathe spins 'profile' around +Y (vases, bottles, lamp bases); model builds \
                                          'recipe' (with 'params' and 'seed') into a mesh with LODs and its style's \
-                                         materials, resting on y = 0; its color tints it (default white = as authored)",
+                                         materials, resting on y = 0; its color tints it (default white = as authored); \
+                                         sprite, tilemap and shape2d are 2D in the entity's local XY plane (metres, +Y \
+                                         up, facing +Z), described by the field of the same name; for a 2D game look \
+                                         at the XY plane with sight_frame view_2d",
                                     ),
                                 ),
                             ]),
@@ -1541,6 +1688,7 @@ fn definitions() -> Vec<ToolDef> {
                     look(&mut props);
                     presentation(&mut props);
                     components(&mut props);
+                    two_d(&mut props);
                     props
                 },
                 &["shape"],
@@ -1574,6 +1722,45 @@ fn definitions() -> Vec<ToolDef> {
                     look(&mut props);
                     presentation(&mut props);
                     components(&mut props);
+                    two_d(&mut props);
+                    props
+                },
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "tilemap_set".into(),
+            description: "Write cells of one layer of a tilemap entity, all at once (one journaled, claim-checked \
+                          change; only the touched chunks are re-uploaded). cells: [[x, y, tile], ...] with x the \
+                          column and y the row (0 = top), tile a number (0 clears) or a token like \"7h\" or \"3r1\" \
+                          (see world_spawn tilemap). Up to 65536 cells per call. Returns the new version."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut props = Vec::new();
+                    target(&mut props);
+                    props.extend([
+                        ("layer", string("Layer name")),
+                        ("cells", described("[[x, y, tile], ...]: tile = number or cell token")),
+                    ]);
+                    props
+                },
+                &["layer", "cells"],
+            ),
+        },
+        ToolDef {
+            name: "tilemap_get".into(),
+            description: "Read cells of a tilemap entity as run-length rows (the same tokens tilemap_set and world \
+                          files use): one layer, a region of at most 4096 cells. Without layer, lists the layers."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut props = Vec::new();
+                    target(&mut props);
+                    props.extend([
+                        ("layer", string("Layer name")),
+                        ("region", described("[x, y, width, height] in cells (default: from (0, 0), up to 64 x 64)")),
+                    ]);
                     props
                 },
                 &[],
@@ -1732,6 +1919,20 @@ fn definitions() -> Vec<ToolDef> {
                     ("eye", vec3("Camera position (give with target)")),
                     ("target", vec3("Point the camera looks at (give with eye; must differ from eye)")),
                     ("fov_y_deg", Json::obj([("type", Json::from("number")), ("description", Json::from("Vertical field of view, 10..120 (default 50)"))])),
+                    (
+                        "ortho",
+                        described(
+                            "{height_m}: an orthographic camera (parallel rays) showing height_m metres top to bottom; \
+                             with eye/target, or alone to frame the world's XY plane from +Z",
+                        ),
+                    ),
+                    (
+                        "view_2d",
+                        described(
+                            "{center [x, y], height_m, z (default 0)}: the 2D camera - orthographic, looking down -Z \
+                             at the XY plane, +Y up on screen; instead of eye/target/ortho",
+                        ),
+                    ),
                     ("max_subjects", integer("Subjects to include in the response, 1..500 (default 50)")),
                     (
                         "time_s",
@@ -1835,6 +2036,8 @@ fn definitions() -> Vec<ToolDef> {
                     ("fov_y_deg", number("Vertical field of view, 10..120 (default 50)")),
                     ("camera", string("A named camera (camera_set) to look through")),
                     ("of", string("With camera: the agent whose camera it is (default: yours)")),
+                    ("ortho", described("{height_m}: orthographic, with eye and target")),
+                    ("view_2d", described("{center [x, y], height_m, z}: the 2D camera (orthographic, down -Z, +Y up)")),
                     ("auto", Json::obj([("type", Json::from("boolean")), ("description", Json::from("true: auto-frame the world"))])),
                 ],
                 &[],
@@ -1849,8 +2052,10 @@ fn definitions() -> Vec<ToolDef> {
                           `problems` listing effects that can't apply as {error, message, ...}, and \
                           `render_graph`: the last frame's graph summary (passes, barriers, compiles); with \
                           `graph: true`, every pass with the resources it reads and writes and the barriers the \
-                          graph inserts. \
-                          Budgets come from perf.toml (per adapter kind). The window and the last capture are \
+                          graph inserts; `shape_budgets`: {shape2d_vertices, transient_shape2d_vertices}, each \
+                          {used, limit, shapes}: the vertex bounds of the world's distinct shape2d shapes \
+                          (persistent entities, and transient ones a game spawns) against their limits. \
+                          Budgets come from perf.toml (per adapter kind; the shape budgets once, in [budgets]). The window and the last capture are \
                           reported separately."
                 .into(),
             input_schema: schema(
@@ -2074,7 +2279,8 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "engine_info".into(),
             description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
-                          changes, state hash) and the connected agents with their roles."
+                          changes, state hash, shape_budgets: {shape2d_vertices, transient_shape2d_vertices} each \
+                          {used, limit, shapes}, as in perf_frame) and the connected agents with their roles."
                 .into(),
             input_schema: schema(vec![], &[]),
         },
@@ -2118,6 +2324,26 @@ mod tests {
     }
 
     #[test]
+    fn tile_tools_check_their_arguments() {
+        for bad in [
+            r#"{"path":"/m","region":[0,0,4294967296,4294967296]}"#,
+            r#"{"path":"/m","region":[0,0,18446744073709551615,2]}"#,
+            r#"{"path":"/m","region":[0,0,65,64]}"#,
+            r#"{"path":"/m","region":[5000,0,1,1]}"#,
+            r#"{"path":"/m","region":[0,0,0,1]}"#,
+        ] {
+            assert!(parse("tilemap_get", &args(bad)).is_err(), "{bad}");
+        }
+        assert!(parse("tilemap_get", &args(r#"{"path":"/m","region":[1000,1000,64,64]}"#)).is_ok());
+        assert!(parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[0,0,"\u00e9"]]}"#)).is_err());
+        assert!(parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[2000,0,1]]}"#)).is_err());
+        match parse("tilemap_set", &args(r#"{"path":"/m","layer":"g","cells":[[1,2,"7h"]],"expect_version":3}"#)) {
+            Ok(Command::Set(_, u)) => assert_eq!((u.tiles.map(|t| t.cells.len()), u.expect_version), (Some(1), Some(3))),
+            _ => panic!("tilemap_set is a world_set of tiles"),
+        }
+    }
+
+    #[test]
     fn spawn_rejects_bad_input() {
         let long = format!(r#"{{"shape":"cube","name":"{}"}}"#, "n".repeat(129));
         for bad in [
@@ -2137,7 +2363,7 @@ mod tests {
         ] {
             assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere, lathe or model");
+        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere, lathe, model, sprite, tilemap or shape2d");
     }
 
     #[test]

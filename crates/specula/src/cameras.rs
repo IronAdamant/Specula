@@ -43,6 +43,9 @@ pub struct CameraSpec {
     pub target: Option<Vec3>,
     pub fov_y_deg: f32,
     pub follow: Option<Follow>,
+    /// Orthographic, this many metres of the view tall (a 2D game's camera); `None` =
+    /// perspective (`fov_y_deg`).
+    pub ortho: Option<f32>,
 }
 
 /// Follow an entity (see the module docs).
@@ -75,6 +78,9 @@ impl NamedCamera {
     pub fn to_json(&self) -> Json {
         let s = &self.spec;
         let mut fields = vec![("name", Json::from(s.name.as_str())), ("fov_y_deg", Json::from(s.fov_y_deg))];
+        if let Some(h) = s.ortho {
+            fields.push(("ortho", Json::obj([("height_m", Json::from(h))])));
+        }
         match &s.follow {
             Some(f) => fields.extend([
                 ("follow", Json::from(f.path.as_str())),
@@ -176,7 +182,7 @@ impl Cameras {
         let spec = &cam.spec;
         let Some(f) = &spec.follow else {
             let (eye, target) = (spec.eye.expect("checked at set"), spec.target.expect("checked at set"));
-            return Ok(Resolved { camera: Camera::new(eye, target, spec.fov_y_deg), warning: None, version });
+            return Ok(Resolved { camera: projected(Camera::new(eye, target, spec.fov_y_deg), spec.ortho), warning: None, version });
         };
         // Borrowed lookups; an entry is made (allocating) only the first time.
         if !self.follows.get(owner).is_some_and(|m| m.contains_key(name)) {
@@ -203,7 +209,7 @@ impl Cameras {
                 };
                 let (eye, target) = (origin + turn(f.offset), origin + turn(f.look_offset));
                 let target = if (target - eye).length() < 1e-4 { target + Vec3::new(0.0, 0.0, -1.0) } else { target };
-                let camera = Camera::new(eye, target, spec.fov_y_deg);
+                let camera = projected(Camera::new(eye, target, spec.fov_y_deg), spec.ortho);
                 slot.last = Some(camera);
                 Ok(Resolved { camera, warning: None, version })
             }
@@ -235,6 +241,14 @@ impl Cameras {
     }
 }
 
+/// `camera` with the spec's projection.
+fn projected(mut camera: Camera, ortho: Option<f32>) -> Camera {
+    if let Some(height_m) = ortho {
+        camera.projection = crate::sight::Projection::Ortho { height_m };
+    }
+    camera
+}
+
 pub(crate) fn not_found(name: &str, of: Option<&str>) -> CameraError {
     let whose = of.map_or("you have".to_owned(), |a| format!("agent '{a}' has"));
     CameraError::new("camera_not_found", format!("{whose} no camera named '{name}' (camera_list shows them)"))
@@ -262,6 +276,7 @@ mod tests {
             target: Some(Vec3::ZERO),
             fov_y_deg: 50.0,
             follow: None,
+            ortho: None,
         }
     }
 
@@ -296,6 +311,14 @@ mod tests {
         let (all, omitted) = list_all(&world, 10);
         assert_eq!((all.len(), omitted), (1, 0), "ann only; bob has none left");
         assert_eq!(world.delete_cameras("ann", None).unwrap(), 2);
+        // A 2D game's camera keeps its projection through camera_set's form (and the world file).
+        let flat = CameraSpec { ortho: Some(12.0), ..fixed("map", [0.0, 0.0, 100.0]) };
+        world.set_camera_t("ann", flat).unwrap();
+        let saved = list(&world, "ann")[0].to_json();
+        assert_eq!(saved.get("ortho").and_then(|o| o.get("height_m")).and_then(Json::as_f64), Some(12.0));
+        assert_eq!(NamedCamera::from_json(&saved).unwrap().spec.ortho, Some(12.0));
+        let r = c.resolve("ann", "map", None, &world).unwrap();
+        assert_eq!(r.camera.projection, crate::sight::Projection::Ortho { height_m: 12.0 });
     }
 
     #[test]
@@ -343,7 +366,7 @@ mod tests {
         world.spawn(s, "t").unwrap();
         let mut c = Cameras::default();
         let follow = Follow { path: "/runner".into(), offset: Vec3::new(0.0, 2.0, 5.0), look_offset: Vec3::ZERO, local: false };
-        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow), ortho: None }).unwrap();
         let r = c.resolve("ann", "chase", None, &world).unwrap();
         assert_eq!((r.camera.eye, r.camera.target), (Vec3::new(10.0, 2.0, 5.0), Vec3::new(10.0, 0.0, 0.0)));
         // It moves: the camera moves with it.
@@ -354,7 +377,7 @@ mod tests {
         assert_eq!(r.camera.eye, Vec3::new(20.0, 2.0, 5.0));
         // Local offsets turn with it: +Z behind becomes +X after a 90 degree yaw.
         let local = Follow { path: "/runner".into(), offset: Vec3::new(0.0, 0.0, 5.0), look_offset: Vec3::ZERO, local: true };
-        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(local) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(local), ortho: None }).unwrap();
         let eye = c.resolve("ann", "chase", None, &world).unwrap().camera.eye;
         assert!((eye - Vec3::new(25.0, 0.0, 0.0)).length() < 1e-4, "{eye:?}");
         // Gone: the last view, with a warning.
@@ -362,7 +385,7 @@ mod tests {
         let r = c.resolve("ann", "chase", None, &world).unwrap();
         assert!((r.camera.eye - eye).length() < 1e-6 && r.warning.unwrap().contains("no longer exists"));
         let never = Follow { path: "/ghost".into(), offset: Vec3::ONE, look_offset: Vec3::ZERO, local: false };
-        world.set_camera_t("ann", CameraSpec { name: "g".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(never) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "g".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(never), ortho: None }).unwrap();
         assert_eq!(c.resolve("ann", "g", None, &world).err().unwrap().code, "follow_target_missing");
         // Deleted cameras' remembered views go.
         world.delete_cameras("ann", None).unwrap();

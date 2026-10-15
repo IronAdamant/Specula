@@ -33,6 +33,7 @@
 //! the live world (on the engine thread; unchanged subtrees cost nothing), and [`execute`] renders
 //! and writes it.
 
+use crate::two_d::ShapeLimits;
 use crate::tools::{check_keys, parse_env, parse_spawn_fields, ENV_KEYS};
 use crate::world::{color_json_exact, material_name, vec3_json, Entity, Layer, Look, World, WorldError};
 use specula_core::hash::hash_str;
@@ -47,10 +48,11 @@ pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 30] = [
+const RECORD_KEYS: [&str; 33] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
+    "sprite", "tilemap", "shape2d",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "time_s", "env", "subtrees", "cameras", "entities"];
 const CAMERAS_KEYS: &[&str] = &["format", "cameras"];
@@ -67,11 +69,13 @@ pub struct PersistError {
     pub file: Option<String>,
     pub entity: Option<String>,
     pub field: Option<String>,
+    /// More machine-readable details (a world limit's `limit` and `value`); boxed, as they are rare.
+    pub details: Option<Box<Vec<(&'static str, Json)>>>,
 }
 
 impl PersistError {
-    fn new(code: &'static str, message: impl Into<String>) -> PersistError {
-        PersistError { code, message: message.into(), file: None, entity: None, field: None }
+    pub fn new(code: &'static str, message: impl Into<String>) -> PersistError {
+        PersistError { code, message: message.into(), file: None, entity: None, field: None, details: None }
     }
 
     fn in_file(mut self, file: &str) -> PersistError {
@@ -99,6 +103,7 @@ impl PersistError {
         let mut f = vec![("error", Json::from(self.code)), ("message", Json::from(self.message.as_str()))];
         let opt = |v: &Option<String>| v.as_deref().map_or(Json::Null, Json::from);
         f.extend([("file", opt(&self.file)), ("entity", opt(&self.entity)), ("field", opt(&self.field))]);
+        f.extend(self.details.iter().flat_map(|d| d.iter()).filter(|(k, _)| *k != "field").cloned());
         Json::obj(f)
     }
 }
@@ -445,6 +450,9 @@ fn record(e: &Entity, path: &str) -> Json {
         if let Some(s) = m.seed {
             f.push(("seed", Json::from(s)));
         }
+    }
+    if let Some(t) = &e.two_d {
+        f.push((t.key(), t.to_json()));
     }
     if !e.visible {
         f.push(("visible", Json::from(false)));
@@ -823,9 +831,16 @@ pub fn save(world: &World, dir: &Path, previous: Option<&Saved>) -> Result<(Save
     execute(plan(world, dir, previous))
 }
 
-/// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally.
+/// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally
+/// (default shape budgets; see [`load_limited`]).
 pub fn load(dir: &Path) -> Result<(World, Saved), PersistError> {
-    let (world, mut saved) = load_with(|file| {
+    load_limited(dir, ShapeLimits::default())
+}
+
+/// [`load`] with the shape budgets the world is checked against while loading (and keeps): a
+/// file whose shapes pass them is refused as a whole.
+pub fn load_limited(dir: &Path, limits: ShapeLimits) -> Result<(World, Saved), PersistError> {
+    let (world, mut saved) = load_with_limits(limits, |file| {
         std::fs::read_to_string(dir.join(file)).map_err(|e| {
             let code = if e.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" };
             PersistError::new(code, format!("{}: {e}", dir.join(file).display())).in_file(file)
@@ -837,7 +852,15 @@ pub fn load(dir: &Path) -> Result<(World, Saved), PersistError> {
 
 /// [`load`] over any file source (tests read from memory). Only files listed in `world.json` are
 /// read.
-pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<(World, Saved), PersistError> {
+pub fn load_with(read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<(World, Saved), PersistError> {
+    load_with_limits(ShapeLimits::default(), read)
+}
+
+/// [`load_with`] with the shape budgets (see [`load_limited`]).
+pub fn load_with_limits(
+    limits: ShapeLimits,
+    mut read: impl FnMut(&str) -> Result<String, PersistError>,
+) -> Result<(World, Saved), PersistError> {
     let index = parse_doc(INDEX, &read(INDEX)?)?;
     let bad = |field: &str, message: &str| PersistError::new("invalid_world", message).in_file(INDEX).field(field);
     check_keys(&index, INDEX, &[INDEX_KEYS]).map_err(|m| bad(&quoted_field(&m).unwrap_or_default(), &m))?;
@@ -896,6 +919,7 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
         Some(v) => v.as_f64().filter(|c| c.is_finite() && c.abs() <= 1.0e9).ok_or_else(|| bad("time_s", "'time_s' must be a number of seconds"))?,
     };
     let mut world = World::default();
+    world.set_shape_limits(limits);
     world.set_clock_s(time_s);
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
@@ -1007,9 +1031,13 @@ fn quoted_field(message: &str) -> Option<String> {
     message.split('\'').nth(1).filter(|f| !f.is_empty() && !f.contains(' ')).map(str::to_owned)
 }
 
+/// A world error while loading: the file is invalid, except that a world limit (a `limit` error,
+/// e.g. too many distinct shape2d vertices) keeps its code and details, so the whole load is
+/// refused for that reason and nothing loaded can later be broken by someone else's change.
 fn from_world(e: WorldError, file: &str, entity: Option<&str>) -> PersistError {
     let field = e.detail("field").and_then(Json::as_str).map(str::to_owned);
-    PersistError { code: "invalid_world", message: e.message, file: Some(file.to_owned()), entity: entity.map(str::to_owned), field }
+    let (code, details) = if e.code == "limit" { ("limit", Some(Box::new(e.details))) } else { ("invalid_world", None) };
+    PersistError { code, message: e.message, file: Some(file.to_owned()), entity: entity.map(str::to_owned), field, details }
 }
 
 fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) -> Result<(), PersistError> {
@@ -1025,6 +1053,7 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             file: Some(file.to_owned()),
             entity: Some(path.map_or_else(|| format!("entities[{i}]"), str::to_owned)),
             field,
+            details: None,
         };
         let Some(path) = path else { return Err(fail(Some("path".into()), "every entity needs a 'path'".into())) };
         let fields = rec.as_object().ok_or_else(|| fail(None, "entities must be objects".into()))?;
@@ -1051,7 +1080,8 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             _ => Err(fail(Some(key.into()), format!("'{key}' must be a string"))),
         };
         let (created_by, modified_by) = (text("created_by")?, text("modified_by")?);
-        let spec = parse_spawn_fields(rec).map_err(|m| fail(quoted_field(&m), m))?;
+        // Shapes are tessellated later, off the engine thread (and identical ones only once).
+        let spec = crate::two_d::deferred(|| parse_spawn_fields(rec)).map_err(|m| fail(quoted_field(&m), m))?;
         world.restore(spec, id, version, &created_by, &modified_by).map_err(|e| from_world(e, file, Some(path)))?;
     }
     Ok(())
@@ -1153,6 +1183,46 @@ mod tests {
             assert_eq!(b.model().to_cols_array().map(f32::to_bits), e.model().to_cols_array().map(f32::to_bits));
         }
         assert_eq!(files(&back), saved, "saving the loaded world gives the same bytes");
+    }
+
+    #[test]
+    fn two_d_entities_save_load_and_edit_bit_exact() {
+        use crate::tools::parse_spawn_fields;
+        let mut w = sample();
+        let spawn = |w: &mut World, text: &str| {
+            let spec = parse_spawn_fields(&Json::parse(text).unwrap()).unwrap();
+            w.spawn(spec, "erin").unwrap().id
+        };
+        spawn(&mut w, r#"{"shape":"sprite","name":"hero","position":[1,2,0],"sprite":{"texture":"sprites/hero.png","sheet":{"frame_px":[16,16]},"anim":{"count":4,"fps":8},"filter":"nearest","blend":"cutout","z_layer":2}}"#);
+        let map = spawn(
+            &mut w,
+            r#"{"shape":"tilemap","name":"map","tilemap":{"tileset":"tiles/set.png","tile_px":[16,16],"size":[40,40],
+                "animations":[{"tile":9,"frames":2,"frame_ms":200}],
+                "layers":[{"name":"ground","rows":["1*40","2,3h,4r1"]},{"name":"top","blend":"blended","rows":["","0,9"]}]}}"#,
+        );
+        spawn(&mut w, r##"{"shape":"shape2d","name":"badge","shape2d":{"items":[{"circle":[0,0,0.5],"fill":"#ff000080","stroke":{"width":0.05}}]}}"##);
+        spawn(&mut w, r#"{"shape":"sprite","name":"dot"}"#);
+        let edits = crate::two_d::parse_tile_edits("top", &Json::parse(r#"[[39,39,"5h"],[0,0,7]]"#).unwrap()).unwrap();
+        let before = w.state_hash();
+        w.update(&EntityKey::Id(map), UpdateSpec { tiles: Some(edits), ..Default::default() }, "erin").unwrap();
+        assert_ne!(w.state_hash(), before, "tile edits change the state hash");
+        let saved = files(&w);
+        let back = reload(&saved).unwrap();
+        assert_eq!(back.state_hash(), w.state_hash());
+        assert_eq!(files(&back), saved, "saving the loaded world gives the same bytes");
+        let m = back.get(map).unwrap();
+        let Some(crate::two_d::TwoD::Tilemap(t)) = &m.two_d else { panic!("tilemap") };
+        assert_eq!(t.layers[1].cells.get(39, 39).orient, specula_gpu::ORIENT_FLIP_X);
+        assert_eq!(t.layers[1].cells.get(1, 1).frames, 2, "animation re-derived on load");
+        // Listings are bounded: no cells.
+        assert!(!m.to_json("/map").to_string().contains("rows"));
+        assert!(m.local_bounds().is_some());
+        // Edits to a non-tilemap or a missing layer are refused and change nothing.
+        let bad = crate::two_d::parse_tile_edits("nope", &Json::parse("[[0,0,1]]").unwrap()).unwrap();
+        assert!(w.update(&EntityKey::Id(map), UpdateSpec { tiles: Some(bad), ..Default::default() }, "erin").is_err());
+        let hero = EntityKey::Path("/hero".into());
+        let ok = crate::two_d::parse_tile_edits("ground", &Json::parse("[[0,0,1]]").unwrap()).unwrap();
+        assert!(w.update(&hero, UpdateSpec { tiles: Some(ok), ..Default::default() }, "erin").is_err());
     }
 
     #[test]
@@ -1263,13 +1333,14 @@ mod tests {
         use crate::cameras::{CameraSpec, Follow};
         let mut w = sample();
         let hash = w.state_hash();
-        let fixed = CameraSpec { name: "overview".into(), eye: Some(Vec3::new(0.1, 9.0, 16.0)), target: Some(Vec3::ZERO), fov_y_deg: 55.0, follow: None };
+        let fixed = CameraSpec { name: "overview".into(), eye: Some(Vec3::new(0.1, 9.0, 16.0)), target: Some(Vec3::ZERO), fov_y_deg: 55.0, follow: None, ortho: None };
         let chase = CameraSpec {
             name: "chase".into(),
             eye: None,
             target: None,
             fov_y_deg: 60.0,
             follow: Some(Follow { path: "/slab".into(), offset: Vec3::new(0.0, 1.6, 4.0), look_offset: Vec3::new(0.0, 1.0, 0.0), local: true }),
+            ortho: None,
         };
         w.set_camera("ann", fixed.clone(), true).unwrap();
         w.set_camera("ann", fixed, true).unwrap(); // version 2
@@ -1319,7 +1390,7 @@ mod tests {
         assert_eq!((loaded.len(), skipped.len()), (crate::cameras::MAX_CAMERAS_PER_AGENT, 2), "{skipped:?}");
         // Cameras of agents without a name (no agent_hello) aren't saved.
         let mut session_only = sample();
-        let tmp = CameraSpec { name: "tmp".into(), eye: Some(Vec3::ONE), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        let tmp = CameraSpec { name: "tmp".into(), eye: Some(Vec3::ONE), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None, ortho: None };
         session_only.set_camera("claude-code-abc123", tmp, false).unwrap();
         assert!(!files(&session_only).contains_key("cameras.1.json"));
         // No subtree ever takes the cameras stem.
@@ -1332,7 +1403,7 @@ mod tests {
         use crate::cameras::CameraSpec;
         let dir = temp_dir("cameras");
         let mut w = sample();
-        let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 9.0, 16.0)), target: Some(Vec3::ZERO), fov_y_deg: 55.0, follow: None };
+        let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 9.0, 16.0)), target: Some(Vec3::ZERO), fov_y_deg: 55.0, follow: None, ortho: None };
         w.set_camera("ann", cam(0.0), true).unwrap();
         let (saved, _) = save(&w, &dir, None).unwrap();
         let first = saved.cameras.clone().unwrap().0;

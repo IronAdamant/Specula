@@ -79,6 +79,14 @@
 //! (morphs, wind) or discards fragments must be mirrored here, or the ID buffer disagrees with
 //! the image.
 //!
+//! **2D items** (sprites, tile chunks, vector shapes) take ids too: `render_with_ids`'s ids list
+//! the mesh draws then the 2D draws, and each step draws the 2D plan's batches after its meshes,
+//! with the scene's own vertex code and texel cuts (`ids_sprite.glsl`, `ids_shape.frag`, sharing
+//! `sprite_vert.glsl` / `sprite_texel.glsl` / `shape_vert.glsl` with the scene): cutouts write
+//! opaque ids (depth tested "or equal" and written, as in the scene), blended items and shapes
+//! join the id sets, and every item marks itself rasterized. Their shaders find the capture's
+//! buffers through an [`IdParams2d`] pointer in the 2D push constants' padding.
+//!
 //! The window path never declares these passes.
 
 use crate::batch::Plan;
@@ -137,6 +145,18 @@ pub struct IdPush {
     pub bones: u64,
 }
 
+
+/// What the 2D ID shaders read through their push constants' padding; must match `IdParams` in
+/// `shaders/sprite.glsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct IdParams2d {
+    pub ids: u64,
+    pub stats: u64,
+    pub seen: u64,
+    pub width: u32,
+    pub epoch: u32,
+}
 
 /// Every fragment the rasteriser produces is shown: opaque draws, glass (the scene draws its back
 /// faces, then its front faces), blob shadows.
@@ -200,6 +220,12 @@ pub struct IdFrame {
     pub insert: [VkPipeline; 2],
     pub raster: [VkPipeline; 4],
     pub resolve: VkPipeline,
+    /// 2D items: sprites and tile chunks by step (opaque = cutouts, insert, raster) and vector
+    /// shapes (insert, raster); `VK_NULL_HANDLE` where they don't run.
+    pub sprite: [VkPipeline; 3],
+    pub shape: [VkPipeline; 2],
+    /// Device address of this capture's [`IdParams2d`] (0 without 2D draws).
+    pub params_2d: u64,
     pub layout: VkPipelineLayout,
     /// Device address of the per-record ids.
     pub ids_address: u64,
@@ -418,6 +444,83 @@ unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, st
     }
 }
 
+/// Draws the frame's 2D batches `step` wants (opaque: cutout sprites and tile chunks; insert:
+/// blended ones and shapes; raster: all), in the scene's order, with the scene's depth test (or
+/// equal: a later layer wins ties, as in the scene).
+///
+/// # Safety
+/// `cmd` is recording inside the `id_buffer` rendering instance, the descriptor set bound for
+/// `f.layout`; the 2D plan's records are in the frame upload; shape meshes are live (`check_2d`).
+unsafe fn draw_2d(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: Step) {
+    use crate::sprite::{BatchKind, QUAD_MESH};
+    let plan = &ctx.scratch.two_d;
+    if plan.batches.is_empty() || f.params_2d == 0 {
+        return;
+    }
+    let dev = ctx.dev;
+    let items = ctx.upload.items_address(ctx.scratch.records.len(), ctx.scratch.overlay.len(), ctx.frame.bones.len());
+    let mut push = plan.push(ctx.upload.frame_address(), items);
+    // The padding after `mode` holds the IdParams2d pointer (see `shaders/sprite.glsl`).
+    push.pad = [f.params_2d as u32, (f.params_2d >> 32) as u32];
+    let compare = if ctx.frame.reverse_z { VK_COMPARE_OP_GREATER_OR_EQUAL } else { VK_COMPARE_OP_LESS_OR_EQUAL };
+    let mut bound = VK_NULL_HANDLE;
+    let mut bound_mesh = None;
+    for b in &plan.batches {
+        let pipeline = match (step, b.kind) {
+            (Step::Opaque, BatchKind::Cutout) => f.sprite[0],
+            (Step::Insert, BatchKind::Blended) => f.sprite[1],
+            (Step::Insert, BatchKind::Shape(_)) => f.shape[0],
+            (Step::Raster, BatchKind::Shape(_)) => f.shape[1],
+            (Step::Raster, _) => f.sprite[2],
+            _ => VK_NULL_HANDLE,
+        };
+        if pipeline == VK_NULL_HANDLE {
+            continue;
+        }
+        // SAFETY: as the caller promises; every referenced struct outlives its call; the push
+        // covers SpritePush's 128 bytes at most.
+        unsafe {
+            if pipeline != bound {
+                (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                if bound == VK_NULL_HANDLE {
+                    (dev.fns.cmd_push_constants)(
+                        cmd,
+                        f.layout,
+                        PUSH_STAGES,
+                        0,
+                        size_of::<crate::sprite::SpritePush>() as u32,
+                        &push as *const crate::sprite::SpritePush as *const c_void,
+                    );
+                }
+                if step != Step::Raster {
+                    (dev.fns.cmd_set_depth_compare_op)(cmd, compare);
+                }
+                bound = pipeline;
+            }
+            match b.kind {
+                BatchKind::Shape(mesh) => {
+                    let Some(m) = ctx.meshes.get(&mesh.0) else { continue };
+                    if bound_mesh != Some(mesh.0) {
+                        let offset: VkDeviceSize = 0;
+                        (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &m.buffer.handle, &offset);
+                        (dev.fns.cmd_bind_index_buffer)(cmd, m.buffer.handle, m.index_offset, VK_INDEX_TYPE_UINT32);
+                        bound_mesh = Some(mesh.0);
+                    }
+                    (dev.fns.cmd_draw_indexed)(cmd, m.index_count, b.count, 0, 0, b.first);
+                }
+                _ => {
+                    let Some(q) = ctx.meshes.get(&QUAD_MESH) else { continue };
+                    if bound_mesh != Some(QUAD_MESH) {
+                        (dev.fns.cmd_bind_index_buffer)(cmd, q.buffer.handle, q.index_offset, VK_INDEX_TYPE_UINT32);
+                        bound_mesh = Some(QUAD_MESH);
+                    }
+                    (dev.fns.cmd_draw_indexed)(cmd, 6, b.count, 0, 0, b.first);
+                }
+            }
+        }
+    }
+}
+
 fn record_id_buffer(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize, f: &IdFrame) {
     let (dev, frame) = (ctx.dev, ctx.frame);
     let color = g.color_attachment(p, f.res.ids, [0.0; 4]); // 0 bits: no id
@@ -446,9 +549,11 @@ fn record_id_buffer(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p:
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
         ctx.descriptors.bind(dev, cmd, f.layout);
-        // Opaque draws, then blended ones, then all of them.
+        // Opaque draws, then blended ones, then all of them; each step's 2D items after its
+        // meshes (as the scene draws them after its opaque meshes).
         for step in [Step::Opaque, Step::Insert, Step::Raster] {
             draw_batches(ctx, cmd, f, step, compare);
+            draw_2d(ctx, cmd, f, step);
         }
         (dev.fns.cmd_end_rendering)(cmd);
     }
@@ -541,6 +646,8 @@ impl Grown {
 #[derive(Default)]
 pub struct IdResources {
     upload: Option<Grown>,
+    /// The 2D ID shaders' [`IdParams2d`].
+    params_2d: Option<Grown>,
     scratch: Vec<u32>,
     readback: Option<Grown>,
     stats: Option<Grown>,
@@ -582,21 +689,29 @@ impl IdResources {
         &mut self,
         dev: &Device,
         pipelines: &mut Pipelines,
-        plan: &Plan,
-        draws: &[crate::DrawItem],
+        plans: (&Plan, &crate::sprite::Plan2d),
+        frame: &crate::FrameDesc,
         draw_ids: &[u32],
         res: IdRes,
         target: u32,
         extent: VkExtent2D,
         graph: &mut FrameGraph,
     ) -> Result<IdFrame, GpuError> {
+        let (plan, plan_2d) = plans;
+        let draws = frame.draws;
         record_ids(plan, draw_ids, &mut self.scratch);
+        // The 2D records' ids follow the meshes' (the 2D plan's order; `draw_ids` gives the 2D
+        // draws theirs after the mesh draws').
+        let ids_2d_at = self.scratch.len();
+        let ids_2d = &draw_ids[draws.len().min(draw_ids.len())..];
+        self.scratch.extend(plan_2d.order.iter().map(|&i| ids_2d.get(i as usize).copied().unwrap_or(0)));
         let addr = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         let upload = Grown::ensure(&mut self.upload, dev, (self.scratch.len().max(1) * 4) as u64, addr, Memory::Upload, "id upload")?;
         // SAFETY: `mapped` is coherent host memory of at least `scratch.len()` u32s that the GPU
         // no longer reads (offscreen renders wait for completion).
         unsafe { ptr::copy_nonoverlapping(self.scratch.as_ptr(), upload.buffer.mapped as *mut u32, self.scratch.len()) };
         let ids_address = upload.address;
+        let ids_2d_address = upload.address + ids_2d_at as u64 * 4;
         let pixels = extent.width as u64 * extent.height as u64;
         let readback = Grown::ensure(&mut self.readback, dev, pixels * BYTES_PER_PIXEL, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id readback")?;
         let readback = readback.buffer.handle;
@@ -605,6 +720,16 @@ impl IdResources {
         let mut has_blended = vec![false; max_id as usize];
         for (d, &id) in draws.iter().zip(draw_ids) {
             if id != 0 && d.material.blended() {
+                has_blended[(id - 1) as usize] = true;
+            }
+        }
+        for (d, &id) in frame.draws_2d.iter().zip(ids_2d) {
+            let blended = match d {
+                crate::Draw2d::Sprite(s) => s.blend == crate::SpriteBlend::Blended,
+                crate::Draw2d::Tiles(t) => t.blend == crate::SpriteBlend::Blended,
+                crate::Draw2d::Shape(_) => true,
+            };
+            if id != 0 && blended {
                 has_blended[(id - 1) as usize] = true;
             }
         }
@@ -645,12 +770,35 @@ impl IdResources {
             stats_host = Grown::ensure(&mut self.stats_host, dev, stats_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id stats readback")?.buffer.handle;
             raster = streams(IdPass::Raster);
         }
+        // 2D items: cutouts always (opaque ids); blended items and shapes through the sets.
+        let built = |pass: IdPass, shape: bool| pipelines.built(PipelineKey::Ids2d { pass, shape }).unwrap_or(VK_NULL_HANDLE);
+        let mut sprite = [built(IdPass::Opaque, false), VK_NULL_HANDLE, VK_NULL_HANDLE];
+        let mut shape = [VK_NULL_HANDLE; 2];
+        if count_blended {
+            if insert[0] != VK_NULL_HANDLE {
+                (sprite[1], shape[0]) = (built(IdPass::Insert, false), built(IdPass::Insert, true));
+            }
+            (sprite[2], shape[1]) = (built(IdPass::Raster, false), built(IdPass::Raster, true));
+        }
+        // Where the 2D ID shaders find the counts (a pointer in their push constants' padding).
+        let mut params_address = 0;
+        if !plan_2d.batches.is_empty() {
+            let p = Grown::ensure(&mut self.params_2d, dev, size_of::<IdParams2d>() as u64, addr, Memory::Upload, "id 2d params")?;
+            let params = IdParams2d { ids: ids_2d_address, stats: stats_address, seen: seen_address, width: extent.width, epoch: self.epoch };
+            // SAFETY: `mapped` is coherent host memory of at least one IdParams2d that the GPU no
+            // longer reads (offscreen renders wait for completion); the mapping is 8-byte aligned.
+            unsafe { ptr::write(p.buffer.mapped as *mut IdParams2d, params) };
+            params_address = p.address;
+        }
         self.pending = Some(Last { target, extent, max_id, blended_counted: count_blended, has_blended, cleared: seen_clear });
         Ok(IdFrame {
             opaque: streams(IdPass::Opaque),
             insert,
             raster,
             resolve,
+            sprite,
+            shape,
+            params_2d: params_address,
             layout: pipelines.layout,
             ids_address,
             stats,
@@ -757,7 +905,10 @@ impl IdResources {
     }
 
     pub fn destroy(&mut self, dev: &Device) {
-        for g in [self.upload.take(), self.readback.take(), self.stats.take(), self.stats_host.take(), self.seen.take()].into_iter().flatten() {
+        for g in [self.upload.take(), self.params_2d.take(), self.readback.take(), self.stats.take(), self.stats_host.take(), self.seen.take()]
+            .into_iter()
+            .flatten()
+        {
             dev.destroy_buffer(&g.buffer);
         }
     }

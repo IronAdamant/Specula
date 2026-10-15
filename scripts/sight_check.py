@@ -310,6 +310,26 @@ def main():
                   f"the posed runner's exact box {ex} lies in its projected box {pr}", failures)
         builder.json("world_set", path="/runner", anim=False)
 
+        print("2D items in the ID buffer (orthographic view_2d)")
+        builder.json("world_batch", ops=[
+            {"op": "spawn", "shape": "sprite", "name": "sprite_behind", "position": [100, 0, 0], "color": "#e0c040",
+             "sprite": {"size": [2, 2], "pivot": [0.5, 0.5], "blend": "cutout"}},
+            {"op": "spawn", "shape": "cube", "name": "sprite_wall", "position": [100, 0, 1], "scale": [3, 3, 0.2], "color": "#606a78"},
+            {"op": "spawn", "shape": "sprite", "name": "sprite_open", "position": [104, 0, 0], "color": "#40c0e0",
+             "sprite": {"size": [2, 2], "pivot": [0.5, 0.5], "blend": "cutout"}},
+            {"op": "spawn", "shape": "sprite", "name": "sprite_soft", "position": [104, 3, 0], "color": "#ffffff", "opacity": 0.5,
+             "sprite": {"size": [2, 1], "pivot": [0.5, 0.5]}},
+        ])
+        flat, _ = save("frame_2d_ids", builder.call("sight_frame", view_2d={"center": [102, 1], "height_m": 10}, width=320, height=320,
+                                                    time_s=1, max_subjects=50))
+        behind, open_, soft = (subject(flat, p) for p in ("/sprite_behind", "/sprite_open", "/sprite_soft"))
+        check(behind is not None and behind["visible_px"] == 0 and behind.get("occluded") is True,
+              f"a sprite behind a wall shows 0 pixels, occluded ({behind and {k: behind.get(k) for k in ('visible_px', 'occluded')}})", failures)
+        # 32 px per metre: a 2 m sprite is 64 x 64 px; the half-transparent one 64 x 32 (blended).
+        check(open_ is not None and open_["visible_px"] == 64 * 64, f"an open sprite counts its pixels ({open_ and open_['visible_px']})", failures)
+        check(soft is not None and soft["visible_px"] == 64 * 32, f"a blended sprite counts through the sets ({soft and soft['visible_px']})", failures)
+        builder.json("world_batch", ops=[{"op": "delete", "path": p} for p in ("/sprite_behind", "/sprite_wall", "/sprite_open", "/sprite_soft")])
+
         print("ID buffer cost at 1280x720")
         costs = []
         for _ in range(6):

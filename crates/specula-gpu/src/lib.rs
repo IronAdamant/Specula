@@ -16,8 +16,9 @@
 //!   draw's colour; white is neutral), D32 depth test (LESS with clear 1, or GREATER with clear 0
 //!   when [`FrameDesc::reverse_z`] is set — use `perspective_vk_reverse_z`).
 //! - Opaque draws ([`Material::Lit`]) come first, with no face culling; then the sky (if on);
-//!   then blended draws (every other material), sorted far to near, with depth test on and depth
-//!   writes off; then the overlay, last, over everything, after post-processing.
+//!   then the 2D items ([`FrameDesc::draws_2d`]: sprites, tile chunks, vector shapes; see
+//!   [`Draw2d`]); then blended draws (every other material), sorted far to near, with depth test
+//!   on and depth writes off; then the overlay, last, over everything, after post-processing.
 //! - With the default [`Environment`] and [`Surface`], a `Lit` draw is shaded exactly as in M0:
 //!   `lit = color * (0.25 + 0.75 * max(dot(n, l), 0))`, light direction ≈ normalize(0.4, 0.8, 0.45).
 //! - Per-frame data (camera, environment, lights, time, shadow cascades, fog, sky) and one record
@@ -107,6 +108,7 @@
 use std::ffi::c_void;
 use std::fmt;
 
+mod atlas;
 mod batch;
 mod descriptors;
 mod device;
@@ -120,14 +122,20 @@ mod overlay;
 mod post;
 mod render;
 mod shadow;
+mod sprite;
 mod ssao;
 mod stats;
 mod swapchain;
+mod tilemap;
 mod timing;
+pub mod vector;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
+pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
+pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};
+pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
 pub use render::{BackgroundFault, PipelineVariants, VariantFailure};
 pub use stats::*;
@@ -406,7 +414,9 @@ pub struct TargetId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureId(pub u32);
 
-/// How a material texture is filtered.
+/// How a texture is filtered: material textures, and sprite and tileset textures (whose
+/// bilinear filtering stays half a texel inside the item's own rect, so atlas neighbours never
+/// bleed in; `Nearest` gives crisp pixel art).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextureFilter {
     Nearest,
@@ -1060,6 +1070,9 @@ pub struct FrameDesc<'a> {
     pub time_s: f32,
     /// Drawn last, over everything, in list order (at most [`MAX_OVERLAY_QUADS`]).
     pub overlay: &'a [OverlayQuad],
+    /// Sprites, tile chunks and vector shapes in the world (see [`Draw2d`]): drawn in the scene
+    /// pass after the opaque meshes and the sky, sorted by layer, then far to near.
+    pub draws_2d: &'a [Draw2d],
     /// Skinning matrices (column-major, bind pose → pose, object space) of every skinned draw,
     /// palettes one after another (see [`DrawItem::skin`]); at most [`MAX_BONE_MATRICES`].
     pub bones: &'a [[f32; 16]],
@@ -1076,6 +1089,7 @@ impl Default for FrameDesc<'_> {
             lights: &[],
             time_s: 0.0,
             overlay: &[],
+            draws_2d: &[],
             bones: &[],
         }
     }
@@ -1227,8 +1241,8 @@ impl Gpu {
     }
 
     /// [`Gpu::render`] plus sight's **ID buffer** (see `idbuffer.rs`): `ids` gives each draw of
-    /// `frame` an id, small and dense (0 = not counted; one per draw, else a structured
-    /// `DataLength` error). After it, [`Gpu::id_coverage`] says what each id covers: its nearest
+    /// `frame` an id, small and dense (0 = not counted): one per mesh draw, then one per 2D draw
+    /// (`draws_2d`), else a structured `DataLength` error. After it, [`Gpu::id_coverage`] says what each id covers: its nearest
     /// opaque pixels, its blended pixels in front of the opaque depth (glass behind glass
     /// included; glass hides nothing), their exact box, and whether it rasterized at all. The
     /// rendered image is identical to `render`'s. Offscreen only: the window never runs these

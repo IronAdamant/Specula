@@ -35,6 +35,7 @@
 use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::Json;
+use crate::two_d::{TileEdits, TwoD};
 use specula_gpu::{Environment, Material, Surface};
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -207,6 +208,17 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
     if (s.shape == Shape::Model) != s.model.is_some() {
         return Err(invalid("recipe", "'recipe' is required for shape 'model' and only allowed for it".into()));
     }
+    match (&s.two_d, s.shape.is_2d()) {
+        (Some(t), true) if t.key() == s.shape.name() => {}
+        (None, false) => {}
+        _ => {
+            let name = s.shape.name();
+            return Err(invalid(
+                if s.shape.is_2d() { name } else { s.two_d.as_ref().map_or(name, TwoD::key) },
+                format!("shape '{name}' needs its '{name}' component, and only sprite, tilemap and shape2d take one"),
+            ));
+        }
+    }
     if let Some(m) = &s.model {
         m.check()?;
         if s.look.surface.seed != 0.0 {
@@ -306,10 +318,26 @@ pub enum Shape {
     Lathe,
     /// A procedural model built from a recipe file (see [`ModelSpec`]).
     Model,
+    /// A textured quad in the local XY plane, or a billboard (see [`crate::two_d`]).
+    Sprite,
+    /// Layers of tiles on a grid in the local XY plane (see [`crate::two_d`]).
+    Tilemap,
+    /// Filled and stroked vector paths in the local XY plane (see [`crate::two_d`]).
+    Shape2d,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 6] = [Shape::Group, Shape::Cube, Shape::Quad, Shape::Sphere, Shape::Lathe, Shape::Model];
+    pub const ALL: [Shape; 9] = [
+        Shape::Group,
+        Shape::Cube,
+        Shape::Quad,
+        Shape::Sphere,
+        Shape::Lathe,
+        Shape::Model,
+        Shape::Sprite,
+        Shape::Tilemap,
+        Shape::Shape2d,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -319,7 +347,15 @@ impl Shape {
             Shape::Sphere => "sphere",
             Shape::Lathe => "lathe",
             Shape::Model => "model",
+            Shape::Sprite => "sprite",
+            Shape::Tilemap => "tilemap",
+            Shape::Shape2d => "shape2d",
         }
+    }
+
+    /// Drawn by the 2D renderer from a [`TwoD`] component.
+    pub fn is_2d(self) -> bool {
+        matches!(self, Shape::Sprite | Shape::Tilemap | Shape::Shape2d)
     }
 
     pub fn parse(s: &str) -> Option<Shape> {
@@ -1172,6 +1208,8 @@ pub struct Entity {
     pub body: Option<Body>,
     /// Present exactly when `shape` is [`Shape::Model`].
     pub model: Option<ModelSpec>,
+    /// Present exactly when `shape` is a 2D shape ([`Shape::is_2d`]).
+    pub two_d: Option<TwoD>,
     /// Model entities only: the animation playing (its `start` always set).
     pub anim: Option<AnimSpec>,
     /// `false` hides the entity and everything below it: not drawn, not a sight subject, not in
@@ -1267,6 +1305,7 @@ impl Entity {
             (Shape::Model, _) => self.resolved.and_then(|r| r.bounds),
             (Shape::Lathe, Some(p)) => Some(p.bounds()),
             (Shape::Quad, _) => Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5))),
+            (Shape::Sprite | Shape::Tilemap | Shape::Shape2d, _) => self.two_d.as_ref().map(TwoD::bounds),
             _ => Some((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))),
         }
     }
@@ -1330,6 +1369,9 @@ impl Entity {
         }
         if let Some(p) = &self.profile {
             fields.push(("profile", p.to_json()));
+        }
+        if let Some(t) = &self.two_d {
+            fields.push((t.key(), t.listing_json()));
         }
         if let Some(m) = &self.model {
             fields.push(("recipe", Json::from(m.recipe.as_str())));
@@ -1441,6 +1483,9 @@ impl Entity {
         if self.layer != Layer::World {
             h.write_str(self.layer.name());
         }
+        if let Some(t) = &self.two_d {
+            t.hash_into(h);
+        }
         if let Some(a) = &self.anim {
             h.write_str("anim");
             a.hash_into(h);
@@ -1494,6 +1539,8 @@ pub struct SpawnSpec {
     pub body: Option<Body>,
     /// Required for [`Shape::Model`], refused for other shapes.
     pub model: Option<ModelSpec>,
+    /// Required for the 2D shapes (of the matching kind), refused for others.
+    pub two_d: Option<TwoD>,
     /// Model entities only (see [`AnimSpec`]; an unset `start` becomes 0).
     pub anim: Option<AnimSpec>,
     pub visible: bool,
@@ -1522,6 +1569,7 @@ impl SpawnSpec {
             collider: None,
             body: None,
             model: None,
+            two_d: None,
             anim: None,
             visible: true,
             layer: Layer::World,
@@ -1570,6 +1618,10 @@ pub struct UpdateSpec {
     pub anim: Option<Option<AnimSpec>>,
     pub visible: Option<bool>,
     pub layer: Option<Layer>,
+    /// 2D entities only: replaces the component (of the same kind).
+    pub two_d: Option<TwoD>,
+    /// Tile maps only: cells to write (`tilemap_set`).
+    pub tiles: Option<TileEdits>,
     /// Reject the change unless the entity is still at this version.
     pub expect_version: Option<u64>,
 }
@@ -1593,6 +1645,8 @@ impl UpdateSpec {
             && self.anim.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
+            && self.two_d.is_none()
+            && self.tiles.is_none()
     }
 
     /// No field would change (`expect_version` alone is not a change).
@@ -1617,6 +1671,8 @@ impl UpdateSpec {
             && self.anim.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
+            && self.two_d.is_none()
+            && self.tiles.is_none()
     }
 }
 
@@ -1830,6 +1886,7 @@ impl Change {
                 + e.profile.as_ref().map_or(0, |p| ALLOC + p.points.len() * 8)
                 + json_heap(&e.props)
                 + e.collider.as_ref().map_or(0, |c| heap(&c.layer))
+                + e.two_d.as_ref().map_or(0, TwoD::heap_bytes)
                 + e.model.as_ref().map_or(0, |m| {
                     heap(&m.recipe) + ALLOC + m.params.iter().map(|(k, _)| std::mem::size_of::<(String, f64)>() + heap(k)).sum::<usize>()
                 })
@@ -1928,11 +1985,11 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 36] = [
+pub const FIELDS: [&str; 39] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
-    "params", "visible", "layer", "transient", "model_state", "anim",
+    "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -1990,6 +2047,20 @@ pub struct World {
     /// Bumped whenever an entity is linked, unlinked, renamed or moved to another parent: path
     /// lookups cached against it stay valid while it holds (follow cameras, every frame).
     layout_epoch: u64,
+    /// The distinct vector shapes of the persistent entities, against their vertex budget.
+    shapes: crate::two_d::ShapeBudget,
+    /// The same for transient entities (game presentation), against a budget of their own.
+    transient_shapes: crate::two_d::ShapeBudget,
+    /// The two budgets (perf.toml `[budgets]`).
+    shape_limits: crate::two_d::ShapeLimits,
+}
+
+/// The shape2d spec of an entity's 2D component, if it has one.
+fn shape_spec(t: Option<&TwoD>) -> Option<&crate::two_d::Shape2dSpec> {
+    match t {
+        Some(TwoD::Shape2d(s)) => Some(s),
+        _ => None,
+    }
 }
 
 impl World {
@@ -2484,6 +2555,7 @@ impl World {
         // Below a transient parent everything is transient (it is never saved, so neither could
         // its children be).
         let transient = spec.transient || parent.is_some_and(|p| self.entities[&p].transient);
+        self.check_shapes(shape_spec(spec.two_d.as_ref()), None, transient)?;
         let resolved = match &spec.model {
             Some(m) => self.resolve_model(m)?,
             None => None,
@@ -2530,6 +2602,7 @@ impl World {
             collider: spec.collider,
             body: spec.body,
             model: spec.model,
+            two_d: spec.two_d,
             anim: spec.anim.map(|mut a| {
                 a.start.get_or_insert(0.0);
                 a
@@ -2646,6 +2719,29 @@ impl World {
                 format!("'{}' is a {}; only model entities have a recipe and params", e.name, e.shape.name()),
             )
             .with("field", field));
+        }
+        // A 2D component's new value, worked out before anything changes.
+        let mut new_two_d = None;
+        if change.two_d.is_some() || change.tiles.is_some() {
+            let field = if change.two_d.is_some() { "two_d" } else { "tiles" };
+            let wrong = |want: &str| {
+                WorldError::new("invalid_component", format!("'{}' is a {}; {want}", e.name, e.shape.name())).with("field", field)
+            };
+            let mut next = match change.two_d.take() {
+                Some(t) if Some(t.key()) == e.two_d.as_ref().map(TwoD::key) => t,
+                Some(t) => return Err(wrong(&format!("only {} entities take a '{}'", t.key(), t.key()))),
+                None => e.two_d.clone().ok_or_else(|| wrong("only tilemap entities have tiles"))?,
+            };
+            if let Some(edits) = change.tiles.take() {
+                match &mut next {
+                    TwoD::Tilemap(t) => {
+                        std::sync::Arc::make_mut(t).apply(&edits).map_err(|m| crate::two_d::invalid("cells", m))?;
+                    }
+                    _ => return Err(wrong("only tilemap entities have tiles")),
+                }
+            }
+            self.check_shapes(shape_spec(Some(&next)), shape_spec(e.two_d.as_ref()), e.transient)?;
+            new_two_d = Some(next);
         }
         // A model's new spec, resolved before anything changes (a broken recipe changes nothing).
         let mut new_model = None;
@@ -2788,6 +2884,16 @@ impl World {
         }
         if let Some(l) = change.layer {
             e.layer = l;
+        }
+        if let Some(t) = new_two_d {
+            let pool = if e.transient { &mut self.transient_shapes } else { &mut self.shapes };
+            if let Some(TwoD::Shape2d(s)) = &e.two_d {
+                pool.release(s);
+            }
+            if let TwoD::Shape2d(s) = &t {
+                pool.charge(s);
+            }
+            e.two_d = Some(t);
         }
         e.version += 1;
         e.hash.0.set(None);
@@ -2942,6 +3048,9 @@ impl World {
         if e.transient {
             self.transient_count += 1;
         }
+        if let Some(TwoD::Shape2d(s)) = &e.two_d {
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
+        }
         self.entities.insert(e.id, e);
     }
 
@@ -2954,7 +3063,79 @@ impl World {
         if e.transient {
             self.transient_count -= 1;
         }
+        if let Some(s) = shape_spec(e.two_d.as_ref()) {
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.release(s);
+        }
         Some(e)
+    }
+
+    /// The distinct vector shapes of the persistent entities and their vertex bounds.
+    pub fn shape_budget(&self) -> &crate::two_d::ShapeBudget {
+        &self.shapes
+    }
+
+    /// The distinct vector shapes of the transient entities (game presentation).
+    pub fn transient_shape_budget(&self) -> &crate::two_d::ShapeBudget {
+        &self.transient_shapes
+    }
+
+    pub fn shape_limits(&self) -> crate::two_d::ShapeLimits {
+        self.shape_limits
+    }
+
+    /// Usage of the two shape budgets, by their perf.toml names:
+    /// `{shape2d_vertices: {used, limit, shapes}, transient_shape2d_vertices: {…}}` (`used`: the
+    /// vertex bounds of the distinct shapes; `shapes`: how many distinct shapes).
+    pub fn shape_budgets_json(&self) -> Json {
+        let pool = |b: &crate::two_d::ShapeBudget, limit: usize| {
+            Json::obj([("used", Json::from(b.vertices())), ("limit", Json::from(limit)), ("shapes", Json::from(b.distinct()))])
+        };
+        Json::obj([
+            ("shape2d_vertices", pool(&self.shapes, self.shape_limits.persistent)),
+            ("transient_shape2d_vertices", pool(&self.transient_shapes, self.shape_limits.transient)),
+        ])
+    }
+
+    /// Sets the two shape budgets (perf.toml). Shapes already in the world stay, whatever the new
+    /// limits; only later changes are checked against them.
+    pub fn set_shape_limits(&mut self, limits: crate::two_d::ShapeLimits) {
+        self.shape_limits = limits;
+    }
+
+    /// Refuses an entity's shape going from `old` to `new` when the distinct shapes of its
+    /// pool (persistent or `transient` entities) would pass that pool's budget (identical shapes
+    /// count once). The budgets are separate so game effects can never crowd out authored
+    /// content, and a refusal says exactly what an effect costs.
+    fn check_shapes(
+        &self,
+        new: Option<&crate::two_d::Shape2dSpec>,
+        old: Option<&crate::two_d::Shape2dSpec>,
+        transient: bool,
+    ) -> Result<(), WorldError> {
+        let Some(n) = new else { return Ok(()) };
+        let (pool, max, budget) = if transient {
+            (&self.transient_shapes, self.shape_limits.transient, "transient_shape2d_vertices")
+        } else {
+            (&self.shapes, self.shape_limits.persistent, "shape2d_vertices")
+        };
+        let total = pool.after(new, old);
+        if total <= max || total <= pool.vertices() {
+            return Ok(());
+        }
+        let whose = if transient { "transient (game-spawned) shape2d shapes" } else { "world's distinct shape2d shapes" };
+        Err(WorldError::new(
+            "limit",
+            format!(
+                "the {whose} would need up to {total} vertices; at most {max} ({budget} in perf.toml; this one: up to {}; \
+                 identical shapes count once: reuse one, delete unused ones, or use fewer items or a larger tolerance)",
+                n.vertices
+            ),
+        )
+        .with("field", "shape2d")
+        .with("budget", budget)
+        .with("limit", max)
+        .with("value", total)
+        .with("shape_vertices", n.vertices))
     }
 
     /// Recomputes the world transforms (and the inherited visibility and layer) of `id` and
@@ -3316,6 +3497,9 @@ impl World {
         if e.transient {
             self.transient_count -= 1;
         }
+        if let Some(s) = shape_spec(e.two_d.as_ref()) {
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.release(s);
+        }
         Some(e)
     }
 
@@ -3344,9 +3528,12 @@ impl World {
             }
         }
         match self.children.get(&(e.parent.unwrap_or(ROOT), e.name.clone())) {
-            Some(&other) if other != e.id => Err(self.name_taken(&e.name, other)),
-            _ => Ok(()),
+            Some(&other) if other != e.id => return Err(self.name_taken(&e.name, other)),
+            _ => {}
         }
+        // Entities keep their kind (ids are per kind), so the old state's shape is in the same pool.
+        let old = self.entities.get(&e.id).and_then(|o| shape_spec(o.two_d.as_ref()));
+        self.check_shapes(shape_spec(e.two_d.as_ref()), old, e.transient)
     }
 
     /// Ids of `id` and everything below it, children before their parents.

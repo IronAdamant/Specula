@@ -48,7 +48,7 @@ fn resolving_a_follow_camera_every_frame_allocates_nothing() {
     cart.parent = Some(EntityKey::Id(parent));
     let id = world.spawn(cart, "t").unwrap().id;
     let follow = Follow { path: "/wave/runner_3".into(), offset: Vec3::new(0.0, 2.0, 5.0), look_offset: Vec3::ZERO, local: true };
-    let spec = CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow) };
+    let spec = CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow), ortho: None };
     world.set_camera("ann", spec, true).unwrap();
     let mut cameras = Cameras::default();
     cameras.resolve("ann", "chase", None, &world).unwrap(); // warm up

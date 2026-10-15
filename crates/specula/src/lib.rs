@@ -28,6 +28,7 @@ pub mod sight_overlay;
 mod sight_tools;
 pub mod swarm;
 mod tools;
+pub mod two_d;
 mod ui;
 pub mod world;
 
@@ -37,8 +38,9 @@ use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
+use specula_core::math::Mat4;
 use specula_core::{base64, png, profile, Json};
-use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -72,6 +74,9 @@ const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
+
+/// Distinct in-view texture files a capture stats on the engine thread (more go to the loader).
+const MAX_CAPTURE_STATS: usize = 256;
 /// The model library forgets what no entity uses at most this often (after the world's models
 /// changed).
 const GC_EVERY: Duration = Duration::from_secs(1);
@@ -220,6 +225,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         kind,
         if perf_cfg.has_adapter_section(kind) { ", with its own section" } else { "" }
     );
+    engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
@@ -228,7 +234,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // Owned for as long as this engine works in it: a second engine is refused, not interleaved.
         engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
-            let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            let (world, saved) = persist::load_limited(&dir, engine.world.shape_limits())
+                .map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
             for problem in engine.replace_world(world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
                 eprintln!("specula: {problem}");
             }
@@ -346,6 +353,12 @@ struct Engine {
     lod_capture: LodStats,
     /// The window frame's draw list (reused: no allocation per frame once warm).
     draws: Vec<DrawItem>,
+    /// Textures, tile cell textures and shape meshes of 2D entities.
+    two_d: two_d::TwoDGpu,
+    /// The window frame's 2D draws (reused).
+    draws_2d: Vec<Draw2d>,
+    /// When 2D GPU resources nobody uses were last freed, at which world revision.
+    last_2d_gc: (Instant, u64),
     /// A human's window is open.
     windowed: bool,
     /// The world mesh epoch `lod_levels` was last pruned at.
@@ -450,6 +463,7 @@ struct AutosaveJob {
 impl Engine {
     fn new(mut gpu: Gpu, captures_root: &Path, library: Library) -> Result<Engine, String> {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
+        let two_d = two_d::TwoDGpu::new(library.root());
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
         let luts = luts::Luts::new(library.root());
@@ -468,6 +482,9 @@ impl Engine {
             lod_window: LodStats::default(),
             lod_capture: LodStats::default(),
             draws: Vec::new(),
+            two_d,
+            draws_2d: Vec::new(),
+            last_2d_gc: (Instant::now(), 0),
             windowed: false,
             lod_epoch: 0,
             build_waiters: Vec::new(),
@@ -686,13 +703,7 @@ impl Engine {
         };
         let result = match received {
             Some(r) => r,
-            None => Err(persist::PersistError {
-                code: "io",
-                message: "the autosave thread stopped without reporting".into(),
-                file: None,
-                entity: None,
-                field: None,
-            }),
+            None => Err(persist::PersistError::new("io", "the autosave thread stopped without reporting")),
         };
         let revision = job.revision;
         self.autosave_job = None;
@@ -810,6 +821,11 @@ impl Engine {
     /// `force`: now). Returns the reload report when something was checked and changed.
     fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
         let reload = self.library.lock().poll(force);
+        // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
+        self.two_d.poll_files(force);
+        if self.two_d.loading() > 0 {
+            self.two_d.pump(&mut self.gpu);
+        }
         // Garbage collection, whether or not anything is drawn (a headless engine never syncs
         // GPU meshes). Cheap part, every GC_UNWANTED_EVERY while builds are in flight after the
         // world's models changed: builds no entity waits for any more are cancelled. Full part,
@@ -907,6 +923,106 @@ impl Engine {
             }
         });
         self.build_waiters.extend(waiters);
+    }
+
+    /// The 2D draws of shown entities (`ui` ones when `include_ui`) in view of `view_proj` (and
+    /// shadow-casting sprites anywhere) at `time_s`, into `out`, and now and then frees 2D GPU
+    /// resources no entity uses any more. Only what is drawn loads, and only its problems are
+    /// reported. `owners` gets each draw's entity (sight's ID buffer).
+    fn build_draws_2d(&mut self, view_proj: &Mat4, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>, mut owners: Option<&mut Vec<u64>>) {
+        out.clear();
+        self.two_d.begin_frame(&mut self.gpu);
+        for e in self.world.entities() {
+            let Some(t) = &e.two_d else { continue };
+            if !sight::in_frame(e, include_ui) {
+                continue;
+            }
+            let casts = matches!(t, two_d::TwoD::Sprite(s) if s.cast_shadows);
+            if !casts && !sight::in_view(e, view_proj) {
+                continue;
+            }
+            let c = e.color;
+            let before = out.len();
+            self.two_d.draws(&mut self.gpu, e.id, t, &e.model(), [c[0], c[1], c[2], e.look.opacity], time_s, out);
+            if let Some(o) = owners.as_deref_mut() {
+                o.extend(std::iter::repeat_n(e.id, out.len() - before));
+            }
+        }
+        let revision = self.world.revision();
+        if revision != self.last_2d_gc.1 && self.last_2d_gc.0.elapsed() >= GC_EVERY {
+            let live: Vec<(u64, &two_d::TwoD)> = self.world.entities().filter_map(|e| e.two_d.as_ref().map(|t| (e.id, t))).collect();
+            self.two_d.collect(&mut self.gpu, &live);
+            self.last_2d_gc = (Instant::now(), revision);
+        }
+    }
+
+    /// What a capture should wait for: the textures and deferred shapes of the 2D entities in its
+    /// view (loads start; finished ones are uploaded), counted while still in flight. Entities
+    /// off screen neither hold it up nor appear in its warnings. `fresh` (when the capture is
+    /// asked for): their texture files are checked for changes now and the capture waits for
+    /// that, so it shows the files as they are at the request, whatever the periodic poll did.
+    fn two_d_loading(&mut self, view_proj: &Mat4, include_ui: bool, fresh: bool) -> usize {
+        self.two_d.pump(&mut self.gpu);
+        let mut waiting = 0;
+        // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
+        // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.
+        let mut checked: BTreeSet<&str> = BTreeSet::new();
+        for e in self.world.entities() {
+            let Some(t) = &e.two_d else { continue };
+            if !sight::in_frame(e, include_ui) || !sight::in_view(e, view_proj) {
+                continue;
+            }
+            let texture = match t {
+                two_d::TwoD::Sprite(s) => s.texture.as_deref(),
+                two_d::TwoD::Tilemap(m) => Some(m.tileset.as_str()),
+                two_d::TwoD::Shape2d(s) => {
+                    waiting += self.two_d.request_shape(s) as usize;
+                    None
+                }
+            };
+            if let Some(p) = texture {
+                self.two_d.request(p);
+                if fresh && checked.insert(p) {
+                    self.two_d.check_now(p, checked.len() <= MAX_CAPTURE_STATS);
+                }
+                waiting += self.two_d.is_pending(p) as usize;
+            }
+        }
+        waiting
+    }
+
+    /// tilemap_get: rows of run-length cell tokens.
+    fn tile_get(&self, key: &world::EntityKey, layer: Option<&str>, region: Option<[u32; 4]>) -> ToolOutput {
+        let id = match self.world.resolve(key) {
+            Ok(id) => id,
+            Err(e) => return world_error(&e),
+        };
+        let e = self.world.get(id).expect("resolved");
+        let Some(two_d::TwoD::Tilemap(t)) = &e.two_d else {
+            return world_error(&WorldError::new("invalid_component", format!("'{}' is a {}, not a tilemap", e.name, e.shape.name())));
+        };
+        let layers = Json::arr(t.layers.iter().map(|l| {
+            Json::obj([("name", Json::from(l.name.as_str())), ("z_layer", Json::from(l.z_layer)), ("filled", Json::from(l.cells.filled()))])
+        }));
+        let Some(name) = layer else {
+            return ToolOutput::text(Json::obj([("size", Json::arr(t.size.map(Json::from))), ("layers", layers)]).to_string());
+        };
+        let Some(l) = t.layers.iter().find(|l| l.name == name) else {
+            return world_error(&WorldError::new("invalid_value", format!("no layer '{name}'")).with("field", "layer").with("layers", layers));
+        };
+        let [x, y, w, h] = region.unwrap_or([0, 0, 64.min(t.size[0]), 64.min(t.size[1])]);
+        let (w, h) = (w.min(t.size[0].saturating_sub(x)), h.min(t.size[1].saturating_sub(y)));
+        let rows = (y..y + h).map(|row| Json::from(two_d::format_row(&l.cells, row, x, w)));
+        ToolOutput::text(
+            Json::obj([
+                ("path", Json::from(self.world.path_of(id))),
+                ("version", Json::from(e.version)),
+                ("layer", Json::from(name)),
+                ("region", Json::arr([x, y, w, h].map(Json::from))),
+                ("rows", Json::arr(rows)),
+            ])
+            .to_string(),
+        )
     }
 
     /// Answers every parked call: the engine is stopping.
@@ -1041,8 +1157,11 @@ impl Engine {
             self.lod_window = stats;
             let (lights, _) = sight::lights(&self.world, true);
             let view_proj = camera.view_proj(size.0, size.1);
+            let mut draws_2d = std::mem::take(&mut self.draws_2d);
+            self.build_draws_2d(&view_proj, true, time_s as f32, &mut draws_2d, None);
             let bones = self.models.take_bones();
-            let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
+            let mut frame =
+                FrameDesc { bones: &bones, draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
@@ -1051,6 +1170,7 @@ impl Engine {
             self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
+            self.draws_2d = draws_2d;
             presented?;
             self.pacing.frame.push(dt);
         }
@@ -1145,6 +1265,7 @@ impl Engine {
                 Err(e) => world_error(&e),
             },
             Command::Query(spec) => self.query(&spec),
+            Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
@@ -1519,7 +1640,7 @@ impl Engine {
             Ok(lock) => lock,
             Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
         };
-        match persist::load(&dir) {
+        match persist::load_limited(&dir, self.world.shape_limits()) {
             Ok((world, saved)) => {
                 if lock.is_some() {
                     self.world_lock = lock;
@@ -1623,6 +1744,7 @@ impl Engine {
             ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
+            ("shape_budgets", self.world.shape_budgets_json()),
             ("models", self.models_json()),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
@@ -1666,6 +1788,7 @@ impl Engine {
             ("worlds_dir", Json::from(self.worlds_dir.display().to_string())),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
+            ("shape_budgets", self.world.shape_budgets_json()),
             ("unsaved_changes", Json::from(self.dirty())),
             ("last_autosave_error", self.autosave_error.clone().unwrap_or(Json::Null)),
             ("leftover_files", Json::arr(self.leftovers.iter().map(|f| Json::from(f.as_str())))),

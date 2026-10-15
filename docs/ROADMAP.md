@@ -338,7 +338,11 @@ shapes?"
 - [x] **GPU instancing, frustum culling, and LOD selection.**
   *Why:* swarms build big worlds, and low-end hardware must stay at frame rate.
   *Done 2026-10-13:* instancing (10k cubes in 1 draw call; 2.7 ms GPU on the Intel iGPU) and CPU frustum culling. LOD selection still to do.
-- [ ] **2D**: sprites, tilemaps, vector shapes, orthographic cameras.
+- [x] **2D**: sprites, tilemaps, vector shapes, orthographic cameras.
+  *Done 2026-10-16:* sprites (billboards, flipbooks, cutout/blended, pixel snap, lit, shadow casting), chunked
+  tilemaps with animated tiles (`tilemap_set`/`tilemap_get`), budgeted vector shapes (fills with holes, strokes,
+  AA), `ortho`/`view_2d` cameras, SSAO-aware. Shape budgets in `perf.toml` (persistent 2M / transient 250k
+  vertices). Intel iGPU: 256x256 tilemap 1.2-1.8 ms, 50k sprites ~6 ms (fill-bound).
 - [x] PNG decode (done early, in M0).
 - [x] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
   *Done 2026-10-14:* `specula-gltf` import/export, our own JPEG codec in `specula-core`; skins → rigs, animations → clips.

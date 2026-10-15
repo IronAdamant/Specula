@@ -301,6 +301,20 @@ impl Mat4 {
         }
     }
 
+    /// [`Mat4::orthographic_vk`] with **reversed Z**: depth 1 at `near`, 0 at `far` (render with
+    /// depth compare GREATER, clear depth 0, like [`Mat4::perspective_vk_reverse_z`]).
+    pub fn orthographic_vk_reverse_z(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Mat4 {
+        let (w, h, d) = (right - left, top - bottom, far - near);
+        Mat4 {
+            cols: [
+                [2.0 / w, 0.0, 0.0, 0.0],
+                [0.0, -2.0 / h, 0.0, 0.0],
+                [0.0, 0.0, 1.0 / d, 0.0],
+                [-(right + left) / w, (top + bottom) / h, far / d, 1.0],
+            ],
+        }
+    }
+
     pub fn mul_vec4(&self, v: Vec4) -> Vec4 {
         let c = &self.cols;
         Vec4 {
@@ -490,6 +504,13 @@ mod tests {
         // Top-left near corner → clip (−1, −1, 0); bottom-right far corner → (1, 1, 1).
         assert!(vclose(o.transform_point(Vec3::new(-2.0, 3.0, -0.5)), Vec3::new(-1.0, -1.0, 0.0)));
         assert!(vclose(o.transform_point(Vec3::new(6.0, -1.0, -10.0)), Vec3::new(1.0, 1.0, 1.0)));
+    }
+
+    #[test]
+    fn reversed_orthographic_puts_near_at_one() {
+        let o = Mat4::orthographic_vk_reverse_z(-2.0, 6.0, -1.0, 3.0, 0.5, 10.0);
+        assert!(vclose(o.transform_point(Vec3::new(-2.0, 3.0, -0.5)), Vec3::new(-1.0, -1.0, 1.0)));
+        assert!(vclose(o.transform_point(Vec3::new(6.0, -1.0, -10.0)), Vec3::new(1.0, 1.0, 0.0)));
     }
 
     #[test]

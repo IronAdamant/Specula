@@ -117,8 +117,8 @@ fn fov_arg(args: &Json) -> Result<f32, String> {
 /// A named camera excludes `eye` and `target` (either one).
 pub fn check_camera_conflict(args: &Json) -> Result<(), String> {
     let given = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
-    if given("camera") && (given("eye") || given("target")) {
-        return Err("give 'camera' (a named camera) or 'eye' and 'target', not both".into());
+    if given("camera") && (given("eye") || given("target") || given("ortho") || given("view_2d")) {
+        return Err("give 'camera' (a named camera, which has its own projection) or 'eye' and 'target' / 'view_2d', not both".into());
     }
     Ok(())
 }
@@ -205,9 +205,16 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SightCall, String>> {
 }
 
 pub(crate) fn parse_camera_set(args: &Json) -> Result<CameraSpec, String> {
-    check_keys(args, "camera_set", &[&["name", "eye", "target", "fov_y_deg", "follow", "offset", "look_offset", "local"]])?;
+    check_keys(args, "camera_set", &[&["name", "eye", "target", "fov_y_deg", "follow", "offset", "look_offset", "local", "ortho"]])?;
     let name = label_arg(args, "name", true)?.expect("required");
     let fov_y_deg = fov_arg(args)?;
+    let ortho = match args.get("ortho").filter(|v| !v.is_null()) {
+        None => None,
+        Some(o) => {
+            check_keys(o, "'ortho'", &[&["height_m"]])?;
+            Some(num_in(o, "height_m", 0.01..=1.0e5)?.ok_or("'ortho' needs 'height_m': metres of the view's height")?)
+        }
+    };
     let (eye, target) = (position_arg(args, "eye")?, position_arg(args, "target")?);
     let offset = position_arg(args, "offset")?;
     let look_offset = position_arg(args, "look_offset")?;
@@ -229,14 +236,14 @@ pub(crate) fn parse_camera_set(args: &Json) -> Result<CameraSpec, String> {
             if (follow.offset - follow.look_offset).length() < 1e-4 {
                 return Err("'offset' and 'look_offset' must differ (the camera would look at itself)".into());
             }
-            Ok(CameraSpec { name, eye: None, target: None, fov_y_deg, follow: Some(follow) })
+            Ok(CameraSpec { name, eye: None, target: None, fov_y_deg, follow: Some(follow), ortho })
         }
         None => {
             if offset.is_some() || look_offset.is_some() || local.is_some() {
                 return Err("'offset', 'look_offset' and 'local' are for follow cameras (give 'follow')".into());
             }
             match (eye, target) {
-                (Some(e), Some(t)) if (t - e).length() >= 1e-4 => Ok(CameraSpec { name, eye, target, fov_y_deg, follow: None }),
+                (Some(e), Some(t)) if (t - e).length() >= 1e-4 => Ok(CameraSpec { name, eye, target, fov_y_deg, follow: None, ortho }),
                 (Some(_), Some(_)) => Err("'eye' and 'target' must be different points".into()),
                 _ => Err("camera_set needs 'eye' and 'target', or 'follow' (an entity path)".into()),
             }
@@ -436,6 +443,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("offset", vec3("Follow: eye offset from the entity's origin (default [0, 4, 6])")),
                     ("look_offset", vec3("Follow: look-at offset from the entity's origin (default [0, 0, 0])")),
                     ("local", t("boolean", "Follow: offsets in the entity's own axes (turn with it); default false (world axes)")),
+                    ("ortho", t("object", "{height_m}: orthographic, this many metres tall (a 2D game's camera); default perspective")),
                 ],
                 &["name"],
             ),
