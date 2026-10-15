@@ -182,6 +182,8 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
 
 /// What an entity adds to a frame: nothing, one fixed draw (built-in shapes and lathes: it
 /// depends only on the entity and its mesh), or a model's draws (chosen per frame: LOD, pose).
+/// Returned by value and consumed at once, never stored: boxing the draw would allocate per entity.
+#[allow(clippy::large_enum_variant)]
 enum Plan {
     Skip,
     Item(DrawItem),
