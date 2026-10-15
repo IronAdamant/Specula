@@ -1472,11 +1472,38 @@ fn stamp_of(file: &FsPath) -> Stamp {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// A file modified this recently may have been rewritten within one tick of its timestamp
+/// (same length, same mtime): its stamp alone can't tell, so its contents are compared.
+const STAMP_TRUSTED_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Files up to this size are hashed when loaded (and when their stamp can't be trusted).
+const MAX_HASHED_FILE: u64 = 64 << 20;
+
+fn recent(stamp: Stamp) -> bool {
+    stamp.is_some_and(|(t, _)| std::time::SystemTime::now().duration_since(t).map_or(true, |d| d < STAMP_TRUSTED_AFTER))
+}
+
+/// The contents' hash (`None`: unreadable or too big to hash).
+fn file_hash(file: &FsPath, stamp: Stamp) -> Option<u64> {
+    let (_, len) = stamp?;
+    if len > MAX_HASHED_FILE {
+        return None;
+    }
+    std::fs::read(file).ok().map(|b| specula_core::hash::hash_bytes(&b))
+}
+
+/// The file changed since it was loaded as `stamp` / `hash`. The stamp decides, except for a
+/// file modified within [`STAMP_TRUSTED_AFTER`], whose contents are compared too.
+fn file_changed(file: &FsPath, now: Stamp, stamp: Stamp, hash: Option<u64>) -> bool {
+    now != stamp || (recent(now) && file_hash(file, now) != hash)
+}
+
 /// Largest sprite or tileset texture side, pixels (checked from the PNG header, before decoding).
 pub const MAX_TEXTURE_SIDE: u32 = 8192;
 
 /// Reads and decodes a PNG, refusing one larger than [`MAX_TEXTURE_SIDE`] from its header alone.
-fn read_texture(key: &str, file: &FsPath) -> Result<png::Image, String> {
+/// `hash`: the hash of the bytes read (up to [`MAX_HASHED_FILE`]), even if they don't decode.
+fn read_texture(key: &str, file: &FsPath, hash: &mut Option<u64>) -> Result<png::Image, String> {
     use std::io::Read as _;
     let mut head = [0u8; 24];
     let mut f = std::fs::File::open(file).map_err(|e| format!("{key}: {e}"))?;
@@ -1488,6 +1515,7 @@ fn read_texture(key: &str, file: &FsPath) -> Result<png::Image, String> {
         return Err(format!("{key}: {w}x{h} pixels; sprite and tileset textures may be at most {MAX_TEXTURE_SIDE} per side"));
     }
     let bytes = std::fs::read(file).map_err(|e| format!("{key}: {e}"))?;
+    *hash = (bytes.len() as u64 <= MAX_HASHED_FILE).then(|| specula_core::hash::hash_bytes(&bytes));
     png::decode(&bytes).map_err(|e| format!("{key}: not a readable PNG ({e:?})"))
 }
 
@@ -1498,23 +1526,27 @@ struct TexEntry {
     loading: bool,
     /// A change check is on the loader thread.
     checking: bool,
-    /// The file as of the last load.
+    /// The file as of the last load: its stamp and (up to [`MAX_HASHED_FILE`]) its contents' hash.
     stamp: Stamp,
+    hash: Option<u64>,
+    /// A capture asked for the file as it is now while a load or check was already in flight
+    /// (it may have read the file before an edit): check again as soon as that one is done.
+    recheck: bool,
 }
 
 /// Work for the loader thread.
 enum Job {
     /// Read and decode a texture.
     Load { key: String, file: PathBuf },
-    /// Reload a texture only if its file no longer matches `stamp` (the stat happens there).
-    Check { key: String, file: PathBuf, stamp: Stamp },
+    /// Reload a texture only if its file changed since `stamp` / `hash` (see [`file_changed`]).
+    Check { key: String, file: PathBuf, stamp: Stamp, hash: Option<u64> },
     /// Tessellate a deferred shape.
     Shape(Arc<Shape2dSpec>),
 }
 
 /// What the loader thread sends back.
 enum Done {
-    Texture { key: String, stamp: Stamp, image: Result<png::Image, String> },
+    Texture { key: String, stamp: Stamp, hash: Option<u64>, image: Result<png::Image, String> },
     Unchanged(String),
     /// A deferred shape is tessellated (or failed); by [`shape_slot`].
     Shape(usize),
@@ -1648,14 +1680,18 @@ impl TwoDGpu {
                 for job in job_rx {
                     let done = match job {
                         Job::Load { key, file } => {
-                            Done::Texture { stamp: stamp_of(&file), image: guarded(&key, || read_texture(&key, &file)), key }
+                            let (stamp, mut hash) = (stamp_of(&file), None);
+                            let image = guarded(&key, || read_texture(&key, &file, &mut hash));
+                            Done::Texture { stamp, hash, image, key }
                         }
-                        Job::Check { key, file, stamp } => {
+                        Job::Check { key, file, stamp, hash } => {
                             let now = stamp_of(&file);
-                            if now == stamp {
-                                Done::Unchanged(key)
+                            if file_changed(&file, now, stamp, hash) {
+                                let mut hash = None;
+                                let image = guarded(&key, || read_texture(&key, &file, &mut hash));
+                                Done::Texture { stamp: now, hash, image, key }
                             } else {
-                                Done::Texture { stamp: now, image: guarded(&key, || read_texture(&key, &file)), key }
+                                Done::Unchanged(key)
                             }
                         }
                         Job::Shape(spec) => {
@@ -1680,7 +1716,7 @@ impl TwoDGpu {
     /// Queues `path` for loading on the loader thread (started on first use).
     fn start_load(&mut self, path: &str) {
         let file = self.assets.join(path);
-        let entry = self.textures.entry(path.to_owned()).or_insert(TexEntry { current: None, loading: false, checking: false, stamp: None });
+        let entry = self.textures.entry(path.to_owned()).or_insert(TexEntry { current: None, loading: false, checking: false, stamp: None, hash: None, recheck: false });
         entry.loading = true;
         if !self.send(Job::Load { key: path.to_owned(), file }) {
             if let Some(e) = self.textures.get_mut(path) {
@@ -1697,24 +1733,50 @@ impl TwoDGpu {
         }
     }
 
-    /// Checks `path`'s file for changes now (a capture: it shows the file as it is when asked,
-    /// not as of the last periodic poll). No-op while it is loading or already being checked.
-    pub fn check_now(&mut self, path: &str) {
-        let Some(t) = self.textures.get(path) else { return };
+    /// Makes a capture show `path`'s file as it is now, not as of the last periodic poll.
+    /// - A load or check already in flight may have read the file before an edit: another check
+    ///   follows it at once (and [`TwoDGpu::is_pending`] stays true until that one is done).
+    /// - `stat_here`: the file is stat'ed on this thread (microseconds): an unchanged file whose
+    ///   stamp can be trusted needs nothing more, so the capture isn't held up. Otherwise (or
+    ///   without `stat_here`) the loader checks it, hashing the contents if the stamp is too
+    ///   recent to trust.
+    pub fn check_now(&mut self, path: &str, stat_here: bool) {
+        let Some(t) = self.textures.get_mut(path) else { return };
         if t.loading || t.checking {
+            t.recheck = true;
             return;
         }
-        let (stamp, file) = (t.stamp, self.assets.join(path));
-        if self.send(Job::Check { key: path.to_owned(), file, stamp }) {
+        if stat_here {
+            let now = stamp_of(&self.assets.join(path));
+            if now == t.stamp && !recent(now) {
+                return;
+            }
+        }
+        self.send_check(path);
+    }
+
+    /// Sends a change check of `path` to the loader.
+    fn send_check(&mut self, path: &str) {
+        let Some(t) = self.textures.get(path) else { return };
+        let job = Job::Check { key: path.to_owned(), file: self.assets.join(path), stamp: t.stamp, hash: t.hash };
+        if self.send(job) {
             if let Some(t) = self.textures.get_mut(path) {
                 t.checking = true;
             }
         }
     }
 
-    /// `path` is being loaded or checked for changes.
+    /// After `key`'s load or check came back: the check a capture asked for meanwhile.
+    fn after_done(&mut self, key: &str) {
+        if let Some(t) = self.textures.get_mut(key).filter(|t| t.recheck && !t.loading && !t.checking) {
+            t.recheck = false;
+            self.send_check(key);
+        }
+    }
+
+    /// `path` is being loaded or checked for changes (or will be checked again right after).
     pub fn is_pending(&self, path: &str) -> bool {
-        self.textures.get(path).is_some_and(|t| t.loading || t.checking)
+        self.textures.get(path).is_some_and(|t| t.loading || t.checking || t.recheck)
     }
 
     /// Asks for a deferred shape's tessellation; true while it is in flight.
@@ -1740,6 +1802,7 @@ impl TwoDGpu {
             }
             t.loading = false;
             t.checking = false;
+            t.recheck = false;
         }
     }
 
@@ -1762,15 +1825,17 @@ impl TwoDGpu {
                     if let Some(e) = self.textures.get_mut(&key) {
                         e.checking = false;
                     }
+                    self.after_done(&key);
                 }
                 Done::Shape(slot) => {
                     self.pending_shapes.remove(&slot);
                 }
-                Done::Texture { key, stamp, image } => {
+                Done::Texture { key, stamp, hash, image } => {
                     let Some(entry) = self.textures.get_mut(&key) else { continue }; // collected meanwhile
                     entry.loading = false;
                     entry.checking = false;
                     entry.stamp = stamp;
+                    entry.hash = hash;
                     let uploaded = image.and_then(|img| {
                         gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
                             .map(|id| LoadedTexture { id, size: [img.width, img.height] })
@@ -1786,9 +1851,10 @@ impl TwoDGpu {
                         }
                         // The last good texture (if any) stays on screen.
                         Err(e) => {
-                            self.errors.insert(key, format!("texture {e}"));
+                            self.errors.insert(key.clone(), format!("texture {e}"));
                         }
                     }
+                    self.after_done(&key);
                 }
             }
         }
@@ -1811,15 +1877,9 @@ impl TwoDGpu {
             return;
         }
         self.last_poll = std::time::Instant::now();
-        let idle: Vec<(String, Stamp)> =
-            self.textures.iter().filter(|(_, t)| !t.loading && !t.checking).map(|(k, t)| (k.clone(), t.stamp)).collect();
-        for (key, stamp) in idle {
-            let file = self.assets.join(&key);
-            if self.send(Job::Check { key: key.clone(), file, stamp }) {
-                if let Some(e) = self.textures.get_mut(&key) {
-                    e.checking = true;
-                }
-            }
+        let idle: Vec<String> = self.textures.iter().filter(|(_, t)| !t.loading && !t.checking).map(|(k, _)| k.clone()).collect();
+        for key in idle {
+            self.send_check(&key);
         }
     }
 

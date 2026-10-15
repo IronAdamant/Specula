@@ -1981,8 +1981,10 @@ fn definitions() -> Vec<ToolDef> {
                           `problems` listing effects that can't apply as {error, message, ...}, and \
                           `render_graph`: the last frame's graph summary (passes, barriers, compiles); with \
                           `graph: true`, every pass with the resources it reads and writes and the barriers the \
-                          graph inserts. \
-                          Budgets come from perf.toml (per adapter kind). The window and the last capture are \
+                          graph inserts; `shape_budgets`: {shape2d_vertices, transient_shape2d_vertices}, each \
+                          {used, limit, shapes}: the vertex bounds of the world's distinct shape2d shapes \
+                          (persistent entities, and transient ones a game spawns) against their limits. \
+                          Budgets come from perf.toml (per adapter kind; the shape budgets once, in [budgets]). The window and the last capture are \
                           reported separately."
                 .into(),
             input_schema: schema(
@@ -2204,7 +2206,8 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "engine_info".into(),
             description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
-                          changes, state hash) and the connected agents with their roles."
+                          changes, state hash, shape_budgets: {shape2d_vertices, transient_shape2d_vertices} each \
+                          {used, limit, shapes}, as in perf_frame) and the connected agents with their roles."
                 .into(),
             input_schema: schema(vec![], &[]),
         },

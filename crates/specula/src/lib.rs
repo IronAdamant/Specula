@@ -68,6 +68,9 @@ const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
+
+/// Distinct in-view texture files a capture stats on the engine thread (more go to the loader).
+const MAX_CAPTURE_STATS: usize = 256;
 /// The model library forgets what no entity uses at most this often (after the world's models
 /// changed).
 const GC_EVERY: Duration = Duration::from_secs(1);
@@ -922,6 +925,9 @@ impl Engine {
         self.two_d.pump(&mut self.gpu);
         let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
         let mut waiting = 0;
+        // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
+        // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.
+        let mut checked: BTreeSet<&str> = BTreeSet::new();
         for e in self.world.entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, spec.include_ui) || !sight::in_view(e, &view_proj) {
@@ -937,8 +943,8 @@ impl Engine {
             };
             if let Some(p) = texture {
                 self.two_d.request(p);
-                if fresh {
-                    self.two_d.check_now(p);
+                if fresh && checked.insert(p) {
+                    self.two_d.check_now(p, checked.len() <= MAX_CAPTURE_STATS);
                 }
                 waiting += self.two_d.is_pending(p) as usize;
             }
@@ -1868,6 +1874,7 @@ impl Engine {
             ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
+            ("shape_budgets", self.world.shape_budgets_json()),
             ("models", self.models_json()),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
@@ -1911,6 +1918,7 @@ impl Engine {
             ("worlds_dir", Json::from(self.worlds_dir.display().to_string())),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
+            ("shape_budgets", self.world.shape_budgets_json()),
             ("unsaved_changes", Json::from(self.dirty())),
             ("last_autosave_error", self.autosave_error.clone().unwrap_or(Json::Null)),
             ("leftover_files", Json::arr(self.leftovers.iter().map(|f| Json::from(f.as_str())))),

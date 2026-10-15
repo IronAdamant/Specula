@@ -18,6 +18,7 @@ Open the PNGs and look at them. Standard library only; keep output ASCII.
 """
 import argparse
 import json
+import os
 import struct
 import sys
 import zlib
@@ -33,7 +34,7 @@ DEFAULT_PORT = 7492
 # PNG in and out
 # ---------------------------------------------------------------------------------------------
 
-def png_bytes(w, h, rgba):
+def png_bytes(w, h, rgba, level=9):
     raw = b"".join(b"\0" + bytes(rgba[y * w * 4:(y + 1) * w * 4]) for y in range(h))
 
     def chunk(kind, data):
@@ -41,7 +42,7 @@ def png_bytes(w, h, rgba):
         return c + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", zlib.compress(raw, level)) + chunk(b"IEND", b""))
 
 
 def read_png(path):
@@ -302,7 +303,7 @@ def build_3d(m):
                 "fill": "#f0e0a0c0"}]})
 
 
-def probes(m, assets, worlds, problems):
+def probes(m, assets, worlds, problems, engine):
     """The 2D review's live probes: textures appear and reload, hostile input is refused (the
     engine survives), big tile edits are quick and undo exactly."""
     import time
@@ -338,6 +339,39 @@ def probes(m, assets, worlds, problems):
         tex.write_bytes(png_bytes(2, 2, [*colour, 255] * 4))
         seen.append(centre()[0] == colour)
     check(all(seen), f"every edit shows in the next capture {seen}", problems)
+    # Round 5: a rewrite of the same length within one timestamp tick (here: the timestamp put
+    # back, as mtime-preserving tools do) still shows: recent files are compared by content.
+    # Stored (uncompressed) PNGs: the length depends only on the size, not the colour.
+    tex.write_bytes(png_bytes(2, 2, [255, 255, 255, 255] * 4, level=0))
+    centre()
+    st = tex.stat()
+    tex.write_bytes(png_bytes(2, 2, [255, 0, 255, 255] * 4, level=0))
+    os.utime(tex, ns=(st.st_atime_ns, st.st_mtime_ns))
+    same_stamp = tex.stat().st_size == st.st_size and tex.stat().st_mtime_ns == st.st_mtime_ns
+    px, _ = centre()
+    check(same_stamp and px == (255, 0, 255), f"a same-length rewrite with the same timestamp shows {px} (stamp kept: {same_stamp})", problems)
+    # Round 5: a file edited while another agent's capture is still loading it: the next capture
+    # shows the edit, not what that load read before it.
+    import threading
+    slow = probe / "slow.png"
+    n = 2048
+    slow.write_bytes(png_bytes(n, n, [0, 0, 255, 255] * (n * n)))
+    m.call("world_spawn", shape="sprite", name="probe_slow", position=[700, 0, 0], color=[1, 1, 1],
+           sprite={"texture": "probe/slow.png", "size": [2, 2]})
+    other = {}
+    with engine.mcp("two_d_check_other") as m2:
+        def first():
+            p = m2.frame(width=64, height=64, view_2d={"center": [700, 0], "height_m": 2}, max_subjects=3)
+            w, _, buf = read_png(p["image"]["path"])
+            i = (32 * w + 32) * 4
+            other["px"] = tuple(buf[i:i + 3])
+        t = threading.Thread(target=first)
+        t.start()
+        time.sleep(0.05)  # the other capture's load is under way
+        slow.write_bytes(png_bytes(2, 2, [0, 255, 0, 255] * 4))
+        px, warn = centre((700, 0))
+        t.join()
+    check(px == (0, 255, 0) and not warn, f"an edit during another capture's load shows next: {px} (that capture saw {other.get('px')})", problems)
     # Round 2: an off-screen sprite whose texture is huge (refused from its header) or missing
     # neither holds a capture up nor shows in its warnings; on screen it is reported.
     head = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR" + (16384).to_bytes(4, "big") * 2 + bytes([8, 6, 0, 0, 0, 0, 0, 0, 0])
@@ -533,7 +567,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
             img5, _ = shot("2d_reloaded", view_2d={"center": [0, 0], "height_m": 18}, time_s=0.0)
             same = sum(1 for k in range(0, len(img5[2]), 4 * 97) if img_saved[2][k:k + 3] != img5[2][k:k + 3])
             check(same == 0, f"the reloaded 2D world renders the same ({same} sampled pixels differ)", problems)
-            probes(m, assets, worlds, problems)
+            probes(m, assets, worlds, problems, engine)
             if windowed:
                 # The human's window shows the 2D view for a while (frames in flight, 2D uploads
                 # and edits between presents), then the 3D scene.

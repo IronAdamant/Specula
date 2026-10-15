@@ -2941,6 +2941,19 @@ impl World {
         self.shape_limits
     }
 
+    /// Usage of the two shape budgets, by their perf.toml names:
+    /// `{shape2d_vertices: {used, limit, shapes}, transient_shape2d_vertices: {…}}` (`used`: the
+    /// vertex bounds of the distinct shapes; `shapes`: how many distinct shapes).
+    pub fn shape_budgets_json(&self) -> Json {
+        let pool = |b: &crate::two_d::ShapeBudget, limit: usize| {
+            Json::obj([("used", Json::from(b.vertices())), ("limit", Json::from(limit)), ("shapes", Json::from(b.distinct()))])
+        };
+        Json::obj([
+            ("shape2d_vertices", pool(&self.shapes, self.shape_limits.persistent)),
+            ("transient_shape2d_vertices", pool(&self.transient_shapes, self.shape_limits.transient)),
+        ])
+    }
+
     /// Sets the two shape budgets (perf.toml). Shapes already in the world stay, whatever the new
     /// limits; only later changes are checked against them.
     pub fn set_shape_limits(&mut self, limits: crate::two_d::ShapeLimits) {
