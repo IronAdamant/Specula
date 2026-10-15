@@ -566,14 +566,20 @@ def criterion_instances(exe, adapter, port, out, check):
 
 
 # --- Main ---------------------------------------------------------------------------------------
-def run_scene(exe, adapter, port, out, attach):
-    """Criteria 1 and 2 on one headless engine (or an attached one)."""
+def run_scene(exe, adapter, port, out, attach, run):
+    """Criteria 1 and/or 2 (as `run` asks) on one headless engine, or an attached one. Returns
+    the summary and criterion 1's checks; the summary's hidden_status is criterion 2's verdict."""
     check, check2 = Checks(), Checks()
     summary = {"adapter": adapter}
+
+    def body(mcp):
+        if 1 in run:
+            summary["scene"] = criterion_scene(mcp, out, check, adapter)
+        if 2 in run:
+            summary["hidden_status"], summary["hidden"] = criterion_hidden(mcp, check2)
+
     if attach:
-        mcp = Mcp(url_for(attach), "m2-exit")
-        summary["scene"] = criterion_scene(mcp, out, check, adapter)
-        summary["hidden_status"], summary["hidden"] = criterion_hidden(mcp, check2)
+        body(Mcp(url_for(attach), "m2-exit"))
         return summary, check
     args = ["--headless", "--adapter", adapter, "--assets", str(out / "assets"), "--captures", str(out / "captures"),
             "--worlds", str(out / "worlds")]
@@ -581,11 +587,11 @@ def run_scene(exe, adapter, port, out, attach):
         mcp = engine.mcp("m2-exit")
         mcp.call("agent_hello", name="m2_exit", role="reviewer")
         summary["gpu"] = mcp.json("engine_info").get("gpu")
-        summary["scene"] = criterion_scene(mcp, out, check, adapter)
-        summary["hidden_status"], summary["hidden"] = criterion_hidden(mcp, check2)
+        body(mcp)
     errs = engine.validation_errors()
-    check(errs == 0, f"validation errors at shutdown: {errs}")
     summary["validation_errors"] = errs
+    if not (check if 1 in run else check2)(errs == 0, f"validation errors at shutdown: {errs}") and 1 not in run:
+        summary["hidden_status"] = "FAIL"
     return summary, check
 
 
@@ -617,10 +623,12 @@ def main():
         print(f"== {adapter}")
         s = summary[adapter] = {}
         if run & {1, 2}:
-            s, check = run_scene(Path(a.exe), adapter, a.port, out, a.attach)
+            s, check = run_scene(Path(a.exe), adapter, a.port, out, a.attach, run)
             summary[adapter] = s
-            status[1].append(("FAIL" if check.failures else "PASS", adapter, check.failures))
-            status[2].append((s["hidden_status"], adapter, []))
+            if 1 in run:
+                status[1].append(("FAIL" if check.failures else "PASS", adapter, check.failures))
+            if 2 in run:
+                status[2].append((s["hidden_status"], adapter, []))
         if a.attach or 3 not in run:
             continue
         check3 = Checks()

@@ -391,7 +391,8 @@ until the ID buffer lands. (3) A windowed engine at 1280×720 with the full nigh
 `perf.example.toml`: 10,000 entities (8,000 cubes + 2,000 tombstone models, 3 instanced draw calls) over 120 frames;
 the frame's GPU time, pacing, draws, triangles, GPU memory and late pipelines must hold; per-pass and CPU-side
 misses are reported as notes. *2026-10-16:* (1) and (3) pass on both GPUs; Intel iGPU GPU p95 7.0–8.8 ms over five
-runs (budget 14), RTX 4090 Laptop 0.4–0.5 ms. Note: the window's `frame/draw_list` CPU zone is 1.9–2.8 ms p95 at
+runs (budget 14), RTX 4090 Laptop 0.4–0.5 ms. (2) is SKIPPED on `main`; run against the unmerged Sight lane's
+build (`--exe`), it passes on both GPUs (hidden box `visible_px` 0, `occluded`; control box 8,543 px). Note: the window's `frame/draw_list` CPU zone is 1.9–2.8 ms p95 at
 10k entities (budget 1.5).
 
 ---
