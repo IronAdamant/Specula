@@ -364,6 +364,7 @@ fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16
         lights: &[],
         time_s: 0.0,
         overlay: &[],
+        draws_2d: &[],
         bones: &[],
     };
     gpu.render(target, &frame).expect("render");

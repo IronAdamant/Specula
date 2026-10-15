@@ -360,6 +360,7 @@ impl Window {
             mode,
             shadow,
             overlay: !frame.overlay.is_empty(),
+            two_d: !frame.draws_2d.is_empty(),
             ssao: crate::ssao::ssao_extent(env, self.extent),
         };
         let res = declare_frame(&mut self.graph, &shape);

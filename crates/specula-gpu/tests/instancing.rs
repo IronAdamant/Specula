@@ -105,7 +105,7 @@ fn instanced_grid_on(adapter: AdapterPreference, label: &str) {
         assert!(s.memory.bytes(MemoryKind::PerFrame) >= s.draw_buffer_bytes);
         assert_eq!(s.memory.bytes(MemoryKind::Staging), 0, "staging is freed after uploads");
         assert_eq!(s.memory.total_bytes, s.memory.by_kind.iter().map(|(_, b)| b).sum::<u64>());
-        assert_eq!(s.memory.allocations, 6, "2 meshes, colour, depth, readback, frame upload");
+        assert_eq!(s.memory.allocations, 7, "2 meshes, the shared sprite quad, colour, depth, readback, frame upload");
         assert!(!s.memory.heaps.is_empty() && s.memory.heaps.iter().any(|h| h.device_local));
         for h in &s.memory.heaps {
             // The spec bounds the budget by the heap size; usage may exceed the budget.

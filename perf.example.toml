@@ -35,6 +35,12 @@ allocations_per_frame = 2_000    # heap allocations per frame, whole process, p9
 sim_tick_ms = 4.0                # one fixed simulation tick, p95
 game_frame_ms = 2.0              # the game's per-frame update (input, camera, HUD), p95
 pipelines_after_warm = 0         # each pipeline built during play is a visible hitch
+# World limits, not frame budgets: set here only, never per adapter (a world must load the same on
+# every machine). Vertices of distinct shape2d shapes (their upper bounds; identical shapes count
+# once). Two pools, so effects a game spawns can never crowd out authored content: a refusal is a
+# structured `limit` error naming the budget.
+shape2d_vertices = 2_000_000           # persistent (saved) entities: what agents and people build
+transient_shape2d_vertices = 250_000   # transient entities: effects and presentation a game spawns
 
 [budgets.gpu_passes]             # GPU ms per pass
 scene = 8.0

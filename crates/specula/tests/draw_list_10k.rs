@@ -94,7 +94,7 @@ fn a_10k_entity_draw_list_allocates_nothing() {
     let shapes = ShapeMeshes::upload(&mut gpu).unwrap();
     let lathes = LatheMeshes::default();
     let meshes = Meshes { shapes: &shapes, lathes: &lathes, models: &models };
-    let camera = Camera { eye: Vec3::new(0.0, 9.0, 14.0), target: Vec3::new(0.0, 0.0, -45.0), fov_y_deg: 50.0 };
+    let camera = Camera::new(Vec3::new(0.0, 9.0, 14.0), Vec3::new(0.0, 0.0, -45.0), 50.0);
     let mut levels = BTreeMap::new();
     let mut draws = Vec::new();
     let mut lights = Vec::new();

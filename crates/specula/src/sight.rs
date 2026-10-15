@@ -17,19 +17,72 @@ pub const SCHEMA: &str = "specula.sight/v1";
 /// large the world is (a "sun" 1000 km away no longer pushes the near plane out).
 pub const NEAR: f32 = 0.05;
 
+/// Far plane of orthographic cameras, metres from the eye (perspective has none).
+pub const ORTHO_FAR: f32 = 10_000.0;
+
+/// How a camera projects.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Projection {
+    /// `fov_y_deg` wide, reversed Z, no far plane.
+    #[default]
+    Perspective,
+    /// Parallel rays: `height_m` metres of the view plane fill the image height (width follows
+    /// the aspect). Reversed Z from [`NEAR`] to [`ORTHO_FAR`] in front of the eye. For 2D: an
+    /// eye on +Z looking down −Z at the XY plane, +Y up (see `crate::two_d`).
+    Ortho { height_m: f32 },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub eye: Vec3,
     pub target: Vec3,
     pub fov_y_deg: f32,
+    pub projection: Projection,
 }
 
 impl Camera {
-    /// Reversed-Z, infinite-far projection × view (pair it with `FrameDesc::reverse_z = true`).
+    /// A perspective camera.
+    pub fn new(eye: Vec3, target: Vec3, fov_y_deg: f32) -> Camera {
+        Camera { eye, target, fov_y_deg, projection: Projection::Perspective }
+    }
+
+    /// The 2D convention: an orthographic camera looking down −Z at the XY plane (+Y up on
+    /// screen) centred on (`x`, `y`), `height_m` tall.
+    pub fn view_2d(x: f32, y: f32, height_m: f32) -> Camera {
+        Camera {
+            eye: Vec3::new(x, y, 100.0),
+            target: Vec3::new(x, y, 0.0),
+            fov_y_deg: 50.0,
+            projection: Projection::Ortho { height_m },
+        }
+    }
+
+    /// The up vector of an orthographic view: +Y, unless looking straight up or down (then −Z:
+    /// north at the top of a top-down view).
+    fn up(&self) -> Vec3 {
+        let f = (self.target - self.eye).normalize();
+        if f.cross(Vec3::Y).length() > 1e-6 {
+            Vec3::Y
+        } else {
+            Vec3::new(0.0, 0.0, -1.0)
+        }
+    }
+
+    /// Reversed-Z projection × view (pair it with `FrameDesc::reverse_z = true`): infinite far
+    /// plane in perspective, [`ORTHO_FAR`] orthographic.
     pub fn view_proj(&self, width: u32, height: u32) -> Mat4 {
         let aspect = width.max(1) as f32 / height.max(1) as f32;
-        let proj = Mat4::perspective_vk_reverse_z(self.fov_y_deg.to_radians(), aspect, NEAR);
-        proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
+        match self.projection {
+            Projection::Perspective => {
+                let proj = Mat4::perspective_vk_reverse_z(self.fov_y_deg.to_radians(), aspect, NEAR);
+                proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
+            }
+            Projection::Ortho { height_m } => {
+                let (h, w) = (height_m, height_m * aspect);
+                let proj = Mat4::orthographic_vk_reverse_z(-0.5 * w, 0.5 * w, -0.5 * h, 0.5 * h, NEAR, ORTHO_FAR);
+                proj * Mat4::look_at_rh(self.eye, self.target, self.up())
+            }
+        }
     }
 
     /// The ray from the eye through window pixel `(x, y)` (origin top-left) of a `width` x `height`
@@ -37,6 +90,13 @@ impl Camera {
     pub fn ray(&self, x: f32, y: f32, width: u32, height: u32) -> (Vec3, Vec3) {
         let (w, h) = (width.max(1) as f32, height.max(1) as f32);
         let forward = (self.target - self.eye).normalize();
+        if let Projection::Ortho { height_m } = self.projection {
+            let right = forward.cross(self.up()).normalize();
+            let up = right.cross(forward);
+            let nx = (2.0 * (x + 0.5) / w - 1.0) * 0.5 * height_m * (w / h);
+            let ny = (1.0 - 2.0 * (y + 0.5) / h) * 0.5 * height_m;
+            return (self.eye + right * nx + up * ny, forward);
+        }
         // Looking straight up or down: any horizontal right vector will do.
         let side = forward.cross(Vec3::Y);
         let right = if side.length() > 1e-6 { side.normalize() } else { Vec3::X };
@@ -48,12 +108,15 @@ impl Camera {
     }
 
     pub fn to_json(self) -> Json {
-        Json::obj([
-            ("eye", vec3_json(self.eye)),
-            ("target", vec3_json(self.target)),
-            ("fov_y_deg", Json::from(self.fov_y_deg)),
-            ("near_m", Json::from(NEAR)),
-        ])
+        let mut f = vec![("eye", vec3_json(self.eye)), ("target", vec3_json(self.target))];
+        match self.projection {
+            Projection::Perspective => f.push(("fov_y_deg", Json::from(self.fov_y_deg))),
+            Projection::Ortho { height_m } => {
+                f.push(("ortho", Json::obj([("height_m", Json::from(height_m)), ("far_m", Json::from(ORTHO_FAR))])))
+            }
+        }
+        f.push(("near_m", Json::from(NEAR)));
+        Json::obj(f)
     }
 }
 
@@ -65,7 +128,19 @@ pub fn auto_camera(world: &World, fov_y_deg: f32) -> Camera {
     };
     let distance = radius / (fov_y_deg.to_radians() * 0.5).sin() * 1.15;
     let dir = Vec3::new(0.55, 0.45, 0.7).normalize();
-    Camera { eye: center + dir * distance, target: center, fov_y_deg }
+    Camera::new(center + dir * distance, center, fov_y_deg)
+}
+
+/// An orthographic view of the whole world down −Z (the 2D convention), `height_m` tall or
+/// fitting the world's bounds (with a margin) for an image of `aspect`.
+pub fn auto_camera_2d(world: &World, height_m: Option<f32>, aspect: f32) -> Camera {
+    let (lo, hi) = world.bounds().unwrap_or((Vec3::new(-1.5, -1.5, 0.0), Vec3::new(1.5, 1.5, 0.0)));
+    let c = (lo + hi) * 0.5;
+    let fit = ((hi.y - lo.y).max((hi.x - lo.x) / aspect.max(1e-3)) * 1.1).max(0.5);
+    let mut cam = Camera::view_2d(c.x, c.y, height_m.unwrap_or(fit));
+    cam.eye.z = hi.z + 100.0;
+    cam.target.z = hi.z;
+    cam
 }
 
 /// Everything uploaded that entities draw with.
@@ -261,6 +336,16 @@ pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights:
     }
 }
 
+/// Whether any of `e`'s bounding box can be in view of `view_proj` (conservative: false only
+/// when every corner is beyond one side of the view, or behind it). Entities without bounds count
+/// as in view.
+pub fn in_view(e: &Entity, view_proj: &Mat4) -> bool {
+    let Some(corners) = e.world_corners() else { return true };
+    let clip = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
+    let all = |f: &dyn Fn(&Vec4) -> bool| clip.iter().all(f);
+    !(all(&|p| p.w <= 0.0) || all(&|p| p.x < -p.w) || all(&|p| p.x > p.w) || all(&|p| p.y < -p.w) || all(&|p| p.y > p.w))
+}
+
 /// Where one entity landed in a frame.
 pub struct Subject {
     pub json: Json,
@@ -277,22 +362,30 @@ pub struct Subject {
 /// `distance_m` is the distance along the view axis to the nearest visible part of the box.
 /// `position` is the world position. Models carry their `recipe`; transient entities say so.
 pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
+    // Billboards turn to the camera: their subject is the card as drawn.
+    let view = specula_gpu::view_2d(&view_proj.to_cols_array(), true);
+    let ortho = view.ortho;
     world
         .entities()
         .filter(|e| e.local_bounds().is_some() && in_frame(e, include_ui))
         .map(|e| {
-            let clip = clip_box(e, view_proj);
+            let card = e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view));
+            let clip = clip_box(e, card, view_proj);
             let screen = screen_rect(&clip, width, height);
-            let distance = clip.iter().map(|p| p.w).fold(f32::INFINITY, f32::min);
+            // Perspective: clip w is the view depth. Orthographic (w = 1): undo the reversed-Z
+            // depth range of `Projection::Ortho` instead.
+            let depth = |p: &Vec4| if ortho { NEAR + (1.0 - p.z / p.w) * (ORTHO_FAR - NEAR) } else { p.w };
+            let distance = clip.iter().map(depth).fold(f32::INFINITY, f32::min);
             let mut fields = vec![
                 ("id", Json::from(e.id)),
                 ("name", Json::from(e.name.as_str())),
                 ("path", Json::from(world.path_of(e.id))),
                 ("shape", Json::from(e.shape.name())),
             ];
-            match &e.model {
-                Some(m) => fields.push(("recipe", Json::from(m.recipe.as_str()))),
-                None => fields.push(("material", Json::from(material_name(e.look.material)))),
+            match (&e.model, &e.two_d) {
+                (Some(m), _) => fields.push(("recipe", Json::from(m.recipe.as_str()))),
+                (None, Some(t)) => fields.push(("two_d", t.subject_json())),
+                (None, None) => fields.push(("material", Json::from(material_name(e.look.material)))),
             }
             fields.extend([
                 ("color", Json::from(color_hex(e.color))),
@@ -333,8 +426,15 @@ pub fn most_relevant(subjects: &[Subject], max: usize) -> (Vec<Json>, usize) {
 /// corners in range plus every point where a box edge crosses one of those planes. Those are
 /// exactly the vertices of the clipped box, so their projection bounds its image. With the
 /// reversed-Z infinite projection, z ≤ w is the near plane and z ≥ 0 holds for everything in front.
-fn clip_box(e: &Entity, view_proj: &Mat4) -> Vec<Vec4> {
-    let Some(corners) = e.world_corners() else { return Vec::new() };
+fn clip_box(e: &Entity, card: Option<[Vec3; 4]>, view_proj: &Mat4) -> Vec<Vec4> {
+    let corners = match card {
+        // A flat card: its four corners twice make the "box" (zero depth).
+        Some(c) => [c[0], c[1], c[3], c[2], c[0], c[1], c[3], c[2]],
+        None => match e.world_corners() {
+            Some(c) => c,
+            None => return Vec::new(),
+        },
+    };
     let corners = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
     let inside = |p: &Vec4| p.z >= 0.0 && p.z <= p.w;
     let mut points: Vec<Vec4> = corners.iter().copied().filter(inside).collect();
@@ -395,7 +495,7 @@ mod tests {
 
     #[test]
     fn camera_rays_hit_what_the_pixel_shows() {
-        let cam = Camera { eye: Vec3::new(3.0, 8.0, 10.0), target: Vec3::new(1.0, 0.0, -2.0), fov_y_deg: 50.0 };
+        let cam = Camera::new(Vec3::new(3.0, 8.0, 10.0), Vec3::new(1.0, 0.0, -2.0), 50.0);
         let (w, h) = (1280u32, 720u32);
         let vp = cam.view_proj(w, h);
         for p in [Vec3::new(1.0, 0.0, -2.0), Vec3::new(4.0, 1.0, 0.0), Vec3::new(-3.0, 0.5, -6.0)] {
@@ -408,7 +508,7 @@ mod tests {
             assert!(miss < 1e-3 * to_p.length(), "{p:?} missed by {miss}");
             assert!((d.length() - 1.0).abs() < 1e-5);
         }
-        let down = Camera { eye: Vec3::new(0.0, 10.0, 0.0), target: Vec3::ZERO, fov_y_deg: 60.0 };
+        let down = Camera::new(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO, 60.0);
         let (_, d) = down.ray(639.5, 359.5, w, h);
         assert!(d.y < -0.999, "straight down still works: {d:?}");
     }
@@ -523,7 +623,7 @@ mod tests {
     }
 
     fn cam(eye: Vec3, target: Vec3, fov_y_deg: f32) -> Camera {
-        Camera { eye, target, fov_y_deg }
+        Camera::new(eye, target, fov_y_deg)
     }
 
     fn frame(world: &World, cam: Camera, w: u32, h: u32) -> Vec<Subject> {
@@ -676,6 +776,26 @@ mod tests {
         assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
         assert_eq!((lights(&world, false, &mut Vec::new()), world.lit_entities().count()), (0, 0));
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
+    }
+
+    #[test]
+    fn billboard_subjects_are_the_card_as_drawn() {
+        let mut world = World::default();
+        let mut tree = SpawnSpec::new(Shape::Sprite);
+        tree.name = Some("tree".into());
+        tree.position = Vec3::new(0.0, 0.0, 0.0);
+        let spec = crate::two_d::parse("sprite", &Json::parse(r#"{"size":[2,4],"pivot":[0.5,0],"billboard":"cylindrical"}"#).unwrap());
+        tree.two_d = Some(spec.unwrap());
+        world.spawn(tree, "t").unwrap();
+        // Orthographic, 20 m tall at 400 x 400: 20 px per metre, seen from the side at 45 degrees.
+        let cam = Camera { projection: Projection::Ortho { height_m: 20.0 }, ..Camera::new(Vec3::new(10.0, 0.0, 10.0), Vec3::ZERO, 50.0) };
+        let s = subjects(&world, &cam.view_proj(400, 400), 400, 400, false);
+        let [x, y, w, h] = rect(&s[0]);
+        assert!((w as i64 - 40).abs() <= 2 && (h as i64 - 80).abs() <= 2, "the card faces the camera: {:?}", [x, y, w, h]);
+        assert!((x as i64 - 180).abs() <= 1 && (y as i64 + h as i64 - 200).abs() <= 1, "feet at the centre: {:?}", [x, y, w, h]);
+        // The card faces the eye 14.14 m away (centre at depth 14.14; its near edge too).
+        let d = s[0].json.get("distance_m").and_then(Json::as_f64).unwrap();
+        assert!((d - 200f64.sqrt()).abs() < 0.05, "orthographic distance along the view axis: {d}");
     }
 
     #[test]
