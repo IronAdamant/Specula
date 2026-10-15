@@ -9,7 +9,7 @@
 
 use specula_core::profile::{self, Collector, FrameProfile, RollingZone};
 use specula_core::{alloc, Json};
-use specula_gpu::{CacheRejection, FramePath, FrameStats, Gpu, MemoryKind, PipelineCacheLoad};
+use specula_gpu::{CacheRejection, FramePath, FrameStats, Gpu, GraphInfo, MemoryKind, PipelineCacheLoad};
 use specula_protocol::ToolOutput;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -151,6 +151,51 @@ fn cache_json(c: PipelineCacheLoad) -> Json {
 }
 
 /// One frame's statistics as compact JSON.
+/// The last frame's render graph for `perf_frame`: a summary, and with `detail` every pass with
+/// the resources it uses and the barriers recorded before it (bounded: a frame has a few dozen
+/// passes and resources at most). `null` before the first frame.
+pub fn graph_json(info: Option<&GraphInfo>, detail: bool) -> Json {
+    let Some(g) = info else { return Json::Null };
+    let mut out = Json::obj([
+        ("passes", Json::from(g.passes.len())),
+        ("resources", Json::from(g.resources.len())),
+        ("barriers", Json::from(g.barrier_count())),
+        ("compiles", Json::from(g.compiles)),
+        ("pass_names", Json::arr(g.passes.iter().map(|p| Json::from(p.name)))),
+    ]);
+    if detail {
+        let passes = g.passes.iter().map(|p| {
+            let uses = p.uses.iter().map(|u| {
+                Json::obj([
+                    ("resource", Json::from(u.resource)),
+                    ("access", Json::from(format!("{:?}", u.access))),
+                    ("load", Json::from(u.load_op)),
+                    ("store", Json::from(u.store_op)),
+                ])
+            });
+            Json::obj([
+                ("name", Json::from(p.name)),
+                ("inline", Json::from(p.inline)),
+                ("uses", Json::arr(uses)),
+                ("barriers", Json::arr(p.barriers.iter().map(|b| Json::from(b.to_string())))),
+            ])
+        });
+        let resources = g.resources.iter().map(|r| {
+            Json::obj([
+                ("name", Json::from(r.name)),
+                ("kind", Json::from(r.kind)),
+                ("size", Json::arr([Json::from(r.width), Json::from(r.height), Json::from(r.layers)])),
+                ("format", Json::from(r.format)),
+                ("bytes", Json::from(r.bytes)),
+            ])
+        });
+        out.set("pass_list", Json::arr(passes));
+        out.set("resource_list", Json::arr(resources));
+        out.set("final_barriers", Json::arr(g.final_barriers.iter().map(|b| Json::from(b.to_string()))));
+    }
+    out
+}
+
 pub fn stats_json(s: &FrameStats) -> Json {
     let gpu = match &s.gpu {
         Some(g) => Json::obj([
@@ -1216,7 +1261,50 @@ pub fn pipeline_cache_path(dir: &Path, adapter_label: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use specula_gpu::{GpuTiming, PassTiming};
+    use specula_gpu::{Access, GpuTiming, GraphBarrier, GraphPass, GraphResource, GraphUse, Load, PassTiming};
+
+    #[test]
+    fn render_graph_summary_and_detail() {
+        assert_eq!(graph_json(None, true), Json::Null);
+        let barrier = GraphBarrier {
+            resource: "hdr",
+            old_layout: "undefined",
+            new_layout: "color_attachment",
+            src_stage: 0,
+            src_access: 0,
+            dst_stage: 0,
+            dst_access: 0,
+        };
+        let g = GraphInfo {
+            resources: vec![GraphResource {
+                name: "hdr",
+                kind: "transient",
+                width: 64,
+                height: 32,
+                layers: 1,
+                format: 97,
+                usage: 0,
+                bytes: 0,
+            }],
+            passes: vec![GraphPass {
+                name: "scene",
+                inline: false,
+                uses: vec![GraphUse { resource: "hdr", access: Access::Color(Load::Clear), load_op: "clear", store_op: "store" }],
+                barriers: vec![barrier],
+            }],
+            final_barriers: vec![],
+            compiles: 2,
+        };
+        let short = graph_json(Some(&g), false);
+        assert_eq!(short.get("passes").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(short.get("barriers").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(short.get("compiles").and_then(Json::as_f64), Some(2.0));
+        assert!(short.get("pass_list").is_none(), "detail only when asked");
+        let full = graph_json(Some(&g), true);
+        let text = full.to_string();
+        assert!(text.contains("\"Color(Clear)\"") && text.contains("undefined->color_attachment"), "{text}");
+        assert!(full.get("resource_list").is_some() && full.get("final_barriers").is_some());
+    }
 
     #[test]
     fn series_statistics() {

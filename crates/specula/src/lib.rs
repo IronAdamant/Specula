@@ -1210,7 +1210,7 @@ impl Engine {
                 }
             },
             Command::Info => self.info(&server.sessions()),
-            Command::Perf { budget_ms } => self.perf(budget_ms),
+            Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
                 if let Some(on) = q.enabled {
                     profile::set_enabled(on);
@@ -1553,7 +1553,7 @@ impl Engine {
         Ok(path)
     }
 
-    fn perf(&self, budget_ms: Option<f64>) -> ToolOutput {
+    fn perf(&self, budget_ms: Option<f64>, graph: bool) -> ToolOutput {
         let kind = perf::adapter_kind(self.gpu.adapter().kind);
         let mut budgets = self.perf_cfg.budgets(kind);
         if let Some(ms) = budget_ms {
@@ -1593,6 +1593,7 @@ impl Engine {
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),
             ("models", self.models_json()),
+            ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
             // and pipeline variants a background build failed to make.
             ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
