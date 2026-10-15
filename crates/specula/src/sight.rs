@@ -10,6 +10,7 @@ use crate::world::{color_hex, material_name, vec3_json, Entity, Shape, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
 use specula_gpu::{DrawItem, FrameDesc, PointLight, MAX_POINT_LIGHTS};
+use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "specula.sight/v1";
 
@@ -218,7 +219,7 @@ fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats
     meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, stats, out);
 }
 
-/// The window's draw list, kept between frames and patched with what changed. Each entity's
+/// The window's draw list, kept between frames and patched with what changed. Each persistent entity's
 /// fixed draw (built-in shapes, lathes) is kept, and each model entity's drawing state, so a frame
 /// copies them instead of walking every entity's full record (F3: on the reference iGPU that walk
 /// was most of the window's CPU frame at 10k entities). When entities change, only those are
@@ -226,8 +227,9 @@ fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats
 /// replaced, the lathe meshes or `include_ui` change, a change touched every entity, or more than
 /// half the entries changed. Models still choose their LOD per frame (each
 /// keeps its level here while its entity exists, hidden or not: the window's hysteresis) and
-/// animated ones are posed from their entity. Same draws, same order as [`draw_list`]; nothing
-/// allocated once warm.
+/// animated ones are posed from their entity. Transient entities (a game's presentation, moving
+/// every tick) aren't cached: they follow every persistent one in id order and are drawn live.
+/// Same draws, same order as [`draw_list`]; nothing allocated once warm.
 #[derive(Default)]
 pub struct DrawCache {
     /// `(world generation, LatheMeshes::version, include_ui)` the entries were built for.
@@ -240,6 +242,8 @@ pub struct DrawCache {
     spare: Vec<Cached>,
     /// Changed ids while patching (reused).
     dirty: Vec<u64>,
+    /// Transient models' remembered LOD levels (while their entity exists).
+    transient_levels: BTreeMap<u64, u8>,
     rebuilds: u64,
     patches: u64,
 }
@@ -315,7 +319,7 @@ impl DrawCache {
             std::mem::swap(&mut self.entries, &mut self.spare);
             self.entries.clear();
             let mut old = self.spare.iter().filter(|_| same_world).map(|c| (c.id(), c.level())).peekable();
-            for e in world.entities() {
+            for e in world.persistent_entities() {
                 while old.next_if(|(id, _)| *id < e.id).is_some() {}
                 let level = old.next_if(|(id, _)| *id == e.id).map_or(u8::MAX, |(_, l)| l);
                 if let Some(c) = Cached::of(e, meshes, view.include_ui, level) {
@@ -329,6 +333,25 @@ impl DrawCache {
             self.key = Some(key);
             self.epoch = world.draw_epoch();
             self.rebuilds += 1;
+            if !same_world {
+                self.transient_levels.clear();
+            }
+        }
+        // Transient entities (game presentation, changing every tick) come after every
+        // persistent one: drawn live, each model with its remembered level.
+        if self.transient_levels.len() > world.transient_len() {
+            self.transient_levels.retain(|id, _| world.get(*id).is_some());
+        }
+        let mut transient = View { camera: view.camera, viewport_h: view.viewport_h, include_ui: view.include_ui, lod: match view.lod {
+            LodChoice::Fixed(l) => LodChoice::Fixed(l),
+            _ => LodChoice::Remembered(&mut self.transient_levels),
+        } };
+        for e in world.transient_entities() {
+            match plan(e, meshes, transient.include_ui) {
+                Plan::Skip => {}
+                Plan::Item(d) => out.push(d),
+                Plan::Model => draw_model(e, meshes, &mut transient, &mut stats, out),
+            }
         }
         stats
     }
@@ -341,7 +364,7 @@ impl DrawCache {
         let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
         // At most World's DRAW_LOG ids; an entity moved many times counts once.
         self.dirty.clear();
-        self.dirty.extend(changes);
+        self.dirty.extend(changes); // persistent entities only (see World::draw_epoch)
         self.dirty.sort_unstable();
         self.dirty.dedup();
         if self.dirty.len() > self.entries.len() / 2 + 16 {
@@ -672,7 +695,7 @@ mod tests {
         world.update(&EntityKey::Id(enemy), UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 5.0)), ..Default::default() }, "game").unwrap();
         check(&world, 0, &mut cache);
         assert_eq!(cache.rebuilds(), 1, "every change above was patched in, not rebuilt");
-        assert!(cache.patches() >= 7);
+        assert!(cache.patches() >= 5);
         // Moving a group moves its subtree: every child is patched.
         let mut g = SpawnSpec::new(Shape::Group);
         g.name = Some("g".into());

@@ -143,8 +143,11 @@ fn a_10k_entity_draw_list_allocates_nothing() {
             world.spawn(s, "game").unwrap().id
         })
         .collect();
-    let step = |world: &mut World, moves: usize, k: usize| {
-        for (j, &id) in enemies.iter().take(moves).enumerate() {
+    // Stone markers an agent moves (persistent: the cache patches them in).
+    let markers: Vec<u64> = world.entities().filter(|e| e.shape == Shape::Cube).take(100).map(|e| e.id).collect();
+    let step = |world: &mut World, moves: usize, persistent: bool, k: usize| {
+        let ids = if persistent { &markers } else { &enemies };
+        for (j, &id) in ids.iter().take(moves).enumerate() {
             let p = Vec3::new(j as f32 * 0.5 - 25.0, 0.5, -10.0 - (k % 50) as f32 * 0.1);
             world.update(&EntityKey::Id(id), UpdateSpec { position: Some(p), ..UpdateSpec::default() }, "game").unwrap();
         }
@@ -163,24 +166,27 @@ fn a_10k_entity_draw_list_allocates_nothing() {
     // Moving enemies: the cache is patched (no rebuild), stays equal to the full walk and
     // allocates nothing once warm.
     for k in 0..10 {
-        step(&mut world, 100, k);
+        step(&mut world, 100, k % 2 == 0, k);
         frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
     }
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     for k in 0..frames {
         // (the world's updates themselves allocate nothing either: tests/transient_alloc.rs)
-        step(&mut world, if k % 2 == 0 { 1 } else { 100 }, k);
+        step(&mut world, if k % 2 == 0 { 1 } else { 100 }, k % 4 < 2, k);
         frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
     }
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed) - before, 0, "patched frames allocate");
-    assert_eq!(cache.rebuilds(), rebuilds, "moving enemies are patched in, never rebuilt");
+    assert_eq!(cache.rebuilds(), rebuilds, "moving markers are patched in and enemies drawn live, never rebuilt");
+    assert!(cache.patches() > 0);
     frame(&world, None, &mut levels, &mut uncached, &mut lights);
     assert!(uncached == draws, "the patched draw list is the full one");
     // Timings, warm and with cold caches (as in the window, where the GPU driver, presentation
     // and, on an iGPU, the GPU itself evict the world between frames: sweep 64 MB first).
     let mut sweep = vec![0u8; 64 << 20];
     let mut medians = BTreeMap::new();
-    for moves in [0usize, 1, 100] {
+    let modes = [(0usize, false), (1, false), (100, false), (1, true), (100, true)];
+    for (moves, persistent) in modes {
+        let what = if persistent { "markers (persistent)" } else { "enemies (transient)" };
         for (label, cached) in [("full walk", false), ("window cache", true)] {
             let (mut warm, mut cold) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
             // The full walk's frames moved enemies without the cache seeing them: one catch-up
@@ -188,7 +194,7 @@ fn a_10k_entity_draw_list_allocates_nothing() {
             frame(&world, cached.then_some(&mut cache), &mut levels, &mut draws, &mut lights);
             let rebuilds = cache.rebuilds();
             for k in 0..frames * 2 {
-                step(&mut world, moves, k);
+                step(&mut world, moves, persistent, k);
                 let is_cold = k % 2 == 1;
                 if is_cold {
                     for (i, b) in sweep.iter_mut().enumerate().step_by(64) {
@@ -202,20 +208,20 @@ fn a_10k_entity_draw_list_allocates_nothing() {
             }
             warm.sort_by(f64::total_cmp);
             cold.sort_by(f64::total_cmp);
-            eprintln!("10k entities, {moves} moves per frame, {label}: warm {:.3} ms median; cold caches {:.3} ms median, {:.3} ms p95",
+            eprintln!("10k entities, {moves} {what} moved per frame, {label}: warm {:.3} ms median; cold caches {:.3} ms median, {:.3} ms p95",
                       warm[frames / 2], cold[frames / 2], cold[frames * 95 / 100]);
-            medians.insert((moves, cached), (warm[frames / 2], cold[frames / 2]));
-            assert_eq!(cache.rebuilds(), rebuilds, "{moves} moves per frame: patched, never rebuilt while timing");
+            medians.insert((moves, persistent, cached), (warm[frames / 2], cold[frames / 2]));
+            assert_eq!(cache.rebuilds(), rebuilds, "{moves} {what} per frame: never rebuilt while timing");
         }
     }
     std::hint::black_box(&sweep);
     // The cache must never cost more than the walk it replaces (beyond noise). Timings mean
     // something only in an optimised build.
     if !cfg!(debug_assertions) {
-        for moves in [0usize, 1, 100] {
-            let (walk, cache) = (medians[&(moves, false)], medians[&(moves, true)]);
+        for (moves, persistent) in modes {
+            let (walk, cache) = (medians[&(moves, persistent, false)], medians[&(moves, persistent, true)]);
             assert!(cache.0 <= walk.0 * 1.1 + 0.02 && cache.1 <= walk.1 * 1.1 + 0.02,
-                    "{moves} moves per frame: the cache ({cache:?} ms warm, cold) is slower than the full walk ({walk:?})");
+                    "{moves} moves per frame (persistent {persistent}): the cache ({cache:?} ms warm, cold) is slower than the full walk ({walk:?})");
         }
     }
     drop(models);

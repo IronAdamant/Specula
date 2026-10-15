@@ -1992,8 +1992,9 @@ pub struct World {
     transient_seq: u64,
     /// Transient entities alive.
     transient_count: usize,
-    /// Moves on every change to any entity (transient ones and derived state included): what a
-    /// renderer keys cached per-entity draw data on. Never hashed or saved.
+    /// Moves on every change to a persistent entity (derived state included): what a renderer
+    /// keys cached per-entity draw data on. Transient entities (game presentation, changing
+    /// every tick) are left out: renderers read them live. Never hashed or saved.
     draw_epoch: u64,
     /// The latest changes as `(draw_epoch after it, entity id)`, oldest first, at most
     /// [`DRAW_LOG`] (see [`World::draw_changes_since`]).
@@ -2214,13 +2215,23 @@ impl World {
         self.entities.values()
     }
 
-    /// See the field: unchanged means no entity changed in any way since it was read.
+    /// The persistent entities, by id (they come before every transient one in [`World::entities`]).
+    pub fn persistent_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e)
+    }
+
+    /// The transient entities (game presentation), by id.
+    pub fn transient_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.entities.range(TRANSIENT_ID_BASE..).map(|(_, e)| e)
+    }
+
+    /// See the field: unchanged means no persistent entity changed in any way since it was read.
     pub fn draw_epoch(&self) -> u64 {
         self.draw_epoch
     }
 
-    /// The ids of the entities that changed (were spawned, changed, moved, removed) after
-    /// [`World::draw_epoch`] was `epoch`, oldest first, possibly repeated; `None` when the record
+    /// The ids of the persistent entities that changed (were spawned, changed, moved, removed)
+    /// after [`World::draw_epoch`] was `epoch`, oldest first, possibly repeated; `None` when the record
     /// no longer reaches back that far (more than [`DRAW_LOG`] changes since, or a change to
     /// every entity): read everything again then. What the window's draw cache patches itself
     /// from.
@@ -2232,8 +2243,12 @@ impl World {
         Some(self.draw_log.range(start..).map(|&(_, id)| id))
     }
 
-    /// Records a change to entity `id` for [`World::draw_changes_since`].
+    /// Records a change to entity `id` for [`World::draw_changes_since`] (transient ones aren't
+    /// recorded: see the field).
     fn draw_touch(&mut self, id: u64) {
+        if id >= TRANSIENT_ID_BASE {
+            return;
+        }
         self.draw_epoch += 1;
         if self.draw_log.len() >= DRAW_LOG {
             if let Some((e, _)) = self.draw_log.pop_front() {
