@@ -25,7 +25,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 26] = [
+static SHADERS: [(&str, &[u8]); 31] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -52,6 +52,11 @@ static SHADERS: [(&str, &[u8]); 26] = [
     ("ids.frag", include_bytes!("../shaders/ids.frag.spv")),
     ("ids_count.frag", include_bytes!("../shaders/ids_count.frag.spv")),
     ("ids_resolve.frag", include_bytes!("../shaders/ids_resolve.frag.spv")),
+    ("ids_skin.vert", include_bytes!("../shaders/ids_skin.vert.spv")),
+    ("ids_tex.vert", include_bytes!("../shaders/ids_tex.vert.spv")),
+    ("ids_skin_tex.vert", include_bytes!("../shaders/ids_skin_tex.vert.spv")),
+    ("ids_tex.frag", include_bytes!("../shaders/ids_tex.frag.spv")),
+    ("ids_count_tex.frag", include_bytes!("../shaders/ids_count_tex.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +87,11 @@ enum Shader {
     IdsFrag = 23,
     IdsCountFrag = 24,
     IdsResolveFrag = 25,
+    IdsSkinVert = 26,
+    IdsTexVert = 27,
+    IdsSkinTexVert = 28,
+    IdsTexFrag = 29,
+    IdsCountTexFrag = 30,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -150,6 +160,29 @@ fn scene_keys(format: VkFormat, include: impl Fn(bool, bool) -> bool) -> Vec<Pip
                     keys.push(PipelineKey::Mesh { format, blended, features: features | FEAT_SSAO, skinned, textured });
                 }
             }
+        }
+    }
+    keys
+}
+
+/// Sight's ID pipelines of the stream variants `include` accepts (`counting`: the device has
+/// fragment atomics, so blended draws are counted): opaque and raster for every scene variant,
+/// insert for the blended ones (blended draws are never textured), the resolve once.
+pub(crate) fn id_keys(include: impl Fn(bool, bool) -> bool, counting: bool) -> Vec<PipelineKey> {
+    use crate::idbuffer::IdPass;
+    let mut keys = Vec::new();
+    for (skinned, textured) in OPAQUE_VARIANTS.into_iter().filter(|(s, t)| include(*s, *t)) {
+        keys.push(PipelineKey::Ids { pass: IdPass::Opaque, skinned, textured });
+        if counting {
+            keys.push(PipelineKey::Ids { pass: IdPass::Raster, skinned, textured });
+        }
+    }
+    if counting {
+        for (skinned, _) in BLENDED_VARIANTS.into_iter().filter(|(s, t)| include(*s, *t)) {
+            keys.push(PipelineKey::Ids { pass: IdPass::Insert, skinned, textured: false });
+        }
+        if include(false, false) {
+            keys.push(PipelineKey::Ids { pass: IdPass::Resolve, skinned: false, textured: false });
         }
     }
     keys
@@ -803,8 +836,10 @@ pub enum PipelineKey {
     /// One direction of the depth-aware separable blur of the occlusion.
     SsaoBlur,
     /// Sight's ID buffer (`idbuffer.rs`): opaque ids into R32_UINT + D32 (compare op dynamic), or
-    /// counted into a storage buffer (blended against the opaque depth; rasterized at all).
-    Ids { pass: crate::idbuffer::IdPass },
+    /// counted into a storage buffer (blended against the opaque depth; rasterized at all), for
+    /// skinned meshes (posed like the scene) and textured ones (alpha-mask cut, like the scene).
+    /// The skinned and textured ones are built with the scene's variants (`id_keys`).
+    Ids { pass: crate::idbuffer::IdPass, skinned: bool, textured: bool },
 }
 
 /// What vertex data a pipeline reads.
@@ -817,8 +852,9 @@ enum VertexInput {
     Mesh { skinned: bool, textured: bool },
     /// [`Vertex`]'s position only (plus the skin stream, and the UVs of the surface stream).
     Position { skinned: bool, uv: bool },
-    /// [`Vertex`]'s position and normal (the ID buffer).
-    PositionNormal,
+    /// [`Vertex`]'s position and normal (the ID buffer), plus the skin stream and the UVs of the
+    /// surface stream when asked.
+    PositionNormal { skinned: bool, uv: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -933,21 +969,29 @@ impl PipelineKey {
             },
             PipelineKey::Ssao => fullscreen(Shader::SsaoFrag, crate::ssao::AO_FORMAT, Blend::Off),
             PipelineKey::SsaoBlur => fullscreen(Shader::SsaoBlurFrag, crate::ssao::AO_FORMAT, Blend::Off),
-            PipelineKey::Ids { pass } => {
+            PipelineKey::Ids { pass, skinned, textured } => {
                 use crate::idbuffer::IdPass;
                 // `id_buffer` (opaque, insert, raster) renders with the id image and its depth;
                 // `id_resolve` (resolve) with the depth only.
                 let in_id_buffer = matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Raster);
                 PipelineDesc {
-                    vert: if pass == IdPass::Resolve { Shader::FullscreenVert } else { Shader::IdsVert },
-                    frag: Some(match pass {
-                        IdPass::Opaque => Shader::IdsFrag,
-                        IdPass::Resolve => Shader::IdsResolveFrag,
-                        _ => Shader::IdsCountFrag,
+                    vert: match (pass, skinned, textured) {
+                        (IdPass::Resolve, ..) => Shader::FullscreenVert,
+                        (_, false, false) => Shader::IdsVert,
+                        (_, true, false) => Shader::IdsSkinVert,
+                        (_, false, true) => Shader::IdsTexVert,
+                        (_, true, true) => Shader::IdsSkinTexVert,
+                    },
+                    frag: Some(match (pass, textured) {
+                        (IdPass::Opaque, false) => Shader::IdsFrag,
+                        (IdPass::Opaque, true) => Shader::IdsTexFrag,
+                        (IdPass::Resolve, _) => Shader::IdsResolveFrag,
+                        (_, false) => Shader::IdsCountFrag,
+                        (_, true) => Shader::IdsCountTexFrag,
                     }),
                     // ids_count.frag's MODE: 0 insert, 1 raster.
                     spec: (pass == IdPass::Raster) as u32,
-                    vertex: if pass == IdPass::Resolve { VertexInput::None } else { VertexInput::PositionNormal },
+                    vertex: if pass == IdPass::Resolve { VertexInput::None } else { VertexInput::PositionNormal { skinned, uv: textured } },
                     color: in_id_buffer.then_some(crate::idbuffer::ID_FORMAT),
                     depth: Some(DEPTH_FORMAT),
                     depth_test: matches!(pass, IdPass::Opaque | IdPass::Insert),
@@ -997,6 +1041,9 @@ pub struct Pipelines {
     cache_load: PipelineCacheLoad,
     /// Stream variants built (see [`Variants`]).
     pub variants: Variants,
+    /// The device counts blended draws in the ID passes (fragment atomics): their counting
+    /// pipelines are built with the variants.
+    ids_counting: bool,
     /// Variants being built on a worker thread, and what that has built so far.
     background: Background,
 }
@@ -1158,6 +1205,7 @@ impl Pipelines {
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
             variants: Variants::default(),
+            ids_counting: false,
             background: Background::default(),
         };
         let result = (|| {
@@ -1248,11 +1296,9 @@ impl Pipelines {
         self.get(dev, PipelineKey::BloomUp)?;
         self.get(dev, PipelineKey::Ssao)?;
         self.get(dev, PipelineKey::SsaoBlur)?;
-        for pass in crate::idbuffer::IdPass::ALL {
-            // The counting passes need fragment atomics; without them blended draws go uncounted.
-            if pass == crate::idbuffer::IdPass::Opaque || dev.fragment_atomics {
-                self.get(dev, PipelineKey::Ids { pass })?;
-            }
+        self.ids_counting = dev.fragment_atomics;
+        for key in id_keys(|s, t| built.has(s, t), self.ids_counting) {
+            self.get(dev, key)?;
         }
         Ok(())
     }
@@ -1311,6 +1357,12 @@ impl Pipelines {
         })
     }
 
+    /// The pipeline for `key` if it exists (never creates one: for variants built in the
+    /// background, which frames must not compile).
+    pub fn built(&self, key: PipelineKey) -> Option<VkPipeline> {
+        self.by_key.iter().find(|(k, _)| *k == key).map(|&(_, p)| p)
+    }
+
     /// The pipeline for `key`. Normally prebuilt; one created here is counted against the warm mark.
     pub fn get(&mut self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
         if let Some(&(_, p)) = self.by_key.iter().find(|(k, _)| *k == key) {
@@ -1351,6 +1403,8 @@ impl Pipelines {
         for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| new(*s, *m)) {
             keys.push(PipelineKey::Shadow { skinned, masked });
         }
+        // Sight's ID passes follow the scene's variants (captures draw what the scene draws).
+        keys.extend(id_keys(new, self.ids_counting));
         keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
         keys
     }
@@ -1453,6 +1507,7 @@ impl Pipelines {
                     let (skinned, textured) = match key {
                         PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured),
                         PipelineKey::Shadow { skinned, masked } => (skinned, masked),
+                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured),
                         _ => (new.skinned, new.textured),
                     };
                     lost.skinned |= skinned && new.skinned;
@@ -1577,13 +1632,13 @@ impl Pipelines {
             VertexInput::None => (false, false, None),
             VertexInput::Mesh { skinned, textured } => (skinned, textured, Some(true)),
             VertexInput::Position { skinned, .. } => (skinned, false, Some(false)),
-            VertexInput::PositionNormal => (false, false, Some(false)),
+            VertexInput::PositionNormal { skinned, .. } => (skinned, false, Some(false)),
         };
-        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. });
+        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. } | VertexInput::PositionNormal { uv: true, .. });
         if let Some(full) = full {
             bindings.push(binding(0, size_of::<Vertex>()));
             attributes.push(attribute(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, position)));
-            if full || d.vertex == VertexInput::PositionNormal {
+            if full || matches!(d.vertex, VertexInput::PositionNormal { .. }) {
                 attributes.push(attribute(1, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, normal)));
             }
             if full {

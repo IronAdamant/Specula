@@ -67,11 +67,17 @@
 //! makes the counts visible to the copy and the copy to the host. Offscreen renders are
 //! synchronous, so nothing earlier still uses them.
 //!
-//! **Extending the vertex stage** (GPU skinning, morphs): every ID pipeline that draws meshes
-//! shares `shaders/ids.vert`, whose `id_world_position()` is the one place vertices are placed;
-//! give it the same deformation as `mesh.vert` (or a skinned variant of `PipelineKey::Ids` with its
-//! own vertex shader built on `ids.glsl`), or the ID buffer disagrees with the image. Materials
-//! that discard fragments (alpha cutouts) need a matching rule in `ids_count.frag`'s `shown()`.
+//! **The scene's streams and discards, mirrored.** Every ID pipeline that draws meshes shares
+//! `shaders/ids_vert.glsl` in the scene's four stream variants (plain, skinned, textured, both:
+//! `PipelineKey::Ids { skinned, textured }`), chosen per batch exactly as the scene chooses them.
+//! Skinned meshes are posed in `id_model()` from the frame's bone palettes as `mesh_vert.glsl`
+//! poses them; the skinned and textured ID pipelines are built in the background with the scene's
+//! variants (`render::id_keys`), never in a frame, and until they are ready their draws are
+//! skipped, as the scene skips them. Textured draws cut alpha-masked texels (`cut_out` in
+//! `ids.glsl`: the base colour's alpha against the draw's cutoff, as `mesh_frag.glsl` and the
+//! masked shadow casters cut) in the opaque pass and in `shown()`. Anything new that moves vertices
+//! (morphs, wind) or discards fragments must be mirrored here, or the ID buffer disagrees with
+//! the image.
 //!
 //! The window path never declares these passes.
 
@@ -109,10 +115,6 @@ pub enum IdPass {
     Resolve,
 }
 
-impl IdPass {
-    pub const ALL: [IdPass; 4] = [IdPass::Opaque, IdPass::Insert, IdPass::Raster, IdPass::Resolve];
-}
-
 /// Push constants of the ID pipelines; must match `Push` in `shaders/ids.glsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -131,6 +133,8 @@ pub struct IdPush {
     pub epoch: u32,
     /// Rows of the capture.
     pub height: u32,
+    /// The frame's bone palettes (skinned draws; `FrameUpload::bones_address`).
+    pub bones: u64,
 }
 
 
@@ -188,11 +192,13 @@ pub fn declare(g: &mut FrameGraph, extent: VkExtent2D, bucket: (u32, u32)) -> Id
 /// What recording the ID passes needs beyond the frame's context.
 #[derive(Clone, Copy, Debug)]
 pub struct IdFrame {
-    pub opaque: VkPipeline,
-    /// The blended passes' pipelines (`VK_NULL_HANDLE` when they don't run: no fragment atomics,
-    /// or no blended draws for insert and resolve).
-    pub insert: VkPipeline,
-    pub raster: VkPipeline,
+    /// By streams: `skinned as usize | (textured as usize) << 1` (`VK_NULL_HANDLE`: that
+    /// variant isn't built yet, so its draws are skipped, as the scene skips them).
+    pub opaque: [VkPipeline; 4],
+    /// The counting passes' pipelines (`VK_NULL_HANDLE` when they don't run: no fragment
+    /// atomics, or no blended draws for insert and resolve). Insert by `skinned as usize`.
+    pub insert: [VkPipeline; 2],
+    pub raster: [VkPipeline; 4],
     pub resolve: VkPipeline,
     pub layout: VkPipelineLayout,
     /// Device address of the per-record ids.
@@ -327,36 +333,84 @@ fn push_for(ctx: &FrameContext, f: &IdFrame) -> IdPush {
         width: f.extent.width,
         epoch: f.epoch,
         height: f.extent.height,
+        bones: ctx.upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len()),
     }
 }
 
-/// Draws the plan's batches whose blendedness `wanted` accepts with `pipeline` (bound by the
-/// caller), pushing each batch's face rule. Glass is planned twice (back faces, then front
-/// faces); it is drawn once (every face of it either way).
+/// One step of `id_buffer`: which batches it draws and with which of its pipelines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Opaque,
+    Insert,
+    Raster,
+}
+
+impl Step {
+    /// The pipeline for a batch with these streams (`VK_NULL_HANDLE`: not drawn, as in the
+    /// scene, whose variant isn't built either).
+    fn pipeline(self, f: &IdFrame, skinned: bool, textured: bool) -> VkPipeline {
+        let streams = skinned as usize | (textured as usize) << 1;
+        match self {
+            Step::Opaque => f.opaque[streams],
+            // Blended draws are never textured (`batch::textured`).
+            Step::Insert => f.insert[skinned as usize],
+            Step::Raster => f.raster[streams],
+        }
+    }
+
+    fn wants(self, blended: bool) -> bool {
+        match self {
+            Step::Opaque => !blended,
+            Step::Insert => blended,
+            Step::Raster => true,
+        }
+    }
+}
+
+/// Draws the plan's batches `step` wants, each with its streams' pipeline (skinned meshes posed
+/// like the scene, textured ones with its alpha-mask cut), pushing each batch's face rule. Glass
+/// is planned twice (back faces, then front faces); it is drawn once (every face of it either
+/// way). Batches whose pipeline variant isn't built are skipped (the scene skips them too).
 ///
 /// # Safety
-/// `cmd` is recording inside a rendering instance with `pipeline` bound, whose layout is
-/// `f.layout`; mesh buffers are live (`check_frame`); the frame upload holds one record per plan
-/// entry and the ids buffer one id per record.
-unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, pipeline_is_opaque: bool, wanted: fn(bool) -> bool) {
+/// `cmd` is recording inside a rendering instance, with the descriptor set bound for
+/// `f.layout`; every ID pipeline uses `f.layout`; mesh buffers are live (`check_frame`); the
+/// frame upload holds one record per plan entry (and the frame's bone palettes) and the ids
+/// buffer one id per record.
+unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: Step, compare: i32) {
     let dev = ctx.dev;
     let mut push = push_for(ctx, f);
     let mut pushed = None;
+    let mut bound = VK_NULL_HANDLE;
     let mut bound_mesh = None;
     let twice = |b: &&crate::batch::Batch| b.material == crate::Material::Glass && b.pass == 0;
-    for batch in ctx.scratch.plan.batches.iter().filter(|b| wanted(b.material.blended()) && !twice(b)) {
+    for batch in ctx.scratch.plan.batches.iter().filter(|b| step.wants(b.material.blended()) && !twice(b)) {
         let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
-        push.faces = if pipeline_is_opaque { FACES_ALL } else { faces_for(batch.material) };
+        // The scene's choice of streams (render.rs), so the same variants draw.
+        let skinned = batch.skinned && mesh.skin_offset.is_some();
+        let textured = batch.textured && mesh.surface_offset.is_some();
+        let pipeline = step.pipeline(f, skinned, textured);
+        if pipeline == VK_NULL_HANDLE {
+            continue;
+        }
+        push.faces = if step == Step::Opaque { FACES_ALL } else { faces_for(batch.material) };
         // SAFETY: as the caller promises; every referenced struct outlives its call.
         unsafe {
+            if pipeline != bound {
+                (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                if step != Step::Raster {
+                    // Dynamic in the depth-tested pipelines (the raster ones don't test depth).
+                    (dev.fns.cmd_set_depth_compare_op)(cmd, compare);
+                }
+                bound = pipeline;
+            }
             if pushed != Some(push.faces) {
                 (dev.fns.cmd_push_constants)(cmd, f.layout, PUSH_STAGES, 0, size_of::<IdPush>() as u32, &push as *const IdPush as *const c_void);
                 pushed = Some(push.faces);
             }
             if bound_mesh != Some(batch.mesh) {
-                let offset: VkDeviceSize = 0;
-                (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &mesh.buffer.handle, &offset);
-                (dev.fns.cmd_bind_index_buffer)(cmd, mesh.buffer.handle, mesh.index_offset, VK_INDEX_TYPE_UINT32);
+                // Every stream the mesh has (the pipeline reads those its variant declares).
+                mesh.bind(dev, cmd);
                 bound_mesh = Some(batch.mesh);
             }
             (dev.fns.cmd_draw_indexed)(cmd, mesh.index_count, batch.count, 0, 0, batch.first);
@@ -384,25 +438,17 @@ fn record_id_buffer(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p:
     };
     let viewport = VkViewport { x: 0.0, y: 0.0, width: f.extent.width as f32, height: f.extent.height as f32, min_depth: 0.0, max_depth: 1.0 };
     let compare = if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS };
-    // (pipeline, which batches): opaque ones, then blended ones, then all of them.
-    type Wanted = fn(bool) -> bool;
-    let steps: [(VkPipeline, Wanted); 3] = [(f.opaque, |b| !b), (f.insert, |b| b), (f.raster, |_| true)];
-    // SAFETY: `cmd` is recording; every referenced struct outlives its call; every pipeline uses
-    // `f.layout`; the opaque and insert ones declare the depth compare op dynamic (the raster one
-    // doesn't test depth); see `draw_batches` for the draws.
+    // SAFETY: `cmd` is recording; every referenced struct outlives its call; the descriptor set
+    // (material textures, for the alpha-mask cut) is compatible with `f.layout`, every ID
+    // pipeline's layout; see `draw_batches` for the draws.
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
-        for (pipeline, wanted) in steps {
-            if pipeline == VK_NULL_HANDLE {
-                continue;
-            }
-            (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-            if pipeline != f.raster {
-                (dev.fns.cmd_set_depth_compare_op)(cmd, compare);
-            }
-            draw_batches(ctx, cmd, f, pipeline == f.opaque, wanted);
+        ctx.descriptors.bind(dev, cmd, f.layout);
+        // Opaque draws, then blended ones, then all of them.
+        for step in [Step::Opaque, Step::Insert, Step::Raster] {
+            draw_batches(ctx, cmd, f, step, compare);
         }
         (dev.fns.cmd_end_rendering)(cmd);
     }
@@ -565,7 +611,16 @@ impl IdResources {
         let count_blended = dev.fragment_atomics && !self.blended_disabled;
         let (mut stats, mut stats_address, mut stats_host, mut stats_bytes) = (VK_NULL_HANDLE, 0, VK_NULL_HANDLE, 0);
         let (mut seen, mut seen_address, mut seen_clear) = (VK_NULL_HANDLE, 0, false);
-        let (mut insert, mut raster, mut resolve) = (VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        let (mut insert, mut raster, mut resolve) = ([VK_NULL_HANDLE; 2], [VK_NULL_HANDLE; 4], VK_NULL_HANDLE);
+        // The variants built (the plain ones always are; skinned and textured ones by the
+        // background build, never here: a capture skips draws whose variant isn't ready, exactly
+        // as the scene does).
+        let ready = pipelines.variants;
+        let variant = |pass: IdPass, skinned: bool, textured: bool| {
+            let have = (!skinned || ready.skinned) && (!textured || ready.textured);
+            have.then(|| pipelines.built(PipelineKey::Ids { pass, skinned, textured })).flatten().unwrap_or(VK_NULL_HANDLE)
+        };
+        let streams = |pass: IdPass| [(false, false), (true, false), (false, true), (true, true)].map(|(s, t)| variant(pass, s, t));
         if count_blended {
             stats_bytes = (max_id.max(1) as usize * STATS_STRIDE * 4) as u64;
             let usage = addr | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -584,15 +639,15 @@ impl IdResources {
                     self.seen_dirty = true; // new memory: undefined contents
                 }
                 seen_clear = self.next_epoch();
-                insert = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Insert })?;
-                resolve = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Resolve })?;
+                insert = [variant(IdPass::Insert, false, false), variant(IdPass::Insert, true, false)];
+                resolve = variant(IdPass::Resolve, false, false);
             }
             stats_host = Grown::ensure(&mut self.stats_host, dev, stats_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id stats readback")?.buffer.handle;
-            raster = pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Raster })?;
+            raster = streams(IdPass::Raster);
         }
         self.pending = Some(Last { target, extent, max_id, blended_counted: count_blended, has_blended, cleared: seen_clear });
         Ok(IdFrame {
-            opaque: pipelines.get(dev, PipelineKey::Ids { pass: IdPass::Opaque })?,
+            opaque: streams(IdPass::Opaque),
             insert,
             raster,
             resolve,

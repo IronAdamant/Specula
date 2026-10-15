@@ -1,5 +1,9 @@
-// Sight's ID buffer: what every ID stage shares (see src/idbuffer.rs). Included by ids.vert,
-// ids_count.frag and ids_resolve.frag; not compiled on its own.
+// Sight's ID buffer: what every ID stage shares (see src/idbuffer.rs). Included by the ids*
+// entry files (ids_vert.glsl's variants, ids*.frag); not compiled on its own. Defines: SKINNED
+// (joints and weights, posed like mesh.vert), TEXTURED (UVs, for the alpha-mask cut).
+#ifdef TEXTURED
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
 #include "frame.glsl"
 
 // One id per draw record, in record order (0 = not counted).
@@ -45,6 +49,7 @@ layout(push_constant) uniform Push {
     uint width;    // pixels per row (indexes `seen`)
     uint epoch;    // this capture's tag in `seen` (1..4095)
     uint height;   // rows of the capture
+    Bones bones;   // skinned draws: the palette starts at draws.items[i].ext.z (as mesh.vert)
 } pc;
 
 // Which fragments of a draw the scene shows, mirroring mesh.frag's discards (src/idbuffer.rs).
@@ -69,3 +74,19 @@ void count_box(uint id, uvec2 p, bvec4 edges) {
     if (edges.z) atomicMax(pc.stats.v[base + 3u], p.x);  // right edge
     if (edges.w) atomicMax(pc.stats.v[base + 4u], p.y);  // bottom edge
 }
+
+#ifdef TEXTURED
+// Alpha-masked textured materials (glTF MASK): the texels the scene cuts (mesh_frag.glsl,
+// shadow_mask.frag): base colour alpha below the draw's cutoff. Same texture, UVs and LOD (the
+// same rasterization, so the same derivatives).
+layout(set = 0, binding = 1) uniform sampler2D textures[];
+
+bool cut_out(uint record, vec2 uv) {
+    uvec4 ext = pc.draws.items[record].ext;
+    uint base_slot = ext.x & 0xffffu;
+    if (base_slot == 0u || (ext.w & EXT_ALPHA_MASK) == 0u) {
+        return false;
+    }
+    return texture(textures[nonuniformEXT(base_slot - 1u)], uv).a < float((ext.w >> 8) & 255u) / 255.0;
+}
+#endif

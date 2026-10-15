@@ -639,7 +639,7 @@ impl Engine {
         }
         if spec.has(Kind::Skeletons) {
             let lib = self.library.lock();
-            let (mut rigged, mut bones, mut rigless) = (0, 0, 0);
+            let (mut rigged, mut bones, mut rigless, mut posed_count) = (0, 0, 0, 0);
             for (_, e, _) in shown.iter().filter(|(_, e, _)| e.model.is_some()) {
                 if rigged >= ov::MAX_SKELETONS {
                     break;
@@ -649,26 +649,46 @@ impl Engine {
                     rigless += 1;
                     continue;
                 };
-                let m = e.model();
-                let at = |v: [f32; 3]| m.transform_point(Vec3::new(v[0], v[1], v[2]));
-                for b in &rig.bones {
-                    let color = if b.name.ends_with("_l") {
+                let color_of = |name: &str| {
+                    if name.ends_with("_l") {
                         [0.35, 0.85, 1.0, 1.0]
-                    } else if b.name.ends_with("_r") {
+                    } else if name.ends_with("_r") {
                         [1.0, 0.45, 0.8, 1.0]
                     } else {
                         [1.0, 0.9, 0.4, 1.0]
-                    };
-                    if let Some(parent) = b.parent.and_then(|i| rig.bones.get(i)) {
-                        if parent.tail != b.head {
-                            p.line(at(parent.head), at(b.head), [1.0, 1.0, 1.0, 0.45], 1.0);
+                    }
+                };
+                // Animated models: the joints as the frame poses them at its time_s (what the
+                // image shows); joints only, so each bone runs from its parent's joint to its own.
+                let posed: Option<std::collections::HashMap<String, Vec3>> =
+                    self.models.bone_positions(e, opts.time_s).map(|list| list.into_iter().collect());
+                let m = e.model();
+                let at = |v: [f32; 3]| m.transform_point(Vec3::new(v[0], v[1], v[2]));
+                if let Some(joints) = &posed {
+                    posed_count += 1;
+                    for b in &rig.bones {
+                        let head = joints.get(&b.name).copied().unwrap_or_else(|| at(b.head));
+                        if let Some(parent) = b.parent.and_then(|i| rig.bones.get(i)) {
+                            let from = joints.get(&parent.name).copied().unwrap_or_else(|| at(parent.head));
+                            p.line(from, head, color_of(&parent.name), 2.5);
                         }
+                        p.dot(head, 3.0, color_of(&b.name));
+                        bones += 1;
                     }
-                    if b.tail != b.head {
-                        p.line(at(b.head), at(b.tail), color, 2.5);
+                } else {
+                    for b in &rig.bones {
+                        let color = color_of(&b.name);
+                        if let Some(parent) = b.parent.and_then(|i| rig.bones.get(i)) {
+                            if parent.tail != b.head {
+                                p.line(at(parent.head), at(b.head), [1.0, 1.0, 1.0, 0.45], 1.0);
+                            }
+                        }
+                        if b.tail != b.head {
+                            p.line(at(b.head), at(b.tail), color, 2.5);
+                        }
+                        p.dot(at(b.head), 3.0, color);
+                        bones += 1;
                     }
-                    p.dot(at(b.head), 3.0, color);
-                    bones += 1;
                 }
                 rigged += 1;
             }
@@ -680,7 +700,9 @@ impl Engine {
                     ("entities", Json::from(rigged)),
                     ("bones", Json::from(bones)),
                     ("models_without_rig", Json::from(rigless)),
-                    ("pose", Json::from("rest")),
+                    // "posed": animated models drawn as the frame poses them; "rest": none were.
+                    ("posed", Json::from(posed_count)),
+                    ("pose", Json::from(if posed_count > 0 { "posed" } else { "rest" })),
                 ]),
             ));
         }

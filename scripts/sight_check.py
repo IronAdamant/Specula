@@ -287,6 +287,27 @@ def main():
         check("/front_glass" not in ld["subjects"]["became_hidden"]["items"], f"compare: not became_hidden ({ld['subjects']['became_hidden']})", failures)
         builder.json("world_batch", ops=[{"op": "delete", "path": p} for p in ["/front_glass"] + [f"/layer_{i}" for i in range(4)]])
 
+        print("posed creatures: the ID buffer and the skeleton follow the animation")
+        builder.json("world_set", path="/runner", anim={"clip": "sprint", "speed": 1})
+        near = dict(eye=[-6, 1.4, 5.5], target=[-6, 0.9, 2], width=640, height=480, max_subjects=50)
+        poses = []
+        for t in (10.0, 10.2):
+            pk, _ = save(f"frame_runner_posed_{t}", builder.call("sight_frame", **near, time_s=t, overlays=["skeletons"]))
+            poses.append((subject(pk, "/runner"), pk["overlays"]["skeletons"]))
+        (a, sk_a), (b, sk_b) = poses
+        check(sk_a.get("pose") == "posed" and sk_a.get("posed") == 1, f"the skeleton overlay draws the pose ({sk_a})", failures)
+        check(a["screen_box_exact"] != b["screen_box_exact"] or a["visible_px"] != b["visible_px"],
+              f"the runner's pixels follow its pose ({a['visible_px']} px {a['screen_box_exact']} -> {b['visible_px']} px {b['screen_box_exact']})",
+              failures)
+        again = subject(builder.frame(**near, time_s=10.0), "/runner")
+        check((again["visible_px"], again["screen_box_exact"]) == (a["visible_px"], a["screen_box_exact"]),
+              "the same time_s gives the same pixels", failures)
+        for s_ in (a, b):
+            ex, pr = s_["screen_box_exact"], s_["screen"]
+            check(pr[0] <= ex[0] and pr[1] <= ex[1] and ex[0] + ex[2] <= pr[0] + pr[2] and ex[1] + ex[3] <= pr[1] + pr[3],
+                  f"the posed runner's exact box {ex} lies in its projected box {pr}", failures)
+        builder.json("world_set", path="/runner", anim=False)
+
         print("ID buffer cost at 1280x720")
         costs = []
         for _ in range(6):

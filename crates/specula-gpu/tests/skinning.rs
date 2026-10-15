@@ -569,6 +569,85 @@ fn unrelated_requests_retry_a_failure_instead_of_dropping_it() {
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }
 
+/// Sight's ID buffer sees what the scene draws: a skinned bar's pixels follow its pose (they
+/// match the CPU-posed copy's, not the rest pose's), an alpha-masked quad's cut-out texel isn't
+/// counted (opaque or rasterized), and none of it compiles a pipeline in a frame (the ID variants
+/// are built in the background with the scene's).
+fn ids_on(adapter: AdapterPreference, label: &str) {
+    let test = format!("ids_follow_pose_and_masks[{label}]");
+    let Some(mut gpu) = gpu_or_skip(&test, adapter) else { return };
+    let (vertices, indices, skin) = bar();
+    let mesh = gpu.upload_mesh_with(&vertices, &indices, &MeshStreams { skin: Some(&skin), ..Default::default() }).unwrap();
+    let (qv, qi, uv) = quad_uv();
+    let quad = gpu.upload_mesh_with(&qv, &qi, &MeshStreams { uvs: Some(&uv), ..Default::default() }).unwrap();
+    let target = gpu.create_target(W, H).unwrap();
+    wait_variants(&mut gpu, true, true);
+    gpu.mark_warm();
+    let coverage = |gpu: &mut Gpu, frame: &FrameDesc| {
+        let ids: Vec<u32> = (1..=frame.draws.len() as u32).collect();
+        gpu.render_with_ids(target, frame, &ids).unwrap();
+        gpu.id_coverage(target, ids.len() as u32).unwrap().per_id
+    };
+    // The bar bent at its joint, skinned on the GPU and posed on the CPU; and its rest pose.
+    let bones = palette(1.0);
+    let mut bent = DrawItem::new(mesh, IDENTITY, [0.9, 0.7, 0.4, 1.0]);
+    bent.skin = Some(0);
+    bent.bounds = Some([0.0, 1.0, 0.0, 1.5]);
+    let gpu_posed = coverage(&mut gpu, &scene_frame(&[bent], &bones, false))[0];
+    let cpu = gpu.upload_mesh(&posed(&vertices, &skin, &bones), &indices).unwrap();
+    let cpu_posed = coverage(&mut gpu, &scene_frame(&[DrawItem::new(cpu, IDENTITY, [1.0; 4])], &[], false))[0];
+    let rest = coverage(&mut gpu, &scene_frame(&[DrawItem::new(mesh, IDENTITY, [1.0; 4])], &[], false))[0];
+    let near = |a: u64, b: u64| a.abs_diff(b) <= b / 50 + 4;
+    assert!(
+        near(gpu_posed.opaque_pixels, cpu_posed.opaque_pixels) && gpu_posed.min.iter().zip(cpu_posed.min).chain(gpu_posed.max.iter().zip(cpu_posed.max)).all(|(a, b)| a.abs_diff(b) <= 1),
+        "{test}: posed bar {gpu_posed:?} vs CPU-posed {cpu_posed:?}"
+    );
+    assert!(gpu_posed.min[0] + 10 < rest.min[0], "{test}: the bent tip moves the box left of the rest pose's: {gpu_posed:?} vs {rest:?}");
+    gpu.destroy_mesh(cpu);
+
+    // The textured quad fills the middle half of the image; masked, its blue texel (a quarter)
+    // is cut, as the scene cuts it.
+    let tex_px = [200, 30, 30, 255, 30, 200, 30, 255, 30, 30, 200, 0, 255, 255, 255, 255];
+    let nearest = TextureSampler { mag: TextureFilter::Nearest, min: TextureFilter::Nearest, mipmap: TextureFilter::Nearest, ..Default::default() };
+    let tex = gpu.upload_material_texture(2, 2, TextureFormat::Rgba8Srgb, &tex_px, nearest).unwrap();
+    let mut d = DrawItem::new(quad, IDENTITY, [1.0; 4]);
+    d.surface = Surface { textures: MaterialTextures { base_color: Some(tex), ..Default::default() }, ..Default::default() };
+    let whole = coverage(&mut gpu, &flat_frame(&[d], 1.0))[0];
+    d.surface.textures.alpha_cutoff = 0.5;
+    let masked = coverage(&mut gpu, &flat_frame(&[d], 1.0))[0];
+    let quarter = whole.opaque_pixels as f64 / 4.0;
+    assert!(
+        (masked.opaque_pixels as f64 - 3.0 * quarter).abs() <= quarter * 0.03,
+        "{test}: masked quad {} px of {} (the cut-out quarter must not count)",
+        masked.opaque_pixels,
+        whole.opaque_pixels
+    );
+    // The cut is the bottom-left texel: the box keeps its full size (top-right three remain).
+    assert_eq!((masked.min, masked.max), (whole.min, whole.max), "{test}");
+    // A masked quad fully cut out: not even rasterized as far as sight is concerned.
+    let clear = gpu.upload_material_texture(1, 1, TextureFormat::Rgba8Srgb, &[255, 255, 255, 0], nearest).unwrap();
+    d.surface.textures.base_color = Some(clear);
+    let gone = coverage(&mut gpu, &flat_frame(&[d], 1.0))[0];
+    assert_eq!(gone.pixels, 0, "{test}: a fully cut quad shows nothing");
+    if gpu.ids_count_blended() {
+        assert_eq!(gone.rasterized, Some(false), "{test}: none of its fragments show, so it isn't 'occluded'");
+    }
+    assert_eq!(gpu.last_frame_stats().pipelines.created_after_warm, 0, "{test}: no ID pipeline compiled in a frame");
+    let errors = validation_errors(&test, gpu);
+    assert!(errors.is_empty(), "{test}: {errors:#?}");
+}
+
+#[test]
+fn ids_follow_pose_and_masks_on_every_adapter() {
+    let Ok(adapters) = specula_gpu::enumerate_adapters() else {
+        eprintln!("ids_follow_pose_and_masks: SKIPPED — Vulkan is not available");
+        return;
+    };
+    for a in adapters {
+        ids_on(AdapterPreference::Index(a.index), &format!("{}", a.index));
+    }
+}
+
 /// Keep `Gpu` in the imports used when every test skips.
 #[allow(dead_code)]
 fn _uses(_: &Gpu) {}
