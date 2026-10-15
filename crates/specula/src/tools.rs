@@ -148,7 +148,8 @@ pub enum Command {
     View(Option<Camera>),
     Info,
     /// perf_frame; `None` = the frame budget from perf.toml.
-    Perf { budget_ms: Option<f64> },
+    /// `graph`: include the last frame's render graph pass by pass (else only its summary).
+    Perf { budget_ms: Option<f64>, graph: bool },
     PerfZones(ZonesQuery),
     /// perf_memory: top zones by allocation.
     PerfMemory { limit: usize },
@@ -313,7 +314,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
         "perf_frame" => {
-            check_keys(args, name, &[&["budget_ms"]])?;
+            check_keys(args, name, &[&["budget_ms", "graph"]])?;
             let budget_ms = match args.get("budget_ms") {
                 None | Some(Json::Null) => None,
                 Some(v) => match v.as_f64() {
@@ -321,7 +322,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                     _ => return Err("'budget_ms' must be a number of milliseconds, 0.1..10000".into()),
                 },
             };
-            Ok(Command::Perf { budget_ms })
+            Ok(Command::Perf { budget_ms, graph: bool_arg(args, "graph")?.unwrap_or(false) })
         }
         "perf_zones" => parse_perf_zones(args).map(Command::PerfZones),
         "perf_memory" => {
@@ -1774,12 +1775,18 @@ fn definitions() -> Vec<ToolDef> {
                           calls, instances, triangles, culled draws, pipelines built after warm-up, GPU memory and \
                           heap budgets, frame pacing (mean/p95/max), simulation tick cost, CPU frame time and heap, \
                           `errors` listing every budget miss as {error, metric, value, budget, unit, adapter}, and \
-                          `problems` listing effects that can't apply as {error, message, ...}. \
+                          `problems` listing effects that can't apply as {error, message, ...}, and \
+                          `render_graph`: the last frame's graph summary (passes, barriers, compiles); with \
+                          `graph: true`, every pass with the resources it reads and writes and the barriers the \
+                          graph inserts. \
                           Budgets come from perf.toml (per adapter kind). The window and the last capture are \
                           reported separately."
                 .into(),
             input_schema: schema(
-                vec![("budget_ms", number("Check frame, GPU, CPU and pacing against this frame time instead of perf.toml's"))],
+                vec![
+                    ("budget_ms", number("Check frame, GPU, CPU and pacing against this frame time instead of perf.toml's")),
+                    ("graph", boolean("Include the render graph pass by pass (resources, accesses, barriers)")),
+                ],
                 &[],
             ),
         },
@@ -2302,8 +2309,10 @@ mod tests {
         assert!(matches!(t(r#"{"action":"step"}"#), Ok(Command::Time(TimeOp::Step(1)))));
         assert!(matches!(t(r#"{"action":"step","ticks":300}"#), Ok(Command::Time(TimeOp::Step(300)))));
         assert!(matches!(t(r#"{"action":"scale","scale":4}"#), Ok(Command::Time(TimeOp::Scale(x))) if x == 4.0));
-        assert!(matches!(parse("perf_frame", &args("{}")), Ok(Command::Perf { budget_ms: None })));
-        assert!(matches!(parse("perf_frame", &args(r#"{"budget_ms":33.3}"#)), Ok(Command::Perf { budget_ms: Some(_) })));
+        assert!(matches!(parse("perf_frame", &args("{}")), Ok(Command::Perf { budget_ms: None, graph: false })));
+        assert!(matches!(parse("perf_frame", &args(r#"{"budget_ms":33.3}"#)), Ok(Command::Perf { budget_ms: Some(_), graph: false })));
+        assert!(matches!(parse("perf_frame", &args(r#"{"graph":true}"#)), Ok(Command::Perf { graph: true, .. })));
+        assert!(parse("perf_frame", &args(r#"{"graph":1}"#)).is_err());
     }
 
     #[test]
