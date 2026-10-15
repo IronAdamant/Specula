@@ -890,8 +890,10 @@ impl Engine {
 
     /// What a capture should wait for: the textures and deferred shapes of the 2D entities in its
     /// view (loads start; finished ones are uploaded), counted while still in flight. Entities
-    /// off screen neither hold it up nor appear in its warnings.
-    fn two_d_loading(&mut self, spec: &FrameSpec) -> usize {
+    /// off screen neither hold it up nor appear in its warnings. `fresh` (when the capture is
+    /// asked for): their texture files are checked for changes now and the capture waits for
+    /// that, so it shows the files as they are at the request, whatever the periodic poll did.
+    fn two_d_loading(&mut self, spec: &FrameSpec, fresh: bool) -> usize {
         self.two_d.pump(&mut self.gpu);
         let view_proj = self.capture_camera(spec).view_proj(spec.width, spec.height);
         let mut waiting = 0;
@@ -900,18 +902,20 @@ impl Engine {
             if !sight::in_frame(e, spec.include_ui) || !sight::in_view(e, &view_proj) {
                 continue;
             }
-            match t {
-                two_d::TwoD::Sprite(s) => {
-                    if let Some(p) = &s.texture {
-                        self.two_d.request(p);
-                        waiting += self.two_d.is_loading(p) as usize;
-                    }
+            let texture = match t {
+                two_d::TwoD::Sprite(s) => s.texture.as_deref(),
+                two_d::TwoD::Tilemap(m) => Some(m.tileset.as_str()),
+                two_d::TwoD::Shape2d(s) => {
+                    waiting += self.two_d.request_shape(s) as usize;
+                    None
                 }
-                two_d::TwoD::Tilemap(m) => {
-                    self.two_d.request(&m.tileset);
-                    waiting += self.two_d.is_loading(&m.tileset) as usize;
+            };
+            if let Some(p) = texture {
+                self.two_d.request(p);
+                if fresh {
+                    self.two_d.check_now(p);
                 }
-                two_d::TwoD::Shape2d(s) => waiting += self.two_d.request_shape(s) as usize,
+                waiting += self.two_d.is_pending(p) as usize;
             }
         }
         waiting
@@ -977,7 +981,7 @@ impl Engine {
         // capture are waited for too.
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
-        if self.building_in_frame(&spec) == 0 && self.two_d_loading(&spec) == 0 {
+        if self.building_in_frame(&spec) == 0 && self.two_d_loading(&spec, true) == 0 {
             let _ = reply.send(self.capture(&spec, &session, wait));
             return;
         }
@@ -1011,7 +1015,7 @@ impl Engine {
         let now = Instant::now();
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
-            if now >= w.until || (self.building_in_frame(&w.spec) == 0 && self.two_d_loading(&w.spec) == 0) {
+            if now >= w.until || (self.building_in_frame(&w.spec) == 0 && self.two_d_loading(&w.spec, false) == 0) {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
                 let _ = w.reply.send(self.capture(&w.spec, &w.session, wait));
             } else {

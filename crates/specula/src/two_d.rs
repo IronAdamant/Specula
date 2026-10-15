@@ -1675,9 +1675,24 @@ impl TwoDGpu {
         }
     }
 
-    /// `path` is being loaded (not merely checked for changes).
-    pub fn is_loading(&self, path: &str) -> bool {
-        self.textures.get(path).is_some_and(|t| t.loading)
+    /// Checks `path`'s file for changes now (a capture: it shows the file as it is when asked,
+    /// not as of the last periodic poll). No-op while it is loading or already being checked.
+    pub fn check_now(&mut self, path: &str) {
+        let Some(t) = self.textures.get(path) else { return };
+        if t.loading || t.checking {
+            return;
+        }
+        let (stamp, file) = (t.stamp, self.assets.join(path));
+        if self.send(Job::Check { key: path.to_owned(), file, stamp }) {
+            if let Some(t) = self.textures.get_mut(path) {
+                t.checking = true;
+            }
+        }
+    }
+
+    /// `path` is being loaded or checked for changes.
+    pub fn is_pending(&self, path: &str) -> bool {
+        self.textures.get(path).is_some_and(|t| t.loading || t.checking)
     }
 
     /// Asks for a deferred shape's tessellation; true while it is in flight.

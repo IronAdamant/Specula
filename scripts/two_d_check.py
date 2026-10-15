@@ -329,15 +329,15 @@ def probes(m, assets, worlds, problems):
            sprite={"texture": "probe/a.png", "size": [2, 2]})
     px, warn = centre()
     check(px == (0, 0, 0) and any("probe/a.png" in w for w in warn), f"a missing texture draws nothing and says so {px} {warn}", problems)
+    # A capture checks the textures in view when asked: no waiting for the periodic poll.
     tex.write_bytes(png_bytes(2, 2, [255, 0, 0, 255] * 4))
-    time.sleep(2.5)  # two polls: one may catch the file half-written
     px, warn = centre()
     check(px == (255, 0, 0) and not warn, f"once written it is drawn {px} {warn}", problems)
-    time.sleep(0.05)
-    tex.write_bytes(png_bytes(2, 2, [0, 0, 255, 255] * 4))
-    time.sleep(2.5)
-    px, _ = centre()
-    check(px == (0, 0, 255), f"an edited texture reloads {px}", problems)
+    seen = []
+    for colour in [(0, 0, 255), (0, 255, 0), (255, 255, 0), (0, 0, 255)]:
+        tex.write_bytes(png_bytes(2, 2, [*colour, 255] * 4))
+        seen.append(centre()[0] == colour)
+    check(all(seen), f"every edit shows in the next capture {seen}", problems)
     # Round 2: an off-screen sprite whose texture is huge (refused from its header) or missing
     # neither holds a capture up nor shows in its warnings; on screen it is reported.
     head = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR" + (16384).to_bytes(4, "big") * 2 + bytes([8, 6, 0, 0, 0, 0, 0, 0, 0])
