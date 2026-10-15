@@ -381,6 +381,19 @@ shapes?"
 - [ ] Sight reports 0 visible pixels for a fully hidden object.
 - [ ] A 10k-instance world holds its budget on the Intel integrated GPU.
 
+`python scripts/m2_exit.py --adapter both` (after `cargo build --release -p specula`) checks all three and prints
+PASS / FAIL / SKIPPED per criterion; captures, packets and `m2_exit.json` go to `target/m2-exit/`.
+(1) A moonlit Sepulcra graveyard: recipe props, an imported textured + skinned GLB walking and a static GLB, four
+recipe creatures playing clips; every model `ready`, each creature's pixels change across a 6-frame filmstrip, and
+ground inside two props' shadows is >25% darker than the same frame with shadows off while open ground is unchanged
+([hero shot](fidelity/m2_exit_hero.png)). (2) A box behind a wall must have `visible_px` 0 and `occluded`; SKIPPED
+until the ID buffer lands. (3) A windowed engine at 1280×720 with the full night effect stack and
+`perf.example.toml`: 10,000 entities (8,000 cubes + 2,000 tombstone models, 3 instanced draw calls) over 120 frames;
+the frame's GPU time, pacing, draws, triangles, GPU memory and late pipelines must hold; per-pass and CPU-side
+misses are reported as notes. *2026-10-16:* (1) and (3) pass on both GPUs; Intel iGPU GPU p95 7.0–8.8 ms over five
+runs (budget 14), RTX 4090 Laptop 0.4–0.5 ms. Note: the window's `frame/draw_list` CPU zone is 1.9–2.8 ms p95 at
+10k entities (budget 1.5).
+
 ---
 
 ## M3: logic, physics and time. The game becomes playable

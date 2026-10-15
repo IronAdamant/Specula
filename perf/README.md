@@ -27,6 +27,16 @@ start-up with the line and column. `perf_frame` (and `perf_capture`'s summary) r
 `{error, metric, value, budget, unit, adapter}`, for example
 `{"error":"gpu_pass_over_budget","metric":"gpu_pass.scene","value":9.1,"budget":8,"unit":"ms","adapter":"integrated"}`.
 
+# M2 exit proof: 10k instances on the iGPU
+
+`python scripts/m2_exit.py --adapter both` (release build) also measures a 10,000-entity world in the
+window at 1280x720 with the Sepulcra night effects (shadows, SSAO, bloom, fog, grading, FXAA) against
+`perf.example.toml`, through `perf_capture` (120 frames, budgets on the p95). The frame's GPU ms,
+pacing, draw calls, triangles, GPU memory and pipelines after warm-up decide it; per-pass and CPU-side
+misses are printed as notes. `--criteria 3` runs only that part. Timings vary between runs (other
+engines on the machine share the GPU; the script warns when it sees them): on 2026-10-16 the Intel
+iGPU's GPU p95 ranged 7.0-8.8 ms over five runs.
+
 # Profiling tools
 
 - **CPU zones** (`specula_core::profile`): `let _z = profile::zone("sim");` around a phase. The engine
