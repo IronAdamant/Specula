@@ -1088,6 +1088,10 @@ fn parse_view(args: &Json) -> Result<ViewSpec, String> {
     if of.is_some() && named.is_none() {
         return Err("'of' needs 'camera' (the name of that agent's camera)".into());
     }
+    let projection = ["ortho", "fov_y_deg"].iter().find(|k| args.get(k).is_some_and(|v| !v.is_null()));
+    if let (Some(k), true) = (projection, named.is_some() || auto) {
+        return Err(format!("'{k}' goes with 'eye' and 'target', not with 'camera' (which has its own) or 'auto'"));
+    }
     if let Some(name) = named {
         return Ok(ViewSpec::Named { name: name.to_owned(), of: of.map(str::to_owned) });
     }
@@ -2025,7 +2029,7 @@ fn definitions() -> Vec<ToolDef> {
             description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg); \
                           camera: a named camera (camera_set) to look through, an agent's with of: \"<agent name>\" (a \
                           follow camera keeps following) until a human takes the controls (key, click, scroll, \
-                          touch) or the hosted game sets a camera of its own, or the next window_view \
+                          touch; a hosted game is told and keeps out), or the next window_view \
                           (engine_info.window: following, released_by); or auto: true to frame the whole world \
                           again. A human sees exactly what an agent's camera sees, and is never locked out."
                 .into(),
@@ -2423,6 +2427,8 @@ mod tests {
         assert!(parse_view(&args("{}")).is_err());
         assert!(parse_view(&args(r#"{"of":"ann"}"#)).is_err(), "of needs camera");
         assert!(parse_view(&args(r#"{"camera":"c","auto":true}"#)).is_err(), "one way at a time");
+        assert!(parse_view(&args(r#"{"camera":"c","ortho":{"height_m":5}}"#)).is_err(), "a named camera has its own projection");
+        assert!(parse_view(&args(r#"{"auto":true,"fov_y_deg":30}"#)).is_err());
     }
 
     #[test]

@@ -265,8 +265,14 @@ impl Controls {
     }
 
     /// Adopts a camera an agent set since the last frame (`window_view`), then writes this
-    /// frame's camera to the engine's slot.
-    pub fn sync_camera(&mut self, slot: &mut Option<Camera>) {
+    /// frame's camera to the engine's slot. While the window looks through an agent's camera
+    /// (`agent_view`) it does neither: the view is the agent's (and may be closer or farther than
+    /// the orbit allows); when that ends, the camera it left is adopted (clamped) and play goes on
+    /// from there.
+    pub fn sync_camera(&mut self, slot: &mut Option<Camera>, agent_view: bool) {
+        if agent_view {
+            return;
+        }
         match (slot.as_ref(), self.written.as_ref()) {
             (Some(now), Some(mine)) if !same(now, mine) => self.orbit = Orbit::adopt(now),
             (Some(now), None) => self.orbit = Orbit::adopt(now),
@@ -331,14 +337,25 @@ mod tests {
     fn agents_window_view_is_adopted() {
         let mut c = Controls::new();
         let mut slot = None;
-        c.sync_camera(&mut slot);
+        c.sync_camera(&mut slot, false);
         let agent = Camera::new(Vec3::new(0.0, 40.0, 1.0), Vec3::ZERO, 50.0);
         slot = Some(agent);
-        c.sync_camera(&mut slot);
+        c.sync_camera(&mut slot, false);
         let now = slot.unwrap();
         assert!((now.eye - agent.eye).length() < 1e-3, "{now:?}");
         slot = None;
-        c.sync_camera(&mut slot);
+        c.sync_camera(&mut slot, false);
         assert!((slot.unwrap().eye - Orbit::default().camera().eye).length() < 1e-3);
+        // Round 8: an agent camera the engine keeps (window_view {camera}) is neither adopted nor
+        // overwritten, however close; when it ends, play continues from it (clamped).
+        let close = Camera::new(Vec3::new(0.0, 2.0, 5.0), Vec3::ZERO, 50.0);
+        slot = Some(close);
+        for _ in 0..3 {
+            c.sync_camera(&mut slot, true);
+            assert_eq!(slot.map(|s| s.eye), Some(close.eye), "the agent's view stays");
+        }
+        c.sync_camera(&mut slot, false);
+        let back = slot.unwrap();
+        assert!((back.target - close.target).length() < 1e-3, "continues from the agent's view: {back:?}");
     }
 }

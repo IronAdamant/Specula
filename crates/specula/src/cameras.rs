@@ -143,6 +143,9 @@ struct Followed {
     entity: Option<u64>,
     /// [`World::layout_epoch`] when `entity` was looked up (`u64::MAX`: never).
     epoch: u64,
+    /// The camera's version it was resolved for: a camera_set (or an undo) that re-points it
+    /// resolves afresh, and forgets the old target's last view.
+    version: u64,
     /// The last view resolved through it.
     last: Option<Camera>,
 }
@@ -186,10 +189,13 @@ impl Cameras {
         };
         // Borrowed lookups; an entry is made (allocating) only the first time.
         if !self.follows.get(owner).is_some_and(|m| m.contains_key(name)) {
-            let fresh = Followed { entity: None, epoch: u64::MAX, last: None };
+            let fresh = Followed { entity: None, epoch: u64::MAX, version, last: None };
             self.follows.entry(owner.to_owned()).or_default().insert(name.to_owned(), fresh);
         }
         let slot = self.follows.get_mut(owner).and_then(|m| m.get_mut(name)).expect("made above");
+        if slot.version != version {
+            *slot = Followed { entity: None, epoch: u64::MAX, version, last: None };
+        }
         if slot.epoch != world.layout_epoch() {
             slot.entity = world.find_path(&f.path).ok();
             slot.epoch = world.layout_epoch();
@@ -387,6 +393,22 @@ mod tests {
         let never = Follow { path: "/ghost".into(), offset: Vec3::ONE, look_offset: Vec3::ZERO, local: false };
         world.set_camera_t("ann", CameraSpec { name: "g".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(never), ortho: None }).unwrap();
         assert_eq!(c.resolve("ann", "g", None, &world).err().unwrap().code, "follow_target_missing");
+        // Reviewer finding (round 8): re-pointing a follow camera follows the new entity at once
+        // (the cache is per camera version, not just per world layout).
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("other".into());
+        s.position = Vec3::new(-7.0, 0.0, 0.0);
+        world.spawn(s, "t").unwrap();
+        let to = |path: &str| Follow { path: path.into(), offset: Vec3::new(0.0, 2.0, 5.0), look_offset: Vec3::ZERO, local: false };
+        world.set_camera_t("ann", CameraSpec { name: "pointer".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(to("/other")), ortho: None }).unwrap();
+        assert_eq!(c.resolve("ann", "pointer", None, &world).unwrap().camera.eye, Vec3::new(-7.0, 2.0, 5.0));
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("third".into());
+        s.position = Vec3::new(3.0, 0.0, 0.0);
+        world.spawn(s, "t").unwrap();
+        c.resolve("ann", "pointer", None, &world).unwrap(); // layout changed: cached again for /other
+        world.set_camera_t("ann", CameraSpec { name: "pointer".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(to("/third")), ortho: None }).unwrap();
+        assert_eq!(c.resolve("ann", "pointer", None, &world).unwrap().camera.eye, Vec3::new(3.0, 2.0, 5.0), "same layout, new target");
         // Deleted cameras' remembered views go.
         world.delete_cameras("ann", None).unwrap();
         c.prune(&world);

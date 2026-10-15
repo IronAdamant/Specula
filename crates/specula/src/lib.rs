@@ -385,9 +385,9 @@ struct Engine {
     /// `window_view {camera}`: the window looks through agent `.0`'s camera `.1`, re-resolved
     /// every frame (a follow camera keeps following).
     window_follow: Option<(String, String)>,
-    /// Why the window stopped following a camera: `"game"` (the hosted game set its own camera)
-    /// or `"input"` (a human pressed a key, clicked, scrolled or touched). Humans are never
-    /// locked out (F5).
+    /// Why the window stopped following a camera: `"input"` (a human pressed a key, clicked,
+    /// scrolled or touched). Humans are never locked out (F5); a hosted game is told
+    /// (`Frame::agent_view`) and can't take it.
     window_released_by: Option<&'static str>,
     /// Offscreen targets by size, most recently used last; at most [`MAX_CACHED_TARGETS`].
     targets: Vec<((u32, u32), TargetId)>,
@@ -626,7 +626,8 @@ impl Engine {
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");
         }
-        let before = self.window_camera;
+        let agent_view = self.window_follow.is_some();
+        let shown = self.window_camera;
         let Some(game) = self.game.as_mut() else { return };
         let _z = profile::zone("game_frame");
         let start = Instant::now();
@@ -636,15 +637,17 @@ impl Engine {
             alpha: self.clock.alpha(),
             dt_s: dt.as_secs_f32(),
             camera: &mut self.window_camera,
+            agent_view,
             title: &mut self.game_title,
         };
         self.world.set_recording(Recording::Snapshot);
         let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
         game.frame(ctx, &mut frame);
         self.world.set_recording(Recording::Full);
-        // So does the game setting a camera of its own (not just keeping the one it was shown).
-        if self.window_follow.is_some() && !same_view(before, self.window_camera) {
-            self.release_window_camera("game");
+        // While the window looks through an agent's camera the game's camera writes don't count
+        // (only a human takes the view back, F5): the game was told (`Frame::agent_view`).
+        if agent_view {
+            self.window_camera = shown;
         }
         self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
@@ -1417,14 +1420,18 @@ impl Engine {
             Command::History(q) => ToolOutput::text(self.swarm.journal.history(&q).to_string()),
             Command::Changes(q) => ToolOutput::text(self.swarm.journal.changes_text(&q)),
             Command::Undo(req) => match self.swarm.undo(&mut self.world, tick, w, &req) {
-                Ok(u) => ToolOutput::text(
+                Ok(u) => {
+                    // Cameras an undo removed (or re-pointed) leave no stale follow state.
+                    self.cameras.prune(&self.world);
+                    ToolOutput::text(
                     Json::obj([
                         ("journal", Json::from(u.seq)),
                         ("undone", Json::arr(u.undone.iter().map(|s| Json::from(*s)))),
                         ("changes", Json::from(u.changes)),
                     ])
                     .to_string(),
-                ),
+                    )
+                }
                 Err(e) => world_error(&e),
             },
             Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
@@ -1823,18 +1830,6 @@ fn human_took_controls(input: &[Event]) -> bool {
     input.iter().any(|e| matches!(e, Event::KeyDown { repeat: false, .. } | Event::MouseDown { .. } | Event::MouseWheel { .. } | Event::PointerDown { .. }))
 }
 
-/// Whether two window cameras are the same view (`None`: auto-framing), up to float round-off: a
-/// game that adopts the camera it was shown (into its own orbit, say) and writes it back keeps it.
-fn same_view(a: Option<Camera>, b: Option<Camera>) -> bool {
-    let near = |x: f32, y: f32| (x - y).abs() <= 1e-3 * x.abs().max(y.abs()).max(1.0);
-    let near3 = |p: specula_core::math::Vec3, q: specula_core::math::Vec3| near(p.x, q.x) && near(p.y, q.y) && near(p.z, q.z);
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => near3(a.eye, b.eye) && near3(a.target, b.target) && near(a.fov_y_deg, b.fov_y_deg),
-        _ => false,
-    }
-}
-
 /// world_batch's answer: counts per kind, every op's result while they fit in
 /// [`MAX_BATCH_RESULT_BYTES`], then how many were left out. `omitted_spawned_ids` gives the first
 /// and last id of left-out spawns (a batch's spawns take consecutive ids, so that's all of them).
@@ -1916,11 +1911,10 @@ mod tests {
     use super::*;
 
     /// Reviewer finding (round 7, F5): an agent camera in the window must never lock the human
-    /// out: input releases it, and so does a game setting a camera of its own (but not a game
-    /// that writes back, within round-off, the camera it was shown).
+    /// out: input releases it (a hosted game is told the view is the agent's, round 8, and its
+    /// camera writes don't count meanwhile).
     #[test]
     fn humans_and_games_take_the_window_camera_back() {
-        use specula_core::math::Vec3;
         use specula_platform::MouseButton;
         assert!(!human_took_controls(&[Event::MouseMove { x: 3, y: 4 }, Event::KeyDown { code: 0x41, repeat: true }]));
         for e in [
@@ -1930,13 +1924,6 @@ mod tests {
         ] {
             assert!(human_took_controls(std::slice::from_ref(&e)), "{e:?}");
         }
-        let cam = Camera::new(Vec3::new(1.0, 2.0, 30.0), Vec3::new(0.5, 0.0, 0.0), 50.0);
-        let mut adopted = cam;
-        adopted.eye.x += 1e-5; // an orbit's round trip
-        assert!(same_view(Some(cam), Some(adopted)) && same_view(None, None));
-        let mut moved = cam;
-        moved.eye.x += 0.5;
-        assert!(!same_view(Some(cam), Some(moved)) && !same_view(Some(cam), None));
     }
 
     /// Reviewer finding: 1000 spawns answered with ~158 KB of per-op results.

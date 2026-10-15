@@ -862,17 +862,22 @@ impl Journal {
                         };
                         return Err(err.with("entry", seq).with("oldest_kept", Json::from(self.oldest_kept())));
                     };
-                    // Cameras are personal views: nobody undoes another's, not even by force.
+                    // Cameras are personal views and belong to agent names (not sessions): their
+                    // owner undoes them, from any session; nobody else, not even by force.
+                    let mut owners = e.changes.iter().filter_map(|c| match c {
+                        Change::Camera { owner, .. } => Some(owner.as_str()),
+                        _ => None,
+                    });
                     let cameras = e.changes.iter().any(|c| matches!(c, Change::Camera { .. }));
-                    if !e.is_by(by) && cameras {
+                    if let Some(other) = owners.find(|o| *o != by.name) {
                         return Err(WorldError::new(
                             "not_yours",
-                            format!("journal entry {seq} changed {}'s cameras; only they change their cameras", e.by),
+                            format!("journal entry {seq} changed {other}'s cameras; only they change their cameras"),
                         )
                         .with("entry", seq)
                         .with("by", &*e.by));
                     }
-                    if !e.is_by(by) && !req.force {
+                    if !e.is_by(by) && !req.force && !cameras {
                         let who = if &*e.by == by.name {
                             format!("{} in another session", e.by)
                         } else {
@@ -1491,6 +1496,13 @@ mod tests {
         assert_eq!(e.code, "camera_limit", "{e:?}");
         assert_eq!(w.cameras()["ann"].len(), MAX_CAMERAS_PER_AGENT, "nothing changed");
         assert!(!w.cameras()["ann"].contains_key("c0"));
+        // Round 8: cameras belong to names, so ann reconnecting (another session) undoes her own.
+        let first = Writer::new("ann", Some("session-1"));
+        let (_, set) = commit(&mut w, &mut j, 4, first, Kind::Camera, Some(&mut no_check), |w| w.delete_cameras("ann", Some("c5"))).unwrap();
+        let again = Writer::new("ann", Some("session-2"));
+        let req = UndoRequest { ids: Some(vec![set.unwrap()]), ..last(1) };
+        j.undo(&mut w, 5, again, &req, Some(&mut no_check)).unwrap();
+        assert!(w.cameras()["ann"].contains_key("c5"), "ann's camera is back");
     }
 
     #[test]
