@@ -98,7 +98,7 @@ PROPS = [
      {"light": {"intensity": 1.6, "range": 5.0, "color": "#3fe0d0", "offset": [0, 1.3, 0.9]}}),
     ("brazier", "recipes/brazier_cairn.json", {"tier": 2}, [2.3, 0, -1.4], -20,
      {"light": {"intensity": 3.0, "range": 8.0, "color": "#ff9a4a", "offset": [0, 2.1, 0]}}),
-    ("ward_gltf", "imported/warding_stone_t3.glb", {}, [5.6, 0, -8.5], -25, {}),
+    ("ward_gltf", "imported/warding_stone_t2.glb", {}, [5.6, 0, -8.5], -25, {}),
     ("pillar", "recipes/rune_pillar.json", {"tier": 1}, [7.6, 0, -8.0], -30, {}),
 ]
 TOMBS = [  # (position, yaw, seed, tilt)
@@ -141,6 +141,9 @@ def scene_ops():
     for name, src, clip, speed, pos, yaw in CHARACTERS:
         ops.append({"op": "spawn", "shape": "model", "path": f"/vignette/{name}", "recipe": src, "position": pos,
                     "rotation_deg": [0, yaw, 0], "anim": {"clip": clip, "speed": speed}})
+    # A cool fill from the moon's side, so the backlit hero's textured front reads.
+    ops.append({"op": "spawn", "shape": "group", "path": "/vignette/moon_fill", "position": [-1.3, 1.6, 3.3],
+                "light": {"intensity": 2.6, "range": 4.0, "color": "#9db2f0"}})
     return ops
 
 
@@ -277,7 +280,7 @@ def make_assets(out):
     shutil.copytree(SEPULCRA / "anims", assets / "anims")
     (assets / "imported").mkdir()
     for example, args in [("textured_creature", ["shambler", "imported/shambler_tex.glb"]),
-                          ("export_recipe", ["warding_stone", "imported/warding_stone_t3.glb", "tier=3"])]:
+                          ("export_recipe", ["warding_stone", "imported/warding_stone_t2.glb", "tier=2"])]:
         args = [str(SEPULCRA), args[0], str(assets / args[1]), *args[2:]]
         r = subprocess.run(["cargo", "run", "-q", "-p", "specula-gltf", "--example", example, "--", *args],
                            cwd=str(ROOT), capture_output=True, text=True)
@@ -300,7 +303,7 @@ def criterion_scene(mcp, out, check, tag):
     print(f"[1] lit, shadowed scene with imported + procedural assets and animated characters ({tag})")
     result = {"captures": {}}
     mcp.call("world_env", **night_env())
-    for src in ("imported/shambler_tex.glb", "imported/warding_stone_t3.glb"):
+    for src in ("imported/shambler_tex.glb", "imported/warding_stone_t2.glb"):
         r = mcp.json("model_build", recipe=src)
         clips = [c["name"] for c in r.get("clips", [])]
         print(f"    {src}: source {r.get('source')}, bones {r.get('bones')}, clips {clips}, "
@@ -327,7 +330,7 @@ def criterion_scene(mcp, out, check, tag):
     print(f"    hero at 1280x720 (for docs/fidelity/m2_exit_hero.png): {small['image']['path']}")
     states = mcp.json("world_query", path_prefix="/vignette", shape="model", fields=["path", "model_state"], limit=500)["items"]
     not_ready = [(s["path"], s["model_state"]) for s in states if s["model_state"] != "ready"]
-    check(len(states) == len(ops) - 2 and not not_ready,
+    check(len(states) == sum(op["shape"] == "model" for op in ops) and not not_ready,
           f"all {len(states)} model entities ready (not ready: {not_ready})")
     check(hero["models"]["missing"] == 0 and hero["models"]["pipeline_failed"] == 0,
           f"every model drawn (missing {hero['models']['missing']}, pipeline_failed {hero['models']['pipeline_failed']})")
