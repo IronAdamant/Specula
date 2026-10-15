@@ -125,12 +125,20 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
 }
 
 /// The point lights of shown entities in the frame (entity id order), at most
-/// [`MAX_POINT_LIGHTS`], and how many were left out.
-pub fn lights(world: &World, include_ui: bool) -> (Vec<PointLight>, usize) {
-    let mut all: Vec<PointLight> = world.entities().filter(|e| in_frame(e, include_ui)).filter_map(|e| e.world_light()).collect();
-    let dropped = all.len().saturating_sub(MAX_POINT_LIGHTS);
-    all.truncate(MAX_POINT_LIGHTS);
-    (all, dropped)
+/// [`MAX_POINT_LIGHTS`], into `out` (cleared first; reused, so no allocation once warm).
+/// Returns how many were left out. Visits only the world's lit entities ([`World::lit_entities`]),
+/// never the rest: a 10k-entity world with a few lamps pays for the lamps.
+pub fn lights(world: &World, include_ui: bool, out: &mut Vec<PointLight>) -> usize {
+    out.clear();
+    let mut dropped = 0;
+    for light in world.lit_entities().filter(|e| in_frame(e, include_ui)).filter_map(|e| e.world_light()) {
+        if out.len() < MAX_POINT_LIGHTS {
+            out.push(light);
+        } else {
+            dropped += 1;
+        }
+    }
+    dropped
 }
 
 /// A frame of the world seen through `view_proj` (reversed Z) at animation time `time_s`.
@@ -309,6 +317,35 @@ mod tests {
         world.spawn(spec, "test").unwrap();
     }
 
+    /// Lights come from the lit-entity index in id order: hidden ones are left out, at most
+    /// MAX_POINT_LIGHTS are kept, the rest counted, and the buffer is reused.
+    #[test]
+    fn lights_are_gathered_in_id_order_up_to_the_limit() {
+        use crate::world::{LightSpec, UpdateSpec};
+        let mut world = World::default();
+        for i in 0..1000 {
+            spawn(&mut world, Shape::Cube, &format!("c{i}"), Vec3::ZERO);
+        }
+        for i in 0..20 {
+            let mut s = SpawnSpec::new(Shape::Sphere);
+            s.name = Some(format!("lamp{i:02}"));
+            s.position = Vec3::new(i as f32, 1.0, 0.0);
+            s.light = Some(LightSpec { intensity: 1.0, range: 2.0, color: None, offset: Vec3::ZERO });
+            world.spawn(s, "t").unwrap();
+        }
+        let hide = UpdateSpec { visible: Some(false), ..Default::default() };
+        world.update(&EntityKey::Path("/lamp00".into()), hide, "t").unwrap();
+        let mut out = Vec::with_capacity(MAX_POINT_LIGHTS);
+        let dropped = lights(&world, false, &mut out);
+        assert_eq!((out.len(), dropped), (MAX_POINT_LIGHTS, 19 - MAX_POINT_LIGHTS));
+        let xs: Vec<f32> = out.iter().map(|l| l.position[0]).collect();
+        assert_eq!(xs, (1..=MAX_POINT_LIGHTS).map(|i| i as f32).collect::<Vec<_>>(), "id order, hidden lamp left out");
+        let ptr = out.as_ptr();
+        lights(&world, false, &mut out);
+        assert_eq!(out.as_ptr(), ptr, "the buffer is reused");
+        assert_eq!(world.lit_entities().count(), 20, "only lamps are in the index, not the 1000 cubes");
+    }
+
     fn spawn(world: &mut World, shape: Shape, name: &str, position: Vec3) {
         spawn_scaled(world, shape, name, position, Vec3::ONE);
     }
@@ -470,7 +507,7 @@ mod tests {
         assert_eq!(names(true), ["stone", "cursor"], "hidden stays hidden even with include_ui");
         let ui = subjects(&world, &cam.view_proj(640, 480), 640, 480, true);
         assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
-        assert_eq!(lights(&world, false).0.len(), 0);
+        assert_eq!((lights(&world, false, &mut Vec::new()), world.lit_entities().count()), (0, 0));
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
     }
 

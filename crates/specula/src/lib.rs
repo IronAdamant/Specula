@@ -340,6 +340,8 @@ struct Engine {
     lod_capture: LodStats,
     /// The window frame's draw list (reused: no allocation per frame once warm).
     draws: Vec<DrawItem>,
+    /// The window frame's point lights (reused like `draws`).
+    lights: Vec<specula_gpu::PointLight>,
     /// A human's window is open.
     windowed: bool,
     /// The world mesh epoch `lod_levels` was last pruned at.
@@ -470,6 +472,7 @@ impl Engine {
             lod_window: LodStats::default(),
             lod_capture: LodStats::default(),
             draws: Vec::new(),
+            lights: Vec::new(),
             windowed: false,
             lod_epoch: 0,
             build_waiters: Vec::new(),
@@ -1063,7 +1066,8 @@ impl Engine {
                 eprintln!("specula: {e}");
             }
             self.lod_window = stats;
-            let (lights, _) = sight::lights(&self.world, true);
+            let mut lights = std::mem::take(&mut self.lights);
+            sight::lights(&self.world, true, &mut lights);
             let view_proj = camera.view_proj(size.0, size.1);
             let bones = self.models.take_bones();
             let mut frame = FrameDesc { bones: &bones, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
@@ -1075,6 +1079,7 @@ impl Engine {
             self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
+            self.lights = lights;
             presented?;
             self.pacing.frame.push(dt);
         }
@@ -1590,7 +1595,8 @@ impl Engine {
         }
         // Models held back because their pipeline variant failed to build.
         warnings.extend(self.world.entities().filter_map(|e| self.models.pipeline_problem(e)).take(5).map(Json::from));
-        let (lights, dropped) = sight::lights(&self.world, spec.include_ui);
+        let mut lights = Vec::new();
+        let dropped = sight::lights(&self.world, spec.include_ui, &mut lights);
         if dropped > 0 {
             warnings.push(Json::from(format!(
                 "{dropped} point light(s) not rendered: at most {} per frame",

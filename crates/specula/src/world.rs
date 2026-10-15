@@ -1932,6 +1932,9 @@ pub struct World {
     transient_seq: u64,
     /// Transient entities alive.
     transient_count: usize,
+    /// Ids of the entities carrying a point light, so frames gather lights without visiting every
+    /// entity (a 10k-entity world has a handful). Kept by `link`, `unlink` and `update`.
+    lit: BTreeSet<u64>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
@@ -2120,6 +2123,11 @@ impl World {
     /// Every entity, by id.
     pub fn entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.entities.values()
+    }
+
+    /// The entities carrying a point light, by id (from an index: no other entity is visited).
+    pub fn lit_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.lit.iter().filter_map(|id| self.entities.get(id))
     }
 
     pub fn env(&self) -> &Env {
@@ -2621,6 +2629,11 @@ impl World {
         change.look.apply(&mut e.look);
         if let Some(l) = change.light {
             e.light = l;
+            if l.is_some() {
+                self.lit.insert(id);
+            } else {
+                self.lit.remove(&id);
+            }
         }
         if let Some(p) = change.profile {
             e.profile = Some(p);
@@ -2801,12 +2814,16 @@ impl World {
         if e.transient {
             self.transient_count += 1;
         }
+        if e.light.is_some() {
+            self.lit.insert(e.id);
+        }
         self.entities.insert(e.id, e);
     }
 
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
         let e = self.entities.remove(&id)?;
+        self.lit.remove(&id);
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
         if e.transient {
@@ -3163,6 +3180,7 @@ impl World {
     /// rename may already have given its old name to another entity).
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
         let e = self.entities.remove(&id)?;
+        self.lit.remove(&id);
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {
             self.children.remove(&key);
@@ -3484,7 +3502,71 @@ mod tests {
     /// Everything a rollback must restore: entities (versions, attribution, cached world
     /// transforms), both indexes, the id and revision counters, the environment.
     fn snapshot(w: &World) -> String {
-        format!("{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.next_id, w.revision, w.env)
+        format!("{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.lit, w.next_id, w.revision, w.env)
+    }
+
+    /// The lit-entity index agrees with a scan of every entity.
+    fn assert_lit_index(w: &World) {
+        let scanned: Vec<u64> = w.entities().filter(|e| e.light.is_some()).map(|e| e.id).collect();
+        let indexed: Vec<u64> = w.lit_entities().map(|e| e.id).collect();
+        assert_eq!(indexed, scanned);
+        assert_eq!(w.lit.len(), scanned.len(), "no stale ids in the index");
+    }
+
+    /// F3: frames gather point lights from an index, never by visiting every entity. The index
+    /// follows spawns (persistent and transient), light changes, deletes of whole subtrees, a
+    /// failed batch's rollback and journal replays.
+    #[test]
+    fn lit_index_follows_every_change() {
+        let lamp = || LightSpec { intensity: 1.0, range: 3.0, color: None, offset: Vec3::ZERO };
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let group = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let mut lit = SpawnSpec::new(Shape::Cube);
+        lit.name = Some("lamp".into());
+        lit.parent = Some(EntityKey::Id(group));
+        lit.light = Some(lamp());
+        let lamp_id = w.spawn(lit, "t").unwrap().id;
+        for i in 0..50 {
+            put(&mut w, Shape::Cube, &format!("c{i}"), None, Vec3::ZERO);
+        }
+        let mut torch = SpawnSpec::new(Shape::Sphere);
+        torch.name = Some("torch".into());
+        torch.transient = true;
+        torch.light = Some(lamp());
+        let torch_id = w.spawn(torch, "game").unwrap().id;
+        assert_lit_index(&w);
+        assert_eq!(w.lit_entities().map(|e| e.id).collect::<Vec<_>>(), [lamp_id, torch_id]);
+
+        // Light added to a plain cube, then removed; removed from the transient torch.
+        let set = |light| UpdateSpec { light: Some(light), ..UpdateSpec::default() };
+        w.update(&EntityKey::Path("/c7".into()), set(Some(lamp())), "t").unwrap();
+        assert_lit_index(&w);
+        assert_eq!(w.lit.len(), 3);
+        w.update(&EntityKey::Path("/c7".into()), set(None), "t").unwrap();
+        w.update(&EntityKey::Id(torch_id), set(None), "game").unwrap();
+        assert_lit_index(&w);
+        assert_eq!(w.lit.len(), 1);
+
+        // A batch that adds a light then fails rolls the index back too.
+        let mut bad = SpawnSpec::new(Shape::Cube);
+        bad.name = Some("lit2".into());
+        bad.light = Some(lamp());
+        let before = snapshot(&w);
+        let ops = vec![Op::Spawn(bad), Op::Set(EntityKey::Path("/c3".into()), set(Some(lamp()))), Op::Delete(EntityKey::Path("/nope".into()), None)];
+        assert!(w.apply_batch(ops, "t").is_err());
+        assert_eq!(snapshot(&w), before);
+        assert_lit_index(&w);
+
+        // Deleting the group takes its lamp out of the index; rolling the delete back (as undo
+        // and failed steps do) brings it back.
+        let mark = w.mark();
+        w.delete(&EntityKey::Id(group), None).unwrap();
+        assert_lit_index(&w);
+        assert_eq!(w.lit.len(), 0);
+        w.rollback_to(mark);
+        assert_lit_index(&w);
+        assert_eq!(w.lit_entities().map(|e| e.id).collect::<Vec<_>>(), [lamp_id]);
     }
 
     fn close(a: Vec3, b: Vec3) -> bool {
