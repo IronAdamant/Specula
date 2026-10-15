@@ -1869,6 +1869,12 @@ impl Engine {
             ("cpu", perf::cpu_json(&self.profiler)),
             ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),
+            // The window's draw cache: frames that rebuilt it from every entity vs patched it
+            // with the changed ones (a rebuild per frame means the world changes wholesale).
+            (
+                "draw_cache",
+                Json::obj([("rebuilds", Json::from(self.draw_cache.rebuilds())), ("patches", Json::from(self.draw_cache.patches()))]),
+            ),
             ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),

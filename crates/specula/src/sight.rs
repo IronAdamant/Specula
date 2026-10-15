@@ -223,8 +223,8 @@ fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats
 /// copies them instead of walking every entity's full record (F3: on the reference iGPU that walk
 /// was most of the window's CPU frame at 10k entities). When entities change, only those are
 /// read again ([`World::draw_changes_since`]); a full rebuild happens only when the world is
-/// replaced, the lathe meshes or `include_ui` change, a change touched every entity, or more
-/// changed than [`DrawCache::PATCH_LIMIT`] allows. Models still choose their LOD per frame (each
+/// replaced, the lathe meshes or `include_ui` change, a change touched every entity, or more than
+/// half the entries changed. Models still choose their LOD per frame (each
 /// keeps its level here while its entity exists, hidden or not: the window's hysteresis) and
 /// animated ones are posed from their entity. Same draws, same order as [`draw_list`]; nothing
 /// allocated once warm.
@@ -287,10 +287,6 @@ impl Cached {
 }
 
 impl DrawCache {
-    /// More changed entities than this (or than an eighth of the entries) since the last frame:
-    /// rebuild instead of patching one by one.
-    pub const PATCH_LIMIT: usize = 512;
-
     /// How many times the entries were rebuilt from every entity.
     pub fn rebuilds(&self) -> u64 {
         self.rebuilds
@@ -338,31 +334,46 @@ impl DrawCache {
     }
 
     /// Brings the entries up to date with the entities changed since `self.epoch`; false when
-    /// that needs a rebuild instead.
+    /// a rebuild is cheaper (or the world's change record no longer reaches back that far).
+    /// Changed entries are replaced in place; when entities came or went, one linear merge of
+    /// the entries with the changed ids makes the new list (never an insert or remove per id).
     fn patch(&mut self, world: &World, meshes: &Meshes, include_ui: bool) -> bool {
         let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
-        let limit = Self::PATCH_LIMIT.min(self.entries.len() / 8 + 16);
+        // At most World's DRAW_LOG ids; an entity moved many times counts once.
         self.dirty.clear();
-        for id in changes {
-            if self.dirty.len() >= limit {
-                return false;
-            }
-            self.dirty.push(id);
-        }
+        self.dirty.extend(changes);
         self.dirty.sort_unstable();
         self.dirty.dedup();
-        for k in 0..self.dirty.len() {
-            let id = self.dirty[k];
+        if self.dirty.len() > self.entries.len() / 2 + 16 {
+            return false;
+        }
+        let mut structural = false;
+        for &id in &self.dirty {
             let at = self.entries.binary_search_by_key(&id, Cached::id);
             let level = at.map_or(u8::MAX, |i| self.entries[i].level());
             match (at, world.get(id).and_then(|e| Cached::of(e, meshes, include_ui, level))) {
                 (Ok(i), Some(c)) => self.entries[i] = c,
-                (Ok(i), None) => {
-                    self.entries.remove(i);
-                }
-                (Err(i), Some(c)) => self.entries.insert(i, c),
                 (Err(_), None) => {}
+                _ => structural = true,
             }
+        }
+        if structural {
+            // Unchanged entries are copied as they are; each changed id is read again and kept
+            // if it draws (with its model's level).
+            self.spare.clear();
+            let mut old = self.entries.iter().peekable();
+            for &d in &self.dirty {
+                while let Some(c) = old.next_if(|c| c.id() < d) {
+                    self.spare.push(*c);
+                }
+                let level = old.next_if(|c| c.id() == d).map_or(u8::MAX, Cached::level);
+                if let Some(c) = world.get(d).and_then(|e| Cached::of(e, meshes, include_ui, level)) {
+                    self.spare.push(c);
+                }
+            }
+            self.spare.extend(old.copied());
+            std::mem::swap(&mut self.entries, &mut self.spare);
+            self.spare.clear();
         }
         self.epoch = world.draw_epoch();
         self.patches += 1;

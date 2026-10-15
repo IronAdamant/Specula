@@ -170,11 +170,12 @@ def main():
                     "errors": perf.get("errors"),
                     "draw_list": perf.get("draw_list"),
                     "draw_list_zone_ms": {"mean": draw_zone.get("mean_ms"), "p95": draw_zone.get("p95_ms")},
+                    "draw_cache": perf.get("draw_cache"),
                 }
                 print(f"  perf at wave {st['wave']} ({st['enemies']} enemies): game_frame {perf.get('game_frame')} "
                       f"sim_tick {perf.get('sim_tick')} pacing {perf.get('frame_pacing')}")
                 print(f"  window draw list (frame/draw_list zone): mean {draw_zone.get('mean_ms')} ms, p95 {draw_zone.get('p95_ms')} ms; "
-                      f"draws built {perf.get('draw_list')}")
+                      f"draws built {perf.get('draw_list')}; cache {perf.get('draw_cache')}")
                 run.capture("busy_wave", **overview)
                 busy_done = True
                 # Fast-forward a stretch with scale (the clock runs ticks faster than real time).
