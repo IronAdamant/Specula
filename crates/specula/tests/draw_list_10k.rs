@@ -1,6 +1,8 @@
 //! Foundation F3: the window's per-frame draw list for a 10,000-entity world (8,000 cubes and
-//! 2,000 tombstone models sharing one build, plus a few lamps) allocates nothing once warm, and
-//! gathering point lights doesn't visit the cubes. Prints the CPU time per frame; measure with
+//! 2,000 tombstone models sharing one build, plus a few lamps) allocates nothing once warm,
+//! equals the full walk, is patched (never rebuilt) while a game moves 1 or 100 enemies a frame,
+//! and is never slower than the full walk it replaces; gathering point lights doesn't visit the
+//! cubes. Prints the CPU time per frame; measure with
 //! `cargo test --release -p specula --test draw_list_10k -- --nocapture` (the engine's
 //! `frame/draw_list` budget on the reference iGPU is 1.5 ms). Needs the GPU for uploads (skips
 //! cleanly without Vulkan).
@@ -10,7 +12,8 @@
 use specula::meshes::{LatheMeshes, ShapeMeshes};
 use specula::models::{GpuModels, Library, LodChoice, SharedLibrary};
 use specula::sight::{self, Camera, DrawCache, Meshes, View};
-use specula::world::{LightSpec, ModelSource, ModelSpec, Shape, SpawnSpec, World};
+use specula::world::{EntityKey, LightSpec, ModelSource, ModelSpec, Shape, SpawnSpec, UpdateSpec, World};
+use specula_model::{BuildParams, Style};
 use specula_core::math::Vec3;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -101,69 +104,120 @@ fn a_10k_entity_draw_list_allocates_nothing() {
     let mut cache = DrawCache::default();
     // One window frame's CPU draw work: the draw list (through the window's cache, or rebuilt
     // from every entity as captures do) and the point lights.
-    let frame = |cached: Option<&mut DrawCache>, levels: &mut BTreeMap<u64, u8>, draws: &mut Vec<specula_gpu::DrawItem>,
+    let frame = |world: &World, cached: Option<&mut DrawCache>, levels: &mut BTreeMap<u64, u8>, draws: &mut Vec<specula_gpu::DrawItem>,
                  lights: &mut Vec<specula_gpu::PointLight>| {
         models.begin_frame(1.0);
         let mut view = View { camera, viewport_h: 720, include_ui: true, lod: LodChoice::Remembered(levels) };
         let stats = match cached {
-            Some(cache) => cache.draw_list(&world, 0, &meshes, &mut view, draws),
-            None => sight::draw_list(&world, &meshes, &mut view, draws),
+            Some(cache) => cache.draw_list(world, 0, &meshes, &mut view, draws),
+            None => sight::draw_list(world, &meshes, &mut view, draws),
         };
-        sight::lights(&world, true, lights);
+        sight::lights(world, true, lights);
         let bones = models.take_bones();
         models.put_bones(bones);
         stats
     };
     for _ in 0..5 {
-        frame(Some(&mut cache), &mut levels, &mut draws, &mut lights);
+        frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
     }
-    let stats = frame(Some(&mut cache), &mut levels, &mut draws, &mut lights);
+    let stats = frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
     assert_eq!(stats.missing, 0, "every tombstone has its build");
     assert_eq!(stats.histogram.iter().sum::<u32>(), 2000);
-    assert_eq!(draws.len(), 8004 + 2000 * models_parts(&draws), "one draw per cube and lamp, one per part per tombstone");
+    // Draws per tombstone: its material parts at the level the frame chose, from the recipe.
+    let style = Style::parse(&std::fs::read_to_string(assets.join("style.json")).unwrap()).unwrap();
+    let tomb = specula_model::build(&std::fs::read_to_string(assets.join("recipes/tombstone.json")).unwrap(), &BuildParams::new(&style)).unwrap();
+    let level = stats.histogram.iter().position(|&n| n == 2000).expect("one level for every tombstone");
+    let parts = tomb.lods[level.min(tomb.lods.len() - 1)].parts.len();
+    assert_eq!(draws.len(), 8004 + 2000 * parts, "one draw per cube and lamp, {parts} per tombstone");
     assert_eq!(lights.len(), 4);
     let mut uncached = Vec::new();
-    frame(None, &mut levels, &mut uncached, &mut lights);
+    frame(&world, None, &mut levels, &mut uncached, &mut lights);
     assert!(uncached == draws, "the window's cached draw list is the full one");
+    // Enemies a hosted game moves every tick (transient, as Sepulcra's are).
+    let enemies: Vec<u64> = (0..100)
+        .map(|k| {
+            let mut s = SpawnSpec::new(Shape::Sphere);
+            s.name = Some(format!("enemy{k:03}"));
+            s.transient = true;
+            s.position = Vec3::new(k as f32 * 0.5 - 25.0, 0.5, -10.0);
+            world.spawn(s, "game").unwrap().id
+        })
+        .collect();
+    let step = |world: &mut World, moves: usize, k: usize| {
+        for (j, &id) in enemies.iter().take(moves).enumerate() {
+            let p = Vec3::new(j as f32 * 0.5 - 25.0, 0.5, -10.0 - (k % 50) as f32 * 0.1);
+            world.update(&EntityKey::Id(id), UpdateSpec { position: Some(p), ..UpdateSpec::default() }, "game").unwrap();
+        }
+    };
     let frames = 120;
+    frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
+    let rebuilds = cache.rebuilds();
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     for _ in 0..frames {
-        frame(Some(&mut cache), &mut levels, &mut draws, &mut lights);
-        frame(None, &mut levels, &mut uncached, &mut lights);
+        frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
+        frame(&world, None, &mut levels, &mut uncached, &mut lights);
     }
     let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
     assert_eq!(allocations, 0, "warm 10k-entity frames allocate");
-    assert_eq!(cache.rebuilds(), 1, "a world that doesn't change keeps its fixed draws");
+    assert_eq!(cache.rebuilds(), rebuilds, "a world that doesn't change keeps its draws");
+    // Moving enemies: the cache is patched (no rebuild), stays equal to the full walk and
+    // allocates nothing once warm.
+    for k in 0..10 {
+        step(&mut world, 100, k);
+        frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
+    }
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    for k in 0..frames {
+        // (the world's updates themselves allocate nothing either: tests/transient_alloc.rs)
+        step(&mut world, if k % 2 == 0 { 1 } else { 100 }, k);
+        frame(&world, Some(&mut cache), &mut levels, &mut draws, &mut lights);
+    }
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed) - before, 0, "patched frames allocate");
+    assert_eq!(cache.rebuilds(), rebuilds, "moving enemies are patched in, never rebuilt");
+    frame(&world, None, &mut levels, &mut uncached, &mut lights);
+    assert!(uncached == draws, "the patched draw list is the full one");
     // Timings, warm and with cold caches (as in the window, where the GPU driver, presentation
     // and, on an iGPU, the GPU itself evict the world between frames: sweep 64 MB first).
     let mut sweep = vec![0u8; 64 << 20];
-    for (label, cached) in [("full walk", false), ("window cache", true)] {
-        let (mut warm, mut cold) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
-        for k in 0..frames * 2 {
-            let is_cold = k % 2 == 1;
-            if is_cold {
-                for (i, b) in sweep.iter_mut().enumerate().step_by(64) {
-                    *b = b.wrapping_add((i + k) as u8);
+    let mut medians = BTreeMap::new();
+    for moves in [0usize, 1, 100] {
+        for (label, cached) in [("full walk", false), ("window cache", true)] {
+            let (mut warm, mut cold) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+            // The full walk's frames moved enemies without the cache seeing them: one catch-up
+            // frame first (a rebuild when that overflowed the world's change record).
+            frame(&world, cached.then_some(&mut cache), &mut levels, &mut draws, &mut lights);
+            let rebuilds = cache.rebuilds();
+            for k in 0..frames * 2 {
+                step(&mut world, moves, k);
+                let is_cold = k % 2 == 1;
+                if is_cold {
+                    for (i, b) in sweep.iter_mut().enumerate().step_by(64) {
+                        *b = b.wrapping_add((i + k) as u8);
+                    }
                 }
+                let start = Instant::now();
+                frame(&world, cached.then_some(&mut cache), &mut levels, &mut draws, &mut lights);
+                let ms = start.elapsed().as_secs_f64() * 1e3;
+                if is_cold { cold.push(ms) } else { warm.push(ms) }
             }
-            let start = Instant::now();
-            frame(cached.then_some(&mut cache), &mut levels, &mut draws, &mut lights);
-            let ms = start.elapsed().as_secs_f64() * 1e3;
-            if is_cold { cold.push(ms) } else { warm.push(ms) }
+            warm.sort_by(f64::total_cmp);
+            cold.sort_by(f64::total_cmp);
+            eprintln!("10k entities, {moves} moves per frame, {label}: warm {:.3} ms median; cold caches {:.3} ms median, {:.3} ms p95",
+                      warm[frames / 2], cold[frames / 2], cold[frames * 95 / 100]);
+            medians.insert((moves, cached), (warm[frames / 2], cold[frames / 2]));
+            assert_eq!(cache.rebuilds(), rebuilds, "{moves} moves per frame: patched, never rebuilt while timing");
         }
-        warm.sort_by(f64::total_cmp);
-        cold.sort_by(f64::total_cmp);
-        eprintln!("10k entities, {label}: warm {:.3} ms median; cold caches {:.3} ms median, {:.3} ms p95", warm[frames / 2],
-                  cold[frames / 2], cold[frames * 95 / 100]);
     }
     std::hint::black_box(&sweep);
+    // The cache must never cost more than the walk it replaces (beyond noise). Timings mean
+    // something only in an optimised build.
+    if !cfg!(debug_assertions) {
+        for moves in [0usize, 1, 100] {
+            let (walk, cache) = (medians[&(moves, false)], medians[&(moves, true)]);
+            assert!(cache.0 <= walk.0 * 1.1 + 0.02 && cache.1 <= walk.1 * 1.1 + 0.02,
+                    "{moves} moves per frame: the cache ({cache:?} ms warm, cold) is slower than the full walk ({walk:?})");
+        }
+    }
     drop(models);
     drop(gpu);
-}
-
-/// Draws per tombstone (its material parts at the chosen LOD), from the draw list itself.
-fn models_parts(draws: &[specula_gpu::DrawItem]) -> usize {
-    let extra = draws.len() - 8004;
-    assert_eq!(extra % 2000, 0, "{} draws", draws.len());
-    extra / 2000
 }

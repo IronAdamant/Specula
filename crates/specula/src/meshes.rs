@@ -14,7 +14,7 @@ pub struct LatheMeshes {
     failed: BTreeMap<u64, String>,
     /// The world mesh epoch and generation last synced to.
     synced: Option<(u64, u64)>,
-    /// Moves whenever the profile → mesh map may have changed (see [`LatheMeshes::version`]).
+    /// Moves whenever the profile → mesh map changed (see [`LatheMeshes::version`]).
     version: u64,
 }
 
@@ -27,7 +27,6 @@ impl LatheMeshes {
             return Vec::new();
         }
         self.synced = Some(key);
-        self.version += 1;
         let mut live = BTreeMap::new();
         for e in world.entities() {
             if let Some(p) = &e.profile {
@@ -35,9 +34,12 @@ impl LatheMeshes {
             }
         }
         let stale: Vec<u64> = self.meshes.keys().copied().filter(|k| !live.contains_key(k)).collect();
+        // Whether any profile's mesh may have changed: draw caches key on `version`.
+        let mut changed = !self.failed.is_empty();
         for k in stale {
             if let Some(mesh) = self.meshes.remove(&k) {
                 gpu.destroy_mesh(mesh);
+                changed = true;
             }
         }
         self.failed.clear();
@@ -57,6 +59,10 @@ impl LatheMeshes {
                     self.failed.insert(key, msg);
                 }
             }
+            changed = true;
+        }
+        if changed {
+            self.version += 1;
         }
         errors
     }

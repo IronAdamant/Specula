@@ -218,91 +218,174 @@ fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats
     meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, stats, out);
 }
 
-/// The window's draw list, kept between frames. While nothing in the world changed, each
-/// entity's fixed draw (built-in shapes, lathes) is copied from the last frame and each model is
-/// drawn from a copy of its drawing state, so a static 10k-entity world doesn't walk every
-/// entity's full record each frame (F3: on the reference iGPU that walk was most of the window's
-/// CPU frame). Models still choose their LOD per frame (each keeps its level here, for the
-/// window's hysteresis) and animated ones are posed from their entity. Same draws, same order as
-/// [`draw_list`]; nothing allocated once warm.
+/// The window's draw list, kept between frames and patched with what changed. Each entity's
+/// fixed draw (built-in shapes, lathes) is kept, and each model entity's drawing state, so a frame
+/// copies them instead of walking every entity's full record (F3: on the reference iGPU that walk
+/// was most of the window's CPU frame at 10k entities). When entities change, only those are
+/// read again ([`World::draw_changes_since`]); a full rebuild happens only when the world is
+/// replaced, the lathe meshes or `include_ui` change, a change touched every entity, or more
+/// changed than [`DrawCache::PATCH_LIMIT`] allows. Models still choose their LOD per frame (each
+/// keeps its level here while its entity exists, hidden or not: the window's hysteresis) and
+/// animated ones are posed from their entity. Same draws, same order as [`draw_list`]; nothing
+/// allocated once warm.
 #[derive(Default)]
 pub struct DrawCache {
-    /// `(world generation, World::draw_epoch, LatheMeshes::version, include_ui)` the entries
-    /// were built for.
-    key: Option<(u64, u64, u64, bool)>,
+    /// `(world generation, LatheMeshes::version, include_ui)` the entries were built for.
+    key: Option<(u64, u64, bool)>,
+    /// The [`World::draw_epoch`] the entries reflect.
+    epoch: u64,
+    /// One per drawn shape entity and per model entity (drawn or not), in id order.
     entries: Vec<Cached>,
     /// The previous entries while rebuilding (their LOD levels carry over); kept for its capacity.
     spare: Vec<Cached>,
+    /// Changed ids while patching (reused).
+    dirty: Vec<u64>,
     rebuilds: u64,
+    patches: u64,
 }
 
 #[derive(Clone, Copy)]
 enum Cached {
-    Item(DrawItem),
+    Item { id: u64, d: DrawItem },
     Model {
         m: ModelDraw,
         /// Has an `anim`: posed from the entity each frame.
         animated: bool,
+        /// In the frame (shown, and not `ui` unless the view includes it). Hidden models keep
+        /// their entry for their LOD level.
+        drawn: bool,
         /// The LOD it was last drawn at (`u8::MAX`: none yet).
         level: u8,
     },
 }
 
+impl Cached {
+    fn id(&self) -> u64 {
+        match self {
+            Cached::Item { id, .. } => *id,
+            Cached::Model { m, .. } => m.id,
+        }
+    }
+
+    /// `e`'s entry, if it has one (`level`: its model's remembered LOD).
+    fn of(e: &Entity, meshes: &Meshes, include_ui: bool, level: u8) -> Option<Cached> {
+        if e.shape == Shape::Model {
+            return Some(Cached::Model { m: ModelDraw::of(e), animated: e.anim.is_some(), drawn: in_frame(e, include_ui), level });
+        }
+        match plan(e, meshes, include_ui) {
+            Plan::Item(d) => Some(Cached::Item { id: e.id, d }),
+            Plan::Skip | Plan::Model => None,
+        }
+    }
+
+    fn level(&self) -> u8 {
+        match self {
+            Cached::Model { level, .. } => *level,
+            Cached::Item { .. } => u8::MAX,
+        }
+    }
+}
+
 impl DrawCache {
-    /// How many times the entries were rebuilt (the world or its meshes changed).
+    /// More changed entities than this (or than an eighth of the entries) since the last frame:
+    /// rebuild instead of patching one by one.
+    pub const PATCH_LIMIT: usize = 512;
+
+    /// How many times the entries were rebuilt from every entity.
     pub fn rebuilds(&self) -> u64 {
         self.rebuilds
+    }
+
+    /// How many frames patched the entries with changed entities only.
+    pub fn patches(&self) -> u64 {
+        self.patches
     }
 
     /// [`draw_list`] for `world` (`generation` changes whenever the engine replaces its world).
     /// LODs are chosen by size with each model's remembered level, or `view.lod`'s if Fixed.
     pub fn draw_list(&mut self, world: &World, generation: u64, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
-        let key = (generation, world.draw_epoch(), meshes.lathes.version(), view.include_ui);
-        if self.key != Some(key) {
-            let same_world = self.key.is_some_and(|k| k.0 == generation);
+        let key = (generation, meshes.lathes.version(), view.include_ui);
+        let same_world = self.key.is_some_and(|k| k.0 == generation);
+        let fresh = self.key == Some(key) && (self.epoch == world.draw_epoch() || self.patch(world, meshes, view.include_ui));
+        let mut stats = LodStats::default();
+        out.clear();
+        if fresh {
+            for c in &mut self.entries {
+                draw_cached(c, world, meshes, view, &mut stats, out);
+            }
+        } else {
+            // Rebuild, drawing as it goes. Levels of the previous entries carry over by id (both
+            // lists are in id order) unless the world was replaced.
             std::mem::swap(&mut self.entries, &mut self.spare);
             self.entries.clear();
-            // Levels of the previous entries, matched by id (both lists are in id order).
-            let mut old = self.spare.iter().filter_map(|c| match c {
-                Cached::Model { m, level, .. } if same_world => Some((m.id, *level)),
-                _ => None,
-            }).peekable();
+            let mut old = self.spare.iter().filter(|_| same_world).map(|c| (c.id(), c.level())).peekable();
             for e in world.entities() {
-                match plan(e, meshes, view.include_ui) {
-                    Plan::Skip => {}
-                    Plan::Item(d) => self.entries.push(Cached::Item(d)),
-                    Plan::Model => {
-                        while old.next_if(|(id, _)| *id < e.id).is_some() {}
-                        let level = old.next_if(|(id, _)| *id == e.id).map_or(u8::MAX, |(_, l)| l);
-                        self.entries.push(Cached::Model { m: ModelDraw::of(e), animated: e.anim.is_some(), level });
+                while old.next_if(|(id, _)| *id < e.id).is_some() {}
+                let level = old.next_if(|(id, _)| *id == e.id).map_or(u8::MAX, |(_, l)| l);
+                if let Some(c) = Cached::of(e, meshes, view.include_ui, level) {
+                    self.entries.push(c);
+                    if let Some(c) = self.entries.last_mut() {
+                        draw_cached(c, world, meshes, view, &mut stats, out);
                     }
                 }
             }
             self.spare.clear();
             self.key = Some(key);
+            self.epoch = world.draw_epoch();
             self.rebuilds += 1;
         }
-        out.clear();
-        let mut stats = LodStats::default();
-        let fixed = match view.lod {
-            LodChoice::Fixed(l) => Some(l),
-            _ => None,
-        };
-        let (eye, fov) = (view.camera.eye, view.camera.fov_y_deg);
-        for entry in &mut self.entries {
-            match entry {
-                Cached::Item(d) => out.push(*d),
-                Cached::Model { m, animated, level } => {
-                    let entity = if *animated { world.get(m.id) } else { None };
-                    let mut choice = match fixed {
-                        Some(l) => LodChoice::Fixed(l),
-                        None => LodChoice::Slot(level),
-                    };
-                    meshes.models.draw_model(m, entity, eye, fov, view.viewport_h, &mut choice, &mut stats, out);
+        stats
+    }
+
+    /// Brings the entries up to date with the entities changed since `self.epoch`; false when
+    /// that needs a rebuild instead.
+    fn patch(&mut self, world: &World, meshes: &Meshes, include_ui: bool) -> bool {
+        let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
+        let limit = Self::PATCH_LIMIT.min(self.entries.len() / 8 + 16);
+        self.dirty.clear();
+        for id in changes {
+            if self.dirty.len() >= limit {
+                return false;
+            }
+            self.dirty.push(id);
+        }
+        self.dirty.sort_unstable();
+        self.dirty.dedup();
+        for k in 0..self.dirty.len() {
+            let id = self.dirty[k];
+            let at = self.entries.binary_search_by_key(&id, Cached::id);
+            let level = at.map_or(u8::MAX, |i| self.entries[i].level());
+            match (at, world.get(id).and_then(|e| Cached::of(e, meshes, include_ui, level))) {
+                (Ok(i), Some(c)) => self.entries[i] = c,
+                (Ok(i), None) => {
+                    self.entries.remove(i);
                 }
+                (Err(i), Some(c)) => self.entries.insert(i, c),
+                (Err(_), None) => {}
             }
         }
-        stats
+        self.epoch = world.draw_epoch();
+        self.patches += 1;
+        true
+    }
+
+}
+
+/// Appends a cached entry's draws (a model's at its LOD for this view, posed if animated).
+fn draw_cached(c: &mut Cached, world: &World, meshes: &Meshes, view: &View, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
+    match c {
+        Cached::Item { d, .. } => out.push(*d),
+        Cached::Model { m, animated, drawn, level } => {
+            if !*drawn {
+                return;
+            }
+            let entity = if *animated { world.get(m.id) } else { None };
+            let mut choice = match view.lod {
+                LodChoice::Fixed(l) => LodChoice::Fixed(l),
+                _ => LodChoice::Slot(level),
+            };
+            meshes.models.draw_model(m, entity, view.camera.eye, view.camera.fov_y_deg, view.viewport_h, &mut choice, stats, out);
+        }
     }
 }
 
@@ -577,6 +660,28 @@ mod tests {
         assert_eq!(check(&world, 0, &mut cache), 29);
         world.update(&EntityKey::Id(enemy), UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 5.0)), ..Default::default() }, "game").unwrap();
         check(&world, 0, &mut cache);
+        assert_eq!(cache.rebuilds(), 1, "every change above was patched in, not rebuilt");
+        assert!(cache.patches() >= 7);
+        // Moving a group moves its subtree: every child is patched.
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("g".into());
+        world.spawn(g, "t").unwrap();
+        for i in 0..5 {
+            let mut c = SpawnSpec::new(Shape::Cube);
+            c.name = Some(format!("k{i}"));
+            c.parent = Some(EntityKey::Path("/g".into()));
+            world.spawn(c, "t").unwrap();
+        }
+        check(&world, 0, &mut cache);
+        set(&mut world, "/g", UpdateSpec { position: Some(Vec3::new(0.0, 0.0, -4.0)), ..Default::default() });
+        set(&mut world, "/g", UpdateSpec { visible: Some(false), ..Default::default() });
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        // Too many changes at once: one rebuild instead of patching each.
+        for i in 0..400 {
+            set(&mut world, &format!("/e{}", i % 40 + if i % 40 == 9 { 1 } else { 0 }), UpdateSpec { color: Some([0.5, 0.5, 0.5]), ..Default::default() });
+        }
+        check(&world, 0, &mut cache);
+        assert_eq!(cache.rebuilds(), 2);
         // A different world that happens to have the same epoch: the generation tells them apart.
         let mut other = World::default();
         spawn(&mut other, Shape::Cube, "x", Vec3::ZERO);

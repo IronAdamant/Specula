@@ -39,7 +39,7 @@ use crate::two_d::{TileEdits, TwoD};
 use specula_gpu::{Environment, Material, Surface};
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -1953,6 +1953,9 @@ pub const FIELDS: [&str; 39] = [
     "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d",
 ];
 
+/// Entity changes [`World::draw_changes_since`] remembers.
+pub const DRAW_LOG: usize = 1024;
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     entities: BTreeMap<u64, Entity>,
@@ -1992,6 +1995,12 @@ pub struct World {
     /// Moves on every change to any entity (transient ones and derived state included): what a
     /// renderer keys cached per-entity draw data on. Never hashed or saved.
     draw_epoch: u64,
+    /// The latest changes as `(draw_epoch after it, entity id)`, oldest first, at most
+    /// [`DRAW_LOG`] (see [`World::draw_changes_since`]).
+    draw_log: VecDeque<(u64, u64)>,
+    /// Changes up to this epoch are no longer in `draw_log` (it overflowed, or a change touched
+    /// every entity).
+    draw_floor: u64,
     /// Ids of the entities carrying a point light, so frames gather lights without visiting every
     /// entity (a 10k-entity world has a handful). Kept by `link`, `unlink` and `update`.
     lit: BTreeSet<u64>,
@@ -2144,14 +2153,14 @@ impl World {
     pub fn refresh_models(&mut self) -> Vec<(u64, WorldError)> {
         self.mesh_epoch += 1;
         let Some(source) = self.models.0.clone() else {
-            self.draw_epoch += 1;
+            self.draw_reset();
             for e in self.entities.values_mut() {
                 e.resolved = None;
             }
             return Vec::new();
         };
         let mut failed = Vec::new();
-        self.draw_epoch += 1;
+        self.draw_reset();
         for e in self.entities.values_mut() {
             let Some(spec) = &e.model else { continue };
             match source.resolve(spec) {
@@ -2171,7 +2180,7 @@ impl World {
     pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
         let Some(source) = self.models.0.clone() else { return };
         let mut touched = false;
-        self.draw_epoch += 1;
+        self.draw_reset();
         for e in self.entities.values_mut() {
             let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
             if handles.contains(&r.handle) {
@@ -2208,6 +2217,37 @@ impl World {
     /// See the field: unchanged means no entity changed in any way since it was read.
     pub fn draw_epoch(&self) -> u64 {
         self.draw_epoch
+    }
+
+    /// The ids of the entities that changed (were spawned, changed, moved, removed) after
+    /// [`World::draw_epoch`] was `epoch`, oldest first, possibly repeated; `None` when the record
+    /// no longer reaches back that far (more than [`DRAW_LOG`] changes since, or a change to
+    /// every entity): read everything again then. What the window's draw cache patches itself
+    /// from.
+    pub fn draw_changes_since(&self, epoch: u64) -> Option<impl Iterator<Item = u64> + '_> {
+        if epoch < self.draw_floor || epoch > self.draw_epoch {
+            return None;
+        }
+        let start = self.draw_log.partition_point(|&(e, _)| e <= epoch);
+        Some(self.draw_log.range(start..).map(|&(_, id)| id))
+    }
+
+    /// Records a change to entity `id` for [`World::draw_changes_since`].
+    fn draw_touch(&mut self, id: u64) {
+        self.draw_epoch += 1;
+        if self.draw_log.len() >= DRAW_LOG {
+            if let Some((e, _)) = self.draw_log.pop_front() {
+                self.draw_floor = e;
+            }
+        }
+        self.draw_log.push_back((self.draw_epoch, id));
+    }
+
+    /// A change to (possibly) every entity: the change record starts again from here.
+    fn draw_reset(&mut self) {
+        self.draw_epoch += 1;
+        self.draw_log.clear();
+        self.draw_floor = self.draw_epoch;
     }
 
     /// The entities carrying a point light, by id (from an index: no other entity is visited).
@@ -2724,7 +2764,7 @@ impl World {
         let by = self.intern(by);
         let moved = reparent || restyled || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
         let remeshed = change.profile.is_some() || new_model.is_some();
-        self.draw_epoch += 1;
+        self.draw_touch(id);
         let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some(name) = change.name {
             e.name = name;
@@ -2946,7 +2986,7 @@ impl World {
         if e.two_d.is_some() {
             self.flat.insert(e.id);
         }
-        self.draw_epoch += 1;
+        self.draw_touch(e.id);
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
             if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
         }
@@ -2955,7 +2995,7 @@ impl World {
 
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
-        self.draw_epoch += 1;
+        self.draw_touch(id);
         let e = self.entities.remove(&id)?;
         self.lit.remove(&id);
         self.flat.remove(&id);
@@ -3058,7 +3098,7 @@ impl World {
     fn refresh_one(&mut self, at: u64) -> bool {
         let Some(parent) = self.entities.get(&at).map(|e| e.parent) else { return false };
         let inherited = parent.and_then(|p| self.entities.get(&p)).map(|p| (p.world, p.shown, p.in_ui));
-        self.draw_epoch += 1;
+        self.draw_touch(at);
         let e = self.entities.get_mut(&at).expect("checked above");
         let local = e.local_matrix();
         // Top-level entities use their local matrix as is (no identity multiply to round).
@@ -3370,7 +3410,7 @@ impl World {
     /// are ignored (the change's entity was replayed away).
     pub(crate) fn apply_pose(&mut self, pose: &Pose, by: &str) {
         let by = self.intern(by);
-        self.draw_epoch += 1;
+        self.draw_touch(pose.id);
         let Some(e) = self.entities.get_mut(&pose.id) else { return };
         pose.apply_to(e);
         e.modified_by = by;
@@ -3388,7 +3428,7 @@ impl World {
     /// Like [`World::unlink`], but only drops index entries that still point at `id` (a replayed
     /// rename may already have given its old name to another entity).
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
-        self.draw_epoch += 1;
+        self.draw_touch(id);
         let e = self.entities.remove(&id)?;
         self.lit.remove(&id);
         self.flat.remove(&id);
@@ -3720,6 +3760,34 @@ mod tests {
     /// transforms), both indexes, the id and revision counters, the environment.
     fn snapshot(w: &World) -> String {
         format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.lit, w.flat, w.next_id, w.revision, w.env)
+    }
+
+    /// The change record renderers patch caches from: every change to an entity (moves of a
+    /// subtree included), in order; gone once it overflows or a change touches every entity.
+    #[test]
+    fn draw_changes_record_what_changed() {
+        let mut w = World::default();
+        let a = put(&mut w, Shape::Cube, "a", None, Vec3::ZERO);
+        let g = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let b = put(&mut w, Shape::Cube, "b", Some("/g"), Vec3::ZERO);
+        let since = w.draw_epoch();
+        assert_eq!(w.draw_changes_since(since).unwrap().count(), 0);
+        let mv = |p: Vec3| UpdateSpec { position: Some(p), ..UpdateSpec::default() };
+        w.update(&EntityKey::Id(a), mv(Vec3::X), "t").unwrap();
+        w.update(&EntityKey::Id(g), mv(Vec3::Y), "t").unwrap();
+        let changed: BTreeSet<u64> = w.draw_changes_since(since).unwrap().collect();
+        assert_eq!(changed, BTreeSet::from([a, g, b]), "the group's move reaches its child");
+        w.delete(&EntityKey::Id(a), None).unwrap();
+        assert!(w.draw_changes_since(since).unwrap().any(|id| id == a));
+        assert!(w.draw_changes_since(w.draw_epoch() + 1).is_none(), "an epoch from another world");
+        let mid = w.draw_epoch();
+        for i in 0..DRAW_LOG + 1 {
+            w.update(&EntityKey::Id(b), mv(Vec3::new(i as f32, 0.0, 0.0)), "t").unwrap();
+        }
+        assert!(w.draw_changes_since(mid).is_none(), "the record overflowed");
+        assert_eq!(w.draw_changes_since(w.draw_epoch() - 3).unwrap().count(), 3);
+        w.refresh_models();
+        assert!(w.draw_changes_since(w.draw_epoch() - 1).is_none(), "a change to every entity starts the record again");
     }
 
     /// The lit-entity index agrees with a scan of every entity.
