@@ -1,8 +1,11 @@
 //! Agent sight: cameras, draw lists and the subject list that accompanies every captured frame.
 //!
 //! Subjects come from the engine's own transforms and the view-projection used to render, so agents
-//! never guess where something is. Rectangles are the projected **bounding box** of each entity
-//! (clipped to the camera's near/far planes and the image); occlusion is not considered yet.
+//! never guess where something is. `screen` is the projected **bounding box** of each entity
+//! (clipped to the camera's near/far planes and the image): loose, and blind to occlusion. Captures
+//! also render the GPU **ID buffer** (`specula_gpu::Gpu::render_with_ids`), which adds the truth
+//! per entity: `visible_px`, the exact `screen_box_exact` of its drawn pixels, `no_pixels` and `occluded`
+//! ([`apply_visibility`]).
 
 use crate::meshes::{LatheMeshes, ShapeMeshes};
 use crate::models::{GpuModels, LodChoice, LodStats};
@@ -167,8 +170,13 @@ pub fn in_frame(e: &Entity, include_ui: bool) -> bool {
 /// One draw per shown entity with a mesh (one per material part for models), appended to
 /// `out` (cleared first). Groups, hidden entities, `ui` entities when the view leaves them out,
 /// and meshes that failed to upload are skipped. Returns how models were drawn.
-pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
+/// `owners`, when given, receives the entity id of every draw (parallel to `out`), for the ID
+/// buffer.
+pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>, mut owners: Option<&mut Vec<u64>>) -> LodStats {
     out.clear();
+    if let Some(o) = owners.as_deref_mut() {
+        o.clear();
+    }
     let mut stats = LodStats::default();
     for e in world.entities() {
         if !in_frame(e, view.include_ui) {
@@ -179,6 +187,9 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
             Shape::Model => {
                 let fov = view.camera.fov_y_deg;
                 meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, &mut stats, out);
+                if let Some(o) = owners.as_deref_mut() {
+                    o.resize(out.len(), e.id);
+                }
                 continue;
             }
             Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
@@ -195,6 +206,9 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
             skin: None,
             bounds: None,
         });
+        if let Some(o) = owners.as_deref_mut() {
+            o.push(e.id);
+        }
     }
     stats
 }
@@ -234,11 +248,17 @@ pub fn in_view(e: &Entity, view_proj: &Mat4) -> bool {
 }
 
 /// Where one entity landed in a frame.
+#[derive(Clone, Debug)]
 pub struct Subject {
+    pub id: u64,
     pub json: Json,
     pub on_screen: bool,
     /// Pixel area of the clipped rectangle (0 when off screen).
+    /// Becomes the exact box's area once the ID buffer ran ([`apply_visibility`]): ranks the response.
     pub area: u64,
+    /// Pixel area of the projected rectangle, always (overlays rank by it, so their picks never
+    /// depend on whether the ID buffer ran first).
+    pub projected_area: u64,
 }
 
 /// One entry per entity with geometry in the frame, in id order: groups draw nothing, hidden
@@ -290,9 +310,81 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, includ
             }
             let json = Json::obj(fields);
             let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
-            Subject { json, on_screen: screen.is_some(), area }
+            Subject { id: e.id, json, on_screen: screen.is_some(), area, projected_area: area }
         })
         .collect()
+}
+
+/// Dense ID-buffer ids for a draw list's owners (`draw_list`): the `k`-th distinct entity gets
+/// `k + 1`. Returns `(id per draw, entity of each dense id - 1)`.
+pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
+    let mut entities: Vec<u64> = Vec::new();
+    let mut index: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    let ids = owners
+        .iter()
+        .map(|&e| {
+            *index.entry(e).or_insert_with(|| {
+                entities.push(e);
+                entities.len() as u32
+            })
+        })
+        .collect();
+    (ids, entities)
+}
+
+/// Adds what the ID buffer saw to each subject:
+/// - `visible_px`: pixels it covers after occlusion (its nearest opaque pixels plus its blended
+///   pixels in front of the opaque depth; glass behind glass counts, glass hides nothing);
+/// - `screen_box_exact`: `[x, y, w, h]` of those pixels, null when none;
+/// - `no_pixels: true` when its box is in view and it was drawn, yet no pixel shows;
+/// - `occluded: true` when, besides, its fragments were rasterized: something in front hid them
+///   (without it the entity was sub-pixel, or off the image after all). Unknown (left out) on
+///   GPUs without fragment atomics; there, entities with blended draws (glass, blob shadows, lava
+///   lamps) get `visible_px: null` and none of the other fields: their pixels weren't counted.
+/// - `visible_px_approx: true` when more blended entities overlapped at some of its pixels than
+///   the ID buffer's per-pixel sets hold: `visible_px` and `screen_box_exact` are then lower
+///   bounds (it shows at least that much), and it is never `no_pixels`/`occluded`.
+///
+/// Its `area` (for ranking) becomes the exact box's.
+pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
+    let by_entity: std::collections::HashMap<u64, specula_gpu::IdCoverage> =
+        entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect();
+    for s in subjects {
+        let drawn = by_entity.get(&s.id);
+        if drawn.is_some_and(|c| !c.counted) {
+            // Blended draws went uncounted (no fragment atomics): its pixels are unknown, not 0.
+            s.json.set("visible_px", Json::Null);
+            continue;
+        }
+        let cov = drawn.filter(|c| c.pixels > 0);
+        let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
+        s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
+        s.json.set("screen_box_exact", exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
+        let approx = drawn.is_some_and(|c| c.approx);
+        if approx {
+            // More blended ids overlapped at some of its pixels than the ID buffer's sets hold:
+            // visible_px and screen_box_exact are lower bounds (it shows at least that much).
+            s.json.set("visible_px_approx", Json::from(true));
+        }
+        if let (true, Some(c), None, false) = (s.on_screen, drawn, cov, approx) {
+            s.json.set("no_pixels", Json::from(true));
+            if c.rasterized == Some(true) {
+                s.json.set("occluded", Json::from(true));
+            }
+        }
+        let exact_area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
+        // An approximate box is a lower bound (possibly empty): rank by what it may cover.
+        s.area = if approx { exact_area.max(s.projected_area) } else { exact_area };
+    }
+}
+
+/// Whether the ID buffer says a subject (its packet JSON) shows at all: `Some(true)` when it has
+/// visible pixels or an approximate count (a lower bound: it showed, maybe all of it, even at 0);
+/// `None` when the ID buffer didn't count it (`visible_px` null or missing). Every consumer of
+/// visibility (filters, compare, overlays, totals) goes through this.
+pub fn shows(j: &Json) -> Option<bool> {
+    let px = j.get("visible_px")?.as_u64()?;
+    Some(px > 0 || j.get("visible_px_approx").and_then(Json::as_bool) == Some(true))
 }
 
 /// The subjects to send back to the agent: everything when it fits in `max`, otherwise the
@@ -572,6 +664,62 @@ mod tests {
         assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
         assert_eq!(lights(&world, false).0.len(), 0);
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
+    }
+
+    #[test]
+    fn id_buffer_results_go_into_subjects() {
+        use specula_gpu::IdCoverage;
+        // A model's parts share its id; ids are dense in draw order.
+        let (ids, entities) = dense_ids(&[7, 7, 3, 9, 3]);
+        assert_eq!((ids, entities.clone()), (vec![1, 1, 2, 3, 2], vec![7, 3, 9]));
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "front", Vec3::ZERO);
+        spawn(&mut world, Shape::Cube, "behind", Vec3::new(0.0, 0.0, -3.0));
+        spawn(&mut world, Shape::Cube, "away", Vec3::new(0.0, 0.0, 40.0));
+        let cam = cam(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 50.0);
+        spawn(&mut world, Shape::Cube, "speck", Vec3::new(1.0, 0.0, 0.0));
+        let mut s = frame(&world, cam, 640, 480);
+        // Drawn: front (visible), behind (rasterized, hidden) and speck (never rasterized);
+        // `away` was culled (never drawn).
+        let seen = IdCoverage {
+            pixels: 1200,
+            opaque_pixels: 1000,
+            blended_pixels: 200,
+            min: [300, 220],
+            max: [339, 259],
+            rasterized: Some(true),
+            counted: true,
+            approx: true,
+        };
+        let hidden = IdCoverage { rasterized: Some(true), ..IdCoverage::default() };
+        let projected = s[0].area;
+        apply_visibility(&mut s, &[1, 2, 4], &[seen, hidden, IdCoverage::default()]);
+        assert_eq!(s[0].projected_area, projected, "overlays keep ranking by the projected box");
+        let get = |i: usize, k: &str| s[i].json.get(k).cloned();
+        assert_eq!(get(0, "visible_px"), Some(Json::from(1200)));
+        assert_eq!(get(0, "visible_px_approx"), Some(Json::from(true)));
+        assert_eq!(get(1, "visible_px_approx"), None);
+        assert_eq!(get(0, "screen_box_exact"), Some(Json::arr([300, 220, 40, 40].map(Json::from))));
+        // Approximate: ranked by the larger of its (lower-bound) exact box and its projected box.
+        assert_eq!((get(0, "no_pixels"), get(0, "occluded"), s[0].area), (None, None, projected.max(1600)));
+        assert_eq!((get(1, "visible_px"), get(1, "no_pixels"), get(1, "occluded")), (Some(Json::from(0)), Some(Json::from(true)), Some(Json::from(true))));
+        assert_eq!((get(1, "screen_box_exact"), s[1].area), (Some(Json::Null), 0));
+        assert_eq!(get(2, "no_pixels"), None, "behind the camera: not in view at all");
+        assert_eq!((get(3, "no_pixels"), get(3, "occluded")), (Some(Json::from(true)), None), "nothing hid it: it rasterized nothing");
+        // Uncounted (glass without fragment atomics): unknown, not "no pixels".
+        let mut s = frame(&world, cam, 640, 480);
+        let uncounted = IdCoverage { counted: false, rasterized: None, ..IdCoverage::default() };
+        apply_visibility(&mut s, &[1], &[uncounted]);
+        assert_eq!(s[0].json.get("visible_px"), Some(&Json::Null));
+        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("screen_box_exact").is_none() && s[0].json.get("occluded").is_none());
+        assert_eq!(s[0].area, s[0].projected_area);
+        // Approximate with nothing counted (pushed out of every set it was drawn in): at least 0,
+        // but it did show, so neither no_pixels nor occluded.
+        let mut s = frame(&world, cam, 640, 480);
+        let pushed_out = IdCoverage { approx: true, rasterized: Some(true), ..IdCoverage::default() };
+        apply_visibility(&mut s, &[1], &[pushed_out]);
+        assert_eq!((s[0].json.get("visible_px"), s[0].json.get("visible_px_approx")), (Some(&Json::from(0)), Some(&Json::from(true))));
+        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("occluded").is_none());
     }
 
     #[test]

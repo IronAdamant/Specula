@@ -32,7 +32,11 @@ edit cells with tilemap_set, read them with tilemap_get) and shape2d (filled / s
 entity's local XY plane (metres, +Y up); a 2D game looks at the world XY plane with sight_frame view_2d \
 (orthographic, down -Z). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
 game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
-on-screen rectangle (its projected bounding box, computed by the engine). world_env sets the sun, ambient light, \
+on-screen rectangle (its projected bounding box, computed by the engine); overlays (grid, axes, bounds, labels, \
+claims, skeletons, lods) draw debug aids into it. Keep your own named cameras with camera_set (fixed, or following \
+an entity) and look through them (or another agent's) with sight_frame {camera}; sight_orbit returns a turntable \
+contact sheet of one entity; sight_compare marks a 'before' and diffs the world against it later; sight_query \
+answers one entity's on-screen facts without an image. world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
@@ -84,6 +88,8 @@ const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
 const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
 const FRAME_KEYS: &[&str] =
     &["width", "height", "eye", "target", "fov_y_deg", "ortho", "view_2d", "max_subjects", "time_s", "include_ui", "lod"];
+/// sight_frame's arguments beyond the view itself (cameras, overlays, subject filter).
+pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
     "background", "shadow", "bloom", "fxaa", "sky", "fog", "grading", "ssao",
@@ -151,7 +157,7 @@ pub enum Command {
     Frame(FrameSpec),
     Env(EnvPatch),
     /// `None` returns the window to auto-framing.
-    View(Option<Camera>),
+    View(ViewSpec),
     Info,
     /// perf_frame; `None` = the frame budget from perf.toml.
     /// `graph`: include the last frame's render graph pass by pass (else only its summary).
@@ -180,6 +186,8 @@ pub enum Command {
     ModelBuild(world::ModelSpec),
     /// model_reload: re-read every recipe and style now.
     ModelReload,
+    /// Cameras, orbits, compares and queries (see [`crate::sight_tools`]).
+    Sight(crate::sight_tools::SightCall),
     /// tilemap_get: cells of one layer (all layers' names when `layer` is `None`) in `region`.
     TileGet { key: EntityKey, layer: Option<String>, region: Option<[u32; 4]> },
 }
@@ -224,6 +232,14 @@ pub struct FrameSpec {
     pub include_ui: bool,
     /// Draw every model at this LOD (clamped to the model's last) instead of choosing by size.
     pub lod: Option<usize>,
+    /// A named camera (`camera_set`) instead of eye/target.
+    pub camera: Option<crate::sight_tools::CameraRef>,
+    /// Debug overlays to draw (none by default).
+    pub overlays: crate::sight_overlay::Spec,
+    /// Which subjects the response lists.
+    pub subjects: crate::sight_tools::SubjectFilter,
+    /// Render the ID buffer: per-subject visible pixels (default true; `ids: false` saves its cost).
+    pub ids: bool,
 }
 
 pub struct Request {
@@ -311,7 +327,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
         }
         "agent_hello" => parse_hello(args),
         "sight_frame" => {
-            check_keys(args, name, &[FRAME_KEYS])?;
+            check_keys(args, name, &[FRAME_KEYS, FRAME_EXTRA_KEYS])?;
             parse_frame(args).map(Command::Frame)
         }
         "world_env" => {
@@ -319,7 +335,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             parse_env(args).map(Command::Env)
         }
         "window_view" => {
-            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "ortho", "view_2d", "auto"]])?;
+            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "ortho", "view_2d", "auto", "camera", "of"]])?;
             parse_view(args).map(Command::View)
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
@@ -429,7 +445,10 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             };
             Ok(Command::TileGet { key, layer: string_arg(args, "layer")?.map(str::to_owned), region })
         }
-        other => Err(format!("unknown tool '{other}'")),
+        other => match crate::sight_tools::parse(other, args) {
+            Some(call) => call.map(Command::Sight),
+            None => Err(format!("unknown tool '{other}'")),
+        },
     }
 }
 
@@ -474,7 +493,7 @@ fn parse_perf_capture(args: &Json) -> Result<CaptureSpec, String> {
 }
 
 /// An optional integer within `lo..=hi`.
-fn int_arg(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
+pub(crate) fn int_arg(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(v) => match v.as_u64() {
@@ -641,7 +660,7 @@ pub fn argument_error(message: &str) -> Json {
 }
 
 /// `id` (integer), `path` ("/a/b") or `name` (unique in the world) identifying an existing entity.
-fn entity_key(args: &Json, tool: &str) -> Result<EntityKey, String> {
+pub(crate) fn entity_key(args: &Json, tool: &str) -> Result<EntityKey, String> {
     let present = |k: &str| args.get(k).is_some_and(|v| !v.is_null());
     if ["id", "path", "name"].iter().filter(|k| present(k)).count() > 1 {
         let hint = if tool == "world_set" { " (to rename an entity use 'rename')" } else { "" };
@@ -660,7 +679,7 @@ fn entity_key(args: &Json, tool: &str) -> Result<EntityKey, String> {
 }
 
 /// An entity reference given as a value: integer id, "/path" or a unique bare name.
-fn key_value(v: &Json, key: &str) -> Result<EntityKey, String> {
+pub(crate) fn key_value(v: &Json, key: &str) -> Result<EntityKey, String> {
     match v {
         Json::Str(s) if s.starts_with('/') => Ok(EntityKey::Path(s.clone())),
         Json::Str(s) => Ok(EntityKey::Name(s.clone())),
@@ -699,14 +718,14 @@ fn version_arg(args: &Json) -> Result<Option<u64>, String> {
     }
 }
 
-fn bool_arg(args: &Json, key: &str) -> Result<Option<bool>, String> {
+pub(crate) fn bool_arg(args: &Json, key: &str) -> Result<Option<bool>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(v) => v.as_bool().map(Some).ok_or_else(|| format!("'{key}' must be true or false")),
     }
 }
 
-fn string_arg<'a>(args: &'a Json, key: &str) -> Result<Option<&'a str>, String> {
+pub(crate) fn string_arg<'a>(args: &'a Json, key: &str) -> Result<Option<&'a str>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Str(s)) => Ok(Some(s)),
@@ -926,7 +945,7 @@ fn body_arg(args: &Json) -> Result<Option<Option<Body>>, String> {
 
 /// Optional finite number. Its range is checked by the world (or by [`num_in`] for non-world
 /// values such as camera settings).
-fn num_arg(args: &Json, key: &str) -> Result<Option<f32>, String> {
+pub(crate) fn num_arg(args: &Json, key: &str) -> Result<Option<f32>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(v) => match v.as_f64() {
@@ -937,7 +956,7 @@ fn num_arg(args: &Json, key: &str) -> Result<Option<f32>, String> {
 }
 
 /// Optional number within `range`.
-fn num_in(args: &Json, key: &str, range: std::ops::RangeInclusive<f32>) -> Result<Option<f32>, String> {
+pub(crate) fn num_in(args: &Json, key: &str, range: std::ops::RangeInclusive<f32>) -> Result<Option<f32>, String> {
     let v = num_arg(args, key)?;
     match v {
         Some(f) if !range.contains(&f) => Err(format!("'{key}' must be a number from {} to {}", range.start(), range.end())),
@@ -1047,9 +1066,37 @@ fn effect_arg<T>(args: &Json, key: &str, parse: fn(&Json) -> Result<T, String>) 
     }
 }
 
-fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
-    if args.get("auto").and_then(Json::as_bool) == Some(true) {
-        return Ok(None);
+/// What `window_view` points the human's window camera at.
+#[derive(Clone, Debug)]
+pub enum ViewSpec {
+    /// Auto-frame the world.
+    Auto,
+    Fixed(Camera),
+    /// Through an agent's named camera (`of`: that agent; the caller's own without), kept up to
+    /// date every frame, so a follow camera keeps following.
+    Named { name: String, of: Option<String> },
+}
+
+fn parse_view(args: &Json) -> Result<ViewSpec, String> {
+    let named = string_arg(args, "camera")?;
+    let of = string_arg(args, "of")?;
+    let auto = args.get("auto").and_then(Json::as_bool) == Some(true);
+    let fixed = ["eye", "target", "view_2d"].iter().any(|k| args.get(k).is_some_and(|v| !v.is_null()));
+    if usize::from(named.is_some()) + usize::from(auto) + usize::from(fixed) > 1 {
+        return Err("window_view takes one of: 'camera' (+ 'of'), 'eye' + 'target', or 'auto': true".into());
+    }
+    if of.is_some() && named.is_none() {
+        return Err("'of' needs 'camera' (the name of that agent's camera)".into());
+    }
+    let projection = ["ortho", "fov_y_deg"].iter().find(|k| args.get(k).is_some_and(|v| !v.is_null()));
+    if let (Some(k), true) = (projection, named.is_some() || auto) {
+        return Err(format!("'{k}' goes with 'eye' and 'target', not with 'camera' (which has its own) or 'auto'"));
+    }
+    if let Some(name) = named {
+        return Ok(ViewSpec::Named { name: name.to_owned(), of: of.map(str::to_owned) });
+    }
+    if auto {
+        return Ok(ViewSpec::Auto);
     }
     let frame = parse_frame(args)?;
     match (frame.eye, frame.target) {
@@ -1058,9 +1105,9 @@ fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
             if let Some(height_m) = frame.ortho {
                 cam.projection = crate::sight::Projection::Ortho { height_m };
             }
-            Ok(Some(cam))
+            Ok(ViewSpec::Fixed(cam))
         }
-        _ => Err("window_view needs 'eye' and 'target' (or 'view_2d'), or 'auto': true".into()),
+        _ => Err("window_view needs 'eye' and 'target' (or 'view_2d'), 'camera' (a named camera), or 'auto': true".into()),
     }
 }
 
@@ -1242,7 +1289,8 @@ fn parse_hello(args: &Json) -> Result<Command, String> {
     Ok(Command::Hello { name, role, resume })
 }
 
-fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
+pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
+    crate::sight_tools::check_camera_conflict(args)?;
     let int = |key: &str, default: u32, range: std::ops::RangeInclusive<u32>| -> Result<u32, String> {
         match args.get(key) {
             None | Some(Json::Null) => Ok(default),
@@ -1305,11 +1353,19 @@ fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         time_s: num_in(args, "time_s", 0.0..=1.0e6)?,
         include_ui: bool_arg(args, "include_ui")?.unwrap_or(false),
         lod: int_arg(args, "lod", 0, 7)?.map(|l| l as usize),
+        camera: None,
+        overlays: crate::sight_overlay::Spec::default(),
+        subjects: crate::sight_tools::SubjectFilter::All,
+        ids: true,
+    })
+    .and_then(|mut spec| {
+        crate::sight_tools::frame_extras(args, &mut spec)?;
+        Ok(spec)
     })
 }
 
 /// A name, trimmed; see [`world::validate_name`].
-fn name_arg(v: Option<&Json>) -> Result<Option<String>, String> {
+pub(crate) fn name_arg(v: Option<&Json>) -> Result<Option<String>, String> {
     match v {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Str(s)) => {
@@ -1328,7 +1384,7 @@ fn name_arg(v: Option<&Json>) -> Result<Option<String>, String> {
 }
 
 /// `[x, y, z]` of finite numbers, or `None` when absent / null.
-fn vec3_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
+pub(crate) fn vec3_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
     match args.get(key) {
         None | Some(Json::Null) => Ok(None),
         Some(v) => {
@@ -1345,7 +1401,7 @@ fn vec3_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
 
 /// A camera point: within ±[`world::MAX_COORD`] metres on every axis. (Entity positions are
 /// checked by the world.)
-fn position_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
+pub(crate) fn position_arg(args: &Json, key: &str) -> Result<Option<Vec3>, String> {
     let p = vec3_arg(args, key)?;
     if let Some(p) = p {
         world::check_point(key, p).map_err(value_error)?;
@@ -1842,13 +1898,23 @@ fn definitions() -> Vec<ToolDef> {
             name: "sight_frame".into(),
             description: "Render the world from a camera and return the PNG image plus JSON with each entity's \
                           on-screen rectangle [x, y, w, h] (pixels, origin top-left): the engine's projection of its \
-                          bounding box, clipped to the view; occlusion is not considered. Without eye/target the camera \
-                          frames the whole world from a three-quarter view. Large worlds return the biggest on-screen \
-                          subjects first (max_subjects); the full list is saved at packet_path. If models in view are \
-                          still building, it waits for them (up to 10 s, other calls go on meanwhile) and then \
-                          renders the world as it is at that moment; packet 'models' and 'warnings' (text) say what \
-                          wasn't drawn; 'problems' lists effects that can't apply as {error, message, ...} (a grading \
-                          LUT that failed to load). A grading LUT edited on disk is reloaded before each capture."
+                          bounding box, clipped to the view (loose, blind to occlusion), and from the GPU ID buffer \
+                          visible_px (pixels actually drawn; glass shows but hides nothing), screen_box_exact (the \
+                          tight box of those pixels), no_pixels: true (in view, yet no pixel shows) and \
+                          occluded: true (besides, something in front hid it; without it, it was sub-pixel). \
+                          visible_px_approx: true means \"at least\": more than 4 glass-like (blended) entities \
+                          overlapped at some of its pixels, so visible_px and screen_box_exact are lower bounds \
+                          (reproducible either way). \
+                          ids: false skips the ID buffer. Without \
+                          eye/target (or a named camera from camera_set) \
+                          the camera frames the whole world from a three-quarter view. overlays draws debug aids \
+                          into the image (grid, axes, bounds, labels, claims, skeletons, lods). Large worlds return \
+                          the biggest on-screen subjects first (max_subjects; subjects: \"on_screen\" or \"visible\" \
+                          filters); the full list is saved at packet_path. If models in view are still building, it \
+                          waits for them (up to 10 s, other calls go on meanwhile) and then renders the world as it \
+                          is at that moment; packet 'models' and 'warnings' (text) say what wasn't drawn; \
+                          'problems' lists effects that can't apply as {error, message, ...} (a grading LUT \
+                          that failed to load). A grading LUT edited on disk is reloaded before each capture."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1884,7 +1950,10 @@ fn definitions() -> Vec<ToolDef> {
                         "lod",
                         integer("Draw every model at this LOD (0 = full detail; clamped to each model's last) instead of by on-screen size"),
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(crate::sight_tools::frame_extra_schema())
+                .collect(),
                 &[],
             ),
         },
@@ -1957,14 +2026,20 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "window_view".into(),
-            description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg), \
-                          or auto: true to frame the whole world again."
+            description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg); \
+                          camera: a named camera (camera_set) to look through, an agent's with of: \"<agent name>\" (a \
+                          follow camera keeps following) until a human takes the controls (key, click, scroll, \
+                          touch; a hosted game is told and keeps out), or the next window_view \
+                          (engine_info.window: following, released_by); or auto: true to frame the whole world \
+                          again. A human sees exactly what an agent's camera sees, and is never locked out."
                 .into(),
             input_schema: schema(
                 vec![
                     ("eye", vec3("Camera position")),
                     ("target", vec3("Point the camera looks at")),
                     ("fov_y_deg", number("Vertical field of view, 10..120 (default 50)")),
+                    ("camera", string("A named camera (camera_set) to look through")),
+                    ("of", string("With camera: the agent whose camera it is (default: yours)")),
                     ("ortho", described("{height_m}: orthographic, with eye and target")),
                     ("view_2d", described("{center [x, y], height_m, z}: the 2D camera (orthographic, down -Z, +Y up)")),
                     ("auto", Json::obj([("type", Json::from("boolean")), ("description", Json::from("true: auto-frame the world"))])),
@@ -2088,7 +2163,9 @@ fn definitions() -> Vec<ToolDef> {
                           more), or specific entries by id. A batch undoes as a unit; several entries undo newest first, all or nothing. \
                           Refused (error undo_conflict, naming who and which entry) when another agent changed the same \
                           entities later, unless force. The undo is itself journaled: undo its id to redo. Game \
-                          updates are replay-only and can't be undone."
+                          updates are replay-only and can't be undone. Camera changes (kind camera) are skipped by \
+                          the default and undone by id only, never another agent's (not even with force), and \
+                          within the camera limits (camera_limit)."
                 .into(),
             input_schema: schema(
                 vec![
@@ -2212,6 +2289,9 @@ fn definitions() -> Vec<ToolDef> {
             input_schema: schema(vec![], &[]),
         },
     ]
+    .into_iter()
+    .chain(crate::sight_tools::definitions())
+    .collect()
 }
 
 #[cfg(test)]
@@ -2337,9 +2417,18 @@ mod tests {
         for bad in [r#"{"grading":{"lut":"../x.png"}}"#, r#"{"grading":{"gamma":[0,1,1]}}"#, r#"{"ssao":{"radius":50}}"#, r#"{"ssao":1}"#] {
             assert!(parse_env(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert!(matches!(parse_view(&args(r#"{"auto":true}"#)), Ok(None)));
-        assert!(matches!(parse_view(&args(r#"{"eye":[0,1,2],"target":[0,0,0]}"#)), Ok(Some(_))));
+        assert!(matches!(parse_view(&args(r#"{"auto":true}"#)), Ok(ViewSpec::Auto)));
+        assert!(matches!(parse_view(&args(r#"{"eye":[0,1,2],"target":[0,0,0]}"#)), Ok(ViewSpec::Fixed(_))));
+        assert!(matches!(
+            parse_view(&args(r#"{"camera":"chase","of":"ann"}"#)),
+            Ok(ViewSpec::Named { name, of: Some(of) }) if name == "chase" && of == "ann"
+        ));
+        assert!(matches!(parse_view(&args(r#"{"camera":"chase"}"#)), Ok(ViewSpec::Named { of: None, .. })));
         assert!(parse_view(&args("{}")).is_err());
+        assert!(parse_view(&args(r#"{"of":"ann"}"#)).is_err(), "of needs camera");
+        assert!(parse_view(&args(r#"{"camera":"c","auto":true}"#)).is_err(), "one way at a time");
+        assert!(parse_view(&args(r#"{"camera":"c","ortho":{"height_m":5}}"#)).is_err(), "a named camera has its own projection");
+        assert!(parse_view(&args(r#"{"auto":true,"fov_y_deg":30}"#)).is_err());
     }
 
     #[test]

@@ -36,12 +36,28 @@ const uint FLAG_SNAP = 32u;
 const uint FLAG_LIT = 64u;
 const uint FLAG_CUTOUT = 128u;
 
+#ifdef IDS
+// Sight's ID buffer (ids_sprite.*, ids_shape.*): where the counts go, in the push constants'
+// padding. Must match `IdParams2d` in src/idbuffer.rs.
+#include "ids_core.glsl"
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer IdParams {
+    Ids ids;      // one id per 2D record (the plan's order)
+    Stats stats;
+    Seen seen;
+    uint width;
+    uint epoch;
+};
+#endif
+
 // Must match `SpritePush` in src/sprite.rs.
 layout(push_constant) uniform Push {
     Frame frame;
     Items items;
     uint pass;     // shadow cascade (sprite shadows)
     uint mode;     // bit 0: orthographic view
+#ifdef IDS
+    IdParams idp;  // (padding otherwise)
+#endif
     vec4 cam_pos;  // xyz: camera position (orthographic: centre of the near plane)
     vec4 cam_right;
     vec4 cam_up;

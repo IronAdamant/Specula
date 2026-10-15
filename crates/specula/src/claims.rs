@@ -201,6 +201,11 @@ impl Claims {
         self.claims.get(&id)
     }
 
+    /// Claims not yet expired at `now`, in id order (for sight's claims overlay).
+    pub fn live(&self, now: Instant) -> impl Iterator<Item = &Claim> + '_ {
+        self.claims.values().filter(move |c| c.expires > now)
+    }
+
     fn by_ids<'a>(&'a self, ids: &'a BTreeSet<u64>) -> impl Iterator<Item = &'a Claim> + 'a {
         ids.iter().filter_map(|id| self.claims.get(id))
     }
@@ -605,7 +610,8 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
             }
         }
         // Only the hosted game's own ticks record poses, and they are never checked.
-        Change::Env { .. } | Change::Pose { .. } => {}
+        // Cameras belong to their agent name, not to any claimed region.
+        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } => {}
     }
     points
 }

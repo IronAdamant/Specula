@@ -26,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 28] = [
+static SHADERS: [(&str, &[u8]); 42] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -55,6 +55,20 @@ static SHADERS: [(&str, &[u8]); 28] = [
     ("shape.frag", include_bytes!("../shaders/shape.frag.spv")),
     ("sprite_shadow.vert", include_bytes!("../shaders/sprite_shadow.vert.spv")),
     ("sprite_shadow.frag", include_bytes!("../shaders/sprite_shadow.frag.spv")),
+    ("ids.vert", include_bytes!("../shaders/ids.vert.spv")),
+    ("ids.frag", include_bytes!("../shaders/ids.frag.spv")),
+    ("ids_count.frag", include_bytes!("../shaders/ids_count.frag.spv")),
+    ("ids_resolve.frag", include_bytes!("../shaders/ids_resolve.frag.spv")),
+    ("ids_skin.vert", include_bytes!("../shaders/ids_skin.vert.spv")),
+    ("ids_tex.vert", include_bytes!("../shaders/ids_tex.vert.spv")),
+    ("ids_skin_tex.vert", include_bytes!("../shaders/ids_skin_tex.vert.spv")),
+    ("ids_tex.frag", include_bytes!("../shaders/ids_tex.frag.spv")),
+    ("ids_count_tex.frag", include_bytes!("../shaders/ids_count_tex.frag.spv")),
+    ("ids_sprite.vert", include_bytes!("../shaders/ids_sprite.vert.spv")),
+    ("ids_sprite.frag", include_bytes!("../shaders/ids_sprite.frag.spv")),
+    ("ids_shape.vert", include_bytes!("../shaders/ids_shape.vert.spv")),
+    ("ids_shape.frag", include_bytes!("../shaders/ids_shape.frag.spv")),
+    ("ids_sprite_count.frag", include_bytes!("../shaders/ids_sprite_count.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +101,20 @@ enum Shader {
     ShapeFrag = 25,
     SpriteShadowVert = 26,
     SpriteShadowFrag = 27,
+    IdsVert = 28,
+    IdsFrag = 29,
+    IdsCountFrag = 30,
+    IdsResolveFrag = 31,
+    IdsSkinVert = 32,
+    IdsTexVert = 33,
+    IdsSkinTexVert = 34,
+    IdsTexFrag = 35,
+    IdsCountTexFrag = 36,
+    IdsSpriteVert = 37,
+    IdsSpriteFrag = 38,
+    IdsShapeVert = 39,
+    IdsShapeFrag = 40,
+    IdsSpriteCountFrag = 41,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -155,6 +183,39 @@ fn scene_keys(format: VkFormat, include: impl Fn(bool, bool) -> bool) -> Vec<Pip
                     keys.push(PipelineKey::Mesh { format, blended, features: features | FEAT_SSAO, skinned, textured });
                 }
             }
+        }
+    }
+    keys
+}
+
+/// Sight's ID pipelines of the stream variants `include` accepts (`counting`: the device has
+/// fragment atomics, so blended draws are counted): opaque and raster for every scene variant,
+/// insert for the blended ones (blended draws are never textured), the resolve once.
+pub(crate) fn id_keys(include: impl Fn(bool, bool) -> bool, counting: bool) -> Vec<PipelineKey> {
+    use crate::idbuffer::IdPass;
+    let mut keys = Vec::new();
+    for (skinned, textured) in OPAQUE_VARIANTS.into_iter().filter(|(s, t)| include(*s, *t)) {
+        keys.push(PipelineKey::Ids { pass: IdPass::Opaque, skinned, textured });
+        if counting {
+            keys.push(PipelineKey::Ids { pass: IdPass::Raster, skinned, textured });
+        }
+    }
+    if include(false, false) {
+        // 2D items (no stream variants).
+        keys.push(PipelineKey::Ids2d { pass: IdPass::Opaque, shape: false });
+        if counting {
+            for pass in [IdPass::Insert, IdPass::Raster] {
+                keys.push(PipelineKey::Ids2d { pass, shape: false });
+                keys.push(PipelineKey::Ids2d { pass, shape: true });
+            }
+        }
+    }
+    if counting {
+        for (skinned, _) in BLENDED_VARIANTS.into_iter().filter(|(s, t)| include(*s, *t)) {
+            keys.push(PipelineKey::Ids { pass: IdPass::Insert, skinned, textured: false });
+        }
+        if include(false, false) {
+            keys.push(PipelineKey::Ids { pass: IdPass::Resolve, skinned: false, textured: false });
         }
     }
     keys
@@ -848,6 +909,15 @@ pub enum PipelineKey {
     Ssao,
     /// One direction of the depth-aware separable blur of the occlusion.
     SsaoBlur,
+    /// Sight's ID buffer (`idbuffer.rs`): opaque ids into R32_UINT + D32 (compare op dynamic), or
+    /// counted into a storage buffer (blended against the opaque depth; rasterized at all), for
+    /// skinned meshes (posed like the scene) and textured ones (alpha-mask cut, like the scene).
+    /// The skinned and textured ones are built with the scene's variants (`id_keys`).
+    Ids { pass: crate::idbuffer::IdPass, skinned: bool, textured: bool },
+    /// Sight's ID buffer for 2D items: sprites and tile chunks (`shape: false`; opaque = their
+    /// cutouts, depth written) or vector shapes (blended), with the scene's 2D cuts (see
+    /// `ids_sprite.frag`).
+    Ids2d { pass: crate::idbuffer::IdPass, shape: bool },
 }
 
 /// What vertex data a pipeline reads.
@@ -860,6 +930,9 @@ enum VertexInput {
     Mesh { skinned: bool, textured: bool },
     /// [`Vertex`]'s position only (plus the skin stream, and the UVs of the surface stream).
     Position { skinned: bool, uv: bool },
+    /// [`Vertex`]'s position and normal (the ID buffer), plus the skin stream and the UVs of the
+    /// surface stream when asked.
+    PositionNormal { skinned: bool, uv: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -871,6 +944,8 @@ enum Blend {
     /// ambient light behind a layer is attenuated exactly like the rest of the light behind it,
     /// and the layer's own light adds none.
     PremultipliedKeepAlpha,
+    /// No blending; only these colour components (`VK_COLOR_COMPONENT_*`) are written.
+    Mask(VkFlags),
 }
 
 /// How a pipeline is built.
@@ -1017,6 +1092,67 @@ impl PipelineKey {
             },
             PipelineKey::Ssao => fullscreen(Shader::SsaoFrag, crate::ssao::AO_FORMAT, Blend::Off),
             PipelineKey::SsaoBlur => fullscreen(Shader::SsaoBlurFrag, crate::ssao::AO_FORMAT, Blend::Off),
+            PipelineKey::Ids2d { pass, shape } => {
+                use crate::idbuffer::IdPass;
+                PipelineDesc {
+                    vert: if shape { Shader::IdsShapeVert } else { Shader::IdsSpriteVert },
+                    frag: Some(match (shape, pass) {
+                        (true, _) => Shader::IdsShapeFrag,
+                        // The opaque mode keeps the late depth test (it writes depth after its
+                        // cut); the counting ones test early (side effects only where shown).
+                        (false, IdPass::Opaque) => Shader::IdsSpriteFrag,
+                        (false, _) => Shader::IdsSpriteCountFrag,
+                    }),
+                    // ids_sprite.frag's / ids_shape.frag's MODE.
+                    spec: match pass {
+                        IdPass::Opaque => 0,
+                        IdPass::Insert => 1,
+                        _ => 2,
+                    },
+                    vertex: if shape { VertexInput::Mesh { skinned: false, textured: false } } else { VertexInput::None },
+                    color: Some(crate::idbuffer::ID_FORMAT),
+                    depth: Some(DEPTH_FORMAT),
+                    depth_test: pass != IdPass::Raster,
+                    depth_write: pass == IdPass::Opaque,
+                    compare: if pass == IdPass::Raster { Some(VK_COMPARE_OP_LESS) } else { None },
+                    blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
+                    depth_bias: false,
+                }
+            }
+            PipelineKey::Ids { pass, skinned, textured } => {
+                use crate::idbuffer::IdPass;
+                // `id_buffer` (opaque, insert, raster) renders with the id image and its depth;
+                // `id_resolve` (resolve) with the depth only.
+                let in_id_buffer = matches!(pass, IdPass::Opaque | IdPass::Insert | IdPass::Raster);
+                PipelineDesc {
+                    vert: match (pass, skinned, textured) {
+                        (IdPass::Resolve, ..) => Shader::FullscreenVert,
+                        (_, false, false) => Shader::IdsVert,
+                        (_, true, false) => Shader::IdsSkinVert,
+                        (_, false, true) => Shader::IdsTexVert,
+                        (_, true, true) => Shader::IdsSkinTexVert,
+                    },
+                    frag: Some(match (pass, textured) {
+                        (IdPass::Opaque, false) => Shader::IdsFrag,
+                        (IdPass::Opaque, true) => Shader::IdsTexFrag,
+                        (IdPass::Resolve, _) => Shader::IdsResolveFrag,
+                        (_, false) => Shader::IdsCountFrag,
+                        (_, true) => Shader::IdsCountTexFrag,
+                    }),
+                    // ids_count.frag's MODE: 0 insert, 1 raster.
+                    spec: (pass == IdPass::Raster) as u32,
+                    vertex: if pass == IdPass::Resolve { VertexInput::None } else { VertexInput::PositionNormal { skinned, uv: textured } },
+                    color: in_id_buffer.then_some(crate::idbuffer::ID_FORMAT),
+                    depth: Some(DEPTH_FORMAT),
+                    depth_test: matches!(pass, IdPass::Opaque | IdPass::Insert),
+                    // As in the scene: blended surfaces never hide what is behind them.
+                    depth_write: pass == IdPass::Opaque,
+                    compare: if matches!(pass, IdPass::Raster | IdPass::Resolve) { Some(VK_COMPARE_OP_LESS) } else { None },
+                    // Only opaque draws write ids; the others write the storage buffers.
+                    blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
+                    depth_bias: false,
+                }
+            }
         }
     }
 }
@@ -1055,6 +1191,9 @@ pub struct Pipelines {
     cache_load: PipelineCacheLoad,
     /// Stream variants built (see [`Variants`]).
     pub variants: Variants,
+    /// The device counts blended draws in the ID passes (fragment atomics): their counting
+    /// pipelines are built with the variants.
+    ids_counting: bool,
     /// Variants being built on a worker thread, and what that has built so far.
     background: Background,
 }
@@ -1221,6 +1360,7 @@ impl Pipelines {
             create_ms: 0.0,
             cache_load: PipelineCacheLoad::NotProvided,
             variants: Variants::default(),
+            ids_counting: false,
             background: Background::default(),
         };
         let result = (|| {
@@ -1325,6 +1465,10 @@ impl Pipelines {
         self.get(dev, PipelineKey::BloomUp)?;
         self.get(dev, PipelineKey::Ssao)?;
         self.get(dev, PipelineKey::SsaoBlur)?;
+        self.ids_counting = dev.fragment_atomics;
+        for key in id_keys(|s, t| built.has(s, t), self.ids_counting) {
+            self.get(dev, key)?;
+        }
         Ok(())
     }
 
@@ -1387,6 +1531,12 @@ impl Pipelines {
         })
     }
 
+    /// The pipeline for `key` if it exists (never creates one: for variants built in the
+    /// background, which frames must not compile).
+    pub fn built(&self, key: PipelineKey) -> Option<VkPipeline> {
+        self.by_key.iter().find(|(k, _)| *k == key).map(|&(_, p)| p)
+    }
+
     /// The pipeline for `key`. Normally prebuilt; one created here is counted against the warm mark.
     pub fn get(&mut self, dev: &Device, key: PipelineKey) -> Result<VkPipeline, GpuError> {
         if let Some(&(_, p)) = self.by_key.iter().find(|(k, _)| *k == key) {
@@ -1427,6 +1577,8 @@ impl Pipelines {
         for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| new(*s, *m)) {
             keys.push(PipelineKey::Shadow { skinned, masked });
         }
+        // Sight's ID passes follow the scene's variants (captures draw what the scene draws).
+        keys.extend(id_keys(new, self.ids_counting));
         keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
         keys
     }
@@ -1529,6 +1681,7 @@ impl Pipelines {
                     let (skinned, textured) = match key {
                         PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured),
                         PipelineKey::Shadow { skinned, masked } => (skinned, masked),
+                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured),
                         _ => (new.skinned, new.textured),
                     };
                     lost.skinned |= skinned && new.skinned;
@@ -1653,13 +1806,16 @@ impl Pipelines {
             VertexInput::None => (false, false, None),
             VertexInput::Mesh { skinned, textured } => (skinned, textured, Some(true)),
             VertexInput::Position { skinned, .. } => (skinned, false, Some(false)),
+            VertexInput::PositionNormal { skinned, .. } => (skinned, false, Some(false)),
         };
-        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. });
+        let uv_only = matches!(d.vertex, VertexInput::Position { uv: true, .. } | VertexInput::PositionNormal { uv: true, .. });
         if let Some(full) = full {
             bindings.push(binding(0, size_of::<Vertex>()));
             attributes.push(attribute(0, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, position)));
-            if full {
+            if full || matches!(d.vertex, VertexInput::PositionNormal { .. }) {
                 attributes.push(attribute(1, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, normal)));
+            }
+            if full {
                 attributes.push(attribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, offset_of!(Vertex, color)));
             }
         }
@@ -1766,6 +1922,7 @@ impl Pipelines {
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: VK_COLOR_COMPONENT_RGBA,
             },
+            Blend::Mask(mask) => VkPipelineColorBlendAttachmentState { blend_enable: VK_FALSE, color_write_mask: mask, ..Default::default() },
         };
         let blend = VkPipelineColorBlendStateCreateInfo {
             s_type: ST_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1928,6 +2085,8 @@ pub struct FrameContext<'a> {
     pub upload: &'a FrameUpload,
     /// Uploaded textures (the grading LUT).
     pub textures: &'a Textures,
+    /// The ID buffer passes' pipelines, resources and ids (captures that ask for them).
+    pub ids: Option<crate::idbuffer::IdFrame>,
 }
 
 /// The scene features a frame prepared in `scratch` uses, given whether it renders a shadow map.
@@ -1964,6 +2123,12 @@ pub enum FramePass {
     /// Sprites, tile chunks and vector shapes: inline in the scene pass (recorded between the sky
     /// and the blended meshes, see `sprite.rs`).
     Sprites,
+    /// Sight's entity ids (offscreen captures that ask for them; see `idbuffer.rs`).
+    IdBuffer,
+    /// The ids copied to the host-readable buffer.
+    IdCopy,
+    /// Sight's blended counts resolved from the per-pixel id sets.
+    IdResolve,
 }
 
 impl FramePass {
@@ -1977,6 +2142,7 @@ impl FramePass {
             FramePass::Tonemap => PASS_TONEMAP,
             FramePass::Fxaa => PASS_FXAA,
             FramePass::Overlay => PASS_OVERLAY,
+            FramePass::IdBuffer | FramePass::IdCopy | FramePass::IdResolve => crate::PASS_ID_BUFFER,
             FramePass::Sprites => PASS_SPRITES,
         }
     }
@@ -2280,6 +2446,11 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
             FramePass::Ssao | FramePass::SsaoBlur(_) => crate::ssao::record_pass(ctx, cmd, g, p, res),
             // Inline: recorded inside the scene's rendering / the pass before it.
             FramePass::Sprites | FramePass::Overlay => {}
+            FramePass::IdBuffer | FramePass::IdCopy | FramePass::IdResolve => {
+                if let Some(ids) = &ctx.ids {
+                    crate::idbuffer::record(ctx, cmd, g, p, tag, ids);
+                }
+            }
             _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.textures, ctx.upload.frame_address(), &mut |cmd| {
                 hook(cmd, Hook::End);
             }),

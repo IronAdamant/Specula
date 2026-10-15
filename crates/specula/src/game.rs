@@ -121,6 +121,11 @@ pub struct Frame<'a> {
     pub dt_s: f32,
     /// The window camera; `None` = auto-frame the world. Agents' `window_view` writes the same slot.
     pub camera: &'a mut Option<Camera>,
+    /// The window looks through an agent's camera (`window_view {camera}`): the engine keeps that
+    /// view (writes to `camera` are ignored meanwhile), so neither adopt nor fight it. A human's
+    /// input ends it; the next frame has this false and `camera` is where the agent's view was:
+    /// carry on from there.
+    pub agent_view: bool,
     /// Set to replace the window title (the HUD until the engine has text).
     pub title: &'a mut Option<String>,
 }
