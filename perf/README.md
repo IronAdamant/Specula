@@ -27,6 +27,20 @@ start-up with the line and column. `perf_frame` (and `perf_capture`'s summary) r
 `{error, metric, value, budget, unit, adapter}`, for example
 `{"error":"gpu_pass_over_budget","metric":"gpu_pass.scene","value":9.1,"budget":8,"unit":"ms","adapter":"integrated"}`.
 
+**Shape budgets (world limits).** `[budgets]` also sets how many vertices the distinct `shape2d` shapes
+of a world may need (their parse-time upper bounds; identical shapes count once), in two pools:
+`shape2d_vertices` (default 2,000,000) for persistent entities and `transient_shape2d_vertices` (default
+250,000) for transient ones, which is what a hosted game spawns for effects and presentation. A spawn,
+set, undo or world load that would pass its pool's budget is refused with
+`{"error":"limit","field":"shape2d","budget":"transient_shape2d_vertices","limit":…,"value":…,"shape_vertices":…}`
+(a load is refused whole). Why two pools:
+- effects can never crowd out authored content, and authored content never starves the game's effects;
+- a refusal tells the game designer exactly what an effect costs, against a budget they set;
+- the small transient default keeps effects cheap on the reference iGPU.
+
+They are world limits, not frame budgets, so they may only appear in `[budgets]`, never in
+`[adapter.*]`: a world must load the same on every machine.
+
 # Profiling tools
 
 - **CPU zones** (`specula_core::profile`): `let _z = profile::zone("sim");` around a phase. The engine

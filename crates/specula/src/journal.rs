@@ -1231,7 +1231,7 @@ mod tests {
         w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::new("walk"))), ..Default::default() }, "ann").unwrap();
         w.set_clock_s(6.5);
         let files = crate::persist::render(&w);
-        let read = |f: &str| files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError { code: "not_found", message: f.into(), file: None, entity: None, field: None });
+        let read = |f: &str| files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError::new("not_found", f));
         let (mut loaded, _) = crate::persist::load_with(read).unwrap();
         loaded.adopt_clock(0.5);
         assert_eq!(loaded.state_hash(), w.state_hash());

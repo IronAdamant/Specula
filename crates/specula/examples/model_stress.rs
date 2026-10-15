@@ -133,7 +133,7 @@ impl Game for Stress {
         }
         if frame.camera.is_none() {
             let side = (self.count as f32).sqrt().ceil() * 3.0;
-            *frame.camera = Some(Camera { eye: Vec3::new(0.0, side * 0.55, side * 0.75), target: Vec3::ZERO, fov_y_deg: 50.0 });
+            *frame.camera = Some(Camera::new(Vec3::new(0.0, side * 0.55, side * 0.75), Vec3::ZERO, 50.0));
         }
     }
 

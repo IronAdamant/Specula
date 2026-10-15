@@ -7,8 +7,9 @@ use crate::{GpuError, GpuTiming, PassTiming};
 use std::ffi::c_void;
 use std::ptr;
 
-/// Passes a frame can time.
-pub const MAX_PASSES: usize = 8;
+/// Timed segments a frame can record (a pass interrupted by another, like the scene by its 2D
+/// items, takes one per stretch; their times add up under the pass's name).
+pub const MAX_PASSES: usize = 16;
 const QUERIES: u32 = 2 * MAX_PASSES as u32;
 
 /// A query pool for one frame slot: a begin and end timestamp per pass.
@@ -119,8 +120,9 @@ impl PassTimer {
 }
 
 /// Turn (value, availability) pairs — begin and end per pass — into milliseconds in `out`,
-/// reusing its pass list. False (and `out` untouched) if any result is unavailable. Timestamps
-/// wrap at `valid_bits`.
+/// reusing its pass list. Segments with the same name add up into one entry (in first-seen
+/// order), so names stay unique. False (and `out` untouched) if any result is unavailable.
+/// Timestamps wrap at `valid_bits`.
 pub fn fill_timing(
     out: &mut Option<GpuTiming>,
     frame: u64,
@@ -138,7 +140,13 @@ pub fn fill_timing(
     t.frame = frame;
     t.total_ms = ms(raw[0][0], raw[2 * passes.len() - 1][0]);
     t.passes.clear();
-    t.passes.extend(passes.iter().enumerate().map(|(i, &name)| PassTiming { name, gpu_ms: ms(raw[2 * i][0], raw[2 * i + 1][0]) }));
+    for (i, &name) in passes.iter().enumerate() {
+        let gpu_ms = ms(raw[2 * i][0], raw[2 * i + 1][0]);
+        match t.passes.iter_mut().find(|p| p.name == name) {
+            Some(p) => p.gpu_ms += gpu_ms,
+            None => t.passes.push(PassTiming { name, gpu_ms }),
+        }
+    }
     true
 }
 
@@ -178,6 +186,15 @@ mod tests {
         // Garbage above the valid bits is ignored.
         let high = [[(0xffu64 << 40) | 100, 1], [(0x12u64 << 40) | 300, 1]];
         assert!((timing_from_raw(1, &["scene"], &high, 40, 1.0).unwrap().total_ms - 200e-6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn segments_of_one_pass_add_up() {
+        let raw = [[0, 1], [10, 1], [10, 1], [14, 1], [14, 1], [20, 1]];
+        let t = timing_from_raw(1, &["scene", "sprites", "scene"], &raw, 64, 1e6).unwrap();
+        let got: Vec<(&str, f64)> = t.passes.iter().map(|p| (p.name, p.gpu_ms)).collect();
+        assert_eq!(got, [("scene", 16.0), ("sprites", 4.0)]);
+        assert_eq!(t.total_ms, 20.0);
     }
 
     #[test]

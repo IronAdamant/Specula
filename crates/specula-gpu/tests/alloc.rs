@@ -6,9 +6,10 @@
 mod common;
 
 use common::*;
+use specula_gpu::vector::{fill, Path, ShapeMesh};
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, FrameDesc, Material, MaterialTextures, MeshStreams, OverlayQuad, PointLight, SkinVertex,
-    Surface, TextureFormat, TextureSampler,
+    AdapterPreference, Billboard, Draw2d, DrawItem, Environment, FrameDesc, Material, MaterialTextures, MeshStreams, OverlayQuad,
+    PointLight, ShapeDraw, SkinVertex, Sprite, SpriteBlend, Surface, TextureFormat, TextureSampler, TileCell, TileChunk, TileGrid,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -95,6 +96,28 @@ fn warm_frames_do_not_allocate() {
         OverlayQuad::solid([4.0, 4.0, 30.0, 10.0], [0.1, 0.1, 0.1, 0.8]),
         OverlayQuad::textured([40.0, 4.0, 8.0, 8.0], [0.0, 0.0, 1.0, 1.0], texture, Default::default(), [1.0; 4]),
     ];
+    // 2D: a lit, shadow-casting cutout billboard, a blended sprite, a tile chunk and a shape.
+    let mut grid = TileGrid::new(4, 4);
+    grid.set(1, 1, TileCell::animated(1, 2, 10));
+    let cells = gpu.upload_texture(4, 4, TextureFormat::Rgba8Unorm, &grid.encode()).unwrap();
+    let mut shape = ShapeMesh::default();
+    fill(&Path::circle([0.0, 0.0], 0.5).flatten(0.01).unwrap(), [200, 50, 50, 255], true, &mut shape).unwrap();
+    let shape_mesh = gpu.upload_mesh(&shape.vertices, &shape.indices).unwrap();
+    let card = Sprite {
+        position: [0.0, 1.5, 1.0],
+        texture: Some(texture),
+        billboard: Billboard::Cylindrical,
+        blend: SpriteBlend::Cutout { threshold: 0.5 },
+        lit: true,
+        cast_shadows: true,
+        ..Default::default()
+    };
+    let draws_2d = [
+        Draw2d::Sprite(card),
+        Draw2d::Sprite(Sprite { position: [1.0, 0.5, 1.0], billboard: Billboard::Spherical, color: [1.0, 1.0, 1.0, 0.5], ..Default::default() }),
+        Draw2d::Tiles(TileChunk { origin: [-2.0, 0.01, -2.0], axes: [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], ..TileChunk::new(texture, [1, 1], cells, [0, 0, 4, 4]) }),
+        Draw2d::Shape(ShapeDraw { mesh: shape_mesh, model: translation([0.0, 2.0, 0.0]), color: [1.0; 4], layer: 1 }),
+    ];
     let mut environment = Environment { tonemap: true, fxaa: true, ..Default::default() };
     environment.shadow.enabled = true;
     environment.shadow.cascades = 2;
@@ -118,6 +141,7 @@ fn warm_frames_do_not_allocate() {
         lights: &lights,
         time_s: 1.0,
         overlay: &overlay,
+        draws_2d: &draws_2d,
         bones: &bones,
     };
     for _ in 0..5 {
@@ -138,6 +162,8 @@ fn warm_frames_do_not_allocate() {
     let graph = gpu.last_graph().expect("a frame was rendered");
     assert_eq!(stats.graph.barriers as usize, graph.barrier_count());
     assert!(graph.passes.iter().any(|p| p.name == "overlay" && p.inline), "{graph}");
+    assert!(graph.passes.iter().any(|p| p.name == "sprites" && p.inline), "{graph}");
+    assert_eq!((stats.draws.sprites, stats.draws.tile_chunks, stats.draws.shapes, stats.draws.shadow_sprites), (2, 1, 1, 1));
     gpu.destroy_target(target);
     gpu.destroy_texture(texture);
     gpu.destroy_texture(material);
