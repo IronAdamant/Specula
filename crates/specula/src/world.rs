@@ -2002,8 +2002,12 @@ pub struct World {
     model_drops: u64,
     /// Builds model entities' models (the engine's model library).
     models: SourceSlot,
-    /// The distinct vector shapes of the entities in the world, against their vertex budget.
+    /// The distinct vector shapes of the persistent entities, against their vertex budget.
     shapes: crate::two_d::ShapeBudget,
+    /// The same for transient entities (game presentation), against a budget of their own.
+    transient_shapes: crate::two_d::ShapeBudget,
+    /// The two budgets (perf.toml `[budgets]`).
+    shape_limits: crate::two_d::ShapeLimits,
 }
 
 /// The shape2d spec of an entity's 2D component, if it has one.
@@ -2398,7 +2402,6 @@ impl World {
     /// Inserts a checked entity under `id` (`None`: the next free id of its kind). Returns its id.
     fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
         check_spawn(&spec)?;
-        self.check_shapes(shape_spec(spec.two_d.as_ref()), None)?;
         let props = canonical_props(spec.props)?;
         let parent = match &spec.parent {
             Some(key) => Some(self.resolve(key).map_err(|e| e.with("field", "parent"))?),
@@ -2413,6 +2416,7 @@ impl World {
         // Below a transient parent everything is transient (it is never saved, so neither could
         // its children be).
         let transient = spec.transient || parent.is_some_and(|p| self.entities[&p].transient);
+        self.check_shapes(shape_spec(spec.two_d.as_ref()), None, transient)?;
         let resolved = match &spec.model {
             Some(m) => self.resolve_model(m)?,
             None => None,
@@ -2597,7 +2601,7 @@ impl World {
                     _ => return Err(wrong("only tilemap entities have tiles")),
                 }
             }
-            self.check_shapes(shape_spec(Some(&next)), shape_spec(e.two_d.as_ref()))?;
+            self.check_shapes(shape_spec(Some(&next)), shape_spec(e.two_d.as_ref()), e.transient)?;
             new_two_d = Some(next);
         }
         // A model's new spec, resolved before anything changes (a broken recipe changes nothing).
@@ -2743,11 +2747,12 @@ impl World {
             e.layer = l;
         }
         if let Some(t) = new_two_d {
+            let pool = if e.transient { &mut self.transient_shapes } else { &mut self.shapes };
             if let Some(TwoD::Shape2d(s)) = &e.two_d {
-                self.shapes.release(s);
+                pool.release(s);
             }
             if let TwoD::Shape2d(s) = &t {
-                self.shapes.charge(s);
+                pool.charge(s);
             }
             e.two_d = Some(t);
         }
@@ -2903,7 +2908,7 @@ impl World {
             self.transient_count += 1;
         }
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
-            self.shapes.charge(s);
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
         }
         self.entities.insert(e.id, e);
     }
@@ -2917,34 +2922,62 @@ impl World {
             self.transient_count -= 1;
         }
         if let Some(s) = shape_spec(e.two_d.as_ref()) {
-            self.shapes.release(s);
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.release(s);
         }
         Some(e)
     }
 
-    /// The distinct vector shapes in the world and their vertex bounds.
+    /// The distinct vector shapes of the persistent entities and their vertex bounds.
     pub fn shape_budget(&self) -> &crate::two_d::ShapeBudget {
         &self.shapes
     }
 
-    /// Refuses an entity's shape going from `old` to `new` when the world's distinct shapes
-    /// would pass [`crate::two_d::MAX_WORLD_SHAPE_VERTICES`] (identical shapes count once).
-    fn check_shapes(&self, new: Option<&crate::two_d::Shape2dSpec>, old: Option<&crate::two_d::Shape2dSpec>) -> Result<(), WorldError> {
-        let max = crate::two_d::MAX_WORLD_SHAPE_VERTICES;
+    /// The distinct vector shapes of the transient entities (game presentation).
+    pub fn transient_shape_budget(&self) -> &crate::two_d::ShapeBudget {
+        &self.transient_shapes
+    }
+
+    pub fn shape_limits(&self) -> crate::two_d::ShapeLimits {
+        self.shape_limits
+    }
+
+    /// Sets the two shape budgets (perf.toml). Shapes already in the world stay, whatever the new
+    /// limits; only later changes are checked against them.
+    pub fn set_shape_limits(&mut self, limits: crate::two_d::ShapeLimits) {
+        self.shape_limits = limits;
+    }
+
+    /// Refuses an entity's shape going from `old` to `new` when the distinct shapes of its
+    /// pool (persistent or `transient` entities) would pass that pool's budget (identical shapes
+    /// count once). The budgets are separate so game effects can never crowd out authored
+    /// content, and a refusal says exactly what an effect costs.
+    fn check_shapes(
+        &self,
+        new: Option<&crate::two_d::Shape2dSpec>,
+        old: Option<&crate::two_d::Shape2dSpec>,
+        transient: bool,
+    ) -> Result<(), WorldError> {
         let Some(n) = new else { return Ok(()) };
-        let total = self.shapes.after(new, old);
-        if total <= max || total <= self.shapes.vertices() {
+        let (pool, max, budget) = if transient {
+            (&self.transient_shapes, self.shape_limits.transient, "transient_shape2d_vertices")
+        } else {
+            (&self.shapes, self.shape_limits.persistent, "shape2d_vertices")
+        };
+        let total = pool.after(new, old);
+        if total <= max || total <= pool.vertices() {
             return Ok(());
         }
+        let whose = if transient { "transient (game-spawned) shape2d shapes" } else { "world's distinct shape2d shapes" };
         Err(WorldError::new(
             "limit",
             format!(
-                "the world's distinct shape2d shapes would need up to {total} vertices; at most {max} (this one: up to {}; \
+                "the {whose} would need up to {total} vertices; at most {max} ({budget} in perf.toml; this one: up to {}; \
                  identical shapes count once: reuse one, delete unused ones, or use fewer items or a larger tolerance)",
                 n.vertices
             ),
         )
         .with("field", "shape2d")
+        .with("budget", budget)
         .with("limit", max)
         .with("value", total)
         .with("shape_vertices", n.vertices))
@@ -3307,7 +3340,7 @@ impl World {
             self.transient_count -= 1;
         }
         if let Some(s) = shape_spec(e.two_d.as_ref()) {
-            self.shapes.release(s);
+            if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.release(s);
         }
         Some(e)
     }
@@ -3340,8 +3373,9 @@ impl World {
             Some(&other) if other != e.id => return Err(self.name_taken(&e.name, other)),
             _ => {}
         }
+        // Entities keep their kind (ids are per kind), so the old state's shape is in the same pool.
         let old = self.entities.get(&e.id).and_then(|o| shape_spec(o.two_d.as_ref()));
-        self.check_shapes(shape_spec(e.two_d.as_ref()), old)
+        self.check_shapes(shape_spec(e.two_d.as_ref()), old, e.transient)
     }
 
     /// Ids of `id` and everything below it, children before their parents.

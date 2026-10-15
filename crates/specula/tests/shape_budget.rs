@@ -267,3 +267,73 @@ fn many_small_distinct_shapes_stay_quick() {
     assert_eq!(w.shape_budget().distinct(), 20_000);
     assert!(laps[3] < laps[0] * 3.0 + 0.05, "no slowdown as the world fills: {laps:?}");
 }
+
+fn spawn_transient(world: &mut World, name: &str, t: TwoD) -> Result<u64, WorldError> {
+    let mut spec = SpawnSpec::new(Shape::Shape2d);
+    spec.name = Some(name.into());
+    spec.two_d = Some(t);
+    spec.transient = true;
+    world.spawn(spec, "game").map(|e| e.id)
+}
+
+#[test]
+fn transient_and_persistent_shapes_have_separate_budgets() {
+    let (per, fit) = heavy();
+    let limits = two_d::ShapeLimits::default();
+    assert_eq!((limits.persistent, limits.transient), (MAX_WORLD_SHAPE_VERTICES, two_d::MAX_TRANSIENT_SHAPE_VERTICES));
+    // A transient flood (a game's effects) fills its own pool, and can't block authored content.
+    let mut w = World::default();
+    let mut k = 0;
+    let refused = loop {
+        match spawn_transient(&mut w, &format!("fx{k}"), deferred(&circles(1000 + k))) {
+            Ok(_) => k += 1,
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(k as usize, limits.transient / per, "transient shapes that fit");
+    assert_eq!(refused.code, "limit");
+    assert_eq!(refused.detail("budget").and_then(Json::as_str), Some("transient_shape2d_vertices"), "{refused}");
+    assert_eq!(refused.detail("limit").and_then(Json::as_u64), Some(limits.transient as u64));
+    assert!(refused.message.contains("transient"), "{}", refused.message);
+    for j in 1..=fit {
+        spawn(&mut w, &format!("art{j}"), deferred(&circles(j))).unwrap();
+    }
+    assert_eq!(w.shape_budget().vertices(), fit as usize * per);
+    assert_eq!(w.transient_shape_budget().vertices(), k as usize * per);
+    // A persistent flood can't block the game's effects either.
+    let mut w = World::default();
+    let mut j = 0;
+    let refused = loop {
+        match spawn(&mut w, &format!("art{j}"), deferred(&circles(j))) {
+            Ok(_) => j += 1,
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(refused.detail("budget").and_then(Json::as_str), Some("shape2d_vertices"), "{refused}");
+    spawn_transient(&mut w, "fx", deferred(&circles(5000))).unwrap();
+    // Deleting a transient entity gives its own pool back, not the other one.
+    let before = w.shape_budget().vertices();
+    w.delete(&EntityKey::Path("/fx".into()), None).unwrap();
+    assert_eq!((w.shape_budget().vertices(), w.transient_shape_budget().vertices()), (before, 0));
+}
+
+#[test]
+fn configured_limits_apply_to_spawns_and_loads() {
+    let (per, _) = heavy();
+    let mut w = World::default();
+    w.set_shape_limits(two_d::ShapeLimits { persistent: 3 * per, transient: 1 });
+    for k in 0..3 {
+        spawn(&mut w, &format!("c{k}"), deferred(&circles(k))).unwrap();
+    }
+    let e = spawn(&mut w, "c3", deferred(&circles(3))).unwrap_err();
+    assert_eq!((e.detail("limit").and_then(Json::as_u64), e.detail("value").and_then(Json::as_u64)), (Some(3 * per as u64), Some(4 * per as u64)));
+    assert!(spawn_transient(&mut w, "fx", deferred(&circles(9))).is_err(), "a 1-vertex transient budget refuses any shape");
+    // A world saved under a bigger budget is refused whole by a smaller one, and loads under its own.
+    let files: BTreeMap<String, String> = persist::render(&w).into_iter().collect();
+    let read = |f: &str| files.get(f).cloned().ok_or_else(|| persist::PersistError::new("not_found", f));
+    let err = persist::load_with_limits(two_d::ShapeLimits { persistent: 2 * per, transient: 1 }, read).unwrap_err();
+    assert_eq!(err.code, "limit");
+    let (back, _) = persist::load_with_limits(two_d::ShapeLimits { persistent: 3 * per, transient: 1 }, read).unwrap();
+    assert_eq!(back.shape_limits().persistent, 3 * per, "a loaded world keeps the limits it was checked against");
+    assert_eq!(back.shape_budget().vertices(), 3 * per);
+}

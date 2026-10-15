@@ -403,7 +403,11 @@ impl Budgets {
                     }
                 }
                 other => {
-                    return Err(format!("unknown budget '{other}' in [{section}] (known: {})", BUDGET_KEYS.join(", ")));
+                    return Err(format!(
+                        "unknown budget '{other}' in [{section}] (known: {}, and in [budgets] only: {})",
+                        BUDGET_KEYS.join(", "),
+                        SHAPE_BUDGET_KEYS.join(", ")
+                    ));
                 }
             }
         }
@@ -449,6 +453,18 @@ const BUDGET_KEYS: [&str; 14] = [
     "zones",
 ];
 
+/// World limits in `[budgets]` (not frame budgets, and never per adapter): the vertex budgets of
+/// persistent and of transient shape2d shapes (see [`crate::two_d::ShapeLimits`]).
+pub const SHAPE_BUDGET_KEYS: [&str; 2] = ["shape2d_vertices", "transient_shape2d_vertices"];
+
+/// A shape budget: a whole number of vertices, 1..=100,000,000.
+fn shape_budget(key: &str, v: &Json) -> Result<usize, String> {
+    v.as_u64()
+        .filter(|n| (1..=100_000_000).contains(n))
+        .map(|n| n as usize)
+        .ok_or_else(|| format!("[budgets] {key} must be a whole number of vertices from 1 to 100000000"))
+}
+
 /// Adapter kinds a `[adapter.<kind>]` section may name.
 const ADAPTER_KINDS: [&str; 5] = ["integrated", "discrete", "virtual", "cpu", "other"];
 
@@ -461,13 +477,23 @@ pub struct PerfConfig {
     pub profiler: bool,
     /// `[profiler] history_frames`: frames of zone history (default 120).
     pub history_frames: usize,
+    /// `[budgets] shape2d_vertices` and `transient_shape2d_vertices`: world limits, the same on
+    /// every adapter (see [`SHAPE_BUDGET_KEYS`]).
+    pub shapes: crate::two_d::ShapeLimits,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
 
 impl Default for PerfConfig {
     fn default() -> PerfConfig {
-        PerfConfig { source: None, profiler: true, history_frames: HISTORY, base: Json::obj::<&str>([]), adapters: Vec::new() }
+        PerfConfig {
+            source: None,
+            profiler: true,
+            history_frames: HISTORY,
+            shapes: crate::two_d::ShapeLimits::default(),
+            base: Json::obj::<&str>([]),
+            adapters: Vec::new(),
+        }
     }
 }
 
@@ -493,11 +519,28 @@ impl PerfConfig {
                         }
                     }
                 }
-                "budgets" => cfg.base = v.clone(),
+                "budgets" => {
+                    let table = v.as_object().ok_or("[budgets] must be a table")?;
+                    let mut frame = Vec::new();
+                    for (k, x) in table {
+                        match k.as_str() {
+                            "shape2d_vertices" => cfg.shapes.persistent = shape_budget(k, x)?,
+                            "transient_shape2d_vertices" => cfg.shapes.transient = shape_budget(k, x)?,
+                            _ => frame.push((k.clone(), x.clone())),
+                        }
+                    }
+                    cfg.base = Json::Obj(frame);
+                }
                 "adapter" => {
                     for (kind, table) in v.as_object().ok_or("[adapter] must hold tables like [adapter.integrated]")? {
                         if !ADAPTER_KINDS.contains(&kind.as_str()) {
                             return Err(format!("unknown adapter kind '{kind}' (known: {})", ADAPTER_KINDS.join(", ")));
+                        }
+                        if let Some(k) = SHAPE_BUDGET_KEYS.iter().find(|k| table.get(k).is_some()) {
+                            return Err(format!(
+                                "[adapter.{kind}] {k}: shape budgets are world limits, set once in [budgets] (a world must \
+                                 load the same on every machine)"
+                            ));
                         }
                         cfg.adapters.push((kind.clone(), table.clone()));
                     }
@@ -510,6 +553,11 @@ impl PerfConfig {
             Budgets::from_json(&cfg.merged(kind), &format!("adapter.{kind}"))?;
         }
         Ok(cfg)
+    }
+
+    /// The shape budgets worlds are checked against.
+    pub fn shape_limits(&self) -> crate::two_d::ShapeLimits {
+        self.shapes
     }
 
     /// `--perf FILE` (must exist) or `./perf.toml` (optional).
@@ -1474,6 +1522,19 @@ mod tests {
         assert!((i.frame_ms - 16.7).abs() < 1e-9, "{i:?}");
         assert!(!i.gpu_passes.is_empty() && !i.zones.is_empty());
         assert!(cfg.has_adapter_section("integrated"));
+        assert_eq!(cfg.shape_limits(), crate::two_d::ShapeLimits { persistent: 2_000_000, transient: 250_000 });
+    }
+
+    #[test]
+    fn shape_budgets_are_world_limits_set_once() {
+        let cfg = PerfConfig::parse("[budgets]\nframe_ms = 16\nshape2d_vertices = 500_000\ntransient_shape2d_vertices = 1000").unwrap();
+        assert_eq!(cfg.shape_limits(), crate::two_d::ShapeLimits { persistent: 500_000, transient: 1000 });
+        assert!((cfg.budgets("integrated").frame_ms - 16.0).abs() < 1e-9, "frame budgets unaffected");
+        assert_eq!(PerfConfig::parse("").unwrap().shape_limits(), crate::two_d::ShapeLimits::default());
+        let err = |text: &str| PerfConfig::parse(text).unwrap_err();
+        assert!(err("[budgets]\nshape2d_vertices = 0").contains("shape2d_vertices"));
+        assert!(err("[budgets]\ntransient_shape2d_vertices = 1.5").contains("transient_shape2d_vertices"));
+        assert!(err("[adapter.integrated]\nshape2d_vertices = 10").contains("world limits"));
     }
 
     #[test]

@@ -216,6 +216,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         kind,
         if perf_cfg.has_adapter_section(kind) { ", with its own section" } else { "" }
     );
+    engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
@@ -224,7 +225,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // Owned for as long as this engine works in it: a second engine is refused, not interleaved.
         engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
-            let (world, saved) = persist::load(&dir).map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            let (world, saved) = persist::load_limited(&dir, engine.world.shape_limits())
+                .map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
             for problem in engine.replace_world(world, &name) {
                 eprintln!("specula: {problem}");
             }
@@ -1633,7 +1635,7 @@ impl Engine {
             Ok(lock) => lock,
             Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
         };
-        match persist::load(&dir) {
+        match persist::load_limited(&dir, self.world.shape_limits()) {
             Ok((world, saved)) => {
                 if lock.is_some() {
                     self.world_lock = lock;

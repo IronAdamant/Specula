@@ -28,6 +28,7 @@
 //! the live world (on the engine thread; unchanged subtrees cost nothing), and [`execute`] renders
 //! and writes it.
 
+use crate::two_d::ShapeLimits;
 use crate::tools::{check_keys, parse_env, parse_spawn_fields, ENV_KEYS};
 use crate::world::{color_json_exact, material_name, vec3_json, Entity, Layer, Look, World, WorldError};
 use specula_core::hash::hash_str;
@@ -767,9 +768,16 @@ pub fn save(world: &World, dir: &Path, previous: Option<&Saved>) -> Result<(Save
     execute(plan(world, dir, previous))
 }
 
-/// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally.
+/// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally
+/// (default shape budgets; see [`load_limited`]).
 pub fn load(dir: &Path) -> Result<(World, Saved), PersistError> {
-    let (world, mut saved) = load_with(|file| {
+    load_limited(dir, ShapeLimits::default())
+}
+
+/// [`load`] with the shape budgets the world is checked against while loading (and keeps): a
+/// file whose shapes pass them is refused as a whole.
+pub fn load_limited(dir: &Path, limits: ShapeLimits) -> Result<(World, Saved), PersistError> {
+    let (world, mut saved) = load_with_limits(limits, |file| {
         std::fs::read_to_string(dir.join(file)).map_err(|e| {
             let code = if e.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" };
             PersistError::new(code, format!("{}: {e}", dir.join(file).display())).in_file(file)
@@ -781,7 +789,15 @@ pub fn load(dir: &Path) -> Result<(World, Saved), PersistError> {
 
 /// [`load`] over any file source (tests read from memory). Only files listed in `world.json` are
 /// read.
-pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<(World, Saved), PersistError> {
+pub fn load_with(read: impl FnMut(&str) -> Result<String, PersistError>) -> Result<(World, Saved), PersistError> {
+    load_with_limits(ShapeLimits::default(), read)
+}
+
+/// [`load_with`] with the shape budgets (see [`load_limited`]).
+pub fn load_with_limits(
+    limits: ShapeLimits,
+    mut read: impl FnMut(&str) -> Result<String, PersistError>,
+) -> Result<(World, Saved), PersistError> {
     let index = parse_doc(INDEX, &read(INDEX)?)?;
     let bad = |field: &str, message: &str| PersistError::new("invalid_world", message).in_file(INDEX).field(field);
     check_keys(&index, INDEX, &[INDEX_KEYS]).map_err(|m| bad(&quoted_field(&m).unwrap_or_default(), &m))?;
@@ -840,6 +856,7 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
         Some(v) => v.as_f64().filter(|c| c.is_finite() && c.abs() <= 1.0e9).ok_or_else(|| bad("time_s", "'time_s' must be a number of seconds"))?,
     };
     let mut world = World::default();
+    world.set_shape_limits(limits);
     world.set_clock_s(time_s);
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;

@@ -935,9 +935,31 @@ struct ShapeItem {
     stroke: Option<StrokeStyle>,
 }
 
-/// Most vertices (by [`Shape2dSpec::vertices`], their upper bounds) of the distinct shape2d
-/// shapes in one world (identical shapes share one mesh, so count once). See [`ShapeBudget`].
+/// Default budget (by [`Shape2dSpec::vertices`], their upper bounds) of the distinct shape2d
+/// shapes of a world's persistent entities (identical shapes share one mesh, so count once).
+/// See [`ShapeBudget`]; perf.toml `[budgets] shape2d_vertices` changes it.
 pub const MAX_WORLD_SHAPE_VERTICES: usize = 2_000_000;
+
+/// Default budget of the distinct shapes of transient entities (what a hosted game spawns for
+/// presentation); perf.toml `[budgets] transient_shape2d_vertices` changes it.
+pub const MAX_TRANSIENT_SHAPE_VERTICES: usize = 250_000;
+
+/// The two shape budgets of a world. They are separate so effects a game spawns can never crowd
+/// out authored content (and the other way round), a refusal tells the game designer exactly
+/// what an effect costs, and the small transient default keeps effects cheap on the iGPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapeLimits {
+    /// Persistent (saved) entities.
+    pub persistent: usize,
+    /// Transient entities.
+    pub transient: usize,
+}
+
+impl Default for ShapeLimits {
+    fn default() -> ShapeLimits {
+        ShapeLimits { persistent: MAX_WORLD_SHAPE_VERTICES, transient: MAX_TRANSIENT_SHAPE_VERTICES }
+    }
+}
 
 /// The distinct shapes in a world and their vertex bounds: world state, charged when an entity
 /// with a shape enters the world (spawn, set, load, undo, rollback) and released when it leaves,
