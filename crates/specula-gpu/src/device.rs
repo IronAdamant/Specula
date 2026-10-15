@@ -25,6 +25,8 @@ pub struct Device {
     pub timestamp_valid_bits: u32,
     /// Nanoseconds per timestamp tick.
     pub timestamp_period: f32,
+    /// Largest sampler anisotropy enabled (1 = the device has no anisotropic filtering).
+    pub max_anisotropy: f32,
     /// `VK_EXT_memory_budget` is enabled.
     pub memory_budget: bool,
     memory: VkPhysicalDeviceMemoryProperties,
@@ -69,10 +71,21 @@ impl Device {
         for i in VkPhysicalDeviceVulkan12Features::BINDLESS {
             v12.flags[i] = VK_TRUE;
         }
+        // Optional: anisotropic filtering for material textures (every desktop GPU has it).
+        let mut supported = VkPhysicalDeviceFeatures2 {
+            s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
+            p_next: ptr::null_mut(),
+            features: VkPhysicalDeviceFeatures { flags: [0; 55] },
+        };
+        // SAFETY: `supported` is a valid, unchained VkPhysicalDeviceFeatures2 for the call.
+        unsafe { (instance.fns.get_physical_device_features2)(physical, &mut supported) };
+        let anisotropy = supported.features.flags[VkPhysicalDeviceFeatures::SAMPLER_ANISOTROPY] != 0;
+        let mut features = VkPhysicalDeviceFeatures { flags: [0; 55] };
+        features.flags[VkPhysicalDeviceFeatures::SAMPLER_ANISOTROPY] = anisotropy as VkBool32;
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
             p_next: &mut v12 as *mut _ as *mut c_void,
-            features: VkPhysicalDeviceFeatures { flags: [0; 55] },
+            features,
         };
         let info = VkDeviceCreateInfo {
             s_type: ST_DEVICE_CREATE_INFO,
@@ -125,6 +138,7 @@ impl Device {
             queue_family,
             timestamp_valid_bits,
             timestamp_period: instance.properties(physical).limits.timestamp_period(),
+            max_anisotropy: if anisotropy { instance.properties(physical).limits.max_sampler_anisotropy().max(1.0) } else { 1.0 },
             memory_budget,
             memory: instance.memory_properties(physical),
             allocated: Cell::new([0; MemoryKind::ALL.len()]),

@@ -183,6 +183,11 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
         let uv: Vec<f32> = mesh.uvs.iter().flatten().copied().collect();
         attrs.push(("TEXCOORD_0", Json::from(out.floats(&uv, 2, "VEC2", Some(ARRAY_BUFFER), false))));
     }
+    // Tangents only when every vertex has one (glTF requires unit tangents throughout).
+    if mesh.has_tangents() {
+        let t: Vec<f32> = mesh.tangents.iter().flatten().copied().collect();
+        attrs.push(("TANGENT", Json::from(out.floats(&t, 4, "VEC4", Some(ARRAY_BUFFER), false))));
+    }
     let col: Vec<f32> = mesh.colors.iter().flat_map(|c| [srgb8_to_linear(c[0]), srgb8_to_linear(c[1]), srgb8_to_linear(c[2]), c[3] as f32 / 255.0]).collect();
     attrs.push(("COLOR_0", Json::from(out.floats(&col, 4, "VEC4", Some(ARRAY_BUFFER), false))));
     if mesh.is_skinned() {

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
-memory of the earlier ones. Last updated **2026-10-13**.
+memory of the earlier ones. Last updated **2026-10-15**.
 
 - **START HERE next session:** the owner asked (2026-10-13) for subagent swarms to advance M1 and M2 **while
   building Sepulcra to completion as dogfood** (Windows first), keep improving the lava lamps as features land,
@@ -10,31 +10,52 @@ memory of the earlier ones. Last updated **2026-10-13**.
   where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
   [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
   How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
-- **Paused 2026-10-13 (owner: "I'll look into M2 tomorrow").** State at the pause:
-  - **M1 done** (exit proof with four Claude subagents; only the msvc replay check is left to CI).
-  - **Merged:** capture speed, GPU stats/instancing, world + persistence, dmath, journal/claims/identity
-    (resume tokens), render (shadows, bloom, FXAA, sky, fog, overlay), text, input, procedural modelling,
-    animation, audio, UI (GPU overlay), engine effects in `world_env`, Sepulcra sim + app (playable greybox).
-  - **Unmerged lane: Engine-for-games** (`model` entities with shared GPU meshes and LOD, visibility, transient
-    entities, UI layer, game hooks). Branch `worktree-agent-aebd4fb01086d5366` at 688ecb6, worktree in
-    `.claude/worktrees/agent-aebd4fb01086d5366` (merges cleanly with main). Round 1's 4 majors are fixed; round 2
-    says **do not merge** until these are fixed (all in the new model build workers, `crates/specula/src/`):
-    1. `lib.rs` `wait_for_models` (from sight_frame): the ≤10 s wait blocks the engine thread, freezing all
-       agents, the game and the window (other agents' calls time out). Park the capture as a waiter (like
-       `BuildWaiter`), counting only visible in-frame models, and keep serving requests.
-    2. `models.rs` `collect_garbage`: queued builds for deleted entities aren't cancelled (handles keep their
-       `want`), starving live agents' builds. Clear `want` for handles not in `live` on each GC.
-    3. `models.rs` `finish`: a cancelled job's result is applied to a respawned entity waiting on the same key
-       (permanently `failed`). Ignore results whose job id isn't `in_flight[key]`; give cancellation its own
-       result kind (not `recipe_invalid`/`Limit`); prune `cancelled` ids; test the `catch_unwind` path.
-    4. (minor) restoring a broken recipe's exact old text keeps the stale error in `models.library.broken`.
-    5. (minor) a recipe folder removed and restored is never polled again.
-    The lane's agent context is likely gone next session: start a fresh lane from the branch with this list.
-  - **Next, in order:** (1) the Sepulcra integration lane: real procedural models, `specula-anim` creatures,
-    the `specula-ui` HUD through `GpuOverlay`, `specula-audio` sound, `--seed` via `Game::configure`;
-    (2) the M2 exit proof; (3) M3 pieces the game needs: save games, module host (hot reload), desync detector.
+- **Paused 2026-10-15 (owner: "nearly out of usage limit ... set up handoffs").** The owner's request was
+  "Let's finish M2 please. All the way". State at the pause:
+  - **M1 done.** **M2: 13 of 16 items on `main`.** Merged this session: render graph follow-up, Post (grading +
+    SSAO, bb4ec24), Skinning & textured materials (GPU skinning, textured PBR, glTF models, world `anim` component,
+    world time; 688e9f2). Engine-for-games was merged earlier.
+  - **Two lanes unmerged**, each in its own worktree under `.claude/worktrees/` (branch `worktree-agent-<id>`). Their
+    agent contexts will be gone: start a fresh lane on the branch with the list below (`git -C <worktree> log` shows
+    where it stopped; WIP commits say so).
+    1. **Sight** (`agent-a71aac62f395c00c8`): per-agent cameras, `sight_orbit`, `sight_compare`, `sight_query`,
+       debug overlays, ID buffer (exact `visible_px`, `occluded`/`no_pixels`, glass counted with per-pixel sorted
+       id sets, reproducible; `visible_px_approx` = lower bound past 4 blended ids per pixel). Six review rounds; the
+       algorithm is verified. Round-6 fixes done and verified at 6a0e6ef (approx counts as seen via
+       `sight::shows()`, device-loss text per mode, GPU-ms stress assert). Head 1a65ec8 is a **WIP** merge of main
+       (Skinning): it builds and ids*.spv are rebuilt for the 128 B DrawRecord, but no tests ran since. Left: run
+       the full checks on the merge; add the **skinned** ID pipeline variant (built in the background like the
+       scene variants), the **alpha-mask** rule in `shown()` and the opaque ID pass, posed bones in the skeleton
+       overlay, with tests (a posed arm's visible_px follows the pose; cut-out pixels aren't counted). Then verify
+       (cargo test, clippy, `scripts/sight_check.py` on both adapters, window_check, lava `--plain`, anim_check),
+       one narrow `lane-reviewer` round on the integration, and merge.
+    2. **2D** (`agent-abab6399ffa467652`): sprites, tilemaps, vector shapes, orthographic cameras, SSAO-aware.
+       Four review rounds; round-4 fixes done at 0e89bc3 (origin in control bounds, exact stroke charge; fuzz 0 failures on 9 seeds). Left: re-run `two_d_check` on NVIDIA (the texture-reload probe failed once — known timing flake, investigate if it repeats); merge main (Skinning: `FEAT_CUTOUT` → 128 if it shares a spec space with `FEAT_SKINNED` = 64; DrawRecord 128 B; rebuild .spv), and after Sight lands register 2D draws with the ID pass. Then verify and merge.
+  - **Then, in order:** (1) M2 exit proof: a lit, shadowed scene with imported + procedural assets and an animated
+    character; 0 visible px for a hidden object (passes on the Sight branch); 10k instances within budget on the
+    Intel iGPU (measured ~1.5–2.7 ms earlier — re-run on final main). (2) `perf_frame` exposing the render graph
+    (`Gpu::last_graph`). (3) Sepulcra integration lane: real procedural/glTF models, animated creatures, the
+    `specula-ui` HUD through `GpuOverlay`, `specula-audio`, `--seed` via `Game::configure`. (4) Tick the roadmap,
+    update this file and memory. Then M3 (save games, module host, desync detector).
+  - **Lessons from this session:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss),
+    so keep the rounds; after round 3–4 the integrator can verify narrow final fixes. Reviewers must stop engines by
+    PID only (`.claude/agents/lane-reviewer.md`); several sessions share ports 7491–7499. Windows now enforces a
+    minimum window width > 200 px (platform tests use bigger windows). Usage limits interrupt lanes: resume each
+    with SendMessage, the work is saved.
   - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
-    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages.
+    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages. 
+  - **Owner decisions 2026-10-15:**
+    - **Cameras persist with the world** (owner: "both human developers and AI developers can corroborate
+      easily"). Sight lane task: save named cameras in the world folder (e.g. `cameras.json`, keyed by agent
+      *name* since identity keys don't outlive a run; follow targets by entity path), load them with the world, keep
+      them out of `world_hash`, journal `camera_set`/`camera_delete` so undo and other agents see them, and show them
+      to humans (`window_view {camera}`) so a developer can look through an agent's camera.
+    - **Transient 2D shapes get their own budget** (owner delegated: "you decide ... optimisation matters just as
+      much as making it look good"). Claude's decision: game-spawned transient shapes draw from a separate, smaller
+      allowance (default 250,000 vertices; persistent world shapes keep 2,000,000), both set in `perf.toml` beside
+      the frame budgets. Why: effects must never crowd out authored content, a refusal tells the game designer
+      exactly what a spawned effect costs, and a small default keeps effects cheap on the iGPU. 2D lane task, with
+      a test that a transient flood can't block a persistent spawn.
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).

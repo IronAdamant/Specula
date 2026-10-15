@@ -146,6 +146,18 @@ impl Animator {
         self.base = Playback { clip, time: 0.0, rate: self.base.rate };
     }
 
+    /// Puts the animator straight into a state, for engines that evaluate a pose as a pure
+    /// function of time (any frame, in any order): `base` playing, and when `fade` is given,
+    /// fading in from its playback `fade.0`, `fade.1` seconds into a `fade.2`-second crossfade.
+    /// Events and root motion of the last advance are cleared; layers are kept. Allocates nothing.
+    pub fn seek(&mut self, base: Playback, fade: Option<(Playback, f32, f32)>) {
+        self.base = base;
+        self.fade_from = fade.filter(|f| f.2 > 0.0 && f.1 < f.2).map(|(p, elapsed, dur)| (FadeSource::Clip(p), elapsed.max(0.0), dur));
+        self.events.clear();
+        self.events_truncated = false;
+        self.root_delta = [0.0; 3];
+    }
+
     pub fn set_rate(&mut self, rate: f32) {
         self.base.rate = if rate.is_finite() { rate.clamp(0.0, MAX_RATE) } else { 1.0 };
     }

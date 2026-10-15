@@ -13,5 +13,7 @@ specula-core = { workspace = true }
 specula-platform = { workspace = true }
 specula-gpu = { workspace = true }
 specula-model = { workspace = true }
+specula-anim = { workspace = true }
+specula-gltf = { workspace = true }
 specula-protocol = { workspace = true }
 specula-sys = { workspace = true }

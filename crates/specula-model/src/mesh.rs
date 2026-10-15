@@ -32,6 +32,9 @@ pub struct Part {
 /// - `uvs`: texture coordinates (`[u, v]`, origin at the image's top-left, as glTF), one per
 ///   vertex, or empty. Recipe meshes have none; imported meshes (`specula-gltf`) keep theirs for
 ///   textured materials.
+/// - `tangents`: glTF `TANGENT`s (xyz unit, w = ±1: bitangent = cross(normal, xyz) × w), one per
+///   vertex, or empty. A zero vector marks a vertex without one (a merged mesh that had none);
+///   renderers generate tangents for such meshes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshData {
     pub positions: Vec<V3>,
@@ -42,6 +45,7 @@ pub struct MeshData {
     pub joints: Vec<[u8; 4]>,
     pub weights: Vec<[u8; 4]>,
     pub uvs: Vec<[f32; 2]>,
+    pub tangents: Vec<[f32; 4]>,
 }
 
 /// Axis-aligned bounds.
@@ -118,6 +122,19 @@ impl fmt::Display for MeshError {
 
 impl std::error::Error for MeshError {}
 
+/// A tangent moved by `t` (its direction follows the surface; `mirror` flips the bitangent's
+/// sign). The zero marker (no tangent) stays zero.
+pub fn transform_tangent(t: &Affine, tg: [f32; 4], mirror: bool) -> [f32; 4] {
+    let v = [tg[0], tg[1], tg[2]];
+    if v == [0.0; 3] {
+        return [0.0; 4];
+    }
+    let d = t.apply_vector(v);
+    let l = math3::length(d);
+    let d = if l.is_finite() && l > 1e-12 { math3::scale(d, 1.0 / l) } else { math3::perpendicular([0.0, 1.0, 0.0]) };
+    [d[0], d[1], d[2], if mirror { -tg[3] } else { tg[3] }]
+}
+
 fn err(code: MeshErrorCode, element: Option<usize>, message: String) -> MeshError {
     MeshError { code, element, message }
 }
@@ -168,6 +185,12 @@ impl MeshData {
         if let Some(i) = self.uvs.iter().position(|uv| !uv[0].is_finite() || !uv[1].is_finite()) {
             return Err(err(MeshErrorCode::NonFinite, Some(i), format!("vertex {i}: UV {:?}", self.uvs[i])));
         }
+        if !(self.tangents.is_empty() || self.tangents.len() == n) {
+            return Err(err(MeshErrorCode::LengthMismatch, None, format!("{n} positions, {} tangents", self.tangents.len())));
+        }
+        if let Some(i) = self.tangents.iter().position(|t| t.iter().any(|v| !v.is_finite())) {
+            return Err(err(MeshErrorCode::NonFinite, Some(i), format!("vertex {i}: tangent {:?}", self.tangents[i])));
+        }
         if let Some(i) = self.weights.iter().position(|w| w.iter().map(|x| *x as u32).sum::<u32>() != 255) {
             return Err(err(MeshErrorCode::BadSkin, Some(i), format!("vertex {i}: weights {:?} don't sum to 255", self.weights[i])));
         }
@@ -215,7 +238,11 @@ impl MeshData {
         for n in &mut self.normals {
             *n = t.apply_normal(*n);
         }
-        if t.determinant() < 0.0 {
+        let mirror = t.determinant() < 0.0;
+        for tg in &mut self.tangents {
+            *tg = transform_tangent(t, *tg, mirror);
+        }
+        if mirror {
             for tri in self.indices.chunks_exact_mut(3) {
                 tri.swap(1, 2);
             }
@@ -232,6 +259,14 @@ impl MeshData {
     /// bound to bone 0 so the buffers stay aligned; likewise a side without UVs gets `[0, 0]`.
     pub fn merge(&mut self, other: &MeshData) {
         let base = self.positions.len() as u32;
+        if !self.tangents.is_empty() || !other.tangents.is_empty() {
+            self.tangents.resize(self.positions.len(), [0.0; 4]);
+            if other.tangents.is_empty() {
+                self.tangents.extend(std::iter::repeat_n([0.0f32; 4], other.positions.len()));
+            } else {
+                self.tangents.extend_from_slice(&other.tangents);
+            }
+        }
         if !self.uvs.is_empty() || !other.uvs.is_empty() {
             self.uvs.resize(self.positions.len(), [0.0; 2]);
             if other.uvs.is_empty() {
@@ -374,7 +409,18 @@ impl MeshData {
                 h.write_f32(uv[1]);
             }
         }
+        if !self.tangents.is_empty() {
+            h.write_u64(self.tangents.len() as u64 | 1 << 62);
+            for t in &self.tangents {
+                t.iter().for_each(|v| h.write_f32(*v));
+            }
+        }
         h.finish()
+    }
+
+    /// True if every vertex has a tangent (none is the zero marker).
+    pub fn has_tangents(&self) -> bool {
+        self.tangents.len() == self.positions.len() && self.tangents.iter().all(|t| t[0] != 0.0 || t[1] != 0.0 || t[2] != 0.0)
     }
 
     /// Indices of one part.

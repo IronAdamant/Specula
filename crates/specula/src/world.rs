@@ -13,6 +13,10 @@
 //! - **Components.** Besides the look, entities carry `tags`, free-form `props` (game data until
 //!   game modules define real components) and the reserved physics components `collider` and
 //!   `body` (F4): stored, validated and saved, not simulated yet.
+//! - **Animation.** Model entities with a rig may carry an [`AnimSpec`] (`anim`): which clip of
+//!   their anim set plays, how fast, from when on the engine clock, crossfading from the previous
+//!   clip. The pose is a pure function of the render time (see [`AnimSpec`]), so a capture at a
+//!   given time always shows the same pose. Saved, hashed and journaled like any component.
 //! - **Models.** [`Shape::Model`] entities name a recipe file ([`ModelSpec`]); the world asks its
 //!   [`ModelSource`] (the engine's model library) to build it on spawn and on change, so broken
 //!   recipes are refused up front, and keeps the built model's handle and bounds on the entity
@@ -229,6 +233,12 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
         return Err(invalid("props", "'props' must be a JSON object".into()));
     }
     s.collider.as_ref().map_or(Ok(()), Collider::validate)?;
+    if let Some(a) = &s.anim {
+        if s.shape != Shape::Model {
+            return Err(invalid("anim", "'anim' is only for model entities (shape 'model' with a rig)".into()));
+        }
+        a.check()?;
+    }
     s.body.as_ref().map_or(Ok(()), check_body)
 }
 
@@ -261,6 +271,9 @@ pub fn check_update(u: &UpdateSpec) -> Result<(), WorldError> {
     }
     if let Some(Some(b)) = &u.body {
         check_body(b)?;
+    }
+    if let Some(Some(a)) = &u.anim {
+        a.check()?;
     }
     Ok(())
 }
@@ -491,8 +504,9 @@ impl ModelSpec {
     }
 }
 
-/// A recipe path relative to the assets root: 1..256 bytes of `A-Z a-z 0-9 _ - . /`, segments
-/// separated by single `/`, none empty or starting or ending with `.`, ending in `.json`.
+/// A model source relative to the assets root: 1..256 bytes of `A-Z a-z 0-9 _ - . /`, segments
+/// separated by single `/`, none empty or starting or ending with `.`, ending in `.json` (a
+/// recipe) or `.glb` / `.gltf` (an imported glTF asset, see [`is_gltf_path`]).
 pub fn validate_recipe_path(path: &str) -> Result<(), WorldError> {
     let ok = !path.is_empty()
         && path.len() <= MAX_RECIPE_PATH
@@ -500,17 +514,189 @@ pub fn validate_recipe_path(path: &str) -> Result<(), WorldError> {
         // No empty, dot-led or dot-ended segments: covers `.` and `..`, hidden files, and the
         // trailing dots Windows strips (which would let two keys name one file).
         && path.split('/').all(|seg| !seg.is_empty() && !seg.starts_with('.') && !seg.ends_with('.'))
-        && path.ends_with(".json");
+        && (path.ends_with(".json") || is_gltf_path(path));
     if ok {
         Ok(())
     } else {
         Err(invalid(
             "recipe",
             format!(
-                "'recipe' must be a .json path relative to the assets root, like \"recipes/warding_stone.json\" \
-                 (A-Z a-z 0-9 _ - . /, no '..', at most {MAX_RECIPE_PATH} bytes); got {path:?}"
+                "'recipe' must be a .json recipe or a .glb/.gltf asset relative to the assets root, like \
+                 \"recipes/warding_stone.json\" (A-Z a-z 0-9 _ - . /, no '..', at most {MAX_RECIPE_PATH} bytes); got {path:?}"
             ),
         ))
+    }
+}
+
+/// A model source that is a glTF asset (`.glb` or `.gltf`), imported instead of built: it takes
+/// no `params` and no `seed`.
+pub fn is_gltf_path(path: &str) -> bool {
+    path.ends_with(".glb") || path.ends_with(".gltf")
+}
+
+/// Most bytes in an animation clip name.
+pub const MAX_CLIP_NAME: usize = 128;
+/// Playback speeds (clip seconds per clock second).
+pub const ANIM_SPEED: RangeInclusive<f32> = 0.0..=8.0;
+/// Clip time offsets (seconds).
+pub const ANIM_OFFSET: RangeInclusive<f32> = -1.0e6..=1.0e6;
+/// Crossfade durations (seconds).
+pub const ANIM_CROSSFADE: RangeInclusive<f32> = 0.0..=60.0;
+/// Clip start times (world time seconds, see [`World::world_time`]).
+pub const ANIM_START: RangeInclusive<f64> = -1.0e9..=1.0e9;
+
+/// The animation a model entity plays: one clip of its model's anim set (a recipe's
+/// `anims/<recipe name>.json`, or a glTF asset's own animations).
+///
+/// The pose is a pure function of the render time `T` (world time, [`World::world_time`]; a
+/// capture's `time_s`): clip time = `(T − start) × speed + time_offset`, never below 0, wrapped or held by
+/// the clip's loop mode (or by `looping` when set). While `T` is less than `crossfade` seconds
+/// past `start`, the pose blends (smoothstep) from `from`, the animation it replaced, still
+/// playing on its own terms. So any frame can be rendered at any time with the same result, and
+/// game entities animate without per-tick state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimSpec {
+    pub clip: String,
+    /// 0..=8 (1 = as authored).
+    pub speed: f32,
+    /// `Some(true)` loops a play-once clip; `Some(false)` holds a looping clip's last pose;
+    /// `None` keeps the clip's own loop mode.
+    pub looping: Option<bool>,
+    /// Seconds of clip time added (phase: two entities on one clip out of step).
+    pub time_offset: f32,
+    /// World time ([`World::world_time`]) the clip starts at. `None` in a request: 0 at spawn
+    /// (phase-locked to world time, so a filmstrip at `time_s` 0, 0.25, … shows the clip from its
+    /// start) and the current world time on update (it starts at once). Always set on an entity;
+    /// never rewritten: world time itself continues across saves and loads, so a loaded world
+    /// hashes and renders (at a given `time_s`) exactly as it did when saved, and every
+    /// animation resumes in phase.
+    pub start: Option<f64>,
+    /// Seconds to blend from the previous animation (0 = cut).
+    pub crossfade: f32,
+    /// The animation being faded out (set by the world when `crossfade` > 0; its own `from` is
+    /// dropped, so an interrupted fade restarts from the interrupted clip).
+    pub from: Option<Box<AnimSpec>>,
+}
+
+impl AnimSpec {
+    /// `clip` at speed 1, its own loop mode, no offset or fade.
+    pub fn new(clip: impl Into<String>) -> AnimSpec {
+        AnimSpec { clip: clip.into(), speed: 1.0, looping: None, time_offset: 0.0, start: None, crossfade: 0.0, from: None }
+    }
+
+    /// The clip time (seconds, before wrapping) at render time `t`.
+    pub fn clip_time(&self, t: f64) -> f64 {
+        ((t - self.start.unwrap_or(0.0)) * self.speed as f64 + self.time_offset as f64).max(0.0)
+    }
+
+    /// The blend weight of this clip over `from` at render time `t` (1 = fully this clip).
+    pub fn fade_weight(&self, t: f64) -> f32 {
+        if self.from.is_none() || self.crossfade <= 0.0 {
+            return 1.0;
+        }
+        let x = ((t - self.start.unwrap_or(0.0)) / self.crossfade as f64).clamp(0.0, 1.0) as f32;
+        x * x * (3.0 - 2.0 * x)
+    }
+
+    pub fn check(&self) -> Result<(), WorldError> {
+        if self.clip.is_empty() || self.clip.len() > MAX_CLIP_NAME || self.clip.chars().any(char::is_control) {
+            return Err(invalid("anim.clip", format!("'anim.clip' must be a clip name of 1..={MAX_CLIP_NAME} bytes")));
+        }
+        check_num("anim.speed", self.speed, &ANIM_SPEED)?;
+        check_num("anim.time_offset", self.time_offset, &ANIM_OFFSET)?;
+        check_num("anim.crossfade", self.crossfade, &ANIM_CROSSFADE)?;
+        if let Some(s) = self.start {
+            if !s.is_finite() || !ANIM_START.contains(&s) {
+                return Err(invalid("anim.start", format!("'anim.start' must be clock seconds in {ANIM_START:?}")));
+            }
+        }
+        if let Some(f) = &self.from {
+            if f.from.is_some() {
+                return Err(invalid("anim.from", "'anim.from' can't fade from another animation itself".into()));
+            }
+            f.check()?;
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> Json {
+        let mut f = vec![("clip", Json::from(self.clip.as_str())), ("speed", Json::from(self.speed))];
+        if let Some(l) = self.looping {
+            f.push(("loop", Json::from(l)));
+        }
+        if self.time_offset != 0.0 {
+            f.push(("time_offset", Json::from(self.time_offset)));
+        }
+        if let Some(s) = self.start {
+            f.push(("start", Json::from(s)));
+        }
+        if self.crossfade > 0.0 {
+            f.push(("crossfade", Json::from(self.crossfade)));
+        }
+        if let Some(from) = &self.from {
+            f.push(("from", from.to_json()));
+        }
+        Json::obj(f)
+    }
+
+    /// From `{clip, speed?, loop?, time_offset?, start? (seconds or "now"), crossfade?, from?}`
+    /// or a bare clip name. `"start": "now"` leaves `start` unset (resolved by the world).
+    pub fn from_json(v: &Json) -> Result<AnimSpec, String> {
+        if let Some(clip) = v.as_str() {
+            return Ok(AnimSpec::new(clip));
+        }
+        let Some(obj) = v.as_object() else {
+            return Err("'anim' must be a clip name, {clip, speed?, loop?, time_offset?, start?, crossfade?} or false".into());
+        };
+        for (k, _) in obj {
+            if !matches!(k.as_str(), "clip" | "speed" | "loop" | "time_offset" | "start" | "crossfade" | "from") {
+                return Err(format!("'anim.{k}' is not an anim field (clip, speed, loop, time_offset, start, crossfade)"));
+            }
+        }
+        let num = |k: &str| -> Result<Option<f64>, String> {
+            match v.get(k) {
+                None | Some(Json::Null) => Ok(None),
+                Some(n) => n.as_f64().map(Some).ok_or_else(|| format!("'anim.{k}' must be a number")),
+            }
+        };
+        let clip = v.get("clip").and_then(Json::as_str).ok_or("'anim.clip' (a clip name) is required")?;
+        let mut a = AnimSpec::new(clip);
+        a.speed = num("speed")?.map_or(1.0, |x| x as f32);
+        a.looping = match v.get("loop") {
+            None | Some(Json::Null) => None,
+            Some(Json::Bool(b)) => Some(*b),
+            Some(_) => return Err("'anim.loop' must be true or false".into()),
+        };
+        a.time_offset = num("time_offset")?.unwrap_or(0.0) as f32;
+        a.start = match v.get("start") {
+            Some(Json::Str(s)) if s == "now" => None,
+            _ => num("start")?,
+        };
+        a.crossfade = num("crossfade")?.unwrap_or(0.0) as f32;
+        if let Some(f) = v.get("from") {
+            a.from = Some(Box::new(AnimSpec::from_json(f).map_err(|e| e.replacen("'anim.", "'anim.from.", 1))?));
+        }
+        Ok(a)
+    }
+
+    fn hash_into(&self, h: &mut StableHasher) {
+        h.write_str(&self.clip);
+        h.write_f32(self.speed);
+        h.write_u8(match self.looping {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        });
+        h.write_f32(self.time_offset);
+        h.write_f64(self.start.unwrap_or(0.0));
+        h.write_f32(self.crossfade);
+        match &self.from {
+            None => h.write_u8(0),
+            Some(f) => {
+                h.write_u8(1);
+                f.hash_into(h);
+            }
+        }
     }
 }
 
@@ -1024,6 +1210,8 @@ pub struct Entity {
     pub model: Option<ModelSpec>,
     /// Present exactly when `shape` is a 2D shape ([`Shape::is_2d`]).
     pub two_d: Option<TwoD>,
+    /// Model entities only: the animation playing (its `start` always set).
+    pub anim: Option<AnimSpec>,
     /// `false` hides the entity and everything below it: not drawn, not a sight subject, not in
     /// the world's bounds. Still saved, queried, journaled and claimed like any field.
     pub visible: bool,
@@ -1194,6 +1382,9 @@ impl Entity {
                 fields.push(("model_state", Json::from(state)));
             }
         }
+        if let Some(a) = &self.anim {
+            fields.push(("anim", a.to_json()));
+        }
         if !self.visible {
             fields.push(("visible", Json::from(false)));
         }
@@ -1295,6 +1486,10 @@ impl Entity {
         if let Some(t) = &self.two_d {
             t.hash_into(h);
         }
+        if let Some(a) = &self.anim {
+            h.write_str("anim");
+            a.hash_into(h);
+        }
     }
 }
 
@@ -1346,6 +1541,8 @@ pub struct SpawnSpec {
     pub model: Option<ModelSpec>,
     /// Required for the 2D shapes (of the matching kind), refused for others.
     pub two_d: Option<TwoD>,
+    /// Model entities only (see [`AnimSpec`]; an unset `start` becomes 0).
+    pub anim: Option<AnimSpec>,
     pub visible: bool,
     pub layer: Layer,
     /// See [`Entity::transient`]. A child of a transient parent is transient whatever this says.
@@ -1373,6 +1570,7 @@ impl SpawnSpec {
             body: None,
             model: None,
             two_d: None,
+            anim: None,
             visible: true,
             layer: Layer::World,
             transient: false,
@@ -1414,6 +1612,10 @@ pub struct UpdateSpec {
     pub recipe: Option<String>,
     /// Model entities only: replaces every parameter (sorted by name).
     pub params: Option<Vec<(String, f64)>>,
+    /// Model entities only: `Some(None)` stops animating (the bind pose); a new [`AnimSpec`]
+    /// replaces the whole component (unset `start` = the world's clock now; `crossfade` > 0
+    /// blends from the animation it replaces).
+    pub anim: Option<Option<AnimSpec>>,
     pub visible: Option<bool>,
     pub layer: Option<Layer>,
     /// 2D entities only: replaces the component (of the same kind).
@@ -1440,6 +1642,7 @@ impl UpdateSpec {
             && self.body.is_none()
             && self.recipe.is_none()
             && self.params.is_none()
+            && self.anim.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -1465,6 +1668,7 @@ impl UpdateSpec {
             && self.body.is_none()
             && self.recipe.is_none()
             && self.params.is_none()
+            && self.anim.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -1658,6 +1862,7 @@ impl Change {
                 + e.model.as_ref().map_or(0, |m| {
                     heap(&m.recipe) + ALLOC + m.params.iter().map(|(k, _)| std::mem::size_of::<(String, f64)>() + heap(k)).sum::<usize>()
                 })
+                + e.anim.as_ref().map_or(0, |a| heap(&a.clip) + a.from.as_ref().map_or(0, |f| ALLOC + std::mem::size_of::<AnimSpec>() + heap(&f.clip)))
         };
         std::mem::size_of::<Change>()
             + match self {
@@ -1741,11 +1946,11 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 38] = [
+pub const FIELDS: [&str; 39] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
-    "params", "visible", "layer", "transient", "model_state", "sprite", "tilemap", "shape2d",
+    "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -1787,6 +1992,12 @@ pub struct World {
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
+    /// The engine clock (seconds) as of its last tick. World time = this + `time_offset`.
+    clock_s: f64,
+    /// World time minus the engine clock: 0 for a world made in this run; for a loaded world,
+    /// the world time it was saved at minus the engine clock when loaded, so world time resumes
+    /// where it stopped. Not state (never hashed): saved as the world time it gives.
+    time_offset: f64,
     /// See [`World::model_drops`].
     model_drops: u64,
     /// Builds model entities' models (the engine's model library).
@@ -1867,6 +2078,30 @@ impl World {
     }
 
     /// See the field: changes whenever GPU meshes may need building or freeing.
+    /// World time (seconds): the time animations live in ([`AnimSpec::start`]), what frames
+    /// render at and what new animations start at. It is the engine clock for a world made in
+    /// this run, and continues from where it was saved for a loaded one ([`World::adopt_clock`]).
+    pub fn world_time(&self) -> f64 {
+        self.clock_s + self.time_offset
+    }
+
+    /// The engine sets this as its clock ticks (and a test as it likes); world time follows.
+    pub fn set_clock_s(&mut self, seconds: f64) {
+        if seconds.is_finite() {
+            self.clock_s = seconds.clamp(*ANIM_START.start(), *ANIM_START.end());
+        }
+    }
+
+    /// Joins the engine clock reading `engine_s` without moving world time: the engine calls it
+    /// on a loaded world, whose clock is the world time it was saved at.
+    pub fn adopt_clock(&mut self, engine_s: f64) {
+        if engine_s.is_finite() {
+            let now = self.world_time();
+            self.set_clock_s(engine_s);
+            self.time_offset = now - self.clock_s;
+        }
+    }
+
     pub fn mesh_epoch(&self) -> u64 {
         self.mesh_epoch
     }
@@ -2225,6 +2460,10 @@ impl World {
             body: spec.body,
             model: spec.model,
             two_d: spec.two_d,
+            anim: spec.anim.map(|mut a| {
+                a.start.get_or_insert(0.0);
+                a
+            }),
             visible: spec.visible,
             layer: spec.layer,
             transient,
@@ -2314,6 +2553,21 @@ impl World {
                 format!("'{}' is a {}; only lathe entities have a profile", e.name, e.shape.name()),
             )
             .with("field", "profile"));
+        }
+        if matches!(change.anim, Some(Some(_))) && e.shape != Shape::Model {
+            return Err(WorldError::new(
+                "invalid_component",
+                format!("'{}' is a {}; only model entities animate", e.name, e.shape.name()),
+            )
+            .with("field", "anim"));
+        }
+        // A new animation starts now (unless told when) and fades from the one it replaces.
+        if let Some(Some(a)) = &mut change.anim {
+            a.start.get_or_insert(self.world_time());
+            a.from = match (&e.anim, a.crossfade > 0.0) {
+                (Some(old), true) => Some(Box::new(AnimSpec { from: None, ..old.clone() })),
+                _ => None,
+            };
         }
         if (change.recipe.is_some() || change.params.is_some()) && e.shape != Shape::Model {
             let field = if change.recipe.is_some() { "recipe" } else { "params" };
@@ -2474,6 +2728,9 @@ impl World {
         }
         if let Some(b) = change.body {
             e.body = b;
+        }
+        if let Some(a) = change.anim {
+            e.anim = a;
         }
         if let Some((spec, resolved)) = new_model {
             e.model = Some(spec);
@@ -3901,6 +4158,46 @@ mod tests {
         let mut w = World::default();
         w.set_model_source(Some(Arc::new(FakeModels)));
         w
+    }
+
+    #[test]
+    fn anims_start_on_the_clock_and_crossfade_from_what_they_replace() {
+        let mut w = with_models();
+        // Only model entities animate.
+        let mut cube = SpawnSpec::new(Shape::Cube);
+        cube.anim = Some(AnimSpec::new("walk"));
+        assert_eq!(w.spawn(cube, "t").err().unwrap().detail("field"), Some(&Json::from("anim")));
+        let mut s = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        s.anim = Some(AnimSpec::new("walk"));
+        let id = w.spawn(s, "t").unwrap().id;
+        let a = w.get(id).unwrap().anim.clone().unwrap();
+        assert_eq!(a.start, Some(0.0), "spawned: phase-locked to the clock");
+        let h0 = w.get(id).unwrap().content_hash();
+        // A new clip on update starts now and fades from the walk.
+        w.set_clock_s(12.5);
+        let mut attack = AnimSpec::new("attack");
+        attack.crossfade = 0.25;
+        attack.speed = 1.5;
+        w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(attack)), ..Default::default() }, "t").unwrap();
+        let e = w.get(id).unwrap();
+        let a = e.anim.as_ref().unwrap();
+        assert_eq!((a.start, a.from.as_ref().map(|f| f.clip.as_str())), (Some(12.5), Some("walk")));
+        assert_ne!(e.content_hash(), h0, "anims are state");
+        assert_eq!(a.fade_weight(12.5), 0.0);
+        assert_eq!(a.fade_weight(12.75), 1.0);
+        assert!((a.clip_time(13.5) - 1.5).abs() < 1e-9);
+        assert_eq!(a.clip_time(10.0), 0.0, "never below 0");
+        // JSON round trip (world files, world_query), and errors carry the field.
+        assert_eq!(&AnimSpec::from_json(&a.to_json()).unwrap(), a);
+        assert_eq!(AnimSpec::from_json(&Json::from("idle")).unwrap(), AnimSpec::new("idle"));
+        assert!(AnimSpec::from_json(&Json::parse(r#"{"clip":"x","sped":2}"#).unwrap()).unwrap_err().contains("sped"));
+        let mut fast = AnimSpec::new("walk");
+        fast.speed = 9.0;
+        let err = w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(fast)), ..Default::default() }, "t").unwrap_err();
+        assert_eq!(err.detail("field"), Some(&Json::from("anim.speed")));
+        // Stopping: the bind pose.
+        w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(None), ..Default::default() }, "t").unwrap();
+        assert!(w.get(id).unwrap().anim.is_none());
     }
 
     #[test]

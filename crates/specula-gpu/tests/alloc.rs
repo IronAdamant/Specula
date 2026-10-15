@@ -8,8 +8,8 @@ mod common;
 use common::*;
 use specula_gpu::vector::{fill, Path, ShapeMesh};
 use specula_gpu::{
-    AdapterPreference, Billboard, Draw2d, DrawItem, Environment, FrameDesc, Material, OverlayQuad, PointLight, ShapeDraw, Sprite,
-    SpriteBlend, Surface, TextureFormat, TileCell, TileChunk, TileGrid,
+    AdapterPreference, Billboard, Draw2d, DrawItem, Environment, FrameDesc, Material, MaterialTextures, MeshStreams, OverlayQuad,
+    PointLight, ShapeDraw, SkinVertex, Sprite, SpriteBlend, Surface, TextureFormat, TextureSampler, TileCell, TileChunk, TileGrid,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -80,6 +80,17 @@ fn warm_frames_do_not_allocate() {
     let mut glow = DrawItem::new(mesh, translation([1.0, 1.0, 0.0]), [1.0, 0.4, 0.1, 1.0]);
     glow.surface = Surface { emissive: 4.0, ..Default::default() };
     draws.push(glow);
+    // A skinned, textured cube: its palette comes from the frame's bones.
+    let uvs: Vec<[f32; 2]> = (0..v.len()).map(|k| [(k % 2) as f32, (k / 2 % 2) as f32]).collect();
+    let skin = vec![SkinVertex { joints: [1, 0, 0, 0], weights: [255, 0, 0, 0] }; v.len()];
+    let posed = gpu.upload_mesh_with(&v, &i, &MeshStreams { skin: Some(&skin), uvs: Some(&uvs), tangents: None }).unwrap();
+    wait_variants(&mut gpu, true, true);
+    let material = gpu.upload_material_texture(4, 4, TextureFormat::Rgba8Srgb, &[200; 64], TextureSampler::default()).unwrap();
+    let mut creature = DrawItem::new(posed, translation([-1.0, 1.0, 0.0]), [1.0; 4]);
+    creature.skin = Some(0);
+    creature.surface.textures = MaterialTextures { base_color: Some(material), ..Default::default() };
+    draws.push(creature);
+    let bones = [translation([0.0; 3]), translation([0.0, 0.5, 0.0])];
     let lights = [PointLight { position: [0.0, 2.0, 0.0], color: [1.0, 0.8, 0.6], intensity: 2.0, range: 5.0 }];
     let overlay = [
         OverlayQuad::solid([4.0, 4.0, 30.0, 10.0], [0.1, 0.1, 0.1, 0.8]),
@@ -131,6 +142,7 @@ fn warm_frames_do_not_allocate() {
         time_s: 1.0,
         overlay: &overlay,
         draws_2d: &draws_2d,
+        bones: &bones,
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();
@@ -154,8 +166,10 @@ fn warm_frames_do_not_allocate() {
     assert_eq!((stats.draws.sprites, stats.draws.tile_chunks, stats.draws.shapes, stats.draws.shadow_sprites), (2, 1, 1, 1));
     gpu.destroy_target(target);
     gpu.destroy_texture(texture);
+    gpu.destroy_texture(material);
     gpu.destroy_texture(lut);
     gpu.destroy_mesh(mesh);
+    gpu.destroy_mesh(posed);
     let errors = validation_errors(test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
 }

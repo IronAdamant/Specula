@@ -341,9 +341,12 @@ shapes?"
 - [x] PNG decode (done early, in M0).
 - [x] **glTF import**: meshes, materials, textures, skins, animations. GLB included.
   *Done 2026-10-14:* `specula-gltf` import/export, our own JPEG codec in `specula-core`; skins → rigs, animations → clips.
-- [ ] **Skeletal animation, stages A1–A2** ([design/ANIMATION.md](design/ANIMATION.md)): GPU skinning, clip playback,
+- [x] **Skeletal animation, stages A1–A2** ([design/ANIMATION.md](design/ANIMATION.md)): GPU skinning, clip playback,
   crossfades, filmstrip sight.
-  *Progress 2026-10-13:* rigs in recipes, `specula-anim` clips/blending/generators/IK, CPU skinning with GPU-ready matrices, filmstrip sight. GPU skinning still to do.
+  *Progress 2026-10-13:* rigs in recipes, `specula-anim` clips/blending/generators/IK, CPU skinning with GPU-ready matrices, filmstrip sight.
+  *Done 2026-10-15:* GPU skinning (per-instance palettes, posed bounds from bone spheres), the world `anim` component
+  (clip, speed, loop, crossfade) on world time, glTF skins and animations, textured PBR materials. Intel iGPU:
+  300 skinned creatures × 20 bones ≈ 7.9 ms. Still to do: skinning in the Sight lane's ID pass (lands with it).
 - [x] **Procedural modelling, tier 1** ([design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md)):
   - recipes and primitives
   - extrude, lathe, sweep

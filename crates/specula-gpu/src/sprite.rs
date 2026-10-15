@@ -33,7 +33,7 @@ use crate::overlay::Textures;
 use crate::render::{camera_position, LinearCache, Mesh, PUSH_STAGES};
 use crate::shadow::invert;
 use crate::vk::*;
-use crate::{DrawStats, FrameDesc, GpuError, IdKind, MeshId, TextureId};
+use crate::{DrawStats, FrameDesc, GpuError, IdKind, MeshId, TextureFilter, TextureId};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -62,15 +62,6 @@ pub enum SpriteBlend {
     Blended,
 }
 
-/// How a texture is sampled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum TextureFilter {
-    /// Bilinear, kept half a texel inside the item's own rect (atlas neighbours never bleed in).
-    #[default]
-    Linear,
-    /// The nearest texel: crisp pixel art.
-    Nearest,
-}
 
 /// A textured quad in the world. Sizes in metres; colours sRGB with straight alpha.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -241,7 +232,7 @@ pub const FLAG_LIT: u32 = 64;
 pub const FLAG_CUTOUT: u32 = 128;
 
 /// Specialization bit of the cutout sprite pipeline (`CUTOUT` in `shaders/sprite.frag`).
-pub const FEAT_CUTOUT: u32 = 64;
+pub const FEAT_CUTOUT: u32 = 128;
 
 /// One item as the 2D shaders read it; must match `Item` in `shaders/sprite.glsl`.
 #[repr(C)]

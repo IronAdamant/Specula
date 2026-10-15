@@ -7,7 +7,7 @@ use crate::descriptors::Descriptors;
 use crate::graph::{Final, GraphInfo, Prior, TransientPool};
 use crate::render::{
     check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
-    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines,
+    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines, SurfaceVertex, Variants,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
 use crate::post::PostMode;
@@ -16,8 +16,9 @@ use crate::swapchain::{Window, WINDOW_OWNER};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
-    AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions, MemoryKind, MeshId,
-    TargetId, TextureFormat, TextureId, ValidationMessage, Vertex,
+    AdapterInfo, AdapterKind, AdapterPreference, CpuTiming, ErrorReason, FrameDesc, FramePath, FrameStats, GpuError, GpuOptions,
+    MemoryKind, MeshId, MeshStream, MeshStreams, SkinVertex, TargetId, TextureFormat, TextureId, TextureSampler, ValidationMessage,
+    Vertex,
 };
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -209,7 +210,7 @@ impl GpuInner {
         gpu.timer = PassTimer::new(&gpu.device)?;
         // The quad every sprite and tile chunk is drawn with (indices only; the shader makes the
         // corners), under an id `upload_mesh` never hands out.
-        let quad = gpu.upload_mesh(&[Vertex::default(); 4], &[0, 1, 2, 0, 2, 3])?;
+        let quad = gpu.upload_mesh(&[Vertex::default(); 4], &[0, 1, 2, 0, 2, 3], &MeshStreams::default())?;
         let mesh = gpu.meshes.remove(&quad.0).expect("just uploaded");
         gpu.meshes.insert(crate::sprite::QUAD_MESH, mesh);
         // Every offscreen pipeline variant now, so no frame ever waits for one.
@@ -252,7 +253,7 @@ impl GpuInner {
         run_sync(&self.device, self.sync_cmd, self.sync_fence, record)
     }
 
-    pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Result<MeshId, GpuError> {
+    pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshId, GpuError> {
         if vertices.is_empty() || indices.is_empty() {
             return Err(GpuError::new(format!(
                 "upload_mesh: need at least one vertex and one triangle (got {} vertices, {} indices)",
@@ -269,9 +270,65 @@ impl GpuInner {
                 vertices.len()
             )));
         }
+        let n = vertices.len();
+        let bad = |stream: MeshStream, vertex: usize, why: String| {
+            GpuError::rejected(ErrorReason::BadStream { stream, vertex: vertex as u32 }, format!("upload_mesh: {why}"))
+        };
+        let mut joints = 0u32;
+        // The shader reads all four joints (a zero weight multiplies, it doesn't skip): joints
+        // without weight are stored as 0, so every joint read lies inside the draw's palette.
+        let skin: Option<Vec<SkinVertex>> = match streams.skin {
+            None => None,
+            Some(skin) => {
+                if skin.len() != n {
+                    return Err(bad(MeshStream::Skin, skin.len(), format!("{} skin entries for {n} vertices", skin.len())));
+                }
+                let mut clean = Vec::with_capacity(n);
+                for (i, s) in skin.iter().enumerate() {
+                    let mut c = *s;
+                    for k in 0..4 {
+                        if s.weights[k] == 0 {
+                            c.joints[k] = 0;
+                        } else if s.joints[k] == 255 {
+                            return Err(bad(MeshStream::Skin, i, format!("vertex {i} gives weight to joint 255 (joints are 0..=254)")));
+                        }
+                        joints = joints.max(c.joints[k] as u32 + 1);
+                    }
+                    clean.push(c);
+                }
+                Some(clean)
+            }
+        };
+        let surface: Option<Vec<SurfaceVertex>> = match streams.uvs {
+            None => None,
+            Some(uvs) => {
+                if uvs.len() != n {
+                    return Err(bad(MeshStream::Uvs, uvs.len(), format!("{} UVs for {n} vertices", uvs.len())));
+                }
+                let generated;
+                let tangents = match streams.tangents {
+                    Some(t) if t.len() != n => {
+                        return Err(bad(MeshStream::Tangents, t.len(), format!("{} tangents for {n} vertices", t.len())));
+                    }
+                    Some(t) => t,
+                    None => {
+                        let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+                        let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
+                        generated = crate::generate_tangents(&positions, &normals, uvs, indices);
+                        &generated
+                    }
+                };
+                Some(uvs.iter().zip(tangents).map(|(&uv, t)| SurfaceVertex { uv, tangent: snorm16_tangent(*t) }).collect())
+            }
+        };
         let vb_bytes = std::mem::size_of_val(vertices) as u64;
+        let skin_bytes = skin.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
+        let surface_bytes = surface.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
         let ib_bytes = std::mem::size_of_val(indices) as u64;
-        let total = vb_bytes + ib_bytes;
+        let skin_offset = vb_bytes;
+        let surface_offset = skin_offset + skin_bytes;
+        let index_offset = surface_offset + surface_bytes;
+        let total = index_offset + ib_bytes;
         let dev = &self.device;
 
         let staging = dev.create_buffer(
@@ -283,11 +340,18 @@ impl GpuInner {
             "mesh staging",
         )?;
         // SAFETY: `staging.mapped` points to at least `total` bytes of coherent host memory;
-        // `Vertex` is `repr(C)` plain f32 data and `u32` indices are plain data; regions don't overlap.
+        // `Vertex`, `SkinVertex` and `SurfaceVertex` are `repr(C)` plain data, as are `u32`
+        // indices; the regions are laid out one after another and don't overlap.
         unsafe {
             let dst = staging.mapped as *mut u8;
             ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, dst, vb_bytes as usize);
-            ptr::copy_nonoverlapping(indices.as_ptr() as *const u8, dst.add(vb_bytes as usize), ib_bytes as usize);
+            if let Some(skin) = &skin {
+                ptr::copy_nonoverlapping(skin.as_ptr() as *const u8, dst.add(skin_offset as usize), skin_bytes as usize);
+            }
+            if let Some(s) = &surface {
+                ptr::copy_nonoverlapping(s.as_ptr() as *const u8, dst.add(surface_offset as usize), surface_bytes as usize);
+            }
+            ptr::copy_nonoverlapping(indices.as_ptr() as *const u8, dst.add(index_offset as usize), ib_bytes as usize);
         }
         let buffer = match dev.create_buffer(
             total,
@@ -324,10 +388,72 @@ impl GpuInner {
             self.device.destroy_buffer(&buffer);
             return Err(e);
         }
+        // The first mesh with skin or UVs starts building those pipeline variants on a worker;
+        // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
+        if skin.is_some() || surface.is_some() {
+            let formats = self.formats();
+            self.pipelines.request_variants(&self.device, Variants { skinned: skin.is_some(), textured: surface.is_some() }, &formats);
+        }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
-        self.meshes.insert(id, Mesh { buffer, index_offset: vb_bytes, index_count: indices.len() as u32, bounds });
+        self.meshes.insert(
+            id,
+            Mesh {
+                buffer,
+                index_offset,
+                index_count: indices.len() as u32,
+                bounds,
+                skin_offset: skin.as_ref().map(|_| skin_offset),
+                surface_offset: surface.as_ref().map(|_| surface_offset),
+                joints,
+            },
+        );
         Ok(MeshId(id))
+    }
+
+    /// Builds the variants now, on this thread (loading time; `variants` changes only once all
+    /// of them exist).
+    pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
+        let formats = self.formats();
+        self.pipelines.build_variants(&self.device, Variants { skinned, textured }, &formats)
+    }
+
+    /// The pipeline variants ready to draw with (a finished background build is taken first).
+    pub fn pipeline_variants(&mut self) -> crate::PipelineVariants {
+        self.poll_pipelines();
+        self.pipelines.ready()
+    }
+
+    pub fn retry_failed_variants(&mut self) -> bool {
+        self.poll_pipelines();
+        let Some(f) = self.pipelines.ready().failed else { return false };
+        let formats = self.formats();
+        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured }, &formats);
+        true
+    }
+
+    pub fn inject_background_fault(&mut self, fault: crate::BackgroundFault) {
+        self.pipelines.inject_background_fault(fault);
+    }
+
+    /// Takes finished background pipelines; starts a queued request.
+    fn poll_pipelines(&mut self) {
+        self.pipelines.poll_background(false);
+        if let Some((want, _)) = self.pipelines.take_requeue() {
+            let formats = self.formats();
+            self.pipelines.request_variants(&self.device, want, &formats);
+        }
+    }
+
+    /// Colour formats scene pipelines are built for: offscreen, HDR, and the window's.
+    fn formats(&self) -> Vec<VkFormat> {
+        let mut f = vec![TARGET_FORMAT, crate::render::HDR_FORMAT];
+        if let Some(w) = &self.window {
+            if !f.contains(&w.format()) {
+                f.push(w.format());
+            }
+        }
+        f
     }
 
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
@@ -468,12 +594,165 @@ impl GpuInner {
         // A fresh slot: no pending frame reads it.
         self.descriptors.write_texture(&self.device, slot, image.view);
         let id = self.next_id();
-        self.textures.map.insert(id, Texture { image, slot, format, width, height });
+        self.textures.map.insert(id, Texture { image, slot, format, width, height, levels: 1 });
+        Ok(TextureId(id))
+    }
+
+    pub fn upload_texture_levels(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        levels: &[&[u8]],
+        sampler: TextureSampler,
+    ) -> Result<TextureId, GpuError> {
+        let Some(&base) = levels.first() else {
+            return Err(GpuError::new("upload_texture_levels: no levels given"));
+        };
+        check_pixels("upload_texture_levels", width, height, format, base)?;
+        let max = self.max_image_dimension_2d;
+        if width > max || height > max {
+            return Err(GpuError::rejected(
+                crate::ErrorReason::TooLarge { width, height, max },
+                format!("upload_texture_levels: size {width}x{height} exceeds {max} in a dimension"),
+            ));
+        }
+        let full = crate::mip_count(width, height) as usize;
+        if levels.len() > full {
+            return Err(GpuError::new(format!("upload_texture_levels: {} levels given; a {width}x{height} image has {full}", levels.len())));
+        }
+        let size = |i: usize| ((width >> i).max(1), (height >> i).max(1));
+        // Each level at a 4-byte aligned offset in one staging buffer.
+        let mut offsets = Vec::with_capacity(levels.len());
+        let mut total = 0u64;
+        for (i, level) in levels.iter().enumerate() {
+            let (w, h) = size(i);
+            check_pixels(&format!("upload_texture_levels (level {i})"), w, h, format, level)?;
+            offsets.push(total);
+            total = (total + level.len() as u64).div_ceil(4) * 4;
+        }
+        let vk_sampler = self.descriptors.sampler(&self.device, sampler)?;
+        let slot = self.descriptors.alloc_slot()?;
+        let dev = &self.device;
+        let image = match dev.create_image_with(
+            vk_format(format),
+            width,
+            height,
+            levels.len() as u32,
+            1,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            MemoryKind::Textures,
+            "material texture",
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                self.descriptors.free_slot(slot);
+                return Err(e);
+            }
+        };
+        let staging = match dev.create_buffer(
+            total,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            0,
+            MemoryKind::Staging,
+            "texture staging",
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                dev.destroy_image(&image);
+                self.descriptors.free_slot(slot);
+                return Err(e);
+            }
+        };
+        for (level, &at) in levels.iter().zip(&offsets) {
+            // SAFETY: `staging.mapped` holds `total` bytes; each level fits at its offset.
+            unsafe { ptr::copy_nonoverlapping(level.as_ptr(), (staging.mapped as *mut u8).add(at as usize), level.len()) };
+        }
+        let regions: Vec<VkBufferImageCopy> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &at)| {
+                let (w, h) = size(i);
+                VkBufferImageCopy {
+                    buffer_offset: at,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: VkImageSubresourceLayers {
+                        aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
+                        mip_level: i as u32,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+                    image_extent: VkExtent3D { width: w, height: h, depth: 1 },
+                }
+            })
+            .collect();
+        let copied = self.run_sync(|dev, cmd| {
+            dev.barrier(
+                cmd,
+                &[],
+                &[image_barrier(
+                    image.handle,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_PIPELINE_STAGE_2_NONE,
+                    VK_ACCESS_2_NONE,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                )],
+            );
+            // SAFETY: recording; every region lies inside the staging buffer and its mip level;
+            // the image is in TRANSFER_DST_OPTIMAL.
+            unsafe {
+                (dev.fns.cmd_copy_buffer_to_image)(
+                    cmd,
+                    staging.handle,
+                    image.handle,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    regions.len() as u32,
+                    regions.as_ptr(),
+                )
+            };
+            dev.barrier(
+                cmd,
+                &[],
+                &[image_barrier(
+                    image.handle,
+                    VK_IMAGE_ASPECT_COLOR_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                )],
+            );
+        });
+        self.device.destroy_buffer(&staging);
+        if let Err(e) = copied {
+            self.device.destroy_image(&image);
+            self.descriptors.free_slot(slot);
+            return Err(e);
+        }
+        // A fresh slot: no pending frame reads it.
+        self.descriptors.write_texture_with(&self.device, slot, image.view, vk_sampler);
+        let id = self.next_id();
+        self.textures.map.insert(id, Texture { image, slot, format, width, height, levels: levels.len() as u32 });
         Ok(TextureId(id))
     }
 
     pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
         let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Texture, texture.0, ""))?;
+        if t.levels > 1 {
+            return Err(GpuError::new(format!(
+                "update_texture: texture {} has {} mip levels (a material texture); upload it again instead",
+                texture.0, t.levels
+            )));
+        }
         check_pixels("update_texture", width, height, t.format, pixels)?;
         if x as u64 + width as u64 > t.width as u64 || y as u64 + height as u64 > t.height as u64 {
             let reason =
@@ -542,6 +821,7 @@ impl GpuInner {
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
+        self.poll_pipelines();
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         };
@@ -681,6 +961,8 @@ impl GpuInner {
             }
         }
         let window = Window::new(&self.instance, &self.device, self.cmd_pool, hinstance, hwnd, width, height)?;
+        // A background build in flight doesn't know this format: finish it first.
+        self.pipelines.poll_background(true);
         // Every variant for the window's format now, so presenting never waits for a pipeline.
         if let Err(e) = self.pipelines.prebuild(&self.device, window.format()) {
             let mut window = window;
@@ -701,6 +983,7 @@ impl GpuInner {
             return Err(GpuError::new("present: no window attached"));
         }
         check_frame(&self.meshes, &self.textures, frame)?;
+        self.poll_pipelines();
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(
@@ -790,7 +1073,15 @@ impl Drop for GpuInner {
     }
 }
 
-const _: () = assert!(size_of::<Vertex>() == 28);
+const _: () = assert!(size_of::<Vertex>() == 28 && size_of::<SkinVertex>() == 8);
+
+/// A tangent as the surface stream stores it: xyz normalized, snorm16, w the sign (±1).
+fn snorm16_tangent(t: [f32; 4]) -> [i16; 4] {
+    let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+    let n = |v: f32| if len > 1e-20 && len.is_finite() { v / len } else { 0.0 };
+    let q = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+    [q(n(t[0])), q(n(t[1])), q(n(t[2])), if t[3] < 0.0 { -32767 } else { 32767 }]
+}
 
 #[cfg(test)]
 mod tests {

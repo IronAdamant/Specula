@@ -18,8 +18,8 @@
 //! and `.glb`; base64 data URIs; every accessor component type, `normalized`, byte strides,
 //! matrix column padding and sparse accessors; TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN
 //! (converted to triangles); POSITION, NORMAL (generated flat when missing, as the spec says),
-//! TEXCOORD_0, COLOR_0, JOINTS_0/1 + WEIGHTS_0/1 (top four influences kept), TANGENT (validated,
-//! not kept: regenerate when normal mapping arrives); node hierarchies with TRS or matrices;
+//! TEXCOORD_0, COLOR_0, JOINTS_0/1 + WEIGHTS_0/1 (top four influences kept), TANGENT (kept in
+//! `MeshData::tangents`, moved with the nodes and the skin's bind-to-rest bake); node hierarchies with TRS or matrices;
 //! scenes; materials (metallic-roughness factors and textures, normal/occlusion/emissive
 //! textures, alpha modes, double-sided, `KHR_materials_emissive_strength`); textures, samplers
 //! and PNG/JPEG images; skins; animations (translation/rotation/scale with LINEAR, STEP and

@@ -14,7 +14,7 @@ const bool HDR = (FEATURES & 4u) != 0u;
 // SSAO (src/ssao.rs): cutouts write the exposed luminance of their ambient light in alpha, as
 // the mesh pipeline's Lit does; blended items keep the alpha below (their blend state).
 const bool SSAO = (FEATURES & 32u) != 0u;
-const bool CUTOUT = (FEATURES & 64u) != 0u;
+const bool CUTOUT = (FEATURES & 128u) != 0u;
 
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 layout(set = 0, binding = 1) uniform sampler2D textures[];
