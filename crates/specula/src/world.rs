@@ -1704,7 +1704,26 @@ pub enum Change {
     /// An entity whose transform or colour alone changed, recorded by [`Recording::Snapshot`]
     /// without copying the entity (replayable, not undoable).
     Pose { path: String, pose: Pose },
+    /// An agent's named camera set (`after`) or deleted (`after: None`); `before` is what it was.
+    /// Not world state for the hash (see [`crate::cameras`]). `path` is
+    /// `@camera/<owner>/<name>`.
+    Camera {
+        path: String,
+        owner: String,
+        name: String,
+        before: Option<Box<crate::cameras::NamedCamera>>,
+        after: Option<Box<crate::cameras::NamedCamera>>,
+    },
 }
+
+/// The journal path of a camera change: `@camera/<owner>/<name>` (never an entity path).
+pub fn camera_path(owner: &str, name: &str) -> String {
+    format!("@camera/{owner}/{name}")
+}
+
+/// Ids at and above this name cameras in the journal (entity ids never get this high): undo
+/// conflicts and history filters treat each camera as its own thing.
+pub const CAMERA_ID_BASE: u64 = 1 << 62;
 
 /// The fields a game moves every tick: transform and colour (plus the version they reached).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1750,17 +1769,19 @@ impl Change {
         match self {
             Change::Spawn { after, .. } | Change::Set { after, .. } => after.transient,
             Change::Delete { before, .. } => before.transient,
-            Change::Env { .. } | Change::Pose { .. } => false,
+            Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } => false,
         }
     }
 
-    /// The entity's id; 0 for the environment.
+    /// The entity's id; 0 for the environment; for a camera, `CAMERA_ID_BASE` plus a hash of its
+    /// path.
     pub fn id(&self) -> u64 {
         match self {
             Change::Spawn { after, .. } | Change::Set { after, .. } => after.id,
             Change::Delete { before, .. } => before.id,
             Change::Env { .. } => ROOT,
             Change::Pose { pose, .. } => pose.id,
+            Change::Camera { path, .. } => CAMERA_ID_BASE | (specula_core::hash::hash_str(path) >> 2),
         }
     }
 
@@ -1770,6 +1791,8 @@ impl Change {
             Change::Set { .. } | Change::Pose { .. } => "set",
             Change::Delete { .. } => "delete",
             Change::Env { .. } => "env",
+            Change::Camera { after: Some(_), .. } => "camera_set",
+            Change::Camera { after: None, .. } => "camera_delete",
         }
     }
 
@@ -1777,7 +1800,11 @@ impl Change {
     /// environment.
     pub fn path(&self) -> &str {
         match self {
-            Change::Spawn { path, .. } | Change::Set { path, .. } | Change::Delete { path, .. } | Change::Pose { path, .. } => path,
+            Change::Spawn { path, .. }
+            | Change::Set { path, .. }
+            | Change::Delete { path, .. }
+            | Change::Pose { path, .. }
+            | Change::Camera { path, .. } => path,
             Change::Env { .. } => "/",
         }
     }
@@ -1787,6 +1814,7 @@ impl Change {
         match self {
             Change::Spawn { after, .. } | Change::Set { after, .. } => Some(after.version),
             Change::Pose { pose, .. } => Some(pose.version),
+            Change::Camera { after: Some(c), .. } => Some(c.version),
             _ => None,
         }
     }
@@ -1816,6 +1844,17 @@ impl Change {
                 Change::Delete { path, before } => heap(path) + entity(before),
                 Change::Pose { path, .. } => heap(path),
                 Change::Env { .. } => 2 * (std::mem::size_of::<Env>() + ALLOC),
+                Change::Camera { path, owner, name, before, after } => {
+                    let cam = |c: &Option<Box<crate::cameras::NamedCamera>>| {
+                        c.as_ref().map_or(0, |c| {
+                            std::mem::size_of::<crate::cameras::NamedCamera>()
+                                + ALLOC
+                                + heap(&c.spec.name)
+                                + c.spec.follow.as_ref().map_or(0, |f| heap(&f.path))
+                        })
+                    };
+                    heap(path) + heap(owner) + heap(name) + cam(before) + cam(after)
+                }
             }
     }
 }
@@ -1945,6 +1984,9 @@ pub struct World {
     model_drops: u64,
     /// Builds model entities' models (the engine's model library).
     models: SourceSlot,
+    /// Agents' named sight cameras: agent name → camera name → camera (see [`crate::cameras`]).
+    /// Saved with the world and journaled, but never hashed: they are tooling, not state.
+    cameras: BTreeMap<String, BTreeMap<String, crate::cameras::NamedCamera>>,
 }
 
 impl World {
@@ -2133,6 +2175,78 @@ impl World {
         self.revision += 1;
         self.record_env(before);
         Ok(())
+    }
+
+    /// Agents' named cameras: agent name → camera name → camera.
+    pub fn cameras(&self) -> &BTreeMap<String, BTreeMap<String, crate::cameras::NamedCamera>> {
+        &self.cameras
+    }
+
+    /// Creates or replaces camera `spec.name` of agent `owner` (its version goes up by one).
+    /// Recorded as a [`Change::Camera`]; bounded per agent and per world.
+    pub fn set_camera(&mut self, owner: &str, spec: crate::cameras::CameraSpec) -> Result<&crate::cameras::NamedCamera, WorldError> {
+        use crate::cameras::{MAX_CAMERAS_PER_AGENT, MAX_OWNERS};
+        if !self.cameras.contains_key(owner) && self.cameras.len() >= MAX_OWNERS {
+            return Err(WorldError::new(
+                "camera_owner_limit",
+                format!("at most {MAX_OWNERS} agents hold cameras in one world; another agent must camera_delete theirs first"),
+            ));
+        }
+        let held = self.cameras.get(owner);
+        let before = held.and_then(|c| c.get(&spec.name)).cloned();
+        if before.is_none() && held.is_some_and(|c| c.len() >= MAX_CAMERAS_PER_AGENT) {
+            return Err(WorldError::new(
+                "camera_limit",
+                format!("at most {MAX_CAMERAS_PER_AGENT} cameras per agent; camera_delete one first"),
+            ));
+        }
+        let name = spec.name.clone();
+        let after = crate::cameras::NamedCamera { version: before.as_ref().map_or(1, |c| c.version + 1), spec };
+        self.put_camera_raw(owner, &name, Some(after));
+        Ok(&self.cameras[owner][&name])
+    }
+
+    /// Deletes agent `owner`'s camera `name` (every one of its cameras with `None`); returns how
+    /// many went. Each is recorded as a [`Change::Camera`].
+    pub fn delete_cameras(&mut self, owner: &str, name: Option<&str>) -> Result<usize, WorldError> {
+        let names: Vec<String> = match (self.cameras.get(owner), name) {
+            (Some(c), Some(n)) if c.contains_key(n) => vec![n.to_owned()],
+            (_, Some(n)) => {
+                return Err(WorldError::new("camera_not_found", format!("you have no camera named '{n}' (camera_list shows them)")))
+            }
+            (Some(c), None) => c.keys().cloned().collect(),
+            (None, None) => Vec::new(),
+        };
+        for n in &names {
+            self.put_camera_raw(owner, n, None);
+        }
+        Ok(names.len())
+    }
+
+    /// Puts camera `name` of `owner` exactly as given (`None` removes it), recorded like any
+    /// change: the journal uses it to replay and undo, world files to load.
+    pub(crate) fn put_camera_raw(&mut self, owner: &str, name: &str, camera: Option<crate::cameras::NamedCamera>) {
+        let held = self.cameras.entry(owner.to_owned()).or_default();
+        let before = match &camera {
+            Some(c) => held.insert(name.to_owned(), c.clone()),
+            None => held.remove(name),
+        };
+        if held.is_empty() {
+            self.cameras.remove(owner);
+        }
+        if before.is_none() && camera.is_none() {
+            return; // nothing was there
+        }
+        self.revision += 1;
+        if self.recording != Recording::Off {
+            self.changes.push(Change::Camera {
+                path: camera_path(owner, name),
+                owner: owner.to_owned(),
+                name: name.to_owned(),
+                before: before.map(Box::new),
+                after: camera.map(Box::new),
+            });
+        }
     }
 
     /// Changes so far (any change bumps it).
@@ -3016,6 +3130,7 @@ impl World {
             }
             Change::Env { after, .. } => self.replace_env(**after),
             Change::Pose { pose, .. } => self.apply_pose(pose, by),
+            Change::Camera { owner, name, after, .. } => self.put_camera_raw(owner, name, after.as_deref().cloned()),
         }
     }
 
@@ -3033,6 +3148,7 @@ impl World {
                 debug_assert!(false, "rollback over a pose of entity {}", pose.id);
             }
             Change::Env { before, .. } => self.replace_env(**before),
+            Change::Camera { owner, name, before, .. } => self.put_camera_raw(owner, name, before.as_deref().cloned()),
         }
     }
 
@@ -3542,6 +3658,7 @@ mod tests {
                 }
                 Change::Env { after, .. } => replayed.replace_env(**after),
                 Change::Pose { pose, .. } => replayed.apply_pose(pose, "g"),
+                Change::Camera { .. } => unreachable!("no cameras here"),
             }
         }
         replayed.replay_next_id(w.next_id());

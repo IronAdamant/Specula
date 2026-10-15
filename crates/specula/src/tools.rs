@@ -151,7 +151,7 @@ pub enum Command {
     Frame(FrameSpec),
     Env(EnvPatch),
     /// `None` returns the window to auto-framing.
-    View(Option<Camera>),
+    View(ViewSpec),
     Info,
     /// perf_frame; `None` = the frame budget from perf.toml.
     Perf { budget_ms: Option<f64> },
@@ -324,7 +324,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             parse_env(args).map(Command::Env)
         }
         "window_view" => {
-            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "auto"]])?;
+            check_keys(args, name, &[&["eye", "target", "fov_y_deg", "auto", "camera", "of"]])?;
             parse_view(args).map(Command::View)
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
@@ -1005,14 +1005,38 @@ fn effect_arg<T>(args: &Json, key: &str, parse: fn(&Json) -> Result<T, String>) 
     }
 }
 
-fn parse_view(args: &Json) -> Result<Option<Camera>, String> {
-    if args.get("auto").and_then(Json::as_bool) == Some(true) {
-        return Ok(None);
+/// What `window_view` points the human's window camera at.
+#[derive(Clone, Debug)]
+pub enum ViewSpec {
+    /// Auto-frame the world.
+    Auto,
+    Fixed(Camera),
+    /// Through an agent's named camera (`of`: that agent; the caller's own without), kept up to
+    /// date every frame, so a follow camera keeps following.
+    Named { name: String, of: Option<String> },
+}
+
+fn parse_view(args: &Json) -> Result<ViewSpec, String> {
+    let named = string_arg(args, "camera")?;
+    let of = string_arg(args, "of")?;
+    let auto = args.get("auto").and_then(Json::as_bool) == Some(true);
+    let fixed = args.get("eye").is_some() || args.get("target").is_some();
+    if usize::from(named.is_some()) + usize::from(auto) + usize::from(fixed) > 1 {
+        return Err("window_view takes one of: 'camera' (+ 'of'), 'eye' + 'target', or 'auto': true".into());
+    }
+    if of.is_some() && named.is_none() {
+        return Err("'of' needs 'camera' (the name of that agent's camera)".into());
+    }
+    if let Some(name) = named {
+        return Ok(ViewSpec::Named { name: name.to_owned(), of: of.map(str::to_owned) });
+    }
+    if auto {
+        return Ok(ViewSpec::Auto);
     }
     let frame = parse_frame(args)?;
     match (frame.eye, frame.target) {
-        (Some(eye), Some(target)) => Ok(Some(Camera { eye, target, fov_y_deg: frame.fov_y_deg })),
-        _ => Err("window_view needs 'eye' and 'target', or 'auto': true".into()),
+        (Some(eye), Some(target)) => Ok(ViewSpec::Fixed(Camera { eye, target, fov_y_deg: frame.fov_y_deg })),
+        _ => Err("window_view needs 'eye' and 'target', 'camera' (a named camera), or 'auto': true".into()),
     }
 }
 
@@ -1796,14 +1820,18 @@ fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "window_view".into(),
-            description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg), \
-                          or auto: true to frame the whole world again."
+            description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg); \
+                          camera: a named camera (camera_set) to look through, an agent's with of: \"<agent name>\" (a \
+                          follow camera keeps following; the view stays on it until the next window_view); or auto: \
+                          true to frame the whole world again. A human sees exactly what an agent's camera sees."
                 .into(),
             input_schema: schema(
                 vec![
                     ("eye", vec3("Camera position")),
                     ("target", vec3("Point the camera looks at")),
                     ("fov_y_deg", number("Vertical field of view, 10..120 (default 50)")),
+                    ("camera", string("A named camera (camera_set) to look through")),
+                    ("of", string("With camera: the agent whose camera it is (default: yours)")),
                     ("auto", Json::obj([("type", Json::from("boolean")), ("description", Json::from("true: auto-frame the world"))])),
                 ],
                 &[],
@@ -2148,9 +2176,16 @@ mod tests {
         for bad in [r#"{"grading":{"lut":"../x.png"}}"#, r#"{"grading":{"gamma":[0,1,1]}}"#, r#"{"ssao":{"radius":50}}"#, r#"{"ssao":1}"#] {
             assert!(parse_env(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert!(matches!(parse_view(&args(r#"{"auto":true}"#)), Ok(None)));
-        assert!(matches!(parse_view(&args(r#"{"eye":[0,1,2],"target":[0,0,0]}"#)), Ok(Some(_))));
+        assert!(matches!(parse_view(&args(r#"{"auto":true}"#)), Ok(ViewSpec::Auto)));
+        assert!(matches!(parse_view(&args(r#"{"eye":[0,1,2],"target":[0,0,0]}"#)), Ok(ViewSpec::Fixed(_))));
+        assert!(matches!(
+            parse_view(&args(r#"{"camera":"chase","of":"ann"}"#)),
+            Ok(ViewSpec::Named { name, of: Some(of) }) if name == "chase" && of == "ann"
+        ));
+        assert!(matches!(parse_view(&args(r#"{"camera":"chase"}"#)), Ok(ViewSpec::Named { of: None, .. })));
         assert!(parse_view(&args("{}")).is_err());
+        assert!(parse_view(&args(r#"{"of":"ann"}"#)).is_err(), "of needs camera");
+        assert!(parse_view(&args(r#"{"camera":"c","auto":true}"#)).is_err(), "one way at a time");
     }
 
     #[test]

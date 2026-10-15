@@ -369,6 +369,9 @@ struct Engine {
     luts: luts::Luts,
     /// The human's window camera; `None` = auto-frame the world.
     window_camera: Option<Camera>,
+    /// `window_view {camera}`: the window looks through agent `.0`'s camera `.1`, re-resolved
+    /// every frame (a follow camera keeps following).
+    window_follow: Option<(String, String)>,
     /// Offscreen targets by size, most recently used last; at most [`MAX_CACHED_TARGETS`].
     targets: Vec<((u32, u32), TargetId)>,
     frames_captured: u64,
@@ -472,6 +475,7 @@ impl Engine {
             last_unwanted: (Instant::now(), 0),
             world,
             window_camera: None,
+            window_follow: None,
             targets: Vec::new(),
             frames_captured: 0,
             capture_dir,
@@ -513,6 +517,8 @@ impl Engine {
             failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", world.path_of(*id))).collect();
         self.swarm.journal.rebase(&world, &format!("world:{name}"));
         self.world = world;
+        // Follow cameras resolve afresh in the new world (its cameras came with it).
+        self.cameras = cameras::Cameras::default();
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
@@ -709,6 +715,29 @@ impl Engine {
             eprintln!("specula: saved, but could not remove old files {:?}; the next save retries", report.leftovers);
         }
         self.leftovers = report.leftovers.clone();
+    }
+
+    /// `window_view {camera}`: the window camera follows that named camera. When the camera is
+    /// gone (deleted, undone, another world loaded) the window keeps its last view.
+    fn follow_window_camera(&mut self) {
+        let Some((owner, name)) = &self.window_follow else { return };
+        match self.cameras.resolve(owner, name, Some(owner), &self.world) {
+            Ok(r) => self.window_camera = Some(r.camera),
+            Err(e) => {
+                eprintln!("specula: the window stops following {owner}'s camera '{name}': {}", e.message);
+                self.window_follow = None;
+            }
+        }
+    }
+
+    /// The human's window camera, for engine_info: where it looks now and what it looks through
+    /// (`window_view {camera}`), so agents and humans can confirm they see the same thing.
+    fn window_json(&mut self) -> Json {
+        self.follow_window_camera();
+        let through = self.window_follow.as_ref().map_or(Json::Null, |(owner, name)| {
+            Json::obj([("owner", Json::from(owner.as_str())), ("camera", Json::from(name.as_str()))])
+        });
+        Json::obj([("camera", self.window_camera.map_or(Json::from("auto"), |c| c.to_json())), ("through", through)])
     }
 
     /// Render time when a capture gives none: world time (the engine clock in whole ticks, plus
@@ -972,6 +1001,7 @@ impl Engine {
                 continue;
             }
             let draw_list = profile::zone("draw_list");
+            self.follow_window_camera();
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
@@ -1149,13 +1179,36 @@ impl Engine {
                 }
                 Err(e) => world_error(&e),
             },
-            Command::View(camera) => {
-                self.window_camera = camera;
-                ToolOutput::text(match camera {
-                    Some(c) => Json::obj([("window_camera", c.to_json())]).to_pretty(),
-                    None => "window camera: auto-framing the world".into(),
-                })
-            }
+            Command::View(view) => match view {
+                tools::ViewSpec::Auto => {
+                    self.window_follow = None;
+                    self.window_camera = None;
+                    ToolOutput::text("window camera: auto-framing the world")
+                }
+                tools::ViewSpec::Fixed(c) => {
+                    self.window_follow = None;
+                    self.window_camera = Some(c);
+                    ToolOutput::text(Json::obj([("window_camera", c.to_json())]).to_pretty())
+                }
+                tools::ViewSpec::Named { name, of } => {
+                    let owner = of.clone().unwrap_or_else(|| by.clone());
+                    match self.cameras.resolve(&owner, &name, of.as_deref(), &self.world) {
+                        Ok(r) => {
+                            self.window_camera = Some(r.camera);
+                            self.window_follow = Some((owner.clone(), name.clone()));
+                            let mut out = Json::obj([
+                                ("window_camera", r.camera.to_json()),
+                                ("through", Json::obj([("owner", Json::from(owner)), ("camera", Json::from(name)), ("camera_version", Json::from(r.version))])),
+                            ]);
+                            if let Some(w) = r.warning {
+                                out.set("warning", Json::from(w));
+                            }
+                            ToolOutput::text(out.to_pretty())
+                        }
+                        Err(e) => ToolOutput::error(e.to_json().to_pretty()),
+                    }
+                }
+            },
             Command::Info => self.info(&server.sessions()),
             Command::Perf { budget_ms } => self.perf(budget_ms),
             Command::PerfZones(q) => {
@@ -1598,6 +1651,7 @@ impl Engine {
             ("clock", self.clock_json()),
             ("swarm", self.swarm.stats_json()),
             ("models", self.models_json()),
+            ("window", self.window_json()),
         ]);
         let mut info = info;
         if let Some(game) = &self.game {

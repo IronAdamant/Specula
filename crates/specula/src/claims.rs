@@ -610,7 +610,8 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
             }
         }
         // Only the hosted game's own ticks record poses, and they are never checked.
-        Change::Env { .. } | Change::Pose { .. } => {}
+        // Cameras belong to their agent name, not to any claimed region.
+        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } => {}
     }
     points
 }

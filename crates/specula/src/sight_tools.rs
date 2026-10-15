@@ -204,7 +204,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SightCall, String>> {
     Some(call)
 }
 
-fn parse_camera_set(args: &Json) -> Result<CameraSpec, String> {
+pub(crate) fn parse_camera_set(args: &Json) -> Result<CameraSpec, String> {
     check_keys(args, "camera_set", &[&["name", "eye", "target", "fov_y_deg", "follow", "offset", "look_offset", "local"]])?;
     let name = label_arg(args, "name", true)?.expect("required");
     let fov_y_deg = fov_arg(args)?;
@@ -420,9 +420,11 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "Create or replace one of your named cameras (at most 32): fixed (eye + target) or following \
                           an entity (follow: path; eye = its origin + offset, looking at its origin + look_offset; \
                           local: offsets turn with the entity). Use it with sight_frame {camera}, sight_compare and \
-                          sight_query; other agents may look through it (camera_of) but only you change it. Cameras \
-                          last for the engine run and are not saved with the world (camera_list returns them in \
-                          camera_set's form to re-create)."
+                          sight_query, and show it to a human with window_view {camera}; other agents may look \
+                          through it (camera_of) but only you change it. Cameras belong to your agent name and are \
+                          saved with the world (world_save / --world autosave; back after world_load or a restart \
+                          for whoever holds the name), journaled (kind camera: world_changes shows them, world_undo \
+                          reverts them), and never part of the world hash."
                 .into(),
             input_schema: schema(
                 vec![
@@ -450,7 +452,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "camera_delete".into(),
-            description: "Delete one of your cameras (name), or all of them (all: true).".into(),
+            description: "Delete one of your cameras (name), or all of them (all: true); journaled (undo brings it back).".into(),
             input_schema: schema(vec![("name", t("string", "Camera name")), ("all", t("boolean", "Every camera of yours"))], &[]),
         },
         ToolDef {

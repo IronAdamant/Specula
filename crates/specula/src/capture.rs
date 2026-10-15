@@ -237,36 +237,24 @@ impl Engine {
             .count()
     }
 
-    /// The identity whose cameras to use: the caller's, or the one now going by agent name `of`:
-    /// the swarm's current holder of the name (never an earlier session that used it), or, for a
-    /// name no agent_hello took, the unnamed session that goes by it (its default name, as
-    /// `camera_list` shows it).
-    fn owner_key(&self, session: &SessionInfo, of: Option<&str>) -> Result<String, ToolOutput> {
-        let Some(name) = of else { return Ok(self.swarm.key(session)) };
-        if let Some(key) = self.swarm.key_of_name(name) {
-            return Ok(key.to_owned());
-        }
-        let unnamed = self.cameras.keys_named(name).into_iter().find(|k| !self.swarm.is_named_key(k));
-        unnamed.map(str::to_owned).ok_or_else(|| {
-            camera_error(CameraError {
-                code: "agent_not_found",
-                message: format!("no agent goes by '{name}' (engine_info lists the agents; camera_list {{all: true}} the camera owners)"),
-            })
-        })
+    /// The agent whose cameras to use: the caller (by its agent name) or agent `of`. Cameras
+    /// belong to names (see [`crate::cameras`]): whoever holds a name holds its cameras.
+    fn camera_owner(&self, session: &SessionInfo, of: Option<&str>) -> String {
+        of.map_or_else(|| self.swarm.agent_name(session), str::to_owned)
     }
 
     /// The camera of a sight_frame-style spec: a named camera, eye/target, or auto-framing.
     fn frame_view(&mut self, spec: &FrameSpec, session: &SessionInfo) -> Result<ViewReq, ToolOutput> {
         let (camera, source, warning) = match (&spec.camera, spec.eye, spec.target) {
             (Some(c), _, _) => {
-                let key = self.owner_key(session, c.of.as_deref())?;
-                let r = self.cameras.resolve(&key, &c.name, c.of.as_deref(), &self.world).map_err(camera_error)?;
+                let owner = self.camera_owner(session, c.of.as_deref());
+                let r = self.cameras.resolve(&owner, &c.name, c.of.as_deref(), &self.world).map_err(camera_error)?;
                 let mut s = vec![("source", Json::from("named")), ("name", Json::from(c.name.as_str()))];
                 if let Some(of) = &c.of {
                     s.push(("of", Json::from(of.as_str())));
                 }
-                // Which identity's camera, and which version of it: a reviewer sees it change.
-                s.push(("owner_id", Json::from(fingerprint(&key))));
+                // Whose camera, and which version of it: a reviewer sees it change.
+                s.push(("owner", Json::from(owner.as_str())));
                 s.push(("camera_version", Json::from(r.version)));
                 (r.camera, Json::obj(s), r.warning)
             }
@@ -318,54 +306,69 @@ impl Engine {
         let key = self.swarm.key(session);
         let name = self.swarm.agent_name(session);
         match call {
-            SightCall::CameraSet(spec) => match self.cameras.set(&key, &name, spec) {
-                Ok(c) => {
-                    let mut out = c.to_json();
-                    let cam_name = c.spec.name.clone();
-                    match self.cameras.resolve(&key, &cam_name, None, &self.world) {
-                        Ok(r) => {
-                            out.set("now", r.camera.to_json());
-                            if let Some(w) = r.warning {
-                                out.set("warning", Json::from(w));
-                            }
-                        }
-                        // A follow camera whose entity doesn't exist yet is kept; it works once it does.
-                        Err(e) => {
-                            out.set("now", Json::Null);
-                            out.set("warning", Json::from(e.message));
+            SightCall::CameraSet(spec) => {
+                // Journaled like any world change (kind `camera`), so other agents see it in
+                // world_changes and world_undo puts it back; saved with the world.
+                let w = Writer::new(&name, Some(&key));
+                let tick = self.clock.tick();
+                let set = self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.set_camera(&name, spec).cloned());
+                let (cam, seq) = match set {
+                    Ok(ok) => ok,
+                    Err(e) => return world_error(&e),
+                };
+                let mut out = cam.to_json();
+                match self.cameras.resolve(&name, &cam.spec.name, None, &self.world) {
+                    Ok(r) => {
+                        out.set("now", r.camera.to_json());
+                        if let Some(w) = r.warning {
+                            out.set("warning", Json::from(w));
                         }
                     }
-                    out.set("owner", Json::from(name));
-                    ToolOutput::text(out.to_pretty())
+                    // A follow camera whose entity doesn't exist yet is kept; it works once it does.
+                    Err(e) => {
+                        out.set("now", Json::Null);
+                        out.set("warning", Json::from(e.message));
+                    }
                 }
-                Err(e) => camera_error(e),
-            },
+                out.set("owner", Json::from(name));
+                out.set("journal", seq.map_or(Json::Null, Json::from));
+                ToolOutput::text(out.to_pretty())
+            }
             SightCall::CameraList { all: true, .. } => {
-                let (owners, omitted) = self.cameras.list_all(64);
+                let (owners, omitted) = cameras::list_all(&self.world, 64);
                 ToolOutput::text(Json::obj([("owners", Json::Arr(owners)), ("owners_omitted", Json::from(omitted))]).to_string())
             }
             SightCall::CameraList { of, .. } => {
-                let owner_key = match self.owner_key(session, of.as_deref()) {
-                    Ok(k) => k,
-                    Err(out) => return out,
-                };
+                let owner = self.camera_owner(session, of.as_deref());
                 let listed: Vec<(String, Json)> =
-                    self.cameras.list(&owner_key).into_iter().map(|c| (c.spec.name.clone(), c.to_json())).collect();
-                let mut cameras = Vec::new();
+                    cameras::list(&self.world, &owner).into_iter().map(|c| (c.spec.name.clone(), c.to_json())).collect();
+                if listed.is_empty() && of.is_some() && !self.world.cameras().contains_key(&owner) {
+                    return camera_error(CameraError::new(
+                        "agent_not_found",
+                        format!("no agent named '{owner}' holds cameras (camera_list {{all: true}} lists the owners)"),
+                    ));
+                }
+                let mut cams = Vec::new();
                 for (cam, mut j) in listed {
-                    if let Ok(r) = self.cameras.resolve(&owner_key, &cam, of.as_deref(), &self.world) {
+                    if let Ok(r) = self.cameras.resolve(&owner, &cam, of.as_deref(), &self.world) {
                         j.set("now", r.camera.to_json());
                     }
-                    cameras.push(j);
+                    cams.push(j);
                 }
-                let owner = of.unwrap_or(name);
-                let out = Json::obj([("owner", Json::from(owner)), ("owner_id", Json::from(fingerprint(&owner_key))), ("cameras", Json::Arr(cameras))]);
+                let out = Json::obj([("owner", Json::from(owner.as_str())), ("cameras", Json::Arr(cams))]);
                 ToolOutput::text(out.to_string())
             }
-            SightCall::CameraDelete { name: cam } => match self.cameras.delete(&key, cam.as_deref()) {
-                Ok(n) => ToolOutput::text(Json::obj([("deleted", Json::from(n))]).to_string()),
-                Err(e) => camera_error(e),
-            },
+            SightCall::CameraDelete { name: cam } => {
+                let w = Writer::new(&name, Some(&key));
+                let tick = self.clock.tick();
+                match self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.delete_cameras(&name, cam.as_deref())) {
+                    Ok((n, seq)) => {
+                        self.cameras.prune(&self.world);
+                        ToolOutput::text(Json::obj([("deleted", Json::from(n)), ("journal", seq.map_or(Json::Null, Json::from))]).to_string())
+                    }
+                    Err(e) => world_error(&e),
+                }
+            }
             SightCall::Compare(CompareCall::List) => {
                 let marks = self.marks.names(&key).into_iter().map(|(n, frame, size)| {
                     Json::obj([("name", Json::from(n)), ("frame", Json::from(frame)), ("size", Json::arr(size.map(Json::from)))])
@@ -1109,13 +1112,6 @@ impl Engine {
         let _z = profile::zone("sight.save");
         self.save_capture("png", bytes)
     }
-}
-
-/// A short, stable, non-secret tag for an identity key (keys may be session ids, which must not
-/// leak): FNV-1a, 8 hex digits.
-fn fingerprint(key: &str) -> String {
-    let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
-    format!("{:08x}", (h >> 32) as u32 ^ h as u32)
 }
 
 /// Writes a packet next to its PNG; when that fails, the packet says so (and has no path).

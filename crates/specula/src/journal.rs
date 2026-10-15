@@ -92,10 +92,12 @@ pub enum Kind {
     GameFrame,
     /// A game tool (`play_*`) an agent called; `via` names the agent.
     GameTool,
+    /// An agent's `camera_set` / `camera_delete` (see [`crate::cameras`]).
+    Camera,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -106,6 +108,7 @@ impl Kind {
         Kind::GameTick,
         Kind::GameFrame,
         Kind::GameTool,
+        Kind::Camera,
     ];
 
     pub fn name(self) -> &'static str {
@@ -120,6 +123,7 @@ impl Kind {
             Kind::GameTick => "game_tick",
             Kind::GameFrame => "game_frame",
             Kind::GameTool => "game_tool",
+            Kind::Camera => "camera",
         }
     }
 
@@ -1017,6 +1021,7 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 world.put_raw(e);
             }
             Change::Env { before, .. } => world.replace_env(**before),
+            Change::Camera { owner, name, before, .. } => world.put_camera_raw(owner, name, before.as_deref().cloned()),
         }
     }
     Ok(())
@@ -1401,6 +1406,49 @@ mod tests {
         assert_eq!(undo(&mut w, &mut j, "ann", named(vec![u.seq - 1])).unwrap_err().code, "already_undone");
         assert_eq!(undo(&mut w, &mut j, "nobody", last(1)).unwrap_err().code, "nothing_to_undo");
         assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
+    }
+
+    /// Owner decision (2026-10-15): cameras are journaled like world changes (kind `camera`), so
+    /// other agents see them in the feed and undo puts them back; they never touch the hash, so
+    /// replay stays exact.
+    #[test]
+    fn camera_changes_are_journaled_undoable_and_hash_free() {
+        use crate::cameras::CameraSpec;
+        use specula_core::math::Vec3;
+        let (mut w, mut j) = live();
+        spawn(&mut w, &mut j, "ann", "/a");
+        let hash = w.state_hash();
+        let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        let set = |w: &mut World, j: &mut Journal, x: f32| {
+            commit(w, j, 2, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(x)).map(|c| c.version)).unwrap()
+        };
+        let (v1, s1) = set(&mut w, &mut j, 1.0);
+        let (v2, _) = set(&mut w, &mut j, 2.0);
+        assert_eq!((v1, v2), (1, 2));
+        assert_eq!(w.state_hash(), hash, "cameras are not world state");
+        let entry = j.get(s1.unwrap()).unwrap();
+        assert_eq!((entry.kind, entry.changes[0].op(), entry.changes[0].path()), (Kind::Camera, "camera_set", "@camera/ann/overview"));
+        // The feed shows them to everyone.
+        let feed = j.changes(&ChangesQuery { since: Cursor { seq: 1, index: 0 }, limit: 10, path_prefix: None, game: false });
+        assert!(feed.to_string().contains("@camera/ann/overview"), "{feed}");
+        // Undo puts the previous camera back, then removes it; redo works like any undo.
+        undo(&mut w, &mut j, "ann", last(1)).unwrap();
+        assert_eq!(w.cameras()["ann"]["overview"].spec.eye, Some(Vec3::new(1.0, 5.0, 5.0)));
+        assert_eq!(w.cameras()["ann"]["overview"].version, 1);
+        undo(&mut w, &mut j, "ann", last(1)).unwrap();
+        assert!(w.cameras().is_empty(), "the first camera_set undone: no camera");
+        assert_eq!(w.state_hash(), hash);
+        // Delete is journaled too, and replay rebuilds the world (cameras included) exactly.
+        set(&mut w, &mut j, 3.0);
+        commit(&mut w, &mut j, 3, "ann", Kind::Camera, Some(&mut no_check), |w| w.delete_cameras("ann", None)).unwrap();
+        set(&mut w, &mut j, 4.0);
+        let replayed = j.replay().unwrap();
+        assert_eq!(replayed.state_hash(), w.state_hash());
+        assert_eq!(replayed.cameras(), w.cameras());
+        // A failed camera command rolls back like any command.
+        let failed = commit(&mut w, &mut j, 4, "ann", Kind::Camera, Some(&mut no_check), |w| w.delete_cameras("ann", Some("nope")));
+        assert_eq!(failed.unwrap_err().code, "camera_not_found");
+        assert_eq!(w.cameras()["ann"]["overview"].spec.eye, Some(Vec3::new(4.0, 5.0, 5.0)));
     }
 
     #[test]

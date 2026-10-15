@@ -361,12 +361,14 @@ shapes?"
   subjects carry `visible_px`, `screen_box_exact`, `occluded`; `sight_query`; `subjects: "visible"`. 0.36 ms GPU +
   1.1 ms readback/count at 1280×720 on the Intel iGPU; never on the window path.
 - [x] **Per-agent persistent cameras**; `sight_orbit` (turntable) and `sight_compare` (before/after).
-  *Done 2026-10-14:* `camera_set/list/delete` (fixed or following an entity, owned by the agent's identity, others may
-  look through them; run-scoped, not saved with the world); `sight_orbit` contact sheets; `sight_compare` mark/diff
-  with a before|after|heat image, changed regions and subject changes.
+  *Done 2026-10-14:* `camera_set/list/delete` (fixed or following an entity, others may look through them);
+  `sight_orbit` contact sheets; `sight_compare` mark/diff with a before|after|heat image, changed regions and subject
+  changes. *2026-10-16 (owner decision):* cameras persist with the world (`cameras.<gen>.json`, committed with
+  `world.json`), keyed by agent name, journaled (kind `camera`: feed and undo), out of the world hash; a human looks
+  through one with `window_view {camera, of}`.
 - [x] **Debug overlays in captures**: grid, axes, bounds, labels, claim regions, skeletons.
   *Done 2026-10-14:* `sight_frame {overlays}`: grid, axes, bounds (hidden ones red), labels (no overlaps, capped),
-  claims, skeletons (rest pose), lods; text through `specula-text` with a system font.
+  claims, skeletons (posed as the frame shows them), lods; text through `specula-text` with a system font.
 - [x] **`perf.toml` budgets**: frame time on the reference low-end GPU. A budget miss is reported as an error.
   *Done 2026-10-14:* `--perf FILE` / `./perf.toml` (`perf.example.toml` documents every budget, per-adapter overrides); misses are structured errors in `perf_frame` and `perf_capture`.
 - [x] ➕ **Post-processing**: tonemapping, bloom, FXAA/SMAA, colour grading; optional SSAO.
