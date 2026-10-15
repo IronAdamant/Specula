@@ -17,6 +17,9 @@ pub const PASS_TONEMAP: &str = "post_tonemap";
 pub const PASS_FXAA: &str = "post_fxaa";
 /// Overlay quads. Drawn inside the last pass's rendering, so that pass's time includes it.
 pub const PASS_OVERLAY: &str = "overlay";
+/// Sight's ID buffer (captures that ask for it): ids of every drawn entity, and their copy to
+/// host memory.
+pub const PASS_ID_BUFFER: &str = "id_buffer";
 /// Sprites, tile chunks and vector shapes, drawn inside the scene pass's rendering (between the
 /// sky and the blended meshes); the scene's time excludes it.
 pub const PASS_SPRITES: &str = "sprites";

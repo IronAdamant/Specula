@@ -622,8 +622,8 @@ pub struct VkFormatProperties {
     pub buffer_features: VkFlags,
 }
 
-/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures` (we enable only `samplerAnisotropy`,
-/// when the device has it).
+/// The 55 `VkBool32` members of `VkPhysicalDeviceFeatures`, by index (we enable only
+/// `samplerAnisotropy` and `fragmentStoresAndAtomics`, when the device has them).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkPhysicalDeviceFeatures {
@@ -633,6 +633,8 @@ pub struct VkPhysicalDeviceFeatures {
 impl VkPhysicalDeviceFeatures {
     /// Index of `samplerAnisotropy`.
     pub const SAMPLER_ANISOTROPY: usize = 19;
+    /// `fragmentStoresAndAtomics` (declaration order in vulkan_core.h).
+    pub const FRAGMENT_STORES_AND_ATOMICS: usize = 26;
 }
 
 #[repr(C)]
@@ -1578,6 +1580,7 @@ fn_table! {
         get_buffer_device_address = c"vkGetBufferDeviceAddress": fn(VkDevice, *const VkBufferDeviceAddressInfo) -> u64;
         cmd_copy_buffer = c"vkCmdCopyBuffer":
             fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
+        cmd_fill_buffer = c"vkCmdFillBuffer": fn(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, u32);
         cmd_copy_image_to_buffer = c"vkCmdCopyImageToBuffer":
             fn(VkCommandBuffer, VkImage, VkImageLayout, VkBuffer, u32, *const VkBufferImageCopy);
         create_query_pool = c"vkCreateQueryPool":

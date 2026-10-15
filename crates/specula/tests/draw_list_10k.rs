@@ -110,7 +110,7 @@ fn a_10k_entity_draw_list_allocates_nothing() {
         let mut view = View { camera, viewport_h: 720, include_ui: true, lod: LodChoice::Remembered(levels) };
         let stats = match cached {
             Some(cache) => cache.draw_list(world, 0, &meshes, &mut view, draws),
-            None => sight::draw_list(world, &meshes, &mut view, draws),
+            None => sight::draw_list(world, &meshes, &mut view, draws, None),
         };
         sight::lights(world, true, lights);
         let bones = models.take_bones();

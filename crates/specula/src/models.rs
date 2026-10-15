@@ -2042,6 +2042,22 @@ impl GpuModels {
         ])
     }
 
+    /// The LOD a capture (no hysteresis) draws `e` at: `(level, levels, triangles at that
+    /// level)`, or `None` when nothing is uploaded for it. `fixed` forces a level (clamped).
+    pub fn lod_of(&self, e: &Entity, eye: Vec3, fov_y_deg: f32, viewport_h: u32, fixed: Option<usize>) -> Option<(usize, usize, u64)> {
+        let id = (*self.by_handle.get(e.resolved_model()?.handle as usize)?)?;
+        let model = self.uploaded.get(&id)?;
+        let count = model.lods.len();
+        let level = match fixed {
+            Some(l) => l.min(count - 1),
+            None => {
+                let world = e.model();
+                select_lod(sphere_px(&world, max_axis_scale(&world), model, eye, fov_y_deg, viewport_h), count, None)
+            }
+        };
+        Some((level, count, model.lods[level].iter().map(|p| u64::from(p.triangles)).sum()))
+    }
+
     /// Starts a frame's draw list at render time `time_s` (engine clock seconds, or a capture's
     /// `time_s`): animated entities are posed at that time. Clears the frame's bone matrices.
     pub fn begin_frame(&self, time_s: f64) {

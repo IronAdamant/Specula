@@ -516,7 +516,7 @@ impl Game for SepulcraGame {
         for a in actions {
             self.act(ctx.world, ctx.agent, a);
         }
-        self.controls.sync_camera(frame.camera);
+        self.controls.sync_camera(frame.camera, frame.agent_view);
         self.hover(ctx.world);
         if let Some(scene) = &mut self.scene {
             scene.animate(ctx.world, alpha, self.now);

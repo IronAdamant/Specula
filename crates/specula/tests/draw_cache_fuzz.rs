@@ -225,7 +225,7 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
             models.begin_frame(t);
             let mut a = Vec::new();
             let mut v = View { camera, viewport_h: 720, include_ui, lod: LodChoice::Remembered(&mut remembered) };
-            let sa = sight::draw_list(&world, &meshes, &mut v, &mut a);
+            let sa = sight::draw_list(&world, &meshes, &mut v, &mut a, None);
             let ba = models.take_bones();
             let ba2 = ba.clone();
             models.put_bones(ba);

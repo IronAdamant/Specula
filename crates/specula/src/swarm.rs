@@ -65,13 +65,19 @@ pub struct Swarm {
     pub claims: Claims,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
+    /// Agent name → the identity that most recently said agent_hello with it (its current holder:
+    /// names are unique among open sessions).
+    named: BTreeMap<String, String>,
     /// Names agents may not take: the hosted game's, in-process writers'.
     reserved: BTreeSet<String>,
 }
 
 /// A session's name before (or without) agent_hello.
 pub fn default_name(s: &SessionInfo) -> String {
-    let client = if s.client_name.is_empty() { "anonymous" } else { s.client_name.as_str() };
+    // At most 48 characters of the client's name (clients choose it freely), without '/' or
+    // control characters, so the whole name stays within an agent name's 64.
+    let client: String = s.client_name.trim().chars().filter(|c| !c.is_control() && *c != '/').take(48).collect();
+    let client = if client.is_empty() { "anonymous".to_owned() } else { client };
     let short: String = s.id.chars().take(6).collect();
     format!("{client}-{short}")
 }
@@ -92,6 +98,16 @@ impl Swarm {
             Some(a) => a.key.clone(),
             None => session.id.clone(),
         }
+    }
+
+    /// The identity key now going by `name` (the last agent_hello with it), if any.
+    pub fn key_of_name(&self, name: &str) -> Option<&str> {
+        self.named.get(name).map(String::as_str)
+    }
+
+    /// Whether `key` is an identity some agent_hello named (else it is an unnamed session's).
+    pub fn is_named_key(&self, key: &str) -> bool {
+        self.named.values().any(|k| k == key)
     }
 
     pub fn role(&self, session_id: &str) -> &str {
@@ -173,6 +189,7 @@ impl Swarm {
             ("resume_token", Json::from(token.as_str())),
             ("note", Json::from("keep resume_token private; a later session continues as this agent (claims and undo included) with agent_hello {name, resume_token}")),
         ]);
+        self.named.insert(name.clone(), key.clone());
         self.agents.insert(session.id.clone(), Agent { name, role, key, token });
         Ok(reply)
     }
@@ -212,6 +229,7 @@ impl Swarm {
             ("resumed", Json::from(true)),
             ("claims", Json::arr(self.claims.owned_by(Writer::new(&agent.name, Some(&agent.key))).into_iter().map(Json::from))),
         ]);
+        self.named.insert(agent.name.clone(), agent.key.clone());
         self.agents.insert(session.id.clone(), agent);
         Ok(reply)
     }

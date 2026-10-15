@@ -29,6 +29,8 @@ pub struct Device {
     pub max_anisotropy: f32,
     /// `VK_EXT_memory_budget` is enabled.
     pub memory_budget: bool,
+    /// `fragmentStoresAndAtomics` is enabled (sight's ID buffer counts blended draws with it).
+    pub fragment_atomics: bool,
     memory: VkPhysicalDeviceMemoryProperties,
     /// Bytes allocated per [`MemoryKind`], and the live allocation count.
     allocated: Cell<[u64; MemoryKind::ALL.len()]>,
@@ -71,7 +73,8 @@ impl Device {
         for i in VkPhysicalDeviceVulkan12Features::BINDLESS {
             v12.flags[i] = VK_TRUE;
         }
-        // Optional: anisotropic filtering for material textures (every desktop GPU has it).
+        // Optional: anisotropic filtering for material textures (every desktop GPU has it) and
+        // fragment shader buffer atomics (sight's ID buffer counts glass with them).
         let mut supported = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
             p_next: ptr::null_mut(),
@@ -80,8 +83,10 @@ impl Device {
         // SAFETY: `supported` is a valid, unchained VkPhysicalDeviceFeatures2 for the call.
         unsafe { (instance.fns.get_physical_device_features2)(physical, &mut supported) };
         let anisotropy = supported.features.flags[VkPhysicalDeviceFeatures::SAMPLER_ANISOTROPY] != 0;
+        let fragment_atomics = supported.features.flags[VkPhysicalDeviceFeatures::FRAGMENT_STORES_AND_ATOMICS] != 0;
         let mut features = VkPhysicalDeviceFeatures { flags: [0; 55] };
         features.flags[VkPhysicalDeviceFeatures::SAMPLER_ANISOTROPY] = anisotropy as VkBool32;
+        features.flags[VkPhysicalDeviceFeatures::FRAGMENT_STORES_AND_ATOMICS] = fragment_atomics as VkBool32;
         let features2 = VkPhysicalDeviceFeatures2 {
             s_type: ST_PHYSICAL_DEVICE_FEATURES_2,
             p_next: &mut v12 as *mut _ as *mut c_void,
@@ -140,6 +145,7 @@ impl Device {
             timestamp_period: instance.properties(physical).limits.timestamp_period(),
             max_anisotropy: if anisotropy { instance.properties(physical).limits.max_sampler_anisotropy().max(1.0) } else { 1.0 },
             memory_budget,
+            fragment_atomics,
             memory: instance.memory_properties(physical),
             allocated: Cell::new([0; MemoryKind::ALL.len()]),
             allocations: Cell::new(0),

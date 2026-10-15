@@ -47,7 +47,7 @@ impl Host {
     fn frame(&mut self, alpha: f32, size: (u32, u32)) {
         let Host { game, world, clock } = self;
         let (mut cam, mut title) = (None, None);
-        let mut f = Frame { input: &[], size, alpha, dt_s: 0.016, camera: &mut cam, title: &mut title };
+        let mut f = Frame { input: &[], size, alpha, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title };
         game.frame(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 

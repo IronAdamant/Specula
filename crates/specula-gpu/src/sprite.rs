@@ -352,6 +352,9 @@ pub struct Plan2d {
     pub batches: Vec<Batch2d>,
     /// The drawn items' records in draw order, then one per shadow-casting sprite.
     pub records: Vec<ItemRecord>,
+    /// For each drawn record, its index in `FrameDesc::draws_2d` (sight's ID buffer gives each
+    /// record the id of its draw).
+    pub order: Vec<u32>,
     /// Records of drawn items (the shadow casters follow them).
     pub drawn: u32,
     /// Shadow-casting sprite records after the drawn ones.
@@ -544,10 +547,11 @@ pub fn plan_2d(
     shadows: bool,
     out: &mut Plan2d,
 ) {
-    let Plan2d { batches, records, keys, .. } = out;
+    let Plan2d { batches, records, keys, order, .. } = out;
     batches.clear();
     records.clear();
     keys.clear();
+    order.clear();
     out.drawn = 0;
     out.casters = 0;
     out.culled = 0;
@@ -602,6 +606,7 @@ pub fn plan_2d(
         };
         let n = records.len() as u32;
         records.push(record);
+        order.push(i);
         match batches.last_mut() {
             Some(b) if b.kind == kind => b.count += 1,
             _ => batches.push(Batch2d { kind, first: n, count: 1 }),
