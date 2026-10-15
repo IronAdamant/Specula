@@ -39,8 +39,11 @@ Timings vary between runs (other engines on the machine share the GPU; the scrip
 them). On 2026-10-16, Intel iGPU: GPU p95 7.1 / 9.2 ms, draw list p95 0.36 / 0.53 ms.
 
 `cargo test --release -p specula --test draw_list_10k -- --nocapture` times the window's CPU draw work
-for a 10k-entity world (the full walk captures use vs the window's cache, warm and with cold caches)
-and checks that a warm frame allocates nothing.
+for a 10k-entity world (the full walk captures use vs the window's cache, warm and with cold caches,
+with 0, 1 and 100 transient enemies or persistent markers moved per frame), checks that a warm frame
+allocates nothing and that the cache is never slower than the walk. `perf_frame`'s `draw_cache`
+counts frames that rebuilt the cache vs patched it; `tests/draw_cache_fuzz.rs` checks the cache
+draws exactly what the full walk does.
 
 **Shape budgets (world limits).** `[budgets]` also sets how many vertices the distinct `shape2d` shapes
 of a world may need (their parse-time upper bounds; identical shapes count once), in two pools:
