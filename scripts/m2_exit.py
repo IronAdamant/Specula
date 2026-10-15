@@ -19,16 +19,18 @@
      visible_px 0 and occluded true, a control box in view has visible_px > 0. Needs the ID
      buffer (the Sight lane); SKIPPED with the reason when subjects carry no visible_px.
   3. A 10k-instance world holds its budget on the Intel integrated GPU: a windowed engine at
-     1280x720 with the full Sepulcra night effect stack and `perf.example.toml`'s budgets,
-     10,000 entities spawned in 1,000-op world_batch chunks (8,000 stone grave markers sharing
-     the cube mesh + 2,000 tombstone models sharing one build, so they instance), seen through
-     the window camera; `perf_capture` records 120 window frames and checks the budgets on the
-     p95 over them. Required (no errors on the integrated adapter): the frame's GPU ms, frame
-     pacing, draw calls, triangles, GPU memory, pipelines built after warm-up. Per-pass GPU
-     budgets (Sepulcra's split of its own frame) and CPU-side budgets (cpu_frame, zones,
-     allocations, heap) are printed and saved as notes. The discrete adapter is measured too,
-     against its tighter budgets, for reference. Other engines running on the machine share the
-     GPU and skew timings: the script warns when it sees any.
+     1280x720 with the full Sepulcra night effect stack and `perf.example.toml`'s budgets, and
+     two 10,000-entity worlds in turn, each spawned in 1,000-op world_batch chunks and seen
+     through the window camera: "mixed" (8,000 stone grave markers sharing the cube mesh +
+     2,000 tombstone models sharing one build) and "tombstones" (10,000 tombstone models).
+     For each, `perf_capture` records 120 window frames and checks the budgets on the p95 over
+     them. Required (no errors on the integrated adapter): the frame's GPU ms, frame pacing,
+     draw calls, triangles, GPU memory, pipelines built after warm-up, and the CPU time building
+     the window's draws (zone frame/draw_list). Per-pass GPU budgets (Sepulcra's split of its
+     own frame) and the other CPU-side budgets (cpu_frame, zones, allocations, heap) are printed
+     and saved as notes. The discrete adapter is measured too, against its tighter budgets, for
+     reference. Other engines running on the machine share the GPU and skew timings: the script
+     warns when it sees any.
 
 Output (PNGs, packets, logs, summary JSON) goes to target/m2-exit/ (--out). Prints PASS / FAIL /
 SKIPPED per criterion and exits non-zero on any FAIL. LOOK AT THE PNGs before claiming anything.
@@ -435,11 +437,14 @@ def criterion_hidden(mcp, check):
 # --- Criterion 3 --------------------------------------------------------------------------------
 GRID = 100          # 100 x 100 plots
 PLOT = 1.6          # metres between plots
-TOMB_EVERY = 5      # every 5th plot holds a tombstone model; the rest a stone marker (cube)
+TOMB_EVERY = 5      # the "mixed" field: every 5th plot holds a tombstone model, the rest a stone marker (cube)
+# The two 10k worlds: (name, every how many plots a tombstone model stands; 1 = all of them).
+FIELDS = [("mixed", TOMB_EVERY), ("tombstones", 1)]
 
 
-def field_batches():
-    """10,000 entities in 10 world_batch calls of 1,000 ops."""
+def field_batches(tomb_every=TOMB_EVERY):
+    """10,000 entities in 10 world_batch calls of 1,000 ops: tombstone models (sharing one build)
+    on every `tomb_every`-th plot, stone markers (cubes) on the rest."""
     for b in range(GRID * GRID // 1000):
         ops = []
         for k in range(1000):
@@ -450,7 +455,7 @@ def field_batches():
             jx, jz = ((h & 0xFF) / 255 - 0.5) * 0.5, (((h >> 8) & 0xFF) / 255 - 0.5) * 0.5
             pos = [(gx - GRID / 2) * PLOT + jx, 0, -(gz * PLOT) + jz]
             yaw = ((h >> 16) & 0xFF) / 255 * 24 - 12
-            if i % TOMB_EVERY == 0:
+            if i % tomb_every == 0:
                 ops.append({"op": "spawn", "shape": "model", "path": f"/field/t{i:05d}", "recipe": "recipes/tombstone.json",
                             "position": pos, "rotation_deg": [0, yaw, 0]})
             else:
@@ -461,14 +466,16 @@ def field_batches():
         yield ops
 
 
-FRAME_METRICS = ("gpu_ms", "frame_pacing_p95_ms", "draw_calls", "triangles", "gpu_memory_mb", "pipelines_after_warm")
+FRAME_METRICS = ("gpu_ms", "frame_pacing_p95_ms", "draw_calls", "triangles", "gpu_memory_mb", "pipelines_after_warm",
+                 "zone.frame/draw_list")
 
 
 def is_frame_metric(metric):
     """The budgets criterion 3 requires: the frame's GPU time, frame pacing, draw calls,
-    triangles, GPU memory and pipelines built after warm-up. Per-pass GPU budgets (Sepulcra's
-    split of its own frame; a 10k-entity field is a different mix, with far more shadow casters)
-    and CPU-side budgets (cpu_frame, zones, allocations, heap) are reported beside them as notes."""
+    triangles, GPU memory, pipelines built after warm-up, and the CPU time building the window's
+    draws (zone frame/draw_list). Per-pass GPU budgets (Sepulcra's split of its own frame; a
+    10k-entity field is a different mix, with far more shadow casters) and the other CPU-side
+    budgets (cpu_frame, other zones, allocations, heap) are reported beside them as notes."""
     return metric in FRAME_METRICS
 
 
@@ -485,84 +492,98 @@ def other_engines(own_pid):
     return n
 
 
+def measure_field(mcp, engine, name, tomb_every, adapter, check):
+    """Spawns one 10k field, lets it settle, records 120 window frames and checks the budgets."""
+    mcp.call("world_spawn", shape="group", path="/field")
+    mcp.call("world_spawn", shape="quad", path="/field/ground", position=[0, 0, -GRID * PLOT / 2],
+             scale=[GRID * PLOT + 40, 1, GRID * PLOT + 40], color=GROUND, roughness=0.95)
+    spawned = sum(mcp.json("world_batch", ops=ops)["applied"] for ops in field_batches(tomb_every))
+    check(spawned == GRID * GRID, f"{name}: spawned {spawned} entities in 1,000-op batches")
+    # Let the tombstone build land and LODs settle, then record 120 window frames.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        q = mcp.json("world_query", path_prefix="/field/t00000", fields=["model_state"])["items"]
+        if q and q[0]["model_state"] == "ready":
+            break
+        time.sleep(0.2)
+    time.sleep(3.0)
+    cap = mcp.json("perf_capture", frames=120, trace=False, label=f"m2exit_{adapter}_{name}")
+    frame = mcp.json("perf_frame")
+    zones = {z["path"]: z for z in mcp.json("perf_zones", min_ms=0.0, limit=200).get("zones", []) if z.get("thread") == "main"}
+    draw_list = zones.get("frame/draw_list", {})
+    win = frame.get("window") or {}
+    draws = win.get("draws", {})
+    gpu = cap.get("gpu_ms") or {}
+    shot = mcp.frame(width=1280, height=720, eye=FIELD_EYE, target=FIELD_TARGET, fov_y_deg=50, time_s=1.0, max_subjects=1)
+    result = {
+        "field": name,
+        "adapter_kind": cap.get("adapter"),
+        "frames": cap.get("frames"),
+        "frame_ms": cap.get("frame_ms"),
+        "gpu_ms": gpu,
+        "gpu_passes_ms": cap.get("gpu_passes_ms"),
+        "draw_calls": cap.get("draw_calls"),
+        "triangles": cap.get("triangles"),
+        "draw_list_cpu_ms": {"mean": draw_list.get("mean_ms"), "p95": draw_list.get("p95_ms")},
+        "window_last_frame": {k: draws.get(k) for k in ("submitted", "culled", "draw_calls", "instances", "triangles")},
+        "window_size": win.get("size"),
+        "budget_errors": cap.get("budget_errors"),
+        "budgets_checked": frame.get("budgets", {}).get("checked"),
+        "budgets_checked_on": cap.get("budgets_checked_on"),
+        "entities": frame.get("entities"),
+        "models": frame.get("models", {}).get("window"),
+        "capture_png": shot["image"]["path"],
+    }
+    print(f"    {name}: window frames {cap.get('frames')}: frame ms {cap.get('frame_ms')}")
+    print(f"    {name}: GPU ms {gpu}")
+    print(f"    {name}: passes p95 { {k: v.get('p95') for k, v in (cap.get('gpu_passes_ms') or {}).items()} }")
+    print(f"    {name}: CPU frame/draw_list ms mean {draw_list.get('mean_ms')} p95 {draw_list.get('p95_ms')}")
+    print(f"    {name}: last window frame ({win.get('size')} px): {result['window_last_frame']}; "
+          f"model LODs {(result['models'] or {}).get('lod_histogram')}")
+    print(f"    {name}: view through the capture camera: {shot['image']['path']}")
+    if cap.get("frames", 0) < 60 or not win:
+        check(False, f"{name}: the window produced frames (captured {cap.get('frames')}, stopped early: {cap.get('stopped_early')})")
+    check(draws.get("instances", 0) >= 5000 and draws.get("draw_calls", 10**9) <= 10,
+          f"{name}: instanced: {draws.get('instances')} instances in {draws.get('draw_calls')} draw calls")
+    errors = cap.get("budget_errors") or []
+    required = [e for e in errors if is_frame_metric(e.get("metric", ""))]
+    notes = [e for e in errors if not is_frame_metric(e.get("metric", ""))]
+    result["other_budget_misses"] = notes
+    for e in required:
+        print(f"    {name}: budget miss: {e}")
+    for e in notes:
+        print(f"    {name}: note (per-pass or other CPU budget: reported, doesn't decide the criterion): {e}")
+    result["other_engines_running"] = other_engines(engine.proc.pid)
+    if result["other_engines_running"]:
+        print(f"    warning: {result['other_engines_running']} other engine process(es) were running and may share the GPU")
+    result["passed"] = check(not required, f"{name}: no frame/GPU/draw-list budget errors over {cap.get('frames')} window frames "
+                                           f"({result['adapter_kind']}; GPU p95 {gpu.get('p95')} ms, "
+                                           f"frame p95 {(cap.get('frame_ms') or {}).get('p95')} ms, "
+                                           f"draw list p95 {draw_list.get('p95_ms')} ms)")
+    mcp.call("world_delete", path="/field")
+    return result
+
+
+FIELD_EYE, FIELD_TARGET = [0, 9, 14], [0, 0, -45]
+
+
 def criterion_instances(exe, adapter, port, out, check):
-    print(f"[3] 10k-instance world within budget, window path ({adapter})")
+    print(f"[3] 10k-instance worlds within budget, window path ({adapter})")
     log = out / f"engine_window_{adapter}.log"
     args = ["--adapter", adapter, "--size", "1280x720", "--perf", str(PERF_TOML), "--assets", str(out / "assets"),
             "--captures", str(out / "captures"), "--worlds", str(out / "worlds")]
-    result = {}
+    results = []
     with Engine(exe, port, log, *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("m2-exit-instances")
         mcp.call("agent_hello", name="m2_exit", role="reviewer")
         mcp.call("world_env", **night_env())
-        mcp.call("world_spawn", shape="group", path="/field")
-        mcp.call("world_spawn", shape="quad", path="/field/ground", position=[0, 0, -GRID * PLOT / 2],
-                 scale=[GRID * PLOT + 40, 1, GRID * PLOT + 40], color=GROUND, roughness=0.95)
-        spawned = 0
-        for ops in field_batches():
-            spawned += mcp.json("world_batch", ops=ops)["applied"]
-        check(spawned == GRID * GRID, f"spawned {spawned} entities in 1,000-op batches")
         # The window camera: from the field's near edge, looking over it.
-        mcp.call("window_view", eye=[0, 9, 14], target=[0, 0, -45], fov_y_deg=50)
-        # Let the tombstone build land and LODs settle, then record 120 window frames.
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            q = mcp.json("world_query", path_prefix="/field/t00000", fields=["model_state"])["items"]
-            if q and q[0]["model_state"] == "ready":
-                break
-            time.sleep(0.2)
-        time.sleep(3.0)
-        cap = mcp.json("perf_capture", frames=120, trace=False, label=f"m2exit_{adapter}")
-        frame = mcp.json("perf_frame")
-        win = frame.get("window") or {}
-        draws = win.get("draws", {})
-        gpu = cap.get("gpu_ms") or {}
-        shot = mcp.frame(width=1280, height=720, eye=[0, 9, 14], target=[0, 0, -45], fov_y_deg=50, time_s=1.0, max_subjects=1)
-        result = {
-            "adapter_kind": cap.get("adapter"),
-            "gpu": frame.get("budgets", {}).get("adapter"),
-            "frames": cap.get("frames"),
-            "frame_ms": cap.get("frame_ms"),
-            "gpu_ms": gpu,
-            "gpu_passes_ms": cap.get("gpu_passes_ms"),
-            "draw_calls": cap.get("draw_calls"),
-            "triangles": cap.get("triangles"),
-            "window_last_frame": {k: draws.get(k) for k in ("submitted", "culled", "draw_calls", "instances", "triangles")},
-            "budget_errors": cap.get("budget_errors"),
-            "budgets_checked": frame.get("budgets", {}).get("checked"),
-            "budgets_checked_on": cap.get("budgets_checked_on"),
-            "entities": frame.get("entities"),
-            "models": frame.get("models", {}).get("window"),
-            "capture_png": shot["image"]["path"],
-        }
-        print(f"    window frames {cap.get('frames')}: frame ms {cap.get('frame_ms')}")
-        print(f"    GPU ms {gpu}")
-        print(f"    passes p95 { {k: v.get('p95') for k, v in (cap.get('gpu_passes_ms') or {}).items()} }")
-        result["window_size"] = win.get("size")
-        print(f"    last window frame ({win.get('size')} px): {result['window_last_frame']}; entities {frame.get('entities')}")
-        print(f"    view through the capture camera: {shot['image']['path']}")
-        if cap.get("frames", 0) < 60 or not win:
-            check(False, f"the window produced frames (captured {cap.get('frames')}, stopped early: {cap.get('stopped_early')})")
-        check(draws.get("instances", 0) >= 5000 and draws.get("draw_calls", 10**9) <= 10,
-              f"instanced: {draws.get('instances')} instances in {draws.get('draw_calls')} draw calls")
-        errors = cap.get("budget_errors") or []
-        required = [e for e in errors if is_frame_metric(e.get("metric", ""))]
-        cpu_side = [e for e in errors if not is_frame_metric(e.get("metric", ""))]
-        result["other_budget_misses"] = cpu_side
-        for e in required:
-            print(f"    budget miss: {e}")
-        for e in cpu_side:
-            print(f"    note (per-pass or CPU-side budget: reported, doesn't decide the criterion): {e}")
-        result["other_engines_running"] = other_engines(engine.proc.pid)
-        if result["other_engines_running"]:
-            print(f"    warning: {result['other_engines_running']} other engine process(es) were running and may share the GPU")
-        result["passed"] = check(not required, f"no frame/GPU budget errors over {cap.get('frames')} window frames "
-                                               f"({result['adapter_kind']}; GPU p95 {gpu.get('p95')} ms, "
-                                               f"frame p95 {(cap.get('frame_ms') or {}).get('p95')} ms)")
+        mcp.call("window_view", eye=FIELD_EYE, target=FIELD_TARGET, fov_y_deg=50)
+        for name, every in FIELDS:
+            results.append(measure_field(mcp, engine, name, every, adapter, check))
     errs = engine.validation_errors()
     check(errs == 0, f"validation errors at shutdown: {errs}")
-    result["validation_errors"] = errs
-    return result
+    return {"fields": results, "validation_errors": errs}
 
 
 # --- Main ---------------------------------------------------------------------------------------
