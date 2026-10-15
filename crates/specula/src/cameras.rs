@@ -65,6 +65,9 @@ pub struct NamedCamera {
     pub spec: CameraSpec,
     /// Bumped on every `camera_set`.
     pub version: u64,
+    /// Saved with the world: cameras of agents that never said `agent_hello` (no name to come
+    /// back as) live for the engine run only.
+    pub persisted: bool,
 }
 
 impl NamedCamera {
@@ -97,7 +100,7 @@ impl NamedCamera {
             o.retain(|(k, _)| k != "version");
         }
         let spec = crate::sight_tools::parse_camera_set(&args)?;
-        Ok(NamedCamera { spec, version })
+        Ok(NamedCamera { spec, version, persisted: true })
     }
 }
 
@@ -118,11 +121,24 @@ impl CameraError {
     }
 }
 
-/// What the engine keeps about cameras beyond the world's: each follow camera's last resolved
-/// view (shown when its entity is gone). Not saved: a reloaded follow camera resolves afresh.
+/// What the engine keeps about cameras beyond the world's: for each follow camera, the entity
+/// its path resolved to (re-resolved only when the world's layout changes, so a window following
+/// one every frame allocates nothing) and its last view (shown when the entity is gone). Not
+/// saved: a reloaded follow camera resolves afresh.
 #[derive(Default)]
 pub struct Cameras {
-    last: BTreeMap<(String, String), Camera>,
+    follows: BTreeMap<String, BTreeMap<String, Followed>>,
+}
+
+/// A follow camera's resolution (see [`Cameras`]).
+#[derive(Clone, Copy, Debug)]
+struct Followed {
+    /// The entity at its path as of `epoch` (`None`: no entity there).
+    entity: Option<u64>,
+    /// [`World::layout_epoch`] when `entity` was looked up (`u64::MAX`: never).
+    epoch: u64,
+    /// The last view resolved through it.
+    last: Option<Camera>,
 }
 
 /// A camera resolved for one frame.
@@ -162,8 +178,17 @@ impl Cameras {
             let (eye, target) = (spec.eye.expect("checked at set"), spec.target.expect("checked at set"));
             return Ok(Resolved { camera: Camera::new(eye, target, spec.fov_y_deg), warning: None, version });
         };
-        let key = (owner.to_owned(), name.to_owned());
-        match world.find_path(&f.path).ok().and_then(|id| world.get(id)) {
+        // Borrowed lookups; an entry is made (allocating) only the first time.
+        if !self.follows.get(owner).is_some_and(|m| m.contains_key(name)) {
+            let fresh = Followed { entity: None, epoch: u64::MAX, last: None };
+            self.follows.entry(owner.to_owned()).or_default().insert(name.to_owned(), fresh);
+        }
+        let slot = self.follows.get_mut(owner).and_then(|m| m.get_mut(name)).expect("made above");
+        if slot.epoch != world.layout_epoch() {
+            slot.entity = world.find_path(&f.path).ok();
+            slot.epoch = world.layout_epoch();
+        }
+        match slot.entity.and_then(|id| world.get(id)) {
             Some(e) => {
                 let m = e.model();
                 let origin = m.transform_point(Vec3::ZERO);
@@ -179,11 +204,11 @@ impl Cameras {
                 let (eye, target) = (origin + turn(f.offset), origin + turn(f.look_offset));
                 let target = if (target - eye).length() < 1e-4 { target + Vec3::new(0.0, 0.0, -1.0) } else { target };
                 let camera = Camera::new(eye, target, spec.fov_y_deg);
-                self.last.insert(key, camera);
+                slot.last = Some(camera);
                 Ok(Resolved { camera, warning: None, version })
             }
-            None => match self.last.get(&key) {
-                Some(&camera) => Ok(Resolved {
+            None => match slot.last {
+                Some(camera) => Ok(Resolved {
                     version,
                     camera,
                     warning: Some(format!(
@@ -203,7 +228,10 @@ impl Cameras {
     /// load), so the cache stays bounded by the world's cameras.
     pub fn prune(&mut self, world: &World) {
         let cams = world.cameras();
-        self.last.retain(|(owner, name), _| cams.get(owner).is_some_and(|c| c.contains_key(name)));
+        self.follows.retain(|owner, m| {
+            m.retain(|name, _| cams.get(owner).is_some_and(|c| c.contains_key(name)));
+            !m.is_empty()
+        });
     }
 }
 
@@ -216,6 +244,16 @@ pub(crate) fn not_found(name: &str, of: Option<&str>) -> CameraError {
 mod tests {
     use super::*;
     use crate::world::{EntityKey, Recording, Shape, SpawnSpec, UpdateSpec};
+
+    trait SetT {
+        fn set_camera_t(&mut self, owner: &str, spec: CameraSpec) -> Result<&NamedCamera, crate::world::WorldError>;
+    }
+
+    impl SetT for World {
+        fn set_camera_t(&mut self, owner: &str, spec: CameraSpec) -> Result<&NamedCamera, crate::world::WorldError> {
+            self.set_camera(owner, spec, true)
+        }
+    }
 
     fn fixed(name: &str, eye: [f32; 3]) -> CameraSpec {
         CameraSpec {
@@ -231,8 +269,8 @@ mod tests {
     fn cameras_belong_to_their_owner() {
         let mut world = World::default();
         let mut c = Cameras::default();
-        world.set_camera("ann", fixed("overview", [0.0, 10.0, 10.0])).unwrap();
-        world.set_camera("bob", fixed("overview", [5.0, 5.0, 5.0])).unwrap();
+        world.set_camera_t("ann", fixed("overview", [0.0, 10.0, 10.0])).unwrap();
+        world.set_camera_t("bob", fixed("overview", [5.0, 5.0, 5.0])).unwrap();
         let ann = c.resolve("ann", "overview", None, &world).unwrap().camera;
         let bob = c.resolve("bob", "overview", None, &world).unwrap().camera;
         assert_eq!(ann.eye, Vec3::new(0.0, 10.0, 10.0));
@@ -247,8 +285,8 @@ mod tests {
         assert!(e.code == "camera_not_found" && e.message.contains("agent 'nobody'"), "{e:?}");
         assert_eq!(world.delete_cameras("bob", Some("gone")).unwrap_err().code, "camera_not_found");
         // Replacing bumps the version; the list is in name order and round-trips camera_set's form.
-        world.set_camera("ann", fixed("overview", [1.0, 2.0, 3.0])).unwrap();
-        world.set_camera("ann", fixed("a_close", [1.0, 1.0, 1.0])).unwrap();
+        world.set_camera_t("ann", fixed("overview", [1.0, 2.0, 3.0])).unwrap();
+        world.set_camera_t("ann", fixed("a_close", [1.0, 1.0, 1.0])).unwrap();
         let listed = list(&world, "ann");
         assert_eq!(listed.iter().map(|n| n.spec.name.as_str()).collect::<Vec<_>>(), ["a_close", "overview"]);
         assert_eq!(listed[1].version, 2);
@@ -266,10 +304,10 @@ mod tests {
         let hash = world.state_hash();
         let revision = world.revision();
         for i in 0..MAX_CAMERAS_PER_AGENT {
-            world.set_camera("ann", fixed(&format!("c{i}"), [1.0, 1.0, 1.0])).unwrap();
+            world.set_camera_t("ann", fixed(&format!("c{i}"), [1.0, 1.0, 1.0])).unwrap();
         }
-        assert_eq!(world.set_camera("ann", fixed("one_more", [1.0, 1.0, 1.0])).err().unwrap().code, "camera_limit");
-        assert!(world.set_camera("ann", fixed("c3", [2.0, 1.0, 1.0])).is_ok(), "replacing is always allowed");
+        assert_eq!(world.set_camera_t("ann", fixed("one_more", [1.0, 1.0, 1.0])).err().unwrap().code, "camera_limit");
+        assert!(world.set_camera_t("ann", fixed("c3", [2.0, 1.0, 1.0])).is_ok(), "replacing is always allowed");
         assert_eq!(world.state_hash(), hash, "cameras never change the state hash (replays, desync checks)");
         assert!(world.revision() > revision, "but they are changes to save");
     }
@@ -278,8 +316,8 @@ mod tests {
     fn camera_changes_are_recorded_and_revert() {
         let mut world = World::default();
         world.set_recording(Recording::Full);
-        world.set_camera("ann", fixed("overview", [0.0, 10.0, 10.0])).unwrap();
-        world.set_camera("ann", fixed("overview", [0.0, 5.0, 5.0])).unwrap();
+        world.set_camera_t("ann", fixed("overview", [0.0, 10.0, 10.0])).unwrap();
+        world.set_camera_t("ann", fixed("overview", [0.0, 5.0, 5.0])).unwrap();
         world.delete_cameras("ann", Some("overview")).unwrap();
         let changes = world.take_changes();
         let ops: Vec<&str> = changes.iter().map(|c| c.op()).collect();
@@ -305,7 +343,7 @@ mod tests {
         world.spawn(s, "t").unwrap();
         let mut c = Cameras::default();
         let follow = Follow { path: "/runner".into(), offset: Vec3::new(0.0, 2.0, 5.0), look_offset: Vec3::ZERO, local: false };
-        world.set_camera("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(follow) }).unwrap();
         let r = c.resolve("ann", "chase", None, &world).unwrap();
         assert_eq!((r.camera.eye, r.camera.target), (Vec3::new(10.0, 2.0, 5.0), Vec3::new(10.0, 0.0, 0.0)));
         // It moves: the camera moves with it.
@@ -316,7 +354,7 @@ mod tests {
         assert_eq!(r.camera.eye, Vec3::new(20.0, 2.0, 5.0));
         // Local offsets turn with it: +Z behind becomes +X after a 90 degree yaw.
         let local = Follow { path: "/runner".into(), offset: Vec3::new(0.0, 0.0, 5.0), look_offset: Vec3::ZERO, local: true };
-        world.set_camera("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(local) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "chase".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(local) }).unwrap();
         let eye = c.resolve("ann", "chase", None, &world).unwrap().camera.eye;
         assert!((eye - Vec3::new(25.0, 0.0, 0.0)).length() < 1e-4, "{eye:?}");
         // Gone: the last view, with a warning.
@@ -324,11 +362,11 @@ mod tests {
         let r = c.resolve("ann", "chase", None, &world).unwrap();
         assert!((r.camera.eye - eye).length() < 1e-6 && r.warning.unwrap().contains("no longer exists"));
         let never = Follow { path: "/ghost".into(), offset: Vec3::ONE, look_offset: Vec3::ZERO, local: false };
-        world.set_camera("ann", CameraSpec { name: "g".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(never) }).unwrap();
+        world.set_camera_t("ann", CameraSpec { name: "g".into(), eye: None, target: None, fov_y_deg: 60.0, follow: Some(never) }).unwrap();
         assert_eq!(c.resolve("ann", "g", None, &world).err().unwrap().code, "follow_target_missing");
         // Deleted cameras' remembered views go.
         world.delete_cameras("ann", None).unwrap();
         c.prune(&world);
-        assert!(c.last.is_empty());
+        assert!(c.follows.is_empty());
     }
 }

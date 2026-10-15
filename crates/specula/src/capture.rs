@@ -308,10 +308,12 @@ impl Engine {
         match call {
             SightCall::CameraSet(spec) => {
                 // Journaled like any world change (kind `camera`), so other agents see it in
-                // world_changes and world_undo puts it back; saved with the world.
+                // world_changes and world_undo puts it back; saved with the world when the agent
+                // has a name to come back as (agent_hello), else for this engine run only.
+                let persisted = self.swarm.introduced(&session.id);
                 let w = Writer::new(&name, Some(&key));
                 let tick = self.clock.tick();
-                let set = self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.set_camera(&name, spec).cloned());
+                let set = self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.set_camera(&name, spec, persisted).cloned());
                 let (cam, seq) = match set {
                     Ok(ok) => ok,
                     Err(e) => return world_error(&e),
@@ -332,6 +334,10 @@ impl Engine {
                 }
                 out.set("owner", Json::from(name));
                 out.set("journal", seq.map_or(Json::Null, Json::from));
+                out.set("persisted", Json::from(persisted));
+                if !persisted {
+                    out.set("note", Json::from("not saved with the world: say agent_hello with a name to keep cameras with the world"));
+                }
                 ToolOutput::text(out.to_pretty())
             }
             SightCall::CameraList { all: true, .. } => {

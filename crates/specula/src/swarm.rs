@@ -74,7 +74,10 @@ pub struct Swarm {
 
 /// A session's name before (or without) agent_hello.
 pub fn default_name(s: &SessionInfo) -> String {
-    let client = if s.client_name.is_empty() { "anonymous" } else { s.client_name.as_str() };
+    // At most 48 characters of the client's name (clients choose it freely), without '/' or
+    // control characters, so the whole name stays within an agent name's 64.
+    let client: String = s.client_name.trim().chars().filter(|c| !c.is_control() && *c != '/').take(48).collect();
+    let client = if client.is_empty() { "anonymous".to_owned() } else { client };
     let short: String = s.id.chars().take(6).collect();
     format!("{client}-{short}")
 }

@@ -1987,6 +1987,9 @@ pub struct World {
     /// Agents' named sight cameras: agent name → camera name → camera (see [`crate::cameras`]).
     /// Saved with the world and journaled, but never hashed: they are tooling, not state.
     cameras: BTreeMap<String, BTreeMap<String, crate::cameras::NamedCamera>>,
+    /// Bumped whenever an entity is linked, unlinked, renamed or moved to another parent: path
+    /// lookups cached against it stay valid while it holds (follow cameras, every frame).
+    layout_epoch: u64,
 }
 
 impl World {
@@ -2182,28 +2185,50 @@ impl World {
         &self.cameras
     }
 
-    /// Creates or replaces camera `spec.name` of agent `owner` (its version goes up by one).
+    /// Creates or replaces camera `spec.name` of agent `owner` (its version goes up by one);
+    /// `persisted`: saved with the world (cameras of agents that never said agent_hello aren't).
     /// Recorded as a [`Change::Camera`]; bounded per agent and per world.
-    pub fn set_camera(&mut self, owner: &str, spec: crate::cameras::CameraSpec) -> Result<&crate::cameras::NamedCamera, WorldError> {
-        use crate::cameras::{MAX_CAMERAS_PER_AGENT, MAX_OWNERS};
-        if !self.cameras.contains_key(owner) && self.cameras.len() >= MAX_OWNERS {
-            return Err(WorldError::new(
-                "camera_owner_limit",
-                format!("at most {MAX_OWNERS} agents hold cameras in one world; another agent must camera_delete theirs first"),
-            ));
-        }
-        let held = self.cameras.get(owner);
-        let before = held.and_then(|c| c.get(&spec.name)).cloned();
-        if before.is_none() && held.is_some_and(|c| c.len() >= MAX_CAMERAS_PER_AGENT) {
-            return Err(WorldError::new(
-                "camera_limit",
-                format!("at most {MAX_CAMERAS_PER_AGENT} cameras per agent; camera_delete one first"),
-            ));
-        }
+    pub fn set_camera(
+        &mut self,
+        owner: &str,
+        spec: crate::cameras::CameraSpec,
+        persisted: bool,
+    ) -> Result<&crate::cameras::NamedCamera, WorldError> {
+        let before = self.cameras.get(owner).and_then(|c| c.get(&spec.name));
+        let version = before.map_or(1, |c| c.version + 1);
         let name = spec.name.clone();
-        let after = crate::cameras::NamedCamera { version: before.as_ref().map_or(1, |c| c.version + 1), spec };
-        self.put_camera_raw(owner, &name, Some(after));
+        self.restore_camera(owner, &name, Some(crate::cameras::NamedCamera { version, spec, persisted }))?;
         Ok(&self.cameras[owner][&name])
+    }
+
+    /// Puts camera `name` of `owner` as given (`None` removes it), refusing to go past the camera
+    /// limits (`camera_limit`, `camera_owner_limit`): what set_camera and undo use.
+    pub(crate) fn restore_camera(&mut self, owner: &str, name: &str, camera: Option<crate::cameras::NamedCamera>) -> Result<(), WorldError> {
+        use crate::cameras::{MAX_CAMERAS_PER_AGENT, MAX_OWNERS};
+        let held = self.cameras.get(owner);
+        if camera.is_some() && !held.is_some_and(|c| c.contains_key(name)) {
+            if held.is_none() && self.cameras.len() >= MAX_OWNERS {
+                return Err(WorldError::new(
+                    "camera_owner_limit",
+                    format!("at most {MAX_OWNERS} agents hold cameras in one world; another agent must camera_delete theirs first"),
+                ));
+            }
+            if held.is_some_and(|c| c.len() >= MAX_CAMERAS_PER_AGENT) {
+                return Err(WorldError::new(
+                    "camera_limit",
+                    format!("at most {MAX_CAMERAS_PER_AGENT} cameras per agent; camera_delete one first"),
+                )
+                .with("owner", owner)
+                .with("camera", name));
+            }
+        }
+        self.put_camera_raw(owner, name, camera);
+        Ok(())
+    }
+
+    /// See the `layout_epoch` field.
+    pub fn layout_epoch(&self) -> u64 {
+        self.layout_epoch
     }
 
     /// Deletes agent `owner`'s camera `name` (every one of its cameras with `None`); returns how
@@ -2773,6 +2798,7 @@ impl World {
             self.names.insert((new_key.1.clone(), id));
             self.children.remove(&(old_parent, old_name));
             self.children.insert(new_key, id);
+            self.layout_epoch += 1;
         }
         if moved {
             self.refresh(id);
@@ -2910,6 +2936,7 @@ impl World {
 
     /// Indexes `e` (its id must not be in the world).
     fn link(&mut self, e: Entity) {
+        self.layout_epoch += 1;
         self.children.insert((e.parent.unwrap_or(ROOT), e.name.clone()), e.id);
         self.names.insert((e.name.clone(), e.id));
         if e.transient {
@@ -2921,6 +2948,7 @@ impl World {
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
         let e = self.entities.remove(&id)?;
+        self.layout_epoch += 1;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
         if e.transient {
@@ -3279,6 +3307,7 @@ impl World {
     /// rename may already have given its old name to another entity).
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
         let e = self.entities.remove(&id)?;
+        self.layout_epoch += 1;
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {
             self.children.remove(&key);

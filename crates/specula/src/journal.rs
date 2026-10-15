@@ -862,6 +862,16 @@ impl Journal {
                         };
                         return Err(err.with("entry", seq).with("oldest_kept", Json::from(self.oldest_kept())));
                     };
+                    // Cameras are personal views: nobody undoes another's, not even by force.
+                    let cameras = e.changes.iter().any(|c| matches!(c, Change::Camera { .. }));
+                    if !e.is_by(by) && cameras {
+                        return Err(WorldError::new(
+                            "not_yours",
+                            format!("journal entry {seq} changed {}'s cameras; only they change their cameras", e.by),
+                        )
+                        .with("entry", seq)
+                        .with("by", &*e.by));
+                    }
                     if !e.is_by(by) && !req.force {
                         let who = if &*e.by == by.name {
                             format!("{} in another session", e.by)
@@ -899,7 +909,8 @@ impl Journal {
                     .entries
                     .iter()
                     .rev()
-                    .filter(|e| e.is_by(by) && e.undone_by.is_none() && e.kind != Kind::Undo && e.undoable())
+                    // Camera changes are undone by id only: "undo my last change" means the world.
+                    .filter(|e| e.is_by(by) && e.undone_by.is_none() && !matches!(e.kind, Kind::Undo | Kind::Camera) && e.undoable())
                     .take(req.count)
                     .map(|e| e.seq)
                     .collect();
@@ -1021,7 +1032,12 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 world.put_raw(e);
             }
             Change::Env { before, .. } => world.replace_env(**before),
-            Change::Camera { owner, name, before, .. } => world.put_camera_raw(owner, name, before.as_deref().cloned()),
+            Change::Camera { owner, name, before, .. } => {
+                // A restored camera is a new version of whatever is there now, within the limits.
+                let current = world.cameras().get(owner).and_then(|c| c.get(name)).map_or(0, |c| c.version);
+                let restored = before.as_deref().map(|b| crate::cameras::NamedCamera { version: current.max(b.version) + 1, ..b.clone() });
+                world.restore_camera(owner, name, restored)?;
+            }
         }
     }
     Ok(())
@@ -1416,14 +1432,14 @@ mod tests {
         use crate::cameras::CameraSpec;
         use specula_core::math::Vec3;
         let (mut w, mut j) = live();
-        spawn(&mut w, &mut j, "ann", "/a");
+        spawn(&mut w, &mut j, "bob", "/a");
         let hash = w.state_hash();
         let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
         let set = |w: &mut World, j: &mut Journal, x: f32| {
-            commit(w, j, 2, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(x)).map(|c| c.version)).unwrap()
+            commit(w, j, 2, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(x), true).map(|c| c.version)).unwrap()
         };
         let (v1, s1) = set(&mut w, &mut j, 1.0);
-        let (v2, _) = set(&mut w, &mut j, 2.0);
+        let (v2, s2) = set(&mut w, &mut j, 2.0);
         assert_eq!((v1, v2), (1, 2));
         assert_eq!(w.state_hash(), hash, "cameras are not world state");
         let entry = j.get(s1.unwrap()).unwrap();
@@ -1431,11 +1447,17 @@ mod tests {
         // The feed shows them to everyone.
         let feed = j.changes(&ChangesQuery { since: Cursor { seq: 1, index: 0 }, limit: 10, path_prefix: None, game: false });
         assert!(feed.to_string().contains("@camera/ann/overview"), "{feed}");
-        // Undo puts the previous camera back, then removes it; redo works like any undo.
-        undo(&mut w, &mut j, "ann", last(1)).unwrap();
+        // "Undo my last change" means the world: camera changes are undone by id only.
+        assert_eq!(undo(&mut w, &mut j, "ann", last(1)).unwrap_err().code, "nothing_to_undo");
+        let ids = |s: Option<u64>| UndoRequest { ids: Some(vec![s.unwrap()]), ..last(1) };
+        // Cameras are personal: nobody else undoes them, not even by force.
+        let forced = UndoRequest { force: true, ..ids(s2) };
+        assert_eq!(undo(&mut w, &mut j, "bob", forced).unwrap_err().code, "not_yours");
+        // Undo puts the previous camera back as a newer version (like entities), then removes it.
+        undo(&mut w, &mut j, "ann", ids(s2)).unwrap();
         assert_eq!(w.cameras()["ann"]["overview"].spec.eye, Some(Vec3::new(1.0, 5.0, 5.0)));
-        assert_eq!(w.cameras()["ann"]["overview"].version, 1);
-        undo(&mut w, &mut j, "ann", last(1)).unwrap();
+        assert_eq!(w.cameras()["ann"]["overview"].version, 3, "max(current 2, before 1) + 1");
+        undo(&mut w, &mut j, "ann", ids(s1)).unwrap();
         assert!(w.cameras().is_empty(), "the first camera_set undone: no camera");
         assert_eq!(w.state_hash(), hash);
         // Delete is journaled too, and replay rebuilds the world (cameras included) exactly.
@@ -1449,6 +1471,26 @@ mod tests {
         let failed = commit(&mut w, &mut j, 4, "ann", Kind::Camera, Some(&mut no_check), |w| w.delete_cameras("ann", Some("nope")));
         assert_eq!(failed.unwrap_err().code, "camera_not_found");
         assert_eq!(w.cameras()["ann"]["overview"].spec.eye, Some(Vec3::new(4.0, 5.0, 5.0)));
+    }
+
+    /// Reviewer finding (round 7): undo restored cameras past the limits (32 cameras, delete
+    /// one, set another, undo the delete: 33), which then made the saved world unloadable.
+    #[test]
+    fn camera_undo_stays_within_the_limits() {
+        use crate::cameras::{CameraSpec, MAX_CAMERAS_PER_AGENT};
+        use specula_core::math::Vec3;
+        let (mut w, mut j) = live();
+        let cam = |n: &str| CameraSpec { name: n.into(), eye: Some(Vec3::new(1.0, 5.0, 5.0)), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        for i in 0..MAX_CAMERAS_PER_AGENT {
+            commit(&mut w, &mut j, 1, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam(&format!("c{i}")), true).map(|_| ())).unwrap();
+        }
+        let (_, del) = commit(&mut w, &mut j, 2, "ann", Kind::Camera, Some(&mut no_check), |w| w.delete_cameras("ann", Some("c0"))).unwrap();
+        commit(&mut w, &mut j, 3, "ann", Kind::Camera, Some(&mut no_check), |w| w.set_camera("ann", cam("c32"), true).map(|_| ())).unwrap();
+        let req = UndoRequest { ids: Some(vec![del.unwrap()]), ..last(1) };
+        let e = undo(&mut w, &mut j, "ann", req).unwrap_err();
+        assert_eq!(e.code, "camera_limit", "{e:?}");
+        assert_eq!(w.cameras()["ann"].len(), MAX_CAMERAS_PER_AGENT, "nothing changed");
+        assert!(!w.cameras()["ann"].contains_key("c0"));
     }
 
     #[test]

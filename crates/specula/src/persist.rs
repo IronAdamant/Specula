@@ -170,6 +170,9 @@ pub struct Saved {
     pub loose: Option<LooseCache>,
     /// The cameras file and the records it holds (`None`: the world has no cameras).
     pub cameras: Option<(String, Arc<Vec<Json>>)>,
+    /// What loading skipped without failing (cameras that can't be used), for the caller to
+    /// report.
+    pub warnings: Vec<String>,
 }
 
 /// `(id, subtree stamp)` of each loose top-level entity, and their rendered records.
@@ -276,7 +279,7 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
 fn camera_records(world: &World) -> Vec<Json> {
     let mut out = Vec::new();
     for (owner, cams) in world.cameras() {
-        for cam in cams.values() {
+        for cam in cams.values().filter(|c| c.persisted) {
             let mut fields = vec![("owner".to_owned(), Json::from(owner.as_str()))];
             if let Json::Obj(rest) = cam.to_json() {
                 fields.extend(rest);
@@ -311,7 +314,7 @@ impl Plan {
     /// they leave behind. Pure.
     fn render(&self, generation: u64) -> (Vec<(String, String)>, Saved) {
         let mut files = Vec::new();
-        let mut saved = Saved { dir: self.dir.clone(), generation, subtrees: BTreeMap::new(), loose: None, cameras: None };
+        let mut saved = Saved { dir: self.dir.clone(), generation, subtrees: BTreeMap::new(), loose: None, cameras: None, warnings: Vec::new() };
         for part in &self.parts {
             match part {
                 Part::Keep { id, saved: s } => {
@@ -896,14 +899,21 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
     world.set_clock_s(time_s);
     world.set_env(&env).map_err(|e| from_world(e, INDEX, None))?;
     load_entities(&mut world, INDEX, &index, None)?;
-    let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new(), loose: None, cameras: None };
-    if let Some(file) = index.get("cameras") {
-        let file = file
-            .as_str()
-            .filter(|f| is_subtree_file(f) && stem_of(f) == CAMERAS_STEM)
-            .ok_or_else(|| bad("cameras", "'cameras' must be a file name like \"cameras.<gen>.json\""))?;
-        let records = load_cameras(&mut world, file, &read(file)?)?;
-        saved.cameras = Some((file.to_owned(), Arc::new(records)));
+    let mut saved = Saved { dir: PathBuf::new(), generation, subtrees: BTreeMap::new(), loose: None, cameras: None, warnings: Vec::new() };
+    // Cameras never cost the world: an unreadable file or camera is skipped with a warning (and
+    // the next save writes the cameras that did load).
+    match index.get("cameras").map(|f| f.as_str().filter(|f| is_subtree_file(f) && stem_of(f) == CAMERAS_STEM)) {
+        None => {}
+        Some(None) => saved.warnings.push("world.json: 'cameras' is not a cameras file name; no cameras loaded".into()),
+        Some(Some(file)) => match read(file).and_then(|text| load_cameras(&mut world, file, &text)) {
+            Ok((records, skipped)) => {
+                if skipped.is_empty() {
+                    saved.cameras = Some((file.to_owned(), Arc::new(records)));
+                }
+                saved.warnings.extend(skipped);
+            }
+            Err(e) => saved.warnings.push(format!("{file}: {}; no cameras loaded", e.message)),
+        },
     }
     for (root, file) in &listed {
         let doc = parse_doc(file, &read(file)?)?;
@@ -944,33 +954,39 @@ pub fn load_with(mut read: impl FnMut(&str) -> Result<String, PersistError>) -> 
     Ok((world, saved))
 }
 
-/// Reads a cameras file into `world` (validated like `camera_set`, within its limits); returns
-/// its records.
-fn load_cameras(world: &mut World, file: &str, text: &str) -> Result<Vec<Json>, PersistError> {
-    use crate::cameras::{NamedCamera, MAX_CAMERAS_PER_AGENT, MAX_OWNERS};
+/// Reads a cameras file into `world`: each camera validated like `camera_set` (its owner like an
+/// agent_hello name) and within the camera limits. A camera that fails is skipped and described
+/// in the second list; only an unreadable file is an error. Returns the loaded records.
+fn load_cameras(world: &mut World, file: &str, text: &str) -> Result<(Vec<Json>, Vec<String>), PersistError> {
+    use crate::cameras::NamedCamera;
     let doc = parse_doc(file, text)?;
     let bad = |field: &str, message: String| PersistError::new("invalid_world", message).in_file(file).field(field);
     check_keys(&doc, file, &[CAMERAS_KEYS]).map_err(|m| bad(&quoted_field(&m).unwrap_or_default(), m.clone()))?;
     let records = doc.get("cameras").and_then(Json::as_array).ok_or_else(|| bad("cameras", "'cameras' must be an array".into()))?;
+    let (mut loaded, mut skipped) = (Vec::new(), Vec::new());
     for (i, r) in records.iter().enumerate() {
-        let at = |m: String| bad(&format!("cameras[{i}]"), m);
-        let owner = r.get("owner").and_then(Json::as_str).filter(|o| !o.is_empty()).ok_or_else(|| at("'owner' must be an agent name".into()))?;
-        let mut rest = r.clone();
-        if let Json::Obj(o) = &mut rest {
-            o.retain(|(k, _)| k != "owner");
+        let mut one = || -> Result<(), String> {
+            let owner = r.get("owner").and_then(Json::as_str).ok_or("'owner' must be an agent name")?;
+            if owner.trim() != owner || owner.chars().count() > 64 || crate::world::validate_name(owner).is_err() {
+                return Err(format!("'owner' {owner:?} is not an agent name (1..64 characters, as agent_hello takes)"));
+            }
+            let mut rest = r.clone();
+            if let Json::Obj(o) = &mut rest {
+                o.retain(|(k, _)| k != "owner");
+            }
+            let cam = NamedCamera::from_json(&rest)?;
+            let name = cam.spec.name.clone();
+            if world.cameras().get(owner).is_some_and(|c| c.contains_key(&name)) {
+                return Err(format!("{owner}'s camera '{name}' is listed twice"));
+            }
+            world.restore_camera(owner, &name, Some(cam)).map_err(|e| e.message)
+        };
+        match one() {
+            Ok(()) => loaded.push(r.clone()),
+            Err(why) => skipped.push(format!("{file}: camera {i} skipped: {why}")),
         }
-        let cam = NamedCamera::from_json(&rest).map_err(at)?;
-        let name = cam.spec.name.clone();
-        if world.cameras().get(owner).is_some_and(|c| c.contains_key(&name)) {
-            return Err(at(format!("{owner}'s camera '{name}' is listed twice")));
-        }
-        let held = world.cameras().get(owner).map_or(0, |c| c.len());
-        if held >= MAX_CAMERAS_PER_AGENT || (held == 0 && world.cameras().len() >= MAX_OWNERS) {
-            return Err(at(format!("more cameras than a world holds ({MAX_CAMERAS_PER_AGENT} per agent, {MAX_OWNERS} agents)")));
-        }
-        world.put_camera_raw(owner, &name, Some(cam));
     }
-    Ok(records.to_vec())
+    Ok((loaded, skipped))
 }
 
 fn parse_doc(file: &str, text: &str) -> Result<Json, PersistError> {
@@ -1255,9 +1271,9 @@ mod tests {
             fov_y_deg: 60.0,
             follow: Some(Follow { path: "/slab".into(), offset: Vec3::new(0.0, 1.6, 4.0), look_offset: Vec3::new(0.0, 1.0, 0.0), local: true }),
         };
-        w.set_camera("ann", fixed.clone()).unwrap();
-        w.set_camera("ann", fixed).unwrap(); // version 2
-        w.set_camera("bob", chase).unwrap();
+        w.set_camera("ann", fixed.clone(), true).unwrap();
+        w.set_camera("ann", fixed, true).unwrap(); // version 2
+        w.set_camera("bob", chase, true).unwrap();
         assert_eq!(w.state_hash(), hash, "cameras never change the state hash");
         let saved = files(&w);
         assert!(saved["world.json"].contains(r#""cameras": "cameras.1.json""#), "{}", saved["world.json"]);
@@ -1271,11 +1287,41 @@ mod tests {
         // A world without cameras lists none.
         let plain = files(&sample());
         assert!(!plain["world.json"].contains("\"cameras\"") && !plain.contains_key("cameras.1.json"));
-        // Bad camera files are refused with where and what.
+        // A bad camera never costs the world (reviewer finding, round 7): it is skipped with a
+        // warning naming the file and camera, the others load, and the next save drops it.
+        let load = |files: &BTreeMap<String, String>| {
+            load_with(|f| files.get(f).cloned().ok_or_else(|| PersistError::new("not_found", f).in_file(f))).unwrap()
+        };
         let mut broken = saved.clone();
         broken.insert("cameras.1.json".into(), text.replace("\"fov_y_deg\":55", "\"fov_y_deg\":500"));
-        let e = reload(&broken).unwrap_err();
-        assert_eq!((e.code, e.file.as_deref(), e.field.as_deref()), ("invalid_world", Some("cameras.1.json"), Some("cameras[0]")), "{e:?}");
+        let (back, cache) = load(&broken);
+        assert_eq!(back.state_hash(), hash);
+        assert_eq!(back.cameras().keys().collect::<Vec<_>>(), ["bob"], "ann's bad camera skipped, bob's loaded");
+        assert!(cache.warnings.len() == 1 && cache.warnings[0].contains("cameras.1.json: camera 0 skipped"), "{:?}", cache.warnings);
+        assert!(cache.cameras.is_none(), "the next save rewrites the cameras");
+        // Bad owner names, unreadable files and over-limit lists are skipped the same way.
+        let mut bad_owner = saved.clone();
+        bad_owner.insert("cameras.1.json".into(), text.replace("{\"owner\":\"ann\"", "{\"owner\":\"a/b\""));
+        let (back, cache) = load(&bad_owner);
+        assert!(back.cameras().get("a/b").is_none() && cache.warnings[0].contains("not an agent name"), "{:?}", cache.warnings);
+        let mut garbage = saved.clone();
+        garbage.insert("cameras.1.json".into(), "{not json".into());
+        let (back, cache) = load(&garbage);
+        assert!(back.cameras().is_empty() && cache.warnings[0].contains("no cameras loaded"), "{:?}", cache.warnings);
+        assert_eq!(back.len(), w.len(), "the world itself loads");
+        let mut many = World::default();
+        let mut records = Vec::new();
+        for i in 0..crate::cameras::MAX_CAMERAS_PER_AGENT + 2 {
+            records.push(format!(r#"{{"owner":"ann","name":"c{i}","fov_y_deg":50,"eye":[1,1,1],"target":[0,0,0],"version":1}}"#));
+        }
+        let doc = format!("{{\"format\": \"{FORMAT}\", \"cameras\": [{}]}}", records.join(","));
+        let (loaded, skipped) = load_cameras(&mut many, "cameras.9.json", &doc).unwrap();
+        assert_eq!((loaded.len(), skipped.len()), (crate::cameras::MAX_CAMERAS_PER_AGENT, 2), "{skipped:?}");
+        // Cameras of agents without a name (no agent_hello) aren't saved.
+        let mut session_only = sample();
+        let tmp = CameraSpec { name: "tmp".into(), eye: Some(Vec3::ONE), target: Some(Vec3::ZERO), fov_y_deg: 50.0, follow: None };
+        session_only.set_camera("claude-code-abc123", tmp, false).unwrap();
+        assert!(!files(&session_only).contains_key("cameras.1.json"));
         // No subtree ever takes the cameras stem.
         let mut taken = BTreeSet::new();
         assert_ne!(new_stem("cameras", &mut taken), "cameras");
@@ -1287,7 +1333,7 @@ mod tests {
         let dir = temp_dir("cameras");
         let mut w = sample();
         let cam = |x: f32| CameraSpec { name: "overview".into(), eye: Some(Vec3::new(x, 9.0, 16.0)), target: Some(Vec3::ZERO), fov_y_deg: 55.0, follow: None };
-        w.set_camera("ann", cam(0.0)).unwrap();
+        w.set_camera("ann", cam(0.0), true).unwrap();
         let (saved, _) = save(&w, &dir, None).unwrap();
         let first = saved.cameras.clone().unwrap().0;
         assert!(listing(&dir).contains(&first));
@@ -1296,7 +1342,7 @@ mod tests {
         w.update(&EntityKey::Path("/sun".into()), edit, "t").unwrap();
         let (saved, _) = save(&w, &dir, Some(&saved)).unwrap();
         assert_eq!(saved.cameras.as_ref().unwrap().0, first, "unchanged cameras keep their file");
-        w.set_camera("ann", cam(1.0)).unwrap();
+        w.set_camera("ann", cam(1.0), true).unwrap();
         let (saved, _) = save(&w, &dir, Some(&saved)).unwrap();
         let second = saved.cameras.clone().unwrap().0;
         assert_ne!(second, first);

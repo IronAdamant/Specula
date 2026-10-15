@@ -357,10 +357,15 @@ def persistent_cameras(args, failures, summary):
         ann.json("camera_set", name="overview", eye=[0, 6, 12], target=[0, 0, 0], fov_y_deg=55)
         chase = ann.json("camera_set", name="chase", follow="/cart", offset=[0, 2, 5], look_offset=[0, 0.5, 0])
         temp = ann.json("camera_set", name="temp", eye=[9, 9, 9], target=[0, 0, 0])
+        check(chase.get("persisted") is True, "a named agent's camera is saved with the world", failures)
+        anon = eng.mcp("cams-anon")  # never says agent_hello
+        quick = anon.json("camera_set", name="quick", eye=[1, 1, 1], target=[0, 0, 0])
+        check(quick.get("persisted") is False and "agent_hello" in quick.get("note", ""),
+              "an unnamed session's camera is for this run only, and the reply says how to keep it", failures)
         check(ann.json("world_hash")["state_hash"] == before, "camera edits leave the world hash alone", failures)
         feed = json.dumps(human.json("world_changes", since="0", limit=50))
         check("@camera/ann/chase" in feed and "camera_set" in feed, "other agents see camera changes in world_changes", failures)
-        undone = ann.json("world_undo", count=1)
+        undone = ann.json("world_undo", ids=[temp["journal"]])
         names = [c["name"] for c in ann.json("camera_list")["cameras"]]
         check(names == ["chase", "overview"] and temp["journal"] in undone.get("undone", []),
               f"world_undo takes back a camera_set ({names}, {undone.get('undone')})", failures)
@@ -370,7 +375,8 @@ def persistent_cameras(args, failures, summary):
               f"window_view looks through ann's chase camera ({eye0})", failures)
         ann.json("world_set", path="/cart", position=[-3, 0.5, 0])
         win = human.json("engine_info")["window"]
-        check([round(v, 3) for v in win["camera"]["eye"]] == [-3, 2.5, 5] and win["through"] == {"owner": "ann", "camera": "chase"},
+        check([round(v, 3) for v in win["camera"]["eye"]] == [-3, 2.5, 5] and win["through"] == {"owner": "ann", "camera": "chase"}
+              and win["following"] is True,
               f"...and keeps following it ({win})", failures)
         try:
             human.json("window_view", camera="nope", of="ann")
@@ -382,6 +388,7 @@ def persistent_cameras(args, failures, summary):
         hash1 = ann.json("world_hash")["state_hash"]
         ann.close()
         human.close()
+        anon.close()
     files = sorted(p.name for p in (worlds / "cams").iterdir())
     check(any(f.startswith("cameras.") for f in files), f"the world folder holds the cameras ({files})", failures)
     with Engine(args.exe, args.port, OUT / "engine-cams-2.log", *engine_args, cwd=str(OUT)) as eng:
@@ -394,6 +401,8 @@ def persistent_cameras(args, failures, summary):
               f"after a restart ann holds her cameras again, follow included ({sorted(by_name)})", failures)
         check([round(v, 3) for v in by_name["chase"]["now"]["eye"]] == [-3, 2.5, 5], "the follow camera finds the cart where it was saved", failures)
         check(ann.json("world_hash")["state_hash"] == hash1, "the reloaded world hashes the same", failures)
+        owners = [o["owner"] for o in ann.json("camera_list", all=True)["owners"]]
+        check(owners == ["ann"], f"the unnamed session's camera wasn't saved ({owners})", failures)
         other = eng.mcp("cams-reviewer")
         other.json("agent_hello", name="reviewer")
         pk = other.frame(camera="overview", camera_of="ann", width=320, height=240, time_s=1)

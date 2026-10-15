@@ -1823,8 +1823,10 @@ fn definitions() -> Vec<ToolDef> {
             name: "window_view".into(),
             description: "Point the human's window camera (the live view, not captures): eye + target (+ fov_y_deg); \
                           camera: a named camera (camera_set) to look through, an agent's with of: \"<agent name>\" (a \
-                          follow camera keeps following; the view stays on it until the next window_view); or auto: \
-                          true to frame the whole world again. A human sees exactly what an agent's camera sees."
+                          follow camera keeps following) until a human takes the controls (key, click, scroll, \
+                          touch) or the hosted game sets a camera of its own, or the next window_view \
+                          (engine_info.window: following, released_by); or auto: true to frame the whole world \
+                          again. A human sees exactly what an agent's camera sees, and is never locked out."
                 .into(),
             input_schema: schema(
                 vec![
@@ -1952,7 +1954,9 @@ fn definitions() -> Vec<ToolDef> {
                           more), or specific entries by id. A batch undoes as a unit; several entries undo newest first, all or nothing. \
                           Refused (error undo_conflict, naming who and which entry) when another agent changed the same \
                           entities later, unless force. The undo is itself journaled: undo its id to redo. Game \
-                          updates are replay-only and can't be undone."
+                          updates are replay-only and can't be undone. Camera changes (kind camera) are skipped by \
+                          the default and undone by id only, never another agent's (not even with force), and \
+                          within the camera limits (camera_limit)."
                 .into(),
             input_schema: schema(
                 vec![
