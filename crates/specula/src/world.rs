@@ -1932,6 +1932,9 @@ pub struct World {
     transient_seq: u64,
     /// Transient entities alive.
     transient_count: usize,
+    /// Moves on every change to any entity (transient ones and derived state included): what a
+    /// renderer keys cached per-entity draw data on. Never hashed or saved.
+    draw_epoch: u64,
     /// Ids of the entities carrying a point light, so frames gather lights without visiting every
     /// entity (a 10k-entity world has a handful). Kept by `link`, `unlink` and `update`.
     lit: BTreeSet<u64>,
@@ -2067,12 +2070,14 @@ impl World {
     pub fn refresh_models(&mut self) -> Vec<(u64, WorldError)> {
         self.mesh_epoch += 1;
         let Some(source) = self.models.0.clone() else {
+            self.draw_epoch += 1;
             for e in self.entities.values_mut() {
                 e.resolved = None;
             }
             return Vec::new();
         };
         let mut failed = Vec::new();
+        self.draw_epoch += 1;
         for e in self.entities.values_mut() {
             let Some(spec) = &e.model else { continue };
             match source.resolve(spec) {
@@ -2092,6 +2097,7 @@ impl World {
     pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
         let Some(source) = self.models.0.clone() else { return };
         let mut touched = false;
+        self.draw_epoch += 1;
         for e in self.entities.values_mut() {
             let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
             if handles.contains(&r.handle) {
@@ -2123,6 +2129,11 @@ impl World {
     /// Every entity, by id.
     pub fn entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.entities.values()
+    }
+
+    /// See the field: unchanged means no entity changed in any way since it was read.
+    pub fn draw_epoch(&self) -> u64 {
+        self.draw_epoch
     }
 
     /// The entities carrying a point light, by id (from an index: no other entity is visited).
@@ -2609,6 +2620,7 @@ impl World {
         let by = self.intern(by);
         let moved = reparent || restyled || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
         let remeshed = change.profile.is_some() || new_model.is_some();
+        self.draw_epoch += 1;
         let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some(name) = change.name {
             e.name = name;
@@ -2817,11 +2829,13 @@ impl World {
         if e.light.is_some() {
             self.lit.insert(e.id);
         }
+        self.draw_epoch += 1;
         self.entities.insert(e.id, e);
     }
 
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
+        self.draw_epoch += 1;
         let e = self.entities.remove(&id)?;
         self.lit.remove(&id);
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
@@ -2851,6 +2865,7 @@ impl World {
     fn refresh_one(&mut self, at: u64) -> bool {
         let Some(parent) = self.entities.get(&at).map(|e| e.parent) else { return false };
         let inherited = parent.and_then(|p| self.entities.get(&p)).map(|p| (p.world, p.shown, p.in_ui));
+        self.draw_epoch += 1;
         let e = self.entities.get_mut(&at).expect("checked above");
         let local = e.local_matrix();
         // Top-level entities use their local matrix as is (no identity multiply to round).
@@ -3162,6 +3177,7 @@ impl World {
     /// are ignored (the change's entity was replayed away).
     pub(crate) fn apply_pose(&mut self, pose: &Pose, by: &str) {
         let by = self.intern(by);
+        self.draw_epoch += 1;
         let Some(e) = self.entities.get_mut(&pose.id) else { return };
         pose.apply_to(e);
         e.modified_by = by;
@@ -3179,6 +3195,7 @@ impl World {
     /// Like [`World::unlink`], but only drops index entries that still point at `id` (a replayed
     /// rename may already have given its old name to another entity).
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
+        self.draw_epoch += 1;
         let e = self.entities.remove(&id)?;
         self.lit.remove(&id);
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());

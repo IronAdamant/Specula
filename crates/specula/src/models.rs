@@ -1755,6 +1755,9 @@ pub enum LodChoice<'a> {
     Fresh,
     /// Every model at this level (clamped).
     Fixed(usize),
+    /// By size, remembering this one entity's level in the slot (`u8::MAX`: none yet): the
+    /// window's cached draw list keeps a slot per model entity.
+    Slot(&'a mut u8),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2111,7 +2114,11 @@ impl GpuModels {
     }
 
     fn held_back(&self, e: &Entity, m: &GpuModel) -> Option<Held<'_>> {
-        let skinned = m.needs.skinned && e.anim.is_some() && !self.ready.skinned;
+        self.held_back_by(e.anim.is_some(), m)
+    }
+
+    fn held_back_by(&self, animated: bool, m: &GpuModel) -> Option<Held<'_>> {
+        let skinned = m.needs.skinned && animated && !self.ready.skinned;
         let textured = m.needs.textured && !self.ready.textured;
         if !skinned && !textured {
             return None;
@@ -2123,7 +2130,11 @@ impl GpuModels {
     }
 
     fn model_of(&self, e: &Entity) -> Option<(u64, &GpuModel)> {
-        let id = self.by_handle.get(e.resolved_model().map_or(usize::MAX, |r| r.handle as usize)).copied().flatten()?;
+        self.model_of_handle(e.resolved_model().map(|r| r.handle))
+    }
+
+    fn model_of_handle(&self, handle: Option<u32>) -> Option<(u64, &GpuModel)> {
+        let id = self.by_handle.get(handle.map_or(usize::MAX, |h| h as usize)).copied().flatten()?;
         self.uploaded.get(&id).map(|m| (id, m))
     }
 
@@ -2161,11 +2172,30 @@ impl GpuModels {
         stats: &mut LodStats,
         out: &mut Vec<DrawItem>,
     ) {
-        let Some((id, model)) = self.model_of(e) else {
+        let m = ModelDraw::of(e);
+        self.draw_model(&m, e.anim.is_some().then_some(e), eye, fov_y_deg, viewport_h, choice, stats, out);
+    }
+
+    /// [`GpuModels::draw`] from a model entity's drawing state `m` (what the window's draw cache
+    /// keeps between frames). `animated` is the entity itself when it has an `anim` (its pose is
+    /// evaluated at the frame's time), `None` otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_model(
+        &self,
+        m: &ModelDraw,
+        animated: Option<&Entity>,
+        eye: Vec3,
+        fov_y_deg: f32,
+        viewport_h: u32,
+        choice: &mut LodChoice,
+        stats: &mut LodStats,
+        out: &mut Vec<DrawItem>,
+    ) {
+        let Some((id, model)) = self.model_of_handle(m.handle) else {
             stats.missing += 1;
             return;
         };
-        match self.held_back(e, model) {
+        match self.held_back_by(animated.is_some(), model) {
             None => {}
             Some(Held::Waiting) => {
                 stats.missing += 1;
@@ -2176,18 +2206,25 @@ impl GpuModels {
                 return;
             }
         }
-        let world = e.model();
+        let world = &m.world;
         let count = model.lods.len();
         let level = match choice {
             LodChoice::Fixed(l) => (*l).min(count - 1),
-            LodChoice::Fresh => select_lod(sphere_px(&world, model, eye, fov_y_deg, viewport_h), count, None),
+            LodChoice::Fresh => select_lod(sphere_px(world, model, eye, fov_y_deg, viewport_h), count, None),
             LodChoice::Remembered(levels) => {
-                let px = sphere_px(&world, model, eye, fov_y_deg, viewport_h);
-                let previous = levels.get(&e.id).map(|l| *l as usize);
+                let px = sphere_px(world, model, eye, fov_y_deg, viewport_h);
+                let previous = levels.get(&m.id).map(|l| *l as usize);
                 let level = select_lod(px, count, previous);
                 if previous != Some(level) {
-                    levels.insert(e.id, level as u8);
+                    levels.insert(m.id, level as u8);
                 }
+                level
+            }
+            LodChoice::Slot(slot) => {
+                let px = sphere_px(world, model, eye, fov_y_deg, viewport_h);
+                let previous = (**slot != u8::MAX).then_some(**slot as usize);
+                let level = select_lod(px, count, previous);
+                **slot = level as u8;
                 level
             }
         };
@@ -2195,8 +2232,8 @@ impl GpuModels {
         // Every part of the LOD shares the entity's palette; each part is culled by its posed
         // sphere.
         let mut posed = None;
-        let skin = match (&model.anims, &e.anim) {
-            (Some(set), Some(_)) => {
+        let skin = match (&model.anims, animated) {
+            (Some(set), Some(e)) => {
                 let mut a = self.anim.borrow_mut();
                 if a.evaluate(e, id, set) {
                     let AnimFrame { bones, skin, .. } = &mut *a;
@@ -2210,19 +2247,16 @@ impl GpuModels {
             }
             _ => None,
         };
-        let cols = world.to_cols_array();
-        let c = &world.cols;
-        let world_stretch = stretch([[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]]);
-        let tint = e.color;
+        let tint = m.color;
         for p in &model.lods[level] {
             stats.triangles += u64::from(p.triangles);
             let bounds = posed.as_ref().and_then(|a| posed_sphere(&p.influence, &a.model)).map(|(centre, r)| {
                 let w = world.transform_point(Vec3::new(centre[0], centre[1], centre[2]));
-                [w.x, w.y, w.z, r * world_stretch]
+                [w.x, w.y, w.z, r * m.stretch]
             });
             out.push(DrawItem {
                 mesh: p.mesh,
-                model: cols,
+                model: m.cols,
                 color: [p.color[0] * tint[0], p.color[1] * tint[1], p.color[2] * tint[2], p.color[3]],
                 material: p.material,
                 surface: p.surface,
@@ -2233,7 +2267,29 @@ impl GpuModels {
     }
 }
 
-/// `model`'s bounding sphere under the entity's world transform, in pixels across.
+/// What drawing a model entity needs from it besides its animation: copied out of the entity,
+/// so the window's draw cache can draw static models without touching the world.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelDraw {
+    pub id: u64,
+    /// The build's handle (`None` while unresolved).
+    pub handle: Option<u32>,
+    pub world: Mat4,
+    pub cols: [f32; 16],
+    /// How far the world transform stretches a unit vector at most (scales posed spheres).
+    pub stretch: f32,
+    pub color: [f32; 3],
+}
+
+impl ModelDraw {
+    pub fn of(e: &Entity) -> ModelDraw {
+        let world = e.model();
+        let c = &world.cols;
+        let stretch = stretch([[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]]);
+        ModelDraw { id: e.id, handle: e.resolved_model().map(|r| r.handle), world, cols: world.to_cols_array(), stretch, color: e.color }
+    }
+}
+
 fn sphere_px(world: &Mat4, model: &GpuModel, eye: Vec3, fov_y_deg: f32, viewport_h: u32) -> f32 {
     let center = world.transform_point(model.center);
     let c = &world.cols;

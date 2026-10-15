@@ -15,7 +15,7 @@ pub mod effects;
 pub mod game;
 pub mod journal;
 mod luts;
-mod meshes;
+pub mod meshes;
 pub mod models;
 mod perf;
 pub mod persist;
@@ -36,7 +36,7 @@ use specula_gpu::{AdapterPreference, DrawItem, FrameDesc, FramePath, Gpu, GpuOpt
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use swarm::Swarm;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -333,19 +333,17 @@ struct Engine {
     library: Arc<SharedLibrary>,
     /// Uploaded model builds.
     models: GpuModels,
-    /// The window's LOD per model entity (kept for hysteresis).
-    lod_levels: BTreeMap<u64, u8>,
     /// How models were drawn in the last window frame and the last capture.
     lod_window: LodStats,
     lod_capture: LodStats,
     /// The window frame's draw list (reused: no allocation per frame once warm).
     draws: Vec<DrawItem>,
+    /// The window's draw list between world changes (and each model's LOD, for hysteresis).
+    draw_cache: sight::DrawCache,
     /// The window frame's point lights (reused like `draws`).
     lights: Vec<specula_gpu::PointLight>,
     /// A human's window is open.
     windowed: bool,
-    /// The world mesh epoch `lod_levels` was last pruned at.
-    lod_epoch: u64,
     /// Calls waiting for model builds.
     build_waiters: Vec<BuildWaiter>,
     /// Captures waiting for models they show.
@@ -468,13 +466,12 @@ impl Engine {
             library,
             luts,
             models: GpuModels::default(),
-            lod_levels: BTreeMap::new(),
             lod_window: LodStats::default(),
             lod_capture: LodStats::default(),
             draws: Vec::new(),
             lights: Vec::new(),
+            draw_cache: sight::DrawCache::default(),
             windowed: false,
-            lod_epoch: 0,
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
             last_gc: (Instant::now(), 0),
@@ -525,7 +522,6 @@ impl Engine {
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
-        self.lod_levels.clear();
         problems
     }
 
@@ -750,12 +746,6 @@ impl Engine {
         let generation = self.world_generation;
         let mut errors = self.lathes.sync(&mut self.gpu, &self.world, generation);
         errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
-        if self.world.mesh_epoch() != self.lod_epoch {
-            // Forget the LOD of entities that are gone.
-            self.lod_epoch = self.world.mesh_epoch();
-            let world = &self.world;
-            self.lod_levels.retain(|id, _| world.get(*id).is_some());
-        }
         errors
     }
 
@@ -999,13 +989,15 @@ impl Engine {
         let errors = self.sync_meshes();
         self.models.begin_frame(time_s);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
-        let lod = match (lod, window) {
-            (Some(l), _) => LodChoice::Fixed(l),
-            (None, true) => LodChoice::Remembered(&mut self.lod_levels),
-            (None, false) => LodChoice::Fresh,
-        };
+        // The window's cache remembers each model's level itself (hysteresis); captures choose
+        // afresh (reproducible).
+        let lod = lod.map_or(LodChoice::Fresh, LodChoice::Fixed);
         let mut view = View { camera, viewport_h, include_ui, lod };
-        let stats = sight::draw_list(&self.world, &meshes, &mut view, out);
+        let stats = if window {
+            self.draw_cache.draw_list(&self.world, self.world_generation, &meshes, &mut view, out)
+        } else {
+            sight::draw_list(&self.world, &meshes, &mut view, out)
+        };
         (stats, errors)
     }
 

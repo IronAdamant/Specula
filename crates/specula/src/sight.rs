@@ -5,7 +5,7 @@
 //! (clipped to the camera's near/far planes and the image); occlusion is not considered yet.
 
 use crate::meshes::{LatheMeshes, ShapeMeshes};
-use crate::models::{GpuModels, LodChoice, LodStats};
+use crate::models::{GpuModels, LodChoice, LodStats, ModelDraw};
 use crate::world::{color_hex, material_name, vec3_json, Entity, Shape, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
@@ -96,32 +96,137 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
     out.clear();
     let mut stats = LodStats::default();
     for e in world.entities() {
-        if !in_frame(e, view.include_ui) {
-            continue;
+        match plan(e, meshes, view.include_ui) {
+            Plan::Skip => {}
+            Plan::Item(d) => out.push(d),
+            Plan::Model => draw_model(e, meshes, view, &mut stats, out),
         }
-        let mesh = match e.shape {
-            Shape::Group => continue,
-            Shape::Model => {
-                let fov = view.camera.fov_y_deg;
-                meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, &mut stats, out);
-                continue;
-            }
-            Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
-            shape => meshes.shapes.get(shape),
-        };
-        let Some(mesh) = mesh else { continue };
-        let c = e.color;
-        out.push(DrawItem {
-            mesh,
-            model: e.model().to_cols_array(),
-            color: [c[0], c[1], c[2], e.look.opacity],
-            material: e.look.material,
-            surface: e.look.surface,
-            skin: None,
-            bounds: None,
-        });
     }
     stats
+}
+
+/// What an entity adds to a frame: nothing, one fixed draw (built-in shapes and lathes: it
+/// depends only on the entity and its mesh), or a model's draws (chosen per frame: LOD, pose).
+enum Plan {
+    Skip,
+    Item(DrawItem),
+    Model,
+}
+
+fn plan(e: &Entity, meshes: &Meshes, include_ui: bool) -> Plan {
+    if !in_frame(e, include_ui) {
+        return Plan::Skip;
+    }
+    let mesh = match e.shape {
+        Shape::Group => return Plan::Skip,
+        Shape::Model => return Plan::Model,
+        Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
+        shape => meshes.shapes.get(shape),
+    };
+    let Some(mesh) = mesh else { return Plan::Skip };
+    let c = e.color;
+    Plan::Item(DrawItem {
+        mesh,
+        model: e.model().to_cols_array(),
+        color: [c[0], c[1], c[2], e.look.opacity],
+        material: e.look.material,
+        surface: e.look.surface,
+        skin: None,
+        bounds: None,
+    })
+}
+
+fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
+    let fov = view.camera.fov_y_deg;
+    meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, stats, out);
+}
+
+/// The window's draw list, kept between frames. While nothing in the world changed, each
+/// entity's fixed draw (built-in shapes, lathes) is copied from the last frame and each model is
+/// drawn from a copy of its drawing state, so a static 10k-entity world doesn't walk every
+/// entity's full record each frame (F3: on the reference iGPU that walk was most of the window's
+/// CPU frame). Models still choose their LOD per frame (each keeps its level here, for the
+/// window's hysteresis) and animated ones are posed from their entity. Same draws, same order as
+/// [`draw_list`]; nothing allocated once warm.
+#[derive(Default)]
+pub struct DrawCache {
+    /// `(world generation, World::draw_epoch, LatheMeshes::version, include_ui)` the entries
+    /// were built for.
+    key: Option<(u64, u64, u64, bool)>,
+    entries: Vec<Cached>,
+    /// The previous entries while rebuilding (their LOD levels carry over); kept for its capacity.
+    spare: Vec<Cached>,
+    rebuilds: u64,
+}
+
+#[derive(Clone, Copy)]
+enum Cached {
+    Item(DrawItem),
+    Model {
+        m: ModelDraw,
+        /// Has an `anim`: posed from the entity each frame.
+        animated: bool,
+        /// The LOD it was last drawn at (`u8::MAX`: none yet).
+        level: u8,
+    },
+}
+
+impl DrawCache {
+    /// How many times the entries were rebuilt (the world or its meshes changed).
+    pub fn rebuilds(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// [`draw_list`] for `world` (`generation` changes whenever the engine replaces its world).
+    /// LODs are chosen by size with each model's remembered level, or `view.lod`'s if Fixed.
+    pub fn draw_list(&mut self, world: &World, generation: u64, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
+        let key = (generation, world.draw_epoch(), meshes.lathes.version(), view.include_ui);
+        if self.key != Some(key) {
+            let same_world = self.key.is_some_and(|k| k.0 == generation);
+            std::mem::swap(&mut self.entries, &mut self.spare);
+            self.entries.clear();
+            // Levels of the previous entries, matched by id (both lists are in id order).
+            let mut old = self.spare.iter().filter_map(|c| match c {
+                Cached::Model { m, level, .. } if same_world => Some((m.id, *level)),
+                _ => None,
+            }).peekable();
+            for e in world.entities() {
+                match plan(e, meshes, view.include_ui) {
+                    Plan::Skip => {}
+                    Plan::Item(d) => self.entries.push(Cached::Item(d)),
+                    Plan::Model => {
+                        while old.next_if(|(id, _)| *id < e.id).is_some() {}
+                        let level = old.next_if(|(id, _)| *id == e.id).map_or(u8::MAX, |(_, l)| l);
+                        self.entries.push(Cached::Model { m: ModelDraw::of(e), animated: e.anim.is_some(), level });
+                    }
+                }
+            }
+            self.spare.clear();
+            self.key = Some(key);
+            self.rebuilds += 1;
+        }
+        out.clear();
+        let mut stats = LodStats::default();
+        let fixed = match view.lod {
+            LodChoice::Fixed(l) => Some(l),
+            _ => None,
+        };
+        let (eye, fov) = (view.camera.eye, view.camera.fov_y_deg);
+        for entry in &mut self.entries {
+            match entry {
+                Cached::Item(d) => out.push(*d),
+                Cached::Model { m, animated, level } => {
+                    let entity = if *animated { world.get(m.id) } else { None };
+                    let mut choice = match fixed {
+                        Some(l) => LodChoice::Fixed(l),
+                        None => LodChoice::Slot(level),
+                    };
+                    meshes.models.draw_model(m, entity, eye, fov, view.viewport_h, &mut choice, &mut stats, out);
+                }
+            }
+        }
+        stats
+    }
 }
 
 /// The point lights of shown entities in the frame (entity id order), at most
@@ -315,6 +420,68 @@ mod tests {
         spec.scale = scale;
         spec.color = [1.0, 0.0, 0.0];
         world.spawn(spec, "test").unwrap();
+    }
+
+    /// The window's cached draw list is draw_list's, draw for draw and in order, through every
+    /// kind of change (moves, recolours, hiding, ui layer, spawns, deletes, transient moves,
+    /// a replaced world), and keeps its fixed draws while nothing changes.
+    #[test]
+    fn cached_draw_list_matches_draw_list() {
+        use crate::meshes::{LatheMeshes, ShapeMeshes};
+        use crate::models::{GpuModels, LodChoice};
+        use crate::world::{Layer, ModelSpec, UpdateSpec};
+        use specula_gpu::MeshId;
+        let shapes = ShapeMeshes::from_ids(MeshId(1), MeshId(2), MeshId(3));
+        let (lathes, models) = (LatheMeshes::default(), GpuModels::default());
+        let meshes = Meshes { shapes: &shapes, lathes: &lathes, models: &models };
+        let camera = cam(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, 50.0);
+        let mut cache = DrawCache::default();
+        let check = |world: &World, generation: u64, cache: &mut DrawCache| {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let mut view = View { camera, viewport_h: 720, include_ui: true, lod: LodChoice::Fresh };
+            let sa = draw_list(world, &meshes, &mut view, &mut a);
+            let sb = cache.draw_list(world, generation, &meshes, &mut view, &mut b);
+            assert_eq!(a, b);
+            assert_eq!(sa, sb);
+            a.len()
+        };
+        let mut world = World::default();
+        for i in 0..40 {
+            let shape = [Shape::Cube, Shape::Sphere, Shape::Quad, Shape::Group][i % 4];
+            spawn(&mut world, shape, &format!("e{i}"), Vec3::new(i as f32, 0.0, 0.0));
+        }
+        world.spawn(SpawnSpec::model(ModelSpec::new("recipes/none.json")), "t").unwrap();
+        assert_eq!(check(&world, 0, &mut cache), 30);
+        let epoch = world.draw_epoch();
+        assert_eq!(check(&world, 0, &mut cache), 30);
+        assert_eq!(world.draw_epoch(), epoch, "drawing changes nothing");
+        let set = |world: &mut World, path: &str, u: UpdateSpec| {
+            world.update(&EntityKey::Path(path.into()), u, "t").unwrap();
+        };
+        set(&mut world, "/e1", UpdateSpec { position: Some(Vec3::new(0.0, 3.0, 0.0)), ..Default::default() });
+        check(&world, 0, &mut cache);
+        set(&mut world, "/e2", UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..Default::default() });
+        check(&world, 0, &mut cache);
+        set(&mut world, "/e5", UpdateSpec { visible: Some(false), ..Default::default() });
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        set(&mut world, "/e6", UpdateSpec { layer: Some(Layer::Ui), ..Default::default() });
+        check(&world, 0, &mut cache);
+        world.delete(&EntityKey::Path("/e9".into()), None).unwrap();
+        assert_eq!(check(&world, 0, &mut cache), 28);
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.name = Some("enemy".into());
+        t.transient = true;
+        let enemy = world.spawn(t, "game").unwrap().id;
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        world.update(&EntityKey::Id(enemy), UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 5.0)), ..Default::default() }, "game").unwrap();
+        check(&world, 0, &mut cache);
+        // A different world that happens to have the same epoch: the generation tells them apart.
+        let mut other = World::default();
+        spawn(&mut other, Shape::Cube, "x", Vec3::ZERO);
+        while other.draw_epoch() < world.draw_epoch() {
+            set(&mut other, "/x", UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() });
+        }
+        assert_eq!(check(&other, 1, &mut cache), 1);
     }
 
     /// Lights come from the lit-entity index in id order: hidden ones are left out, at most

@@ -14,6 +14,8 @@ pub struct LatheMeshes {
     failed: BTreeMap<u64, String>,
     /// The world mesh epoch and generation last synced to.
     synced: Option<(u64, u64)>,
+    /// Moves whenever the profile → mesh map may have changed (see [`LatheMeshes::version`]).
+    version: u64,
 }
 
 impl LatheMeshes {
@@ -25,6 +27,7 @@ impl LatheMeshes {
             return Vec::new();
         }
         self.synced = Some(key);
+        self.version += 1;
         let mut live = BTreeMap::new();
         for e in world.entities() {
             if let Some(p) = &e.profile {
@@ -67,6 +70,12 @@ impl LatheMeshes {
         self.meshes.len()
     }
 
+    /// Unchanged means every profile still maps to the same mesh (draw lists cached across
+    /// frames key on it).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     /// Messages for profiles whose upload failed.
     pub fn failures(&self) -> impl Iterator<Item = &String> {
         self.failed.values()
@@ -89,6 +98,11 @@ impl ShapeMeshes {
         let (v, i) = sphere(32, 16);
         let sphere = gpu.upload_mesh(&v, &i)?;
         Ok(ShapeMeshes { cube, quad, sphere })
+    }
+
+    /// Meshes uploaded elsewhere (tests: ids that draw lists carry but nothing renders).
+    pub fn from_ids(cube: MeshId, quad: MeshId, sphere: MeshId) -> ShapeMeshes {
+        ShapeMeshes { cube, quad, sphere }
     }
 
     /// `None` for lathes.
