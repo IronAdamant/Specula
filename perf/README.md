@@ -29,13 +29,18 @@ start-up with the line and column. `perf_frame` (and `perf_capture`'s summary) r
 
 # M2 exit proof: 10k instances on the iGPU
 
-`python scripts/m2_exit.py --adapter both` (release build) also measures a 10,000-entity world in the
-window at 1280x720 with the Sepulcra night effects (shadows, SSAO, bloom, fog, grading, FXAA) against
-`perf.example.toml`, through `perf_capture` (120 frames, budgets on the p95). The frame's GPU ms,
-pacing, draw calls, triangles, GPU memory and pipelines after warm-up decide it; per-pass and CPU-side
-misses are printed as notes. `--criteria 3` runs only that part. Timings vary between runs (other
-engines on the machine share the GPU; the script warns when it sees them): on 2026-10-16 the Intel
-iGPU's GPU p95 ranged 7.0-8.8 ms over five runs.
+`python scripts/m2_exit.py --adapter both` (release build) also measures two 10,000-entity worlds in
+the window at 1280x720 with the Sepulcra night effects (shadows, SSAO, bloom, fog, grading, FXAA)
+against `perf.example.toml`, through `perf_capture` (120 frames each, budgets on the p95): "mixed"
+(8,000 cubes + 2,000 tombstone models) and "tombstones" (10,000 tombstone models). The frame's GPU ms,
+pacing, draw calls, triangles, GPU memory, pipelines after warm-up and the CPU zone `frame/draw_list`
+decide it; per-pass and other CPU misses are printed as notes. `--criteria 3` runs only that part.
+Timings vary between runs (other engines on the machine share the GPU; the script warns when it sees
+them). On 2026-10-16, Intel iGPU: GPU p95 7.1 / 9.2 ms, draw list p95 0.36 / 0.53 ms.
+
+`cargo test --release -p specula --test draw_list_10k -- --nocapture` times the window's CPU draw work
+for a 10k-entity world (the full walk captures use vs the window's cache, warm and with cold caches)
+and checks that a warm frame allocates nothing.
 
 **Shape budgets (world limits).** `[budgets]` also sets how many vertices the distinct `shape2d` shapes
 of a world may need (their parse-time upper bounds; identical shapes count once), in two pools:

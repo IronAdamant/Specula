@@ -392,12 +392,17 @@ recipe creatures playing clips; every model `ready`, each creature's pixels chan
 ground inside two props' shadows is >25% darker than the same frame with shadows off while open ground is unchanged
 ([hero shot](fidelity/m2_exit_hero.png)). (2) A box behind a wall must have `visible_px` 0 and `occluded`; SKIPPED
 until the ID buffer lands. (3) A windowed engine at 1280×720 with the full night effect stack and
-`perf.example.toml`: 10,000 entities (8,000 cubes + 2,000 tombstone models, 3 instanced draw calls) over 120 frames;
-the frame's GPU time, pacing, draws, triangles, GPU memory and late pipelines must hold; per-pass and CPU-side
-misses are reported as notes. *2026-10-16:* (1) and (3) pass on both GPUs; Intel iGPU GPU p95 7.0–8.8 ms over five
-runs (budget 14), RTX 4090 Laptop 0.4–0.5 ms. (2) is SKIPPED on `main`; run against the unmerged Sight lane's
-build (`--exe`), it passes on both GPUs (hidden box `visible_px` 0, `occluded`; control box 8,543 px). Note: the window's `frame/draw_list` CPU zone is 1.9–2.8 ms p95 at
-10k entities (budget 1.5).
+`perf.example.toml`, two 10,000-entity worlds over 120 frames each: "mixed" (8,000 cubes + 2,000 tombstone models, 3
+instanced draw calls) and "tombstones" (10,000 tombstone models, 2 draw calls); the frame's GPU time, pacing, draws,
+triangles, GPU memory, late pipelines and the CPU time building the window's draws (`frame/draw_list`) must hold;
+per-pass and other CPU misses are reported as notes. *2026-10-16:* (1) and (3) pass on both GPUs. Intel iGPU: GPU
+p95 7.1 ms mixed / 9.2 ms tombstones (budget 14), draw list p95 0.36 / 0.53 ms (budget 1.5); RTX 4090 Laptop: GPU
+p95 1.4 / 1.3 ms. (2) is SKIPPED on `main`; run against the unmerged Sight lane's build (`--exe`), it passes on
+both GPUs (hidden box `visible_px` 0, `occluded`; control box 8,543 px). What it took: point lights from a World
+index instead of a walk over every entity, the window's draw list cached between world changes (10k entities: 1.9–2.8
+→ 0.36 ms p95 on the iGPU), and a coarse recipe rebuild as the far LOD where clustering can't make one (tombstones
+320/247 → 320/247/60 triangles; the 10k-tombstone field went from 15.9 ms GPU p95 and 1.94M triangles to 9.2 ms and
+0.47M).
 
 ---
 
