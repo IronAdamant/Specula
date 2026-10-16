@@ -123,6 +123,19 @@ pub fn defs() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "play_ui".into(),
+            description: "The HUD as data and as buttons: the visible screens' widgets (id, type, rect in physical px,                           text, enabled, focused; widgets with an id or text), at most `limit` (default 60, max 200). `press` activates a widget by                           id exactly as a click or a pad's accept would (refused when a player couldn't reach it, e.g.                           under a modal) and answers the action it sent. Ids: build bar build_<stone>, call_wave, pause,                           upgrade, sell, unwall, deselect, resume, settings, controls, restart, new_run..."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("select", prop("string", "Open the panel of the stone or wall on this cell (as clicking it does), e.g. \"top:12,9\"")),
+                    ("press", prop("string", "Widget id to activate (after `select`)")),
+                    ("limit", prop("integer", "Widgets to list (default 60, max 200)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
             name: "play_control".into(),
             description: "The game's own pause (the player's P key: the simulation stops, building still works) and speed \
                           (1, 2 or 4 simulation steps per tick). For agents' time, prefer the engine's time_control."
@@ -309,7 +322,8 @@ pub fn call(game: &mut SepulcraGame, ctx: &mut Ctx, name: &str, args: &Json) -> 
         "play_new" => new(game, ctx, args),
         "play_record" => record(game, args),
         "play_replay" => replay(game, ctx, args),
-        "play_control" => control(game, args),
+        "play_control" => control(game, ctx, args),
+        "play_ui" => ui(game, ctx, args),
         other => Err(error("unknown_tool", format!("no game tool '{other}'"), vec![])),
     };
     result.unwrap_or_else(|e| e)
@@ -352,9 +366,11 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     out.set("layout", game.autoplay.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str())));
     out.set("state_hash", Json::from(format!("{:016x}", s.hash())));
     out.set("content_hash", Json::from(format!("{:016x}", content.hash)));
+    let mut presentation = game.presentation_json();
     if let Some(scene) = &game.scene {
-        out.set("presentation", scene.counts());
+        presentation.set("scene", scene.counts());
     }
+    out.set("presentation", presentation);
     let include: Vec<&str> = match args.get("include") {
         None | Some(Json::Null) => Vec::new(),
         Some(Json::Arr(a)) => a.iter().filter_map(Json::as_str).collect(),
@@ -649,16 +665,46 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
     Ok(ToolOutput::text(out.to_pretty()))
 }
 
-fn control(game: &mut SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
+fn control(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
     check_keys(args, &["paused", "speed"])?;
-    if let Some(p) = bool_arg(args, "paused")? {
-        game.paused = p;
-    }
-    if let Some(sp) = uint_arg(args, "speed", 64)? {
+    let speed = uint_arg(args, "speed", 64)?;
+    if let Some(sp) = speed {
         if !SPEEDS.contains(&(sp as u32)) {
             return Err(error("bad_argument", "'speed' must be 1, 2 or 4", vec![("field", Json::from("speed"))]));
         }
-        game.speed = sp as u32;
+    }
+    if let Some(p) = bool_arg(args, "paused")? {
+        game.set_paused(ctx.world, p);
+    }
+    if let Some(sp) = speed {
+        game.set_speed(ctx.world, sp as u32);
     }
     Ok(ToolOutput::text(game.status_json().to_pretty()))
+}
+
+fn ui(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
+    check_keys(args, &["select", "press", "limit"])?;
+    let limit = (uint_arg(args, "limit", MAX_LIMIT as u64)?.unwrap_or(60) as usize).clamp(1, MAX_LIMIT);
+    let mut out = obj([]);
+    if let Some(name) = str_arg(args, "select")? {
+        let content = game.content();
+        let cell = content.map.cell_ref(name).ok_or_else(|| error("unknown_cell", format!("no cell {name:?}"), vec![("cell", Json::from(name))]))?;
+        if !game.select_cell(cell) {
+            return Err(error("nothing_there", format!("no stone or wall on {name}"), vec![("cell", Json::from(name))]));
+        }
+        out.set("selected", Json::from(name));
+    }
+    if let Some(id) = str_arg(args, "press")? {
+        match game.press(ctx.world, ctx.agent, id) {
+            Ok(action) => {
+                out.set("pressed", Json::from(id));
+                out.set("action", action.map_or(Json::Null, Json::from));
+            }
+            Err(e) => return Err(error("ui_refused", e, vec![("widget", Json::from(id))])),
+        }
+    }
+    out.set("status", game.status_json());
+    out.set("ui", game.ui_tree(limit));
+    // Compact: a full HUD is dozens of widgets.
+    Ok(ToolOutput::text(out.to_string()))
 }

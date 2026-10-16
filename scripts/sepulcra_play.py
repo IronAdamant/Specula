@@ -6,8 +6,10 @@ Starts the `sepulcra` binary (release) windowed on its own port, starts a run, f
 dust is there), and drives time with the engine's `time_control`: mostly paused + `step` (so the
 run is reproducible), with stretches of real time and of `scale` fast-forward. It captures
 `sight_frame` images at the build phase, during wave 3, at a busy wave, during the boss wave and
-at the end, records `perf_frame` during the busy wave, then saves a recording with `play_record`
-and verifies it with `play_replay`.
+at the end (the busy wave also with the HUD, `include_ui`), records `perf_frame` during the busy
+wave, checks the HUD as data and presses its buttons (`play_ui`), checks the creatures animate
+(their `anim` component), then saves a recording with `play_record` and verifies it with
+`play_replay`. The game runs muted unless `--sound` (sound is checked as data in `play_state`).
 
     cargo build -p sepulcra-app --release
     python scripts/sepulcra_play.py                          # discrete GPU, port 7486
@@ -78,8 +80,11 @@ class Run:
             self.mcp.call("time_control", action="step", ticks=n)
             left -= n
 
-    def capture(self, label, eye, target, fov=45):
-        packet = self.mcp.frame(width=1280, height=720, eye=eye, target=target, fov_y_deg=fov, max_subjects=12)
+    def capture(self, label, eye, target, fov=45, ui=False):
+        args = dict(width=1280, height=720, eye=eye, target=target, fov_y_deg=fov, max_subjects=12)
+        if ui:
+            args["include_ui"] = True
+        packet = self.mcp.frame(**args)
         st = self.state()
         self.captures.append({
             "label": label, "png": packet["image"]["path"], "packet": packet["image"]["packet_path"],
@@ -92,12 +97,49 @@ class Run:
             print(f"    warnings: {packet['warnings']}")
 
 
+def check_hud(mcp):
+    """The HUD as data: its screens and widgets, and its buttons pressed as a player would."""
+    ui = mcp.json("play_ui", limit=200)["ui"]
+    ids = {w.get("id") for s in ui.get("screens", []) for w in s.get("widgets", []) if w.get("id")}
+    want = {"wave", "dust", "tombstones", "call_wave", "build_wall", "pause_button"}
+    missing = sorted(want - ids)
+    pressed = mcp.json("play_ui", press="build_wall")
+    sel_wall = mcp.json("play_state")["presentation"]["hud"]["selected"]
+    mcp.json("play_ui", press="build_warding")
+    sel_back = mcp.json("play_state")["presentation"]["hud"]["selected"]
+    hud = {"screens": [s.get("name") for s in ui.get("screens", [])], "widgets": len(ids), "missing": missing,
+           "pressed_action": pressed.get("action"), "selected_after_wall": sel_wall, "selected_after_warding": sel_back}
+    print(f"  hud: {hud}")
+    if missing or sel_wall != "wall" or sel_back != "warding":
+        raise SystemExit(f"HUD check failed: {hud}")
+    return hud
+
+
+def check_anim(mcp):
+    """Creatures are skinned models playing clips of their anim sets, and transient (never saved)."""
+    q = mcp.json("world_query", tags=["enemy"], fields=["path", "anim", "model_state", "transient"], limit=60)
+    items = q.get("items", [])
+    clips, ready, transient = {}, 0, 0
+    for e in items:
+        a = e.get("anim") or {}
+        clip = a.get("clip", "-")
+        clips[clip] = clips.get(clip, 0) + 1
+        ready += e.get("model_state") == "ready"
+        transient += bool(e.get("transient"))
+    out = {"enemies": len(items), "ready": ready, "transient": transient, "clips": clips}
+    print(f"  anim: {out}")
+    if not items or ready != len(items) or transient != len(items) or "-" in clips:
+        raise SystemExit(f"animation check failed: {out}")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=7486)
     ap.add_argument("--adapter", default="discrete")
     ap.add_argument("--seed", default="7")
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--sound", action="store_true", help="play sound (default: --mute)")
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("use another port than 7471 (reserved for your working engine)")
@@ -108,6 +150,8 @@ def main():
     extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720"]
     if args.headless:
         extra.append("--headless")
+    # The game's own arguments: the seed for its first run, and no sound unless asked.
+    extra += ["--", "--seed", str(args.seed)] + ([] if args.sound else ["--mute"])
     summary = {"adapter": args.adapter, "seed": args.seed}
     with Engine(EXE, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("sepulcra-play")
@@ -125,6 +169,10 @@ def main():
 
         run = Run(mcp, out)
         mcp.call("time_control", action="pause")
+        first = mcp.json("play_state")
+        if first["seed"] != str(args.seed):
+            raise SystemExit(f"--seed {args.seed} did not reach the game (it has {first['seed']})")
+        summary["first_seed"] = first["seed"]
         mcp.json("play_new", seed=args.seed)
         run.drive()
         overview = dict(eye=[38, 27, 52], target=[0, -9, 1])
@@ -166,6 +214,9 @@ def main():
                 print(f"  perf at wave {st['wave']} ({st['enemies']} enemies): game_frame {perf.get('game_frame')} "
                       f"sim_tick {perf.get('sim_tick')} pacing {perf.get('frame_pacing')}")
                 run.capture("busy_wave", **overview)
+                run.capture("busy_wave_hud", eye=[14, 16, 22], target=[0, 0, 2], fov=45, ui=True)
+                summary["hud"] = check_hud(mcp)
+                summary["anim"] = check_anim(mcp)
                 busy_done = True
                 # Fast-forward a stretch with scale (the clock runs ticks faster than real time).
                 mcp.call("time_control", action="scale", scale=8)

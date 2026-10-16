@@ -26,7 +26,7 @@
 use crate::draw::{DrawCmd, DrawList, Owner, Rect};
 use crate::ui::{Ui, WidgetRef};
 use specula_core::json::Json;
-use specula_gpu::{Gpu, GpuError, Limit, OverlayKind, OverlayQuad, TextureFormat, TextureId, MAX_OVERLAY_QUADS};
+use specula_gpu::{GpuError, Limit, OverlayKind, OverlayQuad, OverlayTextures, TextureFormat, TextureId, MAX_OVERLAY_QUADS};
 use specula_text::GlyphAtlas;
 
 /// Why an image wasn't drawn.
@@ -85,7 +85,9 @@ impl GpuOverlay {
 
     /// Upload atlas pages that are new since the last call, and the regions glyph rasterising
     /// changed in the others (`GlyphAtlas::take_dirty`). Call after `Ui::frame`, before drawing.
-    pub fn sync_atlas(&mut self, gpu: &mut Gpu, atlas: &mut GlyphAtlas) -> Result<(), GpuError> {
+    /// `gpu` is a `specula_gpu::Gpu`, or whatever a host lends (a hosted game gets the engine's
+    /// overlay textures, not the device).
+    pub fn sync_atlas<G: OverlayTextures + ?Sized>(&mut self, gpu: &mut G, atlas: &mut GlyphAtlas) -> Result<(), GpuError> {
         let size = atlas.page_size();
         if self.page_size != 0 && self.page_size != size {
             // The atlas was rebuilt with another page size: start over.
@@ -184,14 +186,14 @@ impl GpuOverlay {
         &self.skipped
     }
 
-    fn destroy_textures(&mut self, gpu: &mut Gpu) {
+    fn destroy_textures<G: OverlayTextures + ?Sized>(&mut self, gpu: &mut G) {
         for t in self.pages.drain(..) {
             gpu.destroy_texture(t);
         }
     }
 
     /// Free the atlas textures.
-    pub fn destroy(mut self, gpu: &mut Gpu) {
+    pub fn destroy<G: OverlayTextures + ?Sized>(mut self, gpu: &mut G) {
         self.destroy_textures(gpu);
     }
 }

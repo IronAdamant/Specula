@@ -1107,6 +1107,33 @@ pub fn enumerate_adapters() -> Result<Vec<AdapterInfo>, GpuError> {
     Ok(devices.iter().enumerate().map(|(i, &pd)| instance.adapter_info(i, pd)).collect())
 }
 
+/// The overlay-texture part of [`Gpu`]: what a HUD needs to keep its glyph atlas and images on
+/// the GPU, and nothing else. A host (the engine) can hand this to code it doesn't trust with the
+/// whole device, such as a hosted game drawing its interface (`specula-ui`'s `GpuOverlay` takes
+/// any implementation).
+pub trait OverlayTextures {
+    /// See [`Gpu::upload_texture`].
+    fn upload_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError>;
+    /// See [`Gpu::update_texture`].
+    fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError>;
+    /// See [`Gpu::destroy_texture`].
+    fn destroy_texture(&mut self, texture: TextureId);
+}
+
+impl OverlayTextures for Gpu {
+    fn upload_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        Gpu::upload_texture(self, width, height, format, pixels)
+    }
+
+    fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
+        Gpu::update_texture(self, texture, x, y, width, height, pixels)
+    }
+
+    fn destroy_texture(&mut self, texture: TextureId) {
+        Gpu::destroy_texture(self, texture)
+    }
+}
+
 /// Instance, device, queue and all GPU resources. Not `Send`; use from one thread.
 ///
 /// Dropping it waits for the GPU to go idle, then releases every resource, the window swapchain

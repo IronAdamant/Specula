@@ -137,11 +137,15 @@ fn a_rejected_new_game_keeps_ticks_out_of_others_claims() {
     h.claim("/ann");
     let ann = h.ann_builds("/ann", 400);
     let versions: Vec<u64> = ann.iter().map(|id| h.world.get(*id).unwrap().version).collect();
-    let before = h.world.next_id();
+    // Enemies, bolts and flashes are transient (never saved, ids of their own), so count what
+    // the game had alive at once.
+    let enemies = h.world.find_path("/live/enemies").unwrap();
+    let mut most = 0;
     for _ in 0..6000 {
         h.tick();
+        most = most.max(h.world.children_of(Some(enemies)).count());
     }
-    assert!(h.world.next_id() > before + 50, "the game spawned plenty while ticking ({})", h.world.next_id() - before);
+    assert!(most > 5, "the game spawned plenty while ticking ({most} enemies at once at most)");
     let touched = ann.iter().zip(&versions).filter(|(id, v)| h.world.get(**id).is_none_or(|e| e.version != **v)).count();
     let mut foreign = 0;
     h.world.walk(Some(ann[0]), |e, _| foreign += usize::from(&*e.created_by != "ann"));

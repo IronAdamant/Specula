@@ -1,15 +1,12 @@
-//! What every thing in Sepulcra looks like: the STYLE.md palette and one function per kind of
-//! thing that returns its model as a list of [`Part`]s.
-//!
-//! This is the seam for real assets: the procedural-modelling lane will build meshes from
-//! `games/sepulcra/assets/recipes/`; swapping a greybox for a model means changing the function
-//! for that kind (say [`enemy_model`]) to return one part with the model's mesh. Nothing else in
-//! the presentation knows what a thing is made of.
+//! What every thing in Sepulcra looks like: the STYLE.md palette, which procedural recipe
+//! (`games/sepulcra/assets/recipes/`) draws each kind of thing, how its creatures animate
+//! (clips of `assets/anims/`), and the few primitives (bolts, flashes, the slab's blocks) that
+//! have no recipe yet.
 //!
 //! Models are in metres, with the origin where the thing stands (feet, base), +Y up and +Z
 //! forward (the way an enemy walks). Gameplay pieces are a little oversized, per the style bible.
 
-use specula::world::{LightSpec, Look, Profile, Shape};
+use specula::world::{LightSpec, Look, ModelSpec, Profile, Shape};
 use specula_core::math::Vec3;
 use specula_gpu::{Material, Surface};
 
@@ -36,6 +33,7 @@ pub mod palette {
     pub const CARVED: [f32; 3] = hex(0x8c96a3);
     pub const CHAMFER: [f32; 3] = hex(0xaab4c0);
     pub const MOSS: [f32; 3] = hex(0x4f6b3a);
+    pub const ROOTS: [f32; 3] = hex(0x5a4632);
     pub const BONE: [f32; 3] = hex(0xd8cfb8);
     pub const BONE_SHADOW: [f32; 3] = hex(0x9c937e);
     pub const GRAVE_STONE: [f32; 3] = hex(0xa7a39a);
@@ -47,6 +45,10 @@ pub mod palette {
     /// The sky below the horizon (the void under the slab).
     pub const VOID: [f32; 3] = hex(0x06080e);
     pub const MOON: [f32; 3] = hex(0xc9d6ff);
+    /// The moon's light on the slab (the disc stays MOON).
+    pub const MOONLIGHT: [f32; 3] = hex(0xd0d9f0);
+    /// The night's fill light: MIST with most of its blue taken out.
+    pub const NIGHT_FILL: [f32; 3] = hex(0x30363f);
     pub const IRON: [f32; 3] = hex(0x5c6168);
     /// The chalk scar on lane-jump ledges (a pale neutral).
     pub const CHALK: [f32; 3] = hex(0xd6d2c4);
@@ -126,195 +128,199 @@ fn s(k: f32) -> Vec3 {
     Vec3::new(k, k, k)
 }
 
-/// A stone the player carved: `kind` is its id in `stones.json`, `tier` 0..=2. Tiers read from
-/// the default camera: each tier adds a glowing rune band and height, tier II a capstone,
-/// tier III a floating ring of rune shards.
-pub fn stone_model(kind: &str, tier: u8) -> Vec<Part> {
-    let t = f32::from(tier.min(2));
-    let hf = 1.0 + 0.12 * t;
-    let mut m = vec![Part::cube("plinth", v(0.0, 0.06, 0.0), v(1.4, 0.12, 1.4), CHAMFER).rough(0.7)];
-    // (body height, body width, where rune bands start, top of the stone)
-    let (body_h, body_w) = match kind {
-        "warding" => (2.0 * hf, 1.0),
-        "rune_pillar" => (1.7 * hf, 1.1),
-        "brazier" => (0.0, 1.3),
-        "sky_obelisk" => (3.6 * hf, 0.8),
-        _ => (2.0 * hf, 1.0),
-    };
-    let mut top: f32;
-    match kind {
-        "brazier" => {
-            // A cairn: stacked stones, a little twisted, an iron bowl of fire on top.
-            let mut y = 0.12;
-            let blocks = [(1.3, 0.6, 8.0), (1.05, 0.5, -14.0), (0.85, 0.42, 21.0)];
-            for (i, (w, h, r)) in blocks.iter().enumerate().take(2 + usize::from(tier >= 1)) {
-                let name = ["cairn_1", "cairn_2", "cairn_3"][i];
-                m.push(Part::cube(name, v(0.0, y + h / 2.0, 0.0), v(*w, *h, *w), CARVED).rot(0.0, *r, 0.0).rough(0.75));
-                y += h;
-            }
-            top = y;
-            m.push(Part::cube("rune_1", v(0.0, 0.42, 0.0), v(1.33, 0.08, 1.33), RUNE_GLOW).rot(0.0, 8.0, 0.0).glow(2.5));
-            if tier >= 2 {
-                m.push(Part::cube("rune_2", v(0.0, 0.88, 0.0), v(1.08, 0.08, 1.08), RUNE_GLOW).rot(0.0, -14.0, 0.0).glow(2.5));
-            }
-            m.push(Part::sphere("bowl", v(0.0, top + 0.12, 0.0), v(1.3, 0.5, 1.3), IRON).metal(0.9).rough(0.45));
-            m.push(Part::sphere("flame", v(0.0, top + 0.38, 0.0), v(0.8, 0.62, 0.8), FIRE_FLAME).glow(3.0).light(2.0, 3.5, FIRE_FLAME));
-            m.push(Part::sphere("flame_core", v(0.0, top + 0.5, 0.0), v(0.42, 0.5, 0.42), FIRE_CORE).glow(4.0));
-            top += 0.8;
-        }
-        _ => {
-            m.push(Part::cube("body", v(0.0, 0.12 + body_h / 2.0, 0.0), v(body_w, body_h, body_w), CARVED).rough(0.75));
-            for k in 0..=tier.min(2) {
-                let y = 0.6 + 0.5 * f32::from(k);
-                let name = ["rune_1", "rune_2", "rune_3"][usize::from(k)];
-                m.push(Part::cube(name, v(0.0, y, 0.0), v(body_w + 0.04, 0.09, body_w + 0.04), RUNE_GLOW).glow(2.5));
-            }
-            let crown = 0.12 + body_h;
-            if tier >= 1 {
-                m.push(Part::cube("capstone", v(0.0, crown + 0.07, 0.0), v(body_w + 0.18, 0.14, body_w + 0.18), CHAMFER).rough(0.7));
-            }
-            let crown = crown + if tier >= 1 { 0.14 } else { 0.0 };
-            match kind {
-                "rune_pillar" => {
-                    m.push(Part::cube("cap", v(0.0, crown + 0.08, 0.0), v(1.3, 0.16, 1.3), CHAMFER).rough(0.7));
-                    m.push(Part::sphere("halo", v(0.0, crown + 0.3, 0.0), v(1.9, 0.07, 1.9), RUNE_GLOW).glow(1.6));
-                    top = crown + 0.35;
-                }
-                "sky_obelisk" => {
-                    // A needle: a slim diamond tip that glows.
-                    m.push(Part::cube("tip", v(0.0, crown + 0.1, 0.0), v(0.5, 0.5, 0.8), RUNE_GLOW).rot(0.0, 0.0, 45.0).glow(2.0));
-                    top = crown + 0.45;
-                }
-                _ => {
-                    // Warding stone: a pointed gable.
-                    m.push(Part::cube("point", v(0.0, crown, 0.0), v(0.7, 0.7, body_w), CARVED).rot(0.0, 0.0, 45.0).rough(0.75));
-                    top = crown + 0.5;
-                }
-            }
-        }
-    }
-    if tier >= 2 {
-        for (i, a) in [0.0f32, 90.0, 180.0, 270.0].iter().enumerate() {
-            let (x, z) = (a.to_radians().sin() * 0.95, a.to_radians().cos() * 0.95);
-            let name = ["shard_1", "shard_2", "shard_3", "shard_4"][i];
-            m.push(Part::cube(name, v(x, top + 0.45, z), s(0.2), RUNE_PALE).rot(45.0, *a, 45.0).glow(2.5));
-        }
-    }
-    m
-}
-
-/// How tall a stone's model is (for the range ring and labels).
-pub fn stone_height(kind: &str, tier: u8) -> f32 {
-    let hf = 1.0 + 0.12 * f32::from(tier.min(2));
-    match kind {
-        "rune_pillar" => 1.7 * hf + 0.5,
-        "sky_obelisk" => 3.6 * hf + 0.6,
-        "brazier" => 2.4,
-        _ => 2.0 * hf + 0.6,
-    }
-}
-
-/// An undead: `kind` is its id in `enemies.json`. Distinct silhouettes (STYLE.md shape
-/// language): the shambler wide and low, the runner thin and leaning, the wraith a tattered
-/// floating cone, the colossus a giant ribcage and spine.
-pub fn enemy_model(kind: &str) -> Vec<Part> {
-    let eyes = |name, pos, scale| Part::cube(name, pos, scale, GRAVE_GLOW).glow(2.2);
-    match kind {
-        "shambler" => vec![
-            Part::cube("legs", v(0.0, 0.32, 0.0), v(0.72, 0.64, 0.42), BONE_SHADOW),
-            Part::cube("torso", v(0.0, 0.98, 0.08), v(1.0, 0.82, 0.62), BONE).rot(20.0, 0.0, 0.0),
-            Part::cube("arm_l", v(-0.56, 1.02, 0.42), v(0.2, 0.2, 0.8), BONE_SHADOW).rot(-12.0, 0.0, 0.0),
-            Part::cube("arm_r", v(0.56, 0.98, 0.42), v(0.2, 0.2, 0.8), BONE_SHADOW).rot(-4.0, 0.0, 0.0),
-            Part::sphere("head", v(0.0, 1.46, 0.36), s(0.46), BONE),
-            eyes("eyes", v(0.0, 1.5, 0.58), v(0.28, 0.07, 0.05)),
-        ],
-        "runner" => vec![
-            Part::cube("leg_l", v(-0.13, 0.4, 0.05), v(0.11, 0.8, 0.11), BONE_SHADOW).rot(24.0, 0.0, 0.0),
-            Part::cube("leg_r", v(0.13, 0.4, -0.05), v(0.11, 0.8, 0.11), BONE_SHADOW).rot(-22.0, 0.0, 0.0),
-            Part::cube("spine", v(0.0, 1.12, 0.18), v(0.16, 0.8, 0.16), BONE).rot(28.0, 0.0, 0.0),
-            Part::cube("ribs", v(0.0, 1.18, 0.26), v(0.48, 0.4, 0.3), BONE).rot(28.0, 0.0, 0.0),
-            Part::sphere("skull", v(0.0, 1.6, 0.48), s(0.34), BONE),
-            eyes("eyes", v(0.0, 1.63, 0.64), v(0.2, 0.05, 0.04)),
-        ],
-        "wraith" => {
-            // A tattered hood: the hem narrows and flares in layers, with no feet.
-            let hood = Profile {
-                points: vec![[0.0, -1.1], [0.32, -0.8], [0.18, -0.62], [0.46, -0.25], [0.32, -0.08], [0.58, 0.3], [0.56, 0.68], [0.4, 0.95], [0.0, 1.1]],
-                segments: 9,
-            };
-            let mut shroud = Part::new("shroud", Shape::Lathe, Vec3::ZERO, Vec3::ONE, GRAVE_DEEP).glass(0.3).glow(0.25);
-            shroud.profile = Some(hood);
-            vec![
-                shroud,
-                Part::sphere("core", v(0.0, 0.3, 0.0), v(0.3, 0.55, 0.3), GRAVE_GLOW).glow(0.9),
-                eyes("eyes", v(0.0, 0.72, 0.44), v(0.3, 0.07, 0.05)),
-            ]
-        }
-        "colossus" => {
-            let mut m = vec![
-                Part::cube("leg_l", v(-0.8, 0.95, 0.0), v(0.55, 1.9, 0.55), BONE_SHADOW).rot(10.0, 0.0, 0.0),
-                Part::cube("leg_r", v(0.8, 0.95, 0.0), v(0.55, 1.9, 0.55), BONE_SHADOW).rot(-10.0, 0.0, 0.0),
-                Part::cube("pelvis", v(0.0, 2.0, 0.0), v(2.1, 0.6, 1.0), BONE),
-                Part::cube("spine", v(0.0, 4.3, 0.35), v(0.6, 4.8, 0.6), BONE_SHADOW).rot(12.0, 0.0, 0.0),
-                Part::sphere("skull", v(0.0, 7.1, 1.25), v(1.4, 1.15, 1.5), BONE),
-                Part::cube("jaw", v(0.0, 6.5, 1.55), v(0.95, 0.3, 0.7), BONE_SHADOW),
-                eyes("eyes", v(0.0, 7.25, 1.98), v(0.8, 0.16, 0.1)).glow(3.0),
-                Part::cube("arm_l", v(-1.9, 4.6, 0.9), v(0.4, 3.4, 0.4), BONE).rot(-24.0, 0.0, 8.0),
-                Part::cube("arm_r", v(1.9, 4.6, 0.9), v(0.4, 3.4, 0.4), BONE).rot(-30.0, 0.0, -8.0),
-            ];
-            let ribs = [("rib_1", "rib_1l", "rib_1r"), ("rib_2", "rib_2l", "rib_2r"), ("rib_3", "rib_3l", "rib_3r"), ("rib_4", "rib_4l", "rib_4r")];
-            for (i, (front, l, r)) in ribs.iter().enumerate() {
-                let y = 3.3 + 0.75 * i as f32;
-                let z = 0.75 + 0.15 * i as f32;
-                let w = 2.6 - 0.2 * i as f32;
-                m.push(Part::cube(front, v(0.0, y, z), v(w, 0.2, 0.2), BONE));
-                m.push(Part::cube(l, v(-w / 2.0, y, z - 0.6), v(0.2, 0.2, 1.3), BONE));
-                m.push(Part::cube(r, v(w / 2.0, y, z - 0.6), v(0.2, 0.2, 1.3), BONE));
-            }
-            m
-        }
-        _ => vec![
-            Part::cube("body", v(0.0, 0.85, 0.0), v(0.8, 1.7, 0.5), BONE),
-            eyes("eyes", v(0.0, 1.45, 0.27), v(0.3, 0.07, 0.04)),
-        ],
-    }
-}
-
 /// A projectile from a stone of `kind` (one part: bolts are small and numerous).
 pub fn projectile_model(kind: &str) -> Part {
     match kind {
-        "brazier" => Part::sphere("bolt", Vec3::ZERO, s(0.48), FIRE_FLAME).glow(3.5),
-        "sky_obelisk" => Part::cube("bolt", Vec3::ZERO, v(0.14, 0.14, 0.9), RUNE_PALE).glow(3.0),
-        _ => Part::sphere("bolt", Vec3::ZERO, s(0.3), RUNE_GLOW).glow(3.0),
+        "brazier" => Part::sphere("bolt", Vec3::ZERO, s(0.42), FIRE_CORE).glow(4.0),
+        "sky_obelisk" => Part::cube("bolt", Vec3::ZERO, v(0.12, 0.12, 1.1), RUNE_PALE).glow(4.0),
+        _ => Part::cube("bolt", Vec3::ZERO, v(0.16, 0.16, 0.7), RUNE_GLOW).glow(3.5),
     }
 }
 
-/// A low dry-stone wall across a lane (along local X), `hp` 0..1 of its health: damaged walls
-/// lose height. `seed` makes each wall's blocks a little different.
-pub fn wall_model(seed: u32, hp: f32) -> Vec<Part> {
-    let jitter = |k: u32| ((seed.wrapping_mul(2_654_435_761).wrapping_add(k * 40_503) >> 8) % 1000) as f32 / 1000.0 - 0.5;
-    let h = 0.9 * (0.45 + 0.55 * hp.clamp(0.0, 1.0));
-    let mut m = Vec::new();
-    let names = ["block_1", "block_2", "block_3"];
-    for (i, name) in names.iter().enumerate() {
-        let x = -0.62 + 0.62 * i as f32;
-        let bh = h * (0.9 + 0.2 * jitter(i as u32));
-        let shade = 0.94 + 0.12 * jitter(10 + i as u32);
-        let c = [CARVED[0] * shade, CARVED[1] * shade, CARVED[2] * shade];
-        m.push(Part::cube(name, v(x + 0.06 * jitter(20 + i as u32), bh / 2.0, 0.04 * jitter(30 + i as u32)), v(0.66, bh, 0.6), c)
-            .rot(0.0, 6.0 * jitter(40 + i as u32), 3.0 * jitter(50 + i as u32))
-            .rough(0.85));
-    }
-    m.push(Part::cube("rune_line", v(0.0, h + 0.02, 0.0), v(1.7, 0.04, 0.08), RUNE_GLOW).glow(1.2 * hp.max(0.2)));
-    m
+/// The recipe of a stone kind (its id in `stones.json`), carved to `tier` 0..=2.
+pub fn stone_spec(kind: &str, tier: u8) -> ModelSpec {
+    let recipe = match kind {
+        "rune_pillar" => "recipes/rune_pillar.json",
+        "brazier" => "recipes/brazier_cairn.json",
+        "sky_obelisk" => "recipes/sky_obelisk.json",
+        _ => "recipes/warding_stone.json",
+    };
+    ModelSpec::new(recipe).with_param("tier", f64::from(tier.min(2)) + 1.0)
 }
 
-/// A tombstone (the graveyard's lives). `index` varies the lichen.
-pub fn tombstone_model(index: usize) -> Vec<Part> {
-    // Lichen is a neutral here: green belongs to the dead (STYLE.md), so living stone stays grey.
-    let c = if index % 3 == 1 { hex(0x9a978c) } else { GRAVE_STONE };
-    vec![
-        Part::cube("slab", v(0.0, 0.4, 0.0), v(0.5, 0.8, 0.15), c).rough(0.9),
-        Part::sphere("crown", v(0.0, 0.8, 0.0), v(0.5, 0.26, 0.15), c).rough(0.9),
-    ]
+/// A stone's own light, if it has one: the brazier's fire (warm, from tier I) and the rune glow
+/// of the others at tier III (STYLE.md: small cyan lights at tier III only, for the light
+/// budget). Offsets are from the stone's base.
+pub fn stone_light(kind: &str, tier: u8) -> Option<LightSpec> {
+    match kind {
+        "brazier" => Some(LightSpec { intensity: 2.2, range: 4.5, color: Some(FIRE_FLAME), offset: v(0.0, 1.9, 0.0) }),
+        _ if tier >= 2 => {
+            let h = if kind == "sky_obelisk" { 3.6 } else { 2.9 };
+            Some(LightSpec { intensity: 1.4, range: 3.5, color: Some(RUNE_GLOW), offset: v(0.0, h, 0.0) })
+        }
+        _ => None,
+    }
+}
+
+/// A one-cell wall; `seed` varies the stones.
+pub fn wall_spec(seed: u32) -> ModelSpec {
+    ModelSpec::new("recipes/wall_segment.json").with_seed(u64::from(seed % 1_000_000))
+}
+
+/// A tombstone of the graveyard; `index` varies its stones and lean.
+pub fn tombstone_spec(index: usize) -> ModelSpec {
+    let tilt = ((index * 37) % 13) as f64 / 6.0 - 1.0;
+    ModelSpec::new("recipes/tombstone.json").with_seed(606 + index as u64 * 7).with_param("tilt", tilt)
+}
+
+/// A 2 m fence segment (along X).
+pub fn fence_spec(index: usize) -> ModelSpec {
+    ModelSpec::new("recipes/graveyard_fence.json").with_seed(707 + index as u64)
+}
+
+/// A chunk of the slab's underside (about 10 × 10 m, `height` tall, its flat top at `height`).
+pub fn underside_spec(seed: u64, height: f64) -> ModelSpec {
+    ModelSpec::new("recipes/slab_cliff.json").with_seed(seed).with_param("height", height)
+}
+
+/// What a creature does, as far as its animation is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Act {
+    /// Standing (spawning, waiting).
+    Idle,
+    /// Walking, running or flying along its path.
+    Move,
+    /// Breaking a wall.
+    Attack,
+    /// A runner leaping a cracked ledge, a wraith's dive, the colossus raising shamblers.
+    Special,
+    Death,
+}
+
+/// A clip of the creature's anim set, how fast it plays (clip seconds per game second at
+/// normal speed) and whether it loops.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub name: &'static str,
+    pub rate: f32,
+    pub looping: bool,
+    /// Clip length in seconds (as in `assets/anims/*.json`; a test checks).
+    pub duration: f32,
+}
+
+const fn clip(name: &'static str, rate: f32, looping: bool, duration: f32) -> Clip {
+    Clip { name, rate, looping, duration }
+}
+
+/// How an enemy kind (its id in `enemies.json`) is drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct Creature {
+    pub recipe: &'static str,
+    /// Uniform scale over the recipe's real size (STYLE.md: a little oversized to read at range).
+    pub scale: f32,
+    pub idle: Clip,
+    pub walk: Clip,
+    pub attack: Clip,
+    pub special: Clip,
+    pub death: Clip,
+}
+
+/// The creature for an enemy kind. Walk rates are tuned so the feet roughly keep up with the
+/// simulated speed (shambler 0.8 m/s, runner 2.2, colossus 0.4) at this scale, within what still
+/// reads as the authored gait.
+pub fn creature(kind: &str) -> Creature {
+    match kind {
+        "runner" => Creature {
+            recipe: "recipes/skeleton_runner.json",
+            scale: 1.2,
+            idle: clip("idle", 1.0, true, 1.6),
+            walk: clip("sprint", 0.62, true, 0.56),
+            attack: clip("idle", 1.6, true, 1.6),
+            special: clip("leap", 1.0, false, 0.95),
+            death: clip("death", 1.0, false, 1.6),
+        },
+        "wraith" => Creature {
+            recipe: "recipes/wraith.json",
+            scale: 1.2,
+            idle: clip("float", 1.0, true, 2.4),
+            walk: clip("float", 1.0, true, 2.4),
+            attack: clip("swoop", 1.0, true, 1.4),
+            special: clip("swoop", 0.8, false, 1.4),
+            death: clip("death", 1.0, false, 1.8),
+        },
+        "colossus" => Creature {
+            recipe: "recipes/bone_colossus.json",
+            scale: 1.0,
+            idle: clip("walk", 0.2, true, 2.8),
+            walk: clip("walk", 0.55, true, 2.8),
+            attack: clip("summon", 0.9, true, 3.0),
+            special: clip("summon", 1.0, false, 3.0),
+            death: clip("death", 1.0, false, 3.4),
+        },
+        _ => Creature {
+            recipe: "recipes/shambler.json",
+            scale: 1.2,
+            idle: clip("idle", 1.0, true, 3.2),
+            walk: clip("walk", 1.15, true, 1.7),
+            attack: clip("attack", 1.0, true, 1.3),
+            special: clip("attack", 1.0, false, 1.3),
+            death: clip("death", 1.0, false, 2.4),
+        },
+    }
+}
+
+impl Creature {
+    pub fn clip(&self, act: Act) -> Clip {
+        match act {
+            Act::Idle => self.idle,
+            Act::Move => self.walk,
+            Act::Attack => self.attack,
+            Act::Special => self.special,
+            Act::Death => self.death,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use specula_core::Json;
+
+    const ANIMS: [(&str, &str); 4] = [
+        ("recipes/shambler.json", include_str!("../../sepulcra/assets/anims/shambler.json")),
+        ("recipes/skeleton_runner.json", include_str!("../../sepulcra/assets/anims/skeleton_runner.json")),
+        ("recipes/wraith.json", include_str!("../../sepulcra/assets/anims/wraith.json")),
+        ("recipes/bone_colossus.json", include_str!("../../sepulcra/assets/anims/bone_colossus.json")),
+    ];
+
+    #[test]
+    fn every_clip_exists_in_its_anim_set_with_its_length() {
+        for kind in ["shambler", "runner", "wraith", "colossus"] {
+            let c = creature(kind);
+            let text = ANIMS.iter().find(|(r, _)| *r == c.recipe).expect("anim set").1;
+            let set = Json::parse(text).unwrap();
+            let clips = set.get("clips").and_then(Json::as_array).unwrap();
+            for act in [Act::Idle, Act::Move, Act::Attack, Act::Special, Act::Death] {
+                let want = c.clip(act);
+                let found = clips.iter().find(|j| j.get("name").and_then(Json::as_str) == Some(want.name));
+                let found = found.unwrap_or_else(|| panic!("{kind}: no clip '{}'", want.name));
+                let d = found.get("duration").and_then(Json::as_f64).unwrap() as f32;
+                assert!((d - want.duration).abs() < 1e-3, "{kind}/{}: {d} s, the table says {}", want.name, want.duration);
+            }
+        }
+    }
+
+    #[test]
+    fn stones_have_recipes_for_every_tier() {
+        for kind in ["warding", "rune_pillar", "brazier", "sky_obelisk"] {
+            for tier in 0..3 {
+                let s = stone_spec(kind, tier);
+                assert!(s.check().is_ok(), "{kind} {tier}");
+                assert_eq!(s.params, vec![("tier".to_owned(), f64::from(tier) + 1.0)]);
+            }
+        }
+        assert!(stone_light("brazier", 0).is_some() && stone_light("warding", 1).is_none() && stone_light("warding", 2).is_some());
+        assert!(wall_spec(3).check().is_ok() && tombstone_spec(9).check().is_ok() && fence_spec(1).check().is_ok());
+        assert!(underside_spec(1, 15.0).check().is_ok());
+    }
 }

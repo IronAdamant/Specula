@@ -5,7 +5,7 @@
   "layer": 25,
   "modal": true,
   "focus": "new_run",
-  "notes": "Shown when the run is won. State: waves, tombstones, tombstones_max, run_time_s, kills.",
+  "notes": "Shown when the run is won. Actions: new_run, close_result. State: waves, tombstones, tombstones_max, run_time_s, kills.",
   "root": {
     "type": "box",
     "children": [
@@ -27,7 +27,7 @@
           { "type": "box", "layout": "row", "justify": "space_between", "align": "center", "gap": 12, "children": [ { "type": "label", "text": "Undead laid to rest", "role": "body" }, { "type": "label", "text": "{kills}", "role": "heading", "text_align": "right" } ] },
           { "type": "box", "layout": "row", "justify": "space_between", "align": "center", "gap": 12, "children": [ { "type": "label", "text": "Time", "role": "body" }, { "type": "label", "text": "{run_time_s:time}", "role": "heading", "text_align": "right" } ] },
           { "type": "button", "id": "new_run", "style": "primary", "text": "New run", "action": "new_run" },
-          { "type": "button", "id": "to_title", "text": "Title screen", "action": "quit_to_title" }
+          { "type": "button", "id": "to_slab", "text": "Look at the slab", "action": "close_result" }
         ]
       }
     ]

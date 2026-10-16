@@ -6,7 +6,7 @@
   "modal": true,
   "focus": "resume",
   "back": "resume",
-  "notes": "Actions: resume, open_settings, open_controls, quit_to_title. State: wave, waves.",
+  "notes": "Actions: resume, open_settings, open_controls, restart (asks first). State: wave, waves.",
   "root": {
     "type": "box",
     "children": [
@@ -26,7 +26,7 @@
           { "type": "button", "id": "resume", "style": "primary", "text": "Resume", "action": "resume" },
           { "type": "button", "id": "settings", "text": "Settings", "action": "open_settings" },
           { "type": "button", "id": "controls", "text": "Controls", "action": "open_controls" },
-          { "type": "button", "id": "quit", "text": "Quit to title", "action": "quit_to_title", "tooltip": "Your run is lost." },
+          { "type": "button", "id": "restart", "text": "Restart run", "action": "restart", "tooltip": "Start this seed again. Your run is lost." },
           {
             "type": "box", "layout": "row", "justify": "center", "gap": 18, "margin": [6, 0, 0, 0],
             "children": [

@@ -507,10 +507,15 @@ impl Engine {
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
+        // A hosted game's interface (include_ui), under the debug overlays.
         let mut quads = Vec::new();
+        if opts.include_ui {
+            self.game_overlay((w, h), camera, true, &mut quads);
+        }
+        let hud = quads.len();
         if painted && !second_render {
             let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
-            quads = q;
+            quads.extend(q);
             overlays = (!opts.overlays.is_empty()).then_some(report);
         }
         frame.overlay = &quads;
@@ -544,7 +549,9 @@ impl Engine {
         if second_render {
             let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
             overlays = (!opts.overlays.is_empty()).then_some(report);
-            frame.overlay = &q;
+            let mut both = quads[..hud].to_vec();
+            both.extend(q);
+            frame.overlay = &both;
             let _z = profile::zone("sight.render");
             self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
