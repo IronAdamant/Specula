@@ -167,7 +167,10 @@ impl SepulcraGame {
         let shipped = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("assets")));
         match shipped {
             Some(dir) if dir.join("recipes").is_dir() => dir,
-            _ => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sepulcra/assets")),
+            _ => {
+                let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+                app.parent().unwrap_or(app).join("sepulcra").join("assets")
+            }
         }
     }
 

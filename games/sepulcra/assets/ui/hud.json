@@ -7,7 +7,7 @@
   "root": {
     "type": "box",
     "children": [
-      { "type": "threats", "source": "threats" },
+      { "type": "threats", "source": "threats", "margin": [64, 10, 84, 10], "notes": "Arrows stay between the top bar and the build bar." },
       {
         "type": "panel",
         "id": "top_bar",
