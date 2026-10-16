@@ -228,7 +228,7 @@ top of it.
 
 ---
 
-## M1: world model, multi-agent and determinism. Next
+## M1: world model, multi-agent and determinism. Done (2026-10-13)
 
 **Goal:** many agents build one world at the same time, safely. The world survives restarts. The simulation clock is
 deterministic from day one.
@@ -317,7 +317,7 @@ claims and versions more agents just means more collisions.
 
 ---
 
-## M2: rendering, true sight, animation, first procedural shapes
+## M2: rendering, true sight, animation, first procedural shapes. Done (2026-10-16)
 
 **Goal:** worlds that look like games, sight agents can trust, animated characters, and original shapes beyond cubes.
 **Why here:** after M1 the bottleneck becomes "does it look right, is it really visible, and can agents make real
@@ -392,11 +392,21 @@ shapes?"
   *Done 2026-10-14:* CPU zones (`perf_zones`), frame capture with a Chrome trace (`perf_capture`), memory tracker (`perf_memory`).
 
 **Exit proof:**
-- [ ] A lit, shadowed scene with imported and procedural assets and an animated character.
+- [x] A lit, shadowed scene with imported and procedural assets and an animated character.
+  *Done 2026-10-16:* a moonlit Sepulcra graveyard: recipe props, two imported glTF assets (one textured and
+  GPU-skinned), five animated creatures, shadows/fog/bloom/grading/SSAO; 31 models ready, every pose changes across
+  the filmstrip, fixed `time_s` is bit-identical, shadowed ground 0.39-0.44x of shadows-off. Both GPUs.
+  ![M2 hero](fidelity/m2_exit_hero.png)
 - [x] Sight reports 0 visible pixels for a fully hidden object.
   *Done 2026-10-14:* `scripts/sight_check.py` (box behind a wall: `visible_px` 0, `occluded`; a sphere half behind a
   low wall: 0.47 of its disc) on the NVIDIA and Intel GPUs.
-- [ ] A 10k-instance world holds its budget on the Intel integrated GPU.
+- [x] A 10k-instance world holds its budget on the Intel integrated GPU.
+  *Done 2026-10-16* (integrator's run on main 8a9a5e8, window path, 1280x720, full night effects, 120 frames):
+  8,000 cubes + 2,000 tombstones: GPU p95 7.1 ms, frame p95 9.9 ms, draw list p95 1.1 ms; 10,000 tombstone models:
+  GPU p95 9.5 ms, frame p95 11.9 ms, draw list p95 1.25 ms (budgets 14 / 20.9 / 1.5 ms). Another lane's engine shared
+  the machine; the lane's quiet runs measured draw list p95 0.32 / 0.48 ms. RTX 4090: GPU p95 0.4 / 1.3 ms.
+
+**M2 complete (2026-10-16).**
 
 `python scripts/m2_exit.py --adapter both` (after `cargo build --release -p specula`) checks all three and prints
 PASS / FAIL / SKIPPED per criterion; captures, packets and `m2_exit.json` go to `target/m2-exit/`.
