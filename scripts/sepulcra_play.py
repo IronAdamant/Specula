@@ -98,18 +98,21 @@ def main():
     ap.add_argument("--adapter", default="discrete")
     ap.add_argument("--seed", default="7")
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--exe", default=str(EXE), help="the sepulcra binary (default: this checkout's release build)")
+    ap.add_argument("--out", default=None, help="output folder (default target/sepulcra-play/<adapter>)")
     args = ap.parse_args()
+    exe = Path(args.exe)
     if args.port == 7471:
         sys.exit("use another port than 7471 (reserved for your working engine)")
-    if not EXE.exists():
-        sys.exit(f"{EXE} not found: cargo build -p sepulcra-app --release")
-    out = ROOT / "target" / "sepulcra-play" / args.adapter
+    if not exe.exists():
+        sys.exit(f"{exe} not found: cargo build -p sepulcra-app --release")
+    out = Path(args.out) if args.out else ROOT / "target" / "sepulcra-play" / args.adapter
     out.mkdir(parents=True, exist_ok=True)
     extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720"]
     if args.headless:
         extra.append("--headless")
     summary = {"adapter": args.adapter, "seed": args.seed}
-    with Engine(EXE, args.port, out / "engine.log", *extra, cwd=out) as eng:
+    with Engine(exe, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("sepulcra-play")
 
         def call_raw(tool, **a):
@@ -154,6 +157,9 @@ def main():
                 mcp.call("time_control", action="resume")
                 time.sleep(4.0)
                 perf = mcp.json("perf_frame")
+                zones = {z["path"]: z for z in mcp.json("perf_zones", min_ms=0.0, limit=200).get("zones", [])
+                         if z.get("thread") == "main"}
+                draw_zone = zones.get("frame/draw_list", {})
                 # While the clock runs: what the window shows (interpolated, with live flashes).
                 run.capture("busy_wave_live", eye=[14, 16, 22], target=[0, 0, 2], fov=45)
                 mcp.call("time_control", action="pause")
@@ -162,9 +168,14 @@ def main():
                     "window": perf.get("window"), "frame_pacing": perf.get("frame_pacing"),
                     "sim_tick": perf.get("sim_tick"), "game_frame": perf.get("game_frame"),
                     "errors": perf.get("errors"),
+                    "draw_list": perf.get("draw_list"),
+                    "draw_list_zone_ms": {"mean": draw_zone.get("mean_ms"), "p95": draw_zone.get("p95_ms")},
+                    "draw_cache": perf.get("draw_cache"),
                 }
                 print(f"  perf at wave {st['wave']} ({st['enemies']} enemies): game_frame {perf.get('game_frame')} "
                       f"sim_tick {perf.get('sim_tick')} pacing {perf.get('frame_pacing')}")
+                print(f"  window draw list (frame/draw_list zone): mean {draw_zone.get('mean_ms')} ms, p95 {draw_zone.get('p95_ms')} ms; "
+                      f"draws built {perf.get('draw_list')}; cache {perf.get('draw_cache')}")
                 run.capture("busy_wave", **overview)
                 busy_done = True
                 # Fast-forward a stretch with scale (the clock runs ticks faster than real time).

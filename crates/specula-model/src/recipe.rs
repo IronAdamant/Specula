@@ -908,10 +908,10 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let seed = params.seed.unwrap_or(recipe.seed);
     let mut stack = vec![recipe.name.clone()];
     let tally = Tally::default();
-    let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally)?;
+    let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally, false)?;
     let mut notes = Vec::new();
     let rig = match &recipe.rig {
-        Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default() })?),
+        Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false })?),
         None => None,
     };
     let bindings: Vec<Binding> = match &rig {
@@ -960,22 +960,38 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let extent = size[0].max(size[1]).max(size[2]);
     let mut lods = vec![lod0];
     let mut ratios = vec![1.0f32];
+    let mut coarse_used = false;
     for (i, &ratio) in recipe.lod_ratios.iter().enumerate() {
         let inputs: Vec<LodInput> = built.iter().map(|b| LodInput { shape: &b.shape, cell_scale: b.lod_detail }).collect();
-        let Some((shapes, _cell)) = lod::simplify(&inputs, ratio, bounds.min, extent) else {
-            notes.push(format!("lods[{i}] ({ratio}) skipped: no simplification keeps every part within tolerance"));
-            continue;
-        };
-        let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
-        let mesh = assemble(&pairs, skin);
-        mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
+        let prev = lods.last().map_or(0, |m| m.triangle_count());
         // An LOD that saves under 10% over the previous one is dropped: it would cost memory and
         // a switch for nothing (parts kept with lod_detail 0 can make a model irreducible).
-        let prev = lods.last().map_or(0, |m| m.triangle_count());
-        if mesh.triangle_count() == 0 || mesh.triangle_count() as f32 > 0.9 * prev as f32 {
-            notes.push(format!("lods[{i}] ({ratio}) skipped: saves under 10% over the previous LOD"));
-            continue;
-        }
+        let saves = |m: &MeshData| m.triangle_count() > 0 && m.triangle_count() as f32 <= 0.9 * prev as f32;
+        let simplified = match lod::simplify(&inputs, ratio, bounds.min, extent) {
+            None => Err("no simplification keeps every part within tolerance"),
+            Some((shapes, _cell)) => {
+                let pairs: Vec<(&Shape, &BuiltPart)> = shapes.iter().zip(&built).collect();
+                let mesh = assemble(&pairs, skin);
+                mesh.validate().map_err(|er| e(&format!("lods[{i}]"), ErrorCode::InvalidMesh, er.to_string()))?;
+                if saves(&mesh) { Ok(mesh) } else { Err("saves under 10% over the previous LOD") }
+            }
+        };
+        let mesh = match simplified {
+            Ok(mesh) => mesh,
+            // Clustering can't reduce small bevelled parts (each part's cell is capped by its
+            // size): try the recipe rebuilt coarse instead, once, as the far level.
+            Err(why) => match (coarse_used, coarse_level(recipe, params, seed, &built, skin, &lods[0])?) {
+                (false, Some(mesh)) if saves(&mesh) => {
+                    coarse_used = true;
+                    notes.push(format!("lods[{i}] ({ratio}): {COARSE_NOTE}, {} triangles (clustering: {why})", mesh.triangle_count()));
+                    mesh
+                }
+                _ => {
+                    notes.push(format!("lods[{i}] ({ratio}) skipped: {why}"));
+                    continue;
+                }
+            },
+        };
         lods.push(mesh);
         ratios.push(ratio);
     }
@@ -1153,6 +1169,46 @@ fn hash_collider(h: &mut StableHasher, c: &Collider) {
     }
 }
 
+/// What a coarse far level is (model_build notes say when one was used).
+pub const COARSE_NOTE: &str = "the recipe rebuilt coarse (no bevels, about half the segments and sides, no subdivision or displacement)";
+
+/// The recipe rebuilt coarse ([`Ctx::coarse`]) as a far level, when it has the same parts as
+/// `built` and keeps LOD 0's bounds and volume within the auto-LOD tolerances (the model's
+/// bounds within [`lod::MODEL_BOUNDS_TOLERANCE`] of its size, a closed model's volume within
+/// [`lod::VOLUME_TOLERANCE`]); `None` otherwise.
+fn coarse_level(
+    recipe: &Recipe,
+    params: &BuildParams,
+    seed: u64,
+    built: &[BuiltPart],
+    skin: Option<(&Rig, &[Binding])>,
+    lod0: &MeshData,
+) -> Result<Option<MeshData>, RecipeError> {
+    let mut stack = vec![recipe.name.clone()];
+    let Ok((coarse, _)) = build_parts(recipe, params.values, seed, params, &mut stack, &Tally::default(), true) else {
+        return Ok(None);
+    };
+    if coarse.len() != built.len() {
+        return Ok(None);
+    }
+    let pairs: Vec<(&Shape, &BuiltPart)> = coarse.iter().map(|c| &c.shape).zip(built).collect();
+    let mesh = assemble(&pairs, skin);
+    if mesh.validate().is_err() {
+        return Ok(None);
+    }
+    let (a, b) = (mesh.bounds(), lod0.bounds());
+    let size = b.size();
+    let tol = lod::MODEL_BOUNDS_TOLERANCE * size[0].max(size[1]).max(size[2]);
+    if (0..3).any(|k| (a.min[k] - b.min[k]).abs() > tol || (a.max[k] - b.max[k]).abs() > tol) {
+        return Ok(None);
+    }
+    let (v0, v) = (lod0.signed_volume(), mesh.signed_volume());
+    if v0 > 1e-9 && !(v >= lod::VOLUME_TOLERANCE.0 * v0 && v <= lod::VOLUME_TOLERANCE.1 * v0) {
+        return Ok(None);
+    }
+    Ok(Some(mesh))
+}
+
 /// One built part, before meshing.
 #[derive(Clone, Debug)]
 struct BuiltPart {
@@ -1197,6 +1253,7 @@ fn build_parts(
     params: &BuildParams,
     stack: &mut Vec<String>,
     tally: &Tally,
+    coarse: bool,
 ) -> Result<(Vec<BuiltPart>, BTreeMap<String, f64>), RecipeError> {
     let mut vars: BTreeMap<String, f64> = BTreeMap::new();
     recipe.check_values(values)?;
@@ -1213,7 +1270,7 @@ fn build_parts(
         }
         vars.insert(name.clone(), v);
     }
-    let ctx = Ctx { vars: &vars, style: params.style, seed, tally };
+    let ctx = Ctx { vars: &vars, style: params.style, seed, tally, coarse };
     let smooth_of = |x: &Expr, path: &str| -> Result<f32, RecipeError> {
         let v = ctx.eval(x, path)?;
         if !(0.0..=180.0).contains(&v) {
@@ -1268,7 +1325,7 @@ fn build_parts(
                 }
                 let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
                 stack.push(asset.clone());
-                let res = build_parts(&child, &refs, pseed, params, stack, tally);
+                let res = build_parts(&child, &refs, pseed, params, stack, tally, coarse);
                 stack.pop();
                 res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0
             }
@@ -1306,6 +1363,9 @@ struct Ctx<'a> {
     style: &'a Style,
     seed: u64,
     tally: &'a Tally,
+    /// Building the coarse far level ([`COARSE_NOTE`]): no bevels, half the segments and sides,
+    /// no subdivision or displacement. Values are still checked as given.
+    coarse: bool,
 }
 
 fn axis_index(s: &str) -> usize {
@@ -1339,22 +1399,36 @@ impl Ctx<'_> {
         }
     }
 
-    /// A number in `lo..=hi`.
+    /// A number in `lo..=hi`. Bevels are 0 in a coarse build.
     fn ranged(&self, n: &Node, name: &str, default: f64, lo: f64, hi: f64) -> Result<f32, RecipeError> {
         let v = self.num(n, name, default)?;
         if v < lo || v > hi {
             return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if v > hi { hi } else { lo }));
         }
+        if self.coarse && matches!(name, "bevel" | "corner_bevel") && lo <= 0.0 {
+            return Ok(0.0);
+        }
         Ok(v as f32)
     }
 
+    /// An integer in `lo..=hi`. A coarse build halves segment and side counts (rounding up,
+    /// never below `lo`), resamples nothing and subdivides nothing.
     fn int(&self, n: &Node, name: &str, default: i64, lo: i64, hi: i64) -> Result<u32, RecipeError> {
         let v = self.num(n, name, default as f64)?;
         let r = dmath::round_f64(v);
         if r < lo as f64 || r > hi as f64 {
             return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("{v} is outside {lo}..{hi}")).with_numbers(v, if r > hi as f64 { hi as f64 } else { lo as f64 }));
         }
-        Ok(r as u32)
+        let r = r as u32;
+        if self.coarse {
+            match (name, n.op.as_str()) {
+                // Half, rounded up to even (arches and round sections keep their extreme points).
+                ("segments" | "sides" | "rings", _) => return Ok((r.div_ceil(2).div_ceil(2) * 2).min(r).max(lo.max(0) as u32)),
+                ("resample", _) | ("levels", "subdivide") => return Ok(lo.max(0) as u32),
+                _ => {}
+            }
+        }
+        Ok(r)
     }
 
     fn list(&self, v: &Val, path: &str) -> Result<Vec<f32>, RecipeError> {
@@ -1776,6 +1850,9 @@ impl Ctx<'_> {
             "subdivide" => s.subdivide(self.int(n, "levels", 1, 0, 4)?),
             "displace" => {
                 let amount = self.ranged(n, "amount", 0.0, -100.0, 100.0)?;
+                if self.coarse {
+                    return Ok(()); // surface detail: none at the far level
+                }
                 s.displace(amount, self.positive(n, "scale", 0.5)?, self.int(n, "octaves", 2, 1, 6)?, seed, within("axes", self.vec3(n, "axes", [1.0; 3])?, 10.0)?);
             }
             "taper" => s.taper(axis_index(self.str(n, "axis", "y")), self.ranged(n, "from", 1.0, 0.0, 100.0)?, self.ranged(n, "to", 1.0, 0.0, 100.0)?),

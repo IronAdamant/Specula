@@ -39,7 +39,7 @@ use crate::two_d::{TileEdits, TwoD};
 use specula_gpu::{Environment, Material, Surface};
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -781,6 +781,10 @@ impl Layer {
 /// Transient entities take ids from here up, so they never move the persistent id counter
 /// (which world files and state hashes include). Still exact in a JSON number.
 pub const TRANSIENT_ID_BASE: u64 = 1 << 40;
+
+/// The largest persistent id counter a world may have (world files with more are refused): the
+/// next persistent spawn would reach the transient range.
+pub const MAX_NEXT_ID: u64 = TRANSIENT_ID_BASE - 2;
 
 pub const MATERIAL_NAMES: [&str; 4] = ["standard", "glass", "blob_shadow", "lava_lamp"];
 
@@ -1992,6 +1996,9 @@ pub const FIELDS: [&str; 39] = [
     "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d",
 ];
 
+/// Entity changes [`World::draw_changes_since`] remembers.
+pub const DRAW_LOG: usize = 1024;
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     entities: BTreeMap<u64, Entity>,
@@ -2028,6 +2035,22 @@ pub struct World {
     transient_seq: u64,
     /// Transient entities alive.
     transient_count: usize,
+    /// Moves on every change to a persistent entity (derived state included): what a renderer
+    /// keys cached per-entity draw data on. Transient entities (game presentation, changing
+    /// every tick) are left out: renderers read them live. Never hashed or saved.
+    draw_epoch: u64,
+    /// The latest changes as `(draw_epoch after it, entity id)`, oldest first, at most
+    /// [`DRAW_LOG`] (see [`World::draw_changes_since`]).
+    draw_log: VecDeque<(u64, u64)>,
+    /// Changes up to this epoch are no longer in `draw_log` (it overflowed, or a change touched
+    /// every entity).
+    draw_floor: u64,
+    /// Ids of the entities carrying a point light, so frames gather lights without visiting every
+    /// entity (a 10k-entity world has a handful). Kept by `link`, `unlink` and `update`.
+    lit: BTreeSet<u64>,
+    /// Ids of the 2D entities (sprites, tilemaps, shapes), so the window's 2D pass doesn't visit
+    /// every 3D entity. Kept by `link` and `unlink` (an entity's `two_d` comes with its shape).
+    flat: BTreeSet<u64>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
@@ -2180,12 +2203,14 @@ impl World {
     pub fn refresh_models(&mut self) -> Vec<(u64, WorldError)> {
         self.mesh_epoch += 1;
         let Some(source) = self.models.0.clone() else {
+            self.draw_reset();
             for e in self.entities.values_mut() {
                 e.resolved = None;
             }
             return Vec::new();
         };
         let mut failed = Vec::new();
+        self.draw_reset();
         for e in self.entities.values_mut() {
             let Some(spec) = &e.model else { continue };
             match source.resolve(spec) {
@@ -2205,12 +2230,22 @@ impl World {
     pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
         let Some(source) = self.models.0.clone() else { return };
         let mut touched = false;
+        // Entities whose resolution changed, recorded for draw caches after the walk (a finished
+        // build most frames changes nothing a cache holds).
+        let mut changed = Vec::new();
         for e in self.entities.values_mut() {
             let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
             if handles.contains(&r.handle) {
-                e.resolved = source.resolve(spec).ok();
+                let now = source.resolve(spec).ok();
+                if now != Some(r) {
+                    changed.push(e.id);
+                }
+                e.resolved = now;
                 touched = true;
             }
+        }
+        for id in changed {
+            self.draw_touch(id);
         }
         if touched {
             self.mesh_epoch += 1;
@@ -2236,6 +2271,66 @@ impl World {
     /// Every entity, by id.
     pub fn entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.entities.values()
+    }
+
+    /// The persistent entities, by id (they come before every transient one in [`World::entities`]).
+    pub fn persistent_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e)
+    }
+
+    /// The transient entities (game presentation), by id.
+    pub fn transient_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.entities.range(TRANSIENT_ID_BASE..).map(|(_, e)| e)
+    }
+
+    /// See the field: unchanged means no persistent entity changed in any way since it was read.
+    pub fn draw_epoch(&self) -> u64 {
+        self.draw_epoch
+    }
+
+    /// The ids of the persistent entities that changed (were spawned, changed, moved, removed)
+    /// after [`World::draw_epoch`] was `epoch`, oldest first, possibly repeated; `None` when the record
+    /// no longer reaches back that far (more than [`DRAW_LOG`] changes since, or a change to
+    /// every entity): read everything again then. What the window's draw cache patches itself
+    /// from.
+    pub fn draw_changes_since(&self, epoch: u64) -> Option<impl Iterator<Item = u64> + '_> {
+        if epoch < self.draw_floor || epoch > self.draw_epoch {
+            return None;
+        }
+        let start = self.draw_log.partition_point(|&(e, _)| e <= epoch);
+        Some(self.draw_log.range(start..).map(|&(_, id)| id))
+    }
+
+    /// Records a change to entity `id` for [`World::draw_changes_since`] (transient ones aren't
+    /// recorded: see the field).
+    fn draw_touch(&mut self, id: u64) {
+        if id >= TRANSIENT_ID_BASE {
+            return;
+        }
+        self.draw_epoch += 1;
+        if self.draw_log.len() >= DRAW_LOG {
+            if let Some((e, _)) = self.draw_log.pop_front() {
+                self.draw_floor = e;
+            }
+        }
+        self.draw_log.push_back((self.draw_epoch, id));
+    }
+
+    /// A change to (possibly) every entity: the change record starts again from here.
+    fn draw_reset(&mut self) {
+        self.draw_epoch += 1;
+        self.draw_log.clear();
+        self.draw_floor = self.draw_epoch;
+    }
+
+    /// The entities carrying a point light, by id (from an index: no other entity is visited).
+    pub fn lit_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.lit.iter().filter_map(|id| self.entities.get(id))
+    }
+
+    /// The 2D entities (with `two_d`), by id (from an index: no 3D entity is visited).
+    pub fn two_d_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.flat.iter().filter_map(|id| self.entities.get(id))
     }
 
     pub fn env(&self) -> &Env {
@@ -2357,9 +2452,12 @@ impl World {
 
     /// Restores the id counter from a world file. Never below an existing id, so a stale counter
     /// can't hand out an id twice.
+    /// The persistent id counter (at least the largest persistent id). Kept below the transient
+    /// range: world files are checked on load ([`MAX_NEXT_ID`]); a counter from elsewhere (a
+    /// replay) is capped there, where spawns are refused rather than given a transient id.
     pub(crate) fn set_next_id(&mut self, next_id: u64) {
         let max = self.entities.range(..TRANSIENT_ID_BASE).next_back().map_or(0, |(id, _)| *id);
-        self.next_id = next_id.max(max);
+        self.next_id = next_id.max(max).min(MAX_NEXT_ID);
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
@@ -2527,7 +2625,7 @@ impl World {
         created_by: &str,
         modified_by: &str,
     ) -> Result<(), WorldError> {
-        if id == ROOT || id >= TRANSIENT_ID_BASE || self.entities.contains_key(&id) {
+        if id == ROOT || id > MAX_NEXT_ID || self.entities.contains_key(&id) {
             return Err(WorldError::new("invalid_world", format!("entity id {id} is 0, out of range or used twice")).with("field", "id"));
         }
         if spec.transient {
@@ -2563,6 +2661,17 @@ impl World {
         let id = match id {
             Some(id) => id,
             None if transient => TRANSIENT_ID_BASE + self.transient_seq + 1,
+            // Persistent ids stay below the transient range (a spawn there would take, or later
+            // be overwritten by, a transient entity's id).
+            None if self.next_id + 1 >= TRANSIENT_ID_BASE - 1 => {
+                return Err(WorldError::new(
+                    "limit",
+                    format!("the world has used every persistent entity id (next would be {}; they end below {})", self.next_id + 1, TRANSIENT_ID_BASE - 1),
+                )
+                .with("field", "id")
+                .with("limit", TRANSIENT_ID_BASE - 2)
+                .with("value", self.next_id + 1));
+            }
             None => self.next_id + 1,
         };
         let name = match spec.name {
@@ -2836,6 +2945,7 @@ impl World {
         let by = self.intern(by);
         let moved = reparent || restyled || change.position.is_some() || change.rotation_deg.is_some() || change.scale.is_some();
         let remeshed = change.profile.is_some() || new_model.is_some();
+        self.draw_touch(id);
         let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some(name) = change.name {
             e.name = name;
@@ -2856,6 +2966,11 @@ impl World {
         change.look.apply(&mut e.look);
         if let Some(l) = change.light {
             e.light = l;
+            if l.is_some() {
+                self.lit.insert(id);
+            } else {
+                self.lit.remove(&id);
+            }
         }
         if let Some(p) = change.profile {
             e.profile = Some(p);
@@ -3048,6 +3163,13 @@ impl World {
         if e.transient {
             self.transient_count += 1;
         }
+        if e.light.is_some() {
+            self.lit.insert(e.id);
+        }
+        if e.two_d.is_some() {
+            self.flat.insert(e.id);
+        }
+        self.draw_touch(e.id);
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
             if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
         }
@@ -3056,7 +3178,10 @@ impl World {
 
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
+        self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.lit.remove(&id);
+        self.flat.remove(&id);
         self.layout_epoch += 1;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
@@ -3157,6 +3282,7 @@ impl World {
     fn refresh_one(&mut self, at: u64) -> bool {
         let Some(parent) = self.entities.get(&at).map(|e| e.parent) else { return false };
         let inherited = parent.and_then(|p| self.entities.get(&p)).map(|p| (p.world, p.shown, p.in_ui));
+        self.draw_touch(at);
         let e = self.entities.get_mut(&at).expect("checked above");
         let local = e.local_matrix();
         // Top-level entities use their local matrix as is (no identity multiply to round).
@@ -3470,6 +3596,7 @@ impl World {
     /// are ignored (the change's entity was replayed away).
     pub(crate) fn apply_pose(&mut self, pose: &Pose, by: &str) {
         let by = self.intern(by);
+        self.draw_touch(pose.id);
         let Some(e) = self.entities.get_mut(&pose.id) else { return };
         pose.apply_to(e);
         e.modified_by = by;
@@ -3487,7 +3614,10 @@ impl World {
     /// Like [`World::unlink`], but only drops index entries that still point at `id` (a replayed
     /// rename may already have given its old name to another entity).
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
+        self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.lit.remove(&id);
+        self.flat.remove(&id);
         self.layout_epoch += 1;
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {
@@ -3816,7 +3946,108 @@ mod tests {
     /// Everything a rollback must restore: entities (versions, attribution, cached world
     /// transforms), both indexes, the id and revision counters, the environment.
     fn snapshot(w: &World) -> String {
-        format!("{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.next_id, w.revision, w.env)
+        format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.lit, w.flat, w.next_id, w.revision, w.env)
+    }
+
+    /// The change record renderers patch caches from: every change to an entity (moves of a
+    /// subtree included), in order; gone once it overflows or a change touches every entity.
+    #[test]
+    fn draw_changes_record_what_changed() {
+        let mut w = World::default();
+        let a = put(&mut w, Shape::Cube, "a", None, Vec3::ZERO);
+        let g = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let b = put(&mut w, Shape::Cube, "b", Some("/g"), Vec3::ZERO);
+        let since = w.draw_epoch();
+        assert_eq!(w.draw_changes_since(since).unwrap().count(), 0);
+        let mv = |p: Vec3| UpdateSpec { position: Some(p), ..UpdateSpec::default() };
+        w.update(&EntityKey::Id(a), mv(Vec3::X), "t").unwrap();
+        w.update(&EntityKey::Id(g), mv(Vec3::Y), "t").unwrap();
+        let changed: BTreeSet<u64> = w.draw_changes_since(since).unwrap().collect();
+        assert_eq!(changed, BTreeSet::from([a, g, b]), "the group's move reaches its child");
+        w.delete(&EntityKey::Id(a), None).unwrap();
+        assert!(w.draw_changes_since(since).unwrap().any(|id| id == a));
+        assert!(w.draw_changes_since(w.draw_epoch() + 1).is_none(), "an epoch from another world");
+        let mid = w.draw_epoch();
+        for i in 0..DRAW_LOG + 1 {
+            w.update(&EntityKey::Id(b), mv(Vec3::new(i as f32, 0.0, 0.0)), "t").unwrap();
+        }
+        assert!(w.draw_changes_since(mid).is_none(), "the record overflowed");
+        assert_eq!(w.draw_changes_since(w.draw_epoch() - 3).unwrap().count(), 3);
+        w.refresh_models();
+        assert!(w.draw_changes_since(w.draw_epoch() - 1).is_none(), "a change to every entity starts the record again");
+    }
+
+    /// The lit-entity index agrees with a scan of every entity.
+    fn assert_lit_index(w: &World) {
+        let scanned: Vec<u64> = w.entities().filter(|e| e.light.is_some()).map(|e| e.id).collect();
+        let indexed: Vec<u64> = w.lit_entities().map(|e| e.id).collect();
+        assert_eq!(indexed, scanned);
+        assert_eq!(w.lit.len(), scanned.len(), "no stale ids in the index");
+        let flat: Vec<u64> = w.entities().filter(|e| e.two_d.is_some()).map(|e| e.id).collect();
+        assert_eq!(w.two_d_entities().map(|e| e.id).collect::<Vec<_>>(), flat);
+        assert_eq!(w.flat.len(), flat.len());
+    }
+
+    /// F3: frames gather point lights from an index, never by visiting every entity. The index
+    /// follows spawns (persistent and transient), light changes, deletes of whole subtrees, a
+    /// failed batch's rollback and journal replays.
+    #[test]
+    fn lit_index_follows_every_change() {
+        let lamp = || LightSpec { intensity: 1.0, range: 3.0, color: None, offset: Vec3::ZERO };
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let group = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        let mut lit = SpawnSpec::new(Shape::Cube);
+        lit.name = Some("lamp".into());
+        lit.parent = Some(EntityKey::Id(group));
+        lit.light = Some(lamp());
+        let lamp_id = w.spawn(lit, "t").unwrap().id;
+        for i in 0..50 {
+            put(&mut w, Shape::Cube, &format!("c{i}"), None, Vec3::ZERO);
+        }
+        let mut torch = SpawnSpec::new(Shape::Sphere);
+        torch.name = Some("torch".into());
+        torch.transient = true;
+        torch.light = Some(lamp());
+        let torch_id = w.spawn(torch, "game").unwrap().id;
+        let mut tree = SpawnSpec::new(Shape::Sprite);
+        tree.name = Some("tree".into());
+        tree.parent = Some(EntityKey::Id(group));
+        tree.two_d = Some(crate::two_d::parse("sprite", &Json::parse(r#"{"size":[2,4]}"#).unwrap()).unwrap());
+        let tree_id = w.spawn(tree, "t").unwrap().id;
+        assert_eq!(w.two_d_entities().map(|e| e.id).collect::<Vec<_>>(), [tree_id], "the 2D index holds the sprite alone");
+        assert_lit_index(&w);
+        assert_eq!(w.lit_entities().map(|e| e.id).collect::<Vec<_>>(), [lamp_id, torch_id]);
+
+        // Light added to a plain cube, then removed; removed from the transient torch.
+        let set = |light| UpdateSpec { light: Some(light), ..UpdateSpec::default() };
+        w.update(&EntityKey::Path("/c7".into()), set(Some(lamp())), "t").unwrap();
+        assert_lit_index(&w);
+        assert_eq!(w.lit.len(), 3);
+        w.update(&EntityKey::Path("/c7".into()), set(None), "t").unwrap();
+        w.update(&EntityKey::Id(torch_id), set(None), "game").unwrap();
+        assert_lit_index(&w);
+        assert_eq!(w.lit.len(), 1);
+
+        // A batch that adds a light then fails rolls the index back too.
+        let mut bad = SpawnSpec::new(Shape::Cube);
+        bad.name = Some("lit2".into());
+        bad.light = Some(lamp());
+        let before = snapshot(&w);
+        let ops = vec![Op::Spawn(bad), Op::Set(EntityKey::Path("/c3".into()), set(Some(lamp()))), Op::Delete(EntityKey::Path("/nope".into()), None)];
+        assert!(w.apply_batch(ops, "t").is_err());
+        assert_eq!(snapshot(&w), before);
+        assert_lit_index(&w);
+
+        // Deleting the group takes its lamp out of the index; rolling the delete back (as undo
+        // and failed steps do) brings it back.
+        let mark = w.mark();
+        w.delete(&EntityKey::Id(group), None).unwrap();
+        assert_lit_index(&w);
+        assert_eq!((w.lit.len(), w.flat.len()), (0, 0));
+        w.rollback_to(mark);
+        assert_lit_index(&w);
+        assert_eq!(w.lit_entities().map(|e| e.id).collect::<Vec<_>>(), [lamp_id]);
     }
 
     fn close(a: Vec3, b: Vec3) -> bool {
@@ -4351,6 +4582,57 @@ mod tests {
         let mut w = World::default();
         w.set_model_source(Some(Arc::new(FakeModels)));
         w
+    }
+
+    /// A finished build records only the entities whose resolution changed (draw caches patch
+    /// those) instead of starting the change record again; nothing changed, nothing recorded.
+    #[test]
+    fn finished_builds_record_only_what_they_changed() {
+        let mut w = with_models();
+        let mut s = SpawnSpec::model(ModelSpec::new("recipes/a.json"));
+        s.name = Some("a".into());
+        let a = w.spawn(s, "t").unwrap().id;
+        put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
+        let since = w.draw_epoch();
+        // Handle 1's build finished, but FakeModels resolves it as before: nothing to record.
+        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0), "the record survives an unrelated build");
+        // A handle no entity uses: nothing either.
+        w.refresh_model_handles(&BTreeSet::from([7u32]));
+        assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0));
+        // A change of resolution (the source now resolves the spec differently) is recorded for that entity.
+        w.models = SourceSlot(Some(Arc::new(Tier2)));
+        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        assert_eq!(w.draw_changes_since(since).unwrap().collect::<Vec<_>>(), [a]);
+    }
+
+    /// Resolves everything as handle 2 (a rebuilt spec).
+    struct Tier2;
+
+    impl ModelSource for Tier2 {
+        fn resolve(&self, _: &ModelSpec) -> Result<ResolvedModel, WorldError> {
+            Ok(ResolvedModel { handle: 2, state: ModelState::Ready, bounds: Some((Vec3::ZERO, Vec3::ONE)) })
+        }
+    }
+
+    /// Persistent ids never reach the transient range: a counter from a replay is capped, and a
+    /// spawn past it is refused (structured), while transient spawns go on.
+    #[test]
+    fn persistent_ids_stay_below_the_transient_range() {
+        let mut w = World::default();
+        w.set_next_id(u64::MAX);
+        assert_eq!(w.next_id(), MAX_NEXT_ID);
+        let e = w.spawn(SpawnSpec::new(Shape::Cube), "t").expect_err("refused");
+        assert_eq!((e.code, e.detail("field")), ("limit", Some(&Json::from("id"))));
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.transient = true;
+        assert!(w.spawn(t, "game").unwrap().id > TRANSIENT_ID_BASE);
+        assert_eq!(w.persistent_entities().count(), 0);
+        let mut w = World::default();
+        w.set_next_id(MAX_NEXT_ID - 1);
+        let last = w.spawn(SpawnSpec::new(Shape::Cube), "t").unwrap().id;
+        assert_eq!(last, MAX_NEXT_ID, "the last persistent id is still handed out");
+        assert!(w.spawn(SpawnSpec::new(Shape::Cube), "t").is_err());
     }
 
     #[test]

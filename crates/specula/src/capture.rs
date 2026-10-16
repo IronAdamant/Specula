@@ -16,6 +16,7 @@ use crate::sight_overlay::{self as ov, Kind, Painter};
 use crate::sight_tools::{CompareCall, OrbitSpec, OrbitTarget, QuerySpec, SightCall, SubjectFilter};
 use specula_core::math::{Mat4, Vec3};
 use specula_gpu::OverlayQuad;
+use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
 
 /// A capture-like call parked until the models it would show are built.
@@ -487,7 +488,8 @@ impl Engine {
         let mut owners = Vec::new();
         let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, opts.time_s, &mut draws, Some(&mut owners));
         self.lod_capture = stats;
-        let (lights, dropped_lights) = sight::lights(&self.world, opts.include_ui);
+        let mut lights = Vec::new();
+        let dropped_lights = sight::lights(&self.world, opts.include_ui, &mut lights);
         let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).

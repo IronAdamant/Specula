@@ -130,6 +130,11 @@ fn proportions_follow_the_style_bible() {
     // Tombstone slab 0.5 x 0.15 x 0.8 on a low footing.
     let tomb = size(&model(&style, &lib, "tombstone", None));
     near(tomb[1], 0.85, 0.05, "tombstone height");
+    // F3: graveyards hold thousands of tombstones, so the far level must be a real one (the
+    // coarse rebuild: clustering can't reduce the small bevelled cross).
+    let t = model(&style, &lib, "tombstone", None);
+    let far = t.lods.last().unwrap().triangle_count();
+    assert!(t.lods.len() == 3 && far * 4 <= t.lods[0].triangle_count(), "tombstone LODs {:?}", t.lods.iter().map(|l| l.triangle_count()).collect::<Vec<_>>());
     // Enemies: shambler / runner / wraith tops at 1.7 / 1.8 / 2.2 m; boss about 8 m.
     for (e, h) in ENEMIES {
         let m = model(&style, &lib, e, None);
@@ -164,7 +169,7 @@ fn builds_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra asset hash changed");
 }
 
-const PINNED: &str = "5e7861f2374c42c9";
+const PINNED: &str = "5a6aeffb3bc6da5c";
 
 /// Every enemy (and the fire) is rigged: each LOD carries skinning data, the rig stays within
 /// the crowd joint budget, and every bone moves some vertices.
