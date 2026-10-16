@@ -830,13 +830,15 @@ pub fn night(world: &mut World) {
     let moon = Vec3::new(elev.cos() * az.sin(), elev.sin(), elev.cos() * az.cos());
     let patch = EnvPatch {
         sun_direction: Some(moon),
-        // A dim moon a shade less blue than the palette's swatch, and a low blue fill: the night
-        // is dark, the stone a cool grey where the moon touches it (STYLE.md: neutrals under
-        // ~25% saturation), and the fire, the runes and the dead's eyes carry the scene.
+        // A dim moon a shade less blue than the palette's swatch, and a blue fill that does most
+        // of the lighting: the night is dark, but faces turned from the moon (the north and west
+        // cliffs, where the dead climb) stay readable; the stone is a cool grey (STYLE.md:
+        // neutrals under ~25% saturation), and the fire, the runes and the dead's eyes carry the
+        // scene.
         sun_color: Some(palette::MOONLIGHT),
-        sun_intensity: Some(0.85),
+        sun_intensity: Some(0.55),
         ambient_color: Some(palette::NIGHT_FILL),
-        ambient_intensity: Some(0.95),
+        ambient_intensity: Some(1.7),
         exposure: Some(1.0),
         tonemap: Some(true),
         background: Some(palette::SKY),
@@ -848,11 +850,12 @@ pub fn night(world: &mut World) {
         // A moonlit gradient with the moon's disc in the light's direction; below the horizon the
         // void stays near-black so the slab floats.
         sky: Some(SkyPatch { enabled: Some(true), ground: Some(palette::VOID), ..Default::default() }),
-        // The slab floats over mist: thick below the cliffs, almost none on the top face. The mist
-        // is darker than the moonlit stone so the slab's silhouette stays crisp.
+        // The slab floats over mist: thick below the cliffs, almost none on the top face. The
+        // mist is the night's blue (STYLE.md MIST), a shade lighter than the shadowed cliffs, so
+        // the slab stands out against it and the dead climbing out of it read as silhouettes.
         fog: Some(FogPatch {
             enabled: Some(true),
-            color: Some(palette::DEEP_MIST),
+            color: Some(palette::MIST),
             density: Some(0.08),
             falloff: Some(0.35),
             height: Some(-14.0),
