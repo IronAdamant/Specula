@@ -18,9 +18,16 @@ memory of the earlier ones. Last updated **2026-10-16**.
   - **Owner decisions 2026-10-15** (done): named cameras persist with the world (name-keyed, journaled, outside
     `world_hash`, `window_view {camera}` until a human takes the view back; games get `Frame::agent_view`); transient
     2D shapes have their own budget (250k vertices vs 2M, `perf.toml`).
-  - **Running at this update:** the **Sepulcra integration lane** (worktree `agent-a03ff13a9a9914100`): recipe
-    models, GPU-skinned creatures, moving pieces as transient entities, a `specula-ui` HUD through `GpuOverlay`,
-    `specula-audio`, `--seed`, `games/sepulcra/TESTPLAN.md`. It needs a `lane-reviewer` round before merge.
+  - **Sepulcra integration merged 2026-10-16** (fdbe1b8): recipe models, GPU-skinned creatures with state-driven
+    clips, transient presentation, a `specula-ui` HUD through `GpuOverlay` (`play_ui` for agents), procedural 3D
+    audio, `--seed`/`--mute`, a darker night. In-game test plan for the owner: `games/sepulcra/TESTPLAN.md`.
+    Capture: `docs/fidelity/sepulcra_slice_hud.png`. iGPU wave 6: 4.3 ms GPU, 0 allocations per warm frame.
+  - **Small follow-ups found by the skeptic (not started):** `include_ui` packets count entities as visible under
+    HUD panels (the ID buffer ignores the UI layer); the sky's horizon edge is crisp where `sky.frag` line 63 should
+    smoothstep (hidden by mist now); a near-white slab under a selected brazier (likely its own fire light; check).
+  - **Sepulcra owner questions:** how dark night should be (Claude darkened it; fire and runes carry the scene);
+    active pause on a gamepad (P is active pause, Start opens the menu); a title screen; saved settings and
+    rebinding; may the fire colour mark "can't afford" (STYLE.md reserves fire for fire).
   - **Next:** M3 needs the owner's go-ahead (save games, module host / hot reload, desync detector). Don't start it
     unasked.
   - **Lessons:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss, stale caches), so
