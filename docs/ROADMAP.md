@@ -228,7 +228,7 @@ top of it.
 
 ---
 
-## M1: world model, multi-agent and determinism. Next
+## M1: world model, multi-agent and determinism. Done (2026-10-13)
 
 **Goal:** many agents build one world at the same time, safely. The world survives restarts. The simulation clock is
 deterministic from day one.

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
-memory of the earlier ones. Last updated **2026-10-15**.
+memory of the earlier ones. Last updated **2026-10-16**.
 
 - **START HERE next session:** the owner asked (2026-10-13) for subagent swarms to advance M1 and M2 **while
   building Sepulcra to completion as dogfood** (Windows first), keep improving the lava lamps as features land,
@@ -10,52 +10,25 @@ memory of the earlier ones. Last updated **2026-10-15**.
   where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
   [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
   How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
-- **Paused 2026-10-15 (owner: "nearly out of usage limit ... set up handoffs").** The owner's request was
-  "Let's finish M2 please. All the way". State at the pause:
-  - **M1 done.** **M2: 13 of 16 items on `main`.** Merged this session: render graph follow-up, Post (grading +
-    SSAO, bb4ec24), Skinning & textured materials (GPU skinning, textured PBR, glTF models, world `anim` component,
-    world time; 688e9f2). Engine-for-games was merged earlier.
-  - **Two lanes unmerged**, each in its own worktree under `.claude/worktrees/` (branch `worktree-agent-<id>`). Their
-    agent contexts will be gone: start a fresh lane on the branch with the list below (`git -C <worktree> log` shows
-    where it stopped; WIP commits say so).
-    1. **Sight** (`agent-a71aac62f395c00c8`): per-agent cameras, `sight_orbit`, `sight_compare`, `sight_query`,
-       debug overlays, ID buffer (exact `visible_px`, `occluded`/`no_pixels`, glass counted with per-pixel sorted
-       id sets, reproducible; `visible_px_approx` = lower bound past 4 blended ids per pixel). Six review rounds; the
-       algorithm is verified. Round-6 fixes done and verified at 6a0e6ef (approx counts as seen via
-       `sight::shows()`, device-loss text per mode, GPU-ms stress assert). Head 1a65ec8 is a **WIP** merge of main
-       (Skinning): it builds and ids*.spv are rebuilt for the 128 B DrawRecord, but no tests ran since. Left: run
-       the full checks on the merge; add the **skinned** ID pipeline variant (built in the background like the
-       scene variants), the **alpha-mask** rule in `shown()` and the opaque ID pass, posed bones in the skeleton
-       overlay, with tests (a posed arm's visible_px follows the pose; cut-out pixels aren't counted). Then verify
-       (cargo test, clippy, `scripts/sight_check.py` on both adapters, window_check, lava `--plain`, anim_check),
-       one narrow `lane-reviewer` round on the integration, and merge.
-    2. **2D** (`agent-abab6399ffa467652`): sprites, tilemaps, vector shapes, orthographic cameras, SSAO-aware.
-       Four review rounds; round-4 fixes done at 0e89bc3 (origin in control bounds, exact stroke charge; fuzz 0 failures on 9 seeds). Left: re-run `two_d_check` on NVIDIA (the texture-reload probe failed once — known timing flake, investigate if it repeats); merge main (Skinning: `FEAT_CUTOUT` → 128 if it shares a spec space with `FEAT_SKINNED` = 64; DrawRecord 128 B; rebuild .spv), and after Sight lands register 2D draws with the ID pass. Then verify and merge.
-  - **Then, in order:** (1) M2 exit proof: a lit, shadowed scene with imported + procedural assets and an animated
-    character; 0 visible px for a hidden object (passes on the Sight branch); 10k instances within budget on the
-    Intel iGPU (measured ~1.5–2.7 ms earlier — re-run on final main). (2) `perf_frame` exposing the render graph
-    (`Gpu::last_graph`). (3) Sepulcra integration lane: real procedural/glTF models, animated creatures, the
-    `specula-ui` HUD through `GpuOverlay`, `specula-audio`, `--seed` via `Game::configure`. (4) Tick the roadmap,
-    update this file and memory. Then M3 (save games, module host, desync detector).
-  - **Lessons from this session:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss),
-    so keep the rounds; after round 3–4 the integrator can verify narrow final fixes. Reviewers must stop engines by
-    PID only (`.claude/agents/lane-reviewer.md`); several sessions share ports 7491–7499. Windows now enforces a
-    minimum window width > 200 px (platform tests use bigger windows). Usage limits interrupt lanes: resume each
-    with SendMessage, the work is saved.
+- **M2 complete 2026-10-16** (owner: "Proceed with agent swarm on M2. Do not start off on M3 yet without my
+  permission"). All 16 items and the three exit criteria are on `main`; `python scripts/m2_exit.py --adapter both`
+  re-checks them (after `cargo build --release -p specula`). Merged since the 2026-10-15 pause: 2D, Sight (ID buffer,
+  persistent per-agent cameras, orbit, compare, overlays), the exit proof with an incremental window draw cache and
+  coarse far LODs, and `perf_frame.render_graph`.
+  - **Owner decisions 2026-10-15** (done): named cameras persist with the world (name-keyed, journaled, outside
+    `world_hash`, `window_view {camera}` until a human takes the view back; games get `Frame::agent_view`); transient
+    2D shapes have their own budget (250k vertices vs 2M, `perf.toml`).
+  - **Running at this update:** the **Sepulcra integration lane** (worktree `agent-a03ff13a9a9914100`): recipe
+    models, GPU-skinned creatures, moving pieces as transient entities, a `specula-ui` HUD through `GpuOverlay`,
+    `specula-audio`, `--seed`, `games/sepulcra/TESTPLAN.md`. It needs a `lane-reviewer` round before merge.
+  - **Next:** M3 needs the owner's go-ahead (save games, module host / hot reload, desync detector). Don't start it
+    unasked.
+  - **Lessons:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss, stale caches), so
+    keep the rounds; after round 3-4 the integrator verifies narrow final fixes. Measure with the game running, not
+    only static worlds (the first draw cache was slower in play). Several sessions share the GPU and ports 7460-7499;
+    stop engines by PID only. Usage limits interrupt lanes: resume each with SendMessage.
   - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
-    `style.json` proposals (extra palette entries, invented budgets), Steamworks, launch languages. 
-  - **Owner decisions 2026-10-15:**
-    - **Cameras persist with the world** (owner: "both human developers and AI developers can corroborate
-      easily"). Sight lane task: save named cameras in the world folder (e.g. `cameras.json`, keyed by agent
-      *name* since identity keys don't outlive a run; follow targets by entity path), load them with the world, keep
-      them out of `world_hash`, journal `camera_set`/`camera_delete` so undo and other agents see them, and show them
-      to humans (`window_view {camera}`) so a developer can look through an agent's camera.
-    - **Transient 2D shapes get their own budget** (owner delegated: "you decide ... optimisation matters just as
-      much as making it look good"). Claude's decision: game-spawned transient shapes draw from a separate, smaller
-      allowance (default 250,000 vertices; persistent world shapes keep 2,000,000), both set in `perf.toml` beside
-      the frame budgets. Why: effects must never crowd out authored content, a refusal tells the game designer
-      exactly what a spawned effect costs, and a small default keeps effects cheap on the iGPU. 2D lane task, with
-      a test that a transient flood can't block a persistent spawn.
+    `style.json` proposals, Steamworks, launch languages.
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).
