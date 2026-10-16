@@ -866,6 +866,9 @@ pub fn load_with_limits(
     check_keys(&index, INDEX, &[INDEX_KEYS]).map_err(|m| bad(&quoted_field(&m).unwrap_or_default(), &m))?;
     let generation = index.get("generation").and_then(Json::as_u64).ok_or_else(|| bad("generation", "'generation' must be an integer"))?;
     let next_id = index.get("next_id").and_then(Json::as_u64).ok_or_else(|| bad("next_id", "'next_id' must be an integer"))?;
+    if next_id > crate::world::MAX_NEXT_ID {
+        return Err(bad("next_id", &format!("'next_id' {next_id} reaches the transient id range (at most {})", crate::world::MAX_NEXT_ID)));
+    }
     let env = index.get("env").ok_or_else(|| bad("env", "'env' is missing"))?;
     let env = check_keys(env, "env", &[ENV_KEYS])
         .and_then(|()| parse_env(env))
@@ -1528,6 +1531,26 @@ mod tests {
         let index = low.get_mut("world.json").unwrap();
         *index = index.replacen(r#""next_id": 7"#, r#""next_id": 2"#, 1);
         assert_eq!(reload(&low).unwrap().next_id(), 7);
+        // A counter reaching the transient id range is refused: the next persistent spawn would
+        // take a transient id (and a later one silently replace a transient entity).
+        use crate::world::{Shape, SpawnSpec, MAX_NEXT_ID, TRANSIENT_ID_BASE};
+        for n in [TRANSIENT_ID_BASE - 1, TRANSIENT_ID_BASE, u64::MAX] {
+            let e = broken("world.json", r#""next_id": 7,"#, &format!(r#""next_id": {n},"#));
+            assert_eq!((e.code, e.field.as_deref(), e.file.as_deref()), ("invalid_world", Some("next_id"), Some(INDEX)), "{n}");
+        }
+        // The largest allowed counter loads; a persistent spawn is then refused, a transient one isn't.
+        let mut full = good.clone();
+        let index = full.get_mut("world.json").unwrap();
+        *index = index.replacen(r#""next_id": 7"#, &format!(r#""next_id": {MAX_NEXT_ID}"#), 1);
+        let mut w = reload(&full).unwrap();
+        assert_eq!(w.next_id(), MAX_NEXT_ID);
+        let e = w.spawn(SpawnSpec::new(Shape::Cube), "t").expect_err("refused");
+        let field = e.details.iter().find(|(k, _)| *k == "field").and_then(|(_, v)| v.as_str().map(str::to_owned));
+        assert_eq!((e.code, field.as_deref()), ("limit", Some("id")));
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.transient = true;
+        assert!(w.spawn(t, "game").unwrap().id > TRANSIENT_ID_BASE);
+        assert!(w.persistent_entities().all(|e| e.id < TRANSIENT_ID_BASE - 1));
     }
 
     #[test]

@@ -18,7 +18,7 @@ pub mod effects;
 pub mod game;
 pub mod journal;
 mod luts;
-mod meshes;
+pub mod meshes;
 pub mod models;
 pub mod orbit;
 mod perf;
@@ -44,7 +44,7 @@ use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use swarm::Swarm;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -347,13 +347,15 @@ struct Engine {
     library: Arc<SharedLibrary>,
     /// Uploaded model builds.
     models: GpuModels,
-    /// The window's LOD per model entity (kept for hysteresis).
-    lod_levels: BTreeMap<u64, u8>,
     /// How models were drawn in the last window frame and the last capture.
     lod_window: LodStats,
     lod_capture: LodStats,
     /// The window frame's draw list (reused: no allocation per frame once warm).
     draws: Vec<DrawItem>,
+    /// The window's draw list between world changes (and each model's LOD, for hysteresis).
+    draw_cache: sight::DrawCache,
+    /// The window frame's point lights (reused like `draws`).
+    lights: Vec<specula_gpu::PointLight>,
     /// Textures, tile cell textures and shape meshes of 2D entities.
     two_d: two_d::TwoDGpu,
     /// The window frame's 2D draws (reused).
@@ -362,8 +364,6 @@ struct Engine {
     last_2d_gc: (Instant, u64),
     /// A human's window is open.
     windowed: bool,
-    /// The world mesh epoch `lod_levels` was last pruned at.
-    lod_epoch: u64,
     /// Calls waiting for model builds.
     build_waiters: Vec<BuildWaiter>,
     /// Captures waiting for models they show.
@@ -484,15 +484,15 @@ impl Engine {
             library,
             luts,
             models: GpuModels::default(),
-            lod_levels: BTreeMap::new(),
             lod_window: LodStats::default(),
             lod_capture: LodStats::default(),
             draws: Vec::new(),
+            lights: Vec::new(),
+            draw_cache: sight::DrawCache::default(),
             two_d,
             draws_2d: Vec::new(),
             last_2d_gc: (Instant::now(), 0),
             windowed: false,
-            lod_epoch: 0,
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
             cameras: cameras::Cameras::default(),
@@ -552,7 +552,6 @@ impl Engine {
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
-        self.lod_levels.clear();
         problems
     }
 
@@ -842,12 +841,6 @@ impl Engine {
         let generation = self.world_generation;
         let mut errors = self.lathes.sync(&mut self.gpu, &self.world, generation);
         errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
-        if self.world.mesh_epoch() != self.lod_epoch {
-            // Forget the LOD of entities that are gone.
-            self.lod_epoch = self.world.mesh_epoch();
-            let world = &self.world;
-            self.lod_levels.retain(|id, _| world.get(*id).is_some());
-        }
         errors
     }
 
@@ -966,7 +959,7 @@ impl Engine {
     fn build_draws_2d(&mut self, view_proj: &Mat4, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>, mut owners: Option<&mut Vec<u64>>) {
         out.clear();
         self.two_d.begin_frame(&mut self.gpu);
-        for e in self.world.entities() {
+        for e in self.world.two_d_entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) {
                 continue;
@@ -1001,7 +994,7 @@ impl Engine {
         // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
         // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.
         let mut checked: BTreeSet<&str> = BTreeSet::new();
-        for e in self.world.entities() {
+        for e in self.world.two_d_entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) || !sight::in_view(e, view_proj) {
                 continue;
@@ -1121,13 +1114,15 @@ impl Engine {
         let errors = self.sync_meshes();
         self.models.begin_frame(time_s);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
-        let lod = match (lod, window) {
-            (Some(l), _) => LodChoice::Fixed(l),
-            (None, true) => LodChoice::Remembered(&mut self.lod_levels),
-            (None, false) => LodChoice::Fresh,
-        };
+        // The window's cache remembers each model's level itself (hysteresis); captures choose
+        // afresh (reproducible).
+        let lod = lod.map_or(LodChoice::Fresh, LodChoice::Fixed);
         let mut view = View { camera, viewport_h, include_ui, lod };
-        let stats = sight::draw_list(&self.world, &meshes, &mut view, out, owners);
+        let stats = if window {
+            self.draw_cache.draw_list(&self.world, self.world_generation, &meshes, &mut view, out)
+        } else {
+            sight::draw_list(&self.world, &meshes, &mut view, out, owners)
+        };
         (stats, errors)
     }
 
@@ -1177,11 +1172,12 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            let draw_list = profile::zone("draw_list");
             self.follow_window_camera();
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
+            // The game's interface (its own zone, outside the draw list's).
             let mut game_quads = std::mem::take(&mut self.game_quads);
             self.game_overlay(size, camera, false, &mut game_quads);
+            let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
             let time_s = self.window_time_s();
@@ -1191,7 +1187,8 @@ impl Engine {
                 eprintln!("specula: {e}");
             }
             self.lod_window = stats;
-            let (lights, _) = sight::lights(&self.world, true);
+            let mut lights = std::mem::take(&mut self.lights);
+            sight::lights(&self.world, true, &mut lights);
             let view_proj = camera.view_proj(size.0, size.1);
             let mut draws_2d = std::mem::take(&mut self.draws_2d);
             self.build_draws_2d(&view_proj, true, time_s as f32, &mut draws_2d, None);
@@ -1210,6 +1207,7 @@ impl Engine {
             self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
+            self.lights = lights;
             self.draws_2d = draws_2d;
             self.game_quads = game_quads;
             presented?;
@@ -1790,6 +1788,12 @@ impl Engine {
             ("cpu", perf::cpu_json(&self.profiler)),
             ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),
+            // The window's draw cache: frames that rebuilt it from every entity vs patched it
+            // with the changed ones (a rebuild per frame means the world changes wholesale).
+            (
+                "draw_cache",
+                Json::obj([("rebuilds", Json::from(self.draw_cache.rebuilds())), ("patches", Json::from(self.draw_cache.patches()))]),
+            ),
             ("clock", self.clock_json()),
             ("entities", Json::from(self.world.len())),
             ("transient_entities", Json::from(self.world.transient_len())),

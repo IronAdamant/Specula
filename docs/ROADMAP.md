@@ -398,6 +398,25 @@ shapes?"
   low wall: 0.47 of its disc) on the NVIDIA and Intel GPUs.
 - [ ] A 10k-instance world holds its budget on the Intel integrated GPU.
 
+`python scripts/m2_exit.py --adapter both` (after `cargo build --release -p specula`) checks all three and prints
+PASS / FAIL / SKIPPED per criterion; captures, packets and `m2_exit.json` go to `target/m2-exit/`.
+(1) A moonlit Sepulcra graveyard: recipe props, an imported textured + skinned GLB walking and a static GLB, four
+recipe creatures playing clips; every model `ready`, each creature's pixels change across a 6-frame filmstrip, and
+ground inside two props' shadows is >25% darker than the same frame with shadows off while open ground is unchanged
+([hero shot](fidelity/m2_exit_hero.png)). (2) A box behind a wall must have `visible_px` 0 and `occluded`, a control
+box in view `visible_px` > 0. (3) A windowed engine at 1280×720 with the full night effect stack and
+`perf.example.toml`, two 10,000-entity worlds over 120 frames each: "mixed" (8,000 cubes + 2,000 tombstone models, 3
+instanced draw calls) and "tombstones" (10,000 tombstone models, 2 draw calls); the frame's GPU time, pacing, draws,
+triangles, GPU memory, late pipelines and the CPU time building the window's draws (`frame/draw_list`) must hold;
+per-pass and other CPU misses are reported as notes. *2026-10-16, on main with Sight merged:* all three pass on both
+GPUs. (2): hidden box `visible_px` 0 and `occluded`, control box 8,543 px. (3) Intel iGPU: GPU p95 5.7 ms mixed / 7.9
+ms tombstones (budget 14), draw list p95 0.30 / 0.44 ms (budget 1.5); RTX 4090 Laptop: GPU p95 1.3 / 1.6 ms. What it
+took: point lights and 2D entities from World indexes instead of walks over every entity; the window's draw list
+cached and patched from World's record of changed persistent entities, transient ones drawn live (10k entities: 1.9–2.8
+→ 0.30 ms p95 on the iGPU); and a coarse recipe rebuild as the far LOD where clustering can't make one (tombstones
+320/247 → 320/247/60 triangles; the 10k-tombstone field went from 15.9 ms GPU p95 and 1.94M triangles to 7.9 ms and
+0.47M).
+
 ---
 
 ## M3: logic, physics and time. The game becomes playable

@@ -8,11 +8,12 @@
 //! ([`apply_visibility`]).
 
 use crate::meshes::{LatheMeshes, ShapeMeshes};
-use crate::models::{GpuModels, LodChoice, LodStats};
+use crate::models::{GpuModels, LodChoice, LodStats, ModelDraw};
 use crate::world::{color_hex, material_name, vec3_json, Entity, Shape, World};
 use specula_core::math::{Mat4, Vec3, Vec4};
 use specula_core::Json;
 use specula_gpu::{DrawItem, FrameDesc, PointLight, MAX_POINT_LIGHTS};
+use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = "specula.sight/v1";
 
@@ -179,47 +180,275 @@ pub fn draw_list(world: &World, meshes: &Meshes, view: &mut View, out: &mut Vec<
     }
     let mut stats = LodStats::default();
     for e in world.entities() {
-        if !in_frame(e, view.include_ui) {
-            continue;
+        match plan(e, meshes, view.include_ui) {
+            Plan::Skip => continue,
+            Plan::Item(d) => out.push(d),
+            Plan::Model => draw_model(e, meshes, view, &mut stats, out),
         }
-        let mesh = match e.shape {
-            Shape::Group => continue,
-            Shape::Model => {
-                let fov = view.camera.fov_y_deg;
-                meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, &mut stats, out);
-                if let Some(o) = owners.as_deref_mut() {
-                    o.resize(out.len(), e.id);
-                }
-                continue;
-            }
-            Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
-            shape => meshes.shapes.get(shape),
-        };
-        let Some(mesh) = mesh else { continue };
-        let c = e.color;
-        out.push(DrawItem {
-            mesh,
-            model: e.model().to_cols_array(),
-            color: [c[0], c[1], c[2], e.look.opacity],
-            material: e.look.material,
-            surface: e.look.surface,
-            skin: None,
-            bounds: None,
-        });
         if let Some(o) = owners.as_deref_mut() {
-            o.push(e.id);
+            o.resize(out.len(), e.id);
         }
     }
     stats
 }
 
+/// What an entity adds to a frame: nothing, one fixed draw (built-in shapes and lathes: it
+/// depends only on the entity and its mesh), or a model's draws (chosen per frame: LOD, pose).
+/// Returned by value and consumed at once, never stored: boxing the draw would allocate per entity.
+#[allow(clippy::large_enum_variant)]
+enum Plan {
+    Skip,
+    Item(DrawItem),
+    Model,
+}
+
+fn plan(e: &Entity, meshes: &Meshes, include_ui: bool) -> Plan {
+    if !in_frame(e, include_ui) {
+        return Plan::Skip;
+    }
+    let mesh = match e.shape {
+        Shape::Group => return Plan::Skip,
+        Shape::Model => return Plan::Model,
+        Shape::Lathe => e.profile.as_ref().and_then(|p| meshes.lathes.get(p.key())),
+        shape => meshes.shapes.get(shape),
+    };
+    let Some(mesh) = mesh else { return Plan::Skip };
+    let c = e.color;
+    Plan::Item(DrawItem {
+        mesh,
+        model: e.model().to_cols_array(),
+        color: [c[0], c[1], c[2], e.look.opacity],
+        material: e.look.material,
+        surface: e.look.surface,
+        skin: None,
+        bounds: None,
+    })
+}
+
+fn draw_model(e: &Entity, meshes: &Meshes, view: &mut View, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
+    let fov = view.camera.fov_y_deg;
+    meshes.models.draw(e, view.camera.eye, fov, view.viewport_h, &mut view.lod, stats, out);
+}
+
+/// The window's draw list, kept between frames and patched with what changed. Each persistent entity's
+/// fixed draw (built-in shapes, lathes) is kept, and each model entity's drawing state, so a frame
+/// copies them instead of walking every entity's full record (F3: on the reference iGPU that walk
+/// was most of the window's CPU frame at 10k entities). When entities change, only those are
+/// read again ([`World::draw_changes_since`]); a full rebuild happens only when the world is
+/// replaced, the lathe meshes or `include_ui` change, a change touched every entity, or more than
+/// half the entries changed. Models still choose their LOD per frame (each
+/// keeps its level here while its entity exists, hidden or not: the window's hysteresis) and
+/// animated ones are posed from their entity. Transient entities (a game's presentation, moving
+/// every tick) aren't cached: they follow every persistent one in id order and are drawn live.
+/// Same draws, same order as [`draw_list`]; nothing allocated once warm.
+#[derive(Default)]
+pub struct DrawCache {
+    /// `(world generation, LatheMeshes::version, include_ui)` the entries were built for.
+    key: Option<(u64, u64, bool)>,
+    /// The [`World::draw_epoch`] the entries reflect.
+    epoch: u64,
+    /// One per drawn shape entity and per model entity (drawn or not), in id order.
+    entries: Vec<Cached>,
+    /// The previous entries while rebuilding (their LOD levels carry over); kept for its capacity.
+    spare: Vec<Cached>,
+    /// Changed ids while patching (reused).
+    dirty: Vec<u64>,
+    /// Transient models' remembered LOD levels (while their entity exists).
+    transient_levels: BTreeMap<u64, u8>,
+    rebuilds: u64,
+    patches: u64,
+}
+
+#[derive(Clone, Copy)]
+enum Cached {
+    Item { id: u64, d: DrawItem },
+    Model {
+        m: ModelDraw,
+        /// Has an `anim`: posed from the entity each frame.
+        animated: bool,
+        /// In the frame (shown, and not `ui` unless the view includes it). Hidden models keep
+        /// their entry for their LOD level.
+        drawn: bool,
+        /// The LOD it was last drawn at (`u8::MAX`: none yet).
+        level: u8,
+    },
+}
+
+impl Cached {
+    fn id(&self) -> u64 {
+        match self {
+            Cached::Item { id, .. } => *id,
+            Cached::Model { m, .. } => m.id,
+        }
+    }
+
+    /// `e`'s entry, if it has one (`level`: its model's remembered LOD).
+    fn of(e: &Entity, meshes: &Meshes, include_ui: bool, level: u8) -> Option<Cached> {
+        if e.shape == Shape::Model {
+            return Some(Cached::Model { m: ModelDraw::of(e), animated: e.anim.is_some(), drawn: in_frame(e, include_ui), level });
+        }
+        match plan(e, meshes, include_ui) {
+            Plan::Item(d) => Some(Cached::Item { id: e.id, d }),
+            Plan::Skip | Plan::Model => None,
+        }
+    }
+
+    fn level(&self) -> u8 {
+        match self {
+            Cached::Model { level, .. } => *level,
+            Cached::Item { .. } => u8::MAX,
+        }
+    }
+}
+
+impl DrawCache {
+    /// How many times the entries were rebuilt from every entity.
+    pub fn rebuilds(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// How many frames patched the entries with changed entities only.
+    pub fn patches(&self) -> u64 {
+        self.patches
+    }
+
+    /// [`draw_list`] for `world` (`generation` changes whenever the engine replaces its world).
+    /// LODs are chosen by size with each model's remembered level, or `view.lod`'s if Fixed.
+    pub fn draw_list(&mut self, world: &World, generation: u64, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
+        let key = (generation, meshes.lathes.version(), view.include_ui);
+        let same_world = self.key.is_some_and(|k| k.0 == generation);
+        let fresh = self.key == Some(key) && (self.epoch == world.draw_epoch() || self.patch(world, meshes, view.include_ui));
+        let mut stats = LodStats::default();
+        out.clear();
+        if fresh {
+            for c in &mut self.entries {
+                draw_cached(c, world, meshes, view, &mut stats, out);
+            }
+        } else {
+            // Rebuild, drawing as it goes. Levels of the previous entries carry over by id (both
+            // lists are in id order) unless the world was replaced.
+            std::mem::swap(&mut self.entries, &mut self.spare);
+            self.entries.clear();
+            let mut old = self.spare.iter().filter(|_| same_world).map(|c| (c.id(), c.level())).peekable();
+            for e in world.persistent_entities() {
+                while old.next_if(|(id, _)| *id < e.id).is_some() {}
+                let level = old.next_if(|(id, _)| *id == e.id).map_or(u8::MAX, |(_, l)| l);
+                if let Some(c) = Cached::of(e, meshes, view.include_ui, level) {
+                    self.entries.push(c);
+                    if let Some(c) = self.entries.last_mut() {
+                        draw_cached(c, world, meshes, view, &mut stats, out);
+                    }
+                }
+            }
+            self.spare.clear();
+            self.key = Some(key);
+            self.epoch = world.draw_epoch();
+            self.rebuilds += 1;
+            if !same_world {
+                self.transient_levels.clear();
+            }
+        }
+        // Transient entities (game presentation, changing every tick) come after every
+        // persistent one: drawn live, each model with its remembered level.
+        if self.transient_levels.len() > world.transient_len() {
+            self.transient_levels.retain(|id, _| world.get(*id).is_some());
+        }
+        let mut transient = View { camera: view.camera, viewport_h: view.viewport_h, include_ui: view.include_ui, lod: match view.lod {
+            LodChoice::Fixed(l) => LodChoice::Fixed(l),
+            _ => LodChoice::Remembered(&mut self.transient_levels),
+        } };
+        for e in world.transient_entities() {
+            match plan(e, meshes, transient.include_ui) {
+                Plan::Skip => {}
+                Plan::Item(d) => out.push(d),
+                Plan::Model => draw_model(e, meshes, &mut transient, &mut stats, out),
+            }
+        }
+        stats
+    }
+
+    /// Brings the entries up to date with the entities changed since `self.epoch`; false when
+    /// a rebuild is cheaper (or the world's change record no longer reaches back that far).
+    /// Changed entries are replaced in place; when entities came or went, one linear merge of
+    /// the entries with the changed ids makes the new list (never an insert or remove per id).
+    fn patch(&mut self, world: &World, meshes: &Meshes, include_ui: bool) -> bool {
+        let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
+        // At most World's DRAW_LOG ids; an entity moved many times counts once.
+        self.dirty.clear();
+        self.dirty.extend(changes); // persistent entities only (see World::draw_epoch)
+        self.dirty.sort_unstable();
+        self.dirty.dedup();
+        if self.dirty.len() > self.entries.len() / 2 + 16 {
+            return false;
+        }
+        let mut structural = false;
+        for &id in &self.dirty {
+            let at = self.entries.binary_search_by_key(&id, Cached::id);
+            let level = at.map_or(u8::MAX, |i| self.entries[i].level());
+            match (at, world.get(id).and_then(|e| Cached::of(e, meshes, include_ui, level))) {
+                (Ok(i), Some(c)) => self.entries[i] = c,
+                (Err(_), None) => {}
+                _ => structural = true,
+            }
+        }
+        if structural {
+            // Unchanged entries are copied as they are; each changed id is read again and kept
+            // if it draws (with its model's level).
+            self.spare.clear();
+            let mut old = self.entries.iter().peekable();
+            for &d in &self.dirty {
+                while let Some(c) = old.next_if(|c| c.id() < d) {
+                    self.spare.push(*c);
+                }
+                let level = old.next_if(|c| c.id() == d).map_or(u8::MAX, Cached::level);
+                if let Some(c) = world.get(d).and_then(|e| Cached::of(e, meshes, include_ui, level)) {
+                    self.spare.push(c);
+                }
+            }
+            self.spare.extend(old.copied());
+            std::mem::swap(&mut self.entries, &mut self.spare);
+            self.spare.clear();
+        }
+        self.epoch = world.draw_epoch();
+        self.patches += 1;
+        true
+    }
+
+}
+
+/// Appends a cached entry's draws (a model's at its LOD for this view, posed if animated).
+fn draw_cached(c: &mut Cached, world: &World, meshes: &Meshes, view: &View, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
+    match c {
+        Cached::Item { d, .. } => out.push(*d),
+        Cached::Model { m, animated, drawn, level } => {
+            if !*drawn {
+                return;
+            }
+            let entity = if *animated { world.get(m.id) } else { None };
+            let mut choice = match view.lod {
+                LodChoice::Fixed(l) => LodChoice::Fixed(l),
+                _ => LodChoice::Slot(level),
+            };
+            meshes.models.draw_model(m, entity, view.camera.eye, view.camera.fov_y_deg, view.viewport_h, &mut choice, stats, out);
+        }
+    }
+}
+
 /// The point lights of shown entities in the frame (entity id order), at most
-/// [`MAX_POINT_LIGHTS`], and how many were left out.
-pub fn lights(world: &World, include_ui: bool) -> (Vec<PointLight>, usize) {
-    let mut all: Vec<PointLight> = world.entities().filter(|e| in_frame(e, include_ui)).filter_map(|e| e.world_light()).collect();
-    let dropped = all.len().saturating_sub(MAX_POINT_LIGHTS);
-    all.truncate(MAX_POINT_LIGHTS);
-    (all, dropped)
+/// [`MAX_POINT_LIGHTS`], into `out` (cleared first; reused, so no allocation once warm).
+/// Returns how many were left out. Visits only the world's lit entities ([`World::lit_entities`]),
+/// never the rest: a 10k-entity world with a few lamps pays for the lamps.
+pub fn lights(world: &World, include_ui: bool, out: &mut Vec<PointLight>) -> usize {
+    out.clear();
+    let mut dropped = 0;
+    for light in world.lit_entities().filter(|e| in_frame(e, include_ui)).filter_map(|e| e.world_light()) {
+        if out.len() < MAX_POINT_LIGHTS {
+            out.push(light);
+        } else {
+            dropped += 1;
+        }
+    }
+    dropped
 }
 
 /// A frame of the world seen through `view_proj` (reversed Z) at animation time `time_s`.
@@ -501,6 +730,119 @@ mod tests {
         world.spawn(spec, "test").unwrap();
     }
 
+    /// The window's cached draw list is draw_list's, draw for draw and in order, through every
+    /// kind of change (moves, recolours, hiding, ui layer, spawns, deletes, transient moves,
+    /// a replaced world), and keeps its fixed draws while nothing changes.
+    #[test]
+    fn cached_draw_list_matches_draw_list() {
+        use crate::meshes::{LatheMeshes, ShapeMeshes};
+        use crate::models::{GpuModels, LodChoice};
+        use crate::world::{Layer, ModelSpec, UpdateSpec};
+        use specula_gpu::MeshId;
+        let shapes = ShapeMeshes::from_ids(MeshId(1), MeshId(2), MeshId(3));
+        let (lathes, models) = (LatheMeshes::default(), GpuModels::default());
+        let meshes = Meshes { shapes: &shapes, lathes: &lathes, models: &models };
+        let camera = cam(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, 50.0);
+        let mut cache = DrawCache::default();
+        let check = |world: &World, generation: u64, cache: &mut DrawCache| {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let mut view = View { camera, viewport_h: 720, include_ui: true, lod: LodChoice::Fresh };
+            let sa = draw_list(world, &meshes, &mut view, &mut a, None);
+            let sb = cache.draw_list(world, generation, &meshes, &mut view, &mut b);
+            assert_eq!(a, b);
+            assert_eq!(sa, sb);
+            a.len()
+        };
+        let mut world = World::default();
+        for i in 0..40 {
+            let shape = [Shape::Cube, Shape::Sphere, Shape::Quad, Shape::Group][i % 4];
+            spawn(&mut world, shape, &format!("e{i}"), Vec3::new(i as f32, 0.0, 0.0));
+        }
+        world.spawn(SpawnSpec::model(ModelSpec::new("recipes/none.json")), "t").unwrap();
+        assert_eq!(check(&world, 0, &mut cache), 30);
+        let epoch = world.draw_epoch();
+        assert_eq!(check(&world, 0, &mut cache), 30);
+        assert_eq!(world.draw_epoch(), epoch, "drawing changes nothing");
+        let set = |world: &mut World, path: &str, u: UpdateSpec| {
+            world.update(&EntityKey::Path(path.into()), u, "t").unwrap();
+        };
+        set(&mut world, "/e1", UpdateSpec { position: Some(Vec3::new(0.0, 3.0, 0.0)), ..Default::default() });
+        check(&world, 0, &mut cache);
+        set(&mut world, "/e2", UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..Default::default() });
+        check(&world, 0, &mut cache);
+        set(&mut world, "/e5", UpdateSpec { visible: Some(false), ..Default::default() });
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        set(&mut world, "/e6", UpdateSpec { layer: Some(Layer::Ui), ..Default::default() });
+        check(&world, 0, &mut cache);
+        world.delete(&EntityKey::Path("/e9".into()), None).unwrap();
+        assert_eq!(check(&world, 0, &mut cache), 28);
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.name = Some("enemy".into());
+        t.transient = true;
+        let enemy = world.spawn(t, "game").unwrap().id;
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        world.update(&EntityKey::Id(enemy), UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 5.0)), ..Default::default() }, "game").unwrap();
+        check(&world, 0, &mut cache);
+        assert_eq!(cache.rebuilds(), 1, "every change above was patched in, not rebuilt");
+        assert!(cache.patches() >= 5);
+        // Moving a group moves its subtree: every child is patched.
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("g".into());
+        world.spawn(g, "t").unwrap();
+        for i in 0..5 {
+            let mut c = SpawnSpec::new(Shape::Cube);
+            c.name = Some(format!("k{i}"));
+            c.parent = Some(EntityKey::Path("/g".into()));
+            world.spawn(c, "t").unwrap();
+        }
+        check(&world, 0, &mut cache);
+        set(&mut world, "/g", UpdateSpec { position: Some(Vec3::new(0.0, 0.0, -4.0)), ..Default::default() });
+        set(&mut world, "/g", UpdateSpec { visible: Some(false), ..Default::default() });
+        assert_eq!(check(&world, 0, &mut cache), 29);
+        // Too many changes at once: one rebuild instead of patching each.
+        for i in 0..400 {
+            set(&mut world, &format!("/e{}", i % 40 + if i % 40 == 9 { 1 } else { 0 }), UpdateSpec { color: Some([0.5, 0.5, 0.5]), ..Default::default() });
+        }
+        check(&world, 0, &mut cache);
+        assert_eq!(cache.rebuilds(), 2);
+        // A different world that happens to have the same epoch: the generation tells them apart.
+        let mut other = World::default();
+        spawn(&mut other, Shape::Cube, "x", Vec3::ZERO);
+        while other.draw_epoch() < world.draw_epoch() {
+            set(&mut other, "/x", UpdateSpec { position: Some(Vec3::ZERO), ..Default::default() });
+        }
+        assert_eq!(check(&other, 1, &mut cache), 1);
+    }
+
+    /// Lights come from the lit-entity index in id order: hidden ones are left out, at most
+    /// MAX_POINT_LIGHTS are kept, the rest counted, and the buffer is reused.
+    #[test]
+    fn lights_are_gathered_in_id_order_up_to_the_limit() {
+        use crate::world::{LightSpec, UpdateSpec};
+        let mut world = World::default();
+        for i in 0..1000 {
+            spawn(&mut world, Shape::Cube, &format!("c{i}"), Vec3::ZERO);
+        }
+        for i in 0..20 {
+            let mut s = SpawnSpec::new(Shape::Sphere);
+            s.name = Some(format!("lamp{i:02}"));
+            s.position = Vec3::new(i as f32, 1.0, 0.0);
+            s.light = Some(LightSpec { intensity: 1.0, range: 2.0, color: None, offset: Vec3::ZERO });
+            world.spawn(s, "t").unwrap();
+        }
+        let hide = UpdateSpec { visible: Some(false), ..Default::default() };
+        world.update(&EntityKey::Path("/lamp00".into()), hide, "t").unwrap();
+        let mut out = Vec::with_capacity(MAX_POINT_LIGHTS);
+        let dropped = lights(&world, false, &mut out);
+        assert_eq!((out.len(), dropped), (MAX_POINT_LIGHTS, 19 - MAX_POINT_LIGHTS));
+        let xs: Vec<f32> = out.iter().map(|l| l.position[0]).collect();
+        assert_eq!(xs, (1..=MAX_POINT_LIGHTS).map(|i| i as f32).collect::<Vec<_>>(), "id order, hidden lamp left out");
+        let ptr = out.as_ptr();
+        lights(&world, false, &mut out);
+        assert_eq!(out.as_ptr(), ptr, "the buffer is reused");
+        assert_eq!(world.lit_entities().count(), 20, "only lamps are in the index, not the 1000 cubes");
+    }
+
     fn spawn(world: &mut World, shape: Shape, name: &str, position: Vec3) {
         spawn_scaled(world, shape, name, position, Vec3::ONE);
     }
@@ -662,7 +1004,7 @@ mod tests {
         assert_eq!(names(true), ["stone", "cursor"], "hidden stays hidden even with include_ui");
         let ui = subjects(&world, &cam.view_proj(640, 480), 640, 480, true);
         assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
-        assert_eq!(lights(&world, false).0.len(), 0);
+        assert_eq!((lights(&world, false, &mut Vec::new()), world.lit_entities().count()), (0, 0));
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
     }
 

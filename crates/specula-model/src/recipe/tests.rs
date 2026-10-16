@@ -46,7 +46,9 @@ fn builds_tiers_with_lods_and_collider() {
         let m = build_with(PILLAR, &[("tier", tier as f64)]).unwrap();
         assert!((2..=3).contains(&m.lods.len()), "{:?}", m.notes);
         assert_eq!(m.lod_ratios[..2], [1.0, 0.5]);
-        assert_eq!(m.lods.len() == 3, m.notes.is_empty(), "a skipped LOD is noted: {:?}", m.notes);
+        let skipped = m.notes.iter().any(|n| n.contains("skipped"));
+        assert_eq!(m.lods.len() == 3, !skipped, "a skipped LOD is noted: {:?}", m.notes);
+        assert!(m.notes.iter().all(|n| n.contains("skipped") || n.contains(COARSE_NOTE)), "{:?}", m.notes);
         let n0 = m.lods[0].triangle_count();
         assert!(n0 > prev, "higher tiers add parts");
         prev = n0;
@@ -85,7 +87,49 @@ fn hash_is_pinned() {
     assert_eq!(format!("{:016x}", m.hash), PINNED_PILLAR_HASH, "LOD0 hash {:016x}", m.lods[0].content_hash());
 }
 
-const PINNED_PILLAR_HASH: &str = "3123160fe8d87729";
+const PINNED_PILLAR_HASH: &str = "a874468d2a5ff929";
+
+/// Small bevelled parts can't be clustered (each part's cell is capped by its size), so a far
+/// LOD that clustering can't make comes from the recipe rebuilt coarse: no bevels, half the
+/// segments, no displacement; within the bounds and volume tolerances, noted in the report.
+#[test]
+fn far_level_falls_back_to_a_coarse_rebuild() {
+    const STONE: &str = r##"{ "recipe": 1, "name": "stone", "lods": [0.5, 0.25],
+      "parts": [
+        { "name": "footing", "material": "stone",
+          "shape": { "op": "box", "size": [0.62, 0.07, 0.28], "bevel": 0.02 },
+          "ops": [ { "op": "displace", "amount": 0.01, "scale": 0.15 } ] },
+        { "name": "slab", "material": "stone",
+          "shape": { "op": "extrude", "outline": { "arch": [0.5, 0.8], "segments": 6 }, "height": 0.15, "bevel": 0.02, "corner_bevel": 0.02 },
+          "ops": [ { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "move", "by": [0, 0.05, 0.075] } ] },
+        { "name": "mark", "material": "glow",
+          "shape": { "op": "box", "size": [0.05, 0.26, 0.012], "bevel": 0.004 },
+          "ops": [ { "op": "move", "by": [0, 0.4, 0.079] } ] },
+        { "name": "bar", "material": "glow",
+          "shape": { "op": "box", "size": [0.17, 0.05, 0.012], "bevel": 0.004 },
+          "ops": [ { "op": "move", "by": [0, 0.56, 0.079] } ] } ] }"##;
+    let m = build_with(STONE, &[]).unwrap();
+    let counts: Vec<usize> = m.lods.iter().map(|l| l.triangle_count()).collect();
+    assert_eq!(m.lods.len(), 3, "{counts:?} {:?}", m.notes);
+    assert!(counts[2] * 2 <= counts[0] && counts[2] < counts[1], "the coarse level is a real far level: {counts:?}");
+    assert!(m.notes.iter().any(|n| n.starts_with("lods[1] (0.25)") && n.contains(COARSE_NOTE)), "{:?}", m.notes);
+    let (b0, b2) = (m.lods[0].bounds(), m.lods[2].bounds());
+    let s = b0.size();
+    let tol = lod::MODEL_BOUNDS_TOLERANCE * s[0].max(s[1]).max(s[2]);
+    for k in 0..3 {
+        assert!((b0.min[k] - b2.min[k]).abs() <= tol && (b0.max[k] - b2.max[k]).abs() <= tol, "{b0:?} vs {b2:?}");
+    }
+    assert_eq!(m.lods[2].parts.len(), m.lods[0].parts.len(), "every material stays");
+    assert_eq!(build_with(STONE, &[]).unwrap(), m, "deterministic");
+
+    // A shape the coarse rebuild would change too much (a pentagonal disc halved to a triangle
+    // moves its bounds) doesn't get one.
+    const DISC: &str = r##"{ "recipe": 1, "name": "disc", "lods": [0.25],
+      "parts": [ { "name": "d", "material": "stone",
+        "shape": { "op": "cylinder", "radius": 1.0, "height": 0.02, "sides": 5, "bevel": 0.005 } } ] }"##;
+    let d = build_with(DISC, &[]).unwrap();
+    assert!(d.notes.iter().all(|n| !n.contains(COARSE_NOTE)), "{:?}", d.notes);
+}
 
 #[test]
 fn parameter_errors() {
