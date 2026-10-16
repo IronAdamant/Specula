@@ -2862,20 +2862,24 @@ impl World {
                     return Err(invalid("seed", format!("'seed' of a model must be an integer 0..{MAX_MODEL_SEED}")));
                 }
             };
-            let mut spec = current.clone();
-            if let Some(r) = change.recipe.take() {
-                spec.recipe = r;
-            }
-            if let Some(p) = change.params.take() {
-                spec.params = p;
-            }
-            if seed.is_some() {
-                spec.seed = seed;
-            }
-            if spec != *current {
-                spec.check()?;
-                let resolved = self.resolve_model(&spec)?;
-                new_model = Some((spec, resolved));
+            // Only a change to the spec copies it: a model that just moves (a game's creatures,
+            // every frame) costs no allocation (F3).
+            if change.recipe.is_some() || change.params.is_some() || seed.is_some() {
+                let mut spec = current.clone();
+                if let Some(r) = change.recipe.take() {
+                    spec.recipe = r;
+                }
+                if let Some(p) = change.params.take() {
+                    spec.params = p;
+                }
+                if seed.is_some() {
+                    spec.seed = seed;
+                }
+                if spec != *current {
+                    spec.check()?;
+                    let resolved = self.resolve_model(&spec)?;
+                    new_model = Some((spec, resolved));
+                }
             }
         }
         let new_parent = match &change.parent {

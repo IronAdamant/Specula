@@ -98,10 +98,18 @@ pub struct SepulcraGame {
     volume: f32,
     reduced_motion: bool,
     glyphs: usize,
+    /// The button-prompt style before the settings overrode it ("Auto").
+    auto_glyphs: Option<PadStyle>,
     /// The window camera last frame (threat arrows, listener).
     camera: Option<Camera>,
     /// The title last sent.
     title_sent: bool,
+    /// The HUD's strings, kept between frames.
+    hud_texts: hud::Texts,
+    /// This frame's HUD events (storage reused).
+    ui_frame: UiEvents,
+    /// Scratch for the braziers' crackle (reused).
+    fire_buf: Vec<(CellId, Vec3)>,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -120,6 +128,10 @@ struct Checkpoint {
     now: f32,
     pres_ticks: u64,
     log: VecDeque<(u32, String)>,
+    /// What the player sees of the HUD: open screens, a pending confirmation, the radial's cell.
+    screens: Vec<String>,
+    confirm: Option<Confirm>,
+    radial_cell: Option<CellId>,
 }
 
 impl SepulcraGame {
@@ -156,8 +168,12 @@ impl SepulcraGame {
             volume: 0.8,
             reduced_motion: false,
             glyphs: 0,
+            auto_glyphs: None,
             camera: None,
             title_sent: false,
+            ui_frame: UiEvents::default(),
+            hud_texts: hud::Texts::default(),
+            fire_buf: Vec::new(),
         }
     }
 
@@ -498,6 +514,7 @@ impl SepulcraGame {
                 self.try_command(world, Command::CallWave);
             }
             "pause" => self.set_paused(world, true),
+            "open_menu" => self.open_menu(world),
             "resume" => self.set_paused(world, false),
             "speed" => self.act(world, agent, Action::CycleSpeed),
             "open_build_menu" => self.act(world, agent, Action::BuildMenu),
@@ -531,10 +548,11 @@ impl SepulcraGame {
                 self.sfx.set_volume(self.volume);
             }
             "cycle_glyphs" => {
+                // "Auto" goes back to the style the input had before any override.
+                let input = self.controls.input_mut();
+                let auto = *self.auto_glyphs.get_or_insert(input.pad_style());
                 self.glyphs = (self.glyphs + 1) % GLYPHS.len();
-                if let Some(style) = GLYPHS[self.glyphs].1 {
-                    self.controls.input_mut().set_pad_style(style);
-                }
+                input.set_pad_style(GLYPHS[self.glyphs].1.unwrap_or(auto));
             }
             "toggle_motion" => self.reduced_motion = !self.reduced_motion,
             "restart" => {
@@ -679,29 +697,31 @@ impl SepulcraGame {
             reduced_motion: self.reduced_motion,
             glyph_style: GLYPHS[self.glyphs].0,
         };
-        hud::fill(&mut self.hud.state, &info);
+        hud::fill(&mut self.hud.state, &info, &mut self.hud_texts);
         hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
         if self.confirm == Some(Confirm::Restart) {
             self.hud.state.set_str("confirm_title", "Restart this run?").set_str("confirm_body", "The slab, your stones and the waves start over with the same seed.");
         }
         if let Some(cam) = camera {
             let groups = self.threat_groups();
-            let refs: Vec<(&str, Vec3, usize)> = groups.iter().map(|(l, p, n)| (*l, *p, *n)).collect();
-            hud::fill_threats(&mut self.hud.state, cam, size, &refs);
+            hud::fill_threats(&mut self.hud.state, cam, size, &groups, &mut self.hud_texts);
         }
-        let bindings = self.hud.state.list_mut("bindings");
-        bindings.clear();
-        let input = self.controls.input();
-        for a in input.map().actions().iter().filter(|a| !a.name.starts_with("ui_")).take(24) {
-            let keys = input.prompt(&a.name).unwrap_or_default();
-            let row = bindings.push();
-            let label = if a.description.is_empty() { a.name.as_str() } else { a.description.as_str() };
-            row.set_str("label", label).set_str("keys", &keys);
+        // The controls list only while it's open (prompts are made as text).
+        if self.hud.visible("controls") {
+            let bindings = self.hud.state.list_mut("bindings");
+            bindings.clear();
+            let input = self.controls.input();
+            for a in input.map().actions().iter().filter(|a| !a.name.starts_with("ui_")).take(24) {
+                let keys = input.prompt(&a.name).unwrap_or_default();
+                let row = bindings.push();
+                let label = if a.description.is_empty() { a.name.as_str() } else { a.description.as_str() };
+                row.set_str("label", label).set_str("keys", &keys);
+            }
         }
     }
 
     /// Where the dead are, by face: the centre of each group and how many.
-    fn threat_groups(&self) -> Vec<(&'static str, Vec3, usize)> {
+    fn threat_groups(&self) -> [(&'static str, Vec3, usize); 5] {
         let mut acc: [(&'static str, Vec3, usize); 5] =
             [("North cliff", Vec3::ZERO, 0), ("East cliff", Vec3::ZERO, 0), ("West cliff", Vec3::ZERO, 0), ("South gorges", Vec3::ZERO, 0), ("Wraiths", Vec3::ZERO, 0)];
         let content = self.state.content();
@@ -721,7 +741,7 @@ impl SepulcraGame {
             acc[i].1 = acc[i].1 + p;
             acc[i].2 += 1;
         }
-        acc.iter().filter(|g| g.2 > 0).map(|&(l, sum, n)| (l, sum * (1.0 / n as f32), n)).collect()
+        acc.map(|(l, sum, n)| (l, if n > 0 { sum * (1.0 / n as f32) } else { sum }, n))
     }
 
     pub(crate) fn status_json(&self) -> Json {
@@ -784,15 +804,13 @@ impl SepulcraGame {
         Ok(action)
     }
 
-    /// Braziers' flames, for their crackle.
-    fn fires(&self) -> Vec<(CellId, Vec3)> {
+    /// Braziers' flames into `fire_buf`, for their crackle.
+    fn fires(&mut self) {
+        self.fire_buf.clear();
         let content = self.state.content();
-        let Some(scene) = &self.scene else { return Vec::new() };
-        self.state
-            .stones()
-            .filter(|(_, s)| content.stone(s.kind).id == "brazier")
-            .map(|(c, _)| (c, scene.geo.anchor(&content.map, c).0 + Vec3::new(0.0, 1.8, 0.0)))
-            .collect()
+        let Some(scene) = &self.scene else { return };
+        let fires = self.state.stones().filter(|(_, s)| content.stone(s.kind).id == "brazier");
+        self.fire_buf.extend(fires.map(|(c, _)| (c, scene.geo.anchor(&content.map, c).0 + Vec3::new(0.0, 1.8, 0.0))));
     }
 }
 
@@ -913,15 +931,21 @@ impl Game for SepulcraGame {
         Some(self.assets.clone().unwrap_or_else(SepulcraGame::default_assets))
     }
 
+    fn use_assets(&mut self, root: &std::path::Path) {
+        self.assets = Some(root.to_path_buf());
+    }
+
     fn start(&mut self, ctx: &mut Ctx) {
         night(ctx.world);
-        // The screens from the assets folder (agents edit them there), else the built-in copies.
-        let ui_dir = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets).join("ui");
+        // Screens and sounds from the assets folder (agents edit them there), else the built-in
+        // copies.
+        let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
+        let ui_dir = assets.join("ui");
         self.hud = Hud::new(Some(&ui_dir), crate::controls::bindings().expect("the built-in bindings are valid (tested)"));
         if ctx.windowed {
             self.controls.enable_gamepads();
             if !self.mute {
-                self.sfx = Sfx::start();
+                self.sfx = Sfx::start(Some(assets.join("sounds")));
                 self.sfx.set_volume(self.volume);
             } else {
                 self.sfx = Sfx::off("muted (--mute)");
@@ -994,11 +1018,13 @@ impl Game for SepulcraGame {
         self.controls.begin(frame.input);
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), frame.size);
-        let ui_events = self.hud.frame(self.controls.input(), frame.size);
+        let mut ui_events = std::mem::take(&mut self.ui_frame);
+        self.hud.frame(self.controls.input(), frame.size, &mut ui_events);
         self.ui_events(ctx.world, ctx.agent, &ui_events);
         let map = Arc::clone(self.state.content_arc());
         let Some(scene) = &self.scene else { return };
         let actions = self.controls.act(ui_events.consumed, frame.dt_s.min(0.25), frame.size, &scene.geo, &map.map);
+        self.ui_frame = ui_events;
         for a in actions {
             self.act(ctx.world, ctx.agent, a);
         }
@@ -1011,8 +1037,10 @@ impl Game for SepulcraGame {
         if let Some(cam) = &self.camera {
             self.sfx.listen(cam);
         }
-        let fires = self.fires();
-        self.sfx.fires(&fires);
+        if self.sfx.enabled() {
+            self.fires();
+            self.sfx.fires(&self.fire_buf);
+        }
         if !self.title_sent {
             *frame.title = Some("Sepulcra".into());
             self.title_sent = true;
@@ -1061,6 +1089,9 @@ impl Game for SepulcraGame {
             now: self.now,
             pres_ticks: self.pres_ticks,
             log: self.log.clone(),
+            screens: self.hud.screens(),
+            confirm: self.confirm,
+            radial_cell: self.radial_cell,
         }))
     }
 
@@ -1080,6 +1111,14 @@ impl Game for SepulcraGame {
         self.now = c.now;
         self.pres_ticks = c.pres_ticks;
         self.log = c.log;
+        self.confirm = c.confirm;
+        self.radial_cell = c.radial_cell;
+        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls"] {
+            let open = c.screens.iter().any(|s| s == screen);
+            if self.hud.visible(screen) != open {
+                self.hud.show(screen, open);
+            }
+        }
         // Presentation caches are rebuilt on the next frame.
         self.hover_key = None;
     }

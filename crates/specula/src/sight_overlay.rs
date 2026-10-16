@@ -62,6 +62,10 @@ pub const MAX_CLAIMS: usize = 64;
 pub const MAX_SKELETONS: usize = 64;
 /// Overlay records one capture's overlays may use (well under the GPU's limit).
 pub const MAX_QUADS: usize = 60_000;
+/// Overlay records the text of a capture's labels can take at most (entity labels, grid labels
+/// and a caption, a glyph each): reserved when a capture's overlays share the GPU's limit with a
+/// game's interface.
+pub const LABEL_QUADS: usize = (LABELS.1 + GRID_LABELS + 1) * MAX_LABEL_CHARS;
 /// Label text size in pixels.
 const TEXT_PX: f32 = 13.0;
 /// Most characters of a label.
@@ -156,8 +160,10 @@ pub struct Painter {
     h: f32,
     pub quads: Vec<OverlayQuad>,
     pub labels: Vec<LabelReq>,
-    /// Records not added because [`MAX_QUADS`] was reached.
+    /// Records not added because the limit ([`MAX_QUADS`] unless set lower) was reached.
     pub dropped: usize,
+    /// Most records (lines, boxes, dots); text comes on top, see [`LABEL_QUADS`].
+    pub limit: usize,
 }
 
 /// Distance from the near plane in clip space (`w - z` for the reversed-Z infinite projection,
@@ -172,7 +178,7 @@ fn lerp4(a: Vec4, b: Vec4, t: f32) -> Vec4 {
 
 impl Painter {
     pub fn new(vp: Mat4, width: u32, height: u32) -> Painter {
-        Painter { vp, w: width as f32, h: height as f32, quads: Vec::new(), labels: Vec::new(), dropped: 0 }
+        Painter { vp, w: width as f32, h: height as f32, quads: Vec::new(), labels: Vec::new(), dropped: 0, limit: MAX_QUADS }
     }
 
     pub fn size(&self) -> [f32; 2] {
@@ -190,7 +196,7 @@ impl Painter {
     }
 
     fn push(&mut self, q: OverlayQuad) {
-        if self.quads.len() >= MAX_QUADS {
+        if self.quads.len() >= self.limit {
             self.dropped += 1;
         } else {
             self.quads.push(q);
@@ -602,6 +608,20 @@ mod tests {
     fn painter() -> (Painter, Camera) {
         let cam = Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 0.0, 0.0), 50.0);
         (Painter::new(cam.view_proj(800, 600), 800, 600), cam)
+    }
+
+    #[test]
+    fn overlays_and_a_games_interface_fit_the_gpu_limit_together() {
+        // A full game interface leaves room for full debug overlays with their text.
+        let budget = specula_gpu::MAX_OVERLAY_QUADS - crate::game::MAX_GAME_OVERLAY_QUADS;
+        assert!(LABEL_QUADS < budget);
+        let (mut p, _) = painter();
+        p.limit = 10;
+        for _ in 0..20 {
+            p.line(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), WHITE, 2.0);
+        }
+        assert_eq!(p.quads.len(), 10, "the painter stops at its limit");
+        assert!(p.dropped > 0);
     }
 
     #[test]

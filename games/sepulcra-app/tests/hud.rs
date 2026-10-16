@@ -139,6 +139,40 @@ fn the_pause_button_is_an_active_pause_and_escape_opens_the_menu() {
     assert_eq!(h.game.state().tick(), tick + 1);
 }
 
+/// Mouse-only, touch and agent players reach the menu (settings, controls, restart) from the
+/// HUD itself (review: no HUD widget opened it).
+#[test]
+fn the_menu_button_reaches_settings_and_restart() {
+    let mut h = Host::new(5);
+    if !h.hud_on() {
+        return;
+    }
+    let press = |h: &mut Host, id: &str| {
+        let Host { game, world, clock } = h;
+        let out = game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, "play_ui", &Json::obj([("press", Json::from(id))]));
+        assert!(!out.is_error, "{id}: {:?}", out.content);
+    };
+    for _ in 0..40 {
+        h.tick();
+    }
+    press(&mut h, "menu_button");
+    assert!(screens(&h).contains("pause"), "{}", screens(&h));
+    press(&mut h, "settings");
+    assert!(screens(&h).contains("settings"));
+    press(&mut h, "volume");
+    press(&mut h, "settings_back");
+    assert!(!screens(&h).contains("settings"));
+    press(&mut h, "controls");
+    assert!(screens(&h).contains("controls"));
+    press(&mut h, "controls_back");
+    press(&mut h, "restart");
+    assert!(screens(&h).contains("confirm"));
+    press(&mut h, "confirm_yes");
+    assert_eq!(h.game.state().tick(), 0, "the run started over");
+    assert_eq!(h.game.state().seed(), 5, "with the same seed");
+    assert!(!screens(&h).contains("pause") && !screens(&h).contains("confirm"), "{}", screens(&h));
+}
+
 #[test]
 fn a_placed_stone_opens_its_panel_and_its_buttons_upgrade_and_sell() {
     let mut h = Host::new(5);

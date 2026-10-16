@@ -769,6 +769,10 @@ impl GpuInner {
         self.copy_to_image(t.image.handle, false, x, y, width, height, pixels)
     }
 
+    pub fn has_texture(&self, texture: TextureId) -> bool {
+        self.textures.map.contains_key(&texture.0)
+    }
+
     pub fn destroy_texture(&mut self, texture: TextureId) {
         let Some(t) = self.textures.map.remove(&texture.0) else { return };
         self.wait_window_frames();

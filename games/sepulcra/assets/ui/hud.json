@@ -3,7 +3,7 @@
   "name": "hud",
   "input": "hud",
   "layer": 0,
-  "notes": "State the game supplies each frame: wave, waves, next_wave_s (absent while a wave runs), early_bonus, dust, tombstones, tombstones_max, paused, speed, running, selected (warding|pillar|brazier|obelisk|wall, absent when nothing is selected), selected_name, selected_role, selected_detail, selected_cost, affordable, sel_<icon> / cost_<icon> / can_<icon> for the build bar (icons warding, pillar, brazier, obelisk, wall), hover (text about the cell under the cursor), inspect (the selected stone or wall's name, absent when none), inspect_icon, inspect_detail, upgrade_detail, upgrade_cost (absent at tier III), can_upgrade, refund, inspect_stone, inspect_wall, threats (rows: x, y in physical px from the camera projection, behind, label). Actions: select:<icon>, upgrade, sell, unwall, deselect, call_wave, pause, resume, speed, open_build_menu. Layout adapts with ui.narrow (phones in portrait).",
+  "notes": "State the game supplies each frame: wave, waves, next_wave_s (absent while a wave runs), early_bonus, dust, tombstones, tombstones_max, paused, speed, running, selected (warding|pillar|brazier|obelisk|wall, absent when nothing is selected), selected_name, selected_role, selected_detail, selected_cost, affordable, sel_<icon> / cost_<icon> / can_<icon> for the build bar (icons warding, pillar, brazier, obelisk, wall), hover (text about the cell under the cursor), inspect (the selected stone or wall's name, absent when none), inspect_icon, inspect_detail, upgrade_detail, upgrade_cost (absent at tier III), can_upgrade, refund, inspect_stone, inspect_wall, threats (rows: x, y in physical px from the camera projection, behind, label). Actions: select:<icon>, upgrade, sell, unwall, deselect, call_wave, pause, resume, speed, open_menu, open_build_menu. Layout adapts with ui.narrow (phones in portrait).",
   "root": {
     "type": "box",
     "children": [
@@ -60,7 +60,8 @@
         "children": [
           { "type": "button", "id": "speed_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "x{speed}", "action": "speed", "tooltip": "Game speed: x1, x2, x4.", "children": [ { "type": "prompt", "action": "speed" } ] },
           { "type": "button", "id": "pause_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "pause", "action": "pause", "visible": "!paused", "tooltip": "Active pause: building still works.", "children": [ { "type": "prompt", "action": "pause" } ] },
-          { "type": "button", "id": "resume_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused", "tooltip": "Resume." }
+          { "type": "button", "id": "resume_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused", "tooltip": "Resume." },
+          { "type": "button", "id": "menu_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "Menu", "action": "open_menu", "tooltip": "Settings, controls, restart.", "children": [ { "type": "prompt", "action": "cancel" } ] }
         ]
       },
       {
@@ -74,7 +75,8 @@
         "children": [
           { "type": "button", "id": "speed_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "text": "x{speed}", "action": "speed" },
           { "type": "button", "id": "pause_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "icon": "pause", "action": "pause", "visible": "!paused" },
-          { "type": "button", "id": "resume_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused" }
+          { "type": "button", "id": "resume_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused" },
+          { "type": "button", "id": "menu_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "text": "Menu", "action": "open_menu" }
         ]
       },
       { "type": "toasts", "anchor": "top", "margin": [72, 0, 0, 0], "width": "24em", "max": 4 },

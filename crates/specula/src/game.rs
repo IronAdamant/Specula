@@ -49,6 +49,11 @@ pub trait Game {
         None
     }
 
+    /// The assets root the engine settled on (`--assets`, else [`Game::assets_root`], else the
+    /// working directory), once, before [`Game::start`]: the game reads its own files (screens,
+    /// sounds) from here too, so one flag points the engine and the game at the same folder.
+    fn use_assets(&mut self, _root: &std::path::Path) {}
+
     /// Once, after the engine, window and world are ready (a loaded world may already hold
     /// the scene).
     fn start(&mut self, _ctx: &mut Ctx) {}
@@ -148,6 +153,16 @@ pub struct Frame<'a> {
     pub agent_view: bool,
     /// Set to replace the window title (the HUD until the engine has text).
     pub title: &'a mut Option<String>,
+}
+
+/// Keeps the quads a frame can draw: at most `max`, and only those whose texture `live` knows
+/// (a game naming a texture it never uploaded, or already freed, would otherwise fail the GPU
+/// frame and with it the window). Returns how many were dropped.
+pub fn keep_drawable(quads: &mut Vec<OverlayQuad>, max: usize, live: impl Fn(specula_gpu::TextureId) -> bool) -> usize {
+    let before = quads.len();
+    quads.retain(|q| q.texture.is_none_or(&live));
+    quads.truncate(max);
+    before - quads.len()
 }
 
 /// One image's game interface (see [`Game::overlay`]).
@@ -314,6 +329,18 @@ mod tests {
         assert_eq!(c.advance(Duration::from_millis(100)), 12);
         c.set_scale(f32::NAN);
         assert_eq!(c.scale(), 1.0);
+    }
+
+    #[test]
+    fn game_quads_with_unknown_textures_or_past_the_cap_are_dropped() {
+        use specula_gpu::TextureId;
+        let solid = OverlayQuad::default();
+        let tex = |id| OverlayQuad { texture: Some(TextureId(id)), ..OverlayQuad::default() };
+        let mut q = vec![solid, tex(1), tex(2), solid, tex(1)];
+        assert_eq!(keep_drawable(&mut q, 10, |t| t.0 == 1), 1, "texture 2 is unknown");
+        assert_eq!(q.len(), 4);
+        assert_eq!(keep_drawable(&mut q, 3, |_| true), 1, "the cap");
+        assert_eq!(q.len(), 3);
     }
 
     #[test]

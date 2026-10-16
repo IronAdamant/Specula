@@ -1260,6 +1260,12 @@ impl Gpu {
         self.inner.destroy_texture(texture)
     }
 
+    /// Whether `texture` is live (uploaded and not destroyed): overlay quads naming any other id
+    /// fail the frame.
+    pub fn has_texture(&self, texture: TextureId) -> bool {
+        self.inner.has_texture(texture)
+    }
+
     /// Read back the target as tightly packed sRGB RGBA8, top row first.
     ///
     /// Errors if the target has never been rendered.

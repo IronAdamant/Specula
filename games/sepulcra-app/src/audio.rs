@@ -108,7 +108,9 @@ impl Sfx {
 
     /// Opens the default output (or the null backend when there is none) and renders the sound
     /// set on a worker thread; sounds play once it lands.
-    pub fn start() -> Sfx {
+    /// Recipes come from `dir` (`<assets>/sounds/<name>.json`) when it has them, else the copies
+    /// built into the game.
+    pub fn start(dir: Option<std::path::PathBuf>) -> Sfx {
         let audio = match Audio::start(AudioConfig::default()) {
             Ok(a) => a,
             Err(e) => return Sfx::off(&format!("audio: {e}")),
@@ -116,7 +118,9 @@ impl Sfx {
         let (tx, rx) = mpsc::channel();
         let spawned = std::thread::Builder::new().name("sepulcra-sounds".into()).spawn(move || {
             let mut out: Rendered = Vec::new();
-            for (name, text) in RECIPES {
+            for (name, builtin) in RECIPES {
+                let from_disk = dir.as_ref().and_then(|d| std::fs::read_to_string(d.join(format!("{name}.json"))).ok());
+                let text = from_disk.as_deref().unwrap_or(builtin);
                 let n = if VARIED.contains(&name) { VARIATIONS } else { 1 };
                 for variation in 0..n {
                     let r = specula_audio::load_recipe(text, &RenderOptions { variation, ..RenderOptions::default() }).map_err(|e| e.to_string());
@@ -253,12 +257,14 @@ impl Sfx {
     /// Keeps one crackling loop on every brazier (`fires`: cell and where its flame is).
     pub fn fires(&mut self, fires: &[(CellId, Vec3)]) {
         let Some(a) = &self.audio else { return };
-        let gone: Vec<CellId> = self.crackles.keys().copied().filter(|c| !fires.iter().any(|(f, _)| f == c)).collect();
-        for c in gone {
-            if let Some(v) = self.crackles.remove(&c) {
-                let _ = a.stop(v, 0.3);
+        // Fires that went out (sold): stop their crackle. No allocation per frame.
+        self.crackles.retain(|c, v| {
+            let lit = fires.iter().any(|(f, _)| f == c);
+            if !lit {
+                let _ = a.stop(*v, 0.3);
             }
-        }
+            lit
+        });
         let Some(sound) = self.sounds.get("brazier_crackle_loop").and_then(|v| v.first()) else { return };
         for &(cell, at) in fires {
             if self.crackles.contains_key(&cell) {

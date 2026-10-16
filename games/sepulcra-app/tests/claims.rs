@@ -124,6 +124,24 @@ fn a_rejected_place_leaves_game_and_world_as_they_were() {
     assert_eq!(h.swarm.journal.replay().unwrap().state_hash(), h.world.state_hash());
 }
 
+/// Review (36cb5a1): a rejected tool also leaves what the player sees of the HUD as it was (the
+/// open menu stays open; a rejected restart doesn't close it).
+#[test]
+fn a_rejected_tool_keeps_the_huds_screens() {
+    let mut h = Host::new();
+    let screens = |h: &Host| h.game.presentation_json().get("hud").unwrap().get("screens").unwrap().to_string();
+    if !h.game.presentation_json().get("hud").unwrap().get("on").and_then(Json::as_bool).unwrap_or(false) {
+        println!("SKIP: the HUD is off (no system UI font?)");
+        return;
+    }
+    h.tool(BOB, "play_ui", Json::obj([("press", Json::from("menu_button"))])).unwrap();
+    assert!(screens(&h).contains("pause"), "{}", screens(&h));
+    h.claim("/units/stones");
+    let err = h.tool(BOB, "play_new", Json::obj([("seed", Json::from(2))])).unwrap_err();
+    assert_eq!(err.code, "claimed");
+    assert!(screens(&h).contains("pause"), "the menu is still open: {}", screens(&h));
+}
+
 /// P7: a rejected `play_new` left the game on a new scene whose entities had been rolled back;
 /// its ids were then reissued to ann, and thousands of game ticks wrote into her claim.
 #[test]

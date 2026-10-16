@@ -215,6 +215,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
     // `--assets`, else the hosted game's own folder, else the working directory.
     let assets = args.assets.or_else(|| game.as_ref().and_then(|g| g.assets_root())).unwrap_or_else(|| cwd.clone());
+    if let Some(g) = game.as_mut() {
+        g.use_assets(&assets);
+    }
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
@@ -674,10 +677,11 @@ impl Engine {
         game.overlay(ctx, &mut overlay);
         self.world.set_recording(Recording::Full);
         self.journal_game(Kind::GameFrame);
-        if out.len() > MAX_GAME_OVERLAY_QUADS {
-            self.game_overlay_stats.1 += (out.len() - MAX_GAME_OVERLAY_QUADS) as u64;
-            out.truncate(MAX_GAME_OVERLAY_QUADS);
-        }
+        // Past the cap, or naming a texture the GPU doesn't have: dropped (counted), never a
+        // failed frame.
+        let gpu = &self.gpu;
+        let dropped = game::keep_drawable(out, MAX_GAME_OVERLAY_QUADS, |t| gpu.has_texture(t));
+        self.game_overlay_stats.1 += dropped as u64;
         if !capture {
             self.game_overlay_stats.0 = out.len();
         }

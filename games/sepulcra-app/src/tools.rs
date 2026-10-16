@@ -124,13 +124,21 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "play_ui".into(),
-            description: "The HUD as data and as buttons: the visible screens' widgets (id, type, rect in physical px,                           text, enabled, focused; widgets with an id or text), at most `limit` (default 60, max 200). `press` activates a widget by                           id exactly as a click or a pad's accept would (refused when a player couldn't reach it, e.g.                           under a modal) and answers the action it sent. Ids: build bar build_<stone>, call_wave, pause,                           upgrade, sell, unwall, deselect, resume, settings, controls, restart, new_run..."
+            description: "The HUD as data and as buttons: the visible screens' widgets with an id or text (id, type, \
+                          rect in physical px, text, enabled, focused), at most `limit` (1..200, default 60). `select` \
+                          opens the panel of the stone or wall on a cell, as clicking it does. `press` activates a \
+                          widget by id exactly as a click or a pad's accept would (refused when a player couldn't \
+                          press it now, e.g. hidden, disabled or under a modal) and answers the action it sent. Ids: \
+                          build_<warding|pillar|brazier|obelisk|wall> (the build bar; _on while selected), call_wave, \
+                          pause_button, resume_button, speed_button, menu_button; on a selected stone or wall: upgrade, \
+                          sell, unwall, deselect; in the pause menu: resume, settings, controls, restart (then \
+                          confirm_yes / confirm_no); after the run: new_run."
                 .into(),
             input_schema: schema(
                 vec![
                     ("select", prop("string", "Open the panel of the stone or wall on this cell (as clicking it does), e.g. \"top:12,9\"")),
                     ("press", prop("string", "Widget id to activate (after `select`)")),
-                    ("limit", prop("integer", "Widgets to list (default 60, max 200)")),
+                    ("limit", prop("integer", "Widgets to list, 1..200 (default 60)")),
                 ],
                 &[],
             ),
@@ -684,7 +692,10 @@ fn control(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
 
 fn ui(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
     check_keys(args, &["select", "press", "limit"])?;
-    let limit = (uint_arg(args, "limit", MAX_LIMIT as u64)?.unwrap_or(60) as usize).clamp(1, MAX_LIMIT);
+    let limit = uint_arg(args, "limit", MAX_LIMIT as u64)?.unwrap_or(60) as usize;
+    if limit == 0 {
+        return Err(error("bad_argument", format!("'limit' must be an integer 1..{MAX_LIMIT}"), vec![("field", Json::from("limit"))]));
+    }
     let mut out = obj([]);
     if let Some(name) = str_arg(args, "select")? {
         let content = game.content();
@@ -707,4 +718,21 @@ fn ui(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput,
     out.set("ui", game.ui_tree(limit));
     // Compact: a full HUD is dozens of widgets.
     Ok(ToolOutput::text(out.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// As the engine's own tools: no runs of spaces (a missing line-continuation backslash) in
+    /// what agents read.
+    #[test]
+    fn tool_texts_have_no_runs_of_spaces() {
+        for t in defs() {
+            let schema = t.input_schema.to_string();
+            for text in [&t.description, &schema] {
+                assert!(!text.contains("   "), "{}: a run of spaces in {text:?}", t.name);
+            }
+        }
+    }
 }

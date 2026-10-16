@@ -61,7 +61,15 @@ pub struct Hud {
     /// Recent messages with their presentation time: a capture shows those still fresh (the
     /// UI ages toasts by window frames, which a headless engine never has).
     recent: std::collections::VecDeque<(f32, String, ToastKind)>,
+    /// A second UI for captures (loaded at the first one), so a capture never touches what the
+    /// player sees: their toasts, hover, focus and layout stay the window's.
+    capture: Option<(Ui, GpuOverlay)>,
+    /// Where the screens were loaded from (the capture UI loads the same).
+    dir: Option<std::path::PathBuf>,
 }
+
+/// Screens the game shows and hides (the capture UI mirrors their visibility).
+const SHOWN: [&str; 8] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "confirm"];
 
 /// Seconds a message stays on a capture.
 const CAPTURE_TOAST_S: f32 = 4.0;
@@ -92,6 +100,8 @@ impl Hud {
             laid_out: None,
             user_scale: 1.0,
             recent: std::collections::VecDeque::new(),
+            capture: None,
+            dir: ui_dir.map(Path::to_path_buf),
         };
         match Hud::load(ui_dir) {
             Ok(ui) => hud.ui = Some(ui),
@@ -133,6 +143,8 @@ impl Hud {
             laid_out: None,
             user_scale: 1.0,
             recent: std::collections::VecDeque::new(),
+            capture: None,
+            dir: None,
         }
     }
 
@@ -141,29 +153,29 @@ impl Hud {
     }
 
     /// One window frame: input in, layout, events out (what the player pressed, what the UI took).
-    pub fn frame(&mut self, input: &Input, size: (u32, u32)) -> UiEvents {
-        let Some(ui) = self.ui.as_mut() else { return UiEvents::default() };
+    /// `out` is overwritten (its storage reused: no allocation once warm).
+    pub fn frame(&mut self, input: &Input, size: (u32, u32), out: &mut UiEvents) {
+        out.events.clear();
+        out.consumed = Default::default();
+        let Some(ui) = self.ui.as_mut() else { return };
         if size.0 == 0 || size.1 == 0 {
-            return UiEvents::default();
+            return;
         }
         let view = viewport(ui, size, self.user_scale);
         self.laid_out = Some(size);
-        ui.frame(input, &self.state, &view).events.clone()
+        out.clone_from(ui.frame(input, &self.state, &view).events);
     }
 
     /// The overlay quads for one image: the window (laid out by [`Hud::frame`] this frame) or a
     /// capture (laid out here for its size, with no input).
     /// `now`: presentation seconds (which messages a capture still shows).
     pub fn overlay(&mut self, out: &mut Overlay, now: f32) {
-        let Some(ui) = self.ui.as_mut() else { return };
         if out.capture {
-            ui.clear_toasts();
-            let fresh: Vec<&(f32, String, ToastKind)> = self.recent.iter().filter(|(t, _, _)| now - *t < CAPTURE_TOAST_S && *t <= now).collect();
-            for (_, text, kind) in fresh.iter().skip(fresh.len().saturating_sub(CAPTURE_TOASTS)) {
-                ui.toast(text, *kind);
-            }
+            self.capture_overlay(out, now);
+            return;
         }
-        if out.capture || self.laid_out != Some(out.size) {
+        let Some(ui) = self.ui.as_mut() else { return };
+        if self.laid_out != Some(out.size) {
             let view = viewport(ui, out.size, self.user_scale);
             ui.frame(&self.idle, &self.state, &view);
             // The window lays out again for itself on its next frame.
@@ -176,6 +188,43 @@ impl Hud {
         match self.overlay.build(ui) {
             Ok(quads) => out.quads.extend_from_slice(quads),
             Err(e) => self.problem = Some(format!("overlay: {e}")),
+        }
+    }
+
+    /// A capture's interface, from the capture UI: the window's screens, the messages still
+    /// fresh at `now`, laid out for the capture's size with no input.
+    fn capture_overlay(&mut self, out: &mut Overlay, now: f32) {
+        let Some(win) = self.ui.as_ref() else { return };
+        if self.capture.is_none() {
+            match Hud::load(self.dir.as_deref()) {
+                Ok(ui) => self.capture = Some((ui, GpuOverlay::new())),
+                Err(e) => {
+                    self.problem = Some(format!("capture HUD: {e}"));
+                    return;
+                }
+            }
+        }
+        let Some((ui, overlay)) = self.capture.as_mut() else { return };
+        for name in SHOWN {
+            let open = win.is_visible(name);
+            if ui.is_visible(name) != open {
+                let _ = if open { ui.show(name) } else { ui.hide(name) };
+            }
+        }
+        ui.clear_toasts();
+        let fresh = self.recent.iter().filter(|(t, _, _)| now - *t < CAPTURE_TOAST_S && *t <= now).count();
+        for (_, text, kind) in self.recent.iter().filter(|(t, _, _)| now - *t < CAPTURE_TOAST_S && *t <= now).skip(fresh.saturating_sub(CAPTURE_TOASTS)) {
+            ui.toast(text, *kind);
+        }
+        let view = viewport(ui, out.size, self.user_scale);
+        ui.frame(&self.idle, &self.state, &view);
+        if let Err(e) = overlay.sync_atlas(out.textures, ui.atlas_mut()) {
+            self.problem = Some(format!("capture glyph atlas: {e}"));
+            return;
+        }
+        match overlay.build(ui) {
+            Ok(quads) => out.quads.extend_from_slice(quads),
+            Err(e) => self.problem = Some(format!("capture overlay: {e}")),
         }
     }
 
@@ -348,9 +397,59 @@ fn role(content: &Content, kind: u8) -> &'static str {
 
 const TIERS: [&str; 3] = ["I", "II", "III"];
 
-/// Fills `s` from `info` (everything the screens bind to; see their `notes`).
-pub fn fill(s: &mut StateMap, info: &HudInfo) {
+/// The build bar's state keys per icon: selected, cost, affordable.
+const BAR_KEYS: [(&str, &str, &str, &str); 4] = [
+    ("warding", "sel_warding", "cost_warding", "can_warding"),
+    ("pillar", "sel_pillar", "cost_pillar", "can_pillar"),
+    ("brazier", "sel_brazier", "cost_brazier", "can_brazier"),
+    ("obelisk", "sel_obelisk", "cost_obelisk", "can_obelisk"),
+];
+
+/// The HUD's text that changes only with the content (or a wall's HP), made once and reused, so
+/// a frame's fill allocates nothing (F3).
+#[derive(Default)]
+pub struct Texts {
+    content: Option<u64>,
+    /// Per stone kind and tier: "Warding stone II", what that tier does, and what the next adds.
+    names: Vec<[String; 3]>,
+    details: Vec<[String; 3]>,
+    upgrades: Vec<[String; 3]>,
+    wall: Option<(i32, i32)>,
+    wall_text: String,
+    /// Threat labels.
+    scratch: String,
+}
+
+impl Texts {
+    fn ensure(&mut self, content: &Content) {
+        if self.content == Some(content.hash) {
+            return;
+        }
+        self.content = Some(content.hash);
+        let kinds = 0..content.stones.len() as u8;
+        self.names = kinds.clone().map(|k| TIERS.map(|t| format!("{} {t}", content.stones[usize::from(k)].name))).collect();
+        self.details = kinds.clone().map(|k| [0, 1, 2].map(|t| stone_detail(content, k, t))).collect();
+        self.upgrades = kinds
+            .map(|k| [0u8, 1, 2].map(|t| if t < 2 { format!("Tier {}: {}", TIERS[usize::from(t) + 1], stone_detail(content, k, t + 1)) } else { "Fully carved.".to_owned() }))
+            .collect();
+    }
+
+    fn wall(&mut self, hp: i32, max_hp: i32) -> &str {
+        use std::fmt::Write;
+        if self.wall != Some((hp, max_hp)) {
+            self.wall = Some((hp, max_hp));
+            self.wall_text.clear();
+            let _ = write!(self.wall_text, "{} / {} HP. Removing it refunds what's left of it.", hp / 1000, max_hp / 1000);
+        }
+        &self.wall_text
+    }
+}
+
+/// Fills `s` from `info` (everything the screens bind to; see their `notes`). `texts` keeps the
+/// strings between frames.
+pub fn fill(s: &mut StateMap, info: &HudInfo, texts: &mut Texts) {
     let content = info.content;
+    texts.ensure(content);
     s.reset();
     s.set_int("wave", i64::from(info.wave)).set_int("waves", i64::from(info.waves));
     if let Some(n) = info.next_wave_s {
@@ -363,10 +462,11 @@ pub fn fill(s: &mut StateMap, info: &HudInfo) {
     // The selection and the build bar.
     for (i, def) in content.stones.iter().enumerate() {
         let icon = icon_of(&def.id);
+        let Some(&(_, sel, cost_key, can)) = BAR_KEYS.iter().find(|k| k.0 == icon) else { continue };
         let cost = def.tiers[0].cost;
-        s.set_bool(&format!("sel_{icon}"), info.selected == Some(i as u8));
-        s.set_int(&format!("cost_{icon}"), i64::from(cost));
-        s.set_bool(&format!("can_{icon}"), info.dust >= cost);
+        s.set_bool(sel, info.selected == Some(i as u8));
+        s.set_int(cost_key, i64::from(cost));
+        s.set_bool(can, info.dust >= cost);
     }
     let wall_cost = content.rules.wall.cost;
     s.set_bool("sel_wall", info.selected.is_none()).set_int("cost_wall", i64::from(wall_cost)).set_bool("can_wall", info.dust >= wall_cost);
@@ -374,9 +474,9 @@ pub fn fill(s: &mut StateMap, info: &HudInfo) {
         Some(i) => {
             let def = &content.stones[usize::from(i)];
             s.set_str("selected", icon_of(&def.id));
-            s.set_str("selected_name", &format!("{} I", def.name));
+            s.set_str("selected_name", &texts.names[usize::from(i)][0]);
             s.set_str("selected_role", role(content, i));
-            s.set_str("selected_detail", &stone_detail(content, i, 0));
+            s.set_str("selected_detail", &texts.details[usize::from(i)][0]);
             s.set_int("selected_cost", i64::from(def.tiers[0].cost)).set_bool("affordable", info.dust >= def.tiers[0].cost);
         }
         None => {
@@ -391,20 +491,19 @@ pub fn fill(s: &mut StateMap, info: &HudInfo) {
     match info.inspect {
         Some(Inspect::Stone { kind, tier, upgrade, refund }) => {
             let def = &content.stones[usize::from(kind)];
-            s.set_str("inspect", &format!("{} {}", def.name, TIERS[usize::from(tier.min(2))]));
+            let (k, t) = (usize::from(kind), usize::from(tier.min(2)));
+            s.set_str("inspect", &texts.names[k][t]);
             s.set_str("inspect_icon", icon_of(&def.id));
-            s.set_str("inspect_detail", &stone_detail(content, kind, tier));
+            s.set_str("inspect_detail", &texts.details[k][t]);
             if let Some(cost) = upgrade {
                 s.set_int("upgrade_cost", i64::from(cost)).set_bool("can_upgrade", info.dust >= cost);
-                s.set_str("upgrade_detail", &format!("Tier {}: {}", TIERS[usize::from(tier.min(1)) + 1], stone_detail(content, kind, tier + 1)));
-            } else {
-                s.set_str("upgrade_detail", "Fully carved.");
             }
+            s.set_str("upgrade_detail", &texts.upgrades[k][if upgrade.is_some() { t.min(1) } else { 2 }]);
             s.set_int("refund", i64::from(refund)).set_bool("inspect_stone", true);
         }
         Some(Inspect::Wall { hp, max_hp, refund }) => {
             s.set_str("inspect", "Stone wall").set_str("inspect_icon", "wall");
-            s.set_str("inspect_detail", &format!("{} / {} HP. Removing it refunds what's left of it.", hp / 1000, max_hp / 1000));
+            s.set_str("inspect_detail", texts.wall(hp, max_hp));
             s.set_int("refund", i64::from(refund)).set_bool("inspect_wall", true);
         }
         None => {}
@@ -423,7 +522,8 @@ pub fn fill_scale(s: &mut StateMap, scale: f32) {
 /// Where threats are: one row per face (or the air) with enemies the camera can't see, for the
 /// screen-edge arrows (STYLE.md: grave green, pointing at the face under attack). `groups` are
 /// `(label, centre of its enemies, count)`.
-pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups: &[(&str, Vec3, usize)]) {
+pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups: &[(&str, Vec3, usize)], texts: &mut Texts) {
+    use std::fmt::Write;
     let rows = s.list_mut("threats");
     rows.clear();
     let (w, h) = (size.0.max(1), size.1.max(1));
@@ -450,7 +550,9 @@ pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups:
         }
         let row = rows.push();
         row.set_num("x", f64::from(x)).set_num("y", f64::from(y)).set_bool("behind", behind);
-        row.set_str("label", &format!("{label} ({count})"));
+        texts.scratch.clear();
+        let _ = write!(texts.scratch, "{label} ({count})");
+        row.set_str("label", &texts.scratch);
     }
 }
 
@@ -503,7 +605,8 @@ mod tests {
     fn the_state_has_what_the_screens_bind_to() {
         let content = Content::builtin();
         let mut s = StateMap::new();
-        fill(&mut s, &info(&content));
+        let mut texts = Texts::default();
+        fill(&mut s, &info(&content), &mut texts);
         for key in ["wave", "waves", "next_wave_s", "dust", "tombstones", "tombstones_max", "selected", "selected_cost", "affordable", "hover"] {
             assert!(s.get(key).is_some(), "{key} missing");
         }
@@ -512,7 +615,7 @@ mod tests {
         assert!(matches!(s.get("inspect"), Some(specula_ui::Value::Str(t)) if t == "Brazier cairn II"), "{:?}", s.get("inspect"));
         assert!(matches!(s.get("can_upgrade"), Some(specula_ui::Value::Bool(false))));
         // Nothing to inspect, no wave timer: the keys are gone (the panels hide).
-        fill(&mut s, &HudInfo { inspect: None, next_wave_s: None, ..info(&content) });
+        fill(&mut s, &HudInfo { inspect: None, next_wave_s: None, ..info(&content) }, &mut texts);
         assert!(s.get("inspect").is_none() && s.get("next_wave_s").is_none());
     }
 
@@ -521,7 +624,7 @@ mod tests {
         let cam = Camera::new(Vec3::new(0.0, 30.0, 40.0), Vec3::ZERO, 45.0);
         let mut s = StateMap::new();
         let groups = [("Top", Vec3::ZERO, 3), ("West cliff", Vec3::new(-90.0, -8.0, 0.0), 2), ("Behind", Vec3::new(0.0, 10.0, 90.0), 1), ("None", Vec3::ZERO, 0)];
-        fill_threats(&mut s, &cam, (1280, 720), &groups);
+        fill_threats(&mut s, &cam, (1280, 720), &groups, &mut Texts::default());
         let rows = s.list("threats").unwrap();
         assert_eq!(rows.len(), 2, "the visible face and the empty group have no arrow");
     }
