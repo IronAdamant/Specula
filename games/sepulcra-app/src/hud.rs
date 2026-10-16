@@ -58,7 +58,15 @@ pub struct Hud {
     laid_out: Option<(u32, u32)>,
     /// The player's interface size (settings).
     pub user_scale: f32,
+    /// Recent messages with their presentation time: a capture shows those still fresh (the
+    /// UI ages toasts by window frames, which a headless engine never has).
+    recent: std::collections::VecDeque<(f32, String, ToastKind)>,
 }
+
+/// Seconds a message stays on a capture.
+const CAPTURE_TOAST_S: f32 = 4.0;
+/// Most toasts a capture shows.
+const CAPTURE_TOASTS: usize = 3;
 
 /// The UI's viewport for an image of `size` at the player's interface size.
 fn viewport(ui: &Ui, size: (u32, u32), user_scale: f32) -> Viewport {
@@ -75,7 +83,16 @@ impl Hud {
     /// copies). `map` is the game's input map (prompts show its bindings).
     pub fn new(ui_dir: Option<&Path>, map: ActionMap) -> Hud {
         let idle = Input::new(map);
-        let mut hud = Hud { ui: None, overlay: GpuOverlay::new(), state: StateMap::new(), idle, problem: None, laid_out: None, user_scale: 1.0 };
+        let mut hud = Hud {
+            ui: None,
+            overlay: GpuOverlay::new(),
+            state: StateMap::new(),
+            idle,
+            problem: None,
+            laid_out: None,
+            user_scale: 1.0,
+            recent: std::collections::VecDeque::new(),
+        };
         match Hud::load(ui_dir) {
             Ok(ui) => hud.ui = Some(ui),
             Err(e) => {
@@ -115,6 +132,7 @@ impl Hud {
             problem: Some(why.to_owned()),
             laid_out: None,
             user_scale: 1.0,
+            recent: std::collections::VecDeque::new(),
         }
     }
 
@@ -135,8 +153,16 @@ impl Hud {
 
     /// The overlay quads for one image: the window (laid out by [`Hud::frame`] this frame) or a
     /// capture (laid out here for its size, with no input).
-    pub fn overlay(&mut self, out: &mut Overlay) {
+    /// `now`: presentation seconds (which messages a capture still shows).
+    pub fn overlay(&mut self, out: &mut Overlay, now: f32) {
         let Some(ui) = self.ui.as_mut() else { return };
+        if out.capture {
+            ui.clear_toasts();
+            let fresh: Vec<&(f32, String, ToastKind)> = self.recent.iter().filter(|(t, _, _)| now - *t < CAPTURE_TOAST_S && *t <= now).collect();
+            for (_, text, kind) in fresh.iter().skip(fresh.len().saturating_sub(CAPTURE_TOASTS)) {
+                ui.toast(text, *kind);
+            }
+        }
         if out.capture || self.laid_out != Some(out.size) {
             let view = viewport(ui, out.size, self.user_scale);
             ui.frame(&self.idle, &self.state, &view);
@@ -153,10 +179,15 @@ impl Hud {
         }
     }
 
-    pub fn toast(&mut self, text: &str, kind: ToastKind) {
+    /// Says `text` at presentation time `now`.
+    pub fn toast(&mut self, text: &str, kind: ToastKind, now: f32) {
         if let Some(ui) = &mut self.ui {
             ui.toast(text, kind);
         }
+        if self.recent.len() == 8 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((now, text.to_owned(), kind));
     }
 
     pub fn show(&mut self, screen: &str, visible: bool) {

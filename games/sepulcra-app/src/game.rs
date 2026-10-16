@@ -281,7 +281,7 @@ impl SepulcraGame {
     }
 
     pub(crate) fn say(&mut self, msg: String) {
-        self.hud.toast(&msg, hud::toast_kind(&msg));
+        self.hud.toast(&msg, hud::toast_kind(&msg), self.now);
         if self.log.len() == LOG_LEN {
             self.log.pop_front();
         }
@@ -816,9 +816,9 @@ pub fn night(world: &mut World) {
         // slab's stone stays a cool grey (STYLE.md: neutrals under ~25% saturation) instead of
         // turning the whole night blue, so the cyan, green and fire families carry the colour.
         sun_color: Some(palette::MOONLIGHT),
-        sun_intensity: Some(1.6),
+        sun_intensity: Some(1.5),
         ambient_color: Some(palette::NIGHT_FILL),
-        ambient_intensity: Some(2.2),
+        ambient_intensity: Some(2.7),
         exposure: Some(1.1),
         tonemap: Some(true),
         background: Some(palette::SKY),
@@ -1025,7 +1025,7 @@ impl Game for SepulcraGame {
             let cam = overlay.camera;
             self.fill_hud(Some(&cam), overlay.size);
         }
-        self.hud.overlay(overlay);
+        self.hud.overlay(overlay, self.now);
     }
 
     fn before_capture(&mut self, ctx: &mut Ctx) {
