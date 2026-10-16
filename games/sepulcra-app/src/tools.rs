@@ -123,6 +123,27 @@ pub fn defs() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "play_ui".into(),
+            description: "The HUD as data and as buttons: the visible screens' widgets with an id or text (id, type, \
+                          rect in physical px, text, enabled, focused), at most `limit` (1..200, default 60). `select` \
+                          opens the panel of the stone or wall on a cell, as clicking it does. `press` activates a \
+                          widget by id exactly as a click or a pad's accept would (refused when a player couldn't \
+                          press it now, e.g. hidden, disabled or under a modal) and answers the action it sent. Ids: \
+                          build_<warding|pillar|brazier|obelisk|wall> (the build bar; _on while selected), call_wave, \
+                          pause_button, resume_button, speed_button, menu_button; on a selected stone or wall: upgrade, \
+                          sell, unwall, deselect; in the pause menu: resume, settings, controls, restart (then \
+                          confirm_yes / confirm_no); after the run: new_run."
+                .into(),
+            input_schema: schema(
+                vec![
+                    ("select", prop("string", "Open the panel of the stone or wall on this cell (as clicking it does), e.g. \"top:12,9\"")),
+                    ("press", prop("string", "Widget id to activate (after `select`)")),
+                    ("limit", prop("integer", "Widgets to list, 1..200 (default 60)")),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
             name: "play_control".into(),
             description: "The game's own pause (the player's P key: the simulation stops, building still works) and speed \
                           (1, 2 or 4 simulation steps per tick). For agents' time, prefer the engine's time_control."
@@ -309,7 +330,8 @@ pub fn call(game: &mut SepulcraGame, ctx: &mut Ctx, name: &str, args: &Json) -> 
         "play_new" => new(game, ctx, args),
         "play_record" => record(game, args),
         "play_replay" => replay(game, ctx, args),
-        "play_control" => control(game, args),
+        "play_control" => control(game, ctx, args),
+        "play_ui" => ui(game, ctx, args),
         other => Err(error("unknown_tool", format!("no game tool '{other}'"), vec![])),
     };
     result.unwrap_or_else(|e| e)
@@ -352,9 +374,11 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     out.set("layout", game.autoplay.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str())));
     out.set("state_hash", Json::from(format!("{:016x}", s.hash())));
     out.set("content_hash", Json::from(format!("{:016x}", content.hash)));
+    let mut presentation = game.presentation_json();
     if let Some(scene) = &game.scene {
-        out.set("presentation", scene.counts());
+        presentation.set("scene", scene.counts());
     }
+    out.set("presentation", presentation);
     let include: Vec<&str> = match args.get("include") {
         None | Some(Json::Null) => Vec::new(),
         Some(Json::Arr(a)) => a.iter().filter_map(Json::as_str).collect(),
@@ -649,16 +673,66 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
     Ok(ToolOutput::text(out.to_pretty()))
 }
 
-fn control(game: &mut SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
+fn control(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
     check_keys(args, &["paused", "speed"])?;
-    if let Some(p) = bool_arg(args, "paused")? {
-        game.paused = p;
-    }
-    if let Some(sp) = uint_arg(args, "speed", 64)? {
+    let speed = uint_arg(args, "speed", 64)?;
+    if let Some(sp) = speed {
         if !SPEEDS.contains(&(sp as u32)) {
             return Err(error("bad_argument", "'speed' must be 1, 2 or 4", vec![("field", Json::from("speed"))]));
         }
-        game.speed = sp as u32;
+    }
+    if let Some(p) = bool_arg(args, "paused")? {
+        game.set_paused(ctx.world, p);
+    }
+    if let Some(sp) = speed {
+        game.set_speed(ctx.world, sp as u32);
     }
     Ok(ToolOutput::text(game.status_json().to_pretty()))
+}
+
+fn ui(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {
+    check_keys(args, &["select", "press", "limit"])?;
+    let limit = uint_arg(args, "limit", MAX_LIMIT as u64)?.unwrap_or(60) as usize;
+    if limit == 0 {
+        return Err(error("bad_argument", format!("'limit' must be an integer 1..{MAX_LIMIT}"), vec![("field", Json::from("limit"))]));
+    }
+    let mut out = obj([]);
+    if let Some(name) = str_arg(args, "select")? {
+        let content = game.content();
+        let cell = content.map.cell_ref(name).ok_or_else(|| error("unknown_cell", format!("no cell {name:?}"), vec![("cell", Json::from(name))]))?;
+        if !game.select_cell(cell) {
+            return Err(error("nothing_there", format!("no stone or wall on {name}"), vec![("cell", Json::from(name))]));
+        }
+        out.set("selected", Json::from(name));
+    }
+    if let Some(id) = str_arg(args, "press")? {
+        match game.press(ctx.world, ctx.agent, id) {
+            Ok(action) => {
+                out.set("pressed", Json::from(id));
+                out.set("action", action.map_or(Json::Null, Json::from));
+            }
+            Err(e) => return Err(error("ui_refused", e, vec![("widget", Json::from(id))])),
+        }
+    }
+    out.set("status", game.status_json());
+    out.set("ui", game.ui_tree(limit));
+    // Compact: a full HUD is dozens of widgets.
+    Ok(ToolOutput::text(out.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// As the engine's own tools: no runs of spaces (a missing line-continuation backslash) in
+    /// what agents read.
+    #[test]
+    fn tool_texts_have_no_runs_of_spaces() {
+        for t in defs() {
+            let schema = t.input_schema.to_string();
+            for text in [&t.description, &schema] {
+                assert!(!text.contains("   "), "{}: a run of spaces in {text:?}", t.name);
+            }
+        }
+    }
 }

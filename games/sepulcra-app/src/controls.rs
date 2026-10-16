@@ -14,6 +14,7 @@ use specula::sight::Camera;
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_input::{ActionMap, Device, Input};
+use specula_ui::Consumed;
 use specula_platform::gamepad::Gamepads;
 use specula_platform::{Event, GamepadState, MAX_GAMEPADS};
 use std::time::Instant;
@@ -27,14 +28,21 @@ pub const APP_BINDINGS: &str = include_str!("../data/input_app.json");
 pub enum Action {
     /// 0-based stone index, or `None` for the wall.
     Select(Option<u8>),
-    /// The next stone (then the wall): the pad's build button until the radial menu exists.
+    /// The next stone (then the wall).
     SelectNext,
+    /// Open the radial build menu at the cursor.
+    BuildMenu,
+    /// Close what's open (a selection), else pause.
+    Cancel,
     Build(CellId),
     Upgrade(CellId),
     Sell(CellId),
     Unwall(CellId),
     CallWave,
+    /// Active pause on or off (P, the HUD's button): building still works.
     TogglePause,
+    /// The pause menu (the pad's Start; Escape with nothing to cancel).
+    Menu,
     ToggleHelp,
     CycleSpeed,
     NewGame,
@@ -48,7 +56,10 @@ pub fn bindings() -> Result<ActionMap, String> {
     let mut actions: Vec<Json> = game.get("actions").and_then(Json::as_array).unwrap_or(&[]).to_vec();
     actions.extend(app.get("actions").and_then(Json::as_array).unwrap_or(&[]).iter().cloned());
     game.set("actions", Json::Arr(actions));
-    ActionMap::from_json(&game).map_err(|e| format!("input bindings: {e}"))
+    let mut map = ActionMap::from_json(&game).map_err(|e| format!("input bindings: {e}"))?;
+    // The HUD's own actions (focus, accept, back) for whatever the files leave out.
+    specula_ui::add_ui_actions(&mut map).map_err(|e| format!("ui bindings: {e}"))?;
+    Ok(map)
 }
 
 /// An orbit camera around the slab.
@@ -157,8 +168,9 @@ impl Controls {
         }
     }
 
-    /// Reads this frame's events (and pads), moves the camera, and returns the player's actions.
-    pub fn frame(&mut self, events: &[Event], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
+    /// Reads this frame's events (and pads). Then the HUD sees the input
+    /// ([`Controls::input`]), and [`Controls::act`] turns what's left into play.
+    pub fn begin(&mut self, events: &[Event]) {
         let pads = match &mut self.pads {
             Some(p) => {
                 p.poll();
@@ -168,26 +180,54 @@ impl Controls {
         };
         // This clock only measures frame time for input (taps, holds), never the simulation.
         let now = self.started.elapsed().as_secs_f64();
-        self.frame_at(now, events, &pads, dt, size, geo, map)
+        self.input.update(now, events, &pads);
     }
 
-    /// [`Controls::frame`] with an explicit input clock and pad states (tests, playtests).
+    /// [`Controls::begin`] with an explicit input clock and pad states (tests, playtests).
+    pub fn begin_at(&mut self, now_s: f64, events: &[Event], pads: &[GamepadState]) {
+        self.input.update(now_s, events, pads);
+    }
+
+    /// This frame's input (the HUD reads it before the game acts on it).
+    pub fn input(&self) -> &Input {
+        &self.input
+    }
+
+    /// Mutable input (settings: glyph style; controls: rebinding).
+    pub fn input_mut(&mut self) -> &mut Input {
+        &mut self.input
+    }
+
+    /// [`Controls::begin_at`] then [`Controls::act`] with nothing taken by a HUD (tests).
     #[allow(clippy::too_many_arguments)]
     pub fn frame_at(&mut self, now_s: f64, events: &[Event], pads: &[GamepadState], dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
-        self.input.update(now_s, events, pads);
+        self.begin_at(now_s, events, pads);
+        self.act(Consumed::default(), dt, size, geo, map)
+    }
+
+    /// Moves the camera and returns the player's actions, leaving out what the HUD took this
+    /// frame (`taken`): nothing while a modal menu is open, no buttons while a menu has focus,
+    /// no pointer play while the mouse or a finger is on the HUD.
+    pub fn act(&mut self, taken: Consumed, dt: f32, size: (u32, u32), geo: &SlabGeo, map: &Map) -> Vec<Action> {
+        if taken.all {
+            return Vec::new();
+        }
         let input = &self.input;
+        let pad = matches!(input.last_device(), Some(Device::Gamepad(_)));
+        let pointer_taken = taken.pointer && !pad;
+        let buttons_taken = taken.navigation;
         // Camera.
-        let [ox, oy] = input.value2("orbit");
+        let [ox, oy] = if pointer_taken { [0.0; 2] } else { input.value2("orbit") };
         if ox != 0.0 || oy != 0.0 {
             self.orbit.yaw -= ox * 0.3;
             self.orbit.pitch = (self.orbit.pitch + oy * 0.25).clamp(MIN_PITCH, MAX_PITCH);
             self.orbit.yaw_goal = None;
         }
-        let zoom = input.value("zoom");
+        let zoom = if pointer_taken { 0.0 } else { input.value("zoom") };
         if zoom != 0.0 {
             self.orbit.dist = (self.orbit.dist * 0.88f32.powf(zoom)).clamp(MIN_DIST, MAX_DIST);
         }
-        let [px, py] = input.value2("pan");
+        let [px, py] = if pointer_taken { [0.0; 2] } else { input.value2("pan") };
         if px != 0.0 || py != 0.0 {
             let k = self.orbit.dist;
             self.orbit.pan(px * k, py * k);
@@ -209,7 +249,7 @@ impl Controls {
         // The cursor: the pointer (mouse, touch), or the gamepad's own cursor. A minimized window
         // is 0x0: there is nothing to point at, so the cursor and the hovered cell stay as they are.
         if size.0 > 0 && size.1 > 0 {
-            let [cx, cy] = input.value2("cursor_move");
+            let [cx, cy] = if buttons_taken { [0.0; 2] } else { input.value2("cursor_move") };
             let (w, h) = (size.0 as f32, size.1 as f32);
             if cx != 0.0 || cy != 0.0 {
                 let (x, y) = self.pad_cursor.unwrap_or((w / 2.0, h / 2.0));
@@ -220,13 +260,16 @@ impl Controls {
                 _ => input.pointer().map(|p| (p.x, p.y)),
             };
             let orbit = self.orbit;
-            self.hover = at.and_then(|(x, y)| {
+            self.hover = at.filter(|_| !pointer_taken).and_then(|(x, y)| {
                 let (o, d) = orbit.camera().ray(x, y, size.0, size.1);
                 geo.pick(map, o, d)
             });
         }
         // Buttons, in a fixed order.
         let mut actions = Vec::new();
+        if buttons_taken {
+            return actions;
+        }
         for (i, name) in ["select_1", "select_2", "select_3", "select_4"].iter().enumerate() {
             if input.pressed(name) {
                 actions.push(Action::Select(Some(i as u8)));
@@ -234,11 +277,12 @@ impl Controls {
         }
         let simple = [
             ("select_wall", Action::Select(None)),
-            ("build_menu", Action::SelectNext),
+            ("build_menu", Action::BuildMenu),
             ("call_wave", Action::CallWave),
-            ("pause", Action::TogglePause),
-            // Nothing else to cancel yet, so cancel opens the pause (as the binding file says).
-            ("cancel", Action::TogglePause),
+            // A pad's Start opens the menu (console habit); P toggles active pause.
+            ("pause", if pad { Action::Menu } else { Action::TogglePause }),
+            // Deselects, else opens the pause menu (as the binding file says).
+            ("cancel", Action::Cancel),
             ("help", Action::ToggleHelp),
             ("speed", Action::CycleSpeed),
             ("new_game", Action::NewGame),
@@ -252,7 +296,7 @@ impl Controls {
         let on_cell: [(&str, OnCell); 4] =
             [("place", Action::Build), ("upgrade", Action::Upgrade), ("sell", Action::Sell), ("unwall", Action::Unwall)];
         for (name, action) in on_cell {
-            if input.pressed(name) {
+            if input.pressed(name) && !(pointer_taken && name == "place") {
                 actions.extend(self.hover.map(action));
             }
         }

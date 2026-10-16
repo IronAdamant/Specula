@@ -509,10 +509,17 @@ impl Engine {
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
+        // A hosted game's interface (include_ui), under the debug overlays.
         let mut quads = Vec::new();
+        if opts.include_ui {
+            self.game_overlay((w, h), camera, true, &mut quads);
+        }
+        let hud = quads.len();
+        // Debug overlays get what the game's interface leaves of the GPU's limit.
+        let budget = specula_gpu::MAX_OVERLAY_QUADS - hud;
         if painted && !second_render {
-            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
-            quads = q;
+            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget);
+            quads.extend(q);
             overlays = (!opts.overlays.is_empty()).then_some(report);
         }
         frame.overlay = &quads;
@@ -544,9 +551,11 @@ impl Engine {
             Json::obj([("off", Json::from(true))])
         };
         if second_render {
-            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts);
+            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget);
             overlays = (!opts.overlays.is_empty()).then_some(report);
-            frame.overlay = &q;
+            let mut both = quads[..hud].to_vec();
+            both.extend(q);
+            frame.overlay = &both;
             let _z = profile::zone("sight.render");
             self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
@@ -555,10 +564,12 @@ impl Engine {
         Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems })
     }
 
-    /// The overlay records for one view and what they drew.
-    fn paint_overlays(&mut self, camera: Camera, vp: Mat4, w: u32, h: u32, subjects: &[Subject], opts: &ViewOpts) -> (Vec<OverlayQuad>, Json) {
+    /// The overlay records for one view and what they drew, at most `budget` of them.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_overlays(&mut self, camera: Camera, vp: Mat4, w: u32, h: u32, subjects: &[Subject], opts: &ViewOpts, budget: usize) -> (Vec<OverlayQuad>, Json) {
         let spec = opts.overlays;
         let mut p = Painter::new(vp, w, h);
+        p.limit = p.limit.min(budget.saturating_sub(ov::LABEL_QUADS));
         let mut report = ov::Report::default();
         let world = &self.world;
         // On-screen subjects the overlays may mark, biggest first.
@@ -792,6 +803,11 @@ impl Engine {
             Err(e) => Json::obj([("requested", Json::from(requested)), ("placed", Json::from(0)), ("error", Json::from(e))]),
         };
         report.details.push(("text", text));
+        // Text past the budget too (a caption longer than a label): dropped, never a failed frame.
+        if quads.len() > budget {
+            p.dropped += quads.len() - budget;
+            quads.truncate(budget);
+        }
         if p.dropped > 0 {
             report.details.push(("records_dropped", Json::from(p.dropped)));
         }

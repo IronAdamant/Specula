@@ -51,19 +51,20 @@ impl Host {
         game.frame(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 
+    /// Flashes alive (transient: they go when they end).
     fn active_flashes(&self) -> usize {
-        let Ok(fx) = self.world.find_path("/fx") else { return 0 };
-        self.world.children_of(Some(fx)).filter(|&id| self.world.get(id).unwrap().position.y > -8.0).count()
+        let Ok(fx) = self.world.find_path("/live/fx") else { return 0 };
+        self.world.children_of(Some(fx)).count()
     }
 
-    /// Positions of the enemies on the slab (not parked in the pool).
+    /// Positions of the enemies on the slab (bodies playing their death clip left out).
     fn enemy_positions(&self) -> Vec<(u64, [f32; 3])> {
-        let Ok(g) = self.world.find_path("/units/enemies") else { return Vec::new() };
+        let Ok(g) = self.world.find_path("/live/enemies") else { return Vec::new() };
         self.world
             .children_of(Some(g))
             .filter_map(|id| {
                 let e = self.world.get(id).unwrap();
-                (e.position.y > -8.5).then_some((id, [e.position.x, e.position.y, e.position.z]))
+                (!e.tags.contains("dead")).then_some((id, [e.position.x, e.position.y, e.position.z]))
             })
             .collect()
     }

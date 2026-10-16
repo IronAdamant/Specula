@@ -6,7 +6,7 @@
 //! cells it covers in its props.
 
 use crate::ents;
-use crate::looks::{hex, palette::*, Part};
+use crate::looks::{self, hex, palette::*, Part};
 use sepulcra::map::{CellKind, Face, Map};
 use sepulcra::CellId;
 use specula::world::World;
@@ -287,14 +287,19 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
             }
         }
     }
-    // A jagged underside fading into the dark.
-    for i in 0..7 {
-        let a = i as f32 / 7.0 * std::f32::consts::TAU + rng.f32();
-        let rad = 6.0 + 8.0 * rng.f32();
-        let size = 7.0 + 5.0 * rng.f32();
-        let pos = Vec3::new(a.cos() * rad, -geo.depth - 1.0 - 2.0 * rng.f32(), a.sin() * rad);
-        let p = Part::cube("", pos, Vec3::new(size, size * 0.8, size), shade(CLIFF_A, 0.8)).rot(40.0 + 10.0 * rng.f32(), 360.0 * rng.f32(), 45.0).rough(1.0);
-        ents::part_named(world, agent, body, &format!("underside_{i}"), &p);
+    // A jagged underside fading into the mist: chunks of broken slab (the `slab_cliff` recipe),
+    // each a different seed and depth, hanging below the body.
+    let under = ents::group(world, agent, Some(slab), "underside", Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
+    let chunks = [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (0.0, 0.0)];
+    for (i, (cx, cz)) in chunks.into_iter().enumerate() {
+        let height = 9.0 + 6.0 * f64::from(rng.f32());
+        let spread = if i == 4 { 0.0 } else { geo.half_x * 0.45 };
+        let size = if i == 4 { 2.2 } else { 1.5 + 0.3 * rng.f32() };
+        // The chunk's flat top is at `height` (times its scale): sink it so the top hides a metre
+        // inside the body.
+        let pos = Vec3::new(cx * spread, -geo.depth + 1.0 - height as f32 * size, cz * spread);
+        let spec = ents::model_spec(under, &format!("chunk_{i}"), looks::underside_spec(1212 + i as u64 * 31, height), pos, Vec3::new(0.0, 90.0 * i as f32 + 20.0 * rng.f32(), 0.0), size, &[], Json::Null);
+        ents::spawn(world, agent, spec);
     }
 
     // Fragments: raised rock, one shade per piece.
@@ -371,26 +376,27 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         let centre = (lo + hi) * 0.5;
         let ground = Part::cube("ground", Vec3::new(centre.x, GRAVEYARD_HEIGHT / 2.0, centre.z), Vec3::new(hi.x - lo.x - 0.1, GRAVEYARD_HEIGHT, hi.z - lo.z - 0.1), shade(GRAVE_STONE, 0.62)).rough(1.0);
         ents::part(world, agent, gy, &ground);
-        let posts = [
-            ("post_nw", lo.x, lo.z), ("post_ne", hi.x, lo.z), ("post_sw", lo.x, hi.z), ("post_se", hi.x, hi.z),
-            ("post_n", centre.x, lo.z), ("post_s", centre.x, hi.z), ("post_w", lo.x, centre.z), ("post_e", hi.x, centre.z),
-        ];
-        // Wrought iron, but mostly matte so it reads against the dark lanes at night.
-        let iron = shade(IRON, 1.5);
-        for (name, x, z) in posts {
-            ents::part(world, agent, gy, &Part::cube(name, Vec3::new(x, 0.45, z), Vec3::new(0.14, 0.9, 0.14), iron).metal(0.3).rough(0.55));
-            ents::part_named(world, agent, gy, &format!("{name}_cap"), &Part::sphere("", Vec3::new(x, 0.95, z), Vec3::new(0.2, 0.2, 0.2), iron).metal(0.3).rough(0.55));
-        }
-        // A low rail between the posts (the dead step through it: it marks the ground, not a wall).
-        let (w, d) = (hi.x - lo.x, hi.z - lo.z);
-        let rails = [
-            ("rail_n", Vec3::new(centre.x, 0.7, lo.z), Vec3::new(w, 0.06, 0.06)),
-            ("rail_s", Vec3::new(centre.x, 0.7, hi.z), Vec3::new(w, 0.06, 0.06)),
-            ("rail_w", Vec3::new(lo.x, 0.7, centre.z), Vec3::new(0.06, 0.06, d)),
-            ("rail_e", Vec3::new(hi.x, 0.7, centre.z), Vec3::new(0.06, 0.06, d)),
-        ];
-        for (name, pos, scale) in rails {
-            ents::part(world, agent, gy, &Part::cube(name, pos, scale, iron).metal(0.3).rough(0.55));
+        // A low wrought-iron fence (the `graveyard_fence` recipe, 2 m a segment) round the
+        // graveyard, open where a lane comes in: the dead walk through the gaps.
+        let fence = ents::group(world, agent, Some(gy), "fence", Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
+        let mut n = 0;
+        for &g in &map.graveyard {
+            let c = map.cell(g);
+            let [x, _, z] = c.world_pos_f32();
+            let sides = [(0i32, -1i32, 0.0f32), (0, 1, 180.0), (-1, 0, 90.0), (1, 0, 270.0)];
+            for (dc, dr, yaw) in sides {
+                let (nc, nr) = (i32::from(c.col) + dc, i32::from(c.row) + dr);
+                let Some(next) = (nc >= 0 && nr >= 0).then(|| map.at(Face::Top, nc as u8, nr as u8)).flatten() else { continue };
+                let kind = map.cell(next).kind;
+                if kind == CellKind::Graveyard || kind.walkable(false) {
+                    continue;
+                }
+                let half = geo.cell / 2.0;
+                let pos = Vec3::new(x + dc as f32 * half, GRAVEYARD_HEIGHT, z + dr as f32 * half);
+                let spec = ents::model_spec(fence, &format!("segment_{n:02}"), looks::fence_spec(n), pos, Vec3::new(0.0, yaw, 0.0), 1.0, &[], Json::Null);
+                ents::spawn(world, agent, spec);
+                n += 1;
+            }
         }
     }
 
@@ -421,7 +427,9 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
             }
         };
         let fg = ents::group(world, agent, Some(cliffs), face.name(), Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
-        // key: 0/1 rock strata (by row parity), 2 lane, 3 base, 4 gorge mouth
+        // key: 2 lane, 3 base, 4 gorge mouth, 10.. rock strata: row parity plus one of three
+        // block variants (depth and shade), in runs of about four cells with joints offset row
+        // to row, so the cliffs read as layered, fractured stone rather than painted stripes.
         let key = |c: usize, r: usize| -> Option<u32> {
             if r == 0 && rim_void(c) {
                 return None;
@@ -433,7 +441,11 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
                 CellKind::Climb => 2,
                 CellKind::Base => 3,
                 CellKind::Void => return None,
-                _ => (r % 2) as u32,
+                _ => {
+                    let block = (c + (r * 5) % 4) / 4;
+                    let v = ((block as u32).wrapping_mul(2_654_435_761) ^ (r as u32).wrapping_mul(40_503)) >> 13;
+                    10 + (v % 3) * 2 + (r % 2) as u32
+                }
             })
         };
         let out = SlabGeo::outward(face);
@@ -455,18 +467,21 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         };
         for (c, r, w, h, k) in rectangles(len, cliff_rows, key) {
             let (depth, color, glow) = match k {
-                0 => (PANEL, CLIFF_A, 0.0),
-                1 => (PANEL, CLIFF_B, 0.0),
                 2 => (LANE_PANEL, shade(FISSURE, 1.15), 0.0),
                 3 => (LANE_PANEL, hex(0x15181d), 0.0),
-                _ => (PANEL + 0.02, hex(0x15181d), 0.0),
+                4 => (PANEL + 0.02, hex(0x15181d), 0.0),
+                _ => {
+                    let (v, odd) = (((k - 10) / 2) as usize, (k - 10) % 2 == 1);
+                    let base = if odd { CLIFF_B } else { CLIFF_A };
+                    (PANEL + [0.0, 0.14, -0.1][v], shade(base, [1.0, 1.08, 0.92][v]), 0.0)
+                }
             };
             let (pos, scale) = place(c as f32, w as f32, r as f32, h as f32, depth);
             let name = match k {
-                0 | 1 => format!("strata_{c}_{r}"),
                 2 => format!("lane_{c}_{r}"),
                 3 => format!("base_{c}_{r}"),
-                _ => format!("gorge_{c}"),
+                4 => format!("gorge_{c}"),
+                _ => format!("strata_{c}_{r}"),
             };
             ents::part_named(world, agent, fg, &name, &Part::cube("", pos, scale, color).rough(0.95).glow(glow));
             if k == 3 || k == 4 {

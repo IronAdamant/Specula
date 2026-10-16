@@ -32,7 +32,7 @@ pub mod two_d;
 mod ui;
 pub mod world;
 
-use game::{Clock, Ctx, Game};
+use game::{Clock, Ctx, Game, MAX_GAME_OVERLAY_QUADS};
 use journal::{Kind, Writer};
 use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
@@ -40,7 +40,7 @@ use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::math::Mat4;
 use specula_core::{base64, png, profile, Json};
-use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, Severity, TargetId, Validation};
+use specula_gpu::{AdapterPreference, Draw2d, DrawItem, FrameDesc, FramePath, Gpu, GpuOptions, OverlayQuad, Severity, TargetId, Validation};
 use specula_platform::{client_size_of, Event, WindowDesc};
 use specula_protocol::{Content, Server, ServerConfig, SessionInfo, ToolOutput};
 use specula_sys::interrupt;
@@ -213,7 +213,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
-    let assets = args.assets.unwrap_or_else(|| cwd.clone());
+    // `--assets`, else the hosted game's own folder, else the working directory.
+    let assets = args.assets.or_else(|| game.as_ref().and_then(|g| g.assets_root())).unwrap_or_else(|| cwd.clone());
+    if let Some(g) = game.as_mut() {
+        g.use_assets(&assets);
+    }
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
@@ -427,8 +431,13 @@ struct Engine {
     last_advance: Instant,
     /// Window input gathered for the game each frame (reused).
     input: Vec<Event>,
-    /// A window title set by the game (its HUD until the engine draws text).
+    /// A window title set by the game.
     game_title: Option<String>,
+    /// The game's interface quads for the window frame (reused).
+    game_quads: Vec<OverlayQuad>,
+    /// Quads in the game's last overlay, and how many it ever submitted past
+    /// [`MAX_GAME_OVERLAY_QUADS`] (dropped).
+    game_overlay_stats: (usize, u64),
     /// Identities, claims and the journal of every world change (see [`swarm`]).
     swarm: Swarm,
     /// `(tick, state hash)` recorded as each tick begins, newest last; at most [`TICK_HASHES`].
@@ -519,6 +528,8 @@ impl Engine {
             last_advance: Instant::now(),
             input: Vec::new(),
             game_title: None,
+            game_quads: Vec::new(),
+            game_overlay_stats: (0, 0),
             swarm: Swarm::default(),
             tick_hashes: VecDeque::new(),
             hash_cache: None,
@@ -650,6 +661,30 @@ impl Engine {
         }
         self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
+    }
+
+    /// The hosted game's interface for one image ([`Game::overlay`]) into `out` (cleared first).
+    fn game_overlay(&mut self, size: (u32, u32), camera: Camera, capture: bool, out: &mut Vec<OverlayQuad>) {
+        out.clear();
+        let Some(game) = self.game.as_mut() else { return };
+        if size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        let _z = profile::zone("game_overlay");
+        self.world.set_recording(Recording::Snapshot);
+        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
+        let mut overlay = game::Overlay { size, camera, capture, quads: out, textures: &mut self.gpu };
+        game.overlay(ctx, &mut overlay);
+        self.world.set_recording(Recording::Full);
+        self.journal_game(Kind::GameFrame);
+        // Past the cap, or naming a texture the GPU doesn't have: dropped (counted), never a
+        // failed frame.
+        let gpu = &self.gpu;
+        let dropped = game::keep_drawable(out, MAX_GAME_OVERLAY_QUADS, |t| gpu.has_texture(t));
+        self.game_overlay_stats.1 += dropped as u64;
+        if !capture {
+            self.game_overlay_stats.0 = out.len();
+        }
     }
 
     /// Whether the world changed since it was last saved or loaded.
@@ -1141,9 +1176,12 @@ impl Engine {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            let draw_list = profile::zone("draw_list");
             self.follow_window_camera();
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
+            // The game's interface (its own zone, outside the draw list's).
+            let mut game_quads = std::mem::take(&mut self.game_quads);
+            self.game_overlay(size, camera, false, &mut game_quads);
+            let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
             let time_s = self.window_time_s();
@@ -1159,8 +1197,12 @@ impl Engine {
             let mut draws_2d = std::mem::take(&mut self.draws_2d);
             self.build_draws_2d(&view_proj, true, time_s as f32, &mut draws_2d, None);
             let bones = self.models.take_bones();
-            let mut frame =
-                FrameDesc { bones: &bones, draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32) };
+            let mut frame = FrameDesc {
+                bones: &bones,
+                draws_2d: &draws_2d,
+                overlay: &game_quads,
+                ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32)
+            };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
             drop(draw_list);
             // FIFO present paces the loop to the display refresh.
@@ -1171,6 +1213,7 @@ impl Engine {
             self.draws = draws;
             self.lights = lights;
             self.draws_2d = draws_2d;
+            self.game_quads = game_quads;
             presented?;
             self.pacing.frame.push(dt);
         }
@@ -1742,6 +1785,10 @@ impl Engine {
             ("frame_pacing", pacing.frame.to_json()),
             ("sim_tick", pacing.tick.to_json()),
             ("game_frame", pacing.game_frame.to_json()),
+            (
+                "game_overlay",
+                Json::obj([("quads", Json::from(self.game_overlay_stats.0)), ("dropped", Json::from(self.game_overlay_stats.1))]),
+            ),
             ("cpu", perf::cpu_json(&self.profiler)),
             ("heap_mb", if heap.installed { Json::from(heap_mb) } else { Json::Null }),
             ("draw_list", pacing.draw_list.to_json()),

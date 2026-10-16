@@ -11,10 +11,17 @@
 use crate::sight::Camera;
 use crate::world::World;
 use specula_core::Json;
+use specula_gpu::{OverlayQuad, OverlayTextures};
 use specula_platform::Event;
 use specula_protocol::{ToolDef, ToolOutput};
 use std::any::Any;
+use std::path::PathBuf;
 use std::time::Duration;
+
+/// Most overlay quads a game may submit for one image ([`Game::overlay`]); the rest are dropped
+/// (and counted in `perf_frame`). Leaves room under the GPU's limit for the debug overlays an agent's
+/// capture adds on top.
+pub const MAX_GAME_OVERLAY_QUADS: usize = 16_384;
 
 /// A game hosted by the engine. Every method runs on the engine thread.
 pub trait Game {
@@ -36,6 +43,17 @@ pub trait Game {
         }
     }
 
+    /// Where this game's assets (model recipes, anim sets, LUTs) live when the command line has no
+    /// `--assets`: e.g. the folder shipped next to the executable. `None`: the working directory.
+    fn assets_root(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// The assets root the engine settled on (`--assets`, else [`Game::assets_root`], else the
+    /// working directory), once, before [`Game::start`]: the game reads its own files (screens,
+    /// sounds) from here too, so one flag points the engine and the game at the same folder.
+    fn use_assets(&mut self, _root: &std::path::Path) {}
+
     /// Once, after the engine, window and world are ready (a loaded world may already hold
     /// the scene).
     fn start(&mut self, _ctx: &mut Ctx) {}
@@ -46,6 +64,13 @@ pub trait Game {
     /// Once per window frame, after the ticks it caused and before rendering: read input, move
     /// the camera, update presentation. Headless engines never call it.
     fn frame(&mut self, _ctx: &mut Ctx, _frame: &mut Frame) {}
+
+    /// The game's interface for one image ([`Overlay`]): quads drawn over the finished frame
+    /// (after post-processing, never in the ID buffer). Called for every window frame right after
+    /// [`Game::frame`], and for captures that ask for `include_ui` (`overlay.capture`: lay out at
+    /// the capture's size and read no input). Keep it cheap and bounded: at most
+    /// [`MAX_GAME_OVERLAY_QUADS`] quads are drawn.
+    fn overlay(&mut self, _ctx: &mut Ctx, _overlay: &mut Overlay) {}
 
     /// Right before `sight_frame` renders a capture (headless too): bring presentation up to the
     /// current tick (a headless engine never calls [`Game::frame`], and a paused window may not
@@ -128,6 +153,32 @@ pub struct Frame<'a> {
     pub agent_view: bool,
     /// Set to replace the window title (the HUD until the engine has text).
     pub title: &'a mut Option<String>,
+}
+
+/// Keeps the quads a frame can draw: at most `max`, and only those whose texture `live` knows
+/// (a game naming a texture it never uploaded, or already freed, would otherwise fail the GPU
+/// frame and with it the window). Returns how many were dropped.
+pub fn keep_drawable(quads: &mut Vec<OverlayQuad>, max: usize, live: impl Fn(specula_gpu::TextureId) -> bool) -> usize {
+    let before = quads.len();
+    quads.retain(|q| q.texture.is_none_or(&live));
+    quads.truncate(max);
+    before - quads.len()
+}
+
+/// One image's game interface (see [`Game::overlay`]).
+pub struct Overlay<'a> {
+    /// Size of the image in physical pixels (never 0×0).
+    pub size: (u32, u32),
+    /// The camera the image is drawn with (for screen-space markers such as threat arrows).
+    pub camera: Camera,
+    /// A capture (`sight_frame {include_ui}`), not the window: lay out for `size` and take no
+    /// input; the window's next frame lays out for the window again.
+    pub capture: bool,
+    /// The quads to draw, in order (empty when the call starts). Colours are sRGB.
+    pub quads: &'a mut Vec<OverlayQuad>,
+    /// Textures for the quads (glyph atlas pages, icons): the game owns the ones it uploads and
+    /// frees them. Textures live as long as the engine's GPU does.
+    pub textures: &'a mut dyn OverlayTextures,
 }
 
 /// Fixed-tick simulation clock: real time in, whole ticks out.
@@ -278,6 +329,18 @@ mod tests {
         assert_eq!(c.advance(Duration::from_millis(100)), 12);
         c.set_scale(f32::NAN);
         assert_eq!(c.scale(), 1.0);
+    }
+
+    #[test]
+    fn game_quads_with_unknown_textures_or_past_the_cap_are_dropped() {
+        use specula_gpu::TextureId;
+        let solid = OverlayQuad::default();
+        let tex = |id| OverlayQuad { texture: Some(TextureId(id)), ..OverlayQuad::default() };
+        let mut q = vec![solid, tex(1), tex(2), solid, tex(1)];
+        assert_eq!(keep_drawable(&mut q, 10, |t| t.0 == 1), 1, "texture 2 is unknown");
+        assert_eq!(q.len(), 4);
+        assert_eq!(keep_drawable(&mut q, 3, |_| true), 1, "the cap");
+        assert_eq!(q.len(), 3);
     }
 
     #[test]

@@ -4,9 +4,8 @@
   "input": "menu",
   "layer": 30,
   "modal": true,
-  "focus": "controls_back",
   "back": "close_controls",
-  "notes": "The rebinding list. State: bindings (rows: label = action description, keys = current glyphs for the active device, e.g. \"LMB / A\"), rebinding (true while listening), rebinding_label. Activating row bind[i] sends action \"rebind\"; the widget id tells the game which row (then specula_input::Input::start_rebind).",
+  "notes": "The controls list (read only for now: rebinding is an open owner question). State: bindings (rows: label = action description, keys = current glyphs for the active device, e.g. \"LMB / A\").",
   "root": {
     "type": "box",
     "children": [
@@ -21,45 +20,76 @@
         "align": "stretch",
         "gap": 10,
         "children": [
-          { "type": "label", "text": "Controls", "role": "title", "text_align": "center" },
           {
-            "type": "panel", "style": "inset", "padding": [6, 10], "visible": "rebinding",
-            "children": [ { "type": "label", "text": "Press a key or button for \"{rebinding_label}\"…", "role": "body", "color": "rune_pale", "wrap": true, "width": "fill" } ]
+            "type": "label",
+            "text": "Controls",
+            "role": "title",
+            "text_align": "center"
           },
           {
             "type": "list",
             "id": "binding_list",
             "height": "18em",
             "gap": 4,
-            "padding": [0, 12, 0, 0],
+            "padding": [
+              0,
+              12,
+              0,
+              0
+            ],
             "repeat": {
               "source": "bindings",
               "max": 24,
               "template": {
-                "type": "button",
-                "id": "bind",
-                "style": "compact",
-                "action": "rebind",
+                "type": "box",
+                "layout": "row",
                 "justify": "space_between",
+                "align": "center",
+                "padding": [
+                  4,
+                  6
+                ],
                 "children": [
-                  { "type": "label", "text": "{item.label}", "role": "body" },
                   {
-                    "type": "panel", "style": "keycap", "layout": "row", "align": "center",
-                    "children": [ { "type": "label", "text": "{item.keys}", "role": "keycap" } ]
+                    "type": "label",
+                    "text": "{item.label}",
+                    "role": "body"
+                  },
+                  {
+                    "type": "panel",
+                    "style": "keycap",
+                    "layout": "row",
+                    "align": "center",
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{item.keys}",
+                        "role": "keycap"
+                      }
+                    ]
                   }
                 ]
               }
             }
           },
           {
-            "type": "box", "layout": "row", "gap": 10,
+            "type": "box",
+            "layout": "row",
+            "gap": 10,
             "children": [
-              { "type": "button", "id": "controls_reset", "text": "Reset to defaults", "action": "reset_bindings", "width": "fill" },
-              { "type": "button", "id": "controls_back", "style": "primary", "text": "Back", "action": "close_controls", "width": "fill" }
+              {
+                "type": "button",
+                "id": "controls_back",
+                "style": "primary",
+                "text": "Back",
+                "action": "close_controls",
+                "width": "fill"
+              }
             ]
           }
         ]
       }
     ]
-  }
+  },
+  "focus": "controls_back"
 }

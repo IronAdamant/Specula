@@ -3,18 +3,55 @@
 //! player errors: they are logged and the frame goes on.
 
 use crate::looks::Part;
-use specula::world::{EntityKey, LookPatch, Shape, SpawnSpec, UpdateSpec, World};
+use specula::world::{EntityKey, Layer, ModelSpec, Shape, SpawnSpec, UpdateSpec, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use std::collections::BTreeSet;
 
-/// Where pooled entities wait while unused: inside the slab, at the smallest scale the world
-/// accepts (the engine has no visibility flag yet, so this is how a pool hides things).
-pub const PARK: Vec3 = Vec3 { x: 0.0, y: -9.0, z: 0.0 };
-pub const PARK_SCALE: Vec3 = Vec3 { x: 0.001, y: 0.001, z: 0.001 };
-
 fn log(what: &str, e: impl std::fmt::Display) {
     eprintln!("sepulcra: {what}: {e}");
+}
+
+/// Spawns anything; returns its id, or 0 when the world refused it (logged).
+pub fn spawn(world: &mut World, agent: &str, spec: SpawnSpec) -> u64 {
+    let name = spec.name.clone().unwrap_or_default();
+    match world.spawn(spec, agent) {
+        Ok(e) => e.id,
+        Err(e) => {
+            log(&format!("spawn '{name}'"), e);
+            0
+        }
+    }
+}
+
+/// A model built from a recipe (see `looks`), white so it shows as authored.
+#[allow(clippy::too_many_arguments)]
+pub fn model_spec(parent: u64, name: &str, model: ModelSpec, pos: Vec3, rot: Vec3, scale: f32, tag_list: &[&str], props: Json) -> SpawnSpec {
+    let mut spec = SpawnSpec::model(model);
+    spec.name = Some(name.to_owned());
+    spec.parent = (parent != 0).then_some(EntityKey::Id(parent));
+    spec.position = pos;
+    spec.rotation_deg = rot;
+    spec.scale = Vec3::new(scale, scale, scale);
+    spec.tags = tags(tag_list);
+    spec.props = props;
+    spec
+}
+
+/// A group for game presentation that is never saved, journaled or hashed (moving things:
+/// enemies, bolts, flashes, the cursor). Everything spawned below it is transient too.
+pub fn transient_group(world: &mut World, agent: &str, name: &str, layer: Layer, tag_list: &[&str]) -> u64 {
+    let mut spec = SpawnSpec::new(Shape::Group);
+    spec.name = Some(name.to_owned());
+    spec.transient = true;
+    spec.layer = layer;
+    spec.tags = tags(tag_list);
+    spawn(world, agent, spec)
+}
+
+/// Shows or hides an entity and its subtree.
+pub fn show(world: &mut World, agent: &str, id: u64, visible: bool) {
+    update(world, agent, id, UpdateSpec { visible: Some(visible), ..UpdateSpec::default() });
 }
 
 pub fn tags(list: &[&str]) -> BTreeSet<String> {
@@ -65,18 +102,6 @@ pub fn part_named(world: &mut World, agent: &str, parent: u64, name: &str, p: &P
     }
 }
 
-/// A model: a group named `name` holding one child per part.
-#[allow(clippy::too_many_arguments)]
-pub fn model(world: &mut World, agent: &str, parent: Option<u64>, name: &str, pos: Vec3, rot: Vec3, parts: &[Part], tag_list: &[&str], props: Json) -> u64 {
-    let g = group(world, agent, parent, name, pos, rot, tag_list, props);
-    if g != 0 {
-        for p in parts {
-            part(world, agent, g, p);
-        }
-    }
-    g
-}
-
 /// Moves, turns and scales an entity (fields left `None` stay).
 pub fn place(world: &mut World, agent: &str, id: u64, pos: Option<Vec3>, rot: Option<Vec3>, scale: Option<Vec3>) {
     if id == 0 {
@@ -96,10 +121,6 @@ pub fn update(world: &mut World, agent: &str, id: u64, change: UpdateSpec) {
     if let Err(e) = world.update(&EntityKey::Id(id), change, agent) {
         log("update", e);
     }
-}
-
-pub fn recolor(world: &mut World, agent: &str, id: u64, color: [f32; 3], look: LookPatch) {
-    update(world, agent, id, UpdateSpec { color: Some(color), look, ..UpdateSpec::default() });
 }
 
 pub fn delete(world: &mut World, id: u64) {

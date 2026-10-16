@@ -124,6 +124,24 @@ fn a_rejected_place_leaves_game_and_world_as_they_were() {
     assert_eq!(h.swarm.journal.replay().unwrap().state_hash(), h.world.state_hash());
 }
 
+/// Review (36cb5a1): a rejected tool also leaves what the player sees of the HUD as it was (the
+/// open menu stays open; a rejected restart doesn't close it).
+#[test]
+fn a_rejected_tool_keeps_the_huds_screens() {
+    let mut h = Host::new();
+    let screens = |h: &Host| h.game.presentation_json().get("hud").unwrap().get("screens").unwrap().to_string();
+    if !h.game.presentation_json().get("hud").unwrap().get("on").and_then(Json::as_bool).unwrap_or(false) {
+        println!("SKIP: the HUD is off (no system UI font?)");
+        return;
+    }
+    h.tool(BOB, "play_ui", Json::obj([("press", Json::from("menu_button"))])).unwrap();
+    assert!(screens(&h).contains("pause"), "{}", screens(&h));
+    h.claim("/units/stones");
+    let err = h.tool(BOB, "play_new", Json::obj([("seed", Json::from(2))])).unwrap_err();
+    assert_eq!(err.code, "claimed");
+    assert!(screens(&h).contains("pause"), "the menu is still open: {}", screens(&h));
+}
+
 /// P7: a rejected `play_new` left the game on a new scene whose entities had been rolled back;
 /// its ids were then reissued to ann, and thousands of game ticks wrote into her claim.
 #[test]
@@ -137,11 +155,15 @@ fn a_rejected_new_game_keeps_ticks_out_of_others_claims() {
     h.claim("/ann");
     let ann = h.ann_builds("/ann", 400);
     let versions: Vec<u64> = ann.iter().map(|id| h.world.get(*id).unwrap().version).collect();
-    let before = h.world.next_id();
+    // Enemies, bolts and flashes are transient (never saved, ids of their own), so count what
+    // the game had alive at once.
+    let enemies = h.world.find_path("/live/enemies").unwrap();
+    let mut most = 0;
     for _ in 0..6000 {
         h.tick();
+        most = most.max(h.world.children_of(Some(enemies)).count());
     }
-    assert!(h.world.next_id() > before + 50, "the game spawned plenty while ticking ({})", h.world.next_id() - before);
+    assert!(most > 5, "the game spawned plenty while ticking ({most} enemies at once at most)");
     let touched = ann.iter().zip(&versions).filter(|(id, v)| h.world.get(**id).is_none_or(|e| e.version != **v)).count();
     let mut foreign = 0;
     h.world.walk(Some(ann[0]), |e, _| foreign += usize::from(&*e.created_by != "ann"));

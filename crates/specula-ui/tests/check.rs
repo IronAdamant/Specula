@@ -286,6 +286,14 @@ fn the_sepulcra_screens_pass_with_the_box_font() {
     }
     s.set_str("selected_detail", "Homing bolts: 10 damage every 0.8 s, 7 m range.");
     s.set_str("confirm_body", "The run will be lost.");
+    // The build bar and a selected stone's panel (shown, so they're checked too).
+    s.set_bool("running", true).set_bool("sel_warding", true).set_bool("can_warding", true).set_bool("can_pillar", false);
+    for k in ["cost_warding", "cost_pillar", "cost_brazier", "cost_obelisk", "cost_wall", "upgrade_cost", "refund"] {
+        s.set_int(k, 60);
+    }
+    s.set_str("inspect", "Brazier cairn II").set_str("inspect_icon", "brazier").set_bool("inspect_stone", true).set_bool("can_upgrade", true);
+    s.set_str("inspect_detail", "Lobbed fire: 28 damage in 2 m, every 1.5 s, 6.5 m range.");
+    s.set_str("upgrade_detail", "Tier III: lobbed fire: 45 damage in 2.3 m, every 1.4 s, 7 m range.");
     for n in &names {
         let f = check(&mut ui, &[n], &s, None, &Target::defaults()).unwrap();
         let errors: Vec<&Finding> = f.iter().filter(|x| x.severity == Severity::Error && x.rule != "gamepad_access").collect();

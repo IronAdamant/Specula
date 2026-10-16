@@ -15,11 +15,14 @@ version = "0.1.0"
 dependencies = [
  "sepulcra",
  "specula",
+ "specula-audio",
  "specula-core",
  "specula-gpu",
  "specula-input",
  "specula-platform",
  "specula-protocol",
+ "specula-text",
+ "specula-ui",
 ]
 
 [[package]]
