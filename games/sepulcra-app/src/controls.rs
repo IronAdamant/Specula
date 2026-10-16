@@ -39,7 +39,10 @@ pub enum Action {
     Sell(CellId),
     Unwall(CellId),
     CallWave,
+    /// Active pause on or off (P, the HUD's button): building still works.
     TogglePause,
+    /// The pause menu (the pad's Start; Escape with nothing to cancel).
+    Menu,
     ToggleHelp,
     CycleSpeed,
     NewGame,
@@ -276,8 +279,9 @@ impl Controls {
             ("select_wall", Action::Select(None)),
             ("build_menu", Action::BuildMenu),
             ("call_wave", Action::CallWave),
-            ("pause", Action::TogglePause),
-            // Deselects, else opens the pause (as the binding file says).
+            // A pad's Start opens the menu (console habit); P toggles active pause.
+            ("pause", if pad { Action::Menu } else { Action::TogglePause }),
+            // Deselects, else opens the pause menu (as the binding file says).
             ("cancel", Action::Cancel),
             ("help", Action::ToggleHelp),
             ("speed", Action::CycleSpeed),

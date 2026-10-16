@@ -251,12 +251,24 @@ impl SepulcraGame {
     }
 
     /// Pauses or resumes the game (the P key, the HUD's button, `play_control`).
+    /// Active pause (DESIGN.md): the dead stand still, building still works. The pause *menu* is
+    /// [`SepulcraGame::open_menu`].
     pub(crate) fn set_paused(&mut self, world: &mut World, paused: bool) {
         self.paused = paused;
-        self.hud.show("pause", paused && self.state.outcome() == Outcome::Running);
+        if !paused {
+            self.hud.show("pause", false);
+        }
         let pace = self.pace();
         if let Some(scene) = &mut self.scene {
             scene.set_pace(world, pace);
+        }
+    }
+
+    /// The pause menu (Escape, the pad's Start): pauses the game under it.
+    pub(crate) fn open_menu(&mut self, world: &mut World) {
+        if self.state.outcome() == Outcome::Running {
+            self.set_paused(world, true);
+            self.hud.show("pause", true);
         }
     }
 
@@ -422,9 +434,13 @@ impl SepulcraGame {
                 self.set_paused(world, !self.paused);
                 return;
             }
+            Action::Menu => {
+                self.open_menu(world);
+                return;
+            }
             Action::Cancel => {
                 if self.inspect.take().is_none() {
-                    self.set_paused(world, !self.paused);
+                    self.open_menu(world);
                 }
                 return;
             }

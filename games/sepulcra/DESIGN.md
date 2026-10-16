@@ -362,6 +362,11 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
 - Design for the gamepad from day one; bolting it on later is a known pain point for tower defence games.
 - **Threat indicators:** arrows at the screen edge for faces under attack that are out of view.
 
+**Built (2026-10-16, the playable greybox `games/sepulcra-app`):** clicking a stone or wall selects it
+(its panel upgrades, sells or removes); a build bar picks the stone; **P is an active pause** (building
+still works) and Escape / the pad's Start open the pause menu; the HUD is `assets/ui/*.json` drawn
+with `specula-ui` on the GPU overlay. In-game checks for the owner: [TESTPLAN.md](TESTPLAN.md).
+
 ## Art direction
 
 **(open)** This is written with the owner in the style bible: palette, shape language, proportions and material

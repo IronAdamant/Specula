@@ -96,8 +96,12 @@ fn clicking_the_build_bar_selects_and_never_builds_under_it() {
     assert_eq!(h.selected(), "warding");
 }
 
+fn screens(h: &Host) -> String {
+    h.game.presentation_json().get("hud").unwrap().get("screens").unwrap().to_string()
+}
+
 #[test]
-fn the_pause_button_pauses_and_the_menu_resumes() {
+fn the_pause_button_is_an_active_pause_and_escape_opens_the_menu() {
     let mut h = Host::new(5);
     if !h.hud_on() {
         return;
@@ -105,18 +109,34 @@ fn the_pause_button_pauses_and_the_menu_resumes() {
     h.frame(&[]);
     let at = h.centre_of("pause_button").expect("pause button");
     h.click(at);
-    assert!(h.game.presentation_json().get("hud").unwrap().get("screens").unwrap().to_string().contains("pause"));
     let tick = h.game.state().tick();
     for _ in 0..10 {
         h.tick();
     }
     assert_eq!(h.game.state().tick(), tick, "paused: the simulation doesn't step");
-    let at = h.centre_of("resume").expect("the pause menu's resume button");
+    assert!(!screens(&h).contains("pause"), "active pause: no menu, the slab stays playable");
+    // Building works while paused (DESIGN.md: active pause).
+    let at = h.centre_of("build_wall").expect("wall button");
+    h.click(at);
+    assert_eq!(h.selected(), "wall");
+    let at = h.centre_of("resume_button").expect("the play button replaces pause");
     h.click(at);
     for _ in 0..10 {
         h.tick();
     }
     assert_eq!(h.game.state().tick(), tick + 10, "resumed");
+    // Escape opens the menu (and pauses); its Resume closes it and plays on.
+    h.frame(&[Event::KeyDown { code: 0x1b, repeat: false }]);
+    h.frame(&[Event::KeyUp { code: 0x1b }]);
+    assert!(screens(&h).contains("pause"), "the menu is open: {}", screens(&h));
+    let tick = h.game.state().tick();
+    h.tick();
+    assert_eq!(h.game.state().tick(), tick, "the menu pauses the game");
+    let at = h.centre_of("resume").expect("the pause menu's resume button");
+    h.click(at);
+    assert!(!screens(&h).contains("pause"));
+    h.tick();
+    assert_eq!(h.game.state().tick(), tick + 1);
 }
 
 #[test]
