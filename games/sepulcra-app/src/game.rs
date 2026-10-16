@@ -830,14 +830,14 @@ pub fn night(world: &mut World) {
     let moon = Vec3::new(elev.cos() * az.sin(), elev.sin(), elev.cos() * az.cos());
     let patch = EnvPatch {
         sun_direction: Some(moon),
-        // A moon a shade less blue than the palette's swatch, and a near-neutral fill: the
-        // slab's stone stays a cool grey (STYLE.md: neutrals under ~25% saturation) instead of
-        // turning the whole night blue, so the cyan, green and fire families carry the colour.
+        // A dim moon a shade less blue than the palette's swatch, and a low blue fill: the night
+        // is dark, the stone a cool grey where the moon touches it (STYLE.md: neutrals under
+        // ~25% saturation), and the fire, the runes and the dead's eyes carry the scene.
         sun_color: Some(palette::MOONLIGHT),
-        sun_intensity: Some(1.5),
+        sun_intensity: Some(0.85),
         ambient_color: Some(palette::NIGHT_FILL),
-        ambient_intensity: Some(2.7),
-        exposure: Some(1.1),
+        ambient_intensity: Some(0.95),
+        exposure: Some(1.0),
         tonemap: Some(true),
         background: Some(palette::SKY),
         // The moon casts one fitted shadow map (cheapest on the iGPU for this top-down view).

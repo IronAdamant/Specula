@@ -48,7 +48,7 @@ pub mod palette {
     /// The moon's light on the slab (the disc stays MOON).
     pub const MOONLIGHT: [f32; 3] = hex(0xd0d9f0);
     /// The night's fill light: MIST with half its blue taken out (shadowed cliffs stay readable, blue).
-    pub const NIGHT_FILL: [f32; 3] = hex(0x333b4a);
+    pub const NIGHT_FILL: [f32; 3] = hex(0x2f3850);
     pub const IRON: [f32; 3] = hex(0x5c6168);
     /// The chalk scar on lane-jump ledges (a pale neutral).
     pub const CHALK: [f32; 3] = hex(0xd6d2c4);
