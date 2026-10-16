@@ -782,6 +782,10 @@ impl Layer {
 /// (which world files and state hashes include). Still exact in a JSON number.
 pub const TRANSIENT_ID_BASE: u64 = 1 << 40;
 
+/// The largest persistent id counter a world may have (world files with more are refused): the
+/// next persistent spawn would reach the transient range.
+pub const MAX_NEXT_ID: u64 = TRANSIENT_ID_BASE - 2;
+
 pub const MATERIAL_NAMES: [&str; 4] = ["standard", "glass", "blob_shadow", "lava_lamp"];
 
 pub fn material_name(m: Material) -> &'static str {
@@ -2226,13 +2230,22 @@ impl World {
     pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
         let Some(source) = self.models.0.clone() else { return };
         let mut touched = false;
-        self.draw_reset();
+        // Entities whose resolution changed, recorded for draw caches after the walk (a finished
+        // build most frames changes nothing a cache holds).
+        let mut changed = Vec::new();
         for e in self.entities.values_mut() {
             let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
             if handles.contains(&r.handle) {
-                e.resolved = source.resolve(spec).ok();
+                let now = source.resolve(spec).ok();
+                if now != Some(r) {
+                    changed.push(e.id);
+                }
+                e.resolved = now;
                 touched = true;
             }
+        }
+        for id in changed {
+            self.draw_touch(id);
         }
         if touched {
             self.mesh_epoch += 1;
@@ -2439,9 +2452,12 @@ impl World {
 
     /// Restores the id counter from a world file. Never below an existing id, so a stale counter
     /// can't hand out an id twice.
+    /// The persistent id counter (at least the largest persistent id). Kept below the transient
+    /// range: world files are checked on load ([`MAX_NEXT_ID`]); a counter from elsewhere (a
+    /// replay) is capped there, where spawns are refused rather than given a transient id.
     pub(crate) fn set_next_id(&mut self, next_id: u64) {
         let max = self.entities.range(..TRANSIENT_ID_BASE).next_back().map_or(0, |(id, _)| *id);
-        self.next_id = next_id.max(max);
+        self.next_id = next_id.max(max).min(MAX_NEXT_ID);
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
@@ -2609,7 +2625,7 @@ impl World {
         created_by: &str,
         modified_by: &str,
     ) -> Result<(), WorldError> {
-        if id == ROOT || id >= TRANSIENT_ID_BASE || self.entities.contains_key(&id) {
+        if id == ROOT || id > MAX_NEXT_ID || self.entities.contains_key(&id) {
             return Err(WorldError::new("invalid_world", format!("entity id {id} is 0, out of range or used twice")).with("field", "id"));
         }
         if spec.transient {
@@ -2645,6 +2661,17 @@ impl World {
         let id = match id {
             Some(id) => id,
             None if transient => TRANSIENT_ID_BASE + self.transient_seq + 1,
+            // Persistent ids stay below the transient range (a spawn there would take, or later
+            // be overwritten by, a transient entity's id).
+            None if self.next_id + 1 >= TRANSIENT_ID_BASE - 1 => {
+                return Err(WorldError::new(
+                    "limit",
+                    format!("the world has used every persistent entity id (next would be {}; they end below {})", self.next_id + 1, TRANSIENT_ID_BASE - 1),
+                )
+                .with("field", "id")
+                .with("limit", TRANSIENT_ID_BASE - 2)
+                .with("value", self.next_id + 1));
+            }
             None => self.next_id + 1,
         };
         let name = match spec.name {
@@ -4555,6 +4582,57 @@ mod tests {
         let mut w = World::default();
         w.set_model_source(Some(Arc::new(FakeModels)));
         w
+    }
+
+    /// A finished build records only the entities whose resolution changed (draw caches patch
+    /// those) instead of starting the change record again; nothing changed, nothing recorded.
+    #[test]
+    fn finished_builds_record_only_what_they_changed() {
+        let mut w = with_models();
+        let mut s = SpawnSpec::model(ModelSpec::new("recipes/a.json"));
+        s.name = Some("a".into());
+        let a = w.spawn(s, "t").unwrap().id;
+        put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
+        let since = w.draw_epoch();
+        // Handle 1's build finished, but FakeModels resolves it as before: nothing to record.
+        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0), "the record survives an unrelated build");
+        // A handle no entity uses: nothing either.
+        w.refresh_model_handles(&BTreeSet::from([7u32]));
+        assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0));
+        // A change of resolution (the source now resolves the spec differently) is recorded for that entity.
+        w.models = SourceSlot(Some(Arc::new(Tier2)));
+        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        assert_eq!(w.draw_changes_since(since).unwrap().collect::<Vec<_>>(), [a]);
+    }
+
+    /// Resolves everything as handle 2 (a rebuilt spec).
+    struct Tier2;
+
+    impl ModelSource for Tier2 {
+        fn resolve(&self, _: &ModelSpec) -> Result<ResolvedModel, WorldError> {
+            Ok(ResolvedModel { handle: 2, state: ModelState::Ready, bounds: Some((Vec3::ZERO, Vec3::ONE)) })
+        }
+    }
+
+    /// Persistent ids never reach the transient range: a counter from a replay is capped, and a
+    /// spawn past it is refused (structured), while transient spawns go on.
+    #[test]
+    fn persistent_ids_stay_below_the_transient_range() {
+        let mut w = World::default();
+        w.set_next_id(u64::MAX);
+        assert_eq!(w.next_id(), MAX_NEXT_ID);
+        let e = w.spawn(SpawnSpec::new(Shape::Cube), "t").expect_err("refused");
+        assert_eq!((e.code, e.detail("field")), ("limit", Some(&Json::from("id"))));
+        let mut t = SpawnSpec::new(Shape::Cube);
+        t.transient = true;
+        assert!(w.spawn(t, "game").unwrap().id > TRANSIENT_ID_BASE);
+        assert_eq!(w.persistent_entities().count(), 0);
+        let mut w = World::default();
+        w.set_next_id(MAX_NEXT_ID - 1);
+        let last = w.spawn(SpawnSpec::new(Shape::Cube), "t").unwrap().id;
+        assert_eq!(last, MAX_NEXT_ID, "the last persistent id is still handed out");
+        assert!(w.spawn(SpawnSpec::new(Shape::Cube), "t").is_err());
     }
 
     #[test]

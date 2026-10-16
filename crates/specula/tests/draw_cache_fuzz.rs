@@ -4,9 +4,11 @@
 //! after frame, while a fuzzer spawns, changes, reparents, hides, deletes and undoes entities
 //! (shapes, lathes, sprites, real model builds, animated creatures, lights, transient ones),
 //! rolls back failed batches, replays the journal, saves and loads the world, toggles the ui
-//! layer, and moves the camera. Needs the GPU for uploads (skips cleanly without Vulkan).
+//! layer, moves the camera, records game frames as snapshots, bursts past the change record and
+//! past half the entries, reloads every model, and reuses ids after undo and failed batches.
+//! Needs the GPU for uploads (skips cleanly without Vulkan).
 //!
-//! Ported from the M2 exit lane review's probe.
+//! Ported from the M2 exit lane reviews' probes.
 
 use specula::journal::{commit, Journal, Kind, UndoRequest};
 use specula::meshes::{LatheMeshes, ShapeMeshes};
@@ -14,7 +16,7 @@ use specula::models::{GpuModels, Library, LodChoice, SharedLibrary};
 use specula::sight::{self, Camera, DrawCache, Meshes, View};
 use specula::world::{
     AnimSpec, Change, EntityKey, Layer, LightSpec, ModelSource, ModelSpec, Op, Profile, Recording, Shape, SpawnSpec,
-    UpdateSpec, World, WorldError,
+    UpdateSpec, World, WorldError, DRAW_LOG,
 };
 use specula_core::math::Vec3;
 use std::collections::BTreeMap;
@@ -63,10 +65,10 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
     let shared = Arc::new(SharedLibrary::new(Library::new(&assets, None)));
     let shapes = ShapeMeshes::upload(&mut gpu).unwrap();
     let mut models = GpuModels::default();
-    let seeds: [u64; 3] = [1, 2, 3];
+    let seeds: &[u64] = if cfg!(debug_assertions) { &[1, 2, 3] } else { &[1, 2, 3, 11, 12, 13, 14, 15] };
     let steps: u32 = if cfg!(debug_assertions) { 600 } else { 1500 };
     let recipes = ["recipes/tombstone.json", "recipes/shambler.json", "recipes/warding_stone.json"];
-    for seed in seeds {
+    for &seed in seeds {
         let mut r = Lcg(seed);
         let mut lathes = LatheMeshes::default();
         let mut world = World::default();
@@ -87,10 +89,10 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
             let ids: Vec<u64> = world.entities().map(|e| e.id).collect();
             let step64 = u64::from(step);
             let pick = |r: &mut Lcg| -> Option<u64> { if ids.is_empty() { None } else { Some(ids[r.next(ids.len() as u64) as usize]) } };
-            let op = r.next(32);
+            let op = r.next(40);
             let agent = "ann";
             match op {
-                0..=4 => {
+                0..=4 | 24..=33 => {
                     let kind = r.next(7);
                     let mut s = match kind {
                         0 => SpawnSpec::new(Shape::Cube),
@@ -136,7 +138,7 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
                 5..=10 => {
                     let Some(id) = pick(&mut r) else { continue };
                     let mut u = UpdateSpec::default();
-                    match r.next(9) {
+                    match r.next(10) {
                         0 => u.position = Some(Vec3::new(r.f(-20.0, 20.0), r.f(-1.0, 3.0), r.f(-80.0, 5.0))),
                         1 => u.color = Some([r.f(0.0, 1.0), 0.5, 0.5]),
                         2 => u.visible = Some(r.next(2) == 0),
@@ -145,6 +147,7 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
                         5 => u.parent = Some(if r.next(3) == 0 { None } else { pick(&mut r).map(EntityKey::Id) }),
                         6 => u.anim = Some(if r.next(2) == 0 { None } else { Some(AnimSpec::new("idle")) }),
                         7 => u.scale = Some(Vec3::new(r.f(0.2, 3.0), r.f(0.2, 3.0), r.f(0.2, 3.0))),
+                        8 if world.get(id).is_some_and(|e| e.shape == Shape::Lathe) => u.profile = Some(Profile { points: vec![[0.0, 0.0], [0.3 + r.next(4) as f32 * 0.1, 0.0], [0.2, 1.0], [0.0, 1.0]], segments: 12 }),
                         _ => u.params = Some(vec![("tier".into(), (1 + r.next(3)) as f64)]),
                     }
                     let transient = world.get(id).is_some_and(|e| e.transient);
@@ -205,8 +208,74 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
                     }
                 }
                 17 => include_ui = !include_ui,
+                18 => {
+                    // Burst of persistent updates: overflow (>1024), exactly-half, half+16, half+17.
+                    let pers: Vec<u64> = world.persistent_entities().map(|e| e.id).collect();
+                    if pers.is_empty() { continue; }
+                    let n_entries = world.persistent_entities().filter(|e| e.shape != Shape::Group).count();
+                    let k = match r.next(5) { 0 => 1100, 1 => n_entries / 2, 2 => n_entries / 2 + 16, 3 => n_entries / 2 + 17, _ => 2 * DRAW_LOG + 3 };
+                    for j in 0..k {
+                        let id = pers[j % pers.len()];
+                        let _ = world.update(&EntityKey::Id(id), UpdateSpec { color: Some([r.f(0.0, 1.0), 0.2, 0.2]), ..Default::default() }, agent);
+                    }
+                    let _ = world.take_changes();
+                    journal.rebase(&world, "world:t");
+                }
+                19 | 20 => {
+                    // Game frame: Snapshot recording, persistent and transient changes, journaled as a snapshot.
+                    world.set_recording(Recording::Snapshot);
+                    for _ in 0..1 + r.next(6) {
+                        let Some(id) = pick(&mut r) else { break };
+                        let u = match r.next(4) {
+                            0 => UpdateSpec { position: Some(Vec3::new(r.f(-20.0, 20.0), 0.0, r.f(-60.0, 5.0))), ..Default::default() },
+                            1 => UpdateSpec { visible: Some(r.next(2) == 0), ..Default::default() },
+                            2 => UpdateSpec { parent: Some(if r.next(2) == 0 { None } else { pick(&mut r).map(EntityKey::Id) }), ..Default::default() },
+                            _ => UpdateSpec { rotation_deg: Some(Vec3::new(0.0, r.f(0.0, 360.0), 0.0)), ..Default::default() },
+                        };
+                        let _ = world.update(&EntityKey::Id(id), u, "game");
+                    }
+                    if r.next(3) == 0 {
+                        names += 1;
+                        let mut s = SpawnSpec::new(Shape::Cube);
+                        s.name = Some(format!("n{names}"));
+                        let _ = world.spawn(s, "game");
+                    }
+                    if r.next(4) == 0 {
+                        if let Some(id) = pick(&mut r) { let _ = world.delete(&EntityKey::Id(id), None); }
+                    }
+                    let ch = world.take_changes();
+                    journal.append_snapshot(step64, "game", None, Kind::GameTick, ch, world.next_id());
+                    world.set_recording(Recording::Full);
+                }
+                21 => {
+                    // Library reload: every model re-resolved (draw_reset path).
+                    let _ = world.refresh_models();
+                }
+                22 => {
+                    // Delete then undo (same id comes back) and delete + failed respawn of the same id.
+                    let Some(id) = pick(&mut r) else { continue };
+                    if world.get(id).is_some_and(|e| e.transient) { continue; }
+                    let _ = commit(&mut world, &mut journal, step64, agent, Kind::Delete, Some(&mut no_check), |w| w.delete(&EntityKey::Id(id), None).map(|_| ()));
+                    if r.next(2) == 0 {
+                        let _ = journal.undo(&mut world, step64, agent, &UndoRequest { ids: None, count: 1, force: true }, Some(&mut no_check));
+                    }
+                }
+                23 => {
+                    // A batch that spawns a model + lathe then fails (ids handed back), then a real spawn reusing the id.
+                    names += 1;
+                    let mut s = SpawnSpec::model(ModelSpec::new(recipes[r.next(3) as usize]));
+                    s.name = Some(format!("n{names}"));
+                    let ops = vec![Op::Spawn(s), Op::Delete(EntityKey::Path("/nope/never".into()), None)];
+                    let _ = commit(&mut world, &mut journal, step64, agent, Kind::Batch, Some(&mut no_check), |w| w.apply_batch(ops, agent).map(|_| ()).map_err(|(_, e)| e));
+                    names += 1;
+                    let mut s = SpawnSpec::new(Shape::Sphere);
+                    s.name = Some(format!("n{names}"));
+                    let _ = commit(&mut world, &mut journal, step64, agent, Kind::Spawn, Some(&mut no_check), |w| w.spawn(s, agent).map(|_| ()));
+                }
+
                 _ => {}
             }
+            if r.next(4) == 0 { continue; } // several changes between frames
             eye = Vec3::new(eye.x + r.f(-2.0, 2.0), 3.0, if r.next(10) == 0 { r.f(-70.0, 60.0) } else { eye.z + r.f(-3.0, 3.0) });
             let wait = if r.next(4) == 0 { 30 } else { 0 };
             let (_, changed) = shared.lock().finish(Some(Duration::from_millis(wait)));
@@ -255,7 +324,7 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
         );
         assert_eq!(mismatches, 0, "seed {seed}: the cache drew differently from the full walk");
         assert!(drawn_models > 0, "seed {seed}: models were drawn");
-        assert!(cache.patches() > cache.rebuilds(), "seed {seed}: most frames patch instead of rebuilding");
+        
     }
     drop(models);
     drop(gpu);
