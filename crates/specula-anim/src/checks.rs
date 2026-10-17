@@ -796,29 +796,28 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
     let tracks = foot_tracks(set, &s, &feet, mesh);
     // Feet only matter for clips that stand or move on them (not deaths, not once-off moves).
     let grounded = (clip.looping != LoopMode::Once || clip.distance > 0.0) && !clip.tracks.is_empty();
-    match rules.hover_band(&ctx.subject) {
+    // A clip that moves no foot nor anything above one (a flinch on the upper body) leaves the
+    // feet where the rest pose has them: nothing to check.
+    let skel = &set.skeleton;
+    let above = |b: usize, foot: usize| {
+        let mut x = Some(foot as u16);
+        while let Some(i) = x {
+            if i as usize == b {
+                return true;
+            }
+            x = skel.parents[i as usize];
+        }
+        false
+    };
+    let moves_feet = set.track_bones(id).iter().any(|&b| feet.iter().any(|&f| above(b as usize, f)));
+    let band = rules.hover_band(&ctx.subject);
+    match band {
         Some(band) => hover(&ctx, &s, band, mesh, &mut out),
-        None if clip.tracks.is_empty() => {}
+        None if clip.tracks.is_empty() || tracks.is_empty() => {}
         None => {
             if grounded {
                 foot_sliding(&ctx, &s, &tracks, &mut out);
-            } else if !tracks.is_empty() {
-                out.skipped.push("foot_sliding: a play-once clip that doesn't travel (checked where a graph state plays it on its feet)".into());
             }
-            // A clip that moves no foot nor anything above one (a flinch on the upper body) leaves
-            // the feet where the rest pose has them: nothing to check.
-            let skel = &set.skeleton;
-            let above = |b: usize, foot: usize| {
-                let mut x = Some(foot as u16);
-                while let Some(i) = x {
-                    if i as usize == b {
-                        return true;
-                    }
-                    x = skel.parents[i as usize];
-                }
-                false
-            };
-            let moves_feet = set.track_bones(id).iter().any(|&b| feet.iter().any(|&f| above(b as usize, f)));
             if !moves_feet {
             } else if clip.looping != LoopMode::Once {
                 floating(&ctx, &s, &tracks, &mut out);
@@ -827,11 +826,42 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
             }
         }
     }
+    let none = if clip.tracks.is_empty() {
+        Some("an empty clip (the rest pose)")
+    } else if tracks.is_empty() {
+        Some("no feet found (a graph's feet, footstep events or bones named foot*)")
+    } else {
+        None
+    };
+    let slide_why = none.unwrap_or("a play-once clip that doesn't travel (a graph state that plays it on its feet checks it)");
+    let float_why = none.unwrap_or("it moves no foot nor anything above one (an upper-body clip)");
+    let expect: &[(&str, &str)] = if band.is_some() {
+        &[("hover", ""), ("ground_penetration", ""), ("joint_limits", NO_LIMITS), ("root_drift", "")]
+    } else {
+        &[("foot_sliding", slide_why), ("floating", float_why), ("ground_penetration", ""), ("joint_limits", NO_LIMITS), ("root_drift", "")]
+    };
     ground_penetration(&ctx, &s, mesh, &mut out);
     joint_limits(&ctx, &s, &limits_of(set), &mut out);
     loop_and_drift(&ctx, id, &s, &mut out);
     leap_apex(&ctx, clip, &s, 1.0 / clip.duration.max(1e-6) as f64, &mut out);
+    skip_missing(&mut out, expect);
     out
+}
+
+/// Why a joint-limits check didn't run.
+const NO_LIMITS: &str = "no joint limits are given (a graph's `limits`)";
+
+/// Lists each check of `expect` (those that apply to this kind of subject) that didn't run and
+/// isn't listed yet, with its reason, so a verdict never claims more than ran.
+fn skip_missing(out: &mut Report, expect: &[(&str, &str)]) {
+    for (name, why) in expect {
+        let ran = out.checks.iter().any(|c| c.check == *name);
+        let listed = out.skipped.iter().any(|s| s.split(':').next() == Some(*name));
+        if !ran && !listed {
+            let why = if why.is_empty() { "not measured for this subject" } else { why };
+            out.skipped.push(format!("{name}: {why}"));
+        }
+    }
 }
 
 /// A leap's apex: the root's highest point between `takeoff` and `land` over its height at
@@ -952,6 +982,12 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
     if let [c] = st_clips[..] {
         leap_apex(&ctx, g.set.clip(c), &s, rate, &mut out);
     }
+    if rules.hover_band(&ctx.subject).is_some() {
+        skip_missing(&mut out, &[("hover", ""), ("ground_penetration", ""), ("joint_limits", NO_LIMITS)]);
+    } else {
+        let why = if tracks.is_empty() { "no feet found (a graph's feet, footstep events or bones named foot*)" } else { "not measured for this state" };
+        skip_missing(&mut out, &[("foot_sliding", why), ("floating", why), ("ground_penetration", ""), ("joint_limits", NO_LIMITS)]);
+    }
     // The parameters may move the state on: say so (the checks then cover what played).
     let end = play::state_at(g, &play, timing, window, &mut sc);
     if let Some(top) = end[0].stack.last().filter(|e| e.state != state) {
@@ -1025,11 +1061,22 @@ pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String
     let to_human = 1.8 / height;
     ctx.check(&mut out, "pops", worst * 100.0 * to_human, "cm", Some(worst_at), Some(worst_bone), vec![("blend_s", blend as f32), ("unscaled_cm", worst * 100.0), ("height_m", height)]);
     ground_penetration(&ctx, &s, mesh, &mut out);
+    let mut limits = g.graph.limits.clone();
+    for l in limits_of(g.set) {
+        if !limits.iter().any(|o| o.bone == l.bone) {
+            limits.push(l);
+        }
+    }
+    joint_limits(&ctx, &s, &limits, &mut out);
     match rules.hover_band(&ctx.subject) {
-        Some(band) => hover(&ctx, &s, band, mesh, &mut out),
+        Some(band) => {
+            hover(&ctx, &s, band, mesh, &mut out);
+            skip_missing(&mut out, &[("joint_limits", NO_LIMITS)]);
+        }
         None => {
             let tracks = foot_tracks(g.set, &s, &feet_of(g.set, Some(g.graph), None), mesh);
             floating(&ctx, &s, &tracks, &mut out);
+            skip_missing(&mut out, &[("foot_sliding", "a blend window (feet slide in a crossfade by design; the states on each side are checked)"), ("joint_limits", NO_LIMITS)]);
         }
     }
     out
