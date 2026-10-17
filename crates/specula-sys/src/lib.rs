@@ -133,7 +133,12 @@ pub mod net {
             let get: GetExtendedTcpTable = unsafe { std::mem::transmute::<*mut c_void, GetExtendedTcpTable>(sym) };
             let mut ports = BTreeSet::new();
             for (af, row, port_at) in [(AF_INET, ROW4, PORT4), (AF_INET6, ROW6, PORT6)] {
-                let words = table(get, af)?;
+                // Without an IPv6 stack there can be no IPv6 listeners: only the IPv4 table must read.
+                let words = match table(get, af) {
+                    Ok(words) => words,
+                    Err(_) if af == AF_INET6 => continue,
+                    Err(e) => return Err(e),
+                };
                 let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
                 let count = words.first().copied().unwrap_or(0) as usize;
                 for i in 0..count {

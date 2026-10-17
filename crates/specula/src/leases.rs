@@ -340,8 +340,9 @@ mod tests {
         let lo = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = lo.local_addr().unwrap().port();
         assert!(!port_free(port, None), "the loopback bind fails");
-        let table: std::collections::BTreeSet<u16> = [port + 1].into();
-        assert!(!port_free(port + 1, Some(&table)), "a port in the table is busy whatever the bind says");
+        let other = port.wrapping_add(1).max(1);
+        let table: std::collections::BTreeSet<u16> = [other].into();
+        assert!(!port_free(other, Some(&table)), "a port in the table is busy whatever the bind says");
         match specula_sys::net::tcp_listening_ports() {
             Ok(ports) => assert!(!port_free(port, Some(&ports)) && ports.contains(&port)),
             Err(e) => eprintln!("listener table unavailable here: {e}"),
