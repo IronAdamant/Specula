@@ -831,13 +831,13 @@ impl crate::Engine {
         out.set("complete", Json::from(left == 0));
         if left > 0 {
             out.set("tiles_left", Json::from(left));
-            out.set("tiles", Json::from(total.0 as usize * total.1 as usize));
+            out.set("tiles_total", Json::from(total.0 as usize * total.1 as usize));
             out.set(
                 "note",
                 Json::from(if slot.next.is_some() {
-                    "the rest is built over the next ticks; the navmesh with the old settings serves until then (nav_info shows progress)"
+                    "the rest is built over the next ticks (or call nav_build again with the same arguments to build the next slice now, e.g. while paused); the navmesh with the old settings serves until then"
                 } else {
-                    "the rest is built over the next ticks; queries answer navmesh_building until then (nav_info shows progress)"
+                    "the rest is built over the next ticks (or call nav_build again with the same arguments to build the next slice now, e.g. while paused); queries answer navmesh_building until then"
                 }),
             );
         }

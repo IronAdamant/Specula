@@ -145,9 +145,12 @@ impl Box3 {
 pub struct BoxSet {
     pub boxes: Vec<Box3>,
     /// ((row, column), box, the box's own first (row, column)): sorted.
-    cells: Vec<((i32, i32), u32, (i32, i32))>,
+    cells: Vec<CellEntry>,
     big: Vec<u32>,
 }
+
+/// A grid cell (row, column), a box in it, and that box's own first cell.
+type CellEntry = ((i32, i32), u32, (i32, i32));
 
 const SET_CELL: f32 = 4.0;
 const MAX_SET_CELLS: i64 = 64;

@@ -80,6 +80,14 @@ def main():
             cell = slab["props"]["cell_m"]
             half = cell * 10
             build = m.json("nav_build", name="slab", sources={"under": "/slab"})
+            # A navmesh is built a slice per call (the ticks finish it too): build the rest now.
+            for _ in range(200):
+                if build.get("complete", True):
+                    break
+                more = m.json("nav_build", name="slab", sources={"under": "/slab"})
+                more["tiles_built"] += build["tiles_built"]
+                more["ms"] = round(more["ms"] + build["ms"], 3)
+                build = more
             check(build["polygons"] > 0, f"nav_build from the slab the game draws: {build['polygons']} polygons, {build['tiles_built']} tiles, {build['ms']} ms", failures)
             centre = lambda c, r, y=0.0: [-half + (c + 0.5) * cell, y, -half + (r + 0.5) * cell]  # noqa: E731
             graveyard = centre(9.5, 9.5, 0.12)

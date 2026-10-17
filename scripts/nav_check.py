@@ -77,6 +77,18 @@ def tool(m, name, **args):
     return bool(r.get("isError")), data
 
 
+def build_all(m, **args):
+    """nav_build until complete: a big navmesh is built a slice per call (the ticks finish it
+    too, but a paused world has none). Tiles and ms are summed over the calls."""
+    b = m.json("nav_build", **args)
+    tiles, ms, calls = b["tiles_built"], b["ms"], 1
+    while not b.get("complete", True) and calls < 200:
+        b = m.json("nav_build", **args)
+        tiles, ms, calls = tiles + b["tiles_built"], ms + b["ms"], calls + 1
+    b["tiles_built"], b["ms"], b["calls"] = tiles, round(ms, 3), calls
+    return b
+
+
 def dist_xz(a, b):
     return math.hypot(a[0] - b[0], a[2] - b[2])
 
@@ -200,7 +212,7 @@ def run(m, failures, label, big):
     m.json("world_spawn", shape="cube", name="guard_visor", parent="/guard", position=[0, 0.6, 0.22], scale=[0.4, 0.15, 0.1], color="#ffffff", emissive=1.5)
     m.json("world_spawn", shape="cube", name="thief", position=[9, 0.5, 9], scale=[0.45, 1.0, 0.45], color="#d04040")
     print("Navmesh")
-    build = m.json("nav_build", like="/guard")
+    build = build_all(m, like="/guard")
     check(build["polygons"] > 0 and build["tiles_built"] == build["tiles"][0] * build["tiles"][1],
           f"nav_build: {build['polygons']} polygons over {build['tiles_built']} tiles in {build['ms']} ms", failures)
     s = build["settings"]
@@ -360,14 +372,14 @@ def big_build(m, failures):
         x, z = 155 + (i % 20) * 4.5, -45 + (i // 20) * 4.5
         ops.append({"op": "spawn", "shape": "cube", "name": f"big_box{i}", "position": [x, 0.75, z], "scale": [1.5, 1.5, 1.5], "collider": {"shape": "box"}})
     m.json("world_batch", ops=ops)
-    b = m.json("nav_build", name="big", bounds={"min": [150, -1, -50], "max": [250, 4, 50]})
+    b = build_all(m, name="big", bounds={"min": [150, -1, -50], "max": [250, 4, 50]})
     ms = []
     for i in range(20):
         q = m.json("nav_path", mesh="big", **{"from": [152, 0, -48 + i], "to": [248, 0, 48 - i]})
         ms.append(q["ms"])
         if i == 0:
             check(q["complete"], f"big: a path across 100 m through 400 boxes ({q['corner_count']} corners)", failures)
-    print(f"  big: {b['polygons']} polygons, {b['tiles_built']} tiles in {b['ms']} ms; paths {sum(ms) / len(ms):.3f} ms mean")
+    print(f"  big: {b['polygons']} polygons, {b['tiles_built']} tiles in {b['ms']} ms over {b['calls']} calls; paths {sum(ms) / len(ms):.3f} ms mean")
     return {"build_ms": b["ms"], "polygons": b["polygons"], "tiles": b["tiles_built"], "path_ms_mean": sum(ms) / len(ms), "path_ms_max": max(ms)}
 
 

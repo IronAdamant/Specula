@@ -652,6 +652,15 @@ struct MindSlot {
     /// The definition's path, also while nothing is there yet.
     def_path: Option<String>,
     mind: Option<Mind>,
+    /// The mind's state hash, kept current as it runs (a mind that didn't run is unchanged, so
+    /// the per-tick nav hash costs one word per mind, not its whole state).
+    hash: u64,
+}
+
+fn mind_hash(m: &Mind) -> u64 {
+    let mut h = StableHasher::default();
+    m.hash_into(&mut h);
+    h.finish()
 }
 
 /// An agent as the `paths` overlay draws it.
@@ -1561,7 +1570,7 @@ impl Nav {
                         Some(dj) => (dj.clone(), Some((d, v))),
                         None => {
                             self.forget_mind_goals(id);
-                            self.minds.insert(id, MindSlot { props: version, def_from: Some((d, v)), def_path, mind: None });
+                            self.minds.insert(id, MindSlot { props: version, def_from: Some((d, v)), def_path, mind: None, hash: 0 });
                             self.mind_problems.insert(id, Json::from(format!("'{p}' has no props.{DEF_KEY}")));
                             return;
                         }
@@ -1569,7 +1578,7 @@ impl Nav {
                 }
                 Err(_) => {
                     self.forget_mind_goals(id);
-                    self.minds.insert(id, MindSlot { props: version, def_from: None, def_path, mind: None });
+                    self.minds.insert(id, MindSlot { props: version, def_from: None, def_path, mind: None, hash: 0 });
                     self.mind_problems.insert(id, Json::from(format!("mind definition '{p}' doesn't exist (it loads when an entity with props.{DEF_KEY} appears there)")));
                     return;
                 }
@@ -1577,7 +1586,7 @@ impl Nav {
             Json::Obj(_) => (def_json.clone(), None),
             _ => {
                 self.forget_mind_goals(id);
-                self.minds.insert(id, MindSlot { props: version, def_from: None, def_path: None, mind: None });
+                self.minds.insert(id, MindSlot { props: version, def_from: None, def_path: None, mind: None, hash: 0 });
                 self.mind_problems.insert(id, Json::from("props.mind needs 'def': a definition object or the path of an entity with props.mind_def"));
                 return;
             }
@@ -1619,12 +1628,13 @@ impl Nav {
                         Mind::new(d, bb, 30)
                     }
                 };
-                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: Some(mind) });
+                let hash = mind_hash(&mind);
+                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: Some(mind), hash });
                 self.mind_problems.remove(&id);
             }
             Err(diags) => {
                 self.forget_mind_goals(id);
-                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: None });
+                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: None, hash: 0 });
                 self.mind_problems.insert(id, Json::obj([("invalid_mind", Json::arr(diags.iter().map(Diagnostic::to_json)))]));
             }
         }
@@ -1747,12 +1757,14 @@ impl Nav {
                 report.minds_skipped = order.len() - n;
                 break;
             }
-            let Some(mind) = minds.get_mut(id).and_then(|s| s.mind.as_mut()) else { continue };
+            let Some(slot) = minds.get_mut(id) else { continue };
+            let Some(mind) = slot.mind.as_mut() else { continue };
             mind.hz = hz;
             los.clear();
             let mut host = EngineHost { world: &*world, physics, meshes: &self.meshes, link: self.agents.get_mut(id), id: *id, node: 0, work: 0, los };
             mind.tick(&mut host, tick);
             report.mind_work += host.work + u64::from(mind.visits);
+            slot.hash = mind_hash(mind);
             los = host.los;
             report.minds += 1;
             self.mind_cursor = *id;
@@ -1827,9 +1839,22 @@ impl Nav {
                     None => Some(y),
                 };
                 if let Some(y) = local {
+                    // Turn about Y keeping any tilt. The Euler angles can't be edited in place: the
+                    // physics write-back gives a yaw past 90 degrees as (180, 180 - yaw, 180), and
+                    // changing only its Y mirrors the heading.
                     let r = e.rotation_deg;
-                    if (r.y - y).abs() > 1.0e-3 {
-                        change.rotation_deg = Some(Vec3::new(r.x, y, r.z));
+                    let q = Quat::from_euler_xyz_deg(r.x, r.y, r.z);
+                    let f = q.rotate(Vec3::new(0.0, 0.0, 1.0));
+                    let now = dmath::atan2(f.x, f.z).to_degrees();
+                    let mut diff = (y - now) % 360.0;
+                    if diff > 180.0 {
+                        diff -= 360.0;
+                    } else if diff < -180.0 {
+                        diff += 360.0;
+                    }
+                    if diff.abs() > 1.0e-3 {
+                        let turn = Quat::from_axis_angle(Vec3::new(0.0, 1.0, 0.0), diff.to_radians());
+                        change.rotation_deg = Some(specula_physics::math::quat_to_euler_deg((turn * q).normalize()));
                     }
                 }
             }
@@ -1901,8 +1926,8 @@ impl Nav {
         h.write_u64(self.mind_cursor);
         for (id, m) in &self.minds {
             h.write_u64(*id);
-            if let Some(mind) = &m.mind {
-                mind.hash_into(&mut h);
+            if m.mind.is_some() {
+                h.write_u64(m.hash);
             }
         }
         for (id, l) in &self.agents {
@@ -2565,7 +2590,7 @@ mod tests {
         let (first, _) = build_within(&mut nav, &w, 0, m, Some(40_000));
         let total = { let (nx, nz) = nav.meshes[&m].mesh.tile_count(); (nx * nz) as usize };
         assert!(first > 0 && first < total, "{first} of {total}");
-        assert_eq!(ready_mesh(&nav, m).err().map(|e| e.code), Some("navmesh_building".into()));
+        assert_eq!(ready_mesh(&nav, m).err().map(|e| e.code), Some("navmesh_building"));
         // The heightfield is bucketed: a tile reads its own few hundred triangles of 8,192.
         let b = &nav.meshes[&m].buckets;
         let most = b.values().flat_map(|t| t.values()).map(Vec::len).max().unwrap();
@@ -2625,6 +2650,28 @@ mod tests {
         let shown = list.as_array().unwrap().len();
         assert!(shown > 0 && shown + left == 40, "{shown} + {left}");
         assert!(list.to_string().contains("invalid_mind") && list.to_string().contains("\"diagnostics\""));
+    }
+
+    #[test]
+    fn an_agent_whose_angles_read_180_0_180_still_faces_where_it_walks() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let a = walker(&mut w, "w", Vec3::new(4.0, 0.5, -6.0), vec![]);
+        // (180, 30, 180) is a yaw of 150 degrees: how physics writes a character's turn back.
+        w.update(&EntityKey::Id(a), UpdateSpec { rotation_deg: Some(Vec3::new(180.0, 30.0, 180.0)), ..Default::default() }, "t").unwrap();
+        w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(3.0)), ("goal", Json::arr([Json::from(8.0), Json::from(0.0), Json::from(8.0)]))]))])), ..Default::default() }, "t").unwrap();
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let start = w.get(a).unwrap().world_position();
+        run(&mut nav, &mut w, 10);
+        let e = w.get(a).unwrap();
+        let moved = e.world_position() - start;
+        let f = e.model().cols[2];
+        let l = (f[0] * f[0] + f[2] * f[2]).sqrt() * (moved.x * moved.x + moved.z * moved.z).sqrt();
+        assert!(l > 0.0 && (f[0] * moved.x + f[2] * moved.z) / l > 0.9, "front {:?} moved {moved:?} rot {:?}", f, e.rotation_deg);
+        // Upright stays upright.
+        assert!(e.model().cols[1][1] > 0.99, "{:?}", e.rotation_deg);
     }
 
     #[test]
