@@ -21,7 +21,7 @@
         "gap": 8,
         "children": [
           { "type": "label", "text": "Saved games", "role": "title", "text_align": "center" },
-          { "type": "label", "text": "{saves_status}", "role": "small", "text_align": "center", "color": "rune_pale", "visible": "saves_status" },
+          { "type": "label", "text": "{saves_status}", "role": "small", "text_align": "center", "visible": "saves_status" },
           { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
           {
             "type": "box", "layout": "row", "align": "center", "gap": 8,
@@ -29,7 +29,7 @@
               { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
                 { "type": "label", "text": "{slot1_name}", "role": "heading" },
                 { "type": "label", "text": "{slot1_title}", "role": "small" },
-                { "type": "label", "text": "{slot1_detail}", "role": "small", "color": "rune_pale", "visible": "slot1_used" }
+                { "type": "label", "text": "{slot1_detail}", "role": "small", "visible": "slot1_used" }
               ] },
               { "type": "button", "id": "save_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:1", "tooltip": "Save this run here." },
               { "type": "button", "id": "load_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:1", "enabled": "slot1_used" },
@@ -42,7 +42,7 @@
               { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
                 { "type": "label", "text": "{slot2_name}", "role": "heading" },
                 { "type": "label", "text": "{slot2_title}", "role": "small" },
-                { "type": "label", "text": "{slot2_detail}", "role": "small", "color": "rune_pale", "visible": "slot2_used" }
+                { "type": "label", "text": "{slot2_detail}", "role": "small", "visible": "slot2_used" }
               ] },
               { "type": "button", "id": "save_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:2", "tooltip": "Save this run here." },
               { "type": "button", "id": "load_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:2", "enabled": "slot2_used" },
@@ -55,7 +55,7 @@
               { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
                 { "type": "label", "text": "{slot3_name}", "role": "heading" },
                 { "type": "label", "text": "{slot3_title}", "role": "small" },
-                { "type": "label", "text": "{slot3_detail}", "role": "small", "color": "rune_pale", "visible": "slot3_used" }
+                { "type": "label", "text": "{slot3_detail}", "role": "small", "visible": "slot3_used" }
               ] },
               { "type": "button", "id": "save_3", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:3", "tooltip": "Save this run here." },
               { "type": "button", "id": "load_3", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:3", "enabled": "slot3_used" },
@@ -63,13 +63,14 @@
             ]
           },
           { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
-          { "type": "label", "text": "Autosaves (at the start of each wave)", "role": "small", "color": "rune_pale" },
+          { "type": "label", "text": "Autosaves (at the start of each wave)", "role": "small" },
           {
             "type": "box", "layout": "row", "align": "center", "gap": 8,
             "children": [
               { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
-                { "type": "label", "text": "{auto1_name}: {auto1_title}", "role": "body" },
-                { "type": "label", "text": "{auto1_detail}", "role": "small", "color": "rune_pale", "visible": "auto1_used" }
+                { "type": "label", "text": "{auto1_name}", "role": "body" },
+                { "type": "label", "text": "{auto1_title}", "role": "small" },
+                { "type": "label", "text": "{auto1_detail}", "role": "small", "visible": "auto1_used" }
               ] },
               { "type": "button", "id": "load_auto_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_auto:1", "enabled": "auto1_used" }
             ]
@@ -78,8 +79,9 @@
             "type": "box", "layout": "row", "align": "center", "gap": 8,
             "children": [
               { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
-                { "type": "label", "text": "{auto2_name}: {auto2_title}", "role": "body" },
-                { "type": "label", "text": "{auto2_detail}", "role": "small", "color": "rune_pale", "visible": "auto2_used" }
+                { "type": "label", "text": "{auto2_name}", "role": "body" },
+                { "type": "label", "text": "{auto2_title}", "role": "small" },
+                { "type": "label", "text": "{auto2_detail}", "role": "small", "visible": "auto2_used" }
               ] },
               { "type": "button", "id": "load_auto_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_auto:2", "enabled": "auto2_used" }
             ]
