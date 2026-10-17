@@ -474,6 +474,10 @@ impl Board {
         self.tasks.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
     pub fn get(&self, id: u64) -> Option<&Task> {
         self.tasks.get(&id)
     }

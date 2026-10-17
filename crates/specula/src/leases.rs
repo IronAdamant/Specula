@@ -137,6 +137,10 @@ impl Leases {
         self.leases.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.leases.is_empty()
+    }
+
     pub fn expire(&mut self, now: Instant) {
         self.leases.retain(|_, l| l.expires > now);
     }
@@ -150,13 +154,11 @@ impl Leases {
         self.live(now).map(|l| if let Resource::Gpu { ms_per_s } = l.resource { ms_per_s } else { 0 }).sum()
     }
 
-    /// `lease_take`. `free` says whether a port can be used now (see [`port_free`]).
+    /// `lease_take`: what, a note, and for how long. `free` says whether a port can be used now (see [`port_free`]).
     pub fn take(
         &mut self,
         w: Writer,
-        want: Want,
-        note: String,
-        lease: Duration,
+        (want, note, lease): (Want, String, Duration),
         pools: &Pools,
         free: &dyn Fn(u16) -> bool,
         now: Instant,
@@ -311,18 +313,18 @@ mod tests {
         let root = std::env::temp_dir();
         let mut l = Leases::default();
         let busy = |p: u16| p != 7502; // someone else is listening on 7502
-        let a = l.take(ANN, Want::Ports(2), "engine".into(), DEFAULT_LEASE, &pools(&root), &busy, now).unwrap();
+        let a = l.take(ANN, (Want::Ports(2), "engine".into(), DEFAULT_LEASE), &pools(&root), &busy, now).unwrap();
         assert_eq!(a.resource, Resource::Ports(vec![7500, 7503]));
-        let b = l.take(BOB, Want::Ports(2), String::new(), DEFAULT_LEASE, &pools(&root), &busy, now).unwrap();
+        let b = l.take(BOB, (Want::Ports(2), String::new(), DEFAULT_LEASE), &pools(&root), &busy, now).unwrap();
         assert_eq!(b.resource, Resource::Ports(vec![7504, 7505]));
-        let e = l.take(BOB, Want::Ports(1), String::new(), DEFAULT_LEASE, &pools(&root), &busy, now).unwrap_err();
+        let e = l.take(BOB, (Want::Ports(1), String::new(), DEFAULT_LEASE), &pools(&root), &busy, now).unwrap_err();
         assert_eq!(e.code, "no_free_ports");
         // Released or expired ports come back.
         l.release(ANN, Some(1), false, &root, now).unwrap();
-        assert!(l.take(BOB, Want::Ports(1), String::new(), DEFAULT_LEASE, &pools(&root), &busy, now).is_ok());
+        assert!(l.take(BOB, (Want::Ports(1), String::new(), DEFAULT_LEASE), &pools(&root), &busy, now).is_ok());
         assert_eq!(l.release(ANN, Some(2), false, &root, now).unwrap_err().code, "not_owner");
         let later = now + DEFAULT_LEASE;
-        assert!(l.take(ANN, Want::Ports(2), String::new(), DEFAULT_LEASE, &pools(&root), &busy, later).is_ok());
+        assert!(l.take(ANN, (Want::Ports(2), String::new(), DEFAULT_LEASE), &pools(&root), &busy, later).is_ok());
     }
 
     #[test]
@@ -331,10 +333,10 @@ mod tests {
         let root = std::env::temp_dir();
         let mut l = Leases::default();
         let free = |_| true;
-        l.take(ANN, Want::Gpu(600), String::new(), DEFAULT_LEASE, &pools(&root), &free, now).unwrap();
-        let e = l.take(BOB, Want::Gpu(500), String::new(), DEFAULT_LEASE, &pools(&root), &free, now).unwrap_err();
+        l.take(ANN, (Want::Gpu(600), String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap();
+        let e = l.take(BOB, (Want::Gpu(500), String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap_err();
         assert_eq!((e.code, e.detail("leased_ms_per_s")), ("gpu_busy", Some(&Json::from(600u32))));
-        l.take(BOB, Want::Gpu(400), String::new(), DEFAULT_LEASE, &pools(&root), &free, now).unwrap();
+        l.take(BOB, (Want::Gpu(400), String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap();
         assert_eq!(l.gpu_leased(now), 1000);
         // Renewing keeps it past the first expiry.
         l.renew(ANN, None, DEFAULT_LEASE * 2, now).unwrap();
@@ -347,8 +349,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("specula-lease-test-{}", std::process::id()));
         let mut l = Leases::default();
         let free = |_| true;
-        let a = l.take(ANN, Want::Scratch, String::new(), DEFAULT_LEASE, &pools(&root), &free, now).unwrap().clone();
-        let b = l.take(BOB, Want::Scratch, String::new(), DEFAULT_LEASE, &pools(&root), &free, now).unwrap().clone();
+        let a = l.take(ANN, (Want::Scratch, String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap().clone();
+        let b = l.take(BOB, (Want::Scratch, String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap().clone();
         let (Resource::Scratch(da), Resource::Scratch(db)) = (&a.resource, &b.resource) else { panic!() };
         assert_ne!(da, db);
         assert!(da.is_dir() && db.is_dir());

@@ -1164,6 +1164,12 @@ impl Gpu {
         self.inner.adapter()
     }
 
+    /// GPU memory now: what Specula's allocator holds, and the device's heaps (sizes, and with
+    /// `VK_EXT_memory_budget` the budget and usage). Needs no frame.
+    pub fn memory_stats(&self) -> MemoryStats {
+        self.inner.memory_stats()
+    }
+
     pub fn validation_enabled(&self) -> bool {
         self.inner.validation_enabled()
     }

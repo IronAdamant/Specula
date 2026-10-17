@@ -7,7 +7,15 @@ its window open with --windowed: then the window's frame pacing under the load i
   3. deliberately writes into a neighbour's claimed district every few rounds (a spawn, a batch
      and a set): every one of those must be rejected with error 'claimed',
   4. spawns scratch entities and undoes them with world_undo (single changes and a whole batch),
-  5. polls world_changes to follow everyone else's work.
+  5. polls world_changes to follow everyone else's work,
+  6. works through the swarm communication layer: a lead agent first reads swarm_settings (the
+     operator's hardware; --frame-floor sets the window's floor) and posts one task per district,
+     assigned to its agent; each agent declares its intent (no overlap expected), takes its task,
+     leases a port and a scratch folder, leaves a note, reports progress, asks one question (the
+     lead answers it), declares an intent over its neighbour's district (the overlap must be
+     flagged), makes one deliberately stale write (it must come back with conflict help: base,
+     theirs, yours), and finishes its task. world_rollup by agent and by task must account for
+     every agent's work.
 Then it overloads the server: it holds the protocol's 256 connections open and checks that extra
 requests get a proper HTTP 503 (with Retry-After), not a reset, and that service resumes after.
 At the end the drill checks that every district holds exactly what its agent built (nothing more,
@@ -18,7 +26,7 @@ Reports throughput (world ops/s), per-tool latency p50/p95, conflict and rejecti
 JSON (schema specula.drill/v1) to perf/drills/.
 
 Usage: cargo build -p specula --release && python scripts/swarm_drill.py [--agents 16] [--rounds 12]
-       [--batch 20] [--port 7488] [--debug] [--windowed] [--label NAME]
+       [--batch 20] [--port 7488] [--debug] [--windowed] [--frame-floor FPS] [--label NAME]
 Needs a GPU (the engine starts its renderer even headless). Output is ASCII.
 """
 import argparse
@@ -38,6 +46,8 @@ from pathlib import Path
 from specula_mcp import ROOT, Engine, url_for
 
 PORT = 7488
+# --no-comms: skip the swarm communication steps (for comparing with engines that predate them).
+COMMS = True
 
 
 class Agent:
@@ -111,6 +121,9 @@ class Worker(threading.Thread):
         self.undone = 0
         self.feed_items = 0
         self.feed_gaps = 0
+        self.comms = {"intent_overlaps_flagged": 0, "intent_overlaps_missed": 0, "conflict_help": 0,
+                      "conflict_help_missing": [], "leases": 0, "notes": 0, "progress": 0, "questions": 0}
+        self.task = None
         self.agent = None
         self.error = None
 
@@ -142,9 +155,33 @@ class Worker(threading.Thread):
         a.ok("world_batch", ops=[{"op": "spawn", "shape": "group", "path": home, "position": [x0, 0, z0]}])
         self.ops += 1
         self.expected.add(home)
+        if COMMS:
+            # The communication layer: intent, task, leases, a note (the lead posted the tasks).
+            intent = a.ok("intent_declare", paths=[home], text=f"build {home}", lease_s=600)
+            self.comms["own_intent_overlaps"] = intent["overlap_count"]
+            mine = a.ok("task_list", assignee=self.name_, status="open")["tasks"]
+            if mine:
+                self.task = a.ok("task_take", id=mine[0]["id"])["id"]
+            port = a.ok("lease_take", kind="port", note="headless playtest engine")
+            scratch = a.ok("lease_take", kind="scratch")
+            self.comms["leases"] += 2
+            self.comms["port"] = port["ports"][0]
+            Path(scratch["dir"], "notes.txt").write_text(f"{self.name_} was here\n")
+            a.ok("note_add", on_path=home, text=f"{home} is {self.name_}'s; ask before building here")
+            self.comms["notes"] += 1
         self.ready.wait()
         cursor = "0"
         neighbour = district((self.index + 1) % self.count)
+        if COMMS:
+            if self.count > 1:
+                # Planning work in the neighbour's district is flagged before any edit.
+                over = a.ok("intent_declare", paths=[f"{neighbour}/annex"], text="annex", lease_s=30)
+                kinds = sorted(o["kind"] for o in over["overlaps"])
+                if "claim" in kinds and "intent" in kinds:
+                    self.comms["intent_overlaps_flagged"] += 1
+                else:
+                    self.comms["intent_overlaps_missed"] += 1
+                a.ok("intent_clear", id=over["intent"]["id"])
         for r in range(self.rounds):
             ops = []
             for k in range(self.batch):
@@ -165,6 +202,22 @@ class Worker(threading.Thread):
                 self.intrude("world_batch", ops=[{"op": "spawn", "shape": "cube",
                                                    "path": f"{neighbour}/intruder_b{self.index:02d}_{r:02d}"}])
                 self.intrude("world_set", path=neighbour, position=[0, 99, 0])
+            if COMMS:
+                if self.task and r % 4 == 0:
+                    a.ok("task_update", id=self.task, progress=f"round {r} of {self.rounds}")
+                    self.comms["progress"] += 1
+                if self.task and r == 1:
+                    a.ok("task_update", id=self.task, question="how tall should the walls be?")
+                    self.comms["questions"] += 1
+                if r == 2:
+                    # A deliberately stale write: it must come back with conflict help.
+                    target = f"{home}/r00_c00"
+                    ok, payload = a.call("world_set", path=target, color=[0.9, 0.1, 0.1], expect_version=1)
+                    c = payload.get("conflict") if isinstance(payload, dict) else None
+                    if not ok and payload.get("error") == "stale_version" and c and "base" in c and "theirs" in c and "yours" in c:
+                        self.comms["conflict_help"] += 1
+                    else:
+                        self.comms["conflict_help_missing"].append(payload)
             # Scratch work, undone again.
             if r % 4 == 2:
                 a.ok("world_spawn", shape="sphere", path=f"{home}/scratch_{r:02d}")
@@ -186,6 +239,11 @@ class Worker(threading.Thread):
                 if not feed["more"]:
                     break
         a.ok("claim_renew", all=True, lease_s=600)
+        if self.task:
+            a.ok("task_done", id=self.task, summary=f"{len(self.expected)} entities in {home}")
+        if COMMS:
+            a.ok("lease_release", all=True, delete=True)
+            a.ok("intent_clear", all=True)
 
 
 def stats_ms(samples):
@@ -348,6 +406,60 @@ def attacks(url):
     return results
 
 
+def comms_check(lead, workers, problems):
+    """The board, roll-ups, intents, leases and conflict help after the build."""
+    out = {}
+    for key in ("intent_overlaps_flagged", "intent_overlaps_missed", "conflict_help", "leases", "notes", "progress", "questions"):
+        out[key] = sum(w.comms[key] for w in workers)
+    missing = [m for w in workers for m in w.comms["conflict_help_missing"]]
+    if missing:
+        problems.append(f"{len(missing)} stale writes came back without conflict help, e.g. {missing[0]}")
+    if out["intent_overlaps_missed"]:
+        problems.append(f"{out['intent_overlaps_missed']} intents over a neighbour's district were not flagged")
+    own = [w.comms.get("own_intent_overlaps") for w in workers if w.comms.get("own_intent_overlaps")]
+    if own:
+        problems.append(f"{len(own)} agents' own districts were flagged as overlapping: {own[:3]}")
+    ports = [w.comms.get("port") for w in workers]
+    if len(set(ports)) != len(ports):
+        problems.append(f"port leases collided: {ports}")
+    # Questions: the lead answers every open one.
+    tasks = lead.ok("task_list", tag="drill", limit=200)
+    out["tasks_done"] = tasks["counts"]["done"]
+    if tasks["counts"]["done"] != len(workers):
+        problems.append(f"expected {len(workers)} done tasks, board counts {tasks['counts']}")
+    answered = 0
+    for t in tasks["tasks"]:
+        for q in lead.ok("task_get", id=t["id"], events=0)["questions"]:
+            if "answer" not in q:
+                lead.ok("task_update", id=t["id"], answer={"question": q["id"], "text": "three metres"})
+                answered += 1
+    out["questions_answered"] = answered
+    # Roll-ups: every agent's changes are accounted for, by agent and by task.
+    start = time.perf_counter()
+    by_agent, since = {}, 0
+    while True:
+        r = lead.ok("world_rollup", by="agent", since=since, limit=128)
+        for g in r["groups"]:
+            by_agent[g["agent"]] = by_agent.get(g["agent"], 0) + g["changes"]
+        since = r["next_since"]
+        if not r["more"]:
+            break
+    out["rollup_ms"] = round((time.perf_counter() - start) * 1000, 1)
+    by_task = lead.ok("world_rollup", by="task", limit=128)
+    out["rollup_sample"] = next((g["summary"] for g in r["groups"] if g["agent"].startswith("agent_")), None)
+    out["task_rollup_sample"] = by_task["groups"][0]["summary"] if by_task["groups"] else None
+    for w in workers:
+        if by_agent.get(w.name_, 0) == 0:
+            problems.append(f"world_rollup has no changes for {w.name_}")
+    task_changes = {g["task"]: g["changes"] for g in by_task["groups"]}
+    out["tasks_with_changes"] = sum(1 for v in task_changes.values() if v > 0)
+    leases = lead.ok("lease_list")
+    if leases["total"]:
+        problems.append(f"{leases['total']} leases left after every agent released")
+    out["board_counts"] = tasks["counts"]
+    return out
+
+
 def verify(url, workers):
     """Every district holds exactly what its agent built; the journal replays to the live hash."""
     v = Agent(url, "verifier")
@@ -399,8 +511,13 @@ def main():
     ap.add_argument("--exe", type=Path, help="engine binary (default: target/release or target/debug with --debug)")
     ap.add_argument("--windowed", action="store_true", help="open the engine's window (needs a desktop session)")
     ap.add_argument("--label", default="")
+    ap.add_argument("--no-comms", action="store_true", help="skip the board/intent/lease/conflict steps (older engines)")
+    ap.add_argument("--adapter", help="engine --adapter (discrete, integrated or an index)")
+    ap.add_argument("--frame-floor", type=int, help="the lead sets the window's frame floor (swarm_settings) before deploying")
     ap.add_argument("--out", default=str(ROOT / "perf" / "drills"))
     args = ap.parse_args()
+    global COMMS
+    COMMS = not args.no_comms
     if args.port == 7471:
         sys.exit("never drill on 7471 (the interactive engine's port)")
     exe = args.exe or ROOT / "target" / ("debug" if args.debug else "release") / ("specula.exe" if sys.platform == "win32" else "specula")
@@ -410,13 +527,22 @@ def main():
     url = url_for(args.port)
     result = {"schema": "specula.drill/v1", "label": args.label, "agents": args.agents, "rounds": args.rounds,
               "batch": args.batch, "feed": not args.no_feed, "build": "debug" if args.debug else "release",
-              "windowed": args.windowed,
+              "windowed": args.windowed, "adapter": args.adapter, "frame_floor": args.frame_floor, "comms": not args.no_comms,
               "when": datetime.datetime.now().isoformat(timespec="seconds"),
               "cpu_busy_pct_before": cpu_busy_pct()}
     try:
         mode = [] if args.windowed else ["--headless"]
+        if args.adapter:
+            mode += ["--adapter", args.adapter]
         with Engine(exe, args.port, work / "engine.log", *mode, "--captures", str(work / "captures"),
                     "--worlds", str(work / "worlds"), cwd=work) as engine:
+            if COMMS:
+                lead = Agent(url, "drill-lead")
+                lead.ok("agent_hello", name="drill_lead", role="lead")
+                settings = lead.ok("swarm_settings", **({"frame_floor_fps": args.frame_floor} if args.frame_floor else {}))
+                result["swarm_settings"] = {k: settings.get(k) for k in ("frame_floor_fps", "hardware", "suggested_frame_floor_fps", "windowed")}
+                for i in range(args.agents):
+                    lead.ok("task_post", title=f"build {district(i)}", paths=[district(i)], assign=f"agent_{i:02d}", tags=["drill"])
             ready = threading.Barrier(args.agents)
             workers = [Worker(url, i, args.agents, args.rounds, args.batch, not args.no_feed, ready) for i in range(args.agents)]
             start = time.perf_counter()
@@ -432,6 +558,8 @@ def main():
                 # How the loop shared its time with agents (engines with a serve schedule).
                 result["serve_under_load"] = pf.get("serve")
             problems, h, verify_s, history, info = verify(url, workers)
+            if COMMS:
+                result["comms"] = comms_check(lead, workers, problems)
             result["attacks"] = atk = attacks(url)
             if atk["leaked"]:
                 problems.append(f"claim bypasses accepted: {atk['leaked']}")
@@ -508,6 +636,16 @@ def main():
         print(f"  entities {result['entities']}, journal {entries} entries ~{(j.get('approx_bytes') or 0) // 1024} KiB, "
               f"replay {'MATCHES' if result['replay'].get('matches') else 'MISMATCH'} "
               f"({result['replay_check_s']} s), hash {result['state_hash']}")
+    if "comms" in result:
+        c = result["comms"]
+        print(f"  comms: {c['tasks_done']} tasks done, {c['intent_overlaps_flagged']} intent overlaps flagged, "
+              f"{c['conflict_help']} stale writes with conflict help, {c['leases']} leases, {c['notes']} notes, "
+              f"{c['questions_answered']} questions answered; rollup {c['rollup_ms']} ms")
+        print(f"  rollup: {c['rollup_sample']}")
+        print(f"  task rollup: {c['task_rollup_sample']}")
+    if "swarm_settings" in result:
+        s = result["swarm_settings"]
+        print(f"  swarm_settings: floor {s['frame_floor_fps']} fps (suggested {s['suggested_frame_floor_fps']}), hardware {s['hardware']}")
     if "attacks" in result:
         a = result["attacks"]
         print(f"  attacks (review repros): {a['rejected']} refused as expected, {len(a['leaked'])} leaked, "

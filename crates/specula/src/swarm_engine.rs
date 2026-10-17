@@ -158,7 +158,7 @@ impl Engine {
             SwarmCall::Rollup(q) => out(crate::rollup::rollup(&self.swarm, &q, now)),
             SwarmCall::LeaseTake { want, note, lease } if named => {
                 let pools = self.lease_pools(server);
-                match self.swarm.leases.take(w, want, note, lease, &pools, &crate::leases::port_free, now) {
+                match self.swarm.leases.take(w, (want, note, lease), &pools, &crate::leases::port_free, now) {
                     Ok(l) => {
                         let j = l.to_json(now);
                         let text = format!("{} lease {}", l.resource.kind(), l.id);
@@ -296,8 +296,8 @@ impl Engine {
     fn settings_json(&self) -> Json {
         let a = self.gpu.adapter();
         let kind = crate::perf::adapter_kind(a.kind);
-        let stats = self.gpu.last_frame_stats_of(specula_gpu::FramePath::Window).or_else(|| self.gpu.last_frame_stats_of(specula_gpu::FramePath::Offscreen));
-        let vram_mb = stats.as_ref().map(|s| s.memory.heaps.iter().filter(|h| h.device_local).map(|h| h.size).max().unwrap_or(0) / (1 << 20));
+        let heaps = self.gpu.memory_stats().heaps;
+        let vram_mb = heaps.iter().filter(|h| h.device_local).map(|h| h.size).max().map(|b| b / (1 << 20));
         let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
         let refresh = self.schedule.refresh_known();
         let (suggest, why) = if !self.windowed {

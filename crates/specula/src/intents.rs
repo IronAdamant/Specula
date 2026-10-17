@@ -101,6 +101,10 @@ impl Intents {
         self.intents.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.intents.is_empty()
+    }
+
     pub fn expire(&mut self, now: Instant) {
         self.intents.retain(|_, i| i.expires > now);
     }
