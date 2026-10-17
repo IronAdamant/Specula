@@ -8,7 +8,8 @@
 //! connection's thread ([`shape`]), so the engine thread pays nothing. Some tools already had a
 //! knob, which `response_format` sets: `world_query` (detailed = `fields: ["all"]`) and
 //! `world_history` (detailed = `detail: true`). A game's tools parse it themselves (Sepulcra's
-//! `play_state`), as do `playtest_*`. See `docs/design/TOOLS.md` for the measured savings.
+//! `play_state`), as do `playtest_*`. Every tool's answer also goes through [`tidy`]: compact
+//! JSON, and errors as `{error, message}`. See `docs/design/TOOLS.md` for the measured savings.
 
 use specula_core::Json;
 use specula_protocol::{Content, ToolDef, ToolOutput};
@@ -126,6 +127,47 @@ pub fn shape(tool: &str, format: Format, out: ToolOutput) -> ToolOutput {
         }
     }
     out
+}
+
+/// Error texts that aren't JSON yet, by what they contain, and their codes.
+const PLAIN_ERRORS: [(&str, &str); 5] = [
+    ("shutting down", "shutting_down"),
+    ("too busy", "engine_busy"),
+    ("skipped:", "engine_busy"),
+    ("no game is running", "no_game"),
+    ("unknown game tool", "unknown_tool"),
+];
+
+/// Every answer as compact JSON (pretty-printed answers cost an agent about a third more tokens
+/// for nothing), and every error as `{error, message}` (a plain-text error becomes one, coded by
+/// [`PLAIN_ERRORS`], else `error`). Text that isn't JSON (play_map's map) passes through.
+pub fn tidy(mut out: ToolOutput) -> ToolOutput {
+    let is_error = out.is_error;
+    for c in &mut out.content {
+        let Content::Text(t) = c else { continue };
+        match Json::parse(t) {
+            Ok(v) if is_error && !matches!(v, Json::Obj(_)) => *t = plain_error(t),
+            Ok(v) => {
+                if t.contains('\n') {
+                    *t = v.to_string();
+                }
+            }
+            Err(_) if is_error => *t = plain_error(t),
+            Err(_) => {}
+        }
+        break;
+    }
+    out
+}
+
+fn plain_error(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let code = PLAIN_ERRORS.iter().find(|(k, _)| lower.contains(k)).map_or("error", |(_, c)| c);
+    let mut j = Json::obj([("error", Json::from(code)), ("message", Json::from(text))]);
+    if code == "engine_busy" {
+        j.set("retry", Json::Bool(true));
+    }
+    j.to_string()
 }
 
 /// Keeps only `keys` of an object (in its own order); anything else passes through.
@@ -350,6 +392,18 @@ mod tests {
             text(&shape("perf_frame", Format::Concise, ToolOutput::text(perf))),
             r#"{"budget_ms":16,"errors":[],"offscreen":{"frame":1,"gpu_ms":0.5,"draws":{"draw_calls":3},"memory_mb":4},"physics":{"bodies":2,"total_ms":0.25}}"#
         );
+    }
+
+    #[test]
+    fn answers_are_compact_and_errors_structured() {
+        assert_eq!(text(&tidy(ToolOutput::text("{\n  \"a\": [1,\n 2]\n}"))), r#"{"a":[1,2]}"#);
+        assert_eq!(text(&tidy(ToolOutput::text("map\n# . #"))), "map\n# . #", "not JSON: untouched");
+        let busy = tidy(ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied"));
+        assert!(busy.is_error);
+        assert_eq!(Json::parse(text(&busy)).unwrap().get("error").and_then(Json::as_str), Some("engine_busy"));
+        assert_eq!(text(&tidy(ToolOutput::error("bad thing"))), r#"{"error":"error","message":"bad thing"}"#);
+        assert_eq!(text(&tidy(ToolOutput::error("{\n \"error\": \"x\"\n}"))), r#"{"error":"x"}"#, "already structured: only compacted");
+        assert_eq!(text(&tidy(ToolOutput::error("\"quoted\""))), r#"{"error":"error","message":"\"quoted\""}"#);
     }
 
     #[test]

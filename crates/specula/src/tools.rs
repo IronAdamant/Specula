@@ -296,6 +296,14 @@ impl ToolHandler for Tools {
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
+        // machine-readable codes, whoever built the answer).
+        crate::response::tidy(self.call_engine(session, name, arguments))
+    }
+}
+
+impl Tools {
+    fn call_engine(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
         // Builds and library loads run on this connection's thread; only the swap goes to the engine.
         match name {
             "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),

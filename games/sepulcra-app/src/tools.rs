@@ -68,7 +68,14 @@ pub fn defs() -> Vec<ToolDef> {
                 .into(),
             input_schema: schema(
                 vec![
-                    ("include", obj([("type", Json::from("array")), ("items", obj([("type", Json::from("string")), ("enum", Json::arr(["enemies", "stones", "walls", "waves", "log"].map(Json::from)))]))])),
+                    (
+                        "include",
+                        obj([
+                            ("type", Json::from("array")),
+                            ("items", obj([("type", Json::from("string")), ("enum", Json::arr(["enemies", "stones", "walls", "waves", "log"].map(Json::from)))])),
+                            ("description", Json::from("Lists to add (paged with offset/limit)")),
+                        ]),
+                    ),
                     ("offset", prop("integer", "First list item (default 0)")),
                     ("limit", prop("integer", "List items per list (default 50, max 200)")),
                     (

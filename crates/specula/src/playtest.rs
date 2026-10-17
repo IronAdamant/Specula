@@ -752,7 +752,8 @@ impl Run {
                         return Action::Hash(HashPoint::Start);
                     }
                     if let Some(s) = self.spec.steps.get(self.step_i) {
-                        if s.at == self.tick {
+                        // `<=`: a step is never skipped, even if the clock ran past it.
+                        if s.at <= self.tick {
                             self.pending = Some(Why::Step(self.step_i));
                             return Action::Call(Why::Step(self.step_i));
                         }
@@ -794,7 +795,7 @@ impl Run {
                     if let Some(u) = &self.spec.until {
                         next = next.min((self.tick / u.every + 1) * u.every);
                     }
-                    return Action::Advance(next - self.tick);
+                    return Action::Advance(next.saturating_sub(self.tick).max(1));
                 }
                 Phase::End => {
                     if self.end_i < self.spec.end.len() {
@@ -1338,6 +1339,26 @@ mod tests {
         // Long runs record at most MAX_CHECKPOINTS hashes.
         let s = spec(r#"{"name": "a", "ticks": 1000000, "checkpoint_every": 1}"#);
         assert!(s.ticks / s.checkpoint_every <= MAX_CHECKPOINTS);
+    }
+
+    #[test]
+    fn a_clock_that_runs_past_a_step_still_runs_it() {
+        let mut run = Run::new(spec(r#"{"name": "o", "steps": [{"at": 10, "call": "a"}], "ticks": 20, "checkpoint_every": 1000}"#), None);
+        let mut calls = Vec::new();
+        for _ in 0..100 {
+            match run.next_action() {
+                Action::Call(_) => {
+                    calls.push(run.tick);
+                    run.complete(&ok("{}"));
+                }
+                Action::Hash(p) => run.record_hash(p, vec![]),
+                Action::Advance(n) => run.advanced(n + 3),
+                Action::Wait => unreachable!(),
+                Action::Finish => break,
+            }
+        }
+        assert_eq!(calls, [13], "late, but not skipped");
+        assert_eq!(run.status(), Some(Status::Passed));
     }
 
     #[test]

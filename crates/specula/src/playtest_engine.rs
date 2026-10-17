@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 pub const MAX_WAIT_S: f32 = 20.0;
 /// Finished playtests whose reports `playtest_report` still has.
 const KEPT: usize = 16;
+/// Calls waiting for one playtest's end at most (more are answered at once with its progress).
+const MAX_WAITERS: usize = 32;
 /// A call inside a playtest that isn't answered in this long fails the step.
 const CALL_WAIT: Duration = Duration::from_secs(30);
 /// Time a headless engine gives a playtest per loop turn (then it serves calls); a windowed one
@@ -163,11 +165,12 @@ struct Pending {
 }
 
 impl Pending {
+    /// As an agent gets it over MCP (shaped, compact, errors coded).
     fn answer(&self, out: ToolOutput) -> ToolOutput {
-        match self.format {
+        crate::response::tidy(match self.format {
             Some(f) => crate::response::shape(&self.tool, f, out),
             None => out,
-        }
+        })
     }
 }
 
@@ -233,6 +236,16 @@ impl Active {
         }
         with_id(self.id, self.run.report(format == Format::Detailed), extra)
     }
+
+    /// Answers now (`wait` zero, or too many callers waiting already) or when the playtest ends
+    /// or `wait` runs out.
+    fn wait_or_answer(&mut self, reply: Sender<ToolOutput>, wait: Duration, format: Format) {
+        if wait.is_zero() || self.waiters.len() >= MAX_WAITERS {
+            let _ = reply.send(ToolOutput::text(self.report(format, None).to_string()));
+        } else {
+            self.waiters.push(Waiter { reply, until: Instant::now() + wait, format });
+        }
+    }
 }
 
 impl Engine {
@@ -242,11 +255,7 @@ impl Engine {
             PlaytestCall::Run { source, record, wait, format } => match self.start_playtest(source, record, &session) {
                 Ok(()) => {
                     let a = self.playtests.active.as_mut().expect("just started");
-                    if wait.is_zero() {
-                        let _ = reply.send(ToolOutput::text(a.report(format, None).to_string()));
-                    } else {
-                        a.waiters.push(Waiter { reply, until: Instant::now() + wait, format });
-                    }
+                    a.wait_or_answer(reply, wait, format);
                 }
                 Err(e) => {
                     let _ = reply.send(e);
@@ -255,13 +264,9 @@ impl Engine {
             PlaytestCall::Report { id, wait, cancel, format } => {
                 if let Some(a) = self.playtests.active.as_mut().filter(|a| id.is_none_or(|i| i == a.id)) {
                     a.cancel |= cancel;
-                    if wait.is_zero() && !cancel {
-                        let _ = reply.send(ToolOutput::text(a.report(format, None).to_string()));
-                    } else {
-                        // A cancel answers with the final report, at the next slice.
-                        let wait = if cancel { wait.max(Duration::from_secs(5)) } else { wait };
-                        a.waiters.push(Waiter { reply, until: Instant::now() + wait, format });
-                    }
+                    // A cancel answers with the final report, at the next slice.
+                    let wait = if cancel { wait.max(Duration::from_secs(5)) } else { wait };
+                    a.wait_or_answer(reply, wait, format);
                     return;
                 }
                 let found = match id {
@@ -330,6 +335,8 @@ impl Engine {
         let id = self.playtests.next_id;
         let was_paused = self.clock.paused();
         self.clock.set_paused(true);
+        // Ticks an earlier time_control step queued would run on into the playtest.
+        self.clock.cancel_steps();
         let by = self.swarm.agent_name(session);
         eprintln!("specula: playtest {id} '{}' started by {by}{}", spec.name, if expected.is_some() { " (replay)" } else { "" });
         self.playtests.active = Some(Active {
@@ -355,6 +362,16 @@ impl Engine {
         // Fewer ticks between time checks with a window (its frames come first).
         let chunk = if self.windowed { 16 } else { 64 };
         loop {
+            if a.cancel {
+                a.run.stop(Status::Cancelled, "cancelled with playtest_report");
+            }
+            if a.started.elapsed() > Duration::from_secs(a.run.spec.max_wall_s) {
+                a.run.stop(Status::Error, format!("ran past max_wall_s ({} s)", a.run.spec.max_wall_s));
+            }
+            if a.run.status().is_some() {
+                // A stopped run doesn't wait for an answer (it arrives in a closed channel).
+                a.waiting = None;
+            }
             if let Some(p) = &a.waiting {
                 match p.rx.try_recv() {
                     Ok(out) => a.run.complete(&p.answer(out)),
@@ -362,12 +379,6 @@ impl Engine {
                     Err(_) => a.run.complete(&error("no_answer", format!("the call wasn't answered within {} s", CALL_WAIT.as_secs()), vec![])),
                 }
                 a.waiting = None;
-            }
-            if a.cancel {
-                a.run.stop(Status::Cancelled, "cancelled with playtest_report");
-            }
-            if a.started.elapsed() > Duration::from_secs(a.run.spec.max_wall_s) {
-                a.run.stop(Status::Error, format!("ran past max_wall_s ({} s)", a.run.spec.max_wall_s));
             }
             match a.run.next_action() {
                 Action::Call(why) => {
