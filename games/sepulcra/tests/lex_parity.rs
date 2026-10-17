@@ -210,6 +210,40 @@ fn lex_slice_is_deterministic_and_seed_sensitive() {
     assert_ne!(run(5).last(), run(6).last(), "another seed draws other drops");
 }
 
+/// What the interpreter costs against hand-written Rust (foundation F3), on the defended run:
+/// `cargo test -p sepulcra --release --test lex_parity -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_lex_against_rust() {
+    let c = content();
+    let runs = 200u64;
+    let t = std::time::Instant::now();
+    let mut ticks = 0u64;
+    for seed in 0..runs {
+        let mut s = State::new(c.clone(), seed);
+        while s.outcome() == Outcome::Running && s.tick() < 20_000 {
+            let tick = s.tick();
+            let cmds: Vec<Command> = DEFENDED.iter().filter(|(at, _)| *at == tick).map(|(_, x)| sep_cmd(&c, *x)).collect();
+            s.step(&cmds);
+        }
+        ticks += u64::from(s.tick());
+    }
+    let rust = t.elapsed();
+    let t = std::time::Instant::now();
+    for seed in 0..runs {
+        let mut l = lex(seed);
+        while l.outcome().is_none() && l.tick() < 20_000 {
+            let tick = l.tick();
+            let cmds: Vec<CommandCall> = DEFENDED.iter().filter(|(at, _)| *at == tick).map(|(_, x)| lex_cmd(&l, *x)).collect();
+            l.step(&cmds);
+        }
+    }
+    let lexed = t.elapsed();
+    let per = |d: std::time::Duration| d.as_secs_f64() * 1e6 / ticks as f64;
+    println!("{runs} defended runs, {ticks} ticks: rust {:.2} us/tick, lex {:.2} us/tick (x{:.1}); a 12-minute run in lex: {:.1} ms",
+        per(rust), per(lexed), lexed.as_secs_f64() / rust.as_secs_f64(), per(lexed) * 21_600.0 / 1000.0);
+}
+
 /// The harness must notice a one-point change to one rule, so a pass means something.
 #[test]
 fn a_changed_rule_is_caught() {
