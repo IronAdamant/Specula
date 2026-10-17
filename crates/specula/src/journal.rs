@@ -616,6 +616,22 @@ impl Journal {
         self.agents.entries.len() + self.game.entries.len()
     }
 
+    /// Entries with ids after `seq`, oldest first; the hosted game's only with `game`.
+    pub fn entries_after(&self, seq: u64, game: bool) -> impl Iterator<Item = &Entry> + '_ {
+        let game = self.game.from(seq.saturating_add(1)).take(if game { usize::MAX } else { 0 });
+        merged(self.agents.from(seq.saturating_add(1)), game, false)
+    }
+
+    /// Entries that touched entity `id`, newest first, examining at most `scan` entries.
+    pub fn touching(&self, id: u64, scan: usize) -> impl Iterator<Item = &Entry> + '_ {
+        merged(self.agents.upto_rev(u64::MAX), self.game.upto_rev(u64::MAX), true).take(scan).filter(move |e| e.touches(id))
+    }
+
+    /// The world the entries apply to (empty, or the world as loaded).
+    pub fn base(&self) -> &World {
+        &self.base
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

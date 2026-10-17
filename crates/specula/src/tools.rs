@@ -53,7 +53,14 @@ entities into or out of a claim), and 'claims_overlap' means a path claim and a 
 world_load is refused while other agents hold claims. Every change is journaled with its author and tick: \
 world_history shows who did what, world_undo undoes your own recent changes (refusing to overwrite someone \
 else's later work unless forced; claims always apply), world_changes is a feed to poll for other agents' \
-changes, and world_hash gives the state hash per tick.";
+changes, and world_hash gives the state hash per tick. Swarm communication: the task board (task_post, task_take, \
+task_update, task_done, task_list, task_get) shares who does what, with blockers and questions; intent_declare says \
+what you will work on before you edit (overlaps with others' intents and claims are flagged); note_add leaves \
+handoffs on entities, paths and tasks; world_rollup summarises the journal per agent or task for a parent; refused \
+writes (stale_version, claimed) carry a 'conflict' object (base, theirs, yours, overlap) to rebase from; lease_take \
+hands out ports, GPU time and scratch folders for agents that run their own engines; swarm_settings shows the \
+operator's hardware and sets the window's frame floor before a swarm is deployed; desync_trace and desync_compare \
+find the first tick and component where two runs (or a run and its journal replay) differ.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -190,6 +197,9 @@ pub enum Command {
     Sight(crate::sight_tools::SightCall),
     /// tilemap_get: cells of one layer (all layers' names when `layer` is `None`) in `region`.
     TileGet { key: EntityKey, layer: Option<String>, region: Option<[u32; 4]> },
+    /// The task board, intents, notes, roll-ups, leases, swarm settings and the desync detector
+    /// (see [`crate::swarm_tools`]).
+    Swarm(crate::swarm_tools::SwarmCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -447,7 +457,10 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
         }
         other => match crate::sight_tools::parse(other, args) {
             Some(call) => call.map(Command::Sight),
-            None => Err(format!("unknown tool '{other}'")),
+            None => match crate::swarm_tools::parse(other, args) {
+                Some(call) => call.map(Command::Swarm),
+                None => Err(format!("unknown tool '{other}'")),
+            },
         },
     }
 }
@@ -2295,6 +2308,7 @@ fn definitions() -> Vec<ToolDef> {
     ]
     .into_iter()
     .chain(crate::sight_tools::definitions())
+    .chain(crate::swarm_tools::definitions())
     .collect()
 }
 

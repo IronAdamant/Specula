@@ -480,6 +480,9 @@ pub struct PerfConfig {
     /// `[budgets] shape2d_vertices` and `transient_shape2d_vertices`: world limits, the same on
     /// every adapter (see [`SHAPE_BUDGET_KEYS`]).
     pub shapes: crate::two_d::ShapeLimits,
+    /// `[swarm]`: the window's frame floor under a backlog and the resource lease pools (see
+    /// [`SwarmConfig`]).
+    pub swarm: SwarmConfig,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -491,6 +494,7 @@ impl Default for PerfConfig {
             profiler: true,
             history_frames: HISTORY,
             shapes: crate::two_d::ShapeLimits::default(),
+            swarm: SwarmConfig::default(),
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -545,7 +549,8 @@ impl PerfConfig {
                         cfg.adapters.push((kind.clone(), table.clone()));
                     }
                 }
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter)")),
+                "swarm" => cfg.swarm = SwarmConfig::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;
@@ -602,6 +607,72 @@ impl PerfConfig {
 
     pub fn has_adapter_section(&self, kind: &str) -> bool {
         self.adapters.iter().any(|(k, _)| k == kind)
+    }
+}
+
+/// `perf.toml` `[swarm]`: settings the lead agent may also change at run time (`swarm_settings`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwarmConfig {
+    /// `frame_floor_fps`: while agents keep calls queued the window still presents at least this
+    /// many frames a second (20..=240, default 60; see `schedule`).
+    pub frame_floor_fps: u32,
+    /// `lease_ports = [first, last]`: the ports `lease_take {kind: "port"}` hands out (default
+    /// 7500..=7599, clear of the engines' own 7460-7499).
+    pub lease_ports: (u16, u16),
+    /// `scratch_root`: where scratch-folder leases are made (default: `<captures>/scratch`).
+    pub scratch_root: Option<PathBuf>,
+    /// `gpu_ms_per_s`: GPU time per second that GPU leases share (default 1000: one whole GPU).
+    pub gpu_ms_per_s: u32,
+}
+
+impl Default for SwarmConfig {
+    fn default() -> SwarmConfig {
+        SwarmConfig {
+            frame_floor_fps: crate::schedule::DEFAULT_FRAME_FLOOR_FPS,
+            lease_ports: (7500, 7599),
+            scratch_root: None,
+            gpu_ms_per_s: 1000,
+        }
+    }
+}
+
+impl SwarmConfig {
+    fn parse(v: &Json) -> Result<SwarmConfig, String> {
+        use crate::schedule::{MAX_FRAME_FLOOR_FPS, MIN_FRAME_FLOOR_FPS};
+        let mut cfg = SwarmConfig::default();
+        for (k, x) in v.as_object().ok_or("[swarm] must be a table")? {
+            match k.as_str() {
+                "frame_floor_fps" => {
+                    cfg.frame_floor_fps = x
+                        .as_u64()
+                        .filter(|n| (u64::from(MIN_FRAME_FLOOR_FPS)..=u64::from(MAX_FRAME_FLOOR_FPS)).contains(n))
+                        .ok_or(format!(
+                            "[swarm] frame_floor_fps must be a whole number of frames a second from {MIN_FRAME_FLOOR_FPS} to {MAX_FRAME_FLOOR_FPS}"
+                        ))? as u32;
+                }
+                "lease_ports" => {
+                    let pair: Option<Vec<u64>> = x.as_array().and_then(|a| a.iter().map(Json::as_u64).collect());
+                    cfg.lease_ports = match pair.as_deref() {
+                        Some(&[a, b]) if (1024..=65535).contains(&a) && (a..=65535).contains(&b) && b - a < 4096 => (a as u16, b as u16),
+                        _ => return Err("[swarm] lease_ports must be [first, last]: ports 1024..65535, first <= last, at most 4096 of them".into()),
+                    };
+                }
+                "scratch_root" => {
+                    cfg.scratch_root = Some(PathBuf::from(x.as_str().filter(|s| !s.is_empty()).ok_or("[swarm] scratch_root must be a folder path")?));
+                }
+                "gpu_ms_per_s" => {
+                    cfg.gpu_ms_per_s = x
+                        .as_u64()
+                        .filter(|n| (1..=64_000).contains(n))
+                        .ok_or("[swarm] gpu_ms_per_s must be a whole number from 1 to 64000 (1000 = one whole GPU)")?
+                        as u32;
+                }
+                other => {
+                    return Err(format!("unknown key '{other}' in [swarm] (known: frame_floor_fps, lease_ports, scratch_root, gpu_ms_per_s)"))
+                }
+            }
+        }
+        Ok(cfg)
     }
 }
 
@@ -1477,6 +1548,27 @@ mod tests {
         let metrics: Vec<&str> = errors.iter().map(|e| e.get("metric").and_then(Json::as_str).unwrap()).collect();
         assert!(metrics.contains(&"gpu_pass.scene") && !metrics.contains(&"gpu_pass.shadow"), "{metrics:?}");
         assert!(metrics.contains(&"zone.frame/sim") && metrics.contains(&"zone.specula-autosave:autosave.write"));
+    }
+
+    #[test]
+    fn the_swarm_section_sets_the_frame_floor_and_lease_pools() {
+        let cfg = PerfConfig::parse("[swarm]
+frame_floor_fps = 30
+lease_ports = [7600, 7609]
+scratch_root = \"scratch\"
+gpu_ms_per_s = 2000
+").unwrap();
+        assert_eq!(cfg.swarm.frame_floor_fps, 30);
+        assert_eq!(cfg.swarm.lease_ports, (7600, 7609));
+        assert_eq!(cfg.swarm.scratch_root, Some(PathBuf::from("scratch")));
+        assert_eq!(cfg.swarm.gpu_ms_per_s, 2000);
+        assert_eq!(PerfConfig::default().swarm.frame_floor_fps, 60);
+        for bad in ["frame_floor_fps = 5", "frame_floor_fps = 300", "lease_ports = [9, 2]", "lease_ports = 7600", "floor = 30"] {
+            let err = PerfConfig::parse(&format!("[swarm]
+{bad}
+")).unwrap_err();
+            assert!(err.contains("[swarm]"), "{bad}: {err}");
+        }
     }
 
     #[test]

@@ -11,24 +11,32 @@
 //! wait for vsync (see `schedule`), so agents aren't paced by the display. The human's window is
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
+pub mod board;
 pub mod cameras;
 mod capture;
 pub mod claims;
 pub mod compare;
+pub mod conflict;
+pub mod desync;
 pub mod effects;
 pub mod game;
+pub mod intents;
 pub mod journal;
+pub mod leases;
 mod luts;
 pub mod meshes;
 pub mod models;
 pub mod orbit;
 mod perf;
 pub mod persist;
+pub mod rollup;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
 mod sight_tools;
 pub mod swarm;
+mod swarm_engine;
+mod swarm_tools;
 mod tools;
 pub mod two_d;
 mod ui;
@@ -237,6 +245,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         if perf_cfg.has_adapter_section(kind) { ", with its own section" } else { "" }
     );
     engine.world.set_shape_limits(perf_cfg.shape_limits());
+    engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
@@ -248,6 +257,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             let (world, saved) = persist::load_limited(&dir, engine.world.shape_limits())
                 .map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
             for problem in engine.replace_world(world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
+                eprintln!("specula: {problem}");
+            }
+            if let Some(problem) = engine.load_board(&dir) {
                 eprintln!("specula: {problem}");
             }
             engine.saved = Some(saved);
@@ -316,6 +328,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     };
     engine.finish_autosave(true);
     engine.autosave(true);
+    engine.save_board_if_due();
     // Parked captures and model calls hold reply channels: answer them now, or their callers
     // (and the server's connection threads) would wait out their full timeout.
     engine.answer_waiters_shutting_down();
@@ -458,6 +471,15 @@ struct Engine {
     /// Bumped whenever the world is replaced (a revision number alone could repeat).
     world_generation: u64,
     last_claim_sweep: Instant,
+    /// Per-tick hashes for the desync detector (see [`desync`]).
+    trace: desync::TickLog,
+    /// desync_trace files written by this run.
+    traces_written: u64,
+    /// The task board's revision as last written to the world folder.
+    board_saved: u64,
+    /// The window's frame floor under a swarm's backlog, and who set it (`None`: perf.toml or the
+    /// default); see `schedule` and `swarm_settings`.
+    frame_floor: (u32, Option<String>),
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -546,6 +568,10 @@ impl Engine {
             hash_cache: None,
             world_generation: 0,
             last_claim_sweep: Instant::now(),
+            trace: desync::TickLog::default(),
+            traces_written: 0,
+            board_saved: 0,
+            frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
         })
     }
 
@@ -566,6 +592,7 @@ impl Engine {
         self.world_generation += 1;
         self.hash_cache = None;
         self.tick_hashes.clear();
+        self.trace.clear();
         problems
     }
 
@@ -594,6 +621,7 @@ impl Engine {
             self.tick_hashes.pop_front();
         }
         self.tick_hashes.push_back((self.clock.tick(), h));
+        self.record_trace(self.clock.tick(), h);
     }
 
     /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
@@ -779,6 +807,7 @@ impl Engine {
         self.finish_autosave(false);
         if self.last_autosave.elapsed() >= AUTOSAVE_EVERY {
             self.autosave(false);
+            self.save_board_if_due();
         }
     }
 
@@ -1167,6 +1196,7 @@ impl Engine {
                 let hz = specula_platform::refresh_rate_of(ui.raw);
                 schedule.set_display_refresh(hz.map(|hz| Duration::from_secs_f64(1.0 / hz)));
             }
+            schedule.set_frame_floor(self.frame_floor.0);
             self.schedule = schedule;
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
             let serve_start = Instant::now();
@@ -1338,9 +1368,11 @@ impl Engine {
                 Err(e) => world_error(&e),
             },
             Command::Set(key, change) => {
+                // A refused write says what changed (conflict help): only these can be refused so.
+                let yours = (change.expect_version.is_some() || !self.swarm.claims.is_empty()).then(|| conflict::Yours::of_update(&change));
                 match self.swarm.commit(&mut self.world, tick, w, Kind::Set, |wd| wd.update(&key, change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => self.entity_output(id, seq),
-                    Err(e) => world_error(&e),
+                    Err(e) => world_error(&self.conflict_help(e, yours.as_ref())),
                 }
             }
             Command::Delete(key, expect) => match self.swarm.commit(&mut self.world, tick, w, Kind::Delete, |wd| wd.delete(&key, expect)) {
@@ -1353,12 +1385,13 @@ impl Engine {
                     ])
                     .to_pretty(),
                 ),
-                Err(e) => world_error(&e),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::delete()))),
             },
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Batch(ops) => {
                 let count = ops.len();
+                let yours = self.batch_yours(&ops);
                 let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
                 match self.swarm.commit(&mut self.world, tick, w, Kind::Batch, apply) {
                     Ok((results, seq)) => {
@@ -1367,10 +1400,15 @@ impl Engine {
                         ToolOutput::text(summary.to_string())
                     }
                     // A claim rejects the batch as a whole (no single op is at fault).
-                    Err(e) if e.detail("op_index").is_none() => world_error(&e),
+                    Err(e) if e.detail("op_index").is_none() => {
+                        let all = conflict::Yours { fields: vec!["(the batch's ops)".into()] };
+                        world_error(&self.conflict_help(e, Some(&all)))
+                    }
                     Err(mut e) => {
                         let index = e.detail("op_index").and_then(Json::as_u64).unwrap_or(0);
                         e.details.retain(|(k, _)| *k != "op_index");
+                        let mine = yours.iter().find(|(i, _)| *i as u64 == index).map(|(_, y)| y);
+                        let e = self.conflict_help(e, mine);
                         ToolOutput::error(
                             Json::obj([
                                 ("error", Json::from("batch_failed")),
@@ -1523,10 +1561,14 @@ impl Engine {
                 Err(e) => world_error(&e),
             },
             Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
-            Command::ClaimTake(spec) => match self.swarm.take_claim(&self.world, &request.session, spec) {
-                Ok(c) => ToolOutput::text(c.to_string()),
-                Err(e) => world_error(&e),
-            },
+            Command::ClaimTake(spec) => {
+                let scope = spec.scope.clone();
+                match self.swarm.take_claim(&self.world, &request.session, spec) {
+                    Ok(c) => ToolOutput::text(self.claim_taken(w, &scope, c).to_string()),
+                    Err(e) => world_error(&e),
+                }
+            }
+            Command::Swarm(call) => self.handle_swarm(call, &request.session, server),
             Command::ClaimRenew { id, lease } => match self.swarm.renew(w, id, lease) {
                 Ok(out) => ToolOutput::text(out.to_string()),
                 Err(e) => world_error(&e),
@@ -1688,6 +1730,7 @@ impl Engine {
                 self.last_autosave = Instant::now();
                 self.autosave_error = None;
                 self.note_leftovers(&report);
+                self.save_board_now();
                 ToolOutput::text(
                     Json::obj([
                         ("saved", Json::from(name)),
@@ -1742,6 +1785,7 @@ impl Engine {
                 }
                 let mut problems = self.replace_world(world, &name);
                 problems.extend(saved.warnings.iter().cloned());
+                problems.extend(self.load_board(&dir));
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -1930,6 +1974,7 @@ fn call_class(command: &Command) -> Class {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
+        Command::Swarm(call) => call.class(),
         Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
         Command::Time(TimeOp::Step(_)) => Class::Sim,
         Command::Game { .. } => Class::Game,

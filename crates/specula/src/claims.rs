@@ -98,14 +98,14 @@ impl Scope {
         }
     }
 
-    fn json(&self) -> (&'static str, Json) {
+    pub(crate) fn json(&self) -> (&'static str, Json) {
         match self {
             Scope::Path(p) => ("path", Json::from(p.as_str())),
             Scope::Region { min, max } => ("region", Json::obj([("min", vec3_json(*min)), ("max", vec3_json(*max))])),
         }
     }
 
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match self {
             Scope::Path(p) => p.clone(),
             Scope::Region { min, max } => {
@@ -235,22 +235,7 @@ impl Claims {
 
     /// Whether `a` and `b` (different owners' claims) cover any of the same world.
     fn overlap(&self, world: &World, a: &Scope, b: &Scope) -> bool {
-        match (a, b) {
-            (Scope::Path(x), Scope::Path(y)) => path_under(x, y) || path_under(y, x),
-            (Scope::Region { min: a0, max: a1 }, Scope::Region { min: b0, max: b1 }) => {
-                a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
-            }
-            (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
-                // Overlap where an entity under the path already sits in the region.
-                let root = if p == "/" { None } else { world.find_path(p).ok() };
-                if p != "/" && root.is_none() {
-                    return false;
-                }
-                let mut hit = false;
-                world.walk(root, |e, _| hit = hit || r.contains_point(e.world_position()));
-                hit
-            }
-        }
+        scopes_overlap(world, a, b)
     }
 
     /// Takes a claim for `owner` in `session`. Rejected (`claim_conflict`) when it overlaps
@@ -580,6 +565,27 @@ impl Claims {
             ),
         };
         error.with("entity_path", at).with("op", change.op())
+    }
+}
+
+/// Whether `a` and `b` cover any of the same world. A path and a region meet where an entity
+/// under the path already sits in the region (see the module docs' limitation).
+pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
+    match (a, b) {
+        (Scope::Path(x), Scope::Path(y)) => path_under(x, y) || path_under(y, x),
+        (Scope::Region { min: a0, max: a1 }, Scope::Region { min: b0, max: b1 }) => {
+            a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
+        }
+        (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
+            // Overlap where an entity under the path already sits in the region.
+            let root = if p == "/" { None } else { world.find_path(p).ok() };
+            if p != "/" && root.is_none() {
+                return false;
+            }
+            let mut hit = false;
+            world.walk(root, |e, _| hit = hit || r.contains_point(e.world_position()));
+            hit
+        }
     }
 }
 

@@ -19,7 +19,10 @@
 //! keyed by an identity key that the token carries over, not by the protocol session id, and an
 //! introduced identity's claims last until their lease ends even while no session is open.
 
+use crate::board::Board;
 use crate::claims::{Claim, ClaimSpec, Claims};
+use crate::intents::Intents;
+use crate::leases::Leases;
 use crate::journal::{self, Journal, Kind, UndoRequest, Undone, Writer};
 use crate::world::{Change, World, WorldError};
 use specula_core::Json;
@@ -70,6 +73,14 @@ pub struct Swarm {
     named: BTreeMap<String, String>,
     /// Names agents may not take: the hosted game's, in-process writers'.
     reserved: BTreeSet<String>,
+    /// The task board and notes (see [`crate::board`]).
+    pub board: Board,
+    /// Declared intents (see [`crate::intents`]).
+    pub intents: Intents,
+    /// Ports, GPU time and scratch folders leased to agents (see [`crate::leases`]).
+    pub leases: Leases,
+    /// Agent name → refused writes by error code, for roll-ups (at most [`MAX_AGENTS`] names).
+    refused: BTreeMap<String, BTreeMap<&'static str, u64>>,
 }
 
 /// A session's name before (or without) agent_hello.
@@ -247,10 +258,29 @@ impl Swarm {
         self.claims.expire(now, Some(&ids));
     }
 
-    fn count_rejection(&mut self, e: &WorldError) {
+    fn count_rejection(&mut self, w: Writer, e: &WorldError) {
         if matches!(e.code, "claimed" | "claims_overlap") {
             self.claims.rejected += 1;
         }
+        // Conflicts a parent wants to hear about (not argument mistakes like a missing entity).
+        if matches!(e.code, "claimed" | "claims_overlap" | "stale_version" | "undo_conflict" | "name_taken" | "not_found") {
+            if self.refused.len() >= MAX_AGENTS && !self.refused.contains_key(w.name) {
+                self.refused.pop_first();
+            }
+            *self.refused.entry(w.name.to_owned()).or_default().entry(e.code).or_default() += 1;
+            self.board.note_refused(w);
+        }
+    }
+
+    /// Refused writes of `name` by error code (since the engine started).
+    pub fn refused_of(&self, name: &str) -> Option<&BTreeMap<&'static str, u64>> {
+        self.refused.get(name)
+    }
+
+    /// A write was refused before reaching [`Swarm::commit`] (a batch op's own error): counted
+    /// like a commit's.
+    pub fn note_refused(&mut self, w: Writer, e: &WorldError) {
+        self.count_rejection(w, e);
     }
 
     /// Applies an agent's world command: rejected (and rolled back) when it wrote inside another
@@ -268,8 +298,13 @@ impl Swarm {
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = journal::commit(world, &mut self.journal, tick, w, kind, check, command);
-        if let Err(e) = &result {
-            self.count_rejection(e);
+        match &result {
+            Err(e) => self.count_rejection(w, e),
+            Ok((_, Some(seq))) => {
+                let changes = self.journal.get(*seq).map_or(0, |e| e.changes.len());
+                self.board.note_entry(w, *seq, changes);
+            }
+            Ok(_) => {}
         }
         result
     }
@@ -281,8 +316,9 @@ impl Swarm {
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = self.journal.undo(world, tick, w, req, check);
-        if let Err(e) = &result {
-            self.count_rejection(e);
+        match &result {
+            Err(e) => self.count_rejection(w, e),
+            Ok(u) => self.board.note_entry(w, u.seq, u.changes),
         }
         result
     }
@@ -310,11 +346,14 @@ impl Swarm {
         let checked = if claims.could_block(w, now) { world.recheck_steps(mark, &mut check) } else { Ok(()) };
         if let Err(e) = checked {
             self.journal.note_next_id(world.next_id());
-            self.count_rejection(&e);
+            self.count_rejection(w, &e);
             return Err(e.with("game", game));
         }
         let changes = world.take_changes();
-        self.journal.append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id());
+        let count = changes.len();
+        if let Some(seq) = self.journal.append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
+            self.board.note_entry(w, seq, count);
+        }
         Ok(out)
     }
 
@@ -398,6 +437,10 @@ impl Swarm {
             ("journal", self.journal.stats_json()),
             ("claims", Json::from(self.claims.len())),
             ("claim_rejections", Json::from(self.claims.rejected)),
+            ("tasks", Json::from(self.board.len())),
+            ("notes", Json::from(self.board.notes_len())),
+            ("intents", Json::from(self.intents.len())),
+            ("leases", Json::from(self.leases.len())),
         ])
     }
 }
