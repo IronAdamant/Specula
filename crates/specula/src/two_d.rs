@@ -1852,7 +1852,8 @@ impl TwoDGpu {
                 let bytes = u64::from(img.width) * u64::from(img.height) * 4;
                 let first = a.first_free && used.items == 0;
                 let spent = started.elapsed().as_secs_f64() * 1e3;
-                if !first && (spent >= a.ms || used.bytes + bytes > a.bytes || !gpu.upload_slot_free()) {
+                // Every upload batch in flight: even the first waits (queuing would wait for the GPU).
+                if !gpu.upload_slot_free() || (!first && (spent >= a.ms || used.bytes + bytes > a.bytes)) {
                     self.held = Some(done);
                     used.deferred += 1;
                     break;

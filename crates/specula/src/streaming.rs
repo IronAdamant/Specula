@@ -513,6 +513,9 @@ struct PassState {
     cursor: Option<CellKey>,
     /// Cells whose proxy left members out: their handles are worked out again.
     left_out: Vec<CellKey>,
+    /// Cells done first, out of turn (wherever the cursor is): edits in cells the window draws
+    /// as a proxy.
+    urgent: Vec<CellKey>,
     /// The window's distance to its nearest cell so far.
     nearest: f32,
 }
@@ -563,8 +566,6 @@ pub struct Streamer {
     force_update: bool,
     /// The world or the builds changed since the last update (it runs within UPDATE_EVERY).
     stale: bool,
-    /// Start the pass afresh at the next frame (an edit in a cell the window draws as a proxy).
-    restart: bool,
     /// Where the window's eye was, which way it looked and its field of view at the last pass.
     window_eye: Option<(Vec3, Vec3, f32)>,
     /// The running pass of the wanted set (spread over frames).
@@ -637,7 +638,6 @@ impl Streamer {
             last_update: None,
             force_update: true,
             stale: false,
-            restart: false,
             window_eye: None,
             pass: None,
             done_pass: 0,
@@ -860,9 +860,9 @@ impl Streamer {
         };
         // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
         // change at once (the entity must not stay hidden, nor show at its old place).
-        if touched.iter().any(|k| self.hlod.window_on(*k)) {
-            self.restart = true;
-        }
+        // Done out of turn at the next step, without restarting the pass (edits every frame
+        // would otherwise keep it from ever finishing).
+        let urgent: Vec<CellKey> = touched.iter().copied().filter(|k| self.hlod.window_on(*k)).collect();
         self.touched = touched;
         // Finished proxy builds are taken every frame (their uploads go by priority).
         self.hlod.collect();
@@ -870,11 +870,12 @@ impl Streamer {
         self.stale |= changed;
         let due = self.force_update || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
         let whole = self.force_update;
-        // A forced pass (a new capture view, a jump) starts afresh, so it sees every source; so
-        // does one after an edit in a cell the window draws as a proxy (but sliced).
-        if (due && (self.pass.is_none() || whole)) || self.restart {
-            self.restart = false;
+        // A forced pass (a new capture view, a jump) starts afresh, so it sees every source.
+        if (due && (self.pass.is_none() || whole)) || (!urgent.is_empty() && self.pass.is_none()) {
             self.begin_pass(now);
+        }
+        if let Some(pass) = &mut self.pass {
+            pass.urgent.extend(urgent);
         }
         if self.pass.is_some() {
             let _z = specula_core::profile::zone("want");
@@ -897,11 +898,11 @@ impl Streamer {
         self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| (s.eye, s.dir, s.fov_y_deg));
         self.window_moved = false;
         // A pass restarted before it got everywhere keeps the cells it still had to redo.
-        let mut left_out = self.pass.take().map(|p| p.left_out).unwrap_or_default();
+        let (mut left_out, urgent) = self.pass.take().map(|p| (p.left_out, p.urgent)).unwrap_or_default();
         left_out.extend(self.hlod.take_left_out());
         left_out.sort_unstable();
         left_out.dedup();
-        self.pass = Some(PassState { cursor: None, left_out, nearest: f32::INFINITY });
+        self.pass = Some(PassState { cursor: None, left_out, urgent, nearest: f32::INFINITY });
     }
 
     /// Works through the running pass for at most `slice_ms` (at least one cell): each cell's
@@ -947,15 +948,24 @@ impl Streamer {
         let mut others_by: Vec<(f32, bool, f32, usize)> = Vec::new();
         let mut done = false;
         loop {
-            let next = match pass.cursor {
-                None => self.index.cells.keys().next().copied(),
-                Some(k) => self.index.cells.range((std::ops::Bound::Excluded(k), std::ops::Bound::Unbounded)).next().map(|(k, _)| *k),
+            let k = if let Some(k) = pass.urgent.pop() {
+                // Out of turn (visited again in turn if the cursor hasn't passed it: harmless).
+                if !self.index.cells.contains_key(&k) {
+                    continue;
+                }
+                k
+            } else {
+                let next = match pass.cursor {
+                    None => self.index.cells.keys().next().copied(),
+                    Some(k) => self.index.cells.range((std::ops::Bound::Excluded(k), std::ops::Bound::Unbounded)).next().map(|(k, _)| *k),
+                };
+                let Some(k) = next else {
+                    done = true;
+                    break;
+                };
+                pass.cursor = Some(k);
+                k
             };
-            let Some(k) = next else {
-                done = true;
-                break;
-            };
-            pass.cursor = Some(k);
             let c = self.index.cells.get_mut(&k).expect("listed");
             if c.members.is_empty() {
                 continue;
