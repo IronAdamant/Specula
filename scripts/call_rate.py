@@ -3,7 +3,9 @@
 One MCP session (HTTP keep-alive, like a real agent's client) calls each tool back to back, waiting
 for every reply before sending the next, for `--seconds` per tool: engine_info, world_query (a page
 of 20 entities), world_set (moves one entity) and world_spawn. With a window open the engine used to
-answer about one call per display refresh (60/s); it now serves calls between presents.
+answer about one call per display refresh (60/s at 60 Hz); it now serves calls between presents.
+After each tool it reads perf_frame: the window's frame pacing over the last 120 frames and how the
+loop shared its time (`serve`: window, frame period, backlog, late presents).
 
 Usage: cargo build -p specula --release && python scripts/call_rate.py [--port 7486] [--headless]
        [--adapter integrated] [--seconds 3] [--exe PATH] [--json OUT]
@@ -12,6 +14,7 @@ Needs a GPU and (without --headless) a desktop session. Output is ASCII.
 import argparse
 import http.client
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -87,8 +90,8 @@ def fmt_pacing(p):
     if not p:
         return "n/a"
     s = p.get("serve")
-    serve = (f" | window {s['window_ms']} margin {s['margin_ms']} refresh {s['refresh_ms']} ms, "
-             f"late {s['late_presents']} (ready {s['late_but_ready']}) of {s['windows']}") if s else ""
+    serve = (f" | {'backlog ' if s.get('backlog') else ''}period {s.get('frame_period_ms')} window {s['window_ms']} margin {s['margin_ms']} refresh {s['refresh_ms']} ms, "
+             f"late {s['late_presents']} (ready {s['late_but_ready']}) of {s['windows']}, held {s['held_for_next_window']}") if s else ""
     return f"median {p['median_ms']} p95 {p['p95_ms']} max {p['max_ms']} ms{serve}"
 
 
@@ -110,8 +113,18 @@ def main():
     extra = ["--headless"] if args.headless else []
     if args.adapter:
         extra += ["--adapter", args.adapter]
-    results = {"schema": "specula.call_rate/v1", "exe": str(exe), "windowed": not args.headless,
-               "adapter": args.adapter, "seconds": args.seconds}
+    results = {"schema": "specula.call_rate/v1", "exe": "custom" if args.exe else exe.name,
+               "windowed": not args.headless, "adapter": args.adapter, "seconds": args.seconds}
+    try:
+        measure(exe, args, work, extra, results)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(results, indent=1) + "\n")
+
+
+def measure(exe, args, work, extra, results):
     with Engine(exe, args.port, work / "engine.log", *extra, "--captures", str(work / "captures"),
                 "--worlds", str(work / "worlds"), cwd=work) as eng:
         c = KeepAlive(args.port)
@@ -137,9 +150,6 @@ def main():
     results["validation_errors"] = eng.validation_errors()
     results["exit_code"] = eng.exit_code
     print(f"engine exit {eng.exit_code}, validation errors {eng.validation_errors()}")
-    if args.json:
-        args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(json.dumps(results, indent=1))
 
 
 if __name__ == "__main__":

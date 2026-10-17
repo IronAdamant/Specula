@@ -427,7 +427,10 @@ def main():
             wall = time.perf_counter() - start
             if args.windowed:
                 # The window's last 120 frames: the end of the build, under the swarm's load.
-                result["frame_pacing_under_load"] = Agent(url, "pacing").ok("perf_frame").get("frame_pacing")
+                pf = Agent(url, "pacing").ok("perf_frame")
+                result["frame_pacing_under_load"] = pf.get("frame_pacing")
+                # How the loop shared its time with agents (engines with a serve schedule).
+                result["serve_under_load"] = pf.get("serve")
             problems, h, verify_s, history, info = verify(url, workers)
             result["attacks"] = atk = attacks(url)
             if atk["leaked"]:
