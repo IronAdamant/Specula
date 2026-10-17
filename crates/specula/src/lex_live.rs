@@ -7,26 +7,37 @@
 //! (a 30 Hz set under a 60 Hz engine steps every other engine tick), so pausing, stepping and
 //! fast-forwarding the engine clock (`time_control`) drive Lex time too.
 //!
+//! **Budgets (F1, F3).** All live runs together get [`TICK_BUDGET`] of each engine tick: a run
+//! still short of its target tick when it is spent falls behind (`behind` in status) and catches
+//! up later. One Lex tick may take at most [`STEP_DEADLINE`] (the run's own deadline, read as it
+//! spends work): a run whose tick passes it, or whose in-process native panics, is **halted**
+//! with a structured error (its state is no longer a deterministic result), never the engine.
+//!
 //! **Natives.** Hooks the hosted game implements in-process ([`crate::game::Game::lex_natives`])
 //! run as in `lex_simulate`. Any other declared hook is a module hook: the run calls
-//! [`LogicHost::call_hook`] with the hook's reason and `caller` `lex:<set>`, and the commit
-//! journals its world changes under `lex:<set>` as part of Lex's tick. Module hooks can't change
-//! the run's state (only the world), so with no world-writing hooks, a live run and
+//! [`LogicHost::call_hook`] with the hook's reason and `caller` `lex:<set>`. In the run's own
+//! ticks its world changes are journaled under `lex:<set>` as part of the tick; in an agent's
+//! command they are staged, checked against claims as the agent's and journaled only if the whole
+//! command succeeds (a refusal rolls back the world and the run together). Module hooks can't
+//! change the run's state (only the world), so with no world-writing hooks, a live run and
 //! `lex_simulate` with the same seed, params and commands (at the same ticks: `journal`) reach
 //! the same hash.
 //!
 //! **Presentation.** Each live entity that matches a `present` rule (tags, first match wins) is
-//! a world entity `/lex_live/<set>/e<id>` built from that rule's spawn fields and moved to the
-//! entity's position each engine tick; entities that end are deleted. These updates are the
-//! rules' own output, like a hosted game's: journaled replay-only under `lex:<set>` (coalesced
-//! per tick) and exempt from claims. Starting and stopping a run are the caller's edits
-//! (claim-checked, undoable).
+//! a world entity `/lex_live/<set>/e<id>` (props `lex_live: {id, archetype}`) built from that
+//! rule's spawn fields and moved to the entity's position after each Lex step; entities that end
+//! are deleted, and one an agent deleted is shown again. These updates are the rules' own
+//! output, like a hosted game's: journaled replay-only under `lex:<set>` (coalesced per tick) and
+//! exempt from claims; region claims don't cover `/lex_live` at all (the entities move with the
+//! simulation), path claims do. Starting and stopping a run, and its commands, are the caller's:
+//! a path claim on `/lex_live/<set>` by another agent refuses them.
 //!
 //! **Commands** (`action: command`) apply at once, at the run's current tick (exactly as
 //! `lex_simulate` applies commands stamped with that tick), and are journaled with it.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::journal::{Kind, Writer};
 use crate::logic::LogicHost;
@@ -37,8 +48,7 @@ use crate::world::{EntityKey, Mark, Recording, Shape, SpawnSpec, UpdateSpec, Wor
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_lex::rules::{NativeDef, Rules, TagFilter};
-use specula_lex::sim::NativeHost;
-use specula_lex::{Options, Sim};
+use specula_lex::{NativeArgs, NativeHost, Options, Sim};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 
 /// The top-level group live runs present under.
@@ -53,6 +63,10 @@ const MAX_JOURNAL: usize = 100_000;
 const MAX_PRESENT: usize = 32;
 /// Lex ticks one engine tick may step (a fast set under a slow engine catches up gradually).
 const MAX_STEPS_PER_TICK: u32 = 64;
+/// The time all live runs together may take in one engine tick.
+pub const TICK_BUDGET: Duration = Duration::from_millis(8);
+/// The longest one Lex tick of a live run may take before the run is halted.
+pub const STEP_DEADLINE: Duration = Duration::from_millis(50);
 /// Refusals and hook failures kept for `status`.
 const RECENT: usize = 16;
 /// `journal` pages (default, most), and the most bytes of commands one page lists.
@@ -104,6 +118,8 @@ struct Shown {
 
 struct Run {
     sim: Sim,
+    /// `lex:<set>`: the name the run's world changes are journaled under.
+    agent: String,
     seed: u64,
     params: Json,
     /// The engine tick the run started at (its Lex tick 0).
@@ -111,21 +127,31 @@ struct Run {
     present: Vec<(TagFilter, Json)>,
     group: u64,
     shown: BTreeMap<u32, Shown>,
+    /// The Lex tick last presented (`None`: present on the next engine tick).
+    presented: Option<u32>,
     /// Live entities not shown: past [`MAX_SHOWN`], or matching no rule.
     hidden: usize,
-    /// A presentation write failed (the group was deleted?): presenting stopped.
+    /// The last presentation write that failed (presenting goes on).
     present_error: Option<String>,
+    /// Lex ticks short of where the engine clock says the run should be.
+    behind: u64,
+    /// The run was stopped by an overrun or a panic: why (it steps no more).
+    halted: Option<Json>,
     /// Accepted commands: (Lex tick, command, args, who).
     journal: Vec<(u32, String, Json, String)>,
     recent: VecDeque<Json>,
     hook_calls: u64,
     hook_failures: u64,
+    /// Module hook args, reused call to call.
+    args: Json,
 }
 
 /// The live runs, by set.
 #[derive(Default)]
 pub struct Live {
     runs: BTreeMap<String, Run>,
+    /// Which run steps first next tick (so no run starves the others of the budget).
+    next_first: usize,
 }
 
 impl Live {
@@ -153,6 +179,11 @@ fn hex(h: u64) -> Json {
     Json::from(format!("{h:016x}"))
 }
 
+/// A panic's message (natives are other code: a bug there stops the run, not the engine).
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_else(|| "a panic".into())
+}
+
 /// A tag list as a filter over the rules' tags (an unknown tag never matches).
 fn filter_of(rules: &Rules, tags: &[String]) -> TagFilter {
     let mut f = TagFilter::default();
@@ -178,7 +209,7 @@ fn metres(p: [i64; 3]) -> Vec3 {
     Vec3::new(p[0] as f32 / 1000.0, p[1] as f32 / 1000.0, p[2] as f32 / 1000.0)
 }
 
-/// Module hooks for a live run: `call_hook`, journaled as the run's tick.
+/// Module hooks for a live run: `call_hook`.
 struct Host<'a> {
     logic: &'a mut LogicHost,
     world: &'a mut World,
@@ -189,29 +220,41 @@ struct Host<'a> {
     calls: &'a mut u64,
     failures: &'a mut u64,
     recent: &'a mut VecDeque<Json>,
-    /// An agent's command made this call: its hooks' world changes are checked against
-    /// claims as that agent's (refused: rolled back, and the command with them). The run's
-    /// own ticks are the rules' output, exempt like a hosted game's.
-    writer: Option<Writer<'a>>,
+    args: &'a mut Json,
+    /// In an agent's command: leave the hooks' world changes staged for the caller to check
+    /// and journal (or roll back) with the whole command. In the run's own ticks: journal them
+    /// now, as the tick's.
+    staged: bool,
 }
 
 impl NativeHost for Host<'_> {
-    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: &[(String, i64)], lex_tick: u32) -> Result<(), String> {
+    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: NativeArgs<'_>, lex_tick: u32) -> Result<(), String> {
         *self.calls += 1;
-        let mut a: Vec<(String, Json)> = args.iter().map(|(k, v)| (k.clone(), Json::from(*v))).collect();
-        a.push(("entity".into(), entity.map_or(Json::Null, Json::from)));
-        a.push(("lex_tick".into(), Json::from(lex_tick)));
+        // The args object is rebuilt only when its keys change (same hook, same keys: values only).
+        if !matches!(&*self.args, Json::Obj(v) if v.len() == args.len() + 2 && v.iter().zip(args.iter()).all(|((k, _), (n, _))| k == n)) {
+            let mut v: Vec<(String, Json)> = args.iter().map(|(k, _)| (k.to_owned(), Json::Null)).collect();
+            v.push(("entity".into(), Json::Null));
+            v.push(("lex_tick".into(), Json::Null));
+            *self.args = Json::Obj(v);
+        }
+        if let Json::Obj(v) = &mut *self.args {
+            let n = args.len();
+            for (slot, (_, x)) in v.iter_mut().zip(args.iter()) {
+                slot.1 = Json::from(x);
+            }
+            v[n].1 = entity.map_or(Json::Null, Json::from);
+            v[n + 1].1 = Json::from(lex_tick);
+        }
         let reason: String = hook.reason.chars().take(300).collect();
         let reason = if reason.trim().is_empty() { "a Lex native".to_owned() } else { reason };
-        let (swarm, agent, tick, writer) = (&mut *self.swarm, self.agent, self.tick, self.writer);
-        let commit = &mut |w: &mut World, mark: Mark, _: &str, _| match writer {
-            Some(by) => swarm.check_game_changes(w, mark, tick, agent, by),
-            None => {
+        let (swarm, agent, tick, staged) = (&mut *self.swarm, self.agent, self.tick, self.staged);
+        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
+            if !staged {
                 swarm.game_changes(w, tick, agent, Kind::GameTick);
-                Ok(())
             }
+            Ok(())
         };
-        match self.logic.call_hook(&hook.hook, &Json::Obj(a), &reason, agent, self.world, self.tick, self.hz, commit) {
+        match self.logic.call_hook(&hook.hook, self.args, &reason, agent, self.world, self.tick, self.hz, commit) {
             Ok(_) => Ok(()),
             Err(e) => {
                 *self.failures += 1;
@@ -244,8 +287,19 @@ impl crate::Engine {
     pub(crate) fn lex_live_tick(&mut self) {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz });
+        lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, TICK_BUDGET, STEP_DEADLINE);
     }
+}
+
+fn halt(run: &mut Run, code: &str, message: String) {
+    eprintln!("specula: live Lex run {} halted at tick {}: {message}", run.agent, run.sim.tick());
+    run.halted = Some(Json::obj([("error", Json::from(code)), ("message", Json::from(message)), ("tick", Json::from(run.sim.tick()))]));
+}
+
+fn halted_error(run: &Run) -> ToolOutput {
+    let mut j = run.halted.clone().unwrap_or(Json::Null);
+    j.set("hint", Json::from("the run is halted; lex_live {action: stop} it, then start it again"));
+    ToolOutput::error(j.to_pretty())
 }
 
 impl Live {
@@ -253,21 +307,26 @@ impl Live {
         match call {
             LiveCall::Start(s) => self.start(*s, w, env),
             LiveCall::Stop { set } => {
-                let Some(run) = self.runs.remove(&set) else { return no_run(self, &set) };
-                let mut j = status_json(&set, &run, env.natives);
-                j.set("stopped", Json::Bool(true));
-                if env.world.get(run.group).is_some() {
-                    let group = run.group;
+                let Some(run) = self.runs.get(&set) else { return no_run(self, &set) };
+                if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{set}"), w, "stop this live run") {
+                    return world_error(&e);
+                }
+                let group = run.group;
+                if env.world.get(group).is_some() {
                     if let Err(e) = env.swarm.commit(env.world, env.tick, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
-                        // The run is stopped either way; its entities stay for whoever holds them.
-                        j.set("cleanup_refused", e.to_json());
+                        return world_error(&e);
                     }
                 }
+                let run = self.runs.remove(&set).expect("found above");
+                let mut j = status_json(&set, &run, env.natives);
+                j.set("stopped", Json::Bool(true));
                 ToolOutput::text(j.to_pretty())
             }
             LiveCall::Command { set, name, args } => {
-                let agent = format!("lex:{set}");
                 let Some(run) = self.runs.get_mut(&set) else { return no_run(self, &set) };
+                if run.halted.is_some() {
+                    return halted_error(run);
+                }
                 if run.journal.len() >= MAX_JOURNAL {
                     return error("journal_full", format!("this run has journaled {MAX_JOURNAL} commands; stop it and start another to keep runs replayable"));
                 }
@@ -281,28 +340,54 @@ impl Live {
                 };
                 let at = run.sim.tick();
                 let Env { world, logic, swarm, tick, hz, .. } = env;
-                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, writer: Some(w) };
-                match run.sim.apply_hosted(&call, &mut host) {
-                    Ok(()) => {
-                        run.journal.push((at, name.clone(), args.clone(), by.to_owned()));
-                        present(world, swarm, tick, &agent, run);
-                        let j = Json::obj([
-                            ("accepted", Json::Bool(true)),
-                            ("set", Json::from(set.as_str())),
-                            ("command", Json::from(name.as_str())),
-                            ("tick", Json::from(at)),
-                            ("hash", hex(run.sim.hash())),
-                        ]);
-                        ToolOutput::text(j.to_pretty())
+                // The command and its module hooks' world changes are one unit: staged under
+                // one mark, kept only if the command succeeds and the agent's claims allow them.
+                let before = run.sim.clone();
+                let mark = world.mark();
+                let agent = run.agent.clone();
+                let result = {
+                    let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: true };
+                    let sim = &mut run.sim;
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_hosted(&call, &mut host)))
+                };
+                let refused = match result {
+                    Err(p) => {
+                        world.rollback_to(mark);
+                        run.sim = before;
+                        let message = format!("a native panicked in command '{name}': {}", panic_text(&*p));
+                        halt(run, "native_panicked", message);
+                        return halted_error(run);
                     }
-                    Err(r) => {
-                        let mut j = r.to_json();
-                        j.set("tick", Json::from(at));
-                        j.set("command", Json::from(name.as_str()));
-                        push_recent(&mut run.recent, j.clone());
-                        ToolOutput::error(j.to_pretty())
-                    }
+                    Ok(Err(r)) => Some(r),
+                    Ok(Ok(())) => None,
+                };
+                if let Some(r) = refused {
+                    world.rollback_to(mark);
+                    let mut j = r.to_json();
+                    j.set("tick", Json::from(at));
+                    j.set("command", Json::from(name.as_str()));
+                    push_recent(&mut run.recent, j.clone());
+                    return ToolOutput::error(j.to_pretty());
                 }
+                if let Err(e) = swarm.check_game_changes(world, mark, tick, &agent, w) {
+                    // The world is back at the mark; the run goes back with it.
+                    run.sim = before;
+                    let mut j = e.to_json();
+                    j.set("command", Json::from(name.as_str()));
+                    j.set("note", Json::from("the command's module hooks changed the world where a claim refuses it; nothing was applied"));
+                    return ToolOutput::error(j.to_pretty());
+                }
+                run.journal.push((at, name.clone(), args.clone(), by.to_owned()));
+                run.presented = None;
+                present(world, swarm, tick, run);
+                let j = Json::obj([
+                    ("accepted", Json::Bool(true)),
+                    ("set", Json::from(set.as_str())),
+                    ("command", Json::from(name.as_str())),
+                    ("tick", Json::from(at)),
+                    ("hash", hex(run.sim.hash())),
+                ]);
+                ToolOutput::text(j.to_pretty())
             }
             LiveCall::Status { set } => {
                 let list: Vec<Json> = match &set {
@@ -313,7 +398,8 @@ impl Live {
                     None => self.runs.iter().map(|(s, r)| status_json(s, r, env.natives)).collect(),
                 };
                 let hooks: Vec<Json> = env.logic.hooks().iter().map(|h| Json::from(h.qualified())).collect();
-                ToolOutput::text(Json::obj([("runs", Json::Arr(list)), ("module_hooks", Json::Arr(hooks))]).to_pretty())
+                let budget = Json::obj([("tick_budget_ms", Json::from(TICK_BUDGET.as_secs_f64() * 1000.0)), ("step_deadline_ms", Json::from(STEP_DEADLINE.as_secs_f64() * 1000.0))]);
+                ToolOutput::text(Json::obj([("runs", Json::Arr(list)), ("module_hooks", Json::Arr(hooks)), ("budget", budget)]).to_pretty())
             }
             LiveCall::Journal { set, offset, limit } => {
                 let Some(run) = self.runs.get(&set) else { return no_run(self, &set) };
@@ -358,6 +444,9 @@ impl Live {
         if self.runs.len() >= MAX_RUNS {
             return error("runs_full", format!("{MAX_RUNS} sets are live; stop one first"));
         }
+        if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{}", s.set), w, "start this live run") {
+            return world_error(&e);
+        }
         let sim = match Sim::new_hosted(Arc::clone(&s.rules), s.seed, env.natives) {
             Ok(sim) => sim,
             Err(m) => return error("native_failed", m),
@@ -365,22 +454,11 @@ impl Live {
         let set = s.set.clone();
         // The group: /lex_live/<set>, replacing a leftover one (a saved world, say).
         let made = env.swarm.commit(env.world, env.tick, w, Kind::Batch, |wd| {
-            let root = match wd.find_path(&format!("/{ROOT}")) {
-                Ok(id) => id,
-                Err(_) => {
-                    let mut g = SpawnSpec::new(Shape::Group);
-                    g.name = Some(ROOT.into());
-                    wd.spawn(g, w.name)?.id
-                }
-            };
+            let root = root_group(wd, w.name)?;
             if let Ok(old) = wd.find_path(&format!("/{ROOT}/{set}")) {
                 wd.delete(&EntityKey::Id(old), None)?;
             }
-            let mut g = SpawnSpec::new(Shape::Group);
-            g.name = Some(set.clone());
-            g.parent = Some(EntityKey::Id(root));
-            g.props = Json::obj([("lex_live", Json::obj([("set", Json::from(set.as_str())), ("seed", Json::from(s.seed.to_string()))]))]);
-            Ok(wd.spawn(g, w.name)?.id)
+            run_group(wd, root, &set, s.seed, w.name)
         });
         let group = match made {
             Ok((id, _)) => id,
@@ -389,42 +467,73 @@ impl Live {
         let rules_present = s.present.into_iter().map(|p| (filter_of(&s.rules, &p.tags), p.spawn)).collect();
         let mut run = Run {
             sim,
+            agent: format!("lex:{}", s.set),
             seed: s.seed,
             params: s.params,
             started: env.tick,
             present: rules_present,
             group,
             shown: BTreeMap::new(),
+            presented: None,
             hidden: 0,
             present_error: None,
+            behind: 0,
+            halted: None,
             journal: Vec::new(),
             recent: VecDeque::new(),
             hook_calls: 0,
             hook_failures: 0,
+            args: Json::Null,
         };
-        present(env.world, env.swarm, env.tick, &format!("lex:{}", s.set), &mut run);
+        present(env.world, env.swarm, env.tick, &mut run);
         let mut j = status_json(&s.set, &run, env.natives);
         j.set("started", Json::Bool(true));
         self.runs.insert(s.set, run);
         ToolOutput::text(j.to_pretty())
     }
 
-    /// One engine tick: each run steps the Lex ticks its rate has accumulated, then shows them.
-    pub(crate) fn tick(&mut self, env: Env) {
+    /// One engine tick: each run steps the Lex ticks its rate has accumulated, within `budget`
+    /// for all of them together, then shows what changed.
+    pub(crate) fn tick(&mut self, env: Env, budget: Duration, step_deadline: Duration) {
         let Env { world, logic, swarm, tick, hz, .. } = env;
         let hz = hz.max(1);
-        for (set, run) in self.runs.iter_mut() {
-            let agent = format!("lex:{set}");
+        let start = Instant::now();
+        let n = self.runs.len().max(1);
+        let first = self.next_first % n;
+        self.next_first = self.next_first.wrapping_add(1);
+        let order: Vec<String> = self.runs.keys().cycle().skip(first).take(self.runs.len()).cloned().collect();
+        for set in order {
+            let Some(run) = self.runs.get_mut(&set) else { continue };
+            if run.halted.is_some() {
+                continue;
+            }
             let lex_hz = u64::from(run.sim.rules().tick_hz);
             let done = tick.saturating_sub(run.started) + 1;
             let target = (u128::from(done) * u128::from(lex_hz) / u128::from(hz)).min(u128::from(u32::MAX)) as u32;
             let mut steps = 0;
-            while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK {
-                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, writer: None };
-                run.sim.step_hosted(&[], &mut host);
+            while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK && start.elapsed() < budget {
+                let agent = run.agent.clone();
+                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: false };
+                let sim = &mut run.sim;
+                sim.set_deadline(Some(Instant::now() + step_deadline));
+                let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.step_hosted(&[], &mut host)));
+                sim.set_deadline(None);
+                if let Err(p) = stepped {
+                    let message = format!("a native panicked: {}", panic_text(&*p));
+                    halt(run, "native_panicked", message);
+                    break;
+                }
+                if run.sim.interrupted() {
+                    let message = format!("one Lex tick took more than {} ms (the live limit), so the run stopped part-way through it; lighten the rules (fewer entities scanning each other, longer cooldowns) or simulate them headless with lex_simulate", step_deadline.as_millis());
+                    halt(run, "tick_overrun", message);
+                    break;
+                }
                 steps += 1;
             }
-            present(world, swarm, tick, &agent, run);
+            run.behind = u64::from(target.saturating_sub(run.sim.tick())) * u64::from(run.sim.outcome().is_none() && run.halted.is_none());
+            if run.presented != Some(run.sim.tick()) {
+                present(world, swarm, tick, run);
+            }
         }
     }
 }
@@ -434,17 +543,51 @@ fn no_run(live: &Live, set: &str) -> ToolOutput {
     crate::lex_tools::err_with("not_running", format!("set '{set}' is not live"), vec![("live", Json::arr(names.iter().map(|n| Json::from(*n)))), ("suggestion", Json::from("lex_live {action: start, set}"))])
 }
 
-/// Shows the run's entities as world entities (journaled replay-only under `lex:<set>`).
-fn present(world: &mut World, swarm: &mut Swarm, tick: u64, agent: &str, run: &mut Run) {
-    if run.present_error.is_some() {
-        return;
+/// `/lex_live`, made if missing.
+fn root_group(wd: &mut World, by: &str) -> Result<u64, WorldError> {
+    match wd.find_path(&format!("/{ROOT}")) {
+        Ok(id) => Ok(id),
+        Err(_) => {
+            let mut g = SpawnSpec::new(Shape::Group);
+            g.name = Some(ROOT.into());
+            Ok(wd.spawn(g, by)?.id)
+        }
     }
+}
+
+/// `/lex_live/<set>`, a run's group.
+fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Result<u64, WorldError> {
+    let mut g = SpawnSpec::new(Shape::Group);
+    g.name = Some(set.to_owned());
+    g.parent = Some(EntityKey::Id(root));
+    g.props = Json::obj([("lex_live_run", Json::obj([("set", Json::from(set)), ("seed", Json::from(seed.to_string()))]))]);
+    Ok(wd.spawn(g, by)?.id)
+}
+
+/// Shows the run's entities as world entities (journaled replay-only under `lex:<set>`). A
+/// shown entity someone deleted is shown again; a deleted group is made again.
+fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
     let prev = world.recording();
     world.set_recording(Recording::Snapshot);
+    let agent = run.agent.clone();
+    let set = agent.trim_start_matches("lex:").to_owned();
+    if world.get(run.group).is_none() {
+        // Deleted under the run: make it again (its entities went with it).
+        run.shown.clear();
+        match root_group(world, &agent).and_then(|root| run_group(world, root, &set, run.seed, &agent)) {
+            Ok(g) => run.group = g,
+            Err(e) => {
+                run.present_error = Some(format!("the run's group /{ROOT}/{set} can't be made again: {}", e.message));
+                world.set_recording(prev);
+                swarm.game_changes(world, tick, &agent, Kind::GameTick);
+                return;
+            }
+        }
+    }
     let r = run.sim.rules().clone();
     let mut stale: Vec<u32> = Vec::new();
-    let mut fail: Option<String> = None;
     let mut hidden = 0;
+    let mut fail: Option<String> = None;
     {
         let mut shown = run.shown.iter().peekable();
         for e in run.sim.entities().iter().filter(|e| e.alive) {
@@ -461,12 +604,15 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, agent: &str, run: &m
                 }
                 (None, None) => hidden += 1,
                 (Some(ri), Some((wid, sri, pos))) if ri == sri => {
-                    if pos != e.pos {
+                    if pos != e.pos && world.get(wid).is_some() {
                         let change = UpdateSpec { position: Some(metres(e.pos)), ..Default::default() };
-                        if let Err(err) = world.update(&EntityKey::Id(wid), change, agent) {
+                        if let Err(err) = world.update(&EntityKey::Id(wid), change, &agent) {
                             fail = Some(format!("moving {}: {}", e.id, err.message));
-                            break;
+                            stale.push(e.id);
                         }
+                    } else if world.get(wid).is_none() {
+                        // Deleted by someone: shown again below.
+                        stale.push(e.id);
                     }
                 }
                 (Some(_), Some(_)) => stale.push(e.id),
@@ -477,42 +623,47 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, agent: &str, run: &m
     }
     for sid in &stale {
         if let Some(s) = run.shown.remove(sid) {
-            let _ = world.delete(&EntityKey::Id(s.id), None);
+            if world.get(s.id).is_some() {
+                let _ = world.delete(&EntityKey::Id(s.id), None);
+            }
         }
     }
-    // New (or re-ruled) entities, within the cap.
-    if fail.is_none() {
-        for e in run.sim.entities().iter().filter(|e| e.alive) {
-            if run.shown.contains_key(&e.id) {
-                continue;
+    // New (or re-ruled, or deleted) entities, within the cap.
+    for e in run.sim.entities().iter().filter(|e| e.alive) {
+        if run.shown.contains_key(&e.id) {
+            continue;
+        }
+        let Some(ri) = run.present.iter().position(|(f, _)| matches_arch(&r, e.arch, f)) else { continue };
+        if run.shown.len() >= MAX_SHOWN {
+            hidden += 1;
+            continue;
+        }
+        let Ok(mut spec) = crate::tools::parse_spawn_fields(&run.present[ri].1) else {
+            fail = Some(format!("present rule {ri} no longer parses"));
+            hidden += 1;
+            continue;
+        };
+        spec.name = Some(format!("e{}", e.id));
+        spec.parent = Some(EntityKey::Id(run.group));
+        spec.position = metres(e.pos);
+        let mut props = Json::obj([("lex_live", Json::obj([("id", Json::from(e.id)), ("archetype", Json::from(r.archetypes[usize::from(e.arch)].id.as_str()))]))]);
+        if let Json::Obj(extra) = &spec.props {
+            for (k, v) in extra {
+                props.set(k, v.clone());
             }
-            let Some(ri) = run.present.iter().position(|(f, _)| matches_arch(&r, e.arch, f)) else { continue };
-            if run.shown.len() >= MAX_SHOWN {
+        }
+        spec.props = props;
+        // A leftover entity with this name (someone renamed or kept it) gives way.
+        if let Ok(old) = world.find_path(&format!("/{ROOT}/{set}/e{}", e.id)) {
+            let _ = world.delete(&EntityKey::Id(old), None);
+        }
+        match world.spawn(spec, &agent) {
+            Ok(ent) => {
+                run.shown.insert(e.id, Shown { id: ent.id, rule: ri, pos: e.pos });
+            }
+            Err(err) => {
+                fail = Some(format!("showing {}: {}", e.id, err.message));
                 hidden += 1;
-                continue;
-            }
-            let Ok(mut spec) = crate::tools::parse_spawn_fields(&run.present[ri].1) else {
-                fail = Some(format!("present rule {ri} no longer parses"));
-                break;
-            };
-            spec.name = Some(format!("e{}", e.id));
-            spec.parent = Some(EntityKey::Id(run.group));
-            spec.position = metres(e.pos);
-            let mut props = Json::obj([("lex_live", Json::obj([("id", Json::from(e.id)), ("archetype", Json::from(r.archetypes[usize::from(e.arch)].id.as_str()))]))]);
-            if let Json::Obj(extra) = &spec.props {
-                for (k, v) in extra {
-                    props.set(k, v.clone());
-                }
-            }
-            spec.props = props;
-            match world.spawn(spec, agent) {
-                Ok(ent) => {
-                    run.shown.insert(e.id, Shown { id: ent.id, rule: ri, pos: e.pos });
-                }
-                Err(err) => {
-                    fail = Some(format!("showing {}: {}", e.id, err.message));
-                    break;
-                }
             }
         }
     }
@@ -522,9 +673,12 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, agent: &str, run: &m
         }
     }
     run.hidden = hidden;
-    run.present_error = fail;
+    if fail.is_some() {
+        run.present_error = fail;
+    }
+    run.presented = Some(run.sim.tick());
     world.set_recording(prev);
-    swarm.game_changes(world, tick, agent, Kind::GameTick);
+    swarm.game_changes(world, tick, &agent, Kind::GameTick);
 }
 
 fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json {
@@ -552,6 +706,8 @@ fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json 
         ("entities", Json::from(run.sim.entities().iter().filter(|e| e.alive).count())),
         ("shown", Json::from(run.shown.len())),
         ("hidden", Json::from(run.hidden)),
+        ("behind", Json::from(run.behind)),
+        ("halted", run.halted.clone().unwrap_or(Json::Null)),
         ("commands", Json::from(run.journal.len())),
         ("hash", hex(run.sim.hash())),
         ("rules_hash", hex(r.hash)),
@@ -740,7 +896,8 @@ mod tests {
         fn ticks(&mut self, n: u64) {
             for _ in 0..n {
                 let env = Env { world: &mut self.world, logic: &mut self.logic, swarm: &mut self.swarm, natives: &self.natives, tick: self.tick, hz: self.hz };
-                self.live.tick(env);
+                // No wall-clock budget in tests (deterministic): the step deadline still applies.
+                self.live.tick(env, Duration::from_secs(3600), STEP_DEADLINE);
                 self.tick += 1;
             }
         }
@@ -846,6 +1003,201 @@ mod tests {
         assert!(out.is_error && json(&out).get("error") == Some(&Json::from("claimed")), "{}", json(&out));
         let st = json(&rig.call(LiveCall::Status { set: Some("t".into()) }));
         assert_eq!(st.get("runs").and_then(Json::as_array).unwrap()[0].get("commands").and_then(Json::as_u64), Some(0), "nothing was applied");
+    }
+
+    fn two_agents(rig: &mut Rig) -> (SessionInfo, SessionInfo) {
+        let session = |id: &str| SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let (ann, bob) = (session("aaaaaa11"), session("bbbbbb22"));
+        let live = vec![ann.clone(), bob.clone()];
+        rig.swarm.hello(&ann, "ann".into(), "builder".into(), None, &live).unwrap();
+        rig.swarm.hello(&bob, "bob".into(), "builder".into(), None, &live).unwrap();
+        (ann, bob)
+    }
+
+    /// Review repro (probe.py claims): bob's claim on the run holds ann's stop too; a region
+    /// claim at the origin doesn't hold a start (live runs' output has no region footprint).
+    #[test]
+    fn claims_hold_stop_and_regions_dont_cover_live_runs() {
+        use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
+        let mut rig = Rig::new(30);
+        let (_, bob) = two_agents(&mut rig);
+        let region = Scope::region(Vec3::new(-100.0, -100.0, -100.0), Vec3::new(100.0, 100.0, 100.0)).unwrap();
+        rig.swarm.take_claim(&rig.world, &bob, ClaimSpec { scope: region, lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let out = rig.call(start(walkers_as_spheres()));
+        assert!(!out.is_error, "a region claim at the origin doesn't block a start: {}", json(&out));
+        rig.ticks(40);
+        assert!(!rig.shown().is_empty(), "entities shown inside bob's region");
+        rig.swarm.take_claim(&rig.world, &bob, ClaimSpec { scope: Scope::path("/lex_live/t").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let out = rig.call(LiveCall::Stop { set: "t".into() });
+        assert!(out.is_error && json(&out).get("error") == Some(&Json::from("claimed")), "{}", json(&out));
+        assert!(!rig.call(LiveCall::Status { set: Some("t".into()) }).is_error, "still live");
+    }
+
+    /// Review repro (probe.py heavy): live runs get a time budget per engine tick (they fall
+    /// behind, and catch up), and one Lex tick past the step deadline halts its run, not the
+    /// engine. (Zero budgets make both deterministic here.)
+    #[test]
+    fn live_runs_fall_behind_within_the_budget_and_overruns_halt_the_run() {
+        let mut rig = Rig::new(30);
+        rig.call(start(walkers_as_spheres()));
+        for _ in 0..10 {
+            let env = Env { world: &mut rig.world, logic: &mut rig.logic, swarm: &mut rig.swarm, natives: &rig.natives, tick: rig.tick, hz: rig.hz };
+            rig.live.tick(env, Duration::ZERO, STEP_DEADLINE);
+            rig.tick += 1;
+        }
+        let run = &json(&rig.call(LiveCall::Status { set: Some("t".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
+        assert_eq!((run.get("tick").and_then(Json::as_u64), run.get("behind").and_then(Json::as_u64)), (Some(0), Some(10)), "{run}");
+        rig.ticks(1);
+        let run = &json(&rig.call(LiveCall::Status { set: Some("t".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
+        assert_eq!((run.get("tick").and_then(Json::as_u64), run.get("behind").and_then(Json::as_u64)), (Some(11), Some(0)), "caught up: {run}");
+
+        // A set heavy enough to cross the deadline checks (thousands of entities pulsing).
+        let heavy = r#"{"lex": 1, "name": "heavy", "tick_hz": 30, "items": {
+            "lane": {"kind": "path", "points": [[0,0,0],[1,0,0]]},
+            "e": {"kind": "archetype", "tags": ["enemy"], "attributes": {"hp": "1000000pt"},
+                  "behaviours": [{"type": "health", "attribute": "hp"},
+                                 {"type": "attack", "targets": ["enemy"], "range": "1000m", "cooldown": "0.034s", "delivery": "pulse", "payload": [{"damage": "0pt"}]}]},
+            "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "e", "count": 600, "at": ["lane"], "every": "0s"}]}]}}}"#;
+        let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(heavy).unwrap(), &Options::default()).unwrap().rules);
+        let s = Start { set: "heavy".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new() };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        for _ in 0..3 {
+            let env = Env { world: &mut rig.world, logic: &mut rig.logic, swarm: &mut rig.swarm, natives: &rig.natives, tick: rig.tick, hz: rig.hz };
+            rig.live.tick(env, Duration::from_secs(3600), Duration::ZERO);
+            rig.tick += 1;
+        }
+        let run = &json(&rig.call(LiveCall::Status { set: Some("heavy".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
+        assert_eq!(run.get("halted").and_then(|h| h.get("error")), Some(&Json::from("tick_overrun")), "{run}");
+        let refused = rig.call(LiveCall::Command { set: "heavy".into(), name: "x".into(), args: Json::Null });
+        assert!(refused.is_error && json(&refused).get("error") == Some(&Json::from("tick_overrun")), "a halted run takes no commands");
+    }
+
+    /// An in-process native that panics halts its run (in a tick or in a command); the engine
+    /// goes on.
+    #[test]
+    fn a_panicking_native_halts_its_run_not_the_engine() {
+        struct Boom;
+        impl specula_lex::NativeHook for Boom {
+            fn run(&self, cx: &mut specula_lex::NativeCtx<'_, '_>) -> Result<(), String> {
+                if cx.tick() >= 3 {
+                    panic!("boom at tick {}", cx.tick());
+                }
+                Ok(())
+            }
+        }
+        let items = RULES.replace(r#""glow": {"kind": "native", "hook": "fx/glow", "reason": "a world effect", "phase": "any"},"#, r#""glow": {"kind": "native", "hook": "test.boom", "reason": "a test", "phase": "any"}, "tick_boom": {"kind": "timer", "every": "1t", "do": [{"native": "glow"}]},"#);
+        let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
+        let mut rig = Rig::new(30);
+        rig.natives.insert("test.boom".into(), Arc::new(Boom) as Arc<dyn specula_lex::NativeHook>);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new() };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.ticks(10);
+        let run = &json(&rig.call(LiveCall::Status { set: Some("t".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
+        let halted = run.get("halted").unwrap();
+        assert_eq!(halted.get("error"), Some(&Json::from("native_panicked")), "{run}");
+        assert!(halted.get("message").and_then(Json::as_str).is_some_and(|m| m.contains("boom at tick 3")), "{halted}");
+        assert_eq!(run.get("tick").and_then(Json::as_u64), Some(3), "it stepped no more");
+        // Stopping still works.
+        assert!(!rig.call(LiveCall::Stop { set: "t".into() }).is_error);
+    }
+
+    /// Review finding 9: one failed presentation write doesn't stop presenting; an entity or the
+    /// group someone deleted is shown again.
+    #[test]
+    fn deleted_presentation_comes_back() {
+        let mut rig = Rig::new(30);
+        rig.call(start(walkers_as_spheres()));
+        rig.ticks(40);
+        let e1 = rig.world.find_path("/lex_live/t/e1").unwrap();
+        rig.world.delete(&EntityKey::Id(e1), None).unwrap();
+        rig.ticks(1);
+        assert!(rig.world.find_path("/lex_live/t/e1").is_ok(), "shown again");
+        let g = rig.world.find_path("/lex_live/t").unwrap();
+        rig.world.delete(&EntityKey::Id(g), None).unwrap();
+        rig.ticks(1);
+        assert!(rig.world.find_path("/lex_live/t/e1").is_ok(), "group and entities made again");
+        let run = &json(&rig.call(LiveCall::Status { set: Some("t".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
+        assert_eq!(run.get("present_error"), None, "{run}");
+    }
+
+    /// Review repro (atomic.py): a command that calls a module hook (ambulo/launch writes the
+    /// player) and then fails keeps nothing: not the hook's world changes, not its journal.
+    /// Builds the ambulo module like `tests/module_reload.rs` (skips without Cargo or off Windows).
+    #[test]
+    fn a_refused_command_keeps_none_of_its_module_hooks_changes() {
+        use specula_logic::{BuildRequest, BuildService, ModuleCode};
+        use std::path::{Path, PathBuf};
+        if !cfg!(windows) {
+            println!("skipped: loading module libraries is Windows-only for now");
+            return;
+        }
+        let cargo = specula_logic::build::cargo_program();
+        if std::process::Command::new(&cargo).arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            println!("skipped: cargo is not available");
+            return;
+        }
+        fn copy_dir(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for e in std::fs::read_dir(from).unwrap().flatten() {
+                let (src, dst) = (e.path(), to.join(e.file_name()));
+                if src.is_dir() {
+                    if e.file_name() != "target" {
+                        copy_dir(&src, &dst);
+                    }
+                } else {
+                    std::fs::write(&dst, std::fs::read(&src).unwrap()).unwrap();
+                }
+            }
+        }
+        let repo = specula_logic::fix::canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(".."));
+        let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| repo.join("target"), PathBuf::from);
+        let base = specula_logic::fix::canonical(&target).join("module-tests-lex-live");
+        std::fs::create_dir_all(base.join(".cargo")).unwrap();
+        if let Ok(cfg) = std::fs::read(repo.join(".cargo").join("config.toml")) {
+            std::fs::write(base.join(".cargo").join("config.toml"), cfg).unwrap();
+        }
+        let dir = base.join("ambulo");
+        copy_dir(&repo.join("games").join("ambulo"), &dir);
+        let sdk = repo.join("crates").join("specula-sdk");
+        let manifest = format!(
+            "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n",
+            sdk.to_string_lossy().replace('\\', "/")
+        );
+        std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        let mut req = BuildRequest::new(&dir);
+        req.roots = vec![base.clone(), repo.clone()];
+        req.target_dir = Some(base.join("target"));
+        let built = BuildService::default().build(req);
+        assert!(built.ok, "ambulo builds: {:?} {:?}", built.error, built.stderr_tail);
+        let code = ModuleCode::open(built.library.as_ref().unwrap(), &base.join("loaded")).unwrap();
+        let mut rig = Rig::new(30);
+        let origin = crate::logic::Origin { dir: None, library: built.library.clone() };
+        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
+            w.take_changes();
+            Ok(())
+        };
+        rig.logic.load(code, origin, None, &mut rig.world, 0, 30, commit).unwrap();
+        let player = rig.world.find_path("/ambulo/player").unwrap();
+        let props_before = rig.world.get(player).unwrap().props.clone();
+
+        let set = r#"{"lex": 1, "name": "atom", "tick_hz": 30, "items": {
+            "launch": {"kind": "native", "hook": "ambulo/launch", "reason": "a world effect"},
+            "missing": {"kind": "native", "hook": "nomod/x", "reason": "a hook nobody provides"},
+            "jump": {"kind": "command", "do": [{"native": "launch", "args": {"speed": 7}}, {"native": "missing"}]},
+            "hop": {"kind": "command", "do": [{"native": "launch", "args": {"speed": 7}}]}}}"#;
+        let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(set).unwrap(), &Options::default()).unwrap().rules);
+        let s = Start { set: "atom".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new() };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        let hash = json(&rig.call(LiveCall::Status { set: Some("atom".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].get("hash").cloned();
+        let out = rig.call(LiveCall::Command { set: "atom".into(), name: "jump".into(), args: Json::Null });
+        assert!(out.is_error, "the second hook fails, so the command is refused: {}", json(&out));
+        assert_eq!(rig.world.get(player).unwrap().props, props_before, "the first hook's change was rolled back");
+        let st = json(&rig.call(LiveCall::Status { set: Some("atom".into()) }));
+        assert_eq!(st.get("runs").and_then(Json::as_array).unwrap()[0].get("hash").cloned(), hash, "and the run with it");
+        // A command that succeeds keeps (and journals) its hook's change.
+        let out = rig.call(LiveCall::Command { set: "atom".into(), name: "hop".into(), args: Json::Null });
+        assert!(!out.is_error, "{}", json(&out));
+        assert_ne!(rig.world.get(player).unwrap().props, props_before, "the launch landed");
     }
 
     #[test]

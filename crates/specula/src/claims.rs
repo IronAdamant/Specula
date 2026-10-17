@@ -646,13 +646,26 @@ fn rule_data_only(change: &Change) -> bool {
     }
 }
 
+/// A live Lex run's world entities staying in `/lex_live` (before and after): they move with the
+/// run's simulation every tick, like a hosted game's, so region scopes don't cover them (path
+/// claims on `/lex_live/<set>` do). An entity moved in or out is checked at both ends.
+fn lex_live_only(change: &Change) -> bool {
+    let under = |p: &str| p == "/lex_live" || p.starts_with("/lex_live/");
+    match change {
+        Change::Set { path, prev_path, .. } => under(path) && prev_path.as_deref().is_none_or(under),
+        Change::Spawn { path, .. } | Change::Delete { path, .. } => under(path),
+        _ => false,
+    }
+}
+
 /// World origins a change touches: the entity's before and after, and when it moved with
 /// descendants, theirs now and before the move.
 fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
     // Lex rule data has no place in the world: only path claims cover it. Anything else, in
-    // /lex or moving through it, is checked at both ends like any entity.
-    if rule_data_only(change) {
+    // /lex or moving through it, is checked at both ends like any entity. Live runs' output
+    // likewise.
+    if rule_data_only(change) || lex_live_only(change) {
         return points;
     }
     match change {
