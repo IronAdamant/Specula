@@ -27,11 +27,16 @@
 
 pub mod animator;
 pub mod blend;
+pub mod checks;
 pub mod clip;
 pub mod error;
+pub mod film;
 pub mod gen;
+pub mod graph;
+pub mod ik;
 pub mod math;
 pub mod measure;
+pub mod play;
 pub mod set;
 pub mod skeleton;
 pub mod skin;
