@@ -836,8 +836,12 @@ impl GpuInner {
     }
 
     /// `render`, plus sight's ID buffer: `ids` holds one id per draw of `frame` (0 = not
-    /// counted); read it back with [`GpuInner::read_ids`].
-    pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32]) -> Result<(), GpuError> {
+    /// counted), `occluders` pixel rectangles that hide what is under them in the ID buffer
+    /// (`Gpu::render_with_ids_occluded`); read it back with [`GpuInner::read_ids`].
+    pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32], occluders: &[[u32; 4]]) -> Result<(), GpuError> {
+        if occluders.len() > crate::MAX_ID_OCCLUDERS {
+            return Err(GpuError::limit(crate::Limit::IdOccluders, occluders.len() as u64, crate::MAX_ID_OCCLUDERS as u64));
+        }
         let expected = frame.draws.len() + frame.draws_2d.len();
         if ids.len() != expected {
             return Err(GpuError::rejected(
@@ -850,7 +854,7 @@ impl GpuInner {
                 ),
             ));
         }
-        self.render_frame(target, frame, Some(ids))
+        self.render_frame(target, frame, Some((ids, occluders)))
     }
 
     /// The opaque id image of the target's last render (`render_with_ids`).
@@ -876,7 +880,7 @@ impl GpuInner {
         self.ids.blended_disabled = !on;
     }
 
-    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<&[u32]>) -> Result<(), GpuError> {
+    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
         self.poll_pipelines();
         let Some(t) = self.targets.get_mut(&target.0) else {
@@ -918,8 +922,9 @@ impl GpuInner {
         prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let id_frame = match (ids, id_res) {
-            (Some(ids), Some(id_res)) => {
+            (Some((ids, occluders)), Some(id_res)) => {
                 let plans = (&self.scratch.plan, &self.scratch.two_d);
+                self.ids.set_occluders(occluders, extent);
                 Some(self.ids.frame(&self.device, &mut self.pipelines, plans, frame, ids, id_res, target.0, extent, &mut t.graph)?)
             }
             _ => None,
@@ -938,6 +943,7 @@ impl GpuInner {
             scratch: &self.scratch,
             upload,
             ids: id_frame,
+            id_occluders: if id_frame.is_some() { self.ids.occluders() } else { &[] },
             textures: &self.textures,
         };
         let graph = &mut t.graph;

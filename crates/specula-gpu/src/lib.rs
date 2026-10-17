@@ -276,6 +276,8 @@ pub enum Limit {
     OverlayQuads,
     /// Bone matrices per frame ([`MAX_BONE_MATRICES`]).
     BoneMatrices,
+    /// Occluder rectangles per ID render ([`MAX_ID_OCCLUDERS`]).
+    IdOccluders,
 }
 
 /// What was asked for and what is allowed.
@@ -337,6 +339,7 @@ impl GpuError {
             Limit::Textures => "textures (and post-chain images) alive at once",
             Limit::OverlayQuads => "overlay quads per frame",
             Limit::BoneMatrices => "bone matrices per frame",
+            Limit::IdOccluders => "ID buffer occluder rectangles per capture",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
@@ -714,6 +717,9 @@ pub const MAX_POINT_LIGHTS: usize = 16;
 
 /// At most this many overlay quads per frame.
 pub const MAX_OVERLAY_QUADS: usize = 65_536;
+
+/// At most this many occluder rectangles per ID render ([`Gpu::render_with_ids_occluded`]).
+pub const MAX_ID_OCCLUDERS: usize = 4096;
 
 /// At most this many bone matrices per frame ([`FrameDesc::bones`]): 64 MB of palettes.
 pub const MAX_BONE_MATRICES: usize = 1 << 20;
@@ -1281,7 +1287,20 @@ impl Gpu {
     /// rendered image is identical to `render`'s. Offscreen only: the window never runs these
     /// passes. The results live in buffers shared by every target, valid until the next ID render.
     pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32]) -> Result<(), GpuError> {
-        self.inner.render_with_ids(target, frame, ids)
+        self.inner.render_with_ids(target, frame, ids, &[])
+    }
+
+    /// [`Gpu::render_with_ids`] with `occluders`: pixel rectangles `[x, y, width, height]` (origin
+    /// top left, clamped to the target; empty ones ignored) that hide everything under them **in
+    /// the ID buffer only**, as an opaque interface panel drawn over the frame hides the scene:
+    /// the ID passes start with their depth at the near plane there, so no opaque or blended draw
+    /// counts a pixel under them, while the "rasterized at all" step (no depth test) still marks
+    /// what they cover, so an entity hidden entirely under them reports `rasterized` (occluded).
+    /// The rendered image is unchanged (the frame's own `overlay` draws the interface). One
+    /// clear of the ID depth per rectangle; at most [`MAX_ID_OCCLUDERS`], else a structured
+    /// limit error. With no occluders this is exactly `render_with_ids`.
+    pub fn render_with_ids_occluded(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32], occluders: &[[u32; 4]]) -> Result<(), GpuError> {
+        self.inner.render_with_ids(target, frame, ids, occluders)
     }
 
     /// The opaque ids of the target's last render; errors when it was not the last ID render.

@@ -380,6 +380,24 @@ pub struct VkRect2D {
     pub extent: VkExtent2D,
 }
 
+/// `vkCmdClearAttachments`: which attachment of the current rendering instance to clear.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VkClearAttachment {
+    pub aspect_mask: VkFlags,
+    pub color_attachment: u32,
+    pub clear_value: VkClearValue,
+}
+
+/// `vkCmdClearAttachments`: a region (and layers) to clear.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VkClearRect {
+    pub rect: VkRect2D,
+    pub base_array_layer: u32,
+    pub layer_count: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VkViewport {
@@ -1616,6 +1634,8 @@ fn_table! {
         cmd_set_depth_compare_op = c"vkCmdSetDepthCompareOp": fn(VkCommandBuffer, i32);
         cmd_copy_buffer_to_image = c"vkCmdCopyBufferToImage":
             fn(VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, u32, *const VkBufferImageCopy);
+        cmd_clear_attachments = c"vkCmdClearAttachments":
+            fn(VkCommandBuffer, u32, *const VkClearAttachment, u32, *const VkClearRect);
     }
 }
 
@@ -1722,6 +1742,8 @@ mod tests {
             VkRenderingInfo => 72, 8;
             VkRenderingAttachmentInfo => 72, 8;
             VkClearValue => 16, 4;
+            VkClearAttachment => 24, 4;
+            VkClearRect => 24, 4;
             VkRect2D => 16, 4;
             VkOffset2D => 8, 4;
             VkExtent2D => 8, 4;
