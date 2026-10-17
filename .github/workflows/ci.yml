@@ -65,3 +65,32 @@ jobs:
         run: cargo test --workspace
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  commit-messages:
+    # This repository is public: session and share links (claude.ai or any other) don't belong in commit
+    # messages. Only the commits this push or pull request adds are checked; history is left as it is.
+    name: commit messages (no session links)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check new commit messages
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # A new branch has no "before" commit: check only what isn't on main already.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=$(git merge-base origin/main "$HEAD" 2>/dev/null || echo "")
+          fi
+          RANGE=${BASE:-$HEAD~1}..$HEAD
+          PATTERN='https?://[^ ]*(claude\.ai/(code|chat|share)|chatgpt\.com/(c|share)/|grok\.com/(chat|share)|/session_[A-Za-z0-9]+)'
+          FOUND=$(git log --format='%h %B' "$RANGE" | grep -En "$PATTERN" || true)
+          if [ -n "$FOUND" ]; then
+            echo "::error::session or share links in commit messages ($RANGE):"
+            echo "$FOUND"
+            echo "Reword those commits before merging (see AGENTS.md rule 11)."
+            exit 1
+          fi
+          echo "checked $(git rev-list --count "$RANGE") commit(s) in $RANGE: no session links"

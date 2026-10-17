@@ -342,15 +342,11 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
   - `State::step` and `State::step_into` drive a game one tick at a time.
   - `State::hash()` lets a run check its determinism tick by tick.
 
-### Questions for the owner
+### Still open
 
-1. **Walls:** only on top-face lanes (as now), or on cliff lanes too?
-2. **The colossus:** is a boss leak meant to be survivable, as it is now (5 tombstones, about 30 % of good runs), or
-   should it be a must-kill?
-3. **Edge reach:** 3 m (two cell rows) for range across faces. Too generous, or too strict?
-4. **Wraiths:** should rune pillars slow flyers? For now the obelisk is the only answer to them, as written above.
-5. **Calling waves early:** 0.5 dust for every second left is small. Should it be a real economy lever?
-6. **Breaking walls:** is 8 m per wall a good weight? It makes enemies prefer breaking one wall to two.
+The owner's open questions on these rules (walls on cliff lanes, the colossus, edge reach, wraiths, calling waves
+early, breaking walls) are kept with every other owner question in
+[HANDOFF.md](../../HANDOFF.md#open-owner-decisions), so there is one list.
 
 ## Camera and controls
 

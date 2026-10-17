@@ -35,6 +35,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
     deterministic simulation ([docs/design/DETERMINISM.md](docs/design/DETERMINISM.md)), low-end performance (Intel
     iGPU is the reference), physics/animation designed in, humans optional but never locked out, portable by design
     (mobile comes later; nothing may assume desktop, x86 or a keyboard).
+11. **No session or share links in commit messages** (claude.ai sessions and the like): the repo is public. The CI job
+    `commit-messages` rejects them in new commits; don't rewrite older history.
 
 ## Layout
 
@@ -46,6 +48,14 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |
 | `specula-protocol` | HTTP/1.1 + MCP server for agents |
 | `specula` (bin) | world server: world, rendering, agent tools |
+| `specula-input` | actions, not keys: keyboard, mouse, gamepad (XInput), touch |
+| `specula-audio` | output (WASAPI), mixing, synthesis, analysis |
+| `specula-text` | TrueType fonts → glyph atlas → laid-out quads (CPU) |
+| `specula-ui` | HUD and menu toolkit for agents and humans |
+| `specula-anim` | skeletal animation (stages A1–A2) |
+| `specula-model` | procedural modelling: recipes → meshes, LODs, colliders |
+| `specula-gltf` | glTF 2.0 / GLB import and export |
+| `games/sepulcra`, `games/sepulcra-app` | the first game: headless rules, and the app hosted by the engine |
 
 ## Tooling on this machine
 

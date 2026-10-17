@@ -3,6 +3,7 @@
 use specula_core::Json;
 use specula_protocol::{
     Content, Server, ServerConfig, SessionInfo, ToolDef, ToolHandler, ToolOutput, LATEST_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
 };
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -249,6 +250,8 @@ fn version_negotiation() {
         ("2025-03-26", "2025-03-26"),
         ("2024-11-05", LATEST_PROTOCOL_VERSION),
         ("1999-01-01", LATEST_PROTOCOL_VERSION),
+        // The session-less revision isn't served: a client asking for it is offered ours.
+        ("2026-07-28", "2025-11-25"),
     ] {
         let (_, resp) = initialize(&mut c, asked, "v");
         let got = resp.json().get("result").unwrap().get("protocolVersion").and_then(Json::as_str).map(str::to_owned);
@@ -256,7 +259,16 @@ fn version_negotiation() {
     }
     let resp = post(&mut c, None, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
     assert_eq!(resp.error_code(), Some(-32602));
-    assert_eq!(server.sessions().len(), 4);
+    assert_eq!(server.sessions().len(), 5);
+}
+
+/// The MCP revisions are pinned: moving to another (2026-07-28 drops `initialize` and sessions) is
+/// the owner's decision, so it must be a deliberate change to this test too.
+#[test]
+fn supported_revisions_are_pinned() {
+    assert_eq!(SUPPORTED_PROTOCOL_VERSIONS, ["2025-11-25", "2025-06-18", "2025-03-26"]);
+    assert_eq!(LATEST_PROTOCOL_VERSION, "2025-11-25");
+    assert_eq!(SUPPORTED_PROTOCOL_VERSIONS[0], LATEST_PROTOCOL_VERSION);
 }
 
 #[test]

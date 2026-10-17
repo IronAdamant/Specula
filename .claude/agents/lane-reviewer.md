@@ -12,7 +12,7 @@ You receive: the worktree path or branch, the lane's brief, and the lane's repor
 
 ## How to review
 
-1. Read `AGENTS.md` (hard rules 1–10, foundations F1–F6) and the brief. Then read **the diff**
+1. Read `AGENTS.md` (hard rules 1–11, foundations F1–F6) and the brief. Then read **the diff**
    (`git diff main...<branch>` or `git -C <worktree> diff main...HEAD`), and the files it touches in full where
    the diff is not enough to judge.
 2. Build and test it yourself in the worktree; never trust the report's numbers:

@@ -118,8 +118,7 @@ colour and roughness alone (procedural tier 1).
 | Point lights on screen | 16 maximum (engine limit); prefer emissive without lights |
 | Draw calls | under 300 per frame after instancing |
 
-## Open questions for the owner
+## Still open
 
-- Do you like the **floating slab over mist**? The alternative is a slab sitting in a dark canyon.
-- **Cyan magic vs green dead:** happy with these two families, or another pair?
-- How dark should night be? This proposes "readable moonlight", not "pitch black with torches".
+This bible's open questions (slab over mist or a canyon, cyan magic vs green dead, how dark night is) are kept
+with every other owner question in [HANDOFF.md](../../HANDOFF.md#open-owner-decisions), so there is one list.

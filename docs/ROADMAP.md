@@ -106,12 +106,11 @@ Phase D  Ship                export, packaging, Steam (owner decision), Deck Ver
    files. Agents edit text far faster and more reliably than binary assets.
 
 **Owner decisions that affect speed:**
-- [ ] **First game's scope:** genre, art style, size and languages. This sets every lane's depth for Phase B.
-  Criteria, questions and scoring: [GAME_SELECTION.md](GAME_SELECTION.md). **Genre chosen 2026-10-13:** a 3D tower
-  defence on a shattered slab, working title *Sepulcra* ([games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md)).
-  Art style and launch languages are still open.
-- [ ] **Steamworks** (`steam_api64.dll`, runtime-loaded like Vulkan): allowed as an optional platform service? It's
-  needed for achievements, cloud saves and Steam Input glyphs.
+- **Still open** (first game's art style, size and languages; Steamworks; and the rest): the one list is
+  [Open owner decisions](../HANDOFF.md#open-owner-decisions) in HANDOFF.md.
+- [x] **First game's genre:** a 3D tower defence on a shattered slab, working title *Sepulcra*
+  ([games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md)), chosen 2026-10-13 with
+  [GAME_SELECTION.md](GAME_SELECTION.md).
 - [x] **v1.0 platforms:** Windows + Steam Deck (owner, 2026-10-13). macOS stays on the platform track for after v1.0.
   **Mobile (Android, iOS) comes later**, after v1.0, once the owner is ready to learn it. Foundation F6 keeps the
   engine portable so that port stays cheap.
@@ -271,10 +270,13 @@ top of it.
 - [ ] **One far-away object shrinks an auto-framed view to a dot.** → M2: frame by clusters or ignore outliers.
 - [ ] **Throughput is vsync-paced** (about 60 calls/s per agent with a window open). → M1: batch tool, and commands
   applied separately from present.
-- [ ] **A 257th open connection gets a TCP reset** instead of an HTTP 503. → M1.
-- [ ] **No persistence.** Everything built is lost when the engine closes. → **first item of M1**.
+- [x] **A 257th open connection gets a TCP reset** instead of an HTTP 503. → M1 (done: 503 with `Retry-After`;
+  `connection_limit_answers_503_not_a_reset` in `crates/specula-protocol/tests/mcp_http.rs`).
+- [x] **No persistence.** Everything built is lost when the engine closes. → **first item of M1** (done: text world
+  files, `world_save` / `world_load`, autosave with `--world NAME`).
 - [ ] **Watch the MCP revision.** MCP revision 2026-07-28 drops `initialize` and sessions; we serve 2025-11-25 (plus
-  06-18 and 03-26). Revisit when clients move.
+  06-18 and 03-26). Revisit when clients move. Pinned by `version_negotiation` and `supported_revisions_are_pinned` in
+  `crates/specula-protocol/tests/mcp_http.rs`; when to move is an [open owner decision](../HANDOFF.md#open-owner-decisions).
 
 ---
 

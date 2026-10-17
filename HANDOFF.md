@@ -1,51 +1,41 @@
 # Handoff: read this first
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
-memory of the earlier ones. Last updated **2026-10-16**.
+memory of the earlier ones. This page is **current state and what's next** only; history is in
+[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-17**.
 
-- **START HERE next session:** the owner asked (2026-10-13) for subagent swarms to advance M1 and M2 **while
-  building Sepulcra to completion as dogfood** (Windows first), keep improving the lava lamps as features land,
-  and keep performance baselines. Work runs as **lanes**: one subagent per crate/area in a git worktree, each
-  attacked by a `lane-reviewer` before merge (`.claude/agents/`). Check `git log` and the roadmap ticks for
-  where things stand. Game docs: [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers, owner questions),
-  [STYLE.md](games/sepulcra/STYLE.md) (Claude's style bible draft; owner questions at the end).
-  How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
-- **M2 complete 2026-10-16** (owner: "Proceed with agent swarm on M2. Do not start off on M3 yet without my
-  permission"). All 16 items and the three exit criteria are on `main`; `python scripts/m2_exit.py --adapter both`
-  re-checks them (after `cargo build --release -p specula`). Merged since the 2026-10-15 pause: 2D, Sight (ID buffer,
-  persistent per-agent cameras, orbit, compare, overlays), the exit proof with an incremental window draw cache and
-  coarse far LODs, and `perf_frame.render_graph`.
-  - **Owner decisions 2026-10-15** (done): named cameras persist with the world (name-keyed, journaled, outside
-    `world_hash`, `window_view {camera}` until a human takes the view back; games get `Frame::agent_view`); transient
-    2D shapes have their own budget (250k vertices vs 2M, `perf.toml`).
-  - **Sepulcra integration merged 2026-10-16** (fdbe1b8): recipe models, GPU-skinned creatures with state-driven
-    clips, transient presentation, a `specula-ui` HUD through `GpuOverlay` (`play_ui` for agents), procedural 3D
-    audio, `--seed`/`--mute`, a darker night. In-game test plan for the owner: `games/sepulcra/TESTPLAN.md`.
-    Capture: `docs/fidelity/sepulcra_slice_hud.png`. iGPU wave 6: 4.3 ms GPU, 0 allocations per warm frame.
-  - **Small follow-ups found by the skeptic (not started):** `include_ui` packets count entities as visible under
-    HUD panels (the ID buffer ignores the UI layer); the sky's horizon edge is crisp where `sky.frag` line 63 should
-    smoothstep (hidden by mist now); a near-white slab under a selected brazier (likely its own fire light; check).
-  - **Sepulcra owner questions:** how dark night should be (Claude darkened it; fire and runes carry the scene);
-    active pause on a gamepad (P is active pause, Start opens the menu); a title screen; saved settings and
-    rebinding; may the fire colour mark "can't afford" (STYLE.md reserves fire for fire).
-  - **Next:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
-    built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
-    from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
-    Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
-    balance lab, agent evals, save games, module host, desync detector. The owner said to commit and **push before
-    starting M3**.
-  - **Lessons:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss, stale caches), so
-    keep the rounds; after round 3-4 the integrator verifies narrow final fixes. Measure with the game running, not
-    only static worlds (the first draw cache was slower in play). Several sessions share the GPU and ports 7460-7499;
-    stop engines by PID only. Usage limits interrupt lanes: resume each with SendMessage.
-  - **Owner questions waiting:** STYLE.md's three questions, DESIGN.md (proposal) lines, shipping fonts,
-    `style.json` proposals, Steamworks, launch languages.
+- **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
+  re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
+  is playable as a vertical slice and is the engine's dogfood. **M3 has not started.**
+- **Next:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
+  built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
+  from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
+  Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
+  balance lab, agent evals, save games, module host, desync detector. The owner said to commit and **push before
+  starting M3**.
+- **Pre-M3 cleanup (2026-10-17):** an outside review (Grok) listed gaps; the owner approved fixing them before M3:
+  stale docs, a CI guard against session links in commit messages, a pinned MCP revision test, a link check, HUD
+  occlusion in `include_ui` sight packets, the sky's horizon edge, the white slab under a selected brazier, and
+  vsync-paced command throughput. Deferred: CI rendering checks (need Vulkan loading on Linux first; Platform
+  track), per-agent auth tokens (needed before any non-localhost bind), outlier-aware auto-framing.
+- **How work runs:** as **lanes**: one subagent per crate/area in a git worktree, each attacked by a
+  `lane-reviewer` before merge (`.claude/agents/`), and visual claims checked by `sight-skeptic`. Check `git log`
+  and the roadmap ticks for where things stand.
+- **Lessons:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss, stale caches), so
+  keep the rounds; after round 3-4 the integrator verifies narrow final fixes. Measure with the game running, not
+  only static worlds (the first draw cache was slower in play). Several sessions share the GPU and ports 7460-7499;
+  stop engines by PID only. Usage limits interrupt lanes: resume each with SendMessage.
+- **Game docs:** [DESIGN.md](games/sepulcra/DESIGN.md) (sim rules, numbers), [STYLE.md](games/sepulcra/STYLE.md)
+  (Claude's style bible draft), in-game test plan [TESTPLAN.md](games/sepulcra/TESTPLAN.md). Capture:
+  `docs/fidelity/sepulcra_slice_hud.png`. How the game was chosen: [docs/GAME_SELECTION.md](docs/GAME_SELECTION.md).
 - **Measuring:** `python scripts/perf_baseline.py` (see [perf/README.md](perf/README.md)); the `perf_frame` tool
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
-  (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`).
+  (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`); `scripts/swarm_drill.py`
+  for agent throughput.
 - **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - **Hard rules:** [AGENTS.md](AGENTS.md).
+- **Open owner decisions:** the one list is [below](#open-owner-decisions).
 - **Design research:** [docs/design/](docs/design/) (determinism, physics, animation, procedural modelling, UI).
 - **Engine survey:** [docs/research/ENGINE_SURVEY.md](docs/research/ENGINE_SURVEY.md) compares Unreal, Unity and
   Godot with Specula, lists the gaps (now in the roadmap, marked ➕), covers Unreal's stutter problems, and explains
@@ -92,60 +82,49 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **F6 Portable by design.** Mobile comes after v1.0 (the owner isn't familiar with it yet), but nothing may assume a
   desktop, x86 or a keyboard, so the port stays cheap.
 
-## How we got here
-
-| When | What |
-|---|---|
-| Before 2026-10 | The owner built **Grok-Bevy**: Bevy-based tooling that gave AI agents "eyes" on 3D scenes. The many sight plans and findings from that era are in `docs/archive/bevy-era/`. |
-| 2026-10-12 | Claude assessed the repo. It was renamed **Specula** (Latin: *watchtower*). |
-| 2026-10-12 | **Pivot.** The owner wanted the engine fully native and zero-dependency, with no Bevy. The Bevy code is preserved at tag `bevy-tooling-final`. |
-| 2026-10-12 | Choices made: **Vulkan**, cross-platform with Windows first, **hot-reloaded Rust modules** for game logic, **2D and 3D** from the start, and the Specula repo becomes the engine. |
-| 2026-10-12 | **M0 built** by 4 parallel subagents (one per crate, in git worktrees), with Claude integrating. Then two full audits and three adversarial review rounds; every finding was fixed. |
-| 2026-10-12 | **M0 complete** at commit `badb857`. CI is green on windows-msvc, windows-gnu and ubuntu. |
-| 2026-10-13 | ROADMAP.md and this handoff written. |
-| 2026-10-13 | Engine survey and UI design written. The roadmap gained a **path to production**: v1.0 = a commercial PC game on Steam for Windows and Steam Deck; Phase A M1 → Phase B playable slice (lanes built in parallel by subagent swarms) → Phase C production → Phase D ship. |
-| 2026-10-13 | The owner accepted **every** Claude proposal: physics, skeletal animation, headless playtests, batch edits, procedural modelling, review queue, swarm track. The swarm track became primary, foundations F1–F5 were added, and Claude researched and wrote the four design docs in `docs/design/`. Next: the owner's game project, then M1. |
-| 2026-10-13 | **Lava-lamp fidelity benchmark** (the owner's first asset challenge): three lamps from basic to "as real as possible", built in the engine. It added per-frame GPU data (buffer device address), materials, point lights, glass, blob shadows, lathe meshes, tone mapping and a ray-marched lava lamp. Run it with `python scripts/lava_lamps.py`. The NVIDIA and Intel captures match within 3/255. |
-| 2026-10-13 | **Swarm session (owner: "advance through M1 and M2 while building the TD game").** Wave 1, all reviewed then merged: capture speed (parallel deterministic PNG, ~25x faster), GPU (frame stats, instancing, culling, pipeline warm-up and cache), World (hierarchy, versions, batch, query, crash-safe text saves), determinism (`dmath`, correctly rounded f32; Android CI check), Sepulcra's headless simulation. Then the engine got a `Game` hook, a fixed-tick clock, `perf_frame` and `time_control`. Wave 2 lanes: render (shadows, post, sky, overlay), text, procedural modelling, input, the Sepulcra app, journal/claims. |
-| 2026-10-13 | **First game chosen:** the tower defence *Sepulcra* (over a cozy castle builder and a squad RPG). Platforms: Windows + Steam Deck; mobile later, so foundation **F6 (portable by design)** was added. A **Fidelity track** was added to the roadmap: benchmark assets rebuilt at each tier, from greybox up to Unreal-class realism. |
-
 ## What works today
 
-- **Run it:** `cargo run -p specula`. It opens a window and serves MCP at `http://127.0.0.1:7471/mcp`. Claude Code
-  opened in this folder connects through `.mcp.json`.
-- **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`.
-- **Tools:**
-  - `world_spawn`: cube, sphere, quad or **lathe** (a profile spun around +Y), with position, rotation, scale, colour
-    and name, plus a **material** and an optional **point light**:
-    - `standard`: opaque, with `emissive`, `metallic`, `roughness` and `specular`.
-    - `glass`: a blended thin shell with Fresnel reflections.
-    - `blob_shadow`: a soft contact shadow.
-    - `lava_lamp`: a ray-marched lamp.
-  - `world_set`: change an entity in place, including `rename`, its look, light and lathe profile.
-  - `world_list` and `world_delete`.
-  - `world_env`: sun, ambient light, exposure, filmic tone mapping and background.
-  - `window_view`: point the human's window camera (or `auto`).
-  - `sight_frame`: a PNG plus a subject list with screen boxes and `distance_m`, capped by `max_subjects`. `time_s`
-    fixes the animation time, so a frame is reproducible. The full packet is saved to `captures/run-*/`.
-  - `world_query` (paged filters), `world_batch` (atomic), `world_save` / `world_load` (text world files),
-    `agent_hello` (identity and role).
-  - `perf_frame` (GPU ms per pass, draws, memory, pacing, budget errors) and `time_control` (pause, step, scale).
-  - A hosted game adds its own `play_*` tools.
-  - `engine_info`.
-- **Size:** about 15k lines of Rust in 6 crates (`specula-sys`, `-core`, `-platform`, `-gpu`, `-protocol`,
-  `specula`). 149 tests. **Zero third-party crates.**
-- **Linking:** the Rust toolchain's own linker. Vulkan is loaded at runtime.
+- **Run it:** `cargo run -p specula` opens a window and serves MCP at `http://127.0.0.1:7471/mcp`; Claude Code opened
+  in this folder connects through `.mcp.json`. Sepulcra: `cargo run -p sepulcra-app --release -- --port 7486 --
+  --seed 7` (see its TESTPLAN.md).
+- **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
+  `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
+  `--perf FILE`, and `-- GAME ARGS` for a hosted game.
+- **Tools** (each one's schema is in `tools/list`):
+  - World: `world_spawn`, `world_set`, `world_delete`, `world_list`, `world_query` (paged filters), `world_batch`
+    (atomic), `world_env`, `world_save` / `world_load` (text world files), `world_hash` (per-tick simulation hash).
+  - Swarm: `agent_hello` (identity and role), `claim_take` / `claim_renew` / `claim_share` / `claim_release` /
+    `claim_list` (leases on subtrees and regions), `world_changes` (change feed), `world_history` and `world_undo`
+    (the agent-attributed journal), per-entity versions with `expect_version`.
+  - Sight: `sight_frame` (PNG plus a packet: exact screen boxes, `visible_px`, `occluded` from the ID buffer,
+    overlays), `sight_orbit` (turntable), `sight_compare` (before/after), `sight_query`, named persistent cameras
+    (`camera_set` / `camera_list` / `camera_delete`), `window_view` (point the human's window).
+  - Assets: `model_build` / `model_reload` (procedural recipes and glTF/GLB), 2D tilemaps (`tilemap_get` /
+    `tilemap_set`).
+  - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
+    `perf.toml`), `perf_capture`, `perf_zones`, `perf_memory`, `time_control` (pause, step, scale), `engine_info`.
+  - A hosted game adds `play_*` tools (Sepulcra: `play_new`, `play_command`, `play_control`, `play_state`,
+    `play_map`, `play_ui`, `play_record`, `play_replay`).
+- **Rendering:** Vulkan render graph, PBR-lite and stylised materials, directional and point lights, shadow maps,
+  post (tone mapping, FXAA, LUTs), sky, glass, instancing, culling, LODs, GPU skinning, 2D sprites, tilemaps and
+  vector shapes, a UI overlay. Reversed Z.
+- **Simulation:** fixed-tick clock, seeded RNG streams, deterministic maths (`dmath`), ordered containers, a
+  journal-replay test that reproduces `world_hash` in CI.
+- **Game-side crates:** `specula-anim` (clips, A1-A2), `specula-audio` (WASAPI, procedural 3D audio),
+  `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
+  modelling, tier 1), `specula-gltf`.
+- **Size:** about 129k lines of Rust in 13 crates plus the Sepulcra game and app; about 1,100 tests. **Zero
+  third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
-**What it can't do yet.** Plan game sessions around these limits:
-- **Save/load exists** (`--world NAME` autosaves to `worlds/NAME/`), but there's no journal, undo or claims yet
-  (the Journal lane is building them).
-- **Visuals are early.** Materials, point lights, glass, emission and tone mapping exist (built for the lava-lamp
-  benchmark, 2026-10-13). There are no textures, shadow maps, bloom pass, imported models or 2D sprites yet.
-- **Not playable yet.** There's no game logic, input, physics, audio, or text/UI, so nothing can be played until M3.
-- **Sight limits:** no occlusion, and sphere boxes are about 30% loose.
-
-**So for the game right now:** design documents, plus **greybox blockouts** built live through MCP (layout, scale,
-sightlines). Let the game decide which engine features come first.
+**What it can't do yet** (most of it is M3+):
+- **No physics** (P1-P4 are M3), no gameplay-as-data (Lex), no module host or hot-reloaded game logic yet: Sepulcra's
+  rules are hand-written Rust in `games/sepulcra`.
+- **Animation** stops at stage A2 (clips and state-driven playback); blending, IK and agent-authored motion are M3.
+- **No save games** for players (world files are an editor format), no title screen or settings menu.
+- **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
+  off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
+- **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
+- **Auto-framing** can shrink to a dot when one object is far away from the rest.
 
 ## How the owner likes to work
 
@@ -180,10 +159,29 @@ sightlines). Let the game decide which engine features come first.
 
 ## Open owner decisions
 
-These are listed in ROADMAP.md under "Path to production":
-- **First game:** the genre is chosen (tower defence, *Sepulcra*). Art style and launch languages are still open.
-  v1.0 platforms are decided: Windows + Steam Deck, with mobile later.
-- **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service?
+This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
+`crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
+answer where it applies.
+
+- **M3 go-ahead and scope:** approve or trim the M3/M4 plan above.
+- **Sepulcra scope:** art style, size and launch languages (genre is decided: tower defence; v1.0 platforms are
+  decided: Windows + Steam Deck, mobile later).
+- **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service? It's needed for
+  achievements, cloud saves and Steam Input glyphs.
+- **Sepulcra questions:** how dark night should be (Claude darkened it; fire and runes carry the scene; STYLE.md
+  proposes "readable moonlight"); active pause on a gamepad (P is active pause, Start opens the menu); a title
+  screen; saved settings and rebinding; may the fire colour mark "can't afford" (STYLE.md reserves fire for fire).
+- **Sepulcra rules** ([DESIGN.md](games/sepulcra/DESIGN.md) has the context): walls only on top-face lanes, or on
+  cliff lanes too? Is a boss (colossus) leak meant to be survivable, as now (5 tombstones, about 30 % of good runs), or a
+  must-kill? Edge reach of 3 m (two cell rows) across faces: too generous or too strict? Should rune pillars slow
+  wraiths (now only the obelisk answers flyers)? Calling waves early pays 0.5 dust per second left: should it be a
+  real economy lever? Is 8 m per wall a good weight for breaking walls?
+- **STYLE.md's questions:** floating slab over mist, or a dark canyon? Cyan magic vs green dead?
+- **Other waiting items:** DESIGN.md's **(proposal)** lines, shipping fonts, `style.json` proposals, and reviewing
+  the five `docs/design/` docs (their "reviewed" boxes in ROADMAP are unticked).
+- **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
+  `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
+- **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
 
 ## Claude's opinions and thoughts
 
@@ -192,7 +190,8 @@ These are listed in ROADMAP.md under "Path to production":
   and no hidden behaviour in dependencies.
 - **Sight from the engine's own data.** Agents check images against the engine's packets instead of trusting their
   own perception. That carried over from the Grok-Bevy research and is the project's most distinctive idea.
-- **The M0 base is solid.** Validation-clean on two GPU vendors, with structured errors throughout.
+- **The base is solid.** Validation-clean on two GPU vendors, structured errors throughout, and three milestones
+  that each survived several adversarial review rounds.
 
 **What worries me (honestly):**
 - **Scope.** Zero-dep means writing a TrueType rasteriser, a Vorbis decoder, physics, skeletal animation, a UI toolkit
@@ -212,16 +211,13 @@ These are listed in ROADMAP.md under "Path to production":
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
 **Recommendations for the next session:**
-1. **Pick the game first** (2026-10-13: the owner paused to think through a few ideas). Ask for the ideas, rough is
-   fine. Ask the questions in docs/GAME_SELECTION.md, score each idea (fit, lanes pulled forward, risks, first-slice
-   sketch) and recommend one. **The owner decides.** Then write the game design doc and the style bible, and greybox
-   the first space through MCP.
-2. If the greybox needs to survive restarts, build **M1 persistence (text save/load) first**. It's small and unblocks
-   everything.
-3. Then do the rest of M1. Its exit proof (4+ agents building separate districts at once) doubles as the first real
-   swarm test.
-4. Walk the owner through the five design docs in `docs/design/` and the engine survey. They're researched but not yet reviewed with the
-   owner, and their "reviewed" boxes in ROADMAP.md are unticked.
-5. At the start of the game, write its **style bible** with the owner (see design/PROCEDURAL_MODELLING.md). The owner
-   said Claude's taste is a reason Claude is on this project, so put it to work there: shape language, palette and
-   proportions.
+1. **Ask before M3.** If the owner gives the go-ahead, push first (they said so), then start with Lex (gameplay as
+   data), since Locus, the balance lab and agent evals all build on it. Run it as lanes with reviews, as in M2.
+2. **Bring the open owner decisions** (the list above) to the owner in one short batch, with Claude's recommendation
+   for each; several of them (night darkness, title screen, settings) shape Sepulcra's M3 work.
+3. **Keep Sepulcra the dogfood.** Each M3 feature should land in the game (rules moved into Lex data, physics on
+   creatures, motion checks on its animations), measured on the Intel iGPU with the game running.
+4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check
+   rendering, Vulkan loading must work on Linux (Platform track).
+5. **Walk the owner through the five design docs** in `docs/design/` and the engine survey when there's a natural
+   pause; their "reviewed" boxes are still unticked.

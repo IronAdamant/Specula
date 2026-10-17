@@ -10,8 +10,10 @@ in real time. The agent protocol is the engine's primary interface; the human ed
 - **Sight built in:** agents get their own cameras, exact on-screen bounds and same-frame captures.
 - **2D and 3D**, hot-reloaded Rust game logic, text-first world files.
 
-**Status:** M0 complete (agents connect over MCP, build a world, and see it); M1 (world model + multi-agent claims) next.
-See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+**Status:** M2 complete (rendering, true sight, 2D, animation, procedural models; the first game, *Sepulcra*, is a
+playable slice). M3 (gameplay as data, physics, animation) is planned and waiting for the owner's go-ahead.
+See [HANDOFF.md](HANDOFF.md) for the current state, [docs/ROADMAP.md](docs/ROADMAP.md) and
+[docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 
 The goal: let a solo developer or a small studio build games at the scale of a large company by running swarms of AI
 agents in one live engine.
