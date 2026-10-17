@@ -238,6 +238,12 @@ impl SaveJob {
         let mut sections = vec![Section { name: "world".into(), data: savegame::pack_files(&files) }];
         sections.extend(self.sections);
         let sizes = Json::obj(sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len()))));
+        // What a load would refuse isn't written.
+        let total: u64 = sections.iter().map(|s| s.data.len() as u64).sum();
+        if total > savegame::MAX_DECODED_BYTES || sections.iter().any(|s| s.data.len() > savegame::MAX_SECTION_BYTES) {
+            return Err(SaveError::new("too_large", format!("this save would hold {total} bytes; saves load up to {} (and {} per section)", savegame::MAX_DECODED_BYTES, savegame::MAX_SECTION_BYTES))
+                .with("sections", sizes));
+        }
         let bytes = savegame::encode(&self.meta, &sections);
         let encode_ms = t1.elapsed().as_secs_f64() * 1000.0;
         let t2 = Instant::now();

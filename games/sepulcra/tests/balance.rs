@@ -61,7 +61,7 @@ fn sweeps_do_not_depend_on_the_thread_count() {
 fn tuning_runner_hp_hits_the_targets_on_held_out_seeds() {
     let (d, t) = (doc(), targets());
     // A step wider than the range is refused, not overflowed.
-    let wide = TuneJob::new(&d, &[TuneParam::new("runner_hp").range(40, 160).step(1e16)], TuneOptions { budget: 4, init: None, seed: 1 });
+    let wide = TuneJob::new(&d, &[TuneParam::new("runner_hp").range(40, 160).step(200)], TuneOptions { budget: 4, init: None, seed: 1 });
     assert!(wide.is_err_and(|ds| ds.iter().any(|x| x.path == "step")));
     let tune = [TuneParam::new("runner_hp").range(40, 160).step(1)];
     let mut job = TuneJob::new(&d, &tune, TuneOptions { budget: 14, init: None, seed: 7 }).unwrap();

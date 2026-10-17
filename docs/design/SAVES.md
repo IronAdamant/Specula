@@ -136,5 +136,7 @@ lands, its sets' states become a `lex` section, one `Sim::save_state` per runnin
 - More player slots and a load screen with labels (save_list has the data); a title screen's Continue.
 - Saving the swarm's coordination with a save (task board, claims) if the owner wants "save the whole studio"; today
   the board is saved with world folders.
-- Background *loads* (reading and checking on a worker thread; only the swap on the engine thread).
+- Background *loads* (reading, decompressing and checking on a worker thread; only the swap on the engine thread).
+  Today a load runs on the engine thread: memory is capped (512 MiB decoded in all), but a crafted file that
+  inflates to the cap can hold the engine thread for seconds.
 - Save thumbnails (a capture in the header) for load screens.
