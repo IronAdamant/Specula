@@ -84,6 +84,8 @@ pub(crate) struct Rendered {
     pub(crate) ids: Json,
     /// Problems of the 2D items drawn (missing textures, frames past a sheet, ...).
     pub(crate) two_d_problems: Vec<String>,
+    /// What streaming left out or merged (see `streaming`); null when streaming is off.
+    pub(crate) streaming: Json,
 }
 
 /// Set once the first lost device has been logged.
@@ -174,9 +176,11 @@ impl Engine {
                 return;
             }
         };
+        // Its views become stream sources: what they need starts uploading now.
+        let streaming = self.stream_capture(&stream_views(&views));
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
-        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 {
+        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 {
             let _ = reply.send(self.run_job(&job, &session, wait));
             return;
         }
@@ -202,7 +206,10 @@ impl Engine {
         let waiters = std::mem::take(&mut self.capture_waiters);
         for w in waiters {
             let building = match self.job_views(&w.job, &w.session) {
-                Ok(views) => self.building_in(&views) + self.two_d_waiting(&views, false),
+                Ok(views) => {
+                    let streaming = self.stream.waiting_in(&stream_views(&views), &self.world, &self.models);
+                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming
+                }
                 Err(out) => {
                     let _ = w.reply.send(out);
                     continue;
@@ -435,6 +442,14 @@ impl Engine {
     /// camera's, and validation messages.
     fn capture_warnings(&mut self, r: &Rendered, wait: CaptureWait, building: usize, view: &ViewReq) -> Vec<Json> {
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
+        if r.stats.not_resident > 0 {
+            warnings.push(Json::from(format!(
+                "{} built model entit{} not drawn: not resident (streaming: beyond radius_m of every camera, or evicted under memory_mb; \
+                 packet streaming and subjects drawn_as)",
+                r.stats.not_resident,
+                if r.stats.not_resident == 1 { "y" } else { "ies" },
+            )));
+        }
         if r.stats.missing > 0 {
             let waited = match (wait.parked_at, wait.cut_by_deadline) {
                 (None, _) => "none was in frame when the call came".to_owned(),
@@ -573,7 +588,10 @@ impl Engine {
         }
         let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
         self.models.put_bones(bones);
-        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems })
+        // Subjects drawn merged in a proxy, or not resident, say so.
+        self.stream.annotate(&mut subjects, &self.world, &self.models);
+        let streaming = self.stream.capture_json(&stats);
+        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -888,6 +906,9 @@ impl Engine {
         if let Some(o) = &r.overlays {
             packet.set("overlays", o.clone());
         }
+        if !r.streaming.is_null() {
+            packet.set("streaming", r.streaming.clone());
+        }
         if let Some(path) = &packet_path {
             if let Err(e) = std::fs::write(path, packet.to_pretty()) {
                 warnings.push(Json::from(format!("packet not saved to disk: {e}")));
@@ -1171,6 +1192,11 @@ impl Engine {
         }
         ToolOutput::text(out.to_string())
     }
+}
+
+/// The views' cameras and sizes, as streaming takes them.
+fn stream_views(views: &[ViewReq]) -> Vec<(Camera, u32, u32)> {
+    views.iter().map(|v| (v.camera, v.width, v.height)).collect()
 }
 
 fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {

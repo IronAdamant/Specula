@@ -1,0 +1,1412 @@
+//! Streaming: which model builds and HLOD proxies are on the GPU, uploaded within per-frame
+//! budgets and evicted under a memory budget (`docs/design/STREAMING.md`).
+//!
+//! **Never changes the simulation.** Everything here reads the [`World`] and writes only GPU
+//! resources and its own bookkeeping: entities, their resolved models and the world hash are the
+//! same whatever is resident (`stream_check.py` compares world hashes with streaming on and off).
+//!
+//! - **Cells.** Persistent model entities are filed into square XZ cells of `cell_m` metres by
+//!   their origin ([`Index`], patched from the world's draw changes like the window's draw cache).
+//! - **Sources.** The window's camera every frame, and each capture's camera for
+//!   [`CAPTURE_SOURCE_FOR`] after it (so an agent's next capture finds its view resident).
+//! - **Wanted.** A cell's members are wanted within `radius_m` of a source, unless its HLOD proxy
+//!   is current and the source is `preload` times past the cell's switch distance (the proxy
+//!   draws them). Priority is distance (halved inside the window's view, quartered for captures);
+//!   transient model entities (a game's presentation) are always wanted first.
+//! - **Uploads.** Each frame (and each headless loop) [`Streamer::pump`] uploads wanted builds one
+//!   LOD at a time, coarsest first (an entity draws its coarser level while finer ones arrive),
+//!   plus built proxies, nearest first, through the GPU's queued path (no wait), until the
+//!   frame's `upload_ms` or `upload_mb` is spent. CPU work (re-indexing parts) runs inside that
+//!   budget too; mesh builds and proxy generation run on worker threads.
+//! - **Memory.** Uploaded builds and proxies count against `memory_mb`. Over it, what no source
+//!   wants is evicted, least recently wanted first (textured glTF builds stay: their pixels left
+//!   the CPU at upload). If what is wanted alone exceeds the budget, the farthest stays out and a
+//!   `stream_memory_over_budget` error says so.
+//! - **Agents see it.** `perf_frame.streaming`, the `stream_state` tool, sight packets
+//!   (`streaming` summary; subjects `drawn_as: "hlod" | "not_resident"`), and captures wait (like
+//!   for builds) until what their view needs is resident (`capture_wait`).
+
+use crate::hlod::{self, CellKey, Content, Hlod, MemberInput};
+use crate::models::{part_influence, part_look, part_mesh, textured_look, Built, GpuModel, GpuModels, Needs, PartDraw, SharedLibrary};
+use crate::perf::Series;
+use crate::sight::{self, Camera, Subject};
+use crate::world::{Entity, Shape, World};
+use specula_core::hash::StableHasher;
+use specula_core::math::{Mat4, Vec3};
+use specula_core::Json;
+use specula_gpu::{DrawItem, Gpu, MaterialTextures, MeshStreams, TextureId};
+use specula_model::{MaterialKind, MeshData};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant};
+
+/// Priorities and wanted sets are recomputed at most this often (sooner when a source jumps).
+pub const UPDATE_EVERY: Duration = Duration::from_millis(100);
+/// A capture's camera stays a stream source this long after the capture.
+pub const CAPTURE_SOURCE_FOR: Duration = Duration::from_secs(10);
+/// Capture sources kept at once (the oldest goes).
+const MAX_CAPTURE_SOURCES: usize = 4;
+/// Recent budget misses kept for perf_frame.
+const MAX_MISSES: usize = 16;
+/// Cells and entities stream_state lists at most.
+pub const MAX_LISTED: usize = 64;
+
+/// Adapter kinds a `[streaming.<kind>]` section may name.
+const ADAPTER_KINDS: [&str; 5] = ["integrated", "discrete", "virtual", "cpu", "other"];
+
+// ---------------------------------------------------------------------------------------------
+// Settings: perf.toml [streaming]
+
+/// The streaming settings (perf.toml `[streaming]`, `[streaming.<adapter kind>]` over it, and
+/// `stream_settings` over both).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamConfig {
+    /// Off: every live build is uploaded at once (synchronously, as before streaming) and no
+    /// proxies are drawn.
+    pub enabled: bool,
+    pub cell_m: f32,
+    /// Members of cells farther than this from every source are not wanted.
+    pub radius_m: f32,
+    /// Per-frame upload budget: CPU milliseconds and megabytes.
+    pub upload_ms: f64,
+    pub upload_mb: f64,
+    /// Uploaded builds and proxies stay within this.
+    pub memory_mb: f64,
+    pub hlod: bool,
+    /// No proxy is drawn nearer than this.
+    pub hlod_min_m: f32,
+    /// Proxies are wanted within this of a source.
+    pub hlod_radius_m: f32,
+    /// Members load once a source is within `preload` times a proxied cell's switch distance.
+    pub preload: f32,
+    /// A changed cell waits this long without changes before its proxy is rebuilt.
+    pub settle_s: f32,
+    /// Captures wait for what their view needs to be resident.
+    pub capture_wait: bool,
+}
+
+impl Default for StreamConfig {
+    fn default() -> StreamConfig {
+        StreamConfig {
+            enabled: true,
+            cell_m: 32.0,
+            radius_m: 384.0,
+            upload_ms: 2.0,
+            upload_mb: 8.0,
+            memory_mb: 512.0,
+            hlod: true,
+            hlod_min_m: 48.0,
+            hlod_radius_m: 4096.0,
+            preload: 1.25,
+            settle_s: 1.0,
+            capture_wait: true,
+        }
+    }
+}
+
+/// `(key, min, max)` of the numeric settings.
+const RANGES: [(&str, f64, f64); 9] = [
+    ("cell_m", 4.0, 1024.0),
+    ("radius_m", 16.0, 1.0e5),
+    ("upload_ms", 0.1, 100.0),
+    ("upload_mb", 0.25, 1024.0),
+    ("memory_mb", 8.0, 65536.0),
+    ("hlod_min_m", 0.0, 1.0e5),
+    ("hlod_radius_m", 16.0, 1.0e6),
+    ("preload", 1.0, 4.0),
+    ("settle_s", 0.0, 60.0),
+];
+const FLAGS: [&str; 3] = ["enabled", "hlod", "capture_wait"];
+
+impl StreamConfig {
+    /// Lays `table`'s keys over `self` (checked; `section` names it in errors).
+    pub fn apply(&mut self, table: &Json, section: &str) -> Result<(), String> {
+        for (k, v) in table.as_object().ok_or_else(|| format!("[{section}] must be a table"))? {
+            if ADAPTER_KINDS.contains(&k.as_str()) && section == "streaming" {
+                continue; // adapter sections, applied by StreamTable
+            }
+            if FLAGS.contains(&k.as_str()) {
+                let b = v.as_bool().ok_or_else(|| format!("[{section}] {k} must be true or false"))?;
+                match k.as_str() {
+                    "enabled" => self.enabled = b,
+                    "hlod" => self.hlod = b,
+                    _ => self.capture_wait = b,
+                }
+                continue;
+            }
+            let Some(&(_, lo, hi)) = RANGES.iter().find(|(n, ..)| n == k) else {
+                let known: Vec<&str> = FLAGS.iter().copied().chain(RANGES.iter().map(|r| r.0)).collect();
+                return Err(format!("unknown key '{k}' in [{section}] (known: {})", known.join(", ")));
+            };
+            let x = v.as_f64().filter(|x| x.is_finite() && (lo..=hi).contains(x)).ok_or_else(|| format!("[{section}] {k} must be a number from {lo} to {hi}"))?;
+            match k.as_str() {
+                "cell_m" => self.cell_m = x as f32,
+                "radius_m" => self.radius_m = x as f32,
+                "upload_ms" => self.upload_ms = x,
+                "upload_mb" => self.upload_mb = x,
+                "memory_mb" => self.memory_mb = x,
+                "hlod_min_m" => self.hlod_min_m = x as f32,
+                "hlod_radius_m" => self.hlod_radius_m = x as f32,
+                "preload" => self.preload = x as f32,
+                _ => self.settle_s = x as f32,
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> Json {
+        let r = |x: f64| Json::from((x * 1000.0).round() / 1000.0);
+        Json::obj([
+            ("enabled", Json::from(self.enabled)),
+            ("cell_m", r(f64::from(self.cell_m))),
+            ("radius_m", r(f64::from(self.radius_m))),
+            ("upload_ms", r(self.upload_ms)),
+            ("upload_mb", r(self.upload_mb)),
+            ("memory_mb", r(self.memory_mb)),
+            ("hlod", Json::from(self.hlod)),
+            ("hlod_min_m", r(f64::from(self.hlod_min_m))),
+            ("hlod_radius_m", r(f64::from(self.hlod_radius_m))),
+            ("preload", r(f64::from(self.preload))),
+            ("settle_s", r(f64::from(self.settle_s))),
+            ("capture_wait", Json::from(self.capture_wait)),
+        ])
+    }
+}
+
+/// perf.toml `[streaming]` as read: the base table and the adapter sections.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StreamTable {
+    base: Vec<(String, Json)>,
+    adapters: Vec<(String, Json)>,
+}
+
+impl StreamTable {
+    /// Parses and checks `[streaming]` (every adapter section included).
+    pub fn parse(v: &Json) -> Result<StreamTable, String> {
+        let mut t = StreamTable::default();
+        for (k, x) in v.as_object().ok_or("[streaming] must be a table")? {
+            if ADAPTER_KINDS.contains(&k.as_str()) {
+                if x.as_object().is_none() {
+                    return Err(format!("[streaming.{k}] must be a table"));
+                }
+                t.adapters.push((k.clone(), x.clone()));
+            } else {
+                t.base.push((k.clone(), x.clone()));
+            }
+        }
+        StreamConfig::default().apply(&Json::Obj(t.base.clone()), "streaming")?;
+        for (kind, table) in &t.adapters {
+            let mut c = StreamConfig::default();
+            c.apply(&Json::Obj(t.base.clone()), "streaming")?;
+            c.apply(table, &format!("streaming.{kind}"))?;
+        }
+        Ok(t)
+    }
+
+    /// The settings for an adapter kind.
+    pub fn config(&self, kind: &str) -> StreamConfig {
+        let mut c = StreamConfig::default();
+        let _ = c.apply(&Json::Obj(self.base.clone()), "streaming");
+        if let Some((_, t)) = self.adapters.iter().find(|(k, _)| k == kind) {
+            let _ = c.apply(t, &format!("streaming.{kind}"));
+        }
+        c
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The cell index
+
+/// A persistent model entity as streaming files it.
+#[derive(Clone, Debug)]
+struct Member {
+    id: u64,
+    handle: Option<u32>,
+    world: Mat4,
+    pos: Vec3,
+    tint: [f32; 3],
+    /// The entity's content hash (transform, colour, model, everything saved).
+    hash: u64,
+    /// May be merged into an HLOD proxy as far as the entity goes (shown, not `ui`, no anim, no
+    /// moving body); its build decides the rest.
+    mergeable: bool,
+    /// When it last changed (None: unchanged since the index was built).
+    changed: Option<Instant>,
+}
+
+impl Member {
+    fn of(e: &Entity, now: Option<Instant>) -> Member {
+        let world = e.model();
+        let moving = e.body.is_some_and(|b| b.kind != crate::physics::BodyKind::Static);
+        Member {
+            id: e.id,
+            handle: e.resolved_model().map(|r| r.handle),
+            world,
+            pos: e.world_position(),
+            tint: e.color,
+            hash: e.content_hash(),
+            mergeable: e.shown() && !e.in_ui() && e.anim.is_none() && !moving && e.id < hlod::MAX_COVER_ID,
+            changed: now,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Cell {
+    /// Sorted by id.
+    members: Vec<Member>,
+    /// Box of the members' origins.
+    lo: Vec3,
+    hi: Vec3,
+    /// Its HLOD content must be worked out again.
+    dirty: bool,
+}
+
+impl Cell {
+    fn bounds(&mut self) {
+        let mut it = self.members.iter().map(|m| m.pos);
+        let first = it.next().unwrap_or(Vec3::ZERO);
+        let (lo, hi) = it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+        self.lo = lo;
+        self.hi = hi;
+    }
+}
+
+/// Persistent model entities by cell.
+#[derive(Default)]
+struct Index {
+    /// `(world generation, cell_m bits)` it was built for.
+    key: Option<(u64, u32)>,
+    /// The world's draw epoch it reflects.
+    epoch: u64,
+    cell_of: HashMap<u64, CellKey>,
+    cells: BTreeMap<CellKey, Cell>,
+    rebuilds: u64,
+    patches: u64,
+}
+
+fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
+    let c = |v: f32| (v / cell_m).floor().clamp(-1.0e9, 1.0e9) as i32;
+    (c(p.x), c(p.z))
+}
+
+impl Index {
+    /// Brings the index up to date with `world`. Returns whether anything changed.
+    fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant) -> bool {
+        let key = (generation, cell_m.to_bits());
+        if self.key == Some(key) && self.epoch == world.draw_epoch() {
+            return false;
+        }
+        let patched = self.key == Some(key) && self.patch(world, cell_m, now);
+        if !patched {
+            self.cells.clear();
+            self.cell_of.clear();
+            for e in world.persistent_entities().filter(|e| e.shape == Shape::Model) {
+                let k = cell_key(e.world_position(), cell_m);
+                self.cell_of.insert(e.id, k);
+                self.cells.entry(k).or_default().members.push(Member::of(e, None));
+            }
+            for c in self.cells.values_mut() {
+                c.bounds();
+                c.dirty = true;
+            }
+            self.key = Some(key);
+            self.rebuilds += 1;
+        }
+        self.epoch = world.draw_epoch();
+        true
+    }
+
+    /// The changed entities only; false when the world's change record doesn't reach back.
+    fn patch(&mut self, world: &World, cell_m: f32, now: Instant) -> bool {
+        let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
+        let mut ids: Vec<u64> = changes.collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if let Some(old) = self.cell_of.remove(&id) {
+                if let Some(c) = self.cells.get_mut(&old) {
+                    if let Ok(i) = c.members.binary_search_by_key(&id, |m| m.id) {
+                        c.members.remove(i);
+                    }
+                    c.dirty = true;
+                }
+            }
+            if let Some(e) = world.get(id).filter(|e| e.shape == Shape::Model) {
+                let k = cell_key(e.world_position(), cell_m);
+                self.cell_of.insert(id, k);
+                let c = self.cells.entry(k).or_default();
+                let at = c.members.binary_search_by_key(&id, |m| m.id).unwrap_or_else(|i| i);
+                c.members.insert(at, Member::of(e, Some(now)));
+                c.dirty = true;
+            }
+        }
+        for c in self.cells.values_mut().filter(|c| c.dirty) {
+            c.bounds();
+        }
+        self.patches += 1;
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sources
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SourceKind {
+    Window,
+    Capture,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Source {
+    kind: SourceKind,
+    eye: Vec3,
+    fov_y_deg: f32,
+    viewport_h: u32,
+    view_proj: Mat4,
+    /// Capture sources expire.
+    until: Option<Instant>,
+}
+
+impl Source {
+    /// Priority weight: captures (an agent is waiting) before the window's view before the
+    /// rest.
+    fn weight(&self, lo: Vec3, hi: Vec3) -> f32 {
+        match self.kind {
+            SourceKind::Capture => 0.25,
+            SourceKind::Window if box_in_view(&self.view_proj, lo, hi) => 0.5,
+            SourceKind::Window => 1.0,
+        }
+    }
+}
+
+/// Whether any of the box can be in view (conservative, like `sight::in_view`).
+fn box_in_view(vp: &Mat4, lo: Vec3, hi: Vec3) -> bool {
+    let corners = [0u8, 1, 2, 3, 4, 5, 6, 7].map(|i| {
+        let p = Vec3::new(if i & 1 == 0 { lo.x } else { hi.x }, if i & 2 == 0 { lo.y } else { hi.y }, if i & 4 == 0 { lo.z } else { hi.z });
+        vp.mul_vec4(p.extend(1.0))
+    });
+    let all = |f: &dyn Fn(&specula_core::math::Vec4) -> bool| corners.iter().all(f);
+    !(all(&|p| p.w <= 0.0) || all(&|p| p.x < -p.w) || all(&|p| p.x > p.w) || all(&|p| p.y < -p.w) || all(&|p| p.y > p.w))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The streamer
+
+/// What one frame's pump did.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameUpload {
+    pub items: u32,
+    pub bytes: u64,
+    pub ms: f64,
+    /// Wanted items left for later frames by the budget.
+    pub deferred: u32,
+    /// Wanted items that didn't fit the memory budget even after eviction.
+    pub memory_blocked: u32,
+    pub evicted: u32,
+}
+
+/// Streaming's state (see the module docs).
+pub struct Streamer {
+    kind: String,
+    /// stream_settings' keys over the perf.toml settings, and who set them last.
+    overrides: Vec<(String, Json)>,
+    set_by: Option<String>,
+    pub cfg: StreamConfig,
+    index: Index,
+    pub hlod: Hlod,
+    /// Live builds (the streamed path's view of what entities use).
+    live: BTreeMap<u64, Arc<Built>>,
+    /// Wanted builds and their priority (lower first).
+    want: HashMap<u64, f32>,
+    /// The update each build was last wanted in.
+    last_wanted: HashMap<u64, u64>,
+    sources: Vec<Source>,
+    updates: u64,
+    last_update: Option<Instant>,
+    force_update: bool,
+    /// Where the window's eye was at the last update.
+    window_eye: Option<Vec3>,
+    pub frame: FrameUpload,
+    /// Upload ms per frame that uploaded something.
+    upload_ms: Series,
+    /// Milliseconds per MB uploaded (smoothed): estimates an item's cost before doing it.
+    ms_per_mb: f64,
+    totals: FrameUpload,
+    frames_over: u64,
+    misses: VecDeque<Json>,
+    /// Bytes wanted but blocked by the memory budget at the last pump.
+    blocked_bytes: u64,
+    /// Upload failures since the last sync (reported like the plain path's).
+    upload_errors: Vec<String>,
+    /// The frame's proxy draws (reused: no allocation per frame once warm).
+    pub scratch: Vec<DrawItem>,
+    /// The last capture's proxied cells and covered entities.
+    last_capture: (u32, u32),
+}
+
+impl Default for Streamer {
+    fn default() -> Streamer {
+        Streamer::new(StreamTable::default(), "integrated")
+    }
+}
+
+impl Streamer {
+    pub fn new(table: StreamTable, kind: &str) -> Streamer {
+        let cfg = table.config(kind);
+        Streamer {
+            kind: kind.to_owned(),
+            overrides: Vec::new(),
+            set_by: None,
+            cfg,
+            index: Index::default(),
+            hlod: Hlod::default(),
+            live: BTreeMap::new(),
+            want: HashMap::new(),
+            last_wanted: HashMap::new(),
+            sources: Vec::new(),
+            updates: 0,
+            last_update: None,
+            force_update: true,
+            window_eye: None,
+            frame: FrameUpload::default(),
+            upload_ms: Series::default(),
+            ms_per_mb: 2.0,
+            totals: FrameUpload::default(),
+            frames_over: 0,
+            misses: VecDeque::new(),
+            blocked_bytes: 0,
+            upload_errors: Vec::new(),
+            scratch: Vec::new(),
+            last_capture: (0, 0),
+        }
+    }
+
+    /// Work waiting for later frames (a headless engine loops sooner meanwhile).
+    pub fn busy(&self) -> bool {
+        let (_, _, _, building, ready) = self.hlod.counts();
+        self.cfg.enabled && (self.frame.deferred > 0 || building > 0 || ready > 0)
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.cfg.enabled
+    }
+
+    /// Who last changed the settings with stream_settings.
+    pub fn set_by(&self) -> Option<&str> {
+        self.set_by.as_deref()
+    }
+
+    fn hlod_on(&self) -> bool {
+        self.cfg.enabled && self.cfg.hlod
+    }
+
+    /// stream_settings: lays `patch` over the settings (checked first; nothing changes on an
+    /// error). Switching streaming or HLOD off, or a new cell size, drops proxies and partial
+    /// uploads (`models.synced` is reset so the plain path uploads everything).
+    pub fn set(&mut self, patch: &Json, by: &str, gpu: &mut Gpu, models: &mut GpuModels) -> Result<(), String> {
+        let mut next = self.cfg.clone();
+        next.apply(patch, "stream_settings")?;
+        for (k, v) in patch.as_object().unwrap_or_default() {
+            self.overrides.retain(|(o, _)| o != k);
+            self.overrides.push((k.clone(), v.clone()));
+        }
+        self.set_by = Some(by.to_owned());
+        let old = std::mem::replace(&mut self.cfg, next);
+        if old.enabled != self.cfg.enabled || old.hlod != self.cfg.hlod || old.cell_m != self.cfg.cell_m {
+            self.hlod.clear(gpu);
+            self.index = Index::default();
+            for m in &mut models.cover {
+                *m = 0;
+            }
+        }
+        if old.enabled && !self.cfg.enabled {
+            // The plain path uploads whole builds: partial ones go and come back complete.
+            let partial: Vec<u64> = models.uploaded.iter().filter(|(_, m)| m.resident_from > 0).map(|(id, _)| *id).collect();
+            for id in partial {
+                evict_build(gpu, models, id);
+            }
+            models.synced = None;
+        }
+        if !old.enabled && self.cfg.enabled {
+            models.synced = None;
+        }
+        self.force_update = true;
+        Ok(())
+    }
+
+    /// The window's camera this frame (`None`: minimized or headless).
+    pub fn set_window(&mut self, camera: Option<(Camera, u32, u32)>) {
+        self.sources.retain(|s| s.kind != SourceKind::Window);
+        if let Some((cam, w, h)) = camera {
+            if self.window_eye.is_none_or(|e| (e - cam.eye).length() > self.cfg.cell_m * 0.25) {
+                self.force_update = self.force_update || self.window_eye.is_none_or(|e| (e - cam.eye).length() > self.cfg.cell_m);
+            }
+            self.sources.push(Source {
+                kind: SourceKind::Window,
+                eye: cam.eye,
+                fov_y_deg: cam.fov_y_deg,
+                viewport_h: h,
+                view_proj: cam.view_proj(w, h),
+                until: None,
+            });
+        }
+    }
+
+    /// A capture through `camera` at `w × h`: a source for a while, wanted first.
+    pub fn capture_source(&mut self, camera: Camera, w: u32, h: u32) {
+        if !self.cfg.enabled {
+            return;
+        }
+        let until = Some(Instant::now() + CAPTURE_SOURCE_FOR);
+        self.sources.retain(|s| !(s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 0.01));
+        let mut captures: Vec<usize> = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
+        while captures.len() >= MAX_CAPTURE_SOURCES {
+            let oldest = captures.remove(0);
+            self.sources.remove(oldest);
+            captures = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
+        }
+        self.sources.push(Source { kind: SourceKind::Capture, eye: camera.eye, fov_y_deg: camera.fov_y_deg, viewport_h: h, view_proj: camera.view_proj(w, h), until });
+        self.force_update = true;
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Builds: the streamed path's sync (instead of GpuModels::sync)
+
+    /// When the world's model entities or the library changed: maps handles to builds, retires
+    /// uploads no entity uses any more and remembers the live builds for [`Streamer::pump`].
+    pub fn sync_models(&mut self, models: &mut GpuModels, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
+        models.ready = gpu.pipeline_variants();
+        let lib = library.lock();
+        let key = (world.mesh_epoch(), lib.generation(), world_generation);
+        if models.synced == Some(key) {
+            return std::mem::take(&mut self.upload_errors);
+        }
+        models.synced = Some(key);
+        let live = crate::models::live_handles(world);
+        let old = std::mem::take(&mut models.by_handle);
+        self.live.clear();
+        for &h in &live {
+            let Some(b) = lib.built(h) else { continue };
+            if models.by_handle.len() <= h as usize {
+                models.by_handle.resize(h as usize + 1, None);
+            }
+            models.by_handle[h as usize] = Some(b.id);
+            self.live.insert(b.id, Arc::clone(b));
+        }
+        drop(lib);
+        // Handles rebuilt (an edited recipe): the cells using them merge again. Builds landing
+        // for the first time are picked up by the cells waiting on them (`Content::waiting_on`).
+        let rebuilt: Vec<u32> = (0..old.len().min(models.by_handle.len()))
+            .filter(|&h| matches!((old[h], models.by_handle[h]), (Some(a), Some(b)) if a != b))
+            .map(|h| h as u32)
+            .collect();
+        if !rebuilt.is_empty() {
+            for c in self.index.cells.values_mut() {
+                if c.members.iter().any(|m| m.handle.is_some_and(|h| rebuilt.binary_search(&h).is_ok())) {
+                    c.dirty = true;
+                }
+            }
+        }
+        let stale: Vec<u64> = models.uploaded.keys().copied().filter(|id| !self.live.contains_key(id)).collect();
+        let mut released = Vec::new();
+        for id in stale {
+            if evict_build(gpu, models, id) {
+                released.push(id);
+            }
+        }
+        if !released.is_empty() {
+            let mut lib = library.lock();
+            for id in released {
+                lib.forget_build(id);
+            }
+        }
+        let live = &self.live;
+        models.failed.retain(|id, _| live.contains_key(id));
+        self.force_update = true;
+        std::mem::take(&mut self.upload_errors)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The frame
+
+    /// One frame (or headless loop): files changed entities, recomputes what is wanted (at most
+    /// every [`UPDATE_EVERY`]), schedules proxy builds and uploads within the frame's budget.
+    pub fn frame(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, world: &World, generation: u64) {
+        let now = Instant::now();
+        self.frame = FrameUpload::default();
+        if !self.cfg.enabled {
+            return;
+        }
+        let _z = specula_core::profile::zone("stream");
+        self.sources.retain(|s| s.until.is_none_or(|t| t > now));
+        let changed = self.index.sync(world, generation, self.cfg.cell_m, now);
+        let due = self.force_update || changed || self.last_update.is_none_or(|t| now.duration_since(t) >= UPDATE_EVERY);
+        if due {
+            self.update(world, models, library, gpu, now);
+        }
+        self.pump(gpu, models, library);
+    }
+
+    /// Recomputes HLOD contents of changed cells, the wanted builds and proxies, and schedules
+    /// proxy builds.
+    fn update(&mut self, world: &World, models: &GpuModels, library: &SharedLibrary, gpu: &mut Gpu, now: Instant) {
+        self.updates += 1;
+        self.last_update = Some(now);
+        self.force_update = false;
+        self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| s.eye);
+        let frame = self.updates;
+        let hlod_on = self.hlod_on();
+        // HLOD contents of changed cells (and of cells still waiting for builds).
+        {
+            let lib = library.lock();
+            let mut gone = Vec::new();
+            for (k, c) in &mut self.index.cells {
+                if c.members.is_empty() {
+                    gone.push(*k);
+                    continue;
+                }
+                // Waiting for builds: worked out again once one of them landed (or failed).
+                let waiting = self
+                    .hlod
+                    .content(*k)
+                    .is_some_and(|ct| !ct.complete && ct.waiting_on.iter().any(|&h| lib.built(h).is_some() || lib.handle_error(h).is_some()));
+                if hlod_on && (c.dirty || waiting) {
+                    let content = content_of(c, &lib);
+                    if self.hlod.content(*k) != Some(&content) {
+                        self.hlod.set_content(*k, content);
+                    }
+                }
+                c.dirty = false;
+            }
+            drop(lib);
+            for k in gone {
+                self.index.cells.remove(&k);
+            }
+            let cells = &self.index.cells;
+            self.hlod.retain(|k| cells.contains_key(&k), gpu);
+        }
+        // Wanted builds and proxies.
+        self.want.clear();
+        let cfg = &self.cfg;
+        let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
+        for (k, c) in &self.index.cells {
+            let mut members_p: Option<f32> = None;
+            let mut others_p: Option<f32> = None;
+            let mut proxy_p: Option<f32> = None;
+            let current = hlod_on && self.hlod.has_current(*k);
+            let content = self.hlod.content(*k);
+            for s in &self.sources {
+                let d = hlod::box_distance(s.eye, c.lo, c.hi);
+                let p = d * s.weight(c.lo, c.hi);
+                if d < cfg.radius_m {
+                    others_p = Some(others_p.map_or(p, |q: f32| q.min(p)));
+                    let proxied = current
+                        && content.is_some_and(|ct| d > hlod::switch_distance(ct.k, s.fov_y_deg, s.viewport_h, cfg.hlod_min_m) * cfg.preload);
+                    if !proxied {
+                        members_p = Some(members_p.map_or(p, |q: f32| q.min(p)));
+                    }
+                }
+                if hlod_on && d < cfg.hlod_radius_m {
+                    let pp = p * 0.5;
+                    proxy_p = Some(proxy_p.map_or(pp, |q: f32| q.min(pp)));
+                }
+            }
+            let merged: &[u64] = content.map_or(&[], |ct| ct.members.as_slice());
+            for m in &c.members {
+                let in_proxy = merged.binary_search(&m.id).is_ok();
+                let p = if in_proxy { members_p } else { others_p };
+                if let (Some(p), Some(b)) = (p, build_of(m.handle)) {
+                    let e = self.want.entry(b).or_insert(p);
+                    *e = e.min(p);
+                }
+            }
+            if hlod_on {
+                self.hlod.set_wanted(*k, proxy_p, frame);
+            }
+        }
+        // A game's presentation (transient models) comes first.
+        for e in world.transient_entities().filter(|e| e.shape == Shape::Model) {
+            if let Some(b) = build_of(e.resolved_model().map(|r| r.handle)) {
+                self.want.insert(b, 0.0);
+            }
+        }
+        for b in self.want.keys() {
+            self.last_wanted.insert(*b, frame);
+        }
+        let live = &self.live;
+        self.last_wanted.retain(|b, _| live.contains_key(b));
+        if hlod_on {
+            let cells = &self.index.cells;
+            let lib = library.lock();
+            self.hlod.schedule(now, self.cfg.settle_s, |key, content| inputs_of(cells.get(&key)?, content, &lib));
+        }
+    }
+
+    /// Uploads within the frame's budget, evicting under the memory budget (see the module
+    /// docs).
+    fn pump(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary) {
+        enum Item {
+            Build(u64),
+            Proxy(CellKey),
+        }
+        let mut items: Vec<(f32, Item, u64)> = self
+            .want
+            .iter()
+            .filter(|(b, _)| self.live.contains_key(b) && !models.failed.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > 0))
+            .map(|(b, p)| (*p, Item::Build(*b), next_level_bytes(&self.live[b], models.uploaded.get(b))))
+            .collect();
+        if self.hlod_on() {
+            items.extend(self.hlod.uploads().map(|(p, cell, bytes)| (p, Item::Proxy(cell), bytes)));
+        }
+        if items.is_empty() {
+            self.blocked_bytes = 0;
+            return;
+        }
+        items.sort_by(|a, b| {
+            a.0.total_cmp(&b.0).then_with(|| match (&a.1, &b.1) {
+                (Item::Build(x), Item::Build(y)) => x.cmp(y),
+                (Item::Proxy(x), Item::Proxy(y)) => x.cmp(y),
+                (Item::Build(_), Item::Proxy(_)) => std::cmp::Ordering::Greater,
+                (Item::Proxy(_), Item::Build(_)) => std::cmp::Ordering::Less,
+            })
+        });
+        let started = Instant::now();
+        let budget_ms = self.cfg.upload_ms;
+        let budget_bytes = (self.cfg.upload_mb * 1_048_576.0) as u64;
+        let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
+        let mut resident = models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes();
+        let mut blocked = 0u64;
+        for (_, item, est) in items {
+            let spent = started.elapsed().as_secs_f64() * 1e3;
+            let est_ms = est as f64 / 1_048_576.0 * self.ms_per_mb;
+            if self.frame.items > 0 && (spent + est_ms > budget_ms || self.frame.bytes + est > budget_bytes) {
+                self.frame.deferred += 1;
+                continue;
+            }
+            if resident + est > memory {
+                resident -= self.evict_for(resident + est - memory, gpu, models);
+                if resident + est > memory {
+                    self.frame.memory_blocked += 1;
+                    blocked += est;
+                    continue;
+                }
+            }
+            let t = Instant::now();
+            let done = match item {
+                Item::Build(b) => upload_next_level(gpu, models, library, &self.live[&b]),
+                Item::Proxy(cell) => self.hlod.upload(cell, gpu),
+            };
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            match done {
+                Ok(bytes) => {
+                    self.frame.items += 1;
+                    self.frame.bytes += bytes;
+                    resident += bytes;
+                    if bytes > 64 * 1024 {
+                        // Learn the cost per MB from items big enough to measure.
+                        let rate = ms / (bytes as f64 / 1_048_576.0);
+                        self.ms_per_mb = (self.ms_per_mb * 0.8 + rate * 0.2).clamp(0.05, 200.0);
+                    }
+                }
+                Err(e) => {
+                    if self.upload_errors.len() < 10 {
+                        self.upload_errors.push(e);
+                    }
+                }
+            }
+        }
+        self.blocked_bytes = blocked;
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        self.frame.ms = ms;
+        if self.frame.items > 0 {
+            self.upload_ms.push(started.elapsed());
+            self.totals.items += self.frame.items;
+            self.totals.bytes += self.frame.bytes;
+            if ms > budget_ms {
+                self.frames_over += 1;
+                self.miss(Json::obj([
+                    ("error", Json::from("stream_upload_over_budget")),
+                    ("metric", Json::from("stream_upload_ms")),
+                    ("value", Json::from((ms * 1000.0).round() / 1000.0)),
+                    ("budget", Json::from(budget_ms)),
+                    ("unit", Json::from("ms")),
+                    ("items", Json::from(self.frame.items)),
+                    ("kb", Json::from(self.frame.bytes / 1024)),
+                ]));
+            }
+        }
+        if self.frame.memory_blocked > 0 {
+            self.totals.memory_blocked += self.frame.memory_blocked;
+        }
+        self.totals.deferred += self.frame.deferred;
+        self.totals.evicted += self.frame.evicted;
+    }
+
+    fn miss(&mut self, j: Json) {
+        if self.misses.len() == MAX_MISSES {
+            self.misses.pop_front();
+        }
+        self.misses.push_back(j);
+    }
+
+    /// Evicts unwanted builds and proxies, least recently wanted first, until `need` bytes are
+    /// free (or nothing is left to evict). Returns the bytes freed.
+    fn evict_for(&mut self, need: u64, gpu: &mut Gpu, models: &mut GpuModels) -> u64 {
+        let mut builds: Vec<(u64, u64)> = models
+            .uploaded
+            .iter()
+            .filter(|(id, m)| !self.want.contains_key(id) && m.textures.is_empty())
+            .map(|(id, _)| (self.last_wanted.get(id).copied().unwrap_or(0), *id))
+            .collect();
+        builds.sort_unstable();
+        let mut proxies = self.hlod.evictable().into_iter().peekable();
+        let mut builds = builds.into_iter().peekable();
+        let mut freed = 0;
+        while freed < need {
+            let take_build = match (builds.peek(), proxies.peek()) {
+                (Some(b), Some(p)) => b.0 <= p.0,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_build {
+                let (_, id) = builds.next().expect("peeked");
+                freed += models.uploaded.get(&id).map_or(0, |m| m.bytes);
+                evict_build(gpu, models, id);
+            } else {
+                let (_, cell) = proxies.next().expect("peeked");
+                freed += self.hlod.evict(cell, gpu);
+            }
+            self.frame.evicted += 1;
+        }
+        freed
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Drawing and sight
+
+    /// Appends the window's proxy draws (and swaps cells in and out).
+    pub fn draw_window(&mut self, camera: &Camera, viewport_h: u32, models: &GpuModels, out: &mut Vec<DrawItem>) {
+        if !self.hlod_on() {
+            return;
+        }
+        let index = &self.index;
+        let resident = |id: u64| -> bool {
+            let Some(cell) = index.cell_of.get(&id) else { return true };
+            let Some(c) = index.cells.get(cell) else { return true };
+            let Ok(i) = c.members.binary_search_by_key(&id, |m| m.id) else { return true };
+            let b = c.members[i].handle.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
+            b.is_some_and(|b| models.uploaded.contains_key(&b))
+        };
+        self.hlod.window(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, resident, out);
+    }
+
+    /// Appends a capture's proxy draws and fills the capture cover.
+    pub fn draw_capture(&mut self, camera: &Camera, viewport_h: u32, out: &mut Vec<DrawItem>) {
+        self.last_capture = if self.hlod_on() {
+            self.hlod.capture(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, out)
+        } else {
+            self.hlod.capture_cover.clear();
+            (0, 0)
+        };
+    }
+
+    /// A capture packet's `streaming`: what the last capture left out or merged.
+    pub fn capture_json(&self, stats: &crate::models::LodStats) -> Json {
+        if !self.cfg.enabled {
+            return Json::Null;
+        }
+        Json::obj([
+            ("hlod_cells", Json::from(self.last_capture.0)),
+            ("hlod_entities", Json::from(self.last_capture.1)),
+            ("not_resident", Json::from(stats.not_resident)),
+            ("coarser_lod", Json::from(stats.coarser)),
+            (
+                "note",
+                Json::from(
+                    "subjects drawn_as \"hlod\" are drawn merged in their cell's proxy (same coarsest-LOD geometry; visible_px null), \
+                     \"not_resident\" ones aren't drawn (not on the GPU); resident_lods_from > 0: finer LODs still streaming",
+                ),
+            ),
+        ])
+    }
+
+    /// What a capture through `views` still waits for: model entities in view (within
+    /// `radius_m`, not drawn by a proxy) whose build is built but not all uploaded, and cells in
+    /// view whose proxy is coming. 0 when streaming is off or `capture_wait` is.
+    pub fn waiting_in(&self, views: &[(Camera, u32, u32)], world: &World, models: &GpuModels) -> usize {
+        if !self.cfg.enabled || !self.cfg.capture_wait {
+            return 0;
+        }
+        let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
+        let pending = |b: u64| !models.failed.contains_key(&b) && models.uploaded.get(&b).is_none_or(|m| m.resident_from > 0);
+        let mut waiting = 0;
+        for (cam, w, h) in views {
+            let vp = cam.view_proj(*w, *h);
+            for (k, c) in &self.index.cells {
+                if !box_in_view(&vp, c.lo, c.hi) {
+                    continue;
+                }
+                let d = hlod::box_distance(cam.eye, c.lo, c.hi);
+                let content = self.hlod.content(*k);
+                let proxied = self.hlod_on() && self.hlod.capture_on(*k, cam.eye, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
+                if self.hlod_on() && d < self.cfg.hlod_radius_m && !proxied {
+                    // A proxy on its way that this view would draw.
+                    if let Some(ct) = content.filter(|ct| ct.key != 0 && ct.complete) {
+                        let would = d > hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
+                        if would && !self.hlod.has_current(*k) {
+                            waiting += 1;
+                        }
+                    }
+                }
+                if d >= self.cfg.radius_m {
+                    continue;
+                }
+                let merged: &[u64] = if proxied { content.map_or(&[], |ct| ct.members.as_slice()) } else { &[] };
+                for m in &c.members {
+                    if merged.binary_search(&m.id).is_ok() {
+                        continue;
+                    }
+                    let shown = world.get(m.id).is_some_and(|e| sight::in_frame(e, false));
+                    let p = vp.mul_vec4(m.pos.extend(1.0));
+                    let in_view = p.w > 0.0 && p.x.abs() <= p.w * 1.5 && p.y.abs() <= p.w * 1.5;
+                    if shown && in_view && build_of(m.handle).is_some_and(pending) {
+                        waiting += 1;
+                    }
+                }
+            }
+        }
+        waiting
+    }
+
+    /// Marks a capture's subjects: `drawn_as: "hlod"` (drawn merged in the cell's proxy: its
+    /// pixels aren't counted on their own, `visible_px` is null) or `"not_resident"` (built, not
+    /// on the GPU: not drawn), and `resident_lods_from` when finer levels are still streaming.
+    pub fn annotate(&self, subjects: &mut [Subject], world: &World, models: &GpuModels) {
+        if !self.cfg.enabled {
+            return;
+        }
+        for s in subjects {
+            let Some(e) = world.get(s.id).filter(|e| e.shape == Shape::Model) else { continue };
+            if hlod::covers(&self.hlod.capture_cover, s.id) {
+                s.json.set("drawn_as", Json::from("hlod"));
+                s.json.set("visible_px", Json::Null);
+                continue;
+            }
+            let b = e.resolved_model().and_then(|r| models.by_handle.get(r.handle as usize).copied().flatten());
+            match b.map(|b| (b, models.uploaded.get(&b))) {
+                Some((b, None)) if !models.failed.contains_key(&b) => {
+                    s.json.set("drawn_as", Json::from("not_resident"));
+                }
+                Some((_, Some(m))) if m.resident_from > 0 => {
+                    s.json.set("resident_lods_from", Json::from(m.resident_from));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Reports
+
+    /// perf_frame's `streaming`.
+    pub fn json(&self, gpu: &Gpu, models: &GpuModels) -> Json {
+        let model_bytes: u64 = models.uploaded.values().map(|m| m.bytes).sum();
+        let resident = model_bytes + self.hlod.resident_bytes();
+        let pending = self.want.keys().filter(|b| models.uploaded.get(b).is_none_or(|m| m.resident_from > 0)).count();
+        let mb = |b: u64| Json::from((b as f64 / 1_048_576.0 * 100.0).round() / 100.0);
+        let f = &self.frame;
+        let t = &self.totals;
+        let g = gpu.upload_stats();
+        Json::obj([
+            ("enabled", Json::from(self.cfg.enabled)),
+            ("settings", self.cfg.to_json()),
+            ("set_by", self.set_by.as_deref().map_or(Json::Null, Json::from)),
+            ("overrides", Json::Obj(self.overrides.clone())),
+            ("adapter", Json::from(self.kind.as_str())),
+            (
+                "frame",
+                Json::obj([
+                    ("uploads", Json::from(f.items)),
+                    ("kb", Json::from(f.bytes / 1024)),
+                    ("ms", Json::from((f.ms * 1000.0).round() / 1000.0)),
+                    ("deferred", Json::from(f.deferred)),
+                    ("memory_blocked", Json::from(f.memory_blocked)),
+                    ("evicted", Json::from(f.evicted)),
+                ]),
+            ),
+            ("upload_ms", self.upload_ms.to_json()),
+            ("frames_over_upload_budget", Json::from(self.frames_over)),
+            (
+                "totals",
+                Json::obj([
+                    ("uploads", Json::from(t.items)),
+                    ("mb", mb(t.bytes)),
+                    ("deferred", Json::from(t.deferred)),
+                    ("memory_blocked", Json::from(t.memory_blocked)),
+                    ("evicted", Json::from(t.evicted)),
+                ]),
+            ),
+            ("resident_mb", mb(resident)),
+            ("models_mb", mb(model_bytes)),
+            ("memory_budget_mb", Json::from(self.cfg.memory_mb)),
+            ("blocked_mb", mb(self.blocked_bytes)),
+            ("live_builds", Json::from(self.live.len())),
+            ("uploaded_builds", Json::from(models.uploaded.len())),
+            ("partial_builds", Json::from(models.uploaded.values().filter(|m| m.resident_from > 0).count())),
+            ("wanted_builds", Json::from(self.want.len())),
+            ("pending_builds", Json::from(pending)),
+            ("sources", Json::from(self.sources.len())),
+            ("cells", Json::from(self.index.cells.len())),
+            ("index", Json::obj([("rebuilds", Json::from(self.index.rebuilds)), ("patches", Json::from(self.index.patches))])),
+            ("ms_per_mb", Json::from((self.ms_per_mb * 1000.0).round() / 1000.0)),
+            ("hlod", self.hlod.json()),
+            (
+                "gpu",
+                Json::obj([
+                    ("batches", Json::from(g.batches)),
+                    ("items", Json::from(g.items)),
+                    ("mb", mb(g.bytes)),
+                    ("in_flight", Json::from(g.in_flight)),
+                    ("slot_waits", Json::from(g.slot_waits)),
+                    ("retired_pending", Json::from(g.retired_pending)),
+                    ("freed", Json::from(g.freed)),
+                    ("dedicated_staging", Json::from(g.dedicated_staging)),
+                ]),
+            ),
+        ])
+    }
+
+    /// Budget misses as perf_frame errors (`stream_upload_over_budget`: the p95 of frames that
+    /// uploaded, or one frame over twice the budget; `stream_memory_over_budget`: wanted builds
+    /// and proxies that don't fit `memory_mb`).
+    pub fn budget_errors(&self, adapter: &str) -> Vec<Json> {
+        let mut out = Vec::new();
+        if !self.cfg.enabled {
+            return out;
+        }
+        let err = |code: &str, metric: &str, value: f64, budget: f64, unit: &str| {
+            Json::obj([
+                ("error", Json::from(code)),
+                ("metric", Json::from(metric)),
+                ("value", Json::from((value * 1000.0).round() / 1000.0)),
+                ("budget", Json::from(budget)),
+                ("unit", Json::from(unit)),
+                ("adapter", Json::from(adapter)),
+            ])
+        };
+        if let Some(p95) = self.upload_ms.p95().filter(|&p| p > self.cfg.upload_ms) {
+            out.push(err("stream_upload_over_budget", "stream_upload_p95_ms", p95, self.cfg.upload_ms, "ms"));
+        }
+        let worst = self.misses.iter().filter_map(|m| m.get("value").and_then(Json::as_f64)).fold(0.0f64, f64::max);
+        if worst > self.cfg.upload_ms * 2.0 {
+            out.push(err("stream_upload_spike", "stream_upload_max_ms", worst, self.cfg.upload_ms * 2.0, "ms"));
+        }
+        if self.blocked_bytes > 0 {
+            out.push(err("stream_memory_over_budget", "stream_blocked_mb", self.blocked_bytes as f64 / 1_048_576.0, self.cfg.memory_mb, "MB"));
+        }
+        out
+    }
+
+    /// stream_state: the summary, plus cells near a point and entities not resident there.
+    pub fn state_json(&self, gpu: &Gpu, models: &GpuModels, world: &World, near: Option<Vec3>, limit: usize) -> Json {
+        let mut j = self.json(gpu, models);
+        j.set("recent_misses", Json::arr(self.misses.iter().cloned()));
+        let window = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| (s.eye, s.fov_y_deg, s.viewport_h));
+        let at = near.or(window.map(|w| w.0));
+        if let Some(p) = at {
+            let mut cells: Vec<(f32, CellKey, &Cell)> =
+                self.index.cells.iter().map(|(k, c)| (hlod::box_distance(p, c.lo, c.hi), *k, c)).collect();
+            cells.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
+            let mut not_resident = Vec::new();
+            let listed = cells.iter().take(limit).map(|(d, k, c)| {
+                let resident = c.members.iter().filter(|m| build_of(m.handle).is_some_and(|b| models.uploaded.contains_key(&b))).count();
+                for m in &c.members {
+                    if not_resident.len() < limit && build_of(m.handle).is_some_and(|b| !models.uploaded.contains_key(&b)) {
+                        not_resident.push(Json::obj([("id", Json::from(m.id)), ("path", Json::from(world.path_of(m.id)))]));
+                    }
+                }
+                let view = window.map(|w| (w.0, w.1, w.2));
+                Json::obj([
+                    ("cell", Json::arr([Json::from(k.0), Json::from(k.1)])),
+                    ("distance_m", Json::from((d * 10.0).round() / 10.0)),
+                    ("members", Json::from(c.members.len())),
+                    ("resident", Json::from(resident)),
+                    ("hlod", self.hlod.cell_json(*k, view, self.cfg.hlod_min_m)),
+                ])
+            });
+            j.set("near", Json::arr([p.x, p.y, p.z].map(|v| Json::from((v * 10.0).round() / 10.0))));
+            j.set("nearest_cells", Json::arr(listed.collect::<Vec<_>>()));
+            j.set("not_resident_near", Json::arr(not_resident));
+        }
+        j
+    }
+}
+
+/// What cell `c` merges: its mergeable members whose build is ready, opaque and untextured at
+/// its coarsest level (see `hlod`).
+fn content_of(c: &Cell, lib: &crate::models::Library) -> Content {
+    let mut h = StableHasher::with_seed(0x4365_6c6c_0000_0001);
+    let mut ct = Content { complete: true, ..Content::default() };
+    let mut first = true;
+    for m in c.members.iter().filter(|m| m.mergeable) {
+        let Some(built) = m.handle.and_then(|hd| lib.built(hd)) else {
+            // Still building (or failed): no proxy until every member can join.
+            if let Some(hd) = m.handle.filter(|hd| lib.handle_error(*hd).is_none()) {
+                ct.complete = false;
+                if !ct.waiting_on.contains(&hd) {
+                    ct.waiting_on.push(hd);
+                }
+            }
+            continue;
+        };
+        let level = hlod::last_level(built.model.lods.len());
+        if !hlod::mergeable(built, level) {
+            continue;
+        }
+        let (lo, hi) = built.bounds();
+        let centre = m.world.transform_point((lo + hi) * 0.5);
+        let c3 = &m.world.cols;
+        let scale = [c3[0], c3[1], c3[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max);
+        let radius = ((hi - lo).length() * 0.5).max(1e-3) * scale;
+        ct.k = ct.k.max(hlod::switch_factor(radius, level));
+        if first {
+            ct.lo = centre;
+            ct.hi = centre;
+            first = false;
+        } else {
+            ct.lo = ct.lo.min(centre);
+            ct.hi = ct.hi.max(centre);
+        }
+        h.write_u64(m.id);
+        h.write_u64(m.hash);
+        h.write_u64(built.id);
+        h.write_u64(level as u64);
+        ct.members.push(m.id);
+        if let Some(t) = m.changed {
+            ct.changed = Some(ct.changed.map_or(t, |c: Instant| c.max(t)));
+        }
+    }
+    if !ct.members.is_empty() {
+        ct.key = h.finish().max(1);
+    }
+    ct
+}
+
+/// The generator's inputs for cell `c` (`None` when a member's build is gone meanwhile).
+fn inputs_of(c: &Cell, content: &Content, lib: &crate::models::Library) -> Option<(Vec3, Vec<MemberInput>)> {
+    let mut out = Vec::with_capacity(content.members.len());
+    for &id in &content.members {
+        let i = c.members.binary_search_by_key(&id, |m| m.id).ok()?;
+        let m = &c.members[i];
+        let built = Arc::clone(lib.built(m.handle?)?);
+        let level = hlod::last_level(built.model.lods.len());
+        out.push(MemberInput { id, world: m.world, tint: m.tint, built, level });
+    }
+    // The proxy's frame: the cell's members' centre, rounded to a metre (stable under edits).
+    let o = (content.lo + content.hi) * 0.5;
+    Some((Vec3::new(o.x.round(), o.y.round(), o.z.round()), out))
+}
+
+/// Estimated GPU bytes of the next level `upload_next_level` would upload.
+fn next_level_bytes(built: &Built, m: Option<&GpuModel>) -> u64 {
+    let lods = &built.model.lods;
+    let level = match m {
+        None => lods.len().saturating_sub(1),
+        Some(m) => m.resident_from.saturating_sub(1),
+    };
+    let lod_bytes = lods.get(level).map_or(0, |l| l.positions.len() as u64 * 28 + l.indices.len() as u64 * 4);
+    lod_bytes + if m.is_none() { crate::models::texture_bytes(built) } else { 0 }
+}
+
+/// Retires build `id`'s meshes and textures (queued frees: never waits). Returns whether it had
+/// textures (their pixels left the CPU: the library must forget the build).
+fn evict_build(gpu: &mut Gpu, models: &mut GpuModels, id: u64) -> bool {
+    let Some(m) = models.uploaded.remove(&id) else { return false };
+    for p in m.lods.iter().flatten() {
+        gpu.retire_mesh(p.mesh);
+    }
+    let textured = !m.textures.is_empty();
+    for t in m.textures {
+        gpu.retire_texture(t);
+    }
+    models.forget_animators(id);
+    textured
+}
+
+/// Uploads the next (finer) level of `built`, coarsest first, through the queued path; the
+/// first upload brings the textures. Returns the bytes uploaded.
+fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, built: &Arc<Built>) -> Result<u64, String> {
+    let model = &built.model;
+    let count = model.lods.len();
+    if count == 0 {
+        models.failed.insert(built.id, format!("model '{}' not drawn: it has no LODs", model.name));
+        return Err(format!("model '{}' has no LODs", model.name));
+    }
+    let id = built.id;
+    let first = !models.uploaded.contains_key(&id);
+    let level = models.uploaded.get(&id).map_or(count - 1, |m| m.resident_from.saturating_sub(1));
+    let mut textures: Vec<TextureId> = Vec::new();
+    let mut bytes = 0u64;
+    let fail = |gpu: &mut Gpu, models: &mut GpuModels, textures: &[TextureId], meshes: &[PartDraw], e: String| {
+        for t in textures {
+            gpu.retire_texture(*t);
+        }
+        for p in meshes {
+            gpu.retire_mesh(p.mesh);
+        }
+        evict_build(gpu, models, id);
+        let msg = format!("model '{}' not drawn: {e}", model.name);
+        models.failed.insert(id, msg.clone());
+        Err(msg)
+    };
+    if first {
+        for t in &built.textures {
+            // The pixels go to the GPU and leave the CPU (see `TextureData`).
+            let data = std::mem::take(&mut *t.levels.lock().unwrap_or_else(PoisonError::into_inner));
+            if data.is_empty() {
+                for t in &textures {
+                    gpu.retire_texture(*t);
+                }
+                // Released by an earlier upload: build it again (its entities show as building).
+                library.lock().reimport(id);
+                return Ok(0);
+            }
+            let levels: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+            match gpu.queue_texture_levels(t.width, t.height, t.format, &levels, t.sampler) {
+                Ok(tex) => textures.push(tex),
+                Err(e) => return fail(gpu, models, &textures, &[], e.to_string()),
+            }
+        }
+        bytes += crate::models::texture_bytes(built);
+    }
+    let all_textures: Vec<TextureId> = if first { textures.clone() } else { models.uploaded[&id].textures.clone() };
+    let lod: &MeshData = &model.lods[level];
+    let mut parts = Vec::with_capacity(lod.parts.len());
+    for (i, part) in lod.parts.iter().enumerate() {
+        let Some((_, preset)) = model.materials.iter().find(|(n, _)| *n == part.material) else { continue };
+        let textured = built.materials.get(&part.material).filter(|m| m.textured() && !lod.uvs.is_empty() && preset.kind == MaterialKind::Standard);
+        let p = part_mesh(lod, i, textured.is_some());
+        if p.indices.is_empty() {
+            continue;
+        }
+        let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
+        let mesh = match gpu.queue_mesh(&p.vertices, &p.indices, &streams) {
+            Ok(m) => m,
+            Err(e) => return fail(gpu, models, &textures, &parts, e.to_string()),
+        };
+        bytes += p.bytes();
+        let (material, surface, color) = match textured {
+            Some(m) => textured_look(m, &all_textures),
+            None => part_look(preset, p.mean),
+        };
+        let influence = match (&built.anims, &p.skin) {
+            (Some(set), Some(skin)) => part_influence(&set.skeleton, &p.vertices, skin),
+            _ => Vec::new(),
+        };
+        parts.push(PartDraw { mesh, material, surface, color, triangles: (p.indices.len() / 3) as u32, influence });
+    }
+    let textured_level = parts.iter().any(|p| p.surface.textures != MaterialTextures::NONE);
+    match models.uploaded.get_mut(&id) {
+        Some(m) => {
+            m.lods[level] = parts;
+            m.resident_from = level;
+            m.bytes += bytes;
+            m.needs.textured |= textured_level;
+        }
+        None => {
+            let b = model.bounds;
+            let (lo, hi) = (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]));
+            let mut lods: Vec<Vec<PartDraw>> = (0..count).map(|_| Vec::new()).collect();
+            lods[level] = parts;
+            let needs = Needs { skinned: built.anims.is_some() && model.lods.iter().any(MeshData::is_skinned), textured: textured_level };
+            models.uploaded.insert(
+                id,
+                GpuModel {
+                    lods,
+                    center: (lo + hi) * 0.5,
+                    radius: ((hi - lo).length() * 0.5).max(1e-3),
+                    textures,
+                    anims: built.anims.clone(),
+                    needs,
+                    resident_from: level,
+                    bytes,
+                },
+            );
+        }
+    }
+    Ok(bytes)
+}
+
+/// Every key `stream_settings` takes.
+pub fn setting_keys() -> Vec<&'static str> {
+    FLAGS.iter().copied().chain(RANGES.iter().map(|r| r.0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_parse_with_adapter_sections_and_ranges() {
+        let doc = specula_core::toml::parse("[streaming]\nupload_ms = 1.5\nhlod = false\n[streaming.integrated]\nupload_mb = 4\n").unwrap();
+        let t = StreamTable::parse(doc.get("streaming").unwrap()).unwrap();
+        let i = t.config("integrated");
+        assert_eq!((i.upload_ms, i.upload_mb, i.hlod), (1.5, 4.0, false));
+        let d = t.config("discrete");
+        assert_eq!((d.upload_ms, d.upload_mb), (1.5, 8.0));
+        for bad in ["[streaming]\nupload_ms = 0\n", "[streaming]\nfoo = 1\n", "[streaming]\nenabled = 3\n", "[streaming.integrated]\ncell_m = 2\n"] {
+            let doc = specula_core::toml::parse(bad).unwrap();
+            assert!(StreamTable::parse(doc.get("streaming").unwrap()).is_err(), "{bad}");
+        }
+        let mut c = StreamConfig::default();
+        assert!(c.apply(&Json::obj([("memory_mb", Json::from(1.0))]), "stream_settings").unwrap_err().contains("memory_mb"));
+        assert_eq!(c, StreamConfig::default(), "a refused patch changes nothing");
+    }
+
+    #[test]
+    fn cells_follow_entities_and_never_touch_the_world() {
+        use crate::world::SpawnSpec;
+        let mut world = World::default();
+        let mut ids = Vec::new();
+        for i in 0..20 {
+            let mut s = SpawnSpec::model(crate::world::ModelSpec { recipe: "recipes/x.json".into(), params: Vec::new(), seed: Some(i) });
+            s.position = Vec3::new(i as f32 * 10.0, 0.0, 5.0);
+            ids.push(world.spawn(s, "test").unwrap().id);
+        }
+        let mut index = Index::default();
+        let now = Instant::now();
+        assert!(index.sync(&world, 0, 32.0, now));
+        assert_eq!(index.cells.len(), 6, "x 0..190 in 32 m cells");
+        assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
+        assert!(!index.sync(&world, 0, 32.0, now), "unchanged world: nothing to do");
+        // Move one far away: patched, not rebuilt.
+        let rebuilds = index.rebuilds;
+        world.update(&crate::world::EntityKey::Id(ids[0]), crate::world::UpdateSpec { position: Some(Vec3::new(500.0, 0.0, 5.0)), ..Default::default() }, "test").unwrap();
+        assert!(index.sync(&world, 0, 32.0, now));
+        assert_eq!(index.rebuilds, rebuilds);
+        assert_eq!(index.cell_of[&ids[0]], (15, 0));
+        assert!(index.cells[&(15, 0)].members[0].changed.is_some());
+        assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
+        world.delete(&crate::world::EntityKey::Id(ids[1]), None).unwrap();
+        let hash = world.state_hash();
+        index.sync(&world, 0, 32.0, now);
+        assert!(!index.cell_of.contains_key(&ids[1]));
+        // Another world generation: rebuilt.
+        index.sync(&world, 1, 32.0, now);
+        assert_eq!(index.rebuilds, rebuilds + 1);
+        assert_eq!(world.state_hash(), hash, "filing the world never changes it");
+    }
+
+    #[test]
+    fn box_view_test_is_conservative() {
+        let cam = Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::ZERO, 50.0);
+        let vp = cam.view_proj(320, 200);
+        assert!(box_in_view(&vp, Vec3::new(-1.0, -1.0, -1.0), Vec3::ONE));
+        assert!(!box_in_view(&vp, Vec3::new(-1.0, -1.0, 20.0), Vec3::new(1.0, 1.0, 22.0)), "behind the camera");
+        assert!(!box_in_view(&vp, Vec3::new(500.0, -1.0, -1.0), Vec3::new(501.0, 1.0, 1.0)), "far to the side");
+    }
+}
