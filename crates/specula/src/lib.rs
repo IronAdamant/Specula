@@ -95,6 +95,8 @@ const TICK_HASHES: usize = 1024;
 const CLAIM_SWEEP_EVERY: Duration = Duration::from_secs(1);
 /// world_batch calls with more ops than this count as heavy for the window's schedule.
 const HEAVY_BATCH_OPS: usize = 256;
+/// How often the windowed loop asks for its display's refresh rate.
+const REFRESH_ASK_EVERY: Duration = Duration::from_secs(1);
 
 struct Args {
     port: u16,
@@ -1147,7 +1149,9 @@ impl Engine {
         let mut size = client_size_of(ui.raw);
         let mut last_frame = Instant::now();
         let mut schedule = Schedule::default();
-        // A heavy call that didn't fit the last serve window: the next one starts with it.
+        // The display's refresh rate, asked every second (the window may move to another display).
+        let mut refresh_asked: Option<Instant> = None;
+        // The oldest queued call when the last serve window ended: the next one starts with it.
         let mut held: Option<Request> = None;
         let mut minimized = false;
         loop {
@@ -1156,12 +1160,18 @@ impl Engine {
             // Serve agents in the time the old loop spent waiting for vsync, until this frame is
             // due. Not frame work, so outside the frame zone; each call is its own "requests" zone.
             // perf_frame (answered in the window) reports the schedule as this window began.
+            if refresh_asked.is_none_or(|t| t.elapsed() >= REFRESH_ASK_EVERY) {
+                refresh_asked = Some(Instant::now());
+                let hz = specula_platform::refresh_rate_of(ui.raw);
+                schedule.set_display_refresh(hz.map(|hz| Duration::from_secs_f64(1.0 / hz)));
+            }
             self.schedule = schedule;
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
-            let served = schedule.serve(
+            let serve_start = Instant::now();
+            let ended = schedule.serve(
                 requests,
                 &mut held,
-                Instant::now() + window,
+                serve_start + window,
                 |r| heavy(&r.command),
                 |r| {
                     let _z = profile::zone("requests");
@@ -1169,11 +1179,12 @@ impl Engine {
                 },
                 || interrupt::requested() || ui.close_requested(),
             );
-            if served != Served::Window {
+            if ended != Served::Window {
                 // Stopping (or the server is gone). A held call's reply channel closes as it
                 // drops, which answers it "shutting down".
                 break;
             }
+            let served = serve_start.elapsed();
             let frame_zone = profile::zone("frame");
             self.autosave_if_due();
             self.sweep_claims(server);
@@ -1241,7 +1252,8 @@ impl Engine {
             let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
             let (frame_no, cpu) = self.gpu.last_window_timing();
-            schedule.presented(frame_no, Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0), Instant::now());
+            let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
+            schedule.presented(frame_no, served, blocked, Instant::now());
             self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
