@@ -456,10 +456,22 @@ cached and patched from World's record of changed persistent entities, transient
 code only where no building block fits, and playtest headless at scale.
 **Why here:** swarm need #3. The game moves from diorama to game.
 
-- [ ] ➕ **Gameplay as data** (owner, 2026-10-17: "you don't have to manually code a game"): a design pass first, then
-  behaviours as components (move, chase, patrol, spawn, damage, die, drop), rules / events / triggers / state machines
-  and win-lose conditions and economies as text data, edited through tools with the journal, claims and undo.
-  *Proof:* rebuild Sepulcra's rules in data through tools alone, with replays still matching.
+Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md) (2026-10-17, accepted by the owner).
+
+- [ ] ➕ **Gameplay as data: Lex** (Latin *lex*, "law"; owner, 2026-10-17: "you don't have to manually code a game").
+  A design pass first, then a typed rules language as text data:
+  - behaviours as components (move, chase, patrol, spawn, damage, die, drop);
+  - attributes and effects (Gameplay-Ability-System-like), events, triggers, timers, state machines;
+  - economies and win/lose conditions.
+
+  Every edit is validated against a schema, and errors say what to change, because grammar and compiler feedback is
+  what makes agents' output valid. `lex_*` tools read, edit, validate and simulate, with the journal, claims and undo.
+  Code modules stay the escape hatch; each use is logged with why, so Lex grows by evidence.
+  *Proof:* rebuild Sepulcra's rules in Lex through tools alone, with replays still matching.
+- [ ] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
+  facing, spacing, avoid, inside a region, on the navmesh) and solves positions deterministically. Unsatisfied
+  relations come back as data with the nearest valid alternative.
+  *Why:* agents make systematic coordinate errors, but are good at relations once a solver does the placing.
 
 - [ ] **Module host**: game logic as Rust `cdylib`s behind a C ABI. The engine owns all state; build → reload without
   losing the world; structured build errors.
@@ -480,6 +492,21 @@ code only where no building block fits, and playtest headless at scale.
 - [ ] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
   walk cycles from a rig and a gait, breathing, recoil, procedural secondary motion), so agents animate without
   external tools; animation graphs edited live with the journal and undo.
+- [ ] ➕ **Motion checks as data** *(research)*: foot sliding (foot speed while within ~2.5 cm of the ground), ground
+  penetration, joint limits, pops at transitions, root drift. Reported in packets, with thresholds in `style.toml`, so
+  a failure is an error.
+- [ ] ➕ **Physics checks as data** *(research)*: playtest assertions on contacts, tunnelling, rest states and energy;
+  colliders and contacts visible in captures.
+- [ ] ➕ **Balance lab** *(research)*:
+  - designer targets as data (win rate per wave, gold curve, time to kill);
+  - headless sweeps across parallel engines;
+  - Bayesian optimisation over Lex parameters;
+  - results as data, flagged "needs a human playtest", because simulated balance can mislead.
+- [ ] ➕ **Specula agent evals** *(research)*: a fixed suite of realistic tasks with verifiable outcomes (build a room
+  that passes these checks, add a patrolling enemy, make wave 3 10% harder without breaking wave 4). It runs after
+  every tool change, with a held-out set, and doubles as the public benchmark for marketing.
+- [ ] ➕ **Tool ergonomics** *(research)*: `response_format` (concise/detailed) on heavy tools; an audit of tool count,
+  naming and error messages against agent-tool design guidance.
 - [ ] ➕ **Animation sight**: filmstrips and contact sheets per clip and state, plus checks as data: foot sliding,
   ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
 - [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
@@ -517,7 +544,32 @@ code only where no building block fits, and playtest headless at scale.
   - `style.toml` holds the measurable rules: triangle and texture budgets, scale ranges, palette distance, naming.
   - A violation is an error.
 - [ ] **Taste loop**: silhouette, value and colour passes at thumbnail size; critique against the bible; revise. See
-  the procedural modelling design.
+  the procedural modelling design and [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md).
+- [ ] ➕ **Galleries: "choose, don't describe"** *(research)*. The engine generates variants spread across a parameter
+  space (lighting, palette, proportions, materials, layout), shows them side by side in the window or editor, and a
+  human picks, or clicks the part they dislike. Agents get the same gallery as data (`style_gallery`).
+  *Why:* models can't judge beauty alone (frontier models 26.5% vs experts 68.9% at picking best and worst), and even
+  experts are more consistent comparing than scoring.
+- [ ] ➕ **Pick-driven tuning** *(research)*: several rounds of picks drive preferential Bayesian optimisation over
+  style parameters (Sequential Gallery), so a few clicks tune many parameters.
+- [ ] ➕ **Preference store** *(research)*: every pick and rejection, with its note, is kept per project (optionally
+  per user). Agents consult it before proposing, and repeated picks become `style.toml` rules or priors. A small
+  learned preference model may follow (about 2,000 comparisons transfer).
+- [ ] ➕ **Reference boards** *(research)*: the human drops in images; the engine measures them (value histogram,
+  saturation, palette, contrast, edge density, shadow softness), and the numbers become targets the scene is checked
+  against.
+- [ ] ➕ **Taste checks as data** *(research)*, reported like budget errors:
+  - silhouette distinctness between siblings, and readability at thumbnail size;
+  - subject/background value contrast;
+  - palette distance and neutral saturation;
+  - scale against reference figures;
+  - flat-lighting detection.
+- [ ] ➕ **Shot sets** *(research)*: standard camera rigs for every review (gameplay view, close-up, worst-case
+  lighting, phone-sized, iGPU), so nothing is judged from one flattering angle.
+- [ ] ➕ **Style configurator and first-run onboarding** (owner, 2026-10-16): start from a base style; agents ask new
+  users how the game should look through galleries of options, including UI colours such as "can't afford".
+- [ ] ➕ **Structured critique queue** *(research)*: sight-skeptic and reviewer findings become items that humans and
+  agents work through, each linking its capture and metric.
 - [ ] **Procedural modelling, tiers 2–4**: booleans, SDF modelling, scatter and building generators, terrain,
   procedural materials.
 - [ ] **Review queue**: submissions with captures; the owner approves or rejects batches, and a rejection returns to
@@ -695,7 +747,7 @@ These are researched designs, written before implementation so the foundations h
   measured baseline. Written 2026-10-13. [ ] Reviewed with the owner.
 - [x] [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md): how agents build games and where they fail,
   gameplay as data (Lex), placement by relations (Locus), taste by picking and measuring, balance by simulation,
-  animation metrics; proposals for M3 and M4. Written 2026-10-17. [ ] Reviewed with the owner.
+  animation metrics; proposals for M3 and M4. Written 2026-10-17. [x] Reviewed with the owner (accepted 2026-10-17).
 - [ ] Still to research when their lane starts: audio (WASAPI, mixing, Vorbis), navigation (navmesh generation),
   global-illumination baking, particle systems, asset streaming, Linux/Wayland and macOS/Metal backends.
 
