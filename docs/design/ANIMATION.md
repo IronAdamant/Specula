@@ -1,6 +1,6 @@
 # Design: skeletal animation
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F4**. Stages A1–A2 land in M2 and A3 in M3
+Status: researched 2026-10-13, not yet implemented. Foundation **F4**. Stages A1–A2 land in M2 and A3–A4 in M3
 ([ROADMAP.md](../ROADMAP.md)).
 
 **Goal:** characters and creatures that move well, are cheap on low-end GPUs, deterministic where gameplay depends on
@@ -38,8 +38,9 @@ spec when implementing.
 | **A1** | glTF skins and clips import; clip sampling (STEP, LINEAR, CUBICSPLINE); GPU linear-blend skinning; play/loop one clip | M2 |
 | **A2** | Crossfades and layered/additive blending; masks (upper body only); clip events (footstep, hit frame); filmstrip sight | M2 |
 | **A3** | State machines and blend trees as text data; root motion; two-bone IK (feet on ground, hands on handles); look-at | M3 |
-| **A4** | Ragdolls (physics P4 drives joints) and powered ragdolls blending to animation | M4 |
-| Later | Dual-quaternion skinning (no "candy-wrapper" twist), retargeting between skeletons, morph targets (faces), animation compression, procedural/agent-authored clips | — |
+| **A4** | Ragdolls (physics P4 drives joints) and powered ragdolls blending to animation | M3 (moved from M4, owner 2026-10-17) |
+| M3 | Agent-authored clips and procedural motion as data; animation sight checks (foot sliding, penetration, pops) | M3 (owner 2026-10-17) |
+| Later | Dual-quaternion skinning (no "candy-wrapper" twist), retargeting between skeletons, morph targets (faces), animation compression | — |
 
 ## Key details
 

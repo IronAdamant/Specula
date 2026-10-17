@@ -33,6 +33,27 @@ What that means for the engine:
 - **Taste is part of the product.** The engine gives agents a structured way to apply taste (a style bible, contact
   sheets, critique loops) and gives the owner the final say.
 
+**Direction, 2026-10-17:**
+
+> "I'm trying to make it so you don't have to manually code a game. Same with any other AI agents. Especially going to
+> be helpful for AI agent swarms where you only need to focus on building a game, testing physics, doing all the shit
+> that you can do, and humans can still work on building stuff manually only if they want to."
+>
+> "The primary thing is that this engine makes it easier for you and other AI agents to build a game via code, and
+> using it as a tool to build worlds [...] But also, to really set up the taste [...] bringing it close to realistic
+> engine in Unreal Engine. Just more efficient and not requiring a lot of power."
+>
+> "Many developers are still focused on the human/AI models rather than AI-agent native ways."
+
+What that adds:
+- **Gameplay as data first, code as the escape hatch.** Behaviours, rules, events, state machines, physics and
+  animation are configured through tools as journaled, claimable, undoable data. Agents write code (hot-reloaded
+  modules) only for what no building block covers, and a recurring need for code means a building block is missing.
+- **Taste is engineered, not hoped for:** style rules the engine checks, critique loops, and fidelity that climbs
+  toward Unreal-class realism without Unreal's hardware bill.
+- **Agent-native, not human tools with AI bolted on.** Every system is designed for agents first (data, bounded
+  responses, verification as data); the human editor is a client of the same protocol.
+
 ## Why this order: what a swarm needs
 
 | # | What a swarm needs | Without it | Where it lands |
@@ -429,10 +450,16 @@ cached and patched from World's record of changed persistent entities, transient
 
 ---
 
-## M3: logic, physics and time. The game becomes playable
+## M3: logic, physics, animation and time. The game becomes playable
 
-**Goal:** agents write gameplay code, reload it live, and playtest headless at scale.
+**Goal:** agents build gameplay through data and tools (behaviours, rules, physics, animation), write hot-reloaded
+code only where no building block fits, and playtest headless at scale.
 **Why here:** swarm need #3. The game moves from diorama to game.
+
+- [ ] ➕ **Gameplay as data** (owner, 2026-10-17: "you don't have to manually code a game"): a design pass first, then
+  behaviours as components (move, chase, patrol, spawn, damage, die, drop), rules / events / triggers / state machines
+  and win-lose conditions and economies as text data, edited through tools with the journal, claims and undo.
+  *Proof:* rebuild Sepulcra's rules in data through tools alone, with replays still matching.
 
 - [ ] **Module host**: game logic as Rust `cdylib`s behind a C ABI. The engine owns all state; build → reload without
   losing the world; structured build errors.
@@ -446,7 +473,16 @@ cached and patched from World's record of changed persistent entities, transient
   - P1: queries and triggers
   - P2: kinematic character controller
   - P3: rigid bodies with the Soft Step solver
-- [ ] **Animation, stage A3**: state machines and blend trees as text data, events, root motion, two-bone IK.
+- [ ] **Animation, stage A3** ([design/ANIMATION.md](design/ANIMATION.md)): state machines and blend trees as text
+  data, events, root motion, two-bone IK (feet on the ground, hands on handles), look-at.
+- [ ] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
+  animation, driven by physics joints (P4 below).
+- [ ] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
+  walk cycles from a rig and a gait, breathing, recoil, procedural secondary motion), so agents animate without
+  external tools; animation graphs edited live with the journal and undo.
+- [ ] ➕ **Animation sight**: filmstrips and contact sheets per clip and state, plus checks as data: foot sliding,
+  ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
+- [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
 - [ ] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
   *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.
@@ -486,7 +522,6 @@ cached and patched from World's record of changed persistent entities, transient
   procedural materials.
 - [ ] **Review queue**: submissions with captures; the owner approves or rejects batches, and a rejection returns to
   the agent with its note.
-- [ ] **Physics, stage P4**: joints and ragdolls, which connect to skeletons.
 - [ ] ➕ **Baked global illumination**: lightmaps or probe volumes, baked by agents.
   *Why:* this is the low-end-friendly answer to Lumen.
 - [ ] ➕ **Particle/VFX system**: CPU first, GPU later. Cosmetic only, so it's outside determinism. Effects are data.

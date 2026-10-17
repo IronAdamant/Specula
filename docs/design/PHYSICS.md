@@ -1,6 +1,6 @@
 # Design: physics
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F4**; stages P1–P3 land in M3 and P4 in M4
+Status: researched 2026-10-13, not yet implemented. Foundation **F4**; stages P1–P4 land in M3 (P4 moved from M4 with ragdolls, owner 2026-10-17)
 ([ROADMAP.md](../ROADMAP.md)).
 
 **Goal:** the physics most games need, written from scratch (zero-dep):
