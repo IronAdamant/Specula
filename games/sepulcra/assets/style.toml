@@ -13,6 +13,8 @@ joint_limits_deg = 5.0
 pops_cm = 6.0
 root_drift_cm = 2.0
 loop_seam_mm = 1.0
+# A leap's apex (the root's highest point over its takeoff height) against the height it was made with.
+leap_apex_cm = 5.0
 sample_hz = 60
 
 [motion.allow]

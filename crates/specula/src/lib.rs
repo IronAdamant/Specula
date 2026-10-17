@@ -962,6 +962,10 @@ impl Engine {
                 reload.errors.len()
             );
         }
+        // Anim sets that changed reach the world here, journaled (never when a build lands).
+        if !reload.anim_handles.is_empty() && anim::resettle(&mut self.world, &reload.anim_handles) > 0 {
+            self.swarm.game_changes(&mut self.world, self.clock.tick(), anim::RELOAD_AGENT, Kind::Set);
+        }
         Some(reload)
     }
 

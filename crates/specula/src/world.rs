@@ -790,9 +790,10 @@ pub trait ModelSource: Send + Sync {
         None
     }
 
-    /// The anim set a graph write to an entity of `handle` settles against: the build's own with
-    /// `assets` (the world's, as of the write) laid over it. A build still in flight is waited
-    /// for, so what a write stores never depends on how fast models build (foundation F2).
+    /// The anim set a graph write to an entity of `handle` settles against, with `assets` (the
+    /// world's, as of the write) laid over it. It must not depend on whether or when a build
+    /// lands (foundation F2): the model library builds it from the rig and anims alone, without
+    /// waiting.
     fn anim_set_for_write(&self, handle: u32, _assets: &crate::anim::Assets) -> Option<Arc<specula_anim::AnimSet>> {
         self.anim_set(handle)
     }

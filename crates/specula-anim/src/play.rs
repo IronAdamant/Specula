@@ -612,11 +612,13 @@ impl Machine<'_> {
     /// state's rate (cycles/s). Fired transitions go to `fired` (when given); periods are only
     /// skipped up to `skip_until`. `history` is scratch (the last firing of each transition).
     ///
-    /// Two rules keep the work bounded: one instant fires at most one transition more than the
-    /// layer has states (by then the machine is cycling without time passing: `a -> b when on`
-    /// with `b -> a when on` stops after three firings, in `b`; transitions that would fire at
-    /// that instant wait until time moves on), and a transition firing again with the same stack
-    /// shifted in time marks a period, which is skipped whole periods at a time.
+    /// Two rules keep the work bounded. A transition firing again with the same stack shifted in
+    /// time marks a period, which is skipped whole periods at a time. And one instant fires at
+    /// most one transition more than the layer has states: past that the machine is cycling
+    /// without time passing (graphs that can are refused at parse, but the check has a work
+    /// budget), so the instant is undone (the layer stays as it came into it: settling is
+    /// idempotent, never a flip), transitions that would fire then wait for time to move on, and
+    /// the layer reports `truncated`. Triggers that instant spent stay spent.
     #[allow(clippy::too_many_arguments)]
     fn resolve(&self, li: usize, mut layer: RLayer, params: &mut [RVal], rates: &[f64], t0: f64, t_end: f64, skip_until: f64, history: &mut Vec<Option<(f64, RLayer)>>, mut fired: Option<&mut Vec<Fired>>) -> Resolved {
         let lg = &self.graph.layers[li];
@@ -626,6 +628,9 @@ impl Machine<'_> {
         // Firings at the current instant `t`, and the most one instant may have.
         let mut at_instant = 0usize;
         let instant_cap = lg.states.len() + 1;
+        // The layer and the firings so far as the current instant began; whether one was undone.
+        let mut instant_start = (layer, 0usize);
+        let mut looped = false;
         history.clear();
         history.resize(lg.transitions.len(), None);
         loop {
@@ -668,6 +673,9 @@ impl Machine<'_> {
                 return Resolved { layer, truncated: true };
             }
             let tr = &lg.transitions[ti];
+            if tf > t || at_instant == 0 {
+                instant_start = (layer, fired.as_deref().map_or(0, |f| f.len()));
+            }
             // Triggers it tested are consumed.
             let mut consumed = false;
             for c in &tr.when {
@@ -701,6 +709,15 @@ impl Machine<'_> {
             }
             at_instant += 1;
             t = tf;
+            if at_instant >= instant_cap {
+                // A zero-time cycle: this instant changes nothing after all.
+                layer = instant_start.0;
+                if let Some(f) = fired.as_deref_mut() {
+                    f.truncate(instant_start.1);
+                }
+                looped = true;
+                continue;
+            }
             if consumed {
                 history.iter_mut().for_each(|h| *h = None);
                 continue;
@@ -736,7 +753,7 @@ impl Machine<'_> {
             layer.stack.copy_within(k..layer.len, 0);
             layer.len -= k;
         }
-        Resolved { layer, truncated: false }
+        Resolved { layer, truncated: looped }
     }
 }
 

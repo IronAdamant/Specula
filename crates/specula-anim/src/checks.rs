@@ -6,7 +6,8 @@
 //! |---|---|---|
 //! | `foot_sliding` | feet's ground speed while their soles are within `contact_m` (2.5 cm) of the ground, weighted `2 − 2^(h/contact)` (the standard foot-skating metric), averaged over contact frames; the fastest frame is reported too | cm/s |
 //! | `floating` | how high the lowest sole stays above the ground over the whole subject (a creature that never touches down hovers); for play-once subjects (deaths, leaps, strikes) how high the body (its soles, or its lowest point when it is off its feet) rests at the end | cm |
-//! | `hover` | for flyers (`[motion.hover]`): how far the body's lowest point leaves the subject's hover band above the ground, within `floating_cm` | cm |
+//! | `hover` | for flyers (`[motion.hover]`): how far the body's lowest point leaves the subject's hover band above the ground (the band is in the check's `band_low_cm` / `band_high_cm`; limit 0) | cm |
+//! | `leap_apex` | for leaps (a `takeoff` event carrying the spec height, as the `leap` generator writes): how far the root's apex between takeoff and land misses that height | cm |
 //! | `ground_penetration` | how far the lowest joint (or skinned vertex, when a mesh is given) goes below the ground | cm |
 //! | `joint_limits` | the largest excess past a graph's `limits` (Euler degrees, rest-relative) | deg |
 //! | `pops` | at a transition: the largest per-frame joint jump beyond what the states moved on their own, scaled to a 1.8 m figure (a giant's hand may travel further in a frame than a person's) | cm/frame |
@@ -30,6 +31,7 @@
 //! pops_cm = 6.0
 //! root_drift_cm = 2.0
 //! loop_seam_mm = 1.0
+//! leap_apex_cm = 5.0
 //! sample_hz = 60
 //!
 //! [motion.allow]          # what a subject is exempt from: "rig/subject" (* matches anything)
@@ -39,6 +41,11 @@
 //! [motion.hover]          # flyers: the band (cm above the ground) the body's lowest point keeps
 //! "wraith/*" = [3, 90]
 //! ```
+//!
+//! A graph state is exempt from what the clips it plays are exempt from (`"shambler/climb"`
+//! exempts the state that plays the climb). Checks a subject skips (foot sliding for a play-once
+//! clip that doesn't travel, a fall) are listed in the report's `skipped`, so a verdict never
+//! claims more than ran.
 //!
 //! A hover subject has no feet on the ground: `foot_sliding` and `floating` don't apply to it,
 //! `hover` does (exempt a flyer's death from it to let it rise away).
@@ -60,7 +67,7 @@ pub const MAX_FRAMES: usize = 2400;
 /// Most notes a report's JSON lists.
 pub const MAX_NOTES: usize = 16;
 /// Check names, in report order.
-pub const CHECKS: [&str; 8] = ["foot_sliding", "floating", "ground_penetration", "joint_limits", "pops", "root_drift", "loop_seam", "hover"];
+pub const CHECKS: [&str; 9] = ["foot_sliding", "floating", "ground_penetration", "joint_limits", "pops", "root_drift", "loop_seam", "hover", "leap_apex"];
 
 /// Thresholds (the `[motion]` table of `style.toml`).
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +80,7 @@ pub struct MotionRules {
     pub pops_cm: f32,
     pub root_drift_cm: f32,
     pub loop_seam_mm: f32,
+    pub leap_apex_cm: f32,
     pub sample_hz: f32,
     /// `(subject pattern, checks it is exempt from)`.
     pub allow: Vec<(String, Vec<String>)>,
@@ -93,6 +101,7 @@ impl Default for MotionRules {
             pops_cm: 6.0,
             root_drift_cm: 2.0,
             loop_seam_mm: 1.0,
+            leap_apex_cm: 5.0,
             sample_hz: 60.0,
             allow: Vec::new(),
             hover: Vec::new(),
@@ -125,6 +134,7 @@ impl MotionRules {
                 "pops_cm" => r.pops_cm = num(0.0, 1e4)?,
                 "root_drift_cm" => r.root_drift_cm = num(0.0, 1e5)?,
                 "loop_seam_mm" => r.loop_seam_mm = num(0.0, 1e5)?,
+                "leap_apex_cm" => r.leap_apex_cm = num(0.0, 1e4)?,
                 "sample_hz" => r.sample_hz = num(10.0, 480.0)?,
                 "allow" => {
                     let allow = v.as_object().ok_or_else(|| err(&p, AnimErrorCode::WrongType, "[motion.allow] maps \"rig/subject\" to a list of check names"))?;
@@ -152,7 +162,7 @@ impl MotionRules {
                         r.hover.push((subject.clone(), [lo, hi]));
                     }
                 }
-                other => return Err(err(&p, AnimErrorCode::UnknownField, format!("'{other}' is not a motion rule (contact_m, foot_sliding_cm_s, floating_cm, ground_penetration_cm, joint_limits_deg, pops_cm, root_drift_cm, loop_seam_mm, sample_hz, allow, hover)"))),
+                other => return Err(err(&p, AnimErrorCode::UnknownField, format!("'{other}' is not a motion rule (contact_m, foot_sliding_cm_s, floating_cm, ground_penetration_cm, joint_limits_deg, pops_cm, root_drift_cm, loop_seam_mm, leap_apex_cm, sample_hz, allow, hover)"))),
             }
         }
         Ok(r)
@@ -178,7 +188,9 @@ impl MotionRules {
     fn limit(&self, check: &str) -> f32 {
         match check {
             "foot_sliding" => self.foot_sliding_cm_s,
-            "floating" | "hover" => self.floating_cm,
+            "floating" => self.floating_cm,
+            "hover" => 0.0,
+            "leap_apex" => self.leap_apex_cm,
             "ground_penetration" => self.ground_penetration_cm,
             "joint_limits" => self.joint_limits_deg,
             "pops" => self.pops_cm,
@@ -198,6 +210,7 @@ impl MotionRules {
             ("pops_cm", Json::Num(self.pops_cm as f64)),
             ("root_drift_cm", Json::Num(self.root_drift_cm as f64)),
             ("loop_seam_mm", Json::Num(self.loop_seam_mm as f64)),
+            ("leap_apex_cm", Json::Num(self.leap_apex_cm as f64)),
             ("sample_hz", Json::Num(self.sample_hz as f64)),
             ("allow", Json::obj(self.allow.iter().map(|(p, c)| (p.clone(), Json::arr(c.iter().map(|n| Json::Str(n.clone()))))))),
             ("hover", Json::obj(self.hover.iter().map(|(p, b)| (p.clone(), Json::arr([Json::Num(b[0] as f64), Json::Num(b[1] as f64)]))))),
@@ -285,6 +298,8 @@ pub struct Report {
     pub checks: Vec<Check>,
     /// What else an agent should know (a state its parameters don't hold, ...).
     pub notes: Vec<String>,
+    /// Checks this subject skipped, with why (`"foot_sliding: off its feet"`).
+    pub skipped: Vec<String>,
 }
 
 impl Report {
@@ -321,7 +336,22 @@ impl Report {
         if self.checks.len() > max_checks {
             out.push(("checks_omitted", Json::from(self.checks.len() - max_checks)));
         }
+        if !self.skipped.is_empty() {
+            out.push(("skipped", Json::arr(self.skipped.iter().take(MAX_NOTES).map(|n| Json::Str(n.clone())))));
+        }
         Json::obj(out)
+    }
+
+    /// The names of the checks skipped (without the reasons), for labels.
+    pub fn skipped_checks(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.skipped {
+            let n = s.split(':').next().unwrap_or(s).to_string();
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
     }
 
     /// Names of the checks that passed only because the rules exempt them (`"check"` or
@@ -415,13 +445,19 @@ struct Ctx<'a> {
     set: &'a AnimSet,
     rules: &'a MotionRules,
     subject: String,
+    /// More subjects whose exemptions apply (a state's clips, `"rig/clip"`).
+    also: Vec<String>,
 }
 
 impl Ctx<'_> {
+    fn allows(&self, check: &str, bone: Option<&str>) -> bool {
+        self.rules.allows(&self.subject, check, bone) || self.also.iter().any(|s| self.rules.allows(s, check, bone))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check(&self, out: &mut Report, check: &'static str, value: f32, unit: &'static str, at_s: Option<f32>, bone: Option<usize>, detail: Vec<(&'static str, f32)>) {
         let limit = self.rules.limit(check);
-        let exempt = self.rules.allows(&self.subject, check, None);
+        let exempt = self.allows(check, None);
         let passed = exempt || (value.is_finite() && value <= limit);
         out.checks.push(Check {
             check,
@@ -565,7 +601,7 @@ fn foot_sliding(ctx: &Ctx, s: &Sampled, tracks: &[FootTrack], out: &mut Report) 
     let mut exempt = Vec::new();
     for tr in tracks {
         let m = measure(tr);
-        if ctx.rules.allows(&ctx.subject, "foot_sliding", Some(&skel.names[tr.bone])) {
+        if ctx.allows("foot_sliding", Some(&skel.names[tr.bone])) {
             exempt.push(m);
         } else if worst.is_none_or(|w| m.0 > w.0) {
             worst = Some(m);
@@ -752,7 +788,7 @@ fn loop_and_drift(ctx: &Ctx, id: ClipId, s: &Sampled, out: &mut Report) {
 /// mesh, for penetration by skinned vertices.
 pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mesh: Option<&specula_model::MeshData>) -> Report {
     let clip = set.clip(id);
-    let ctx = Ctx { set, rules, subject: format!("{rig}/{}", clip.name) };
+    let ctx = Ctx { set, rules, subject: format!("{rig}/{}", clip.name), also: Vec::new() };
     let s = sample_clip(set, id, rules.sample_hz);
     let mut out = Report::default();
     // Feet slide only matters for clips that stand or move on them (not deaths, not flyers).
@@ -766,6 +802,8 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
         None => {
             if grounded {
                 foot_sliding(&ctx, &s, &tracks, &mut out);
+            } else if !tracks.is_empty() {
+                out.skipped.push("foot_sliding: a play-once clip that doesn't travel (checked where a graph state plays it on its feet)".into());
             }
             // A clip that moves no foot nor anything above one (a flinch on the upper body) leaves
             // the feet where the rest pose has them: nothing to check.
@@ -792,6 +830,53 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
     ground_penetration(&ctx, &s, mesh, &mut out);
     joint_limits(&ctx, &s, &limits_of(set), &mut out);
     loop_and_drift(&ctx, id, &s, &mut out);
+    leap_apex(&ctx, clip, &s, 1.0 / clip.duration.max(1e-6) as f64, &mut out);
+    out
+}
+
+/// A leap's apex: the root's highest point between `takeoff` and `land` over its height at
+/// takeoff, against the height the `takeoff` event carries. `rate`: clip cycles per second of
+/// the sampled subject.
+fn leap_apex(ctx: &Ctx, clip: &crate::clip::Clip, s: &Sampled, rate: f64, out: &mut Report) {
+    let ev = |n: &str| clip.events.iter().find(|e| e.name == n);
+    let (Some(up), Some(down)) = (ev("takeoff"), ev("land")) else { return };
+    let Ok(spec) = up.data.trim().parse::<f32>() else { return };
+    let frame = |time: f32| ((time as f64 / clip.duration.max(1e-6) as f64 / rate / s.dt as f64).round() as usize).min(s.heads.len().saturating_sub(1));
+    let (k0, k1) = (frame(up.time), frame(down.time));
+    if k1 <= k0 {
+        return;
+    }
+    let base = s.heads[k0][0][1];
+    let (mut apex, mut at) = (f32::MIN, k0);
+    for (k, h) in s.heads.iter().enumerate().take(k1 + 1).skip(k0) {
+        if h[0][1] - base > apex {
+            (apex, at) = (h[0][1] - base, k);
+        }
+    }
+    ctx.check(out, "leap_apex", (apex - spec).abs() * 100.0, "cm", Some(at as f32 * s.dt), Some(0), vec![("apex_m", apex), ("spec_m", spec)]);
+}
+
+/// The clips (not additive layers' deltas) a node plays, at most [`crate::graph::MAX_LEAVES`].
+fn clips_under(g: Graphed, node: crate::graph::NodeId) -> Vec<ClipId> {
+    use crate::graph::Node;
+    let mut out = Vec::new();
+    let mut todo = vec![node];
+    while let Some(n) = todo.pop() {
+        if out.len() as u64 >= crate::graph::MAX_LEAVES {
+            break;
+        }
+        match &g.graph.nodes[n.0 as usize] {
+            Node::Clip { clip, .. } => {
+                if !out.contains(clip) {
+                    out.push(*clip);
+                }
+            }
+            Node::Blend1 { points, .. } => todo.extend(points.iter().map(|(_, c)| *c)),
+            Node::Blend2 { points, .. } => todo.extend(points.iter().map(|(_, c)| *c)),
+            Node::Additive { base, .. } => todo.push(*base),
+            Node::External => {}
+        }
+    }
     out
 }
 
@@ -822,7 +907,9 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
         Some(Value::Num(x)) => *x,
         _ => 0.0,
     }) / g.scale.max(1e-6);
-    let ctx = Ctx { set: g.set, rules, subject: format!("{rig}/{graph_name}.{state}") };
+    let st_clips = clips_under(g, st.node);
+    let also = st_clips.iter().map(|&c| format!("{rig}/{}", g.set.clip(c).name)).collect();
+    let ctx = Ctx { set: g.set, rules, subject: format!("{rig}/{graph_name}.{state}"), also };
     let s = sample_play(g, &play, timing, 0.0, window, rules.sample_hz, speed);
     let mut out = Report::default();
     let feet = feet_of(g.set, Some(g.graph), None);
@@ -832,7 +919,19 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
     let once = !g.graph.node_loops[st.node.0 as usize];
     match rules.hover_band(&ctx.subject) {
         Some(band) => hover(&ctx, &s, band, mesh, &mut out),
-        None if feet_off => floating_end(&ctx, &s, mesh, &mut out),
+        None if feet_off => {
+            // Off its feet (feet IK off): a climb or a leap still moves on its feet, a fall doesn't.
+            let travels = st_clips.iter().any(|&c| {
+                let c = g.set.clip(c);
+                c.looping != LoopMode::Once || c.distance > 0.0
+            });
+            if travels {
+                foot_sliding(&ctx, &s, &tracks, &mut out);
+            } else if !tracks.is_empty() {
+                out.skipped.push("foot_sliding: off its feet (feet IK off) in a fall".into());
+            }
+            floating_end(&ctx, &s, mesh, &mut out);
+        }
         None => {
             foot_sliding(&ctx, &s, &tracks, &mut out);
             if once {
@@ -850,6 +949,9 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
         }
     }
     joint_limits(&ctx, &s, &limits, &mut out);
+    if let [c] = st_clips[..] {
+        leap_apex(&ctx, g.set.clip(c), &s, rate, &mut out);
+    }
     // The parameters may move the state on: say so (the checks then cover what played).
     let end = play::state_at(g, &play, timing, window, &mut sc);
     if let Some(top) = end[0].stack.last().filter(|e| e.state != state) {
@@ -878,7 +980,7 @@ pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String
     let t1 = Timing { anchor: ts, speed: 1.0 };
     let names = |p: &GraphPlay, tm: Timing, t: f64, sc: &mut Scratch| play::state_at(g, p, tm, t, sc)[0].stack.last().map(|e| e.state.clone()).unwrap_or_default();
     let (a, b) = (names(&before, t0, ts, &mut sc), names(&after, t1, ts + 1.5, &mut sc));
-    let ctx = Ctx { set: g.set, rules, subject: format!("{rig}/{graph_name}.{a}->{b}") };
+    let ctx = Ctx { set: g.set, rules, subject: format!("{rig}/{graph_name}.{a}->{b}"), also: Vec::new() };
     // The longest blend the change could start, plus a margin.
     let blend = g.graph.layers.iter().flat_map(|l| l.transitions.iter().map(|t| t.blend)).fold(0.0f32, f32::max).min(2.0) as f64;
     let (w0, w1) = (ts - 0.1, ts + blend + 0.2);

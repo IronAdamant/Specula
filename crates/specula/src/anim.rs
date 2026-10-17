@@ -59,9 +59,10 @@ pub fn anim_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
     world.model_source()?.anim_set(e.resolved_model()?.handle)
 }
 
-/// The anim set a graph write to `e` settles against: waits for a build in flight and lays the
-/// world's own assets (as of now) over it, so the result never depends on build timing or on
-/// when the engine last looked at the world.
+/// The anim set a graph write to `e` settles against: built from the model's rig and anims file
+/// alone (no mesh, no waiting: see `Library::write_set`), with the world's own assets (as of
+/// now) over it, so the result never depends on build timing or on when the engine last looked
+/// at the world.
 fn write_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
     world.model_source()?.anim_set_for_write(e.resolved_model()?.handle, world.anim_assets())
 }
@@ -92,7 +93,7 @@ pub fn check_params(graph: &AnimGraph, name: &str, params: &[(String, Value)]) -
 }
 
 /// What [`World::update`] does with a new graph anim on `e`: checks the graph and parameters
-/// against the model's anim set (waiting for a build in flight) and, when the entity already
+/// against the model's anim set (see [`write_set_of`]) and, when the entity already
 /// plays the same graph and the write gives no `layers`, settles the old play at the write's
 /// time and lays the new parameters over the old ones. Without an anim set (no rig, a failed
 /// build, no model library) nothing can be checked or settled, but the parameters still merge.
@@ -137,6 +138,32 @@ pub(crate) fn settle_update(world: &World, e: &Entity, new: &mut AnimSpec) -> Re
     }
     Ok(())
 }
+
+/// Re-settles the graph plays of the entities whose model is one of `handles` (their source
+/// changed on disk: a hot reload or `model_reload`), at the current world time against their new
+/// anim set. Called by the engine where it polls the files, so a changed anim set reaches the
+/// world at a defined point, as journaled changes by `RELOAD_AGENT`. Returns how many plays it
+/// wrote (a play its new set can't take keeps its old state and is reported by `anim_state`).
+pub(crate) fn resettle(world: &mut World, handles: &BTreeSet<u32>) -> usize {
+    let ids: Vec<(u64, AnimSpec)> = world
+        .persistent_entities()
+        .filter(|e| e.resolved_model().is_some_and(|r| handles.contains(&r.handle)))
+        .filter_map(|e| e.anim.as_ref().filter(|a| a.graph.is_some()).map(|a| (e.id, a.clone())))
+        .collect();
+    let mut n = 0;
+    for (id, old) in ids {
+        let name = old.graph.as_ref().expect("filtered").graph.clone();
+        let spec = AnimSpec { speed: old.speed, ..AnimSpec::graph(specula_anim::play::GraphPlay::new(name)) };
+        let change = crate::world::UpdateSpec { anim: Some(Some(spec)), ..Default::default() };
+        if world.update(&crate::world::EntityKey::Id(id), change, RELOAD_AGENT).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Who the journal says re-settled plays after a reload.
+pub const RELOAD_AGENT: &str = "anim_reload";
 
 /// Why entity `e`'s graph anim can't play as written (unknown graph, parameters, states), for
 /// `anim_problem`; `None` when it plays.

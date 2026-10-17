@@ -1134,7 +1134,147 @@ fn parse_graph(v: &Json, binder: &Binder) -> Result<AnimGraph, AnimError> {
         }
     }
     let node_loops = check_trees(&ctx)?;
+    check_instant_cycles(&ctx.params, &layers)?;
     Ok(AnimGraph { params: ctx.params, nodes: ctx.nodes, layers, ik, limits, feet, node_loops, source: v.clone() })
+}
+
+/// Work [`check_instant_cycles`] may do per graph (paths looked at); past it, the resolver's
+/// own guard still keeps such a loop from spinning.
+const CYCLE_CHECK_BUDGET: usize = 20_000;
+
+/// Refuses transitions that fire at once (no exit time, no trigger: a trigger is spent by
+/// firing) around a loop of states with conditions that can all hold together: `a -> b when on`
+/// with `b -> a when on` would flip the layer back and forth without time passing.
+fn check_instant_cycles(params: &[Param], layers: &[Layer]) -> Result<(), AnimError> {
+    let mut budget = CYCLE_CHECK_BUDGET;
+    for (li, l) in layers.iter().enumerate() {
+        let prefix = if li == 0 { "transitions".to_string() } else { format!("layers[{}].transitions", li - 1) };
+        let instant: Vec<usize> = (0..l.transitions.len())
+            .filter(|&i| {
+                let t = &l.transitions[i];
+                t.exit.is_none_or(|x| x <= 0.0) && !t.when.iter().any(|c| matches!(params[c.param as usize].kind, ParamKind::Trigger))
+            })
+            .collect();
+        if instant.is_empty() {
+            continue;
+        }
+        for start in 0..l.states.len() as u16 {
+            let mut stack: Vec<(u16, Vec<usize>)> = vec![(start, Vec::new())];
+            while let Some((s, path)) = stack.pop() {
+                for &ti in &instant {
+                    let t = &l.transitions[ti];
+                    if !t.leaves(s) || path.contains(&ti) {
+                        continue;
+                    }
+                    if budget == 0 {
+                        return Ok(());
+                    }
+                    budget -= 1;
+                    let mut p = path.clone();
+                    p.push(ti);
+                    let conds: Vec<&Cond> = p.iter().flat_map(|&i| l.transitions[i].when.iter()).collect();
+                    if !can_hold(params, &conds) {
+                        continue;
+                    }
+                    if t.to == start {
+                        let name = |s: u16| l.states[s as usize].name.as_str();
+                        let mut at = start;
+                        let steps: Vec<String> = p
+                            .iter()
+                            .map(|&i| {
+                                let to = l.transitions[i].to;
+                                let step = format!("{prefix}[{i}] ({} -> {})", name(at), name(to));
+                                at = to;
+                                step
+                            })
+                            .collect();
+                        return Err(err(
+                            &format!("{prefix}[{}]", p[0]),
+                            AnimErrorCode::InstantCycle,
+                            format!("{} can all fire at once: their conditions can hold together and none waits for an exit time, so the layer would cycle without time passing; give one an exit time or a condition the others exclude", steps.join(", ")),
+                        ));
+                    }
+                    if p.len() < l.states.len() {
+                        stack.push((t.to, p));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether conditions can all hold at once (per parameter: an enum or bool value, a number
+/// interval; triggers can always hold).
+fn can_hold(params: &[Param], conds: &[&Cond]) -> bool {
+    let mut seen: Vec<u16> = conds.iter().map(|c| c.param).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.into_iter().all(|p| {
+        let cs = conds.iter().filter(|c| c.param == p);
+        match &params[p as usize].kind {
+            ParamKind::Float { min, max } => {
+                let (mut lo, mut lo_open, mut hi, mut hi_open) = (*min as f64, false, *max as f64, false);
+                let (mut eq, mut ne): (Option<f64>, Vec<f64>) = (None, Vec::new());
+                for c in cs {
+                    let CondValue::Num(v) = c.value else { return false };
+                    let v = v as f64;
+                    match c.op {
+                        Op::Eq => {
+                            if eq.is_some_and(|e| e != v) {
+                                return false;
+                            }
+                            eq = Some(v);
+                        }
+                        Op::Ne => ne.push(v),
+                        Op::Gt | Op::Ge if v > lo || (v == lo && c.op == Op::Gt) => (lo, lo_open) = (v, c.op == Op::Gt),
+                        Op::Lt | Op::Le if v < hi || (v == hi && c.op == Op::Lt) => (hi, hi_open) = (v, c.op == Op::Lt),
+                        _ => {}
+                    }
+                }
+                let inside = |x: f64| (x > lo || (x == lo && !lo_open)) && (x < hi || (x == hi && !hi_open));
+                match eq {
+                    Some(e) => inside(e) && !ne.contains(&e),
+                    None => lo < hi || (lo == hi && !lo_open && !hi_open && !ne.contains(&lo)),
+                }
+            }
+            ParamKind::Bool | ParamKind::Trigger => {
+                let mut want: Option<bool> = None;
+                for c in cs {
+                    let CondValue::Bool(b) = c.value else { return false };
+                    let v = if c.op == Op::Eq { b } else { !b };
+                    if want.is_some_and(|w| w != v) {
+                        return false;
+                    }
+                    want = Some(v);
+                }
+                true
+            }
+            ParamKind::Enum(values) => {
+                let (mut eq, mut ne): (Option<u16>, Vec<u16>) = (None, Vec::new());
+                for c in cs {
+                    let CondValue::Enum(v) = c.value else { return false };
+                    if c.op == Op::Eq {
+                        if eq.is_some_and(|e| e != v) {
+                            return false;
+                        }
+                        eq = Some(v);
+                    } else {
+                        ne.push(v);
+                    }
+                }
+                match eq {
+                    Some(e) => !ne.contains(&e),
+                    None => {
+                        ne.sort_unstable();
+                        ne.dedup();
+                        ne.len() < values.len()
+                    }
+                }
+            }
+            ParamKind::Vec3 => true,
+        }
+    })
 }
 
 /// Every node's real depth and clip count (named nodes reused under each other count every use)

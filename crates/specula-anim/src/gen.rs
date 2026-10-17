@@ -1007,7 +1007,9 @@ fn leap(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32)
         f
     };
     let (frames, _) = solve_all(skel, body, &make, times, true, "distance")?;
-    let mut events = vec![Event { name: "takeoff".into(), time: ant * duration, data: String::new() }, Event { name: "land".into(), time: (ant + fl) * duration, data: String::new() }];
+    // The takeoff carries the spec height (the root's apex over its takeoff height): the
+    // `leap_apex` check measures against it.
+    let mut events = vec![Event { name: "takeoff".into(), time: ant * duration, data: format!("{height}") }, Event { name: "land".into(), time: (ant + fl) * duration, data: String::new() }];
     events.extend(body.legs.iter().map(|l| Event { name: "footstep".into(), time: (ant + fl) * duration, data: skel.names[l.foot.unwrap_or(l.shin)].clone() }));
     Ok(Out { looping: LoopMode::Once, distance, events, curves: Vec::new(), frames })
 }

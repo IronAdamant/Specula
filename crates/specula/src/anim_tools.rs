@@ -361,8 +361,10 @@ pub fn definitions() -> Vec<ToolDef> {
                           within contact_m, 2.5 cm, of the ground), floating (cm the lowest sole stays above it), \
                           ground_penetration (cm below, by skinned vertices), joint_limits (deg past a graph's limits), pops \
                           (cm per frame a transition jumps beyond the states' own motion, at 1.8 m scale), root_drift (cm), \
-                          loop_seam (mm). A value over its limit is an error (in 'errors', with the subject, bone and time); \
-                          [motion.allow] exempts deliberate style. Subjects: 'recipe' checks every clip and every base-layer \
+                          loop_seam (mm), hover (cm a flyer's lowest point leaves its [motion.hover] band), leap_apex (cm a \
+                          leap's apex misses its spec). A value over its limit is an error (in 'errors', with the subject, bone \
+                          and time); [motion.allow] exempts deliberate style (a state takes its clips' exemptions); \
+                          checks a subject skips are listed in 'skipped'. Subjects: 'recipe' checks every clip and every base-layer \
                           state (or those listed in clips/states, with params) plus listed transitions (parameter changes); \
                           an entity checks what it plays now, at its own scale."
                 .into(),
@@ -558,6 +560,9 @@ struct FilmRow {
     times: Vec<f64>,
     poses: Vec<Pose>,
     report: Option<Report>,
+    /// Per frame, how far the root has risen (model metres): a graph state's root motion is taken
+    /// out of its poses, so the sheet puts the vertical part back (a leap leaves the ground).
+    lift: Vec<f32>,
 }
 
 impl Engine {
@@ -1232,7 +1237,8 @@ impl Engine {
                         })
                         .collect();
                     let report = with_checks.then(|| checks::check_clip(&set, &rig, id, &rules, mesh));
-                    film.push(FilmRow { label: format!("{} {:.2}S {}", c.name, c.duration, c.looping.name()), subject: format!("{rig}/{}", c.name), times, poses, report });
+                    let lift = vec![0.0; times.len()];
+                    film.push(FilmRow { label: format!("{} {:.2}S {}", c.name, c.duration, c.looping.name()), subject: format!("{rig}/{}", c.name), times, poses, report, lift });
                 }
                 Row::State(s) => {
                     let Some(graph) = set.graph(graph_name) else { return error("unknown_graph", format!("{source} has no graph '{graph_name}'")) };
@@ -1254,7 +1260,8 @@ impl Engine {
                     let poses = times.iter().map(|&t| player.evaluate(g, &play, timing, t, &Surroundings::default()).clone()).collect();
                     let report = if with_checks { Some(checks::check_state(g, &rig, graph_name, &s.state, &params, 3.0, &rules, mesh).unwrap_or_default()) } else { None };
                     let shown: Vec<String> = params.iter().map(|(n, v)| format!("{n}={}", short(v))).collect();
-                    film.push(FilmRow { label: format!("{}.{} {}", graph_name, s.state, shown.join(" ").replace('"', "")), subject: format!("{rig}/{graph_name}.{}", s.state), times, poses, report });
+                    let lift: Vec<f32> = times.iter().map(|&t| aplay::root_motion(g, &play, timing, 0.0, t, &mut sc)[1]).collect();
+                    film.push(FilmRow { label: format!("{}.{} {}", graph_name, s.state, shown.join(" ").replace('"', "")), subject: format!("{rig}/{graph_name}.{}", s.state), times, poses, report, lift });
                 }
                 Row::Transition(tr) => {
                     let Some(graph) = set.graph(graph_name) else { return error("unknown_graph", format!("{source} has no graph '{graph_name}'")) };
@@ -1286,7 +1293,7 @@ impl Engine {
                     let report = with_checks.then(|| checks::check_transition(g, &rig, graph_name, &from, &to, tr.settle_s, &rules, mesh));
                     let name_of = |p: &GraphPlay, tm: Timing, t: f64, sc: &mut Scratch| aplay::state_at(g, p, tm, t, sc)[0].stack.last().map(|e| e.state.clone()).unwrap_or_default();
                     let (a, b) = (name_of(&before, t0, ts, &mut sc), name_of(&after, t1, w1, &mut sc));
-                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b}, switched at {:.2}S", ts), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report });
+                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b}, switched at {:.2}S", ts), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report, lift: vec![0.0; n] });
                 }
             }
         }
@@ -1308,11 +1315,12 @@ impl Engine {
         for row in &film {
             let mut lo = [f32::MAX; 3];
             let mut hi = [f32::MIN; 3];
-            for p in &row.poses {
+            for (k, p) in row.poses.iter().enumerate() {
                 skel.model_space(p, &mut model);
                 for (b, m) in model.iter().enumerate() {
                     let tail = m.apply_point(specula_anim::math::math3::sub(skel.tails[b], skel.heads[b]));
                     for q in [m.t, tail] {
+                        let q = [q[0], q[1] + row.lift[k], q[2]];
                         for i in 0..3 {
                             lo[i] = lo[i].min(q[i]);
                             hi[i] = hi[i].max(q[i]);
@@ -1347,7 +1355,8 @@ impl Engine {
                     d.surface = specula_gpu::Surface { roughness: 0.9, specular: 0.05, ..specula_gpu::Surface::default() };
                     draws.push(d);
                 }
-                if let Err(e) = self.models.posed_draws(&mut self.gpu, &src.built, &skin, &Mat4::IDENTITY, &mut bones, &mut draws) {
+                let place = Mat4::from_trs(Vec3::new(0.0, row.lift[k], 0.0), specula_core::math::Quat::IDENTITY, Vec3::new(1.0, 1.0, 1.0));
+                if let Err(e) = self.models.posed_draws(&mut self.gpu, &src.built, &skin, &place, &mut bones, &mut draws) {
                     return error("render_unavailable", e);
                 }
                 let x0 = k as u32 * tile;
@@ -1364,7 +1373,11 @@ impl Engine {
             }
             // Labels: the subject, and the checks that failed (or "checks ok", with what the rules
             // exempt it from).
-            let label = if scale < 0.995 { format!("{}  SCALE {scale:.2}X", row.label) } else { row.label.clone() };
+            let mut label = if scale < 0.995 { format!("{}  SCALE {scale:.2}X", row.label) } else { row.label.clone() };
+            let rise = row.lift.iter().fold(0.0f32, |m, l| m.max(l.abs()));
+            if rise > 0.01 {
+                label.push_str(&format!("  ROOT RISE {rise:.2}M SHOWN"));
+            }
             film::draw_text(&mut sheet, sw, 4, y0 + tile + 2, &label, [230, 226, 214]);
             let verdict = row.report.as_ref().map(verdict_of).unwrap_or_default();
             let colour = if row.report.as_ref().is_some_and(|r| !r.passed()) { [255, 120, 100] } else { [140, 220, 160] };
@@ -1378,6 +1391,7 @@ impl Engine {
                 ("luma", Json::Arr(lumas)),
                 ("framed_radius_m", round(radius as f64, 3)),
                 ("scale", round(scale as f64, 3)),
+                ("root_rise_m", Json::arr(row.lift.iter().map(|l| round(*l as f64, 3)))),
             ]);
             if let Some(r) = &row.report {
                 j.set("checks", r.to_json(12));
@@ -1517,7 +1531,8 @@ impl Engine {
                                 ex.push(n);
                             }
                         }
-                        verdict.push(if ex.is_empty() { "CHECKS OK".into() } else { format!("CHECKS OK (EXEMPT: {})", ex.join(", ")) });
+                        let skipped: Vec<String> = j.get("skipped").and_then(Json::as_array).into_iter().flatten().filter_map(|s| s.as_str().map(|s| s.split(':').next().unwrap_or(s).to_string())).collect();
+                        verdict.push(ok_verdict(&ex, &skipped));
                     } else if j.get("passed").is_some() {
                         failed = true;
                         let errs = j.get("errors").and_then(Json::as_array).into_iter().flatten().take(3);
@@ -1627,15 +1642,26 @@ fn fit_tile(tile: u32, cols: u32, rows: u32, label_h: u32) -> u32 {
     tile.min(MAX_SHEET_PX / cols.max(1)).min((MAX_SHEET_PX / rows.max(1)).saturating_sub(label_h)).max(16)
 }
 
+/// "CHECKS OK", with what the rules exempted and what the subject skipped.
+fn ok_verdict(exempt: &[String], skipped: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !exempt.is_empty() {
+        parts.push(format!("EXEMPT: {}", exempt.join(", ")));
+    }
+    if !skipped.is_empty() {
+        parts.push(format!("SKIPPED: {}", skipped.join(", ")));
+    }
+    if parts.is_empty() {
+        "CHECKS OK".to_string()
+    } else {
+        format!("CHECKS OK ({})", parts.join("; "))
+    }
+}
+
 /// A row's verdict label: what failed, or "checks ok" with what the rules exempted.
 fn verdict_of(r: &Report) -> String {
     if r.passed() {
-        let ex = r.exemptions();
-        if ex.is_empty() {
-            "CHECKS OK".to_string()
-        } else {
-            format!("CHECKS OK (EXEMPT: {})", ex.join(", "))
-        }
+        ok_verdict(&r.exemptions(), &r.skipped_checks())
     } else {
         r.failures().take(3).map(|c| format!("FAIL {} {:.1}{}", c.check, c.value, c.unit)).collect::<Vec<_>>().join("  ")
     }
@@ -1686,9 +1712,11 @@ mod tests {
     #[test]
     fn verdicts_name_exemptions() {
         let c = |exempt: bool, passed: bool| specula_anim::checks::Check { check: "ground_penetration", subject: "s".into(), value: 9.0, limit: 3.0, unit: "cm", passed, exempt, at_s: None, bone: None, detail: Vec::new() };
-        assert_eq!(verdict_of(&Report { checks: vec![c(false, true)], notes: Vec::new() }), "CHECKS OK");
-        assert_eq!(verdict_of(&Report { checks: vec![c(true, true)], notes: Vec::new() }), "CHECKS OK (EXEMPT: ground_penetration)");
-        assert!(verdict_of(&Report { checks: vec![c(false, false)], notes: Vec::new() }).starts_with("FAIL ground_penetration 9.0cm"));
+        assert_eq!(verdict_of(&Report { checks: vec![c(false, true)], notes: Vec::new(), ..Default::default() }), "CHECKS OK");
+        assert_eq!(verdict_of(&Report { checks: vec![c(true, true)], notes: Vec::new(), ..Default::default() }), "CHECKS OK (EXEMPT: ground_penetration)");
+        assert!(verdict_of(&Report { checks: vec![c(false, false)], notes: Vec::new(), ..Default::default() }).starts_with("FAIL ground_penetration 9.0cm"));
+        let skipped = Report { checks: vec![c(true, true)], skipped: vec!["foot_sliding: off its feet".into()], ..Default::default() };
+        assert_eq!(verdict_of(&skipped), "CHECKS OK (EXEMPT: ground_penetration; SKIPPED: foot_sliding)");
     }
 
     #[test]

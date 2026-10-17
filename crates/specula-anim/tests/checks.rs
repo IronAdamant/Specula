@@ -148,7 +148,7 @@ fn check(name: &'static str, value: f32, passed: bool, exempt: bool, bone: Optio
 /// Review round 1, finding 8: a report's `errors` were never capped by `max_checks`.
 #[test]
 fn report_json_is_bounded() {
-    let r = checks::Report { checks: vec![check("pops", 9.0, false, false, None); 50], notes: vec!["n".into(); 40] };
+    let r = checks::Report { checks: vec![check("pops", 9.0, false, false, None); 50], notes: vec!["n".into(); 40], ..Default::default() };
     let j = r.to_json(5);
     assert_eq!(j.get("errors").and_then(|e| e.as_array()).map(|a| a.len()), Some(5));
     assert_eq!(j.get("errors_omitted").and_then(|e| e.as_f64()), Some(45.0));
@@ -166,6 +166,6 @@ fn hover_bands_from_toml() {
     assert!(r.allows("wraith/death", "hover", None));
     assert!(MotionRules::from_toml("[motion.hover]\n\"w\" = [9, 3]\n", "t").is_err(), "low above high");
     assert!(MotionRules::from_toml("[motion.hover]\n\"w\" = 3\n", "t").is_err());
-    let rep = checks::Report { checks: vec![check("foot_sliding", 0.0, true, true, Some("foot_r")), check("hover", 50.0, true, true, None), check("pops", 1.0, true, false, None)], notes: Vec::new() };
+    let rep = checks::Report { checks: vec![check("foot_sliding", 0.0, true, true, Some("foot_r")), check("hover", 50.0, true, true, None), check("pops", 1.0, true, false, None)], notes: Vec::new(), ..Default::default() };
     assert_eq!(rep.exemptions(), ["foot_sliding:foot_r", "hover"]);
 }

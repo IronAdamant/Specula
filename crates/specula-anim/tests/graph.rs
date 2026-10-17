@@ -403,28 +403,70 @@ fn long_periodic_cycles_resolve_at_any_time() {
     }
 }
 
-/// Review round 1, finding 4: zero-time transition loops (a -> b when on, b -> a when on) ran to
-/// the step limit on every pose, and root motion re-resolved every 1/120 s (one 30 s window at
-/// speed 8 took 20 s).
+/// Review rounds 1 and 2, finding 4 / 2: zero-time transition loops (a -> b when on, b -> a when
+/// on) ran to the step limit on every pose, then flipped the visible state on every settle. They
+/// are refused at parse with the transitions named; graphs whose loops can't fire stay valid.
 #[test]
-fn instant_loops_settle_once_and_root_motion_resolves_once() {
-    let mut trs = vec![r#"{ "from": "a", "to": "b", "when": "on", "blend": 0 }"#.to_string(), r#"{ "from": "b", "to": "a", "when": "on", "blend": 0 }"#.to_string()];
+fn instant_cycles_are_refused_at_parse() {
+    let load = |trs: &str, params: &str| AnimSet::load(&set_text(&format!(r#"{{ "params": {{ {params} }}, "states": {{ "a": "idle", "b": "walk", "c": "still" }}, "transitions": [{trs}] }}"#)), Skeleton::from_rig(&rig()).unwrap());
+    // Both ways on one condition (the reviewer's flip probe).
+    let e = load(r#"{ "from": "a", "to": "b", "when": "on", "blend": 0 }, { "from": "b", "to": "a", "when": "on", "blend": 0 }"#, r#""on": "bool""#).unwrap_err();
+    assert_eq!(e.code, AnimErrorCode::InstantCycle, "{e}");
+    assert!(e.path.ends_with("transitions[0]"), "{}", e.path);
+    assert!(e.message.contains("transitions[0] (a -> b)") && e.message.contains("transitions[1] (b -> a)"), "{}", e.message);
+    // A three-state loop, and "*" sources.
+    assert_eq!(load(r#"{ "from": "a", "to": "b", "when": "x > 1" }, { "from": "b", "to": "c", "when": "x > 2" }, { "from": "c", "to": "a", "when": "x < 5" }"#, r#""x": "float""#).unwrap_err().code, AnimErrorCode::InstantCycle);
+    assert_eq!(load(r#"{ "from": "*", "to": "a", "when": "on" }, { "from": "a", "to": "b", "when": "on" }"#, r#""on": "bool""#).unwrap_err().code, AnimErrorCode::InstantCycle);
+    // Conditions that exclude each other, exit times and triggers end the loop: all valid.
+    for (trs, params) in [
+        (r#"{ "from": "a", "to": "b", "when": "x > 1" }, { "from": "b", "to": "a", "when": "x < 1" }"#, r#""x": "float""#),
+        (r#"{ "from": "a", "to": "b", "when": "x >= 1" }, { "from": "b", "to": "a", "when": "x < 1" }"#, r#""x": "float""#),
+        (r#"{ "from": "a", "to": "b", "when": "act == b" }, { "from": "b", "to": "a", "when": "act == a" }"#, r#""act": { "type": "enum", "values": ["a", "b"] }"#),
+        (r#"{ "from": "a", "to": "b", "when": "on" }, { "from": "b", "to": "a", "when": "on == false" }"#, r#""on": "bool""#),
+        (r#"{ "from": "a", "to": "b", "when": "on" }, { "from": "b", "to": "a", "when": "on", "exit": 0.5 }"#, r#""on": "bool""#),
+        (r#"{ "from": "a", "to": "b", "when": "go" }, { "from": "b", "to": "a", "when": "go" }"#, r#""go": "trigger""#),
+        (r#"{ "from": "*", "to": "a", "when": "act == a" }, { "from": "*", "to": "b", "when": "act == b" }"#, r#""act": { "type": "enum", "values": ["a", "b"] }"#),
+    ] {
+        load(trs, params).unwrap_or_else(|e| panic!("{trs}: {e}"));
+    }
+}
+
+/// A zero-time loop past the parse check's budget (made here by editing a parsed graph): the
+/// resolver undoes the looping instant, so settling is idempotent (no flip), and says so.
+#[test]
+fn instant_loops_left_at_runtime_are_idempotent_and_reported() {
+    let mut trs = vec![r#"{ "from": "a", "to": "b", "when": "on", "blend": 0 }"#.to_string(), r#"{ "from": "b", "to": "a", "when": "on == false", "blend": 0 }"#.to_string()];
     for _ in 0..200 {
-        trs.push(r#"{ "from": ["a", "b"], "to": "a", "when": ["on", "x > 1", "x > 2", "x > 3"] }"#.to_string());
+        trs.push(r#"{ "from": ["a", "b"], "to": "a", "when": ["on", "x > 1", "x > 2", "x > 3"], "exit": 0.5 }"#.to_string());
     }
     let g = format!(r#"{{ "params": {{ "on": "bool", "x": "float" }}, "states": {{ "a": "idle", "b": "walk" }}, "transitions": [{}] }}"#, trs.join(", "));
     let s = AnimSet::load(&set_text(&g), Skeleton::from_rig(&rig()).unwrap()).unwrap();
-    let gr = Graphed { set: &s, graph: s.graph("g").unwrap(), scale: 1.0 };
+    let mut graph = s.graph("g").unwrap().clone();
+    graph.layers[0].transitions[1].when = graph.layers[0].transitions[0].when.clone();
+    let gr = Graphed { set: &s, graph: &graph, scale: 1.0 };
     let mut play = GraphPlay::new("g");
     play.set_param("on", Value::Bool(true));
     let mut sc = Scratch::default();
+    let mut anchor = 0.0;
+    let mut tops = Vec::new();
+    for k in 0..4 {
+        let t = 1.0 + k as f64;
+        let tm = Timing { anchor, speed: 1.0 };
+        let now = play::state_at(gr, &play, tm, t, &mut sc);
+        assert!(now[0].truncated, "reported");
+        let (settled, _) = play::settle(gr, &play, tm, t, &mut sc);
+        let again = play::state_at(gr, &settled, Timing { anchor: t, speed: 1.0 }, t, &mut sc);
+        assert_eq!(again[0].stack.last().unwrap().state, now[0].stack.last().unwrap().state, "settling keeps the state");
+        tops.push(again[0].stack.last().unwrap().state.clone());
+        play = settled;
+        anchor = t;
+    }
+    assert!(tops.iter().all(|t| *t == tops[0]), "no flip: {tops:?}");
     let tm = Timing { anchor: 0.0, speed: 8.0 };
-    let now = play::state_at(gr, &play, tm, 1.0, &mut sc);
-    // a -> b -> a -> b at the anchor (one firing more than the states), then time moves on.
-    assert!(!now[0].truncated);
-    assert_eq!(now[0].stack.last().unwrap().state, "b");
+    let t = std::time::Instant::now();
     let a = play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc);
     assert_eq!(a, play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc), "deterministic");
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
 
 /// Root motion integrated along one resolve agrees with the exact displacement of a leap

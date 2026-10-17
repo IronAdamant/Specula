@@ -136,16 +136,22 @@ parameter values, the graph clock at an anchor and, per layer, a short blend sta
 at any time is computed by running the state machines forward from the anchor with constant parameters: conditions
 fire at once, exit times at the moment the phase reaches them. Periodic chains of any length (attack → idle →
 attack) are detected (the last firing of every transition is kept) and skipped whole periods at a time, so the cost is
-bounded however far the time is from the anchor (`MAX_STEPS` otherwise, reported as `truncated`). One instant fires at
-most one transition more than the layer has states, so zero-time loops (`a → b when on`, `b → a when on`) stop
-deterministically instead of spinning. Blend trees are bounded at parse time by their real depth and clip count
-(named nodes reused under each other count every use; at most 64 clips). **Writing parameters settles the play** at
-the write's time (the world does it in `World::update`): blends stay continuous, fired triggers are consumed, and
-parameters not given keep their values. The write waits for the model's build if it is still in flight and lays the
-world's anim assets as of that write over it, so what is stored (and hashed) never depends on build timing or on
-when the engine last looked at the world; without an anim set (a failed build, no rig) parameters still merge.
-There is no per-frame state, so captures, replays and the window agree. `root_motion` integrates along the stacks
-of one resolve.
+bounded however far the time is from the anchor (`MAX_STEPS` otherwise, reported as `truncated`). Zero-time
+loops (`a → b when on`, `b → a when on`: transitions without an exit time or a trigger around a loop of states, whose
+conditions can all hold together) are refused at parse with the transitions named (`InstantCycle`); past the check's
+work budget the resolver still stops one: an instant that fires more transitions than the layer has states is undone
+(settling stays idempotent, never a flip) and the layer reports `truncated`. Blend trees are bounded at parse time by
+their real depth and clip count (named nodes reused under each other count every use; at most 64 clips).
+**Writing parameters settles the play** at the write's time (the world does it in `World::update`): blends stay
+continuous, fired triggers are consumed, and parameters not given keep their values. The anim set a write settles
+against never comes from the mesh build: the library builds it on the spot from the recipe's rig (its parameters,
+`let`s and bones; no geometry) and anims file, or a glTF's skeleton and clips, cached by build key (5-9 ms the first
+time for a Sepulcra creature in release, then cached), and lays the world's anim assets as of that write over it.
+Nothing waits, and nothing depends on whether or when a build lands: the library's view of the files changes only
+when the engine polls them, and a changed anim set (hot reload, `model_reload`) reaches the world right there, as
+journaled re-settles of the plays it touches (by `anim_reload`). Without an anim set (no rig, a rig or anims file that
+fails to load) parameters still merge. There is no per-frame state, so captures, replays and the window agree.
+`root_motion` integrates along the stacks of one resolve.
 
 ### Determinism: what is simulation, what is cosmetic
 
@@ -179,10 +185,13 @@ generator specs.
 Foot sliding (soles within 2.5 cm, weighted `2 − 2^(h/H)`, per foot), floating (for play-once subjects such as
 deaths and leaps: how high the body rests at the end), ground penetration (skinned vertices), joint limits, pops at
 transitions (excess per-frame joint jump, scaled to a 1.8 m figure), root drift, loop seams and, for flyers, a hover
-band (`[motion.hover]`: the body's lowest point stays within it; feet checks don't apply), for clips, graph states
-held with parameters and parameter changes. Thresholds and precise exemptions (`"rig/subject" = ["check",
-"check:bone"]`) come from the game's `style.toml` `[motion]` table; a value over its limit is an error, and an
-exemption shows on filmstrip labels ("CHECKS OK (EXEMPT: ...)"). On Sepulcra the checks found real defects, now
+band (`[motion.hover]`: the body's lowest point stays within it; feet checks don't apply) and, for leaps, the
+root's apex against the height the generator was given (`leap_apex`), for clips, graph states held with parameters
+and parameter changes. Thresholds and precise exemptions (`"rig/subject" = ["check", "check:bone"]`) come from the
+game's `style.toml` `[motion]` table; a value over its limit is an error. A graph state takes the exemptions of the
+clips it plays; a state off its feet (feet IK off) still has its feet checked when its clips travel (a climb, a leap),
+and checks a subject skips are listed (`skipped`). Filmstrip labels say both: "CHECKS OK (EXEMPT: ...; SKIPPED:
+...)". On Sepulcra the checks found real defects, now
 fixed: the runner hovered 7.8 cm, the colossus's hands went 33 cm into the slab walking and 2 m in its death, the
 shambler's death sank 73 cm and the wraith's shroud dipped 15 cm under the floor in its swoop. Self-intersection is
 not checked yet.
@@ -192,7 +201,8 @@ not checked yet.
 `anim_filmstrip` renders contact sheets (rows of clips, states or transitions on a neutral stage, or an entity's own
 play in the world) with each row's checks attached, saved like captures with a packet. Sheets stay within 2048 px a
 side (tiles shrink) and 128 tiles a call; a stage sheet frames each row on its own and labels a row framed wider
-than the closest one with its scale. Entity sheets add a front view of the feet from above knee-high clutter, light
+than the closest one with its scale; graph-state rows put the root's rise back (root motion is taken out of their
+poses), so a leap leaves the ground. Entity sheets add a front view of the feet from above knee-high clutter, light
 each view from the camera, warn about tiles too dark to judge
 (mean luma under 0.1 in the subject's box) and report `feet_in_world`: per frame the ground under each foot, the
 ankle's height over it after the IK against the animation's, and a `feet_on_ground` check (non-zero only when a
