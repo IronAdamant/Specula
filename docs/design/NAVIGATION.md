@@ -241,9 +241,12 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   they see navigation as of the last tick or write, so calling them can't change what the simulation does. Write
   tools (`nav_build`, `nav_agent`, `ai_set`, `world_place`) bring it up to date first, as inputs at a tick boundary.
 - Configs whose erosion border (radius + 3 columns) is wider than a tile, whose tile grid with its border is wider
-  than 160 columns, or whose tiles with borders add up to more than 16 M columns, are refused (`budget`, naming the
-  field to change). Edits rebuild at most `tiles_per_tick` tiles and about 16,384 grid columns per tick (at least one
-  tile), so a tick's rebuild work stays near a few milliseconds whatever the settings.
+  than 96 columns, or whose tiles with borders add up to more than 16 M columns, are refused (`budget`, naming the
+  field to change); settings saved with wider tiles are narrowed when read. Edits rebuild at most `tiles_per_tick`
+  tiles and about 9,216 grid columns per tick (at least one tile): a default tile is about 0.3 ms, the widest allowed
+  a few milliseconds on the reference machine's CPU class.
+- A mind that can't run (its definition missing, invalid or over the cap) leaves its agent standing, like a removed
+  one.
 - A mind that is replaced (its definition changed or became invalid) or removed takes its goal, facing and patrol
   index with it. Dry runs and status reads see the last tick (said in the tool descriptions).
 - A mind's abort clears only the goal its own action node set (a reactive selector starts the new child before

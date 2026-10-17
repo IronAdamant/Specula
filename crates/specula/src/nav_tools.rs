@@ -244,7 +244,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("like", any("A character entity (kinematic body with body.character and a capsule collider) to match")),
                     ("cell_size", t("number", "Grid cell width, m (default 0.15; 0.02..2)")),
                     ("cell_height", t("number", "Height resolution, m (default 0.05)")),
-                    ("tile_cells", t("integer", "Cells per tile side (default 48; 8..256)")),
+                    ("tile_cells", t("integer", "Cells per tile side (default 48; 8..86 at the default radius: a tile with its border, radius + 3 cells a side, is at most 96 cells)")),
                     ("bounds", t("object", "{min: [x,y,z], max: [x,y,z]} the navmesh covers")),
                     ("margin", t("number", "Metres added around the sources' bounds when bounds aren't given (default 1)")),
                     ("sources", t("object", "{colliders: true, shapes: true, kinematic: false, under: \"/level\", exclude_tags: [..]}")),

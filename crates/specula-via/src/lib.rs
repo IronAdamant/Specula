@@ -73,7 +73,7 @@ pub const MAX_TILES: usize = 4096;
 /// borders).
 pub const MAX_COLUMNS: u64 = 16 * 1024 * 1024;
 /// Widest a tile's grid with its border may be (a rebuild's work is about its square).
-pub const MAX_TILE_SIDE: u64 = 160;
+pub const MAX_TILE_SIDE: u64 = 96;
 /// Most solid spans in one column (more are dropped, reported as a budget error).
 pub const MAX_SPANS_PER_COLUMN: usize = 64;
 /// Most polygons in one tile.
@@ -140,7 +140,7 @@ impl Config {
         range("max_step", self.max_step, 0.0, 10.0)?;
         range("max_slope_deg", self.max_slope_deg, 0.0, 89.0)?;
         if !(8..=256).contains(&self.tile_cells) {
-            return Err(NavError::new("invalid_value", "'tile_cells' must be 8..256").with("field", "tile_cells"));
+            return Err(NavError::new("invalid_value", format!("'tile_cells' must be 8..256, and the tile with its border (radius + 3 columns a side) at most {MAX_TILE_SIDE} columns")).with("field", "tile_cells"));
         }
         if !finite(self.bounds_min) || !finite(self.bounds_max) {
             return Err(NavError::new("invalid_value", "'bounds' must be finite").with("field", "bounds"));
@@ -227,8 +227,10 @@ mod tests {
     fn borders_wider_than_tiles_are_refused() {
         let e = Config::huge_border().validate().unwrap_err();
         assert_eq!((e.code, e.details[0].1.as_str()), ("budget", Some("tile_cells")), "{e:?}");
-        assert!(Config { tile_cells: 128, ..Config::huge_border() }.validate().is_err(), "128 + 2 x 103 is wider than 160");
-        assert!(Config { tile_cells: 120, agent_radius: 0.3, ..Config::huge_border() }.validate().is_ok());
+        assert!(Config { tile_cells: 128, ..Config::huge_border() }.validate().is_err(), "128 + 2 x 103 is wider than 96");
+        // 0.3 m at 0.02 m cells: a border of 15 + 3 columns; 60 + 2 x 18 = 96 fits, 61 doesn't.
+        assert!(Config { tile_cells: 60, agent_radius: 0.3, ..Config::huge_border() }.validate().is_ok());
+        assert!(Config { tile_cells: 61, agent_radius: 0.3, ..Config::huge_border() }.validate().is_err());
         assert!(Config { tile_cells: 256, cell_size: 0.0396, agent_radius: 10.0, ..Config::default() }.validate().is_err());
         assert!(Config::default().validate().is_ok());
     }

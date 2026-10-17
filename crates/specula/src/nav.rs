@@ -43,9 +43,10 @@ pub const MAX_MESHES: usize = 16;
 pub const MAX_MINDS: usize = 1024;
 /// Per-tick hashes kept.
 const HASHES: usize = 1024;
-/// Columns of tile grid (with borders) rebuilt per tick at most (about 1-3 ms of work; a tile
-/// at the default settings is 3,364).
-pub const COLUMNS_PER_TICK: usize = 16_384;
+/// Columns of tile grid (with borders) rebuilt per tick at most, at least one tile: a default
+/// tile (58 x 58 = 3,364 columns) takes about 0.3 ms on the reference machine's CPU class, the
+/// widest allowed (96 x 96) a few milliseconds (more on a slow laptop).
+pub const COLUMNS_PER_TICK: usize = 9_216;
 /// Recent nav_path answers kept for the `paths` overlay.
 const QUERIES: usize = 4;
 
@@ -157,7 +158,7 @@ impl MeshSettings {
             None | Some(Json::Null) => d.tile_cells,
             Some(t) => t.as_u64().ok_or_else(|| invalid("tile_cells", "'tile_cells' must be an integer"))?.min(u64::from(u32::MAX)) as u32,
         };
-        let config = specula_via::Config {
+        let mut config = specula_via::Config {
             cell_size: num("cell_size", d.cell_size)?,
             cell_height: num("cell_height", d.cell_height)?,
             agent_radius: num("agent_radius", d.agent_radius)?,
@@ -168,6 +169,13 @@ impl MeshSettings {
             bounds_min: bmin,
             bounds_max: bmax,
         };
+        // Settings saved before the tile-width cap: narrow the tiles (same navmesh, smaller tiles)
+        // rather than refuse the world's navmesh.
+        let border = specula_via::Derived::of(&config).border;
+        let widest = (specula_via::MAX_TILE_SIDE as u32).saturating_sub(2 * border);
+        if config.tile_cells > widest && widest >= 8 {
+            config.tile_cells = widest;
+        }
         config.validate().map_err(|e| nav_error(&e))?;
         let mut sources = Sources::default();
         if let Some(s) = v.get("sources").filter(|s| !s.is_null()) {
@@ -1400,6 +1408,7 @@ impl Nav {
                     match world.get(d).and_then(|e| e.props.get(DEF_KEY)) {
                         Some(dj) => (dj.clone(), Some((d, v))),
                         None => {
+                            self.forget_mind_goals(id);
                             self.minds.insert(id, MindSlot { props: version, def_from: Some((d, v)), def_path, mind: None });
                             self.mind_problems.insert(id, Json::from(format!("'{p}' has no props.{DEF_KEY}")));
                             return;
@@ -1407,6 +1416,7 @@ impl Nav {
                     }
                 }
                 Err(_) => {
+                    self.forget_mind_goals(id);
                     self.minds.insert(id, MindSlot { props: version, def_from: None, def_path, mind: None });
                     self.mind_problems.insert(id, Json::from(format!("mind definition '{p}' doesn't exist (it loads when an entity with props.{DEF_KEY} appears there)")));
                     return;
@@ -1414,12 +1424,14 @@ impl Nav {
             },
             Json::Obj(_) => (def_json.clone(), None),
             _ => {
+                self.forget_mind_goals(id);
                 self.minds.insert(id, MindSlot { props: version, def_from: None, def_path: None, mind: None });
                 self.mind_problems.insert(id, Json::from("props.mind needs 'def': a definition object or the path of an entity with props.mind_def"));
                 return;
             }
         };
         if self.minds.len() >= MAX_MINDS && !self.minds.contains_key(&id) {
+            self.forget_mind_goals(id);
             self.mind_problems.insert(id, Json::from(format!("a world runs at most {MAX_MINDS} minds")));
             return;
         }
@@ -2102,6 +2114,26 @@ mod tests {
         run(&mut nav, &mut w, 60);
         let p1 = w.get(a).unwrap().world_position();
         assert!(horizontal(p0, p1) < 0.05, "stands still once its mind only waits: {p0:?} -> {p1:?}");
+    }
+
+    #[test]
+    fn a_mind_whose_definition_goes_stops() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("brain".into());
+        s.props = Json::obj([(DEF_KEY, Json::parse(r#"{"do": "move_to", "target": [8, 0, 8]}"#).unwrap())]);
+        let b = w.spawn(s, "t").unwrap().id;
+        let a = walker(&mut w, "a", Vec3::new(-7.5, 0.5, -7.5), vec![(MIND_KEY, Json::obj([("def", Json::from("/brain"))]))]);
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        run(&mut nav, &mut w, 10);
+        w.delete(&EntityKey::Id(b), None).unwrap();
+        run(&mut nav, &mut w, 20);
+        let p0 = w.get(a).unwrap().world_position();
+        run(&mut nav, &mut w, 60);
+        assert!(horizontal(p0, w.get(a).unwrap().world_position()) < 0.05, "stops once its mind can't run");
     }
 
     #[test]
