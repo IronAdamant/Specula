@@ -1,0 +1,275 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "comms-windowed",
+  "agents": 16,
+  "rounds": 12,
+  "batch": 20,
+  "feed": true,
+  "build": "release",
+  "windowed": true,
+  "adapter": null,
+  "frame_floor": null,
+  "comms": {
+    "intent_overlaps_flagged": 16,
+    "intent_overlaps_missed": 0,
+    "conflict_help": 16,
+    "leases": 32,
+    "notes": 16,
+    "progress": 48,
+    "questions": 16,
+    "tasks_done": 16,
+    "questions_answered": 16,
+    "rollup_ms": 7.3,
+    "rollup_sample": "agent_00: 322 changes in 23 entries (13 delete, 55 set, 254 spawn) on 254 entities under /district_00, 5 undone; 13 refused; tasks: 1 done (last done: 'build /district_00')",
+    "task_rollup_sample": "task 1 'build /district_00' (done, agent_00): 321 changes in 22 entries (13 delete, 55 set, 253 spawn) on 253 entities under /district_00, 5 undone; 13 refused; result: 241 entities in /district_00",
+    "tasks_with_changes": 16,
+    "board_counts": {
+      "open": 0,
+      "taken": 0,
+      "blocked": 0,
+      "done": 16,
+      "cancelled": 0
+    }
+  },
+  "when": "2026-10-18T01:53:25",
+  "cpu_busy_pct_before": 24.6,
+  "swarm_settings": {
+    "frame_floor_fps": 60,
+    "hardware": {
+      "gpu": "NVIDIA GeForce RTX 4090 Laptop GPU",
+      "gpu_kind": "discrete",
+      "vendor_id": "0x10de",
+      "vram_mb": 16048,
+      "vram_note": "device-local heap",
+      "cpu_threads": 32,
+      "has_battery": true,
+      "on_ac_power": true,
+      "display_refresh_hz": 240,
+      "refresh_from": "display"
+    },
+    "suggested_frame_floor_fps": 30,
+    "windowed": true
+  },
+  "frame_pacing_under_load": {
+    "samples": 120,
+    "mean_ms": 11.694,
+    "median_ms": 13.914,
+    "p95_ms": 19.533,
+    "max_ms": 22.895
+  },
+  "serve_under_load": {
+    "window_ms": 1,
+    "frame_period_ms": 4.167,
+    "refresh_ms": 4.167,
+    "refresh_from": "display",
+    "frame_work_ms": 1.623,
+    "margin_ms": 3.866,
+    "backlog": false,
+    "frame_floor_fps": 60,
+    "call_cost_ms": {
+      "read": 0.807,
+      "edit": 0.05,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+    },
+    "windows": 158,
+    "backlog_windows": 82,
+    "calls": 1118,
+    "held_for_next_window": 63,
+    "late_presents": 18,
+    "late_but_ready": 4,
+    "unblocked_presents": 2
+  },
+  "attacks": {
+    "rejected": 23,
+    "leaked": [],
+    "wrong": []
+  },
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 1.414,
+  "world_ops": 5024,
+  "ops_per_s": 3552.8,
+  "tool_calls": 1116,
+  "calls_per_s": 789.2,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 9.77,
+      "p95": 15.31,
+      "max": 20.29,
+      "n": 16
+    },
+    "claim_release": {
+      "p50": 7.62,
+      "p95": 25.09,
+      "max": 26.25,
+      "n": 16
+    },
+    "claim_renew": {
+      "p50": 10.01,
+      "p95": 25.56,
+      "max": 29.58,
+      "n": 16
+    },
+    "claim_take": {
+      "p50": 10.04,
+      "p95": 13.79,
+      "max": 16.37,
+      "n": 16
+    },
+    "intent_clear": {
+      "p50": 12.41,
+      "p95": 24.33,
+      "max": 39.15,
+      "n": 32
+    },
+    "intent_declare": {
+      "p50": 12.13,
+      "p95": 20.93,
+      "max": 24.58,
+      "n": 32
+    },
+    "lease_release": {
+      "p50": 14.87,
+      "p95": 23.12,
+      "max": 25.99,
+      "n": 16
+    },
+    "lease_take": {
+      "p50": 12.67,
+      "p95": 23.41,
+      "max": 27.86,
+      "n": 32
+    },
+    "note_add": {
+      "p50": 7.61,
+      "p95": 13.24,
+      "max": 14.13,
+      "n": 16
+    },
+    "task_done": {
+      "p50": 13.71,
+      "p95": 21.35,
+      "max": 30.0,
+      "n": 16
+    },
+    "task_list": {
+      "p50": 10.19,
+      "p95": 14.69,
+      "max": 15.18,
+      "n": 16
+    },
+    "task_take": {
+      "p50": 15.19,
+      "p95": 19.79,
+      "max": 21.3,
+      "n": 16
+    },
+    "task_update": {
+      "p50": 19.09,
+      "p95": 29.55,
+      "max": 32.59,
+      "n": 64
+    },
+    "world_batch": {
+      "p50": 19.02,
+      "p95": 33.54,
+      "max": 52.26,
+      "n": 304
+    },
+    "world_changes": {
+      "p50": 22.25,
+      "p95": 35.39,
+      "max": 48.44,
+      "n": 236
+    },
+    "world_set": {
+      "p50": 18.46,
+      "p95": 32.93,
+      "max": 40.07,
+      "n": 80
+    },
+    "world_spawn": {
+      "p50": 20.32,
+      "p95": 29.8,
+      "max": 45.12,
+      "n": 112
+    },
+    "world_undo": {
+      "p50": 18.4,
+      "p95": 28.92,
+      "max": 34.83,
+      "n": 80
+    }
+  },
+  "intrusions_rejected": 192,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 80,
+  "feed_items": 79536,
+  "feed_gaps": 0,
+  "entities": 3856,
+  "state_hash": "f0cd12bafcd3bdd4",
+  "replay": {
+    "replayable": true,
+    "entries": 368,
+    "replay_hash": "f0cd12bafcd3bdd4",
+    "matches": true,
+    "ms": 14.5837
+  },
+  "replay_check_s": 0.021,
+  "journal": {
+    "first_id": 1,
+    "last_id": 368,
+    "agent_entries": 368,
+    "game_entries": 0,
+    "approx_bytes": 6992464,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "ee9471e83e35674b"
+  },
+  "claim_rejections_engine": 192,
+  "history_sample": [
+    {
+      "id": 329,
+      "tick": 48,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_4",
+        "/district_00/tmp_11_3",
+        "/district_00/tmp_11_2"
+      ],
+      "undoes": [
+        324
+      ]
+    },
+    {
+      "id": 324,
+      "tick": 47,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_0",
+        "/district_00/tmp_11_1",
+        "/district_00/tmp_11_2"
+      ],
+      "undone_by": 329
+    }
+  ],
+  "agent_errors": [],
+  "problems": [],
+  "cpu_busy_pct_after": 29.6
+}

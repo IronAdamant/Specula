@@ -483,7 +483,7 @@ pub fn definitions() -> Vec<ToolDef> {
         def(
             "task_post",
             "Put a task on the shared board so the swarm knows what needs doing (the parent assigns work here). Agents \
-             task_take open tasks whose deps are done. Returns the task. Saved with the world.",
+             task_take open tasks whose deps are finished (done or cancelled). Returns the task. Saved with the world.",
             schema(
                 vec![
                     ("title", t("string", "What to do, 1..200 characters")),
@@ -503,7 +503,7 @@ pub fn definitions() -> Vec<ToolDef> {
         def(
             "task_take",
             "Take an open task: you become its owner and it is your current task (your journal entries, refused writes and \
-             new claims are linked to it, for world_rollup). Refused while deps aren't done (deps_not_done lists them), when \
+             new claims are linked to it, for world_rollup). Refused while deps aren't finished (deps_not_done lists them), when \
              another agent has it (task_taken), or when it is assigned to someone else. Needs agent_hello.",
             schema(vec![("id", t("integer", "Task id")), ("expect_version", t("integer", "Refuse if the task changed since you read it"))], &["id"]),
         ),
@@ -552,7 +552,7 @@ pub fn definitions() -> Vec<ToolDef> {
         def(
             "task_list",
             "The board, one page in id order, with counts per status and board_seq. Filters: status (one or a list), owner, \
-             mine, posted_by, assignee, ready (open, deps done), ready_for_me (ready and takeable by you), path_prefix, tag, \
+             mine, posted_by, assignee, ready (open, deps finished), ready_for_me (ready and takeable by you), path_prefix, tag, \
              parent. Poll with changed_since: board_seq from your last call to get only tasks changed since (events_since adds the board's event feed).",
             schema(
                 [
@@ -562,7 +562,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("mine", t("boolean", "Tasks you own")),
                         ("posted_by", t("string", "Agent name")),
                         ("assignee", t("string", "Agent name")),
-                        ("ready", t("boolean", "Open with every dependency done")),
+                        ("ready", t("boolean", "Open with every dependency finished")),
                         ("ready_for_me", t("boolean", "Ready, and not assigned to someone else")),
                         ("path_prefix", t("string", "Tasks about this path, above or below it")),
                         ("tag", t("string", "Tasks with this tag")),
@@ -703,10 +703,10 @@ pub fn definitions() -> Vec<ToolDef> {
         def(
             "swarm_settings",
             "For the lead agent BEFORE deploying a swarm. Reports the operator's hardware (GPU and its kind, VRAM, CPU threads, \
-             display refresh, window open or headless) and the window's frame floor: under a backlog of agent calls the \
+             display refresh, battery or mains power, window open or headless) and the window's frame floor: under a backlog of agent calls the \
              window still presents at least frame_floor_fps (default 60). On low- and mid-spec laptops keep 60 so the human's \
              window stays fluid; on high-spec desktops or cloud machines lower it (30, 20) to give agents more of every \
-             frame. Set frame_floor_fps (20..240) to change it; perf.toml [swarm] frame_floor_fps sets the start value.",
+             frame. Setting frame_floor_fps (20..240) needs agent_hello with role \"lead\"; perf.toml [swarm] frame_floor_fps sets the start value.",
             schema(vec![("frame_floor_fps", t("integer", "Frames per second the window keeps under a swarm's load, 20..240"))], &[]),
         ),
         def(

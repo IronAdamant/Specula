@@ -263,7 +263,7 @@ impl Swarm {
             self.claims.rejected += 1;
         }
         // Conflicts a parent wants to hear about (not argument mistakes like a missing entity).
-        if matches!(e.code, "claimed" | "claims_overlap" | "stale_version" | "undo_conflict" | "name_taken" | "not_found") {
+        if matches!(e.code, "claimed" | "claims_overlap" | "stale_version" | "undo_conflict" | "name_taken") {
             if self.refused.len() >= MAX_AGENTS && !self.refused.contains_key(w.name) {
                 self.refused.pop_first();
             }
@@ -275,12 +275,6 @@ impl Swarm {
     /// Refused writes of `name` by error code (since the engine started).
     pub fn refused_of(&self, name: &str) -> Option<&BTreeMap<&'static str, u64>> {
         self.refused.get(name)
-    }
-
-    /// A write was refused before reaching [`Swarm::commit`] (a batch op's own error): counted
-    /// like a commit's.
-    pub fn note_refused(&mut self, w: Writer, e: &WorldError) {
-        self.count_rejection(w, e);
     }
 
     /// Applies an agent's world command: rejected (and rolled back) when it wrote inside another

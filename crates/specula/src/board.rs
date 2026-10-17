@@ -5,7 +5,8 @@
 //!
 //! **Tasks.** `task_post` puts a task on the board (title, detail, dependencies, the paths,
 //! entities and claims it is about, an optional assignee). An agent `task_take`s an open task
-//! whose dependencies are all done (an assigned task only by its assignee), reports with
+//! whose dependencies are all finished (done, or cancelled: a cancelled dependency won't be done,
+//! so the poster replaces it if it mattered; an assigned task only by its assignee), reports with
 //! `task_update` (progress, `blocked` with a blocker, questions and answers, more links) and
 //! finishes with `task_done` (a summary) or cancels it. Statuses: `open` → `taken` ⇄ `blocked`
 //! → `done` / `cancelled`; the owner (or the poster) can give a task back (`open`).
@@ -14,7 +15,9 @@
 //!   *current* task: every journal entry it makes while that holds is linked to the task, claims
 //!   it takes are added to the task's links, and refused writes count against it. That is what
 //!   `world_rollup {by: "task"}` reads.
-//! - **Who may do what.** Introduced agents only (`agent_hello`): tasks belong to names. The
+//! - **Who may do what.** Introduced agents only (`agent_hello`). Owners, posters and note
+//!   authors are a name *and* an identity, like claims and undo: a name taken again after its
+//!   session ended adopts nothing (a resumed agent keeps its identity). The
 //!   owner changes status and progress; the poster edits the task (title, detail, assignee,
 //!   dependencies, priority) and may cancel or reopen it; anyone may ask or answer a question,
 //!   or add links. `expect_version` refuses an update when the task changed since it was read.
@@ -22,8 +25,11 @@
 //!   its author: the last 64 per task are kept on the task, and `task_list {changed_since}` is a
 //!   feed of tasks changed after a sequence number.
 //! - **Persisted with the world**: `board.json` next to `world.json` (written when the world is
-//!   saved, and by autosave when only the board changed), read back with the world. Owners come
-//!   back by name: a loaded task's owner is whichever session holds that name.
+//!   saved, and by autosave on a worker thread, re-rendering only tasks that changed), read back
+//!   with the world. Identities are per run, so loaded owners, posters and note authors come back
+//!   by name: whichever session holds the name, until the owner or poster acts on the task again
+//!   and binds it. `world_load` keeps the outgoing world's board with it first, and refuses
+//!   (`unsaved_changes`) when it can't.
 //! - **Bounded.** At most [`MAX_TASKS`] tasks (the oldest done or cancelled ones make room),
 //!   [`MAX_NOTES`] notes, and every text and list has a cap; listings are paged by bytes.
 //!
@@ -171,6 +177,9 @@ pub struct Task {
     pub detail: String,
     pub status: Status,
     pub posted_by: String,
+    /// The identity key that posted it (`None` for a task loaded from a file: whichever session
+    /// holds the name, until the poster acts again and binds it).
+    pub poster_key: Option<String>,
     pub owner: Option<Owner>,
     /// Only this agent may take it.
     pub assignee: Option<String>,
@@ -240,8 +249,14 @@ impl Task {
         Json::obj(f)
     }
 
-    /// Everything, with the last `events` events (all kept with `None`).
+    /// Everything, with the last `events` events and the last `questions` questions (all with
+    /// `None`; the file keeps everything).
     pub fn to_json(&self, events: Option<usize>) -> Json {
+        self.to_json_with(events, None)
+    }
+
+    /// [`Task::to_json`] with at most `questions` questions (the newest; open ones first).
+    pub fn to_json_with(&self, events: Option<usize>, questions: Option<usize>) -> Json {
         let mut j = self.summary_json();
         let ids = |v: &[u64]| Json::arr(v.iter().map(|x| Json::from(*x)));
         let strs = |v: &[String]| Json::arr(v.iter().map(|x| Json::from(x.as_str())));
@@ -260,9 +275,22 @@ impl Task {
         if !self.result.is_empty() {
             j.set("result", Json::from(self.result.as_str()));
         }
+        let shown: Vec<&Question> = match questions {
+            None => self.questions.iter().collect(),
+            Some(n) => {
+                let mut v: Vec<&Question> = self.questions.iter().filter(|q| q.answer.is_none()).collect();
+                v.extend(self.questions.iter().rev().filter(|q| q.answer.is_some()));
+                v.truncate(n);
+                v.sort_by_key(|q| q.id);
+                v
+            }
+        };
+        if shown.len() < self.questions.len() {
+            j.set("questions_total", Json::from(self.questions.len()));
+        }
         j.set(
             "questions",
-            Json::arr(self.questions.iter().map(|q| {
+            Json::arr(shown.into_iter().map(|q| {
                 let mut f = vec![("id", Json::from(u64::from(q.id))), ("by", Json::from(q.by.as_str())), ("text", Json::from(q.text.as_str()))];
                 if let Some((by, text)) = &q.answer {
                     f.push(("answer", Json::obj([("by", Json::from(by.as_str())), ("text", Json::from(text.as_str()))])));
@@ -320,6 +348,8 @@ impl NoteTarget {
 pub struct Note {
     pub id: u64,
     pub by: String,
+    /// The author's identity key (`None` when loaded from a file).
+    pub by_key: Option<String>,
     pub target: NoteTarget,
     pub text: String,
     pub tick: u64,
@@ -457,8 +487,11 @@ pub struct Board {
     current: BTreeMap<String, u64>,
     /// Journal entry → the task it was made for.
     entry_task: BTreeMap<u64, u64>,
-    /// Bumped by every change (the engine saves the board when it moved).
+    /// Bumped by every change that is saved (the engine saves the board when it moved).
     revision: u64,
+    /// Rendered `board.json` lines of tasks, by id: (version, line). Only tasks that changed
+    /// since the last save are rendered again (F3).
+    rendered: BTreeMap<u64, (u64, String)>,
 }
 
 impl Board {
@@ -560,7 +593,13 @@ impl Board {
 
     /// Records a board event that isn't a task change (intents, leases, settings).
     pub fn log(&mut self, by: &str, tick: u64, what: &'static str, task: Option<u64>, text: String) {
-        self.event(by, tick, what, task.filter(|t| self.tasks.contains_key(t)), text);
+        let task = task.filter(|t| self.tasks.contains_key(t));
+        let revision = self.revision;
+        self.event(by, tick, what, task, text);
+        if task.is_none() {
+            // Feed only: nothing saved changed.
+            self.revision = revision;
+        }
     }
 
     /// Makes room for one more task: drops the oldest finished one. Refused when every kept
@@ -602,6 +641,7 @@ impl Board {
             detail: spec.detail,
             status: Status::Open,
             posted_by: w.name.to_owned(),
+            poster_key: w.session.map(str::to_owned),
             owner: None,
             assignee: spec.assignee,
             parent: spec.parent,
@@ -649,10 +689,11 @@ impl Board {
         Self::check_version(t, expect)?;
         match (t.status, &t.owner) {
             (s, Some(o)) if s.active() && o.is(w) => {
-                // Taking your own task again makes it current.
+                // Taking your own task again makes it current (and binds a loaded owner).
                 if let Some(k) = w.session {
                     self.current.insert(k.to_owned(), id);
                 }
+                self.bind(w, id);
                 return Ok(&self.tasks[&id]);
             }
             (s, Some(o)) if s.active() => {
@@ -674,13 +715,13 @@ impl Board {
             .deps
             .iter()
             .filter_map(|d| self.tasks.get(d))
-            .filter(|d| d.status != Status::Done)
+            .filter(|d| !d.status.finished())
             .map(|d| Json::obj([("id", Json::from(d.id)), ("title", Json::from(d.title.as_str())), ("status", Json::from(d.status.name()))]))
             .collect();
         if !pending.is_empty() {
             return Err(err(
                 "deps_not_done",
-                format!("task {id} depends on {} task(s) that aren't done yet; take one of those, or wait", pending.len()),
+                format!("task {id} depends on {} task(s) that aren't finished yet; take one of those, or wait", pending.len()),
             )
             .with("task", id)
             .with("pending", Json::Arr(pending)));
@@ -696,9 +737,27 @@ impl Board {
         Ok(&self.tasks[&id])
     }
 
-    /// Whether `w` owns task `t` / posted it.
+    /// Whether `w` owns task `t` (taken or blocked by it).
     fn owns(t: &Task, w: Writer) -> bool {
         t.owner.as_ref().is_some_and(|o| o.is(w)) && t.status.active()
+    }
+
+    /// Whether `w` posted task `t`: the same name *and* identity (a name taken again after its
+    /// session ended adopts nothing), or the name alone for a task loaded from a file.
+    fn posted(t: &Task, w: Writer) -> bool {
+        t.posted_by == w.name && t.poster_key.as_deref().is_none_or(|k| w.session == Some(k))
+    }
+
+    /// After `w` acted on task `id` as its owner or poster: a loaded task's name-only owner or
+    /// poster is bound to `w`'s identity from now on.
+    fn bind(&mut self, w: Writer, id: u64) {
+        let Some(t) = self.tasks.get_mut(&id) else { return };
+        if let Some(o) = t.owner.as_mut().filter(|o| o.key.is_none() && o.name == w.name) {
+            o.key = w.session.map(str::to_owned);
+        }
+        if t.poster_key.is_none() && t.posted_by == w.name {
+            t.poster_key = w.session.map(str::to_owned);
+        }
     }
 
     fn would_cycle(&self, id: u64, add: &[u64]) -> Option<u64> {
@@ -723,7 +782,7 @@ impl Board {
         let t = self.tasks.get(&id).ok_or_else(|| not_found(id))?;
         Self::check_version(t, p.expect_version)?;
         let owner = Self::owns(t, w);
-        let poster = t.posted_by == w.name;
+        let poster = Self::posted(t, w);
         let poster_only = p.title.is_some() || p.detail.is_some() || p.assignee.is_some() || p.priority.is_some() || !p.add_deps.is_empty() || !p.remove_deps.is_empty();
         if poster_only && !poster {
             return Err(err(
@@ -862,6 +921,9 @@ impl Board {
         for (what, text) in events {
             self.event(name, tick, what, Some(id), text);
         }
+        if owner || poster {
+            self.bind(w, id);
+        }
         Ok(&self.tasks[&id])
     }
 
@@ -874,12 +936,13 @@ impl Board {
         }
         let owner = Self::owns(t, w);
         if cancel {
-            if !owner && t.posted_by != w.name {
+            if !owner && !Self::posted(t, w) {
                 return Err(err("not_poster", format!("only the owner or {} (who posted it) may cancel task {id}", t.posted_by)).with("task", id));
             }
         } else if !owner {
             return Err(not_owner(t, "finish"));
         }
+        self.bind(w, id);
         let t = self.tasks.get_mut(&id).expect("checked");
         t.status = if cancel { Status::Cancelled } else { Status::Done };
         t.result = summary.clone();
@@ -892,7 +955,7 @@ impl Board {
     pub fn list(&self, q: &TaskQuery) -> Json {
         let ready = |t: &Task| {
             t.status == Status::Open
-                && t.deps.iter().all(|d| self.tasks.get(d).is_none_or(|d| d.status == Status::Done))
+                && t.deps.iter().all(|d| self.tasks.get(d).is_none_or(|d| d.status.finished()))
                 && q.ready_for.as_deref().is_none_or(|me| t.assignee.as_deref().is_none_or(|a| a == me))
         };
         let matching = self.tasks.values().filter(|t| {
@@ -951,15 +1014,15 @@ impl Board {
             _ => None,
         };
         let seq = self.event(w.name, tick, "note", task, short(&text, 80));
-        self.notes.insert(id, Note { id, by: w.name.to_owned(), target, text, tick, seq });
+        self.notes.insert(id, Note { id, by: w.name.to_owned(), by_key: w.session.map(str::to_owned), target, text, tick, seq });
         Ok(&self.notes[&id])
     }
 
     /// `note_delete`: the author's own, or anyone's with `force`.
     pub fn delete_note(&mut self, w: Writer, tick: u64, id: u64, force: bool) -> Result<Note, WorldError> {
         let n = self.notes.get(&id).ok_or_else(|| err("note_not_found", format!("there is no note {id}")).with("note", id))?;
-        if n.by != w.name && !force {
-            return Err(err("not_yours", format!("note {id} was left by {}; pass force: true to delete someone else's note", n.by))
+        if !(n.by == w.name && n.by_key.as_deref().is_none_or(|k| w.session == Some(k))) && !force {
+            return Err(err("not_yours", format!("note {id} was left by {} (in another session, or another agent); pass force: true to delete someone else's note", n.by))
                 .with("note", id)
                 .with("by", n.by.as_str()));
         }
@@ -1005,24 +1068,37 @@ impl Board {
 
     // ---- persistence ----
 
-    /// The board as `board.json` text.
-    pub fn render(&self) -> String {
-        let task = |t: &Task| {
-            let mut j = t.to_json(None);
-            // Owners come back by name (keys are this run's).
-            j.set("owner", t.owner.as_ref().map_or(Json::Null, |o| Json::from(o.name.as_str())));
-            j.set("assignee", t.assignee.as_deref().map_or(Json::Null, Json::from));
-            j.set("events_dropped", Json::from(t.events_dropped));
-            j.to_string()
-        };
-        let mut out = String::new();
+    /// The board as `board.json` text, re-rendering only tasks that changed since the last call.
+    pub fn render_cached(&mut self) -> String {
+        let tasks = &self.tasks;
+        self.rendered.retain(|id, _| tasks.contains_key(id));
+        for t in self.tasks.values() {
+            if self.rendered.get(&t.id).is_none_or(|(v, _)| *v != t.version) {
+                self.rendered.insert(t.id, (t.version, Self::task_line(t)));
+            }
+        }
+        let mut out = String::with_capacity(self.rendered.values().map(|(_, l)| l.len() + 2).sum::<usize>() + self.notes.len() * 200 + 256);
+        self.write_into(&mut out, |id| &self.rendered[&id].1);
+        out
+    }
+
+    fn task_line(t: &Task) -> String {
+        let mut j = t.to_json(None);
+        // Owners and posters come back by name (keys are this run's).
+        j.set("owner", t.owner.as_ref().map_or(Json::Null, |o| Json::from(o.name.as_str())));
+        j.set("assignee", t.assignee.as_deref().map_or(Json::Null, Json::from));
+        j.set("events_dropped", Json::from(t.events_dropped));
+        j.to_string()
+    }
+
+    fn write_into<'a>(&'a self, out: &mut String, line: impl Fn(u64) -> &'a str) {
         out.push_str(&format!(
             "{{\"format\": \"{FORMAT}\", \"next_task\": {}, \"next_note\": {}, \"seq\": {},\n\"tasks\": [",
             self.next_task, self.next_note, self.seq
         ));
-        for (i, t) in self.tasks.values().enumerate() {
+        for (i, id) in self.tasks.keys().enumerate() {
             out.push_str(if i == 0 { "\n" } else { ",\n" });
-            out.push_str(&task(t));
+            out.push_str(line(*id));
         }
         out.push_str("\n],\n\"notes\": [");
         for (i, n) in self.notes.values().enumerate() {
@@ -1030,6 +1106,13 @@ impl Board {
             out.push_str(&n.to_json().to_string());
         }
         out.push_str("\n]}\n");
+    }
+
+    /// The board as `board.json` text.
+    pub fn render(&self) -> String {
+        let lines: BTreeMap<u64, String> = self.tasks.values().map(|t| (t.id, Self::task_line(t))).collect();
+        let mut out = String::new();
+        self.write_into(&mut out, |id| &lines[&id]);
         out
     }
 
@@ -1089,6 +1172,7 @@ impl Board {
                     detail: text(t, "detail"),
                     status,
                     posted_by: text(t, "posted_by"),
+                    poster_key: None,
                     owner: if status.active() { owner } else { owner.filter(|_| status.finished()) },
                     assignee: t.get("assignee").and_then(Json::as_str).map(str::to_owned),
                     parent: t.get("parent").and_then(Json::as_u64),
@@ -1122,7 +1206,7 @@ impl Board {
             } else {
                 NoteTarget::Path(text(n, "path"))
             };
-            b.notes.insert(id, Note { id, by: text(n, "by"), target, text: text(n, "text"), tick: num(n, "tick"), seq: num(n, "seq") });
+            b.notes.insert(id, Note { id, by: text(n, "by"), by_key: None, target, text: text(n, "text"), tick: num(n, "tick"), seq: num(n, "seq") });
             b.next_note = b.next_note.max(id);
         }
         Ok(b)
@@ -1308,6 +1392,56 @@ mod tests {
         // Ids keep counting.
         assert_eq!(back.post(PARENT, 3, spec("d")).unwrap().id, c + 1);
         assert!(Board::parse("{\"format\": \"other\"}").is_err());
+    }
+
+    /// Review finding (major): a later session that took a gone poster's name could reopen and
+    /// retitle tasks, and delete the poster's notes; loaded owners stayed name-only for good.
+    #[test]
+    fn a_name_taken_again_adopts_no_tasks_or_notes() {
+        let mut b = Board::default();
+        let id = b.post(PARENT, 0, spec("gate")).unwrap().id;
+        b.take(ANN, 0, id, None).unwrap();
+        b.add_note(PARENT, 0, NoteTarget::Task(id), "mind the hinges".into()).unwrap();
+        let heir = Writer::new("lead", Some("k-new"));
+        let reopen = TaskPatch { status: Some(Status::Open), ..TaskPatch::default() };
+        assert_eq!(b.update(heir, 1, id, reopen.clone()).unwrap_err().code, "not_task_owner");
+        assert_eq!(b.update(heir, 1, id, TaskPatch { title: Some("hijacked".into()), ..TaskPatch::default() }).unwrap_err().code, "not_poster");
+        assert_eq!(b.done(heir, 1, id, String::new(), true, None).unwrap_err().code, "not_poster");
+        assert_eq!(b.delete_note(heir, 1, 1, false).unwrap_err().code, "not_yours");
+        // The real poster still can.
+        b.update(PARENT, 1, id, reopen).unwrap();
+        // Loaded: name-only until they act, then bound.
+        let mut back = Board::parse(&b.render()).unwrap();
+        let ann_now = Writer::new("ann", Some("k-ann-2"));
+        back.take(ann_now, 2, id, None).unwrap();
+        back.update(Writer::new("lead", Some("k-lead-2")), 2, id, TaskPatch { priority: Some(1), ..TaskPatch::default() }).unwrap();
+        assert_eq!(back.update(Writer::new("lead", Some("k-other")), 2, id, TaskPatch { priority: Some(2), ..TaskPatch::default() }).unwrap_err().code, "not_poster");
+        assert_eq!(back.done(Writer::new("ann", Some("k-other")), 2, id, String::new(), false, None).unwrap_err().code, "not_task_owner");
+        back.done(ann_now, 2, id, String::new(), false, None).unwrap();
+    }
+
+    #[test]
+    fn feed_only_events_leave_the_board_saved_and_renders_are_cached() {
+        let mut b = Board::default();
+        b.post(PARENT, 0, spec("a")).unwrap();
+        let r = b.revision();
+        b.log("ann", 0, "lease", None, "port lease 1".into());
+        assert_eq!(b.revision(), r, "nothing saved changed");
+        assert_eq!(b.events_since(0, 10).count(), 2, "but the feed has it");
+        let first = b.render_cached();
+        assert_eq!(first, b.render());
+        b.take(ANN, 1, 1, None).unwrap();
+        assert_eq!(b.render_cached(), b.render(), "a changed task is rendered again");
+    }
+
+    #[test]
+    fn a_finished_dependency_no_longer_blocks() {
+        let mut b = Board::default();
+        let a = b.post(PARENT, 0, spec("a")).unwrap().id;
+        let c = b.post(PARENT, 0, TaskSpec { deps: vec![a], ..spec("c") }).unwrap().id;
+        b.done(PARENT, 0, a, "not needed".into(), true, None).unwrap();
+        assert_eq!(b.list(&TaskQuery { ready: true, limit: 10, ..TaskQuery::default() }).get("total"), Some(&Json::from(1)));
+        b.take(ANN, 0, c, None).unwrap();
     }
 
     #[test]

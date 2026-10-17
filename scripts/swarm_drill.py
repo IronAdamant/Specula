@@ -32,6 +32,7 @@ Needs a GPU (the engine starts its renderer even headless). Output is ASCII.
 import argparse
 import datetime
 import json
+import os
 import shutil
 import socket
 import statistics
@@ -520,7 +521,7 @@ def main():
     COMMS = not args.no_comms
     if args.port == 7471:
         sys.exit("never drill on 7471 (the interactive engine's port)")
-    exe = args.exe or ROOT / "target" / ("debug" if args.debug else "release") / ("specula.exe" if sys.platform == "win32" else "specula")
+    exe = args.exe or Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / ("debug" if args.debug else "release") / ("specula.exe" if sys.platform == "win32" else "specula")
     if not exe.exists():
         sys.exit(f"{exe} not found: cargo build -p specula{'' if args.debug else ' --release'}")
     work = Path(tempfile.mkdtemp(prefix="specula-drill-"))

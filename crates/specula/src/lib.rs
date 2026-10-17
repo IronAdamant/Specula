@@ -328,7 +328,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     };
     engine.finish_autosave(true);
     engine.autosave(true);
-    engine.save_board_if_due();
+    engine.save_board_blocking();
     // Parked captures and model calls hold reply channels: answer them now, or their callers
     // (and the server's connection threads) would wait out their full timeout.
     engine.answer_waiters_shutting_down();
@@ -475,8 +475,8 @@ struct Engine {
     trace: desync::TickLog,
     /// desync_trace files written by this run.
     traces_written: u64,
-    /// The task board's revision as last written to the world folder.
-    board_saved: u64,
+    /// Writing the task board next to the world (see `swarm_engine`).
+    board_io: swarm_engine::BoardSaver,
     /// The window's frame floor under a swarm's backlog, and who set it (`None`: perf.toml or the
     /// default); see `schedule` and `swarm_settings`.
     frame_floor: (u32, Option<String>),
@@ -570,7 +570,7 @@ impl Engine {
             last_claim_sweep: Instant::now(),
             trace: desync::TickLog::default(),
             traces_written: 0,
-            board_saved: 0,
+            board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
         })
     }
@@ -1365,7 +1365,7 @@ impl Engine {
         let output = match request.command {
             Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
-                Err(e) => world_error(&e),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::spawn()))),
             },
             Command::Set(key, change) => {
                 // A refused write says what changed (conflict help): only these can be refused so.
@@ -1454,7 +1454,7 @@ impl Engine {
                     }
                     ToolOutput::text(env.to_pretty())
                 }
-                Err(e) => world_error(&e),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec!["(environment)".into()] }))),
             },
             Command::View(view) => match view {
                 tools::ViewSpec::Auto => {
@@ -1537,7 +1537,7 @@ impl Engine {
                                     self.swarm.game_changes(&mut self.world, tick, agent, Kind::GameTool);
                                 }
                             }
-                            world_error(&e)
+                            world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec![format!("(game tool {name})")] })))
                         }
                     }
                 }
@@ -1558,7 +1558,7 @@ impl Engine {
                     .to_string(),
                     )
                 }
-                Err(e) => world_error(&e),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec!["(undo)".into()] }))),
             },
             Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
             Command::ClaimTake(spec) => {
@@ -1730,10 +1730,11 @@ impl Engine {
                 self.last_autosave = Instant::now();
                 self.autosave_error = None;
                 self.note_leftovers(&report);
-                self.save_board_now();
+                let board_error = self.save_board_now();
                 ToolOutput::text(
                     Json::obj([
                         ("saved", Json::from(name)),
+                        ("board_save_error", board_error.unwrap_or(Json::Null)),
                         ("dir", Json::from(report.dir.display().to_string())),
                         ("generation", Json::from(report.generation)),
                         ("files", Json::from(report.files)),
@@ -1758,16 +1759,22 @@ impl Engine {
 
     fn load(&mut self, name: String, force: bool) -> ToolOutput {
         self.finish_autosave(true);
-        if self.dirty() && !force {
+        // The outgoing world's task board is kept with it (a world without a folder can't keep one).
+        self.save_board_now();
+        let board_unsaved = self.board_unsaved();
+        if (self.dirty() || board_unsaved) && !force {
             let current = self.world_name.as_deref().map_or(Json::Null, Json::from);
             return ToolOutput::error(
                 Json::obj([
                     ("error", Json::from("unsaved_changes")),
                     (
                         "message",
-                        Json::from("the live world has unsaved changes; world_save first, or pass force: true to discard them"),
+                        Json::from(
+                            "the live world (or its task board) has unsaved changes; world_save first, or pass force: true to discard them",
+                        ),
                     ),
                     ("current_world", current),
+                    ("board_unsaved", Json::from(board_unsaved)),
                     ("entities", Json::from(self.world.len())),
                 ])
                 .to_pretty(),
@@ -1960,6 +1967,9 @@ impl Engine {
             ("window", self.window_json()),
         ]);
         let mut info = info;
+        if let Some(e) = &self.board_io.error {
+            info.set("board_save_error", e.clone());
+        }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));
         }

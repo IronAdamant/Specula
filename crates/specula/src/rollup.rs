@@ -42,7 +42,8 @@ pub struct RollupQuery {
     pub task: Option<u64>,
     /// Journal id: only entries after it.
     pub since: u64,
-    /// Include the hosted game's own changes (ticks and frames) as a group of their own.
+    /// Include the hosted game's own changes (ticks and frames) as a group of their own. Game
+    /// tools agents call always count, for the agent that called them.
     pub game: bool,
     pub limit: usize,
 }
@@ -182,13 +183,17 @@ pub fn rollup(sw: &Swarm, q: &RollupQuery, now: Instant) -> Json {
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     let mut by_task: BTreeMap<u64, Group> = BTreeMap::new();
     let (mut scanned, mut last, mut more, mut unlinked) = (0usize, q.since, false, 0u64);
-    for e in sw.journal.entries_after(q.since, q.game) {
+    // Game tools are agents' work and always count; the game's own ticks and frames only with `game`.
+    for e in sw.journal.entries_after(q.since, true) {
         if scanned == MAX_SCAN {
             more = true;
             break;
         }
         scanned += 1;
         last = e.seq;
+        if e.kind.is_game() && e.kind != crate::journal::Kind::GameTool && !q.game {
+            continue;
+        }
         match q.by {
             By::Agent => {
                 // A game tool's changes are the calling agent's work; the game's own ticks are the game's.
@@ -421,6 +426,15 @@ mod tests {
         assert_eq!((t.get("task"), t.get("changes"), t.get("status")), (Some(&Json::from(walls)), Some(&Json::from(4)), Some(&Json::from("done"))));
         assert_eq!(t.get("work_total").unwrap().get("refused"), Some(&Json::from(1)));
         assert_eq!(by_task.get("entries_without_task"), Some(&Json::from(1)), "child_2's /keep");
+        // A game tool's changes count for the agent that called it, without `game`.
+        sw.game_tool(&mut w, 4, "sepulcra", c2, |w| {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            s.name = Some("tower".into());
+            w.spawn(s, "sepulcra").unwrap();
+        })
+        .unwrap();
+        let two = rollup(&sw, &RollupQuery { by: By::Agent, agent: Some("child_2".into()), task: None, since: 0, game: false, limit: 10 }, Instant::now());
+        assert_eq!(two.get("groups").unwrap().as_array().unwrap()[0].get("changes"), Some(&Json::from(2)));
         // Paging by journal id.
         let later = rollup(&sw, &RollupQuery { by: By::Agent, agent: Some("child_1".into()), task: None, since: 3, game: false, limit: 10 }, Instant::now());
         assert_eq!(later.get("groups").unwrap().as_array().unwrap()[0].get("changes"), Some(&Json::from(1)));

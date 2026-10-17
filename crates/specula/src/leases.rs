@@ -98,9 +98,13 @@ impl Lease {
     }
 }
 
-/// Whether a port can be bound on loopback right now.
+/// Whether a port can be bound right now, on every interface and on loopback. (On Windows a
+/// loopback bind succeeds while another program listens on 0.0.0.0 at that port, so both are
+/// tried. No connect probe: a refused connect takes about a second on Windows, on the engine
+/// thread.)
 pub fn port_free(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    use std::net::{Ipv4Addr, TcpListener};
+    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_ok() && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
 }
 
 /// See the module docs.
@@ -325,6 +329,15 @@ mod tests {
         assert_eq!(l.release(ANN, Some(2), false, &root, now).unwrap_err().code, "not_owner");
         let later = now + DEFAULT_LEASE;
         assert!(l.take(ANN, (Want::Ports(2), String::new(), DEFAULT_LEASE), &pools(&root), &busy, later).is_ok());
+    }
+
+    /// Review finding: a listener on 0.0.0.0 left the loopback bind free on Windows.
+    #[test]
+    fn a_port_someone_listens_on_is_not_free() {
+        let any = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        assert!(!port_free(any.local_addr().unwrap().port()));
+        let lo = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        assert!(!port_free(lo.local_addr().unwrap().port()));
     }
 
     #[test]

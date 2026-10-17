@@ -33,6 +33,55 @@ pub mod kernel32 {
         pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
         pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
         pub fn CloseHandle(handle: *mut c_void) -> i32;
+        pub fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+    }
+
+    /// `SYSTEM_POWER_STATUS`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct SystemPowerStatus {
+        pub ac_line_status: u8,
+        pub battery_flag: u8,
+        pub battery_life_percent: u8,
+        pub system_status_flag: u8,
+        pub battery_life_time: u32,
+        pub battery_full_life_time: u32,
+    }
+}
+
+/// The machine's power source, for hints about how much it can spare (a laptop on battery
+/// shouldn't be pushed). `None` where unknown (other platforms, or the OS doesn't say).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Power {
+    /// The machine has a system battery (a laptop or handheld, most likely).
+    pub has_battery: bool,
+    /// Running on mains power (`None`: unknown).
+    pub on_ac: Option<bool>,
+}
+
+/// See [`Power`].
+pub fn power() -> Option<Power> {
+    #[cfg(windows)]
+    {
+        let mut st = kernel32::SystemPowerStatus::default();
+        // SAFETY: `st` is a writable SYSTEM_POWER_STATUS of the documented layout.
+        if unsafe { kernel32::GetSystemPowerStatus(&mut st) } == 0 {
+            return None;
+        }
+        // BatteryFlag: 128 = no system battery, 255 = unknown. ACLineStatus: 0 off, 1 on, 255 unknown.
+        if st.battery_flag == 255 {
+            return None;
+        }
+        let on_ac = match st.ac_line_status {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        Some(Power { has_battery: st.battery_flag & 128 == 0, on_ac })
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
@@ -268,6 +317,15 @@ pub mod dynlib {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn power_status_answers_or_says_unknown() {
+        // Any answer is fine (machines differ); it must not crash, and battery-less machines are
+        // never reported as on battery.
+        if let Some(p) = super::power() {
+            assert!(p.has_battery || p.on_ac != Some(false), "{p:?}");
+        }
+    }
+
     use super::*;
 
     #[cfg(windows)]

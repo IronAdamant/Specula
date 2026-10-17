@@ -48,7 +48,7 @@ pub struct TickRecord {
     pub tick: u64,
     pub world: u64,
     pub next_id: u64,
-    pub subsystems: Vec<(String, u64)>,
+    pub subsystems: Vec<(&'static str, u64)>,
 }
 
 /// The engine's per-tick hashes (see the module docs).
@@ -73,12 +73,8 @@ impl TickLog {
             TickRecord { tick, world, next_id, subsystems: Vec::new() }
         };
         let mut rec = rec;
-        for (name, h) in self.scratch.drain(..) {
-            match rec.subsystems.iter_mut().find(|(n, _)| n == name) {
-                Some(slot) => slot.1 = h,
-                None => rec.subsystems.push((name.to_owned(), h)),
-            }
-        }
+        // A recycled record keeps its vector's capacity: no allocation per tick once warm.
+        rec.subsystems.append(&mut self.scratch);
         self.records.push_back(rec);
     }
 
@@ -180,7 +176,7 @@ impl Trace {
         let ticks = log
             .records()
             .filter(|r| (lo..=hi).contains(&r.tick))
-            .map(|r| (r.tick, (r.world, r.subsystems.clone())))
+            .map(|r| (r.tick, (r.world, r.subsystems.iter().map(|(n, h)| ((*n).to_owned(), *h)).collect())))
             .collect::<BTreeMap<_, _>>();
         let mut changes: BTreeMap<u64, BTreeMap<u64, Mark>> = BTreeMap::new();
         if let (Some(&first), Some(&last)) = (ticks.keys().next(), ticks.keys().next_back()) {
@@ -196,8 +192,8 @@ impl Trace {
                 }
             }
         }
-        // Complete from the tick after the oldest entry kept, unless nothing was ever evicted.
-        let entities_from = if journal.replayable() { 0 } else { journal.entries().next().map_or(u64::MAX, |e| e.tick + 1) };
+        // Complete from past the newest tick either journal ring evicted entries of.
+        let entities_from = journal.complete_from_tick();
         Trace { game: game.map(str::to_owned), tick_hz, ticks, changes, entities_from }
     }
 
@@ -562,6 +558,22 @@ mod tests {
         assert_eq!(r.get("match"), Some(&Json::from(false)));
         let e = &r.get("entities").unwrap().as_array().unwrap()[0];
         assert_eq!(e.get("fields"), Some(&Json::arr([Json::from("scale")])));
+    }
+
+    /// Review finding: entity lists were reported complete for ticks whose changes one journal
+    /// ring had already evicted.
+    #[test]
+    fn entity_lists_are_complete_only_past_evicted_ticks() {
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let mut j = Journal::with_limits(&World::default(), "empty", 4, 1 << 30);
+        assert_eq!(j.complete_from_tick(), 0);
+        for t in 0..10u64 {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            s.name = Some(format!("c{t}"));
+            journal::commit(&mut w, &mut j, t, Writer::from("ann"), Kind::Spawn, None, |w| w.spawn(s, "ann").map(|_| ())).unwrap();
+        }
+        assert_eq!(j.complete_from_tick(), 7, "ticks 0..=5 were evicted, tick 6 is the oldest kept");
     }
 
     #[test]

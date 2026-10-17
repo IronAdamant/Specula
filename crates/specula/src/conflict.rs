@@ -43,6 +43,10 @@ impl Yours {
         Yours { fields: vec!["(delete)".into()] }
     }
 
+    pub fn spawn() -> Yours {
+        Yours { fields: vec!["(spawn)".into()] }
+    }
+
     /// The entity fields an update sets.
     pub fn of_update(u: &UpdateSpec) -> Yours {
         let mut f: Vec<String> = Vec::new();
@@ -222,6 +226,24 @@ fn stale(world: &World, journal: &Journal, e: WorldError, yours: &Yours) -> Worl
         return e;
     };
     let Some(now) = world.get(id) else { return e };
+    if now.version == expected {
+        // Nothing outside this command changed it: an earlier op of the same batch did (and was
+        // rolled back with the rest).
+        let advice = format!(
+            "an earlier op in this same batch changed it (each op bumps the version): in the later op use the version the              earlier one produces ({}), or leave expect_version out of the later op",
+            expected + 1
+        );
+        return e.with(
+            "conflict",
+            Json::obj([
+                ("base", Json::obj([("version", Json::from(expected))])),
+                ("theirs", Json::obj([("version", Json::from(expected)), ("changes", Json::arr([]))])),
+                ("yours", Json::obj([("fields", Json::arr(yours.fields.iter().map(|f| Json::from(f.as_str()))))])),
+                ("same_batch", Json::from(true)),
+                ("rebase", Json::from(advice)),
+            ]),
+        );
+    }
     let current = now.to_json(&world.path_of(id));
     let mut conflict = vec![];
     let (changed, base) = match at_version(journal, id, expected) {
@@ -334,6 +356,29 @@ mod tests {
         let refused = set(&mut w, &mut j, "ann", mine).unwrap_err();
         let e = help(&w, &j, refused, &yours);
         assert_eq!(e.detail("conflict").unwrap().get("overlap"), Some(&Json::arr([Json::from("position")])));
+    }
+
+    /// Review finding: an earlier op of the same batch bumped the version; the help must say so
+    /// rather than advise retrying with the version that just failed.
+    #[test]
+    fn a_stale_op_after_an_earlier_op_of_its_batch_says_so() {
+        use crate::world::Op;
+        let mut w = world();
+        let mut j = Journal::default();
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("gate".into());
+        journal::commit(&mut w, &mut j, 0, Writer::new("ann", Some("ann")), Kind::Spawn, None, |w| w.spawn(s, "ann").map(|_| ())).unwrap();
+        let key = || EntityKey::Path("/gate".into());
+        let ops = vec![
+            Op::Set(key(), UpdateSpec { position: Some(Vec3::ONE), ..Default::default() }),
+            Op::Set(key(), UpdateSpec { color: Some([1.0, 0.0, 0.0]), expect_version: Some(1), ..Default::default() }),
+        ];
+        let e = journal::commit(&mut w, &mut j, 0, Writer::new("ann", Some("ann")), Kind::Batch, None, |w| w.apply_batch(ops, "ann").map_err(|(_, e)| e))
+            .unwrap_err();
+        let e = help(&w, &j, e, &Yours { fields: vec!["color".into()] });
+        let c = e.detail("conflict").unwrap();
+        assert_eq!(c.get("same_batch"), Some(&Json::from(true)));
+        assert!(c.get("rebase").unwrap().as_str().unwrap().contains("(2)"));
     }
 
     #[test]

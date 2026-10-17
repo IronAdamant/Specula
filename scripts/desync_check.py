@@ -21,6 +21,7 @@ Output is ASCII. Exit code 0 = every expectation held.
 """
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -30,7 +31,7 @@ from specula_mcp import ROOT, Engine, Mcp, url_for
 
 
 def exe_path(name, debug):
-    return ROOT / "target" / ("debug" if debug else "release") / (name + (".exe" if sys.platform == "win32" else ""))
+    return Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / ("debug" if debug else "release") / (name + (".exe" if sys.platform == "win32" else ""))
 
 
 def align(mcps):

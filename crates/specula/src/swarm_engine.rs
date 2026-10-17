@@ -17,9 +17,49 @@ use specula_protocol::{Server, SessionInfo, ToolOutput};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// A board write's outcome: the folder and the error on failure.
+type WriteResult = Result<(), (String, String)>;
+
+/// Writing `board.json`: the revision last written, a write running on a worker thread, and the
+/// last failure (shown by engine_info and world_save until a write succeeds).
+#[derive(Default)]
+pub(crate) struct BoardSaver {
+    pub saved: u64,
+    job: Option<(u64, std::sync::mpsc::Receiver<WriteResult>)>,
+    pub error: Option<Json>,
+}
+
+impl BoardSaver {
+    fn note(&mut self, revision: u64, result: WriteResult) {
+        match result {
+            Ok(()) => {
+                self.saved = revision;
+                self.error = None;
+            }
+            Err((dir, message)) => {
+                eprintln!("specula: could not save the task board to {dir}: {message}");
+                self.error = Some(Json::obj([
+                    ("error", Json::from("io")),
+                    ("message", Json::from(format!("the task board was not saved to {dir}: {message}; the next autosave retries"))),
+                    ("dir", Json::from(dir)),
+                    ("at_revision", Json::from(revision)),
+                ]));
+            }
+        }
+    }
+}
+
 /// The board's file in a world folder.
 pub const BOARD_FILE: &str = "board.json";
 const BOARD_TMP: &str = "board.json.tmp";
+
+/// What task edits answer: the task's summary and its last few events (task_get has the rest).
+fn brief(t: &crate::board::Task) -> Json {
+    let mut j = t.summary_json();
+    let n = t.events.len().min(4);
+    j.set("events", Json::arr(t.events.iter().skip(t.events.len() - n).map(|e| e.to_json())));
+    j
+}
 
 fn out(j: Json) -> ToolOutput {
     ToolOutput::text(j.to_string())
@@ -56,23 +96,23 @@ impl Engine {
         let now = Instant::now();
         match call {
             SwarmCall::TaskPost(spec) if named => match self.swarm.board.post(w, tick, spec) {
-                Ok(t) => out(t.to_json(Some(4))),
+                Ok(t) => out(brief(t)),
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskTake { id, expect } if named => match self.swarm.board.take(w, tick, id, expect) {
                 Ok(t) => {
-                    let mut j = t.to_json(Some(4));
+                    let mut j = brief(t);
                     j.set("current", Json::from(true));
                     out(j)
                 }
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskUpdate { id, patch } if named => match self.swarm.board.update(w, tick, id, patch) {
-                Ok(t) => out(t.to_json(Some(4))),
+                Ok(t) => out(brief(t)),
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskDone { id, summary, cancel, expect } if named => match self.swarm.board.done(w, tick, id, summary, cancel, expect) {
-                Ok(t) => out(t.to_json(Some(4))),
+                Ok(t) => out(brief(t)),
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskPost(_) | SwarmCall::TaskTake { .. } | SwarmCall::TaskUpdate { .. } | SwarmCall::TaskDone { .. } => hello_required("tasks"),
@@ -96,7 +136,8 @@ impl Engine {
             }
             SwarmCall::TaskGet { id, events } => match self.swarm.board.get(id) {
                 Some(t) => {
-                    let mut j = t.to_json(Some(events));
+                    // The newest questions (open ones first): a task holds up to 32 of 2000 characters.
+                    let mut j = t.to_json_with(Some(events), Some(8));
                     j.set("notes", Json::arr(self.swarm.board.notes_on_task(id, 10).into_iter().map(|n| n.to_json())));
                     if let Some(p) = t.parent {
                         j.set("parent_title", self.swarm.board.get(p).map_or(Json::Null, |p| Json::from(p.title.as_str())));
@@ -203,6 +244,14 @@ impl Engine {
                 );
                 out(j)
             }
+            SwarmCall::Settings { frame_floor_fps: Some(_) } if !named || !matches!(self.swarm.role(&session.id), "lead" | "director") => {
+                fail(&WorldError::new(
+                    "lead_only",
+                    "the frame floor is chosen by the lead agent before it deploys a swarm: say agent_hello with role \"lead\" \
+                     (or \"director\") first; anyone may read swarm_settings",
+                )
+                .with("role", self.swarm.role(&session.id)))
+            }
             SwarmCall::Settings { frame_floor_fps } => {
                 if let Some(fps) = frame_floor_fps {
                     self.frame_floor = (fps, Some(by.clone()));
@@ -300,12 +349,19 @@ impl Engine {
         let vram_mb = heaps.iter().filter(|h| h.device_local).map(|h| h.size).max().map(|b| b / (1 << 20));
         let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
         let refresh = self.schedule.refresh_known();
+        let power = specula_sys::power();
+        let on_battery = power.is_some_and(|p| p.has_battery && p.on_ac == Some(false));
+        let vram_gb = vram_mb.unwrap_or(0) / 1024;
+        // The owner's line (2026-10-17): low- and mid-spec laptops can't spare frames; high-spec
+        // laptops, desktops and cloud machines can. A hint only: the lead decides.
         let (suggest, why) = if !self.windowed {
             (self.frame_floor.0, "headless: no window to keep fluid, so the floor doesn't apply (agents get every frame)")
+        } else if on_battery {
+            (60, "on battery: keep 60 so the operator's window stays fluid (and the battery lasts)")
         } else if kind == "integrated" || threads <= 4 {
-            (60, "an integrated GPU or few CPU threads: a low- or mid-spec laptop. Keep 60 so the operator's window stays fluid")
-        } else if kind == "discrete" && threads >= 12 {
-            (30, "a discrete GPU and many CPU threads: a high-spec machine can trade frames for agent throughput (30, or 20 for big swarms)")
+            (60, "an integrated GPU or few CPU threads: a low- or mid-spec machine. Keep 60 so the operator's window stays fluid")
+        } else if kind == "discrete" && threads >= 16 && vram_gb >= 10 {
+            (30, "a strong discrete GPU and many CPU threads: a high-spec machine can trade frames for agent throughput (30, or 20 for big swarms)")
         } else {
             (60, "a mid-spec machine: keep 60 for 3D; 2D work may afford 30")
         };
@@ -332,6 +388,8 @@ impl Engine {
                     ("vram_mb", Json::from(vram_mb)),
                     ("vram_note", Json::from(if kind == "integrated" { "shared with the CPU (system memory)" } else { "device-local heap" })),
                     ("cpu_threads", Json::from(threads)),
+                    ("has_battery", Json::from(power.map(|p| p.has_battery))),
+                    ("on_ac_power", Json::from(power.and_then(|p| p.on_ac))),
                     ("display_refresh_hz", Json::from(refresh.map(|(d, _)| (1.0 / d.as_secs_f64() * 10.0).round() / 10.0))),
                     ("refresh_from", Json::from(refresh.map(|(_, s)| s))),
                 ]),
@@ -387,27 +445,76 @@ impl Engine {
         self.trace.record(tick, hash, self.world.next_id());
     }
 
-    /// Writes the board next to the current world when it changed since the last write (and the
-    /// world has been saved there at least once).
+    /// Whether the board has changes not yet written next to the world.
+    pub(crate) fn board_unsaved(&self) -> bool {
+        self.swarm.board.revision() != self.board_io.saved
+    }
+
+    /// Where the board is written: the current world's folder, once the world has been saved there.
+    fn board_dir(&self) -> Option<PathBuf> {
+        let dir = self.worlds_dir.join(self.world_name.as_ref()?);
+        dir.join("world.json").exists().then_some(dir)
+    }
+
+    /// Autosave: when the board changed since it was last written, renders it (only the tasks that
+    /// changed are rendered again) and writes it on a worker thread, like the world's autosave.
     pub(crate) fn save_board_if_due(&mut self) {
-        if self.swarm.board.revision() != self.board_saved {
+        self.finish_board_save(false);
+        if self.board_io.job.is_some() || !self.board_unsaved() {
+            return;
+        }
+        let Some(dir) = self.board_dir() else { return };
+        let text = {
+            let _z = specula_core::profile::zone("board.render");
+            self.swarm.board.render_cached()
+        };
+        let revision = self.swarm.board.revision();
+        let (tx, done) = std::sync::mpsc::channel();
+        let job = move || {
+            let _z = specula_core::profile::zone("board.write");
+            let _ = tx.send(write_board(&dir, &text).map_err(|e| (dir.display().to_string(), e.to_string())));
+        };
+        if std::thread::Builder::new().name("specula-board".into()).spawn(job).is_ok() {
+            self.board_io.job = Some((revision, done));
+        }
+    }
+
+    /// Collects a finished board write (or waits for it with `block`).
+    fn finish_board_save(&mut self, block: bool) {
+        let Some((revision, done)) = &self.board_io.job else { return };
+        let result = if block {
+            done.recv().ok()
+        } else {
+            match done.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let revision = *revision;
+        self.board_io.job = None;
+        self.board_io.note(revision, result.unwrap_or_else(|| Err((String::new(), "the board writer stopped without reporting".into()))));
+    }
+
+    /// At shutdown: finishes a running write and writes what changed since.
+    pub(crate) fn save_board_blocking(&mut self) {
+        self.finish_board_save(true);
+        if self.board_unsaved() {
             self.save_board_now();
         }
     }
 
-    /// Writes the board next to the current world (after a world_save: the world may have a new
-    /// folder). A failure is reported and retried by the next autosave.
-    pub(crate) fn save_board_now(&mut self) {
-        let Some(name) = &self.world_name else { return };
-        let dir = self.worlds_dir.join(name);
-        if !dir.join("world.json").exists() {
-            return;
-        }
+    /// Writes the board next to the current world now (world_save: the world may have a new
+    /// folder; world_load: the outgoing world keeps its board). Returns the error, if any (also
+    /// shown by engine_info until a later write succeeds).
+    pub(crate) fn save_board_now(&mut self) -> Option<Json> {
+        self.finish_board_save(true);
+        let dir = self.board_dir()?;
         let _z = specula_core::profile::zone("board.save");
-        match write_board(&dir, &self.swarm.board.render()) {
-            Ok(()) => self.board_saved = self.swarm.board.revision(),
-            Err(e) => eprintln!("specula: could not save the task board to {}: {e}", dir.display()),
-        }
+        let text = self.swarm.board.render_cached();
+        let revision = self.swarm.board.revision();
+        self.board_io.note(revision, write_board(&dir, &text).map_err(|e| (dir.display().to_string(), e.to_string())));
+        self.board_io.error.clone()
     }
 
     /// Reads the board saved with the world in `dir` (an empty board when there is none).
@@ -424,7 +531,7 @@ impl Engine {
             Err(e) => (Board::default(), Some(format!("task board {} not read: {e}", path.display()))),
         };
         self.swarm.board = board;
-        self.board_saved = self.swarm.board.revision();
+        self.board_io.saved = self.swarm.board.revision();
         warning
     }
 }

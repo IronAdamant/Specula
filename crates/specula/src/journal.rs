@@ -627,6 +627,17 @@ impl Journal {
         merged(self.agents.upto_rev(u64::MAX), self.game.upto_rev(u64::MAX), true).take(scan).filter(move |e| e.touches(id))
     }
 
+    /// The first tick whose changes are all still kept: past the newest tick either ring has
+    /// evicted entries of (0 while nothing was evicted).
+    pub fn complete_from_tick(&self) -> u64 {
+        [&self.agents, &self.game]
+            .into_iter()
+            .filter(|r| r.evicted > 0)
+            .filter_map(|r| r.entries.front().map(|e| e.tick + 1))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The world the entries apply to (empty, or the world as loaded).
     pub fn base(&self) -> &World {
         &self.base

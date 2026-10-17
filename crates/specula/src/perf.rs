@@ -619,7 +619,8 @@ pub struct SwarmConfig {
     /// `lease_ports = [first, last]`: the ports `lease_take {kind: "port"}` hands out (default
     /// 7500..=7599, clear of the engines' own 7460-7499).
     pub lease_ports: (u16, u16),
-    /// `scratch_root`: where scratch-folder leases are made (default: `<captures>/scratch`).
+    /// `scratch_root`: where scratch-folder leases are made (default: `scratch` next to this
+    /// run's captures folder, i.e. `<captures root>/scratch`).
     pub scratch_root: Option<PathBuf>,
     /// `gpu_ms_per_s`: GPU time per second that GPU leases share (default 1000: one whole GPU).
     pub gpu_ms_per_s: u32,
