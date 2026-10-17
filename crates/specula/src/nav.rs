@@ -2006,7 +2006,7 @@ mod tests {
         s.props = Json::obj([(DEF_KEY, Json::parse(r#"{"wait": 5}"#).unwrap())]);
         let b = w.spawn(s, "t").unwrap().id;
         nav.sync(&w, 0);
-        assert!(nav.mind_problems.get(&id).is_none(), "{:?}", nav.mind_problems);
+        assert!(!nav.mind_problems.contains_key(&id), "{:?}", nav.mind_problems);
         assert_eq!(nav.mind_json(&w, id, 1024).unwrap().get("definition").and_then(Json::as_str), Some("/brain"));
         // An invalid edit of the definition is the mind's problem, and an agent relink keeps it.
         w.update(&EntityKey::Id(b), UpdateSpec { props: Some(Json::obj([(DEF_KEY, Json::parse(r#"{"do": "chace", "target": "/x"}"#).unwrap())])), ..Default::default() }, "t").unwrap();
