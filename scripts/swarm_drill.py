@@ -1,6 +1,7 @@
 """Swarm drill: many agents build one world at once through MCP, and the safety layer must hold.
 
-N agents (threads, each its own MCP session) work on one headless engine at the same time. Each:
+N agents (threads, each its own MCP session) work on one engine at the same time (headless, or with
+its window open with --windowed: then the window's frame pacing under the load is reported too). Each:
   1. says hello and claims its own district (/district_NN),
   2. builds it with world_batch rounds (spawns, then moves some of what it built),
   3. deliberately writes into a neighbour's claimed district every few rounds (a spawn, a batch
@@ -17,7 +18,7 @@ Reports throughput (world ops/s), per-tool latency p50/p95, conflict and rejecti
 JSON (schema specula.drill/v1) to perf/drills/.
 
 Usage: cargo build -p specula --release && python scripts/swarm_drill.py [--agents 16] [--rounds 12]
-       [--batch 20] [--port 7488] [--debug] [--label NAME]
+       [--batch 20] [--port 7488] [--debug] [--windowed] [--label NAME]
 Needs a GPU (the engine starts its renderer even headless). Output is ASCII.
 """
 import argparse
@@ -396,6 +397,7 @@ def main():
     ap.add_argument("--debug", action="store_true", help="use the debug build (default: release)")
     ap.add_argument("--no-feed", action="store_true", help="agents don't poll world_changes (isolates its cost)")
     ap.add_argument("--exe", type=Path, help="engine binary (default: target/release or target/debug with --debug)")
+    ap.add_argument("--windowed", action="store_true", help="open the engine's window (needs a desktop session)")
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default=str(ROOT / "perf" / "drills"))
     args = ap.parse_args()
@@ -408,10 +410,12 @@ def main():
     url = url_for(args.port)
     result = {"schema": "specula.drill/v1", "label": args.label, "agents": args.agents, "rounds": args.rounds,
               "batch": args.batch, "feed": not args.no_feed, "build": "debug" if args.debug else "release",
+              "windowed": args.windowed,
               "when": datetime.datetime.now().isoformat(timespec="seconds"),
               "cpu_busy_pct_before": cpu_busy_pct()}
     try:
-        with Engine(exe, args.port, work / "engine.log", "--headless", "--captures", str(work / "captures"),
+        mode = [] if args.windowed else ["--headless"]
+        with Engine(exe, args.port, work / "engine.log", *mode, "--captures", str(work / "captures"),
                     "--worlds", str(work / "worlds"), cwd=work) as engine:
             ready = threading.Barrier(args.agents)
             workers = [Worker(url, i, args.agents, args.rounds, args.batch, not args.no_feed, ready) for i in range(args.agents)]
@@ -421,6 +425,9 @@ def main():
             for w in workers:
                 w.join()
             wall = time.perf_counter() - start
+            if args.windowed:
+                # The window's last 120 frames: the end of the build, under the swarm's load.
+                result["frame_pacing_under_load"] = Agent(url, "pacing").ok("perf_frame").get("frame_pacing")
             problems, h, verify_s, history, info = verify(url, workers)
             result["attacks"] = atk = attacks(url)
             if atk["leaked"]:
@@ -480,7 +487,11 @@ def main():
     path = out_dir / f"{stamp}-swarm-{args.agents}{'-' + args.label if args.label else ''}.json"
     path.write_text(json.dumps(result, indent=2) + "\n")
 
-    print(f"swarm drill: {args.agents} agents x {args.rounds} rounds x {args.batch}-spawn batches ({result['build']})")
+    print(f"swarm drill: {args.agents} agents x {args.rounds} rounds x {args.batch}-spawn batches ({result['build']}, "
+          f"{'windowed' if args.windowed else 'headless'})")
+    if result.get("frame_pacing_under_load"):
+        p = result["frame_pacing_under_load"]
+        print(f"  window frame pacing under load: median {p['median_ms']} p95 {p['p95_ms']} max {p['max_ms']} ms")
     if "wall_s" in result:
         print(f"  wall {result['wall_s']} s, {result['world_ops']} world ops -> {result['ops_per_s']} ops/s, "
               f"{result['tool_calls']} calls -> {result['calls_per_s']} calls/s")

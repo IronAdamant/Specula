@@ -89,7 +89,8 @@ def main():
         for z in zones["zones"]:
             print(f"    {z['path']:28s} ms {z['ms']:>8} self {z['self_ms']:>8} p95 {z['p95_ms']:>8} "
                   f"allocs/frame {z['allocs_per_frame']}")
-        want = ["frame", "frame/requests", "frame/sim"] + ([] if args.headless else ["frame/draw_list", "frame/present"])
+        # With a window open, agents' calls are served between frames (their own top-level zone).
+        want = ["frame", "frame/sim"] + (["frame/requests"] if args.headless else ["requests", "frame/draw_list", "frame/present"])
         check(all(p in paths for p in want), f"zones include {want}")
         page = m.json("perf_zones", limit=2)
         check(len(page["zones"]) == 2 and page["next_cursor"] == "2", "perf_zones pages")
