@@ -4,13 +4,13 @@
 //! `logic_build` and `logic_reload` do their slow parts on the calling connection's thread,
 //! never the engine's: Cargo (seconds; through one engine-wide [`BuildService`] that runs one
 //! Cargo at a time and merges duplicate requests) and opening the library (copying it and
-//! mapping it, which the OS may scan first: a few hundred ms for a large debug build). Only the
+//! mapping it, which the OS may scan first: 100-230 ms per new library, whatever its size). Only the
 //! swap goes to the engine thread, applied at a tick boundary like any other command (about a
 //! millisecond: describe, stop the old build, start the new one).
 
 use super::{Journal, LogicHost, Origin, Phase};
 use crate::game::Clock;
-use crate::journal::Kind;
+use crate::journal::{Kind, Writer};
 use crate::swarm::Swarm;
 use crate::tools::{argument_error, bool_arg, check_keys, int_arg, string_arg, Command, Request};
 use crate::world::{World, WorldError};
@@ -237,7 +237,9 @@ fn open(library: &Path) -> Result<ModuleCode, WorldError> {
 }
 
 /// Applies a module-host command on the engine thread, at a tick boundary.
-pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &Clock, swarm: &mut Swarm, by: &str) -> ToolOutput {
+/// `w` is the calling agent: hooks it calls are checked against other agents' claims, as
+/// game tools are.
+pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &Clock, swarm: &mut Swarm, w: Writer) -> ToolOutput {
     let (tick, hz) = (clock.tick(), clock.hz());
     let journal: &mut Journal<'_> = &mut |w: &mut World, agent: &str, phase: Phase| swarm.game_changes(w, tick, agent, kind(phase));
     let result = match call {
@@ -261,7 +263,13 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &
             j
         }),
         LogicCall::Input { module, actions, ticks } => host.hold(&module, &actions, ticks),
-        LogicCall::Hook { hook, args, reason } => host.call_hook(&hook, &args, &reason, by, world, tick, hz, journal),
+        LogicCall::Hook { hook, args, reason } => {
+            // Like a game tool: the hook's changes may not reach into another agent's claim (if
+            // they do, the world is rolled back and the error says whose claim).
+            let agent = super::agent_of(hook.split('/').next().unwrap_or_default());
+            let call = |wd: &mut World| host.call_hook(&hook, &args, &reason, w.name, wd, tick, hz, &mut |_: &mut World, _: &str, _: Phase| {});
+            swarm.game_tool(world, tick, &agent, w, call).and_then(|r| r)
+        }
     };
     // Module names are attribution: no agent may introduce itself as one.
     for m in host.modules() {
@@ -402,7 +410,9 @@ fn load_library(to_engine: &Sender<Request>, session: &SessionInfo, library: Pat
 
 /// `logic_reload`, on the calling connection's thread (see the module docs).
 pub fn reload(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
-    let parsed = (|| -> Result<(Option<String>, Option<PathBuf>, Option<u64>), String> {
+    // (module, library, seed)
+    type Parsed = (Option<String>, Option<PathBuf>, Option<u64>);
+    let parsed = (|| -> Result<Parsed, String> {
         check_keys(args, "logic_reload", &[&["module", "library", "seed"]])?;
         let module = string_arg(args, "module")?.map(str::to_owned);
         let library = string_arg(args, "library")?.map(|l| project_path(l, "library")).transpose()?;

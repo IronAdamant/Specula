@@ -68,7 +68,9 @@ fn copy_dir(from: &Path, to: &Path) {
                 copy_dir(&src, &dst);
             }
         } else {
-            std::fs::copy(&src, &dst).unwrap();
+            // Read and write, not fs::copy: a copy keeps the old modification time on Windows, so
+            // Cargo would think the restored source older than the last build and not rebuild.
+            std::fs::write(&dst, std::fs::read(&src).unwrap()).unwrap();
         }
     }
 }

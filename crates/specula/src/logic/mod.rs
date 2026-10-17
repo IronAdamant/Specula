@@ -365,9 +365,12 @@ impl LogicHost {
         // The new build is good to go: the old one stops (its changes kept even if it fails).
         let mut stop_error = None;
         if reloaded {
-            let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
-            if let Err((_, j)) = self.call(&name, entry::STOP, &stop, world, tick, Phase::Stop, journal) {
-                stop_error = Some(j);
+            // A disabled build isn't called again, not even to stop.
+            if self.slots[&name].disabled.is_none() {
+                let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
+                if let Err((_, j)) = self.call(&name, entry::STOP, &stop, world, tick, Phase::Stop, journal) {
+                    stop_error = Some(j);
+                }
             }
             let old = self.slots.remove(&name).expect("checked");
             input.adopt_holds(&old.input);

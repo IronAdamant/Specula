@@ -26,6 +26,9 @@ pub struct Diagnostic {
     pub fixes: Vec<Fix>,
     /// rustc's human rendering (what a terminal would show).
     pub rendered: Option<String>,
+    /// The crate it is about when that isn't the module itself (an error in a dependency, e.g.
+    /// the SDK failing to build); `None` for the module's own messages.
+    pub package: Option<String>,
 }
 
 /// One suggested replacement.
@@ -53,8 +56,8 @@ impl Fix {
 /// One line of Cargo's JSON output, as far as a build cares.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
-    /// A compiler message for the package whose manifest is `manifest`.
-    Diagnostic { manifest: PathBuf, diagnostic: Diagnostic },
+    /// A compiler message for the package whose manifest is `manifest` (its target `target`).
+    Diagnostic { manifest: PathBuf, target: String, diagnostic: Diagnostic },
     /// A built target: its package name, crate kinds and files.
     Artifact { manifest: PathBuf, name: String, kinds: Vec<String>, files: Vec<PathBuf>, fresh: bool },
     /// The build ended.
@@ -69,7 +72,10 @@ pub fn parse_line(line: &str, root: &Path) -> Message {
     let manifest = PathBuf::from(s(&j, "manifest_path").unwrap_or_default());
     match j.get("reason").and_then(Json::as_str) {
         Some("compiler-message") => match j.get("message") {
-            Some(m) => Message::Diagnostic { manifest, diagnostic: diagnostic(m, root) },
+            Some(m) => {
+                let target = j.get("target").and_then(|t| s(t, "name")).unwrap_or_default();
+                Message::Diagnostic { manifest, target, diagnostic: diagnostic(m, root) }
+            }
             None => Message::Other,
         },
         Some("compiler-artifact") => {
@@ -117,6 +123,7 @@ fn diagnostic(m: &Json, root: &Path) -> Diagnostic {
         notes,
         fixes,
         rendered: s(m, "rendered"),
+        package: None,
     }
 }
 
@@ -166,6 +173,9 @@ impl Diagnostic {
             shown.to_string_lossy().replace('\\', "/")
         };
         let mut f = vec![("level", Json::from(self.level.as_str())), ("message", Json::from(self.message.as_str()))];
+        if let Some(p) = &self.package {
+            f.push(("package", Json::from(p.as_str())));
+        }
         if let Some(c) = &self.code {
             f.push(("code", Json::from(c.as_str())));
         }
@@ -214,7 +224,8 @@ pub(crate) mod tests {
     #[test]
     fn parses_a_warning_with_a_machine_applicable_fix() {
         let root = Path::new("D:/w/m");
-        let Message::Diagnostic { diagnostic: d, manifest } = parse_line(UNUSED_MUT, root) else { panic!("not a diagnostic") };
+        let Message::Diagnostic { diagnostic: d, manifest, target } = parse_line(UNUSED_MUT, root) else { panic!("not a diagnostic") };
+        assert_eq!(target, "m");
         assert_eq!(manifest, PathBuf::from("D:\\w\\m\\Cargo.toml"));
         assert_eq!((d.level.as_str(), d.code.as_deref()), ("warning", Some("unused_mut")));
         assert_eq!((d.line, d.column, d.end_column), (3, 9, 14));

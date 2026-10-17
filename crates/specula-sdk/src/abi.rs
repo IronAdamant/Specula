@@ -130,8 +130,10 @@ pub fn sdk_version_str(bytes: &[u8; 16]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// The last panic seen by [`call`] on this side: `(thread, message, location)`.
-static LAST_PANIC: Mutex<Option<(std::thread::ThreadId, String, String)>> = Mutex::new(None);
+/// The last panic per thread: `(thread, message, location)`. Per thread, because other threads
+/// (a linked-in module's host, a test harness) may panic at the same time. Bounded.
+static LAST_PANIC: Mutex<Vec<(std::thread::ThreadId, String, String)>> = Mutex::new(Vec::new());
+const PANICS_KEPT: usize = 64;
 static HOOK: Once = Once::new();
 
 /// Records panic locations for structured errors, then defers to the previous hook (which
@@ -143,7 +145,12 @@ fn install_panic_hook() {
             let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
             let message = panic_message(info.payload());
             if let Ok(mut last) = LAST_PANIC.lock() {
-                *last = Some((std::thread::current().id(), message, location));
+                let me = std::thread::current().id();
+                last.retain(|(t, ..)| *t != me);
+                if last.len() == PANICS_KEPT {
+                    last.remove(0);
+                }
+                last.push((me, message, location));
             }
             previous(info);
         }));
@@ -193,10 +200,9 @@ pub unsafe extern "C" fn call<M: Module>(host: *const HostApi, entry: u32, input
             let mut location = String::new();
             let me = std::thread::current().id();
             if let Ok(mut last) = LAST_PANIC.lock() {
-                if let Some((thread, m, l)) = last.take() {
-                    if thread == me {
-                        (message, location) = (m, l);
-                    }
+                if let Some(i) = last.iter().position(|(t, ..)| *t == me) {
+                    let (_, m, l) = last.remove(i);
+                    (message, location) = (m, l);
                 }
             }
             // A payload whose drop panics would unwind out of here: keep it from dropping.

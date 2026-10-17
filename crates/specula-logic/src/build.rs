@@ -58,7 +58,8 @@ pub struct BuildReport {
     pub library: Option<PathBuf>,
     /// Cargo found nothing to rebuild.
     pub fresh: bool,
-    /// Errors first, then warnings, in Cargo's order; only the module's own package.
+    /// Errors first, then warnings, in Cargo's order: the module's own messages, plus errors in
+    /// other crates of the build (tagged with their `package`; their warnings are left out).
     pub diagnostics: Vec<Diagnostic>,
     pub fixes_applied: Vec<Applied>,
     pub stderr_tail: Vec<String>,
@@ -335,10 +336,18 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
     let mut finished = None;
     for line in &lines {
         match diag::parse_line(line, &root) {
-            Message::Diagnostic { manifest: m, diagnostic } if fix::canonical(&m) == manifest => {
+            Message::Diagnostic { manifest: m, target, mut diagnostic } => {
                 // "aborting due to..." summaries carry no information an agent needs.
                 if diagnostic.file.is_none() && diagnostic.message.starts_with("aborting due to") {
                     continue;
+                }
+                if fix::canonical(&m) != manifest {
+                    // Another crate's warnings are not the module's business; its errors are
+                    // (they stop the build: a broken SDK, a full disk).
+                    if !diagnostic.is_error() {
+                        continue;
+                    }
+                    diagnostic.package = Some(target);
                 }
                 if diagnostic.is_error() {
                     errors.push(diagnostic);

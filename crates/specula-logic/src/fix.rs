@@ -120,6 +120,7 @@ mod tests {
             notes: vec![],
             fixes,
             rendered: None,
+            package: None,
         }
     }
 

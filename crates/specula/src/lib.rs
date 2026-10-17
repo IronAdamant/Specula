@@ -1556,7 +1556,7 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
-            Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, &by),
+            Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.

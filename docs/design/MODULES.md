@@ -114,7 +114,7 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
 | `logic_unload {module, forget_state?}` | Stop and unload. |
 | `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds. |
 | `logic_input {module, actions, ticks?}` | Hold actions for N ticks (buttons true/false, axes numbers, 2D axes `[x, y]`). |
-| `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). |
+| `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). Its world changes are checked against other agents' claims, as `play_*` tools' are; a rejection rolls the world back (the module's state store keeps what the hook wrote). |
 
 Paths must lie under the engine's working directory, and modules may not have build scripts (zero-dep rule).
 
@@ -174,25 +174,32 @@ The contract between Lex (gameplay as data) and modules:
    structured error; a panicking one also disables its module.
 6. **Journal.** The hook's world changes are handed to the `journal` callback: Lex passes one that records them as
    part of its own tick (or a no-op to leave them pending for its own journaling); the `logic_hook` tool journals them
-   as the module's.
+   as the module's. The host records the call in full (`Recording::Full`, needed for the rollback) and restores the
+   caller's mode after, so call it with no snapshot-mode changes pending (take them first).
 
 Integration (after both lanes merge): the integrator connects Lex's `native` effect to `LogicHost::call_hook` with
 `caller = "lex"` and the rule's reason, and runs hooks inside Lex's tick so their changes are attributed with it.
 
-## Build times (measured 2026-10-18, this machine, windows-gnu)
+## Build times (measured 2026-10-18, this machine, windows-gnu; shared and busy, so ±30 %)
 
 | What | Time |
 |---|---|
 | ambulo edit → `cargo build` (dev, opt-level 1, debuginfo; 13.5 MB DLL) | median 628 ms |
-| same, `strip = "debuginfo"` for the module (2.1 MB DLL) | median 519 ms |
+| same, `debug = 0` + `strip = "debuginfo"` for the module (1.5–2.1 MB DLL) | median 519 ms |
 | same, opt-level 0 + strip | median 568 ms (opt-level 0 doesn't help a thin module; linking dominates) |
-| open (copy + load) of the 13.5 MB debug DLL | ~230 ms (the OS scans the new file); ~X ms stripped |
-| describe + stop + start (engine thread) | ~1.5 ms |
-| **edit → reload in a running engine** (`scripts/module_reload.py`) | **~0.95 s** (budget 2 s) |
-| ambulo tick | ~47 µs average (headless, debug engine) |
+| open (copy, map, and the OS's scan of a new library) | 100–230 ms whatever the size; on the caller's thread |
+| describe + stop + start (engine thread) | ~1–2 ms |
+| **edit → reload in a running engine** (`scripts/module_reload.py`, headless) | **1.05–1.08 s** (budget 2 s; cargo ~0.9 s of it) |
+| edit → reload in `tests/module_reload.rs` (module copy as its own workspace) | ~1.05 s |
+| ambulo tick (8 requests, controller included) | 50–100 µs average |
 
-So modules build with `strip = "debuginfo"` (workspace `Cargo.toml`, `[profile.dev.package.ambulo]`), and the
-library is opened off the engine thread, so a reload costs the window about a millisecond.
+So modules build without debug info (workspace `Cargo.toml`, `[profile.dev.package.ambulo]`; new modules add the same
+two lines), and the library is opened off the engine thread, so a reload costs the window a millisecond or two.
+
+**Engine crates at opt-level 2 in dev** (the Rust track's per-package optimisation, in the workspace `Cargo.toml`):
+clean `cargo build -p specula` 58.5 s → 61.3 s, incremental after an edit in the `specula` crate 2.40 s → 2.70 s;
+one agent's headless call rate (`scripts/call_rate.py`) `world_set` 1,289 → 1,917 calls/s, `world_spawn` 1,282 →
+1,889, `world_query` 1,234 → 1,477, `engine_info` unchanged. Game modules stay at the dev default.
 
 ## Not done yet
 
