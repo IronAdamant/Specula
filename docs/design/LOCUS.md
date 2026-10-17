@@ -120,6 +120,11 @@ write). Changes and details:
 - Errors: `unsatisfied` (with the nearest valid alternatives and hints), `no_free_spot` (some instance has no
   collision-free spot near the asked one), `no_placement`, `footprint_unknown`; argument errors name the field. The
   answer lists every relation for up to 8 instances (then only failures) and at most 48 KB of placements in detail.
+- *Review round:* `avoid {tag}` and `spacing {among}` boxes are indexed in a 4 m grid (each box visited once per
+  candidate, big ones always), at most 16,384 per tag (more is a `budget` error naming the tag, never a silent cut).
+  The solver charges candidates, box visits and probes (8 each) to a work budget of 4 M units per call (a few
+  hundred milliseconds); past it the call is a `budget` error with the work and how many instances were solved. A
+  call with more than 8 instances or a tag set is classed big whether or not it is a dry run.
 - Writes go through the swarm commit path as one `batch` journal entry (claims, conflict help, `world_undo`). Spawns
   with `count` > 1 are named `name_1`, `name_2`...
 

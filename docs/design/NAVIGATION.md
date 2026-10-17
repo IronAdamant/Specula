@@ -235,16 +235,15 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   carve a hole where it stood. When an entity starts or stops moving on its own, its subtree is looked at again.
 - Agents and minds are re-read only when their `props` change (versions change at every write-back).
 - Navmesh changes rebuild everything (a new grid) and re-link agents; edits mark the tiles their old and new bounds
-  touch (plus the erosion border); `tiles_per_tick` (default 8) of them rebuild per tick. `sources.under` matches
+  touch (plus the erosion border); they rebuild within `tiles_per_tick` default tiles of work per tick (see the
+  review round below). `sources.under` matches
   by entity id up the parent chain; when the path comes to name another entity (or none), every tile rebuilds.
 - Read tools (`nav_path`, `nav_point`, `nav_info`, `ai_status`, a `world_place` dry run) never apply world changes:
   they see navigation as of the last tick or write, so calling them can't change what the simulation does. Write
   tools (`nav_build`, `nav_agent`, `ai_set`, `world_place`) bring it up to date first, as inputs at a tick boundary.
 - Configs whose erosion border (radius + 3 columns) is wider than a tile, whose tile grid with its border is wider
   than 96 columns, or whose tiles with borders add up to more than 16 M columns, are refused (`budget`, naming the
-  field to change); settings saved with wider tiles are narrowed when read. Edits rebuild at most `tiles_per_tick`
-  tiles and about 9,216 grid columns per tick (at least one tile): a default tile is about 0.3 ms, the widest allowed
-  a few milliseconds on the reference machine's CPU class.
+  field to change); settings saved with wider tiles are narrowed when read (nav_build refuses them).
 - A mind that can't run (its definition missing, invalid or over the cap) leaves its agent standing, like a removed
   one.
 - A mind that is replaced (its definition changed or became invalid) or removed takes its goal, facing and patrol
@@ -261,7 +260,42 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   subsystem hash; `perf_frame` has a `nav` section.
 - *Limit:* hidden state (corridors, minds' running nodes, patrol indices) isn't saved in world files: a reloaded world
   rebuilds its navmeshes and restarts its minds from the root (deterministically, but not bit-identically to the run
-  that saved it). Agents below a parent get only their position written (no yaw).
+  that saved it).
+
+**Review round (coordinator, 2026-10-18).**
+- Hostile settings (cell size 0, radius 1e30, NaN, zero heights) are `invalid_value` / `budget` errors: field ranges
+  are checked before anything is derived from them, with saturating maths, in the tool and when world data is read.
+- *Amendment: building is sliced.* Work is counted in grid columns plus 16 per source triangle (big sources, over
+  256 triangles, are bucketed by tile once, so a tile reads only its own triangles). `nav_build` does about 50 ms of
+  work (80,000 units) and says `complete`, `tiles_left`; the ticks finish the rest within `tiles_per_tick` default
+  tiles of work (3,364 units, about 2 ms each; default 2), and calling `nav_build` again builds the next slice (for
+  a paused world). A navmesh that has never been complete answers `navmesh_building` with its progress (paths,
+  points, `world_place on_navmesh`), and its agents wait. New settings for a navmesh that serves are built beside it
+  and swapped in when complete (agents relink then). Navmeshes a world load (or the first look at a world) brings
+  are built in full before the first tick, so a loaded world behaves like the run that saved it.
+- Navmesh settings under `/nav` sit nowhere: region claims don't cover them (path claims on `/nav` do), like Lex
+  rule data.
+- Minds share a per-tick work budget of 4,096 (node visits, senses and inputs 1, line-of-sight raycasts 16), round
+  robin by id from the one after the last that ran (at least one runs); the tick report says `mind_work` and
+  `minds_skipped`. A mind's identical `sees` within a tick casts once. Shared definitions are parsed once per
+  version. Each mind's state hash is kept as it runs, so the per-tick nav hash costs a word per mind.
+- Senses sync the physics space before minds run, so `sees` respects walls with physics disabled.
+- `nav_info` lists problems as one short line each (a code and the first diagnostic; `ai_status` has the rest) in
+  8 KB, says `problems_not_listed`, and cuts the agent page at 32 KB (`next_cursor` continues it).
+- Agents turn about Y keeping any tilt, below a parent in its frame (exact for parents turned about Y). Editing the
+  Euler Y alone mirrored characters whose physics write-back reads (180, 180 - yaw, 180).
+- `world_undo` of `nav_agent` / `ai_set` after navigation moved the entity stays `undo_conflict`, with a hint:
+  `force: true` undoes it and puts the entity back where it stood.
+- A clump looks at at most 128 agents per grid row for neighbours and push-apart, and picks the nearest by
+  selection, not a sort (1,024 agents at one point: bounded, still deterministic).
+- Warm minds allocate nothing per tick (an allocation-counting test): running leaves compared in place, parallel and
+  utility buffers kept, the blackboard overwritten in place and hashed without formatting; the nav tick's lists are
+  reused.
+- Measured (release, this machine, reviewer probes): 1,000 minds of 150 `sees` each: nav tick 2.6-3.7 ms mean (was
+  453 ms with 290; 13 minds run per tick); a 129 x 129 heightfield: `nav_build` call 96 ms before this round's call
+  budget was lowered, ticks 4.9 ms while rebuilding (was 5.1 s in one call); `world_place` with `avoid` 4,000
+  tagged boxes: 34 ms for one instance, 140 ms for 8 (was minutes); 64 instances against 4,000: refused with
+  `budget` after about 4 M units.
 
 **AI.**
 - *Amendment: sequences are reactive by default too:* each tick a running sequence first re-checks the conditions

@@ -66,9 +66,9 @@ def check(cond, msg, failures):
     return cond
 
 
-def tool(m, name, **args):
+def tool(m, tool_name, **args):
     """(is_error, parsed or text) of a tool call, without raising on tool errors."""
-    r = m.request("tools/call", {"name": name, "arguments": args})
+    r = m.request("tools/call", {"name": tool_name, "arguments": args})
     text = next(c["text"] for c in r["content"] if c["type"] == "text")
     try:
         data = json.loads(text)
@@ -218,6 +218,13 @@ def run(m, failures, label, big):
     s = build["settings"]
     check(abs(s["agent_radius"] - 0.3) < 1e-4 and abs(s["agent_height"] - 1.8) < 1e-4 and abs(s["max_step"] - 0.3) < 1e-4,
           "nav_build like the guard: radius 0.3, height 1.8, step 0.3 (its capsule and controller)", failures)
+    # Review regressions: hostile settings are refused, never a crash or a silent narrowing.
+    for bad in [{"cell_size": 0}, {"tile_cells": 200}]:
+        err, out = tool(m, "nav_build", name="hostile", **bad)
+        check(err and isinstance(out, dict) and out.get("error") in ("invalid_value", "budget"), f"nav_build {bad} is refused ({out.get('error') if isinstance(out, dict) else out})", failures)
+    err, out = tool(m, "world_place", spawn={"shape": "cube", "name": "ghost"}, count=4, dry_run=True,
+                    relations=[{"rel": "inside", "region": {"min": [-10, -1, -10], "max": [10, 3, 10]}}, {"rel": "avoid", "tag": "no_such_tag", "distance": 1}])
+    check(not err, "world_place avoid {tag} with an empty tag set still places", failures)
     # Timing: 50 queries (before the ones the overlay should show).
     t0 = time.perf_counter()
     qms = []
@@ -238,7 +245,7 @@ def run(m, failures, label, big):
     info0 = m.json("nav_info")
     rebuilt0 = info0["navmeshes"][0]["rebuilt_tiles"]
     m.json("world_spawn", shape="cube", name="blocker", position=[0, 1, 0], scale=[0.6, 2, 2.6], color="#c03030", collider={"shape": "box"})
-    m.json("time_control", action="step", ticks=3)
+    m.json("time_control", action="step", ticks=8)  # within tiles_per_tick work: a few tiles per tick
     info1 = m.json("nav_info")
     mesh1 = info1["navmeshes"][0]
     touched = mesh1["rebuilt_tiles"] - rebuilt0

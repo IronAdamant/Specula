@@ -251,7 +251,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("bounds", t("object", "{min: [x,y,z], max: [x,y,z]} the navmesh covers")),
                     ("margin", t("number", "Metres added around the sources' bounds when bounds aren't given (default 1)")),
                     ("sources", t("object", "{colliders: true, shapes: true, kinematic: false, under: \"/level\", exclude_tags: [..]}")),
-                    ("tiles_per_tick", t("integer", "Tile rebuild work per fixed tick after edits, in default-size tiles (default 8; a tile with many triangles costs more)")),
+                    ("tiles_per_tick", t("integer", "Tile rebuild work per fixed tick after edits and while a build finishes, in default-size tiles (about 2 ms each; default 2; a tile with many triangles costs more)")),
                     ("expect_version", t("integer", "Refuse unless the navmesh entity is at this version")),
                 ],
                 &[],
@@ -687,7 +687,7 @@ impl crate::Engine {
         // Start from the current settings when rebuilding one.
         let mut settings = match existing.and_then(|id| self.world.get(id)).and_then(|e| e.props.get(nav::MESH_KEY)) {
             Some(p) => MeshSettings::from_json(p)?,
-            None => MeshSettings { config: specula_via::Config::default(), sources: Sources::default(), tiles_per_tick: 8 },
+            None => MeshSettings { config: specula_via::Config::default(), sources: Sources::default(), tiles_per_tick: nav::DEFAULT_TILES_PER_TICK },
         };
         let c = &mut settings.config;
         if let Some(like) = args.get("like").filter(|v| !v.is_null()) {

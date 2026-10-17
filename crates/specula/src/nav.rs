@@ -217,7 +217,7 @@ impl MeshSettings {
             }
         }
         let tiles_per_tick = match v.get("tiles_per_tick") {
-            None | Some(Json::Null) => 8,
+            None | Some(Json::Null) => DEFAULT_TILES_PER_TICK,
             Some(t) => match t.as_u64() {
                 Some(n) if (1..=256).contains(&n) => n as usize,
                 _ => return Err(invalid("tiles_per_tick", "'tiles_per_tick' must be 1..256")),
@@ -555,10 +555,14 @@ pub struct NextMesh {
 
 /// Sources with more triangles than this are bucketed by tile.
 const BUCKET_MIN: usize = 256;
-/// Work units (grid columns, 16 per triangle) per default-size tile: `tiles_per_tick` counts these.
-pub const TILE_WORK: u64 = 4_096;
-/// Work one nav_build call does before leaving the rest to the ticks (tens of milliseconds).
-pub const BUILD_CALL_WORK: u64 = 600_000;
+/// Work units (grid columns, 16 per triangle) of a default-size tile (48 cells and its border):
+/// `tiles_per_tick` counts these. Measured: about 1,700 units per millisecond on the
+/// development machine's CPU, so a default tile is about 2 ms.
+pub const TILE_WORK: u64 = 3_364;
+/// Default tile rebuild work per tick (about 4 ms).
+pub const DEFAULT_TILES_PER_TICK: usize = 2;
+/// Work one nav_build call does before leaving the rest to the ticks (about 50 ms).
+pub const BUILD_CALL_WORK: u64 = 80_000;
 
 /// Builds queued tiles of `mesh` in tile order, at most `budget` work units (at least one tile;
 /// `None`: all). Returns the tiles built and the work done.
