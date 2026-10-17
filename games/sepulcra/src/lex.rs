@@ -108,33 +108,46 @@ struct Bound {
     cache: Mutex<Cache>,
 }
 
-/// What the ground hook derives from the run's walls and rooting stones.
+/// What the ground hook derives from a run's walls and rooting stones. Every entry is keyed by
+/// everything it was derived from, so clones of a run stepping on several threads (lex_simulate
+/// runs continued `from` one saved run) share entries only when their states agree; each call
+/// takes everything it uses in one locked lookup.
 #[derive(Default)]
 struct Cache {
-    /// The generation, breach penalty and root radius the view below was made for.
-    key: Option<((u64, u64), i64, i64)>,
-    view: Option<View>,
-    gen: Option<(u64, u64)>,
-    /// Wall cells with their entity, by cell; and rooting stones' cells, sorted.
-    walls: Vec<(CellId, u32)>,
-    roots: Vec<CellId>,
-    fields: Option<Derived>,
-    rooted: Option<(Vec<CellId>, i64, Arc<Vec<bool>>)>,
+    /// Views by (generation, breach penalty, root radius), newest last.
+    views: Vec<(ViewKey, View)>,
+    /// Flow fields and blocked cells by (wall cells, breach penalty), newest last.
+    fields: Vec<(Vec<CellId>, i64, Arc<Fields>, Arc<Vec<bool>>)>,
+    /// Rooted cells by (rooting stones' cells, radius), newest last.
+    rooted: Vec<(Vec<CellId>, i64, Arc<Vec<bool>>)>,
 }
 
-struct Derived {
-    walls: Vec<CellId>,
-    breach: i64,
-    fields: Arc<Fields>,
-    blocked: Arc<Vec<bool>>,
+type ViewKey = ((u64, u64), i64, i64);
+
+/// Entries each list keeps (a handful of states stepping at once, a few wall layouts).
+const CACHED: usize = 16;
+
+fn remember<T>(list: &mut Vec<T>, item: T) {
+    if list.len() >= CACHED {
+        list.remove(0);
+    }
+    list.push(item);
 }
 
-/// One call's view of the derived state.
+/// One call's view of the derived state: all of it from the same state.
 #[derive(Clone)]
 struct View {
     fields: Arc<Fields>,
     blocked: Arc<Vec<bool>>,
     rooted: Arc<Vec<bool>>,
+    /// Wall cells with their entity, by cell.
+    walls: Arc<Vec<(CellId, u32)>>,
+}
+
+impl View {
+    fn wall_at(&self, cell: CellId) -> Option<u32> {
+        self.walls.binary_search_by_key(&cell, |(w, _)| *w).ok().map(|i| self.walls[i].1)
+    }
 }
 
 impl NativeHook for Hook {
@@ -172,6 +185,23 @@ fn face_index(f: Face) -> i64 {
         Face::East => 2,
         Face::South => 3,
         Face::West => 4,
+    }
+}
+
+/// Bounds on what the rules feed the hooks (attributes are data an agent may set to anything):
+/// speeds up to 1,000 km/s, ratios up to 1000x, edges up to 1 km. Past them a value is clamped
+/// (speeds, ratios) or refused as an error that names it (movement state).
+const MAX_SPEED: i64 = 1_000_000_000;
+const MAX_RATIO: i64 = 1_000_000;
+const MAX_EDGE: i64 = 1_000_000;
+const MAX_HOPS: i64 = 1_000_000;
+
+/// A movement state (`prog` of `len` mm along an edge) the hooks can trust.
+fn edge_state(me: u32, prog: i64, len: i64) -> Result<(), String> {
+    if (0..=MAX_EDGE).contains(&len) && (0..=len).contains(&prog) {
+        Ok(())
+    } else {
+        Err(format!("entity {me}'s movement state is out of range (prog {prog} of elen {len} mm; 0 <= prog <= elen <= {MAX_EDGE}): an action set it?"))
     }
 }
 
@@ -226,69 +256,63 @@ impl Bound {
         self.at.get(&p).copied()
     }
 
-    /// The flow fields, blocked cells and rooted cells for the run's current walls and stones.
-    fn view(&self, cx: &NativeCtx<'_, '_>, breach: i64, radius: i64) -> View {
+    /// The flow fields, blocked cells, rooted cells and walls for this state's walls and stones.
+    fn view(&self, cx: &mut NativeCtx<'_, '_>, breach: i64, radius: i64) -> Result<View, String> {
+        let key: ViewKey = (cx.generation(), breach, radius);
         let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        let gen = cx.generation();
-        let key = Some((gen, breach, radius));
-        if c.key == key {
-            if let Some(v) = &c.view {
-                return v.clone();
+        if let Some((_, v)) = c.views.iter().rev().find(|(k, _)| *k == key) {
+            return Ok(v.clone());
+        }
+        let (mut walls, mut roots) = (Vec::new(), Vec::new());
+        let scanned = cx.each_tagged(self.t.wall, |id, p| {
+            if let Some(cell) = self.cell_at(p) {
+                walls.push((cell, id));
             }
-        }
-        if c.gen != Some(gen) {
-            let (mut walls, mut roots) = (Vec::new(), Vec::new());
-            cx.each_tagged(self.t.wall, |id, p| {
-                if let Some(cell) = self.cell_at(p) {
-                    walls.push((cell, id));
-                }
-            });
-            cx.each_tagged(self.t.roots, |_, p| {
-                if let Some(cell) = self.cell_at(p) {
-                    roots.push(cell);
-                }
-            });
-            walls.sort();
-            roots.sort();
-            c.walls = walls;
-            c.roots = roots;
-            c.gen = Some(gen);
-        }
-        let wall_cells: Vec<CellId> = c.walls.iter().map(|(w, _)| *w).collect();
-        let stale = c.fields.as_ref().is_none_or(|d| d.walls != wall_cells || d.breach != breach);
-        if stale {
-            let mut blocked = vec![false; self.map.cells().len()];
-            for w in &wall_cells {
-                blocked[w.index()] = true;
+        }) && cx.each_tagged(self.t.roots, |_, p| {
+            if let Some(cell) = self.cell_at(p) {
+                roots.push(cell);
             }
-            let penalty = breach.clamp(0, i64::from(i32::MAX)) as i32;
-            let fields = Fields::build(&self.map, &blocked, penalty);
-            c.fields = Some(Derived { walls: wall_cells, breach, fields: Arc::new(fields), blocked: Arc::new(blocked) });
+        });
+        if !scanned {
+            return Err("work_limit: the tick's work budget ran out while finding walls".into());
         }
-        let roots_stale = c.rooted.as_ref().is_none_or(|(r, rad, _)| *r != c.roots || *rad != radius);
-        if roots_stale {
-            let mut rooted = vec![false; self.map.cells().len()];
-            let r2 = i64::from(radius.clamp(0, i64::from(i32::MAX)) as i32).pow(2);
-            for &s in &c.roots {
-                let sc = self.map.cell(s);
-                for other in self.map.cells() {
-                    if other.face == sc.face && other.kind.walkable(true) && other.pos.dist2(sc.pos) <= r2 {
-                        rooted[other.id.index()] = true;
+        walls.sort();
+        roots.sort();
+        let wall_cells: Vec<CellId> = walls.iter().map(|(w, _)| *w).collect();
+        let (fields, blocked) = match c.fields.iter().rev().find(|(w, b, _, _)| *w == wall_cells && *b == breach) {
+            Some((_, _, f, bl)) => (Arc::clone(f), Arc::clone(bl)),
+            None => {
+                let mut blocked = vec![false; self.map.cells().len()];
+                for w in &wall_cells {
+                    blocked[w.index()] = true;
+                }
+                let penalty = breach.clamp(0, i64::from(i32::MAX)) as i32;
+                let (f, b) = (Arc::new(Fields::build(&self.map, &blocked, penalty)), Arc::new(blocked));
+                remember(&mut c.fields, (wall_cells, breach, Arc::clone(&f), Arc::clone(&b)));
+                (f, b)
+            }
+        };
+        let rooted = match c.rooted.iter().rev().find(|(r, rad, _)| *r == roots && *rad == radius) {
+            Some((_, _, r)) => Arc::clone(r),
+            None => {
+                let mut rooted = vec![false; self.map.cells().len()];
+                let r2 = i64::from(radius.clamp(0, i64::from(i32::MAX)) as i32).pow(2);
+                for &s in &roots {
+                    let sc = self.map.cell(s);
+                    for other in self.map.cells() {
+                        if other.face == sc.face && other.kind.walkable(true) && other.pos.dist2(sc.pos) <= r2 {
+                            rooted[other.id.index()] = true;
+                        }
                     }
                 }
+                let r = Arc::new(rooted);
+                remember(&mut c.rooted, (roots, radius, Arc::clone(&r)));
+                r
             }
-            c.rooted = Some((c.roots.clone(), radius, Arc::new(rooted)));
-        }
-        let d = c.fields.as_ref().expect("built above");
-        let v = View { fields: Arc::clone(&d.fields), blocked: Arc::clone(&d.blocked), rooted: Arc::clone(&c.rooted.as_ref().expect("built above").2) };
-        c.key = key;
-        c.view = Some(v.clone());
-        v
-    }
-
-    fn wall_at(&self, cell: CellId) -> Option<u32> {
-        let c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        c.walls.binary_search_by_key(&cell, |(w, _)| *w).ok().map(|i| c.walls[i].1)
+        };
+        let v = View { fields, blocked, rooted, walls: Arc::new(walls) };
+        remember(&mut c.views, (key, v.clone()));
+        Ok(v)
     }
 
     fn cell_id(&self, v: i64, what: &str) -> Result<CellId, String> {
@@ -300,9 +324,13 @@ impl Bound {
     }
 
     /// Converts this tick's speed into whole millimetres, carrying the remainder (`sim.rs`).
+    /// Inputs are clamped (speed to [0, MAX_SPEED], permille to [0, MAX_RATIO], the carry to a
+    /// valid remainder), so nothing overflows.
     fn budget(speed: i64, permille: i64, carry: &mut i64, hz: u32) -> i64 {
-        let den = i64::from(hz) * 1000;
-        let num = speed.saturating_mul(permille).saturating_add(*carry);
+        let den = i64::from(hz.max(1)) * 1000;
+        let speed = speed.clamp(0, MAX_SPEED);
+        let permille = permille.clamp(0, MAX_RATIO);
+        let num = speed.saturating_mul(permille).saturating_add((*carry).clamp(0, den - 1));
         *carry = num % den;
         num / den
     }
@@ -313,7 +341,7 @@ impl Bound {
         let map = &*self.map;
         let base = |cx: &NativeCtx, attr: u16| cx.base(me, attr).ok_or_else(|| format!("entity {me} lacks an attribute sepulcra.ground needs (see games/sepulcra/src/lex.rs)"));
         let breach = cx.arg("breach").unwrap_or(0);
-        let root_slow = cx.arg("root_slow").unwrap_or(0);
+        let root_slow = cx.arg("root_slow").unwrap_or(0).clamp(0, 1000);
         let radius = cx.arg("root_radius").unwrap_or(0);
         let missing = || format!("entity {me} lacks an attribute sepulcra.ground needs (see games/sepulcra/src/lex.rs)");
         let [mut from, mut to, mut prog, mut len, leap0, mut carry, mut stuck] = cx.base_many(me, [a.c_from, a.c_to, a.prog, a.elen, a.leap, a.carry, a.stuck]).ok_or_else(missing)?;
@@ -323,21 +351,23 @@ impl Bound {
             let start = if from >= 0 { self.cell_id(from, "c_from")? } else { self.cell_at(cx.position(me).unwrap_or_default()).ok_or_else(|| format!("entity {me} spawned off the slab's cells"))? };
             (from, to, prog, len, leap) = (i64::from(start.0), i64::from(start.0), 0, 0, true);
         }
+        edge_state(me, prog, len)?;
+        let mut stuck_ticks = stuck.max(0);
         let mut from_c = self.cell_id(from, "c_from")?;
         let mut to_c = self.cell_id(to, "c_to")?;
         let class = if cx.has(me, self.t.climber) { Class::Climber } else { Class::Walker };
         let jumper = cx.has(me, self.t.leaper);
-        let mut v = self.view(cx, breach, radius);
+        let mut v = self.view(cx, breach, radius)?;
         // Speed: slows (speed_scale, with effects), then roots on the cell it is nearer to, then
-        // climbing.
-        let mut f = cx.get(me, a.speed_scale).unwrap_or(1000);
+        // climbing. Each factor is clamped, so the products stay far inside i64.
+        let mut f = cx.get(me, a.speed_scale).unwrap_or(1000).clamp(0, MAX_RATIO);
         let near = if prog * 2 < len { from_c } else { to_c };
         if v.rooted[near.index()] {
             f = f * (1000 - root_slow) / 1000;
         }
         let climbing = map.cell(from_c).kind.is_climb() || map.cell(to_c).kind.is_climb();
         if climbing {
-            f = f * base(cx, a.climb_speed)? / 1000;
+            f = f * base(cx, a.climb_speed)?.clamp(0, MAX_RATIO) / 1000;
         }
         let speed = cx.get(me, a.speed).unwrap_or(0);
         let mut left = Self::budget(speed, f, &mut carry, cx.tick_hz());
@@ -371,7 +401,7 @@ impl Bound {
             }
             let route = v.fields.route(map, class, jumper, &v.blocked, at);
             if route != Route::Stuck {
-                stuck = 0;
+                stuck_ticks = 0;
             }
             match route {
                 Route::Step(n) => {
@@ -385,12 +415,12 @@ impl Bound {
                     (from_c, to_c, prog, len, leap) = (at, at, 0, 0, true);
                     carry = 0;
                     // Per second in the rules, per tick here, truncated like content.rs does.
-                    let dmg = base(cx, a.wall_dps)? / i64::from(cx.tick_hz().max(1));
-                    if let Some(wall) = self.wall_at(w) {
+                    let dmg = base(cx, a.wall_dps)?.max(0) / i64::from(cx.tick_hz().max(1));
+                    if let Some(wall) = v.wall_at(w) {
                         let hp = cx.base(wall, a.hp).ok_or_else(|| format!("wall entity {wall} has no hp"))?;
-                        cx.set(wall, a.hp, hp - dmg)?;
+                        cx.set(wall, a.hp, hp.saturating_sub(dmg))?;
                         // A broken wall reopens routes for everyone after this enemy, and for it.
-                        v = self.view(cx, breach, radius);
+                        v = self.view(cx, breach, radius)?;
                     }
                     break;
                 }
@@ -400,15 +430,17 @@ impl Bound {
                 Route::Stuck => {
                     (from_c, to_c, prog, len, leap) = (at, at, 0, 0, true);
                     carry = 0;
-                    stuck += 1;
-                    if stuck >= i64::from(STRANDED_TICKS) {
+                    stuck_ticks = stuck_ticks.saturating_add(1);
+                    if stuck_ticks >= i64::from(STRANDED_TICKS) {
                         end = Some("stranded");
                     }
                     break;
                 }
             }
         }
+        stuck = stuck_ticks;
         // Where it stands now, and how far it still has to go ("first" targeting sorts by it).
+        // prog and len are within [0, MAX_EDGE] here (validated, or a slab edge).
         let p = Pos::lerp(map.cell(from_c).pos, map.cell(to_c).pos, prog as i32, len as i32);
         let rest = v.fields.remaining(class, jumper, to_c);
         let remaining = if rest == UNREACHABLE { UNREACHABLE } else { rest.saturating_add((len - prog) as i32) };
@@ -446,7 +478,7 @@ impl Bound {
         let mut best: Option<CellId> = None;
         for &p in self.map.jump_partners(at) {
             let d = open[p.index()];
-            if v.blocked[p.index()] || d == UNREACHABLE || i64::from(d) > i64::from(here) + detour {
+            if v.blocked[p.index()] || d == UNREACHABLE || i64::from(d) > i64::from(here).saturating_add(detour) {
                 continue;
             }
             if best.is_none_or(|b| d < open[b.index()]) {
@@ -475,18 +507,20 @@ impl Bound {
         let air = &self.map.air;
         let n = air.ring.len() as i64;
         let missing = || format!("entity {me} lacks an attribute sepulcra.air needs (see games/sepulcra/src/lex.rs)");
-        let [mut ring, dir, mut hops, diving0, mut prog, mut len, mut carry] = cx.base_many(me, [a.ring, a.dir, a.hops, a.diving, a.prog, a.elen, a.carry]).ok_or_else(missing)?;
+        let [mut ring, dir, hops0, diving0, mut prog, mut len, mut carry] = cx.base_many(me, [a.ring, a.dir, a.hops, a.diving, a.prog, a.elen, a.carry]).ok_or_else(missing)?;
         let mut diving = diving0 != 0;
         let dir = if dir < 0 { -1 } else { 1 };
+        let mut hops = hops0.clamp(0, MAX_HOPS);
         if ring < 0 {
             let here = cx.position(me).unwrap_or_default();
             let start = air.ring.iter().position(|p| p3(*p) == here).ok_or_else(|| format!("flyer {me} must spawn on a ring point (an air entry site)"))?;
-            let (r, h, d, l) = self.air_leg(start, dir, hops.max(0));
+            let (r, h, d, l) = self.air_leg(start, dir, hops);
             (ring, hops, diving, prog, len) = (r as i64, h, d, 0, l);
         }
         if !(0..n).contains(&ring) {
             return Err(format!("ring {ring} is not a ring point"));
         }
+        edge_state(me, prog, len)?;
         let f = cx.get(me, a.speed_scale).unwrap_or(1000);
         let speed = cx.get(me, a.speed).unwrap_or(0);
         let mut left = Self::budget(speed, f, &mut carry, cx.tick_hz());
@@ -512,7 +546,7 @@ impl Bound {
         let from = if diving { air.ring[ring as usize] } else { air.ring[(ring - dir).rem_euclid(n) as usize] };
         let p = Pos::lerp(from, to, prog as i32, len as i32);
         let seg = i64::from(air.ring[0].dist(air.ring[1]));
-        let remaining = (len - prog) + hops * seg + if diving { 0 } else { i64::from(air.ring_half) };
+        let remaining = (len - prog).saturating_add(hops.saturating_mul(seg)).saturating_add(if diving { 0 } else { i64::from(air.ring_half) });
         cx.set_many(me, &[(a.ring, ring), (a.hops, hops), (a.diving, i64::from(diving)), (a.prog, prog), (a.elen, len), (a.carry, carry), (a.face, -1)])?;
         cx.set_pos(me, p3(p))?;
         cx.set_path_remaining(me, remaining)?;
@@ -531,18 +565,18 @@ impl Bound {
         let c = self.map.cell(cell);
         let far = i64::from(i32::MAX);
         let rim = |other: Face| self.map.rim_distance(c.pos, c.face, other).map_or(far, i64::from);
-        for (attr, val) in [
-            (a.cell, i64::from(cell.0)),
-            (a.face, face_index(c.face)),
-            (a.rim_n, rim(Face::North)),
-            (a.rim_e, rim(Face::East)),
-            (a.rim_s, rim(Face::South)),
-            (a.rim_w, rim(Face::West)),
-            (a.rim_top, rim(Face::Top)),
-        ] {
-            cx.set(me, attr, val)?;
-        }
-        Ok(())
+        cx.set_many(
+            me,
+            &[
+                (a.cell, i64::from(cell.0)),
+                (a.face, face_index(c.face)),
+                (a.rim_n, rim(Face::North)),
+                (a.rim_e, rim(Face::East)),
+                (a.rim_s, rim(Face::South)),
+                (a.rim_w, rim(Face::West)),
+                (a.rim_top, rim(Face::Top)),
+            ],
+        )
     }
 
     /// Refuses a wall on a cell a ground enemy stands on or is stepping into.
@@ -552,11 +586,11 @@ impl Bound {
         };
         let cell = self.cell_at([x, y, z]).ok_or("the site is not a cell of the slab")?;
         let a = &self.a;
-        let mut blocker = None;
-        cx.each_tagged(self.t.ground, |id, p| {
-            if blocker.is_some() {
-                return;
-            }
+        let mut ground = Vec::new();
+        if !cx.each_tagged(self.t.ground, |id, p| ground.push((id, p))) {
+            return Err("work_limit: the work budget ran out while looking for enemies".into());
+        }
+        let blocker = ground.into_iter().find_map(|(id, p)| {
             let (from, to) = (cx_base(cx, id, a.c_from), cx_base(cx, id, a.c_to));
             let (from, to) = if to < 0 {
                 let c = if from >= 0 { from } else { self.cell_at(p).map_or(-1, |c| i64::from(c.0)) };
@@ -564,9 +598,7 @@ impl Bound {
             } else {
                 (from, to)
             };
-            if from == i64::from(cell.0) || to == i64::from(cell.0) {
-                blocker = Some(id);
-            }
+            (from == i64::from(cell.0) || to == i64::from(cell.0)).then_some(id)
         });
         match blocker {
             Some(id) => Err(cx.refuse("enemy_in_the_way", format!("enemy {id} stands on or is stepping into {}", self.map.cell_name(cell)))),
@@ -574,7 +606,6 @@ impl Bound {
         }
     }
 }
-
 fn cx_base(cx: &NativeCtx<'_, '_>, id: u32, attr: u16) -> i64 {
     cx.base(id, attr).unwrap_or(-1)
 }

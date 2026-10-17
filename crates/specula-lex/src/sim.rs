@@ -253,7 +253,30 @@ pub trait NativeHook: Send + Sync {
 /// engine's live Lex calls module hooks through this). Called synchronously, in rule order.
 /// The host can't touch the run's state: its effects live outside the rules (the world).
 pub trait NativeHost {
-    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: &[(String, i64)], tick: u32) -> Result<(), String>;
+    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: NativeArgs<'_>, tick: u32) -> Result<(), String>;
+}
+
+/// A native call's args, as evaluated for that call (no allocation per call).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeArgs<'a> {
+    names: &'a [(String, Ex)],
+    vals: &'a [i64],
+}
+
+impl<'a> NativeArgs<'a> {
+    pub fn len(&self) -> usize {
+        self.vals.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vals.is_empty()
+    }
+
+    /// (name, value) in declaration order.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, i64)> + 'a {
+        let (names, vals) = (self.names, self.vals);
+        names.iter().zip(vals).map(|((k, _), v)| (k.as_str(), *v))
+    }
 }
 
 /// Hook name → implementation.
@@ -302,6 +325,9 @@ pub struct State {
     /// effect (so whenever which entities have which tags can change). Not hashed: natives key
     /// what they derive from tag scans on ([`NativeCtx::generation`]).
     gen: u64,
+    /// The earliest tick an effect that grants tags runs out (`u32::MAX`: none): has_tag stops
+    /// seeing its tags from then, so the generation moves then too.
+    tag_expiry: u32,
     /// A fresh id for every state value, clones included, so two runs (or a run and its
     /// rollback snapshot) never share a generation key.
     instance: Instance,
@@ -420,6 +446,7 @@ impl Sim {
             interrupted: false,
             dispatched: 0,
             gen: 0,
+            tag_expiry: u32::MAX,
             instance: Instance::fresh(),
         };
         Ok(Sim { rules, natives: bound, st, deadline: None, order: Vec::new(), order_key: None })
@@ -495,6 +522,21 @@ impl Sim {
 
     /// Resets the per-tick event list, dispatch count and work budget.
     fn begin(&mut self) {
+        // Granted tags that ran out stop counting this tick: natives' tag caches must see it.
+        let st = &mut self.st;
+        if st.tick >= st.tag_expiry {
+            st.bump();
+            let r = &self.rules;
+            let tick = st.tick;
+            st.tag_expiry = st
+                .ents
+                .iter()
+                .flat_map(|e| e.effects.iter())
+                .filter(|a| a.expires > tick && !r.effects[usize::from(a.effect)].grant_tags.is_empty())
+                .map(|a| a.expires)
+                .min()
+                .unwrap_or(u32::MAX);
+        }
         self.st.events.clear();
         self.st.dispatched = 0;
         self.st.dropped = 0;
@@ -2184,6 +2226,11 @@ impl Core<'_> {
         };
         if applied {
             self.st.mark();
+            if !def.grant_tags.is_empty() {
+                // Its tags stop counting at expiry: see State::tag_expiry. (A strongest
+                // instance may last longer; an extra bump then only costs a cache miss.)
+                self.st.tag_expiry = self.st.tag_expiry.min(expires);
+            }
             self.emit(ev::EFFECT_APPLIED, Some(target), source, magnitude);
             self.actions(&def.on_apply, &f)?;
             if let Some(i) = idx_of(self.st, target) {
@@ -2263,13 +2310,16 @@ impl Core<'_> {
         }
         let vals = &vals[..args.len().min(crate::compile::MAX_NATIVE_ARGS)];
         self.st.native_calls[usize::from(hook)] += 1;
+        // A call costs work like an action (a hook's own scans are charged as it makes them).
+        if self.spend(1 + vals.len()) {
+            return Err(rt("work_limit", "the tick's work budget is spent; the native call was skipped"));
+        }
         let Some(h) = self.natives.get(usize::from(hook)).and_then(|h| h.clone()) else {
             let def = &self.r.natives[usize::from(hook)];
             let Some(host) = self.host.as_deref_mut() else {
                 return Err(rt("native_unbound", format!("native hook '{}' is not provided", def.hook)));
             };
-            let named: Vec<(String, i64)> = args.iter().zip(vals).map(|((k, _), v)| (k.clone(), *v)).collect();
-            return host.call(def, f.me, &named, self.st.tick).map_err(|m| rt("native_failed", m));
+            return host.call(def, f.me, NativeArgs { names: args, vals }, self.st.tick).map_err(|m| rt("native_failed", m));
         };
         let in_command = self.in_command;
         let mut cx = NativeCtx { core: self, entity: f.me, names: args, vals, on };
@@ -2765,12 +2815,18 @@ impl NativeCtx<'_, '_> {
     }
 
     /// Calls `f(id, position)` for every live entity with the tag, in id order (no allocation).
-    pub fn each_tagged(&self, tag: u16, mut f: impl FnMut(u32, P3)) {
+    /// The scan is charged to the tick's work budget (one unit per entity); `false` when the
+    /// budget ran out first (the scan stopped: treat the result as incomplete).
+    pub fn each_tagged(&mut self, tag: u16, mut f: impl FnMut(u32, P3)) -> bool {
+        if self.core.spend(self.core.st.ents.len()) {
+            return false;
+        }
         for e in &self.core.st.ents {
             if e.alive && has_tag(self.core.r, self.core.st, e, tag) {
                 f(e.id, e.pos);
             }
         }
+        true
     }
 
     /// Uniform in `lo..=hi` from a stream by id (declared in the native's `streams`).

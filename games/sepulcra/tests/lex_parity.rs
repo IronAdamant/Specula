@@ -555,6 +555,104 @@ fn bench_full_game_lex_against_rust() {
     );
 }
 
+/// Review repro (race.rs): clones of one run stepping on two threads share their bound hooks;
+/// what the hooks cache must never leak from one clone's state into the other's.
+#[test]
+fn clones_stepping_on_threads_agree_with_sequential_runs() {
+    let (c, rules) = (full::content(), full::rules());
+    let seed = 2;
+    let layout = |n: &str| full::LAYOUTS.iter().find(|(x, _)| *x == n).unwrap().1;
+    let (ja, _, _) = full::journal(&c, layout("full_block"), seed);
+    let (jb, _, _) = full::journal(&c, layout("centre"), seed);
+    let play = |mut l: specula_lex::Sim, j: &[(u32, Command)]| {
+        let mut k = 0;
+        while l.outcome().is_none() && l.tick() < 40_000 {
+            let mut now = Vec::new();
+            while k < j.len() && j[k].0 <= l.tick() {
+                if let Ok(x) = sepulcra::lex::command_call(&l, &c, &j[k].1) {
+                    now.push(x);
+                }
+                k += 1;
+            }
+            l.step(&now);
+        }
+        (l.tick(), l.hash())
+    };
+    let base = sepulcra::lex::sim(rules, seed).unwrap();
+    let (ra, rb) = (play(base.clone(), &ja), play(base.clone(), &jb));
+    let proof = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lex").join("proof.json")).unwrap();
+    assert!(proof.contains(&format!("{:016x}", ra.1)), "the sequential full block run is proof.json's");
+    for trial in 0..3 {
+        let (a, b) = (base.clone(), base.clone());
+        let (x, y) = std::thread::scope(|s| {
+            let h1 = s.spawn(|| play(a, &ja));
+            let h2 = s.spawn(|| play(b, &jb));
+            (h1.join().unwrap(), h2.join().unwrap())
+        });
+        assert_eq!((x, y), (ra, rb), "trial {trial}: concurrent clones diverged from the sequential runs");
+    }
+}
+
+/// Review repro (targeted.rs): attribute values an agent may write (huge ratios, speeds, chances,
+/// cells) never panic the hooks (an engine's main thread runs them in live runs); a bad state is a
+/// run-time diagnostic.
+#[test]
+fn extreme_attribute_values_never_panic_the_hooks() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("shambler", "climb_speed", "\"1000000000000000%\""),
+        ("shambler", "climb_speed", "\"9000000000000%\""),
+        ("enemy", "speed_scale", "\"9000000000000%\""),
+        ("wraith", "circle_max", "9000000000000000"),
+        ("wraith", "circle_min", "9000000000000000"),
+        ("wraith", "speed", "\"1000000000000m/s\""),
+        ("shambler", "speed", "\"1000000000000m/s\""),
+        ("runner", "jump_chance", "\"1000000000000%\""),
+        ("runner", "jump_detour", "\"9000000000000m\""),
+        ("enemy", "c_from", "9000000000000000"),
+        ("enemy", "prog", "\"-5m\""),
+        ("enemy", "elen", "\"9000000000m\""),
+        ("enemy", "carry", "-9000000000000000"),
+        ("shambler", "wall_dps", "\"9000000000000pt\""),
+        ("wraith", "dir", "-9000000000000000"),
+        ("wraith", "hops", "-9000000000000000"),
+    ];
+    let base = sepulcra::lex::document().unwrap();
+    for (item, attr, v) in cases {
+        let mut doc = base.clone();
+        let it = doc.items.get_mut(*item).unwrap();
+        let mut attrs = it.get("attributes").cloned().unwrap_or(Json::Obj(vec![]));
+        attrs.set(*attr, Json::parse(v).unwrap());
+        it.set("attributes", attrs);
+        let opts = Options { overrides: vec![("start_dust".into(), Json::from(100_000))], ..Default::default() };
+        let Ok(compiled) = compile(&doc, &opts) else { continue };
+        let rules = Arc::new(compiled.rules);
+        let mut sim = Sim::new(rules.clone(), 3, &sepulcra::lex::natives()).unwrap();
+        let spots: Vec<String> = rules.sites.iter().filter(|s| rules.site_groups[usize::from(s.group)] == "build_spots").map(|s| s.name.clone()).collect();
+        let stones = ["warding_1", "rune_pillar_1", "brazier_1", "sky_obelisk_1"];
+        for (i, s) in spots.iter().enumerate().take(40) {
+            if let Ok(c) = sim.parse_command("place", &Json::obj([("site", Json::from(s.as_str())), ("stone", Json::from(stones[i % 4]))])) {
+                let _ = sim.apply(&c);
+            }
+            if let Ok(c) = sim.parse_command("upgrade", &Json::obj([("stone", Json::from(s.as_str()))])) {
+                let _ = sim.apply(&c);
+            }
+        }
+        for _ in 0..6000 {
+            let mut cmds = vec![];
+            if sim.tick() % 300 == 0 {
+                if let Ok(c) = sim.parse_command("call_wave", &Json::Obj(vec![])) {
+                    cmds.push(c);
+                }
+            }
+            sim.step(&cmds);
+            if sim.outcome().is_some() {
+                break;
+            }
+        }
+        eprintln!("{item}.{attr} = {v}: tick {} outcome {:?} diagnostics {:?}", sim.tick(), sim.outcome(), sim.state().diag.counts);
+    }
+}
+
 /// `lex/proof.json`: whole games as Lex commands with the hashes and outcomes Lex reaches, for
 /// `scripts/sepulcra_lex_tools.py` (which rebuilds the rule set through the lex_* tools and
 /// simulates these). Rewrite with `LEX_WRITE_PROOF=1`.
