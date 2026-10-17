@@ -23,6 +23,7 @@ use crate::world::{self, check_num, check_point, vec3_json, validate_tag, WorldE
 
 pub mod joints;
 pub mod mover;
+pub mod ragdoll;
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -1026,6 +1027,8 @@ pub struct Physics {
     pub tick_ms: VecDeque<f64>,
     /// The world's settings reached the space once (later changes wake sleeping bodies).
     settings_applied: bool,
+    /// Ragdolls (A4; see [`ragdoll`]).
+    pub ragdolls: ragdoll::Ragdolls,
 }
 
 impl Default for Physics {
@@ -1048,6 +1051,7 @@ impl Default for Physics {
             errors: VecDeque::new(),
             tick_ms: VecDeque::new(),
             settings_applied: false,
+            ragdolls: ragdoll::Ragdolls::default(),
         }
     }
 }
@@ -1296,6 +1300,8 @@ impl Physics {
                 d.lock_angular = body.lock_rotation;
                 d.sleeping = body.sleeping && body.kind == BodyKind::Dynamic;
                 d.ccd = body.ccd;
+                // An entity with a ragdoll doesn't collide with its own parts.
+                d.group = self.ragdolls.group_of(id);
                 if body.character.is_some() {
                     // A character moves by its controller, not by its velocity.
                     d.velocity = Vec3::ZERO;
@@ -1338,10 +1344,12 @@ impl Physics {
                             // Joints: the entity's own, and those on it as a body.
                             self.upsert_joint(world, e);
                             self.refresh_joints_of(world, id);
+                            self.note_ragdoll(Some(e), id);
                         }
                         None => {
                             self.forget(id);
                             self.forget_joint(id);
+                            self.note_ragdoll(None, id);
                         }
                     }
                 }
@@ -1358,10 +1366,14 @@ impl Physics {
                     }
                 }
                 // Joints after every body (their frames take the bodies' scales).
+                self.ragdolls.persistent.clear();
                 for e in world.persistent_entities() {
                     if joints::is_joint(e) {
                         live_joints.insert(e.id);
                         self.upsert_joint(world, e);
+                    }
+                    if e.props.get(ragdoll::PROP).is_some() {
+                        self.ragdolls.persistent.insert(e.id);
                     }
                 }
                 self.drop_stale_joints(&live_joints);
@@ -1489,6 +1501,7 @@ impl Physics {
         }
         self.settings_applied = true;
         self.sync(world, generation);
+        self.ragdolls_before_step(world, tick, dt);
         if self.space.is_empty() {
             // Report the empty state's hash once (world_hash must not show a stale one).
             let empty = self.space.hash();
@@ -1504,6 +1517,7 @@ impl Physics {
         self.move_characters(world, dt);
         let report = self.space.step(dt).clone();
         self.write_back(world);
+        self.ragdolls_after_step(world);
         // Physics' own writes are known: skip them in the change log next sync.
         self.synced = Some((generation, world.draw_epoch()));
         for ev in &report.events {

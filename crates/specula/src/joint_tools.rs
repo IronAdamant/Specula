@@ -592,7 +592,7 @@ const AXIS: [f32; 4] = [1.0, 0.95, 0.4, 1.0];
 /// coloured by how the joint holds. Returns the packet's details.
 pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &ov::Spec) -> Json {
     let space = &physics.space;
-    let selected = |k: u64| spec.entities.is_empty() || spec.selects(&world.path_of(k));
+    let selected = |k: u64| spec.entities.is_empty() || spec.selects(&world.path_of(crate::physics::ragdoll::owner_of(k)));
     let (mut drawn, mut omitted) = (0usize, 0usize);
     let mut counts = [0usize; 4];
     let mut worst = 0.0f32;

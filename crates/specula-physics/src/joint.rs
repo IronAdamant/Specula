@@ -103,6 +103,9 @@ pub struct JointDesc {
     pub spring_damping: f32,
     pub rest_length: f32,
     pub motor: Option<Motor>,
+    /// Hinge and ball joints: friction torque (N·m) resisting turning (a ragdoll's joints lose
+    /// energy like real ones, so it comes to rest).
+    pub friction: f32,
     /// The two bodies still collide with each other (default: they don't).
     pub collide_connected: bool,
 }
@@ -122,6 +125,7 @@ impl JointDesc {
             spring_damping: 0.0,
             rest_length: 0.0,
             motor: None,
+            friction: 0.0,
             collide_connected: false,
         }
     }
@@ -170,11 +174,13 @@ pub struct JointImpulses {
     pub motor: Vec3,
     /// Distance: the rod or spring row.
     pub spring: f32,
+    /// Joint friction (world angular impulse).
+    pub friction: Vec3,
 }
 
 impl JointImpulses {
     pub(crate) fn hash_into(&self, h: &mut specula_core::hash::StableHasher) {
-        for v in [self.linear, self.angular, self.motor] {
+        for v in [self.linear, self.angular, self.motor, self.friction] {
             h.write_f32(v.x);
             h.write_f32(v.y);
             h.write_f32(v.z);
@@ -453,6 +459,7 @@ pub fn warm_start(joints: &[JointConstraint], bodies: &mut [SolverBody]) {
             JointKind::Fixed | JointKind::Hinge | JointKind::Ball => {
                 apply_linear(imp.linear, g.ra, g.rb, &mut a, &mut b);
                 apply_angular(imp.angular, &mut a, &mut b);
+                apply_angular(imp.friction, &mut a, &mut b);
                 let (xb, _, _) = axes(g.qb);
                 let axis = if j.desc.kind == JointKind::Ball { normalize_or(xa + xb, xa) } else { xa };
                 apply_angular(axis * (imp.lower - imp.upper), &mut a, &mut b);
@@ -494,6 +501,7 @@ pub fn solve(joints: &mut [JointConstraint], bodies: &mut [SolverBody], h: f32, 
         let spring = j.spring;
         let motor = j.desc.motor;
         let max_motor = motor.map_or(0.0, |m| m.max_force * h);
+        let max_friction = j.desc.friction * h;
         let imp = &mut j.imp;
         match j.desc.kind {
             JointKind::Fixed => {
@@ -507,6 +515,11 @@ pub fn solve(joints: &mut [JointConstraint], bodies: &mut [SolverBody], h: f32, 
             JointKind::Hinge => {
                 let angle = hinge_angle(xa, ya, yb);
                 let row = angular_row(xa, &a, &b);
+                if max_friction > 0.0 {
+                    let mut acc = imp.friction.dot(xa);
+                    motor_row(&row, (Some(0.0), 0.0), &mut acc, &mut a, &mut b, &spring, max_friction);
+                    imp.friction = xa * acc;
+                }
                 if let Some(m) = motor {
                     let drive = match m.drive {
                         Drive::Speed(s) => (Some(s), 0.0),
@@ -532,6 +545,14 @@ pub fn solve(joints: &mut [JointConstraint], bodies: &mut [SolverBody], h: f32, 
                 solve_point(&g, &mut imp.linear, &mut a, &mut b, &soft, use_bias);
             }
             JointKind::Ball => {
+                if max_friction > 0.0 {
+                    // Friction: towards no relative turning, at most `friction` N·m.
+                    let k = invert(a.inv_inertia.add(&b.inv_inertia));
+                    let l = -k.mul_vec(b.w - a.w);
+                    let new = clamp_len(imp.friction + l, max_friction);
+                    apply_angular(new - imp.friction, &mut a, &mut b);
+                    imp.friction = new;
+                }
                 if let Some(Motor { drive: Drive::Rotation(t), .. }) = motor {
                     // A spring towards the target rotation, as strong as the motor allows.
                     let k = invert(a.inv_inertia.add(&b.inv_inertia));
@@ -715,6 +736,9 @@ pub fn validate(desc: &JointDesc) -> Result<(), crate::PhysicsError> {
         if !(desc.spring_hertz.is_finite() && desc.spring_hertz >= 0.0 && desc.spring_damping.is_finite() && desc.spring_damping >= 0.0 && desc.rest_length.is_finite()) {
             return bad("spring", "spring hertz and damping must be >= 0");
         }
+    }
+    if !(desc.friction.is_finite() && desc.friction >= 0.0) {
+        return bad("friction", "joint friction must be a finite torque >= 0 (N·m)");
     }
     if let Some(m) = desc.motor {
         if !(m.max_force.is_finite() && m.max_force >= 0.0 && m.hertz.is_finite() && m.hertz >= 0.0 && m.damping_ratio.is_finite() && m.damping_ratio >= 0.0) {

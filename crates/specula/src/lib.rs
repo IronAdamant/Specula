@@ -37,6 +37,7 @@ pub mod rollup;
 pub mod physics;
 mod physics_tools;
 mod joint_tools;
+mod ragdoll_tools;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -1199,6 +1200,7 @@ impl Engine {
     ) -> (LodStats, Vec<String>) {
         let errors = self.sync_meshes();
         self.models.begin_frame(time_s);
+        self.models.set_externals(&self.world);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         // The window's cache remembers each model's level itself (hysteresis); captures choose
         // afresh (reproducible).

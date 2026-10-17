@@ -254,10 +254,16 @@ fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
     [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)]
 }
 
-/// Marks a slab piece as ground: creatures' feet stand on its top (the anim graphs' feet IK).
+/// Marks a slab piece as ground: creatures' feet stand on its top (the anim graphs' feet IK) and
+/// the dead fall onto it (a static box collider: ragdolls land on it).
 fn ground(world: &mut World, agent: &str, id: u64) {
     if id != 0 {
-        ents::update(world, agent, id, specula::world::UpdateSpec { add_tags: vec![specula::anim::GROUND_TAG.into()], ..Default::default() });
+        let change = specula::world::UpdateSpec {
+            add_tags: vec![specula::anim::GROUND_TAG.into()],
+            collider: Some(Some(specula::world::Collider::default())),
+            ..Default::default()
+        };
+        ents::update(world, agent, id, change);
     }
 }
 

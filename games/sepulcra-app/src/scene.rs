@@ -588,12 +588,15 @@ impl Scene {
                     let [x, y, z] = pos.to_f32();
                     let big = if content.enemy(kind).id == "colossus" { 4.0 } else { 1.0 };
                     self.flash(world, now, Vec3::new(x, y + 0.9 * big, z), 0.2 * big, 1.1 * big, 0.35, GRAVE_GLOW, 1.0, Some(0.25));
-                    // The body plays its death where it fell, then goes.
+                    // The body plays its death where it fell (or falls as a ragdoll), then goes.
                     if let Some(mut m) = self.enemies.remove(&enemy) {
                         let pace = self.pace.max(1.0);
                         tell(world, &self.agent, &mut m, Act::Death, 0.0, false, pace);
                         ents::place(world, &self.agent, m.id, Some(m.cur), Some(m.rot), None);
                         ents::update(world, &self.agent, m.id, UpdateSpec { add_tags: vec!["dead".into()], ..UpdateSpec::default() });
+                        if m.creature.ragdoll {
+                            ragdoll_death(world, &self.agent, &m, pace);
+                        }
                         self.corpses.push(Corpse { id: m.id, until: now + m.creature.death_s / pace + LINGER_S });
                     }
                 }
@@ -835,6 +838,25 @@ fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: 
     m.act = act;
     m.speed = speed;
     tell_id(world, agent, m.id, graph_params(act, speed, hit), pace);
+}
+
+/// A ragdoll death (A4): the body goes limp and is knocked back, away from where it faced (the
+/// stones are ahead of it), with a little lift; its graph blends into the physics pose. The
+/// corpse is transient, so its ragdoll is cosmetic: it lands on the slab's colliders and never
+/// touches the simulation.
+fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
+    let yaw = m.rot.y.to_radians();
+    let back = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    // N·s on the chest: about 2.5 m/s on it, enough to topple the body backwards.
+    let knock = back * 26.0 + Vec3::new(0.0, 6.0, 0.0);
+    let ragdoll = Json::obj([
+        ("mode", Json::from("limp")),
+        ("hit", Json::obj([("bone", Json::from("chest")), ("impulse", Json::arr([knock.x, knock.y, knock.z].map(Json::from))), ("seq", Json::from(1))])),
+    ]);
+    ents::update(world, agent, m.id, UpdateSpec { props: Some(Json::obj([("ragdoll", ragdoll)])), ..UpdateSpec::default() });
+    let mut play = graph_params(Act::Death, 0.0, false);
+    play.set_param("ragdoll", Value::Bool(true));
+    tell_id(world, agent, m.id, play, pace);
 }
 
 fn tell_id(world: &mut World, agent: &str, id: u64, play: GraphPlay, pace: f32) {

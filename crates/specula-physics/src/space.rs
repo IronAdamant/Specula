@@ -878,6 +878,29 @@ impl Space {
         }
     }
 
+    /// Puts a body in collision group `group` (0: none): it stops colliding with that group's
+    /// bodies (their pairs go) and may collide again with its old group's.
+    pub fn set_group(&mut self, key: u64, group: u64) {
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
+        if self.slot(s).desc.group == group {
+            return;
+        }
+        self.slot_mut(s).desc.group = group;
+        if group != 0 {
+            for k in self.pairs_of(key) {
+                let other = if k.0 == key { k.1 } else { k.0 };
+                if self.get(other).is_some_and(|o| o.desc.group == group) {
+                    self.drop_contact(k);
+                }
+            }
+        }
+        self.wake_slot(s);
+        self.moved.insert(key);
+        self.inactive_cache.set(None);
+    }
+
     pub fn set_velocity(&mut self, key: u64, v: Vec3, w: Vec3) {
         let Some(&s) = self.by_key.get(&key) else {
             return;
@@ -2707,6 +2730,7 @@ fn desc_hash(d: &JointDesc) -> u64 {
             [m.max_force, m.hertz, m.damping_ratio].iter().for_each(|v| h.write_f32(*v));
         }
     }
+    h.write_f32(d.friction);
     h.write_bool(d.collide_connected);
     h.finish()
 }

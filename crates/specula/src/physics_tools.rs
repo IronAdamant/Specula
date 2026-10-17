@@ -95,6 +95,8 @@ pub enum PhysicsCall {
     Impulse { entity: EntityKey, impulse: Vec3, at: Option<Vec3>, angular: Vec3 },
     /// `physics_joint` / `physics_joints` (see [`crate::joint_tools`]).
     Joint(crate::joint_tools::JointCall),
+    /// `ragdoll_set` / `ragdoll_info` (see [`crate::ragdoll_tools`]).
+    Ragdoll(crate::ragdoll_tools::RagdollCall),
 }
 
 impl PhysicsCall {
@@ -103,6 +105,7 @@ impl PhysicsCall {
         match self {
             PhysicsCall::Impulse { .. } => Class::Edit,
             PhysicsCall::Joint(j) if !j.is_read() => Class::Edit,
+            PhysicsCall::Ragdoll(r) if !r.is_read() => Class::Edit,
             _ => Class::Read,
         }
     }
@@ -316,7 +319,11 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PhysicsCall, String>> {
             let at = vec3_arg(args, "at")?;
             Ok(PhysicsCall::Impulse { entity: entity_key(args, name)?, impulse, at, angular })
         })(),
-        _ => return crate::joint_tools::parse(name, args).map(|r| r.map(PhysicsCall::Joint)),
+        _ => {
+            return crate::joint_tools::parse(name, args)
+                .map(|r| r.map(PhysicsCall::Joint))
+                .or_else(|| crate::ragdoll_tools::parse(name, args).map(|r| r.map(PhysicsCall::Ragdoll)))
+        }
     };
     Some(call)
 }
@@ -324,6 +331,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PhysicsCall, String>> {
 pub fn definitions() -> Vec<ToolDef> {
     let mut defs = definitions_physics();
     defs.extend(crate::joint_tools::definitions());
+    defs.extend(crate::ragdoll_tools::definitions());
     defs
 }
 
@@ -511,7 +519,11 @@ fn world_error(e: &WorldError) -> ToolOutput {
 }
 
 fn entity_json(world: &World, id: u64) -> Json {
-    Json::obj([("id", Json::from(id)), ("path", Json::from(world.path_of(id)))])
+    match crate::physics::ragdoll::unkey(id) {
+        // A ragdoll part (ragdoll_info names its parts).
+        Some((e, part)) => Json::obj([("ragdoll", Json::obj([("id", Json::from(e)), ("path", Json::from(world.path_of(e)))])), ("part", Json::from(part as u64))]),
+        None => Json::obj([("id", Json::from(id)), ("path", Json::from(world.path_of(id)))]),
+    }
 }
 
 impl crate::Engine {
@@ -670,6 +682,7 @@ impl crate::Engine {
                 )
             }
             PhysicsCall::Joint(j) => self.joint_call(j, w, tick),
+            PhysicsCall::Ragdoll(r) => self.ragdoll_call(r, w, tick),
             PhysicsCall::Info => ToolOutput::text(self.physics.summary_json(&self.world.env().physics).to_pretty()),
             PhysicsCall::Explain { entity } => match self.world.resolve(&entity) {
                 Ok(id) => ToolOutput::text(self.explain(id).to_pretty()),
@@ -860,7 +873,7 @@ impl crate::Engine {
                     if b.kind != specula_physics::BodyKind::Dynamic {
                         continue;
                     }
-                    let path = world.path_of(b.key);
+                    let path = world.path_of(crate::physics::ragdoll::owner_of(b.key));
                     if let Scope::Under(p) = scope {
                         if !(path == *p || path.starts_with(&format!("{p}/"))) {
                             continue;
@@ -1051,7 +1064,7 @@ fn draw_shape(p: &mut Painter, shape: &Shape, pose: &Pose, color: [f32; 4], budg
 pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &ov::Spec, colliders: bool, contacts: bool) -> Vec<(&'static str, Json)> {
     let mut details = Vec::new();
     let space = &physics.space;
-    let selected = |k: u64| spec.entities.is_empty() || spec.selects(&world.path_of(k));
+    let selected = |k: u64| spec.entities.is_empty() || spec.selects(&world.path_of(crate::physics::ragdoll::owner_of(k)));
     if colliders {
         let (mut drawn, mut omitted) = (0usize, 0usize);
         let mut counts = [0usize; 5];

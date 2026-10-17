@@ -848,6 +848,55 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
     out
 }
 
+/// Checks poses recorded from outside the animation (a ragdoll's, from physics; A4): `poses`
+/// are local poses `dt` seconds apart in model space, the ground at y = 0 as for clips. Runs
+/// ground penetration, where the body comes to rest (`floating`, at the last frame), joint
+/// limits against `limits` and pops where physics takes over (the first frames): a joint jumping
+/// off the path it was moving on (the change of its per-frame motion, so a fast smooth fall isn't
+/// a pop and a teleport is), scaled to a 1.8 m figure like the transition check.
+pub fn check_frames(set: &AnimSet, subject: &str, poses: &[Pose], dt: f32, limits: &[Limit], rules: &MotionRules, mesh: Option<&specula_model::MeshData>) -> Report {
+    let ctx = Ctx { set, rules, subject: subject.to_string(), also: Vec::new() };
+    let mut s = Sampled { dt, heads: Vec::with_capacity(poses.len()), tails: Vec::with_capacity(poses.len()), poses: Vec::with_capacity(poses.len()) };
+    let mut model = Vec::new();
+    for p in poses.iter().take(MAX_FRAMES) {
+        if p.local.len() != set.skeleton.len() {
+            continue;
+        }
+        set.skeleton.model_space(p, &mut model);
+        push_frame(&mut s, set, p, &model, [0.0; 3]);
+    }
+    let mut out = Report::default();
+    if s.heads.len() < 2 {
+        out.skipped.push("all: fewer than two frames recorded".into());
+        return out;
+    }
+    ground_penetration(&ctx, &s, mesh, &mut out);
+    floating_end(&ctx, &s, mesh, &mut out);
+    joint_limits(&ctx, &s, limits, &mut out);
+    // Pops where physics takes over (the first frames): the largest change of a joint's
+    // per-frame motion (second difference). Later ones are impacts, which physics resolves.
+    let height = set.skeleton.heads.iter().chain(&set.skeleton.tails).map(|p| p[1]).fold(0.0f32, f32::max).max(0.1);
+    let to_human = 1.8 / height;
+    let (mut worst, mut at, mut bone) = (0.0f32, 0.0f32, 0usize);
+    for k in 2..s.heads.len().min(TAKEOVER_FRAMES) {
+        for b in 1..s.heads[k].len() {
+            let (p0, p1, p2) = (s.heads[k - 2][b], s.heads[k - 1][b], s.heads[k][b]);
+            let d = math3::length(math3::sub(math3::sub(p2, p1), math3::sub(p1, p0)));
+            if d > worst {
+                (worst, at, bone) = (d, k as f32 * dt, b);
+            }
+        }
+    }
+    ctx.check(&mut out, "pops", worst * 100.0 * to_human, "cm", Some(at), Some(bone), vec![("unscaled_cm", worst * 100.0), ("frame_s", dt)]);
+    if limits.is_empty() {
+        out.skipped.push(format!("joint_limits: {NO_LIMITS}"));
+    }
+    out
+}
+
+/// Frames after a recording starts that [`check_frames`] looks at for pops.
+const TAKEOVER_FRAMES: usize = 6;
+
 /// Why a joint-limits check didn't run.
 const NO_LIMITS: &str = "no joint limits are given (a graph's `limits`)";
 

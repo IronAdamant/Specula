@@ -2047,6 +2047,19 @@ pub struct World {
     /// The anim assets in the world, as graph writes settle against them (derived from the
     /// entities, refreshed inside `update`; never hashed or saved).
     anim_assets: crate::anim::AssetCache,
+    /// Poses supplied from outside the animation (ragdolls, from physics; A4) by entity:
+    /// what a graph's `{external: true}` nodes play. Derived each physics tick, never hashed,
+    /// journaled or saved.
+    external_poses: BTreeMap<u64, ExternalPose>,
+}
+
+/// A pose supplied from outside the animation (a ragdoll's).
+#[derive(Clone, Debug)]
+pub struct ExternalPose {
+    pub pose: Arc<specula_anim::Pose>,
+    /// Drawn as it is, whatever the anim plays (a powered ragdoll, which follows the animation
+    /// itself); otherwise only the graph's `{external: true}` nodes play it.
+    pub direct: bool,
 }
 
 /// The shape2d spec of an entity's 2D component, if it has one.
@@ -3589,6 +3602,29 @@ impl World {
         self.env = env;
         self.revision += 1;
         self.record_env(before);
+    }
+
+    /// The pose an entity's `{external: true}` animation nodes play (its ragdoll's), if any.
+    pub fn external_pose(&self, id: u64) -> Option<&ExternalPose> {
+        self.external_poses.get(&id)
+    }
+
+    /// Sets (or with `None` clears) entity `id`'s external pose. Not world state: it isn't
+    /// hashed, journaled or saved (physics derives it every tick).
+    pub fn set_external_pose(&mut self, id: u64, pose: Option<ExternalPose>) {
+        match pose {
+            Some(p) => {
+                self.external_poses.insert(id, p);
+            }
+            None => {
+                self.external_poses.remove(&id);
+            }
+        }
+    }
+
+    /// Entities with an external pose.
+    pub fn external_pose_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.external_poses.keys().copied()
     }
 
     /// Physics' write-back, the hot path (foundation F3): a body's new local position and

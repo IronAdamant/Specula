@@ -383,7 +383,7 @@ impl Physics {
         if key < SYNTHETIC {
             return Json::obj([("id", Json::from(key)), ("path", Json::from(world.path_of(key)))]);
         }
-        Json::obj([("key", Json::from(key))])
+        self.ragdoll_key_json(world, key)
     }
 
     /// After a full compare: joints whose entities are gone go too.
