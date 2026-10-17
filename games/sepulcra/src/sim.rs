@@ -30,6 +30,10 @@ use crate::fixed::{Pos, TICK_HZ};
 use crate::map::{Cell, CellId, CellKind, Face};
 use crate::path::{Class, Fields, Route, UNREACHABLE};
 
+#[path = "sim_save.rs"]
+mod save;
+pub use save::{StateError, STATE_VERSION};
+
 pub type EnemyId = u32;
 pub type ProjectileId = u32;
 

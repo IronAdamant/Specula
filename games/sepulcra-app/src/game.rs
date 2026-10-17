@@ -37,6 +37,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "saves.rs"]
+mod saves;
+
 /// A window frame this recent means another follows the next tick.
 const FRAMED_WITHIN: Duration = Duration::from_millis(250);
 const LOG_LEN: usize = 32;
@@ -110,6 +113,8 @@ pub struct SepulcraGame {
     ui_frame: UiEvents,
     /// Scratch for the braziers' crackle (reused).
     fire_buf: Vec<(CellId, Vec3)>,
+    /// The pause menu's Save and Load, for the engine (see `saves`).
+    requests: Vec<specula::game::GameRequest>,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -174,6 +179,7 @@ impl SepulcraGame {
             ui_frame: UiEvents::default(),
             hud_texts: hud::Texts::default(),
             fire_buf: Vec::new(),
+            requests: Vec::new(),
         }
     }
 
@@ -576,6 +582,8 @@ impl SepulcraGame {
                 self.hud.show("defeat", false);
                 self.new_run(world, agent);
             }
+            "save_game" => self.request(specula::game::GameRequest::Save { slot: saves::PLAYER_SLOT.into(), label: Some(format!("wave {} of {}", self.state.wave(), self.state.waves_total())) }),
+            "load_game" => self.request(specula::game::GameRequest::Load { slot: saves::PLAYER_SLOT.into() }),
             "close_result" => {
                 self.hud.show("victory", false);
                 self.hud.show("defeat", false);
@@ -1126,6 +1134,28 @@ impl Game for SepulcraGame {
     /// state's hash, and its parts, so a divergence names what diverged first.
     fn state_hashes(&self, out: &mut Vec<(&'static str, u64)>) {
         state_hashes(&self.state, out);
+    }
+
+    fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
+        Some(Ok(self.save_bytes()))
+    }
+
+    fn parse_state(&self, data: &[u8]) -> Result<Box<dyn Any>, String> {
+        self.parse_saved(data).map(|l| Box::new(l) as Box<dyn Any>)
+    }
+
+    fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn Any>) {
+        if let Ok(l) = state.downcast::<saves::Loaded>() {
+            self.apply_saved(ctx.world, ctx.agent, *l);
+        }
+    }
+
+    fn take_requests(&mut self, out: &mut Vec<specula::game::GameRequest>) {
+        out.append(&mut self.requests);
+    }
+
+    fn request_done(&mut self, ctx: &mut Ctx, request: &specula::game::GameRequest, result: Result<Json, Json>) {
+        self.request_result(ctx.world, request, result);
     }
 
     fn checkpoint(&self) -> Option<Box<dyn Any>> {
