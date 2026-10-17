@@ -25,3 +25,4 @@ specula-physics = { workspace = true }
 specula-via = { workspace = true }
 specula-mens = { workspace = true }
 specula-locus = { workspace = true }
+specula-lex = { workspace = true }

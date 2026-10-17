@@ -19,6 +19,7 @@ members = [
     "crates/specula-via",
     "crates/specula-mens",
     "crates/specula-locus",
+    "crates/specula-lex",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -54,6 +55,7 @@ specula-physics = { path = "crates/specula-physics" }
 specula-via = { path = "crates/specula-via" }
 specula-mens = { path = "crates/specula-mens" }
 specula-locus = { path = "crates/specula-locus" }
+specula-lex = { path = "crates/specula-lex" }
 
 [profile.dev]
 opt-level = 1

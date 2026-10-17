@@ -11,3 +11,6 @@ publish = false
 
 [dependencies]
 specula-core = { workspace = true }
+
+[dev-dependencies]
+specula-lex = { workspace = true }

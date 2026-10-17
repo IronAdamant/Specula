@@ -594,7 +594,11 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
             a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
         }
         (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
-            // Overlap where an entity under the path already sits in the region.
+            // Overlap where an entity under the path already sits in the region. Rule data
+            // (/lex) sits nowhere.
+            if p == "/lex" || p.starts_with("/lex/") {
+                return false;
+            }
             let root = if p == "/" { None } else { world.find_path(p).ok() };
             if p != "/" && root.is_none() {
                 return false;
@@ -606,10 +610,51 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
     }
 }
 
+fn under_lex(p: &str) -> bool {
+    p == "/lex" || p.starts_with("/lex/")
+}
+
+/// Lex rule data: the hidden groups the Lex tools keep under `/lex` (the root, a set's header,
+/// an item).
+fn is_rule_data(e: &crate::world::Entity) -> bool {
+    e.props.get("lex").is_some() || e.props.get("lex_set").is_some() || (e.parent.is_none() && e.name == "lex")
+}
+
+/// A change that writes `/lex` or Lex rule data anywhere (into, inside or out of `/lex`): only
+/// the Lex tools may make it ([`crate::swarm::Swarm::commit_lex`]).
+pub fn touches_rule_data(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, after } => under_lex(path) || is_rule_data(after),
+        Change::Delete { path, before } => under_lex(path) || is_rule_data(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_lex(path) || prev_path.as_deref().is_some_and(under_lex) || is_rule_data(after) || before.as_deref().is_some_and(is_rule_data)
+        }
+        Change::Pose { path, .. } => under_lex(path),
+        Change::Env { .. } | Change::Camera { .. } => false,
+    }
+}
+
+/// Rule data staying in `/lex` (before and after): exempt from region scopes.
+fn rule_data_only(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, after } => under_lex(path) && is_rule_data(after),
+        Change::Delete { path, before } => under_lex(path) && is_rule_data(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_lex(path) && prev_path.as_deref().is_none_or(under_lex) && is_rule_data(after) && before.as_deref().is_none_or(is_rule_data)
+        }
+        _ => false,
+    }
+}
+
 /// World origins a change touches: the entity's before and after, and when it moved with
 /// descendants, theirs now and before the move.
 fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
+    // Lex rule data has no place in the world: only path claims cover it. Anything else, in
+    // /lex or moving through it, is checked at both ends like any entity.
+    if rule_data_only(change) {
+        return points;
+    }
     match change {
         Change::Spawn { after, .. } => points.push(after.world_position()),
         Change::Delete { before, .. } => points.push(before.world_position()),
