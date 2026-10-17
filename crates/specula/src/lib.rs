@@ -12,6 +12,8 @@
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
 pub mod board;
+pub mod anim;
+mod anim_tools;
 pub mod cameras;
 mod capture;
 pub mod claims;
@@ -664,6 +666,9 @@ impl Engine {
 
     /// Turns the real time since the last call into whole ticks and runs them.
     fn advance_clock(&mut self) {
+        // The world's anim assets reach the library (graph writes settle against them) without
+        // waiting for a draw: headless engines never draw.
+        self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
         let now = Instant::now();
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
@@ -972,6 +977,10 @@ impl Engine {
                 reload.rebuilding.len(),
                 reload.errors.len()
             );
+        }
+        // Anim sets that changed reach the world here, journaled (never when a build lands).
+        if !reload.anim_handles.is_empty() && anim::resettle(&mut self.world, &reload.anim_handles) > 0 {
+            self.swarm.game_changes(&mut self.world, self.clock.tick(), anim::RELOAD_AGENT, Kind::Set);
         }
         Some(reload)
     }
@@ -1634,6 +1643,7 @@ impl Engine {
             Command::Physics(call) => self.physics_call(call, w, tick),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
+            Command::Anim(call) => self.anim_call(call, w, tick),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
@@ -2044,6 +2054,7 @@ impl Engine {
 fn call_class(command: &Command) -> Class {
     match command {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
+        Command::Anim(call) => anim_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),

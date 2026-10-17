@@ -174,6 +174,71 @@ pub fn qframe(a: V3, n: V3, b: V3, m: V3) -> Q {
     qfrom_cols(cols)
 }
 
+/// Rotation of `rad` radians about a unit `axis`.
+pub fn qaxis_rad(axis: V3, rad: f32) -> Q {
+    let (s, c) = dmath::sin_cos(rad * 0.5);
+    [axis[0] * s, axis[1] * s, axis[2] * s, c]
+}
+
+/// The shortest rotation taking direction `from` to direction `to` (need not be unit). Opposite
+/// directions turn 180° about an axis perpendicular to `from`; a zero vector gives the identity.
+pub fn qarc(from: V3, to: V3) -> Q {
+    let (lf, lt) = (math3::length(from), math3::length(to));
+    if lf < 1e-12 || lt < 1e-12 {
+        return QID;
+    }
+    let (f, t) = (math3::scale(from, 1.0 / lf), math3::scale(to, 1.0 / lt));
+    let d = math3::dot(f, t);
+    if d < -1.0 + 1e-6 {
+        let a = math3::normalize(math3::perpendicular(f));
+        return [a[0], a[1], a[2], 0.0];
+    }
+    let c = math3::cross(f, t);
+    qnorm([c[0], c[1], c[2], 1.0 + d])
+}
+
+/// The fraction `t` of unit rotation `q` along its shortest path (axis-angle scaled: exact for
+/// any angle, unlike nlerp, which bunches up near 180°).
+pub fn qscale(q: Q, t: f32) -> Q {
+    let q = if q[3] < 0.0 { qneg(q) } else { q };
+    let v = [q[0], q[1], q[2]];
+    let s = math3::length(v);
+    if s < 1e-9 {
+        return QID;
+    }
+    let angle = 2.0 * dmath::atan2(s, q[3]);
+    qaxis_rad(math3::scale(v, 1.0 / s), angle * t)
+}
+
+/// The rotation angle of unit `q`, in degrees (0..=180).
+pub fn qangle_deg(q: Q) -> f32 {
+    let w = q[3].abs().min(1.0);
+    (2.0 * dmath::acos(w)).to_degrees()
+}
+
+/// Euler degrees `[x, y, z]` of unit `q` in [`qeuler`]'s convention (X, then Y, then Z): the
+/// inverse of `qeuler` for `|y| < 90°`. Near `y = ±90°` (gimbal lock) X and Z share one degree
+/// of freedom and Z takes it.
+pub fn euler_of(q: Q) -> V3 {
+    let c = qcols(q);
+    // R = Rz · Ry · Rx; column-major: R[row][col] = c[col][row].
+    let sy = (-c[0][2]).clamp(-1.0, 1.0);
+    let y = dmath::asin(sy);
+    if sy.abs() > 1.0 - 1e-6 {
+        // Gimbal lock: x = 0, z from the top-left 2×2 block.
+        let z = dmath::atan2(-c[1][0], c[1][1]);
+        return [0.0, y.to_degrees(), z.to_degrees()];
+    }
+    let x = dmath::atan2(c[1][2], c[2][2]);
+    let z = dmath::atan2(c[0][1], c[0][0]);
+    [x.to_degrees(), y.to_degrees(), z.to_degrees()]
+}
+
+/// Rotation of an affine's (possibly scaled) linear part.
+pub fn rotation_of(m: &Affine) -> Q {
+    qfrom_cols([math3::normalize(m.cols[0]), math3::normalize(m.cols[1]), math3::normalize(m.cols[2])])
+}
+
 /// Inverse of an affine transform (`None` if singular).
 pub fn inverse(m: &Affine) -> Option<Affine> {
     let [a, b, c] = m.cols;
@@ -265,6 +330,25 @@ mod tests {
         assert!((qdot(m, m) - 1.0).abs() < 1e-6);
         assert!(qdot(m, qaxis([0.0, 1.0, 0.0], 20.0)) > 1.0 - 1e-6);
         assert_eq!(qnlerp(a, b, 0.0), a);
+    }
+
+    #[test]
+    fn arcs_angles_and_euler_extraction() {
+        let q = qarc([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        assert!(close(&qrot(q, [0.0, 0.0, 1.0]), &[1.0, 0.0, 0.0], 1e-6));
+        assert!((qangle_deg(q) - 90.0).abs() < 1e-3);
+        let flip = qarc([0.0, 1.0, 0.0], [0.0, -1.0, 0.0]);
+        assert!(close(&qrot(flip, [0.0, 1.0, 0.0]), &[0.0, -1.0, 0.0], 1e-6));
+        assert_eq!(qarc([0.0; 3], [1.0, 0.0, 0.0]), QID);
+        for d in [[10.0, 20.0, 30.0], [-70.0, 45.0, 120.0], [150.0, -30.0, -5.0], [0.0, 0.0, 0.0], [-179.0, 80.0, 179.0]] {
+            let back = euler_of(qeuler(d));
+            assert!(close(&back, &d, 2e-3), "{d:?} -> {back:?}");
+        }
+        // Gimbal lock still round-trips the rotation.
+        let q = qeuler([30.0, 90.0, 10.0]);
+        assert!(qdot(qeuler(euler_of(q)), q).abs() > 1.0 - 1e-5);
+        let m = Transform { t: [0.0; 3], r: qeuler([10.0, 20.0, 30.0]), s: [2.0, 0.5, 3.0] }.to_affine();
+        assert!(qdot(rotation_of(&m), qeuler([10.0, 20.0, 30.0])).abs() > 1.0 - 1e-6);
     }
 
     #[test]

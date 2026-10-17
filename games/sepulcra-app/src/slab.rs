@@ -254,6 +254,13 @@ fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
     [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)]
 }
 
+/// Marks a slab piece as ground: creatures' feet stand on its top (the anim graphs' feet IK).
+fn ground(world: &mut World, agent: &str, id: u64) {
+    if id != 0 {
+        ents::update(world, agent, id, specula::world::UpdateSpec { add_tags: vec![specula::anim::GROUND_TAG.into()], ..Default::default() });
+    }
+}
+
 /// Builds the slab under `/slab` (replacing an old one). Returns the group's id.
 pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
     if let Some(old) = ents::top_level(world, "slab") {
@@ -274,7 +281,8 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         let pos = Vec3::new(x_of(c as f32 + w as f32 / 2.0), -geo.depth / 2.0, z_of(r as f32 + h as f32 / 2.0));
         let scale = Vec3::new(w as f32 * geo.cell, geo.depth, h as f32 * geo.cell);
         let p = Part::cube("", pos, scale, FISSURE).rough(0.95);
-        ents::part_named(world, agent, body, &format!("rock_{i:02}"), &p);
+        let id = ents::part_named(world, agent, body, &format!("rock_{i:02}"), &p);
+        ground(world, agent, id);
     }
     // Broken corners: chipped down one cliff row, at slightly different depths.
     for r in 0..rows {
@@ -340,7 +348,8 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         let pos = Vec3::new((x0 + x1) / 2.0, (top_y - 0.1) / 2.0, (z0 + z1) / 2.0);
         let scale = Vec3::new(x1 - x0, top_y + 0.1, z1 - z0);
         let p = Part::cube("", pos, scale, shade(SLAB_TOP, piece_shade[piece as usize])).rough(0.9);
-        ents::part_named(world, agent, frags, &format!("piece{piece:02}_{c}_{r}"), &p);
+        let id = ents::part_named(world, agent, frags, &format!("piece{piece:02}_{c}_{r}"), &p);
+        ground(world, agent, id);
     }
 
     // Lane-jump points: a pale chalk scar across the fragment between each pair.
@@ -375,7 +384,8 @@ pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
         let (lo, hi) = (lo - Vec3::new(half, 0.0, half), hi + Vec3::new(half, 0.0, half));
         let centre = (lo + hi) * 0.5;
         let ground = Part::cube("ground", Vec3::new(centre.x, GRAVEYARD_HEIGHT / 2.0, centre.z), Vec3::new(hi.x - lo.x - 0.1, GRAVEYARD_HEIGHT, hi.z - lo.z - 0.1), shade(GRAVE_STONE, 0.62)).rough(1.0);
-        ents::part(world, agent, gy, &ground);
+        let id = ents::part(world, agent, gy, &ground);
+        self::ground(world, agent, id);
         // A low wrought-iron fence (the `graveyard_fence` recipe, 2 m a segment) round the
         // graveyard, open where a lane comes in: the dead walk through the gaps.
         let fence = ents::group(world, agent, Some(gy), "fence", Vec3::ZERO, Vec3::ZERO, &[], Json::Null);

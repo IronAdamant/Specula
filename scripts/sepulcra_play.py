@@ -119,13 +119,17 @@ def check_hud(mcp):
 
 
 def check_anim(mcp):
-    """Creatures are skinned models playing clips of their anim sets, and transient (never saved)."""
+    """Creatures are skinned models playing their anim sets' graphs (or clips), and transient
+    (never saved). Graph plays are counted by graph and act."""
     q = mcp.json("world_query", tags=["enemy"], fields=["path", "anim", "model_state", "transient"], limit=60)
     items = q.get("items", [])
     clips, ready, transient = {}, 0, 0
     for e in items:
         a = e.get("anim") or {}
-        clip = a.get("clip", "-")
+        if "graph" in a:
+            clip = f"{a['graph']}:{(a.get('params') or {}).get('act', '?')}"
+        else:
+            clip = a.get("clip", "-")
         clips[clip] = clips.get(clip, 0) + 1
         ready += e.get("model_state") == "ready"
         transient += bool(e.get("transient"))

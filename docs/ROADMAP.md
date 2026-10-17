@@ -548,16 +548,24 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   the space (target 2 ms) plus about 1.3 ms of world write-back and hashing, so a world-side pose-and-body fast path
   (and a journal change kind for it) is next; module characters still use the module host's `Kinematic` placeholder
   until a `PhysicsMover` wires P2 in.
-- [ ] **Animation, stage A3** ([design/ANIMATION.md](design/ANIMATION.md)): state machines and blend trees as text
+- [x] **Animation, stage A3** ([design/ANIMATION.md](design/ANIMATION.md)): state machines and blend trees as text
   data, events, root motion, two-bone IK (feet on the ground, hands on handles), look-at.
+  *Done 2026-10-18:* `specula-anim` graphs (parameters, blend trees, layered state machines, transitions refused at
+  parse when they would loop in zero time), plays as data whose pose is a pure function of time, IK and look-at;
+  writes settle against a rig-only anim set that never waits for mesh builds. Sepulcra's four creatures run on graphs.
 - [ ] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
   animation, driven by physics joints (P4 below).
-- [ ] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
+- [x] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
   walk cycles from a rig and a gait, breathing, recoil, procedural secondary motion), so agents animate without
   external tools; animation graphs edited live with the journal and undo.
-- [ ] ➕ **Motion checks as data** *(research)*: foot sliding (foot speed while within ~2.5 cm of the ground), ground
+  *Done 2026-10-18:* generators `keys`, `pose`, `recoil`, `breathe`, `chain`, gaits from bone names; `anim_set` writes
+  clips and graphs as journaled, claimable `/anims/...` assets. Generation is budgeted (frames × bones).
+- [x] ➕ **Motion checks as data** *(research)*: foot sliding (foot speed while within ~2.5 cm of the ground), ground
   penetration, joint limits, pops at transitions, root drift. Reported in packets, with thresholds in `style.toml`, so
   a failure is an error.
+  *Done 2026-10-18:* foot sliding, floating, penetration, joint limits, pops, root drift, loop seams, hover bands and
+  leap apex, with exemptions in `style.toml [motion]` labelled wherever they apply; checks list what they skipped.
+  They found real defects in Sepulcra's creatures (a hovering runner, hands 2 m into the ground).
 - [x] ➕ **Physics checks as data** *(research)*: playtest assertions on contacts, tunnelling, rest states and energy;
   colliders and contacts visible in captures.
   *Done 2026-10-18:* `physics_check` (rest, contacts, penetration, tunnelling, energy gainers, positions), automatic
@@ -572,8 +580,10 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   every tool change, with a held-out set, and doubles as the public benchmark for marketing.
 - [ ] ➕ **Tool ergonomics** *(research)*: `response_format` (concise/detailed) on heavy tools; an audit of tool count,
   naming and error messages against agent-tool design guidance.
-- [ ] ➕ **Animation sight**: filmstrips and contact sheets per clip and state, plus checks as data: foot sliding,
+- [x] ➕ **Animation sight**: filmstrips and contact sheets per clip and state, plus checks as data: foot sliding,
   ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
+  *Done 2026-10-18:* `anim_filmstrip` contact sheets (clips, states, transitions, live entities) with each row's
+  checks, scale labels, root rise and darkness warnings in the packet; `scripts/anim_graph_check.py`.
 - [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
 - [ ] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.

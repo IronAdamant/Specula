@@ -257,7 +257,9 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
         let ibm: Vec<f32> = s.inverse_bind.iter().flat_map(|m| m.to_cols_array()).collect();
         let ibm_acc = out.floats(&ibm, 16, "MAT4", None, false);
         skins.push(Json::obj([("inverseBindMatrices", Json::from(ibm_acc)), ("skeleton", Json::from(1u32)), ("joints", Json::arr((0..s.len()).map(|i| Json::from(i + 1))))]));
-        for (ci, clip) in input.clips.iter().enumerate() {
+        // A clip without tracks (a neutral additive-layer base) has no channels to write: glTF
+        // animations need at least one.
+        for (ci, clip) in input.clips.iter().enumerate().filter(|(_, c)| !c.tracks.is_empty()) {
             animations.push(animation_json(&mut out, s, clip, ci)?);
         }
     } else {

@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 sepulcra = { path = "../sepulcra" }
 specula = { path = "../../crates/specula" }
+specula-anim = { workspace = true }
 specula-audio = { workspace = true }
 specula-core = { workspace = true }
 specula-lex = { workspace = true }
