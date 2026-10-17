@@ -1080,6 +1080,10 @@ impl GpuInner {
         Ok(())
     }
 
+    pub fn last_window_timing(&self) -> (u64, CpuTiming) {
+        (self.last_window.frame, self.last_window.cpu)
+    }
+
     /// The latest frame of `path` (or of either path), with current pipeline and memory state.
     pub fn last_frame_stats(&self, path: Option<FramePath>) -> FrameStats {
         let latest = match path {

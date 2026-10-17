@@ -1348,6 +1348,14 @@ impl Gpu {
         self.inner.last_graph()
     }
 
+    /// The latest presented window frame's number (`0` before any) and CPU timing; cheap (no
+    /// copies or memory queries, unlike [`Gpu::last_frame_stats_of`]), for a loop that paces
+    /// itself by how long [`Gpu::present`] blocked: `wait_ms` plus `submit_ms` (FIFO may block in
+    /// either the acquire or the present call, depending on the driver).
+    pub fn last_window_timing(&self) -> (u64, CpuTiming) {
+        self.inner.last_window_timing()
+    }
+
     /// Like [`Gpu::last_frame_stats`], but the latest frame of one path (`None` if it has none
     /// yet): the window's frame rate is not disturbed by agents' offscreen captures.
     pub fn last_frame_stats_of(&self, path: FramePath) -> Option<FrameStats> {
