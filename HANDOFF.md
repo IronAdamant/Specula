@@ -28,8 +28,12 @@ memory of the earlier ones. Last updated **2026-10-16**.
   - **Sepulcra owner questions:** how dark night should be (Claude darkened it; fire and runes carry the scene);
     active pause on a gamepad (P is active pause, Start opens the menu); a title screen; saved settings and
     rebinding; may the fire colour mark "can't afford" (STYLE.md reserves fire for fire).
-  - **Next:** M3 needs the owner's go-ahead (save games, module host / hot reload, desync detector). Don't start it
-    unasked.
+  - **Next:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
+    built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
+    from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
+    Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
+    balance lab, agent evals, save games, module host, desync detector. The owner said to commit and **push before
+    starting M3**.
   - **Lessons:** reviews keep finding real bugs (determinism leaks, unbounded work, device loss, stale caches), so
     keep the rounds; after round 3-4 the integrator verifies narrow final fixes. Measure with the game running, not
     only static worlds (the first draw cache was slower in play). Several sessions share the GPU and ports 7460-7499;
