@@ -126,6 +126,13 @@ fn finite(v: Vec3) -> bool {
 impl Config {
     /// Checks every field; errors name the field and the allowed range.
     pub fn validate(&self) -> Result<(), NavError> {
+        self.validate_fields()?;
+        self.validate_work()
+    }
+
+    /// Each field in its range, the bounds finite and not too tall: what must hold before any
+    /// grid numbers are derived from the config.
+    pub fn validate_fields(&self) -> Result<(), NavError> {
         let range = |field: &'static str, v: f32, lo: f32, hi: f32| -> Result<(), NavError> {
             if v.is_finite() && v >= lo && v <= hi {
                 Ok(())
@@ -156,6 +163,11 @@ impl Config {
             )
             .with("field", "bounds"));
         }
+        Ok(())
+    }
+
+    /// The grid's size and each tile's work bounded (after [`Config::validate_fields`]).
+    pub fn validate_work(&self) -> Result<(), NavError> {
         let d = Derived::of(self);
         let columns = u64::from(d.cells_x) * u64::from(d.cells_z);
         if columns > MAX_COLUMNS {
@@ -179,7 +191,7 @@ impl Config {
             .with("field", "tile_cells"));
         }
         let tiles = d.tiles_x as usize * d.tiles_z as usize;
-        let side = u64::from(self.tile_cells + 2 * d.border);
+        let side = u64::from(self.tile_cells) + 2 * u64::from(d.border);
         if side > MAX_TILE_SIDE {
             return Err(NavError::new(
                 "budget",
@@ -234,6 +246,21 @@ mod tests {
         assert!(Config { tile_cells: 256, cell_size: 0.0396, agent_radius: 10.0, ..Config::default() }.validate().is_err());
         assert!(Config::default().validate().is_ok());
     }
+
+    #[test]
+    fn hostile_configs_are_errors_not_panics() {
+        for c in [
+            Config { cell_size: 0.0, ..Config::default() },
+            Config { agent_radius: 1.0e30, ..Config::default() },
+            Config { agent_radius: f32::NAN, ..Config::default() },
+            Config { tile_cells: 0, ..Config::default() },
+            Config { cell_size: 1.0e-30, agent_radius: 10.0, ..Config::default() },
+            Config { cell_height: 0.0, ..Config::default() },
+        ] {
+            let _ = Derived::of(&c);
+            assert!(c.validate().is_err(), "{c:?}");
+        }
+    }
 }
 
 /// Grid numbers derived from a [`Config`].
@@ -267,7 +294,9 @@ impl Derived {
         let down = |v: f32| dmath::floor(v + EPS).max(0.0);
         let cells = |s: f32| (up(s / c.cell_size) as u64).clamp(1, u64::from(u32::MAX)) as u32;
         let (cells_x, cells_z) = (cells(size.x), cells(size.z));
-        let tiles = |n: u32| n.div_ceil(c.tile_cells);
+        // Saturating throughout: derived numbers of an unchecked config never overflow (validate
+        // refuses such configs; this only has to stay sane until it does).
+        let tiles = |n: u32| n.div_ceil(c.tile_cells.max(1));
         let radius_cells = up(c.agent_radius / c.cell_size) as u32;
         Derived {
             cells_x,
@@ -277,7 +306,7 @@ impl Derived {
             radius_cells,
             height_q: (up(c.agent_height / c.cell_height) as u32).min(u32::from(u16::MAX)) as u16,
             climb_q: (down(c.max_step / c.cell_height) as u32).min(u32::from(u16::MAX)) as u16,
-            border: radius_cells + 3,
+            border: radius_cells.saturating_add(3),
             max_q: (up(size.y / c.cell_height) as u32).min(u32::from(u16::MAX) - 1) as u16,
             walkable_y: dmath::cos(c.max_slope_deg.to_radians()),
         }

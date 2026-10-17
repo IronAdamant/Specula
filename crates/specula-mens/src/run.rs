@@ -99,12 +99,14 @@ pub struct Mind {
     /// The running leaves after the last tick (node indices).
     running_leaves: Vec<usize>,
     pub last_status: Option<Status>,
+    /// Nodes the last tick visited (what a host charges against a per-tick budget).
+    pub visits: u32,
 }
 
 impl Mind {
     pub fn new(def: Arc<Def>, bb: Blackboard, hz: u32) -> Mind {
         let n = def.nodes.len();
-        Mind { def, bb, states: vec![NodeState::default(); n], tick: 0, hz: hz.max(1), trace: VecDeque::new(), running_leaves: Vec::new(), last_status: None }
+        Mind { def, bb, states: vec![NodeState::default(); n], tick: 0, hz: hz.max(1), trace: VecDeque::new(), running_leaves: Vec::new(), last_status: None, visits: 0 }
     }
 
     fn note(&mut self, text: String) {
@@ -117,6 +119,7 @@ impl Mind {
     /// Runs one tick at simulation tick `tick`.
     pub fn tick(&mut self, host: &mut dyn Host, tick: u64) -> Status {
         self.tick = tick;
+        self.visits = 0;
         let def = Arc::clone(&self.def);
         let status = self.run(&def, 0, host);
         if !matches!(status, Status::Running) {
@@ -184,6 +187,7 @@ impl Mind {
     }
 
     fn run(&mut self, def: &Def, i: usize, host: &mut dyn Host) -> Status {
+        self.visits = self.visits.saturating_add(1);
         let node: &Node = &def.nodes[i];
         let s = match &node.kind {
             NodeKind::Sequence { reactive } => {

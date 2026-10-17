@@ -16,12 +16,17 @@ use crate::tools::{bool_arg, check_keys, int_arg, key_value, num_in, string_arg}
 use crate::world::{self, EntityKey, Op, OpResult, Shape, UpdateSpec, World, WorldError};
 use specula_core::math::{Quat, Vec3};
 use specula_core::Json;
-use specula_locus::{solve, Box3, Placement, Probe, Rel, Relation, Request};
+use specula_locus::{solve, Box3, BoxSet, Placement, Probe, Rel, Relation, Request};
 use specula_protocol::ToolOutput;
 use std::collections::BTreeSet;
 
 /// Drawn entities without a collider one call checks against at most.
 const MAX_BOXES: usize = 8192;
+/// Most entities one `avoid {tag}` or `spacing {among}` takes.
+const MAX_TAGGED: usize = 16_384;
+/// Work one world_place may do (see `specula_locus::Request::max_work`): a few hundred
+/// milliseconds at most.
+const MAX_WORK: u64 = 4_000_000;
 /// Instances listed with every relation (more list only the unsatisfied ones).
 const FULL_DETAIL: usize = 8;
 /// Bytes of placements an answer lists in detail; past them, placements are listed briefly.
@@ -67,11 +72,13 @@ pub struct PlaceCall {
 }
 
 impl PlaceCall {
+    /// By its work, not by whether it writes: many instances or tag sets are big either way.
     pub fn class(&self) -> Class {
-        if self.dry_run {
-            Class::Read
-        } else if self.count > 8 {
+        let tagged = self.relations.iter().any(|(r, _)| matches!(r, RelSpec::Avoid { tag: Some(_), .. } | RelSpec::Spacing { among: Some(_), .. }));
+        if self.count > 8 || tagged {
             Class::Big
+        } else if self.dry_run {
+            Class::Read
         } else {
             Class::Edit
         }
@@ -714,6 +721,23 @@ impl crate::Engine {
         }
     }
 
+    /// The boxes of every entity with `tag` (except the one being moved): all of them, or a
+    /// structured refusal past [`MAX_TAGGED`].
+    fn tagged_boxes(&self, tag: &str, moving: Option<u64>) -> Result<Vec<Box3>, WorldError> {
+        let mut out = Vec::new();
+        for e in self.world.persistent_entities().filter(|e| e.tags.contains(tag) && Some(e.id) != moving) {
+            if out.len() == MAX_TAGGED {
+                return Err(WorldError::new("budget", format!("more than {MAX_TAGGED} entities are tagged '{tag}': use a narrower tag (or a target)"))
+                    .with("field", "relations")
+                    .with("tag", tag));
+            }
+            if let Some(b) = entity_box(&self.world, e.id) {
+                out.push(b);
+            }
+        }
+        Ok(out)
+    }
+
     fn target_box(&self, k: &EntityKey) -> Result<(Box3, u64), WorldError> {
         let id = self.world.resolve(k)?;
         Ok((entity_box(&self.world, id).expect("resolved"), id))
@@ -764,16 +788,10 @@ impl crate::Engine {
                 RelSpec::Facing { target, direction } => Rel::Facing { point: target.as_ref().map(|s| self.resolve_spot(s).map(|r| r.0)).transpose()?, direction: *direction },
                 RelSpec::Spacing { min, max, among } => {
                     let among = match among {
-                        Some(tag) => self
-                            .world
-                            .persistent_entities()
-                            .filter(|e| e.tags.contains(tag) && Some(e.id) != moving)
-                            .take(4096)
-                            .filter_map(|e| entity_box(&self.world, e.id))
-                            .collect(),
+                        Some(tag) => self.tagged_boxes(tag, moving)?,
                         None => Vec::new(),
                     };
-                    Rel::Spacing { min: *min, max: *max, among }
+                    Rel::Spacing { min: *min, max: *max, among: BoxSet::new(among) }
                 }
                 RelSpec::Avoid { target, tag, distance } => {
                     let mut boxes = Vec::new();
@@ -781,9 +799,9 @@ impl crate::Engine {
                         boxes.push(self.target_box(k)?.0);
                     }
                     if let Some(tag) = tag {
-                        boxes.extend(self.world.persistent_entities().filter(|e| e.tags.contains(tag) && Some(e.id) != moving).take(4096).filter_map(|e| entity_box(&self.world, e.id)));
+                        boxes.extend(self.tagged_boxes(tag, moving)?);
                     }
-                    Rel::Avoid { boxes, distance: *distance }
+                    Rel::Avoid { boxes: BoxSet::new(boxes), distance: *distance }
                 }
                 RelSpec::OnNavmesh { mesh: m, reachable_from } => {
                     mesh = Some(self.nav.find_mesh(m.as_deref())?);
@@ -945,9 +963,22 @@ impl crate::Engine {
             settle: call.settle,
             collide: call.collide,
             seed: call.seed,
+            max_work: MAX_WORK,
         };
         let mut probe = WorldProbe { physics: &self.physics, nav: &self.nav, mesh, exclude, boxes: Boxes::new(boxes), flood: None };
         let solution = solve(&req, &mut probe);
+        if solution.budget_exceeded {
+            return Err(Err(WorldError::new(
+                "budget",
+                format!(
+                    "this placement needs more work than one call may do ({} units, {} of {} instances solved): fewer instances, a smaller region, or a narrower tag",
+                    solution.work,
+                    solution.placements.len(),
+                    call.count
+                ),
+            )
+            .with("work", solution.work)));
+        }
         let all_ok = solution.placements.iter().all(|p| p.satisfied);
         let full = solution.placements.len() <= FULL_DETAIL;
         let mut out = Json::obj([

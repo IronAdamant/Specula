@@ -139,6 +139,96 @@ impl Box3 {
     }
 }
 
+/// Many boxes (an `avoid` or `spacing` tag set) in a grid of 4 m cells, so a footprint looks only
+/// at the boxes near it. Boxes covering more than 64 cells are always looked at.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoxSet {
+    pub boxes: Vec<Box3>,
+    /// ((row, column), box, the box's own first (row, column)): sorted.
+    cells: Vec<((i32, i32), u32, (i32, i32))>,
+    big: Vec<u32>,
+}
+
+const SET_CELL: f32 = 4.0;
+const MAX_SET_CELLS: i64 = 64;
+
+fn xz_rect(b: &Box3) -> (f32, f32, f32, f32) {
+    let (mut x0, mut z0, mut x1, mut z1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for (x, z) in b.corners() {
+        x0 = x0.min(x);
+        z0 = z0.min(z);
+        x1 = x1.max(x);
+        z1 = z1.max(z);
+    }
+    (x0, z0, x1, z1)
+}
+
+fn cell_of(v: f32) -> i64 {
+    dmath::floor(v / SET_CELL) as i64
+}
+
+impl BoxSet {
+    pub fn new(boxes: Vec<Box3>) -> BoxSet {
+        let mut cells = Vec::new();
+        let mut big = Vec::new();
+        for (i, b) in boxes.iter().enumerate() {
+            let (x0, z0, x1, z1) = xz_rect(b);
+            let (cx0, cz0, cx1, cz1) = (cell_of(x0), cell_of(z0), cell_of(x1), cell_of(z1));
+            if !(x0.is_finite() && z0.is_finite() && x1.is_finite() && z1.is_finite()) || (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > MAX_SET_CELLS {
+                big.push(i as u32);
+                continue;
+            }
+            for cz in cz0..=cz1 {
+                for cx in cx0..=cx1 {
+                    cells.push(((cz as i32, cx as i32), i as u32, (cz0 as i32, cx0 as i32)));
+                }
+            }
+        }
+        cells.sort_unstable();
+        BoxSet { boxes, cells, big }
+    }
+
+    pub fn len(&self) -> usize {
+        self.boxes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.boxes.is_empty()
+    }
+
+    /// Calls `f` once for each box whose X/Z bounds come within `reach` of `fp`'s (and maybe a
+    /// few more), counting every entry looked at in `work`.
+    pub fn for_each_near(&self, fp: &Box3, reach: f32, work: &std::cell::Cell<u64>, mut f: impl FnMut(&Box3)) {
+        for &i in &self.big {
+            work.set(work.get() + 1);
+            f(&self.boxes[i as usize]);
+        }
+        let (x0, z0, x1, z1) = xz_rect(fp);
+        let (qx0, qz0, qx1, qz1) = (cell_of(x0 - reach), cell_of(z0 - reach), cell_of(x1 + reach), cell_of(z1 + reach));
+        if !(qx0 <= qx1 && qz0 <= qz1) || (qx1 - qx0 + 1) * (qz1 - qz0 + 1) > 4096 {
+            // A huge reach: everything.
+            for (i, b) in self.boxes.iter().enumerate() {
+                if !self.big.contains(&(i as u32)) {
+                    work.set(work.get() + 1);
+                    f(b);
+                }
+            }
+            return;
+        }
+        for qz in qz0..=qz1 {
+            let lo = self.cells.partition_point(|(c, _, _)| *c < (qz as i32, qx0 as i32));
+            let hi = self.cells.partition_point(|(c, _, _)| *c <= (qz as i32, qx1 as i32));
+            for &((cz, cx), i, (bz0, bx0)) in &self.cells[lo..hi] {
+                work.set(work.get() + 1);
+                // Each box once: at the first query cell it covers.
+                if (cz, cx) == (bz0.max(qz as i32), bx0.max(qx0 as i32)) {
+                    f(&self.boxes[i as usize]);
+                }
+            }
+        }
+    }
+}
+
 /// Distance from `p` to segment `a`-`b` in 2D.
 pub fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     let (dx, dz) = (b.0 - a.0, b.1 - a.1);
@@ -151,6 +241,24 @@ pub fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_sets_find_each_near_box_once() {
+        let boxes: Vec<Box3> = (0..400).map(|i| Box3::aligned(Vec3::new((i % 20) as f32 * 3.0, 0.0, (i / 20) as f32 * 3.0), Vec3::new((i % 20) as f32 * 3.0 + 0.5, 1.0, (i / 20) as f32 * 3.0 + 0.5))).collect();
+        let set = BoxSet::new(boxes.clone());
+        let fp = Box3::aligned(Vec3::new(20.0, 0.0, 20.0), Vec3::new(21.0, 1.0, 21.0));
+        let work = std::cell::Cell::new(0);
+        let mut seen = Vec::new();
+        set.for_each_near(&fp, 5.0, &work, |b| seen.push(b.center.x * 1000.0 + b.center.z));
+        let mut sorted = seen.clone();
+        sorted.sort_by(f32::total_cmp);
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "no box twice");
+        let want = boxes.iter().filter(|b| b.distance_xz(&fp) <= 5.0).count();
+        let got = boxes.iter().filter(|b| b.distance_xz(&fp) <= 5.0 && seen.contains(&(b.center.x * 1000.0 + b.center.z))).count();
+        assert_eq!(got, want, "every box within reach");
+        assert!(work.get() < 100, "looked at {} of 400", work.get());
+    }
 
     #[test]
     fn boxes() {

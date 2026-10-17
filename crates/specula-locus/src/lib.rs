@@ -18,7 +18,7 @@
 pub mod geom;
 pub mod solve;
 
-pub use geom::Box3;
+pub use geom::{Box3, BoxSet};
 pub use solve::{solve, Placement, Probe, Rel, RelReport, Relation, Request, Solution};
 
 /// Most relations per call.

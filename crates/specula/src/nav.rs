@@ -47,6 +47,9 @@ const HASHES: usize = 1024;
 /// tile (58 x 58 = 3,364 columns) takes about 0.3 ms on the reference machine's CPU class, the
 /// widest allowed (96 x 96) a few milliseconds (more on a slow laptop).
 pub const COLUMNS_PER_TICK: usize = 9_216;
+/// Mind work per tick (node visits, senses and inputs at 1, line-of-sight raycasts at 16):
+/// minds past it wait for the next tick, round robin by id; at least one runs.
+pub const MIND_WORK_PER_TICK: u64 = 4_096;
 /// Recent nav_path answers kept for the `paths` overlay.
 const QUERIES: usize = 4;
 
@@ -169,6 +172,8 @@ impl MeshSettings {
             bounds_min: bmin,
             bounds_max: bmax,
         };
+        // Field ranges first: nothing is derived from an unchecked config.
+        config.validate_fields().map_err(|e| nav_error(&e))?;
         // Settings saved before the tile-width cap: narrow the tiles (same navmesh, smaller tiles)
         // rather than refuse the world's navmesh.
         let border = specula_via::Derived::of(&config).border;
@@ -591,6 +596,10 @@ pub struct TickReport {
     pub repaths: usize,
     pub waiting: usize,
     pub nodes: usize,
+    /// Minds the per-tick budget left for the next ticks.
+    pub minds_skipped: usize,
+    /// Mind work done (node visits, senses; line-of-sight raycasts count 16).
+    pub mind_work: u64,
     pub ms: f64,
 }
 
@@ -607,6 +616,12 @@ pub struct Nav {
     /// they only decide when to look).
     def_ids: BTreeSet<u64>,
     def_paths: BTreeSet<String>,
+    /// The last mind that ran (the budget's round robin), and buffers reused every tick.
+    mind_cursor: u64,
+    mind_order: Vec<u64>,
+    /// Parsed shared definitions by entity, with the version they were parsed at.
+    def_cache: BTreeMap<u64, (u64, Arc<Def>)>,
+    los_scratch: Vec<([u32; 6], u64, bool)>,
     /// Minds that can't run, and why (kept apart from agents' problems).
     pub mind_problems: BTreeMap<u64, Json>,
     /// `(world generation, draw epoch)` synced up to.
@@ -704,6 +719,11 @@ struct EngineHost<'a> {
     id: u64,
     /// The action node being run.
     node: usize,
+    /// Work charged this tick (senses, inputs, raycasts).
+    work: u64,
+    /// Line-of-sight answers this tick by (eye, target point, target id): a definition asking the
+    /// same `sees` many times casts once.
+    los: Vec<([u32; 6], u64, bool)>,
 }
 
 impl EngineHost<'_> {
@@ -782,6 +802,7 @@ impl EngineHost<'_> {
 
 impl mens::Host for EngineHost<'_> {
     fn condition(&mut self, name: &str, args: &Json, bb: &mens::run::Blackboard) -> bool {
+        self.work += 1;
         let Some(me) = self.me().map(Entity::world_position) else { return false };
         match name {
             "sees" => {
@@ -809,12 +830,22 @@ impl mens::Host for EngineHost<'_> {
                 if len < 1.0e-4 {
                     return true;
                 }
+                let key = [from.x, from.y, from.z, to.x, to.y, to.z].map(f32::to_bits);
+                let tkey = tid.unwrap_or(u64::MAX);
+                if let Some((_, _, seen)) = self.los.iter().find(|(k, t, _)| *k == key && *t == tkey) {
+                    return *seen;
+                }
+                self.work += 16;
                 let filter = specula_physics::Filter { mask: u64::MAX, triggers: false, exclude: Some(self.id) };
                 let (hits, _) = self.physics.space.raycast(from, dir, len, &filter, 4);
-                match hits.iter().find(|h| Some(h.key) != Some(self.id)) {
+                let seen = match hits.iter().find(|h| Some(h.key) != Some(self.id)) {
                     None => true,
                     Some(h) => Some(h.key) == tid || tid.is_some_and(|t| is_ancestor(self.world, t, h.key)),
+                };
+                if self.los.len() < 64 {
+                    self.los.push((key, tkey, seen));
                 }
+                seen
             }
             "near" => {
                 let Some((at, _)) = args.get("target").and_then(|t| resolve_target(self.world, t, bb)) else { return false };
@@ -970,6 +1001,7 @@ impl mens::Host for EngineHost<'_> {
     }
 
     fn input(&mut self, name: &str, args: &Json, bb: &mens::run::Blackboard) -> f64 {
+        self.work += 1;
         match name {
             "distance" => {
                 let me = self.me().map(Entity::world_position);
@@ -1386,6 +1418,8 @@ impl Nav {
     /// The definition indexes from the live minds (they only grow between rebuilds).
     fn reindex_definitions(&mut self) {
         self.def_ids = self.minds.values().filter_map(|m| m.def_from.map(|(d, _)| d)).collect();
+        let live = &self.def_ids;
+        self.def_cache.retain(|k, _| live.contains(k));
         self.def_paths = self.minds.values().filter_map(|m| m.def_path.clone()).collect();
     }
 
@@ -1435,7 +1469,18 @@ impl Nav {
             self.mind_problems.insert(id, Json::from(format!("a world runs at most {MAX_MINDS} minds")));
             return;
         }
-        let parsed = Def::parse(&def, self.vocab());
+        // A shared definition is parsed once per version of its entity.
+        let cached = from.and_then(|f| self.def_cache.get(&f.0).filter(|(v, _)| *v == f.1).map(|(_, d)| d.clone()));
+        let parsed = match cached {
+            Some(d) => Ok(d),
+            None => {
+                let p = Def::parse(&def, self.vocab()).map(Arc::new);
+                if let (Some((d, v)), Ok(p)) = (from, &p) {
+                    self.def_cache.insert(d, (v, p.clone()));
+                }
+                p
+            }
+        };
         match parsed {
             Ok(d) => {
                 let bb: mens::run::Blackboard = match props.get("blackboard") {
@@ -1443,7 +1488,7 @@ impl Nav {
                     _ => BTreeMap::new(),
                 };
                 // A changed definition keeps nothing; a changed blackboard alone keeps the run.
-                let keep = self.minds.get(&id).and_then(|m| m.mind.as_ref()).filter(|m| *m.def == d).cloned();
+                let keep = self.minds.get(&id).and_then(|m| m.mind.as_ref()).filter(|m| Arc::ptr_eq(&m.def, &d) || *m.def == *d).cloned();
                 let mind = match keep {
                     Some(mut m) => {
                         for (k, v) in bb {
@@ -1453,7 +1498,7 @@ impl Nav {
                     }
                     None => {
                         self.forget_mind_goals(id);
-                        Mind::new(Arc::new(d), bb, 30)
+                        Mind::new(d, bb, 30)
                     }
                 };
                 self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: Some(mind) });
@@ -1540,15 +1585,32 @@ impl Nav {
         for (mid, budget) in ids {
             report.tiles_rebuilt += self.rebuild(mid, Some(budget), world);
         }
-        // Minds decide (their actions set agents' goals).
+        // Minds decide (their actions set agents' goals), within a per-tick work budget: round
+        // robin by id from the one after the last that ran; at least one runs.
         let mut minds = std::mem::take(&mut self.minds);
-        for (id, slot) in minds.iter_mut() {
-            let Some(mind) = slot.mind.as_mut() else { continue };
+        let mut order = std::mem::take(&mut self.mind_order);
+        order.clear();
+        order.extend(minds.iter().filter(|(_, s)| s.mind.is_some()).map(|(k, _)| *k));
+        let split = order.partition_point(|k| *k <= self.mind_cursor);
+        order.rotate_left(split);
+        let mut los = std::mem::take(&mut self.los_scratch);
+        for (n, id) in order.iter().enumerate() {
+            if n > 0 && report.mind_work >= MIND_WORK_PER_TICK {
+                report.minds_skipped = order.len() - n;
+                break;
+            }
+            let Some(mind) = minds.get_mut(id).and_then(|s| s.mind.as_mut()) else { continue };
             mind.hz = hz;
-            let mut host = EngineHost { world: &*world, physics, meshes: &self.meshes, link: self.agents.get_mut(id), id: *id, node: 0 };
+            los.clear();
+            let mut host = EngineHost { world: &*world, physics, meshes: &self.meshes, link: self.agents.get_mut(id), id: *id, node: 0, work: 0, los };
             mind.tick(&mut host, tick);
+            report.mind_work += host.work + u64::from(mind.visits);
+            los = host.los;
             report.minds += 1;
+            self.mind_cursor = *id;
         }
+        self.los_scratch = los;
+        self.mind_order = order;
         self.minds = minds;
         // Goals and positions into the crowds.
         for (id, link) in self.agents.iter_mut() {
@@ -1671,6 +1733,7 @@ impl Nav {
             h.write_u64(m.dirty.len() as u64);
         }
         h.write_u64(self.minds.len() as u64);
+        h.write_u64(self.mind_cursor);
         for (id, m) in &self.minds {
             h.write_u64(*id);
             if let Some(mind) = &m.mind {
@@ -1809,6 +1872,8 @@ impl Nav {
                         ("repaths", Json::from(r.repaths)),
                         ("repaths_waiting", Json::from(r.waiting)),
                         ("path_nodes", Json::from(r.nodes)),
+                        ("mind_work", Json::from(r.mind_work)),
+                        ("minds_skipped", Json::from(r.minds_skipped)),
                     ])
                 }),
             ),
@@ -2157,6 +2222,55 @@ mod tests {
         let m = navmesh(&mut w);
         nav.sync(&w, 0);
         assert!(nav.meshes.contains_key(&m) && nav.mind_problems.contains_key(&id), "a navmesh appearing (agents relink) keeps the mind's problem");
+    }
+
+    #[test]
+    fn hostile_navmesh_settings_are_problems_not_panics() {
+        for bad in [r#"{"cell_size": 0}"#, r#"{"agent_radius": 1e30}"#, r#"{"tile_cells": 0}"#, r#"{"cell_size": 1e-30, "agent_radius": 10}"#] {
+            assert!(MeshSettings::from_json(&Json::parse(bad).unwrap()).is_err(), "{bad}");
+        }
+        let mut w = World::default();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("nm".into());
+        s.props = Json::obj([(MESH_KEY, Json::parse(r#"{"agent_radius": 1e30}"#).unwrap())]);
+        let id = w.spawn(s, "t").unwrap().id;
+        let mut nav = Nav::default();
+        run(&mut nav, &mut w, 2);
+        assert!(nav.problems.contains_key(&id) && nav.meshes.is_empty());
+    }
+
+    #[test]
+    fn minds_share_a_per_tick_budget_round_robin() {
+        let mut w = World::default();
+        room(&mut w);
+        cube(&mut w, "t", Vec3::new(5.0, 0.5, 5.0), Vec3::ONE);
+        // A heavy definition: 290 sees that all fail (out of range), so every one is visited.
+        let sel = format!(r#"{{"selector": [{}]}}"#, vec![r#"{"if": "sees", "target": "/t", "range": 0.1, "fov_deg": 360}"#; 290].join(","));
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("brain".into());
+        s.props = Json::obj([(DEF_KEY, Json::parse(&sel).unwrap())]);
+        w.spawn(s, "t").unwrap();
+        for i in 0..300 {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(format!("m{i}"));
+            s.position = Vec3::new(-5.0 + (i % 30) as f32 * 0.3, 0.5, -5.0 + (i / 30) as f32 * 0.3);
+            s.props = Json::obj([(MIND_KEY, Json::obj([("def", Json::from("/brain"))]))]);
+            w.spawn(s, "t").unwrap();
+        }
+        let mut nav = Nav::default();
+        let physics = Physics::default();
+        nav.tick(&mut w, &physics, 0, 0, 1.0 / 30.0, 30);
+        let r = nav.last.clone().unwrap();
+        assert!(r.minds < 300 && r.minds_skipped == 300 - r.minds, "{r:?}");
+        // (At most one mind past the budget.)
+        assert!(r.mind_work < MIND_WORK_PER_TICK + 600, "{r:?}");
+        // Over a few ticks every mind gets its turn.
+        let mut ran = r.minds;
+        for t in 1..60 {
+            nav.tick(&mut w, &physics, 0, t, 1.0 / 30.0, 30);
+            ran += nav.last.as_ref().unwrap().minds;
+        }
+        assert!(ran >= 300, "{ran}");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! The solver: candidates from the most constraining relation, every relation measured at each,
 //! collisions checked through the [`Probe`], the best kept (docs/design/LOCUS.md, "The solver").
 
-use crate::geom::{segment_distance, yaw_axes, yaw_difference, yaw_toward, Box3};
+use crate::geom::{segment_distance, yaw_axes, yaw_difference, yaw_toward, Box3, BoxSet};
+use std::cell::Cell;
 use crate::{MAX_CANDIDATES, MAX_COUNT, MAX_RELATIONS};
 use specula_core::dmath;
 use specula_core::math::Vec3;
@@ -41,9 +42,9 @@ pub enum Rel {
     Facing { point: Option<Vec3>, direction: Option<(f32, f32)> },
     /// At least `min` (at most `max` from the nearest) between instances of this call, and at
     /// least `min` from the `among` boxes.
-    Spacing { min: f32, max: Option<f32>, among: Vec<Box3> },
+    Spacing { min: f32, max: Option<f32>, among: BoxSet },
     /// At least `distance` from every box.
-    Avoid { boxes: Vec<Box3>, distance: f32 },
+    Avoid { boxes: BoxSet, distance: f32 },
     /// On the navmesh (and reachable by path from a point).
     OnNavmesh { reachable_from: Option<Vec3> },
 }
@@ -96,6 +97,9 @@ pub struct Request {
     pub collide: bool,
     /// Offsets the candidate grid's phase (0: none).
     pub seed: u64,
+    /// Work one call may do (candidates, boxes looked at, probes at 8 each); past it the solver
+    /// stops and says so in [`Solution::budget_exceeded`].
+    pub max_work: u64,
 }
 
 /// One relation's result at a placement.
@@ -133,6 +137,38 @@ pub struct Solution {
     pub placements: Vec<Placement>,
     /// What to relax, in words.
     pub hints: Vec<String>,
+    /// The solver stopped at [`Request::max_work`] (the placements are those finished).
+    pub budget_exceeded: bool,
+    /// Work done.
+    pub work: u64,
+}
+
+/// A probe that charges each call to the work count.
+struct Counted<'a> {
+    inner: &'a mut dyn Probe,
+    work: &'a Cell<u64>,
+}
+
+impl Probe for Counted<'_> {
+    fn ground(&mut self, x: f32, z: f32, from_y: f32, depth: f32, only: Option<u64>) -> Option<(f32, u64)> {
+        self.work.set(self.work.get() + 8);
+        self.inner.ground(x, z, from_y, depth, only)
+    }
+    fn blocked(&mut self, b: &Box3) -> Option<u64> {
+        self.work.set(self.work.get() + 8);
+        self.inner.blocked(b)
+    }
+    fn navmesh(&mut self, p: Vec3) -> Option<Vec3> {
+        self.work.set(self.work.get() + 8);
+        self.inner.navmesh(p)
+    }
+    fn reachable(&mut self, from: Vec3, to: Vec3) -> bool {
+        self.work.set(self.work.get() + 8);
+        self.inner.reachable(from, to)
+    }
+    fn navmesh_area(&mut self) -> Option<Box3> {
+        self.inner.navmesh_area()
+    }
 }
 
 /// Tolerances: a relation off by less counts as held.
@@ -342,6 +378,10 @@ impl Request {
 
 /// Solves where `req.count` instances go.
 pub fn solve(req: &Request, probe: &mut dyn Probe) -> Solution {
+    let work = Cell::new(0u64);
+    let mut counted = Counted { inner: probe, work: &work };
+    let probe: &mut dyn Probe = &mut counted;
+    let mut budget_exceeded = false;
     let count = req.count.clamp(1, MAX_COUNT);
     let relations: Vec<&Relation> = req.relations.iter().take(MAX_RELATIONS).collect();
     let gen = req.generator(probe);
@@ -355,7 +395,12 @@ pub fn solve(req: &Request, probe: &mut dyn Probe) -> Solution {
         let mut evaluated = 0usize;
         for c in &coarse {
             evaluated += 1;
-            if let Some(s) = evaluate(req, &relations, c, k, count, &placed, probe, best.as_ref().map_or(f32::INFINITY, |b| b.score)) {
+            work.set(work.get() + 1);
+            if work.get() > req.max_work {
+                budget_exceeded = true;
+                break;
+            }
+            if let Some(s) = evaluate(req, &relations, c, k, count, &placed, probe, best.as_ref().map_or(f32::INFINITY, |b| b.score), &work) {
                 if best.as_ref().is_none_or(|b| s.score < b.score) {
                     best = Some(s);
                 }
@@ -396,12 +441,20 @@ pub fn solve(req: &Request, probe: &mut dyn Probe) -> Solution {
             }
             for c in &extra {
                 evaluated += 1;
-                if let Some(s) = evaluate(req, &relations, c, k, count, &placed, probe, best.as_ref().map_or(f32::INFINITY, |b| b.score)) {
+                work.set(work.get() + 1);
+                if work.get() > req.max_work {
+                    budget_exceeded = true;
+                    break;
+                }
+                if let Some(s) = evaluate(req, &relations, c, k, count, &placed, probe, best.as_ref().map_or(f32::INFINITY, |b| b.score), &work) {
                     if best.as_ref().is_none_or(|b| s.score < b.score) {
                         best = Some(s);
                     }
                 }
             }
+        }
+        if budget_exceeded {
+            break;
         }
         let Some(mut b) = best else { break };
         b.placement.candidates = evaluated;
@@ -439,7 +492,7 @@ pub fn solve(req: &Request, probe: &mut dyn Probe) -> Solution {
             hints.push("no collision-free spot was found for some instances within 2 m of what the relations ask: move or remove what blocks them, or loosen a relation".into());
         }
     }
-    Solution { placements: placed, hints }
+    Solution { placements: placed, hints, budget_exceeded, work: work.get() }
 }
 
 /// Small preferences: an even share along a segment, the middle of a gap, close to the start.
@@ -457,7 +510,7 @@ fn preference(req: &Request, c: &Cand, k: usize, count: usize) -> f32 {
 
 /// How far off a relation is from the footprint's X/Z alone (a lower bound of its full
 /// measure); `None` for relations that need probes or height.
-fn xz_off(rel: &Rel, fp: &Box3, c: &Cand, placed: &[Placement], facing_yaw: Option<f32>, yaw: f32) -> Option<f32> {
+fn xz_off(rel: &Rel, fp: &Box3, c: &Cand, placed: &[Placement], facing_yaw: Option<f32>, yaw: f32, work: &Cell<u64>) -> Option<f32> {
     Some(match rel {
         Rel::On { target: Some((b, _)) } => b.overhang(fp),
         Rel::On { target: None } | Rel::OnNavmesh { .. } => return None,
@@ -482,18 +535,20 @@ fn xz_off(rel: &Rel, fp: &Box3, c: &Cand, placed: &[Placement], facing_yaw: Opti
         Rel::Spacing { min, among, .. } => {
             let nearest = placed.iter().map(|p| p.footprint.distance_xz(fp)).fold(f32::INFINITY, f32::min);
             let mut off = if nearest.is_finite() { (min - nearest).max(0.0) } else { 0.0 };
-            for b in among {
-                off += (min - b.distance_xz(fp)).max(0.0);
-            }
+            among.for_each_near(fp, *min, work, |b| off += (min - b.distance_xz(fp)).max(0.0));
             off
         }
-        Rel::Avoid { boxes, distance } => boxes.iter().map(|b| (distance - b.distance_xz(fp)).max(0.0)).fold(0.0, f32::max),
+        Rel::Avoid { boxes, distance } => {
+            let mut off = 0.0f32;
+            boxes.for_each_near(fp, *distance, work, |b| off = off.max((distance - b.distance_xz(fp)).max(0.0)));
+            off
+        }
     })
 }
 
 /// Scores one candidate; `None` when it can't beat `bound` (probes skipped).
 #[allow(clippy::too_many_arguments)]
-fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize, placed: &[Placement], probe: &mut dyn Probe, bound: f32) -> Option<Scored> {
+fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize, placed: &[Placement], probe: &mut dyn Probe, bound: f32, work: &Cell<u64>) -> Option<Scored> {
     // Yaw: facing, else the generator's (against), else along's line, else as given.
     let mut yaw = c.yaw.unwrap_or(req.yaw_deg);
     let mut facing_yaw = None;
@@ -528,7 +583,7 @@ fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize,
     let fp_xz = Box3::footprint(req.lo, req.hi, Vec3::new(c.x, c.base - req.lo.y, c.z), yaw);
     let mut lower = preference(req, c, k, count);
     for r in rels {
-        if let Some(off) = xz_off(&r.rel, &fp_xz, c, placed, facing_yaw, yaw) {
+        if let Some(off) = xz_off(&r.rel, &fp_xz, c, placed, facing_yaw, yaw, work) {
             let (tol, w) = if r.rel.is_angle() { (TOL_DEG, DEG_WEIGHT) } else { (TOL_M, 1.0) };
             lower += (off - tol).max(0.0) * w * if r.soft { 1.0 } else { HARD };
         }
@@ -686,16 +741,15 @@ fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize,
                 if let (Some(mx), true) = (max, nearest.is_finite()) {
                     off += (nearest - mx).max(0.0);
                 }
-                for b in among {
-                    off += (min - b.distance_xz(&fp)).max(0.0);
-                }
+                among.for_each_near(&fp, *min, work, |b| off += (min - b.distance_xz(&fp)).max(0.0));
                 if off > TOL_M {
                     why = Some(if nearest.is_finite() { format!("{nearest:.3} m from the nearest other instance") } else { "too close to an 'among' entity".into() });
                 }
                 off
             }
             Rel::Avoid { boxes, distance } => {
-                let off = boxes.iter().map(|b| (distance - b.distance_xz(&fp)).max(0.0)).fold(0.0, f32::max);
+                let mut off = 0.0f32;
+                boxes.for_each_near(&fp, *distance, work, |b| off = off.max((distance - b.distance_xz(&fp)).max(0.0)));
                 if off > TOL_M {
                     why = Some(format!("within {:.3} m of something to avoid", distance - off));
                 }
@@ -810,6 +864,7 @@ mod tests {
             settle: true,
             collide: true,
             seed: 0,
+            max_work: u64::MAX,
         }
     }
 
@@ -844,7 +899,7 @@ mod tests {
     #[test]
     fn spaced_along_a_line_with_a_hint_when_too_many() {
         let line = Rel::Along { a: Vec3::new(-4.0, 0.0, 0.0), b: Vec3::new(4.0, 0.0, 0.0), offset: 0.0 };
-        let mut r = req(vec![line.clone(), Rel::Spacing { min: 1.0, max: None, among: Vec::new() }]);
+        let mut r = req(vec![line.clone(), Rel::Spacing { min: 1.0, max: None, among: BoxSet::default() }]);
         r.count = 4;
         let mut room = Room { boxes: Vec::new() };
         let s = solve(&r, &mut room);
@@ -893,9 +948,27 @@ mod tests {
     }
 
     #[test]
+    fn thousands_of_boxes_to_avoid_stay_cheap_and_the_budget_holds() {
+        let boxes: Vec<Box3> = (0..4000).map(|i| {
+            let (x, z) = (-50.0 + (i % 40) as f32 * 2.5, -50.0 + (i / 40) as f32);
+            Box3::aligned(Vec3::new(x - 0.15, 0.0, z - 0.15), Vec3::new(x + 0.15, 1.0, z + 0.15))
+        }).collect();
+        let region = Box3::aligned(Vec3::new(-60.0, -1.0, -60.0), Vec3::new(60.0, 3.0, 60.0));
+        let mut r = req(vec![Rel::Inside { region, y: None }, Rel::Avoid { boxes: BoxSet::new(boxes), distance: 3.0 }]);
+        r.count = 8;
+        let mut room = Room { boxes: Vec::new() };
+        let s = solve(&r, &mut room);
+        assert!(!s.budget_exceeded && s.placements.len() == 8, "{}", s.work);
+        assert!(s.work < 3_000_000, "work {}", s.work);
+        r.max_work = 10_000;
+        let s = solve(&r, &mut room);
+        assert!(s.budget_exceeded && s.work <= 10_000 + 2_000, "{}", s.work);
+    }
+
+    #[test]
     fn deterministic() {
         let mut room = Room { boxes: vec![(10, table())] };
-        let mut r = req(vec![Rel::Inside { region: Box3::aligned(Vec3::new(-3.0, 0.0, -3.0), Vec3::new(3.0, 3.0, 3.0)), y: None }, Rel::Spacing { min: 0.5, max: None, among: Vec::new() }]);
+        let mut r = req(vec![Rel::Inside { region: Box3::aligned(Vec3::new(-3.0, 0.0, -3.0), Vec3::new(3.0, 3.0, 3.0)), y: None }, Rel::Spacing { min: 0.5, max: None, among: BoxSet::default() }]);
         r.count = 6;
         let a = solve(&r, &mut room);
         let b = solve(&r, &mut room);
