@@ -2,7 +2,7 @@
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. This page is **current state and what's next** only; history is in
-[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-17**.
+[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-18**.
 
 - **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
   re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
@@ -21,6 +21,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   playtest swarms and tool ergonomics, streaming and HLOD, then the M3 exit proof and agent evals); wave 3 (M4: stage
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
+  **Merged so far (2026-10-18):** swarm communication and the module host. Lex, physics and animation are in
+  review rounds.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
@@ -126,6 +128,10 @@ In practice that means six **foundations** that apply to every change from M1 on
     (`camera_set` / `camera_list` / `camera_delete`), `window_view` (point the human's window).
   - Assets: `model_build` / `model_reload` (procedural recipes and glTF/GLB), 2D tilemaps (`tilemap_get` /
     `tilemap_set`).
+  - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
+    scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
+  - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
+    `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
     `perf.toml`), `perf_capture`, `perf_zones`, `perf_memory`, `time_control` (pause, step, scale), `engine_info`.
   - A hosted game adds `play_*` tools (Sepulcra: `play_new`, `play_command`, `play_control`, `play_state`,
@@ -138,12 +144,13 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Game-side crates:** `specula-anim` (clips, A1-A2), `specula-audio` (WASAPI, procedural 3D audio),
   `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
   modelling, tier 1), `specula-gltf`.
-- **Size:** about 129k lines of Rust in 13 crates plus the Sepulcra game and app; about 1,100 tests. **Zero
+- **Size:** about 129k lines of Rust in 13 crates (15 with `specula-sdk` and `specula-logic`) plus the Sepulcra game and app; about 1,100 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
-- **No physics** (P1-P4 are M3), no gameplay-as-data (Lex), no module host or hot-reloaded game logic yet: Sepulcra's
-  rules are hand-written Rust in `games/sepulcra`.
+- **No physics** (P1-P4 are M3) and no gameplay-as-data (Lex) on main yet: Sepulcra's rules are hand-written Rust in
+  `games/sepulcra`. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
+  requests can't be preempted.
 - **Animation** stops at stage A2 (clips and state-driven playback); blending, IK and agent-authored motion are M3.
 - **No save games** for players (world files are an editor format), no title screen in the app, settings aren't
   saved and there's no rebinding.
@@ -181,6 +188,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   working directory or pass `--captures`.
 - **Live check:** CI has no GPU. After GPU or window changes, run `python scripts/window_check.py` and **open the PNGs**.
 - **MCP tool names:** no dots, because Claude Code rejects them.
+- **Disk:** drive D: is nearly full; lane worktrees each grew 8-15 GB of `target/`. Build into C: with
+  `CARGO_TARGET_DIR` (lanes use one folder each), and delete a merged worktree's `target/`.
+- **Firewall:** never bind `0.0.0.0`, even to test a port: Windows asks about every new binary that listens beyond
+  loopback (leases read the OS listener table instead).
 
 ## Open owner decisions
 

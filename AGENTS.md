@@ -14,7 +14,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
    **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
    DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` and `winmm` → `specula-platform`;
    `ole32` → `specula-audio`. Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
-   `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio).
+   `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio),
+   `iphlpapi` (specula-sys: which ports have listeners).
    Tests/examples must not re-declare imports of a DLL their dependencies already declare.
 3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
    Do not set other linkers or add build scripts that call external tools.
@@ -55,7 +56,10 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-anim` | skeletal animation (stages A1–A2) |
 | `specula-model` | procedural modelling: recipes → meshes, LODs, colliders |
 | `specula-gltf` | glTF 2.0 / GLB import and export |
+| `specula-sdk` | the one crate game-logic modules depend on: deterministic `Cx` API, versioned C ABI |
+| `specula-logic` | module host internals: library loading, the build service, diagnostics as data |
 | `games/sepulcra`, `games/sepulcra-app` | the first game: headless rules, and the app hosted by the engine |
+| `games/ambulo` | example module: a walking, jumping character (the module host's proof) |
 
 ## Tooling on this machine
 

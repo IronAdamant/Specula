@@ -76,3 +76,11 @@ ssao = 0.4
 post_bloom = 0.6
 post_tonemap = 0.2
 post_fxaa = 0.3
+
+# Swarm settings (the lead agent can also change frame_floor_fps live with swarm_settings, whose reply
+# suggests a floor from this machine's hardware).
+# [swarm]
+# frame_floor_fps = 60          # 20-240: the window's minimum fps while agents keep calls queued
+# lease_ports = [7500, 7599]    # ports lease_take {kind: "port"} hands out (never the engine's own)
+# scratch_root = "scratch"      # where scratch-folder leases are made
+# gpu_ms_per_s = 1000           # GPU time per second shared by GPU leases (advisory)

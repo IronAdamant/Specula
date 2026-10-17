@@ -192,23 +192,28 @@ entities only; everything else is the gap.
   style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
   imported images, models and audio follow with the asset studio.
   *Why:* two agents editing one recipe file today can silently clobber each other.
-- [ ] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
+- [x] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
   - Tasks are linked to claims and journal entries.
   - The parent assigns work; children report status, blockers and questions.
   - Undone and blocked work is visible to everyone.
+  *Done 2026-10-18:* `task_*` tools (dependencies, owners, blockers, questions, a change feed); each agent's current task gathers its journal entries; saved as `board.json` beside the world.
 
   *Why:* claims protect data; the board shares intent, so two agents don't both build the tavern.
-- [ ] **Intents and notes** (M3): before working, an agent declares its planned scope ("rework the east gate"), and
+- [x] **Intents and notes** (M3): before working, an agent declares its planned scope ("rework the east gate"), and
   overlaps with other intents or claims are flagged *before* any edit. Agents can also leave notes on entities, files
   and tasks for whoever comes next, as handoffs.
+  *Done 2026-10-18:* `intent_declare`/`intent_list`/`intent_clear` (overlaps flagged before any edit; `claim_take` adds `intent_warnings`), `note_add`/`note_list`/`note_delete`.
 - [ ] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
   original. In M4, a suggested three-way merge for text data, where the engine knows the schema.
-- [ ] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
+  *M3 part done 2026-10-18:* `stale_version`, `claimed` and `claims_overlap` refusals carry `conflict {base, theirs, yours, overlap, rebase}`.
+- [x] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
   changes, 2 refused, 1 open question"), so a parent reads a report, not a log.
-- [ ] **Resource leases** (M3, with headless playtest swarms): ports, GPU time and scratch folders leased per agent,
+  *Done 2026-10-18:* `world_rollup {by: agent|task}`.
+- [x] **Resource leases** (M3, with headless playtest swarms): ports, GPU time and scratch folders leased per agent,
   for swarms that run their own engines.
   *Why:* this session's lanes clobbered a shared scratch folder, one killed other lanes' engines, and engines
   collided on ports.
+  *Done 2026-10-18:* `lease_*` tools: ports (checked against the OS listener table, never a wildcard bind), advisory GPU ms per second, scratch folders.
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
 - [ ] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
@@ -218,15 +223,17 @@ entities only; everything else is the gap.
 - [ ] **Director pattern** (M4–M5): one lead agent turns the game design doc into tasks, assigns roles and tracks
   progress on the board, with the owner as final reviewer.
   *Why:* this is the "agents complete the entire game" path.
-- [ ] **Swarm frame floor as a setting** (M3; owner, 2026-10-17): the window's minimum frame rate while agents are
+- [x] **Swarm frame floor as a setting** (M3; owner, 2026-10-17): the window's minimum frame rate while agents are
   backed up (today the constant `BUSY_FRAME`, 60 fps, in `crates/specula/src/schedule.rs`) becomes a setting
   (`perf.toml` and a tool) that the controller (lead) AI sets before it deploys a swarm, from the operator's
   hardware: low- and mid-spec laptops keep the window fluid at the swarm's expense; high-spec machines and cloud
   hardware can trade frames for agent throughput.
   *Why:* the right trade depends on how strong the human operator's machine is.
+  *Done 2026-10-18:* `perf.toml [swarm] frame_floor_fps` and `swarm_settings` (lead or director only), 20-240 fps, with a hardware hint. iGPU, 64 agents: floor 30 gives 13% more agent ops, floor 20 30% more (`perf/drills/20261018-*`).
 - [ ] **Auth before any non-localhost bind** (before any remote agent): per-agent tokens, with claims tied to tokens.
 - [ ] **Scale drills** (every milestone from M1): 16, then 64 concurrent agents. Measure throughput, conflict rate,
   token cost and reject reasons.
+  *M3 progress 2026-10-18:* 16- and 64-agent drills exercise the board, intents, leases and conflict help (`perf/drills/20261018-*`).
 - [ ] **Cost and progress dashboard** (M5): tokens per agent, tasks done, rejects. Shown in the editor.
 - [ ] **The swarm, seen by humans** (M5): the editor shows the task board, intents, claims, notes and roll-ups live,
   so a human can see who is doing what, step in, or hand a task to an agent. Same protocol, no separate system.
@@ -514,10 +521,12 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   relations come back as data with the nearest valid alternative.
   *Why:* agents make systematic coordinate errors, but are good at relations once a solver does the placing.
 
-- [ ] **Module host**: game logic as Rust `cdylib`s behind a C ABI. The engine owns all state; build → reload without
+- [x] **Module host**: game logic as Rust `cdylib`s behind a C ABI. The engine owns all state; build → reload without
   losing the world; structured build errors.
-- [ ] **`specula-sdk`**: the one crate game modules depend on. It exposes only deterministic APIs (tick, engine RNG),
+  *Done 2026-10-18:* `crates/specula-logic` and `crates/specula/src/logic/`; `logic_build`, `logic_reload`, `logic_unload`, `logic_status`, `logic_input`, `logic_hook`. Design: [design/MODULES.md](design/MODULES.md).
+- [x] **`specula-sdk`**: the one crate game modules depend on. It exposes only deterministic APIs (tick, engine RNG),
   enforcing F2.
+  *Done 2026-10-18:* `crates/specula-sdk` (stateless `Module` trait, `Cx` with tick, inputs, events, world access, a state store and engine RNG streams; versioned C ABI).
 - [x] **Input**: keyboard and mouse (Win32), gamepads (XInput, runtime-loaded). Input is recorded into the journal.
   *Done 2026-10-13:* Win32 keyboard/mouse/pointer + XInput (runtime-loaded); per-tick action recordings in `specula-input`.
 - [x] **Time**: `time_pause`, `time_step`, `time_resume`, and `time_scale` for fast-forward headless runs.
@@ -554,7 +563,8 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
   *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.
-- [ ] **Desync detector**: when two runs' hashes diverge, report the first tick and the component that differs.
+- [x] **Desync detector**: when two runs' hashes diverge, report the first tick and the component that differs.
+  *Done 2026-10-18:* per-tick hash ring, `desync_trace` and `desync_compare` (files, live, or the journal replayed); Sepulcra reports subsystem hashes; `scripts/desync_check.py`.
 - [x] ➕ **Input actions with rebinding** ("jump", not "Space"), with device-correct glyphs.
   *Done 2026-10-13:* `specula-input`: actions as JSON, rebinding with conflicts, pad/touch cancel, device glyphs.
 - [ ] ➕ **Navigation and AI**: navmesh generation from world geometry, pathfinding, crowd avoidance; behaviour trees
@@ -566,8 +576,10 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **2D physics variant** if the game is 2D.
 
 **Exit proof:**
-- [ ] An agent writes a module that adds a playable character.
-- [ ] Another agent changes that module while the world keeps running.
+- [x] An agent writes a module that adds a playable character.
+  *Done 2026-10-18:* `games/ambulo`; `crates/specula/tests/module_reload.rs`, `scripts/module_reload.py`.
+- [x] Another agent changes that module while the world keeps running.
+  *Done 2026-10-18:* same proof; edit to reload about 1 s.
 - [ ] A headless suite of 20+ replays runs across parallel engines and passes.
 - [ ] The playable build holds budget on the integrated GPU.
 
@@ -751,12 +763,16 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 - [ ] **Compile-time budgets in CI** from `cargo build --timings`: clean dev under 30 s, incremental under 3 s.
 
 **With M3 (module host):**
-- [ ] Thin game modules that depend only on `specula-sdk`; edit → reload under 2 s as a budget.
-- [ ] `logic_build`: compiler diagnostics as JSON data, with machine-applicable fixes auto-applied.
-- [ ] Per-package dev optimisation (engine `opt-level = 2`, modules `0`).
+- [x] Thin game modules that depend only on `specula-sdk`; edit → reload under 2 s as a budget.
+  *Done 2026-10-18:* about 0.8-1.1 s measured; `logic_build` refuses anything but path crates (no build scripts, proc-macros, registry crates, Cargo config or toolchain files).
+- [x] `logic_build`: compiler diagnostics as JSON data, with machine-applicable fixes auto-applied.
+  *Done 2026-10-18.*
+- [x] Per-package dev optimisation (engine `opt-level = 2`, modules `0`).
+  *Done 2026-10-18:* engine crates `opt-level = 2` in dev (agent calls about 1.5x faster); modules stay at the default without debug info, since linking dominates a thin module.
 
 **Long-term:**
-- [ ] Build service: the engine queues and merges swarm build requests (the Cargo lock becomes a scheduler).
+- [x] Build service: the engine queues and merges swarm build requests (the Cargo lock becomes a scheduler).
+  *Done 2026-10-18:* `BuildService`: one Cargo at a time, identical queued requests merged.
 - [ ] Zero-dep mutation fuzzer for every parser (JSON, HTTP, PNG, inflate, TrueType, glTF, audio, saves), in CI.
 - [ ] An unsafe-auditor reviewer role, and the unsafe-site count tracked per crate.
 - [ ] Try `rust-lld` on windows-gnu (the toolchain's own linker) and measure link time.

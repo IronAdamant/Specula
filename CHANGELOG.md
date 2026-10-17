@@ -11,6 +11,22 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
+### M3, in progress (from 2026-10-18)
+
+- **Swarm communication:** a task board (`task_*`: dependencies, owners, blockers, questions, a change feed; saved as
+  `board.json` beside the world, with a 24 MiB budget), intents and notes (`intent_*`, `note_*`; overlaps flagged
+  before any edit), conflict help on refused writes (`conflict {base, theirs, yours, overlap, rebase}`), roll-ups
+  (`world_rollup`), resource leases (`lease_*`: ports, advisory GPU time, scratch folders), the window's frame floor
+  under a swarm as a setting (`perf.toml [swarm]`, `swarm_settings`, lead only, with a hardware hint), and a desync
+  detector (`desync_trace`, `desync_compare`, `Game::state_hashes`, `scripts/desync_check.py`). `specula-sys` gains
+  `power()` and `net::tcp_listening_ports()` (runtime-loaded `iphlpapi`); `specula-gpu` gains `Gpu::memory_stats`
+- **Module host:** game logic as hot-reloaded Rust `cdylib`s. New crates `specula-sdk` (what a module depends on:
+  deterministic `Cx`, versioned C ABI, panics caught at the boundary) and `specula-logic` (loading, a build service
+  that merges duplicate requests, Cargo diagnostics as data with machine-applicable fixes). Tools `logic_build`,
+  `logic_reload`, `logic_unload`, `logic_status`, `logic_input`, `logic_hook`. Builds are vetted (path crates only;
+  no build scripts, proc-macros, Cargo config or toolchain files) and run offline with `panic = "unwind"`. Example
+  module `games/ambulo`; edit to reload about 1 s. Engine crates build at `opt-level = 2` in dev
+
 ### Pre-M3 cleanup (2026-10-17)
 
 - Agent calls are served between presents (`schedule.rs`), not once per frame: one windowed agent gets 500-1,270
