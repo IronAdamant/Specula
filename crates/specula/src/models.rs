@@ -2314,6 +2314,8 @@ pub struct GpuModels {
     pub(crate) ready: PipelineVariants,
     /// Per build: the anim set its entities play (the world's assets laid over its own).
     anim_sets: BTreeMap<u64, Arc<AnimSet>>,
+    /// The world's anim assets `anim_sets` were laid over with (see [`GpuModels::sync_anim_sets`]).
+    sets_from: Option<Arc<crate::anim::Assets>>,
     /// The world's ground and anim assets as last read (see [`crate::anim::AnimEnv`]).
     env: crate::anim::AnimEnv,
 }
@@ -2323,13 +2325,12 @@ impl GpuModels {
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
         self.ready = gpu.pipeline_variants();
-        let assets_changed = self.refresh_anim_env(library, world, world_generation);
+        self.refresh_anim_env(library, world, world_generation);
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
-            if assets_changed {
-                self.anim_sets.clear();
-                self.refresh_anim_sets(&lib, world);
+            if self.anim_sets_stale() {
+                self.sync_anim_sets(&lib, world, true);
             }
             return Vec::new();
         }
@@ -2391,9 +2392,36 @@ impl GpuModels {
                 }
             }
         }
-        self.anim_sets.retain(|id, _| self.uploaded.contains_key(id));
-        self.refresh_anim_sets(&library.lock(), world);
+        self.sync_anim_sets(&library.lock(), world, true);
         errors
+    }
+
+    /// The anim set entities of `handle` play when drawn (the world's assets laid over the
+    /// build's own); `None` without one, or before the handle's build is known.
+    pub fn anim_set_of(&self, handle: u32) -> Option<Arc<AnimSet>> {
+        let id = self.by_handle.get(handle as usize).copied().flatten()?;
+        self.anim_sets.get(&id).cloned().or_else(|| self.uploaded.get(&id).and_then(|m| m.anims.clone()))
+    }
+
+    /// Whether the world's anim assets changed since the anim sets were laid over with them
+    /// (whoever read them: a tool, the clock or a sync).
+    pub(crate) fn anim_sets_stale(&self) -> bool {
+        !self.sets_from.as_ref().is_some_and(|a| Arc::ptr_eq(a, &self.env.assets))
+    }
+
+    /// Keeps the per-build anim sets in step with the world's anim assets: all laid over again
+    /// when they changed, new builds' sets added, gone builds' dropped. `uploaded_only`: only
+    /// builds on the GPU (the plain path uploads every live build); the streamed path keeps one
+    /// per live build, so a build uploaded later plays the world's clips at once.
+    pub(crate) fn sync_anim_sets(&mut self, lib: &Library, world: &World, uploaded_only: bool) {
+        if self.anim_sets_stale() {
+            self.anim_sets.clear();
+            self.sets_from = Some(Arc::clone(&self.env.assets));
+        }
+        let live: BTreeSet<u64> = self.by_handle.iter().flatten().copied().collect();
+        let uploaded = &self.uploaded;
+        self.anim_sets.retain(|id, _| live.contains(id) && (!uploaded_only || uploaded.contains_key(id)));
+        self.refresh_anim_sets(lib, world, uploaded_only);
     }
 
     /// Forgets the spare animators of build `id` (its upload is gone: see `streaming`).
@@ -2454,11 +2482,12 @@ impl GpuModels {
         Ok(())
     }
 
-    /// Each uploaded build's anim set from the library (the world's assets laid over its own).
-    fn refresh_anim_sets(&mut self, lib: &Library, world: &World) {
+    /// Each live (`uploaded_only`: uploaded) build's anim set from the library (the world's
+    /// assets laid over its own).
+    fn refresh_anim_sets(&mut self, lib: &Library, world: &World, uploaded_only: bool) {
         for h in live_handles(world) {
             let Some(Some(id)) = self.by_handle.get(h as usize).copied() else { continue };
-            if self.anim_sets.contains_key(&id) || !self.uploaded.contains_key(&id) {
+            if self.anim_sets.contains_key(&id) || (uploaded_only && !self.uploaded.contains_key(&id)) {
                 continue;
             }
             if let Some(set) = lib.anim_set(h) {

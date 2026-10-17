@@ -692,11 +692,14 @@ impl Hlod {
 
     /// A capture's frame (no hysteresis, no memory): fills [`Hlod::capture_cover`] and appends
     /// the proxies' draws. Returns `(cells, covered entities)`.
-    pub fn capture(&mut self, eye: Vec3, fov_y_deg: f32, viewport_h: u32, min_m: f32, out: &mut Vec<DrawItem>) -> (u32, u32) {
+    pub fn capture(&mut self, eye: Vec3, fov_y_deg: f32, viewport_h: u32, min_m: f32, stale: impl Fn(CellKey) -> bool, out: &mut Vec<DrawItem>) -> (u32, u32) {
         self.capture_cover.clear();
         let (mut cells, mut covered) = (0, 0);
-        for c in self.cells.values() {
+        for (&k, c) in &self.cells {
             let Some(u) = c.current() else { continue };
+            if stale(k) {
+                continue;
+            }
             let d = box_distance(eye, c.content.lo, c.content.hi);
             if d > switch_distance(c.content.k, fov_y_deg, viewport_h, min_m) {
                 for &id in &u.members {

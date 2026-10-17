@@ -209,7 +209,8 @@ impl Engine {
         for w in waiters {
             let building = match self.job_views(&w.job, &w.session) {
                 Ok(views) => {
-                    let streaming = self.stream.waiting_in(&stream_views(&views), &self.world, &self.models);
+                    // Edits since it parked are filed (no old proxy drawn) and its views stay sources.
+                    let streaming = self.stream_capture(&stream_views(&views));
                     self.building_in(&views) + self.two_d_waiting(&views, false) + streaming
                 }
                 Err(out) => {
@@ -446,8 +447,8 @@ impl Engine {
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
         if r.stats.not_resident > 0 {
             warnings.push(Json::from(format!(
-                "{} built model entit{} not drawn: not resident (streaming: beyond radius_m of every camera, or evicted under memory_mb; \
-                 packet streaming and subjects drawn_as)",
+                "{} built model entit{} not drawn: not resident (streaming: too far and too small for every camera, or evicted under \
+                 memory_mb; see streaming.not_resident and subjects' drawn_as, stream_state for why)",
                 r.stats.not_resident,
                 if r.stats.not_resident == 1 { "y" } else { "ies" },
             )));
@@ -1179,8 +1180,27 @@ impl Engine {
         let Some(s) = r.subjects.into_iter().find(|s| s.id == id) else {
             return ToolOutput::error(format!("{path} was not in the frame it was queried in"));
         };
-        out.set("drawn", Json::from(true));
-        for key in ["on_screen", "screen", "distance_m", "visible_px", "visible_px_approx", "screen_box_exact", "no_pixels", "occluded"] {
+        // Streaming: not on the GPU (not drawn), or drawn merged in its cell's HLOD proxy (drawn,
+        // its own pixels not counted).
+        match s.json.get("drawn_as").and_then(Json::as_str) {
+            Some("not_resident") => {
+                out.set("drawn", Json::from(false));
+                out.set("drawn_as", Json::from("not_resident"));
+                out.set(
+                    "reason",
+                    Json::from("built but not on the GPU (streaming: too far and too small for every camera, or evicted under memory_mb; stream_state shows why)"),
+                );
+            }
+            Some("hlod") => {
+                out.set("drawn", Json::from(true));
+                out.set("drawn_as", Json::from("hlod"));
+                out.set("reason", Json::from("drawn merged in its cell's HLOD proxy: its own pixels aren't counted (visible_px null)"));
+            }
+            _ => {
+                out.set("drawn", Json::from(true));
+            }
+        }
+        for key in ["on_screen", "screen", "distance_m", "visible_px", "visible_px_approx", "screen_box_exact", "no_pixels", "occluded", "resident_lods_from"] {
             if let Some(v) = s.json.get(key) {
                 out.set(key, v.clone());
             }

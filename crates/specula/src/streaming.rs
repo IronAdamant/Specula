@@ -46,6 +46,9 @@ use std::time::{Duration, Instant};
 /// While the window's camera moves (a quarter cell, or turns), priorities and wanted sets are
 /// recomputed at most this often; at once when the world, the builds or the sources change.
 pub const UPDATE_EVERY: Duration = Duration::from_millis(100);
+/// A model at least this many pixels across in a camera's view is wanted there whatever
+/// `radius_m` says (a big building or a glass tower far away stays drawn).
+pub const RESIDENT_MIN_PX: f32 = 4.0;
 /// Otherwise at least this often (cells settling for their proxies).
 pub const UPDATE_IDLE: Duration = Duration::from_secs(1);
 /// A capture's camera stays a stream source this long after the capture.
@@ -473,6 +476,10 @@ enum SourceKind {
 struct Source {
     kind: SourceKind,
     eye: Vec3,
+    target: Vec3,
+    /// Orthographic: the distance at which a perspective camera of the same field of view
+    /// sees the view's height (sizes on screen don't change with distance).
+    ortho_d: Option<f32>,
     fov_y_deg: f32,
     viewport_h: u32,
     view_proj: Mat4,
@@ -483,6 +490,26 @@ struct Source {
 }
 
 impl Source {
+    fn new(kind: SourceKind, cam: &Camera, w: u32, h: u32, until: Option<Instant>) -> Source {
+        let ortho_d = match cam.projection {
+            sight::Projection::Ortho { height_m } => Some(height_m * 0.5 / (cam.fov_y_deg.to_radians() * 0.5).tan().max(1e-6)),
+            sight::Projection::Perspective => None,
+        };
+        let dir = (cam.target - cam.eye).normalize();
+        Source { kind, eye: cam.eye, target: cam.target, ortho_d, fov_y_deg: cam.fov_y_deg, viewport_h: h, view_proj: cam.view_proj(w, h), dir, until }
+    }
+
+    /// The distance sizes on screen are worked out from: to the box from the eye; orthographic,
+    /// [`Source::ortho_d`] for anything in view (plus how far from the view's centre otherwise,
+    /// so what is near the view is wanted before what is far from it).
+    fn dist(&self, lo: Vec3, hi: Vec3) -> f32 {
+        match self.ortho_d {
+            None => hlod::box_distance(self.eye, lo, hi),
+            Some(d) if box_in_view(&self.view_proj, lo, hi) => d,
+            Some(d) => d + hlod::box_distance(self.target, lo, hi),
+        }
+    }
+
     /// Priority weight: captures (an agent is waiting) before the window's view before the
     /// rest.
     fn weight(&self, lo: Vec3, hi: Vec3) -> f32 {
@@ -492,6 +519,13 @@ impl Source {
             SourceKind::Window => 1.0,
         }
     }
+}
+
+/// How many pixels across `built` at world scale `scale` is from `d` away.
+fn built_px(built: &Built, scale: f32, d: f32, fov_y_deg: f32, viewport_h: u32) -> f32 {
+    let (lo, hi) = built.bounds();
+    let r = ((hi - lo).length() * 0.5).max(1e-3) * scale;
+    crate::models::screen_px(r, d.max(0.0), fov_y_deg, viewport_h)
 }
 
 /// Whether any of the box can be in view (conservative, like `sight::in_view`).
@@ -610,6 +644,15 @@ pub struct Streamer {
     blocked_cells: Vec<CellKey>,
     /// Cells the last index patch touched (reused).
     touched: Vec<CellKey>,
+    /// Cells changed (edited, or a member's build rebuilt) that no pass has looked at since:
+    /// the window's proxies of them are redone out of turn, captures run a whole pass first,
+    /// and no capture draws their old proxy.
+    dirty_cells: std::collections::BTreeSet<CellKey>,
+    /// The window's camera is orthographic (proxies are for perspective distances: not drawn).
+    window_ortho: bool,
+    /// Transient model entities' builds not on the GPU yet (a game's presentation): uploaded
+    /// first, without waiting for a pass.
+    transients: Vec<u64>,
     /// The eviction queue (see `victims`), kept across frames until the next pass.
     victims_cache: Option<VecDeque<(f32, Victim)>>,
 }
@@ -661,6 +704,9 @@ impl Streamer {
             blocked: Vec::new(),
             blocked_cells: Vec::new(),
             touched: Vec::new(),
+            dirty_cells: Default::default(),
+            window_ortho: false,
+            transients: Vec::new(),
             victims_cache: None,
         }
     }
@@ -721,6 +767,7 @@ impl Streamer {
         self.sources.retain(|s| s.kind != SourceKind::Window);
         if let Some((cam, w, h)) = camera {
             let dir = (cam.target - cam.eye).normalize();
+            self.window_ortho = matches!(cam.projection, sight::Projection::Ortho { .. });
             // Moved enough to matter: a quarter cell, or a tenth of the way to the nearest cell
             // (levels of detail change fastest up close), a turn, or a zoom.
             let step = (self.nearest * 0.1).clamp(0.5, self.cfg.cell_m * 0.25);
@@ -730,15 +777,7 @@ impl Streamer {
             };
             // A jump (a teleport, a new view) is wanted at once.
             self.force_update |= self.window_eye.is_none_or(|(e, ..)| (e - cam.eye).length() > self.cfg.cell_m * 2.0);
-            self.sources.push(Source {
-                kind: SourceKind::Window,
-                eye: cam.eye,
-                fov_y_deg: cam.fov_y_deg,
-                viewport_h: h,
-                view_proj: cam.view_proj(w, h),
-                dir,
-                until: None,
-            });
+            self.sources.push(Source::new(SourceKind::Window, &cam, w, h, None));
         }
     }
 
@@ -758,8 +797,7 @@ impl Streamer {
             self.sources.remove(oldest);
             captures = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
         }
-        let dir = (camera.target - camera.eye).normalize();
-        self.sources.push(Source { kind: SourceKind::Capture, eye: camera.eye, fov_y_deg: camera.fov_y_deg, viewport_h: h, view_proj: camera.view_proj(w, h), dir, until });
+        self.sources.push(Source::new(SourceKind::Capture, &camera, w, h, until));
         if known {
             self.stale = true;
         } else {
@@ -774,9 +812,15 @@ impl Streamer {
     /// uploads no entity uses any more and remembers the live builds for [`Streamer::pump`].
     pub fn sync_models(&mut self, models: &mut GpuModels, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
         models.ready = gpu.pipeline_variants();
+        // The world's anim assets (agent-written clips and graphs) laid over the builds' sets,
+        // as GpuModels::sync does.
+        models.refresh_anim_env(library, world, world_generation);
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if models.synced == Some(key) {
+            if models.anim_sets_stale() {
+                models.sync_anim_sets(&lib, world, false);
+            }
             return std::mem::take(&mut self.upload_errors);
         }
         models.synced = Some(key);
@@ -799,9 +843,10 @@ impl Streamer {
             .map(|h| h as u32)
             .collect();
         if !rebuilt.is_empty() {
-            for c in self.index.cells.values_mut() {
+            for (k, c) in self.index.cells.iter_mut() {
                 if c.members.iter().any(|m| m.handle.is_some_and(|h| rebuilt.binary_search(&h).is_ok())) {
                     c.dirty = true;
+                    self.dirty_cells.insert(*k);
                 }
             }
         }
@@ -828,6 +873,7 @@ impl Streamer {
         }
         let live = &self.live;
         models.failed.retain(|id, _| live.contains_key(id));
+        models.sync_anim_sets(&library.lock(), world, false);
         self.victims_cache = None;
         self.stale = true;
         std::mem::take(&mut self.upload_errors)
@@ -858,18 +904,22 @@ impl Streamer {
             let slice = if new_frame { Duration::from_secs_f64(self.cfg.upload_ms * 0.25 / 1e3) } else { Duration::MAX };
             self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched, slice)
         };
+        self.dirty_cells.extend(touched.iter().copied());
         // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
-        // change at once (the entity must not stay hidden, nor show at its old place).
-        // Done out of turn at the next step, without restarting the pass (edits every frame
-        // would otherwise keep it from ever finishing).
-        let urgent: Vec<CellKey> = touched.iter().copied().filter(|k| self.hlod.window_on(*k)).collect();
+        // change at once (the entity must not stay hidden, nor show at its old place). Done out
+        // of turn at the next step, without restarting the pass (edits every frame would
+        // otherwise keep it from ever finishing).
+        let urgent: Vec<CellKey> = self.dirty_cells.iter().copied().filter(|k| self.hlod.window_on(*k)).collect();
         self.touched = touched;
         // Finished proxy builds are taken every frame (their uploads go by priority).
         self.hlod.collect();
         let since = self.last_update.map_or(Duration::MAX, |t| now.duration_since(t));
         self.stale |= changed;
-        let due = self.force_update || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
-        let whole = self.force_update;
+        // A capture after a change sees it: a whole pass first (no old proxy, nothing wanted for
+        // the world as it was).
+        let capture_fresh = !new_frame && (changed || !self.dirty_cells.is_empty());
+        let due = self.force_update || capture_fresh || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
+        let whole = self.force_update || capture_fresh;
         // A forced pass (a new capture view, a jump) starts afresh, so it sees every source.
         if (due && (self.pass.is_none() || whole)) || (!urgent.is_empty() && self.pass.is_none()) {
             self.begin_pass(now);
@@ -884,6 +934,8 @@ impl Streamer {
             let slice = if whole || !new_frame { f64::INFINITY } else { self.cfg.upload_ms * 0.5 };
             self.step(world, models, library, gpu, now, slice);
         }
+        // A game's presentation that isn't on the GPU yet goes first, without waiting for a pass.
+        self.find_transients(world, models);
         // The frame's streaming work so far (filing, the wanted set) counts against the upload budget.
         self.pump(gpu, models, library, now);
         self.spent_ms += now.elapsed().as_secs_f64() * 1e3;
@@ -929,6 +981,8 @@ impl Streamer {
             let px = crate::models::screen_px(r, d.max(0.0), fov, vh) / (1.0 - crate::models::LOD_HYSTERESIS);
             crate::models::select_lod(px, built.model.lods.len(), None)
         };
+        // How many pixels across `b` (world scale `scale`) is at `d`.
+        let px_at = |b: u64, scale: f32, d: f32, fov: f32, vh: u32| -> f32 { live.get(&b).map_or(0.0, |built| built_px(built, scale, d, fov, vh)) };
         let want = &mut self.want;
         // `hard`: a camera would draw it (or it is a game's presentation); soft: it stands in
         // for a proxy that isn't there yet, and gives way to anything nearer or hard-wanted.
@@ -946,6 +1000,9 @@ impl Streamer {
         // The sources a cell's members are wanted by: `(priority, hard, distance, source)`.
         let mut members_by: Vec<(f32, bool, f32, usize)> = Vec::new();
         let mut others_by: Vec<(f32, bool, f32, usize)> = Vec::new();
+        // Sources beyond the reach of `members_by` / `others_by`: `(priority, distance, source)`.
+        let mut far_members: Vec<(f32, f32, usize)> = Vec::new();
+        let mut far_others: Vec<(f32, f32, usize)> = Vec::new();
         let mut done = false;
         loop {
             let k = if let Some(k) = pass.urgent.pop() {
@@ -966,6 +1023,7 @@ impl Streamer {
                 pass.cursor = Some(k);
                 k
             };
+            self.dirty_cells.remove(&k);
             let c = self.index.cells.get_mut(&k).expect("listed");
             if c.members.is_empty() {
                 continue;
@@ -1005,20 +1063,29 @@ impl Streamer {
             // What it is wanted for.
             members_by.clear();
             others_by.clear();
+            far_members.clear();
+            far_others.clear();
             let mut proxy_p: Option<f32> = None;
             let current = hlod_on && self.hlod.has_current(k);
             let content = self.hlod.content(k);
             let merging = hlod_on && content.is_some_and(|ct| ct.key != 0);
             for (si, s) in self.sources.iter().enumerate() {
-                let d = hlod::box_distance(s.eye, c.lo, c.hi);
+                let d = s.dist(c.lo, c.hi);
                 if s.kind == SourceKind::Window {
                     pass.nearest = pass.nearest.min(d);
                 }
                 let p = d * s.weight(c.lo, c.hi);
+                // Within radius_m everything is wanted; beyond, what is big enough on screen.
                 if d < cfg.radius_m {
                     others_by.push((p, true, d, si));
+                } else {
+                    far_others.push((p, d, si));
                 }
-                if merging && d < cfg.hlod_radius_m {
+                // Orthographic views never draw proxies (they are for perspective distances).
+                let merging = merging && s.ortho_d.is_none();
+                if merging && d >= cfg.hlod_radius_m {
+                    far_members.push((p, d, si));
+                } else if merging {
                     // Wanted wherever this camera wouldn't draw the proxy (within preload x the
                     // switch distance, whatever radius_m says: no band where nothing draws). A
                     // cell whose proxy is stale or still coming has its members stand in for it,
@@ -1031,15 +1098,17 @@ impl Streamer {
                     } else {
                         members_by.push((p, d < cfg.radius_m || d <= sw * cfg.preload, d, si));
                     }
-                } else if !merging && d < cfg.radius_m {
+                } else if d < cfg.radius_m {
                     members_by.push((p, true, d, si));
+                } else {
+                    far_members.push((p, d, si));
                 }
-                if hlod_on && d < cfg.hlod_radius_m {
+                if hlod_on && s.ortho_d.is_none() && d < cfg.hlod_radius_m {
                     let pp = p * 0.5;
                     proxy_p = Some(proxy_p.map_or(pp, |q: f32| q.min(pp)));
                 }
             }
-            if !members_by.is_empty() || !others_by.is_empty() {
+            if !members_by.is_empty() || !others_by.is_empty() || !far_members.is_empty() || !far_others.is_empty() {
                 for &(h, in_proxy, scale) in &c.handles {
                     let Some(b) = build_of(Some(h)) else { continue };
                     for &(p, hard, d, si) in if in_proxy { &members_by } else { &others_by } {
@@ -1048,6 +1117,14 @@ impl Streamer {
                         let level = if hard { level_at(b, scale, d, s.fov_y_deg, s.viewport_h) } else { usize::MAX };
                         wish(b, p, hard, level);
                     }
+                    // Beyond radius_m (or the proxies' reach): wanted where it is big enough on
+                    // screen to see.
+                    for &(p, d, si) in if in_proxy { &far_members } else { &far_others } {
+                        let s = &self.sources[si];
+                        if px_at(b, scale, d, s.fov_y_deg, s.viewport_h) >= RESIDENT_MIN_PX {
+                            wish(b, p, true, level_at(b, scale, d, s.fov_y_deg, s.viewport_h));
+                        }
+                    }
                 }
             }
             // Wide members by their own boxes.
@@ -1055,9 +1132,10 @@ impl Streamer {
                 for m in c.members.iter().filter(|m| m.wide) {
                     let Some(b) = build_of(m.handle) else { continue };
                     for s in &self.sources {
-                        let d = hlod::box_distance(s.eye, m.lo, m.hi);
-                        if d < cfg.radius_m {
-                            wish(b, d * s.weight(m.lo, m.hi), true, level_at(b, max_scale(&m.world), d, s.fov_y_deg, s.viewport_h));
+                        let d = s.dist(m.lo, m.hi);
+                        let scale = max_scale(&m.world);
+                        if d < cfg.radius_m || px_at(b, scale, d, s.fov_y_deg, s.viewport_h) >= RESIDENT_MIN_PX {
+                            wish(b, d * s.weight(m.lo, m.hi), true, level_at(b, scale, d, s.fov_y_deg, s.viewport_h));
                         }
                     }
                 }
@@ -1107,6 +1185,23 @@ impl Streamer {
         }
     }
 
+    /// Transient model entities (a game's presentation: creatures, effects) whose builds aren't
+    /// fully on the GPU: wanted at once, first (a pass would only find them at its end).
+    fn find_transients(&mut self, world: &World, models: &GpuModels) {
+        self.transients.clear();
+        for e in world.transient_entities().filter(|e| e.shape == Shape::Model) {
+            let Some(b) = e.resolved_model().and_then(|r| models.by_handle.get(r.handle as usize).copied().flatten()) else { continue };
+            if !self.live.contains_key(&b) || models.failed.contains_key(&b) || models.uploaded.get(&b).is_some_and(|m| m.resident_from == 0) {
+                continue;
+            }
+            if !self.transients.contains(&b) {
+                self.transients.push(b);
+                // Wanted now (never evicted as unwanted before the next pass), at its finest level.
+                self.want.insert(b, (0.0, self.updates, true, 0));
+            }
+        }
+    }
+
     /// Uploads within the frame's budget, evicting under the memory budget (see the module
     /// docs).
     fn pump(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, frame_start: Instant) {
@@ -1120,6 +1215,14 @@ impl Streamer {
         let live = &self.live;
         self.pending.retain(|&(_, b, _, level)| live.contains_key(&b) && !models.failed.contains_key(&b) && models.uploaded.get(&b).is_none_or(|m| m.resident_from > level));
         let mut proxies: Vec<(f32, CellKey, u64)> = if self.hlod_on() { self.hlod.uploads().collect() } else { Vec::new() };
+        // Transients first (priority 0; a pass's entry for the same build follows harmlessly).
+        if !self.transients.is_empty() {
+            let transients = &self.transients;
+            self.pending.retain(|p| !transients.contains(&p.1));
+            let mut first: Vec<(f32, u64, bool, usize)> = transients.iter().map(|&b| (0.0, b, true, 0)).collect();
+            first.append(&mut self.pending);
+            self.pending = first;
+        }
         if self.pending.is_empty() && proxies.is_empty() {
             self.blocked_bytes = 0;
             self.blocked.clear();
@@ -1400,13 +1503,21 @@ impl Streamer {
             let b = c.members[i].handle.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
             b.is_some_and(|b| models.uploaded.contains_key(&b))
         };
-        self.hlod.window(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, resident, out);
+        // Orthographic: no proxies (an infinite switch distance lets each go once its members are
+        // on the GPU, as on any switch).
+        let ortho = matches!(camera.projection, sight::Projection::Ortho { .. });
+        let min_m = if ortho { f32::INFINITY } else { self.cfg.hlod_min_m };
+        self.hlod.window(camera.eye, camera.fov_y_deg, viewport_h, min_m, resident, out);
     }
 
     /// Appends a capture's proxy draws and fills the capture cover.
     pub fn draw_capture(&mut self, camera: &Camera, viewport_h: u32, out: &mut Vec<DrawItem>) {
-        self.last_capture = if self.hlod_on() {
-            self.hlod.capture(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, out)
+        let ortho = matches!(camera.projection, sight::Projection::Ortho { .. });
+        self.last_capture = if self.hlod_on() && !ortho {
+            // Never a changed cell's old proxy (its members draw instead).
+            let (index, dirty) = (&self.index, &self.dirty_cells);
+            let stale = |k: CellKey| dirty.contains(&k) || index.cells.get(&k).is_some_and(|c| c.dirty);
+            self.hlod.capture(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, stale, out)
         } else {
             self.hlod.capture_cover.clear();
             (0, 0)
@@ -1448,26 +1559,39 @@ impl Streamer {
             !models.failed.contains_key(&b) && self.blocked.binary_search(&b).is_err() && models.uploaded.get(&b).is_none_or(|m| m.resident_from > level)
         };
         let mut waiting = 0;
+        let resident = |h: Option<u32>| build_of(h).is_some_and(|b| models.uploaded.contains_key(&b));
         for (cam, w, h) in views {
             let vp = cam.view_proj(*w, *h);
+            let src = Source::new(SourceKind::Capture, cam, *w, *h, None);
+            let hlod_on = self.hlod_on() && src.ortho_d.is_none();
+            let big = |b: u64, scale: f32, d: f32| self.live.get(&b).is_some_and(|built| built_px(built, scale, d, cam.fov_y_deg, *h) >= RESIDENT_MIN_PX);
+            // A game's presentation in view (wanted first, see `find_transients`).
+            for e in world.transient_entities().filter(|e| e.shape == Shape::Model && sight::in_frame(e, false)) {
+                let p = vp.mul_vec4(e.position.extend(1.0));
+                let in_view = p.w > 0.0 && p.x.abs() <= p.w * 1.5 && p.y.abs() <= p.w * 1.5;
+                if in_view && build_of(e.resolved_model().map(|r| r.handle)).is_some_and(pending) {
+                    waiting += 1;
+                }
+            }
             for (k, c) in &self.index.cells {
                 if !c.has_wide && !box_in_view(&vp, c.lo, c.hi) {
                     continue;
                 }
-                let d = hlod::box_distance(cam.eye, c.lo, c.hi);
+                let d = src.dist(c.lo, c.hi);
                 let content = self.hlod.content(*k);
-                let current = self.hlod_on() && self.hlod.has_current(*k);
-                let proxied = self.hlod_on() && self.hlod.capture_on(*k, cam.eye, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
-                if self.hlod_on() && d < self.cfg.hlod_radius_m && !proxied && self.blocked_cells.binary_search(k).is_err() {
-                    // A proxy on its way that this view would draw.
+                let current = hlod_on && self.hlod.has_current(*k);
+                let proxied = hlod_on && self.hlod.capture_on(*k, cam.eye, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
+                if hlod_on && d < self.cfg.hlod_radius_m && !proxied && self.blocked_cells.binary_search(k).is_err() {
+                    // A proxy on its way that this view would draw: waited for only when its
+                    // members aren't on the GPU to draw meanwhile.
                     if let Some(ct) = content.filter(|ct| ct.key != 0 && ct.complete) {
                         let would = d > hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
-                        if would && !current {
+                        if would && !current && !c.members.iter().filter(|m| m.mergeable).all(|m| resident(m.handle)) {
                             waiting += 1;
                         }
                     }
                 }
-                let merged = if self.hlod_on() { self.hlod.proxy_members(*k) } else { &[] };
+                let merged = if hlod_on { self.hlod.proxy_members(*k) } else { &[] };
                 let sw = content.filter(|ct| ct.key != 0).map_or(0.0, |ct| hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m));
                 for m in &c.members {
                     let in_proxy = merged.binary_search(&m.id).is_ok();
@@ -1479,14 +1603,18 @@ impl Streamer {
                     // draw the proxy, of a coming one within radius_m or preload x the switch
                     // distance (beyond, they stand in softly: not waited for); the rest within
                     // radius_m.
+                    let b = build_of(m.handle);
+                    let scale = max_scale(&m.world);
+                    let seen = |d: f32| b.is_some_and(|b| big(b, scale, d));
                     let near = if m.wide {
-                        hlod::box_distance(cam.eye, m.lo, m.hi) < self.cfg.radius_m
+                        let dw = src.dist(m.lo, m.hi);
+                        dw < self.cfg.radius_m || seen(dw)
                     } else if in_proxy && current {
-                        d < self.cfg.hlod_radius_m
+                        d < self.cfg.hlod_radius_m || seen(d)
                     } else if in_proxy {
-                        d < self.cfg.radius_m || (d <= sw * self.cfg.preload && d < self.cfg.hlod_radius_m)
+                        d < self.cfg.radius_m || (d <= sw * self.cfg.preload && d < self.cfg.hlod_radius_m) || seen(d)
                     } else {
-                        d < self.cfg.radius_m
+                        d < self.cfg.radius_m || seen(d)
                     };
                     if !near {
                         continue;
