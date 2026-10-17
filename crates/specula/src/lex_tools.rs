@@ -811,7 +811,7 @@ fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<Loaded, Tool
 
 /// A set (by name) or an inline `document`. A stored set whose header or item ids are broken is
 /// refused here (with what to fix), so nothing runs it at the wrong rate or without some items.
-fn doc_arg(tools: &Tools, session: &SessionInfo, args: &Json, tool: &str) -> Result<(Document, Option<String>), ToolOutput> {
+pub(crate) fn doc_arg(tools: &Tools, session: &SessionInfo, args: &Json, tool: &str) -> Result<(Document, Option<String>), ToolOutput> {
     match (args.get("set"), args.get("document")) {
         (Some(_), Some(_)) => Err(err("invalid_argument", format!("{tool}: give 'set' or 'document', not both"))),
         (None, Some(d)) => {

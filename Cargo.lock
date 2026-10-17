@@ -39,6 +39,7 @@ name = "specula"
 version = "0.3.0"
 dependencies = [
  "specula-anim",
+ "specula-balance",
  "specula-core",
  "specula-gltf",
  "specula-gpu",

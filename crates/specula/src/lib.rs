@@ -11,6 +11,7 @@
 //! wait for vsync (see `schedule`), so agents aren't paced by the display. The human's window is
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
+mod balance_tools;
 pub mod board;
 pub mod cameras;
 mod capture;

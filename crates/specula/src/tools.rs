@@ -280,6 +280,8 @@ pub struct Tools {
     pub(crate) lex_runs: crate::lex_tools::Runs,
     /// One `lex_edit` per rule set at a time (held on protocol threads only).
     pub(crate) lex_locks: crate::lex_tools::Locks,
+    /// Kept `balance_tune` jobs.
+    pub(crate) balance_jobs: crate::balance_tools::Jobs,
 }
 
 impl Tools {
@@ -291,7 +293,7 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default() }
+        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default(), balance_jobs: Default::default() }
     }
 
     /// Sends a command to the main thread and waits for its answer.
@@ -332,6 +334,9 @@ impl ToolHandler for Tools {
         } else if name.starts_with("lex_") {
             // Lex tools do their heavy work (validation, simulation) on this thread.
             return crate::lex_tools::call(self, session, name, arguments);
+        } else if name.starts_with("balance_") {
+            // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
+            return crate::balance_tools::call(self, session, name, arguments);
         } else {
             parse(name, arguments)
         };
@@ -2315,6 +2320,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::physics_tools::definitions())
     .chain(crate::lex_tools::definitions())
     .chain(crate::save_tools::definitions())
+    .chain(crate::balance_tools::definitions())
     .collect()
 }
 
