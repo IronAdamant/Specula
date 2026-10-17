@@ -10,7 +10,8 @@ the game's own recordings, captures), and two engine-only playtests (a physics c
 world edit undone) to show the facility isn't Sepulcra's alone.
 
 Each playtest runs in a fresh headless engine and records a replay; each replay is then run again
-in another fresh engine and must match every recorded hash (see scripts/playtest_swarm.py). The
+in another fresh engine and must match every recorded hash (see scripts/playtest_swarm.py); as a
+negative control, one replay with its seed changed (hashes kept) must fail to verify. The
 suite runs with --workers engines at once (default 8) and, with --serial, once more with one worker
 to measure the wall time saved. Results: perf/playtests/<date>-sepulcra-suite.json (kept in the
 repo) and target/playtest-suite/ (replays, captures, per-engine logs).
@@ -224,6 +225,28 @@ def suite():
     return specs
 
 
+def negative_control(exe, out, port):
+    """A replay whose spec was changed (another seed) but whose hashes weren't must not verify:
+    proof that 'verified' means something. Runs in a fresh engine of its own."""
+    src = out / "replays" / "centre_s7.json"
+    if not src.exists():
+        return {"skipped": "no centre_s7 replay"}
+    replay = json.loads(src.read_text())
+    replay["spec"]["steps"][0]["args"]["seed"] = "8"
+    work = out / "negative-control"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "tampered.json").write_text(json.dumps(replay))
+    from specula_mcp import Engine
+    from playtest_swarm import finish
+    with Engine(exe, port, work / "engine.log", "--headless", "--paused", "--captures", str(work / "captures"), "--", "--mute", cwd=work) as eng:
+        m = eng.mcp("negative-control")
+        r = finish(m, m.json("playtest_run", replay="tampered.json"))
+    d = r.get("replay", {}).get("first_divergence", {})
+    return {"status": r.get("status"), "verified": r.get("replay", {}).get("verified"),
+            "diverged_at_tick": d.get("got", {}).get("tick"), "parts_differing": d.get("parts_differing"),
+            "passed": r.get("status") == "diverged"}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=str(EXE), help="the sepulcra binary (default: this checkout's release build)")
@@ -234,6 +257,7 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "target" / "playtest-suite"))
     ap.add_argument("--results", default=str(ROOT / "perf" / "playtests"), help="folder for the kept results file")
     ap.add_argument("--keep-scratch", action="store_true")
+    ap.add_argument("--adapter", default=None, help="engine --adapter for every engine (discrete, integrated or an index)")
     a = ap.parse_args()
     exe = Path(a.exe)
     if not exe.exists():
@@ -246,7 +270,8 @@ def main():
     runs = {}
     for label, workers in [("parallel", a.workers)] + ([("serial", 1)] if a.serial else []):
         out = Path(a.out) / label
-        swarm = Swarm(exe, out, workers, a.lead_port, game_args=["--mute"], keep_scratch=a.keep_scratch)
+        engine_args = ["--adapter", a.adapter] if a.adapter else []
+        swarm = Swarm(exe, out, workers, a.lead_port, engine_args=engine_args, game_args=["--mute"], keep_scratch=a.keep_scratch)
         r = swarm.run(specs)
         runs[label] = r
         print(f"{label}: {r['passed']}/{r['playtests']} passed, {r['verified']} replays verified by hash, "
@@ -255,10 +280,13 @@ def main():
             if not res.get("passed"):
                 print(f"  FAIL {res['name']}: {json.dumps(res.get('run', res.get('error')))[:600]}")
     p = runs["parallel"]
+    control = negative_control(exe, Path(a.out) / "parallel", a.lead_port)
+    print(f"negative control (a replay with its seed changed): {control}")
     summary = {
         "suite": "sepulcra",
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "exe": exe.name,
+        "adapter": a.adapter or "discrete (default)",
         "playtests": p["playtests"],
         "passed": p["passed"],
         "verified": p["verified"],
@@ -267,6 +295,7 @@ def main():
         "wall_s_serial": runs["serial"]["wall_s"] if "serial" in runs else None,
         "speedup": round(runs["serial"]["wall_s"] / p["wall_s"], 2) if "serial" in runs else None,
         "board": p["board"],
+        "negative_control": control,
         "results": [{
             "name": r["name"],
             "passed": r.get("passed"),
@@ -289,7 +318,7 @@ def main():
         path = res_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-sepulcra-suite.json"
         path.write_text(json.dumps(summary, indent=1))
         print(f"results: {path}")
-    ok = p["passed"] == p["playtests"] and p["verified"] == p["playtests"]
+    ok = p["passed"] == p["playtests"] and p["verified"] == p["playtests"] and control.get("passed", False)
     print("SUITE PASSED" if ok else "SUITE FAILED")
     sys.exit(0 if ok else 1)
 
