@@ -35,8 +35,17 @@ when a condition holds:
 - **Captures**: any answer with `image.path` (`sight_frame`) is listed with its label and tick.
 - **Time**: the playtest owns the clock. It pauses it, steps tick by tick to each `at`, and refuses other agents'
   `time_control` (except `info`) until it ends; ticks queued by an earlier `step` are dropped.
-- **Bounds**: 256 steps, 64 end steps, 32 expectations a step, 1,000,000 ticks, `max_wall_s` (default 600, at most
-  3600), reports capped (failures 64, captures 64, results 512), 16 finished reports kept, 32 callers waiting.
+- **Bounds**: a spec is at most 256 KB of JSON, with 256 steps, 64 end steps, 32 expectations a step, each matcher
+  at most 2 KB and each path 256 characters. A run is at most 1,000,000 ticks, `max_wall_s` (default 600, at most
+  3600) and 64 file-writing calls (`sight_frame`, `sight_orbit`, `sight_compare`, `perf_capture`; past that a call
+  fails with `capture_limit`, and the engine never sees it). Reports quote values cut to 240 characters and have
+  byte budgets: failures 6 KB concise and 48 KB detailed, the whole report 128 KB. The engine keeps 16 finished
+  reports, and at most 32 callers wait on a run.
+- **Ownership**: only the agent that started a playtest (by identity key) cancels it. Another agent needs
+  `force: true`, and the cancel is logged on the board's event feed.
+- **Replay files** are written only under `playtests/` in the engine's working directory, only as `.json`, and never
+  over an existing file unless `overwrite: true`. Sepulcra's `play_record` follows the same rule: `.json` only, and
+  no overwrite unasked.
 
 `playtest_run {spec | path | replay, record?, wait_s?}` starts one (one at a time per engine) and answers when it ends
 or after `wait_s` (at most 20) with its progress; `playtest_report {id?, wait_s?, cancel?}` polls, waits or cancels.
@@ -50,6 +59,9 @@ run records a checkpoint: the world's state hash, the physics hash and the game'
 detector sees), combined. `record` writes them with the spec into a **replay file** (`format: specula-playtest`).
 `playtest_run {replay}` runs that spec again and compares every checkpoint; the first that differs stops the run as
 `diverged` and names the parts that differ (then `desync_trace` and `desync_compare` find the component and field).
+
+However a run stops (a failure with `stop_on_failure`, an `until` call that errs, a cancel, `max_wall_s`), its end
+is hashed, so the replay of a failed run verifies up to where it stopped and reproduces the failure.
 
 The start checkpoint is compared but not required to match: a spec that begins with `play_new` may start anywhere. The
 world part, though, includes the id counter and every persistent entity, so a replay only verifies in an engine in

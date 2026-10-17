@@ -125,9 +125,16 @@ pub fn defs() -> Vec<ToolDef> {
             name: "play_record".into(),
             description: "Save the run so far as a self-checking recording (seed, content hash, every command with its tick, \
                           end tick and state hash) to a file under the engine's working directory (default \
-                          recordings/sepulcra-<seed>-<tick>.json)."
+                          recordings/sepulcra-<seed>-<tick>.json). The name ends in .json; an existing file is only \
+                          replaced with overwrite: true."
                 .into(),
-            input_schema: schema(vec![("path", prop("string", "Relative path for the recording"))], &[]),
+            input_schema: schema(
+                vec![
+                    ("path", prop("string", "Relative path for the recording, ending in .json")),
+                    ("overwrite", prop("boolean", "Replace an existing file (refused otherwise)")),
+                ],
+                &[],
+            ),
         },
         ToolDef {
             name: "play_replay".into(),
@@ -630,10 +637,18 @@ pub fn recording(game: &SepulcraGame) -> (Recording, bool) {
 }
 
 fn record(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
-    check_keys(args, &["path"])?;
+    check_keys(args, &["path", "overwrite"])?;
     let default = format!("recordings/sepulcra-{}-{}.json", game.state.seed(), game.state.tick());
     let rel = str_arg(args, "path")?.map_or(default, str::to_owned);
+    // A recording never replaces another file by accident (e.g. AGENTS.md): .json only, and an
+    // existing file only with overwrite.
+    if !rel.to_ascii_lowercase().ends_with(".json") {
+        return Err(bad_path(&rel, "a recording's file name must end in .json"));
+    }
     let path = safe_path(&rel, true)?;
+    if path.exists() && !bool_arg(args, "overwrite")?.unwrap_or(false) {
+        return Err(error("exists", format!("{rel} already exists; pass overwrite: true to replace it"), vec![("path", Json::from(rel.as_str()))]));
+    }
     let (rec, advanced) = recording(game);
     let text = rec.to_json(game.state.content()).to_pretty();
     std::fs::write(&path, text).map_err(|e| error("io", format!("{}: {e}", show(&path)), vec![]))?;

@@ -14,7 +14,7 @@ Per playtest a worker starts a **fresh** headless engine (`--headless --paused`,
 in its scratch folder) on one of its ports, runs the spec with `playtest_run {record}`, stops the
 engine, then starts a second fresh engine on its other port and runs the replay file
 (`playtest_run {replay}`), so every replay is verified by hash in a separate process. Engines are
-stopped by PID (Ctrl+Break, then kill). At the end the workers release their leases (scratch folders
+stopped by PID (Ctrl+Break, then kill), also on Ctrl+C or an error: every live engine is tracked. At the end the workers release their leases (scratch folders
 deleted unless --keep-scratch), and the report (every playtest's status, failures, ticks, wall time,
 verification) is written to --out. Replays and captures are copied next to it.
 
@@ -25,6 +25,7 @@ Bounded: at most --workers engines at once (default 4, max 16), each playtest's 
 (max_wall_s), captures copied at most 8 per playtest. Standard library only; output ASCII.
 """
 import argparse
+import contextlib
 import json
 import shutil
 import sys
@@ -69,6 +70,30 @@ class Swarm:
         self.lock = threading.Lock()
         self.results = {}
         self.errors = []
+        # Set on Ctrl+C or an error: workers take no more tasks.
+        self.stopping = threading.Event()
+        # Engines running now (stopped by PID in run()'s finally, whatever happened).
+        self.live = set()
+
+    @contextlib.contextmanager
+    def started(self, engine):
+        """Runs `engine`, tracked while it lives."""
+        with engine as eng:
+            with self.lock:
+                self.live.add(eng)
+            try:
+                yield eng
+            finally:
+                with self.lock:
+                    self.live.discard(eng)
+
+    def stop_all(self):
+        """Stops every tracked engine (by PID: Ctrl+Break, then kill)."""
+        self.stopping.set()
+        with self.lock:
+            engines = list(self.live)
+        for eng in engines:
+            eng.stop()
 
     def engine(self, port, cwd, label, cache):
         cwd.mkdir(parents=True, exist_ok=True)
@@ -85,13 +110,14 @@ class Swarm:
         result = {"name": name, "worker": worker}
         start = time.perf_counter()
         rec_dir = job / "record"
-        with self.engine(ports[0], rec_dir, "engine", scratch / "pipeline-cache") as eng:
+        with self.started(self.engine(ports[0], rec_dir, "engine", scratch / "pipeline-cache")) as eng:
             result["startup_s"] = round(eng.startup_s, 2)
             mcp = eng.mcp(f"playtester-{worker}")
-            r = finish(mcp, mcp.json("playtest_run", spec=spec, record="replay.json"))
+            r = finish(mcp, mcp.json("playtest_run", spec=spec, record="replay.json", overwrite=True))
             mcp.close()
         result["run"] = short(r)
-        replay_src = rec_dir / "replay.json"
+        # record writes under the engine's playtests/ folder.
+        replay_src = rec_dir / "playtests" / "replay.json"
         if replay_src.exists():
             (self.out / "replays").mkdir(parents=True, exist_ok=True)
             shutil.copyfile(replay_src, self.out / "replays" / f"{name}.json")
@@ -113,7 +139,7 @@ class Swarm:
             ver_dir = job / "verify"
             ver_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(replay_src, ver_dir / "replay.json")
-            with self.engine(ports[1], ver_dir, "engine", scratch / "pipeline-cache") as eng:
+            with self.started(self.engine(ports[1], ver_dir, "engine", scratch / "pipeline-cache")) as eng:
                 mcp = eng.mcp(f"playtester-{worker}")
                 v = finish(mcp, mcp.json("playtest_run", replay="replay.json"))
                 mcp.close()
@@ -130,12 +156,13 @@ class Swarm:
         name = f"playtester-{k}"
         with Mcp(lead_url, name) as lead:
             lead.json("agent_hello", name=name, role="playtester")
-            ports = lead.json("lease_take", kind="port", count=2, note="playtest engines", lease_s=3600)
-            scratch = lead.json("lease_take", kind="scratch", note="playtest working folders", lease_s=3600)
-            port_list, folder = ports["ports"], Path(scratch["dir"])
-            self.log(f"  {name}: ports {port_list}, scratch {folder}")
             try:
-                while True:
+                # Inside the try: whatever was leased is released, even if the second lease fails.
+                ports = lead.json("lease_take", kind="port", count=2, note="playtest engines", lease_s=3600)
+                scratch = lead.json("lease_take", kind="scratch", note="playtest working folders", lease_s=3600)
+                port_list, folder = ports["ports"], Path(scratch["dir"])
+                self.log(f"  {name}: ports {port_list}, scratch {folder}")
+                while not self.stopping.is_set():
                     ready = lead.json("task_list", ready_for_me=True, tag="playtest", limit=20).get("tasks", [])
                     if not ready:
                         break
@@ -195,11 +222,21 @@ class Swarm:
                 threads = [threading.Thread(target=self.worker, args=(k + 1, lead_url), daemon=True) for k in range(self.workers)]
                 for th in threads:
                     th.start()
-                for th in threads:
-                    th.join()
+                try:
+                    # Short joins, so Ctrl+C reaches this thread.
+                    while any(th.is_alive() for th in threads):
+                        for th in threads:
+                            th.join(0.5)
+                except KeyboardInterrupt:
+                    self.log("interrupted: stopping the engines and releasing the leases")
+                    self.stop_all()
+                    for th in threads:
+                        th.join(60)
+                    raise
                 board = lead.json("task_list", tag="playtest", limit=200)
                 done = sum(1 for t in board.get("tasks", []) if t.get("status") == "done")
         finally:
+            self.stop_all()
             if lead_engine is not None:
                 lead_engine.__exit__(None, None, None)
         wall = time.perf_counter() - started

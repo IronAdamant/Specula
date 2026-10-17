@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine  # noqa: E402
+from specula_mcp import ROOT, Engine, detailed  # noqa: E402
 
 ASSETS = ROOT / "games" / "sepulcra" / "assets"
 
@@ -85,7 +85,7 @@ def shutdown_check(a, out, check):
 
     def call(name, tool, **args):
         start = time.perf_counter()
-        r = Mcp(url_for(a.port), name).request("tools/call", {"name": tool, "arguments": args})
+        r = Mcp(url_for(a.port), name).request("tools/call", {"name": tool, "arguments": detailed(tool, args)})
         text = next(c["text"] for c in r["content"] if c["type"] == "text")
         answers[name] = (time.perf_counter() - start, r.get("isError", False), text[:120])
 

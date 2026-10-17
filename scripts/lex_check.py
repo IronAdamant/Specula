@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine
+from specula_mcp import ROOT, Engine, detailed
 
 SLICE = ROOT / "games" / "sepulcra" / "lex" / "slice.lex.json"
 SET = "sepulcra_slice"
@@ -44,7 +44,7 @@ def check(cond, what):
 
 def refused(mcp, tool, **args):
     """A tool call expected to fail: its error JSON."""
-    result = mcp.request("tools/call", {"name": tool, "arguments": args})
+    result = mcp.request("tools/call", {"name": tool, "arguments": detailed(tool, args)})
     if not result.get("isError"):
         print(f"FAIL: {tool} should have been refused: {result['content'][0]['text'][:300]}")
         sys.exit(1)

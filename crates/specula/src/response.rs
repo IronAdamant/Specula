@@ -51,7 +51,8 @@ impl Format {
 pub const SHAPED: [(&str, &str); 6] = [
     (
         "sight_frame",
-        "concise (default): subjects with id, name, path, screen boxes, visible_px, occlusion and distance only (their look \
+        "concise (default): subjects with id, name, path, screen boxes, visible_px, occlusion, distance, layer (ui) and \
+         transient only (their look \
          and transform are in world_query), no id_buffer/models/lights internals; the full packet is always saved at \
          image.packet_path. detailed: the whole packet",
     ),
@@ -70,27 +71,90 @@ pub const SHAPED: [(&str, &str); 6] = [
     ("world_history", "concise (default): one line per entry; detailed: each entry's changes (detail: true)"),
 ];
 
-/// Adds `response_format` to the schemas of the [`SHAPED`] tools.
+/// Adds `response_format` to the schemas of the [`SHAPED`] tools, and to `agent_hello` (a
+/// session's default).
 pub fn add_to_schemas(defs: &mut [ToolDef]) {
     for d in defs.iter_mut() {
-        let Some((_, what)) = SHAPED.iter().find(|(n, _)| *n == d.name) else { continue };
+        let what = match SHAPED.iter().find(|(n, _)| *n == d.name) {
+            Some((_, what)) => *what,
+            None if d.name == "agent_hello" => {
+                "this session's default for every tool with a response_format: concise (the engine's default unless it \
+                 runs with --response-format detailed) or detailed (scripts that check data in depth)"
+            }
+            None => continue,
+        };
         let mut props = d.input_schema.get("properties").cloned().unwrap_or_else(|| Json::obj::<&str>([]));
         props.set(KEY, Format::schema_saying(what));
         d.input_schema.set("properties", props);
     }
 }
 
+/// Default formats: the engine's (`--response-format`, concise unless set) and each session's
+/// (`agent_hello {response_format}`). Shared by the connection threads and the engine thread
+/// (playtests call as their starter's session).
+pub struct Defaults {
+    engine: Format,
+    sessions: std::sync::Mutex<std::collections::BTreeMap<String, Format>>,
+}
+
+/// Sessions whose default is remembered at most (the oldest by id is forgotten past it).
+const MAX_SESSION_DEFAULTS: usize = 4096;
+
+impl Defaults {
+    pub fn new(engine: Format) -> std::sync::Arc<Defaults> {
+        std::sync::Arc::new(Defaults { engine, sessions: std::sync::Mutex::new(std::collections::BTreeMap::new()) })
+    }
+
+    /// The default for `session`.
+    pub fn get(&self, session: &str) -> Format {
+        let map = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.get(session).copied().unwrap_or(self.engine)
+    }
+
+    pub fn set(&self, session: &str, format: Format) {
+        let mut map = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.insert(session.to_owned(), format);
+        while map.len() > MAX_SESSION_DEFAULTS {
+            map.pop_first();
+        }
+    }
+}
+
+/// Whether `def` takes `response_format` itself (a game's tool, `logic_status`, `playtest_*`),
+/// as opposed to being [`SHAPED`] here.
+pub fn takes_format(def: &ToolDef) -> bool {
+    !SHAPED.iter().any(|(n, _)| *n == def.name) && def.input_schema.get("properties").is_some_and(|p| p.get(KEY).is_some())
+}
+
+/// `args` with `response_format: "detailed"` when the default is detailed and the call doesn't
+/// choose (for tools that [`takes_format`]); `None` when nothing changes.
+pub fn with_default(args: &Json, default: Format) -> Option<Json> {
+    if default == Format::Concise || args.get(KEY).is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    let mut out = match args {
+        Json::Obj(_) => args.clone(),
+        _ => Json::obj::<&str>([]),
+    };
+    out.set(KEY, Json::from("detailed"));
+    Some(out)
+}
+
 /// Takes `response_format` out of a [`SHAPED`] tool's arguments (setting the tool's own knob for
-/// a detailed answer). `None`: the tool isn't shaped here (its arguments are left alone).
-pub fn split(tool: &str, args: &Json) -> Result<Option<(Format, Json)>, String> {
+/// a detailed answer); `default` when the call doesn't choose. `None`: the tool isn't shaped here
+/// (its arguments are left alone).
+pub fn split(tool: &str, args: &Json, default: Format) -> Result<Option<(Format, Json)>, String> {
     if !SHAPED.iter().any(|(n, _)| *n == tool) {
         return Ok(None);
     }
-    let format = Format::arg(args, Format::Concise)?;
+    let format = Format::arg(args, default)?;
     let mut rest = match args {
         Json::Obj(pairs) => Json::Obj(pairs.iter().filter(|(k, _)| k != KEY).cloned().collect()),
         other => other.clone(),
     };
+    if format == Format::Detailed && rest.is_null() && matches!(tool, "world_query" | "world_history") {
+        rest = Json::obj::<&str>([]);
+    }
     if format == Format::Detailed && rest.as_object().is_some() {
         match tool {
             "world_query" if rest.get("fields").is_none_or(Json::is_null) => {
@@ -202,8 +266,8 @@ fn non_empty(v: Option<&Json>) -> bool {
     }
 }
 
-const SUBJECT_KEYS: [&str; 12] = [
-    "id", "name", "path", "on_screen", "screen", "screen_box_exact", "visible_px", "visible_px_approx", "no_pixels", "occluded", "distance_m", "ui",
+const SUBJECT_KEYS: [&str; 13] = [
+    "id", "name", "path", "on_screen", "screen", "screen_box_exact", "visible_px", "visible_px_approx", "no_pixels", "occluded", "distance_m", "layer", "transient",
 ];
 
 fn sight_frame(v: &Json) -> Json {
@@ -271,11 +335,10 @@ fn perf_frame(v: &Json) -> Json {
 fn engine_info(v: &Json) -> Json {
     let mut out = keep(v, &["engine", "gpu", "validation", "entities", "agents", "clock", "window", "game", "modules", "board_save_error", "board_warning"]);
     if let Some(w) = v.get("world") {
-        let mut world = keep(w, &["name", "entities", "unsaved_changes", "state_hash"]);
-        for k in ["last_autosave_error", "leftover_files"] {
-            if non_empty(w.get(k)) {
-                world.set(k, w.get(k).cloned().unwrap_or(Json::Null));
-            }
+        // last_autosave_error always (null when fine): agents and scripts check it.
+        let mut world = keep(w, &["name", "entities", "unsaved_changes", "last_autosave_error", "state_hash"]);
+        if non_empty(w.get("leftover_files")) {
+            world.set("leftover_files", w.get("leftover_files").cloned().unwrap_or(Json::Null));
         }
         out.set("world", world);
     }
@@ -351,16 +414,39 @@ mod tests {
     #[test]
     fn split_sets_the_tools_own_knobs() {
         let args = |t: &str| Json::parse(t).unwrap();
-        assert_eq!(split("world_spawn", &args(r#"{"response_format": "concise"}"#)), Ok(None), "not shaped here");
-        let (f, rest) = split("world_query", &args(r#"{"limit": 5, "response_format": "detailed"}"#)).unwrap().unwrap();
+        assert_eq!(split("world_spawn", &args(r#"{"response_format": "concise"}"#), Format::Concise), Ok(None), "not shaped here");
+        let (f, rest) = split("world_query", &args(r#"{"limit": 5, "response_format": "detailed"}"#), Format::Concise).unwrap().unwrap();
         assert_eq!((f, rest.to_string()), (Format::Detailed, r#"{"limit":5,"fields":["all"]}"#.to_owned()));
-        let (_, rest) = split("world_query", &args(r#"{"fields": ["id"], "response_format": "detailed"}"#)).unwrap().unwrap();
+        let (_, rest) = split("world_query", &args(r#"{"fields": ["id"], "response_format": "detailed"}"#), Format::Concise).unwrap().unwrap();
         assert_eq!(rest.to_string(), r#"{"fields":["id"]}"#, "explicit fields win");
-        let (_, rest) = split("world_history", &args(r#"{"response_format": "detailed"}"#)).unwrap().unwrap();
+        let (_, rest) = split("world_history", &args(r#"{"response_format": "detailed"}"#), Format::Concise).unwrap().unwrap();
         assert_eq!(rest.to_string(), r#"{"detail":true}"#);
-        let (f, rest) = split("perf_frame", &Json::Null).unwrap().unwrap();
+        let (f, rest) = split("perf_frame", &Json::Null, Format::Concise).unwrap().unwrap();
         assert_eq!((f, rest), (Format::Concise, Json::Null));
-        assert!(split("perf_frame", &args(r#"{"response_format": 1}"#)).is_err());
+        assert!(split("perf_frame", &args(r#"{"response_format": 1}"#), Format::Concise).is_err());
+        // A detailed default: shaped tools, and the tools' own knobs even without arguments.
+        let (f, rest) = split("world_query", &Json::Null, Format::Detailed).unwrap().unwrap();
+        assert_eq!((f, rest.to_string()), (Format::Detailed, r#"{"fields":["all"]}"#.to_owned()));
+        let (f, _) = split("sight_frame", &args(r#"{"response_format": "concise"}"#), Format::Detailed).unwrap().unwrap();
+        assert_eq!(f, Format::Concise, "the call's own choice wins");
+    }
+
+    #[test]
+    fn defaults_per_engine_and_session() {
+        let d = Defaults::new(Format::Concise);
+        assert_eq!(d.get("s1"), Format::Concise);
+        d.set("s1", Format::Detailed);
+        assert_eq!((d.get("s1"), d.get("s2")), (Format::Detailed, Format::Concise));
+        assert_eq!(Defaults::new(Format::Detailed).get("any"), Format::Detailed);
+        assert_eq!(with_default(&Json::Null, Format::Detailed).unwrap().to_string(), r#"{"response_format":"detailed"}"#);
+        assert_eq!(with_default(&Json::parse(r#"{"response_format": "concise"}"#).unwrap(), Format::Detailed), None);
+        assert_eq!(with_default(&Json::Null, Format::Concise), None);
+        let mut defs = vec![
+            ToolDef { name: "play_state".into(), description: String::new(), input_schema: Json::parse(r#"{"properties": {"response_format": {}}}"#).unwrap() },
+            ToolDef { name: "perf_frame".into(), description: String::new(), input_schema: Json::parse(r#"{"properties": {}}"#).unwrap() },
+        ];
+        add_to_schemas(&mut defs);
+        assert_eq!((takes_format(&defs[0]), takes_format(&defs[1])), (true, false), "shaped tools aren't passed through");
     }
 
     #[test]
@@ -374,6 +460,12 @@ mod tests {
             text(&out),
             r#"{"image":{"path":"a.png"},"camera":{"eye":[1.235,0,0]},"subjects_total":1,"subjects_on_screen":1,"warnings":[],"problems":[],"subjects":[{"id":1,"name":"a","path":"/a","screen":[1,2,3,4],"visible_px":10,"distance_m":3.14}]}"#
         );
+        let ui = frame.replace(r#""visible_px": 10,"#, r#""visible_px": 10, "layer": "ui", "transient": true,"#);
+        let ui = text(&shape("sight_frame", Format::Concise, ToolOutput::text(ui))).to_owned();
+        assert!(ui.contains(r#""layer":"ui""#) && ui.contains(r#""transient":true"#), "{ui}");
+        let info = r#"{"engine": "x", "world": {"name": null, "worlds_dir": "w", "unsaved_changes": false, "last_autosave_error": null, "leftover_files": []}}"#;
+        let info = text(&shape("engine_info", Format::Concise, ToolOutput::text(info))).to_owned();
+        assert_eq!(info, r#"{"engine":"x","world":{"name":null,"unsaved_changes":false,"last_autosave_error":null}}"#);
         let missing = frame.replace(r#""missing": 0"#, r#""missing": 2"#);
         assert!(text(&shape("sight_frame", Format::Concise, ToolOutput::text(missing))).contains(r#""models":{"missing":2}"#));
         assert_eq!(text(&shape("sight_frame", Format::Detailed, ToolOutput::text(frame))), frame, "detailed is untouched");

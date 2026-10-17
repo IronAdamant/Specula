@@ -1,5 +1,13 @@
 # Agent tools: an audit, and response formats
 
+> **For script and tool authors:** heavy tools (`sight_frame`, `perf_frame`, `engine_info`, `world_list`,
+> `world_query`, `world_history`, `play_state`, `logic_status`, `playtest_*`) answer **concisely by default**. A
+> script that checks engine data in depth must either use `scripts/specula_mcp.py` (its `Mcp` asks for detailed
+> answers; a script with its own client wraps its arguments in `specula_mcp.detailed(tool, args)`) or pass
+> `response_format: "detailed"` itself. Other ways to get detailed answers by default: `agent_hello
+> {response_format: "detailed"}` (for one session) or start the engine with `--response-format detailed` (for every
+> session). New heavy tools should take `response_format` too (see "Changed").
+
 Status: audit of 2026-10-18 (M3, tool ergonomics), against the agent-tool guidance summarised in
 [research/AGENT_GAMEMAKING.md](../research/AGENT_GAMEMAKING.md) ("Tool design for agents"). The changes listed under
 "Changed" are in `crates/specula/src/response.rs`, `tools.rs` (the call path), `games/sepulcra-app/src/tools.rs`
@@ -38,7 +46,7 @@ nothing. Each tool's schema says what its concise answer leaves out.
 
 | Tool | Concise keeps | Detailed adds |
 |---|---|---|
-| `sight_frame` | image paths, camera, subject counts, warnings, problems, overlays; per subject: id, name, path, on_screen, screen boxes, visible_px, occlusion, distance | each subject's shape, material, colour, position, author; `id_buffer`, `models` (kept when models are missing), `lights`, `time_s`, `schema`. The full packet is always saved at `image.packet_path`. |
+| `sight_frame` | image paths, camera, subject counts, warnings, problems, overlays; per subject: id, name, path, on_screen, screen boxes, visible_px, occlusion, distance, layer (ui), transient | each subject's shape, material, colour, position, author; `id_buffer`, `models` (kept when models are missing), `lights`, `time_s`, `schema`. The full packet is always saved at `image.packet_path`. |
 | `perf_frame` | errors, problems, per render path GPU ms, CPU wait/record/submit, draw calls and triangles, memory total; pacing, serve schedule, sim and game times, physics totals, heap, entity counts | every pass, pipeline counters (kept when pipelines were built after warm-up), heaps, budget tables, render graph, model library, shape budgets |
 | `engine_info` | engine, GPU, validation, world summary, agents, clock, window, game status, module summary, swarm counts | the model library, capture and world paths, journal internals, shape budgets |
 | `world_list` | whole entities with what defaults imply left out (`name` = the path's last segment, `rotation_deg` [0,0,0], `scale` [1,1,1], `modified_by` = `created_by`): lossless | those fields |
@@ -57,9 +65,18 @@ newlines; text that isn't JSON, such as `play_map`'s map, is untouched).
 `engine_busy` (with `"retry": true`), `no_game`, `unknown_tool`, and the generic `error` for the rest (a failed render,
 a module host's timeout), so an agent can branch on a code everywhere.
 
-**Scripts keep detailed answers.** `scripts/specula_mcp.py` asks for `response_format: "detailed"` on the shaped tools
-unless a call passes its own, so the verification scripts read what they always read. An agent (and a client made
-with `detailed=False`) gets the concise defaults.
+**Scripts keep detailed answers.** `scripts/specula_mcp.py` asks for `response_format: "detailed"` on the tools with a
+format unless a call passes its own, and the scripts with their own MCP clients (`call_rate.py`, `swarm_drill.py`,
+`world_roundtrip.py`, `window_check.py`, `lex_check.py` and the raw calls in `model_gallery.py`, `physics_check.py`,
+`two_d_check.py`, `sepulcra_play.py`) wrap their arguments in `specula_mcp.detailed()`, so the verification scripts
+read what they always read. An agent (and a client made with `detailed=False`) gets the concise defaults. Review round
+1 found the gap: concise `engine_info` had left out a null `last_autosave_error`, which `world_roundtrip.py` reads.
+Concise `engine_info` now always carries it, null or not.
+
+**Choosing the default.** The order of precedence is: a call's own `response_format`, then the session's default
+(`agent_hello {response_format}`), then the engine's (`--response-format concise|detailed`, concise unless set). The
+defaults apply to the shaped tools above and to every tool that takes `response_format` itself (a game's `play_state`,
+`logic_status`, `playtest_*`), and inside playtests, which call as their starter's session.
 
 ### Measured (bytes, headless Sepulcra at tick 10,000, 40 agent cubes)
 

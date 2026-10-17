@@ -67,7 +67,10 @@ operator's hardware and sets the window's frame floor before a swarm is deployed
 find the first tick and component where two runs (or a run and its journal replay) differ. playtest_run runs a headless \
 playtest as data (tool calls at ticks, expectations on their answers, captures) and records a replay that verifies by \
 hash; playtest_report polls it. Heavy tools (sight_frame, perf_frame, engine_info, world_list, world_query, world_history, \
-play_state) answer concisely; pass response_format: \"detailed\" for everything.";
+play_state, logic_status, playtest_*) answer concisely by default; pass response_format: \"detailed\" for everything, or \
+make detailed your session's default with agent_hello {response_format: \"detailed\"} (an engine started with \
+--response-format detailed defaults every session to it). Scripts that check data in depth should do one of these \
+(scripts/specula_mcp.py does it for you).";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -283,6 +286,10 @@ pub struct Tools {
     pub(crate) lex_runs: crate::lex_tools::Runs,
     /// One `lex_edit` per rule set at a time (held on protocol threads only).
     pub(crate) lex_locks: crate::lex_tools::Locks,
+    /// Default response formats, the engine's and each session's (see [`crate::response`]).
+    formats: std::sync::Arc<crate::response::Defaults>,
+    /// Tools that take `response_format` themselves (a session's detailed default is passed on).
+    native_format: Vec<String>,
 }
 
 impl Tools {
@@ -294,7 +301,21 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default() }
+        let native_format = definitions().iter().chain(&game_tools).filter(|d| crate::response::takes_format(d)).map(|d| d.name.clone()).collect();
+        Tools {
+            to_engine,
+            game_tools,
+            lex_runs: Default::default(),
+            lex_locks: Default::default(),
+            formats: crate::response::Defaults::new(crate::response::Format::Concise),
+            native_format,
+        }
+    }
+
+    /// Uses `formats` for default response formats (shared with the engine thread).
+    pub fn with_formats(mut self, formats: std::sync::Arc<crate::response::Defaults>) -> Tools {
+        self.formats = formats;
+        self
     }
 
     /// Sends a command to the main thread and waits for its answer.
@@ -339,12 +360,30 @@ impl Tools {
             "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
             _ => {}
         }
+        // agent_hello {response_format} sets this session's default (once the hello succeeds).
+        let mut hello_format = None;
+        let stripped;
+        let arguments = if name == "agent_hello" && arguments.get(crate::response::KEY).is_some() {
+            match crate::response::Format::arg(arguments, crate::response::Format::Concise) {
+                Ok(f) => hello_format = Some(f),
+                Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+            }
+            stripped = match arguments {
+                Json::Obj(p) => Json::Obj(p.iter().filter(|(k, _)| k != crate::response::KEY).cloned().collect()),
+                other => other.clone(),
+            };
+            &stripped
+        } else {
+            arguments
+        };
+        let default = self.formats.get(&session.id);
         // response_format of the heavy tools: taken out here, applied to the answer below.
-        let shaped = match crate::response::split(name, arguments) {
+        let shaped = match crate::response::split(name, arguments, default) {
             Ok(s) => s,
             Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
-        let arguments = shaped.as_ref().map_or(arguments, |(_, a)| a);
+        let defaulted = if shaped.is_none() && self.native_format.iter().any(|t| t == name) { crate::response::with_default(arguments, default) } else { None };
+        let arguments = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(arguments);
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
         } else if name.starts_with("lex_") {
@@ -358,6 +397,9 @@ impl Tools {
             Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
         let out = self.send(session, command);
+        if let (Some(f), false) = (hello_format, out.is_error) {
+            self.formats.set(&session.id, f);
+        }
         match shaped {
             Some((format, _)) => crate::response::shape(name, format, out),
             None => out,

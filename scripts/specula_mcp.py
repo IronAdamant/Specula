@@ -18,7 +18,16 @@ ROOT = Path(__file__).resolve().parent.parent
 # Tools that answer concisely by default (`response_format`, see docs/design/TOOLS.md). Scripts
 # check engine data in depth, so this client asks them for detailed answers unless a call passes
 # its own response_format (or the client is made with detailed=False, as an agent would see them).
-DETAILED_BY_DEFAULT = {"sight_frame", "perf_frame", "engine_info", "world_list", "world_query", "world_history", "play_state"}
+# A script with its own MCP client wraps its arguments in `detailed(tool, args)`.
+DETAILED_BY_DEFAULT = {"sight_frame", "perf_frame", "engine_info", "world_list", "world_query", "world_history", "play_state",
+                       "logic_status", "playtest_run", "playtest_report"}
+
+
+def detailed(tool, args):
+    """`args` asking `tool` for its detailed answer (when it has a format and the call doesn't choose)."""
+    if tool in DETAILED_BY_DEFAULT and "response_format" not in (args or {}):
+        return dict(args or {}, response_format="detailed")
+    return args
 
 
 class Mcp:
@@ -52,8 +61,8 @@ class Mcp:
         return reply["result"]
 
     def call(self, tool, **args):
-        if self.detailed and tool in DETAILED_BY_DEFAULT and "response_format" not in args:
-            args["response_format"] = "detailed"
+        if self.detailed:
+            args = detailed(tool, args)
         result = self.request("tools/call", {"name": tool, "arguments": args})
         if result.get("isError"):
             raise RuntimeError(f"{tool}: {result['content'][0]['text']}")

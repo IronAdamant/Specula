@@ -22,6 +22,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from specula_mcp import detailed
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -55,7 +57,7 @@ class Mcp:
         return reply["result"]
 
     def raw(self, tool, **args):
-        return self.request("tools/call", {"name": tool, "arguments": args})
+        return self.request("tools/call", {"name": tool, "arguments": detailed(tool, args)})
 
     def call(self, tool, **args):
         result = self.raw(tool, **args)

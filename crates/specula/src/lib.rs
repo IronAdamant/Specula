@@ -88,7 +88,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [-- GAME ARGS...]";
+[--paused] [--response-format concise|detailed] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -136,6 +136,8 @@ struct Args {
     /// Start with the clock paused (`--paused`): nothing ticks until an agent says so, so fresh
     /// engines start playtests from the same tick and state.
     paused: bool,
+    /// The default `response_format` of every session (`--response-format`; concise unless set).
+    response_format: response::Format,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -158,6 +160,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         style: None,
         game_args: Vec::new(),
         paused: false,
+        response_format: response::Format::Concise,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -172,6 +175,13 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--paused" => args.paused = true,
+            "--response-format" => {
+                args.response_format = match value()?.as_str() {
+                    "concise" => response::Format::Concise,
+                    "detailed" => response::Format::Detailed,
+                    other => return Err(format!("--response-format must be concise or detailed, not '{other}'\n{USAGE}")),
+                }
+            }
             "--adapter" => {
                 let v = value()?;
                 args.adapter_label = v.clone();
@@ -248,6 +258,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
+    engine.formats = response::Defaults::new(args.response_format);
     engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
     let kind = perf::adapter_kind(engine.gpu.adapter().kind);
     eprintln!(
@@ -307,7 +318,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools)),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats))),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -501,6 +512,8 @@ struct Engine {
     physics: physics::Physics,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
     playtests: playtest_engine::Playtests,
+    /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
+    formats: Arc<response::Defaults>,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -596,6 +609,7 @@ impl Engine {
             logic: logic::LogicHost::new(),
             physics: physics::Physics::default(),
             playtests: Default::default(),
+            formats: response::Defaults::new(response::Format::Concise),
         })
     }
 
@@ -1392,7 +1406,7 @@ impl Engine {
                 return;
             }
             Command::Playtest(call) => {
-                self.playtest_call(call, request.session, request.reply);
+                self.playtest_call(call, request.session, request.reply, server);
                 return;
             }
             command => Request { command, ..request },
@@ -1555,7 +1569,7 @@ impl Engine {
                 ToolOutput::text(perf::memory_json(&self.profiler, stats.as_ref(), limit).to_string())
             }
             Command::PerfCapture(_) | Command::Playtest(_) => unreachable!("answered above"),
-            Command::Time(op) if op != TimeOp::Info && self.playtests.running() => playtest_engine::clock_busy(),
+            Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
             Command::Time(op) => {
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
@@ -2240,6 +2254,10 @@ mod tests {
         let e = parse("--seed 7").err().unwrap();
         assert!(e.contains("unknown argument '--seed'") && e.contains("after --"), "{e}");
         assert_eq!(parse("--style s.json").unwrap().style.as_deref(), Some(Path::new("s.json")));
+        let a = parse("--paused --response-format detailed").unwrap();
+        assert!(a.paused && a.response_format == response::Format::Detailed);
+        assert_eq!(parse("").unwrap().response_format, response::Format::Concise);
+        assert!(parse("--response-format verbose").err().unwrap().contains("concise or detailed"));
     }
 
     #[test]

@@ -5,13 +5,16 @@
 //! One playtest runs at a time per engine: it owns the clock (paused, stepped tick by tick by the
 //! runner; `time_control` is refused meanwhile, except `info`). Its calls go through the same path
 //! as an agent's (claims, journal, attribution), as the agent that started it. A headless engine
-//! runs it flat out (about 15,000 Sepulcra ticks a second), a windowed one a few milliseconds a
+//! runs it flat out (about 50,000 Sepulcra ticks a second), a windowed one a few milliseconds a
 //! frame, so the window stays fluid. Swarms run many playtests on many engines
 //! (`scripts/playtest_swarm.py`).
+//!
+//! Everything here talks to the engine through [`Host`], so the bookkeeping (ownership, waiting
+//! callers, replay files, bounds) is tested without a GPU; [`Engine`] is the real host.
 
 use crate::playtest::{self, Action, Expected, Run, Spec, Status};
 use crate::response::Format;
-use crate::tools::{argument_error, bool_arg, check_keys, num_in, string_arg, Command, Request};
+use crate::tools::{argument_error, bool_arg, check_keys, num_in, string_arg, Command, Request, TimeOp};
 use crate::Engine;
 use specula_core::Json;
 use specula_protocol::{Server, SessionInfo, ToolDef, ToolOutput};
@@ -33,6 +36,11 @@ const CALL_WAIT: Duration = Duration::from_secs(30);
 /// gives it this much per frame.
 pub const HEADLESS_SLICE: Duration = Duration::from_millis(10);
 pub const WINDOW_SLICE: Duration = Duration::from_millis(4);
+/// Replay files are written under this folder of the engine's working directory, and only there.
+pub const RECORD_DIR: &str = "playtests";
+/// Tools that write files (images, packets, traces): a playtest makes at most
+/// [`playtest::MAX_CAPTURES`] such calls.
+const FILE_TOOLS: [&str; 4] = ["sight_frame", "sight_orbit", "sight_compare", "perf_capture"];
 
 pub enum Source {
     Inline(Json),
@@ -41,8 +49,8 @@ pub enum Source {
 }
 
 pub enum PlaytestCall {
-    Run { source: Source, record: Option<String>, wait: Duration, format: Format },
-    Report { id: Option<u64>, wait: Duration, cancel: bool, format: Format },
+    Run { source: Source, record: Option<String>, overwrite: bool, wait: Duration, format: Format },
+    Report { id: Option<u64>, wait: Duration, cancel: bool, force: bool, format: Format },
 }
 
 fn wait_arg(args: &Json, default: f32) -> Result<Duration, String> {
@@ -52,7 +60,7 @@ fn wait_arg(args: &Json, default: f32) -> Result<Duration, String> {
 pub fn parse(name: &str, args: &Json) -> Option<Result<PlaytestCall, String>> {
     let call = match name {
         "playtest_run" => (|| {
-            check_keys(args, name, &[&["spec", "path", "replay", "record", "wait_s", "response_format"]])?;
+            check_keys(args, name, &[&["spec", "path", "replay", "record", "overwrite", "wait_s", "response_format"]])?;
             let given = ["spec", "path", "replay"].iter().filter(|k| args.get(k).is_some_and(|v| !v.is_null())).count();
             if given != 1 {
                 return Err("give exactly one of 'spec' (the playtest as JSON), 'path' (a spec file) or 'replay' (a replay file to verify)".to_owned());
@@ -70,16 +78,18 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PlaytestCall, String>> {
             Ok(PlaytestCall::Run {
                 source,
                 record: string_arg(args, "record")?.map(str::to_owned),
+                overwrite: bool_arg(args, "overwrite")?.unwrap_or(false),
                 wait: wait_arg(args, MAX_WAIT_S)?,
                 format: Format::arg(args, Format::Concise)?,
             })
         })(),
         "playtest_report" => (|| {
-            check_keys(args, name, &[&["id", "wait_s", "cancel", "response_format"]])?;
+            check_keys(args, name, &[&["id", "wait_s", "cancel", "force", "response_format"]])?;
             Ok(PlaytestCall::Report {
                 id: crate::tools::int_arg(args, "id", 1, u64::MAX >> 11)?,
                 wait: wait_arg(args, 0.0)?,
                 cancel: bool_arg(args, "cancel")?.unwrap_or(false),
+                force: bool_arg(args, "force")?.unwrap_or(false),
                 format: Format::arg(args, Format::Concise)?,
             })
         })(),
@@ -103,16 +113,18 @@ pub fn definitions() -> Vec<ToolDef> {
                           run length (default: the last step, or 36000 with until), end?: [steps without at, run once at the \
                           end], checkpoint_every?: ticks between hashes (300), stop_on_failure?, max_wall_s?}. A path's '#' \
                           is a length (\"enemies.items.#\"). The playtest owns the clock (time_control is refused while it \
-                          runs) and calls as you; sight_frame steps are listed as captures. record: write a replay file \
-                          (spec plus every hash); replay: run one again and stop at the first hash that differs, naming the \
-                          parts that differ. Answers when done or after wait_s with progress (then poll playtest_report). \
-                          For identical hashes across engines start them with --paused. One playtest at a time per engine."
+                          runs) and calls as you; sight_frame steps are listed as captures (at most 64 file-writing calls). \
+                          record: write a replay file (spec plus every hash) under playtests/; replay: run one again and \
+                          stop at the first hash that differs, naming the parts that differ. Answers when done or after \
+                          wait_s with progress (then poll playtest_report). For identical hashes across engines start them \
+                          with --paused. One playtest at a time per engine."
                 .into(),
             input_schema: schema(vec![
                 ("spec", t("object", "The playtest (see the description)")),
                 ("path", t("string", "A spec file (JSON), relative to the engine's working directory")),
-                ("replay", t("string", "A replay file (written by record) to run again and verify")),
-                ("record", t("string", "Write the replay file here (relative path) when the run ends")),
+                ("replay", t("string", "A replay file to run again and verify, relative to the working directory (record's answer gives it)")),
+                ("record", t("string", "Write the replay file here when the run ends: a .json name relative to playtests/")),
+                ("overwrite", t("boolean", "Let record replace an existing replay file (refused otherwise)")),
                 ("wait_s", t("number", "Seconds to wait for the result, 0..20 (default 20); 0 answers at once with the id")),
                 ("response_format", Format::schema()),
             ]),
@@ -122,16 +134,48 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "A playtest's report: status (running, passed, failed, diverged, error, cancelled), ticks, steps \
                           passed and failed, failures (part, index, tick, call, kind, path, expected, actual), captures, \
                           hashes and, for a replay, whether it verified. Without id: the running playtest, else the latest. \
-                          wait_s waits for it to finish; cancel stops it."
+                          wait_s waits for it to finish; cancel stops it (only its starter, or anyone with force: true, \
+                          which is logged on the board)."
                 .into(),
             input_schema: schema(vec![
                 ("id", t("integer", "The playtest (from playtest_run)")),
                 ("wait_s", t("number", "Seconds to wait for it to finish, 0..20 (default 0)")),
                 ("cancel", t("boolean", "Stop it (the report says cancelled)")),
+                ("force", t("boolean", "With cancel: stop another agent's playtest")),
                 ("response_format", Format::schema()),
             ]),
         },
     ]
+}
+
+/// What a playtest needs from the engine.
+pub(crate) trait Host {
+    fn tick_hz(&self) -> u32;
+    /// Where spec and replay files are read and replays written (under [`RECORD_DIR`]).
+    fn working_dir(&self) -> Result<PathBuf, String>;
+    /// The hosted game's name and its tools' names.
+    fn game(&self) -> Option<(String, Vec<String>)>;
+    fn engine_tools(&self) -> Vec<String>;
+    /// A session's agent name and identity key.
+    fn identity(&self, session: &SessionInfo) -> (String, String);
+    fn format_default(&self, session: &SessionInfo) -> Format;
+    /// Pauses the clock and drops queued steps; whether it was paused before.
+    fn take_clock(&mut self) -> bool;
+    fn release_clock(&mut self, was_paused: bool);
+    /// Runs up to `n` ticks now; how many ran.
+    fn run_ticks(&mut self, n: u64) -> u64;
+    /// The hashes a checkpoint records.
+    fn parts(&mut self) -> Vec<(String, u64)>;
+    /// Hands a call to the engine as `session`; the answer comes through the receiver.
+    fn dispatch(&mut self, session: &SessionInfo, tool: &str, args: &Json, game_tool: bool) -> Result<Receiver<ToolOutput>, ToolOutput>;
+    fn windowed(&self) -> bool;
+    /// Records something other agents should be able to see (a cancel of another's playtest).
+    fn log(&mut self, by: &str, text: String);
+}
+
+/// time_control is refused while a playtest runs, except `info`.
+pub fn clock_refused(op: TimeOp, running: bool) -> bool {
+    running && op != TimeOp::Info
 }
 
 struct Waiter {
@@ -145,15 +189,20 @@ struct Active {
     run: Run,
     session: SessionInfo,
     by: String,
+    /// The starter's identity key: only it may cancel without force.
+    key: String,
     started: Instant,
     was_paused: bool,
     /// A call answered later (a capture waiting for builds).
     waiting: Option<Pending>,
-    /// Where to write the replay: (as given, resolved).
+    /// Where to write the replay: (as shown, resolved).
     record: Option<(String, PathBuf)>,
     game_tools: Vec<String>,
     waiters: Vec<Waiter>,
-    cancel: bool,
+    /// Who asked to cancel it.
+    cancel: Option<String>,
+    /// Calls that write files so far.
+    file_calls: usize,
 }
 
 /// A call's answer still to come: the receiver, when to give up, and the answer's shape.
@@ -188,21 +237,10 @@ pub(crate) struct Playtests {
     done: VecDeque<Finished>,
 }
 
-impl Playtests {
-    pub fn running(&self) -> bool {
-        self.active.is_some()
-    }
-
-    /// The running playtest waits for a deferred answer (no need to spin).
-    pub fn waiting_on_call(&self) -> bool {
-        self.active.as_ref().is_some_and(|a| a.waiting.is_some())
-    }
-}
-
 fn error(code: &str, message: impl Into<String>, details: Vec<(&str, Json)>) -> ToolOutput {
     let mut pairs = vec![("error", Json::from(code)), ("message", Json::from(message.into()))];
     pairs.extend(details);
-    ToolOutput::error(Json::obj(pairs).to_pretty())
+    ToolOutput::error(Json::obj(pairs).to_string())
 }
 
 /// time_control while a playtest runs.
@@ -248,35 +286,52 @@ impl Active {
     }
 }
 
-impl Engine {
+impl Playtests {
+    pub fn running(&self) -> bool {
+        self.active.is_some()
+    }
+
+    /// The running playtest waits for a deferred answer (no need to spin).
+    pub fn waiting_on_call(&self) -> bool {
+        self.active.as_ref().is_some_and(|a| a.waiting.is_some())
+    }
+
     /// playtest_run and playtest_report (answered now or once the playtest ends).
-    pub(crate) fn playtest_call(&mut self, call: PlaytestCall, session: SessionInfo, reply: Sender<ToolOutput>) {
+    pub(crate) fn call(&mut self, host: &mut dyn Host, call: PlaytestCall, session: &SessionInfo, reply: Sender<ToolOutput>) {
         match call {
-            PlaytestCall::Run { source, record, wait, format } => match self.start_playtest(source, record, &session) {
-                Ok(()) => {
-                    let a = self.playtests.active.as_mut().expect("just started");
-                    a.wait_or_answer(reply, wait, format);
-                }
+            PlaytestCall::Run { source, record, overwrite, wait, format } => match self.start(host, source, record, overwrite, session) {
+                Ok(()) => self.active.as_mut().expect("just started").wait_or_answer(reply, wait, format),
                 Err(e) => {
                     let _ = reply.send(e);
                 }
             },
-            PlaytestCall::Report { id, wait, cancel, format } => {
-                if let Some(a) = self.playtests.active.as_mut().filter(|a| id.is_none_or(|i| i == a.id)) {
-                    a.cancel |= cancel;
+            PlaytestCall::Report { id, wait, cancel, force, format } => {
+                if let Some(a) = self.active.as_mut().filter(|a| id.is_none_or(|i| i == a.id)) {
+                    if cancel {
+                        let (by, key) = host.identity(session);
+                        if key != a.key && !force {
+                            let msg = format!("playtest {} is {}'s; only they cancel it (or pass force: true, which is logged)", a.id, a.by);
+                            let _ = reply.send(error("not_yours", msg, vec![("id", Json::from(a.id)), ("started_by", Json::from(a.by.as_str()))]));
+                            return;
+                        }
+                        if key != a.key {
+                            host.log(&by, format!("cancelled playtest {} '{}' of {} (force)", a.id, a.run.spec.name, a.by));
+                        }
+                        a.cancel.get_or_insert(by);
+                    }
                     // A cancel answers with the final report, at the next slice.
                     let wait = if cancel { wait.max(Duration::from_secs(5)) } else { wait };
                     a.wait_or_answer(reply, wait, format);
                     return;
                 }
                 let found = match id {
-                    Some(i) => self.playtests.done.iter().find(|f| f.id == i),
-                    None => self.playtests.done.back(),
+                    Some(i) => self.done.iter().find(|f| f.id == i),
+                    None => self.done.back(),
                 };
                 let out = match found {
                     Some(f) => ToolOutput::text(if format == Format::Detailed { f.detailed.to_string() } else { f.concise.to_string() }),
                     None => {
-                        let kept: Vec<Json> = self.playtests.done.iter().map(|f| Json::from(f.id)).collect();
+                        let kept: Vec<Json> = self.done.iter().map(|f| Json::from(f.id)).collect();
                         let msg = match id {
                             Some(i) => format!("no playtest {i}: this engine keeps the last {KEPT} reports"),
                             None => "no playtest has run in this engine yet: start one with playtest_run".to_owned(),
@@ -289,16 +344,16 @@ impl Engine {
         }
     }
 
-    fn start_playtest(&mut self, source: Source, record: Option<String>, session: &SessionInfo) -> Result<(), ToolOutput> {
-        if let Some(a) = &self.playtests.active {
+    fn start(&mut self, host: &mut dyn Host, source: Source, record: Option<String>, overwrite: bool, session: &SessionInfo) -> Result<(), ToolOutput> {
+        if let Some(a) = &self.active {
             return Err(error(
                 "playtest_busy",
                 format!("playtest {} ('{}') is running; one at a time per engine (run more engines for more at once)", a.id, a.run.spec.name),
                 vec![("id", Json::from(a.id)), ("progress", a.run.progress())],
             ));
         }
-        let root = std::env::current_dir().map_err(|e| error("io", format!("the working directory: {e}"), vec![]))?;
-        let bad = |e: playtest::SpecError| ToolOutput::error(e.to_json().to_pretty());
+        let root = host.working_dir().map_err(|e| error("io", format!("the working directory: {e}"), vec![]))?;
+        let bad = |e: playtest::SpecError| ToolOutput::error(e.to_json().to_string());
         let io = |field: &str, e: String| error("bad_path", e, vec![("field", Json::from(field))]);
         let (spec, expected): (Spec, Option<Expected>) = match source {
             Source::Inline(v) => (Spec::parse(&v).map_err(bad)?, None),
@@ -309,61 +364,69 @@ impl Engine {
             }
             Source::Replay(rel) => {
                 let (_, text) = playtest::read_file(&root, &rel).map_err(|e| io("replay", e))?;
-                let (spec, exp) = playtest::parse_replay(&text, &rel, self.clock.hz()).map_err(bad)?;
+                let (spec, exp) = playtest::parse_replay(&text, &rel, host.tick_hz()).map_err(bad)?;
                 (spec, Some(exp))
             }
         };
+        let game = host.game();
         if let Some(g) = &spec.game {
-            if self.game.is_none() || *g != self.game_name {
-                let hosted = if self.game.is_some() { Json::from(self.game_name.as_str()) } else { Json::Null };
+            if game.as_ref().is_none_or(|(name, _)| name != g) {
+                let hosted = game.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str()));
                 return Err(error("wrong_game", format!("the spec is for the game '{g}'"), vec![("hosted", hosted)]));
             }
         }
-        let game_tools: Vec<String> = self.game.as_ref().map(|g| g.tools().into_iter().map(|t| t.name).collect()).unwrap_or_default();
-        let engine_tools = crate::tools::engine_tool_names();
+        let game_tools = game.map(|(_, t)| t).unwrap_or_default();
+        let engine_tools = host.engine_tools();
         if let Some(unknown) = spec.calls().find(|c| !game_tools.iter().any(|t| t == c) && !engine_tools.iter().any(|t| t == c)) {
             return Err(error("unknown_tool", format!("the spec calls '{unknown}', which this engine doesn't have (tools/list shows them)"), vec![("call", Json::from(unknown))]));
         }
         let record = match record {
             Some(rel) => {
-                let path = playtest::safe_path(&root, &rel, true).map_err(|e| io("record", e))?;
-                Some((rel, path))
+                // Only .json files under playtests/, and never over an existing one unasked.
+                if !rel.to_ascii_lowercase().ends_with(".json") {
+                    return Err(io("record", format!("'{rel}': a replay file's name ends in .json")));
+                }
+                let shown = format!("{RECORD_DIR}/{rel}");
+                let path = playtest::safe_path(&root, &shown, true).map_err(|e| io("record", e))?;
+                if path.exists() && !overwrite {
+                    return Err(error("exists", format!("{shown} already exists; pass overwrite: true to replace it"), vec![("path", Json::from(shown.as_str()))]));
+                }
+                Some((shown, path))
             }
             None => None,
         };
-        self.playtests.next_id += 1;
-        let id = self.playtests.next_id;
-        let was_paused = self.clock.paused();
-        self.clock.set_paused(true);
-        // Ticks an earlier time_control step queued would run on into the playtest.
-        self.clock.cancel_steps();
-        let by = self.swarm.agent_name(session);
+        self.next_id += 1;
+        let id = self.next_id;
+        let was_paused = host.take_clock();
+        let (by, key) = host.identity(session);
         eprintln!("specula: playtest {id} '{}' started by {by}{}", spec.name, if expected.is_some() { " (replay)" } else { "" });
-        self.playtests.active = Some(Active {
+        self.active = Some(Active {
             id,
             run: Run::new(spec, expected),
             session: session.clone(),
             by,
+            key,
             started: Instant::now(),
             was_paused,
             waiting: None,
             record,
             game_tools,
             waiters: Vec::new(),
-            cancel: false,
+            cancel: None,
+            file_calls: 0,
         });
         Ok(())
     }
 
     /// Runs the active playtest for about `budget`.
-    pub(crate) fn pump_playtests(&mut self, server: &Server, budget: Duration) {
-        let Some(mut a) = self.playtests.active.take() else { return };
+    pub(crate) fn pump(&mut self, host: &mut dyn Host, budget: Duration) {
+        let Some(mut a) = self.active.take() else { return };
         let end = Instant::now() + budget;
         // Fewer ticks between time checks with a window (its frames come first).
-        let chunk = if self.windowed { 16 } else { 64 };
+        let chunk = if host.windowed() { 16 } else { 64 };
         loop {
-            if a.cancel {
-                a.run.stop(Status::Cancelled, "cancelled with playtest_report");
+            if let Some(by) = &a.cancel {
+                a.run.stop(Status::Cancelled, format!("cancelled by {by}"));
             }
             if a.started.elapsed() > Duration::from_secs(a.run.spec.max_wall_s) {
                 a.run.stop(Status::Error, format!("ran past max_wall_s ({} s)", a.run.spec.max_wall_s));
@@ -384,7 +447,7 @@ impl Engine {
                 Action::Call(why) => {
                     let (tool, args) = a.run.call_of(why);
                     let (tool, args) = (tool.to_owned(), args.clone());
-                    match self.playtest_dispatch(&a, &tool, &args, server) {
+                    match Self::dispatch(host, &mut a, &tool, &args) {
                         Ok(p) => match p.rx.try_recv() {
                             Ok(out) => a.run.complete(&p.answer(out)),
                             Err(TryRecvError::Empty) => a.waiting = Some(p),
@@ -394,14 +457,11 @@ impl Engine {
                     }
                 }
                 Action::Hash(point) => {
-                    let parts = self.playtest_parts();
+                    let parts = host.parts();
                     a.run.record_hash(point, parts);
                 }
                 Action::Advance(n) => {
-                    let before = self.clock.tick();
-                    self.clock.step(n.min(chunk));
-                    self.advance_clock();
-                    let ran = self.clock.tick() - before;
+                    let ran = host.run_ticks(n.min(chunk));
                     if ran == 0 {
                         a.run.stop(Status::Error, "the clock didn't advance");
                     }
@@ -409,7 +469,7 @@ impl Engine {
                 }
                 Action::Wait => break,
                 Action::Finish => {
-                    self.finish_playtest(a);
+                    self.finish(host, a);
                     return;
                 }
             }
@@ -427,51 +487,38 @@ impl Engine {
             }
         }
         a.waiters = keep;
-        self.playtests.active = Some(a);
+        self.active = Some(a);
     }
 
     /// A playtest's call, as its agent: answered at once or later through the receiver.
-    fn playtest_dispatch(&mut self, a: &Active, tool: &str, args: &Json, server: &Server) -> Result<Pending, ToolOutput> {
+    fn dispatch(host: &mut dyn Host, a: &mut Active, tool: &str, args: &Json) -> Result<Pending, ToolOutput> {
         if let Some(why) = playtest::forbidden(tool) {
             return Err(error("forbidden", format!("a playtest can't call {tool}: {why}"), vec![]));
         }
-        // As over MCP: response_format of the heavy tools is applied to the answer.
-        let shaped = crate::response::split(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_pretty()))?;
+        if FILE_TOOLS.contains(&tool) {
+            if a.file_calls >= playtest::MAX_CAPTURES {
+                let msg = format!("a playtest makes at most {} calls that write files (captures, traces)", playtest::MAX_CAPTURES);
+                return Err(error("capture_limit", msg, vec![("max", Json::from(playtest::MAX_CAPTURES))]));
+            }
+            a.file_calls += 1;
+        }
+        // As over MCP: the starter's default format, response_format of the heavy tools applied
+        // to the answer.
+        let default = host.format_default(&a.session);
+        let shaped = crate::response::split(tool, args, default).map_err(|e| ToolOutput::error(argument_error(&e).to_string()))?;
         let format = shaped.as_ref().map(|(f, _)| *f);
-        let args = shaped.as_ref().map_or(args, |(_, a)| a);
-        let command = if a.game_tools.iter().any(|t| t == tool) {
-            Command::Game { name: tool.to_owned(), args: args.clone() }
-        } else {
-            crate::tools::parse(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_pretty()))?
-        };
-        let (reply, answer) = mpsc::channel();
-        let request = Request { session: a.session.clone(), command, reply, deadline: Instant::now() + Duration::from_secs(25) };
-        self.handle(request, server);
-        Ok(Pending { rx: answer, deadline: Instant::now() + CALL_WAIT, tool: tool.to_owned(), format })
+        let defaulted = if shaped.is_none() { crate::response::with_default(args, default) } else { None };
+        let args = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(args);
+        let game_tool = a.game_tools.iter().any(|t| t == tool);
+        let rx = host.dispatch(&a.session, tool, args, game_tool)?;
+        Ok(Pending { rx, deadline: Instant::now() + CALL_WAIT, tool: tool.to_owned(), format })
     }
 
-    /// The hashes a playtest checkpoint records: the world, physics and the game's subsystems.
-    fn playtest_parts(&mut self) -> Vec<(String, u64)> {
-        let mut parts = vec![("world".to_owned(), self.state_hash())];
-        if let Some(h) = self.physics.hash() {
-            parts.push(("physics".to_owned(), h));
-        }
-        if let Some(g) = &self.game {
-            let mut hashes = Vec::new();
-            g.state_hashes(&mut hashes);
-            parts.extend(hashes.into_iter().map(|(k, h)| (format!("game.{k}"), h)));
-        }
-        parts
-    }
-
-    fn finish_playtest(&mut self, mut a: Active) {
-        if !a.was_paused {
-            self.clock.set_paused(false);
-            self.last_advance = Instant::now();
-        }
+    fn finish(&mut self, host: &mut dyn Host, mut a: Active) {
+        host.release_clock(a.was_paused);
         let replay_file = a.record.as_ref().map(|(rel, path)| {
-            let game = self.game.as_ref().map(|_| self.game_name.as_str());
-            let text = a.run.replay_json(game, self.clock.hz()).to_pretty();
+            let game = host.game().map(|(n, _)| n);
+            let text = a.run.replay_json(game.as_deref(), host.tick_hz()).to_pretty();
             match std::fs::write(path, &text) {
                 Ok(()) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(true)), ("bytes", Json::from(text.len()))]),
                 Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", Json::from(e.to_string()))]),
@@ -485,9 +532,337 @@ impl Engine {
         }
         let status = a.run.status().map_or("running", Status::name);
         eprintln!("specula: playtest {} '{}' {status} after {} ticks in {:.2} s", a.id, a.run.spec.name, a.run.tick, a.started.elapsed().as_secs_f64());
-        if self.playtests.done.len() == KEPT {
-            self.playtests.done.pop_front();
+        if self.done.len() == KEPT {
+            self.done.pop_front();
         }
-        self.playtests.done.push_back(Finished { id: a.id, concise, detailed });
+        self.done.push_back(Finished { id: a.id, concise, detailed });
+    }
+}
+
+/// The engine as a playtest's host.
+struct EngineHost<'a> {
+    e: &'a mut Engine,
+    server: &'a Server,
+}
+
+impl Host for EngineHost<'_> {
+    fn tick_hz(&self) -> u32 {
+        self.e.clock.hz()
+    }
+
+    fn working_dir(&self) -> Result<PathBuf, String> {
+        std::env::current_dir().map_err(|e| e.to_string())
+    }
+
+    fn game(&self) -> Option<(String, Vec<String>)> {
+        self.e.game.as_ref().map(|g| (self.e.game_name.clone(), g.tools().into_iter().map(|t| t.name).collect()))
+    }
+
+    fn engine_tools(&self) -> Vec<String> {
+        crate::tools::engine_tool_names()
+    }
+
+    fn identity(&self, session: &SessionInfo) -> (String, String) {
+        (self.e.swarm.agent_name(session), self.e.swarm.key(session))
+    }
+
+    fn format_default(&self, session: &SessionInfo) -> Format {
+        self.e.formats.get(&session.id)
+    }
+
+    fn take_clock(&mut self) -> bool {
+        let was = self.e.clock.paused();
+        self.e.clock.set_paused(true);
+        // Ticks an earlier time_control step queued would run on into the playtest.
+        self.e.clock.cancel_steps();
+        was
+    }
+
+    fn release_clock(&mut self, was_paused: bool) {
+        if !was_paused {
+            self.e.clock.set_paused(false);
+            self.e.last_advance = Instant::now();
+        }
+    }
+
+    fn run_ticks(&mut self, n: u64) -> u64 {
+        let before = self.e.clock.tick();
+        self.e.clock.step(n);
+        self.e.advance_clock();
+        self.e.clock.tick() - before
+    }
+
+    fn parts(&mut self) -> Vec<(String, u64)> {
+        let mut parts = vec![("world".to_owned(), self.e.state_hash())];
+        if let Some(h) = self.e.physics.hash() {
+            parts.push(("physics".to_owned(), h));
+        }
+        if let Some(g) = &self.e.game {
+            let mut hashes = Vec::new();
+            g.state_hashes(&mut hashes);
+            parts.extend(hashes.into_iter().map(|(k, h)| (format!("game.{k}"), h)));
+        }
+        parts
+    }
+
+    fn dispatch(&mut self, session: &SessionInfo, tool: &str, args: &Json, game_tool: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
+        let command = if game_tool {
+            Command::Game { name: tool.to_owned(), args: args.clone() }
+        } else {
+            crate::tools::parse(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_string()))?
+        };
+        let (reply, answer) = mpsc::channel();
+        let request = Request { session: session.clone(), command, reply, deadline: Instant::now() + Duration::from_secs(25) };
+        self.e.handle(request, self.server);
+        Ok(answer)
+    }
+
+    fn windowed(&self) -> bool {
+        self.e.windowed
+    }
+
+    fn log(&mut self, by: &str, text: String) {
+        let tick = self.e.clock.tick();
+        self.e.swarm.board.log(by, tick, "playtest", None, text);
+    }
+}
+
+impl Engine {
+    /// playtest_run and playtest_report.
+    pub(crate) fn playtest_call(&mut self, call: PlaytestCall, session: SessionInfo, reply: Sender<ToolOutput>, server: &Server) {
+        let mut p = std::mem::take(&mut self.playtests);
+        p.call(&mut EngineHost { e: self, server }, call, &session, reply);
+        self.playtests = p;
+    }
+
+    /// Runs the active playtest for about `budget`.
+    pub(crate) fn pump_playtests(&mut self, server: &Server, budget: Duration) {
+        if !self.playtests.running() {
+            return;
+        }
+        let mut p = std::mem::take(&mut self.playtests);
+        p.pump(&mut EngineHost { e: self, server }, budget);
+        self.playtests = p;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host without an engine: tools answer from a table, the clock is a counter.
+    struct Fake {
+        root: PathBuf,
+        tick: u64,
+        paused: bool,
+        calls: Vec<String>,
+        logs: Vec<String>,
+        /// Senders of answers that never come (kept so the receivers stay open).
+        held: Vec<Sender<ToolOutput>>,
+    }
+
+    impl Fake {
+        fn new(label: &str) -> Fake {
+            let root = std::env::temp_dir().join(format!("specula-playtest-engine-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new() }
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl Host for Fake {
+        fn tick_hz(&self) -> u32 {
+            30
+        }
+        fn working_dir(&self) -> Result<PathBuf, String> {
+            Ok(self.root.clone())
+        }
+        fn game(&self) -> Option<(String, Vec<String>)> {
+            Some(("g".into(), vec!["play_state".into()]))
+        }
+        fn engine_tools(&self) -> Vec<String> {
+            ["world_query", "sight_frame", "time_control", "never"].map(String::from).to_vec()
+        }
+        fn identity(&self, s: &SessionInfo) -> (String, String) {
+            (format!("agent-{}", s.id), format!("key-{}", s.id))
+        }
+        fn format_default(&self, _: &SessionInfo) -> Format {
+            Format::Concise
+        }
+        fn take_clock(&mut self) -> bool {
+            std::mem::replace(&mut self.paused, true)
+        }
+        fn release_clock(&mut self, was: bool) {
+            self.paused = was;
+        }
+        fn run_ticks(&mut self, n: u64) -> u64 {
+            self.tick += n;
+            n
+        }
+        fn parts(&mut self) -> Vec<(String, u64)> {
+            vec![("world".into(), self.tick)]
+        }
+        fn dispatch(&mut self, _: &SessionInfo, tool: &str, args: &Json, _: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
+            self.calls.push(tool.to_owned());
+            let (tx, rx) = mpsc::channel();
+            match tool {
+                "sight_frame" => tx.send(ToolOutput::text(r#"{"image": {"path": "f.png"}}"#)).unwrap(),
+                "never" => self.held.push(tx),
+                _ => tx.send(ToolOutput::text(args.to_string())).unwrap(),
+            }
+            Ok(rx)
+        }
+        fn windowed(&self) -> bool {
+            false
+        }
+        fn log(&mut self, by: &str, text: String) {
+            self.logs.push(format!("{by}: {text}"));
+        }
+    }
+
+    fn session(id: &str) -> SessionInfo {
+        SessionInfo { id: id.into(), client_name: "t".into(), client_version: "0".into(), protocol_version: "x".into() }
+    }
+
+    fn run_call(spec: &str, record: Option<&str>, overwrite: bool) -> PlaytestCall {
+        PlaytestCall::Run { source: Source::Inline(Json::parse(spec).unwrap()), record: record.map(String::from), overwrite, wait: Duration::ZERO, format: Format::Concise }
+    }
+
+    fn report_call(cancel: bool, force: bool, wait: Duration) -> PlaytestCall {
+        PlaytestCall::Report { id: None, wait, cancel, force, format: Format::Concise }
+    }
+
+    /// Calls and returns the answer, if there is one yet.
+    fn ask(p: &mut Playtests, h: &mut Fake, call: PlaytestCall, s: &SessionInfo) -> (Receiver<ToolOutput>, Option<Json>) {
+        let (tx, rx) = mpsc::channel();
+        p.call(h, call, s, tx);
+        let now = rx.try_recv().ok().map(|o| Json::parse(match &o.content[0] {
+            specula_protocol::Content::Text(t) => t,
+            _ => "null",
+        }).unwrap());
+        (rx, now)
+    }
+
+    fn finish(p: &mut Playtests, h: &mut Fake) {
+        for _ in 0..10_000 {
+            if !p.running() {
+                return;
+            }
+            p.pump(h, Duration::from_millis(50));
+        }
+        panic!("never finished");
+    }
+
+    fn code(j: &Json) -> Option<&str> {
+        j.get("error").and_then(Json::as_str)
+    }
+
+    #[test]
+    fn the_clock_is_the_playtests_while_it_runs() {
+        assert!(clock_refused(TimeOp::Step(1), true));
+        assert!(clock_refused(TimeOp::Resume, true));
+        assert!(!clock_refused(TimeOp::Info, true), "info stays open");
+        assert!(!clock_refused(TimeOp::Step(1), false));
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("clock"), session("a"));
+        ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 100}"#, None, false), &a);
+        assert!(h.paused, "taken over");
+        finish(&mut p, &mut h);
+        assert_eq!((h.tick, h.paused), (100, false), "given back as it was");
+    }
+
+    #[test]
+    fn replays_are_written_under_playtests_and_never_overwritten_unasked() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("record"), session("a"));
+        let spec = r#"{"name": "r", "steps": [{"at": 0, "call": "world_query"}], "ticks": 600}"#;
+        let (_, ans) = ask(&mut p, &mut h, run_call(spec, Some("../AGENTS.md"), false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("bad_path"), "not a .json name");
+        let (_, ans) = ask(&mut p, &mut h, run_call(spec, Some("../x.json"), false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("bad_path"), "out of playtests/");
+        ask(&mut p, &mut h, run_call(spec, Some("r.json"), false), &a);
+        finish(&mut p, &mut h);
+        let file = h.root.join(RECORD_DIR).join("r.json");
+        assert!(file.exists());
+        let (_, ans) = ask(&mut p, &mut h, run_call(spec, Some("r.json"), false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("exists"));
+        h.tick = 0;
+        let (_, ans) = ask(&mut p, &mut h, run_call(spec, Some("r.json"), true), &a);
+        assert!(code(ans.as_ref().unwrap()).is_none(), "overwrite: true");
+        finish(&mut p, &mut h);
+        // The replay runs again and verifies (the fake's hash is the tick since the start).
+        h.tick = 0;
+        let replay = PlaytestCall::Run { source: Source::Replay("playtests/r.json".into()), record: None, overwrite: false, wait: Duration::ZERO, format: Format::Concise };
+        ask(&mut p, &mut h, replay, &a);
+        finish(&mut p, &mut h);
+        let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
+        assert_eq!(r.unwrap().get("replay").and_then(|r| r.get("verified")).and_then(Json::as_bool), Some(true));
+    }
+
+    #[test]
+    fn only_the_starter_cancels_unless_forced_and_logged() {
+        let (mut p, mut h, a, b) = (Playtests::default(), Fake::new("cancel"), session("a"), session("b"));
+        ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 1000000}"#, None, false), &a);
+        let (_, ans) = ask(&mut p, &mut h, report_call(true, false, Duration::ZERO), &b);
+        assert_eq!(code(&ans.unwrap()), Some("not_yours"));
+        p.pump(&mut h, Duration::from_millis(1));
+        assert!(p.running(), "still running");
+        let (rx, _) = ask(&mut p, &mut h, report_call(true, true, Duration::ZERO), &b);
+        assert_eq!(h.logs.len(), 1, "a forced cancel is logged: {:?}", h.logs);
+        finish(&mut p, &mut h);
+        let out = rx.try_recv().expect("answered at the end");
+        assert!(format!("{:?}", out.content).contains("cancelled by agent-b"));
+        // The starter needs no force.
+        ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 1000000}"#, None, false), &a);
+        ask(&mut p, &mut h, report_call(true, false, Duration::ZERO), &a);
+        finish(&mut p, &mut h);
+    }
+
+    #[test]
+    fn waiting_callers_are_capped() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("waiters"), session("a"));
+        ask(&mut p, &mut h, run_call(r#"{"name": "w", "steps": [{"at": 0, "call": "never"}], "ticks": 10}"#, None, false), &a);
+        let answered_now = (0..MAX_WAITERS + 8).filter(|_| ask(&mut p, &mut h, report_call(false, false, Duration::from_secs(10)), &a).1.is_some()).count();
+        assert_eq!(answered_now, 8, "past {MAX_WAITERS} waiting callers, the rest are answered at once");
+        assert_eq!(p.active.as_ref().unwrap().waiters.len(), MAX_WAITERS);
+    }
+
+    #[test]
+    fn forbidden_tools_and_too_many_captures_are_refused() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("forbidden"), session("a"));
+        let (_, ans) = ask(&mut p, &mut h, run_call(r#"{"name": "f", "steps": [{"at": 0, "call": "time_control"}]}"#, None, false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("bad_spec"));
+        let (_, ans) = ask(&mut p, &mut h, run_call(r#"{"name": "f", "steps": [{"at": 0, "call": "nope"}]}"#, None, false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("unknown_tool"));
+        let (_, ans) = ask(&mut p, &mut h, run_call(r#"{"name": "f", "game": "other"}"#, None, false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("wrong_game"));
+        let shots: Vec<String> = (0..playtest::MAX_CAPTURES + 6).map(|i| format!(r#"{{"at": {i}, "call": "sight_frame"}}"#)).collect();
+        let spec = format!(r#"{{"name": "shots", "steps": [{}]}}"#, shots.join(","));
+        ask(&mut p, &mut h, run_call(&spec, None, false), &a);
+        finish(&mut p, &mut h);
+        assert_eq!(h.calls.iter().filter(|c| *c == "sight_frame").count(), playtest::MAX_CAPTURES, "the engine never saw the rest");
+        let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
+        let r = r.unwrap();
+        assert_eq!(r.get("failures_total").and_then(Json::as_u64), Some(6));
+        assert!(r.to_string().contains("capture_limit"));
+    }
+
+    #[test]
+    fn reports_stay_within_their_byte_budget() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("budget"), session("a"));
+        // 48 failing steps (a spec near its byte cap), each quoting a 2 KB matcher and a big actual value.
+        let big = "x".repeat(playtest::MAX_MATCHER_BYTES - 16);
+        let steps: Vec<String> = (0..48).map(|i| format!(r#"{{"at": {i}, "call": "world_query", "args": {{"pad": "{big}"}}, "expect": {{"pad": "{big}y"}}}}"#)).collect();
+        let spec = format!(r#"{{"name": "big", "steps": [{}]}}"#, steps.join(","));
+        ask(&mut p, &mut h, run_call(&spec, None, false), &a);
+        finish(&mut p, &mut h);
+        let f = p.done.back().unwrap();
+        assert!(f.concise.to_string().len() < 16 * 1024, "{}", f.concise.to_string().len());
+        assert!(f.detailed.to_string().len() <= playtest::MAX_REPORT_BYTES + 4096, "{}", f.detailed.to_string().len());
+        assert_eq!(f.detailed.get("failures_total").and_then(Json::as_u64), Some(48));
     }
 }

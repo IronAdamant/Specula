@@ -55,12 +55,21 @@ pub const DEFAULT_EVERY: u64 = 30;
 pub const DEFAULT_WALL_S: u64 = 600;
 pub const MAX_WALL_S: u64 = 3600;
 const MAX_FAILURES: usize = 64;
-const MAX_CAPTURES: usize = 64;
+pub const MAX_CAPTURES: usize = 64;
 const MAX_RESULTS: usize = 512;
 /// Values quoted in failures are cut to this many characters of JSON.
 const MAX_VALUE_CHARS: usize = 240;
 const MAX_NAME: usize = 64;
 const MAX_TEXT: usize = 400;
+/// One expectation's matcher, as JSON, at most (failures quote it).
+pub const MAX_MATCHER_BYTES: usize = 2048;
+const MAX_PATH_CHARS: usize = 256;
+/// A whole spec, as compact JSON, at most (it is kept for the replay file).
+pub const MAX_SPEC_BYTES: usize = 256 * 1024;
+/// Failures a report quotes, by bytes of JSON: concise, detailed.
+const FAILURE_BYTES: (usize, usize) = (6 * 1024, 48 * 1024);
+/// A report's JSON at most: past it, the per-call results and checkpoints are left out.
+pub const MAX_REPORT_BYTES: usize = 128 * 1024;
 
 /// Tools a playtest may not call, and why (the error says what to do instead).
 pub const FORBIDDEN: [(&str, &str); 6] = [
@@ -301,7 +310,13 @@ fn parse_expects(v: &Json, field: &str) -> Result<Vec<Expect>, SpecError> {
     pairs
         .iter()
         .map(|(path, m)| {
+            if path.len() > MAX_PATH_CHARS {
+                return Err(SpecError::new(format!("{field}.expect"), format!("expectation paths are at most {MAX_PATH_CHARS} characters")));
+            }
             let f = format!("{field}.expect.{path}");
+            if m.to_string().len() > MAX_MATCHER_BYTES {
+                return Err(SpecError::new(&f, format!("a matcher is at most {MAX_MATCHER_BYTES} bytes of JSON (compare a count or a field, not a whole answer)")));
+            }
             let segs = parse_path(path).map_err(|e| SpecError::new(&f, e))?;
             Ok(Expect { path: path.clone(), segs, ops: parse_matcher(m, &f)?, source: m.clone() })
         })
@@ -335,6 +350,10 @@ fn parse_step(v: &Json, field: &str, timed: bool) -> Result<Step, SpecError> {
 impl Spec {
     pub fn parse(v: &Json) -> Result<Spec, SpecError> {
         keys(v, "", &SPEC_KEYS).map_err(|e| if e.field.is_empty() { SpecError::new("spec", "the spec must be a JSON object") } else { e })?;
+        let bytes = v.to_string().len();
+        if bytes > MAX_SPEC_BYTES {
+            return Err(SpecError::new("spec", format!("the spec is {bytes} bytes of JSON; at most {MAX_SPEC_BYTES}")));
+        }
         let name = text(v, "name", "name", MAX_NAME)?.ok_or_else(|| SpecError::new("name", "'name' is required (it names the report and files)"))?;
         check_name(&name).map_err(|e| SpecError::new("name", e))?;
         let list = |key: &str, max: usize, timed: bool| -> Result<Vec<Step>, SpecError> {
@@ -751,6 +770,12 @@ impl Run {
     pub fn next_action(&mut self) -> Action {
         loop {
             if self.status.is_some() || self.phase == Phase::Done {
+                // However a run stops (a failure, a cancel, the wall-time limit), its end is
+                // hashed, so its replay can verify up to there. A divergence needs no end.
+                if self.started && !self.end_hashed && self.status != Some(Status::Diverged) {
+                    self.pending = None;
+                    return Action::Hash(HashPoint::End);
+                }
                 return Action::Finish;
             }
             if self.pending.is_some() {
@@ -788,7 +813,7 @@ impl Run {
                                 call,
                                 kind: "until_not_met",
                                 path: None,
-                                expected: expect,
+                                expected: quote(&expect),
                                 actual: Json::from(format!("still not met after {} ticks", self.spec.ticks)),
                             });
                         }
@@ -890,7 +915,7 @@ impl Run {
         if problems.is_empty() {
             for e in &step.expect {
                 if let Err(actual) = e.check(&answer) {
-                    problems.push(("expect", Some(e.path.clone()), e.source.clone(), quote(&actual)));
+                    problems.push(("expect", Some(e.path.clone()), quote(&e.source), quote(&actual)));
                 }
             }
         }
@@ -1011,10 +1036,20 @@ impl Run {
         if let Some(r) = &self.stop_reason {
             out.set("reason", Json::from(r.as_str()));
         }
-        let shown = if detailed { MAX_FAILURES } else { 5 };
+        let (shown, budget) = if detailed { (MAX_FAILURES, FAILURE_BYTES.1) } else { (5, FAILURE_BYTES.0) };
         out.set("failures_total", Json::from(self.failures_total));
         if self.failures_total > 0 {
-            out.set("failures", Json::arr(self.failures.iter().take(shown).map(|f| self.failure_json(f))));
+            // At least one failure, then as many as fit the byte budget.
+            let (mut quoted, mut bytes) = (Vec::new(), 0);
+            for f in self.failures.iter().take(shown) {
+                let j = self.failure_json(f);
+                bytes += j.to_string().len();
+                if !quoted.is_empty() && bytes > budget {
+                    break;
+                }
+                quoted.push(j);
+            }
+            out.set("failures", Json::Arr(quoted));
         }
         let shown = if detailed { MAX_CAPTURES } else { 8 };
         if self.captures_total > 0 {
@@ -1089,6 +1124,10 @@ impl Run {
             );
             let n = self.checkpoints.len();
             out.set("checkpoint_list", Json::arr(self.checkpoints.iter().enumerate().filter(|(i, _)| *i < 8 || *i + 8 >= n).map(|(_, c)| c.to_json())));
+            if out.to_string().len() > MAX_REPORT_BYTES {
+                out.set("results", Json::from("left out: the report is over its byte budget"));
+                out.set("checkpoint_list", Json::from("left out: the report is over its byte budget"));
+            }
         }
         out
     }
@@ -1342,6 +1381,13 @@ mod tests {
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0, "call": "time_control"}]}"#).field, "steps[0].call");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0}]}"#).field, "steps[0]");
         assert_eq!(err(r#"{"name": "a", "end": [{"call": "lex_edit"}]}"#).field, "end[0].call", "connection-thread tools");
+        // Bounds: a matcher (failures quote it), a path, the whole spec.
+        let big = "x".repeat(MAX_MATCHER_BYTES);
+        assert_eq!(err(&format!(r#"{{"name": "a", "end": [{{"call": "x", "expect": {{"a": "{big}"}}}}]}}"#)).field, "end[0].expect.a");
+        let long = "p".repeat(300);
+        assert_eq!(err(&format!(r#"{{"name": "a", "end": [{{"call": "x", "expect": {{"{long}": 1}}}}]}}"#)).field, "end[0].expect");
+        let pad = "y".repeat(MAX_SPEC_BYTES);
+        assert_eq!(err(&format!(r#"{{"name": "a", "description": "{pad}"}}"#)).field, "spec");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 9, "call": "x"}], "ticks": 5}"#).field, "ticks");
         assert_eq!(err(r#"{"name": "a", "until": {"call": "x"}}"#).field, "until.expect");
         assert_eq!(err(r#"{"name": "a", "end": [{"at": 1, "call": "x"}]}"#).field, "end[0].at");
@@ -1376,12 +1422,27 @@ mod tests {
     fn stop_on_failure_and_stop() {
         let mut run = Run::new(spec(r#"{"name": "s", "stop_on_failure": true, "steps": [{"at": 0, "call": "a", "expect": {"x": 1}}, {"at": 10, "call": "b"}]}"#), None);
         let log = drive(&mut run, |_, _| ok(r#"{"x": 2}"#));
-        assert_eq!(log, ["hash:start@0", "a@0"]);
+        assert_eq!(log, ["hash:start@0", "a@0", "hash:end@0"], "a stopped run still hashes its end");
         assert_eq!(run.status(), Some(Status::Failed));
-        let mut c = Run::new(spec(r#"{"name": "s", "ticks": 10}"#), None);
+        // So the failure's replay verifies, and reproduces the failure.
+        let (s, exp) = parse_replay(&run.replay_json(None, 30).to_string(), "s.json", 30).unwrap();
+        let mut again = Run::new(s, Some(exp));
+        drive(&mut again, |_, _| ok(r#"{"x": 2}"#));
+        assert_eq!(again.status(), Some(Status::Failed));
+        assert_eq!(again.report(false).get("replay").unwrap().get("verified").unwrap().as_bool(), Some(true));
+        // A cancel (and the wall-time limit) of a started run hashes its end too.
+        let mut c = Run::new(spec(r#"{"name": "s", "ticks": 1000}"#), None);
+        assert_eq!(c.next_action(), Action::Hash(HashPoint::Start));
+        c.record_hash(HashPoint::Start, vec![]);
+        c.advanced(40);
         c.stop(Status::Cancelled, "asked");
+        assert_eq!(c.next_action(), Action::Hash(HashPoint::End));
+        c.record_hash(HashPoint::End, vec![]);
         assert_eq!(c.next_action(), Action::Finish);
         assert_eq!(c.report(false).get("reason").unwrap().as_str(), Some("asked"));
+        let mut never = Run::new(spec(r#"{"name": "s", "ticks": 10}"#), None);
+        never.stop(Status::Cancelled, "before it started");
+        assert_eq!(never.next_action(), Action::Finish, "nothing to hash before the start");
     }
 
     #[test]
