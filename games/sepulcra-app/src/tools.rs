@@ -614,6 +614,14 @@ fn record(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     if advanced {
         out.set("note", Json::from("commands were applied at the current tick, so the recording ends one tick later (where they take effect)"));
     }
+    // With the Lex rules on: their hash at the same end (play_replay replays them too).
+    if let Some(l) = &game.lex {
+        let mut sim = l.sim.clone();
+        if advanced {
+            sim.step(&[]);
+        }
+        out.set("lex", Json::obj([("end_tick", Json::from(sim.tick())), ("end_hash", Json::from(format!("{:016x}", sim.hash()))), ("parity", Json::from(if l.desync.is_none() { "ok" } else { "desync" }))]));
+    }
     Ok(ToolOutput::text(out.to_pretty()))
 }
 
@@ -652,7 +660,7 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
         error(code, e.to_string(), d)
     })?;
     let s = &replayed.state;
-    let out = obj([
+    let mut out = obj([
         ("status", Json::from(match replayed.status {
             ReplayStatus::Verified => "verified",
             ReplayStatus::Unverified => "unverified",
@@ -666,6 +674,18 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
         ("tombstones", Json::from(s.tombstones())),
         ("loaded", Json::from(load)),
     ]);
+    // With the Lex rules on, the same commands replay through them to the same tick.
+    if game.rules_lex {
+        out.set("lex", match crate::lexmode::LexRules::replay(&content, rec.seed, &rec.journal, s.tick()) {
+            Ok((tick, hash, outcome)) => obj([
+                ("end_tick", Json::from(tick)),
+                ("end_hash", Json::from(format!("{hash:016x}"))),
+                ("outcome", Json::from(outcome.as_deref().unwrap_or("running"))),
+                ("matches_reference", Json::from(tick == s.tick() && outcome.as_deref().unwrap_or("running") == outcome_name(s.outcome()))),
+            ]),
+            Err(e) => obj([("error", Json::from(e))]),
+        });
+    }
     if load {
         game.load(ctx.world, ctx.agent, replayed.state, rec.journal);
         game.say(format!("Loaded replay {rel}"));

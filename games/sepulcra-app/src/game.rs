@@ -110,6 +110,10 @@ pub struct SepulcraGame {
     ui_frame: UiEvents,
     /// Scratch for the braziers' crackle (reused).
     fire_buf: Vec<(CellId, Vec3)>,
+    /// `--rules lex`: the Lex rules decide, the state above is their reference (see
+    /// [`crate::lexmode`]). `rules_lex` keeps the choice across new runs.
+    pub(crate) lex: Option<crate::lexmode::LexRules>,
+    pub(crate) rules_lex: bool,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -132,6 +136,7 @@ struct Checkpoint {
     screens: Vec<String>,
     confirm: Option<Confirm>,
     radial_cell: Option<CellId>,
+    lex: Option<crate::lexmode::LexRules>,
 }
 
 impl SepulcraGame {
@@ -174,6 +179,20 @@ impl SepulcraGame {
             ui_frame: UiEvents::default(),
             hud_texts: hud::Texts::default(),
             fire_buf: Vec::new(),
+            lex: None,
+            rules_lex: false,
+        }
+    }
+
+    /// Starts the Lex rules for the current state (`--rules lex`), or says why not.
+    fn start_lex(&mut self) {
+        self.lex = None;
+        if !self.rules_lex {
+            return;
+        }
+        match crate::lexmode::LexRules::new(self.state.content(), self.state.seed()) {
+            Ok(l) => self.lex = Some(l),
+            Err(e) => self.say(format!("Lex rules off: {e}")),
         }
     }
 
@@ -206,6 +225,10 @@ impl SepulcraGame {
     /// Applies a command now (at the current tick) and journals it.
     pub fn command(&mut self, world: &mut World, cmd: Command) -> Result<(), Rejection> {
         let tick = self.state.tick();
+        // With the Lex rules on, they decide (the state is their reference).
+        if let Some(lex) = &mut self.lex {
+            lex.decide(&self.state, &cmd)?;
+        }
         self.state.apply(&cmd, &mut self.pending)?;
         self.journal.push((tick, cmd));
         self.messages_from_pending();
@@ -222,6 +245,7 @@ impl SepulcraGame {
     /// build order.
     pub fn restart(&mut self, world: &mut World, agent: &str, content: Arc<Content>, seed: u64, autoplay: Option<(String, Player)>) {
         self.state = State::new(content, seed);
+        self.start_lex();
         self.journal.clear();
         self.autoplay = autoplay;
         self.events.clear();
@@ -239,6 +263,19 @@ impl SepulcraGame {
 
     /// Replaces the state (a loaded replay) and rebuilds the scene.
     pub(crate) fn load(&mut self, world: &mut World, agent: &str, state: State, journal: Journal) {
+        // The Lex rules replay the same commands to the same tick.
+        if self.rules_lex {
+            self.lex = match crate::lexmode::LexRules::replayed(state.content(), state.seed(), &journal, state.tick()) {
+                Ok(mut l) => {
+                    l.check(&state);
+                    Some(l)
+                }
+                Err(e) => {
+                    self.say(format!("Lex rules off: the replay doesn't run under them ({e})"));
+                    None
+                }
+            };
+        }
         self.state = state;
         self.journal = journal;
         self.autoplay = None;
@@ -745,6 +782,16 @@ impl SepulcraGame {
     }
 
     pub(crate) fn status_json(&self) -> Json {
+        let mut j = self.status_core();
+        j.set("rules", match &self.lex {
+            Some(l) => l.status_json(),
+            None if self.rules_lex => Json::obj([("rules", Json::from("lex")), ("off", Json::from("see the log: the Lex rules couldn't start"))]),
+            None => Json::from("rust"),
+        });
+        j
+    }
+
+    fn status_core(&self) -> Json {
         let s = &self.state;
         Json::obj([
             ("seed", Json::from(s.seed().to_string())),
@@ -966,13 +1013,34 @@ impl Game for SepulcraGame {
     }
 
     fn configure(&mut self, args: &[String]) -> Result<(), String> {
-        let (seed, mute) = parse_args(args)?;
+        // `--rules lex|rust` (see crate::lexmode); the rest are parse_args's.
+        let mut rest = Vec::new();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "--rules" {
+                match it.next().map(String::as_str) {
+                    Some("lex") => self.rules_lex = true,
+                    Some("rust") => self.rules_lex = false,
+                    other => return Err(format!("--rules takes lex or rust, got {other:?}")),
+                }
+            } else {
+                rest.push(a.clone());
+            }
+        }
+        let (seed, mute) = parse_args(&rest)?;
         if let Some(seed) = seed {
             self.seed_arg = Some(seed);
             self.state = State::new(self.content(), seed);
         }
         self.mute = mute;
+        if self.rules_lex {
+            self.lex = Some(crate::lexmode::LexRules::new(self.state.content(), self.state.seed())?);
+        }
         Ok(())
+    }
+
+    fn lex_natives(&self) -> specula_lex::Natives {
+        sepulcra::lex::natives()
     }
 
     fn assets_root(&self) -> Option<PathBuf> {
@@ -1017,10 +1085,16 @@ impl Game for SepulcraGame {
                 if let Some((_, player)) = &mut self.autoplay {
                     let tick = self.state.tick();
                     for c in player.drive(&mut self.state, &mut self.events) {
+                        if let Some(lex) = &mut self.lex {
+                            lex.follow(&self.state, &c);
+                        }
                         self.journal.push((tick, c));
                     }
                 }
                 self.state.step_into(&[], &mut self.events);
+                if let Some(lex) = &mut self.lex {
+                    lex.step(&self.state);
+                }
                 stepped += 1;
             }
         }
@@ -1126,6 +1200,9 @@ impl Game for SepulcraGame {
     /// state's hash, and its parts, so a divergence names what diverged first.
     fn state_hashes(&self, out: &mut Vec<(&'static str, u64)>) {
         state_hashes(&self.state, out);
+        if let Some(l) = &self.lex {
+            out.push(("lex", l.sim.hash()));
+        }
     }
 
     fn checkpoint(&self) -> Option<Box<dyn Any>> {
@@ -1146,6 +1223,7 @@ impl Game for SepulcraGame {
             screens: self.hud.screens(),
             confirm: self.confirm,
             radial_cell: self.radial_cell,
+            lex: self.lex.clone(),
         }))
     }
 
@@ -1167,6 +1245,7 @@ impl Game for SepulcraGame {
         self.log = c.log;
         self.confirm = c.confirm;
         self.radial_cell = c.radial_cell;
+        self.lex = c.lex;
         for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls"] {
             let open = c.screens.iter().any(|s| s == screen);
             if self.hud.visible(screen) != open {

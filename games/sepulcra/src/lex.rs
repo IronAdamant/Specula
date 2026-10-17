@@ -710,7 +710,7 @@ pub fn document() -> Result<Document, String> {
 /// The compiled rule set (with `params` overrides), or every diagnostic.
 pub fn compiled(params: &[(&str, Json)]) -> Result<Arc<Rules>, String> {
     let doc = document()?;
-    let opts = specula_lex::Options { overrides: params.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(), natives: None };
+    let opts = specula_lex::Options { overrides: params.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(), ..Default::default() };
     match specula_lex::compile(&doc, &opts) {
         Ok(c) => Ok(Arc::new(c.rules)),
         Err(d) => Err(d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n")),
