@@ -20,6 +20,9 @@
 //! - Transient entities (a game's presentation) never take part.
 
 use crate::world::{self, check_num, check_point, vec3_json, validate_tag, WorldError};
+
+pub mod joints;
+pub mod mover;
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -988,6 +991,11 @@ pub struct TickRecord {
     pub kinetic: f64,
     /// The bodies that gained the most energy: `(id, joules)`.
     pub gainers: [(u64, f64); 2],
+    /// The worst joint error `(m, rad, joint)`, angle past a limit `(rad, joint)` and offset past
+    /// one `(m, joint)` (see [`specula_physics::StepReport`]).
+    pub joint: Option<(f32, f32, u64)>,
+    pub limit: Option<(f32, u64)>,
+    pub offset: Option<(f32, u64)>,
 }
 
 /// The engine's physics: the space and its bridge to the world.
@@ -1325,8 +1333,16 @@ impl Physics {
                 ids.dedup();
                 for id in ids {
                     match world.get(id) {
-                        Some(e) => self.upsert(world, e),
-                        None => self.forget(id),
+                        Some(e) => {
+                            self.upsert(world, e);
+                            // Joints: the entity's own, and those on it as a body.
+                            self.upsert_joint(world, e);
+                            self.refresh_joints_of(world, id);
+                        }
+                        None => {
+                            self.forget(id);
+                            self.forget_joint(id);
+                        }
                     }
                 }
             }
@@ -1334,12 +1350,22 @@ impl Physics {
                 // The change log doesn't reach back: compare everything (state survives).
                 self.pending.clear();
                 let mut live = BTreeSet::new();
+                let mut live_joints = BTreeSet::new();
                 for e in world.persistent_entities() {
                     if relevant(e) {
                         live.insert(e.id);
                         self.upsert(world, e);
                     }
                 }
+                // Joints after every body (their frames take the bodies' scales).
+                for e in world.persistent_entities() {
+                    if joints::is_joint(e) {
+                        live_joints.insert(e.id);
+                        self.upsert_joint(world, e);
+                    }
+                }
+                self.drop_stale_joints(&live_joints);
+                live.extend(live_joints);
                 let gone: Vec<u64> = self.seen.keys().filter(|k| !live.contains(k)).copied().collect();
                 for id in gone {
                     self.forget(id);
@@ -1403,7 +1429,7 @@ impl Physics {
             if !moved && new_body == body {
                 continue;
             }
-            let mut change = UpdateSpec { body: (new_body != body).then_some(Some(new_body)), ..Default::default() };
+            let (mut position, mut rotation_deg) = (None, None);
             if moved {
                 // Into the parent's frame.
                 let (local_p, local_q) = match e.parent.and_then(|p| world.get(p)) {
@@ -1414,11 +1440,12 @@ impl Physics {
                     }
                     None => (view.pose.p, view.pose.q),
                 };
-                change.position = Some(local_p);
-                change.rotation_deg = Some(specula_physics::math::quat_to_euler_deg(local_q));
+                position = Some(local_p);
+                rotation_deg = Some(specula_physics::math::quat_to_euler_deg(local_q));
             }
             let has_children = world.has_children(id);
-            match world.update(&EntityKey::Id(id), change, AGENT) {
+            // The world's pose-and-body fast path: journaled as a pose, not a copy of the entity.
+            match world.set_motion(id, position, rotation_deg, new_body, AGENT) {
                 Ok(e) => {
                     let (version, cols) = (e.version, mat_cols(&e.model()));
                     if let Some(s) = self.seen.get_mut(&id) {
@@ -1506,6 +1533,9 @@ impl Physics {
             awake: report.awake,
             kinetic: report.kinetic_energy,
             gainers: [0, 1].map(|i| report.energy_gainers.get(i).copied().unwrap_or((0, 0.0))),
+            joint: report.worst_joint,
+            limit: report.worst_limit,
+            offset: report.worst_offset,
         });
         if self.hashes.len() == HASHES {
             self.hashes.pop_front();
@@ -1671,7 +1701,7 @@ mod tests {
         settings.sleep = false;
         let mut p = Physics::default();
         p.space.settings = space_settings(&settings, 60);
-        let (mut sync, mut step, mut back, mut changes, mut space_stages) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let (mut sync, mut step, mut back, mut changes, mut space_stages, mut world_hash) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let mut j = Journal::default();
         let n = 120u64;
         for tick in 0..n {
@@ -1689,11 +1719,15 @@ mod tests {
             let ch = w.take_changes();
             j.append_snapshot(tick, AGENT, None, Kind::Physics, ch, w.next_id());
             let t4 = std::time::Instant::now();
+            // The engine hashes the world every tick (world_hash, the desync detector).
+            let _ = w.state_hash();
+            let t5 = std::time::Instant::now();
             if tick >= 20 {
                 sync += (t1 - t0).as_secs_f64();
                 step += (t2 - t1).as_secs_f64();
                 back += (t3 - t2).as_secs_f64();
                 changes += (t4 - t3).as_secs_f64();
+                world_hash += (t5 - t4).as_secs_f64();
                 let t = report.times;
                 space_stages += (t.pairs_us + t.narrowphase_us + t.solve_us + t.integrate_us + t.ccd_us) / 1.0e6;
             }
@@ -1701,12 +1735,13 @@ mod tests {
         }
         let ms = |v: f64| v * 1000.0 / (n - 20) as f64;
         println!(
-            "1000 awake boxes, per tick: sync {:.3} ms, space step {:.3} ms (stages {:.3}), write-back + hash {:.3} ms, changes + journal {:.3} ms",
+            "1000 awake boxes, per tick: sync {:.3} ms, space step {:.3} ms (stages {:.3}), write-back + hash {:.3} ms, changes + journal {:.3} ms, world hash {:.3} ms",
             ms(sync),
             ms(step),
             ms(space_stages),
             ms(back),
-            ms(changes)
+            ms(changes),
+            ms(world_hash)
         );
         // The pieces, once over every body.
         let ids: Vec<u64> = p.space.stepped().collect();
@@ -1724,11 +1759,29 @@ mod tests {
             w.update(&EntityKey::Id(*id), change, AGENT).unwrap();
         }
         let update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let changes_update = w.take_changes();
+        let take_update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // The same writes through the pose-and-body fast path (what write-back uses).
+        let t = std::time::Instant::now();
+        for (id, (pose, r)) in ids.iter().zip(poses.iter().zip(&eulers)) {
+            let body = w.get(*id).unwrap().body.unwrap();
+            w.set_motion(*id, Some(pose.p), Some(*r), body, AGENT).unwrap();
+        }
+        let motion_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let changes_motion = w.take_changes();
+        let take_motion_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(changes_update.len(), changes_motion.len());
+        assert!(changes_motion.iter().all(|c| matches!(c, crate::world::Change::Pose { .. })), "recorded as poses");
         w.set_recording(Recording::Full);
         let t = std::time::Instant::now();
         let _ = p.space.hash();
         let hash_ms = t.elapsed().as_secs_f64() * 1000.0;
-        println!("pieces over {} bodies: world_pose {world_pose_ms:.3} ms, quat_to_euler {euler_ms:.3} ms, world.update {update_ms:.3} ms, space hash {hash_ms:.3} ms", ids.len());
+        println!(
+            "pieces over {} bodies: world_pose {world_pose_ms:.3} ms, quat_to_euler {euler_ms:.3} ms, world.update {update_ms:.3} ms + snapshot {take_update_ms:.3} ms, world.set_motion {motion_ms:.3} ms + snapshot {take_motion_ms:.3} ms, space hash {hash_ms:.3} ms",
+            ids.len()
+        );
     }
 
     #[test]

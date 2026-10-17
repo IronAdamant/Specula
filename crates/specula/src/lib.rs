@@ -36,6 +36,7 @@ pub mod persist;
 pub mod rollup;
 pub mod physics;
 mod physics_tools;
+mod joint_tools;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -582,7 +583,13 @@ impl Engine {
             traces_written: 0,
             board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
-            logic: logic::LogicHost::new(),
+            logic: {
+                // Modules' move_character is the physics P2 controller (the space is lent to it
+                // around module calls: lend_physics / return_physics).
+                let mut host = logic::LogicHost::new();
+                host.set_mover(Box::new(physics::mover::PhysicsMover::default()));
+                host
+            },
             physics: physics::Physics::default(),
         })
     }
@@ -678,6 +685,7 @@ impl Engine {
             }
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
+                self.lend_physics();
                 let (tick, swarm) = (self.clock.tick(), &mut self.swarm);
                 // The game's rules: journaled, exempt from claims.
                 let commit = &mut |w: &mut World, _: world::Mark, agent: &str, phase| {
@@ -685,6 +693,7 @@ impl Engine {
                     Ok(())
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
+                self.return_physics();
             }
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
@@ -1625,7 +1634,12 @@ impl Engine {
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
-            Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
+            Command::Logic(call) => {
+                self.lend_physics();
+                let out = logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w);
+                self.return_physics();
+                out
+            }
             Command::Anim(call) => self.anim_call(call, w, tick),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");

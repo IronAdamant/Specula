@@ -1747,7 +1747,8 @@ pub fn camera_path(owner: &str, name: &str) -> String {
 /// conflicts and history filters treat each camera as its own thing.
 pub const CAMERA_ID_BASE: u64 = 1 << 62;
 
-/// The fields a game moves every tick: transform and colour (plus the version they reached).
+/// The fields a game or physics moves every tick: transform, colour and the body component
+/// (whose velocities and sleep state physics writes back), plus the version they reached.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub id: u64,
@@ -1756,11 +1757,12 @@ pub struct Pose {
     pub rotation_deg: Vec3,
     pub scale: Vec3,
     pub color: [f32; 3],
+    pub body: Option<Body>,
 }
 
 impl Pose {
     pub fn of(e: &Entity) -> Pose {
-        Pose { id: e.id, version: e.version, position: e.position, rotation_deg: e.rotation_deg, scale: e.scale, color: e.color }
+        Pose { id: e.id, version: e.version, position: e.position, rotation_deg: e.rotation_deg, scale: e.scale, color: e.color, body: e.body }
     }
 
     /// Puts the pose on `e` (a copy of the same entity).
@@ -1769,6 +1771,7 @@ impl Pose {
         e.rotation_deg = self.rotation_deg;
         e.scale = self.scale;
         e.color = self.color;
+        e.body = self.body;
         e.version = self.version;
         e.hash.0.set(None);
     }
@@ -3586,6 +3589,59 @@ impl World {
         self.env = env;
         self.revision += 1;
         self.record_env(before);
+    }
+
+    /// Physics' write-back, the hot path (foundation F3): a body's new local position and
+    /// rotation (`None`: unchanged) and its body component, of which only the motion
+    /// (velocities, sleeping) may differ from what the entity has; anything else goes through
+    /// [`World::update`]. Checked like an update, but recorded by [`Recording::Snapshot`] as a
+    /// [`Change::Pose`] (which carries the body) instead of a copy of the whole entity.
+    pub fn set_motion(&mut self, id: u64, position: Option<Vec3>, rotation_deg: Option<Vec3>, body: Body, by: &str) -> Result<&Entity, WorldError> {
+        position.map_or(Ok(()), |p| check_point("position", p))?;
+        rotation_deg.map_or(Ok(()), check_rotation)?;
+        check_body(&body)?;
+        let e = self.entities.get(&id).ok_or_else(|| WorldError::new("not_found", format!("no entity with id {id}")).with("id", id))?;
+        let motion_only = e.body.is_some_and(|old| Body { velocity: old.velocity, angular_velocity: old.angular_velocity, sleeping: old.sleeping, ..body } == old);
+        if !motion_only {
+            let change = UpdateSpec { position, rotation_deg, body: Some(Some(body)), ..UpdateSpec::default() };
+            return self.update(&EntityKey::Id(id), change, by);
+        }
+        let before = (self.recording == Recording::Full).then(|| Box::new(e.clone()));
+        let transient = e.transient;
+        let by = self.intern(by);
+        let moved = position.is_some() || rotation_deg.is_some();
+        if !moved {
+            // (A move is logged by `refresh`.)
+            self.draw_touch(id);
+        }
+        let e = self.entities.get_mut(&id).expect("checked");
+        if let Some(p) = position {
+            e.position = p;
+        }
+        if let Some(r) = rotation_deg {
+            e.rotation_deg = r;
+        }
+        e.body = Some(body);
+        e.version += 1;
+        e.hash.0.set(None);
+        e.modified_by = by;
+        if moved {
+            self.refresh(id);
+        }
+        self.touch(id);
+        self.bump(transient);
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot if transient => {}
+            Recording::Snapshot => {
+                self.dirty.entry(id).or_insert(Dirty::Pose);
+            }
+            Recording::Full => {
+                let after = Box::new(self.entities[&id].clone());
+                self.changes.push(Change::Set { path: self.path_of(id), prev_path: None, before, after });
+            }
+        }
+        Ok(&self.entities[&id])
     }
 
     /// Replays a [`Change::Pose`]: the entity takes the pose, attributed to `by`. Unknown ids

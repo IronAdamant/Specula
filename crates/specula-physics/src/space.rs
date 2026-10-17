@@ -362,11 +362,13 @@ pub struct StepReport {
     pub energy_change: f64,
     /// The bodies that gained the most energy this step: `(key, joules)`, at most 4.
     pub energy_gainers: Vec<(u64, f64)>,
-    /// Joints solved this step; the worst joint error `(linear m, angular rad, key)` and the
-    /// worst limit excess `(rad or m, key)` among them (cosmetic joints left out).
+    /// Joints solved this step; among them (cosmetic joints left out) the worst joint error
+    /// `(linear m, angular rad, key)`, the worst angle past a limit (hinges and ball joints,
+    /// rad) and the worst offset past one (prismatic and distance joints, m).
     pub joints: usize,
     pub worst_joint: Option<(f32, f32, u64)>,
     pub worst_limit: Option<(f32, u64)>,
+    pub worst_offset: Option<(f32, u64)>,
     pub errors: Vec<PhysicsError>,
     pub times: StageTimes,
 }
@@ -2116,6 +2118,7 @@ impl Space {
         let cons = std::mem::take(&mut self.joint_cons);
         let mut worst: Option<(f32, f32, u64)> = None;
         let mut over: Option<(f32, u64)> = None;
+        let mut past: Option<(f32, u64)> = None;
         for c in &cons {
             let (Some(pa), Some(pb)) = (self.side_pose(c.desc.a), self.side_pose(c.desc.b)) else { continue };
             let state = crate::joint::measure(&c.desc, &pa, &pb, &c.imp, h);
@@ -2124,8 +2127,10 @@ impl Space {
                 if worst.is_none_or(|(l, a, _)| state.linear_error > l || state.linear_error == l && state.angular_error > a) {
                     worst = Some((state.linear_error, state.angular_error, c.key));
                 }
-                if state.limit_excess > 0.0 && over.is_none_or(|(e, _)| state.limit_excess > e) {
-                    over = Some((state.limit_excess, c.key));
+                let angular = matches!(c.desc.kind, crate::joint::JointKind::Hinge | crate::joint::JointKind::Ball);
+                let slot = if angular { &mut over } else { &mut past };
+                if state.limit_excess > 0.0 && slot.is_none_or(|(e, _)| state.limit_excess > e) {
+                    *slot = Some((state.limit_excess, c.key));
                 }
             }
             let steps = self.steps;
@@ -2137,6 +2142,7 @@ impl Space {
         self.report.joints = cons.len();
         self.report.worst_joint = worst;
         self.report.worst_limit = over;
+        self.report.worst_offset = past;
         self.joint_cons = cons;
     }
 

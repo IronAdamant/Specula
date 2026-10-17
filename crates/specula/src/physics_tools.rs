@@ -79,6 +79,8 @@ pub enum CheckSpec {
     NoTunnelling,
     Energy { max_gain_j: f32 },
     Inside { entity: EntityKey, min: Vec3, max: Vec3 },
+    /// `joint_error` / `joint_limits` (see [`crate::joint_tools::run_check`]).
+    Joint { name: &'static str, args: Json },
 }
 
 pub enum PhysicsCall {
@@ -91,6 +93,8 @@ pub enum PhysicsCall {
     Explain { entity: EntityKey },
     Check { checks: Vec<CheckSpec>, since_tick: Option<u64> },
     Impulse { entity: EntityKey, impulse: Vec3, at: Option<Vec3>, angular: Vec3 },
+    /// `physics_joint` / `physics_joints` (see [`crate::joint_tools`]).
+    Joint(crate::joint_tools::JointCall),
 }
 
 impl PhysicsCall {
@@ -98,6 +102,7 @@ impl PhysicsCall {
     pub fn class(&self) -> Class {
         match self {
             PhysicsCall::Impulse { .. } => Class::Edit,
+            PhysicsCall::Joint(j) if !j.is_read() => Class::Edit,
             _ => Class::Read,
         }
     }
@@ -165,7 +170,7 @@ fn scope_arg(v: Option<&Json>) -> Result<Scope, String> {
 }
 
 fn check_arg(c: &Json) -> Result<CheckSpec, String> {
-    let kind = c.get("check").and_then(Json::as_str).ok_or("each check needs 'check': at_rest, touching, not_touching, no_penetration, no_tunnelling, energy or inside")?;
+    let kind = c.get("check").and_then(Json::as_str).ok_or("each check needs 'check': at_rest, touching, not_touching, no_penetration, no_tunnelling, energy, inside, joint_error or joint_limits")?;
     let num = |k: &str, default: f32| -> Result<f32, String> { Ok(num_in(c, k, 0.0..=1.0e6)?.unwrap_or(default)) };
     let key = |k: &str| -> Result<EntityKey, String> { key_value(c.get(k).ok_or_else(|| format!("check '{kind}' needs '{k}' (an id or path)"))?, k) };
     match kind {
@@ -193,7 +198,16 @@ fn check_arg(c: &Json) -> Result<CheckSpec, String> {
             check_keys(c, "check", &[&["check", "entity", "min", "max"]])?;
             Ok(CheckSpec::Inside { entity: key("entity")?, min: point_arg(c, "min")?, max: point_arg(c, "max")? })
         }
-        other => Err(format!("unknown check '{other}' (at_rest, touching, not_touching, no_penetration, no_tunnelling, energy, inside)")),
+        "joint_error" | "joint_limits" => {
+            let (name, keys): (&'static str, &[&str]) =
+                if kind == "joint_error" { ("joint_error", &["check", "max_m", "max_deg"]) } else { ("joint_limits", &["check", "max_deg", "max_m"]) };
+            check_keys(c, "check", &[keys])?;
+            for k in &keys[1..] {
+                num(k, 0.0)?;
+            }
+            Ok(CheckSpec::Joint { name, args: c.clone() })
+        }
+        other => Err(format!("unknown check '{other}' (at_rest, touching, not_touching, no_penetration, no_tunnelling, energy, inside, joint_error, joint_limits)")),
     }
 }
 
@@ -302,12 +316,18 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PhysicsCall, String>> {
             let at = vec3_arg(args, "at")?;
             Ok(PhysicsCall::Impulse { entity: entity_key(args, name)?, impulse, at, angular })
         })(),
-        _ => return None,
+        _ => return crate::joint_tools::parse(name, args).map(|r| r.map(PhysicsCall::Joint)),
     };
     Some(call)
 }
 
 pub fn definitions() -> Vec<ToolDef> {
+    let mut defs = definitions_physics();
+    defs.extend(crate::joint_tools::definitions());
+    defs
+}
+
+fn definitions_physics() -> Vec<ToolDef> {
     let schema = |props: Vec<(&str, Json)>, required: &[&str]| {
         Json::obj([
             ("type", Json::from("object")),
@@ -455,7 +475,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           asleep counts) | touching / not_touching (a, b) | no_penetration (max_depth 0.02 m, over the \
                           window) | no_tunnelling (no body ended a tick deeper than half its thickness inside another, \
                           no unguarded fast body) | energy (max_gain_j 0.5 per tick, over the window) | inside (entity, \
-                          min, max: its world position in a box)}. since_tick limits the window (the last 1800 ticks \
+                          min, max: its world position in a box) | joint_error (max_m 0.01 anchor gap, max_deg 2 \
+                          misalignment, worst joint over the window) | joint_limits (max_deg 2, max_m 0.01 past any \
+                          joint's limits, over the window)}. since_tick limits the window (the last 1800 ticks \
                           are kept). Returns each result with its data and pass: true only if all pass."
                 .into(),
             input_schema: schema(
@@ -647,6 +669,7 @@ impl crate::Engine {
                     .to_string(),
                 )
             }
+            PhysicsCall::Joint(j) => self.joint_call(j, w, tick),
             PhysicsCall::Info => ToolOutput::text(self.physics.summary_json(&self.world.env().physics).to_pretty()),
             PhysicsCall::Explain { entity } => match self.world.resolve(&entity) {
                 Ok(id) => ToolOutput::text(self.explain(id).to_pretty()),
@@ -794,6 +817,10 @@ impl crate::Engine {
             })
             .collect();
         out.set("neighbours", Json::Arr(neighbours));
+        let joints: Vec<Json> = space.joints_of(id).into_iter().take(16).map(|k| self.joint_json(k)).collect();
+        if !joints.is_empty() {
+            out.set("joints", Json::Arr(joints));
+        }
         if let Some(cs) = space.character_state(id) {
             out.set(
                 "character",
@@ -936,6 +963,7 @@ impl crate::Engine {
                     ("note", Json::from("energy a tick added to the bodies it moved: kinematic pushes and penetration recovery add some; a closed system should not")),
                 ])
             }
+            CheckSpec::Joint { name, args } => crate::joint_tools::run_check(self, name, args, since),
             CheckSpec::Inside { entity, min, max } => {
                 let id = match world.resolve(entity) {
                     Ok(id) => id,

@@ -36,7 +36,7 @@ pub mod solver;
 pub mod space;
 pub mod tree;
 
-pub use character::{CharacterConfig, CharacterMove};
+pub use character::{CharacterBody, CharacterConfig, CharacterMove};
 pub use joint::{Drive, JointDesc, JointKind, JointState, Motor};
 pub use math::{Aabb, Pose};
 pub use shape::Shape;

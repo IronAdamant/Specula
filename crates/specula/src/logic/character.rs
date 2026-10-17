@@ -26,6 +26,9 @@ pub trait CharacterMover {
     /// Moves entity `id` by `motion` (metres, world axes, gravity included) and sets its
     /// position, attributing the change to `by`.
     fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError>;
+
+    /// For the engine to reach its own controller's state (e.g. lend it the physics space).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Highest step a character walks up without jumping.
@@ -98,7 +101,11 @@ fn footprint_hits(b: &Aabb, x: f32, z: f32, r: f32) -> bool {
 
 impl CharacterMover for Kinematic {
     fn name(&self) -> &str {
-        "kinematic placeholder (until physics P2)"
+        "kinematic placeholder (no physics space)"
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {

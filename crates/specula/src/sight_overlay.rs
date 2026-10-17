@@ -34,11 +34,13 @@ pub enum Kind {
     Colliders,
     /// Physics contact points and normals.
     Contacts,
+    /// Physics joints: anchors, axes, limit arcs, how well each holds.
+    Joints,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] =
-        [Kind::Grid, Kind::Axes, Kind::Bounds, Kind::Labels, Kind::Claims, Kind::Skeletons, Kind::Lods, Kind::Colliders, Kind::Contacts];
+    pub const ALL: [Kind; 10] =
+        [Kind::Grid, Kind::Axes, Kind::Bounds, Kind::Labels, Kind::Claims, Kind::Skeletons, Kind::Lods, Kind::Colliders, Kind::Contacts, Kind::Joints];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -51,6 +53,7 @@ impl Kind {
             Kind::Lods => "lods",
             Kind::Colliders => "colliders",
             Kind::Contacts => "contacts",
+            Kind::Joints => "joints",
         }
     }
 

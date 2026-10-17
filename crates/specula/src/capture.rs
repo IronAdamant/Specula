@@ -801,6 +801,10 @@ impl Engine {
                 report.details.push((k, d));
             }
         }
+        if spec.has(Kind::Joints) {
+            report.drawn.push("joints");
+            report.details.push(("joints", crate::joint_tools::paint(&self.physics, world, &mut p, spec)));
+        }
         if spec.has(Kind::Labels) {
             for (s, e, _) in shown.iter().take(spec.max_labels * 4) {
                 let at = centre(&p, e, s);
