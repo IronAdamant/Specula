@@ -11,6 +11,19 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
+### Pre-M3 cleanup (2026-10-17)
+
+- Agent calls are served between presents (`schedule.rs`), not once per frame: one windowed agent gets 500-1,270
+  calls/s instead of about 60-230; under a backlog the window keeps 60 fps. `perf_frame.serve`, `call_cost_ms`,
+  `scripts/call_rate.py`, `swarm_drill.py --windowed`; `specula-platform` gains `timer::FineTimer` (winmm) and
+  `refresh_rate_of`
+- Sight: with `include_ui`, opaque HUD panels hide what's under them (`Gpu::render_with_ids_occluded`,
+  `id_buffer.ui_occluders`, `MAX_ID_OCCLUDERS` / `Limit::IdOccluders`)
+- The sky eases into the horizon instead of meeting it with a crisp line
+- Sepulcra: selection and range-ring highlights use saturated rune cyan (the old pale mark rendered near-white)
+- Docs: current README, HANDOFF and CHANGELOG; one open-owner-decisions list; tests for Markdown links and the MCP
+  revision pin; CI rejects session links in new commit messages and runs clippy on Linux
+
 ### Added in M2 (2026-10-16): rendering, true sight, animation, first procedural shapes
 
 - Render graph that owns barriers; PBR-lite and stylised materials; directional and point lights; shadow maps;

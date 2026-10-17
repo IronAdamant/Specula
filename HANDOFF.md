@@ -13,11 +13,22 @@ memory of the earlier ones. This page is **current state and what's next** only;
   Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
   balance lab, agent evals, save games, module host, desync detector. The owner said to commit and **push before
   starting M3**.
-- **Pre-M3 cleanup (2026-10-17):** an outside review (Grok) listed gaps; the owner approved fixing them before M3:
-  stale docs, a CI guard against session links in commit messages, a pinned MCP revision test, a link check, HUD
-  occlusion in `include_ui` sight packets, the sky's horizon edge, the white slab under a selected brazier, and
-  vsync-paced command throughput. Deferred: CI rendering checks (need Vulkan loading on Linux first; Platform
-  track), per-agent auth tokens (needed before any non-localhost bind), outlier-aware auto-framing.
+- **Pre-M3 cleanup done (2026-10-17):** an outside review (Grok) listed gaps and the owner approved fixing them
+  before M3. All merged, each reviewed:
+  - current docs; a CI guard against session links in commit messages; a pinned MCP revision test; a Markdown link
+    check and one owner-decisions list (`crates/specula/tests/docs_links.rs`); Linux clippy in CI.
+  - with `include_ui`, opaque HUD panels (alpha >= 0.9) hide what's under them in sight packets
+    (`id_buffer.ui_occluders`; textured interface quads never hide anything).
+  - the sky eases into the horizon (no crisp line).
+  - the near-white slab under a selected brazier was **the selection mark itself** (pale `RUNE_PALE` times a glow,
+    washed out by ACES, bloom and the grade), not the fire light: highlights now use saturated `RUNE_GLOW`
+    (`looks::highlight`), and the range-ring dots are cyan too.
+  - agent calls are served **between presents** (`crates/specula/src/schedule.rs`): one agent with the window
+    open went from about 110-230 to 500-1,270 calls/s; under a 64-agent swarm the window keeps 60 fps (frames used
+    to stall for 2-3 s) at about 20% less total throughput. `perf_frame.serve` shows the schedule. Numbers in
+    `perf/drills/`.
+  - Deferred: CI rendering checks (need Vulkan loading on Linux first; Platform track), per-agent auth tokens
+    (needed before any non-localhost bind), outlier-aware auto-framing.
 - **How work runs:** as **lanes**: one subagent per crate/area in a git worktree, each attacked by a
   `lane-reviewer` before merge (`.claude/agents/`), and visual claims checked by `sight-skeptic`. Check `git log`
   and the roadmap ticks for where things stand.
@@ -182,6 +193,11 @@ answer where it applies.
 - **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
   `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
 - **crates.io:** whether and when to publish the crates.
+- **Window under a swarm:** the window keeps at least 60 fps while agents are backed up (`BUSY_FRAME` in
+  `crates/specula/src/schedule.rs`), which costs a 64-agent swarm about 20% throughput. Keep 60, or make it a
+  `perf.toml` setting?
+- **Selection look:** selected stones now glow saturated cyan (glow 2.0) instead of the old pale mark that
+  rendered near-white. Is that the look you want?
 - **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
 
 ## Claude's opinions and thoughts

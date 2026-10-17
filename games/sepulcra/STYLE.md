@@ -104,6 +104,8 @@ colour and roughness alone (procedural tier 1).
 
 - Carved-stone panels (neutral `#2b3038`, bevelled edges), ivory text `#ece6d6`, player cyan for
   highlights and selection, grave green only for threats.
+- Glowing highlights (cursor, selection, range dots) use the saturated glow `#3fe0d0`, never pale `#b8fff6`: a pale
+  colour with a glow tone-maps to near-white (`looks::highlight` in `games/sepulcra-app`).
 - A clean sans-serif text face for legibility on the Deck at 800p (minimum 9 px cap height at 800p).
   Decorative serif only for titles.
 - Threat arrows at the screen edge use grave green and pulse; they point to the face under attack.

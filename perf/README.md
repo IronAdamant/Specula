@@ -59,14 +59,29 @@ set, undo or world load that would pass its pool's budget is refused with
 They are world limits, not frame budgets, so they may only appear in `[budgets]`, never in
 `[adapter.*]`: a world must load the same on every machine.
 
+# Agent throughput (windowed)
+
+The window serves agents' calls between presents (`crates/specula/src/schedule.rs`): each serve window is the
+display's refresh period minus the frame's own work and a margin; under a backlog (two or more calls still queued
+when windows end) it presents less often but keeps at least 60 fps (`BUSY_FRAME`). `perf_frame.serve` reports the
+window, period and its source, frame work, margin, backlog, held calls, late presents and `call_cost_ms` per call
+class.
+
+- `python scripts/call_rate.py`: one sequential agent's calls/s with the window open, per adapter.
+- `python scripts/swarm_drill.py --windowed --agents 16|64`: swarm throughput and frame pacing with the window open.
+- Results: `perf/drills/*-windowed-{before,after}.json` (2026-10-17: one agent 500-1,270 calls/s, was about
+  110-230; 64 agents pacing p95 about 19 ms, was 0.4-2.5 s stalls, at about 20% less total throughput).
+- The real-time versions of the schedule tests: `cargo test -p specula --lib schedule -- --ignored --nocapture`.
+
 # Profiling tools
 
 - **CPU zones** (`specula_core::profile`): `let _z = profile::zone("sim");` around a phase. The engine
-  thread's frame is `frame` with children `requests` (agents' tool calls; `sight.render`, `sight.encode`,
-  `sight.save` inside), `autosave` (`autosave.plan`), `sim` (`tick`, `tick_hash`), `game_frame`,
+  thread's frame is `frame` with children `autosave` (`autosave.plan`), `sim` (`tick`, `tick_hash`), `game_frame`,
   `draw_list` (with `sync_meshes`), `parked_captures` and `present` (which waits for vsync). The autosave worker records
   `autosave.write` on thread `specula-autosave`. `perf_zones` lists them (latest frame plus rolling
-  mean/p95; paged; `enabled` switches recording).
+  mean/p95; paged; `enabled` switches recording). Agents' tool calls are top-level `requests` zones outside `frame`
+  (`sight.render`, `sight.encode`, `sight.save` inside), since the window serves them between presents, so CPU frame
+  budgets don't include them.
 - **Memory** (`specula_core::alloc::Counting`): the `specula` and `sepulcra` binaries install the counting
   allocator; `perf_memory` gives heap, peak, allocations per frame and the zones that allocate most.
   Vulkan driver memory is not on the Rust heap: see `perf_frame`'s GPU memory.

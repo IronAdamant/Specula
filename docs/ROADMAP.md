@@ -268,8 +268,9 @@ top of it.
 - [x] **Sphere boxes are about 30% loose**, because the boxes are projected bounding boxes. → M2 (done:
   `screen_box_exact`).
 - [ ] **One far-away object shrinks an auto-framed view to a dot.** → M2: frame by clusters or ignore outliers.
-- [ ] **Throughput is vsync-paced** (about 60 calls/s per agent with a window open). → M1: batch tool, and commands
-  applied separately from present.
+- [x] **Throughput is vsync-paced** (about 60 calls/s per agent with a window open). → M1: batch tool, and commands
+  applied separately from present (done 2026-10-17: calls served between presents, `crates/specula/src/schedule.rs`;
+  numbers in `perf/drills/`).
 - [x] **A 257th open connection gets a TCP reset** instead of an HTTP 503. → M1 (done: 503 with `Retry-After`;
   `connection_limit_answers_503_not_a_reset` in `crates/specula-protocol/tests/mcp_http.rs`).
 - [x] **No persistence.** Everything built is lost when the engine closes. → **first item of M1** (done: text world
@@ -300,7 +301,10 @@ claims and versions more agents just means more collisions.
   modules define real components. Collider and body components are reserved (F4).
   *Why:* agents need to attach meaning ("door", "spawn_point") before logic exists.
   *Done 2026-10-13:* tags, props, reserved collider and body; values validated by the world itself.
-- [ ] **Commands applied at tick boundaries**, separately from present, so throughput isn't vsync-paced.
+- [x] **Commands applied at tick boundaries**, separately from present, so throughput isn't vsync-paced.
+  *Done 2026-10-17 (pre-M3 cleanup):* the window serves calls between presents, in arrival order and before the next
+  tick, sized from the display's refresh and the frame's own work; under a backlog it keeps 60 fps. One agent:
+  500-1,270 calls/s windowed (was about 110-230); 64 agents: frame pacing p95 about 19 ms (was 0.4-2.5 s stalls).
 - [x] **`world_batch`**: many commands in one call, applied atomically.
 - [x] **`world_query`**: filter by path prefix, tag, region (AABB) or creator; paged results.
   *Why:* `world_list` returns everything, and at 10k entities that overflows an agent's context.
