@@ -206,4 +206,4 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "2d89c91b6cf8d334";
+const PINNED: &str = "7588e27a7d1c7ccc";

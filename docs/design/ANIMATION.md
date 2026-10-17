@@ -191,10 +191,12 @@ not checked yet.
 
 `anim_filmstrip` renders contact sheets (rows of clips, states or transitions on a neutral stage, or an entity's own
 play in the world) with each row's checks attached, saved like captures with a packet. Sheets stay within 2048 px a
-side (tiles shrink) and 128 tiles a call; a stage sheet uses one camera distance for every row, so sizes compare.
-Entity sheets add a low front view of the feet, light each view from the camera, warn about tiles too dark to judge
+side (tiles shrink) and 128 tiles a call; a stage sheet frames each row on its own and labels a row framed wider
+than the closest one with its scale. Entity sheets add a front view of the feet from above knee-high clutter, light
+each view from the camera, warn about tiles too dark to judge
 (mean luma under 0.1 in the subject's box) and report `feet_in_world`: per frame the ground under each foot, the
-ankle's height over it after the IK against the animation's, and a `feet_on_ground` check. The `filmstrip` and
+ankle's height over it after the IK against the animation's, and a `feet_on_ground` check (non-zero only when a
+leg can't reach where the animation meant the foot to be). The `filmstrip` and
 `motion_checks` examples do the same offline.
 
 ### Tools

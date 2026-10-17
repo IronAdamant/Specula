@@ -1301,8 +1301,9 @@ impl Engine {
         let skel = &set.skeleton;
         let mut out_rows = Vec::new();
         let (mut model, mut skin) = (Vec::new(), Vec::new());
-        // Every row's poses fitted (side view, from the creature's left); one camera distance for
-        // the whole sheet, so sizes compare across rows.
+        // Every row's poses fitted (side view, from the creature's left). Each row is framed on
+        // its own (a death lying 7 m long would shrink every other row to a speck); a row framed
+        // wider than the closest one is labelled with its scale, so sizes still compare.
         let mut fits = Vec::new();
         for row in &film {
             let mut lo = [f32::MAX; 3];
@@ -1325,12 +1326,13 @@ impl Engine {
             let radius = 0.58 * specula_anim::math::math3::length([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]) + 0.1;
             fits.push((centre, radius));
         }
-        let radius = fits.iter().map(|f| f.1).fold(0.1f32, f32::max);
+        let closest = fits.iter().map(|f| f.1).fold(f32::MAX, f32::min);
         let fov = 30.0;
         let mut dark = Vec::new();
         for (ri, row) in film.iter().enumerate() {
             let y0 = ri as u32 * (tile + label_h);
-            let centre = fits[ri].0;
+            let (centre, radius) = fits[ri];
+            let scale = closest / radius;
             let eye = film::frame_eye(centre, radius, 90.0, 12.0, fov);
             let mut tiles = Vec::new();
             let mut lumas = Vec::new();
@@ -1362,7 +1364,8 @@ impl Engine {
             }
             // Labels: the subject, and the checks that failed (or "checks ok", with what the rules
             // exempt it from).
-            film::draw_text(&mut sheet, sw, 4, y0 + tile + 2, &row.label, [230, 226, 214]);
+            let label = if scale < 0.995 { format!("{}  SCALE {scale:.2}X", row.label) } else { row.label.clone() };
+            film::draw_text(&mut sheet, sw, 4, y0 + tile + 2, &label, [230, 226, 214]);
             let verdict = row.report.as_ref().map(verdict_of).unwrap_or_default();
             let colour = if row.report.as_ref().is_some_and(|r| !r.passed()) { [255, 120, 100] } else { [140, 220, 160] };
             film::draw_text(&mut sheet, sw, 4, y0 + tile + 4 + film::CHAR_H, &verdict, colour);
@@ -1373,6 +1376,8 @@ impl Engine {
                 ("times_s", Json::arr(row.times.iter().map(|t| round(*t, 4)))),
                 ("tiles", Json::Arr(tiles)),
                 ("luma", Json::Arr(lumas)),
+                ("framed_radius_m", round(radius as f64, 3)),
+                ("scale", round(scale as f64, 3)),
             ]);
             if let Some(r) = &row.report {
                 j.set("checks", r.to_json(12));
@@ -1385,7 +1390,7 @@ impl Engine {
             ("kind", Json::from("anim_filmstrip")),
             ("recipe", Json::from(source)),
             ("view", Json::from("side (from the model's left, +X), 12 deg up, neutral stage with a ground plane at y = 0")),
-            ("scale", Json::from(format!("one camera distance for every row (framing a {:.2} m radius): sizes compare across rows", radius))),
+            ("scale", Json::from("each row framed on its own; rows[].scale (and the label, when under 1) is its size against the closest-framed row")),
             ("frames", Json::from(n)),
             ("tile", Json::from(tile)),
             ("rows", Json::Arr(out_rows)),
@@ -1416,15 +1421,15 @@ impl Engine {
         let (lo, hi) = capture::subtree_bounds(&self.world, id).unwrap_or((e.world_position(), e.world_position()));
         let centre = (lo + hi) * 0.5;
         let radius = ((hi - lo).length() * 0.5).max(0.5) * 1.15;
-        // The feet: the lowest third of the body, from the front and low, so a foot on a step and
-        // one below it both show.
+        // The feet: the lowest third of the body, from the front and above knee-high clutter
+        // (fences, rails), so a foot on a step and one below it both show.
         let feet_h = (hi.y - lo.y) * 0.34;
         let feet_centre = Vec3::new(centre.x, lo.y + feet_h * 0.5, centre.z);
-        let feet_radius = ((hi.x - lo.x).max(hi.z - lo.z) * 0.5).max(feet_h).max(0.3) * 1.1;
+        let feet_radius = ((hi.x - lo.x).max(hi.z - lo.z) * 0.5).max(feet_h).max(0.45) * 1.25;
         // Along its way (lanes run between raised blocks), high enough to see over them; then the
         // feet. Each view is lit from the camera too (the world's night leaves a creature's front
         // in the dark).
-        let views = [(35.0f32, 24.0f32, "front quarter", centre, radius), (-145.0, 24.0, "back quarter", centre, radius), (8.0, 6.0, "feet (front, low)", feet_centre, feet_radius)];
+        let views = [(35.0f32, 24.0f32, "front quarter", centre, radius), (-145.0, 24.0, "back quarter", centre, radius), (8.0, 30.0, "feet (front)", feet_centre, feet_radius)];
         let label_h = 2 * film::CHAR_H + 6;
         let tile = fit_tile(tile, n as u32, views.len() as u32, label_h);
         let (sw, sh) = (n as u32 * tile, views.len() as u32 * (tile + label_h));
@@ -1444,7 +1449,7 @@ impl Engine {
             let eye = film::frame_eye([c.x, c.y, c.z], *r, az + yaw, *el, 35.0);
             let eye = Vec3::new(eye[0], eye[1], eye[2]);
             let dist = (eye - *c).length();
-            let fill = specula_gpu::PointLight { position: [eye.x, eye.y, eye.z], color: [1.0, 0.95, 0.88], intensity: 0.45 * dist * dist, range: dist * 3.0 };
+            let fill = specula_gpu::PointLight { position: [eye.x, eye.y, eye.z], color: [1.0, 0.95, 0.88], intensity: 0.7 * dist * dist, range: dist * 2.5 };
             let camera = Camera::new(eye, *c, 35.0);
             let mut tiles = Vec::new();
             let mut lumas = Vec::new();
