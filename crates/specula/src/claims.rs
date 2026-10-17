@@ -646,14 +646,32 @@ fn rule_data_only(change: &Change) -> bool {
     }
 }
 
-/// A live Lex run's world entities staying in `/lex_live` (before and after): they move with the
-/// run's simulation every tick, like a hosted game's, so region scopes don't cover them (path
-/// claims on `/lex_live/<set>` do). An entity moved in or out is checked at both ends.
+fn under_lex_live(p: &str) -> bool {
+    p == "/lex_live" || p.starts_with("/lex_live/")
+}
+
+/// What `lex_live` start and stop write, exempt from region scopes: the groups `/lex_live` and
+/// `/lex_live/<set>` (no geometry, at the origin), and deletes inside `/lex_live` (what a run
+/// shows comes back while it runs). Nothing else in `/lex_live` is exempt; agents can't spawn or
+/// change entities there at all ([`touches_lex_live`]), and a run's own presentation is the
+/// rules' output, journaled without claim checks like a hosted game's.
 fn lex_live_only(change: &Change) -> bool {
-    let under = |p: &str| p == "/lex_live" || p.starts_with("/lex_live/");
     match change {
-        Change::Set { path, prev_path, .. } => under(path) && prev_path.as_deref().is_none_or(under),
-        Change::Spawn { path, .. } | Change::Delete { path, .. } => under(path),
+        Change::Spawn { path, after } => {
+            after.shape == crate::world::Shape::Group && (path == "/lex_live" || path.strip_prefix("/lex_live/").is_some_and(|s| !s.is_empty() && !s.contains('/')))
+        }
+        Change::Delete { path, .. } => under_lex_live(path),
+        _ => false,
+    }
+}
+
+/// A change that spawns or changes an entity in `/lex_live` (or moves one in or out): only
+/// `lex_live` makes them ([`crate::swarm::Swarm::commit_lex_live`]). Deleting there is anyone's
+/// (the run shows its entities again).
+pub fn touches_lex_live(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, .. } | Change::Pose { path, .. } => under_lex_live(path),
+        Change::Set { path, prev_path, .. } => under_lex_live(path) || prev_path.as_deref().is_some_and(under_lex_live),
         _ => false,
     }
 }

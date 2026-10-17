@@ -503,23 +503,28 @@ on the main thread every engine tick, after the hosted game and the modules, by 
 `tick_hz` has accumulated (a 30 Hz set under a 60 Hz engine steps every other tick), so `time_control` pauses, steps
 and fast-forwards it with everything else. At most 4 runs at once.
 
-- **Budgets.** All live runs together get 8 ms of each engine tick (they take turns going first): a run short of
-  its target tick when that is spent falls behind (`behind` in `status`) and catches up on later ticks. One Lex tick
-  may take at most 50 ms (the run's deadline, checked as it spends work); a run past it, or one whose in-process
-  native panics, is **halted** with a structured error in `status` (`halted: {error: tick_overrun |
-  native_panicked, message, tick}`), takes no more commands, and is stopped and started again by an agent. The
-  engine goes on.
+- **Budgets, in work, not time (F2).** All live runs together may do 2,000,000 units of Lex work per engine tick
+  (each Lex tick costs its `tick_work`, plus one per entity, plus one; they take turns going first): a run short of
+  its target tick when that is spent falls behind (`behind` in `status`) and catches up on later ticks. A Lex tick
+  that does more than 5,000,000 units (its phases were cut short) **halts** the run with `work_limit`. Both depend
+  only on the rules and the state, so presentation and hook writes (which are in the world hash) land on the same
+  engine ticks on any machine. Wall time is only a backstop: a Lex tick past 1 s halts the run with `tick_overrun`,
+  marked `deterministic: false`. A run whose in-process native panics halts too (`native_panicked`). A halted run
+  (`halted: {error, message, tick, deterministic}` in `status`) takes no more commands and is stopped and started
+  again by an agent. The engine goes on.
 
 - **Presentation.** Each live entity matching a `present` rule (`{tags, spawn}`, first match wins; default: every
   entity as a 0.5 m cube) is a world entity `/lex_live/<set>/e<id>` (props `lex_live: {id, archetype}`), moved to
   the entity's position after each Lex step and deleted when it ends; at most 2,000 per run (the rest are counted,
   not shown). An entity (or the run's group) someone deleted is shown again; a write that fails is kept as
   `present_error` and presenting goes on. These writes are the rules' output, like a hosted game's: journaled
-  replay-only under `lex:<set>`, coalesced per tick, exempt from claims. **Claims:** region claims don't cover
-  `/lex_live` at all (its entities move with the simulation, wherever the rules take them, so a region claim would
-  either block a run from starting or be crossed every tick); path claims on `/lex_live/<set>` do, and another
-  agent's path claim refuses starting, stopping and commanding that run. Starting and stopping are the caller's
-  edits (undoable).
+  replay-only under `lex:<set>`, coalesced per tick, exempt from claims (its entities move wherever the rules
+  take them). **`/lex_live` is reserved** like `/lex`: world tools can't spawn there, change or move what is there,
+  or move anything in (`reserved`); they may delete (the run shows its entity again). So nothing hides from a
+  region claim under it. Starting and stopping are the caller's edits (undoable): the run's groups (`/lex_live`,
+  `/lex_live/<set>`, groups at the origin with no geometry) and deletes inside `/lex_live` are exempt from region
+  claims, so a region claim at the origin doesn't block a run; path claims on `/lex_live/<set>` cover the run, and
+  another agent's path claim refuses starting, stopping and commanding it.
 - **Commands** (`action: command`) apply at once at the run's current tick, exactly as `lex_simulate` applies a
   command stamped with that tick, and are journaled with it. `journal` pages them as `lex_simulate` commands, so
   `lex_simulate {seed, params, ticks, commands}` reproduces the live hash.
@@ -527,7 +532,9 @@ and fast-forwards it with everything else. At most 4 runs at once.
   through the module host with the native's `reason` and caller `lex:<set>`. In the run's own ticks its world
   changes are journaled as the run's tick. In a command they are staged with the command: checked against claims as
   the commanding agent's and journaled only if the whole command succeeds; a refused command (a failing hook, a
-  `require`, a claim) rolls back the world and the run together. A failing hook is a run-time diagnostic (in a
+  `require`, a claim) rolls back the world, the run and what the hooks did to their modules (state store, RNG
+  draws, queued events) together, and the ids it used are noted so replays agree. Refusals answer `{error, code,
+  message, ...}` like every other error. A failing hook is a run-time diagnostic (in a
   command: a refusal), counted in `status`.
 - **Live = headless.** A module hook can't change the run's state, only the world, so with the same seed, params and
   commands at the same ticks, a live run and `lex_simulate` reach the same hash (tested in `lex_live.rs`, and on a

@@ -685,6 +685,12 @@ impl Journal {
         self.next_id_seen = self.next_id_seen.max(next_id);
     }
 
+    /// The highest next id noted (tests).
+    #[cfg(test)]
+    pub(crate) fn next_id_noted(&self) -> u64 {
+        self.next_id_seen
+    }
+
     /// Sizes and bounds, for engine_info and world_hash.
     pub fn stats_json(&self) -> Json {
         Json::obj([

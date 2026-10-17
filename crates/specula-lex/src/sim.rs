@@ -605,6 +605,12 @@ impl Sim {
         self.st.interrupted
     }
 
+    /// The work the last tick's phases did, in the units of [`MAX_WORK_PER_TICK`]: a
+    /// deterministic measure of its cost (past the cap, the rest of that tick was skipped).
+    pub fn tick_work(&self) -> u64 {
+        self.st.work
+    }
+
     /// A 64-bit hash of the whole state (with the rules' hash), in a fixed order.
     pub fn hash(&self) -> u64 {
         state_hash(&self.rules, &self.st)
