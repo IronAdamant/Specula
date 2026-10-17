@@ -90,6 +90,8 @@ pub struct GpuInner {
     /// pipelines and memory are filled in when asked.
     last_offscreen: FrameStats,
     last_window: FrameStats,
+    /// Queued uploads and deferred frees (`stream.rs`): submitted before each frame.
+    uploads: crate::stream::Uploads,
     // Dropped after `Drop::drop` released everything above, device before instance.
     device: Device,
     instance: Instance,
@@ -203,6 +205,7 @@ impl GpuInner {
             frame_no: 0,
             last_offscreen: FrameStats::default(),
             last_window: FrameStats::default(),
+            uploads: crate::stream::Uploads::default(),
             device,
             instance,
         };
@@ -262,83 +265,9 @@ impl GpuInner {
     }
 
     pub fn upload_mesh(&mut self, vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshId, GpuError> {
-        if vertices.is_empty() || indices.is_empty() {
-            return Err(GpuError::new(format!(
-                "upload_mesh: need at least one vertex and one triangle (got {} vertices, {} indices)",
-                vertices.len(),
-                indices.len()
-            )));
-        }
-        if indices.len() % 3 != 0 {
-            return Err(GpuError::new(format!("upload_mesh: index count {} is not a multiple of 3", indices.len())));
-        }
-        if let Some((at, &bad)) = indices.iter().enumerate().find(|(_, &i)| i as usize >= vertices.len()) {
-            return Err(GpuError::new(format!(
-                "upload_mesh: index {bad} at position {at} is out of range ({} vertices)",
-                vertices.len()
-            )));
-        }
-        let n = vertices.len();
-        let bad = |stream: MeshStream, vertex: usize, why: String| {
-            GpuError::rejected(ErrorReason::BadStream { stream, vertex: vertex as u32 }, format!("upload_mesh: {why}"))
-        };
-        let mut joints = 0u32;
-        // The shader reads all four joints (a zero weight multiplies, it doesn't skip): joints
-        // without weight are stored as 0, so every joint read lies inside the draw's palette.
-        let skin: Option<Vec<SkinVertex>> = match streams.skin {
-            None => None,
-            Some(skin) => {
-                if skin.len() != n {
-                    return Err(bad(MeshStream::Skin, skin.len(), format!("{} skin entries for {n} vertices", skin.len())));
-                }
-                let mut clean = Vec::with_capacity(n);
-                for (i, s) in skin.iter().enumerate() {
-                    let mut c = *s;
-                    for k in 0..4 {
-                        if s.weights[k] == 0 {
-                            c.joints[k] = 0;
-                        } else if s.joints[k] == 255 {
-                            return Err(bad(MeshStream::Skin, i, format!("vertex {i} gives weight to joint 255 (joints are 0..=254)")));
-                        }
-                        joints = joints.max(c.joints[k] as u32 + 1);
-                    }
-                    clean.push(c);
-                }
-                Some(clean)
-            }
-        };
-        let surface: Option<Vec<SurfaceVertex>> = match streams.uvs {
-            None => None,
-            Some(uvs) => {
-                if uvs.len() != n {
-                    return Err(bad(MeshStream::Uvs, uvs.len(), format!("{} UVs for {n} vertices", uvs.len())));
-                }
-                let generated;
-                let tangents = match streams.tangents {
-                    Some(t) if t.len() != n => {
-                        return Err(bad(MeshStream::Tangents, t.len(), format!("{} tangents for {n} vertices", t.len())));
-                    }
-                    Some(t) => t,
-                    None => {
-                        let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
-                        let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
-                        generated = crate::generate_tangents(&positions, &normals, uvs, indices);
-                        &generated
-                    }
-                };
-                Some(uvs.iter().zip(tangents).map(|(&uv, t)| SurfaceVertex { uv, tangent: snorm16_tangent(*t) }).collect())
-            }
-        };
-        let vb_bytes = std::mem::size_of_val(vertices) as u64;
-        let skin_bytes = skin.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
-        let surface_bytes = surface.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
-        let ib_bytes = std::mem::size_of_val(indices) as u64;
-        let skin_offset = vb_bytes;
-        let surface_offset = skin_offset + skin_bytes;
-        let index_offset = surface_offset + surface_bytes;
-        let total = index_offset + ib_bytes;
+        let layout = mesh_layout(vertices, indices, streams)?;
+        let total = layout.total;
         let dev = &self.device;
-
         let staging = dev.create_buffer(
             total,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -347,28 +276,9 @@ impl GpuInner {
             MemoryKind::Staging,
             "mesh staging",
         )?;
-        // SAFETY: `staging.mapped` points to at least `total` bytes of coherent host memory;
-        // `Vertex`, `SkinVertex` and `SurfaceVertex` are `repr(C)` plain data, as are `u32`
-        // indices; the regions are laid out one after another and don't overlap.
-        unsafe {
-            let dst = staging.mapped as *mut u8;
-            ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, dst, vb_bytes as usize);
-            if let Some(skin) = &skin {
-                ptr::copy_nonoverlapping(skin.as_ptr() as *const u8, dst.add(skin_offset as usize), skin_bytes as usize);
-            }
-            if let Some(s) = &surface {
-                ptr::copy_nonoverlapping(s.as_ptr() as *const u8, dst.add(surface_offset as usize), surface_bytes as usize);
-            }
-            ptr::copy_nonoverlapping(indices.as_ptr() as *const u8, dst.add(index_offset as usize), ib_bytes as usize);
-        }
-        let buffer = match dev.create_buffer(
-            total,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            0,
-            MemoryKind::Meshes,
-            "mesh",
-        ) {
+        // SAFETY: `staging.mapped` points to at least `total` bytes of coherent host memory.
+        unsafe { layout.write(staging.mapped as *mut u8, vertices, indices) };
+        let buffer = match create_mesh_buffer(dev, total) {
             Ok(b) => b,
             Err(e) => {
                 dev.destroy_buffer(&staging);
@@ -396,11 +306,40 @@ impl GpuInner {
             self.device.destroy_buffer(&buffer);
             return Err(e);
         }
+        Ok(self.finish_mesh(buffer, layout, vertices, indices.len()))
+    }
+
+    /// [`GpuInner::upload_mesh`] without waiting: the copy goes into the current upload batch,
+    /// submitted before the next frame (see `stream.rs`). The mesh can be drawn at once.
+    pub fn queue_mesh(&mut self, vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshId, GpuError> {
+        let layout = mesh_layout(vertices, indices, streams)?;
+        let total = layout.total;
+        let buffer = create_mesh_buffer(&self.device, total)?;
+        let staged = match self.uploads.stage(&self.device, self.cmd_pool, total) {
+            Ok(s) => s,
+            Err(e) => {
+                self.device.destroy_buffer(&buffer);
+                return Err(e);
+            }
+        };
+        // SAFETY: `staged.dst` points to at least `total` bytes of mapped staging memory that no
+        // submitted batch uses (its slot is recording).
+        unsafe { layout.write(staged.dst, vertices, indices) };
+        let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
+        crate::stream::record_buffer_copy(&self.device, cmd, &staged, buffer.handle, total);
+        let id = self.finish_mesh(buffer, layout, vertices, indices.len());
+        self.uploads.queued(id.0, total);
+        Ok(id)
+    }
+
+    /// Registers an uploaded mesh buffer: starts its pipeline variants and hands out its id.
+    fn finish_mesh(&mut self, buffer: Buffer, layout: MeshLayout, vertices: &[Vertex], index_count: usize) -> MeshId {
         // The first mesh with skin or UVs starts building those pipeline variants on a worker;
         // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
-        if skin.is_some() || surface.is_some() {
+        if layout.skin.is_some() || layout.surface.is_some() {
             let formats = self.formats();
-            self.pipelines.request_variants(&self.device, Variants { skinned: skin.is_some(), textured: surface.is_some() }, &formats);
+            let want = Variants { skinned: layout.skin.is_some(), textured: layout.surface.is_some() };
+            self.pipelines.request_variants(&self.device, want, &formats);
         }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
@@ -408,15 +347,56 @@ impl GpuInner {
             id,
             Mesh {
                 buffer,
-                index_offset,
-                index_count: indices.len() as u32,
+                index_offset: layout.index_offset,
+                index_count: index_count as u32,
                 bounds,
-                skin_offset: skin.as_ref().map(|_| skin_offset),
-                surface_offset: surface.as_ref().map(|_| surface_offset),
-                joints,
+                skin_offset: layout.skin.as_ref().map(|_| layout.skin_offset),
+                surface_offset: layout.surface.as_ref().map(|_| layout.surface_offset),
+                joints: layout.joints,
             },
         );
-        Ok(MeshId(id))
+        MeshId(id)
+    }
+
+    /// Frees a mesh once no submitted frame can read it, without waiting (see `stream.rs`).
+    pub fn retire_mesh(&mut self, mesh: MeshId) {
+        if mesh.0 == crate::sprite::QUAD_MESH {
+            return;
+        }
+        if let Some(m) = self.meshes.remove(&mesh.0) {
+            self.uploads.retire(crate::stream::Retired::Buffer(m.buffer));
+        }
+    }
+
+    /// Frees a texture once no submitted frame can read it, without waiting.
+    pub fn retire_texture(&mut self, texture: TextureId) {
+        if let Some(t) = self.textures.map.remove(&texture.0) {
+            self.uploads.retire(crate::stream::Retired::Image(t.image, t.slot));
+        }
+    }
+
+    /// Submits the upload batch (and retirements) now, and frees what finished batches release.
+    pub fn flush_uploads(&mut self) -> Result<(), GpuError> {
+        let flushed = self.uploads.flush(&self.device, self.cmd_pool);
+        for slot in self.uploads.take_freed_slots() {
+            self.descriptors.free_slot(slot);
+        }
+        flushed
+    }
+
+    pub fn upload_stats(&self) -> crate::UploadStats {
+        self.uploads.stats()
+    }
+
+    /// Before a synchronous destroy of `id`: if a batch that may not have finished copies into
+    /// it, finish every batch first.
+    fn settle_upload_of(&mut self, id: u32) {
+        if self.uploads.is_pending(id) {
+            let _ = self.uploads.finish(&self.device, self.cmd_pool);
+            for slot in self.uploads.take_freed_slots() {
+                self.descriptors.free_slot(slot);
+            }
+        }
     }
 
     /// Builds the variants now, on this thread (loading time; `variants` changes only once all
@@ -468,6 +448,7 @@ impl GpuInner {
         if mesh.0 == crate::sprite::QUAD_MESH {
             return; // the shared sprite quad lives as long as the GPU
         }
+        self.settle_upload_of(mesh.0);
         let Some(m) = self.meshes.remove(&mesh.0) else { return };
         // A presented frame may still read the mesh.
         if let Some(w) = &self.window {
@@ -614,31 +595,7 @@ impl GpuInner {
         levels: &[&[u8]],
         sampler: TextureSampler,
     ) -> Result<TextureId, GpuError> {
-        let Some(&base) = levels.first() else {
-            return Err(GpuError::new("upload_texture_levels: no levels given"));
-        };
-        check_pixels("upload_texture_levels", width, height, format, base)?;
-        let max = self.max_image_dimension_2d;
-        if width > max || height > max {
-            return Err(GpuError::rejected(
-                crate::ErrorReason::TooLarge { width, height, max },
-                format!("upload_texture_levels: size {width}x{height} exceeds {max} in a dimension"),
-            ));
-        }
-        let full = crate::mip_count(width, height) as usize;
-        if levels.len() > full {
-            return Err(GpuError::new(format!("upload_texture_levels: {} levels given; a {width}x{height} image has {full}", levels.len())));
-        }
-        let size = |i: usize| ((width >> i).max(1), (height >> i).max(1));
-        // Each level at a 4-byte aligned offset in one staging buffer.
-        let mut offsets = Vec::with_capacity(levels.len());
-        let mut total = 0u64;
-        for (i, level) in levels.iter().enumerate() {
-            let (w, h) = size(i);
-            check_pixels(&format!("upload_texture_levels (level {i})"), w, h, format, level)?;
-            offsets.push(total);
-            total = (total + level.len() as u64).div_ceil(4) * 4;
-        }
+        let (offsets, total) = self.level_plan(width, height, format, levels)?;
         let vk_sampler = self.descriptors.sampler(&self.device, sampler)?;
         let slot = self.descriptors.alloc_slot()?;
         let dev = &self.device;
@@ -678,26 +635,7 @@ impl GpuInner {
             // SAFETY: `staging.mapped` holds `total` bytes; each level fits at its offset.
             unsafe { ptr::copy_nonoverlapping(level.as_ptr(), (staging.mapped as *mut u8).add(at as usize), level.len()) };
         }
-        let regions: Vec<VkBufferImageCopy> = offsets
-            .iter()
-            .enumerate()
-            .map(|(i, &at)| {
-                let (w, h) = size(i);
-                VkBufferImageCopy {
-                    buffer_offset: at,
-                    buffer_row_length: 0,
-                    buffer_image_height: 0,
-                    image_subresource: VkImageSubresourceLayers {
-                        aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
-                        mip_level: i as u32,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
-                    image_extent: VkExtent3D { width: w, height: h, depth: 1 },
-                }
-            })
-            .collect();
+        let regions = level_regions(width, height, &offsets);
         let copied = self.run_sync(|dev, cmd| {
             dev.barrier(
                 cmd,
@@ -753,6 +691,89 @@ impl GpuInner {
         Ok(TextureId(id))
     }
 
+    /// [`GpuInner::upload_texture_levels`] without waiting: the copies go into the current
+    /// upload batch, submitted before the next frame (see `stream.rs`).
+    pub fn queue_texture_levels(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        levels: &[&[u8]],
+        sampler: TextureSampler,
+    ) -> Result<TextureId, GpuError> {
+        let (offsets, total) = self.level_plan(width, height, format, levels)?;
+        let vk_sampler = self.descriptors.sampler(&self.device, sampler)?;
+        let slot = self.descriptors.alloc_slot()?;
+        let image = match self.device.create_image_with(
+            vk_format(format),
+            width,
+            height,
+            levels.len() as u32,
+            1,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            MemoryKind::Textures,
+            "material texture",
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                self.descriptors.free_slot(slot);
+                return Err(e);
+            }
+        };
+        let staged = match self.uploads.stage(&self.device, self.cmd_pool, total) {
+            Ok(s) => s,
+            Err(e) => {
+                self.device.destroy_image(&image);
+                self.descriptors.free_slot(slot);
+                return Err(e);
+            }
+        };
+        for (level, &at) in levels.iter().zip(&offsets) {
+            // SAFETY: `staged.dst` holds `total` bytes no submitted batch uses; each level fits at
+            // its offset.
+            unsafe { ptr::copy_nonoverlapping(level.as_ptr(), staged.dst.add(at as usize), level.len()) };
+        }
+        let mut regions = level_regions(width, height, &offsets);
+        let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
+        crate::stream::record_image_copy(&self.device, cmd, &staged, image.handle, &mut regions);
+        // A fresh slot: no pending frame reads it.
+        self.descriptors.write_texture_with(&self.device, slot, image.view, vk_sampler);
+        let id = self.next_id();
+        self.textures.map.insert(id, Texture { image, slot, format, width, height, levels: levels.len() as u32 });
+        self.uploads.queued(id, total);
+        Ok(TextureId(id))
+    }
+
+    /// Checks a texture's mip levels; returns each level's 4-byte aligned offset in one staging
+    /// range, and the range's size.
+    fn level_plan(&self, width: u32, height: u32, format: TextureFormat, levels: &[&[u8]]) -> Result<(Vec<u64>, u64), GpuError> {
+        let Some(&base) = levels.first() else {
+            return Err(GpuError::new("upload_texture_levels: no levels given"));
+        };
+        check_pixels("upload_texture_levels", width, height, format, base)?;
+        let max = self.max_image_dimension_2d;
+        if width > max || height > max {
+            return Err(GpuError::rejected(
+                crate::ErrorReason::TooLarge { width, height, max },
+                format!("upload_texture_levels: size {width}x{height} exceeds {max} in a dimension"),
+            ));
+        }
+        let full = crate::mip_count(width, height) as usize;
+        if levels.len() > full {
+            return Err(GpuError::new(format!("upload_texture_levels: {} levels given; a {width}x{height} image has {full}", levels.len())));
+        }
+        let mut offsets = Vec::with_capacity(levels.len());
+        let mut total = 0u64;
+        for (i, level) in levels.iter().enumerate() {
+            let (w, h) = ((width >> i).max(1), (height >> i).max(1));
+            check_pixels(&format!("upload_texture_levels (level {i})"), w, h, format, level)?;
+            offsets.push(total);
+            total = (total + level.len() as u64).div_ceil(4) * 4;
+        }
+        Ok((offsets, total))
+    }
+
     pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
         let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Texture, texture.0, ""))?;
         if t.levels > 1 {
@@ -778,6 +799,7 @@ impl GpuInner {
     }
 
     pub fn destroy_texture(&mut self, texture: TextureId) {
+        self.settle_upload_of(texture.0);
         let Some(t) = self.textures.map.remove(&texture.0) else { return };
         self.wait_window_frames();
         self.device.destroy_image(&t.image);
@@ -886,6 +908,8 @@ impl GpuInner {
 
     fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
         check_frame(&self.meshes, &self.textures, frame)?;
+        // Queued uploads go first on the queue: the frame draws with them.
+        self.flush_uploads()?;
         self.poll_pipelines();
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
@@ -1066,6 +1090,8 @@ impl GpuInner {
             return Err(GpuError::new("present: no window attached"));
         }
         check_frame(&self.meshes, &self.textures, frame)?;
+        // Queued uploads go first on the queue: the frame draws with them.
+        self.flush_uploads()?;
         self.poll_pipelines();
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
@@ -1129,6 +1155,7 @@ impl Drop for GpuInner {
     fn drop(&mut self) {
         let dev = &self.device;
         dev.wait_idle();
+        self.uploads.destroy(dev);
         if let Some(mut w) = self.window.take() {
             w.destroy(&self.instance, dev, self.cmd_pool);
         }
@@ -1162,6 +1189,154 @@ impl Drop for GpuInner {
 }
 
 const _: () = assert!(size_of::<Vertex>() == 28 && size_of::<SkinVertex>() == 8);
+
+/// A mesh's streams, checked and laid out for one buffer: vertices, then skin, then surface
+/// (UV + tangent), then indices.
+struct MeshLayout {
+    skin: Option<Vec<SkinVertex>>,
+    surface: Option<Vec<SurfaceVertex>>,
+    /// Bone matrices a skinned draw's palette needs (see `Mesh::joints`).
+    joints: u32,
+    vb_bytes: u64,
+    skin_offset: u64,
+    surface_offset: u64,
+    index_offset: u64,
+    total: u64,
+}
+
+impl MeshLayout {
+    /// Writes the mesh's bytes at `dst`.
+    ///
+    /// # Safety
+    /// `dst` must point to at least `self.total` writable bytes.
+    unsafe fn write(&self, dst: *mut u8, vertices: &[Vertex], indices: &[u32]) {
+        let skin_bytes = (self.surface_offset - self.skin_offset) as usize;
+        let surface_bytes = (self.index_offset - self.surface_offset) as usize;
+        let index_bytes = (self.total - self.index_offset) as usize;
+        // SAFETY: the caller gives `total` bytes at `dst`; `Vertex`, `SkinVertex` and
+        // `SurfaceVertex` are `repr(C)` plain data, as are `u32` indices; the regions are laid
+        // out one after another and don't overlap.
+        unsafe {
+            ptr::copy_nonoverlapping(vertices.as_ptr() as *const u8, dst, self.vb_bytes as usize);
+            if let Some(skin) = &self.skin {
+                ptr::copy_nonoverlapping(skin.as_ptr() as *const u8, dst.add(self.skin_offset as usize), skin_bytes);
+            }
+            if let Some(s) = &self.surface {
+                ptr::copy_nonoverlapping(s.as_ptr() as *const u8, dst.add(self.surface_offset as usize), surface_bytes);
+            }
+            ptr::copy_nonoverlapping(indices.as_ptr() as *const u8, dst.add(self.index_offset as usize), index_bytes);
+        }
+    }
+}
+
+/// Checks a mesh and lays its streams out (see [`MeshLayout`]).
+fn mesh_layout(vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshLayout, GpuError> {
+    if vertices.is_empty() || indices.is_empty() {
+        return Err(GpuError::new(format!(
+            "upload_mesh: need at least one vertex and one triangle (got {} vertices, {} indices)",
+            vertices.len(),
+            indices.len()
+        )));
+    }
+    if indices.len() % 3 != 0 {
+        return Err(GpuError::new(format!("upload_mesh: index count {} is not a multiple of 3", indices.len())));
+    }
+    if let Some((at, &bad)) = indices.iter().enumerate().find(|(_, &i)| i as usize >= vertices.len()) {
+        return Err(GpuError::new(format!("upload_mesh: index {bad} at position {at} is out of range ({} vertices)", vertices.len())));
+    }
+    let n = vertices.len();
+    let bad = |stream: MeshStream, vertex: usize, why: String| {
+        GpuError::rejected(ErrorReason::BadStream { stream, vertex: vertex as u32 }, format!("upload_mesh: {why}"))
+    };
+    let mut joints = 0u32;
+    // The shader reads all four joints (a zero weight multiplies, it doesn't skip): joints
+    // without weight are stored as 0, so every joint read lies inside the draw's palette.
+    let skin: Option<Vec<SkinVertex>> = match streams.skin {
+        None => None,
+        Some(skin) => {
+            if skin.len() != n {
+                return Err(bad(MeshStream::Skin, skin.len(), format!("{} skin entries for {n} vertices", skin.len())));
+            }
+            let mut clean = Vec::with_capacity(n);
+            for (i, s) in skin.iter().enumerate() {
+                let mut c = *s;
+                for k in 0..4 {
+                    if s.weights[k] == 0 {
+                        c.joints[k] = 0;
+                    } else if s.joints[k] == 255 {
+                        return Err(bad(MeshStream::Skin, i, format!("vertex {i} gives weight to joint 255 (joints are 0..=254)")));
+                    }
+                    joints = joints.max(c.joints[k] as u32 + 1);
+                }
+                clean.push(c);
+            }
+            Some(clean)
+        }
+    };
+    let surface: Option<Vec<SurfaceVertex>> = match streams.uvs {
+        None => None,
+        Some(uvs) => {
+            if uvs.len() != n {
+                return Err(bad(MeshStream::Uvs, uvs.len(), format!("{} UVs for {n} vertices", uvs.len())));
+            }
+            let generated;
+            let tangents = match streams.tangents {
+                Some(t) if t.len() != n => {
+                    return Err(bad(MeshStream::Tangents, t.len(), format!("{} tangents for {n} vertices", t.len())));
+                }
+                Some(t) => t,
+                None => {
+                    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+                    let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
+                    generated = crate::generate_tangents(&positions, &normals, uvs, indices);
+                    &generated
+                }
+            };
+            Some(uvs.iter().zip(tangents).map(|(&uv, t)| SurfaceVertex { uv, tangent: snorm16_tangent(*t) }).collect())
+        }
+    };
+    let vb_bytes = std::mem::size_of_val(vertices) as u64;
+    let skin_bytes = skin.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
+    let surface_bytes = surface.as_ref().map_or(0, |s| std::mem::size_of_val(s.as_slice()) as u64);
+    let ib_bytes = std::mem::size_of_val(indices) as u64;
+    let skin_offset = vb_bytes;
+    let surface_offset = skin_offset + skin_bytes;
+    let index_offset = surface_offset + surface_bytes;
+    Ok(MeshLayout { skin, surface, joints, vb_bytes, skin_offset, surface_offset, index_offset, total: index_offset + ib_bytes })
+}
+
+/// One copy region per mip level of a `width × height` image, at `offsets` in its staging.
+fn level_regions(width: u32, height: u32, offsets: &[u64]) -> Vec<VkBufferImageCopy> {
+    offsets
+        .iter()
+        .enumerate()
+        .map(|(i, &at)| VkBufferImageCopy {
+            buffer_offset: at,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: VkImageSubresourceLayers {
+                aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
+                mip_level: i as u32,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+            image_extent: VkExtent3D { width: (width >> i).max(1), height: (height >> i).max(1), depth: 1 },
+        })
+        .collect()
+}
+
+/// A device-local buffer for a mesh's vertex and index streams.
+fn create_mesh_buffer(dev: &Device, total: u64) -> Result<Buffer, GpuError> {
+    dev.create_buffer(
+        total,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        0,
+        MemoryKind::Meshes,
+        "mesh",
+    )
+}
 
 /// A tangent as the surface stream stores it: xyz normalized, snorm16, w the sign (±1).
 fn snorm16_tangent(t: [f32; 4]) -> [i16; 4] {

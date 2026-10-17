@@ -125,6 +125,7 @@ mod shadow;
 mod sprite;
 mod ssao;
 mod stats;
+mod stream;
 mod swapchain;
 mod tilemap;
 mod timing;
@@ -139,6 +140,7 @@ pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIE
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
 pub use render::{BackgroundFault, PipelineVariants, VariantFailure};
 pub use stats::*;
+pub use stream::{UploadStats, ARENA_BYTES as UPLOAD_ARENA_BYTES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Validation {
@@ -1205,6 +1207,51 @@ impl Gpu {
     /// Unknown ids are ignored. Waits for in-flight window frames that may still use the mesh.
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
         self.inner.destroy_mesh(mesh)
+    }
+
+    /// [`Gpu::upload_mesh_with`] for streaming: **never waits**. The data is copied into a
+    /// staging arena and the copy recorded into an upload batch that is submitted before the
+    /// next frame (window or offscreen) on the same queue, so the mesh can be drawn by that
+    /// frame. Same checks and errors as `upload_mesh_with`. Callers bound what they queue per
+    /// frame (the engine's `[streaming]` budgets).
+    pub fn queue_mesh(&mut self, vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshId, GpuError> {
+        self.inner.queue_mesh(vertices, indices, streams)
+    }
+
+    /// [`Gpu::upload_texture_levels`] for streaming: never waits (see [`Gpu::queue_mesh`]).
+    pub fn queue_texture_levels(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        levels: &[&[u8]],
+        sampler: TextureSampler,
+    ) -> Result<TextureId, GpuError> {
+        self.inner.queue_texture_levels(width, height, format, levels, sampler)
+    }
+
+    /// Frees a mesh without waiting: it goes once every frame and upload batch submitted so far
+    /// has finished on the GPU (checked by polling fences, never by a wait). The id is invalid
+    /// at once. Unknown ids are ignored.
+    pub fn retire_mesh(&mut self, mesh: MeshId) {
+        self.inner.retire_mesh(mesh)
+    }
+
+    /// Frees a texture without waiting (see [`Gpu::retire_mesh`]).
+    pub fn retire_texture(&mut self, texture: TextureId) {
+        self.inner.retire_texture(texture)
+    }
+
+    /// Submits the queued uploads and retirements now (frames do this themselves; a headless
+    /// engine that renders nothing calls it so retired memory is freed), and frees what
+    /// finished batches release. Never waits.
+    pub fn flush_uploads(&mut self) -> Result<(), GpuError> {
+        self.inner.flush_uploads()
+    }
+
+    /// What the queued path did so far (batches, bytes, frees, slot waits).
+    pub fn upload_stats(&self) -> UploadStats {
+        self.inner.upload_stats()
     }
 
     /// Offscreen colour target (`R8G8B8A8_SRGB`) with its readback buffer. Its depth buffer and
