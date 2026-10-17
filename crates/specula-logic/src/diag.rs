@@ -59,7 +59,9 @@ pub enum Message {
     /// A compiler message for the package whose manifest is `manifest` (its target `target`).
     Diagnostic { manifest: PathBuf, target: String, diagnostic: Diagnostic },
     /// A built target: its package name, crate kinds and files.
-    Artifact { manifest: PathBuf, name: String, kinds: Vec<String>, files: Vec<PathBuf>, fresh: bool },
+    Artifact { manifest: PathBuf, package_id: String, name: String, kinds: Vec<String>, files: Vec<PathBuf>, fresh: bool },
+    /// A build script ran (for the package `package_id`).
+    BuildScript { package_id: String },
     /// The build ended.
     Finished { success: bool },
     Other,
@@ -87,8 +89,10 @@ pub fn parse_line(line: &str, root: &Path) -> Message {
             let kinds = strings(target.and_then(|t| t.get("crate_types")));
             let files = strings(j.get("filenames")).into_iter().map(PathBuf::from).collect();
             let fresh = j.get("fresh").and_then(Json::as_bool).unwrap_or(false);
-            Message::Artifact { manifest, name, kinds, files, fresh }
+            let package_id = s(&j, "package_id").unwrap_or_default();
+            Message::Artifact { manifest, package_id, name, kinds, files, fresh }
         }
+        Some("build-script-executed") => Message::BuildScript { package_id: s(&j, "package_id").unwrap_or_default() },
         Some("build-finished") => Message::Finished { success: j.get("success").and_then(Json::as_bool).unwrap_or(false) },
         _ => Message::Other,
     }
@@ -245,7 +249,8 @@ pub(crate) mod tests {
     fn parses_artifacts_and_the_end() {
         let line = r#"{"reason":"compiler-artifact","package_id":"x","manifest_path":"D:\\w\\m\\Cargo.toml","target":{"kind":["cdylib"],"crate_types":["cdylib"],"name":"ambulo","src_path":"x"},"profile":{},"features":[],"filenames":["D:\\w\\target\\debug\\ambulo.dll","D:\\w\\target\\debug\\libambulo.dll.a"],"executable":null,"fresh":false}"#;
         match parse_line(line, Path::new(".")) {
-            Message::Artifact { name, kinds, files, fresh, .. } => {
+            Message::Artifact { name, kinds, files, fresh, package_id, .. } => {
+                assert_eq!(package_id, "x");
                 assert_eq!(name, "ambulo");
                 assert_eq!(kinds, vec!["cdylib".to_owned()]);
                 assert_eq!(files.len(), 2);
@@ -255,6 +260,10 @@ pub(crate) mod tests {
         }
         assert_eq!(parse_line(r#"{"reason":"build-finished","success":false}"#, Path::new(".")), Message::Finished { success: false });
         assert_eq!(parse_line("not json", Path::new(".")), Message::Other);
-        assert_eq!(parse_line(r#"{"reason":"build-script-executed"}"#, Path::new(".")), Message::Other);
+        assert_eq!(
+            parse_line(r#"{"reason":"build-script-executed","package_id":"p"}"#, Path::new(".")),
+            Message::BuildScript { package_id: "p".into() }
+        );
+        assert_eq!(parse_line(r#"{"reason":"compiler-moonbeam"}"#, Path::new(".")), Message::Other);
     }
 }

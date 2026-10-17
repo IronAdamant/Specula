@@ -97,7 +97,7 @@ fn module_copy(repo: &Path, base: &Path) -> PathBuf {
     let sdk = repo.join("crates").join("specula-sdk");
     let manifest = format!(
         "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n\
-         [dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n\n[profile.dev]\ndebug = 0\nstrip = \"debuginfo\"\n",
+         [dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n\n[profile.dev]\ndebug = 0\nstrip = \"debuginfo\"\npanic = \"abort\"\n",
         sdk.to_string_lossy().replace('\\', "/")
     );
     std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
@@ -136,6 +136,26 @@ fn edit_rebuild_reload_while_the_world_runs() {
         req.target_dir = Some(base.join("target"));
         builds.build(req)
     };
+
+    // The copy's profile says panic = "abort" (the reviewer's abortmod): built by plain Cargo the
+    // SDK refuses to compile; logic_build's build overrides it to unwind (all builds below), so a
+    // panicking module can't take the engine down (the panic step below).
+    let plain = specula_logic::build::cargo_command()
+        .args(["check", "--offline", "--lib", "--color", "never", "--manifest-path"])
+        .arg(dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(base.join("target"))
+        .current_dir(&dir)
+        .output()
+        .expect("cargo runs");
+    let said = String::from_utf8_lossy(&plain.stderr);
+    assert!(!plain.status.success() && said.contains("panic = \"unwind\""), "the SDK refuses panic = abort: {said}");
+
+    // A toolchain file in the module folder (the reviewer's tcmod) is refused before anything runs.
+    std::fs::write(dir.join("rust-toolchain.toml"), "[toolchain]\npath = \"C:/nowhere/faketc\"\n").unwrap();
+    let refused = build(false);
+    assert_eq!(refused.error.as_ref().map(|e| e.0), Some("toolchain_file"), "{:?}", refused.error);
+    std::fs::remove_file(dir.join("rust-toolchain.toml")).unwrap();
 
     // First build (may compile the SDK into the copy's target folder once).
     let first = build(false);
@@ -212,7 +232,8 @@ fn edit_rebuild_reload_while_the_world_runs() {
     assert_eq!(fixed.warnings(), 0, "rebuilt without the warning: {:?}", fixed.diagnostics);
     assert!(std::fs::read_to_string(&src).unwrap().contains("let dt = cx.dt();"), "the fix was written to the source");
 
-    // A build that panics mid-tick is disabled; the tick changed nothing.
+    // A build that panics mid-tick is disabled; the tick changed nothing (and the process lives:
+    // the manifest asks for panic = "abort", the build unwinds anyway).
     edit(&src, "let dt = cx.dt();", "let dt = cx.dt();\n        if cx.tick() >= 200 { panic!(\"probe panic\"); }");
     let bomb = build(false);
     assert!(bomb.ok, "{:?}", bomb.diagnostics);

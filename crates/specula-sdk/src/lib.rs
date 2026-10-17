@@ -42,6 +42,15 @@
 //!
 //! See `docs/design/MODULES.md` for the lifecycle, the ABI and the build loop.
 
+// The SDK catches a module's panics at the C ABI boundary and reports them as data; with
+// `panic = "abort"` the first panic (even the SDK's own, ending a runaway call) would abort the
+// whole engine. `logic_build` passes `--config profile.<dev|release>.panic="unwind"` as well.
+#[cfg(not(panic = "unwind"))]
+compile_error!(
+    "specula modules must be built with panic = \"unwind\": a panic in a module built with \
+     panic = \"abort\" would kill the engine (remove panic = \"abort\" from the profile)"
+);
+
 pub mod abi;
 mod module;
 pub mod value;

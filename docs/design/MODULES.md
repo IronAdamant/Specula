@@ -67,6 +67,13 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   build time;
 - **no `.cargo/` folder** between the module and the working directory (`cargo_config`): a `rustc-wrapper` or linker
   there would run; the project's own `.cargo/config.toml` applies;
+- **no `rust-toolchain` or `rust-toolchain.toml`** between the module and the working directory (`toolchain_file`),
+  checked before any Cargo runs (rustup would run, or download, the toolchain it names); and every Cargo the engine
+  starts is pinned to the engine's own toolchain (`RUSTUP_TOOLCHAIN`, and an absolute Cargo and rustc when the engine
+  knows them);
+- the build's **own output** is checked again before its library may load: an artifact that isn't a path crate under
+  the root, a build script that ran, or a proc-macro refuses the build and restores `Cargo.lock` (a manifest edited
+  between the check and the build can't slip anything in);
 - Cargo runs `--offline`, so nothing is downloaded; if resolving would change `Cargo.lock` and the build is refused, the
   lock file is put back.
 
@@ -126,9 +133,12 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
   tools and are validated by the same code, so modules and agents share one vocabulary and one set of error messages.
 - Neither side frees the other's memory or keeps its pointers past a call. Answers live in an engine buffer valid until
   the module's next request; replies are copied by the engine.
-- **Panics never cross the boundary.** The SDK catches them in `call` (with message and `file:line:column` from a
-  chained panic hook in the module's own copy of std) and returns `PANIC`; the engine's trampolines catch their own.
-  The engine then rolls the call back and disables the module.
+- **Panics never cross the boundary**, provided the module unwinds: the SDK catches them in `call` (with message and
+  `file:line:column` from a chained panic hook in the module's own copy of std) and returns `PANIC`; the engine's
+  trampolines catch their own. The engine then rolls the call back and disables the module. **Modules must be built
+  with `panic = "unwind"`** (Rust's default): with `"abort"` a panic would end the whole engine process. The SDK
+  refuses to compile otherwise (`compile_error!` on `cfg(not(panic = "unwind"))`), and `logic_build` passes
+  `--config profile.dev.panic="unwind"` (and release) so a module's own profile can't change it.
 - **Bounded work.** At most 10,000 requests per call: past that each request is refused, the call fails with
   `too_many_requests` and the module is **disabled**, like after a panic (a deterministic cutoff, no wall clock; a
   runaway costs one frame a few tens of milliseconds, once). Replies ≤ 256 KiB; queries ≤ 4,096 ids; ≤ 256 events per

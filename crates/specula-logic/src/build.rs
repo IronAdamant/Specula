@@ -8,9 +8,13 @@
 //!
 //! **What a module may build from** (checked before Cargo builds anything, see [`vet`]): crates
 //! by path under the request's `root` only (no registry or git crates: zero third-party crates,
-//! AGENTS.md rule 1), no build scripts, no proc-macros, and no `.cargo/` configuration between the
-//! module and the root (a `rustc-wrapper` or linker there would run). Cargo runs `--offline`, so
-//! nothing is downloaded. A module, and anything it builds, still runs with the engine's
+//! AGENTS.md rule 1), no build scripts, no proc-macros, and no `.cargo/` configuration or
+//! `rust-toolchain` file between the module and the root (a `rustc-wrapper`, linker or toolchain
+//! there would run). Every Cargo the engine starts is pinned to the engine's own toolchain
+//! ([`cargo_command`]), runs `--offline` (nothing is downloaded) and builds with
+//! `panic = "unwind"` (an aborting module would take the engine down with its first panic). The
+//! build's own output is checked again before its library may load ([`check_build_output`]), so a
+//! manifest edited between the check and the build can't slip anything in. A module, and anything it builds, still runs with the engine's
 //! privileges: these checks keep builds zero-dependency and free of build-time code, they are no
 //! sandbox.
 
@@ -258,7 +262,8 @@ pub fn workspace_root(dir: &Path) -> PathBuf {
 
 /// Refuses a build that would use more than the module's own path crates (see the module docs):
 /// `Err((code, message))` naming the offending package, target or file. Codes: `outside_root`,
-/// `cargo_config`, `metadata_failed`, `third_party_crate`, `build_script`, `proc_macro`.
+/// `cargo_config`, `toolchain_file`, `metadata_failed`, `third_party_crate`, `build_script`,
+/// `proc_macro`. The folders are checked before anything runs.
 ///
 /// `cargo metadata` may rewrite the workspace's `Cargo.lock` while resolving; if the build is
 /// refused (or metadata fails) the lock file is put back as it was.
@@ -276,6 +281,12 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
         if cfg.exists() {
             return Err(("cargo_config", format!("{} configures Cargo for this module (a wrapper or linker there would run); modules use the project's configuration only: remove it", cfg.display())));
         }
+        for name in ["rust-toolchain", "rust-toolchain.toml"] {
+            let tc = d.join(name);
+            if tc.exists() {
+                return Err(("toolchain_file", format!("{} picks a toolchain for this module (rustup would run or download it); modules build with the engine's toolchain: remove it", tc.display())));
+            }
+        }
         at = d.parent();
     }
     let lock = workspace_root(&dir).join("Cargo.lock");
@@ -290,7 +301,7 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
             let _ = std::fs::remove_file(&lock);
         }
     };
-    let out = Command::new(cargo_program())
+    let out = cargo_command()
         .args(["metadata", "--format-version", "1", "--offline", "--color", "never", "--manifest-path"])
         .arg(dir.join("Cargo.toml"))
         .current_dir(&dir)
@@ -354,12 +365,108 @@ pub fn check_metadata(meta: &specula_core::Json, roots: &[PathBuf]) -> Result<()
 
 /// The Cargo to run: the one that launched us (`$CARGO`), else `cargo` on the PATH.
 pub fn cargo_program() -> PathBuf {
-    std::env::var_os("CARGO").map_or_else(|| PathBuf::from("cargo"), PathBuf::from)
+    if let Some(c) = std::env::var_os("CARGO") {
+        return PathBuf::from(c);
+    }
+    // The Cargo that built the engine (an absolute path into its toolchain), if it's still there.
+    match option_env!("CARGO").map(PathBuf::from) {
+        Some(c) if c.is_absolute() && c.is_file() => c,
+        _ => PathBuf::from("cargo"),
+    }
+}
+
+/// The toolchain the engine was built with (e.g. `stable-x86_64-pc-windows-gnu`): rustup's
+/// `RUSTUP_TOOLCHAIN` now or at build time, else the toolchain folder the building Cargo lived in.
+pub fn engine_toolchain() -> Option<String> {
+    if let Some(t) = std::env::var("RUSTUP_TOOLCHAIN").ok().filter(|t| !t.is_empty()) {
+        return Some(t);
+    }
+    if let Some(t) = option_env!("RUSTUP_TOOLCHAIN").filter(|t| !t.is_empty()) {
+        return Some(t.to_owned());
+    }
+    // .../toolchains/<name>/bin/cargo
+    let cargo = PathBuf::from(option_env!("CARGO")?);
+    let toolchain_dir = cargo.parent()?.parent()?;
+    (toolchain_dir.parent()?.file_name()? == "toolchains").then(|| toolchain_dir.file_name()?.to_str().map(str::to_owned)).flatten()
+}
+
+/// A Cargo command pinned to the engine's toolchain: `RUSTUP_TOOLCHAIN` set (so rustup ignores
+/// toolchain files and overrides), and `RUSTC` set to the rustc next to an absolute Cargo.
+pub fn cargo_command() -> Command {
+    let program = cargo_program();
+    let mut cmd = Command::new(&program);
+    if let Some(t) = engine_toolchain() {
+        cmd.env("RUSTUP_TOOLCHAIN", t);
+    }
+    if program.is_absolute() {
+        let rustc = program.with_file_name(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        if rustc.is_file() {
+            cmd.env("RUSTC", rustc);
+        }
+    }
+    cmd
+}
+
+/// Checks a build's own messages (after [`vet`] checked the manifest, which may have changed
+/// since): every artifact is a path crate under `roots`, no build script ran, no proc-macro was
+/// built. `Err((code, message))` names the package.
+pub fn check_build_output(messages: &[Message], roots: &[PathBuf]) -> Result<(), (&'static str, String)> {
+    let roots: Vec<PathBuf> = roots.iter().map(|r| fix::canonical(r)).collect();
+    let late = "appeared in the build itself (the manifest changed after it was checked); the build was not loaded";
+    for m in messages {
+        match m {
+            Message::BuildScript { package_id } => {
+                return Err(("build_script", format!("a build script ran for {package_id}: {late}")));
+            }
+            Message::Artifact { manifest, package_id, kinds, .. } => {
+                if !package_id.starts_with("path+file://") {
+                    return Err(("third_party_crate", format!("{package_id} is not a path crate: {late}")));
+                }
+                let canon = fix::canonical(manifest);
+                if !roots.iter().any(|r| canon.starts_with(r)) {
+                    return Err(("outside_root", format!("{} is outside the project: {late}", manifest.display())));
+                }
+                if kinds.iter().any(|k| k == "proc-macro") {
+                    return Err(("proc_macro", format!("{package_id} is a proc-macro: {late}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `Cargo.lock` as it was before a build, to put back if the build is refused.
+struct LockGuard {
+    path: PathBuf,
+    before: Option<Vec<u8>>,
+}
+
+impl LockGuard {
+    fn take(dir: &Path) -> LockGuard {
+        let path = workspace_root(dir).join("Cargo.lock");
+        let before = std::fs::read(&path).ok();
+        LockGuard { path, before }
+    }
+
+    fn restore(&self) {
+        match &self.before {
+            Some(bytes) => {
+                if std::fs::read(&self.path).ok().as_deref() != Some(bytes.as_slice()) {
+                    let _ = std::fs::write(&self.path, bytes);
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
 }
 
 /// The default [`Runner`]: Cargo, with fix rounds when asked.
 pub fn run_cargo(req: &BuildRequest) -> BuildReport {
     let start = Instant::now();
+    let lock = LockGuard::take(&req.dir);
     if let Err((code, message)) = vet(req) {
         return BuildReport {
             error: Some((code, message)),
@@ -387,6 +494,9 @@ pub fn run_cargo(req: &BuildRequest) -> BuildReport {
             }
         }
     }
+    if report.error.as_ref().is_some_and(|e| matches!(e.0, "build_script" | "third_party_crate" | "outside_root" | "proc_macro")) {
+        lock.restore();
+    }
     report.build_time = start.elapsed();
     report
 }
@@ -412,13 +522,19 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
         args.push("--target-dir".into());
         args.push(t.to_string_lossy().into_owned());
     }
+    // Modules unwind (the SDK catches panics at the boundary): a module's manifest can't make
+    // a panic abort the engine.
+    for profile in ["dev", "release"] {
+        args.push("--config".into());
+        args.push(format!("profile.{profile}.panic=\"unwind\""));
+    }
     let program = cargo_program();
     let mut report = BuildReport {
         command: format!("{} {}", program.display(), args.join(" ")),
         root: root.clone(),
         ..BuildReport::default()
     };
-    let child = Command::new(&program)
+    let child = cargo_command()
         .args(&args)
         .current_dir(&req.dir)
         .stdin(Stdio::null())
@@ -459,8 +575,13 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut finished = None;
+    let mut seen = Vec::new();
     for line in &lines {
-        match diag::parse_line(line, &root) {
+        let message = diag::parse_line(line, &root);
+        if matches!(message, Message::Artifact { .. } | Message::BuildScript { .. }) {
+            seen.push(message.clone());
+        }
+        match message {
             Message::Diagnostic { manifest: m, target, mut diagnostic } => {
                 // "aborting due to..." summaries carry no information an agent needs.
                 if diagnostic.file.is_none() && diagnostic.message.starts_with("aborting due to") {
@@ -480,7 +601,7 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
                     warnings.push(diagnostic);
                 }
             }
-            Message::Artifact { manifest: m, name, kinds, files, fresh } if fix::canonical(&m) == manifest => {
+            Message::Artifact { manifest: m, name, kinds, files, fresh, .. } if fix::canonical(&m) == manifest => {
                 report.package = Some(name);
                 report.fresh = fresh;
                 if kinds.iter().any(|k| k == "cdylib") {
@@ -496,10 +617,15 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
     }
     errors.extend(warnings);
     report.diagnostics = errors;
+    let vetted = check_build_output(&seen, &req.roots);
     let tail: Vec<String> = stderr.lines().filter(|l| !l.trim().is_empty()).map(str::to_owned).collect();
     report.stderr_tail = tail[tail.len().saturating_sub(STDERR_TAIL)..].to_vec();
     match (status, finished) {
         (None, _) => report.error = Some(("timeout", format!("cargo ran longer than {} s and was stopped", req.timeout.as_secs()))),
+        (Some(_), _) if vetted.is_err() => {
+            report.library = None;
+            report.error = vetted.err();
+        }
         (Some(s), Some(true)) if s.success() => {
             if !req.check && report.library.is_none() {
                 report.error = Some((
@@ -623,6 +749,71 @@ mod tests {
         std::fs::create_dir_all(&req.roots[0]).unwrap();
         assert_eq!(vet(&req).unwrap_err().0, "outside_root");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn toolchain_files_are_refused_before_anything_runs() {
+        let base = std::env::temp_dir().join(format!("specula-vet-tc-{}", std::process::id()));
+        let module = base.join("tcmod");
+        std::fs::create_dir_all(&module).unwrap();
+        // The reviewer's probe: a toolchain path pointing at a fake cargo.
+        std::fs::write(module.join("rust-toolchain.toml"), "[toolchain]\npath = \"C:/nowhere/faketc\"\n").unwrap();
+        let mut req = BuildRequest::new(&module);
+        req.roots = vec![base.clone()];
+        let e = vet(&req).unwrap_err();
+        assert_eq!(e.0, "toolchain_file");
+        assert!(e.1.contains("rust-toolchain.toml"), "{}", e.1);
+        std::fs::remove_file(module.join("rust-toolchain.toml")).unwrap();
+        std::fs::write(base.join("rust-toolchain"), "nightly").unwrap();
+        req.roots = vec![base.parent().unwrap().to_owned()];
+        assert_eq!(vet(&req).unwrap_err().0, "toolchain_file", "a plain rust-toolchain above the module too");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn every_cargo_is_pinned_to_the_engines_toolchain() {
+        let Some(toolchain) = engine_toolchain() else {
+            println!("skipped: this build of the engine doesn't know its toolchain (not built through rustup)");
+            return;
+        };
+        let cmd = cargo_command();
+        let env: Vec<(String, String)> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
+            .collect();
+        assert!(env.contains(&("RUSTUP_TOOLCHAIN".to_owned(), toolchain)), "{env:?}");
+    }
+
+    #[test]
+    fn the_builds_own_output_is_checked_too() {
+        let root = fix::canonical(&std::env::temp_dir());
+        let roots = vec![root.clone()];
+        let path = |n: &str| root.join(n).join("Cargo.toml");
+        let art = |id: &str, n: &str, kind: &str| Message::Artifact {
+            manifest: path(n),
+            package_id: id.to_owned(),
+            name: n.to_owned(),
+            kinds: vec![kind.to_owned()],
+            files: vec![],
+            fresh: false,
+        };
+        let ok = art("path+file:///x/m#0.1.0", "m", "cdylib");
+        assert_eq!(check_build_output(std::slice::from_ref(&ok), &roots), Ok(()));
+        let reg = art("registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.11", "itoa", "lib");
+        assert_eq!(check_build_output(&[ok.clone(), reg], &roots).unwrap_err().0, "third_party_crate");
+        let bs = Message::BuildScript { package_id: "path+file:///x/m#0.1.0".into() };
+        assert_eq!(check_build_output(&[ok.clone(), bs], &roots).unwrap_err().0, "build_script");
+        let pm = art("path+file:///x/d#0.1.0", "d", "proc-macro");
+        assert_eq!(check_build_output(&[pm], &roots).unwrap_err().0, "proc_macro");
+        let far = Message::Artifact {
+            manifest: PathBuf::from("/far/away/Cargo.toml"),
+            package_id: "path+file:///far/away#0.1.0".into(),
+            name: "far".into(),
+            kinds: vec!["lib".into()],
+            files: vec![],
+            fresh: false,
+        };
+        assert_eq!(check_build_output(&[far], &[root.join("specula-nowhere")]).unwrap_err().0, "outside_root");
     }
 
     #[test]
