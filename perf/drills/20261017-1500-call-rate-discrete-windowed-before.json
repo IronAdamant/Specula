@@ -1,0 +1,70 @@
+{
+ "schema": "specula.call_rate/v1",
+ "windowed": true,
+ "adapter": null,
+ "seconds": 4.0,
+ "frame_pacing_idle": {
+  "samples": 120,
+  "mean_ms": 4.899,
+  "median_ms": 4.202,
+  "p95_ms": 8.674,
+  "max_ms": 9.522
+ },
+ "tools": {
+  "engine_info": {
+   "calls": 903,
+   "calls_per_s": 225.8,
+   "p50_ms": 4.152,
+   "p95_ms": 7.756,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.86,
+    "median_ms": 4.241,
+    "p95_ms": 8.511,
+    "max_ms": 9.905
+   }
+  },
+  "world_query": {
+   "calls": 885,
+   "calls_per_s": 221.2,
+   "p50_ms": 4.186,
+   "p95_ms": 8.101,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.551,
+    "median_ms": 4.159,
+    "p95_ms": 8.471,
+    "max_ms": 10.228
+   }
+  },
+  "world_set": {
+   "calls": 811,
+   "calls_per_s": 202.8,
+   "p50_ms": 4.201,
+   "p95_ms": 9.079,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.584,
+    "median_ms": 2.584,
+    "p95_ms": 11.83,
+    "max_ms": 12.584
+   }
+  },
+  "world_spawn": {
+   "calls": 435,
+   "calls_per_s": 108.8,
+   "p50_ms": 8.588,
+   "p95_ms": 13.139,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.992,
+    "median_ms": 6.849,
+    "p95_ms": 12.425,
+    "max_ms": 15.914
+   }
+  }
+ },
+ "validation_errors": 0,
+ "exit_code": 0,
+ "engine": "before (main at eba5e86)"
+}

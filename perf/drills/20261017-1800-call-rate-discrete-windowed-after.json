@@ -1,0 +1,195 @@
+{
+ "schema": "specula.call_rate/v1",
+ "exe": "specula.exe",
+ "windowed": true,
+ "adapter": null,
+ "seconds": 4.0,
+ "frame_pacing_idle": {
+  "samples": 120,
+  "mean_ms": 4.21,
+  "median_ms": 4.105,
+  "p95_ms": 5.782,
+  "max_ms": 8.283,
+  "serve": {
+   "window_ms": 2.132,
+   "frame_period_ms": 4.167,
+   "refresh_ms": 4.167,
+   "refresh_from": "display",
+   "frame_work_ms": 0.241,
+   "margin_ms": 1.794,
+   "backlog": false,
+   "call_cost_ms": {
+    "read": 0.2,
+    "edit": 0.05,
+    "render": 8,
+    "disk": 8,
+    "big": 8,
+    "sim": 1,
+    "game": 0.5
+   },
+   "windows": 590,
+   "backlog_windows": 0,
+   "calls": 20,
+   "held_for_next_window": 0,
+   "late_presents": 35,
+   "late_but_ready": 33,
+   "unblocked_presents": 11
+  }
+ },
+ "tools": {
+  "engine_info": {
+   "calls": 2529,
+   "calls_per_s": 632.2,
+   "p50_ms": 0.77,
+   "p95_ms": 4.19,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.386,
+    "median_ms": 4.128,
+    "p95_ms": 8.097,
+    "max_ms": 9.868,
+    "serve": {
+     "window_ms": 2.617,
+     "frame_period_ms": 4.167,
+     "refresh_ms": 4.167,
+     "refresh_from": "display",
+     "frame_work_ms": 0.216,
+     "margin_ms": 1.334,
+     "backlog": false,
+     "call_cost_ms": {
+      "read": 0.05,
+      "edit": 0.05,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+     },
+     "windows": 1472,
+     "backlog_windows": 0,
+     "calls": 2549,
+     "held_for_next_window": 1,
+     "late_presents": 117,
+     "late_but_ready": 110,
+     "unblocked_presents": 12
+    }
+   }
+  },
+  "world_query": {
+   "calls": 2098,
+   "calls_per_s": 524.5,
+   "p50_ms": 0.846,
+   "p95_ms": 5.077,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.619,
+    "median_ms": 4.184,
+    "p95_ms": 8.27,
+    "max_ms": 11.209,
+    "serve": {
+     "window_ms": 2.241,
+     "frame_period_ms": 4.167,
+     "refresh_ms": 4.167,
+     "refresh_from": "display",
+     "frame_work_ms": 0.153,
+     "margin_ms": 1.773,
+     "backlog": false,
+     "call_cost_ms": {
+      "read": 0.132,
+      "edit": 0.05,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+     },
+     "windows": 2355,
+     "backlog_windows": 0,
+     "calls": 4648,
+     "held_for_next_window": 14,
+     "late_presents": 216,
+     "late_but_ready": 199,
+     "unblocked_presents": 13
+    }
+   }
+  },
+  "world_set": {
+   "calls": 2154,
+   "calls_per_s": 538.5,
+   "p50_ms": 0.691,
+   "p95_ms": 6.349,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 4.943,
+    "median_ms": 4.388,
+    "p95_ms": 9.365,
+    "max_ms": 12.178,
+    "serve": {
+     "window_ms": 2.058,
+     "frame_period_ms": 4.167,
+     "refresh_ms": 4.167,
+     "refresh_from": "display",
+     "frame_work_ms": 0.888,
+     "margin_ms": 1.22,
+     "backlog": false,
+     "call_cost_ms": {
+      "read": 0.05,
+      "edit": 0.453,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+     },
+     "windows": 3181,
+     "backlog_windows": 0,
+     "calls": 6803,
+     "held_for_next_window": 15,
+     "late_presents": 385,
+     "late_but_ready": 364,
+     "unblocked_presents": 18
+    }
+   }
+  },
+  "world_spawn": {
+   "calls": 680,
+   "calls_per_s": 170.0,
+   "p50_ms": 6.418,
+   "p95_ms": 13.26,
+   "frame_pacing": {
+    "samples": 120,
+    "mean_ms": 5.278,
+    "median_ms": 4.651,
+    "p95_ms": 14.62,
+    "max_ms": 19.896,
+    "serve": {
+     "window_ms": 1,
+     "frame_period_ms": 4.167,
+     "refresh_ms": 4.167,
+     "refresh_from": "display",
+     "frame_work_ms": 0.921,
+     "margin_ms": 4.104,
+     "backlog": false,
+     "call_cost_ms": {
+      "read": 0.05,
+      "edit": 0.05,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+     },
+     "windows": 3991,
+     "backlog_windows": 0,
+     "calls": 7485,
+     "held_for_next_window": 15,
+     "late_presents": 729,
+     "late_but_ready": 705,
+     "unblocked_presents": 22
+    }
+   }
+  }
+ },
+ "validation_errors": 0,
+ "exit_code": 0
+}

@@ -1,6 +1,7 @@
 //! Specula platform layer: native windows and input events (keyboard, mouse, touch/pen pointers),
-//! gamepads ([`gamepad`], XInput loaded at runtime) and key names ([`keys`]). Mapping all of this
-//! onto game actions is `specula-input`'s job.
+//! gamepads ([`gamepad`], XInput loaded at runtime), key names ([`keys`]) and the system timer's
+//! resolution ([`timer`]; the only crate that declares `winmm`). Mapping input onto game actions
+//! is `specula-input`'s job.
 //!
 //! Windows first (raw Win32 via `#[link(kind = "raw-dylib")]`, no import libraries); Linux and
 //! macOS backends come later behind this same API. On other platforms `Window::new` returns
@@ -12,6 +13,7 @@ use std::fmt;
 mod decode;
 pub mod gamepad;
 pub mod keys;
+pub mod timer;
 #[cfg(windows)]
 mod win32;
 
@@ -61,6 +63,21 @@ pub fn client_size_of(raw: RawWindow) -> (u32, u32) {
     {
         let _ = raw;
         (0, 0)
+    }
+}
+
+/// The refresh rate, in Hz, of the display showing `raw` (the nearest one), from **any** thread.
+/// `None` when the driver doesn't say or there is no backend. Variable-refresh displays report
+/// their highest rate. It can change (the window moves to another display): ask again now and then.
+pub fn refresh_rate_of(raw: RawWindow) -> Option<f64> {
+    #[cfg(windows)]
+    {
+        win32::refresh_rate_of(raw.hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = raw;
+        None
     }
 }
 

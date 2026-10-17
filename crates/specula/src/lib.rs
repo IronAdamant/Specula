@@ -7,8 +7,9 @@
 //!
 //! Threads: protocol threads parse tool calls and hand them to the engine (main) thread over a
 //! channel; the engine thread owns the world and GPU, applies commands between frames, renders,
-//! and replies. The human's window is pumped by its own thread (see `ui`), so dragging it never
-//! stalls agents.
+//! and replies. With a window open it serves calls as they arrive in the time it would otherwise
+//! wait for vsync (see `schedule`), so agents aren't paced by the display. The human's window is
+//! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
 pub mod cameras;
 mod capture;
@@ -23,6 +24,7 @@ pub mod models;
 pub mod orbit;
 mod perf;
 pub mod persist;
+mod schedule;
 pub mod sight;
 pub mod sight_overlay;
 mod sight_tools;
@@ -36,6 +38,7 @@ use game::{Clock, Ctx, Game, MAX_GAME_OVERLAY_QUADS};
 use journal::{Kind, Writer};
 use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
+use schedule::{Class, Schedule, Served};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::math::Mat4;
@@ -90,6 +93,10 @@ const DEFAULT_TICK_HZ: u32 = 30;
 const TICK_HASHES: usize = 1024;
 /// How often claims of vanished sessions are dropped.
 const CLAIM_SWEEP_EVERY: Duration = Duration::from_secs(1);
+/// world_batch calls with more ops than this are big work for the window's schedule.
+const HEAVY_BATCH_OPS: usize = 256;
+/// How often the windowed loop asks for its display's refresh rate.
+const REFRESH_ASK_EVERY: Duration = Duration::from_secs(1);
 
 struct Args {
     port: u16,
@@ -423,6 +430,9 @@ struct Engine {
     game_name: String,
     /// Frame pacing and simulation cost, for perf_frame.
     pacing: perf::Pacing,
+    /// With a window: when agents are served between presents (see `schedule`); a copy of the
+    /// loop's, as the current serve window began, for perf_frame.
+    schedule: Schedule,
     /// CPU zones per frame and perf_capture (see [`specula_core::profile`]).
     profiler: perf::Profiler,
     /// Budgets (perf.toml).
@@ -523,6 +533,7 @@ impl Engine {
             game: None,
             game_name: String::new(),
             pacing: perf::Pacing::default(),
+            schedule: Schedule::default(),
             profiler: perf::Profiler::new(120),
             perf_cfg: perf::PerfConfig::default(),
             last_advance: Instant::now(),
@@ -1131,19 +1142,52 @@ impl Engine {
     }
 
     fn run_windowed(&mut self, ui: &UiThread, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
+        // Timed waits end within about a millisecond instead of on Windows' default 15.6 ms tick,
+        // so a serve window ends when the frame is due.
+        let _timer = specula_platform::timer::FineTimer::request();
         let mut title = String::new();
         let mut size = client_size_of(ui.raw);
         let mut last_frame = Instant::now();
-        while !interrupt::requested() && !ui.close_requested() {
+        let mut schedule = Schedule::default();
+        // The display's refresh rate, asked every second (the window may move to another display).
+        let mut refresh_asked: Option<Instant> = None;
+        // The oldest calls queued when the last serve window ended (at most two): the next one
+        // starts with them.
+        let mut held: VecDeque<Request> = VecDeque::with_capacity(2);
+        let mut inbox = requests;
+        let mut minimized = false;
+        loop {
             // Everything recorded during the previous iteration is that frame's profile.
             self.profiler.end_frame(&self.gpu);
-            let frame_zone = profile::zone("frame");
-            {
-                let _z = profile::zone("requests");
-                while let Ok(request) = requests.try_recv() {
-                    self.handle(request, server);
-                }
+            // Serve agents in the time the old loop spent waiting for vsync, until this frame is
+            // due. Not frame work, so outside the frame zone; each call is its own "requests" zone.
+            // perf_frame (answered in the window) reports the schedule as this window began.
+            if refresh_asked.is_none_or(|t| t.elapsed() >= REFRESH_ASK_EVERY) {
+                refresh_asked = Some(Instant::now());
+                let hz = specula_platform::refresh_rate_of(ui.raw);
+                schedule.set_display_refresh(hz.map(|hz| Duration::from_secs_f64(1.0 / hz)));
             }
+            self.schedule = schedule;
+            let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
+            let serve_start = Instant::now();
+            let ended = schedule.serve(
+                &mut inbox,
+                &mut held,
+                serve_start + window,
+                |r| call_class(&r.command),
+                |r| {
+                    let _z = profile::zone("requests");
+                    self.handle(r, server);
+                },
+                || interrupt::requested() || ui.close_requested(),
+            );
+            if ended != Served::Window {
+                // Stopping (or the server is gone). Held calls' reply channels close as they
+                // drop, which answers them "shutting down".
+                break;
+            }
+            let served = serve_start.elapsed();
+            let frame_zone = profile::zone("frame");
             self.autosave_if_due();
             self.sweep_claims(server);
             self.poll_assets(false);
@@ -1169,11 +1213,11 @@ impl Engine {
                 size = now;
                 self.gpu.resize_window(size.0, size.1).map_err(|e| format!("resize: {e}"))?;
             }
-            if size.0 == 0 || size.1 == 0 {
-                // Minimized: keep serving agents without a frame to present. The wait is not frame
-                // work, so it is outside the frame zone.
+            minimized = size.0 == 0 || size.1 == 0;
+            if minimized {
+                // Minimized: no frame to present; the next serve window keeps serving agents (and
+                // the clock) at about 60 Hz.
                 drop(frame_zone);
-                std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
             self.follow_window_camera();
@@ -1205,9 +1249,13 @@ impl Engine {
             };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
             drop(draw_list);
-            // FIFO present paces the loop to the display refresh.
+            // FIFO present paces the loop to the display refresh. How long it blocked sizes the
+            // next serve window.
             let present = profile::zone("present");
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            let (frame_no, cpu) = self.gpu.last_window_timing();
+            let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
+            schedule.presented(frame_no, served, blocked, Instant::now());
             self.models.put_bones(bones);
             drop(present);
             self.draws = draws;
@@ -1783,6 +1831,8 @@ impl Engine {
             ("window", window.as_ref().map_or(Json::Null, perf::stats_json)),
             ("offscreen", offscreen.as_ref().map_or(Json::Null, perf::stats_json)),
             ("frame_pacing", pacing.frame.to_json()),
+            // With a window: how agents' calls are served between presents.
+            ("serve", if self.windowed { self.schedule.to_json() } else { Json::Null }),
             ("sim_tick", pacing.tick.to_json()),
             ("game_frame", pacing.game_frame.to_json()),
             (
@@ -1873,6 +1923,43 @@ impl Engine {
     }
 }
 
+/// What kind of cost a call has, for the window's schedule: a serve window only starts a call
+/// when it has room for what calls of its class cost lately (see `schedule`).
+fn call_class(command: &Command) -> Class {
+    match command {
+        Command::Frame(_) | Command::Sight(_) => Class::Render,
+        Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
+        Command::Hash { verify: true, .. } => Class::Big,
+        Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
+        Command::Time(TimeOp::Step(_)) => Class::Sim,
+        Command::Game { .. } => Class::Game,
+        Command::Spawn(_)
+        | Command::Set(..)
+        | Command::Delete(..)
+        | Command::Batch(_)
+        | Command::Env(_)
+        | Command::View(_)
+        | Command::Undo(_)
+        | Command::Hello { .. }
+        | Command::ClaimTake(_)
+        | Command::ClaimRenew { .. }
+        | Command::ClaimRelease { .. }
+        | Command::ClaimShare { .. }
+        | Command::Time(_)
+        | Command::PerfCapture(_) => Class::Edit,
+        Command::Query(_)
+        | Command::TileGet { .. }
+        | Command::Info
+        | Command::Perf { .. }
+        | Command::PerfZones(_)
+        | Command::PerfMemory { .. }
+        | Command::History(_)
+        | Command::Changes(_)
+        | Command::Hash { .. }
+        | Command::ClaimList { .. } => Class::Read,
+    }
+}
+
 /// Whether this frame's input is a human taking the controls (a key press, click, scroll or
 /// touch; mouse moves and key repeats alone aren't): it releases an agent camera the window
 /// follows (F5: humans are never locked out).
@@ -1959,6 +2046,21 @@ fn prune_capture_runs(root: &Path, keep: usize, current: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each kind of cost is tracked apart: a slow step or game tool doesn't hold back edits.
+    #[test]
+    fn calls_are_classed_by_what_they_cost() {
+        assert_eq!(call_class(&Command::Save { name: None, overwrite: false }), Class::Disk);
+        assert_eq!(call_class(&Command::Load { name: "w".into(), force: false }), Class::Disk);
+        assert_eq!(call_class(&Command::ModelReload), Class::Disk);
+        assert_eq!(call_class(&Command::Hash { recent: 0, tick: None, verify: true }), Class::Big);
+        assert_eq!(call_class(&Command::Hash { recent: 8, tick: None, verify: false }), Class::Read);
+        assert_eq!(call_class(&Command::Info), Class::Read);
+        assert_eq!(call_class(&Command::Batch(Vec::new())), Class::Edit);
+        assert_eq!(call_class(&Command::Time(TimeOp::Step(18_000))), Class::Sim);
+        assert_eq!(call_class(&Command::Time(TimeOp::Pause)), Class::Edit);
+        assert_eq!(call_class(&Command::Game { name: "play_x".into(), args: Json::Null }), Class::Game);
+    }
 
     /// Reviewer finding (round 7, F5): an agent camera in the window must never lock the human
     /// out: input releases it (a hosted game is told the view is the agent's, round 8, and its
