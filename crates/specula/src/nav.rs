@@ -274,7 +274,8 @@ struct SourceEntry {
     /// Shown and not on the ui layer (both follow ancestors without changing the version).
     drawn: bool,
     cols: [[f32; 4]; 4],
-    path: String,
+    /// Its id and its ancestors' (`sources.under` matches by id: a rename keeps them).
+    ancestors: Vec<u64>,
     tags: BTreeSet<String>,
     /// Collider geometry, and whether its body is kinematic.
     collider: Option<(Source, bool)>,
@@ -282,12 +283,18 @@ struct SourceEntry {
     shape: Option<Source>,
 }
 
+/// `sources.under` resolved: `None` (no filter), `Some(None)` (the path doesn't exist: nothing),
+/// `Some(Some(id))`.
+fn under_of(world: &World, s: &Sources) -> Option<Option<u64>> {
+    s.under.as_ref().map(|p| world.find_path(p).ok())
+}
+
 impl SourceEntry {
-    fn pick(&self, s: &Sources) -> Option<&Source> {
-        if let Some(u) = &s.under {
-            if !(self.path == *u || self.path.strip_prefix(u.as_str()).is_some_and(|r| r.starts_with('/'))) {
-                return None;
-            }
+    fn pick(&self, s: &Sources, under: Option<Option<u64>>) -> Option<&Source> {
+        match under {
+            Some(Some(u)) if !self.ancestors.contains(&u) => return None,
+            Some(None) => return None,
+            _ => {}
         }
         if s.exclude_tags.iter().any(|t| self.tags.contains(t)) {
             return None;
@@ -463,7 +470,13 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
     if collider.is_none() && shape.is_none() {
         return None;
     }
-    Some(SourceEntry { version: e.version, drawn: true, cols: m.cols, path: world.path_of(e.id), tags: e.tags.clone(), collider, shape })
+    let mut ancestors = vec![e.id];
+    let mut at = e.parent;
+    while let Some(p) = at {
+        ancestors.push(p);
+        at = world.get(p).and_then(|x| x.parent);
+    }
+    Some(SourceEntry { version: e.version, drawn: true, cols: m.cols, ancestors, tags: e.tags.clone(), collider, shape })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -486,6 +499,8 @@ pub struct MeshSlot {
     pub errors: VecDeque<Json>,
     /// Models without a collider in its area at the last full build.
     pub models_skipped: usize,
+    /// `sources.under` as last resolved (a rename or a new entity there rebuilds every tile).
+    under: Option<Option<u64>>,
 }
 
 /// Where an agent was told to go.
@@ -513,6 +528,8 @@ struct AgentLink {
     wander_count: u64,
     /// Ticks a chase or move has had no complete path.
     unreachable_ticks: u32,
+    /// The action node that set `mind_goal` (an abort clears only its own goal).
+    goal_owner: Option<usize>,
     /// What navigation last wrote (world position), to tell its own moves from teleports.
     written: Option<Vec3>,
 }
@@ -523,6 +540,8 @@ struct MindSlot {
     props: Json,
     /// The definition entity it reads (`props.mind = {def: "/path"}`), and its version.
     def_from: Option<(u64, u64)>,
+    /// The definition's path, also while nothing is there yet.
+    def_path: Option<String>,
     mind: Option<Mind>,
 }
 
@@ -560,6 +579,12 @@ pub struct Nav {
     movers: BTreeSet<u64>,
     agents: BTreeMap<u64, AgentLink>,
     minds: BTreeMap<u64, MindSlot>,
+    /// Entities minds read definitions from, and paths minds wait for (may hold stale entries:
+    /// they only decide when to look).
+    def_ids: BTreeSet<u64>,
+    def_paths: BTreeSet<String>,
+    /// Minds that can't run, and why (kept apart from agents' problems).
+    pub mind_problems: BTreeMap<u64, Json>,
     /// `(world generation, draw epoch)` synced up to.
     synced: Option<(u64, u64)>,
     /// Entities navigation can't use, and why.
@@ -653,6 +678,8 @@ struct EngineHost<'a> {
     meshes: &'a BTreeMap<u64, MeshSlot>,
     link: Option<&'a mut AgentLink>,
     id: u64,
+    /// The action node being run.
+    node: usize,
 }
 
 impl EngineHost<'_> {
@@ -687,6 +714,7 @@ impl EngineHost<'_> {
                 if l.mind_goal != g {
                     l.unreachable_ticks = 0;
                 }
+                l.goal_owner = g.as_ref().map(|_| self.node);
                 l.mind_goal = g;
                 true
             }
@@ -775,9 +803,11 @@ impl mens::Host for EngineHost<'_> {
         }
     }
 
-    fn action(&mut self, name: &str, args: &Json, phase: Phase, bb: &mut mens::run::Blackboard) -> Status {
+    fn action(&mut self, node: usize, name: &str, args: &Json, phase: Phase, bb: &mut mens::run::Blackboard) -> Status {
+        self.node = node;
         if phase == Phase::Abort {
-            if name != "face" {
+            // Only the goal this node set: the action that replaced it may have set its own.
+            if self.link.as_ref().is_some_and(|l| l.goal_owner == Some(node)) {
                 self.set_goal(None);
             }
             return Status::Failure;
@@ -882,16 +912,7 @@ impl mens::Host for EngineHost<'_> {
                     let Some(slot) = self.mesh() else { return Status::Failure };
                     let count = self.link.as_ref().map_or(0, |l| l.wander_count);
                     let mut rng = Rng::new(id, count);
-                    let mut pick = None;
-                    for _ in 0..16 {
-                        if let Some((_, p)) = slot.mesh.random_point(&mut rng) {
-                            if horizontal(p, me) <= radius {
-                                pick = Some(p);
-                                break;
-                            }
-                        }
-                    }
-                    let Some(p) = pick else { return Status::Failure };
+                    let Some((_, p)) = slot.mesh.random_point_near(&mut rng, me, radius) else { return Status::Failure };
                     if let Some(l) = self.link.as_deref_mut() {
                         l.wander_count += 1;
                     }
@@ -1071,8 +1092,13 @@ impl Nav {
                             self.problems.insert(id, err.to_json());
                         }
                     }
-                } else if let Some(m) = self.meshes.get_mut(&id) {
-                    m.path = world.path_of(id);
+                } else {
+                    let path = world.path_of(id);
+                    if let Some(m) = self.meshes.get_mut(&id).filter(|m| m.path != path) {
+                        m.path = path;
+                        // Agents name navmeshes by name or path.
+                        self.relink_agents(world);
+                    }
                 }
             }
             None => {
@@ -1119,8 +1145,9 @@ impl Nav {
         if let Some(new) = new {
             let old = self.sources.remove(&id);
             for m in self.meshes.values_mut() {
+                let under = under_of(world, &m.settings.sources);
                 for s in [old.as_ref(), new.as_ref()].into_iter().flatten() {
-                    if let Some(src) = s.pick(&m.settings.sources) {
+                    if let Some(src) = s.pick(&m.settings.sources, under) {
                         m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
                     }
                 }
@@ -1131,7 +1158,9 @@ impl Nav {
         } else if e.is_none() {
             if let Some(old) = self.sources.remove(&id) {
                 for m in self.meshes.values_mut() {
-                    if let Some(src) = old.pick(&m.settings.sources) {
+                    // (A deleted `under` root: its whole old area is dirty anyway.)
+                    let under = under_of(world, &m.settings.sources).map(|u| u.or(old.ancestors.last().copied()));
+                    if let Some(src) = old.pick(&m.settings.sources, under) {
                         m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
                     }
                 }
@@ -1162,12 +1191,26 @@ impl Nav {
             }
             None => {
                 self.minds.remove(&id);
+                self.mind_problems.remove(&id);
             }
         }
-        let readers: Vec<u64> = self.minds.iter().filter(|(_, m)| m.def_from.is_some_and(|(d, v)| d == id && e.is_none_or(|e| e.version != v))).map(|(k, _)| *k).collect();
-        for r in readers {
-            if let Some(props) = world.get(r).and_then(|e| e.props.get(MIND_KEY)).cloned() {
-                self.load_mind(world, r, props);
+        // Minds reading this entity's definition, or waiting for one at its path.
+        let at_path = (!self.def_paths.is_empty() && e.is_some_and(|e| e.props.get(DEF_KEY).is_some())).then(|| world.path_of(id)).filter(|p| self.def_paths.contains(p));
+        if self.def_ids.contains(&id) || at_path.is_some() {
+            let version = e.map(|e| e.version);
+            let readers: Vec<u64> = self
+                .minds
+                .iter()
+                .filter(|(_, m)| match m.def_from {
+                    Some((d, v)) => d == id && version != Some(v),
+                    None => at_path.is_some() && m.def_path == at_path,
+                })
+                .map(|(k, _)| *k)
+                .collect();
+            for r in readers {
+                if let Some(props) = world.get(r).and_then(|e| e.props.get(MIND_KEY)).cloned() {
+                    self.load_mind(world, r, props);
+                }
             }
         }
         if e.is_none() {
@@ -1176,6 +1219,7 @@ impl Nav {
     }
 
     fn make_mesh(&mut self, world: &World, e: &Entity, settings: MeshSettings, props: Json) {
+        let settings_sources = settings.sources.clone();
         let mesh = match NavMesh::new(settings.config) {
             Ok(m) => m,
             Err(err) => {
@@ -1204,6 +1248,7 @@ impl Nav {
                 last_rebuild: Vec::new(),
                 errors: VecDeque::new(),
                 models_skipped: 0,
+                under: under_of(world, &settings_sources),
             },
         );
         self.relink_agents(world);
@@ -1249,6 +1294,9 @@ impl Nav {
         let offset_y = match (external, collider_bottom) {
             (true, Some(lo)) => -lo * scale.y,
             (true, None) => 0.0,
+            // A model's built bounds arrive when its build finishes (wall-clock time, F2): models
+            // use their collider's bottom, or their origin.
+            (false, lo) if e.shape == Shape::Model => lo.map_or(0.0, |lo| -lo * scale.y),
             (false, _) => e.local_bounds().map_or(0.0, |(lo, _)| -lo.y * scale.y),
         };
         let mut problem = None;
@@ -1288,6 +1336,7 @@ impl Nav {
                 patrol_index: keep.map_or(0, |o| o.patrol_index),
                 wander_count: keep.map_or(0, |o| o.wander_count),
                 unreachable_ticks: 0,
+                goal_owner: keep.and_then(|o| o.goal_owner),
                 written: keep.and_then(|o| o.written),
             },
         );
@@ -1297,31 +1346,39 @@ impl Nav {
     fn load_mind(&mut self, world: &World, id: u64, props: Json) {
         let version = props.clone();
         let def_json = props.get("def").cloned().unwrap_or(Json::Null);
+        let def_path = def_json.as_str().map(str::to_owned);
+        if let Some(p) = &def_path {
+            self.def_paths.insert(p.clone());
+        }
         let (def, from) = match &def_json {
             Json::Str(p) => match world.find_path(p) {
-                Ok(d) => match world.get(d).and_then(|e| e.props.get(DEF_KEY)) {
-                    Some(dj) => (dj.clone(), Some((d, world.get(d).map_or(0, |e| e.version)))),
-                    None => {
-                        self.minds.insert(id, MindSlot { props: version, def_from: Some((d, world.get(d).map_or(0, |e| e.version))), mind: None });
-                        self.problems.insert(id, Json::from(format!("'{p}' has no props.{DEF_KEY}")));
-                        return;
+                Ok(d) => {
+                    self.def_ids.insert(d);
+                    let v = world.get(d).map_or(0, |e| e.version);
+                    match world.get(d).and_then(|e| e.props.get(DEF_KEY)) {
+                        Some(dj) => (dj.clone(), Some((d, v))),
+                        None => {
+                            self.minds.insert(id, MindSlot { props: version, def_from: Some((d, v)), def_path, mind: None });
+                            self.mind_problems.insert(id, Json::from(format!("'{p}' has no props.{DEF_KEY}")));
+                            return;
+                        }
                     }
-                },
+                }
                 Err(_) => {
-                    self.minds.insert(id, MindSlot { props: version, def_from: None, mind: None });
-                    self.problems.insert(id, Json::from(format!("mind definition '{p}' doesn't exist")));
+                    self.minds.insert(id, MindSlot { props: version, def_from: None, def_path, mind: None });
+                    self.mind_problems.insert(id, Json::from(format!("mind definition '{p}' doesn't exist (it loads when an entity with props.{DEF_KEY} appears there)")));
                     return;
                 }
             },
             Json::Obj(_) => (def_json.clone(), None),
             _ => {
-                self.minds.insert(id, MindSlot { props: version, def_from: None, mind: None });
-                self.problems.insert(id, Json::from("props.mind needs 'def': a definition object or the path of an entity with props.mind_def"));
+                self.minds.insert(id, MindSlot { props: version, def_from: None, def_path: None, mind: None });
+                self.mind_problems.insert(id, Json::from("props.mind needs 'def': a definition object or the path of an entity with props.mind_def"));
                 return;
             }
         };
         if self.minds.len() >= MAX_MINDS && !self.minds.contains_key(&id) {
-            self.problems.insert(id, Json::from(format!("a world runs at most {MAX_MINDS} minds")));
+            self.mind_problems.insert(id, Json::from(format!("a world runs at most {MAX_MINDS} minds")));
             return;
         }
         let parsed = Def::parse(&def, self.vocab());
@@ -1342,12 +1399,12 @@ impl Nav {
                     }
                     None => Mind::new(Arc::new(d), bb, 30),
                 };
-                self.minds.insert(id, MindSlot { props: version, def_from: from, mind: Some(mind) });
-                self.problems.remove(&id);
+                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: Some(mind) });
+                self.mind_problems.remove(&id);
             }
             Err(diags) => {
-                self.minds.insert(id, MindSlot { props: version, def_from: from, mind: None });
-                self.problems.insert(id, Json::obj([("invalid_mind", Json::arr(diags.iter().map(Diagnostic::to_json)))]));
+                self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: None });
+                self.mind_problems.insert(id, Json::obj([("invalid_mind", Json::arr(diags.iter().map(Diagnostic::to_json)))]));
             }
         }
     }
@@ -1357,7 +1414,12 @@ impl Nav {
         let Some(slot) = self.meshes.get_mut(&mesh_id) else { return 0 };
         let n = budget.unwrap_or(usize::MAX).min(slot.dirty.len());
         let take: Vec<(u32, u32)> = slot.dirty.iter().take(n).copied().collect();
-        let picked: Vec<(&SourceEntry, &Source)> = self.sources.values().filter_map(|s| s.pick(&slot.settings.sources).map(|src| (s, src))).collect();
+        if take.is_empty() && budget.is_some() {
+            slot.last_rebuild.clear();
+            return 0;
+        }
+        let under = under_of(world, &slot.settings.sources);
+        let picked: Vec<(&SourceEntry, &Source)> = self.sources.values().filter_map(|s| s.pick(&slot.settings.sources, under).map(|src| (s, src))).collect();
         for &(tx, tz) in &take {
             slot.dirty.remove(&(tx, tz));
             let (lo, hi) = slot.mesh.tile_input_bounds(tx, tz);
@@ -1396,6 +1458,21 @@ impl Nav {
             return;
         }
         let mut report = TickReport { tick, ..TickReport::default() };
+        // A navmesh limited to a subtree that now resolves to another entity (or none) starts over.
+        for slot in self.meshes.values_mut() {
+            if slot.settings.sources.under.is_some() {
+                let u = under_of(world, &slot.settings.sources);
+                if u != slot.under {
+                    slot.under = u;
+                    let (nx, nz) = slot.mesh.tile_count();
+                    for tz in 0..nz {
+                        for tx in 0..nx {
+                            slot.dirty.insert((tx, tz));
+                        }
+                    }
+                }
+            }
+        }
         let ids: Vec<(u64, usize)> = self.meshes.iter().map(|(k, m)| (*k, m.settings.tiles_per_tick)).collect();
         for (mid, budget) in ids {
             report.tiles_rebuilt += self.rebuild(mid, Some(budget), world);
@@ -1405,7 +1482,7 @@ impl Nav {
         for (id, slot) in minds.iter_mut() {
             let Some(mind) = slot.mind.as_mut() else { continue };
             mind.hz = hz;
-            let mut host = EngineHost { world: &*world, physics, meshes: &self.meshes, link: self.agents.get_mut(id), id: *id };
+            let mut host = EngineHost { world: &*world, physics, meshes: &self.meshes, link: self.agents.get_mut(id), id: *id, node: 0 };
             mind.tick(&mut host, tick);
             report.minds += 1;
         }
@@ -1597,10 +1674,12 @@ impl Nav {
         };
         j.set("id", Json::from(id));
         j.set("path", Json::from(world.path_of(id)));
-        if let Some((d, _)) = slot.def_from {
-            j.set("definition", Json::from(world.path_of(d)));
-        }
-        if let Some(p) = self.problems.get(&id) {
+        match (slot.def_from, &slot.def_path) {
+            (Some((d, _)), _) => j.set("definition", Json::from(world.path_of(d))),
+            (None, Some(p)) => j.set("definition", Json::from(p.as_str())),
+            _ => false,
+        };
+        if let Some(p) = self.mind_problems.get(&id) {
             j.set("problem", p.clone());
         }
         if let Some(a) = self.agent_json(world, id) {
@@ -1651,7 +1730,7 @@ impl Nav {
             ("navmeshes", Json::Arr(meshes)),
             ("agents", Json::from(self.agents.len())),
             ("minds", Json::from(self.minds.len())),
-            ("problems", Json::from(self.problems.len())),
+            ("problems", Json::from(self.problems.len() + self.mind_problems.len())),
             ("hash", Json::from(self.last_hash().map(|h| format!("{h:016x}")))),
             (
                 "last_tick",
@@ -1717,8 +1796,9 @@ pub fn build_now(nav: &mut Nav, world: &World, generation: u64, mesh: u64) -> (u
 pub fn source_bounds(nav: &mut Nav, world: &World, generation: u64, sources: &Sources) -> Option<(Vec3, Vec3)> {
     nav.sync(world, generation);
     let mut out: Option<(Vec3, Vec3)> = None;
+    let under = under_of(world, sources);
     for s in nav.sources.values() {
-        if let Some(src) = s.pick(sources) {
+        if let Some(src) = s.pick(sources, under) {
             out = Some(match out {
                 None => (src.lo, src.hi),
                 Some((a, b)) => (a.min(src.lo), b.max(src.hi)),
@@ -1843,7 +1923,7 @@ mod tests {
         cube(&mut w, "thief", Vec3::new(-6.0, 0.5, -8.0), Vec3::new(0.4, 1.0, 0.4));
         let mut nav = Nav::default();
         build_now(&mut nav, &w, 0, m);
-        assert!(nav.problems.is_empty(), "{:?}", nav.problems);
+        assert!(nav.problems.is_empty() && nav.mind_problems.is_empty(), "{:?} {:?}", nav.problems, nav.mind_problems);
         let mut visited = [false; 2];
         for _ in 0..12 {
             run(&mut nav, &mut w, 25);
@@ -1889,13 +1969,62 @@ mod tests {
     }
 
     #[test]
+    fn a_move_to_that_takes_over_keeps_its_goal() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let def = Json::parse(
+            r#"{"selector": [
+                {"sequence": [{"if": "near", "target": "/thief", "distance": 4}, {"do": "move_to", "target": "/thief"}]},
+                {"do": "patrol", "points": [[4, 0, 4], [4, 0, 7]]}
+            ]}"#,
+        )
+        .unwrap();
+        let g = walker(&mut w, "guard", Vec3::new(4.0, 0.5, 4.0), vec![(MIND_KEY, Json::obj([("def", def)]))]);
+        let thief = cube(&mut w, "thief", Vec3::new(-6.0, 0.5, -8.0), Vec3::new(0.4, 1.0, 0.4));
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        run(&mut nav, &mut w, 30);
+        // The thief comes within 4 m: move_to starts (and patrol is aborted after it).
+        let at = w.get(g).unwrap().world_position();
+        w.update(&EntityKey::Id(thief), UpdateSpec { position: Some(Vec3::new(at.x + 3.0, 0.5, at.z)), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 90);
+        let p = w.get(g).unwrap().world_position();
+        // (The thief's cube carves the navmesh around it: the nearest walkable point is ~0.7 m off.)
+        assert!(horizontal(p, Vec3::new(at.x + 3.0, 0.0, at.z)) < 1.0, "walked to the thief: {p:?} {:?}", nav.agent_json(&w, g));
+    }
+
+    #[test]
+    fn a_mind_waits_for_its_definition() {
+        let mut w = World::default();
+        let id = walker(&mut w, "g", Vec3::ZERO, vec![(MIND_KEY, Json::obj([("def", Json::from("/brain"))]))]);
+        let mut nav = Nav::default();
+        nav.sync(&w, 0);
+        assert!(nav.mind_problems.get(&id).is_some_and(|p| p.to_string().contains("doesn't exist")));
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("brain".into());
+        s.props = Json::obj([(DEF_KEY, Json::parse(r#"{"wait": 5}"#).unwrap())]);
+        let b = w.spawn(s, "t").unwrap().id;
+        nav.sync(&w, 0);
+        assert!(nav.mind_problems.get(&id).is_none(), "{:?}", nav.mind_problems);
+        assert_eq!(nav.mind_json(&w, id, 1024).unwrap().get("definition").and_then(Json::as_str), Some("/brain"));
+        // An invalid edit of the definition is the mind's problem, and an agent relink keeps it.
+        w.update(&EntityKey::Id(b), UpdateSpec { props: Some(Json::obj([(DEF_KEY, Json::parse(r#"{"do": "chace", "target": "/x"}"#).unwrap())])), ..Default::default() }, "t").unwrap();
+        nav.sync(&w, 0);
+        assert!(nav.mind_problems.get(&id).is_some_and(|p| p.to_string().contains("chase")));
+        let m = navmesh(&mut w);
+        nav.sync(&w, 0);
+        assert!(nav.meshes.contains_key(&m) && nav.mind_problems.contains_key(&id), "a navmesh appearing (agents relink) keeps the mind's problem");
+    }
+
+    #[test]
     fn invalid_minds_are_problems_with_diagnostics() {
         let mut w = World::default();
         let def = Json::parse(r#"{"do": "chace", "target": "/x"}"#).unwrap();
         let id = walker(&mut w, "bad", Vec3::ZERO, vec![(MIND_KEY, Json::obj([("def", def)]))]);
         let mut nav = Nav::default();
         nav.sync(&w, 0);
-        let p = nav.problems.get(&id).unwrap().to_string();
+        let p = nav.mind_problems.get(&id).unwrap().to_string();
         assert!(p.contains("did you mean 'chase'"), "{p}");
     }
 

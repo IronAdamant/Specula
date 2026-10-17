@@ -557,6 +557,66 @@ impl NavMesh {
         Some((r, Vec3::new(x, self.height(p, x, z), z)))
     }
 
+    /// A random point within `radius` of `centre` (in X/Z) on the navmesh: a polygon of the tiles
+    /// around it chosen by its area inside the circle's square, then a point in that overlap
+    /// (a few tries to land inside the circle). Bounded by the tiles the square touches.
+    pub fn random_point_near(&self, rng: &mut Rng, centre: Vec3, radius: f32) -> Option<(PolyRef, Vec3)> {
+        let (lo, hi) = (Vec3::new(centre.x - radius, -f32::MAX, centre.z - radius), Vec3::new(centre.x + radius, f32::MAX, centre.z + radius));
+        let mut cands: Vec<(PolyRef, [f32; 4], f32)> = Vec::new();
+        let mut total = 0.0f32;
+        for (tx, tz) in self.tiles_touching(Vec3::new(lo.x, self.config().bounds_min.y, lo.z), Vec3::new(hi.x, self.config().bounds_max.y, hi.z)) {
+            let index = self.tile_index(tx, tz);
+            let Some(tile) = self.tile(index) else { continue };
+            for (k, p) in tile.polys.iter().enumerate() {
+                let r = self.rect(p);
+                let c = [r[0].max(lo.x), r[1].max(lo.z), r[2].min(hi.x), r[3].min(hi.z)];
+                if c[2] <= c[0] || c[3] <= c[1] {
+                    continue;
+                }
+                let a = (c[2] - c[0]) * (c[3] - c[1]);
+                total += a;
+                cands.push((PolyRef::new(index, k), c, total));
+            }
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        for _ in 0..8 {
+            let pick = rng.f32() * total;
+            let i = cands.partition_point(|(_, _, t)| *t < pick).min(cands.len() - 1);
+            let (r, c, _) = cands[i];
+            let x = c[0] + (c[2] - c[0]) * rng.f32();
+            let z = c[1] + (c[3] - c[1]) * rng.f32();
+            let (dx, dz) = (x - centre.x, z - centre.z);
+            if dx * dx + dz * dz <= radius * radius {
+                let p = self.poly(r)?;
+                return Some((r, Vec3::new(x, self.height(p, x, z), z)));
+            }
+        }
+        None
+    }
+
+    /// Every polygon reachable from `start` (a flood over links), sorted; at most `max`.
+    pub fn reachable_from(&self, start: PolyRef, max: usize) -> Vec<PolyRef> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec![start];
+        seen.insert(start);
+        let mut i = 0;
+        while i < queue.len() && seen.len() < max {
+            let Some(p) = self.poly(queue[i]) else {
+                i += 1;
+                continue;
+            };
+            i += 1;
+            for l in &p.links {
+                if seen.len() < max && seen.insert(l.to) {
+                    queue.push(l.to);
+                }
+            }
+        }
+        seen.into_iter().collect()
+    }
+
     /// Length of a corridor's remaining path from `from` to `end` (string-pulled), metres.
     pub fn corridor_length(&self, from: Vec3, end: Vec3, polys: &[PolyRef]) -> f32 {
         self.straighten(from, end, polys, usize::MAX).windows(2).map(|w| dist(w[0], w[1])).sum()
@@ -742,5 +802,15 @@ mod tests {
         }
         let (mut r1, mut r2) = (Rng::new(5, 1), Rng::new(5, 1));
         assert_eq!(a.random_point(&mut r1), b.random_point(&mut r2));
+        // Near a point: within the radius, on the navmesh.
+        let c = Vec3::new(-5.0, 0.0, 3.0);
+        for _ in 0..50 {
+            let (_, p) = a.random_point_near(&mut r1, c, 2.0).unwrap();
+            assert!(horizontal_distance(p, c) <= 2.0 + 1.0e-4, "{p:?}");
+        }
+        // The other side of the wall is reachable (around its end); a sealed box isn't.
+        let (s, _) = a.nearest(Vec3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 2.0, 1.0)).unwrap();
+        let (e, _) = a.nearest(Vec3::new(5.0, 0.0, 0.0), Vec3::new(1.0, 2.0, 1.0)).unwrap();
+        assert!(a.reachable_from(s, usize::MAX).binary_search(&e).is_ok());
     }
 }

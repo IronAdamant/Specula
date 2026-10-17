@@ -56,7 +56,10 @@ pub enum Phase {
 /// What a mind's definition calls into: the game's (or engine's) senses and deeds.
 pub trait Host {
     fn condition(&mut self, name: &str, args: &Json, bb: &Blackboard) -> bool;
-    fn action(&mut self, name: &str, args: &Json, phase: Phase, bb: &mut Blackboard) -> Status;
+    /// `node` is the action's node index in the definition: an [`Phase::Abort`] names the node
+    /// being halted, so a host can tell whether what it undoes still belongs to that node (a
+    /// reactive selector starts its new child before halting the old one).
+    fn action(&mut self, node: usize, name: &str, args: &Json, phase: Phase, bb: &mut Blackboard) -> Status;
     fn input(&mut self, name: &str, args: &Json, bb: &Blackboard) -> f64;
 }
 
@@ -158,7 +161,7 @@ impl Mind {
             self.halt_node(def, c, host);
         }
         if let NodeKind::Action { name, args } = &node.kind {
-            host.action(name, args, Phase::Abort, &mut self.bb);
+            host.action(i, name, args, Phase::Abort, &mut self.bb);
         }
         let keep = self.states[i].last_success;
         self.states[i] = NodeState { last_success: keep, ..NodeState::default() };
@@ -377,7 +380,7 @@ impl Mind {
             }
             NodeKind::Action { name, args } => {
                 let phase = if self.states[i].running { Phase::Continue } else { Phase::Start };
-                host.action(name, args, phase, &mut self.bb)
+                host.action(i, name, args, phase, &mut self.bb)
             }
             NodeKind::Set { key, value } => {
                 if self.bb.len() >= MAX_KEYS && !self.bb.contains_key(key) {
@@ -547,7 +550,7 @@ mod tests {
         fn condition(&mut self, name: &str, _: &Json, _: &Blackboard) -> bool {
             name == "sees" && self.sees
         }
-        fn action(&mut self, name: &str, _: &Json, phase: Phase, _: &mut Blackboard) -> Status {
+        fn action(&mut self, _: usize, name: &str, _: &Json, phase: Phase, _: &mut Blackboard) -> Status {
             self.log.push(format!("{name}:{phase:?}"));
             match phase {
                 Phase::Abort => Status::Failure,

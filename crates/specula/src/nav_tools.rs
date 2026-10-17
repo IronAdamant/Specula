@@ -3,7 +3,9 @@
 //!
 //! - `nav_build` writes a navmesh entity (`/nav/<name>`, journaled, claim-checked, undoable) and
 //!   builds it at once; later world edits rebuild only the tiles they touch, on the fixed tick.
-//! - `nav_path` and `nav_point` query a navmesh; `nav_info` reports navmeshes and agents.
+//! - `nav_path` and `nav_point` query a navmesh; `nav_info` reports navmeshes and agents. Reads
+//!   never apply world changes: they see navigation as of the last tick (or the last write), so
+//!   calling one never changes what the simulation does.
 //! - `nav_agent` makes an entity a nav agent (its `props.nav_agent`), `ai_set` gives it a mind
 //!   (`props.mind`), validated first; `ai_check` validates a definition without writing anything;
 //!   `ai_status` shows what minds are doing and why.
@@ -398,8 +400,8 @@ impl crate::Engine {
                     (Ok(m), Ok(f), Ok(t)) => (m, f, t),
                     (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return world_error(&e),
                 };
-                self.nav.sync(&self.world, self.world_generation);
-                let slot = &self.nav.meshes[&mid];
+                // Reads see the navmesh as of the last tick (edits rebuild tiles on the tick).
+                let Some(slot) = self.nav.meshes.get(&mid) else { return world_error(&WorldError::new("no_navmesh", "that navmesh is gone")) };
                 let ext = Vec3::new(1.0, slot.settings.config.agent_height, 1.0);
                 let started = std::time::Instant::now();
                 let Some(p) = slot.mesh.find_path(from, to, ext, max_nodes) else {
@@ -437,8 +439,7 @@ impl crate::Engine {
                     Ok(a) => a,
                     Err(e) => return world_error(&e),
                 };
-                self.nav.sync(&self.world, self.world_generation);
-                let slot = &self.nav.meshes[&mid];
+                let Some(slot) = self.nav.meshes.get(&mid) else { return world_error(&WorldError::new("no_navmesh", "that navmesh is gone")) };
                 let mut out = Json::obj([("mesh", Json::from(slot.path.as_str()))]);
                 if let Some(a) = at {
                     let h = slot.settings.config.agent_height;
@@ -460,16 +461,15 @@ impl crate::Engine {
                     let mut rng = Rng::new(seed, 0x6e61_7670);
                     let mut points = Vec::new();
                     let mut tries = 0;
-                    while points.len() < random && tries < random * 64 {
+                    while points.len() < random && tries < random * 4 {
                         tries += 1;
-                        let Some((_, p)) = slot.mesh.random_point(&mut rng) else { break };
-                        if let (Some(a), Some(r)) = (at, radius) {
-                            let (dx, dz) = (p.x - a.x, p.z - a.z);
-                            if dx * dx + dz * dz > r * r {
-                                continue;
-                            }
+                        let found = match (at, radius) {
+                            (Some(a), Some(r)) => slot.mesh.random_point_near(&mut rng, a, r),
+                            _ => slot.mesh.random_point(&mut rng),
+                        };
+                        if let Some((_, p)) = found {
+                            points.push(r3(p));
                         }
-                        points.push(r3(p));
                     }
                     out.set("random", Json::Arr(points));
                 }
@@ -511,13 +511,13 @@ impl crate::Engine {
                 }
             }
             NavCall::Info { mesh, agents, after, limit } => {
-                self.nav.sync(&self.world, self.world_generation);
                 let mut out = self.nav.summary_json();
                 if let Some(m) = mesh {
                     match self.nav.find_mesh(Some(&m)) {
                         Ok(mid) => {
-                            let slot = &self.nav.meshes[&mid];
-                            out.set("settings", slot.settings.to_json());
+                            if let Some(slot) = self.nav.meshes.get(&mid) {
+                                out.set("settings", slot.settings.to_json());
+                            }
                         }
                         Err(e) => return world_error(&e),
                     }
@@ -526,6 +526,7 @@ impl crate::Engine {
                     .nav
                     .problems
                     .iter()
+                    .chain(self.nav.mind_problems.iter())
                     .take(32)
                     .map(|(id, p)| Json::obj([("id", Json::from(*id)), ("path", Json::from(self.world.path_of(*id))), ("problem", p.clone())]))
                     .collect();
@@ -620,7 +621,6 @@ impl crate::Engine {
                 }
             }
             NavCall::Status { entity, after, limit } => {
-                self.nav.sync(&self.world, self.world_generation);
                 match entity {
                     Some(k) => match self.world.resolve(&k) {
                         Ok(id) => match self.nav.mind_json(&self.world, id, MAX_STATUS_BYTES / 2) {
@@ -781,7 +781,7 @@ impl crate::Engine {
             return Err(WorldError::new("navmesh_invalid", "the navmesh entity was written but its settings don't build").with("problem", p.clone()).with("journal", Json::from(seq)));
         }
         let (tiles, ms) = nav::build_now(&mut self.nav, &self.world, self.world_generation, id);
-        let slot = &self.nav.meshes[&id];
+        let slot = self.nav.meshes.get(&id).ok_or_else(|| WorldError::new("navmesh_invalid", "the navmesh entity was written but didn't build").with("journal", Json::from(seq)))?;
         let mut out = slot.mesh.summary_json();
         out.set("path", Json::from(path.as_str()));
         out.set("settings", slot.settings.to_json());

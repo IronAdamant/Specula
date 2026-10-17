@@ -522,6 +522,8 @@ struct WorldProbe<'a> {
     mesh: Option<u64>,
     exclude: BTreeSet<u64>,
     boxes: Boxes,
+    /// Polygons reachable from the last `reachable_from` start polygon (one flood per call).
+    flood: Option<(specula_via::PolyRef, Vec<specula_via::PolyRef>)>,
 }
 
 impl Probe for WorldProbe<'_> {
@@ -570,7 +572,12 @@ impl Probe for WorldProbe<'_> {
     fn reachable(&mut self, from: Vec3, to: Vec3) -> bool {
         let Some(slot) = self.mesh.and_then(|m| self.nav.meshes.get(&m)) else { return false };
         let ext = Vec3::new(1.0, slot.settings.config.agent_height, 1.0);
-        slot.mesh.find_path(from, to, ext, 8192).is_some_and(|p| p.complete())
+        let (Some((a, _)), Some((b, _))) = (slot.mesh.nearest(from, ext), slot.mesh.nearest(to, ext)) else { return false };
+        if self.flood.as_ref().is_none_or(|(s, _)| *s != a) {
+            // Bounded by the navmesh's polygons, once per call (not one search per candidate).
+            self.flood = Some((a, slot.mesh.reachable_from(a, usize::MAX)));
+        }
+        self.flood.as_ref().is_some_and(|(_, set)| set.binary_search(&b).is_ok())
     }
 
     fn navmesh_area(&mut self) -> Option<Box3> {
@@ -588,6 +595,44 @@ impl Probe for WorldProbe<'_> {
         }
         out.map(|(lo, hi)| Box3::aligned(lo, hi))
     }
+}
+
+/// The world box a placement can involve: the relations' geometry and the start, grown by the
+/// solver's search ring, the object's size and some room for settling and spacing.
+fn region_of(rels: &[Relation], start: Vec3, lo: Vec3, hi: Vec3, navmesh: Option<Box3>) -> (Vec3, Vec3) {
+    let (mut a, mut b) = (start, start);
+    let mut point = |p: Vec3, grow: f32| {
+        a = a.min(p - Vec3::new(grow, grow, grow));
+        b = b.max(p + Vec3::new(grow, grow, grow));
+    };
+    let boxed = |x: &Box3, grow: f32, point: &mut dyn FnMut(Vec3, f32)| {
+        let (x0, z0, x1, z1) = xz_bounds(x);
+        point(Vec3::new(x0, x.bottom(), z0), grow);
+        point(Vec3::new(x1, x.top(), z1), grow);
+    };
+    for r in rels {
+        match &r.rel {
+            Rel::On { target: Some((x, _)) } | Rel::Inside { region: x, .. } => boxed(x, 0.0, &mut point),
+            Rel::Against { target, gap, .. } => boxed(target, *gap, &mut point),
+            Rel::Near { target, max, .. } => boxed(target, *max, &mut point),
+            Rel::Along { a: p, b: q, offset } => {
+                point(*p, offset.abs());
+                point(*q, offset.abs());
+            }
+            Rel::Between { a: p, b: q, .. } => {
+                point(*p, 0.0);
+                point(*q, 0.0);
+            }
+            Rel::OnNavmesh { .. } => {
+                if let Some(n) = &navmesh {
+                    boxed(n, 0.0, &mut point);
+                }
+            }
+            _ => {}
+        }
+    }
+    let grow = 6.0 + (hi - lo).length();
+    (a - Vec3::new(grow, grow, grow), b + Vec3::new(grow, grow, grow))
 }
 
 fn r3(v: Vec3) -> Json {
@@ -826,9 +871,13 @@ impl crate::Engine {
             Some(k) => Some(self.world.resolve(k).map_err(Err)?),
             None => None,
         };
-        // Queries see this tick's colliders and navmesh.
-        self.physics.sync(&self.world, self.world_generation);
-        self.nav.sync(&self.world, self.world_generation);
+        // A write sees this tick's colliders and navmesh (it is an input at a tick boundary, like
+        // any edit). A dry run applies nothing: it reads physics and navigation as of the last
+        // tick, and checks colliders physics hasn't taken in yet as boxes.
+        if !call.dry_run {
+            self.physics.sync(&self.world, self.world_generation);
+            self.nav.sync(&self.world, self.world_generation);
+        }
         let ((lo, hi), footprint_from) = self.footprint(&call, spawn0.as_ref()).map_err(Err)?;
         let (relations, mesh) = self.resolve_relations(&call.relations, moving).map_err(Err)?;
         let (start, yaw) = match (moving, &spawn0) {
@@ -857,16 +906,27 @@ impl crate::Engine {
             let id = self.world.resolve(k).map_err(Err)?;
             exclude.insert(id);
         }
+        // Drawn entities without colliders near what the call is about.
+        let area = mesh.and_then(|m| self.nav.meshes.get(&m)).map(|s| Box3::aligned(s.settings.config.bounds_min, s.settings.config.bounds_max));
+        let (rlo, rhi) = region_of(&relations, start, lo, hi, area);
         let mut boxes = Vec::new();
         for e in self.world.persistent_entities() {
-            if e.collider.is_some() || !e.shown() || e.in_ui() || e.shape.is_2d() || exclude.contains(&e.id) || e.local_bounds().is_none() {
+            let unsynced = call.dry_run && e.collider.is_some() && !self.physics.space.contains(e.id);
+            if (e.collider.is_some() && !unsynced) || !e.shown() || e.in_ui() || e.shape.is_2d() || exclude.contains(&e.id) || e.local_bounds().is_none() {
                 continue;
             }
             if e.props.get(nav::MESH_KEY).is_some() {
                 continue;
             }
+            let (a, b) = e.world_aabb();
+            if a.x > rhi.x || b.x < rlo.x || a.z > rhi.z || b.z < rlo.z || a.y > rhi.y || b.y < rlo.y {
+                continue;
+            }
             if boxes.len() >= MAX_BOXES {
-                return Err(Err(WorldError::new("budget", format!("more than {MAX_BOXES} drawn entities without colliders to check against: give them colliders, or 'collide': false"))));
+                return Err(Err(WorldError::new(
+                    "budget",
+                    format!("more than {MAX_BOXES} drawn entities without colliders lie around the relations' area: give them colliders (physics checks those), or narrow the relations (a smaller region or target)"),
+                )));
             }
             if let Some(b) = entity_box(&self.world, e.id) {
                 boxes.push((e.id, b));
@@ -884,7 +944,7 @@ impl crate::Engine {
             collide: call.collide,
             seed: call.seed,
         };
-        let mut probe = WorldProbe { physics: &self.physics, nav: &self.nav, mesh, exclude, boxes: Boxes::new(boxes) };
+        let mut probe = WorldProbe { physics: &self.physics, nav: &self.nav, mesh, exclude, boxes: Boxes::new(boxes), flood: None };
         let solution = solve(&req, &mut probe);
         let all_ok = solution.placements.iter().all(|p| p.satisfied);
         let full = solution.placements.len() <= FULL_DETAIL;

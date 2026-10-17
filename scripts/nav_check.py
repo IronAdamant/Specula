@@ -243,6 +243,14 @@ def run(m, failures, label, big):
                    relations=[{"rel": "inside", "region": {"min": [2, 0, -6], "max": [11, 2, 6]}}, {"rel": "on_navmesh", "reachable_from": [-9, 0, -9]},
                               {"rel": "avoid", "tag": "pillar", "distance": 1.5}])
     check(bool(beacon) and beacon["satisfied"], "beacon: on the navmesh, reachable from the west room", failures)
+    # Review regression: an unreachable spot (the table top, a walkable island) is refused quickly
+    # (one flood of the navmesh per call, not a search per candidate).
+    t0 = time.perf_counter()
+    err, unreach = tool(m, "world_place", spawn={"shape": "sphere", "name": "orb", "scale": [0.2, 0.2, 0.2]}, count=4,
+                        relations=[{"rel": "on", "target": "/table"}, {"rel": "on_navmesh", "reachable_from": [-9, 0, -9]}])
+    took = time.perf_counter() - t0
+    check(err and isinstance(unreach, dict) and unreach.get("error") in ("unsatisfied", "no_free_spot") and took < 5.0,
+          f"orbs on the table top, reachable from the west room: refused in {took:.2f} s ({unreach.get('error') if isinstance(unreach, dict) else unreach})", failures)
     # AI: the guard patrols, the thief walks.
     print("AI")
     err, bad = tool(m, "ai_set", **{"path": "/guard", "def": {"root": {"do": "chace", "target": "/thief"}}})
@@ -310,6 +318,14 @@ def run(m, failures, label, big):
     check(drawn_polys > 0 and ov.get("navmesh", {}).get("omitted_polygons") == 0, f"the top capture draws the navmesh ({drawn_polys} polygons)", failures)
     check(len(ov.get("paths", {}).get("agents", [])) >= 9, f"the top capture draws the agents' paths ({len(ov.get('paths', {}).get('agents', []))} agents)", failures)
     check(len(mid.get("overlays", {}).get("paths", {}).get("agents", [])) >= 2, "the patrol capture draws the guard and the thief", failures)
+    # Review regression: a navmesh deleted between ticks, then queried, never takes the engine down.
+    m.json("nav_build", name="temp")
+    m.json("world_delete", path="/nav/temp")
+    err, gone = tool(m, "nav_path", mesh="temp", **{"from": [-8, 0, -4], "to": [8, 0, 4]})
+    m.json("time_control", action="step", ticks=1)
+    err2, gone2 = tool(m, "nav_path", mesh="temp", **{"from": [-8, 0, -4], "to": [8, 0, 4]})
+    check(not tool(m, "engine_info")[0] and err2 and "no_navmesh" in json.dumps(gone2),
+          "a deleted navmesh: queries answer from the last tick, then 'no_navmesh'; the engine lives", failures)
     # Determinism and journal.
     hashes = m.json("world_hash", recent=1, verify=True)
     check(hashes["verify"]["matches"], "the journal replays the world exactly (nav writes included)", failures)

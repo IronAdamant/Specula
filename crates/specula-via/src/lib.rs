@@ -163,13 +163,35 @@ impl Config {
             .with("field", "cell_size")
             .with("columns", columns));
         }
+        // Each tile is built with an erosion border of radius + 3 columns on every side: keep it
+        // no wider than the tile, and the whole build's columns bounded.
+        if d.border > self.tile_cells {
+            return Err(NavError::new(
+                "budget",
+                format!(
+                    "agent_radius {} m is {} columns at this cell_size; tiles need at least radius + 3 = {} columns (tile_cells is {}): raise tile_cells or cell_size",
+                    self.agent_radius, d.radius_cells, d.border, self.tile_cells
+                ),
+            )
+            .with("field", "tile_cells"));
+        }
         let tiles = d.tiles_x as usize * d.tiles_z as usize;
+        let side = u64::from(self.tile_cells + 2 * d.border);
+        if tiles as u64 * side * side > 4 * MAX_COLUMNS {
+            return Err(NavError::new("budget", format!("building {tiles} tiles of {side} x {side} columns (with their borders) is too much work: raise cell_size or tile_cells"))
+                .with("field", "cell_size"));
+        }
         if tiles > MAX_TILES {
             return Err(NavError::new("budget", format!("{} x {} tiles is more than {MAX_TILES}: raise tile_cells", d.tiles_x, d.tiles_z))
                 .with("field", "tile_cells")
                 .with("tiles", tiles));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn huge_border() -> Config {
+        Config { cell_size: 0.02, tile_cells: 8, agent_radius: 2.0, bounds_min: Vec3::new(0.0, 0.0, 0.0), bounds_max: Vec3::new(10.24, 4.0, 10.24), ..Config::default() }
     }
 
     pub fn to_json(&self) -> Json {
@@ -184,6 +206,19 @@ impl Config {
             ("tile_cells", Json::from(self.tile_cells)),
             ("bounds", Json::obj([("min", v(self.bounds_min)), ("max", v(self.bounds_max))])),
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borders_wider_than_tiles_are_refused() {
+        let e = Config::huge_border().validate().unwrap_err();
+        assert_eq!((e.code, e.details[0].1.as_str()), ("budget", Some("tile_cells")), "{e:?}");
+        assert!(Config { tile_cells: 128, ..Config::huge_border() }.validate().is_ok());
+        assert!(Config::default().validate().is_ok());
     }
 }
 

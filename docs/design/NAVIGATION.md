@@ -226,7 +226,8 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
 - `remaining` is exact over the next three corners and a straight line past them (exact on the last stretch, where
   arrival slows the agent).
 - Neighbours come from agents sorted by grid cell (rows contiguous); avoidance reads a snapshot, so agents never see
-  each other's half-updated state; overlap push-apart uses the same grid. A step allocates nothing once warm.
+  each other's half-updated state; overlap push-apart uses the same grid. A step's containers are reused between
+  steps (only the funnel's two small lists per moving agent are allocated).
 
 **Engine.**
 - Sources: as designed, plus *amendment: whatever is below something that moves on its own* (a nav agent, a dynamic
@@ -234,7 +235,19 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   carve a hole where it stood. When an entity starts or stops moving on its own, its subtree is looked at again.
 - Agents and minds are re-read only when their `props` change (versions change at every write-back).
 - Navmesh changes rebuild everything (a new grid) and re-link agents; edits mark the tiles their old and new bounds
-  touch (plus the erosion border); `tiles_per_tick` (default 8) of them rebuild per tick.
+  touch (plus the erosion border); `tiles_per_tick` (default 8) of them rebuild per tick. `sources.under` matches
+  by entity id up the parent chain; when the path comes to name another entity (or none), every tile rebuilds.
+- Read tools (`nav_path`, `nav_point`, `nav_info`, `ai_status`, a `world_place` dry run) never apply world changes:
+  they see navigation as of the last tick or write, so calling them can't change what the simulation does. Write
+  tools (`nav_build`, `nav_agent`, `ai_set`, `world_place`) bring it up to date first, as inputs at a tick boundary.
+- Configs whose erosion border (radius + 3 columns) is wider than a tile, or whose tiles with borders add up to more
+  than 4 x 16 M columns, are refused (`budget`, naming the field to change).
+- A mind's abort clears only the goal its own action node set (a reactive selector starts the new child before
+  halting the old one); `Host::action` receives the node index for this.
+- Mind problems are kept apart from agent problems; a mind whose definition path doesn't exist yet loads when an
+  entity with `props.mind_def` appears there.
+- `wander` and `nav_point {random, radius}` sample the polygons of the tiles around the point, not the whole
+  navmesh; `world_place`'s `reachable_from` floods the navmesh once per call instead of searching per candidate.
 - Write-back: crowd-moved agents get position (and, at the top level, yaw from their velocity or a `face` action);
   physics characters get `body.velocity` (x, z; the vertical part kept) and physics walks them. Journal kind `nav`.
 - `world_hash` reports `nav` (navmeshes, crowds, minds, agents' runtime goals); the desync trace carries a `nav`
