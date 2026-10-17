@@ -73,7 +73,10 @@ pub struct Settings {
     /// caps, so presentation can never crowd out the simulation.
     pub max_cosmetic_bodies: usize,
     pub max_cosmetic_pairs: usize,
-    /// Threads the narrowphase may use (1: the calling thread only). Results never depend on it.
+    /// Threads the narrowphase may use (default 1: the calling thread only). Results never
+    /// depend on it. More helps on idle cores (about a quarter off a 1,000-body narrowphase),
+    /// but threads started each step can wait long for a busy machine to schedule them (a
+    /// loaded 24-core machine saw 50 ms steps), so it is opt-in.
     pub threads: usize,
 }
 
@@ -101,7 +104,7 @@ impl Default for Settings {
             max_joints: 16_384,
             max_cosmetic_bodies: 4_096,
             max_cosmetic_pairs: 16_384,
-            threads: 4,
+            threads: 1,
         }
     }
 }

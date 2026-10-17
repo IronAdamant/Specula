@@ -206,10 +206,27 @@ only agent input. Modules never see keys (F6).
 
 `Cx::move_character(id, motion)` moves a character entity by a displacement (gravity included) and returns
 `{position, grounded, blocked}`. Behind it is the engine's `CharacterMover` trait
-(`crates/specula/src/logic/character.rs`). Today's implementation, `Kinematic`, is a **placeholder**: a vertical capsule
-(the entity's capsule collider, feet at its origin) against the world-space boxes of other entities' colliders; it lands
-on tops (stepping up to 0.35 m), stops at sides and slides along them, with no slopes or ceilings. The physics lane's
-P2 controller replaces it with `LogicHost::set_mover` and no module changes.
+(`crates/specula/src/logic/character.rs`). The engine sets the **physics P2 controller**
+(`crates/specula/src/physics/mover.rs`, `PhysicsMover`, through `LogicHost::set_mover`; `logic_status` names it):
+sweep and slide, steps, the slope limit, snapping down stairs, moving platforms and pushing dynamic bodies, with no
+module changes. How it fits the host:
+
+- **The space is lent, not shared.** The engine owns its physics by value; around module calls (ticks, loads,
+  hooks) it moves it into the mover (`Engine::lend_physics`) and takes it back after (`return_physics`). Each move
+  first syncs the space with the world, so what the module did earlier in the tick is there.
+- **Rollback-safe.** A failed call rolls the world back but not the space, so a move never changes the space: the
+  controller *plans* it (`Space::plan_character`) from what is underfoot now (`Space::character_ground`: it keeps no
+  memory of its own) and the result is written as world changes: the character's position, and the velocity changes
+  of the dynamic bodies it pushed (as `physics_impulse` writes them). A rolled-back call takes all of it with it.
+- **Displacement in, velocity inside.** The SDK's motion includes gravity (modules own their vertical speed), so the
+  adapter turns it into a velocity for one tick and runs the controller with its gravity off. The character is the
+  entity's own convex collider, else a 0.3 × 1.8 m capsule on its origin; `body.character` tunes the controller when
+  the entity has one.
+- The old `Kinematic` box-scan controller is the fallback when no space is lent (unit tests of the host).
+
+Proof: `physics::mover` tests walk a module (Ambulo's walk) up three steps onto a landing and down a 20° ramp, stop it
+against a wall, repeat runs bit for bit, and show a rolled-back call leaves neither the move nor its pushes behind;
+`scripts/module_reload.py` still passes with the physics controller.
 
 ## Native hooks: the Lex escape hatch
 

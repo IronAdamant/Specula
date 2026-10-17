@@ -1801,6 +1801,9 @@ mod tests {
         settings.sleep = false;
         let mut p = Physics::default();
         p.space.settings = space_settings(&settings, 60);
+        if let Some(t) = std::env::var("SPECULA_PHYSICS_THREADS").ok().and_then(|t| t.parse().ok()) {
+            p.space.settings.threads = t;
+        }
         let (mut sync, mut step, mut back, mut changes, mut space_stages, mut world_hash) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let mut j = Journal::default();
         let n = 120u64;
