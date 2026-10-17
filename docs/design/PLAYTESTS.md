@@ -94,7 +94,9 @@ replayed, captures) and two engine-only playtests (a crate settling under physic
 Result (2026-10-18, RTX 4090 laptop, a machine shared with other sessions): **26 of 26 passed, 26 replays verified by
 hash in separate fresh engines**. On the lane as merged with Lex (`perf/playtests/20261018-053843-sepulcra-suite.json`)
 the suite took 46.2 s wall with 8 engines in parallel against 313.9 s with one, 6.8 times faster. An earlier run before
-that merge (`20261018-045650`) took 58.6 s against 241.9 s, 4.1 times faster. Load from other sessions moves both
+that merge (`20261018-045650`) took 58.6 s against 241.9 s, 4.1 times faster. After review round 1, on main
+`715e55f` (`20261018-064836`), it was again 26 of 26 passed and verified, with the negative control diverging, in
+75.9 s against 491.2 s (6.5 times faster) on a busier machine. Load from other sessions moves both
 figures. A replay recorded in a **windowed engine on the Intel iGPU** also verifies in a headless engine on the
 discrete GPU, with the same end hash as a headless run (`af131660c03bdebc`, centre layout, seed 7). With the window
 open, the playtest ran at about 8,400 ticks a second and the window's frame median stayed at 10.5-11.5 ms. The negative control (the centre seed-7 replay with its seed

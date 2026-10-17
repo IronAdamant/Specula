@@ -238,7 +238,8 @@ def main():
     finally:
         if proc.poll() is None:
             stop(proc, log, log_path, 1)
-    files = sorted(p.name for p in (args.out / "worlds" / "e2e").iterdir())
+    # board.json is the task board, saved beside the world since the swarm-comms lane.
+    files = sorted(p.name for p in (args.out / "worlds" / "e2e").iterdir() if p.name != "board.json")
     print(f"run 1: {total1} entities, state {info1['world']['state_hash']}, files {files}")
     # The shutdown autosave only touched /pawn (in world.json): the slab subtree keeps generation 2.
     assert files == ["slab.2.json", "world.json"], files
