@@ -114,7 +114,9 @@ impl EditOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Versions {
     pub set: u64,
-    pub items: BTreeMap<String, u64>,
+    /// Item name → (entity id, version): the id catches an item deleted and put again (a new
+    /// entity that restarts at version 1).
+    pub items: BTreeMap<String, (u64, u64)>,
 }
 
 /// A validated edit for the main thread to write.
@@ -128,6 +130,19 @@ pub struct Commit {
     /// New or changed items (`true`: new).
     pub puts: Vec<(String, Json, bool)>,
     pub deletes: Vec<String>,
+}
+
+/// Per-set edit locks: edits through the tools queue per set instead of racing (and failing
+/// with `set_changed`); the main thread never waits on them. Writes that bypass `lex_edit`
+/// (`world_set`, `world_undo`) are still caught by the commit's version check.
+#[derive(Default)]
+pub struct Locks(Mutex<BTreeMap<String, Arc<Mutex<()>>>>);
+
+impl Locks {
+    fn for_set(&self, set: &str) -> Arc<Mutex<()>> {
+        let mut m = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(m.entry(set.to_owned()).or_default())
+    }
 }
 
 /// Saved simulation sessions (`lex_simulate {save_as}`), shared by all agents.
@@ -167,7 +182,7 @@ fn set_entity(world: &World, set: &str) -> Option<u64> {
 /// The set's versions, without copying any item.
 fn versions(world: &World, set: &str) -> Option<Versions> {
     let id = set_entity(world, set)?;
-    let items = world.children_of(Some(id)).filter_map(|c| world.get(c)).map(|e| (e.name.clone(), e.version)).collect();
+    let items = world.children_of(Some(id)).filter_map(|c| world.get(c)).map(|e| (e.name.clone(), (e.id, e.version))).collect();
     Some(Versions { set: world.get(id)?.version, items })
 }
 
@@ -184,7 +199,7 @@ fn snapshot_json(world: &World, set: &str, only: Option<&[String]>) -> Json {
             continue;
         }
         let item = ch.props.get("lex").cloned().unwrap_or(Json::Null);
-        items.push(Json::obj([("id", Json::from(ch.name.as_str())), ("version", Json::from(ch.version)), ("item", item)]));
+        items.push(Json::obj([("id", Json::from(ch.name.as_str())), ("version", Json::from(ch.version)), ("eid", Json::from(ch.id)), ("item", item)]));
     }
     let mut out = vec![("set", Json::from(set)), ("exists", Json::Bool(true)), ("header", header), ("set_version", Json::from(e.version)), ("items", Json::Arr(items))];
     if only.is_some() {
@@ -292,7 +307,7 @@ fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer,
         )),
         (Some(_), None) => {}
     }
-    let base_version = |id: &str| c.base.as_ref().and_then(|b| b.items.get(id).copied());
+    let base_version = |id: &str| c.base.as_ref().and_then(|b| b.items.get(id)).map(|(_, v)| *v);
     for (id, item, new) in &c.puts {
         if *new {
             let mut s = SpawnSpec::new(Shape::Group);
@@ -314,7 +329,7 @@ fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer,
     match swarm.commit(world, tick, w, Kind::Batch, apply) {
         Ok((_, seq)) => {
             let v = versions(world, &c.set).map(|v| v.items).unwrap_or_default();
-            let touched: Vec<(String, Json)> = c.puts.iter().map(|(id, _, _)| (id.clone(), Json::from(v.get(id).copied()))).collect();
+            let touched: Vec<(String, Json)> = c.puts.iter().map(|(id, _, _)| (id.clone(), Json::from(v.get(id).map(|(_, ver)| *ver)))).collect();
             ToolOutput::text(Json::obj([("journal", Json::from(seq)), ("versions", Json::Obj(touched))]).to_string())
         }
         Err(we) => {
@@ -429,12 +444,15 @@ fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
         let exists = snap.get("exists") == Some(&Json::Bool(true));
         let mut before = BTreeMap::new();
         let mut item_versions = BTreeMap::new();
+        let mut base_items = BTreeMap::new();
         for it in snap.get("items").and_then(Json::as_array).unwrap_or_default() {
             let id = it.get("id").and_then(Json::as_str).unwrap_or("").to_owned();
-            item_versions.insert(id.clone(), it.get("version").and_then(Json::as_u64).unwrap_or(0));
+            let version = it.get("version").and_then(Json::as_u64).unwrap_or(0);
+            item_versions.insert(id.clone(), version);
+            base_items.insert(id.clone(), (it.get("eid").and_then(Json::as_u64).unwrap_or(0), version));
             before.insert(id, it.get("item").cloned().unwrap_or(Json::Null));
         }
-        let base = exists.then(|| Versions { set: snap.get("set_version").and_then(Json::as_u64).unwrap_or(0), items: item_versions.clone() });
+        let base = exists.then(|| Versions { set: snap.get("set_version").and_then(Json::as_u64).unwrap_or(0), items: base_items });
         let old_header = header_of(snap.get("header"), &e.set);
         let mut header = old_header.clone();
         if let Some(n) = &e.header.name {
@@ -1051,6 +1069,8 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     let set = set_arg(args, true)?.expect("required");
     let ops = parse_ops(args)?;
     let e = Edit { set, header: header_args(args)?, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace: false, tool: "lex_edit" };
+    let lock = tools.lex_locks.for_set(&e.set);
+    let _held = lock.lock().unwrap_or_else(|p| p.into_inner());
     Ok(edit_in(&mut EngineStore { tools, session }, &e))
 }
 
@@ -1069,6 +1089,8 @@ fn import_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Tool
     let header = Header { name: Some(doc.name.clone()).filter(|n| !n.is_empty()), tick_hz: Some(doc.tick_hz), notes: Some(doc.notes.clone()) };
     let replace = crate::tools::bool_arg(args, "replace")?.unwrap_or(true);
     let e = Edit { set, header, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace, tool: "lex_import" };
+    let lock = tools.lex_locks.for_set(&e.set);
+    let _held = lock.lock().unwrap_or_else(|p| p.into_inner());
     Ok(edit_in(&mut EngineStore { tools, session }, &e))
 }
 
@@ -1597,6 +1619,21 @@ mod tests {
         let out = edit_in(&mut TestStore { w: &mut w, sw: &mut sw, who: ANN, interfere: true }, &e);
         assert!(!out.is_error, "{}", output_json(&out));
         assert_eq!(ids(&w, "rules"), ["gems", "gold", "intruder"]);
+    }
+
+    #[test]
+    fn an_item_deleted_and_put_again_is_a_change() {
+        let (mut w, mut sw) = setup();
+        go(&mut w, &mut sw, ANN, edit_of("rules", vec![put("x", r#"{"kind": "resource", "start": 1}"#)]));
+        let stale = versions(&w, "rules");
+        // Bob deletes x and puts a different x: it restarts at version 1, as a new entity.
+        go(&mut w, &mut sw, BOB, edit_of("rules", vec![EditOp::Delete { id: "x".into(), expect: None }]));
+        go(&mut w, &mut sw, BOB, edit_of("rules", vec![put("x", r#"{"kind": "resource", "start": 2}"#)]));
+        assert_eq!(item(&w, "rules", "x").map(|(v, _)| v), Some(1));
+        let late = Commit { set: "rules".into(), base: stale, header: None, puts: vec![("x".into(), Json::parse(r#"{"kind": "resource", "start": 9}"#).unwrap(), false)], deletes: vec![] };
+        let out = handle(LexCall::Commit(late), &mut w, &mut sw, 0, ANN, "ann");
+        assert_eq!(output_json(&out).get("error").and_then(Json::as_str), Some("set_changed"), "the id gives the old snapshot away");
+        assert_eq!(item(&w, "rules", "x").and_then(|(_, j)| j.get("start").and_then(Json::as_i64)), Some(2), "Bob's x survives");
     }
 
     #[test]

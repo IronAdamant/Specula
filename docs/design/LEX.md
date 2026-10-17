@@ -224,8 +224,9 @@ as data when it bites:
 | Live entities | 100,000 | the spawn fails (`entity_limit`) |
 | Spawns per action | 10,000 | clamped |
 | Spawns one wave schedules | 100,000 | compile error (`too_many`) |
+| Spawns waiting in the wave queue | 200,000 | a wave that would pass it starts without its groups (`spawn_limit`) |
 | Nested action lists (on_spawn spawning itself, on_apply reapplying, on_enter re-entering) | 32 | that list stops (`recursion_limit`) |
-| Entity checks per tick (attack scans, splash, chase, `count`, `occupied`) | 5,000,000 | the tick's remaining behaviours are skipped (`work_limit`) |
+| Work per tick: actions run plus entity checks (attack scans, splash, chase, `count`, `occupied`) | 5,000,000 | the rest of the tick's behaviours, rules and effects are skipped and `count` / `occupied` stop (`work_limit`) |
 | Events kept and dispatched per tick | 100,000 | counted only (`event_overflow`) |
 | Expression length / nesting | 1,000 characters / 64 levels | compile error (`too_many`) |
 | Coordinates | ±10⁹ m | compile error (`out_of_range`) |
@@ -292,10 +293,13 @@ The world hash covers the rule sets, so a replay that changes the rules diverges
 **Threads.** The main thread only reads (snapshots, pages of summaries) and writes (one atomic batch through the
 claims and the journal). Everything costly runs on the calling agent's protocol thread: an edit takes a snapshot,
 applies its ops, validates the set before and after (uncapped, so a set with hundreds of errors can still be fixed
-one at a time), and sends a commit that carries the versions it validated against; if another agent changed the
-set meanwhile, the commit is refused and the edit is redone on the new state (four tries, then `busy`, with the
-fix: claim the set first). Measured on a 2,000-archetype set in a debug build: an edit takes about 0.3 s on its
-own thread while `world_list` from another agent answers in 8 ms (median, 42 ms worst).
+one at a time), and sends a commit that carries the entity id and version of every item it validated against.
+Edits to one set queue behind a per-set lock (held on protocol threads only, never by the main thread), so agents
+editing different items of a set don't fail each other: 8 agents × 5 edits to their own items of a 500-item set
+all succeed. If something outside `lex_edit` changed the set meanwhile (`world_set`, `world_undo`), or an item
+was deleted and put again (a new entity, caught by its id), the commit is refused and the edit is redone on the
+new state (four tries, then `busy`). Measured on a 2,000-archetype set in a debug build: an edit takes about
+0.3 s on its own thread while `world_list` from another agent answers in 8 ms (median, 42 ms worst).
 
 **Damaged sets.** A set changed outside `lex_edit` (an item with an invalid id, a broken header) still lists,
 validates (its load problems lead the diagnostics) and edits (a badly named item can be deleted); `lex_simulate`

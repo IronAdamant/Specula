@@ -276,6 +276,8 @@ pub struct Tools {
     game_tools: Vec<ToolDef>,
     /// Saved `lex_simulate` runs.
     pub(crate) lex_runs: crate::lex_tools::Runs,
+    /// One `lex_edit` per rule set at a time (held on protocol threads only).
+    pub(crate) lex_locks: crate::lex_tools::Locks,
 }
 
 impl Tools {
@@ -287,7 +289,7 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools, lex_runs: Default::default() }
+        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default() }
     }
 
     /// Sends a command to the main thread and waits for its answer.

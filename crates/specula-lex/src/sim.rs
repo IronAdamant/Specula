@@ -23,6 +23,8 @@ pub const MAX_ACTION_DEPTH: u32 = 32;
 /// Entity checks (eligibility, splash, chase, count) per tick before the tick's remaining
 /// behaviours are skipped (`work_limit`): a deterministic cap on one tick's cost.
 pub const MAX_WORK_PER_TICK: u64 = 5_000_000;
+/// Most spawns waiting in the wave queue at once (a wave that would pass it isn't scheduled).
+pub const MAX_PENDING_SPAWNS: usize = 200_000;
 /// Most entities one spawn action creates.
 pub const MAX_SPAWN_COUNT: i64 = 10_000;
 /// Most live entities; spawns beyond it are refused (`entity_limit`).
@@ -374,7 +376,23 @@ impl Sim {
 
     /// Applies a command now (before the tick's phases). Atomic: a refused or failing command
     /// changes nothing.
+    ///
+    /// Called between steps, it starts a fresh event list and work budget (like a step does);
+    /// `events()` then shows the command's events.
     pub fn apply(&mut self, call: &CommandCall) -> Result<(), Rejection> {
+        self.begin();
+        self.command(call)
+    }
+
+    /// Resets the per-tick event list, dispatch count and work budget.
+    fn begin(&mut self) {
+        self.st.events.clear();
+        self.st.dispatched = 0;
+        self.st.dropped = 0;
+        self.st.work = 0;
+    }
+
+    fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
         let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
         c.command(call)
     }
@@ -383,13 +401,10 @@ impl Sim {
     /// one tick. Phases: waves, spawns, timers, spawners, movement, attacks, projectiles,
     /// effects and machines, cleanup; events reach rules after each phase.
     pub fn step(&mut self, commands: &[CommandCall]) -> Vec<(usize, Rejection)> {
-        self.st.events.clear();
-        self.st.dispatched = 0;
-        self.st.dropped = 0;
-        self.st.work = 0;
+        self.begin();
         let mut refused = Vec::new();
         for (i, c) in commands.iter().enumerate() {
-            if let Err(e) = self.apply(c) {
+            if let Err(e) = self.command(c) {
                 refused.push((i, e));
             }
         }
@@ -703,7 +718,9 @@ impl Core<'_> {
                 Val::Bool(id.and_then(|id| idx_of(self.st, id)).is_some_and(|i| has_tag(self.r, self.st, &self.st.ents[i], *t)))
             }
             Ex::Count(t) => {
-                self.spend(self.st.ents.len());
+                if self.spend(self.st.ents.len()) {
+                    return Err(rt("work_limit", "count() skipped: the tick's work budget is spent"));
+                }
                 Val::Int(self.st.ents.iter().filter(|e| e.alive && has_tag(self.r, self.st, e, *t)).count() as i64)
             }
             Ex::Dist(a, b) => {
@@ -713,7 +730,9 @@ impl Core<'_> {
             }
             Ex::Occupied(s, t) => {
                 let Val::Site(site) = self.eval(s, f)? else { return Err(rt("no_site", "the site is none")) };
-                self.spend(self.st.ents.len());
+                if self.spend(self.st.ents.len()) {
+                    return Err(rt("work_limit", "occupied() skipped: the tick's work budget is spent"));
+                }
                 Val::Bool(self.st.ents.iter().any(|e| e.alive && e.site == Some(site) && has_tag(self.r, self.st, e, *t)))
             }
             Ex::Rand(s, lo, hi) => {
@@ -858,21 +877,49 @@ impl Core<'_> {
             let m = format!("wave {number} on_start: {}", e.message);
             self.note(e.code, &m);
         }
+        let total: usize = def.groups.iter().map(|g| g.count as usize).sum();
+        if self.st.pending.len().saturating_add(total) > MAX_PENDING_SPAWNS {
+            self.note("spawn_limit", &format!("wave {number} would queue {total} spawns on top of {} pending (most {MAX_PENDING_SPAWNS}); its groups were skipped", self.st.pending.len()));
+        } else {
+            self.schedule_wave(w, number);
+        }
+        self.st.next_wave_tick = def.duration.filter(|_| w + 1 < waves.waves.len()).map(|d| self.st.tick.saturating_add(d));
+        Ok(())
+    }
+
+    /// Queues every spawn of wave `w`, keeping `pending` sorted latest first (merged, not
+    /// re-sorted, so starting many waves stays linear).
+    fn schedule_wave(&mut self, w: usize, number: u16) {
+        let waves = self.r.waves.as_ref().expect("scheduling a wave");
+        let def = &waves.waves[w];
         self.st.wave_stats[w].started_at = Some(self.st.tick);
+        let mut fresh = Vec::new();
         for g in &def.groups {
             for k in 0..g.count {
                 let pick = self.st.rngs[usize::from(waves.stream)].below(g.at.len() as u32) as usize;
                 let tick = self.st.tick.saturating_add(g.start).saturating_add(k.saturating_mul(g.every));
                 let seq = self.st.next_seq;
                 self.st.next_seq = self.st.next_seq.saturating_add(1);
-                self.st.pending.push(Pending { tick, seq, arch: g.arch, wave: number, at: g.at[pick] });
+                fresh.push(Pending { tick, seq, arch: g.arch, wave: number, at: g.at[pick] });
                 self.st.wave_stats[w].pending = self.st.wave_stats[w].pending.saturating_add(1);
             }
         }
         // Latest first, so the next spawn is always at the back.
-        self.st.pending.sort_by_key(|p| std::cmp::Reverse((p.tick, p.seq)));
-        self.st.next_wave_tick = def.duration.filter(|_| w + 1 < waves.waves.len()).map(|d| self.st.tick.saturating_add(d));
-        Ok(())
+        let key = |p: &Pending| std::cmp::Reverse((p.tick, p.seq));
+        fresh.sort_by_key(key);
+        let old = std::mem::take(&mut self.st.pending);
+        let mut merged = Vec::with_capacity(old.len() + fresh.len());
+        let (mut a, mut b) = (old.into_iter().peekable(), fresh.into_iter().peekable());
+        while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+            if key(x) <= key(y) {
+                merged.push(a.next().expect("peeked"));
+            } else {
+                merged.push(b.next().expect("peeked"));
+            }
+        }
+        merged.extend(a);
+        merged.extend(b);
+        self.st.pending = merged;
     }
 
     fn phase_spawns(&mut self) {
@@ -1354,6 +1401,9 @@ impl Core<'_> {
         }
         let n = self.st.ents.len();
         for i in 0..n {
+            if self.over_budget() {
+                return;
+            }
             if !self.st.ents[i].alive {
                 continue;
             }
@@ -1481,6 +1531,11 @@ impl Core<'_> {
     /// Delivers queued events to rules and `on` transitions, oldest first.
     fn dispatch(&mut self) {
         while !self.st.queue.is_empty() {
+            if self.over_budget() {
+                // The budget note was made when it ran out; the queued events are dropped.
+                self.st.queue.clear();
+                return;
+            }
             let batch = std::mem::take(&mut self.st.queue);
             for e in batch {
                 self.st.dispatched += 1;
@@ -1872,6 +1927,9 @@ impl Core<'_> {
     fn actions(&mut self, acts: &[Action], f: &Frame) -> Result<(), RtErr> {
         if acts.is_empty() {
             return Ok(());
+        }
+        if self.spend(acts.len()) {
+            return Err(rt("work_limit", "the tick's work budget is spent; this action list was stopped"));
         }
         if self.depth >= MAX_ACTION_DEPTH {
             return Err(rt(

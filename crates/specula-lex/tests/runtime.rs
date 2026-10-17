@@ -423,6 +423,51 @@ fn self_feeding_rules_are_cut_off_not_fatal() {
 }
 
 #[test]
+fn branching_recursion_and_entity_scans_stay_within_the_budget() {
+    // on_enter re-enters its state twice: 2^32 actions if only depth stopped it.
+    let fan = r#"
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0]}},
+        "m": {"kind": "machine", "initial": "s", "states": {"s": {"on_enter": [{"goto": "s"}, {"goto": "s"}]}}},
+        "x": {"kind": "archetype", "machine": "m"},
+        "go": {"kind": "timer", "do": [{"spawn": "x", "at": "a"}]}
+    "#;
+    let mut s = sim(fan, 1);
+    s.step(&[]);
+    s.step(&[]);
+    assert!(s.state().diag.counts.contains_key("work_limit"), "{:?}", s.state().diag);
+    // 3000 entities each counting all of them every tick: 9 million checks.
+    let scan = r#"
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0]}},
+        "m": {"kind": "machine", "initial": "s", "states": {"s": {"transitions": [{"to": "s", "when": "count(x) > 1000000"}]}}},
+        "y": {"kind": "archetype", "tags": ["x"], "machine": "m"},
+        "go": {"kind": "timer", "do": [{"spawn": "y", "at": "a", "count": 3000}]}
+    "#;
+    let mut s = sim(scan, 1);
+    s.step(&[]);
+    assert!(s.state().diag.counts.contains_key("work_limit"), "{:?}", s.state().diag);
+}
+
+#[test]
+fn chained_waves_cannot_queue_without_bound() {
+    // Every wave starts the next at once: 3 x 100,000 spawns would queue in one tick.
+    let items = r#"
+        "foe": {"kind": "archetype"},
+        "lane": {"kind": "path", "points": [[0,0,0],[1,0,0]]},
+        "chain": {"kind": "rule", "on": "wave_started", "do": [{"next_wave": true}]},
+        "waves": {"kind": "waves", "start": "0s", "waves": [
+            {"duration": "1000s", "groups": [{"archetype": "foe", "count": 100000, "at": ["lane"], "start": "100s"}]},
+            {"duration": "1000s", "groups": [{"archetype": "foe", "count": 100000, "at": ["lane"], "start": "100s"}]},
+            {"groups": [{"archetype": "foe", "count": 100000, "at": ["lane"], "start": "100s"}]}]}
+    "#;
+    let mut s = sim(items, 1);
+    s.step(&[]);
+    assert_eq!(s.state().wave, 3, "all three started");
+    assert!(s.state().diag.counts.contains_key("spawn_limit"), "{:?}", s.state().diag);
+    let pending: u32 = s.state().wave_stats.iter().map(|w| w.pending).sum();
+    assert!(pending as usize <= specula_lex::sim::MAX_PENDING_SPAWNS, "{pending}");
+}
+
+#[test]
 fn one_tick_has_bounded_events_and_work() {
     // 2000 pulse towers over 2000 targets: 4 million hits and 8 million checks a tick, unless capped.
     let items = r#"
