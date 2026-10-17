@@ -410,7 +410,7 @@ impl Engine {
     pub(crate) fn stream_tick(&mut self, window: Option<(Camera, u32, u32)>) {
         self.stream.set_window(window);
         let generation = self.world_generation;
-        self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation);
+        self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation, true);
     }
 
     /// Before a capture: its views become stream sources and their uploads start now.
@@ -422,7 +422,7 @@ impl Engine {
             self.stream.capture_source(*c, *w, *h);
         }
         let generation = self.world_generation;
-        self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation);
+        self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation, false);
         self.stream.waiting_in(views, &self.world, &self.models)
     }
 }

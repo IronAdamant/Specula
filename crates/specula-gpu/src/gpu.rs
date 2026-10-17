@@ -791,6 +791,8 @@ impl GpuInner {
     }
 
     pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
+        // A queued texture whose copy may not have run yet: finish the batches first.
+        self.settle_upload_of(texture.0);
         let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Texture, texture.0, ""))?;
         if t.levels > 1 {
             return Err(GpuError::new(format!(

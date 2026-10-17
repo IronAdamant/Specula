@@ -155,8 +155,13 @@ fn large_and_many_batches_stay_correct() {
         let draws: Vec<DrawItem> =
             meshes.iter().enumerate().map(|(i, m)| DrawItem::new(*m, scale_translation(0.3, [i as f32 * 0.6 - 1.5, 0.0, 0.0]), [1.0; 4])).collect();
         let image = render(&mut gpu, target, &draws);
-        let lit = image.chunks(4).filter(|p| p[0] > 40).count();
-        assert!(lit > 200, "{test}: every cube drew ({lit} px)");
+        // Each cube's own columns (camera 6 m away, 45 degrees: 25.75 px per metre at x = 0).
+        for i in 0..6 {
+            let centre = 64.0 + (i as f32 * 0.6 - 1.5) * (64.0 / (6.0 * 22.5f32.to_radians().tan()));
+            let cols = (centre as u32 - 2)..=(centre as u32 + 2);
+            let lit = (0..H).flat_map(|y| cols.clone().map(move |x| (x, y))).filter(|&(x, y)| pixel(&image, W, x, y)[0] > 40).count();
+            assert!(lit > 10, "{test}: cube {i} drew ({lit} px at x {centre:.0})");
+        }
         let s = gpu.upload_stats();
         assert!(s.batches >= 7, "{test}: {s:?}");
         for m in meshes {

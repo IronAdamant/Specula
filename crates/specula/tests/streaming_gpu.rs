@@ -1,7 +1,8 @@
 //! Streaming on a real GPU (skips cleanly without Vulkan): uploads stay within the per-frame
 //! byte budget and arrive coarsest LOD first; a camera that moves away and back makes the memory
 //! budget evict what it no longer wants (never what it wants); far cells get HLOD proxies that
-//! cover their members in a capture; and none of it changes the world's hash.
+//! cover their members in a capture. (Streaming only reads the world: `stream_check.py` compares
+//! world hashes with streaming on and off.)
 
 use specula::meshes::{LatheMeshes, ShapeMeshes};
 use specula::models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
@@ -63,7 +64,6 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
         let (_, changed) = shared.lock().finish(Some(Duration::from_millis(50)));
         world.refresh_model_handles(&changed);
     }
-    let hash = world.state_hash();
     let mut models = GpuModels::default();
     let mut stream = Streamer::new(StreamTable::default(), "integrated");
     let patch = Json::obj([
@@ -82,7 +82,7 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let frame = |stream: &mut Streamer, models: &mut GpuModels, gpu: &mut specula_gpu::Gpu, cam: Camera| {
         stream.sync_models(models, gpu, &shared, &world, 0);
         stream.set_window(Some((cam, 1280, 720)));
-        stream.frame(gpu, models, &shared, &world, 0);
+        stream.frame(gpu, models, &shared, &world, 0, true);
         // The window draws (and flushes the batch), here an offscreen render's flush.
         gpu.flush_uploads().unwrap();
         let j = stream.json(gpu, models);
@@ -107,8 +107,12 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     }
     assert!(saw_coarser, "while finer levels stream, entities draw a coarser one");
     let stats = draw(&world, &models, &shapes, &lathes, near_a);
-    // The draw list walks the whole world: A (72 models) draws, B (600 m away, beyond radius_m) is not resident.
-    assert_eq!((stats.histogram.iter().sum::<u32>(), stats.not_resident), (72, 72), "everything near A is resident: {stats:?}");
+    // The draw list walks the whole world: all of A (72 models) draws. B (600 m away, beyond
+    // radius_m) has no proxy yet, so its members stand in for it as memory allows.
+    assert!(stats.histogram.iter().sum::<u32>() >= 72, "{stats:?}");
+    let near = stream.state_json(&gpu, &models, &world, Some(Vec3::new(50.0, 0.0, 40.0)), 12);
+    let missing = near.get("not_resident_near").and_then(Json::as_array).map_or(99, |a| a.len());
+    assert_eq!(missing, 0, "everything near A is resident: {near}");
     assert!(stats.missing == 0);
     let j = stream.json(&gpu, &models);
     assert!(num(&j, &["resident_mb"]) <= 8.0 + 0.01, "{j}");
@@ -143,8 +147,6 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let covered = stream.hlod.capture_cover.iter().map(|w| w.count_ones()).sum::<u32>();
     assert!(covered >= 100, "the proxies cover most of the 144 models ({covered})");
     assert!(proxies.len() < covered as usize / 4, "{} proxy draws for {covered} entities", proxies.len());
-    // Streaming never touched the world.
-    assert_eq!(world.state_hash(), hash);
     let messages = gpu.close();
     let errors: Vec<_> = messages.iter().filter(|m| m.severity == specula_gpu::Severity::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");

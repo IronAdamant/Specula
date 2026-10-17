@@ -159,8 +159,11 @@ impl Blocks {
         let Some(Some(b)) = self.blocks.get_mut(block as usize) else { return };
         b.give(at, bytes);
         if b.used == 0 {
+            // One empty block of the usual size is kept for what comes next; an oversized one,
+            // or a second spare, goes.
+            let usual = b.buffer.bytes <= BLOCK_BYTES;
             let empty = self.blocks.iter().flatten().filter(|b| b.used == 0).count();
-            if empty > 1 {
+            if !usual || empty > 1 {
                 if let Some(b) = self.blocks[block as usize].take() {
                     dev.destroy_buffer(&b.buffer);
                 }

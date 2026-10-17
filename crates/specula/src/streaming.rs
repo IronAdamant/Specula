@@ -119,7 +119,9 @@ const RANGES: [(&str, f64, f64); 9] = [
     ("memory_mb", 8.0, 65536.0),
     ("hlod_min_m", 0.0, 1.0e5),
     ("hlod_radius_m", 16.0, 1.0e6),
-    ("preload", 1.0, 4.0),
+    // At least past the window's 10% hysteresis into a proxy, so members never stop being
+    // wanted before the proxy is drawn instead.
+    ("preload", 1.15, 4.0),
     ("settle_s", 0.0, 60.0),
 ];
 const FLAGS: [&str; 3] = ["enabled", "hlod", "capture_wait"];
@@ -230,6 +232,10 @@ struct Member {
     handle: Option<u32>,
     world: Mat4,
     pos: Vec3,
+    /// Its world box (the build's bounds once built; its origin before): streaming distances
+    /// are measured to it, so a big model near the camera loads whatever cell its origin is in.
+    lo: Vec3,
+    hi: Vec3,
     tint: [f32; 3],
     /// May be merged into an HLOD proxy as far as the entity goes (shown, not `ui`, no anim, no
     /// moving body); its build decides the rest.
@@ -242,11 +248,14 @@ impl Member {
     fn of(e: &Entity, now: Option<Instant>) -> Member {
         let world = e.model();
         let moving = e.body.is_some_and(|b| b.kind != crate::physics::BodyKind::Static);
+        let (lo, hi) = e.world_aabb();
         Member {
             id: e.id,
             handle: e.resolved_model().map(|r| r.handle),
             world,
             pos: e.world_position(),
+            lo,
+            hi,
             tint: e.color,
             mergeable: e.shown() && !e.in_ui() && e.anim.is_none() && !moving && e.id < hlod::MAX_COVER_ID,
             changed: now,
@@ -258,7 +267,7 @@ impl Member {
 struct Cell {
     /// Sorted by id.
     members: Vec<Member>,
-    /// Box of the members' origins.
+    /// Box of the members' world boxes.
     lo: Vec3,
     hi: Vec3,
     /// Its HLOD content must be worked out again.
@@ -267,9 +276,9 @@ struct Cell {
 
 impl Cell {
     fn bounds(&mut self) {
-        let mut it = self.members.iter().map(|m| m.pos);
-        let first = it.next().unwrap_or(Vec3::ZERO);
-        let (lo, hi) = it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+        let mut it = self.members.iter().map(|m| (m.lo, m.hi));
+        let first = it.next().unwrap_or((Vec3::ZERO, Vec3::ZERO));
+        let (lo, hi) = it.fold(first, |(lo, hi), (a, b)| (lo.min(a), hi.max(b)));
         self.lo = lo;
         self.hi = hi;
     }
@@ -286,6 +295,8 @@ struct Index {
     cells: BTreeMap<CellKey, Cell>,
     rebuilds: u64,
     patches: u64,
+    /// Cells whose box a patch must work out again (reused).
+    rebound: Vec<CellKey>,
 }
 
 fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
@@ -294,13 +305,16 @@ fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
 }
 
 impl Index {
-    /// Brings the index up to date with `world`. Returns whether anything changed.
-    fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant) -> bool {
+    /// Brings the index up to date with `world`. Returns whether anything changed; `touched`
+    /// gets the cells where a patch changed a mergeable member (one an HLOD proxy may hold;
+    /// cleared first; empty after a rebuild).
+    fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>) -> bool {
+        touched.clear();
         let key = (generation, cell_m.to_bits());
         if self.key == Some(key) && self.epoch == world.draw_epoch() {
             return false;
         }
-        let patched = self.key == Some(key) && self.patch(world, cell_m, now);
+        let patched = self.key == Some(key) && self.patch(world, cell_m, now, touched);
         if !patched {
             self.cells.clear();
             self.cell_of.clear();
@@ -320,35 +334,85 @@ impl Index {
         true
     }
 
-    /// The changed entities only; false when the world's change record doesn't reach back.
-    fn patch(&mut self, world: &World, cell_m: f32, now: Instant) -> bool {
+    /// The changed entities only; false when the world's change record doesn't reach back. An
+    /// entity that stays in its cell is updated in place.
+    fn patch(&mut self, world: &World, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>) -> bool {
         let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
         let mut ids: Vec<u64> = changes.collect();
         ids.sort_unstable();
         ids.dedup();
         for id in ids {
-            if let Some(old) = self.cell_of.remove(&id) {
+            let now_in = world.get(id).filter(|e| e.shape == Shape::Model).map(|e| (cell_key(e.world_position(), cell_m), e));
+            let old = self.cell_of.get(&id).copied();
+            let boxed = |k: CellKey, mergeable: bool, touched: &mut Vec<CellKey>, rebound: &mut Vec<CellKey>| {
+                rebound.push(k);
+                if mergeable {
+                    touched.push(k);
+                }
+            };
+            if let (Some(old), Some((k, e))) = (old, now_in) {
+                if old == k {
+                    if let Some(c) = self.cells.get_mut(&k) {
+                        if let Ok(i) = c.members.binary_search_by_key(&id, |m| m.id) {
+                            let m = Member::of(e, Some(now));
+                            let mergeable = m.mergeable || c.members[i].mergeable;
+                            c.members[i] = m;
+                            c.dirty = true;
+                            boxed(k, mergeable, touched, &mut self.rebound);
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(old) = old {
+                self.cell_of.remove(&id);
                 if let Some(c) = self.cells.get_mut(&old) {
                     if let Ok(i) = c.members.binary_search_by_key(&id, |m| m.id) {
-                        c.members.remove(i);
+                        let gone = c.members.remove(i);
+                        boxed(old, gone.mergeable, touched, &mut self.rebound);
                     }
                     c.dirty = true;
                 }
             }
-            if let Some(e) = world.get(id).filter(|e| e.shape == Shape::Model) {
-                let k = cell_key(e.world_position(), cell_m);
+            if let Some((k, e)) = now_in {
                 self.cell_of.insert(id, k);
                 let c = self.cells.entry(k).or_default();
                 let at = c.members.binary_search_by_key(&id, |m| m.id).unwrap_or_else(|i| i);
-                c.members.insert(at, Member::of(e, Some(now)));
+                let m = Member::of(e, Some(now));
+                let mergeable = m.mergeable;
+                c.members.insert(at, m);
                 c.dirty = true;
+                boxed(k, mergeable, touched, &mut self.rebound);
             }
         }
-        for c in self.cells.values_mut().filter(|c| c.dirty) {
-            c.bounds();
+        touched.sort_unstable();
+        touched.dedup();
+        self.rebound.sort_unstable();
+        self.rebound.dedup();
+        for k in self.rebound.drain(..) {
+            if let Some(c) = self.cells.get_mut(&k) {
+                c.bounds();
+            }
         }
         self.patches += 1;
         true
+    }
+
+    /// Re-reads the world boxes of members whose model handle is in `handles` (their builds
+    /// landed: the boxes now span the models, not just their origins).
+    fn rebox(&mut self, world: &World, handles: &[u32]) {
+        for c in self.cells.values_mut() {
+            let mut changed = false;
+            for m in c.members.iter_mut().filter(|m| m.handle.is_some_and(|h| handles.binary_search(&h).is_ok())) {
+                if let Some(e) = world.get(m.id) {
+                    (m.lo, m.hi) = e.world_aabb();
+                    changed = true;
+                }
+            }
+            if changed {
+                c.bounds();
+            }
+        }
     }
 }
 
@@ -457,6 +521,13 @@ pub struct Streamer {
     pub scratch: Vec<DrawItem>,
     /// The last capture's proxied cells and covered entities.
     last_capture: (u32, u32),
+    /// Upload ms spent since the window's (or the headless loop's) last frame: captures' pumps
+    /// share the frame's budget instead of each getting one.
+    spent_ms: f64,
+    /// Builds the memory budget kept out at the last pump (sorted): captures don't wait for them.
+    blocked: Vec<u64>,
+    /// Cells the last index patch touched (reused).
+    touched: Vec<CellKey>,
 }
 
 impl Default for Streamer {
@@ -496,13 +567,16 @@ impl Streamer {
             upload_errors: Vec::new(),
             scratch: Vec::new(),
             last_capture: (0, 0),
+            spent_ms: 0.0,
+            blocked: Vec::new(),
+            touched: Vec::new(),
         }
     }
 
     /// Work waiting for later frames (a headless engine loops sooner meanwhile).
     pub fn busy(&self) -> bool {
-        let (_, _, _, building, ready) = self.hlod.counts();
-        self.cfg.enabled && (self.frame.deferred > 0 || building > 0 || ready > 0)
+        let (_, _, _, building, _) = self.hlod.counts();
+        self.cfg.enabled && (self.frame.deferred > 0 || building > 0 || self.hlod.uploads().next().is_some())
     }
 
     pub fn enabled(&self) -> bool {
@@ -579,6 +653,9 @@ impl Streamer {
             return;
         }
         let until = Some(Instant::now() + CAPTURE_SOURCE_FOR);
+        // A capture from about where an earlier one was (an agent's repeated look) needs no
+        // update of its own at once: within UPDATE_EVERY is soon enough.
+        let known = self.sources.iter().any(|s| s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 1.0);
         self.sources.retain(|s| !(s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 0.01));
         let mut captures: Vec<usize> = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
         while captures.len() >= MAX_CAPTURE_SOURCES {
@@ -588,7 +665,11 @@ impl Streamer {
         }
         let dir = (camera.target - camera.eye).normalize();
         self.sources.push(Source { kind: SourceKind::Capture, eye: camera.eye, fov_y_deg: camera.fov_y_deg, viewport_h: h, view_proj: camera.view_proj(w, h), dir, until });
-        self.force_update = true;
+        if known {
+            self.stale = true;
+        } else {
+            self.force_update = true;
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -629,6 +710,14 @@ impl Streamer {
                 }
             }
         }
+        // Builds that landed (or changed): their members' boxes now span the models.
+        let reboxed: Vec<u32> = (0..models.by_handle.len())
+            .filter(|&h| models.by_handle[h].is_some() && old.get(h).copied().flatten() != models.by_handle[h])
+            .map(|h| h as u32)
+            .collect();
+        if !reboxed.is_empty() {
+            self.index.rebox(world, &reboxed);
+        }
         let stale: Vec<u64> = models.uploaded.keys().copied().filter(|id| !self.live.contains_key(id)).collect();
         let mut released = Vec::new();
         for id in stale {
@@ -653,18 +742,31 @@ impl Streamer {
 
     /// One frame (or headless loop): files changed entities, recomputes what is wanted (at most
     /// every [`UPDATE_EVERY`]), schedules proxy builds and uploads within the frame's budget.
-    pub fn frame(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, world: &World, generation: u64) {
+    ///
+    /// `new_frame`: the window's frame (or a headless loop) starts a fresh upload budget; a
+    /// capture's call (false) uses what is left of the current one.
+    pub fn frame(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, world: &World, generation: u64, new_frame: bool) {
         let now = Instant::now();
         self.frame = FrameUpload::default();
+        if new_frame {
+            self.spent_ms = 0.0;
+        }
         if !self.cfg.enabled {
             return;
         }
         let _z = specula_core::profile::zone("stream");
         self.sources.retain(|s| s.until.is_none_or(|t| t > now));
+        let mut touched = std::mem::take(&mut self.touched);
         let changed = {
             let _z = specula_core::profile::zone("index");
-            self.index.sync(world, generation, self.cfg.cell_m, now)
+            self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched)
         };
+        // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
+        // change at once (the entity must not stay hidden, nor show at its old place).
+        if touched.iter().any(|k| self.hlod.window_on(*k)) {
+            self.force_update = true;
+        }
+        self.touched = touched;
         // Finished proxy builds are taken every frame (their uploads go by priority).
         self.hlod.collect();
         let since = self.last_update.map_or(Duration::MAX, |t| now.duration_since(t));
@@ -675,6 +777,7 @@ impl Streamer {
         }
         // The frame's streaming work so far (filing, the wanted set) counts against the upload budget.
         self.pump(gpu, models, library, now);
+        self.spent_ms += now.elapsed().as_secs_f64() * 1e3;
     }
 
     /// Recomputes HLOD contents of changed cells, the wanted builds and proxies, and schedules
@@ -729,6 +832,9 @@ impl Streamer {
             let mut proxy_p: Option<f32> = None;
             let current = hlod_on && self.hlod.has_current(*k);
             let content = self.hlod.content(*k);
+            // A cell whose proxy is stale or still coming (an edit, a build landing): its
+            // members stand in for it as far as proxies are wanted, so it never vanishes.
+            let standing_in = hlod_on && !current && content.is_some_and(|ct| ct.key != 0);
             for s in &self.sources {
                 let d = hlod::box_distance(s.eye, c.lo, c.hi);
                 let p = d * s.weight(c.lo, c.hi);
@@ -739,6 +845,8 @@ impl Streamer {
                     if !proxied {
                         members_p = Some(members_p.map_or(p, |q: f32| q.min(p)));
                     }
+                } else if standing_in && d < cfg.hlod_radius_m {
+                    members_p = Some(members_p.map_or(p, |q: f32| q.min(p)));
                 }
                 if hlod_on && d < cfg.hlod_radius_m {
                     let pp = p * 0.5;
@@ -771,6 +879,8 @@ impl Streamer {
         self.last_wanted.retain(|b, _| live.contains_key(b));
         drop(want_zone);
         if hlod_on {
+            // Proxies built for cells no camera wants any more go (CPU data and part uploads).
+            self.hlod.drop_unwanted(gpu);
             let cells = &self.index.cells;
             let lib = library.lock();
             let _z = specula_core::profile::zone("hlod_schedule");
@@ -797,6 +907,7 @@ impl Streamer {
         }
         if items.is_empty() {
             self.blocked_bytes = 0;
+            self.blocked.clear();
             return;
         }
         items.sort_by(|a, b| {
@@ -813,9 +924,14 @@ impl Streamer {
         let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
         let mut resident = models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes();
         let mut blocked = 0u64;
+        // Nothing more to evict this frame: later items over the budget are blocked at once.
+        let mut evicted_all = false;
+        self.blocked.clear();
         let count = items.len() as u32;
+        // What earlier pumps of this frame (captures' calls) spent comes off the budget.
+        let already = self.spent_ms;
         for (i, (_, item, est)) in items.into_iter().enumerate() {
-            let spent = frame_start.elapsed().as_secs_f64() * 1e3;
+            let spent = already + frame_start.elapsed().as_secs_f64() * 1e3;
             if spent >= budget_ms {
                 self.frame.deferred += count - i as u32;
                 break;
@@ -827,10 +943,16 @@ impl Streamer {
                 continue;
             }
             if resident + est > memory {
-                resident -= self.evict_for(resident + est - memory, gpu, models);
+                if !evicted_all {
+                    resident -= self.evict_for(resident + est - memory, gpu, models);
+                }
                 if resident + est > memory {
+                    evicted_all = true;
                     self.frame.memory_blocked += 1;
                     blocked += est;
+                    if let Item::Build(b) = item {
+                        self.blocked.push(b);
+                    }
                     continue;
                 }
             }
@@ -872,6 +994,7 @@ impl Streamer {
             }
         }
         self.blocked_bytes = blocked;
+        self.blocked.sort_unstable();
         let ms = started.elapsed().as_secs_f64() * 1e3;
         self.frame.ms = ms;
         if self.frame.items > 0 {
@@ -914,12 +1037,13 @@ impl Streamer {
     }
 
     /// Evicts unwanted builds and proxies, least recently wanted first, until `need` bytes are
-    /// free (or nothing is left to evict). Returns the bytes freed.
+    /// free (or nothing is left to evict). Returns the bytes freed. A textured build's pixels
+    /// left the CPU at upload: wanted again, it is imported again.
     fn evict_for(&mut self, need: u64, gpu: &mut Gpu, models: &mut GpuModels) -> u64 {
         let mut builds: Vec<(u64, u64)> = models
             .uploaded
             .iter()
-            .filter(|(id, m)| !self.want.contains_key(id) && m.textures.is_empty())
+            .filter(|(id, _)| !self.want.contains_key(id))
             .map(|(id, _)| (self.last_wanted.get(id).copied().unwrap_or(0), *id))
             .collect();
         builds.sort_unstable();
@@ -936,6 +1060,8 @@ impl Streamer {
             if take_build {
                 let (_, id) = builds.next().expect("peeked");
                 freed += models.uploaded.get(&id).map_or(0, |m| m.bytes);
+                // A textured build comes back through `upload_next_level`, which finds its
+                // pixels gone and has the library import it again.
                 evict_build(gpu, models, id);
             } else {
                 let (_, cell) = proxies.next().expect("peeked");
@@ -1003,7 +1129,10 @@ impl Streamer {
             return 0;
         }
         let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
-        let pending = |b: u64| !models.failed.contains_key(&b) && models.uploaded.get(&b).is_none_or(|m| m.resident_from > 0);
+        // Builds the memory budget keeps out aren't waited for (they would not come).
+        let pending = |b: u64| {
+            !models.failed.contains_key(&b) && self.blocked.binary_search(&b).is_err() && models.uploaded.get(&b).is_none_or(|m| m.resident_from > 0)
+        };
         let mut waiting = 0;
         for (cam, w, h) in views {
             let vp = cam.view_proj(*w, *h);
@@ -1452,25 +1581,34 @@ mod tests {
             ids.push(world.spawn(s, "test").unwrap().id);
         }
         let mut index = Index::default();
+        let mut touched = Vec::new();
         let now = Instant::now();
-        assert!(index.sync(&world, 0, 32.0, now));
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
         assert_eq!(index.cells.len(), 6, "x 0..190 in 32 m cells");
         assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
-        assert!(!index.sync(&world, 0, 32.0, now), "unchanged world: nothing to do");
+        assert!(!index.sync(&world, 0, 32.0, now, &mut touched), "unchanged world: nothing to do");
         // Move one far away: patched, not rebuilt.
         let rebuilds = index.rebuilds;
         world.update(&crate::world::EntityKey::Id(ids[0]), crate::world::UpdateSpec { position: Some(Vec3::new(500.0, 0.0, 5.0)), ..Default::default() }, "test").unwrap();
-        assert!(index.sync(&world, 0, 32.0, now));
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
         assert_eq!(index.rebuilds, rebuilds);
         assert_eq!(index.cell_of[&ids[0]], (15, 0));
         assert!(index.cells[&(15, 0)].members[0].changed.is_some());
         assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
+        assert_eq!(touched, vec![(0, 0), (15, 0)], "both cells were touched");
+        // A move within its cell: updated in place, its box follows.
+        world.update(&crate::world::EntityKey::Id(ids[2]), crate::world::UpdateSpec { position: Some(Vec3::new(25.0, 0.0, 5.0)), ..Default::default() }, "test").unwrap();
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
+        assert_eq!(touched, vec![(0, 0)]);
+        assert_eq!(index.cell_of[&ids[2]], (0, 0));
+        assert_eq!(index.cells[&(0, 0)].hi.x, 30.0, "the cell's box spans its members (x 10..30)");
+        assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
         world.delete(&crate::world::EntityKey::Id(ids[1]), None).unwrap();
         let hash = world.state_hash();
-        index.sync(&world, 0, 32.0, now);
+        index.sync(&world, 0, 32.0, now, &mut touched);
         assert!(!index.cell_of.contains_key(&ids[1]));
         // Another world generation: rebuilt.
-        index.sync(&world, 1, 32.0, now);
+        index.sync(&world, 1, 32.0, now, &mut touched);
         assert_eq!(index.rebuilds, rebuilds + 1);
         assert_eq!(world.state_hash(), hash, "filing the world never changes it");
     }

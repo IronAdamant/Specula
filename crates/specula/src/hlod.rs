@@ -5,7 +5,7 @@
 //! - **What goes in.** A cell's *members*: persistent, shown, non-`ui` model entities without an
 //!   `anim` or a moving body, whose build is ready, opaque (`standard` presets only) and untextured.
 //!   Everything else in the cell (glass, textured glTF, animated, kinematic or dynamic bodies) is
-//!   always drawn on its own.
+//!   drawn on its own, so like any model it is drawn only within `radius_m` of a camera.
 //! - **What comes out.** [`generate`] merges each member's coarsest LOD (the level
 //!   `select_lod` reaches last, at most 3), transformed into the cell's frame, its colour (part
 //!   colour times entity tint) baked into the vertex colours, into one mesh per distinct
@@ -433,6 +433,26 @@ impl Hlod {
             c.want = want;
             if want.is_some() {
                 c.last_wanted = frame;
+            }
+        }
+    }
+
+    /// Whether the window draws cell `cell` as its proxy now.
+    pub fn window_on(&self, cell: CellKey) -> bool {
+        self.cells.get(&cell).is_some_and(|c| c.window_on)
+    }
+
+    /// Drops built-but-not-uploaded proxies (and part uploads) of cells no camera wants, or
+    /// whose content changed since: they would only hold memory.
+    pub fn drop_unwanted(&mut self, gpu: &mut Gpu) {
+        for c in self.cells.values_mut() {
+            let stale = c.ready.as_ref().is_some_and(|r| r.key != c.content.key);
+            if c.want.is_none() || stale {
+                c.ready = None;
+                for (m, ..) in c.staged.1.drain(..) {
+                    gpu.retire_mesh(m);
+                }
+                c.staged.0 = 0;
             }
         }
     }

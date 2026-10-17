@@ -1307,8 +1307,13 @@ impl Engine {
             }
             minimized = size.0 == 0 || size.1 == 0;
             if minimized {
-                // Captures still stream in while the window is minimized.
+                // Captures still stream in while the window is minimized; with no frame to
+                // flush it, the upload batch (and retired memory) goes now. A flight ends on time.
                 self.stream_tick(None);
+                if let Err(e) = self.gpu.flush_uploads() {
+                    eprintln!("specula: upload batch not submitted: {e}");
+                }
+                self.fly_camera(human_took_controls(&self.input));
                 // Minimized: no frame to present; the next serve window keeps serving agents (and
                 // the clock) at about 60 Hz.
                 drop(frame_zone);
