@@ -73,6 +73,8 @@ pub struct Settings {
     /// caps, so presentation can never crowd out the simulation.
     pub max_cosmetic_bodies: usize,
     pub max_cosmetic_pairs: usize,
+    /// Threads the narrowphase may use (1: the calling thread only). Results never depend on it.
+    pub threads: usize,
 }
 
 impl Default for Settings {
@@ -99,6 +101,7 @@ impl Default for Settings {
             max_joints: 16_384,
             max_cosmetic_bodies: 4_096,
             max_cosmetic_pairs: 16_384,
+            threads: 4,
         }
     }
 }
@@ -497,6 +500,8 @@ pub struct Space {
     body_joints: BTreeSet<(u64, u64)>,
     no_collide: BTreeMap<(u64, u64), u32>,
     joint_cons: Vec<JointConstraint>,
+    /// Each sim pair's narrowphase result this step (reused).
+    narrow: Vec<Narrow>,
     /// Cosmetic bodies and the pairs with a cosmetic body (their own caps; left out of the hash).
     cosmetic_count: usize,
     cosmetic_pairs: usize,
@@ -566,6 +571,7 @@ impl Space {
             body_joints: BTreeSet::new(),
             no_collide: BTreeMap::new(),
             joint_cons: Vec::new(),
+            narrow: Vec::new(),
             cosmetic_count: 0,
             cosmetic_pairs: 0,
         }
@@ -1291,46 +1297,58 @@ impl Space {
         let mut remove: Vec<(u64, u64)> = Vec::new();
         let mut wake: Vec<u32> = Vec::new();
         let mut events: Vec<Event> = Vec::new();
-        let mut m = Manifold::default();
         let mut touching_delta: isize = 0;
         let mut deepest: Option<(f32, u64, u64)> = None;
         // Mesh triangles left untested by the per-pair cap: (pairs, triangles, first pair).
         let mut capped: (usize, u64, Option<(u64, u64)>) = (0, 0, None);
         self.collect_sim();
-        for &slot in &self.sim {
+        // Every pair's contact points first: pairs are independent, so many pairs run on
+        // several threads, each filling its own slice of `narrow` in `sim` order (the results
+        // are the same however the work is split: determinism rule 7). Then one pass in order.
+        let mut narrow = std::mem::take(&mut self.narrow);
+        narrow.clear();
+        narrow.resize(self.sim.len(), Narrow::default());
+        {
+            let view = NarrowView { slots: &self.slots, contacts: &self.contacts, static_tree: &self.static_tree, dynamic_tree: &self.dynamic_tree, base, max_margin, dt };
+            let sim = &self.sim;
+            let threads = narrow_threads(sim.len(), self.settings.threads);
+            if threads <= 1 {
+                for (k, out) in narrow.iter_mut().enumerate() {
+                    *out = view.pair(sim[k]);
+                }
+            } else {
+                let chunk = sim.len().div_ceil(threads);
+                std::thread::scope(|scope| {
+                    for (outs, slots) in narrow.chunks_mut(chunk).zip(sim.chunks(chunk)) {
+                        let view = &view;
+                        scope.spawn(move || {
+                            for (out, &slot) in outs.iter_mut().zip(slots) {
+                                *out = view.pair(slot);
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        for (k, &slot) in self.sim.iter().enumerate() {
+            let pre = &narrow[k];
             let c = self.contacts[slot as usize].as_mut().expect("live contact");
             let (ka, kb) = c.key;
             let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
-            let fa = fat_of(&self.static_tree, &self.dynamic_tree, a);
-            let fb = fat_of(&self.static_tree, &self.dynamic_tree, b);
-            if !fa.overlaps(&fb) {
+            if pre.apart {
                 if c.touching {
                     events.push(end_event(c, ka, kb));
                 }
                 remove.push((ka, kb));
                 continue;
             }
-            let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
-            let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
+            let ca = a.desc.collider.as_ref().expect("paired");
             let was = c.touching;
-            // Speculative contacts reach as far as the pair can close in one step (at least the
-            // base distance), so a fast approach is caught before it overlaps.
-            let closing = (a.desc.velocity - b.desc.velocity).length()
-                + a.desc.angular_velocity.length() * a.outer_radius
-                + b.desc.angular_velocity.length() * b.outer_radius;
-            let margin = (base + closing * dt).min(max_margin);
-            // Bounding spheres apart: no points (cheap early out).
-            let reach = a.outer_radius + b.outer_radius + margin;
-            let far = crate::math::len_sq(a.center - b.center) > reach * reach;
+            let m = pre.manifold;
+            if m.skipped > 0 {
+                capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
+            }
             if c.trigger {
-                if far {
-                    m.len = 0;
-                } else {
-                    collide(&ca.shape, &pa, &cb.shape, &pb, 0.0, &mut m);
-                    if m.skipped > 0 {
-                        capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
-                    }
-                }
                 let deepest = m.as_slice().iter().fold(None::<crate::contact::ContactPoint>, |d, p| match d {
                     Some(q) if q.separation <= p.separation => Some(q),
                     _ => Some(*p),
@@ -1354,14 +1372,7 @@ impl Space {
                 }
                 continue;
             }
-            if far {
-                m.len = 0;
-            } else {
-                collide_cached(&ca.shape, &pa, &cb.shape, &pb, margin, &mut m, Some(&mut c.sat));
-                if m.skipped > 0 {
-                    capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
-                }
-            }
+            c.sat = pre.sat;
             // Warm start: carry impulses over by feature id.
             let old = c.points;
             let old_len = c.len;
@@ -1435,6 +1446,7 @@ impl Space {
         }
         let room = MAX_EVENTS_PER_STEP.saturating_sub(self.report.events.len());
         self.report.events.extend(events.into_iter().take(room));
+        self.narrow = narrow;
     }
 
     /// Advances the simulation by `dt` seconds.
@@ -2526,6 +2538,72 @@ impl Space {
         }
         h.finish()
     }
+}
+
+/// One pair's narrowphase result.
+#[derive(Clone, Copy, Debug, Default)]
+struct Narrow {
+    /// The fat boxes no longer overlap: the pair ends.
+    apart: bool,
+    manifold: Manifold,
+    /// The polytope test's memory after this test.
+    sat: SatCache,
+}
+
+/// What the narrowphase reads (shareable across threads).
+struct NarrowView<'a> {
+    slots: &'a [Option<Body>],
+    contacts: &'a [Option<Contact>],
+    static_tree: &'a Tree,
+    dynamic_tree: &'a Tree,
+    base: f32,
+    max_margin: f32,
+    dt: f32,
+}
+
+impl NarrowView<'_> {
+    /// Contact slot `slot`'s points this step (from its bodies as they are; no state changes).
+    fn pair(&self, slot: u32) -> Narrow {
+        let c = self.contacts[slot as usize].as_ref().expect("live contact");
+        let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
+        let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
+        let fa = fat_of(self.static_tree, self.dynamic_tree, a);
+        let fb = fat_of(self.static_tree, self.dynamic_tree, b);
+        if !fa.overlaps(&fb) {
+            out.apart = true;
+            return out;
+        }
+        let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
+        let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
+        // Speculative contacts reach as far as the pair can close in one step (at least the base
+        // distance), so a fast approach is caught before it overlaps.
+        let closing = (a.desc.velocity - b.desc.velocity).length() + a.desc.angular_velocity.length() * a.outer_radius + b.desc.angular_velocity.length() * b.outer_radius;
+        let margin = (self.base + closing * self.dt).min(self.max_margin);
+        // Bounding spheres apart: no points (cheap early out).
+        let reach = a.outer_radius + b.outer_radius + margin;
+        if crate::math::len_sq(a.center - b.center) > reach * reach {
+            return out;
+        }
+        if c.trigger {
+            collide(&ca.shape, &pa, &cb.shape, &pb, 0.0, &mut out.manifold);
+        } else {
+            collide_cached(&ca.shape, &pa, &cb.shape, &pb, margin, &mut out.manifold, Some(&mut out.sat));
+        }
+        out
+    }
+}
+
+/// Pairs per narrowphase thread at least (fewer run on the calling thread: starting threads
+/// costs more than small batches save).
+const PAIRS_PER_THREAD: usize = 384;
+/// How many threads a narrowphase of `pairs` pairs uses, at most `limit` (the result never
+/// depends on it).
+fn narrow_threads(pairs: usize, limit: usize) -> usize {
+    if pairs < 2 * PAIRS_PER_THREAD || limit <= 1 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    (pairs / PAIRS_PER_THREAD).min(cores).min(limit).max(1)
 }
 
 thread_local! {

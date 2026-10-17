@@ -250,6 +250,27 @@ fn fast_bodies_do_not_tunnel_through_thin_dynamic_bodies() {
 }
 
 #[test]
+fn the_threaded_narrowphase_gives_the_same_states() {
+    // 900 boxes in a heap (thousands of pairs: the narrowphase splits them over threads).
+    let build = |threads: usize| {
+        let mut s = Space::new(Settings { threads, ..Settings::default() });
+        ground(&mut s);
+        for i in 0..900u64 {
+            let (x, y, z) = ((i % 10) as f32 * 1.05 - 5.0, 0.5 + (i / 100) as f32 * 1.05, ((i / 10) % 10) as f32 * 1.05 - 5.0);
+            dynamic(&mut s, 10 + i, Shape::cuboid(v3(0.5, 0.5, 0.5)), v3(x, y, z));
+        }
+        s
+    };
+    let (mut one, mut four) = (build(1), build(4));
+    for t in 0..40 {
+        one.step(DT);
+        four.step(DT);
+        assert_eq!(one.hash(), four.hash(), "diverged at step {t}");
+    }
+    assert!(one.report().pairs > 2000, "enough pairs to split: {}", one.report().pairs);
+}
+
+#[test]
 fn compound_bodies_stand_on_their_parts() {
     // A stool: a seat on four thin legs, dropped from a metre. It lands on its legs, upright,
     // with the seat clear of the floor.
