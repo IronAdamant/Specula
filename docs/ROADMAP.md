@@ -759,7 +759,7 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 - [ ] Own shading language compiled to SPIR-V (removes the dev-time `glslc`).
 - [ ] Networking and multiplayer: lockstep or rollback, which F2 makes possible.
 - [ ] Animation retargeting and parametric character generation.
-- [ ] Publish crates to crates.io (owner to decide).
+- [ ] Publish crates to crates.io (an [open owner decision](../HANDOFF.md#open-owner-decisions)).
 
 ---
 

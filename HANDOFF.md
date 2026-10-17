@@ -120,7 +120,8 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **No physics** (P1-P4 are M3), no gameplay-as-data (Lex), no module host or hot-reloaded game logic yet: Sepulcra's
   rules are hand-written Rust in `games/sepulcra`.
 - **Animation** stops at stage A2 (clips and state-driven playback); blending, IK and agent-authored motion are M3.
-- **No save games** for players (world files are an editor format), no title screen or settings menu.
+- **No save games** for players (world files are an editor format), no title screen in the app, settings aren't
+  saved and there's no rebinding.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
@@ -136,7 +137,6 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Their own builds:** they asked for things built by us rather than borrowed ("full control"), for example their own
   linker. The agreed compromise: the toolchain linker plus raw-dylib already removes third parties, so the custom
   linker is parked as a long-term option.
-- **crates.io:** publishing is for the owner to decide later.
 - **Naming:** Latin-style names.
 - **Test steps:** in-game test plans as `- [ ]` checklists (they use Obsidian).
 - **Other work:** Fallout 4 mods in `D:\Coding Projects\AgentCreationKit`. A peer Claude session there once committed
@@ -181,6 +181,7 @@ answer where it applies.
   the five `docs/design/` docs (their "reviewed" boxes in ROADMAP are unticked).
 - **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
   `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
+- **crates.io:** whether and when to publish the crates.
 - **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
 
 ## Claude's opinions and thoughts

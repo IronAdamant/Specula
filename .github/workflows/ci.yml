@@ -79,18 +79,39 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # A push's own list of new commits: the fallback when its "before" commit is gone (force push).
+          PUSHED: ${{ toJSON(github.event.commits) }}
         run: |
-          # A new branch has no "before" commit: check only what isn't on main already.
-          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            BASE=$(git merge-base origin/main "$HEAD" 2>/dev/null || echo "")
+          set -euo pipefail
+          PATTERN='(https?://)?[^ ]*(claude\.ai/(code|chat|share)|chatgpt\.com/(c|share)/|chat\.openai\.com/(c|share)/|grok\.com/(chat|share)|gemini\.google\.com/(app|share)|g\.co/gemini/share|/session_0[0-9a-z]{20,})'
+          git cat-file -e "$HEAD^{commit}"
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            RANGE="$BASE..$HEAD"
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$PUSHED" != null ] && [ "$PUSHED" != "[]" ]; then
+            # New branch or force push: the payload lists exactly the commits this push added.
+            if printf '%s' "$PUSHED" | grep -Eiq "$PATTERN"; then
+              echo "::error::session or share links in this push's commit messages:"
+              printf '%s' "$PUSHED" | grep -Eio "$PATTERN" || true
+              echo "Reword those commits (see AGENTS.md rule 11)."
+              exit 1
+            fi
+            echo "checked the pushed commits from the event payload: no session links"
+            exit 0
+          else
+            # A new branch with nothing listed: check what isn't on main yet.
+            RANGE="$(git merge-base origin/main "$HEAD")..$HEAD"
           fi
-          RANGE=${BASE:-$HEAD~1}..$HEAD
-          PATTERN='https?://[^ ]*(claude\.ai/(code|chat|share)|chatgpt\.com/(c|share)/|grok\.com/(chat|share)|/session_[A-Za-z0-9]+)'
-          FOUND=$(git log --format='%h %B' "$RANGE" | grep -En "$PATTERN" || true)
-          if [ -n "$FOUND" ]; then
-            echo "::error::session or share links in commit messages ($RANGE):"
-            echo "$FOUND"
+          COUNT=$(git rev-list --count "$RANGE")
+          BAD=0
+          for c in $(git rev-list "$RANGE"); do
+            if git log -1 --format=%B "$c" | grep -Eiq "$PATTERN"; then
+              echo "::error::session or share link in commit $(git log -1 --format='%h %s' "$c"):"
+              git log -1 --format=%B "$c" | grep -Ein "$PATTERN" || true
+              BAD=1
+            fi
+          done
+          if [ "$BAD" = 1 ]; then
             echo "Reword those commits before merging (see AGENTS.md rule 11)."
             exit 1
           fi
-          echo "checked $(git rev-list --count "$RANGE") commit(s) in $RANGE: no session links"
+          echo "checked $COUNT commit(s) in $RANGE: no session links"
