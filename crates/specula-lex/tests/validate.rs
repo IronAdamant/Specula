@@ -211,6 +211,38 @@ fn a_machine_must_match_its_archetypes_behaviours() {
 }
 
 #[test]
+fn hostile_sizes_are_errors_not_crashes() {
+    // Deep nesting and long expressions.
+    let deep = format!("{}1{} > 0", "(".repeat(2000), ")".repeat(2000));
+    let ds = diags(&format!(r#""o": {{"kind": "outcome", "result": "won", "when": "{deep}"}}"#));
+    assert_eq!(one(&ds, "too_many").path, "when");
+    let chain = format!("{} > 0", vec!["1"; 100].join(" + "));
+    let ds = diags(&format!(r#""o": {{"kind": "outcome", "result": "won", "when": "{chain}"}}"#));
+    assert!(one(&ds, "too_many").message.contains("deep"));
+    // Coordinates so large their squares would overflow.
+    let ds = diags(r#""p": {"kind": "path", "points": [[-9e15, 0, 0], [9e15, 0, 0]]}"#);
+    assert!(ds.iter().any(|d| d.code == "out_of_range"), "{ds:?}");
+    // A huge duration in an out-of-range message.
+    let ds = diags(r#""p": {"kind": "param", "type": "duration", "value": "10000000000000000t", "max": "1t"}"#);
+    assert_eq!(one(&ds, "out_of_range").item, "p");
+    // A wave that would queue millions of spawns.
+    let ds = diags(
+        r#""foe": {"kind": "archetype"}, "lane": {"kind": "path", "points": [[0,0,0],[1,0,0]]},
+           "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "foe", "count": 100000, "at": ["lane"]}, {"archetype": "foe", "count": 100000, "at": ["lane"]}]}]}"#,
+    );
+    assert!(one(&ds, "too_many").message.contains("per wave"));
+}
+
+#[test]
+fn a_notes_named_by_the_author_is_data() {
+    let a = doc(r#""a": {"kind": "archetype", "attributes": {"notes": 1}}"#);
+    let b = doc(r#""a": {"kind": "archetype", "attributes": {"notes": 2}}"#);
+    assert_ne!(a.hash(), b.hash(), "an attribute called notes changes the rules");
+    let c = doc(r#""a": {"kind": "archetype", "notes": "x", "attributes": {"notes": 1}}"#);
+    assert_eq!(a.hash(), c.hash(), "the item's own notes don't");
+}
+
+#[test]
 fn diagnostics_serialise_as_data() {
     let ds = tower(r#"{"type": "attack", "targets": ["enemy"], "range": "7", "cooldown": 1, "payload": []}"#);
     let j = ds[0].to_json();

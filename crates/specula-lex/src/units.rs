@@ -184,18 +184,19 @@ pub fn human(value: i64, unit: Unit, tick_hz: u32) -> String {
         Unit::Speed => format!("{}m/s", thousandths(value)),
         Unit::Ratio => {
             // permille → percent with one decimal at most.
-            if value % 10 == 0 {
-                format!("{}%", value / 10)
+            let (sign, a) = (if value < 0 { "-" } else { "" }, value.unsigned_abs());
+            if a % 10 == 0 {
+                format!("{sign}{}%", a / 10)
             } else {
-                format!("{}.{}%", value / 10, (value % 10).abs())
+                format!("{sign}{}.{}%", a / 10, a % 10)
             }
         }
         Unit::Duration => {
-            let hz = i64::from(tick_hz.max(1));
-            if (value * 1000) % hz == 0 {
-                format!("{}s", thousandths(value * 1000 / hz))
-            } else {
-                format!("{value}t")
+            let hz = i128::from(tick_hz.max(1));
+            let milli = i128::from(value) * 1000;
+            match i64::try_from(milli / hz) {
+                Ok(ms) if milli % hz == 0 => format!("{}s", thousandths(ms)),
+                _ => format!("{value}t"),
             }
         }
     }

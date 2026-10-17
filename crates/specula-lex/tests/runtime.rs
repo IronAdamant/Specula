@@ -395,9 +395,49 @@ fn runtime_problems_are_reported_not_fatal() {
     }
     let diag = &s.state().diag;
     assert!(diag.counts.get("division_by_zero").is_some_and(|n| *n >= 2), "{diag:?}");
-    assert_eq!(diag.counts.get("event_storm"), Some(&1), "{diag:?}");
+    assert_eq!(diag.counts.get("event_overflow"), Some(&1), "an event loop is cut off at the per-tick cap: {diag:?}");
     assert_eq!(s.resource("gold"), Some(0));
     assert_eq!(s.tick(), 20, "the run went on");
+}
+
+#[test]
+fn self_feeding_rules_are_cut_off_not_fatal() {
+    // Each of these would recurse forever: an on_spawn that spawns itself, an on_apply that
+    // reapplies its effect, an on_enter that re-enters its state.
+    let items = r#"
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0]}},
+        "rabbit": {"kind": "archetype", "on_spawn": [{"spawn": "rabbit", "at": "self"}]},
+        "echo": {"kind": "effect", "stacking": "refresh", "duration": "1s", "on_apply": [{"apply": "echo", "to": "self"}]},
+        "loopy": {"kind": "machine", "initial": "a", "states": {"a": {"on_enter": [{"goto": "a"}]}}},
+        "spinner": {"kind": "archetype", "machine": "loopy", "on_spawn": [{"apply": "echo"}]},
+        "go": {"kind": "timer", "do": [{"spawn": "rabbit", "at": "a"}]},
+        "go2": {"kind": "timer", "do": [{"spawn": "spinner", "at": "a"}]}
+    "#;
+    let mut s = sim(items, 1);
+    for _ in 0..3 {
+        s.step(&[]);
+    }
+    let n = s.state().diag.counts.get("recursion_limit").copied().unwrap_or(0);
+    assert!(n >= 2, "stopped and reported: {:?}", s.state().diag);
+    assert!(s.entities().len() <= 200, "bounded: {}", s.entities().len());
+}
+
+#[test]
+fn one_tick_has_bounded_events_and_work() {
+    // 2000 pulse towers over 2000 targets: 4 million hits and 8 million checks a tick, unless capped.
+    let items = r#"
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0]}},
+        "foe": {"kind": "archetype", "tags": ["foe"], "attributes": {"hp": "1000000pt"}, "behaviours": [{"type": "health", "attribute": "hp"}]},
+        "tower": {"kind": "archetype", "behaviours": [{"type": "attack", "targets": ["foe"], "range": "10m", "cooldown": "0.1s", "delivery": "pulse", "payload": [{"damage": "1pt"}]}]},
+        "build": {"kind": "timer", "do": [{"spawn": "foe", "at": "a", "count": 2000}, {"spawn": "tower", "at": "a", "count": 2000}]}
+    "#;
+    let mut s = sim(items, 1);
+    for _ in 0..2 {
+        s.step(&[]);
+        assert!(s.events().len() <= specula_lex::sim::MAX_EVENTS_PER_TICK, "{}", s.events().len());
+    }
+    let d = &s.state().diag.counts;
+    assert!(d.contains_key("work_limit") && d.contains_key("event_overflow"), "{d:?}");
 }
 
 #[test]

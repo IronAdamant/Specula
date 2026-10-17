@@ -204,15 +204,26 @@ pub fn canonical(v: &Json) -> Json {
     }
 }
 
+/// Objects whose keys are names the author chose (an attribute or a site may be called
+/// `notes`), so a `notes` key inside them is data, not a note.
+const NAMED_MAPS: [&str; 9] = ["attributes", "points", "states", "args", "scale", "with", "cost", "items", "set"];
+
 fn canonical_without_notes(v: &Json) -> Json {
+    strip_notes(v, false)
+}
+
+fn strip_notes(v: &Json, named: bool) -> Json {
     match v {
         Json::Obj(pairs) => {
-            let mut sorted: Vec<(String, Json)> =
-                pairs.iter().filter(|(k, _)| k != "notes").map(|(k, v)| (k.clone(), canonical_without_notes(v))).collect();
+            let mut sorted: Vec<(String, Json)> = pairs
+                .iter()
+                .filter(|(k, v)| named || k != "notes" || !matches!(v, Json::Str(_)))
+                .map(|(k, v)| (k.clone(), strip_notes(v, !named && NAMED_MAPS.contains(&k.as_str()))))
+                .collect();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
             Json::Obj(sorted)
         }
-        Json::Arr(items) => Json::Arr(items.iter().map(canonical_without_notes).collect()),
+        Json::Arr(items) => Json::Arr(items.iter().map(|i| strip_notes(i, false)).collect()),
         other => other.clone(),
     }
 }

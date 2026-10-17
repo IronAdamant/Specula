@@ -14,6 +14,7 @@ Standard library only; output ASCII.
 """
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -53,7 +54,8 @@ def refused(mcp, tool, **args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7480)
-    ap.add_argument("--exe", default=str(ROOT / "target" / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
+    ap.add_argument("--exe", default=str(target / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")), help="default: $CARGO_TARGET_DIR (or target/) debug build")
     args = ap.parse_args()
     work = Path(tempfile.mkdtemp(prefix="lex_check_"))
     with Engine(args.exe, args.port, work / "engine.log", "--headless", "--worlds", str(work / "worlds"), "--captures", str(work / "captures")) as eng:

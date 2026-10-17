@@ -249,6 +249,7 @@ fn bench_lex_against_rust() {
 fn a_changed_rule_is_caught() {
     let changed = SLICE.replacen("\"payload\": [{ \"damage\": \"10pt\" }]", "\"payload\": [{ \"damage\": \"11pt\" }]", 1);
     assert_ne!(changed, SLICE, "the edit applies");
-    let caught = std::panic::catch_unwind(|| parity_with(&changed, 1, DEFENDED, 20_000)).is_err();
-    assert!(caught, "warding damage 11 instead of 10 must diverge from the hand-written sim");
+    let panic = std::panic::catch_unwind(|| parity_with(&changed, 1, DEFENDED, 20_000)).expect_err("warding damage 11 instead of 10 must diverge from the hand-written sim");
+    let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default();
+    assert!(msg.contains("diverge"), "it failed for the right reason (a divergence, not a compile or parse error): {msg}");
 }

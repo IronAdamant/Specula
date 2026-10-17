@@ -7,10 +7,11 @@
 //! author and undone with `world_undo`, `world_changes` reports them, and `world_save` writes
 //! them with the world's text files.
 //!
-//! **Threads.** Edits run on the main thread (validated, then committed as one atomic batch
-//! through the swarm's claims and journal). Reads, validation and simulation take a snapshot
-//! from the main thread and do the work on the calling agent's protocol thread, so many agents
-//! can simulate at once without stalling the window.
+//! **Threads.** The main thread only reads (snapshots, pages of summaries) and writes (one
+//! atomic batch through the swarm's claims and journal). Validation, edits' before/after
+//! checks and simulation run on the calling agent's protocol thread: an edit validates against
+//! a snapshot, and its commit is refused (and redone) if the set changed meanwhile. So many
+//! agents can edit and simulate at once without stalling the window.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -23,7 +24,7 @@ use crate::world::{EntityKey, Op, Shape, SpawnSpec, UpdateSpec, World, WorldErro
 use specula_core::Json;
 use specula_lex::diag::{did_you_mean, Diagnostic};
 use specula_lex::run::{compile_query, run, show_val, RunSpec, Timed};
-use specula_lex::{compile, schema, validate, Document, Natives, Options, Sim};
+use specula_lex::{compile, schema, Document, Natives, Options, Sim};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 
 /// The top-level group that holds every rule set.
@@ -49,17 +50,23 @@ const MAX_RUNS: usize = 16;
 /// Largest exported document.
 const MAX_EXPORT_BYTES: usize = 2 * 1024 * 1024;
 
-/// What the main thread does for a lex tool.
+/// What the main thread does for a lex tool. Only cheap reads and the final write happen
+/// there; validation and simulation run on the calling agent's protocol thread.
 pub enum LexCall {
-    /// A rule set's header, items and versions (`None`: the list of sets).
-    Snapshot { set: Option<String> },
-    Edit(Edit),
+    /// A set's header, versions and items (`only`: just these items).
+    Snapshot { set: String, only: Option<Vec<String>> },
+    /// The rule sets in the world, by name, paged.
+    Sets { after: Option<String>, limit: usize },
+    /// One page of a set's item summaries.
+    List { set: String, kind: Option<String>, after: Option<String>, limit: usize },
+    /// Writes a validated edit, unless the set changed since it was validated.
+    Commit(Commit),
 }
 
 impl LexCall {
-    /// Reads are cheap; edits validate and commit.
+    /// Everything but a commit only reads.
     pub fn is_read(&self) -> bool {
-        matches!(self, LexCall::Snapshot { .. })
+        !matches!(self, LexCall::Commit(_))
     }
 }
 
@@ -95,6 +102,32 @@ impl EditOp {
             EditOp::Put { id, .. } | EditOp::Patch { id, .. } | EditOp::Delete { id, .. } => id,
         }
     }
+
+    fn expect(&self) -> Option<u64> {
+        match self {
+            EditOp::Put { expect, .. } | EditOp::Patch { expect, .. } | EditOp::Delete { expect, .. } => *expect,
+        }
+    }
+}
+
+/// A set's version and its items' versions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Versions {
+    pub set: u64,
+    pub items: BTreeMap<String, u64>,
+}
+
+/// A validated edit for the main thread to write.
+pub struct Commit {
+    pub set: String,
+    /// The versions the edit was validated against (`None`: the set didn't exist). The commit is
+    /// refused with `set_changed` if they no longer match, and the caller validates again.
+    pub base: Option<Versions>,
+    /// The new header, when it changed (always for a new set).
+    pub header: Option<Json>,
+    /// New or changed items (`true`: new).
+    pub puts: Vec<(String, Json, bool)>,
+    pub deletes: Vec<String>,
 }
 
 /// Saved simulation sessions (`lex_simulate {save_as}`), shared by all agents.
@@ -122,60 +155,173 @@ fn err_with(code: &'static str, message: impl Into<String>, extra: Vec<(&str, Js
     ToolOutput::error(Json::obj(pairs).to_pretty())
 }
 
-struct Stored {
-    header: Json,
-    set_version: u64,
-    /// id → (version, item)
-    items: BTreeMap<String, (u64, Json)>,
-}
-
 fn set_path(set: &str) -> String {
     format!("/{ROOT}/{set}")
 }
 
-fn read_set(world: &World, set: &str) -> Option<Stored> {
+fn set_entity(world: &World, set: &str) -> Option<u64> {
     let id = world.find_path(&set_path(set)).ok()?;
-    let e = world.get(id)?;
+    world.get(id).filter(|e| e.props.get("lex_set").is_some()).map(|e| e.id)
+}
+
+/// The set's versions, without copying any item.
+fn versions(world: &World, set: &str) -> Option<Versions> {
+    let id = set_entity(world, set)?;
+    let items = world.children_of(Some(id)).filter_map(|c| world.get(c)).map(|e| (e.name.clone(), e.version)).collect();
+    Some(Versions { set: world.get(id)?.version, items })
+}
+
+fn snapshot_json(world: &World, set: &str, only: Option<&[String]>) -> Json {
+    let Some(id) = set_entity(world, set) else {
+        return Json::obj([("set", Json::from(set)), ("exists", Json::Bool(false))]);
+    };
+    let e = world.get(id).expect("found");
     let header = e.props.get("lex_set").cloned().unwrap_or_else(|| Json::obj::<&str>([]));
-    let mut items = BTreeMap::new();
+    let mut items = Vec::new();
     for c in world.children_of(Some(id)) {
-        if let Some(ch) = world.get(c) {
-            let item = ch.props.get("lex").cloned().unwrap_or(Json::Null);
-            items.insert(ch.name.clone(), (ch.version, item));
+        let Some(ch) = world.get(c) else { continue };
+        if only.is_some_and(|o| !o.contains(&ch.name)) {
+            continue;
+        }
+        let item = ch.props.get("lex").cloned().unwrap_or(Json::Null);
+        items.push(Json::obj([("id", Json::from(ch.name.as_str())), ("version", Json::from(ch.version)), ("item", item)]));
+    }
+    let mut out = vec![("set", Json::from(set)), ("exists", Json::Bool(true)), ("header", header), ("set_version", Json::from(e.version)), ("items", Json::Arr(items))];
+    if only.is_some() {
+        let all: Vec<Json> = world.children_of(Some(id)).filter_map(|c| world.get(c)).map(|c| Json::from(c.name.as_str())).collect();
+        if all.len() <= 1000 {
+            out.push(("all_ids", Json::Arr(all)));
         }
     }
-    Some(Stored { header, set_version: e.version, items })
+    Json::obj(out)
 }
 
-fn list_sets(world: &World) -> Vec<(String, usize, u64)> {
-    let Ok(root) = world.find_path(&format!("/{ROOT}")) else { return Vec::new() };
-    world
-        .children_of(Some(root))
-        .filter_map(|c| world.get(c))
-        .filter(|e| e.props.get("lex_set").is_some())
-        .map(|e| (e.name.clone(), world.children_of(Some(e.id)).count(), e.version))
-        .collect()
+fn sets_json(world: &World, after: Option<&str>, limit: usize) -> Json {
+    let Ok(root) = world.find_path(&format!("/{ROOT}")) else {
+        return Json::obj([("sets", Json::arr([])), ("next_cursor", Json::Null)]);
+    };
+    let mut page = Vec::new();
+    let mut next = Json::Null;
+    for e in world.children_of(Some(root)).filter_map(|c| world.get(c)).filter(|e| e.props.get("lex_set").is_some() && after.is_none_or(|a| e.name.as_str() > a)) {
+        if page.len() == limit {
+            next = page.last().and_then(|p: &Json| p.get("set")).cloned().unwrap_or(Json::Null);
+            break;
+        }
+        page.push(Json::obj([("set", Json::from(e.name.as_str())), ("items", Json::from(world.children_of(Some(e.id)).count())), ("version", Json::from(e.version))]));
+    }
+    Json::obj([("sets", Json::Arr(page)), ("next_cursor", next)])
 }
 
-fn snapshot_json(world: &World, set: Option<&str>) -> Json {
-    match set {
-        None => Json::obj([(
-            "sets",
-            Json::arr(list_sets(world).into_iter().map(|(n, c, v)| Json::obj([("set", Json::from(n)), ("items", Json::from(c)), ("version", Json::from(v))]))),
-        )]),
-        Some(s) => match read_set(world, s) {
-            None => Json::obj([("set", Json::from(s)), ("exists", Json::Bool(false))]),
-            Some(st) => Json::obj([
-                ("set", Json::from(s)),
-                ("exists", Json::Bool(true)),
-                ("header", st.header),
-                ("set_version", Json::from(st.set_version)),
-                (
-                    "items",
-                    Json::arr(st.items.into_iter().map(|(id, (v, item))| Json::obj([("id", Json::from(id)), ("version", Json::from(v)), ("item", item)]))),
-                ),
-            ]),
-        },
+fn list_json(world: &World, set: &str, kind: Option<&str>, after: Option<&str>, limit: usize) -> ToolOutput {
+    let Some(id) = set_entity(world, set) else {
+        return err("unknown_set", format!("there is no rule set '{set}'; lex_list without 'set' lists them"));
+    };
+    let e = world.get(id).expect("found");
+    let mut page = Vec::new();
+    let mut next = Json::Null;
+    let mut total = 0usize;
+    for ch in world.children_of(Some(id)).filter_map(|c| world.get(c)) {
+        total += 1;
+        if after.is_some_and(|a| ch.name.as_str() <= a) {
+            continue;
+        }
+        let item = ch.props.get("lex").unwrap_or(&Json::Null);
+        if kind.is_some_and(|k| item.get("kind").and_then(Json::as_str) != Some(k)) {
+            continue;
+        }
+        if page.len() == limit {
+            if next.is_null() {
+                next = page.last().and_then(|p: &Json| p.get("id")).cloned().unwrap_or(Json::Null);
+            }
+            continue;
+        }
+        let mut s = summary_of(&ch.name, item);
+        s.set("version", Json::from(ch.version));
+        page.push(s);
+    }
+    ToolOutput::text(
+        Json::obj([
+            ("set", Json::from(set)),
+            ("header", e.props.get("lex_set").cloned().unwrap_or(Json::Null)),
+            ("total", Json::from(total)),
+            ("items", Json::Arr(page)),
+            ("next_cursor", next),
+        ])
+        .to_string(),
+    )
+}
+
+/// Answers a lex call on the main thread.
+pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
+    match call {
+        LexCall::Snapshot { set, only } => ToolOutput::text(snapshot_json(world, &set, only.as_deref()).to_string()),
+        LexCall::Sets { after, limit } => ToolOutput::text(sets_json(world, after.as_deref(), limit).to_string()),
+        LexCall::List { set, kind, after, limit } => list_json(world, &set, kind.as_deref(), after.as_deref(), limit),
+        LexCall::Commit(c) => commit(c, world, swarm, tick, w, by),
+    }
+}
+
+fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
+    let now = versions(world, &c.set);
+    if now != c.base {
+        return err("set_changed", "the set changed while the edit was being validated");
+    }
+    let root_path = format!("/{ROOT}");
+    let sp = set_path(&c.set);
+    let mut ops = Vec::new();
+    if world.find_path(&root_path).is_err() {
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some(ROOT.into());
+        s.visible = false;
+        s.tags = BTreeSet::from(["lex".to_owned()]);
+        ops.push(Op::Spawn(s));
+    }
+    match (&c.base, &c.header) {
+        (None, header) => {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(c.set.clone());
+            s.parent = Some(EntityKey::Path(root_path.clone()));
+            s.visible = false;
+            s.tags = BTreeSet::from(["lex".to_owned(), "lex_set".to_owned()]);
+            s.props = Json::obj([("lex_set", header.clone().unwrap_or_else(|| Json::obj::<&str>([])))]);
+            ops.push(Op::Spawn(s));
+        }
+        (Some(b), Some(h)) => ops.push(Op::Set(
+            EntityKey::Path(sp.clone()),
+            UpdateSpec { props: Some(Json::obj([("lex_set", h.clone())])), expect_version: Some(b.set), ..Default::default() },
+        )),
+        (Some(_), None) => {}
+    }
+    let base_version = |id: &str| c.base.as_ref().and_then(|b| b.items.get(id).copied());
+    for (id, item, new) in &c.puts {
+        if *new {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(id.clone());
+            s.parent = Some(EntityKey::Path(sp.clone()));
+            s.visible = false;
+            s.tags = BTreeSet::from(["lex".to_owned()]);
+            s.props = Json::obj([("lex", item.clone())]);
+            ops.push(Op::Spawn(s));
+        } else {
+            let u = UpdateSpec { props: Some(Json::obj([("lex", item.clone())])), expect_version: base_version(id), ..Default::default() };
+            ops.push(Op::Set(EntityKey::Path(format!("{sp}/{id}")), u));
+        }
+    }
+    for id in &c.deletes {
+        ops.push(Op::Delete(EntityKey::Path(format!("{sp}/{id}")), base_version(id)));
+    }
+    let apply = |wd: &mut World| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
+    match swarm.commit(world, tick, w, Kind::Batch, apply) {
+        Ok((_, seq)) => {
+            let v = versions(world, &c.set).map(|v| v.items).unwrap_or_default();
+            let touched: Vec<(String, Json)> = c.puts.iter().map(|(id, _, _)| (id.clone(), Json::from(v.get(id).copied()))).collect();
+            ToolOutput::text(Json::obj([("journal", Json::from(seq)), ("versions", Json::Obj(touched))]).to_string())
+        }
+        Err(we) => {
+            let mut j = we.to_json();
+            j.set("hint", Json::from("claims: claim_take the set (/lex/<set>) or the item path, or ask its owner to claim_share; versions: lex_get the item and pass its version"));
+            ToolOutput::error(j.to_pretty())
+        }
     }
 }
 
@@ -190,10 +336,43 @@ fn header_of(stored: Option<&Json>, set: &str) -> Json {
     h
 }
 
-fn document(header: &Json, items: &BTreeMap<String, Json>) -> Result<Document, Vec<Diagnostic>> {
-    let mut j = header.clone();
-    j.set("items", Json::Obj(items.iter().map(|(k, v)| (k.clone(), v.clone())).collect()));
-    Document::from_json(&j)
+/// A stored (or edited) set as a document. Problems with the header or with item ids become
+/// diagnostics instead of failures, so a damaged set can still be listed, validated and fixed.
+struct Loaded {
+    doc: Document,
+    problems: Vec<Diagnostic>,
+}
+
+fn load(header: &Json, items: &BTreeMap<String, Json>, set: &str) -> Loaded {
+    let mut problems = Vec::new();
+    let mut h = header.clone();
+    h.set("items", Json::obj::<&str>([]));
+    let mut doc = match Document::from_json(&h) {
+        Ok(d) => d,
+        Err(ds) => {
+            problems.extend(ds.into_iter().map(|mut d| {
+                d.message = format!("the set's header: {}", d.message);
+                d
+            }));
+            Document::new(set, specula_lex::doc::DEFAULT_TICK_HZ)
+        }
+    };
+    for (id, item) in items {
+        match specula_lex::doc::check_id(id) {
+            Ok(()) => {
+                doc.items.insert(id.clone(), item.clone());
+            }
+            Err(d) => problems.push(d.suggest(format!("delete it with lex_edit {{\"op\": \"delete\", \"id\": \"{id}\"}} and put it again under a valid id"))),
+        }
+    }
+    Loaded { doc, problems }
+}
+
+/// Every diagnostic, uncapped: the load problems first, then validation.
+fn all_diags(l: &Loaded) -> Vec<Diagnostic> {
+    let mut d = l.problems.clone();
+    d.extend(specula_lex::compile::validate_all(&l.doc, &Options { natives: Some(Vec::new()), ..Default::default() }));
+    d
 }
 
 fn error_keys(ds: &[Diagnostic]) -> BTreeSet<(String, String, String)> {
@@ -204,217 +383,210 @@ fn diag_json(ds: &[Diagnostic], limit: usize) -> Json {
     Json::arr(ds.iter().take(limit).map(Diagnostic::to_json))
 }
 
-/// Answers a lex call on the main thread.
-pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
-    match call {
-        LexCall::Snapshot { set } => ToolOutput::text(snapshot_json(world, set.as_deref()).to_string()),
-        LexCall::Edit(e) => edit(e, world, swarm, tick, w, by),
+/// Where an edit reads the stored set from and writes its result to: the engine, or a test.
+trait Store {
+    fn snapshot(&mut self, set: &str) -> Result<Json, ToolOutput>;
+    fn commit(&mut self, c: Commit) -> ToolOutput;
+}
+
+struct EngineStore<'a> {
+    tools: &'a Tools,
+    session: &'a SessionInfo,
+}
+
+fn output_json(out: &ToolOutput) -> Json {
+    match out.content.first() {
+        Some(specula_protocol::Content::Text(t)) => Json::parse(t).unwrap_or_else(|_| Json::from(t.as_str())),
+        _ => Json::Null,
     }
 }
 
-fn edit(e: Edit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
-    let stored = read_set(world, &e.set);
-    let mut header = header_of(stored.as_ref().map(|s| &s.header), &e.set);
-    if let Some(n) = &e.header.name {
-        header.set("name", Json::from(n.as_str()));
-    }
-    if let Some(hz) = e.header.tick_hz {
-        header.set("tick_hz", Json::from(hz));
-    }
-    match &e.header.notes {
-        Some(Some(n)) => {
-            header.set("notes", Json::from(n.as_str()));
+impl Store for EngineStore<'_> {
+    fn snapshot(&mut self, set: &str) -> Result<Json, ToolOutput> {
+        let out = self.tools.send(self.session, Command::Lex(LexCall::Snapshot { set: set.to_owned(), only: None }));
+        if out.is_error {
+            return Err(out);
         }
-        Some(None) => {
-            if let Json::Obj(p) = &mut header {
-                p.retain(|(k, _)| k != "notes");
-            }
-        }
-        None => {}
+        Ok(output_json(&out))
     }
-    let before: BTreeMap<String, Json> = stored.as_ref().map(|s| s.items.iter().map(|(k, (_, v))| (k.clone(), v.clone())).collect()).unwrap_or_default();
-    let versions: BTreeMap<String, u64> = stored.as_ref().map(|s| s.items.iter().map(|(k, (v, _))| (k.clone(), *v)).collect()).unwrap_or_default();
-    let mut after = before.clone();
-    let mut touched: BTreeSet<String> = BTreeSet::new();
-    for (i, op) in e.ops.iter().enumerate() {
-        let id = op.id().to_owned();
-        let fail = |code: &'static str, msg: String, extra: Vec<(&str, Json)>| {
-            let mut x = vec![("op_index", Json::from(i)), ("id", Json::from(id.as_str()))];
-            x.extend(extra);
-            err_with(code, format!("ops[{i}] ({id}): {msg}; no op was applied"), x)
+
+    fn commit(&mut self, c: Commit) -> ToolOutput {
+        self.tools.send(self.session, Command::Lex(LexCall::Commit(c)))
+    }
+}
+
+/// How often an edit is validated again when other agents keep changing the set under it.
+const EDIT_ATTEMPTS: usize = 4;
+
+/// An edit: read the set, apply the ops, validate before and after (on this thread), then
+/// commit if nothing changed meanwhile (else start over).
+fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
+    for _ in 0..EDIT_ATTEMPTS {
+        let snap = match store.snapshot(&e.set) {
+            Ok(s) => s,
+            Err(out) => return out,
         };
-        if let Err(d) = specula_lex::doc::check_id(&id) {
-            return fail("invalid_id", d.message, vec![("suggestion", Json::from(d.suggestion.unwrap_or_default()))]);
+        let exists = snap.get("exists") == Some(&Json::Bool(true));
+        let mut before = BTreeMap::new();
+        let mut item_versions = BTreeMap::new();
+        for it in snap.get("items").and_then(Json::as_array).unwrap_or_default() {
+            let id = it.get("id").and_then(Json::as_str).unwrap_or("").to_owned();
+            item_versions.insert(id.clone(), it.get("version").and_then(Json::as_u64).unwrap_or(0));
+            before.insert(id, it.get("item").cloned().unwrap_or(Json::Null));
         }
-        let expect = match op {
-            EditOp::Put { expect, .. } | EditOp::Patch { expect, .. } | EditOp::Delete { expect, .. } => *expect,
-        };
-        if let Some(want) = expect {
-            let have = versions.get(&id).copied().unwrap_or(0);
-            if have != want {
-                return fail(
-                    "version_conflict",
-                    format!("expected version {want}, but the item is at version {have}{}", if have == 0 { " (it doesn't exist)" } else { "" }),
-                    vec![("version", Json::from(have)), ("suggestion", Json::from("lex_get it again, redo the change on the current item, and pass its version"))],
-                );
-            }
+        let base = exists.then(|| Versions { set: snap.get("set_version").and_then(Json::as_u64).unwrap_or(0), items: item_versions.clone() });
+        let old_header = header_of(snap.get("header"), &e.set);
+        let mut header = old_header.clone();
+        if let Some(n) = &e.header.name {
+            header.set("name", Json::from(n.as_str()));
         }
-        match op {
-            EditOp::Put { item, .. } => {
-                after.insert(id.clone(), item.clone());
+        if let Some(hz) = e.header.tick_hz {
+            header.set("tick_hz", Json::from(hz));
+        }
+        match &e.header.notes {
+            Some(Some(n)) => {
+                header.set("notes", Json::from(n.as_str()));
             }
-            EditOp::Patch { set, remove, .. } => {
-                let Some(item) = after.get_mut(&id) else {
-                    let hint = did_you_mean(&id, before.keys().map(String::as_str)).unwrap_or_else(|| "put it first".into());
-                    return fail("unknown_item", format!("there is no item '{id}' to patch"), vec![("suggestion", Json::from(hint))]);
-                };
-                for (path, v) in set {
-                    if let Err(m) = json_set(item, path, v.clone()) {
-                        return fail("bad_path", format!("set '{path}': {m}"), vec![]);
+            Some(None) => {
+                if let Json::Obj(p) = &mut header {
+                    p.retain(|(k, _)| k != "notes");
+                }
+            }
+            None => {}
+        }
+        let mut after = before.clone();
+        let mut touched: BTreeSet<String> = BTreeSet::new();
+        for (i, op) in e.ops.iter().enumerate() {
+            let id = op.id().to_owned();
+            let fail = |code: &'static str, msg: String, extra: Vec<(&str, Json)>| {
+                let mut x = vec![("op_index", Json::from(i)), ("id", Json::from(id.as_str()))];
+                x.extend(extra);
+                err_with(code, format!("ops[{i}] ({id}): {msg}; no op was applied"), x)
+            };
+            // A badly named stored item can still be deleted.
+            let deleting_existing = matches!(op, EditOp::Delete { .. }) && before.contains_key(&id);
+            if !deleting_existing {
+                if let Err(d) = specula_lex::doc::check_id(&id) {
+                    return fail("invalid_id", d.message, vec![("suggestion", Json::from(d.suggestion.unwrap_or_default()))]);
+                }
+            }
+            if let Some(want) = op.expect() {
+                let have = item_versions.get(&id).copied().unwrap_or(0);
+                if have != want {
+                    return fail(
+                        "version_conflict",
+                        format!("expected version {want}, but the item is at version {have}{}", if have == 0 { " (it doesn't exist)" } else { "" }),
+                        vec![("version", Json::from(have)), ("suggestion", Json::from("lex_get it again, redo the change on the current item, and pass its version"))],
+                    );
+                }
+            }
+            match op {
+                EditOp::Put { item, .. } => {
+                    after.insert(id.clone(), item.clone());
+                }
+                EditOp::Patch { set, remove, .. } => {
+                    let Some(item) = after.get_mut(&id) else {
+                        let hint = did_you_mean(&id, before.keys().map(String::as_str)).unwrap_or_else(|| "put it first".into());
+                        return fail("unknown_item", format!("there is no item '{id}' to patch"), vec![("suggestion", Json::from(hint))]);
+                    };
+                    for (path, v) in set {
+                        if let Err(m) = json_set(item, path, v.clone()) {
+                            return fail("bad_path", format!("set '{path}': {m}"), vec![]);
+                        }
+                    }
+                    for path in remove {
+                        if let Err(m) = json_remove(item, path) {
+                            return fail("bad_path", format!("remove '{path}': {m}"), vec![]);
+                        }
                     }
                 }
-                for path in remove {
-                    if let Err(m) = json_remove(item, path) {
-                        return fail("bad_path", format!("remove '{path}': {m}"), vec![]);
+                EditOp::Delete { .. } => {
+                    if after.remove(&id).is_none() {
+                        let hint = did_you_mean(&id, before.keys().map(String::as_str)).unwrap_or_default();
+                        return fail("unknown_item", format!("there is no item '{id}' to delete"), vec![("suggestion", Json::from(hint))]);
                     }
                 }
             }
-            EditOp::Delete { .. } => {
-                if after.remove(&id).is_none() {
-                    let hint = did_you_mean(&id, before.keys().map(String::as_str)).unwrap_or_default();
-                    return fail("unknown_item", format!("there is no item '{id}' to delete"), vec![("suggestion", Json::from(hint))]);
+            touched.insert(id);
+        }
+        if e.replace {
+            after.retain(|k, _| touched.contains(k));
+        }
+        // Validate before and after, uncapped: refuse an edit that adds errors (unless a draft).
+        let old_keys = error_keys(&all_diags(&load(&old_header, &before, &e.set)));
+        let new_diags = all_diags(&load(&header, &after, &e.set));
+        let added: Vec<&Diagnostic> = new_diags.iter().filter(|d| d.is_error() && !old_keys.contains(&(d.code.to_owned(), d.item.clone(), d.path.clone()))).collect();
+        let errors = new_diags.iter().filter(|d| d.is_error()).count();
+        if !added.is_empty() && !e.allow_errors {
+            return err_with(
+                "invalid",
+                format!("the edit would add {} validation error(s), so nothing was changed; fix them (each says what to change) or pass allow_errors: true to store a draft", added.len()),
+                vec![("diagnostics", Json::arr(added.iter().take(50).map(|d| d.to_json()))), ("errors_after", Json::from(errors))],
+            );
+        }
+        let header_changed = !exists || old_header.to_string() != header.to_string();
+        let mut changes: Vec<(String, &'static str)> = Vec::new();
+        let mut puts = Vec::new();
+        for (id, item) in &after {
+            match before.get(id) {
+                None => {
+                    puts.push((id.clone(), item.clone(), true));
+                    changes.push((id.clone(), "added"));
                 }
+                Some(old) if specula_lex::doc::canonical(old).to_string() != specula_lex::doc::canonical(item).to_string() => {
+                    puts.push((id.clone(), item.clone(), false));
+                    changes.push((id.clone(), "changed"));
+                }
+                Some(_) => {}
             }
         }
-        touched.insert(id);
-    }
-    if e.replace {
-        after.retain(|k, _| touched.contains(k));
-    }
-    // Validate the result: refuse an edit that adds errors (unless it's a draft).
-    let old_diags = document(&header_of(stored.as_ref().map(|s| &s.header), &e.set), &before).map(|d| validate(&d, &Options::default())).unwrap_or_else(|d| d);
-    let new_diags = match document(&header, &after) {
-        Ok(d) => validate(&d, &Options { natives: Some(Vec::new()), ..Default::default() }),
-        Err(d) => d,
-    };
-    let old_keys = error_keys(&old_diags);
-    let added: Vec<&Diagnostic> = new_diags.iter().filter(|d| d.is_error() && !old_keys.contains(&(d.code.to_owned(), d.item.clone(), d.path.clone()))).collect();
-    let errors = new_diags.iter().filter(|d| d.is_error()).count();
-    if !added.is_empty() && !e.allow_errors {
-        return err_with(
-            "invalid",
-            format!("the edit would add {} validation error(s), so nothing was changed; fix them (each says what to change) or pass allow_errors: true to store a draft", added.len()),
-            vec![
-                ("diagnostics", Json::arr(added.iter().take(50).map(|d| d.to_json()))),
-                ("errors_after", Json::from(errors)),
-            ],
-        );
-    }
-    // The world ops: create the root and the set when missing, then the items.
-    let mut ops = Vec::new();
-    let root_path = format!("/{ROOT}");
-    if world.find_path(&root_path).is_err() {
-        let mut s = SpawnSpec::new(Shape::Group);
-        s.name = Some(ROOT.into());
-        s.visible = false;
-        s.tags = BTreeSet::from(["lex".to_owned()]);
-        ops.push(Op::Spawn(s));
-    }
-    let sp = set_path(&e.set);
-    let header_changed = stored.as_ref().is_none_or(|s| header_of(Some(&s.header), &e.set).to_string() != header.to_string());
-    if stored.is_none() {
-        let mut s = SpawnSpec::new(Shape::Group);
-        s.name = Some(e.set.clone());
-        s.parent = Some(EntityKey::Path(root_path.clone()));
-        s.visible = false;
-        s.tags = BTreeSet::from(["lex".to_owned(), "lex_set".to_owned()]);
-        s.props = Json::obj([("lex_set", header.clone())]);
-        ops.push(Op::Spawn(s));
-    } else if header_changed {
-        ops.push(Op::Set(EntityKey::Path(sp.clone()), UpdateSpec { props: Some(Json::obj([("lex_set", header.clone())])), ..Default::default() }));
-    }
-    let mut changed: Vec<(String, &'static str)> = Vec::new();
-    let expects: BTreeMap<String, Option<u64>> = e
-        .ops
-        .iter()
-        .map(|o| {
-            let x = match o {
-                EditOp::Put { expect, .. } | EditOp::Patch { expect, .. } | EditOp::Delete { expect, .. } => *expect,
-            };
-            (o.id().to_owned(), x)
-        })
-        .collect();
-    for (id, item) in &after {
-        let expect = expects.get(id).copied().flatten().filter(|v| *v > 0);
-        match before.get(id) {
-            None => {
-                let mut s = SpawnSpec::new(Shape::Group);
-                s.name = Some(id.clone());
-                s.parent = Some(EntityKey::Path(sp.clone()));
-                s.visible = false;
-                s.tags = BTreeSet::from(["lex".to_owned()]);
-                s.props = Json::obj([("lex", item.clone())]);
-                ops.push(Op::Spawn(s));
-                changed.push((id.clone(), "added"));
+        let deletes: Vec<String> = before.keys().filter(|k| !after.contains_key(*k)).cloned().collect();
+        changes.extend(deletes.iter().map(|d| (d.clone(), "deleted")));
+        let summary = |journal: Option<u64>, versions: Option<&Json>| {
+            let list: Vec<Json> = changes
+                .iter()
+                .map(|(id, what)| {
+                    let v = versions.and_then(|v| v.get(id)).cloned().unwrap_or(Json::Null);
+                    Json::obj([("id", Json::from(id.as_str())), ("change", Json::from(*what)), ("version", v)])
+                })
+                .collect();
+            let warnings: Vec<&Diagnostic> = new_diags.iter().filter(|d| !d.is_error()).collect();
+            let mut out = vec![
+                ("set", Json::from(e.set.as_str())),
+                ("changes", Json::Arr(list)),
+                ("items", Json::from(after.len())),
+                ("valid", Json::Bool(errors == 0)),
+                ("journal", Json::from(journal)),
+            ];
+            if errors > 0 {
+                out.push(("errors", Json::arr(new_diags.iter().filter(|d| d.is_error()).take(50).map(Diagnostic::to_json))));
             }
-            Some(old) if specula_lex::doc::canonical(old).to_string() != specula_lex::doc::canonical(item).to_string() => {
-                let u = UpdateSpec { props: Some(Json::obj([("lex", item.clone())])), expect_version: expect, ..Default::default() };
-                ops.push(Op::Set(EntityKey::Path(format!("{sp}/{id}")), u));
-                changed.push((id.clone(), "changed"));
+            if !warnings.is_empty() {
+                out.push(("warnings", Json::arr(warnings.iter().take(50).map(|d| d.to_json()))));
             }
-            Some(_) => {}
+            Json::obj(out)
+        };
+        if e.dry_run {
+            let mut s = summary(None, None);
+            s.set("dry_run", Json::Bool(true));
+            return ToolOutput::text(s.to_pretty());
         }
-    }
-    for id in before.keys() {
-        if !after.contains_key(id) {
-            let expect = expects.get(id).copied().flatten().filter(|v| *v > 0);
-            ops.push(Op::Delete(EntityKey::Path(format!("{sp}/{id}")), expect));
-            changed.push((id.clone(), "deleted"));
+        if changes.is_empty() && !header_changed {
+            return ToolOutput::text(summary(None, None).to_pretty());
         }
-    }
-    let summary = |journal: Option<u64>, world: Option<&World>| {
-        let mut versions = Vec::new();
-        for (id, what) in &changed {
-            let v = match world {
-                Some(world) if *what != "deleted" => world.find_path(&format!("{sp}/{id}")).ok().and_then(|x| world.get(x)).map_or(Json::Null, |x| Json::from(x.version)),
-                _ => Json::Null,
-            };
-            versions.push(Json::obj([("id", Json::from(id.as_str())), ("change", Json::from(*what)), ("version", v)]));
-        }
-        let warnings: Vec<&Diagnostic> = new_diags.iter().filter(|d| !d.is_error()).collect();
-        let mut out = vec![
-            ("set", Json::from(e.set.as_str())),
-            ("changes", Json::Arr(versions)),
-            ("items", Json::from(after.len())),
-            ("valid", Json::Bool(errors == 0)),
-            ("journal", Json::from(journal)),
-        ];
-        if errors > 0 {
-            out.push(("errors", Json::arr(new_diags.iter().filter(|d| d.is_error()).take(50).map(Diagnostic::to_json))));
-        }
-        if !warnings.is_empty() {
-            out.push(("warnings", Json::arr(warnings.iter().take(50).map(|d| d.to_json()))));
-        }
-        Json::obj(out)
-    };
-    if e.dry_run {
-        let mut s = summary(None, None);
-        s.set("dry_run", Json::Bool(true));
-        return ToolOutput::text(s.to_pretty());
-    }
-    if ops.is_empty() {
-        return ToolOutput::text(summary(None, Some(world)).to_pretty());
-    }
-    let apply = |wd: &mut World| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
-    match swarm.commit(world, tick, w, Kind::Batch, apply) {
-        Ok((_, seq)) => ToolOutput::text(summary(seq, Some(world)).to_pretty()),
-        Err(we) => {
-            let mut j = we.to_json();
+        let out = store.commit(Commit { set: e.set.clone(), base, header: header_changed.then(|| header.clone()), puts, deletes });
+        let reply = output_json(&out);
+        if out.is_error {
+            if reply.get("error").and_then(Json::as_str) == Some("set_changed") {
+                continue;
+            }
+            let mut j = reply;
             j.set("tool", Json::from(e.tool));
-            j.set("hint", Json::from("claims: claim_take the set (/lex/<set>) or the item path; versions: lex_get the item and pass its version"));
-            ToolOutput::error(j.to_pretty())
+            return ToolOutput::error(j.to_pretty());
         }
+        return ToolOutput::text(summary(reply.get("journal").and_then(Json::as_u64), reply.get("versions")).to_pretty());
     }
+    err("busy", format!("other agents kept changing set '{}' while this edit was validated ({EDIT_ATTEMPTS} tries); claim_take /lex/{} first, then edit", e.set, e.set))
 }
 
 /// Splits `a.b[2].c` into keys and indices.
@@ -543,59 +715,42 @@ fn bool_of(args: &Json, key: &str) -> Result<bool, String> {
     Ok(crate::tools::bool_arg(args, key)?.unwrap_or(false))
 }
 
-/// The stored set as a document plus item versions, fetched from the main thread.
-fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<(Document, BTreeMap<String, u64>), ToolOutput> {
-    let snap = tools.send(session, Command::Lex(LexCall::Snapshot { set: Some(set.to_owned()) }));
-    if snap.is_error {
-        return Err(snap);
-    }
-    let text = match snap.content.first() {
-        Some(specula_protocol::Content::Text(t)) => t.clone(),
-        _ => return Err(err("internal", "the engine sent no snapshot")),
-    };
-    let j = Json::parse(&text).map_err(|e| err("internal", e.message))?;
-    if j.get("exists") == Some(&Json::Bool(false)) {
-        let sets = tools.send(session, Command::Lex(LexCall::Snapshot { set: None }));
-        let names: Vec<String> = match sets.content.first() {
-            Some(specula_protocol::Content::Text(t)) => Json::parse(t)
-                .ok()
-                .and_then(|x| x.get("sets").and_then(Json::as_array).map(|a| a.iter().filter_map(|s| s.get("set").and_then(Json::as_str).map(str::to_owned)).collect()))
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
+/// The stored set, loaded (with its load problems), from a main-thread snapshot.
+fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<Loaded, ToolOutput> {
+    let j = EngineStore { tools, session }.snapshot(set)?;
+    if j.get("exists") != Some(&Json::Bool(true)) {
+        let sets = output_json(&tools.send(session, Command::Lex(LexCall::Sets { after: None, limit: 500 })));
+        let names: Vec<String> = sets.get("sets").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|s| s.get("set").and_then(Json::as_str).map(str::to_owned)).collect();
         let hint = did_you_mean(set, names.iter().map(String::as_str)).unwrap_or_else(|| "create it with lex_edit or lex_import".into());
         return Err(err_with("unknown_set", format!("there is no rule set '{set}'"), vec![("suggestion", Json::from(hint))]));
     }
     let mut items = BTreeMap::new();
-    let mut versions = BTreeMap::new();
     for it in j.get("items").and_then(Json::as_array).unwrap_or_default() {
-        let id = it.get("id").and_then(Json::as_str).unwrap_or("").to_owned();
-        versions.insert(id.clone(), it.get("version").and_then(Json::as_u64).unwrap_or(0));
-        items.insert(id, it.get("item").cloned().unwrap_or(Json::Null));
+        items.insert(it.get("id").and_then(Json::as_str).unwrap_or("").to_owned(), it.get("item").cloned().unwrap_or(Json::Null));
     }
-    let header = header_of(j.get("header"), set);
-    match document(&header, &items) {
-        Ok(d) => Ok((d, versions)),
-        // A broken header still lets agents see and fix the items.
-        Err(_) => {
-            let mut d = Document::new(set, specula_lex::doc::DEFAULT_TICK_HZ);
-            d.items = items;
-            Ok((d, versions))
-        }
-    }
+    Ok(load(&header_of(j.get("header"), set), &items, set))
 }
 
-/// A set (by name) or an inline `document`.
+/// A set (by name) or an inline `document`. A stored set whose header or item ids are broken is
+/// refused here (with what to fix), so nothing runs it at the wrong rate or without some items.
 fn doc_arg(tools: &Tools, session: &SessionInfo, args: &Json, tool: &str) -> Result<(Document, Option<String>), ToolOutput> {
     match (args.get("set"), args.get("document")) {
         (Some(_), Some(_)) => Err(err("invalid_argument", format!("{tool}: give 'set' or 'document', not both"))),
         (None, Some(d)) => {
-            let doc = Document::from_json(d).map_err(|ds| err_with("invalid_document", "the document's header is invalid", vec![("diagnostics", diag_json(&ds, 50))]))?;
+            let doc = Document::from_json(d).map_err(|ds| err_with("invalid_document", "the document's header or item ids are invalid", vec![("diagnostics", diag_json(&ds, 50))]))?;
             Ok((doc, None))
         }
         _ => {
             let set = set_arg(args, true).map_err(|m| err("invalid_argument", m))?.expect("required");
-            Ok((fetch(tools, session, &set)?.0, Some(set)))
+            let l = fetch(tools, session, &set)?;
+            if !l.problems.is_empty() {
+                return Err(err_with(
+                    "invalid_set",
+                    format!("set '{set}' has a broken header or item ids (changed outside lex_edit?); fix them with lex_edit first"),
+                    vec![("diagnostics", diag_json(&l.problems, 50))],
+                ));
+            }
+            Ok((l.doc, Some(set)))
         }
     }
 }
@@ -694,46 +849,19 @@ fn summary_of(id: &str, item: &Json) -> Json {
 
 fn list_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     check_keys(args, "lex_list", &[&["set", "kind", "cursor", "limit"]])?;
+    let limit = u64_arg(args, "limit", 1, LIST_LIMITS.1)?.unwrap_or(LIST_LIMITS.0) as usize;
+    let cursor = crate::tools::string_arg(args, "cursor")?.map(str::to_owned);
     let Some(set) = set_arg(args, false)? else {
-        return Ok(tools.send(session, Command::Lex(LexCall::Snapshot { set: None })));
+        return Ok(tools.send(session, Command::Lex(LexCall::Sets { after: cursor, limit })));
     };
-    let kind = crate::tools::string_arg(args, "kind")?;
-    if let Some(k) = kind {
+    let kind = crate::tools::string_arg(args, "kind")?.map(str::to_owned);
+    if let Some(k) = &kind {
         if schema::kind(k).is_none() {
             let names: Vec<&str> = schema::KINDS.iter().map(|k| k.name).collect();
             return Err(format!("'kind' {k:?} is not an item kind; {}", did_you_mean(k, names).unwrap_or_default()));
         }
     }
-    let limit = u64_arg(args, "limit", 1, LIST_LIMITS.1)?.unwrap_or(LIST_LIMITS.0) as usize;
-    let cursor = crate::tools::string_arg(args, "cursor")?;
-    let (doc, versions) = match fetch(tools, session, &set) {
-        Ok(x) => x,
-        Err(e) => return Ok(e),
-    };
-    let mut page = Vec::new();
-    let mut next = None;
-    for (id, item) in doc.items.iter().filter(|(id, _)| cursor.is_none_or(|c| id.as_str() > c)) {
-        if kind.is_some_and(|k| item.get("kind").and_then(Json::as_str) != Some(k)) {
-            continue;
-        }
-        if page.len() == limit {
-            next = page.last().and_then(|p: &Json| p.get("id")).and_then(Json::as_str).map(str::to_owned);
-            break;
-        }
-        let mut s = summary_of(id, item);
-        s.set("version", Json::from(versions.get(id).copied().unwrap_or(0)));
-        page.push(s);
-    }
-    Ok(ToolOutput::text(
-        Json::obj([
-            ("set", Json::from(set)),
-            ("header", doc.header_json()),
-            ("total", Json::from(doc.items.len())),
-            ("items", Json::Arr(page)),
-            ("next_cursor", Json::from(next)),
-        ])
-        .to_string(),
-    ))
+    Ok(tools.send(session, Command::Lex(LexCall::List { set, kind, after: cursor, limit })))
 }
 
 fn get_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
@@ -744,18 +872,28 @@ fn get_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOut
         Some(Json::Str(s)) => vec![s.clone()],
         _ => return Err(format!("'ids' must be an item id or an array of 1 to {MAX_GET} ids (lex_list pages through all of them)")),
     };
-    let (doc, versions) = match fetch(tools, session, &set) {
-        Ok(x) => x,
-        Err(e) => return Ok(e),
-    };
+    let snap = tools.send(session, Command::Lex(LexCall::Snapshot { set: set.clone(), only: Some(ids.clone()) }));
+    if snap.is_error {
+        return Ok(snap);
+    }
+    let j = output_json(&snap);
+    if j.get("exists") != Some(&Json::Bool(true)) {
+        return Ok(err("unknown_set", format!("there is no rule set '{set}'; lex_list without 'set' lists them")));
+    }
+    let stored = j.get("items").and_then(Json::as_array).unwrap_or_default();
+    let all: Vec<String> = j.get("all_ids").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|x| x.as_str().map(str::to_owned)).collect();
     let mut found = Vec::new();
     let mut missing = Vec::new();
     for id in &ids {
-        match doc.items.get(id) {
-            Some(item) => found.push(Json::obj([("id", Json::from(id.as_str())), ("version", Json::from(versions.get(id).copied().unwrap_or(0))), ("item", specula_lex::doc::canonical(item))])),
+        match stored.iter().find(|it| it.get("id").and_then(Json::as_str) == Some(id)) {
+            Some(it) => found.push(Json::obj([
+                ("id", Json::from(id.as_str())),
+                ("version", it.get("version").cloned().unwrap_or(Json::Null)),
+                ("item", specula_lex::doc::canonical(it.get("item").unwrap_or(&Json::Null))),
+            ])),
             None => missing.push(Json::obj([
                 ("id", Json::from(id.as_str())),
-                ("suggestion", Json::from(did_you_mean(id, doc.items.keys().map(String::as_str)).unwrap_or_default())),
+                ("suggestion", Json::from(did_you_mean(id, all.iter().map(String::as_str)).unwrap_or_default())),
             ])),
         }
     }
@@ -766,23 +904,43 @@ fn get_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOut
     Ok(ToolOutput::text(Json::obj(out).to_string()))
 }
 
+/// Most params and natives `lex_validate` lists.
+const MAX_LISTED: usize = 200;
+
 fn validate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     check_keys(args, "lex_validate", &[&["set", "document", "params", "limit"]])?;
     let params = params_arg(args)?;
     let limit = u64_arg(args, "limit", 1, specula_lex::compile::MAX_DIAGNOSTICS as u64)?.unwrap_or(50) as usize;
-    let (doc, set) = match doc_arg(tools, session, args, "lex_validate") {
-        Ok(x) => x,
-        Err(e) => return Ok(e),
+    // A stored set is validated even when damaged: its load problems lead the list.
+    let (doc, set, mut diags) = match (args.get("set"), args.get("document")) {
+        (Some(_), None) => {
+            let set = set_arg(args, true)?.expect("required");
+            match fetch(tools, session, &set) {
+                Ok(l) => (l.doc, Some(set), l.problems),
+                Err(e) => return Ok(e),
+            }
+        }
+        _ => match doc_arg(tools, session, args, "lex_validate") {
+            Ok((d, s)) => (d, s, Vec::new()),
+            Err(e) => return Ok(e),
+        },
     };
     let opts = Options { overrides: params, natives: Some(Vec::new()) };
-    let (diags, rules) = match compile(&doc, &opts) {
-        Ok(c) => (c.warnings, Some(c.rules)),
-        Err(d) => (d, None),
+    let rules = match compile(&doc, &opts) {
+        Ok(c) => {
+            diags.extend(c.warnings);
+            Some(c.rules)
+        }
+        Err(d) => {
+            diags.extend(d);
+            None
+        }
     };
+    diags.sort_by_key(|d| d.severity);
     let errors = diags.iter().filter(|d| d.is_error()).count();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for item in doc.items.values() {
-        *counts.entry(item.get("kind").and_then(Json::as_str).unwrap_or("?").to_owned()).or_insert(0) += 1;
+        *counts.entry(item.get("kind").and_then(Json::as_str).unwrap_or("?").chars().take(32).collect()).or_insert(0) += 1;
     }
     let mut out = vec![
         ("set", Json::from(set)),
@@ -790,23 +948,29 @@ fn validate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
         ("errors", Json::from(errors)),
         ("warnings", Json::from(diags.len() - errors)),
         ("diagnostics", diag_json(&diags, limit)),
-        ("items_by_kind", Json::Obj(counts.into_iter().map(|(k, v)| (k, Json::from(v))).collect())),
+        ("items_by_kind", Json::Obj(counts.into_iter().take(MAX_LISTED).map(|(k, v)| (k, Json::from(v))).collect())),
     ];
-    if let Some(r) = rules {
+    if let Some(r) = rules.filter(|_| errors == 0) {
         out.push(("rules_hash", Json::from(format!("{:016x}", r.hash))));
         out.push((
             "params",
-            Json::arr(r.params.iter().map(|p| {
+            Json::arr(r.params.iter().take(MAX_LISTED).map(|p| {
                 Json::obj([
                     ("id", Json::from(p.id.as_str())),
                     ("type", Json::from(p.unit.name())),
                     ("value", show_val(&r, specula_lex::Val::Int(p.value), specula_lex::expr::Ty::Num(p.unit))),
-                    ("doc", Json::from(p.doc.as_str())),
+                    ("doc", Json::from(p.doc.chars().take(200).collect::<String>())),
                 ])
             })),
         ));
+        if r.params.len() > MAX_LISTED {
+            out.push(("params_not_listed", Json::from(r.params.len() - MAX_LISTED)));
+        }
         if !r.natives.is_empty() {
-            out.push(("natives", Json::arr(r.natives.iter().map(|n| Json::obj([("id", Json::from(n.id.as_str())), ("hook", Json::from(n.hook.as_str())), ("reason", Json::from(n.reason.as_str()))])))));
+            out.push(("natives", Json::arr(r.natives.iter().take(MAX_LISTED).map(|n| Json::obj([("id", Json::from(n.id.as_str())), ("hook", Json::from(n.hook.as_str())), ("reason", Json::from(n.reason.chars().take(300).collect::<String>()))])))));
+        }
+        if r.natives.len() > MAX_LISTED {
+            out.push(("natives_not_listed", Json::from(r.natives.len() - MAX_LISTED)));
         }
     }
     Ok(ToolOutput::text(Json::obj(out).to_string()))
@@ -887,7 +1051,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     let set = set_arg(args, true)?.expect("required");
     let ops = parse_ops(args)?;
     let e = Edit { set, header: header_args(args)?, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace: false, tool: "lex_edit" };
-    Ok(tools.send(session, Command::Lex(LexCall::Edit(e))))
+    Ok(edit_in(&mut EngineStore { tools, session }, &e))
 }
 
 fn import_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
@@ -896,19 +1060,24 @@ fn import_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Tool
     let d = args.get("document").ok_or("'document' is required: {\"lex\": 1, \"tick_hz\": ..., \"items\": {...}}")?;
     let doc = match Document::from_json(d) {
         Ok(doc) => doc,
-        Err(ds) => return Ok(err_with("invalid_document", "the document's header is invalid; nothing was imported", vec![("diagnostics", diag_json(&ds, 50))])),
+        Err(ds) => return Ok(err_with("invalid_document", "the document's header or item ids are invalid; nothing was imported", vec![("diagnostics", diag_json(&ds, 50))])),
     };
+    if doc.items.len() > MAX_OPS * 20 {
+        return Err(format!("the document has {} items; at most {}", doc.items.len(), MAX_OPS * 20));
+    }
     let ops = doc.items.iter().map(|(id, item)| EditOp::Put { id: id.clone(), item: item.clone(), expect: None }).collect();
     let header = Header { name: Some(doc.name.clone()).filter(|n| !n.is_empty()), tick_hz: Some(doc.tick_hz), notes: Some(doc.notes.clone()) };
     let replace = crate::tools::bool_arg(args, "replace")?.unwrap_or(true);
     let e = Edit { set, header, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace, tool: "lex_import" };
-    Ok(tools.send(session, Command::Lex(LexCall::Edit(e))))
+    Ok(edit_in(&mut EngineStore { tools, session }, &e))
 }
 
 fn export_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     check_keys(args, "lex_export", &[&["set", "pretty"]])?;
-    let set = set_arg(args, true)?.expect("required");
-    let (doc, _) = match fetch(tools, session, &set) {
+    if args.get("document").is_some() {
+        return Err("lex_export exports a stored set: give 'set'".into());
+    }
+    let (doc, _) = match doc_arg(tools, session, args, "lex_export") {
         Ok(x) => x,
         Err(e) => return Ok(e),
     };
@@ -1299,14 +1468,47 @@ mod tests {
         EditOp::Put { id: id.into(), item: Json::parse(item).unwrap(), expect: None }
     }
 
+    /// The engine's store, minus the threads: snapshots and commits straight on the world.
+    struct TestStore<'a> {
+        w: &'a mut World,
+        sw: &'a mut Swarm,
+        who: Writer<'a>,
+        /// Before the first commit, another agent changes the set (to exercise the retry).
+        interfere: bool,
+    }
+
+    impl Store for TestStore<'_> {
+        fn snapshot(&mut self, set: &str) -> Result<Json, ToolOutput> {
+            Ok(snapshot_json(self.w, set, None))
+        }
+
+        fn commit(&mut self, c: Commit) -> ToolOutput {
+            if std::mem::take(&mut self.interfere) {
+                let base = versions(self.w, &c.set);
+                let other = Commit { set: c.set.clone(), base, header: None, puts: vec![("intruder".into(), Json::parse(r#"{"kind": "resource", "start": 1}"#).unwrap(), true)], deletes: vec![] };
+                assert!(!handle(LexCall::Commit(other), self.w, self.sw, 0, BOB, "bob").is_error);
+            }
+            handle(LexCall::Commit(c), self.w, self.sw, 0, self.who, self.who.name)
+        }
+    }
+
     fn go(w: &mut World, sw: &mut Swarm, who: Writer, e: Edit) -> (bool, Json) {
-        let out = handle(LexCall::Edit(e), w, sw, 0, who, who.name);
-        let specula_protocol::Content::Text(t) = &out.content[0] else { panic!() };
-        (out.is_error, Json::parse(t).unwrap_or_else(|_| Json::from(t.as_str())))
+        let out = edit_in(&mut TestStore { w, sw, who, interfere: false }, &e);
+        (out.is_error, output_json(&out))
+    }
+
+    fn snap(w: &World, set: &str) -> Json {
+        snapshot_json(w, set, None)
     }
 
     fn item(w: &World, set: &str, id: &str) -> Option<(u64, Json)> {
-        read_set(w, set).and_then(|s| s.items.get(id).cloned())
+        let s = snap(w, set);
+        let it = s.get("items")?.as_array()?.iter().find(|i| i.get("id").and_then(Json::as_str) == Some(id))?.clone();
+        Some((it.get("version")?.as_u64()?, it.get("item")?.clone()))
+    }
+
+    fn ids(w: &World, set: &str) -> Vec<String> {
+        snap(w, set).get("items").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|i| i.get("id").and_then(Json::as_str).map(str::to_owned)).collect()
     }
 
     #[test]
@@ -1317,7 +1519,7 @@ mod tests {
         assert_eq!(out.get("valid"), Some(&Json::Bool(true)));
         assert!(out.get("journal").and_then(Json::as_u64).is_some(), "journaled: {out}");
         assert_eq!(item(&w, "rules", "gold").map(|(v, _)| v), Some(1));
-        assert_eq!(read_set(&w, "rules").unwrap().header.get("tick_hz").and_then(Json::as_u64), Some(30));
+        assert_eq!(snap(&w, "rules").get("header").and_then(|h| h.get("tick_hz")).and_then(Json::as_u64), Some(30));
 
         // An edit that adds an error changes nothing and says what to fix.
         let (bad, out) = go(&mut w, &mut sw, ANN, edit_of("rules", vec![put("win", r#"{"kind": "outcome", "result": "won", "when": "res.gld >= 10"}"#)]));
@@ -1375,10 +1577,58 @@ mod tests {
         imp.replace = true;
         let (bad, out) = go(&mut w, &mut sw, BOB, imp);
         assert!(!bad, "{out}");
-        let s = read_set(&w, "bobs").unwrap();
-        assert_eq!(s.items.keys().collect::<Vec<_>>(), ["coins"]);
-        let snap = snapshot_json(&w, None).to_string();
-        assert!(snap.contains("\"set\":\"bobs\"") && snap.contains("\"set\":\"rules\""), "{snap}");
+        assert_eq!(ids(&w, "bobs"), ["coins"]);
+        let sets = sets_json(&w, None, 100).to_string();
+        assert!(sets.contains("\"set\":\"bobs\"") && sets.contains("\"set\":\"rules\""), "{sets}");
+        let page = sets_json(&w, None, 1);
+        assert_eq!(page.get("next_cursor").and_then(Json::as_str), Some("bobs"), "paged");
+    }
+
+    #[test]
+    fn a_commit_against_a_changed_set_is_redone() {
+        let (mut w, mut sw) = setup();
+        go(&mut w, &mut sw, ANN, edit_of("rules", vec![put("gold", r#"{"kind": "resource", "start": 5}"#)]));
+        let stale = Commit { set: "rules".into(), base: None, header: None, puts: vec![], deletes: vec![] };
+        let out = handle(LexCall::Commit(stale), &mut w, &mut sw, 0, ANN, "ann");
+        assert_eq!(output_json(&out).get("error").and_then(Json::as_str), Some("set_changed"));
+        // Another agent's commit lands between this edit's validation and its commit: it is
+        // validated again on the new state and both survive.
+        let e = edit_of("rules", vec![put("gems", r#"{"kind": "resource", "start": 2}"#)]);
+        let out = edit_in(&mut TestStore { w: &mut w, sw: &mut sw, who: ANN, interfere: true }, &e);
+        assert!(!out.is_error, "{}", output_json(&out));
+        assert_eq!(ids(&w, "rules"), ["gems", "gold", "intruder"]);
+    }
+
+    #[test]
+    fn damaged_sets_are_still_validated_and_can_be_fixed() {
+        let (mut w, mut sw) = setup();
+        go(&mut w, &mut sw, ANN, edit_of("s", vec![put("gold", r#"{"kind": "resource", "start": 5}"#)]));
+        // A badly named item slipped in through world_spawn.
+        let mut bad = SpawnSpec::new(Shape::Group);
+        bad.name = Some("Bad".into());
+        bad.parent = Some(EntityKey::Path("/lex/s".into()));
+        w.spawn(bad, "x").unwrap();
+        let (refused, out) = go(&mut w, &mut sw, ANN, edit_of("s", vec![put("win", r#"{"kind": "outcome", "result": "won", "when": "res.gld >= 10 +"}"#)]));
+        assert!(refused, "the new syntax error is still caught: {out}");
+        assert!(out.get("diagnostics").unwrap().to_string().contains("syntax"));
+        let (refused, out) = go(&mut w, &mut sw, ANN, edit_of("s", vec![EditOp::Delete { id: "Bad".into(), expect: None }]));
+        assert!(!refused, "the bad item can be deleted: {out}");
+        assert_eq!(out.get("valid"), Some(&Json::Bool(true)));
+    }
+
+    #[test]
+    fn errors_past_the_report_cap_still_count() {
+        let (mut w, mut sw) = setup();
+        let mut ops = vec![put("gold", r#"{"kind": "resource", "start": 5}"#)];
+        for i in 0..250 {
+            ops.push(put(&format!("o{i:03}"), r#"{"kind": "outcome", "result": "won", "when": "res.gld >= 10"}"#));
+        }
+        let mut draft = edit_of("big", ops);
+        draft.allow_errors = true;
+        assert!(!go(&mut w, &mut sw, ANN, draft).0);
+        let fix = edit_of("big", vec![put("o000", r#"{"kind": "outcome", "result": "won", "when": "res.gold >= 10"}"#)]);
+        let (refused, out) = go(&mut w, &mut sw, ANN, fix);
+        assert!(!refused, "fixing one of 250 errors adds none: {out}");
     }
 
     #[test]

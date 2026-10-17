@@ -24,6 +24,13 @@ pub const MAX_DIAGNOSTICS: usize = 200;
 /// Largest counts and sizes, so a typo can't ask for a billion spawns.
 pub const MAX_GROUP_COUNT: i64 = 100_000;
 pub const MAX_ITEMS: usize = 10_000;
+/// Most spawns one wave schedules (they are all queued when it starts).
+pub const MAX_WAVE_SPAWNS: i64 = 100_000;
+/// Largest coordinate: 1e9 m (in mm), so squared distances never overflow.
+pub const MAX_COORD_MM: i64 = 1_000_000_000_000;
+/// Most sites, tags, attributes and RNG streams (they are indexed by u16, and u16::MAX is the
+/// "no tag" mark).
+pub const MAX_NAMES: usize = 60_000;
 
 /// Compile options.
 #[derive(Clone, Debug, Default)]
@@ -43,14 +50,27 @@ pub struct Compiled {
     pub warnings: Vec<Diagnostic>,
 }
 
-/// Compiles a document. `Err` holds every diagnostic (errors first, then warnings).
+/// Compiles a document. `Err` holds the diagnostics (errors first, then warnings), at most
+/// [`MAX_DIAGNOSTICS`] of them.
 pub fn compile(doc: &Document, opts: &Options) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_capped(doc, opts, true)
+}
+
+/// Every diagnostic, uncapped (for callers that compare two validations, like `lex_edit`).
+pub fn validate_all(doc: &Document, opts: &Options) -> Vec<Diagnostic> {
+    match compile_capped(doc, opts, false) {
+        Ok(c) => c.warnings,
+        Err(d) => d,
+    }
+}
+
+fn compile_capped(doc: &Document, opts: &Options, cap: bool) -> Result<Compiled, Vec<Diagnostic>> {
     let mut cx = Cx::new(doc);
     cx.pass1(opts);
     let rules = cx.pass2(opts);
     let mut diags = cx.diags.into_inner();
     diags.sort_by_key(|d| d.severity);
-    if diags.len() > MAX_DIAGNOSTICS {
+    if cap && diags.len() > MAX_DIAGNOSTICS {
         let n = diags.len();
         diags.truncate(MAX_DIAGNOSTICS);
         diags.push(Diagnostic::warning(codes::TOO_MANY, "", "", format!("{n} diagnostics; only the first {MAX_DIAGNOSTICS} are shown")).suggest("fix these and validate again"));
@@ -259,6 +279,10 @@ impl<'d> Cx<'d> {
                 }
             }
         }
+        if site_points.len() > MAX_NAMES {
+            self.push(Diagnostic::error(codes::TOO_MANY, "", "sites", format!("{} sites; at most {MAX_NAMES}", site_points.len())));
+            site_points = site_points.into_iter().take(MAX_NAMES).collect();
+        }
         for (i, (name, (pos, _))) in site_points.into_iter().enumerate() {
             self.reg.sites.insert(name.clone(), i as u16);
             self.sites.push(SiteDef { name, pos });
@@ -286,6 +310,10 @@ impl<'d> Cx<'d> {
             if let Some(Json::Arr(ts)) = doc.items[&id].get("grant_tags") {
                 tags.extend(ts.iter().filter_map(|t| t.as_str().map(str::to_owned)));
             }
+        }
+        if tags.len() > MAX_NAMES {
+            self.push(Diagnostic::error(codes::TOO_MANY, "", "tags", format!("{} distinct tags; at most {MAX_NAMES}", tags.len())));
+            tags = tags.into_iter().take(MAX_NAMES).collect();
         }
         for (i, t) in tags.into_iter().enumerate() {
             self.reg.tags.insert(t, i as u16);
@@ -329,6 +357,10 @@ impl<'d> Cx<'d> {
                 }
             }
             per_arch.push(list);
+        }
+        if attr_units.len() > MAX_NAMES {
+            self.push(Diagnostic::error(codes::TOO_MANY, "", "attributes", format!("{} distinct attributes; at most {MAX_NAMES}", attr_units.len())));
+            attr_units = attr_units.into_iter().take(MAX_NAMES).collect();
         }
         for (i, (name, (unit, _))) in attr_units.iter().enumerate() {
             self.reg.attrs.insert(name.clone(), (i as u16, *unit));
@@ -461,7 +493,12 @@ impl<'d> Cx<'d> {
         };
         let mut out = [0i64; 3];
         for (i, c) in list.iter().enumerate() {
-            out[i] = self.const_num(&v.index(i, c), Unit::Distance)?;
+            let x = self.const_num(&v.index(i, c), Unit::Distance)?;
+            if x.abs() > MAX_COORD_MM {
+                self.push(v.index(i, c).err(codes::OUT_OF_RANGE, format!("{} is too far out: coordinates are at most 1,000,000 km", show(c))).got(show(c)));
+                return None;
+            }
+            out[i] = x;
         }
         Some(out)
     }
@@ -854,6 +891,9 @@ impl<'d> Cx<'d> {
         for (id, v) in ov {
             h.write_str(&id);
             h.write_i64(v);
+        }
+        if self.reg.streams.borrow().len() > MAX_NAMES {
+            self.push(Diagnostic::error(codes::TOO_MANY, "", "", format!("more than {MAX_NAMES} random streams")));
         }
         let streams: BTreeMap<u16, String> = self.reg.streams.borrow().iter().map(|(n, i)| (*i, n.clone())).collect();
         let n_attrs = self.reg.attrs.len();
@@ -1568,6 +1608,14 @@ impl<'d> Cx<'d> {
                         }
                     }
                 }
+                let total: i64 = groups.iter().map(|g| i64::from(g.count)).sum();
+                if total > MAX_WAVE_SPAWNS {
+                    self.push(
+                        w.err(codes::TOO_MANY, format!("wave {} spawns {total} entities; at most {MAX_WAVE_SPAWNS} per wave", i + 1))
+                            .suggest("split it into more waves, or lower the groups' counts"),
+                    );
+                    groups.clear();
+                }
                 waves.push(WaveDef { duration, on_start, scale: scale_list, groups });
             }
         }
@@ -2019,10 +2067,10 @@ fn merge_archetype(base: &Json, child: &Json) -> Json {
 }
 
 fn dist(a: P3, b: P3) -> i64 {
-    let d2: u128 = (0..3).map(|i| {
-        let d = i128::from(a[i]) - i128::from(b[i]);
-        (d * d) as u128
-    }).sum();
+    let d2 = (0..3).fold(0u128, |acc, i| {
+        let d = (i128::from(a[i]) - i128::from(b[i])).unsigned_abs();
+        acc.saturating_add(d.saturating_mul(d))
+    });
     isqrt(d2).min(i64::MAX as u128) as i64
 }
 

@@ -58,7 +58,8 @@ A rule set is one JSON document (`*.lex.json`; JSON like every other Specula dat
 - `tick_hz` is the simulation rate (default 60; Sepulcra uses 30). Durations convert with it.
 - Item ids are `[a-z][a-z0-9_]*`, at most 64 characters. Exported documents list items sorted by id with keys
   sorted, so the text form is canonical and diff-friendly, and the document hash ignores whitespace and key order.
-- `notes` (string) is allowed on every item and on the document, and never affects the hash of the compiled rules.
+- `notes` (string) is allowed on the document, every item and every behaviour, action and nested object the schema
+  defines, and never affects the rules hash.
 
 ### Values, units and expressions
 
@@ -173,8 +174,8 @@ Built-in events: `spawned`, `died`, `removed`, `arrived`, `damaged`, `hit`, `eff
 `wave_started`, `wave_cleared`, `state_entered`; any other name is a custom event raised by `emit` (the validator
 refuses `on` names that nothing emits, with the closest name). Events are queued and dispatched to rules and `on`
 transitions at the end of each phase (and after each command), in the order they happened; events raised by rules
-are dispatched in the same pass. A tick that raises more than 100,000 events stops dispatching and reports
-`event_storm`, so a rule that re-emits its own event can't hang a run.
+are dispatched in the same pass. A tick keeps and dispatches at most 100,000 events; later ones are only
+counted (`event_overflow`), so a rule that re-emits its own event can't hang or flood a run.
 
 Rules see `self` (the event's subject), `other` (the instigator: the killer, the attacker, the effect's source)
 and `event.value`. Timers fire at `start`, then every `every`, at most `count` times, skipping firings while
@@ -211,9 +212,28 @@ ends the run: the rest of that tick is skipped, except cleanup, and every later 
 `game_over`. Death runs `on_death` at once (so drop rolls happen in hit order); the `died` event reaches rules at
 the end of the phase, while the dead entity can still be read.
 
-Run-time problems never panic and never stop a run: a division by zero gives 0, a missing entity or attribute
+Run-time problems never stop a run: arithmetic saturates, a division by zero gives 0, a missing entity or attribute
 aborts the action list it happened in, and each is counted under `runtime_diagnostics` (with the first 20 messages)
-in the run's report. Limits: 100,000 live entities, 10,000 spawns per action.
+in the run's report.
+
+**Limits**, so no rule set (and no agent's typo) can crash the engine or make a call unbounded. Each is reported
+as data when it bites:
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| Live entities | 100,000 | the spawn fails (`entity_limit`) |
+| Spawns per action | 10,000 | clamped |
+| Spawns one wave schedules | 100,000 | compile error (`too_many`) |
+| Nested action lists (on_spawn spawning itself, on_apply reapplying, on_enter re-entering) | 32 | that list stops (`recursion_limit`) |
+| Entity checks per tick (attack scans, splash, chase, `count`, `occupied`) | 5,000,000 | the tick's remaining behaviours are skipped (`work_limit`) |
+| Events kept and dispatched per tick | 100,000 | counted only (`event_overflow`) |
+| Expression length / nesting | 1,000 characters / 64 levels | compile error (`too_many`) |
+| Coordinates | ±10⁹ m | compile error (`out_of_range`) |
+| Sites, tags, attributes, RNG streams | 60,000 each | compile error (`too_many`) |
+| Items per set | 10,000 | compile error |
+
+A negative cost is refused (`invalid_cost`) rather than paying the player. A command's rollback snapshots the
+state, so a command costs O(state); rules that fire thousands of commands a tick belong in timers or rules.
 
 **Cost.** The Sepulcra slice runs at about 1 µs per tick in a release build, ten times the hand-written Rust sim
 (0.1 µs): a 12-minute game in about 21 ms, so a 1000-seed sweep is about 20 core-seconds
@@ -269,6 +289,20 @@ subtree gets its own file, one line per item in path order, so rule changes diff
 `lex_edit` (which validates); a `world_set` on the props bypasses validation, and `lex_validate` reports the result.
 The world hash covers the rule sets, so a replay that changes the rules diverges where it should.
 
+**Threads.** The main thread only reads (snapshots, pages of summaries) and writes (one atomic batch through the
+claims and the journal). Everything costly runs on the calling agent's protocol thread: an edit takes a snapshot,
+applies its ops, validates the set before and after (uncapped, so a set with hundreds of errors can still be fixed
+one at a time), and sends a commit that carries the versions it validated against; if another agent changed the
+set meanwhile, the commit is refused and the edit is redone on the new state (four tries, then `busy`, with the
+fix: claim the set first). Measured on a 2,000-archetype set in a debug build: an edit takes about 0.3 s on its
+own thread while `world_list` from another agent answers in 8 ms (median, 42 ms worst).
+
+**Damaged sets.** A set changed outside `lex_edit` (an item with an invalid id, a broken header) still lists,
+validates (its load problems lead the diagnostics) and edits (a badly named item can be deleted); `lex_simulate`
+and `lex_export` refuse it until it is fixed, so nothing runs it at the wrong tick rate or without some items.
+`notes` is ignored by the rules hash only where the schema puts notes: an attribute, site, state or arg the author
+named `notes` is data.
+
 | Tool | What it does |
 |---|---|
 | `lex_schema` | The language as data: item kinds, fields with types and units, behaviours, actions, payloads, functions, events, units and the tick's phases, by `topic`. |
@@ -276,7 +310,7 @@ The world hash covers the rule sets, so a replay that changes the rules diverges
 | `lex_get` | Items in full, with versions (at most 50 per call); unknown ids come back with the closest id. |
 | `lex_edit` | Atomic `put` / `patch` (field paths like `behaviours[0].range`) / `delete` ops with `expect_version` (0: must not exist yet); creates the set when needed. The whole set is validated after the edit, and an edit that adds errors is refused with every new error (`allow_errors` stores a draft; errors already there don't block fixing others). `dry_run` only reports. |
 | `lex_validate` | Every error and warning for a set (or an inline document), the items by kind, the params (the tunable search space) and the declared native hooks with their reasons. |
-| `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; a call stops after 20 s of wall time and says at which tick (continue with `save_as` / `from`). |
+| `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; the wall clock is checked every tick (one tick is bounded by the work limit), and a call that passes 20 s stops, says at which tick (continue with `save_as` / `from`) and leaves its `expect` unjudged. |
 | `lex_import` / `lex_export` | A whole document in (one validated, journaled edit; `replace` deletes items it doesn't have) or out (canonical text to save as `*.lex.json`). |
 | `lex_session` | Saved runs: list them, inspect one's entities (paged; attributes in human units, effects, machine state) or delete one. |
 

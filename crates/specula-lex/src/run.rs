@@ -97,6 +97,19 @@ pub fn show_val(r: &Rules, v: Val, ty: Ty) -> Json {
     }
 }
 
+/// Most entries in each per-name list of a report (archetypes, events, resources, waves).
+pub const MAX_LISTED: usize = 100;
+
+/// The first [`MAX_LISTED`] pairs, plus `"..."` saying how many were left out.
+fn capped(mut pairs: Vec<(String, Json)>) -> Json {
+    if pairs.len() > MAX_LISTED {
+        let more = pairs.len() - MAX_LISTED;
+        pairs.truncate(MAX_LISTED);
+        pairs.push(("...".to_owned(), Json::from(format!("{more} more"))));
+    }
+    Json::Obj(pairs)
+}
+
 /// A command scheduled at a tick (`name` for the report).
 #[derive(Clone, Debug)]
 pub struct Timed {
@@ -135,7 +148,7 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
     let mut refused = 0usize;
     let mut applied = 0usize;
     let mut samples: Vec<Json> = Vec::new();
-    let sample = |sim: &Sim, samples: &mut Vec<Json>| {
+    let sample = |sim: &mut Sim, samples: &mut Vec<Json>| {
         let mut row = vec![("tick".to_owned(), Json::from(sim.tick()))];
         for q in &spec.watch {
             let v = sim.query(&q.ex).map(|v| show_val(&r, v, q.ty)).unwrap_or(Json::Null);
@@ -155,7 +168,7 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
     let mut stopped_early = false;
     while sim.tick() < end && sim.outcome().is_none() {
         let now = sim.tick();
-        if (now - start) % 64 == 0 && spec.deadline.is_some_and(|d| std::time::Instant::now() > d) {
+        if spec.deadline.is_some_and(|d| std::time::Instant::now() > d) {
             stopped_early = true;
             break;
         }
@@ -178,33 +191,36 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
     if !spec.watch.is_empty() && samples.last().and_then(|s| s.get("tick")).and_then(Json::as_u64) != Some(u64::from(sim.tick())) {
         sample(sim, &mut samples);
     }
-    let st = sim.state();
-    let expect: Vec<Json> = spec
-        .expect
-        .iter()
-        .map(|q| {
-            let (pass, value) = match sim.query(&q.ex) {
+    let mut expect: Vec<Json> = Vec::with_capacity(spec.expect.len());
+    for q in &spec.expect {
+        // A run cut short by the wall clock stopped at a machine-dependent tick, so its
+        // expectations are not judged.
+        let (pass, value) = if stopped_early {
+            (false, Json::from("not reached: the run stopped early"))
+        } else {
+            match sim.query(&q.ex) {
                 Ok(v) => (v == Val::Bool(true), show_val(&r, v, q.ty)),
                 Err(e) => (false, Json::from(format!("error: {}", e.message))),
-            };
-            Json::obj([("expect", Json::from(q.src.as_str())), ("pass", Json::Bool(pass)), ("value", value)])
-        })
-        .collect();
-    let mut by_arch: Vec<(String, Json)> = Vec::new();
-    for (i, a) in r.archetypes.iter().enumerate() {
-        let n = st.ents.iter().filter(|e| e.alive && usize::from(e.arch) == i).count();
-        if n > 0 {
-            by_arch.push((a.id.clone(), Json::from(n)));
-        }
+            }
+        };
+        expect.push(Json::obj([("expect", Json::from(q.src.as_str())), ("pass", Json::Bool(pass)), ("value", value)]));
     }
-    let events: Vec<(String, Json)> = r.events.iter().zip(&st.event_counts).filter(|(_, c)| **c > 0).map(|(e, c)| (e.name.clone(), Json::from(*c))).collect();
+    let st = sim.state();
+    let mut per_arch = vec![0usize; r.archetypes.len()];
+    for e in st.ents.iter().filter(|e| e.alive) {
+        per_arch[usize::from(e.arch)] += 1;
+    }
+    let by_arch: Vec<(String, Json)> =
+        r.archetypes.iter().zip(&per_arch).filter(|(_, n)| **n > 0).map(|(a, n)| (a.id.clone(), Json::from(*n))).collect();
+    let by_arch = capped(by_arch);
+    let events = capped(r.events.iter().zip(&st.event_counts).filter(|(_, c)| **c > 0).map(|(e, c)| (e.name.clone(), Json::from(*c))).collect());
     let waves = r.waves.as_ref().map(|w| {
         Json::obj([
             ("current", Json::from(u32::from(st.wave))),
             ("total", Json::from(w.waves.len())),
             (
                 "stats",
-                Json::arr(st.wave_stats.iter().enumerate().filter(|(_, s)| s.started_at.is_some()).map(|(i, s)| {
+                Json::arr(st.wave_stats.iter().enumerate().filter(|(_, s)| s.started_at.is_some()).take(MAX_LISTED).map(|(i, s)| {
                     Json::obj([
                         ("wave", Json::from(i + 1)),
                         ("started_at", Json::from(s.started_at)),
@@ -219,8 +235,8 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
             ),
         ])
     });
-    let resources: Vec<(String, Json)> = r.resources.iter().zip(&st.res).map(|(d, v)| (d.id.clone(), show_val(&r, Val::Int(*v), Ty::Num(d.unit)))).collect();
-    let natives: Vec<(String, Json)> = r.natives.iter().zip(&st.native_calls).map(|(n, c)| (n.hook.clone(), Json::from(*c))).collect();
+    let resources = capped(r.resources.iter().zip(&st.res).map(|(d, v)| (d.id.clone(), show_val(&r, Val::Int(*v), Ty::Num(d.unit)))).collect());
+    let natives = capped(r.natives.iter().zip(&st.native_calls).map(|(n, c)| (n.hook.clone(), Json::from(*c))).collect());
     let mut out = vec![
         ("rules_hash", Json::from(format!("{:016x}", r.hash))),
         ("seed", Json::from(st.seed.to_string())),
@@ -228,9 +244,9 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
         ("tick", Json::from(sim.tick())),
         ("seconds", Json::from(f64::from(sim.tick()) / f64::from(r.tick_hz))),
         ("outcome", sim.outcome().map_or(Json::Null, |(res, t)| Json::obj([("result", Json::from(res)), ("tick", Json::from(t))]))),
-        ("resources", Json::Obj(resources)),
-        ("entities", Json::obj([("alive", Json::from(st.ents.iter().filter(|e| e.alive).count())), ("by_archetype", Json::Obj(by_arch))])),
-        ("events", Json::Obj(events)),
+        ("resources", resources),
+        ("entities", Json::obj([("alive", Json::from(st.ents.iter().filter(|e| e.alive).count())), ("by_archetype", by_arch)])),
+        ("events", events),
         ("commands", Json::obj([("applied", Json::from(applied - refused)), ("refused", Json::from(refused)), ("not_reached", Json::from(unapplied))])),
         ("hash", Json::from(format!("{:016x}", sim.hash()))),
     ];
@@ -246,8 +262,8 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
     if !rejections.is_empty() {
         out.push(("rejections", Json::Arr(rejections)));
     }
-    if !natives.is_empty() {
-        out.push(("native_calls", Json::Obj(natives)));
+    if !r.natives.is_empty() {
+        out.push(("native_calls", natives));
     }
     if !st.diag.counts.is_empty() {
         out.push((

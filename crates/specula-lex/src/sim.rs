@@ -18,6 +18,11 @@ use crate::units::isqrt;
 
 /// Most events dispatched to rules in one tick before dispatch stops (`event_storm`).
 pub const MAX_EVENTS_PER_TICK: usize = 100_000;
+/// How deeply action lists may nest before `recursion_limit` stops them.
+pub const MAX_ACTION_DEPTH: u32 = 32;
+/// Entity checks (eligibility, splash, chase, count) per tick before the tick's remaining
+/// behaviours are skipped (`work_limit`): a deterministic cap on one tick's cost.
+pub const MAX_WORK_PER_TICK: u64 = 5_000_000;
 /// Most entities one spawn action creates.
 pub const MAX_SPAWN_COUNT: i64 = 10_000;
 /// Most live entities; spawns beyond it are refused (`entity_limit`).
@@ -248,6 +253,9 @@ pub struct State {
     /// Since the last full check (outcomes that scan entities are due).
     dirty_full: bool,
     effect_seq: u32,
+    /// This tick: events past the cap, and entity checks done (see [`MAX_WORK_PER_TICK`]).
+    dropped: u64,
+    work: u64,
     dispatched: usize,
 }
 
@@ -310,6 +318,8 @@ impl Sim {
             dirty: true,
             dirty_full: true,
             effect_seq: 0,
+            dropped: 0,
+            work: 0,
             dispatched: 0,
         };
         Ok(Sim { rules, natives: bound, st })
@@ -365,7 +375,7 @@ impl Sim {
     /// Applies a command now (before the tick's phases). Atomic: a refused or failing command
     /// changes nothing.
     pub fn apply(&mut self, call: &CommandCall) -> Result<(), Rejection> {
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
         c.command(call)
     }
 
@@ -375,13 +385,15 @@ impl Sim {
     pub fn step(&mut self, commands: &[CommandCall]) -> Vec<(usize, Rejection)> {
         self.st.events.clear();
         self.st.dispatched = 0;
+        self.st.dropped = 0;
+        self.st.work = 0;
         let mut refused = Vec::new();
         for (i, c) in commands.iter().enumerate() {
             if let Err(e) = self.apply(c) {
                 refused.push((i, e));
             }
         }
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
         c.tick();
         refused
     }
@@ -398,11 +410,14 @@ impl Sim {
         state_hash(&self.rules, &self.st)
     }
 
-    /// Evaluates a compiled global expression (no self) without changing anything.
-    pub fn query(&self, ex: &Ex) -> Result<Val, RtErr> {
-        let mut st = self.st.clone();
-        let mut c = Core { r: &self.rules, st: &mut st, natives: &self.natives };
-        c.eval(ex, &Frame::default())
+    /// Evaluates a compiled global expression (no self) without changing anything: evaluation
+    /// only touches the RNG streams, the diagnostics and the work counter, which are restored.
+    pub fn query(&mut self, ex: &Ex) -> Result<Val, RtErr> {
+        let (rngs, diag, work) = (self.st.rngs.clone(), self.st.diag.clone(), self.st.work);
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
+        let v = c.eval(ex, &Frame::default());
+        (self.st.rngs, self.st.diag, self.st.work) = (rngs, diag, work);
+        v
     }
 }
 
@@ -421,6 +436,8 @@ struct Core<'a> {
     r: &'a Rules,
     st: &'a mut State,
     natives: &'a [Option<Arc<dyn NativeHook>>],
+    /// Nested action lists (on_spawn spawning, on_apply applying, on_enter switching...).
+    depth: u32,
 }
 
 fn idx_of(st: &State, id: u32) -> Option<usize> {
@@ -482,10 +499,10 @@ fn matches(r: &Rules, st: &State, e: &Entity, f: &TagFilter) -> bool {
 }
 
 fn dist2(a: P3, b: P3) -> i128 {
-    (0..3).map(|i| {
+    (0..3).fold(0i128, |acc, i| {
         let d = i128::from(a[i]) - i128::from(b[i]);
-        d * d
-    }).sum()
+        acc.saturating_add(d.checked_mul(d).unwrap_or(i128::MAX))
+    })
 }
 
 fn dist(a: P3, b: P3) -> i64 {
@@ -497,7 +514,10 @@ fn lerp(a: P3, b: P3, num: i64, den: i64) -> P3 {
     if den <= 0 {
         return b;
     }
-    let f = |a: i64, b: i64| a + ((i128::from(b) - i128::from(a)) * i128::from(num) / i128::from(den)) as i64;
+    let f = |a: i64, b: i64| {
+        let step = (i128::from(b) - i128::from(a)).saturating_mul(i128::from(num)) / i128::from(den);
+        (i128::from(a) + step).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+    };
     [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2])]
 }
 
@@ -511,18 +531,40 @@ fn step_toward(from: P3, to: P3, d: i64) -> (P3, bool) {
 }
 
 impl Core<'_> {
+    /// Adds `n` entity checks to this tick's work; true once the tick is over budget (the
+    /// remaining behaviours of the tick are skipped, once noted).
+    fn spend(&mut self, n: usize) -> bool {
+        let before = self.st.work;
+        self.st.work = self.st.work.saturating_add(n as u64);
+        if self.st.work > MAX_WORK_PER_TICK && before <= MAX_WORK_PER_TICK {
+            self.note("work_limit", "more than 5 million entity checks in one tick (attacks or counts over many entities?); the rest of the tick's behaviours were skipped");
+        }
+        self.over_budget()
+    }
+
+    fn over_budget(&self) -> bool {
+        self.st.work > MAX_WORK_PER_TICK
+    }
+
     fn note(&mut self, code: &'static str, msg: &str) {
         let t = self.st.tick;
         self.st.diag.note(t, code, msg);
     }
 
     fn emit(&mut self, kind: u16, subject: Option<u32>, other: Option<u32>, value: i64) {
-        let e = Event { kind, subject, other, value };
-        self.st.events.push(e);
-        self.st.queue.push(e);
         if let Some(c) = self.st.event_counts.get_mut(usize::from(kind)) {
             *c += 1;
         }
+        if self.st.events.len() >= MAX_EVENTS_PER_TICK {
+            if self.st.dropped == 0 {
+                self.note("event_overflow", "more than 100000 events in one tick: later ones are counted but neither kept nor dispatched");
+            }
+            self.st.dropped += 1;
+            return;
+        }
+        let e = Event { kind, subject, other, value };
+        self.st.events.push(e);
+        self.st.queue.push(e);
     }
 
     fn ent(&self, id: Option<u32>, what: &str) -> Result<usize, RtErr> {
@@ -660,7 +702,10 @@ impl Core<'_> {
                 let id = self.eval_ent(e, f)?;
                 Val::Bool(id.and_then(|id| idx_of(self.st, id)).is_some_and(|i| has_tag(self.r, self.st, &self.st.ents[i], *t)))
             }
-            Ex::Count(t) => Val::Int(self.st.ents.iter().filter(|e| e.alive && has_tag(self.r, self.st, e, *t)).count() as i64),
+            Ex::Count(t) => {
+                self.spend(self.st.ents.len());
+                Val::Int(self.st.ents.iter().filter(|e| e.alive && has_tag(self.r, self.st, e, *t)).count() as i64)
+            }
             Ex::Dist(a, b) => {
                 let (x, y) = (self.eval_ent(a, f)?, self.eval_ent(b, f)?);
                 let (i, j) = (self.ent(x, "the first entity")?, self.ent(y, "the second entity")?);
@@ -668,6 +713,7 @@ impl Core<'_> {
             }
             Ex::Occupied(s, t) => {
                 let Val::Site(site) = self.eval(s, f)? else { return Err(rt("no_site", "the site is none")) };
+                self.spend(self.st.ents.len());
                 Val::Bool(self.st.ents.iter().any(|e| e.alive && e.site == Some(site) && has_tag(self.r, self.st, e, *t)))
             }
             Ex::Rand(s, lo, hi) => {
@@ -818,9 +864,9 @@ impl Core<'_> {
                 let pick = self.st.rngs[usize::from(waves.stream)].below(g.at.len() as u32) as usize;
                 let tick = self.st.tick.saturating_add(g.start).saturating_add(k.saturating_mul(g.every));
                 let seq = self.st.next_seq;
-                self.st.next_seq += 1;
+                self.st.next_seq = self.st.next_seq.saturating_add(1);
                 self.st.pending.push(Pending { tick, seq, arch: g.arch, wave: number, at: g.at[pick] });
-                self.st.wave_stats[w].pending += 1;
+                self.st.wave_stats[w].pending = self.st.wave_stats[w].pending.saturating_add(1);
             }
         }
         // Latest first, so the next spawn is always at the back.
@@ -889,6 +935,9 @@ impl Core<'_> {
     fn phase_behaviours(&mut self, phase: Phase) {
         let n = self.st.ents.len();
         for i in 0..n {
+            if self.over_budget() {
+                return;
+            }
             if !self.st.ents[i].alive {
                 continue;
             }
@@ -1031,7 +1080,7 @@ impl Core<'_> {
         }
         let len = path_def.seg[seg as usize];
         let pos = lerp(path_def.points[seg as usize], path_def.points[(seg as usize + 1) % path_def.points.len()], progress, len);
-        let remaining = path_def.after[seg as usize].saturating_add(len - progress);
+        let remaining = path_def.after[seg as usize].saturating_add(len.saturating_sub(progress));
         let e = &mut self.st.ents[i];
         e.pos = pos;
         e.path_remaining = if arrived { 0 } else { remaining };
@@ -1053,13 +1102,14 @@ impl Core<'_> {
         let f = Frame { me: Some(id), ..Frame::default() };
         let range = self.int(range, &f)?;
         let me_pos = self.st.ents[i].pos;
-        let r2 = i128::from(range) * i128::from(range);
+        let r2 = i128::from(range).saturating_mul(i128::from(range));
         let valid = |c: &Core, t: u32| idx_of(c.st, t).is_some_and(|j| {
             let e = &c.st.ents[j];
             e.alive && e.id != id && matches(c.r, c.st, e, targets) && dist2(e.pos, me_pos) <= r2
         });
         let mut target = target.filter(|t| valid(self, *t));
         if target.is_none() {
+            self.spend(self.st.ents.len());
             let mut best: Option<(i128, u32)> = None;
             for e in &self.st.ents {
                 if e.alive && e.id != id && matches(self.r, self.st, e, targets) {
@@ -1083,7 +1133,7 @@ impl Core<'_> {
         };
         let reach = self.int(reach, &f)?;
         let step = self.budget(speed, scale, &mut carry);
-        let to_go = (dist(me_pos, tpos) - reach).max(0);
+        let to_go = dist(me_pos, tpos).saturating_sub(reach).max(0);
         let (pos, _) = step_toward(me_pos, tpos, step.min(to_go));
         self.st.ents[i].pos = pos;
         let now_reached = dist(pos, tpos) <= reach;
@@ -1112,9 +1162,12 @@ impl Core<'_> {
         let id = self.st.ents[i].id;
         let f = Frame { me: Some(id), ..Frame::default() };
         let range = self.int(&def.range, &f)?;
-        let r2 = i128::from(range) * i128::from(range);
+        let r2 = i128::from(range).saturating_mul(i128::from(range));
         let from = self.st.ents[i].pos;
         let n = self.st.ents.len();
+        if self.spend(n) {
+            return Ok(());
+        }
         let fired = match def.delivery {
             Delivery::Pulse => {
                 let mut hit = false;
@@ -1163,7 +1216,7 @@ impl Core<'_> {
                             for (a, e) in with {
                                 with_vals.push((*a, self.int(e, &tf)?));
                             }
-                            let origin = [from[0] + def.muzzle[0], from[1] + def.muzzle[1], from[2] + def.muzzle[2]];
+                            let origin = [from[0].saturating_add(def.muzzle[0]), from[1].saturating_add(def.muzzle[1]), from[2].saturating_add(def.muzzle[2])];
                             let aim = self.st.ents[j].pos;
                             let pid = self.spawn(*parch, origin, None, None, None, &[], &with_vals)?;
                             if let Some(pi) = idx_of(self.st, pid) {
@@ -1227,6 +1280,9 @@ impl Core<'_> {
     fn phase_projectiles(&mut self) {
         let n = self.st.ents.len();
         for i in 0..n {
+            if self.over_budget() {
+                return;
+            }
             if !self.st.ents[i].alive {
                 continue;
             }
@@ -1272,8 +1328,9 @@ impl Core<'_> {
         let (sarch, sb) = p.attack;
         let BehKind::Attack(def) = &self.r.archetypes[usize::from(sarch)].behaviours[usize::from(sb)].kind else { return Ok(()) };
         if splash > 0 {
-            let r2 = i128::from(splash) * i128::from(splash);
+            let r2 = i128::from(splash).saturating_mul(i128::from(splash));
             let n = self.st.ents.len();
+            self.spend(n);
             for j in 0..n {
                 let e = &self.st.ents[j];
                 if e.alive && matches(self.r, self.st, e, &def.targets) && dist2(e.pos, p.aim) <= r2 {
@@ -1519,7 +1576,7 @@ impl Core<'_> {
         let spawn_path = path.map(|(p, _, _)| p);
         let path_remaining = path.map_or(0, |(p, seg, progress)| {
             let pd = &self.r.paths[usize::from(p)];
-            pd.after[seg as usize].saturating_add(pd.seg[seg as usize] - progress)
+            pd.after[seg as usize].saturating_add(pd.seg[seg as usize].saturating_sub(progress))
         });
         let state = def.machine.map(|m| (self.r.machines[usize::from(m)].initial, tick));
         let mut e = Entity { id, arch, alive: true, pos, base, effects: Vec::new(), beh, state, wave, site, spawn_path, path_remaining };
@@ -1657,7 +1714,7 @@ impl Core<'_> {
             let after = self.st.ents[i].base[slot];
             if after < before {
                 let id = self.st.ents[i].id;
-                self.emit(ev::DAMAGED, Some(id), source, before - after);
+                self.emit(ev::DAMAGED, Some(id), source, before.saturating_sub(after));
             }
             self.health_check(i, source);
         }
@@ -1813,10 +1870,19 @@ impl Core<'_> {
     // ---- actions and commands ----
 
     fn actions(&mut self, acts: &[Action], f: &Frame) -> Result<(), RtErr> {
-        for a in acts {
-            self.action(a, f)?;
+        if acts.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        if self.depth >= MAX_ACTION_DEPTH {
+            return Err(rt(
+                "recursion_limit",
+                format!("actions nested {MAX_ACTION_DEPTH} deep (an on_spawn that spawns itself, an on_apply that reapplies its effect, an on_enter that re-enters its state?); this action list was stopped"),
+            ));
+        }
+        self.depth += 1;
+        let r = acts.iter().try_for_each(|a| self.action(a, f));
+        self.depth -= 1;
+        r
     }
 
     fn set_res(&mut self, r: u16, v: i64) {
@@ -1989,6 +2055,9 @@ impl Core<'_> {
             let need = self.int(e, &f).map_err(|e| Rejection::new(e.code, e.message))?;
             let have = self.st.res[usize::from(*res)];
             let name = &self.r.resources[usize::from(*res)].id;
+            if need < 0 {
+                return Err(Rejection::new("invalid_cost", format!("the {name} cost of '{}' came to {need}; a cost can't be negative (use an action to pay out)", def.id)).with("cost", Json::from(need)));
+            }
             if have < need {
                 return Err(Rejection::new(format!("not_enough_{name}"), format!("needs {need} {name}, has {have}"))
                     .with("need", Json::from(need))
@@ -2006,7 +2075,7 @@ impl Core<'_> {
         let snapshot = self.st.clone();
         for (res, need) in costs {
             let cur = self.st.res[usize::from(res)];
-            self.set_res(res, cur - need);
+            self.set_res(res, cur.saturating_sub(need));
         }
         if let Err(e) = self.actions(&def.actions, &f) {
             *self.st = snapshot;

@@ -212,9 +212,15 @@ impl Ast {
     }
 }
 
+/// Longest expression string, and deepest nesting (parentheses, unary operators, operator
+/// chains): expressions are short, and the bounds keep every recursive pass small.
+pub const MAX_EXPR_CHARS: usize = 1000;
+pub const MAX_EXPR_DEPTH: u32 = 64;
+
 struct Parser {
     toks: Vec<(Tok, usize)>,
     i: usize,
+    depth: u32,
 }
 
 impl Parser {
@@ -245,7 +251,23 @@ impl Parser {
         None
     }
 
+    fn nest(&mut self) -> Result<(), ExprError> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            return Err(ExprError::new(codes::TOO_MANY, format!("the expression nests more than {MAX_EXPR_DEPTH} deep"), self.col())
+                .suggest("split it: put parts in params or attributes, or simplify"));
+        }
+        Ok(())
+    }
+
     fn or(&mut self) -> Result<Ast, ExprError> {
+        self.nest()?;
+        let r = self.or_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn or_inner(&mut self) -> Result<Ast, ExprError> {
         let mut l = self.and()?;
         while let Some((_, col)) = self.eat_op(&["||"]) {
             let r = self.and()?;
@@ -310,7 +332,10 @@ impl Parser {
 
     fn unary(&mut self) -> Result<Ast, ExprError> {
         if let Some((o, col)) = self.eat_op(&["-", "!"]) {
-            let e = self.unary()?;
+            self.nest()?;
+            let e = self.unary();
+            self.depth -= 1;
+            let e = e?;
             return Ok(if o == "-" { Ast::Neg(Box::new(e), col) } else { Ast::Not(Box::new(e), col) });
         }
         let mut e = self.prim()?;
@@ -388,14 +413,34 @@ fn describe(t: &Tok) -> String {
     }
 }
 
+fn ast_depth(a: &Ast) -> usize {
+    1 + match a {
+        Ast::Num { .. } | Ast::Bool(..) | Ast::Name { .. } | Ast::Param { .. } => 0,
+        Ast::Member { base, .. } => ast_depth(base),
+        Ast::Neg(e, _) | Ast::Not(e, _) => ast_depth(e),
+        Ast::Bin { l, r, .. } => ast_depth(l).max(ast_depth(r)),
+        Ast::Call { args, .. } => args.iter().map(ast_depth).max().unwrap_or(0),
+    }
+}
+
 /// Parses an expression string.
 pub fn parse(src: &str) -> Result<Ast, ExprError> {
     if src.trim().is_empty() {
         return Err(ExprError::new(codes::SYNTAX, "the expression is empty", 1).suggest("write a value, e.g. 10 or self.hp"));
     }
+    let chars = src.chars().count();
+    if chars > MAX_EXPR_CHARS {
+        return Err(ExprError::new(codes::TOO_MANY, format!("the expression is {chars} characters; at most {MAX_EXPR_CHARS}"), 1)
+            .suggest("split it: put parts in params or attributes"));
+    }
     let toks = lex(src)?;
-    let mut p = Parser { toks, i: 0 };
+    let mut p = Parser { toks, i: 0, depth: 0 };
     let e = p.or()?;
+    let depth = ast_depth(&e);
+    if depth > MAX_EXPR_DEPTH as usize {
+        return Err(ExprError::new(codes::TOO_MANY, format!("the expression is {depth} operations deep; at most {MAX_EXPR_DEPTH}"), 1)
+            .suggest("split it: put parts in params or attributes"));
+    }
     if *p.peek() != Tok::End {
         let col = p.col();
         let what = describe(p.peek());
