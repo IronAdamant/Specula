@@ -563,6 +563,8 @@ pub struct Streamer {
     force_update: bool,
     /// The world or the builds changed since the last update (it runs within UPDATE_EVERY).
     stale: bool,
+    /// Start the pass afresh at the next frame (an edit in a cell the window draws as a proxy).
+    restart: bool,
     /// Where the window's eye was, which way it looked and its field of view at the last pass.
     window_eye: Option<(Vec3, Vec3, f32)>,
     /// The running pass of the wanted set (spread over frames).
@@ -633,6 +635,7 @@ impl Streamer {
             last_update: None,
             force_update: true,
             stale: false,
+            restart: false,
             window_eye: None,
             pass: None,
             done_pass: 0,
@@ -851,12 +854,15 @@ impl Streamer {
         let mut touched = std::mem::take(&mut self.touched);
         let changed = {
             let _z = specula_core::profile::zone("index");
-            self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched, Duration::from_secs_f64(self.cfg.upload_ms * 0.25 / 1e3))
+            // A capture files every change now (it must see what was just spawned); frames file
+            // a slice of the budget's worth.
+            let slice = if new_frame { Duration::from_secs_f64(self.cfg.upload_ms * 0.25 / 1e3) } else { Duration::MAX };
+            self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched, slice)
         };
         // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
         // change at once (the entity must not stay hidden, nor show at its old place).
         if touched.iter().any(|k| self.hlod.window_on(*k)) {
-            self.force_update = true;
+            self.restart = true;
         }
         self.touched = touched;
         // Finished proxy builds are taken every frame (their uploads go by priority).
@@ -865,14 +871,17 @@ impl Streamer {
         self.stale |= changed;
         let due = self.force_update || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
         let whole = self.force_update;
-        // A forced pass (a new capture view, a jump) starts afresh, so it sees every source.
-        if due && (self.pass.is_none() || whole) {
+        // A forced pass (a new capture view, a jump) starts afresh, so it sees every source; so
+        // does one after an edit in a cell the window draws as a proxy (but sliced).
+        if (due && (self.pass.is_none() || whole)) || self.restart {
+            self.restart = false;
             self.begin_pass(now);
         }
         if self.pass.is_some() {
             let _z = specula_core::profile::zone("want");
-            // A capture (or a jump) gets its whole pass at once; otherwise a slice of the budget.
-            let slice = if whole { f64::INFINITY } else { self.cfg.upload_ms * 0.5 };
+            // A capture (or a jump) gets its whole pass at once (a capture also finishes a
+            // running one: it reads the wanted levels); otherwise a slice of the budget.
+            let slice = if whole || !new_frame { f64::INFINITY } else { self.cfg.upload_ms * 0.5 };
             self.step(world, models, library, gpu, now, slice);
         }
         // The frame's streaming work so far (filing, the wanted set) counts against the upload budget.
@@ -888,7 +897,12 @@ impl Streamer {
         self.stale = false;
         self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| (s.eye, s.dir, s.fov_y_deg));
         self.window_moved = false;
-        self.pass = Some(PassState { cursor: None, left_out: self.hlod.take_left_out(), nearest: f32::INFINITY });
+        // A pass restarted before it got everywhere keeps the cells it still had to redo.
+        let mut left_out = self.pass.take().map(|p| p.left_out).unwrap_or_default();
+        left_out.extend(self.hlod.take_left_out());
+        left_out.sort_unstable();
+        left_out.dedup();
+        self.pass = Some(PassState { cursor: None, left_out, nearest: f32::INFINITY });
     }
 
     /// Works through the running pass for at most `slice_ms` (at least one cell): each cell's
@@ -1148,7 +1162,10 @@ impl Streamer {
                 Item::Proxy(_) => est,
             };
             let spent = already + frame_start.elapsed().as_secs_f64() * 1e3;
-            if spent >= budget_ms {
+            // Every upload batch still in flight (the GPU is that far behind): the rest waits for
+            // the next frame rather than for the GPU (or for a fence poll, which the Intel driver
+            // can make slow while it is saturated).
+            if spent >= budget_ms || !gpu.upload_slot_free() {
                 self.frame.deferred += count - i as u32;
                 break;
             }
@@ -1310,7 +1327,9 @@ impl Streamer {
                 break;
             }
             victims.pop_front();
-            freed += match victim {
+            let bytes = match victim {
+                // (The queue may be older than this pass: a build it now wants hard stays.)
+                Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 == self.updates && e.2) => 0,
                 Victim::Build(id) => {
                     let bytes = models.uploaded.get(&id).map_or(0, |m| m.bytes);
                     evict_build(gpu, models, id);
@@ -1320,7 +1339,10 @@ impl Streamer {
                 Victim::Proxy(cell) if self.hlod.window_on(cell) => 0,
                 Victim::Proxy(cell) => self.hlod.evict(cell, gpu),
             };
-            self.frame.evicted += 1;
+            if bytes > 0 {
+                freed += bytes;
+                self.frame.evicted += 1;
+            }
         }
         freed
     }

@@ -246,6 +246,11 @@ impl Uploads {
         s
     }
 
+    /// A batch is being recorded, or a slot is free for one (or may still be made).
+    pub fn slot_free(&self) -> bool {
+        self.recording.is_some() || self.slots.len() < MAX_SLOTS || self.slots.iter().any(|s| s.state == SlotState::Free)
+    }
+
     /// Whether `id` (a mesh or texture) was queued in a batch that may not have finished.
     pub fn is_pending(&self, id: u32) -> bool {
         self.pending_ids.iter().any(|&(i, _)| i == id)

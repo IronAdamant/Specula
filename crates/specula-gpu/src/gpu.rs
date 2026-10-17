@@ -401,6 +401,10 @@ impl GpuInner {
         self.uploads.stats()
     }
 
+    pub fn upload_slot_free(&self) -> bool {
+        self.uploads.slot_free()
+    }
+
     /// Before a synchronous destroy of `id`: if a batch that may not have finished copies into
     /// it, finish every batch first.
     fn settle_upload_of(&mut self, id: u32) {

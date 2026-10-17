@@ -1254,6 +1254,12 @@ impl Gpu {
         self.inner.upload_stats()
     }
 
+    /// Whether something can be queued now without waiting for the GPU: a batch is being
+    /// recorded or a batch slot is free (as of the last fence poll, at the last flush).
+    pub fn upload_slot_free(&self) -> bool {
+        self.inner.upload_slot_free()
+    }
+
     /// Offscreen colour target (`R8G8B8A8_SRGB`) with its readback buffer. Its depth buffer and
     /// post-chain images belong to its render graph: created by the first frame that needs them,
     /// reused while sizes and settings hold, freed with the target.
