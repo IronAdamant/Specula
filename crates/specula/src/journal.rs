@@ -96,10 +96,12 @@ pub enum Kind {
     Camera,
     /// One fixed tick of the physics simulation moving bodies (coalesced, like a game tick).
     Physics,
+    /// One fixed tick of navigation moving agents (coalesced, like physics; see [`crate::nav`]).
+    Nav,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -112,6 +114,7 @@ impl Kind {
         Kind::GameTool,
         Kind::Camera,
         Kind::Physics,
+        Kind::Nav,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +131,7 @@ impl Kind {
             Kind::GameTool => "game_tool",
             Kind::Camera => "camera",
             Kind::Physics => "physics",
+            Kind::Nav => "nav",
         }
     }
 
@@ -136,7 +140,7 @@ impl Kind {
     }
 
     pub fn is_game(self) -> bool {
-        matches!(self, Kind::GameStart | Kind::GameTick | Kind::GameFrame | Kind::GameTool | Kind::Physics)
+        matches!(self, Kind::GameStart | Kind::GameTick | Kind::GameFrame | Kind::GameTool | Kind::Physics | Kind::Nav)
     }
 }
 

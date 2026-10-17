@@ -460,6 +460,10 @@ impl Engine {
         if let Some(h) = self.physics.hash() {
             self.trace.scratch.push(("physics", h));
         }
+        // So is navigation's (corridors, crowd velocities, minds' running nodes).
+        if let Some(h) = self.nav.last_hash() {
+            self.trace.scratch.push(("nav", h));
+        }
         self.trace.record(tick, hash, self.world.next_id());
     }
 

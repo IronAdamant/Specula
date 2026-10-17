@@ -33,6 +33,9 @@ pub mod persist;
 pub mod rollup;
 pub mod physics;
 mod physics_tools;
+pub mod nav;
+mod nav_tools;
+mod locus;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -487,6 +490,8 @@ struct Engine {
     logic: logic::LogicHost,
     /// The physics simulation and its bridge to the world (see [`physics`]).
     physics: physics::Physics,
+    /// Navmeshes, nav agents and minds (see [`nav`]).
+    nav: nav::Nav,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -581,6 +586,7 @@ impl Engine {
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
             logic: logic::LogicHost::new(),
             physics: physics::Physics::default(),
+            nav: nav::Nav::default(),
         })
     }
 
@@ -603,6 +609,7 @@ impl Engine {
         self.tick_hashes.clear();
         self.trace.clear();
         self.physics.reset();
+        self.nav.reset();
         problems
     }
 
@@ -680,6 +687,8 @@ impl Engine {
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
             }
+            // Navigation decides and steers on the same tick, before physics walks its characters.
+            self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
             self.clock.finish_tick();
@@ -1610,6 +1619,8 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
+            Command::Nav(call) => self.nav_call(call, w, tick),
+            Command::Place(call) => self.place_call(call, w, tick),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
         };
@@ -1647,6 +1658,11 @@ impl Engine {
                 "physics",
                 Json::obj([("state_hash", Json::from(journal::hex(h))), ("recent", Json::arr(self.physics.hashes.range(pstart..).map(pair)))]),
             );
+        }
+        // Navigation's hidden state (navmeshes, corridors, minds).
+        if let Some(h) = self.nav.last_hash() {
+            let nstart = self.nav.hashes.len().saturating_sub(recent);
+            out.set("nav", Json::obj([("state_hash", Json::from(journal::hex(h))), ("recent", Json::arr(self.nav.hashes.range(nstart..).map(pair)))]));
         }
         if let Some(t) = tick {
             let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
@@ -1919,6 +1935,7 @@ impl Engine {
             ("serve", if self.windowed { self.schedule.to_json() } else { Json::Null }),
             ("sim_tick", pacing.tick.to_json()),
             ("physics", self.physics.summary_json(&self.world.env().physics)),
+            ("nav", if self.nav.is_empty() { Json::Null } else { self.nav.summary_json() }),
             ("game_frame", pacing.game_frame.to_json()),
             (
                 "game_overlay",
@@ -2030,6 +2047,8 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::Nav(call) => call.class(),
+        Command::Place(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)

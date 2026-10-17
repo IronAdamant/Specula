@@ -41,7 +41,9 @@ dependencies = [
  "specula-gltf",
  "specula-gpu",
  "specula-input",
+ "specula-locus",
  "specula-logic",
+ "specula-mens",
  "specula-model",
  "specula-physics",
  "specula-platform",
@@ -49,6 +51,7 @@ dependencies = [
  "specula-sdk",
  "specula-sys",
  "specula-text",
+ "specula-via",
 ]
 
 [[package]]

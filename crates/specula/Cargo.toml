@@ -22,3 +22,6 @@ specula-input = { workspace = true }
 specula-logic = { workspace = true }
 specula-sdk = { workspace = true }
 specula-physics = { workspace = true }
+specula-via = { workspace = true }
+specula-mens = { workspace = true }
+specula-locus = { workspace = true }
