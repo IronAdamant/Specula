@@ -605,6 +605,8 @@ pub struct Streamer {
     blocked_cells: Vec<CellKey>,
     /// Cells the last index patch touched (reused).
     touched: Vec<CellKey>,
+    /// The eviction queue (see `victims`), kept across frames until the next pass.
+    victims_cache: Option<VecDeque<(f32, Victim)>>,
 }
 
 impl Default for Streamer {
@@ -653,6 +655,7 @@ impl Streamer {
             blocked: Vec::new(),
             blocked_cells: Vec::new(),
             touched: Vec::new(),
+            victims_cache: None,
         }
     }
 
@@ -819,6 +822,7 @@ impl Streamer {
         }
         let live = &self.live;
         models.failed.retain(|id, _| live.contains_key(id));
+        self.victims_cache = None;
         self.stale = true;
         std::mem::take(&mut self.upload_errors)
     }
@@ -1067,6 +1071,7 @@ impl Streamer {
         }
         self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         self.done_pass = frame;
+        self.victims_cache = None;
         self.nearest = pass.nearest;
         self.index.cells.retain(|_, c| !c.members.is_empty());
         let cells = &self.index.cells;
@@ -1130,7 +1135,8 @@ impl Streamer {
         // is no lower is blocked at once (items come nearest first; a hard one goes lower).
         let mut exhausted = f32::INFINITY;
         // What may be evicted, worked out once per pump when first needed.
-        let mut victims: Option<VecDeque<(f32, Victim)>> = None;
+        // What may be evicted: made when first needed, kept until the next pass (or builds change).
+        let mut victims: Option<VecDeque<(f32, Victim)>> = self.victims_cache.take();
         self.blocked.clear();
         self.blocked_cells.clear();
         let count = (pending.len() + proxies.len()) as u32;
@@ -1210,6 +1216,7 @@ impl Streamer {
             }
         }
         self.pending = pending;
+        self.victims_cache = victims;
         self.blocked_bytes = blocked;
         self.blocked.sort_unstable();
         self.blocked_cells.sort_unstable();
@@ -1309,6 +1316,8 @@ impl Streamer {
                     evict_build(gpu, models, id);
                     bytes
                 }
+                // (The queue may be older than this frame: a proxy the window draws now stays.)
+                Victim::Proxy(cell) if self.hlod.window_on(cell) => 0,
                 Victim::Proxy(cell) => self.hlod.evict(cell, gpu),
             };
             self.frame.evicted += 1;
