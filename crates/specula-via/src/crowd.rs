@@ -28,6 +28,10 @@ const SPEEDS: [f32; 2] = [1.0, 0.5];
 /// Neighbour search cell size, metres.
 const GRID: f32 = 4.0;
 
+/// Agents one agent looks at per row of grid cells, at most (bounds a clump's cost: without it a
+/// thousand agents at one point cost a million distance checks and sorts per step).
+const MAX_SCAN: usize = 128;
+
 /// An agent as one step's neighbour search sees it.
 #[derive(Clone, Copy, Debug)]
 struct Snap {
@@ -231,6 +235,8 @@ pub struct StepStats {
     /// Repath requests left for later steps.
     pub waiting: usize,
     pub nodes: usize,
+    /// Neighbour candidates looked at (avoidance and push-apart).
+    pub scanned: usize,
 }
 
 /// Agents on one navmesh.
@@ -467,7 +473,9 @@ impl Crowd {
             for gz in cz - 1..=cz + 1 {
                 let lo = sc.grid.partition_point(|(c, _)| *c < (gz, cx - 1));
                 let hi = sc.grid.partition_point(|(c, _)| *c <= (gz, cx + 1));
-                for &(_, j) in &sc.grid[lo..hi] {
+                // (A clump looks at its first MAX_SCAN agents in grid order, not all of them.)
+                for &(_, j) in sc.grid[lo..hi].iter().take(MAX_SCAN) {
+                    stats.scanned += 1;
                     if j as usize == i {
                         continue;
                     }
@@ -477,8 +485,14 @@ impl Crowd {
                     }
                 }
             }
-            sc.near.sort_by(|x, y| x.0.total_cmp(&y.0).then(sc.snap[x.1 as usize].id.cmp(&sc.snap[y.1 as usize].id)));
+            // The nearest few (distance, then id: a total order, so the same set every run).
+            let snap = &sc.snap;
+            let order = |x: &(f32, u32), y: &(f32, u32)| x.0.total_cmp(&y.0).then(snap[x.1 as usize].id.cmp(&snap[y.1 as usize].id));
+            if sc.near.len() > s.neighbours && s.neighbours > 0 {
+                sc.near.select_nth_unstable_by(s.neighbours - 1, order);
+            }
             sc.near.truncate(s.neighbours);
+            sc.near.sort_by(order);
             let v = if a.params.avoid && !sc.near.is_empty() && a.desired != Vec3::ZERO {
                 sc.others.clear();
                 sc.others.extend(sc.near.iter().map(|(_, j)| {
@@ -537,7 +551,8 @@ impl Crowd {
             for gz in cz - 1..=cz + 1 {
                 let lo = sc.grid.partition_point(|(c, _)| *c < (gz, cx - 1));
                 let hi = sc.grid.partition_point(|(c, _)| *c <= (gz, cx + 1));
-                for k in lo..hi {
+                for k in lo..hi.min(lo + MAX_SCAN) {
+                    stats.scanned += 1;
                     let j = sc.grid[k].1 as usize;
                     if j <= i {
                         continue;
@@ -746,6 +761,31 @@ mod tests {
         }
         assert!(closest > 0.5, "they pass each other (closest {closest})");
         assert!(c.agents().all(|(_, a)| a.status == AgentStatus::Arrived), "{:?}", c.agents().map(|(_, a)| (a.status, a.pos)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_clump_at_one_point_costs_a_bounded_scan() {
+        let m = NavMesh::new(room_config()).map(|mut m| {
+            build_all(&mut m, &scene([-10.0, -10.0, 10.0, 10.0], &[]));
+            m
+        });
+        let m = m.unwrap();
+        let make = || {
+            let mut c = Crowd::new(CrowdSettings::default());
+            for i in 0..1024u64 {
+                c.upsert(i + 1, AgentParams::default(), Vec3::new(0.0, 0.0, 0.0)).unwrap();
+                c.set_target(i + 1, Some(Vec3::new(if i % 2 == 0 { 8.0 } else { -8.0 }, 0.0, 0.0)));
+            }
+            c
+        };
+        let mut a = make();
+        let s = a.step(&m, 1.0 / 30.0);
+        assert!(s.scanned <= 1024 * 6 * MAX_SCAN, "{}", s.scanned);
+        let mut b = make();
+        b.step(&m, 1.0 / 30.0);
+        run(&mut a, &m, 30);
+        run(&mut b, &m, 30);
+        assert_eq!(a.hash(), b.hash(), "still deterministic");
     }
 
     #[test]

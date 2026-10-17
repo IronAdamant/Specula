@@ -126,8 +126,20 @@ impl Mind {
             // A finished root starts afresh next tick.
             self.reset_subtree(&def, 0);
         }
-        let leaves: Vec<usize> = (0..def.nodes.len()).filter(|&i| self.states[i].running && def.nodes[i].children.is_empty()).collect();
-        if leaves != self.running_leaves {
+        // What runs now, compared in place (a list is built only when it changed).
+        let mut now = (0..def.nodes.len()).filter(|&i| self.states[i].running && def.nodes[i].children.is_empty());
+        let same = {
+            let mut old = self.running_leaves.iter().copied();
+            loop {
+                match (now.next(), old.next()) {
+                    (None, None) => break true,
+                    (a, b) if a == b => continue,
+                    _ => break false,
+                }
+            }
+        };
+        if !same {
+            let leaves: Vec<usize> = (0..def.nodes.len()).filter(|&i| self.states[i].running && def.nodes[i].children.is_empty()).collect();
             let names: Vec<&str> = leaves.iter().map(|&i| def.nodes[i].label.as_str()).collect();
             let text = if names.is_empty() { format!("{} -> nothing running", status.name()) } else { format!("now: {}", names.join(", ")) };
             self.note(text);
@@ -147,9 +159,16 @@ impl Mind {
         self.running_leaves.clear();
     }
 
+    /// A node's state back to its start, keeping `last_success` (and the `done` buffer's memory).
+    fn clear_state(&mut self, i: usize) {
+        let s = &mut self.states[i];
+        let mut done = std::mem::take(&mut s.done);
+        done.clear();
+        *s = NodeState { last_success: s.last_success, done, ..NodeState::default() };
+    }
+
     fn reset_subtree(&mut self, def: &Def, i: usize) {
-        let keep = self.states[i].last_success;
-        self.states[i] = NodeState { last_success: keep, ..NodeState::default() };
+        self.clear_state(i);
         for &c in &def.nodes[i].children {
             self.reset_subtree(def, c);
         }
@@ -166,8 +185,7 @@ impl Mind {
         if let NodeKind::Action { name, args } = &node.kind {
             host.action(i, name, args, Phase::Abort, &mut self.bb);
         }
-        let keep = self.states[i].last_success;
-        self.states[i] = NodeState { last_success: keep, ..NodeState::default() };
+        self.clear_state(i);
     }
 
     fn finish(&mut self, def: &Def, i: usize, s: Status) -> Status {
@@ -246,7 +264,8 @@ impl Mind {
             }
             NodeKind::Parallel { succeed, fail } => {
                 if self.states[i].done.len() != node.children.len() {
-                    self.states[i].done = vec![None; node.children.len()];
+                    self.states[i].done.clear();
+                    self.states[i].done.resize(node.children.len(), None);
                 }
                 for (k, &c) in node.children.iter().enumerate() {
                     if self.states[i].done[k].is_none() {
@@ -391,16 +410,29 @@ impl Mind {
                     self.note(format!("set {key} refused: the blackboard holds at most {MAX_KEYS} keys"));
                     Status::Failure
                 } else {
-                    self.bb.insert(key.clone(), value.clone());
+                    // (An existing key is overwritten in place: no new key string per tick.)
+                    match self.bb.get_mut(key) {
+                        Some(v) => {
+                            if v != value {
+                                *v = value.clone();
+                            }
+                        }
+                        None => {
+                            self.bb.insert(key.clone(), value.clone());
+                        }
+                    }
                     Status::Success
                 }
             }
             NodeKind::Utility { options, momentum } => {
                 let current = self.states[i].chosen;
-                let mut scores = Vec::with_capacity(options.len());
+                // Last tick's score buffers, reused.
+                let mut scores = std::mem::take(&mut self.states[i].scores);
+                scores.resize_with(options.len(), Default::default);
                 let mut best: Option<(f32, usize)> = None;
                 for (k, o) in options.iter().enumerate() {
-                    let mut parts = Vec::with_capacity(o.considerations.len());
+                    let (total, parts) = &mut scores[k];
+                    parts.clear();
                     let mut score = o.weight;
                     for c in &o.considerations {
                         let v = host.input(&c.input, &c.args, &self.bb);
@@ -414,7 +446,7 @@ impl Mind {
                     if best.is_none_or(|(b, _)| score > b) {
                         best = Some((score, k));
                     }
-                    scores.push((score, parts));
+                    *total = score;
                 }
                 self.states[i].scores = scores;
                 let (_, pick) = best.expect("at least one option");
@@ -521,7 +553,42 @@ impl Mind {
         h.write_u64(self.bb.len() as u64);
         for (k, v) in &self.bb {
             h.write_str(k);
-            h.write_str(&v.to_string());
+            hash_json(h, v);
+        }
+    }
+}
+
+/// Hashes a value's structure without formatting it.
+fn hash_json(h: &mut specula_core::hash::StableHasher, v: &Json) {
+    match v {
+        Json::Null => h.write_u8(0),
+        Json::Bool(b) => {
+            h.write_u8(1);
+            h.write_bool(*b);
+        }
+        Json::Num(n) => {
+            h.write_u8(2);
+            // 1 and 1.0 (and 0 and -0) hash the same, as they compare.
+            h.write_u64(if *n == 0.0 { 0 } else { n.to_bits() });
+        }
+        Json::Str(s) => {
+            h.write_u8(3);
+            h.write_str(s);
+        }
+        Json::Arr(a) => {
+            h.write_u8(4);
+            h.write_u64(a.len() as u64);
+            for x in a {
+                hash_json(h, x);
+            }
+        }
+        Json::Obj(o) => {
+            h.write_u8(5);
+            h.write_u64(o.len() as u64);
+            for (k, x) in o {
+                h.write_str(k);
+                hash_json(h, x);
+            }
         }
     }
 }

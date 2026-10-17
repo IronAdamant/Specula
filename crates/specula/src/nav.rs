@@ -702,6 +702,8 @@ pub struct Nav {
     /// The last mind that ran (the budget's round robin), and buffers reused every tick.
     mind_cursor: u64,
     mind_order: Vec<u64>,
+    mesh_scratch: Vec<(u64, Option<u64>)>,
+    link_scratch: Vec<(u64, u64)>,
     /// Parsed shared definitions by entity, with the version they were parsed at.
     def_cache: BTreeMap<u64, (u64, Arc<Def>)>,
     los_scratch: Vec<([u32; 6], u64, bool)>,
@@ -1681,7 +1683,7 @@ impl Nav {
 
     /// One fixed tick: sync, rebuild dirty tiles, minds, crowds, write-back. The caller records
     /// changes as a snapshot and journals them.
-    pub fn tick(&mut self, world: &mut World, physics: &Physics, generation: u64, tick: u64, dt: f32, hz: u32) {
+    pub fn tick(&mut self, world: &mut World, physics: &mut Physics, generation: u64, tick: u64, dt: f32, hz: u32) {
         let started = std::time::Instant::now();
         self.sync(world, generation);
         if self.is_empty() {
@@ -1715,17 +1717,22 @@ impl Nav {
         }
         // Navmeshes a world load brought are complete before their first tick (the run that saved
         // the world had them complete); others build within their per-tick work.
-        let ids: Vec<(u64, Option<u64>)> = self
-            .meshes
-            .iter_mut()
-            .map(|(k, m)| {
-                let all = std::mem::take(&mut m.complete_first);
-                (*k, if all { None } else { Some(m.settings.tiles_per_tick as u64 * TILE_WORK) })
-            })
-            .collect();
-        for (mid, budget) in ids {
+        let mut ids = std::mem::take(&mut self.mesh_scratch);
+        ids.clear();
+        ids.extend(self.meshes.iter_mut().map(|(k, m)| {
+            let all = std::mem::take(&mut m.complete_first);
+            (*k, if all { None } else { Some(m.settings.tiles_per_tick as u64 * TILE_WORK) })
+        }));
+        for &(mid, budget) in &ids {
             report.tiles_rebuilt += self.rebuild(mid, budget, world);
         }
+        self.mesh_scratch = ids;
+        // Senses cast rays into the physics space: keep it in step with the world even when the
+        // simulation is off (a disabled physics doesn't sync on its own).
+        if !self.minds.is_empty() {
+            physics.sync(world, generation);
+        }
+        let physics = &*physics;
         // Minds decide (their actions set agents' goals), within a per-tick work budget: round
         // robin by id from the one after the last that ran; at least one runs.
         let mut minds = std::mem::take(&mut self.minds);
@@ -1797,18 +1804,29 @@ impl Nav {
             report.nodes += s.nodes;
         }
         // Write back.
-        let links: Vec<(u64, u64)> = self.agents.iter().filter_map(|(id, l)| l.mesh.map(|m| (*id, m))).collect();
-        for (id, mid) in links {
+        let mut links = std::mem::take(&mut self.link_scratch);
+        links.clear();
+        links.extend(self.agents.iter().filter_map(|(id, l)| l.mesh.map(|m| (*id, m))));
+        for &(id, mid) in &links {
             let Some(a) = self.meshes.get(&mid).and_then(|s| s.crowd.agent(id)) else { continue };
             let (pos, vel, moving) = (a.pos, a.vel, a.desired != Vec3::ZERO || a.vel != Vec3::ZERO);
             let link = self.agents.get_mut(&id).expect("listed");
             let Some(e) = world.get(id) else { continue };
-            let top = e.parent.is_none();
             let speed2 = vel.x * vel.x + vel.z * vel.z;
             let yaw = link.face.take().or_else(|| (speed2 > 0.0025).then(|| dmath::atan2(vel.x, vel.z).to_degrees()));
             let mut change = UpdateSpec::default();
-            if top {
-                if let Some(y) = yaw {
+            if let Some(y) = yaw {
+                // The world heading in the parent's frame (exact for parents turned about Y).
+                let local = match e.parent.and_then(|p| world.get(p)) {
+                    Some(parent) => {
+                        let inv = parent.model().inverse().unwrap_or(Mat4::IDENTITY);
+                        let (s, c) = dmath::sin_cos(y.to_radians());
+                        let d = inv.transform_point(Vec3::new(s, 0.0, c)) - inv.transform_point(Vec3::ZERO);
+                        (d.x * d.x + d.z * d.z > 1.0e-12).then(|| dmath::atan2(d.x, d.z).to_degrees())
+                    }
+                    None => Some(y),
+                };
+                if let Some(y) = local {
                     let r = e.rotation_deg;
                     if (r.y - y).abs() > 1.0e-3 {
                         change.rotation_deg = Some(Vec3::new(r.x, y, r.z));
@@ -1847,6 +1865,7 @@ impl Nav {
                 }
             }
         }
+        self.link_scratch = links;
         // Navigation's own writes are known: skip them next sync.
         if let Some((g, _)) = self.synced {
             self.synced = Some((g, world.draw_epoch()));
@@ -1940,6 +1959,36 @@ impl Nav {
     }
 
     /// A mind's status (`None`: no mind there).
+    /// Navmesh and mind problems, one short line each (a code and the first diagnostic; ai_status
+    /// has a mind's full list), within `max_bytes`. Returns the list and how many were left out.
+    pub fn problems_json(&self, world: &World, max_bytes: usize) -> (Json, usize) {
+        let all: Vec<(&u64, &Json)> = self.problems.iter().chain(self.mind_problems.iter()).collect();
+        let mut out = Vec::new();
+        let mut bytes = 2;
+        for (n, (id, p)) in all.iter().enumerate() {
+            let short = match p {
+                Json::Obj(_) if p.get("invalid_mind").is_some() => {
+                    let diags = p.get("invalid_mind").and_then(Json::as_array).unwrap_or(&[]);
+                    let mut j = Json::obj([("code", Json::from("invalid_mind")), ("diagnostics", Json::from(diags.len()))]);
+                    if let Some(first) = diags.first() {
+                        j.set("first", first.clone());
+                    }
+                    j
+                }
+                Json::Str(s) => Json::obj([("message", Json::from(s.as_str()))]),
+                other => (*other).clone(),
+            };
+            let item = Json::obj([("id", Json::from(**id)), ("path", Json::from(world.path_of(**id))), ("problem", short)]);
+            let len = item.to_string().len() + 1;
+            if bytes + len > max_bytes {
+                return (Json::Arr(out), all.len() - n);
+            }
+            bytes += len;
+            out.push(item);
+        }
+        (Json::Arr(out), 0)
+    }
+
     pub fn mind_json(&self, world: &World, id: u64, max_bytes: usize) -> Option<Json> {
         let slot = self.minds.get(&id)?;
         let mut j = match &slot.mind {
@@ -2169,9 +2218,9 @@ mod tests {
     }
 
     fn run(nav: &mut Nav, w: &mut World, ticks: u64) {
-        let physics = Physics::default();
+        let mut physics = Physics::default();
         for t in 0..ticks {
-            nav.tick(w, &physics, 0, t, 1.0 / 30.0, 30);
+            nav.tick(w, &mut physics, 0, t, 1.0 / 30.0, 30);
             let _ = w.take_changes();
         }
     }
@@ -2438,8 +2487,8 @@ mod tests {
             w.spawn(s, "t").unwrap();
         }
         let mut nav = Nav::default();
-        let physics = Physics::default();
-        nav.tick(&mut w, &physics, 0, 0, 1.0 / 30.0, 30);
+        let mut physics = Physics::default();
+        nav.tick(&mut w, &mut physics, 0, 0, 1.0 / 30.0, 30);
         let r = nav.last.clone().unwrap();
         assert!(r.minds < 300 && r.minds_skipped == 300 - r.minds, "{r:?}");
         // (At most one mind past the budget.)
@@ -2447,7 +2496,7 @@ mod tests {
         // Over a few ticks every mind gets its turn.
         let mut ran = r.minds;
         for t in 1..60 {
-            nav.tick(&mut w, &physics, 0, t, 1.0 / 30.0, 30);
+            nav.tick(&mut w, &mut physics, 0, t, 1.0 / 30.0, 30);
             ran += nav.last.as_ref().unwrap().minds;
         }
         assert!(ran >= 300, "{ran}");
@@ -2479,8 +2528,8 @@ mod tests {
         assert!(nav.meshes[&m].next.is_none() && nav.meshes[&m].settings.config.cell_size == 0.1, "swapped in after {ticks} ticks");
         // A world load (a new generation): the navmesh is complete at the first tick.
         let mut loaded = Nav::default();
-        let physics = Physics::default();
-        loaded.tick(&mut w, &physics, 7, 0, 1.0 / 30.0, 30);
+        let mut physics = Physics::default();
+        loaded.tick(&mut w, &mut physics, 7, 0, 1.0 / 30.0, 30);
         assert!(loaded.meshes[&m].ready && probe(&loaded));
         assert_eq!(loaded.meshes[&m].mesh.hash(), nav.meshes[&m].mesh.hash());
     }
@@ -2521,10 +2570,10 @@ mod tests {
         let b = &nav.meshes[&m].buckets;
         let most = b.values().flat_map(|t| t.values()).map(Vec::len).max().unwrap();
         assert!(most < 1_000, "{most}");
-        let physics = Physics::default();
+        let mut physics = Physics::default();
         let mut ticks = 0;
         while !nav.meshes[&m].ready && ticks < 1_000 {
-            nav.tick(&mut w, &physics, 0, ticks, 1.0 / 30.0, 30);
+            nav.tick(&mut w, &mut physics, 0, ticks, 1.0 / 30.0, 30);
             ticks += 1;
         }
         assert!(ready_mesh(&nav, m).is_ok() && ticks > 1, "{ticks} ticks");
@@ -2533,6 +2582,79 @@ mod tests {
         whole.sync(&w, 0);
         build_now(&mut whole, &w, 0, m);
         assert_eq!(whole.meshes[&m].mesh.hash(), nav.meshes[&m].mesh.hash());
+    }
+
+    #[test]
+    fn senses_see_walls_even_with_physics_off() {
+        let mut w = World::default();
+        // Only nav ticks run (as with physics disabled): nothing else syncs the physics space.
+        let wall = cube(&mut w, "wall", Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.5, 2.0, 30.0));
+        w.update(&EntityKey::Id(wall), UpdateSpec { collider: Some(Some(crate::physics::Collider::default())), ..Default::default() }, "t").unwrap();
+        cube(&mut w, "t", Vec3::new(5.0, 0.5, 0.0), Vec3::ONE);
+        let def = Json::parse(r#"{"selector": [{"sequence": [{"if": "sees", "target": "/t", "range": 50, "fov_deg": 360}, {"set": "saw", "value": 1}]}, {"set": "saw", "value": 0}]}"#).unwrap();
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("g".into());
+        s.position = Vec3::new(-5.0, 0.5, 0.0);
+        s.props = Json::obj([(MIND_KEY, Json::obj([("def", def)]))]);
+        let g = w.spawn(s, "t").unwrap().id;
+        let mut nav = Nav::default();
+        let saw = |nav: &Nav, w: &World| nav.mind_json(w, g, 4096).unwrap().get("blackboard").and_then(|b| b.get("saw")).and_then(Json::as_f64);
+        run(&mut nav, &mut w, 3);
+        assert_eq!(saw(&nav, &w), Some(0.0), "the wall hides the target");
+        w.update(&EntityKey::Id(wall), UpdateSpec { position: Some(Vec3::new(0.0, 1.0, 40.0)), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 3);
+        assert_eq!(saw(&nav, &w), Some(1.0), "the wall moved away");
+    }
+
+    #[test]
+    fn many_invalid_minds_are_summarised_within_a_byte_cap() {
+        let mut w = World::default();
+        let bad: Vec<String> = (0..60).map(|i| format!(r#"{{"do": "no_such_action_{i}", "x": "{}"}}"#, "y".repeat(80))).collect();
+        let def = Json::parse(&format!(r#"{{"sequence": [{}]}}"#, bad.join(","))).unwrap();
+        for i in 0..40 {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(format!("m{i}"));
+            s.props = Json::obj([(MIND_KEY, Json::obj([("def", def.clone())]))]);
+            w.spawn(s, "t").unwrap();
+        }
+        let mut nav = Nav::default();
+        nav.sync(&w, 0);
+        assert_eq!(nav.mind_problems.len(), 40);
+        let (list, left) = nav.problems_json(&w, 8 * 1024);
+        assert!(list.to_string().len() <= 8 * 1024, "{}", list.to_string().len());
+        let shown = list.as_array().unwrap().len();
+        assert!(shown > 0 && shown + left == 40, "{shown} + {left}");
+        assert!(list.to_string().contains("invalid_mind") && list.to_string().contains("\"diagnostics\""));
+    }
+
+    #[test]
+    fn parented_agents_turn_in_their_parents_frame() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("squad".into());
+        g.rotation_deg = Vec3::new(0.0, 90.0, 0.0);
+        w.spawn(g, "t").unwrap();
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("w".into());
+        s.parent = Some(EntityKey::Path("/squad".into()));
+        // Local +X of a parent turned 90 degrees about Y.
+        s.position = Vec3::new(0.0, 0.5, 6.0);
+        s.scale = Vec3::new(0.5, 1.0, 0.5);
+        s.props = Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(3.0)), ("goal", Json::arr([Json::from(-8.0), Json::from(0.0), Json::from(-8.0)]))]))]);
+        let a = w.spawn(s, "t").unwrap().id;
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let start = w.get(a).unwrap().world_position();
+        run(&mut nav, &mut w, 10);
+        let e = w.get(a).unwrap();
+        let moved = e.world_position() - start;
+        // The agent's world front points the way it walks.
+        let f = e.model().cols[2];
+        let (fx, fz) = (f[0], f[2]);
+        let l = (fx * fx + fz * fz).sqrt() * (moved.x * moved.x + moved.z * moved.z).sqrt();
+        assert!(l > 0.0 && (fx * moved.x + fz * moved.z) / l > 0.8, "front {fx},{fz} moved {moved:?} rot {:?}", e.rotation_deg);
     }
 
     #[test]

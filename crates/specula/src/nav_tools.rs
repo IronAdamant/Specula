@@ -29,6 +29,9 @@ const MAX_DRAWN_POLYS: usize = 4000;
 const MAX_DRAWN_CORNERS: usize = 24;
 /// Bytes of one ai_status answer.
 const MAX_STATUS_BYTES: usize = 32 * 1024;
+/// Bytes of nav_info's problem list, and of a whole nav_info answer.
+const MAX_PROBLEM_BYTES: usize = 8 * 1024;
+const MAX_INFO_BYTES: usize = 32 * 1024;
 
 /// A point, or an entity whose world position is the point.
 #[derive(Clone, Debug, PartialEq)]
@@ -294,7 +297,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           it walks its navmesh to 'goal' with the crowd (steering, avoiding other agents, sliding along \
                           walls). An entity with a physics character body is walked by the character controller (nav \
                           sets its walking velocity); others are moved along the navmesh surface. A mind (ai_set) \
-                          decides goals instead of 'goal'. Returns the agent's state."
+                          decides goals instead of 'goal'. Returns the agent's state. Once it has walked, world_undo \
+                          of this call is refused (undo_conflict: navigation moved it later); force: true undoes it and \
+                          puts the entity back where it stood."
                 .into(),
             input_schema: schema(agent, &[]),
         },
@@ -342,7 +347,8 @@ pub fn definitions() -> Vec<ToolDef> {
                           validated first and refused with its diagnostics if invalid. It runs every fixed tick, \
                           deterministically; its move actions drive the entity's nav agent (nav_agent), so give it one \
                           to move. as_definition: true stores a shared definition (props.mind_def) that minds name by \
-                          path instead."
+                          path instead. Once its agent has walked, world_undo of this call needs force: true (it also \
+                          puts the entity back where it stood)."
                 .into(),
             input_schema: schema(set_mind, &[]),
         },
@@ -375,7 +381,7 @@ impl crate::Engine {
         let hz = self.clock.hz();
         let _z = specula_core::profile::zone("nav");
         self.world.set_recording(crate::world::Recording::Snapshot);
-        self.nav.tick(&mut self.world, &self.physics, self.world_generation, tick, 1.0 / hz as f32, hz);
+        self.nav.tick(&mut self.world, &mut self.physics, self.world_generation, tick, 1.0 / hz as f32, hz);
         self.world.set_recording(crate::world::Recording::Full);
         self.swarm.game_changes(&mut self.world, tick, nav::AGENT, JKind::Nav);
     }
@@ -529,21 +535,34 @@ impl crate::Engine {
                         Err(e) => return world_error(&e),
                     }
                 }
-                let problems: Vec<Json> = self
-                    .nav
-                    .problems
-                    .iter()
-                    .chain(self.nav.mind_problems.iter())
-                    .take(32)
-                    .map(|(id, p)| Json::obj([("id", Json::from(*id)), ("path", Json::from(self.world.path_of(*id))), ("problem", p.clone())]))
-                    .collect();
-                out.set("problem_list", Json::Arr(problems));
+                let (problems, left) = self.nav.problems_json(&self.world, MAX_PROBLEM_BYTES);
+                out.set("problem_list", problems);
+                if left > 0 {
+                    out.set("problems_not_listed", Json::from(left));
+                }
                 if agents {
-                    let ids: Vec<u64> = self.nav.agent_ids().filter(|id| *id > after).collect();
-                    let page: Vec<Json> = ids.iter().take(limit).filter_map(|id| self.nav.agent_json(&self.world, *id)).collect();
-                    let next = (ids.len() > limit).then(|| ids[limit - 1]);
+                    // A page of agents, cut short at the byte cap (next_cursor continues it).
+                    let mut bytes = out.to_string().len();
+                    let mut page = Vec::new();
+                    let mut last = None;
+                    let mut more = false;
+                    for id in self.nav.agent_ids().filter(|id| *id > after) {
+                        if page.len() == limit {
+                            more = true;
+                            break;
+                        }
+                        let Some(j) = self.nav.agent_json(&self.world, id) else { continue };
+                        let len = j.to_string().len() + 1;
+                        if bytes + len > MAX_INFO_BYTES && !page.is_empty() {
+                            more = true;
+                            break;
+                        }
+                        bytes += len;
+                        page.push(j);
+                        last = Some(id);
+                    }
                     out.set("agent_list", Json::Arr(page));
-                    out.set("next_cursor", Json::from(next));
+                    out.set("next_cursor", Json::from(if more { last } else { None }));
                 }
                 ToolOutput::text(out.to_string())
             }
