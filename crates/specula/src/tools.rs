@@ -218,6 +218,8 @@ pub enum Command {
     Place(crate::locus::PlaceCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
     Lex(crate::lex_tools::LexCall),
+    /// The animation tools (see [`crate::anim_tools`]).
+    Anim(crate::anim_tools::AnimCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -501,7 +503,10 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                         Some(call) => call.map(Command::Nav),
                         None => match crate::locus::parse(other, args) {
                             Some(call) => call.map(Command::Place),
-                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                            None => match crate::anim_tools::parse(other, args) {
+                                Some(call) => call.map(Command::Anim),
+                                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                            },
                         },
                     },
                 },
@@ -2325,6 +2330,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::nav_tools::definitions())
     .chain([crate::locus::definition()])
     .chain(crate::lex_tools::definitions())
+    .chain(crate::anim_tools::definitions())
     .collect()
 }
 

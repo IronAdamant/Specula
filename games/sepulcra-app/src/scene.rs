@@ -14,9 +14,12 @@
 //! **Models.** Stones, walls, tombstones and creatures are procedural recipes from
 //! `games/sepulcra/assets/recipes/` (see [`looks`]): one shared GPU mesh per recipe, parameters
 //! and seed, drawn at the level of detail that fits the screen. Creatures are rigged and skinned
-//! on the GPU; each plays a clip of its anim set (the world's `anim` component) chosen from what
-//! it does (walk, attack a wall, leap, dive, summon, die), crossfading on every change, at a rate
-//! that follows the game's speed and the creature's slow.
+//! on the GPU; each plays its anim set's `creature` graph (the world's `anim` component in graph
+//! mode): the scene only sets parameters (what it does: `act` = idle, move, attack, special,
+//! death; its ground `speed` in m/s, slow included, which the graph's locomotion blend tree and
+//! `match_speed` turn into planted feet; a `hit` trigger for the flinch layer; the look target),
+//! and the graph, as data, picks the clips, blends them and plants the feet on the slab (whose
+//! top pieces are tagged `ground`). The game's pace is the anim's speed.
 //!
 //! Cost (foundation F3): structure changes touch only what changed; moving things are written
 //! once per frame, interpolated between the last two ticks with the frame's `alpha`, and only
@@ -31,6 +34,8 @@ use sepulcra::map::{CellKind, Face};
 use sepulcra::sim::{EnemyId, ProjectileId};
 use sepulcra::{CellId, Enemy, Event, Motion, Projectile, State};
 use specula::world::{AnimSpec, EntityKey, Layer, LookPatch, SpawnSpec, UpdateSpec, World};
+use specula_anim::graph::Value;
+use specula_anim::play::GraphPlay;
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_gpu::Material;
@@ -41,8 +46,10 @@ const MAX_GAME_LIGHTS: usize = 12;
 /// Flashes alive at once (the oldest is reused past this).
 const FX_MAX: usize = 48;
 const RING_DOTS: usize = 28;
-/// Seconds a crossfade between two clips takes.
-const CROSSFADE_S: f32 = 0.2;
+/// The anim graph every creature plays.
+const GRAPH: &str = "creature";
+/// Ground speed (m/s) changes smaller than this aren't written (each write settles the graph).
+const SPEED_STEP: f32 = 0.05;
 /// Seconds a body stays after its death clip ends.
 const LINGER_S: f32 = 0.6;
 
@@ -58,13 +65,11 @@ struct Mob {
     /// What was last written to the world.
     written: Option<(Vec3, Vec3)>,
     flies: bool,
-    /// What its clip shows, and the clip rate last written.
+    /// What its graph was last told: `act` and ground speed (m/s).
     act: Act,
-    rate: f32,
+    speed: f32,
     /// A one-shot clip (a summon) plays until this presentation time.
     busy_until: f32,
-    /// Its own phase, so a pack doesn't walk in step.
-    phase: f32,
 }
 
 /// A body playing its death clip until `until` (presentation seconds).
@@ -424,12 +429,15 @@ impl Scene {
         p
     }
 
-    /// What an enemy's clip should show this tick.
-    fn act_of(e: &Enemy) -> Act {
+    /// What an enemy's clip should show this tick: its special is a runner's leap, a wraith's
+    /// dive and a climber hauling itself up a cliff (the colossus's summon comes from events).
+    fn act_of(e: &Enemy, map: &sepulcra::map::Map) -> Act {
         match e.motion {
             Motion::Ground { leap: true, .. } => Act::Special,
             Motion::Air { diving: true, .. } => Act::Special,
             _ if e.attacking.is_some() => Act::Attack,
+            // The same test the simulation's climb speed uses.
+            Motion::Ground { from, to, len, .. } if len > 0 && (map.cell(from).kind.is_climb() || map.cell(to).kind.is_climb()) => Act::Special,
             Motion::Ground { len: 0, .. } => Act::Idle,
             _ => Act::Move,
         }
@@ -452,7 +460,7 @@ impl Scene {
                 for m in self.enemies.values_mut() {
                     let d = m.cur - Vec3::new(x, m.cur.y, z);
                     if m.creature.recipe == looks::creature("colossus").recipe && d.length() < 5.0 {
-                        m.busy_until = now + m.creature.special.duration / m.creature.special.rate.max(0.1);
+                        m.busy_until = now + m.creature.special_s / self.pace.max(0.1);
                     }
                 }
             }
@@ -465,30 +473,27 @@ impl Scene {
                 let def = content.enemy(e.kind);
                 let creature = looks::creature(&def.id);
                 let phase = (e.id % 17) as f32 * 0.137;
-                let act = Scene::act_of(e);
-                let clip = creature.clip(act);
-                let rate = self.rate(clip.rate, e, tick);
+                let act = Scene::act_of(e, &content.map);
+                let speed = Scene::ground_speed(state, e, pos, tick);
                 let yaw = facing(Vec3::ZERO - pos, 0.0);
                 let props = Json::obj([("enemy", Json::from(e.id)), ("kind", Json::from(def.id.as_str()))]);
                 let model = specula::world::ModelSpec::new(creature.recipe);
                 let rot = Vec3::new(0.0, yaw, 0.0);
                 let mut spec = ents::model_spec(self.enemies_g, &format!("{}_{}", def.id, e.id), model, pos, rot, creature.scale, &["enemy", &def.id], props);
-                spec.anim = Some(AnimSpec {
-                    speed: rate,
-                    looping: Some(clip.looping),
-                    time_offset: if clip.looping { phase } else { 0.0 },
-                    start: Some(world_now),
-                    ..AnimSpec::new(clip.name)
-                });
+                // Anchored `phase` seconds back, so a pack doesn't walk in step.
+                let mut play = graph_params(act, speed, false);
+                play.set_param("look_at", Value::Vec3(looks::LOOK_TARGET));
+                play.set_param("look", Value::Num(creature.look));
+                spec.anim = Some(AnimSpec { speed: self.pace, start: Some(world_now - phase as f64), ..AnimSpec::graph(play) });
                 let id = ents::spawn(world, &self.agent, spec);
                 let flies = def.flies();
-                self.enemies.insert(e.id, Mob { id, creature, prev: pos, cur: pos, prev_rot: rot, rot, written: Some((pos, rot)), flies, act, rate, busy_until: 0.0, phase });
+                self.enemies.insert(e.id, Mob { id, creature, prev: pos, cur: pos, prev_rot: rot, rot, written: Some((pos, rot)), flies, act, speed, busy_until: 0.0 });
                 continue;
             }
             let busy = self.enemies.get(&e.id).is_some_and(|m| m.busy_until > now);
-            let act = if busy { Act::Special } else { Scene::act_of(e) };
-            let base = self.enemies[&e.id].creature.clip(act).rate;
-            let rate = self.rate(base, e, tick);
+            let act = if busy { Act::Special } else { Scene::act_of(e, &content.map) };
+            let speed = Scene::ground_speed(state, e, pos, tick);
+            let pace = self.pace;
             let Some(m) = self.enemies.get_mut(&e.id) else { continue };
             m.prev = m.cur;
             m.prev_rot = m.rot;
@@ -502,31 +507,35 @@ impl Scene {
                 yaw = facing(Vec3::new(-pos.x.signum() * f32::from(pos.x.abs() > pos.z.abs()), 0.0, -pos.z.signum() * f32::from(pos.z.abs() >= pos.x.abs())), yaw);
             }
             m.rot = Vec3::new(0.0, yaw, 0.0);
-            if act != m.act || (rate - m.rate).abs() > 0.02 {
-                play(world, &self.agent, m, act, rate, world_now);
+            if act != m.act || (speed - m.speed).abs() > SPEED_STEP {
+                tell(world, &self.agent, m, act, speed, false, pace);
             }
         }
     }
 
-    /// A clip's rate for an enemy: its own rate, slowed with the enemy, at the game's pace.
-    fn rate(&self, base: f32, e: &Enemy, tick: u32) -> f32 {
+    /// An enemy's ground speed in m/s as the simulation moves it (slowed, climbing): the graph
+    /// picks the gait and rate that keep its feet planted at it.
+    fn ground_speed(state: &State, e: &Enemy, pos: Vec3, tick: u32) -> f32 {
+        let def = state.content().enemy(e.kind);
         let slow = if e.is_slowed(tick) { (1000 - e.slow.clamp(0, 900)) as f32 / 1000.0 } else { 1.0 };
-        (base * slow * self.pace).clamp(0.0, 8.0)
+        let climb = if pos.y < -0.5 && !def.flies() { def.climb_speed as f32 / 1000.0 } else { 1.0 };
+        def.speed as f32 / 1000.0 * slow * climb
     }
 
     /// Sets how fast the game runs (0 while paused, else 1, 2 or 4 steps per tick): every
-    /// creature's clip follows, keeping its place in the clip.
+    /// creature's graph follows (its time scale; the play settles, so nothing jumps).
     pub fn set_pace(&mut self, world: &mut World, pace: f32) {
         if pace == self.pace {
             return;
         }
-        let old = self.pace;
         self.pace = pace;
-        let now = world.world_time();
         for m in self.enemies.values_mut() {
-            let rate = if old > 0.0 { m.rate / old * pace } else { m.creature.clip(m.act).rate * pace };
-            let act = m.act;
-            play(world, &self.agent, m, act, rate.clamp(0.0, 8.0), now);
+            let (act, speed) = (m.act, m.speed);
+            tell(world, &self.agent, m, act, speed, false, pace);
+        }
+        // The dying play on at the new pace too.
+        for c in &self.corpses {
+            tell_id(world, &self.agent, c.id, graph_params(Act::Death, 0.0, false), pace);
         }
     }
 
@@ -573,7 +582,6 @@ impl Scene {
     fn flourishes(&mut self, world: &mut World, state: &State, events: &[Event], now: f32) {
         let content = state.content();
         let map = &content.map;
-        let world_now = world.world_time();
         for ev in events {
             match *ev {
                 Event::Died { enemy, pos, kind } => {
@@ -583,16 +591,18 @@ impl Scene {
                     // The body plays its death where it fell, then goes.
                     if let Some(mut m) = self.enemies.remove(&enemy) {
                         let pace = self.pace.max(1.0);
-                        let clip = m.creature.death;
-                        play(world, &self.agent, &mut m, Act::Death, (clip.rate * pace).min(8.0), world_now);
+                        tell(world, &self.agent, &mut m, Act::Death, 0.0, false, pace);
                         ents::place(world, &self.agent, m.id, Some(m.cur), Some(m.rot), None);
                         ents::update(world, &self.agent, m.id, UpdateSpec { add_tags: vec!["dead".into()], ..UpdateSpec::default() });
-                        self.corpses.push(Corpse { id: m.id, until: now + clip.duration / (clip.rate * pace) + LINGER_S });
+                        self.corpses.push(Corpse { id: m.id, until: now + m.creature.death_s / pace + LINGER_S });
                     }
                 }
                 Event::Hit { enemy, .. } => {
-                    if let Some(m) = self.enemies.get(&enemy) {
+                    if let Some(m) = self.enemies.get_mut(&enemy) {
                         let p = m.cur + Vec3::new(0.0, 1.1, 0.0);
+                        // The flinch layer: a trigger the graph consumes.
+                        let (act, speed, pace) = (m.act, m.speed, self.pace);
+                        tell(world, &self.agent, m, act, speed, true, pace);
                         self.flash(world, now, p, 0.15, 0.6, 0.15, RUNE_PALE, 3.0, None);
                     }
                 }
@@ -808,32 +818,28 @@ fn hex_tint(c: [f32; 3]) -> [f32; 3] {
     [0.55 + 0.45 * c[0], 0.55 + 0.45 * c[1], 0.55 + 0.45 * c[2]]
 }
 
-/// Plays what `act` shows at `rate`: a new clip crossfades in; the same clip at a new rate keeps
-/// its place (no jump).
-fn play(world: &mut World, agent: &str, m: &mut Mob, act: Act, rate: f32, now: f64) {
-    let clip = m.creature.clip(act);
-    let same_clip = m.creature.clip(m.act).name == clip.name;
-    let current = world.get(m.id).and_then(|e| e.anim.clone());
-    let anim = match current {
-        Some(cur) if same_clip && cur.clip == clip.name => AnimSpec {
-            speed: rate,
-            looping: Some(clip.looping),
-            time_offset: cur.clip_time(now) as f32,
-            start: Some(now),
-            ..AnimSpec::new(clip.name)
-        },
-        _ => AnimSpec {
-            speed: rate,
-            looping: Some(clip.looping),
-            time_offset: if clip.looping { m.phase } else { 0.0 },
-            start: Some(now),
-            crossfade: CROSSFADE_S,
-            ..AnimSpec::new(clip.name)
-        },
-    };
+/// The graph parameters for what a creature does.
+fn graph_params(act: Act, speed: f32, hit: bool) -> GraphPlay {
+    let mut p = GraphPlay::new(GRAPH);
+    p.set_param("act", Value::Name(act.name().into()));
+    p.set_param("speed", Value::Num(speed));
+    if hit {
+        p.set_param("hit", Value::Bool(true));
+    }
+    p
+}
+
+/// Tells a creature's graph what it does now: the world settles the play at the write and the
+/// graph blends (parameters not given, like the look target, keep their values).
+fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: bool, pace: f32) {
     m.act = act;
-    m.rate = rate;
-    ents::update(world, agent, m.id, UpdateSpec { anim: Some(Some(anim)), ..UpdateSpec::default() });
+    m.speed = speed;
+    tell_id(world, agent, m.id, graph_params(act, speed, hit), pace);
+}
+
+fn tell_id(world: &mut World, agent: &str, id: u64, play: GraphPlay, pace: f32) {
+    let anim = AnimSpec { speed: pace.clamp(0.0, 8.0), ..AnimSpec::graph(play) };
+    ents::update(world, agent, id, UpdateSpec { anim: Some(Some(anim)), ..UpdateSpec::default() });
 }
 
 /// Yaw (degrees about +Y) that turns +Z towards `d`; `keep` when `d` has no horizontal part.
