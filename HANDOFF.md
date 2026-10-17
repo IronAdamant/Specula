@@ -16,7 +16,13 @@ memory of the earlier ones. This page is **current state and what's next** only;
     one might for 2D, depending on its hardware); high-spec laptops, desktops and cloud hardware can. Today it's the
     constant `BUSY_FRAME` (60 fps) in `crates/specula/src/schedule.rs`; the ROADMAP swarm track has the item.
   - **The stronger cyan selection mark: yes**, keep it (STYLE.md's highlight rule stands).
-- **M3 plan:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
+- **M3 and M4 approved (owner, 2026-10-17 late: "I'd like you to finish M3 and M4 please").** Work runs in waves of
+  lanes: wave 1 (Lex, physics P1-P3, animation A3 and agent-authored motion, swarm communication, module host and
+  SDK); wave 2 (Locus and navigation/AI, Sepulcra in Lex with save games and the balance lab, P4 and A4 ragdolls,
+  playtest swarms and tool ergonomics, streaming and HLOD, then the M3 exit proof and agent evals); wave 3 (M4: stage
+  world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
+  baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
+- **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
   Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
@@ -183,7 +189,6 @@ This is the **one list** of decisions waiting for the owner (other docs link her
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies.
 
-- **M3 go-ahead and scope:** approve or trim the M3/M4 plan above.
 - **Sepulcra scope:** art style, size and launch languages (genre is decided: tower defence; v1.0 platforms are
   decided: Windows + Steam Deck, mobile later).
 - **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service? It's needed for
@@ -232,9 +237,8 @@ answer where it applies.
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
 **Recommendations for the next session:**
-1. **On 2026-10-21, confirm the M3 go-ahead and scope** (already pushed), then start with Lex (gameplay as data),
-   since Locus, the balance lab and agent evals all build on it. Run it as lanes with reviews, as in M2. The swarm
-   frame-floor setting (owner answer above) is a small early lane.
+1. **M3 and M4 are approved and under way** (see the wave plan at the top). Continue the waves; Lex comes first
+   because Locus, the balance lab and agent evals all build on it. Run lanes with reviews, as in M2.
 2. **Bring the open owner decisions** (the list above) to the owner in one short batch, with Claude's recommendation
    for each; several of them (night darkness, title screen, settings) shape Sepulcra's M3 work.
 3. **Keep Sepulcra the dogfood.** Each M3 feature should land in the game (rules moved into Lex data, physics on
