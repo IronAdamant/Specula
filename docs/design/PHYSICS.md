@@ -200,6 +200,12 @@ triangle normal). Plus:
   separating direction first (one support scan each); while touching, if the relative pose moved less than 5 mm and
   about 1° since the last full test, it reuses that face or edge and only re-clips. Hull pairs cost edges × edges, so
   hulls on moving bodies are capped at 16 points (a structured error says so); static hulls take up to 64.
+  `specula-model` fits hulls of up to 48 points; `collider::fit_limited` with its `MAX_MOVING_HULL_POINTS` (16, the
+  same number, checked by an engine test) fits one for a moving body.
+  The memory changes results (a reused feature can differ from a fresh test by a few millimetres and some degrees of
+  normal at the edge of the 5 mm / 1° window), so it is **state**: it is in the physics hash beside the warm-start
+  impulses. Changing a collider in place clears both on all of its pairs, and a remembered index the shape doesn't
+  have means a fresh test, never "no contacts".
 - Against meshes, the triangles near a body are visited nearest its own vertices first (so a box's corners are
   supported first), up to 256 a tick; more is a structured `budget` error. Shape casts against meshes sweep the BVH
   nearest-first, pruned by the best hit so far, with no cap.
@@ -216,7 +222,9 @@ disc per point. Jacobian rows are precomputed per step. Joints (P4) slot in besi
   ~10 cm into the floor; with the margin at 2 cm + closing speed × dt (capped at 42 cm) it never sinks.
 
 **Islands and sleeping.** Union-find each step over touching awake dynamic pairs; an island at rest for 0.5 s sleeps
-whole, and wakes whole when touched, when a support is removed, or when an agent moves or changes a member. Only awake
+whole, and wakes whole when touched, when a support is removed, or when an agent moves or changes a member. Moving a
+static or kinematic body by hand wakes what overlaps it where it was and where it is now; a small move (up to two of
+its own sizes) wakes its whole swept box, a teleport doesn't wake the ground it jumps over. Only awake
 bodies and their pairs are visited (an awake set and a contact slab with a pair-key index), so sleeping bodies cost
 nothing.
 
@@ -267,7 +275,12 @@ hash (target: nearly nothing); 100 characters on a heightfield 0.010–0.015 ms 
 bodies piling up 3.9–4.2 ms a tick (target 2 ms: **not met yet**: narrowphase 1.5–1.7 ms, solver 1.75–1.8 ms; the
 solver is compute-bound, as packing its points densely changed nothing). 1,000 falling 16-point hulls: narrowphase
 about 15 ms a tick while they land (58 ms before the per-pair memory), far less once they rest. The world hash of 1,000
-moving boxes: 0.4–0.5 ms a tick (9.3 ms when bodies were hashed as JSON). The next steps for the 2 ms target are
+moving boxes: 0.4–0.5 ms a tick (9.3 ms when bodies were hashed as JSON). In the engine (`bridge_profile`, an ignored
+test in `crates/specula/src/physics.rs`), 1,000 awake boxes: the space's step 2.4 ms (its stages 2.2 ms), write-back
+1.05 ms (of which `World::update` 0.7 ms and the Euler conversion 0.09 ms), the physics hash 0.28 ms, and outside the
+physics tick the change snapshot and journal 0.56 ms. The write-back skips bodies whose pose bits and body are
+unchanged, reuses its buffers and computes the world rotation only when the position is unchanged; the rest is the
+world's generic update and its full-entity snapshots. The next steps for the 2 ms target are
 friction at the manifold centre instead of per point, SIMD rows (Box2D's wide solver) and a deterministic parallel
 narrowphase.
 

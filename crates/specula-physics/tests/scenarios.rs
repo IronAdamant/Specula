@@ -559,3 +559,164 @@ fn the_incremental_hash_matches_a_full_one() {
         assert_eq!(s.hash(), s.hash_uncached(), "tick {t}");
     }
 }
+
+/// Review round 2, finding 1: teleporting a static wall wakes what it touched and what it now
+/// touches, not every sleeping body inside the box spanning both places.
+#[test]
+fn teleporting_a_wall_wakes_only_its_ends() {
+    let mut s = Space::default();
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::at(v3(0.0, -0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(100.0, 0.5, 100.0)))))).unwrap();
+    for i in 0..1600u64 {
+        let (x, z) = ((i % 40) as f32 * 1.5 - 30.0, (i / 40) as f32 * 1.5 - 30.0);
+        let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(x, 0.5, z)), Some(ColliderDesc::new(Shape::cuboid(v3(0.5, 0.5, 0.5)))));
+        d.sleeping = true;
+        s.insert(100 + i, d).unwrap();
+    }
+    s.insert(2, BodyDesc::new(BodyKind::Static, Pose::at(v3(-50.0, 0.5, -50.0)), Some(ColliderDesc::new(Shape::cuboid(v3(1.0, 1.0, 1.0)))))).unwrap();
+    s.step(DT);
+    assert_eq!(s.report().awake, 0);
+    // Across the whole grid, both ends outside it: nothing wakes.
+    s.set_pose(2, Pose::at(v3(50.0, 0.5, 50.0)));
+    s.step(DT);
+    assert_eq!(s.report().awake, 0, "a teleport doesn't wake the ground it jumps over");
+    // Onto the grid's far corner: only the crates it now overlaps wake.
+    s.set_pose(2, Pose::at(v3(28.5, 0.5, 28.5)));
+    s.step(DT);
+    let awake = s.report().awake;
+    assert!((1..=9).contains(&awake), "{awake}");
+    // A small move (under two of its sizes) wakes its whole path, not just its ends.
+    let mut s2 = Space::default();
+    ground(&mut s2);
+    let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(1.6, 0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.5, 0.5, 0.5)))));
+    d.sleeping = true;
+    s2.insert(10, d).unwrap();
+    s2.insert(2, BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, 0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.5, 0.5, 0.5)))))).unwrap();
+    s2.step(DT);
+    assert!(s2.body(10).unwrap().sleeping);
+    // (Its ends don't touch the crate; the path between them does.)
+    s2.set_pose(2, Pose::at(v3(3.2, 0.5, 0.0)));
+    assert!(!s2.body(10).unwrap().sleeping, "the crate on its short path wakes");
+}
+
+fn corners(h: Vec3) -> Vec<Vec3> {
+    (0..8).map(|i| v3(if i & 1 == 0 { -h.x } else { h.x }, if i & 2 == 0 { -h.y } else { h.y }, if i & 4 == 0 { -h.z } else { h.z })).collect()
+}
+
+fn ball_points(n: usize, r: f32) -> Vec<Vec3> {
+    (0..n)
+        .map(|i| {
+            let a = i as f32 * 2.399;
+            let y = 1.0 - 2.0 * (i as f32 + 0.5) / n as f32;
+            let rr = (1.0 - y * y).sqrt();
+            v3(specula_core::dmath::cos(a) * rr * r, y * r, specula_core::dmath::sin(a) * rr * r)
+        })
+        .collect()
+}
+
+/// Rests a hull crate on a hull floor, then replaces the floor's and/or the crate's shape, in
+/// place or by removing and re-inserting. Returns (peak speed, deepest contact, final position bits).
+fn change_shapes(in_place: bool, which: u32) -> (f32, f32, [u32; 3]) {
+    let mut s = Space::new(Settings { sleep: false, ..Default::default() });
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::at(v3(0.0, -0.5, 0.0)), Some(ColliderDesc::new(Shape::hull(&corners(v3(5.0, 0.5, 5.0))).unwrap())))).unwrap();
+    dynamic(&mut s, 2, Shape::hull(&corners(v3(0.5, 0.5, 0.5))).unwrap(), v3(0.0, 0.5, 0.0));
+    for _ in 0..60 {
+        s.step(DT);
+    }
+    // A floor with extra points (more faces, in another order); a crate that is a 16-point ball.
+    let mut fp = vec![v3(0.0, -0.5, 0.0), v3(0.0, 0.5, -5.0), v3(-5.0, 0.5, 0.0), v3(5.0, -0.5, 2.0)];
+    fp.extend(corners(v3(5.0, 0.5, 5.0)));
+    let floor = if which & 1 != 0 { Shape::hull(&fp).unwrap() } else { Shape::hull(&corners(v3(5.0, 0.5, 5.0))).unwrap() };
+    let crate_shape = if which & 2 != 0 { Shape::hull(&ball_points(16, 0.5)).unwrap() } else { Shape::hull(&corners(v3(0.5, 0.5, 0.5))).unwrap() };
+    let b = s.body(2).unwrap();
+    let (pose, v, w) = (b.pose, b.velocity, b.angular_velocity);
+    if !in_place {
+        s.remove(1);
+        s.remove(2);
+    }
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::at(v3(0.0, -0.5, 0.0)), Some(ColliderDesc::new(floor)))).unwrap();
+    let mut d = BodyDesc::new(BodyKind::Dynamic, pose, Some(ColliderDesc::new(crate_shape)));
+    d.velocity = v;
+    d.angular_velocity = w;
+    s.insert(2, d).unwrap();
+    let (mut peak, mut deepest) = (0.0f32, 0.0f32);
+    for _ in 0..30 {
+        s.step(DT);
+        peak = peak.max(s.body(2).unwrap().velocity.length());
+        deepest = deepest.min(s.report().deepest.map_or(0.0, |d| d.0));
+    }
+    let p = s.body(2).unwrap().pose.p;
+    (peak, deepest, [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+}
+
+/// Review round 2, finding 2: changing a collider in place starts its pairs afresh (no stale
+/// face or edge index from the old shape, no warm starts): the same result as a fresh insert.
+#[test]
+fn in_place_shape_changes_match_fresh_inserts() {
+    for which in [1u32, 2, 3] {
+        let (in_place, fresh) = (change_shapes(true, which), change_shapes(false, which));
+        assert_eq!(in_place, fresh, "change {which}");
+        assert!(in_place.1 > -0.05, "change {which}: no phantom penetration ({})", in_place.1);
+    }
+    let (peak, deepest, _) = change_shapes(true, 1);
+    assert!(peak < 0.05 && deepest > -0.01, "a new floor under a resting crate doesn't kick it ({peak}, {deepest})");
+}
+
+/// Review round 2, finding 3 (and the hash fuzz): random edits, sleeps, shape swaps and steps
+/// keep the cached hash equal to a full one; the polytope test's memory is hashed too.
+#[test]
+fn hashes_survive_random_edits() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn f(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * ((self.next() % 10000) as f32 / 10000.0)
+        }
+        fn n(&mut self, k: u64) -> u64 {
+            self.next() % k
+        }
+    }
+    let shapes = [Shape::cuboid(v3(0.4, 0.4, 0.4)), Shape::sphere(0.4), Shape::capsule(0.3, 0.3), Shape::hull(&ball_points(12, 0.5)).unwrap()];
+    for seed in 1..9u64 {
+        let mut r = Rng(seed * 7919);
+        let mut s = Space::default();
+        s.insert(1, BodyDesc::new(BodyKind::Static, Pose::at(v3(0.0, -0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(20.0, 0.5, 20.0)))))).unwrap();
+        for op in 0..300 {
+            let key = 10 + r.n(30);
+            match r.n(12) {
+                0 | 1 => {
+                    let kind = match r.n(5) {
+                        0 => BodyKind::Static,
+                        1 => BodyKind::Kinematic,
+                        _ => BodyKind::Dynamic,
+                    };
+                    let mut d = BodyDesc::new(kind, Pose::at(v3(r.f(-3.0, 3.0), r.f(0.4, 4.0), r.f(-3.0, 3.0))), Some(ColliderDesc::new(shapes[r.n(4) as usize].clone())));
+                    d.sleeping = kind == BodyKind::Dynamic && r.n(3) == 0;
+                    let _ = s.insert(key, d);
+                }
+                2 => {
+                    s.remove(key);
+                }
+                3 => s.set_pose(key, Pose::at(v3(r.f(-3.0, 3.0), r.f(0.4, 4.0), r.f(-3.0, 3.0)))),
+                4 => s.set_velocity(key, v3(r.f(-2.0, 2.0), r.f(-2.0, 2.0), 0.0), Vec3::ZERO),
+                5 => s.wake(key),
+                6 => s.apply_impulse(key, v3(r.f(-5.0, 5.0), 0.0, 0.0), v3(0.0, 1.0, 0.0)),
+                7 => s.move_kinematic(key, Pose::at(v3(r.f(-3.0, 3.0), 1.0, 0.0))),
+                8 => s.settings.gravity = v3(0.0, r.f(-12.0, 0.0), 0.0),
+                9 => s.wake_all(),
+                10 => s.set_pose(1, Pose::at(v3(0.0, -0.5 + r.f(-0.01, 0.01), 0.0))),
+                _ => {
+                    for _ in 0..r.n(40) {
+                        s.step(DT);
+                    }
+                }
+            }
+            let _ = s.hash();
+            assert_eq!(s.hash(), s.hash_uncached(), "seed {seed} op {op}");
+        }
+    }
+}

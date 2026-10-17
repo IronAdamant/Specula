@@ -999,6 +999,8 @@ pub struct Physics {
     synced: Option<(u64, u64)>,
     /// Entities to look at again next sync (children of moved bodies).
     pending: BTreeSet<u64>,
+    /// write_back's list of bodies, reused.
+    keys: Vec<u64>,
     shapes: BTreeMap<u64, Shape>,
     /// Character entities and the velocity their last move left.
     characters: BTreeMap<u64, Vec3>,
@@ -1026,6 +1028,7 @@ impl Default for Physics {
             layers: BTreeMap::new(),
             synced: None,
             pending: BTreeSet::new(),
+            keys: Vec::new(),
             shapes: BTreeMap::new(),
             characters: BTreeMap::new(),
             hashes: VecDeque::new(),
@@ -1369,8 +1372,12 @@ impl Physics {
 
     /// Writes the bodies the step moved back into the world (journaled by the caller).
     fn write_back(&mut self, world: &mut World) {
-        let keys: Vec<u64> = self.space.stepped().chain(self.characters.keys().copied()).collect::<BTreeSet<_>>().into_iter().collect();
-        for id in keys {
+        let mut keys = std::mem::take(&mut self.keys);
+        keys.clear();
+        keys.extend(self.space.stepped().chain(self.characters.keys().copied()));
+        keys.sort_unstable();
+        keys.dedup();
+        for &id in &keys {
             let Some(view) = self.space.body(id) else { continue };
             let Some(e) = world.get(id) else { continue };
             let Some(body) = e.body else { continue };
@@ -1379,7 +1386,8 @@ impl Physics {
             if body.kind == BodyKind::Kinematic && !character && body.velocity == Vec3::ZERO && body.angular_velocity == Vec3::ZERO {
                 continue;
             }
-            let (pose, _) = world_pose(world, e);
+            let m = e.model();
+            let at = Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]);
             let new_body = if character {
                 Body { velocity: self.characters.get(&id).copied().unwrap_or(body.velocity), ..body }
             } else if body.kind == BodyKind::Dynamic {
@@ -1387,10 +1395,11 @@ impl Physics {
             } else {
                 body
             };
-            let moved = view.pose.p.x.to_bits() != pose.p.x.to_bits()
-                || view.pose.p.y.to_bits() != pose.p.y.to_bits()
-                || view.pose.p.z.to_bits() != pose.p.z.to_bits()
-                || specula_physics::math::quat_dot(view.pose.q, pose.q).abs() < 1.0 - 1.0e-7;
+            // (The world rotation, which costs trigonometry, only when the position is unchanged.)
+            let moved = view.pose.p.x.to_bits() != at.x.to_bits()
+                || view.pose.p.y.to_bits() != at.y.to_bits()
+                || view.pose.p.z.to_bits() != at.z.to_bits()
+                || specula_physics::math::quat_dot(view.pose.q, world_rotation(world, e)).abs() < 1.0 - 1.0e-7;
             if !moved && new_body == body {
                 continue;
             }
@@ -1433,6 +1442,7 @@ impl Physics {
                 }
             }
         }
+        self.keys = keys;
     }
 
     /// One fixed tick: sync, characters, step, write-back. The caller records changes as a
@@ -1643,6 +1653,82 @@ mod tests {
                 j.append_snapshot(tick, AGENT, None, Kind::Physics, changes, w.next_id());
             }
         }
+    }
+
+    /// Where an engine physics tick goes with 1,000 awake boxes (review round 2, finding 6). Run
+    /// with `cargo test --release -p specula --lib bridge_profile -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bridge_profile() {
+        let mut w = World::default();
+        let f = floor(&mut w);
+        w.update(&EntityKey::Id(f), UpdateSpec { scale: Some(Vec3::new(80.0, 1.0, 80.0)), ..Default::default() }, "t").unwrap();
+        for i in 0..1000u32 {
+            let (x, y, z) = ((i % 10) as f32 * 1.6 - 8.0, 0.5 + (i / 100) as f32 * 1.02, ((i / 10) % 10) as f32 * 1.6 - 8.0);
+            crate_at(&mut w, &format!("c{i}"), Vec3::new(x, y, z));
+        }
+        let mut settings = w.env().physics;
+        settings.sleep = false;
+        let mut p = Physics::default();
+        p.space.settings = space_settings(&settings, 60);
+        let (mut sync, mut step, mut back, mut changes, mut space_stages) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut j = Journal::default();
+        let n = 120u64;
+        for tick in 0..n {
+            w.set_recording(Recording::Snapshot);
+            let t0 = std::time::Instant::now();
+            p.sync(&w, 0);
+            let t1 = std::time::Instant::now();
+            let report = p.space.step(DT).clone();
+            let t2 = std::time::Instant::now();
+            p.write_back(&mut w);
+            p.synced = Some((0, w.draw_epoch()));
+            let _ = p.space.hash();
+            let t3 = std::time::Instant::now();
+            w.set_recording(Recording::Full);
+            let ch = w.take_changes();
+            j.append_snapshot(tick, AGENT, None, Kind::Physics, ch, w.next_id());
+            let t4 = std::time::Instant::now();
+            if tick >= 20 {
+                sync += (t1 - t0).as_secs_f64();
+                step += (t2 - t1).as_secs_f64();
+                back += (t3 - t2).as_secs_f64();
+                changes += (t4 - t3).as_secs_f64();
+                let t = report.times;
+                space_stages += (t.pairs_us + t.narrowphase_us + t.solve_us + t.integrate_us + t.ccd_us) / 1.0e6;
+            }
+            assert!(tick < 20 || report.awake > 900, "tick {tick}: {} awake", report.awake);
+        }
+        let ms = |v: f64| v * 1000.0 / (n - 20) as f64;
+        println!(
+            "1000 awake boxes, per tick: sync {:.3} ms, space step {:.3} ms (stages {:.3}), write-back + hash {:.3} ms, changes + journal {:.3} ms",
+            ms(sync),
+            ms(step),
+            ms(space_stages),
+            ms(back),
+            ms(changes)
+        );
+        // The pieces, once over every body.
+        let ids: Vec<u64> = p.space.stepped().collect();
+        let t = std::time::Instant::now();
+        let poses: Vec<Pose> = ids.iter().map(|id| world_pose(&w, w.get(*id).unwrap()).0).collect();
+        let world_pose_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let eulers: Vec<Vec3> = poses.iter().map(|p| specula_physics::math::quat_to_euler_deg(p.q)).collect();
+        let euler_ms = t.elapsed().as_secs_f64() * 1000.0;
+        w.set_recording(Recording::Snapshot);
+        let t = std::time::Instant::now();
+        for (id, (pose, r)) in ids.iter().zip(poses.iter().zip(&eulers)) {
+            let body = w.get(*id).unwrap().body;
+            let change = UpdateSpec { position: Some(pose.p), rotation_deg: Some(*r), body: Some(body), ..Default::default() };
+            w.update(&EntityKey::Id(*id), change, AGENT).unwrap();
+        }
+        let update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        w.set_recording(Recording::Full);
+        let t = std::time::Instant::now();
+        let _ = p.space.hash();
+        let hash_ms = t.elapsed().as_secs_f64() * 1000.0;
+        println!("pieces over {} bodies: world_pose {world_pose_ms:.3} ms, quat_to_euler {euler_ms:.3} ms, world.update {update_ms:.3} ms, space hash {hash_ms:.3} ms", ids.len());
     }
 
     #[test]
@@ -1869,6 +1955,8 @@ mod tests {
     /// Finding 6: a hull with more than 16 points is refused on a moving body, by the world.
     #[test]
     fn big_hulls_are_static_only() {
+        // Auto-fitted colliders for moving bodies use the same cap physics enforces.
+        assert_eq!(specula_model::collider::MAX_MOVING_HULL_POINTS, specula_physics::shape::MAX_MOVING_HULL_POINTS);
         let pts: Vec<Vec3> = (0..20).map(|i| {
             let a = i as f32 * 2.399;
             let y = 1.0 - 2.0 * (i as f32 + 0.5) / 20.0;

@@ -12,19 +12,19 @@ const NULL: u32 = u32::MAX;
 
 /// A traversal stack on the stack (balanced trees stay shallow), spilling to the heap only if
 /// it ever runs out.
-struct Stack {
+pub(crate) struct Stack {
     fixed: [u32; 128],
     len: usize,
     spill: Vec<u32>,
 }
 
 impl Stack {
-    fn new() -> Stack {
+    pub(crate) fn new() -> Stack {
         Stack { fixed: [0; 128], len: 0, spill: Vec::new() }
     }
 
     #[inline]
-    fn push(&mut self, v: u32) {
+    pub(crate) fn push(&mut self, v: u32) {
         if self.len < self.fixed.len() {
             self.fixed[self.len] = v;
             self.len += 1;
@@ -34,7 +34,7 @@ impl Stack {
     }
 
     #[inline]
-    fn pop(&mut self) -> Option<u32> {
+    pub(crate) fn pop(&mut self) -> Option<u32> {
         if let Some(v) = self.spill.pop() {
             return Some(v);
         }

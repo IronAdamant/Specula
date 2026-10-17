@@ -668,7 +668,8 @@ impl TriMesh {
         }
         let inv = crate::math::inv_dir(dir);
         let grow = |b: &Aabb| Aabb { min: b.min - pad, max: b.max + pad };
-        let mut stack: Vec<u32> = Vec::with_capacity(64);
+        // On the stack (spilling to the heap only for absurdly deep trees): casts are frequent.
+        let mut stack = crate::tree::Stack::new();
         stack.push(0);
         while let Some(ni) = stack.pop() {
             let node = self.nodes[ni as usize];

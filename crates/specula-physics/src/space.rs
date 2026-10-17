@@ -557,6 +557,17 @@ impl Space {
                 return self.insert(key, desc);
             }
             self.wake_slot(s);
+            // Its shape or mass may have changed: its pairs start afresh (no warm starts, no
+            // remembered separating features from the old shape).
+            for k in self.pairs_of(key) {
+                if let Some(&slot) = self.pairs.get(&k) {
+                    if let Some(c) = self.contacts[slot as usize].as_mut() {
+                        c.len = 0;
+                        c.sat = SatCache::default();
+                    }
+                }
+            }
+            self.inactive_cache.set(None);
             let settings = self.settings;
             let b = self.slot_mut(s);
             b.desc = desc;
@@ -729,24 +740,44 @@ impl Space {
         let moves_others = b.desc.kind != BodyKind::Dynamic;
         self.refresh_proxy(s, false);
         if moves_others {
-            // Moving a static or kinematic body by hand wakes what its sweep (from where it was
-            // to where it is) actually overlaps, not everything within the broadphase margin.
-            let swept = match (before, self.slot(s).aabb()) {
-                (Some(a), Some(b)) => Some(a.union(&b)),
-                (a, b) => a.or(b),
+            // Moving a static or kinematic body by hand wakes what it overlaps where it was and
+            // where it is now (what rested on it, what it now touches), not everything within
+            // the broadphase margin. A small move (up to two of its own sizes) wakes its whole
+            // swept box; a teleport never wakes the ground in between.
+            let slop = self.settings.linear_slop;
+            let boxes: Vec<Aabb> = match (before, self.slot(s).aabb()) {
+                (Some(a), Some(b)) => {
+                    let size = (a.max - a.min).length();
+                    if (b.center() - a.center()).length() <= 2.0 * size {
+                        vec![a.union(&b)]
+                    } else {
+                        vec![a, b]
+                    }
+                }
+                (a, b) => a.or(b).into_iter().collect(),
             };
-            if let Some(bounds) = swept {
-                let bounds = bounds.expand(self.settings.linear_slop);
-                let mut near = Vec::new();
+            let mut near = Vec::new();
+            for bounds in boxes {
+                let bounds = bounds.expand(slop);
+                let start = near.len();
                 self.dynamic_tree.query(&bounds, |o| {
                     near.push(o);
                     true
                 });
-                near.retain(|&o| o != s && self.slots[o as usize].as_ref().and_then(Body::aabb).is_some_and(|ab| ab.overlaps(&bounds)));
-                near.sort_unstable();
-                for o in near {
-                    self.wake_slot(o);
+                let mut k = start;
+                while k < near.len() {
+                    let o = near[k];
+                    if o != s && self.slots[o as usize].as_ref().and_then(Body::aabb).is_some_and(|ab| ab.overlaps(&bounds)) {
+                        k += 1;
+                    } else {
+                        near.swap_remove(k);
+                    }
                 }
+            }
+            near.sort_unstable();
+            near.dedup();
+            for o in near {
+                self.wake_slot(o);
             }
         }
     }
@@ -1750,7 +1781,8 @@ impl Space {
     pub fn cast(&self, shape: &Shape, pose: &Pose, delta: Vec3, filter: &Filter, max_hits: usize, skin: f32) -> (Vec<Hit>, usize) {
         let swept = shape.aabb(pose).swept(delta).expand(skin);
         let mut hits: Vec<Hit> = Vec::new();
-        for s in self.candidates_in(&swept) {
+        let cands = self.candidates_in(&swept);
+        for &s in &cands {
             let b = self.slot(s);
             if !self.passes(b, filter) {
                 continue;
@@ -1767,6 +1799,7 @@ impl Space {
                 });
             }
         }
+        recycle(cands);
         hits.sort_by(|a, b| a.at.total_cmp(&b.at).then(a.key.cmp(&b.key)));
         let total = hits.len();
         hits.truncate(max_hits);
@@ -1777,7 +1810,8 @@ impl Space {
     pub fn overlap(&self, shape: &Shape, pose: &Pose, filter: &Filter, limit: usize) -> (Vec<u64>, usize) {
         let bounds = shape.aabb(pose);
         let mut keys: Vec<u64> = Vec::new();
-        for s in self.candidates_in(&bounds) {
+        let cands = self.candidates_in(&bounds);
+        for &s in &cands {
             let b = self.slot(s);
             if !self.passes(b, filter) {
                 continue;
@@ -1787,6 +1821,7 @@ impl Space {
                 keys.push(b.key);
             }
         }
+        recycle(cands);
         keys.sort_unstable();
         let total = keys.len();
         keys.truncate(limit);
@@ -1803,8 +1838,10 @@ impl Space {
     }
 
     /// Slots whose fat boxes overlap `b`, in key order.
+    /// (A reused buffer: hand it back with [`recycle`] when done.)
     fn candidates_in(&self, b: &Aabb) -> Vec<u32> {
-        let mut out: Vec<u32> = Vec::new();
+        let mut out = CANDIDATES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        out.clear();
         self.static_tree.query(b, |s| {
             out.push(s);
             true
@@ -1887,6 +1924,8 @@ impl Space {
         h.write_u64(a);
         h.write_u64(b);
         h.write_bool(c.touching);
+        // The polytope test's memory changes results, so it is state too.
+        c.sat.hash_into(h);
         for p in &c.points[..c.len] {
             h.write_u32(p.id);
             h.write_f32(p.normal_impulse);
@@ -1939,6 +1978,21 @@ impl Space {
         }
         h.finish()
     }
+}
+
+thread_local! {
+    /// [`Space::candidates_in`]'s buffer, reused (queries and character casts run often).
+    static CANDIDATES: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Hands a [`Space::candidates_in`] buffer back for reuse.
+fn recycle(v: Vec<u32>) {
+    CANDIDATES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.capacity() < v.capacity() {
+            *c = v;
+        }
+    });
 }
 
 impl Body {

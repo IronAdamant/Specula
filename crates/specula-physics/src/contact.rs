@@ -100,6 +100,18 @@ impl SatCache {
         self.rel_q = [rel.q.x, rel.q.y, rel.q.z, rel.q.w];
     }
 
+    /// Feeds the memory into a state hash (it changes results, so it is state).
+    pub fn hash_into(&self, h: &mut specula_core::hash::StableHasher) {
+        h.write_u8(self.kind);
+        if self.kind != SAT_NONE {
+            h.write_u32(u32::from(self.i) << 16 | u32::from(self.j));
+            for v in [self.axis, self.rel_p] {
+                [v.x, v.y, v.z].iter().for_each(|c| h.write_f32(*c));
+            }
+            self.rel_q.iter().for_each(|c| h.write_f32(*c));
+        }
+    }
+
     fn near(&self, rel: &Pose) -> bool {
         let q = self.rel_q;
         let dot = q[0] * rel.q.x + q[1] * rel.q.y + q[2] * rel.q.z + q[3] * rel.q.w;
@@ -667,20 +679,23 @@ fn poly_pair<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin: f
                     return;
                 }
             }
-            SAT_FACE_A | SAT_FACE_B if c.near(rel) && (c.i as usize) < a.face_count().max(b.face_count()) => {
+            // A stale index (the shape changed) means a fresh test below, never "no contacts".
+            SAT_FACE_A | SAT_FACE_B
+                if c.near(rel) && (c.kind == SAT_FACE_A && (c.i as usize) < a.face_count() || c.kind == SAT_FACE_B && (c.j as usize) < b.face_count()) =>
+            {
                 CLIP.with(|cell| {
                     let clip = &mut *cell.borrow_mut();
                     clip.cands.len = 0;
-                    if c.kind == SAT_FACE_A && (c.i as usize) < a.face_count() {
+                    if c.kind == SAT_FACE_A {
                         face_contact(a, c.i as usize, b, margin, false, clip);
-                    } else if c.kind == SAT_FACE_B && (c.j as usize) < b.face_count() {
+                    } else {
                         face_contact(b, c.j as usize, a, margin, true, clip);
                     }
                     clip.cands.reduce(out);
                 });
                 return;
             }
-            SAT_EDGE if c.near(rel) && (c.i as usize) < a.edge_count() && (c.j as usize) < b.edge_count() => {
+            SAT_EDGE if c.near(rel) && (c.i as usize) < a.edge_count() && (c.j as usize) < b.edge_count() && edge_contact(a, b, c.i as usize, c.j as usize).is_some() => {
                 if let Some((axis, sep, point)) = edge_contact(a, b, c.i as usize, c.j as usize) {
                     if sep <= margin {
                         out.push(ContactPoint { point, normal: axis, separation: sep, id: 0x4000_0000 | ((c.i as u32) << 12) | c.j as u32 });
@@ -872,7 +887,9 @@ fn mesh_vs_convex(mesh: &TriMesh, mesh_pose: &Pose, c: &Convex, local_aabb: Aabb
     };
     // Gather the nearby triangles, then visit those nearest a feature point first: a box on a
     // fine mesh gets its corners supported before anything else.
-    let mut near: Vec<(f32, u32)> = Vec::new();
+    // The candidate list is reused across calls (no allocation per pair per tick).
+    let mut near = NEAR.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    near.clear();
     let mut overflow = false;
     mesh.each_in(&world_bounds, |t| {
         if near.len() == MAX_MESH_CANDIDATES {
@@ -929,6 +946,12 @@ fn mesh_vs_convex(mesh: &TriMesh, mesh_pose: &Pose, c: &Convex, local_aabb: Aabb
     }
     cands.reduce(out);
     out.skipped = skipped as u32;
+    NEAR.with(|n| *n.borrow_mut() = near);
+}
+
+thread_local! {
+    /// [`mesh_vs_convex`]'s candidate triangles, reused.
+    static NEAR: std::cell::RefCell<Vec<(f32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Whether `p` (near the triangle) sits on one of its internal edges or vertices (an inactive
