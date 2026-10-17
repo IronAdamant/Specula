@@ -69,6 +69,8 @@ pub(crate) struct ViewOpts<'a> {
     pub(crate) caption: Option<String>,
     /// Render the ID buffer (visibility per subject).
     pub(crate) ids: bool,
+    /// A light added to the world's (filmstrips light their subject from the camera).
+    pub(crate) fill: Option<specula_gpu::PointLight>,
 }
 
 /// One rendered view.
@@ -490,6 +492,10 @@ impl Engine {
         self.lod_capture = stats;
         let mut lights = Vec::new();
         let dropped_lights = sight::lights(&self.world, opts.include_ui, &mut lights);
+        if let Some(l) = opts.fill {
+            lights.insert(0, l);
+            lights.truncate(specula_gpu::MAX_POINT_LIGHTS);
+        }
         let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).
@@ -837,7 +843,7 @@ impl Engine {
     fn capture_frame(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait, view: &ViewReq, building: usize) -> ToolOutput {
         let (w, h) = (spec.width, spec.height);
         let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids };
+        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
         let r = match self.render_view(view.camera, w, h, &opts) {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(e),
@@ -930,7 +936,7 @@ impl Engine {
         for (i, v) in views.iter().enumerate() {
             let (_, az) = orbit::view(center, distance, o.elevation_deg, o.start_deg, i as u32, o.views, o.fov_y_deg);
             let caption = format!("{} az {}", i + 1, az.round());
-            let opts = ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s, overlays: &o.overlays, caption: Some(caption), ids: true };
+            let opts = ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s, overlays: &o.overlays, caption: Some(caption), ids: true, fill: None };
             let r = match self.render_view(v.camera, tw, th, &opts) {
                 Ok(r) => r,
                 Err(e) => return ToolOutput::error(e),
@@ -1012,7 +1018,7 @@ impl Engine {
     /// sight_compare mark.
     fn compare_mark(&mut self, name: &str, spec: &FrameSpec, session: &SessionInfo, view: &ViewReq) -> ToolOutput {
         let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids };
+        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
         let r = match self.render_view(view.camera, spec.width, spec.height, &opts) {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(e),
@@ -1060,7 +1066,7 @@ impl Engine {
         let view = mark.view.clone();
         let (marked_frame, marked_tick) = (mark.data.frame, mark.data.tick);
         let time_s = view.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: view.include_ui, lod: view.lod, time_s, overlays: &view.overlays, caption: None, ids: view.ids };
+        let opts = ViewOpts { include_ui: view.include_ui, lod: view.lod, time_s, overlays: &view.overlays, caption: None, ids: view.ids, fill: None };
         let r = match self.render_view(view.camera, view.width, view.height, &opts) {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(e),
@@ -1144,7 +1150,7 @@ impl Engine {
         // The ID buffer needs the frame rendered (no PNG is made or sent).
         let time_s = q.frame.time_s.map_or_else(|| self.time_s(), f64::from);
         let none = ov::Spec::default();
-        let opts = ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s, overlays: &none, caption: None, ids: true };
+        let opts = ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s, overlays: &none, caption: None, ids: true, fill: None };
         let r = match self.render_view(view.camera, view.width, view.height, &opts) {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(e),

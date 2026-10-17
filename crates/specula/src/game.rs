@@ -77,6 +77,12 @@ pub trait Game {
     /// have drawn since the last step). Changes are journaled like a frame's.
     fn before_capture(&mut self, _ctx: &mut Ctx) {}
 
+    /// The game's tools (of [`Game::tools`]) that write files, such as recordings: a playtest
+    /// counts their calls toward its cap on file writes. Default: none.
+    fn file_tools(&self) -> &[&str] {
+        &[]
+    }
+
     /// Extra MCP tools (by convention `play_*`), answered by [`Game::call_tool`].
     fn tools(&self) -> Vec<ToolDef> {
         Vec::new()
@@ -297,6 +303,12 @@ impl Clock {
     /// Queues `n` ticks to run while paused.
     pub fn step(&mut self, n: u64) {
         self.steps = self.steps.saturating_add(n);
+    }
+
+    /// Drops ticks queued by [`Clock::step`] that haven't run yet (a playtest takes the clock
+    /// over: an earlier `time_control step` must not run on into it).
+    pub fn cancel_steps(&mut self) {
+        self.steps = 0;
     }
 
     /// Adds real time; returns how many ticks to run now.

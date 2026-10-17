@@ -154,7 +154,14 @@ pub fn definitions() -> Vec<ToolDef> {
                           error, tick time, input actions, agent-held input, native hooks, state size; plus recent loads, log lines, \
                           events and hook uses (with reasons), and the engine's recent builds."
                 .into(),
-            input_schema: schema(vec![("module", module.clone()), ("detailed", t("boolean", "More history and the state store's values (bounded)"))], &[]),
+            input_schema: schema(
+                vec![
+                    ("module", module.clone()),
+                    ("detailed", t("boolean", "More history and the state store's values (bounded)")),
+                    ("response_format", crate::response::Format::schema()),
+                ],
+                &[],
+            ),
         },
         ToolDef {
             name: "logic_input".into(),
@@ -204,8 +211,11 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<Command, String>> {
             Ok(LogicCall::Unload { module, forget: bool_arg(args, "forget_state")?.unwrap_or(false) })
         })(),
         "logic_status" => (|| {
-            check_keys(args, name, &[&["module", "detailed"]])?;
-            Ok(LogicCall::Status { module: string_arg(args, "module")?.map(str::to_owned), detailed: bool_arg(args, "detailed")?.unwrap_or(false) })
+            check_keys(args, name, &[&["module", "detailed", "response_format"]])?;
+            // response_format, as on the other tools, is the same knob as `detailed`.
+            let format = crate::response::Format::arg(args, crate::response::Format::Concise)?;
+            let detailed = bool_arg(args, "detailed")?.unwrap_or(false) || format == crate::response::Format::Detailed;
+            Ok(LogicCall::Status { module: string_arg(args, "module")?.map(str::to_owned), detailed })
         })(),
         "logic_input" => (|| {
             check_keys(args, name, &[&["module", "actions", "ticks"]])?;

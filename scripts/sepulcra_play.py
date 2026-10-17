@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine
+from specula_mcp import ROOT, Engine, detailed
 
 LAYOUT = ROOT / "games" / "sepulcra" / "data" / "layouts" / "centre.json"
 EXE = ROOT / "target" / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
@@ -116,13 +116,17 @@ def check_hud(mcp):
 
 
 def check_anim(mcp):
-    """Creatures are skinned models playing clips of their anim sets, and transient (never saved)."""
+    """Creatures are skinned models playing their anim sets' graphs (or clips), and transient
+    (never saved). Graph plays are counted by graph and act."""
     q = mcp.json("world_query", tags=["enemy"], fields=["path", "anim", "model_state", "transient"], limit=60)
     items = q.get("items", [])
     clips, ready, transient = {}, 0, 0
     for e in items:
         a = e.get("anim") or {}
-        clip = a.get("clip", "-")
+        if "graph" in a:
+            clip = f"{a['graph']}:{(a.get('params') or {}).get('act', '?')}"
+        else:
+            clip = a.get("clip", "-")
         clips[clip] = clips.get(clip, 0) + 1
         ready += e.get("model_state") == "ready"
         transient += bool(e.get("transient"))
@@ -160,7 +164,7 @@ def main():
         mcp = eng.mcp("sepulcra-play")
 
         def call_raw(tool, **a):
-            return mcp.request("tools/call", {"name": tool, "arguments": a})
+            return mcp.request("tools/call", {"name": tool, "arguments": detailed(tool, a)})
         mcp.call_raw = call_raw
         tools = mcp.tools()
         play = sorted(t for t in tools if t.startswith("play_"))
@@ -254,7 +258,7 @@ def main():
         summary["log"] = st["log"]["items"]
         summary["layout_applied"], summary["layout_skipped"] = run.applied, run.skipped
         print(f"end: {st['outcome']} at tick {st['tick']}, tombstones {st['tombstones']}, hash {st['state_hash']}")
-        rec = mcp.json("play_record", path="recordings/sepulcra-play.json")
+        rec = mcp.json("play_record", path="recordings/sepulcra-play.json", overwrite=True)
         rep = mcp.json("play_replay", path="recordings/sepulcra-play.json")
         summary["recording"], summary["replay"] = rec, rep
         print(f"replay: {rep['status']} (end tick {rep['end_tick']}, hash {rep['end_hash']})")

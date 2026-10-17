@@ -1122,6 +1122,11 @@ impl Game for SepulcraGame {
         tools::defs()
     }
 
+    /// play_record writes a recording file (a playtest counts it toward its file cap).
+    fn file_tools(&self) -> &[&str] {
+        &["play_record"]
+    }
+
     fn call_tool(&mut self, ctx: &mut Ctx, name: &str, args: &Json) -> ToolOutput {
         tools::call(self, ctx, name, args)
     }

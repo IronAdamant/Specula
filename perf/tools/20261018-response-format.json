@@ -1,0 +1,165 @@
+{
+ "date": "2026-10-18",
+ "what": "Answer sizes in bytes (UTF-8) from a headless Sepulcra engine (seed 7, centre layout, tick 10000, 40 agent cubes), RTX 4090 laptop.",
+ "per_tool": {
+  "note": "this lane; detailed = the full answer (now also compact JSON), concise = the default",
+  "rows": {
+   "sight_frame": {
+    "concise": 2814,
+    "detailed": 4528,
+    "saved_pct": 37.9
+   },
+   "perf_frame": {
+    "concise": 698,
+    "detailed": 3479,
+    "saved_pct": 79.9
+   },
+   "engine_info": {
+    "concise": 768,
+    "detailed": 2104,
+    "saved_pct": 63.5
+   },
+   "world_list": {
+    "concise": 8701,
+    "detailed": 12536,
+    "saved_pct": 30.6
+   },
+   "world_query": {
+    "concise": 4746,
+    "detailed": 12533,
+    "saved_pct": 62.1
+   },
+   "world_history": {
+    "concise": 2082,
+    "detailed": 7914,
+    "saved_pct": 73.7
+   },
+   "play_state": {
+    "concise": 282,
+    "detailed": 637,
+    "saved_pct": 55.7
+   },
+   "play_state+lists": {
+    "concise": 1939,
+    "detailed": 2613,
+    "saved_pct": 25.8
+   }
+  },
+  "total": {
+   "concise": 22030,
+   "detailed": 46344
+  }
+ },
+ "session": {
+  "note": "the same 20 calls of a typical builder session against main (6c01c8c: pretty JSON, full answers) and this lane (defaults: concise, compact)",
+  "main_bytes": 27475,
+  "lane_bytes": 12900,
+  "saved_pct": 53.0,
+  "calls": [
+   {
+    "tool": "agent_hello",
+    "main": 246,
+    "lane": 229
+   },
+   {
+    "tool": "engine_info",
+    "main": 3037,
+    "lane": 764
+   },
+   {
+    "tool": "play_new",
+    "main": 232,
+    "lane": 183
+   },
+   {
+    "tool": "time_control",
+    "main": 137,
+    "lane": 112
+   },
+   {
+    "tool": "play_state",
+    "main": 888,
+    "lane": 268
+   },
+   {
+    "tool": "claim_take",
+    "main": 66,
+    "lane": 66
+   },
+   {
+    "tool": "world_spawn",
+    "main": 343,
+    "lane": 236
+   },
+   {
+    "tool": "world_spawn",
+    "main": 400,
+    "lane": 271
+   },
+   {
+    "tool": "world_set",
+    "main": 400,
+    "lane": 271
+   },
+   {
+    "tool": "world_query",
+    "main": 222,
+    "lane": 222
+   },
+   {
+    "tool": "world_list",
+    "main": 5967,
+    "lane": 4570
+   },
+   {
+    "tool": "task_post",
+    "main": 242,
+    "lane": 242
+   },
+   {
+    "tool": "sight_frame",
+    "main": 7604,
+    "lane": 2807
+   },
+   {
+    "tool": "perf_frame",
+    "main": 5433,
+    "lane": 695
+   },
+   {
+    "tool": "world_history",
+    "main": 731,
+    "lane": 731
+   },
+   {
+    "tool": "physics_info",
+    "main": 737,
+    "lane": 523
+   },
+   {
+    "tool": "play_command",
+    "main": 236,
+    "lane": 196
+   },
+   {
+    "tool": "play_command",
+    "main": 248,
+    "lane": 208
+   },
+   {
+    "tool": "world_hash",
+    "main": 290,
+    "lane": 290
+   },
+   {
+    "tool": "claim_release",
+    "main": 16,
+    "lane": 16
+   }
+  ]
+ },
+ "tools_list": {
+  "tools": 82,
+  "bytes_compact": 96525
+ }
+}

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use specula_anim::blend::{self, Base};
 use specula_anim::math::{math3, Affine, V3};
-use specula_anim::{measure, skin, AnimSet, ClipId, Skeleton};
+use specula_anim::{film, measure, skin, AnimSet, ClipId, Skeleton};
 use specula_core::math::{Mat4, Vec3};
 use specula_gpu::{DrawItem, Environment, FrameDesc, Gpu, GpuOptions, Material, MeshId, Severity, ShadowSettings, Surface, Validation, Vertex};
 use specula_model::{build, BuildParams, MaterialKind, MaterialPreset, MeshData, Model, Shape, Style};
@@ -210,7 +210,7 @@ fn main() {
             render_tile(&mut gpu, target, cam, &draws, &mut sheet, sw, 3 + (n + view as u32) * tile, y0, tile, false);
             all_meshes.into_iter().for_each(|m| gpu.destroy_mesh(m));
         }
-        draw_text(&mut sheet, sw, 5, y0 + tile + 3, label, [230, 226, 214]);
+        film::draw_text(&mut sheet, sw, 5, y0 + tile + 3, label, [230, 226, 214]);
         // Separator before the trail views.
         for y in y0..y0 + tile {
             let o = ((y * sw + 3 + n * tile - 1) * 4) as usize;
@@ -399,69 +399,4 @@ fn srgb(r: u8, g: u8, b: u8) -> [f32; 4] {
 
 fn rgb3(r: u8, g: u8, b: u8) -> [f32; 3] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
-}
-
-// ---- 5x7 bitmap font for labels ----
-
-fn glyph(c: char) -> [u8; 7] {
-    match c.to_ascii_uppercase() {
-        'A' => [14, 17, 17, 31, 17, 17, 17],
-        'B' => [30, 17, 17, 30, 17, 17, 30],
-        'C' => [14, 17, 16, 16, 16, 17, 14],
-        'D' => [30, 17, 17, 17, 17, 17, 30],
-        'E' => [31, 16, 16, 30, 16, 16, 31],
-        'F' => [31, 16, 16, 30, 16, 16, 16],
-        'G' => [14, 17, 16, 23, 17, 17, 15],
-        'H' => [17, 17, 17, 31, 17, 17, 17],
-        'I' => [14, 4, 4, 4, 4, 4, 14],
-        'J' => [7, 2, 2, 2, 2, 18, 12],
-        'K' => [17, 18, 20, 24, 20, 18, 17],
-        'L' => [16, 16, 16, 16, 16, 16, 31],
-        'M' => [17, 27, 21, 21, 17, 17, 17],
-        'N' => [17, 17, 25, 21, 19, 17, 17],
-        'O' => [14, 17, 17, 17, 17, 17, 14],
-        'P' => [30, 17, 17, 30, 16, 16, 16],
-        'Q' => [14, 17, 17, 17, 21, 18, 13],
-        'R' => [30, 17, 17, 30, 20, 18, 17],
-        'S' => [15, 16, 16, 14, 1, 1, 30],
-        'T' => [31, 4, 4, 4, 4, 4, 4],
-        'U' => [17, 17, 17, 17, 17, 17, 14],
-        'V' => [17, 17, 17, 17, 17, 10, 4],
-        'W' => [17, 17, 17, 21, 21, 21, 10],
-        'X' => [17, 17, 10, 4, 10, 17, 17],
-        'Y' => [17, 17, 10, 4, 4, 4, 4],
-        'Z' => [31, 1, 2, 4, 8, 16, 31],
-        '0' => [14, 17, 19, 21, 25, 17, 14],
-        '1' => [4, 12, 4, 4, 4, 4, 14],
-        '2' => [14, 17, 1, 2, 4, 8, 31],
-        '3' => [31, 2, 4, 2, 1, 17, 14],
-        '4' => [2, 6, 10, 18, 31, 2, 2],
-        '5' => [31, 16, 30, 1, 1, 17, 14],
-        '6' => [6, 8, 16, 30, 17, 17, 14],
-        '7' => [31, 1, 2, 4, 8, 8, 8],
-        '8' => [14, 17, 17, 14, 17, 17, 14],
-        '9' => [14, 17, 17, 15, 1, 2, 12],
-        '/' => [1, 1, 2, 4, 8, 16, 16],
-        '.' => [0, 0, 0, 0, 0, 12, 12],
-        '_' => [0, 0, 0, 0, 0, 0, 31],
-        '-' => [0, 0, 0, 31, 0, 0, 0],
-        _ => [0; 7],
-    }
-}
-
-fn draw_text(img: &mut [u8], w: u32, x: u32, y: u32, text: &str, color: [u8; 3]) {
-    for (i, c) in text.chars().enumerate() {
-        let g = glyph(c);
-        for (row, bits) in g.iter().enumerate() {
-            for col in 0..5 {
-                if bits & (16 >> col) != 0 {
-                    let (px, py) = (x + i as u32 * 6 + col, y + row as u32);
-                    let o = ((py * w + px) * 4) as usize;
-                    if o + 3 < img.len() && px < w {
-                        img[o..o + 3].copy_from_slice(&color);
-                    }
-                }
-            }
-        }
-    }
 }

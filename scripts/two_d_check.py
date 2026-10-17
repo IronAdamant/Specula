@@ -25,7 +25,7 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine  # noqa: E402
+from specula_mcp import ROOT, Engine, detailed  # noqa: E402
 
 DEFAULT_PORT = 7492
 
@@ -309,7 +309,7 @@ def probes(m, assets, worlds, problems, engine):
     import time
 
     def raw(tool, **a):
-        r = m.request("tools/call", {"name": tool, "arguments": a})
+        r = m.request("tools/call", {"name": tool, "arguments": detailed(tool, a)})
         return bool(r.get("isError")), r["content"][0].get("text", "")
 
     def centre(c=(500, 0)):

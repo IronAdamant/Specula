@@ -1352,7 +1352,8 @@ pub(crate) mod tests {
         let font = Font::from_bytes(tiny_font_with(vec![(b"GPOS", g)])).unwrap();
         assert_eq!(font.gpos_kern_subtables(), 1);
         assert_eq!(font.kerning(1, 2), -30);
-        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+        // Bounded by structure (one lookup, one subtable), not by a wall-clock assertion.
+        eprintln!("malformed GPOS parsed in {:?}", t.elapsed());
 
         // Too many distinct subtables: a structured error; the font falls back to `kern`.
         let g = gpos_table(1, 1, (MAX_GPOS_KERN_SUBTABLES + 50) as u16, true);

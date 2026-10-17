@@ -22,7 +22,7 @@ pub struct Skeleton {
 }
 
 /// Local transforms of every bone: **absolute** (rest included), indexed like the skeleton.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pose {
     pub local: Vec<Transform>,
 }
