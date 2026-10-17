@@ -159,6 +159,27 @@ fn recordings_refuse_device_names_and_streams() {
     }
 }
 
+/// Playtest lane review: a recording never replaces a file by accident (AGENTS.md, a source file).
+#[test]
+fn recordings_are_json_and_never_overwrite_unasked() {
+    let mut h = Host::new(3);
+    let not_json = h.call("play_record", &Json::obj([("path", Json::from("AGENTS.md"))]));
+    assert!(not_json.is_error && text(&not_json).contains("bad_path"), "{}", text(&not_json));
+    let dir = format!("sepulcra-app-review-overwrite-{}", std::process::id());
+    let path = format!("{dir}/rec.json");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, "keep me").unwrap();
+    let refused = h.call("play_record", &Json::obj([("path", Json::from(path.as_str()))]));
+    let kept = std::fs::read_to_string(&path).unwrap();
+    let forced = h.call("play_record", &Json::obj([("path", Json::from(path.as_str())), ("overwrite", Json::Bool(true))]));
+    let replaced = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(refused.is_error && text(&refused).contains("exists"), "{}", text(&refused));
+    assert_eq!(kept, "keep me");
+    assert!(!forced.is_error, "{}", text(&forced));
+    assert_ne!(replaced, "keep me");
+}
+
 #[cfg(windows)]
 #[test]
 fn recordings_do_not_follow_junctions_out_of_the_working_directory() {
