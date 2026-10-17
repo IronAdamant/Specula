@@ -163,3 +163,10 @@ dependencies = [
  "specula-platform",
  "specula-text",
 ]
+
+[[package]]
+name = "specula-via"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
