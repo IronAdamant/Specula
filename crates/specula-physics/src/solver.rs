@@ -1,0 +1,407 @@
+//! The Soft Step solver (Catto, "Solver2D", 2024; Box2D v3), in 3D.
+//!
+//! Per step of `dt` split into `n` substeps of `h = dt / n`:
+//!
+//! ```text
+//! prepare contacts (anchors, Jacobians, effective masses, softness) once
+//! for each substep:
+//!     integrate velocities (gravity, damping)
+//!     warm start (apply last impulses)
+//!     solve        (soft constraints with position bias: push apart at most `push` m/s)
+//!     integrate positions
+//!     relax        (the same constraints without bias: removes the energy the bias added)
+//! restitution (bounce), then store impulses for next step's warm start
+//! ```
+//!
+//! Soft constraints have physical parameters (stiffness in Hz, damping ratio) instead of magic
+//! numbers, so tuning is explainable ("contacts: 30 Hz, damping 10"). Sub-stepping keeps stacks
+//! stiff at low cost. Anchors and inverse inertias are fixed for the step (so each constraint
+//! row's Jacobian is computed once in `prepare`); the current separation is recovered from
+//! each body's position and rotation change since the step began.
+//!
+//! **Joints (P4)** slot in beside the contacts: each joint type adds `prepare`, `warm_start`,
+//! `solve(use_bias)` and `relax` passes run in the same places as the contact passes below
+//! (joints first, as in Box2D), with their own softness (joint Hz), built from the same
+//! [`Row`]s. The body arrays, substepping and island linking (touching pairs in
+//! [`crate::space`]) need no change.
+//!
+//! Locked axes (2D mode, or a body's own locks) zero the matching inverse mass and inertia
+//! components, so constraint masses stay consistent with what the body can do.
+
+use crate::math::{integrate_rotation, mul, Mat3, Quat, Vec3};
+
+/// Solver view of a body.
+#[derive(Clone, Copy, Debug)]
+pub struct SolverBody {
+    pub v: Vec3,
+    pub w: Vec3,
+    /// Position change of the centre of mass since the step began.
+    pub dp: Vec3,
+    /// Rotation change since the step began.
+    pub dq: Quat,
+    /// Inverse mass per world axis (0 on locked axes).
+    pub inv_mass: Vec3,
+    /// World inverse inertia (rows/columns of locked axes zeroed).
+    pub inv_inertia: Mat3,
+    /// Acceleration from gravity (dynamic bodies only).
+    pub gravity: Vec3,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    /// Kinematic: moves at its velocity but takes no impulses.
+    pub kinematic: bool,
+    pub lock_linear: [bool; 3],
+    pub lock_angular: [bool; 3],
+}
+
+/// "Static" body index: zero velocity, infinite mass.
+pub const STATIC: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Softness {
+    pub bias_rate: f32,
+    pub mass_scale: f32,
+    pub impulse_scale: f32,
+}
+
+impl Softness {
+    pub fn new(hertz: f32, zeta: f32, h: f32) -> Softness {
+        if hertz <= 0.0 {
+            return Softness { bias_rate: 0.0, mass_scale: 1.0, impulse_scale: 0.0 };
+        }
+        let omega = 2.0 * std::f32::consts::PI * hertz;
+        let a1 = 2.0 * zeta + h * omega;
+        let a2 = h * omega * a1;
+        let a3 = 1.0 / (1.0 + a2);
+        Softness { bias_rate: omega / a1, mass_scale: a2 * a3, impulse_scale: a3 }
+    }
+}
+
+/// One constraint direction between two bodies at fixed anchors: its Jacobian and the velocity
+/// change a unit impulse makes on each body.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Row {
+    pub dir: Vec3,
+    /// `ra × dir`, `rb × dir`.
+    pub rxa: Vec3,
+    pub rxb: Vec3,
+    /// Linear and angular velocity change per unit impulse.
+    pub la: Vec3,
+    pub lb: Vec3,
+    pub aa: Vec3,
+    pub ab: Vec3,
+    /// `1 / effective mass` inverted: the impulse per unit velocity error.
+    pub mass: f32,
+}
+
+impl Row {
+    fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: Option<&SolverBody>, b: Option<&SolverBody>) -> Row {
+        let rxa = ra.cross(dir);
+        let rxb = rb.cross(dir);
+        let (la, aa) = response(a, dir, rxa);
+        let (lb, ab) = response(b, dir, rxb);
+        let k = dir.dot(la) + dir.dot(lb) + rxa.dot(aa) + rxb.dot(ab);
+        Row { dir, rxa, rxb, la, lb, aa, ab, mass: if k > 0.0 { 1.0 / k } else { 0.0 } }
+    }
+
+    /// Relative velocity along the row (B minus A).
+    #[inline]
+    fn velocity(&self, a: &Local, b: &Local) -> f32 {
+        self.dir.dot(b.v - a.v) + self.rxb.dot(b.w) - self.rxa.dot(a.w)
+    }
+
+    #[inline]
+    fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
+        a.v = a.v - self.la * l;
+        a.w = a.w - self.aa * l;
+        b.v = b.v + self.lb * l;
+        b.w = b.w + self.ab * l;
+    }
+}
+
+/// Velocity change per unit impulse along `dir` (with `r × dir` precomputed).
+fn response(b: Option<&SolverBody>, dir: Vec3, rxd: Vec3) -> (Vec3, Vec3) {
+    match b {
+        Some(b) if !b.kinematic => (mul(b.inv_mass, dir), b.inv_inertia.mul_vec(rxd)),
+        _ => (Vec3::ZERO, Vec3::ZERO),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SolverPoint {
+    /// Fixed anchors from each body's centre of mass at the step start.
+    pub ra: Vec3,
+    pub rb: Vec3,
+    pub normal: Vec3,
+    /// Separation minus the anchors' contribution (see the module docs).
+    pub adjusted_separation: f32,
+    pub n: Row,
+    pub t1: Row,
+    pub t2: Row,
+    pub normal_impulse: f32,
+    pub tangent_impulse: [f32; 2],
+    pub max_normal_impulse: f32,
+    /// Normal relative velocity at the step start (for restitution).
+    pub relative_velocity: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Constraint {
+    pub a: u32,
+    pub b: u32,
+    pub friction: f32,
+    pub restitution: f32,
+    pub soft: Softness,
+    pub points: [SolverPoint; 4],
+    pub len: usize,
+    /// Index of the contact this came from (to store impulses back).
+    pub contact: u32,
+}
+
+/// Solver tuning (see [`crate::Settings`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    pub substeps: u32,
+    pub contact_hertz: f32,
+    pub damping_ratio: f32,
+    pub push_speed: f32,
+    pub restitution_threshold: f32,
+    pub max_linear_speed: f32,
+}
+
+const MAX_ROTATION_PER_SUBSTEP: f32 = 0.25 * std::f32::consts::PI;
+
+#[inline]
+fn body(bodies: &[SolverBody], i: u32) -> Option<&SolverBody> {
+    if i == STATIC {
+        None
+    } else {
+        Some(&bodies[i as usize])
+    }
+}
+
+/// Prepares constraint rows (Jacobians, masses, tangents, relative velocity). Impulses carry
+/// over.
+pub fn prepare(constraints: &mut [Constraint], bodies: &[SolverBody]) {
+    for c in constraints.iter_mut() {
+        let (a, b) = (body(bodies, c.a), body(bodies, c.b));
+        let (la, lb) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        for p in &mut c.points[..c.len] {
+            let n = p.normal;
+            let (t1, t2) = crate::math::basis(n);
+            p.n = Row::new(n, p.ra, p.rb, a, b);
+            p.t1 = Row::new(t1, p.ra, p.rb, a, b);
+            p.t2 = Row::new(t2, p.ra, p.rb, a, b);
+            p.relative_velocity = p.n.velocity(&la, &lb);
+            p.max_normal_impulse = 0.0;
+        }
+    }
+}
+
+/// A constraint's body state in locals.
+struct Local {
+    v: Vec3,
+    w: Vec3,
+    dp: Vec3,
+    dq: Quat,
+    moves: bool,
+}
+
+impl Local {
+    #[inline]
+    fn load(bodies: &[SolverBody], i: u32) -> Local {
+        match body(bodies, i) {
+            None => Local { v: Vec3::ZERO, w: Vec3::ZERO, dp: Vec3::ZERO, dq: Quat::IDENTITY, moves: false },
+            Some(b) => Local { v: b.v, w: b.w, dp: b.dp, dq: b.dq, moves: !b.kinematic },
+        }
+    }
+
+    #[inline]
+    fn store(&self, bodies: &mut [SolverBody], i: u32) {
+        if self.moves {
+            let b = &mut bodies[i as usize];
+            b.v = self.v;
+            b.w = self.w;
+        }
+    }
+}
+
+pub fn integrate_velocities(bodies: &mut [SolverBody], h: f32, max_speed: f32) {
+    for b in bodies.iter_mut() {
+        if b.kinematic {
+            continue;
+        }
+        let mut v = (b.v + b.gravity * h) * (1.0 / (1.0 + h * b.linear_damping));
+        let mut w = b.w * (1.0 / (1.0 + h * b.angular_damping));
+        let v2 = v.dot(v);
+        if v2 > max_speed * max_speed {
+            v = v * (max_speed / v2.sqrt());
+        }
+        let w2 = w.dot(w);
+        let max_w = MAX_ROTATION_PER_SUBSTEP / h;
+        if w2 > max_w * max_w {
+            w = w * (max_w / w2.sqrt());
+        }
+        lock(&mut v, b.lock_linear);
+        lock(&mut w, b.lock_angular);
+        b.v = v;
+        b.w = w;
+    }
+}
+
+fn lock(v: &mut Vec3, axes: [bool; 3]) {
+    if axes[0] {
+        v.x = 0.0;
+    }
+    if axes[1] {
+        v.y = 0.0;
+    }
+    if axes[2] {
+        v.z = 0.0;
+    }
+}
+
+pub fn integrate_positions(bodies: &mut [SolverBody], h: f32) {
+    for b in bodies.iter_mut() {
+        b.dp = b.dp + b.v * h;
+        b.dq = integrate_rotation(b.dq, b.w, h);
+    }
+}
+
+pub fn warm_start(constraints: &[Constraint], bodies: &mut [SolverBody]) {
+    for c in constraints {
+        let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        for p in &c.points[..c.len] {
+            p.n.apply(p.normal_impulse, &mut a, &mut b);
+            p.t1.apply(p.tangent_impulse[0], &mut a, &mut b);
+            p.t2.apply(p.tangent_impulse[1], &mut a, &mut b);
+        }
+        a.store(bodies, c.a);
+        b.store(bodies, c.b);
+    }
+}
+
+/// One pass over the contacts: non-penetration (soft, with bias when `use_bias`), then friction.
+pub fn solve(constraints: &mut [Constraint], bodies: &mut [SolverBody], inv_h: f32, push_speed: f32, use_bias: bool) {
+    for c in constraints.iter_mut() {
+        let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        let dp = b.dp - a.dp;
+        for p in &mut c.points[..c.len] {
+            // Current separation from the bodies' motion since the step began.
+            let pra = a.dq.rotate(p.ra);
+            let prb = b.dq.rotate(p.rb);
+            let s = (dp + (prb - pra)).dot(p.normal) + p.adjusted_separation;
+            let (bias, mass_scale, impulse_scale) = if s > 0.0 {
+                // Speculative: allow closing the gap this substep.
+                (s * inv_h, 1.0, 0.0)
+            } else if use_bias {
+                ((c.soft.bias_rate * s).max(-push_speed), c.soft.mass_scale, c.soft.impulse_scale)
+            } else {
+                (0.0, 1.0, 0.0)
+            };
+            let vn = p.n.velocity(&a, &b);
+            let mut impulse = -p.n.mass * mass_scale * (vn + bias) - impulse_scale * p.normal_impulse;
+            let new = (p.normal_impulse + impulse).max(0.0);
+            impulse = new - p.normal_impulse;
+            p.normal_impulse = new;
+            p.max_normal_impulse = p.max_normal_impulse.max(impulse);
+            p.n.apply(impulse, &mut a, &mut b);
+        }
+        // Friction: a disc of radius friction x normal impulse in the tangent plane.
+        for p in &mut c.points[..c.len] {
+            let l1 = -p.t1.mass * p.t1.velocity(&a, &b);
+            let l2 = -p.t2.mass * p.t2.velocity(&a, &b);
+            let (old1, old2) = (p.tangent_impulse[0], p.tangent_impulse[1]);
+            let (mut n1, mut n2) = (old1 + l1, old2 + l2);
+            let max = c.friction * p.normal_impulse;
+            let len2 = n1 * n1 + n2 * n2;
+            if len2 > max * max {
+                let k = if len2 > 0.0 { max / len2.sqrt() } else { 0.0 };
+                n1 *= k;
+                n2 *= k;
+            }
+            p.tangent_impulse = [n1, n2];
+            p.t1.apply(n1 - old1, &mut a, &mut b);
+            p.t2.apply(n2 - old2, &mut a, &mut b);
+        }
+        a.store(bodies, c.a);
+        b.store(bodies, c.b);
+    }
+}
+
+pub fn restitution(constraints: &mut [Constraint], bodies: &mut [SolverBody], threshold: f32) {
+    for c in constraints.iter_mut() {
+        if c.restitution == 0.0 {
+            continue;
+        }
+        let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        for p in &mut c.points[..c.len] {
+            if p.relative_velocity > -threshold || p.max_normal_impulse == 0.0 {
+                continue;
+            }
+            let vn = p.n.velocity(&a, &b);
+            let mut impulse = -p.n.mass * (vn + c.restitution * p.relative_velocity);
+            let new = (p.normal_impulse + impulse).max(0.0);
+            impulse = new - p.normal_impulse;
+            p.normal_impulse = new;
+            p.max_normal_impulse = p.max_normal_impulse.max(impulse);
+            p.n.apply(impulse, &mut a, &mut b);
+        }
+        a.store(bodies, c.a);
+        b.store(bodies, c.b);
+    }
+}
+
+/// Runs a whole step on prepared bodies and constraints.
+pub fn step(constraints: &mut [Constraint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
+    let n = t.substeps.max(1);
+    let h = dt / n as f32;
+    let inv_h = 1.0 / h;
+    prepare(constraints, bodies);
+    for _ in 0..n {
+        integrate_velocities(bodies, h, t.max_linear_speed);
+        warm_start(constraints, bodies);
+        solve(constraints, bodies, inv_h, t.push_speed, true);
+        integrate_positions(bodies, h);
+        solve(constraints, bodies, inv_h, t.push_speed, false);
+    }
+    restitution(constraints, bodies, t.restitution_threshold);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn softness_is_stiff_at_high_rates_and_off_at_zero() {
+        let s = Softness::new(30.0, 10.0, 1.0 / 240.0);
+        assert!(s.mass_scale > 0.0 && s.mass_scale < 1.0 && s.impulse_scale > 0.0 && s.bias_rate > 0.0);
+        assert!((s.mass_scale + s.impulse_scale - 1.0).abs() < 1e-6);
+        let off = Softness::new(0.0, 1.0, 0.01);
+        assert_eq!((off.mass_scale, off.impulse_scale, off.bias_rate), (1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn rows_match_the_textbook_effective_mass() {
+        // A unit-mass sphere (I = 0.4) hit at its surface along the normal through its centre:
+        // effective mass 1 (no rotation).
+        let b = SolverBody {
+            v: Vec3::ZERO,
+            w: Vec3::ZERO,
+            dp: Vec3::ZERO,
+            dq: Quat::IDENTITY,
+            inv_mass: Vec3::ONE,
+            inv_inertia: Mat3::diag(Vec3::ONE * 2.5),
+            gravity: Vec3::ZERO,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            kinematic: false,
+            lock_linear: [false; 3],
+            lock_angular: [false; 3],
+        };
+        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(0.0, -1.0, 0.0), None, Some(&b));
+        assert!((r.mass - 1.0).abs() < 1e-6);
+        // Off-centre: rotation makes it lighter.
+        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), None, Some(&b));
+        assert!((r.mass - 1.0 / 3.5).abs() < 1e-6);
+    }
+}
