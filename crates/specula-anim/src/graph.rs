@@ -76,8 +76,11 @@ pub const MAX_LAYERS: usize = 4;
 pub const MAX_STATES: usize = 64;
 pub const MAX_TRANSITIONS: usize = 256;
 pub const MAX_NODES: usize = 256;
-/// Deepest nesting of blend-tree nodes.
+/// Deepest nesting of blend-tree nodes (counted through named nodes, however they are reused).
 pub const MAX_NODE_DEPTH: usize = 8;
+/// Most clips one node may blend, counting a named node once per use (a node reused twice
+/// under another plays twice): bounds the work of every pose.
+pub const MAX_LEAVES: u64 = 64;
 pub const MAX_POINTS: usize = 16;
 pub const MAX_CONDITIONS: usize = 8;
 pub const MAX_IK: usize = 8;
@@ -319,6 +322,9 @@ pub struct AnimGraph {
     pub limits: Vec<Limit>,
     /// Bones the motion checks treat as feet.
     pub feet: Vec<usize>,
+    /// Per node: whether every (non-additive) clip under it loops (exit times of looping states
+    /// wait for the next cycle). All true for a structure-only check.
+    pub node_loops: Vec<bool>,
     /// The graph as written (for tools).
     pub source: Json,
 }
@@ -440,6 +446,8 @@ struct Ctx<'a, 'b> {
     binder: &'b Binder<'a>,
     params: Vec<Param>,
     nodes: Vec<Node>,
+    /// Where each node was written (for errors).
+    paths: Vec<String>,
     /// Named nodes: source, and the id once parsed (`None` while being parsed: a cycle).
     named: Vec<(String, &'b Json, Option<Option<NodeId>>)>,
 }
@@ -488,6 +496,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             return Err(err(path, AnimErrorCode::Limit, format!("at most {MAX_NODES} nodes in a graph")));
         }
         self.nodes.push(n);
+        self.paths.push(path.to_string());
         Ok(NodeId(self.nodes.len() as u16 - 1))
     }
 
@@ -1043,7 +1052,7 @@ fn parse_graph(v: &Json, binder: &Binder) -> Result<AnimGraph, AnimError> {
             return Err(err("graph", AnimErrorCode::OutOfRange, format!("unsupported graph format (this build reads {FORMAT_VERSION})")));
         }
     }
-    let mut ctx = Ctx { binder, params: Vec::new(), nodes: Vec::new(), named: Vec::new() };
+    let mut ctx = Ctx { binder, params: Vec::new(), nodes: Vec::new(), paths: Vec::new(), named: Vec::new() };
     if let Some(p) = o.get("params") {
         for (name, pv) in limit_obj(p, "params", MAX_PARAMS, "parameters")? {
             let param = parse_param(name, pv, &format!("params.{name}"))?;
@@ -1124,7 +1133,43 @@ fn parse_graph(v: &Json, binder: &Binder) -> Result<AnimGraph, AnimError> {
             ctx.named_or_clip(&name, &format!("nodes.{name}"), 0)?;
         }
     }
-    Ok(AnimGraph { params: ctx.params, nodes: ctx.nodes, layers, ik, limits, feet, source: v.clone() })
+    let node_loops = check_trees(&ctx)?;
+    Ok(AnimGraph { params: ctx.params, nodes: ctx.nodes, layers, ik, limits, feet, node_loops, source: v.clone() })
+}
+
+/// Every node's real depth and clip count (named nodes reused under each other count every use)
+/// against [`MAX_NODE_DEPTH`] and [`MAX_LEAVES`], and whether it loops. Children always come
+/// before their parents in the arena, so one pass in order sees every child first.
+fn check_trees(ctx: &Ctx) -> Result<Vec<bool>, AnimError> {
+    let n = ctx.nodes.len();
+    let (mut depth, mut count, mut loops) = (vec![0usize; n], vec![0u64; n], vec![true; n]);
+    for (i, node) in ctx.nodes.iter().enumerate() {
+        let kids: Vec<usize> = match node {
+            Node::Clip { .. } | Node::External => Vec::new(),
+            Node::Blend1 { points, .. } => points.iter().map(|(_, c)| c.0 as usize).collect(),
+            Node::Blend2 { points, .. } => points.iter().map(|(_, c)| c.0 as usize).collect(),
+            Node::Additive { base, add, .. } => vec![base.0 as usize, add.0 as usize],
+        };
+        debug_assert!(kids.iter().all(|&k| k < i), "children are parsed before their parents");
+        depth[i] = 1 + kids.iter().map(|&k| depth[k]).max().unwrap_or(0);
+        count[i] = if kids.is_empty() { 1 } else { kids.iter().map(|&k| count[k]).fold(0u64, u64::saturating_add) };
+        loops[i] = match node {
+            Node::Clip { clip, .. } => match ctx.binder {
+                Binder::Set(set) => set.clip(*clip).looping != crate::clip::LoopMode::Once,
+                Binder::Loose => true,
+            },
+            Node::External => true,
+            Node::Additive { base, .. } => loops[base.0 as usize],
+            _ => kids.iter().all(|&k| loops[k]),
+        };
+        if depth[i] > MAX_NODE_DEPTH + 1 {
+            return Err(err(&ctx.paths[i], AnimErrorCode::Limit, format!("this blend tree nests {} deep (through named nodes); at most {MAX_NODE_DEPTH}", depth[i] - 1)).with_numbers((depth[i] - 1) as f64, MAX_NODE_DEPTH as f64));
+        }
+        if count[i] > MAX_LEAVES {
+            return Err(err(&ctx.paths[i], AnimErrorCode::Limit, format!("this blend tree plays {} clips (a named node used twice under another counts twice); at most {MAX_LEAVES}", count[i])).with_numbers(count[i] as f64, MAX_LEAVES as f64));
+        }
+    }
+    Ok(loops)
 }
 
 #[cfg(test)]

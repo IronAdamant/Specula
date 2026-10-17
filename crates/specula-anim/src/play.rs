@@ -514,17 +514,6 @@ fn leaves(graph: &AnimGraph, node: NodeId, params: &[RVal], w: f32, additive: bo
     }
 }
 
-/// Whether every (non-additive) clip under `node` loops.
-fn node_loops(set: &AnimSet, graph: &AnimGraph, node: NodeId) -> bool {
-    match &graph.nodes[node.0 as usize] {
-        Node::Clip { clip, .. } => set.clip(*clip).looping != LoopMode::Once,
-        Node::External => true,
-        Node::Blend1 { points, .. } => points.iter().all(|(_, n)| node_loops(set, graph, *n)),
-        Node::Blend2 { points, .. } => points.iter().all(|(_, n)| node_loops(set, graph, *n)),
-        Node::Additive { base, .. } => node_loops(set, graph, *base),
-    }
-}
-
 /// Seconds per cycle and metres per cycle of a leaf list (weighted over its non-additive leaves).
 fn cycle_of(set: &AnimSet, leaves: &[Leaf]) -> (f64, f64) {
     let (mut w, mut d, mut m) = (0.0f64, 0.0f64, 0.0f64);
@@ -564,12 +553,14 @@ struct Resolved {
     truncated: bool,
 }
 
-/// A transition that fired while resolving.
+/// A transition that fired while resolving (or a skip over whole periods).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Fired {
     tau: f64,
-    /// The entry it pushed (its phase at the play's clock).
-    entry: REntry,
+    /// The layer's blend stack right after it (phases at the play's clock).
+    layer: RLayer,
+    /// False for a skip: the stack moved on whole periods, nothing was entered.
+    entered: bool,
 }
 
 /// Per-resolve scratch and constants of one play.
@@ -619,16 +610,24 @@ impl Machine<'_> {
 
     /// Runs layer `li` from the play's clock `t0` to `t_end` (graph seconds). `rates` holds every
     /// state's rate (cycles/s). Fired transitions go to `fired` (when given); periods are only
-    /// skipped up to `skip_until`.
+    /// skipped up to `skip_until`. `history` is scratch (the last firing of each transition).
+    ///
+    /// Two rules keep the work bounded: one instant fires at most one transition more than the
+    /// layer has states (by then the machine is cycling without time passing: `a -> b when on`
+    /// with `b -> a when on` stops after three firings, in `b`; transitions that would fire at
+    /// that instant wait until time moves on), and a transition firing again with the same stack
+    /// shifted in time marks a period, which is skipped whole periods at a time.
     #[allow(clippy::too_many_arguments)]
-    fn resolve(&self, li: usize, mut layer: RLayer, params: &mut [RVal], rates: &[f64], t0: f64, t_end: f64, skip_until: f64, mut fired: Option<&mut Vec<Fired>>) -> Resolved {
+    fn resolve(&self, li: usize, mut layer: RLayer, params: &mut [RVal], rates: &[f64], t0: f64, t_end: f64, skip_until: f64, history: &mut Vec<Option<(f64, RLayer)>>, mut fired: Option<&mut Vec<Fired>>) -> Resolved {
         let lg = &self.graph.layers[li];
         let phase_at = |e: &REntry, t: f64| e.phase + (t - t0) * rates[e.state as usize];
         let mut t = t0;
         let mut steps = 0usize;
-        // Recent firings (time, transition, stack) since the last trigger was consumed.
-        let mut history: [(f64, usize, RLayer); 8] = [(0.0, usize::MAX, layer); 8];
-        let mut hist_len = 0usize;
+        // Firings at the current instant `t`, and the most one instant may have.
+        let mut at_instant = 0usize;
+        let instant_cap = lg.states.len() + 1;
+        history.clear();
+        history.resize(lg.transitions.len(), None);
         loop {
             let top = *layer.top();
             let mut best: Option<(f64, usize)> = None;
@@ -641,7 +640,7 @@ impl Machine<'_> {
                     Some(x) => {
                         let r = rates[top.state as usize];
                         let p_now = phase_at(&top, t);
-                        let looping = node_loops(self.set, self.graph, lg.states[top.state as usize].node);
+                        let looping = self.graph.node_loops[lg.states[top.state as usize].node.0 as usize];
                         if p_now >= x && !looping {
                             Some(t)
                         } else if r <= 0.0 {
@@ -652,6 +651,8 @@ impl Machine<'_> {
                         }
                     }
                 };
+                // An instant that has used up its firings lets time move on first.
+                let tf = tf.filter(|&tf| tf > t || at_instant < instant_cap);
                 if let Some(tf) = tf {
                     if best.is_none_or(|(b, _)| tf < b) {
                         best = Some((tf, ti));
@@ -693,17 +694,21 @@ impl Machine<'_> {
                 layer.len += 1;
             }
             if let Some(f) = fired.as_deref_mut() {
-                f.push(Fired { tau: tf, entry });
+                f.push(Fired { tau: tf, layer, entered: true });
             }
+            if tf > t {
+                at_instant = 0;
+            }
+            at_instant += 1;
             t = tf;
             if consumed {
-                hist_len = 0;
+                history.iter_mut().for_each(|h| *h = None);
                 continue;
             }
-            // A periodic chain: the same transition with the same stack (shifted in time) again.
-            if let Some(prev) = history[..hist_len].iter().rev().find(|h| h.1 == ti).copied() {
-                let period = tf - prev.0;
-                if period > 1e-6 && same_shifted(&prev.2, &layer, period, rates) {
+            // A periodic chain: this transition fired before with the same stack, shifted in time.
+            if let Some((t_prev, prev)) = history[ti] {
+                let period = tf - t_prev;
+                if period > 1e-6 && same_shifted(&prev, &layer, period, rates) {
                     let room = skip_until.min(t_end) - tf;
                     let k = dmath::floor_f64(room / period) - 1.0;
                     if k >= 1.0 {
@@ -715,17 +720,16 @@ impl Machine<'_> {
                             }
                         }
                         t = tf + shift;
-                        hist_len = 0;
+                        at_instant = 0;
+                        history.iter_mut().for_each(|h| *h = None);
+                        if let Some(f) = fired.as_deref_mut() {
+                            f.push(Fired { tau: t, layer, entered: false });
+                        }
                         continue;
                     }
                 }
             }
-            if hist_len == history.len() {
-                history.copy_within(1.., 0);
-                hist_len -= 1;
-            }
-            history[hist_len] = (tf, ti, layer);
-            hist_len += 1;
+            history[ti] = Some((tf, layer));
         }
         // What lies under an entry that is fully in at `t_end` doesn't show.
         if let Some(k) = (0..layer.len).rev().find(|&k| fade_weight(layer.stack[k].fade, t_end) >= 1.0) {
@@ -772,6 +776,7 @@ pub struct Scratch {
     leaves: Vec<Leaf>,
     layers: Vec<Resolved>,
     fired: Vec<Fired>,
+    history: Vec<Option<(f64, RLayer)>>,
 }
 
 impl Graphed<'_> {
@@ -797,7 +802,7 @@ impl Graphed<'_> {
                 Some((l, f)) if *l == li => Some(&mut **f),
                 _ => None,
             };
-            let r = m.resolve(li, layer, &mut s.params, &rates, play.clock, tau, skip_until, f);
+            let r = m.resolve(li, layer, &mut s.params, &rates, play.clock, tau, skip_until, &mut s.history, f);
             s.layers.push(r);
             s.rates[li] = rates;
         }
@@ -965,8 +970,9 @@ pub fn events(g: Graphed, play: &GraphPlay, timing: Timing, t0: f64, t1: f64, s:
             let end = next.unwrap_or(tau1);
             seg(cur, seg_start, end, s, out, &mut dropped);
             let Some(f) = f_iter.next() else { break };
-            let st = &lg.states[f.entry.state as usize];
-            if let Some(name) = &st.on_enter {
+            let top = *f.layer.top();
+            let st = &lg.states[top.state as usize];
+            if let (Some(name), true) = (&st.on_enter, f.entered) {
                 if f.tau >= tau0 && f.tau < tau1 {
                     if out.len() >= MAX_EVENTS {
                         dropped = true;
@@ -975,7 +981,7 @@ pub fn events(g: Graphed, play: &GraphPlay, timing: Timing, t0: f64, t1: f64, s:
                     }
                 }
             }
-            cur = f.entry;
+            cur = top;
             seg_start = f.tau;
         }
         s.fired = fired;
@@ -984,59 +990,82 @@ pub fn events(g: Graphed, play: &GraphPlay, timing: Timing, t0: f64, t1: f64, s:
     dropped
 }
 
+/// Most integration steps [`root_motion`] takes over one window (longer windows take longer
+/// steps; each step's root delta is exact, only crossfade weights are sampled per step).
+pub const MAX_ROOT_STEPS: usize = 4096;
+
 /// Root translation (model space, metres) the base layer's root-motion states moved between
-/// world times `t0` and `t1` (at most [`MAX_WINDOW_S`] graph seconds), integrated in steps of at
-/// most 1/120 graph second with each state's crossfade weight. Deterministic: the same play and
-/// times give the same bits on every machine. A simulation should ask for whole ticks
-/// (`[tick, tick + 1]`): splitting a window differently gives sums equal to rounding, not bits.
+/// world times `t0` and `t1` (at most [`MAX_WINDOW_S`] graph seconds). One resolve over the
+/// window gives the blend stack between transitions; the motion is integrated along it in steps
+/// of 1/120 graph second (at most [`MAX_ROOT_STEPS`]) with each state's crossfade weight.
+/// Deterministic: the same play and times give the same bits on every machine. A simulation
+/// should ask for whole ticks (`[tick, tick + 1]`): splitting a window differently gives sums
+/// equal to rounding, not bits.
 pub fn root_motion(g: Graphed, play: &GraphPlay, timing: Timing, t0: f64, t1: f64, s: &mut Scratch) -> V3 {
     let (tau0, tau1) = (timing.tau(play.clock, t0), timing.tau(play.clock, t1));
     if tau1.is_nan() || tau0.is_nan() || tau1 <= tau0 {
         return [0.0; 3];
     }
     let tau1 = tau1.min(tau0 + MAX_WINDOW_S);
-    let steps = dmath::ceil_f64((tau1 - tau0) * 120.0).max(1.0) as usize;
+    let mut fired = std::mem::take(&mut s.fired);
+    fired.clear();
+    g.resolve_all(play, tau1, tau0, s, Some((0, &mut fired)));
     let lg = &g.graph.layers[0];
+    let step = ((tau1 - tau0) / MAX_ROOT_STEPS as f64).max(1.0 / 120.0);
     let mut acc = [0.0f64; 3];
-    let mut lv: Vec<Leaf> = Vec::new();
-    for k in 0..steps {
-        let a = tau0 + (tau1 - tau0) * k as f64 / steps as f64;
-        let b = if k + 1 == steps { tau1 } else { tau0 + (tau1 - tau0) * (k + 1) as f64 / steps as f64 };
-        g.resolve_all(play, b, b, s, None);
-        let r = s.layers[0];
-        let mid = 0.5 * (a + b);
-        // Crossfade weights: each entry over what is under it.
-        let n = r.layer.len;
-        let mut ws = [0.0f32; MAX_STACK];
-        let mut remaining = 1.0f32;
-        for i in (0..n).rev() {
-            let w = if i == 0 { 1.0 } else { fade_weight(r.layer.stack[i].fade, mid) };
-            ws[i] = remaining * w;
-            remaining *= 1.0 - w;
-        }
-        for (i, e) in r.layer.entries().iter().enumerate() {
-            let st = &lg.states[e.state as usize];
-            if st.root_motion == RootMotion::Off || ws[i] <= 0.0 {
-                continue;
-            }
-            let rate = s.rates[0][e.state as usize];
-            let (pa, pb) = (e.phase + (a - play.clock) * rate, e.phase + (b - play.clock) * rate);
-            lv.clear();
-            leaves(g.graph, st.node, &s.params, 1.0, false, &mut lv);
-            let total: f32 = lv.iter().filter(|l| !l.additive).map(|l| l.weight).sum();
-            for l in lv.iter().filter(|l| !l.additive) {
-                let Some(c) = l.clip else { continue };
-                let d = root_delta(g.set, c, pa, pb);
-                let w = ws[i] as f64 * (l.weight / total.max(1e-9)) as f64;
-                for j in 0..3 {
-                    if st.root_motion == RootMotion::Horizontal && j == 1 {
+    let mut lv = std::mem::take(&mut s.leaves);
+    // The stack in force from `seg_start` until the next firing.
+    let mut stack = bind_layer(g.graph, 0, play);
+    let mut seg_start = play.clock;
+    let mut next = 0usize;
+    loop {
+        let seg_end = fired.get(next).map_or(tau1, |f| f.tau);
+        let (a0, b0) = (seg_start.max(tau0), seg_end.min(tau1));
+        if b0 > a0 {
+            let n = dmath::ceil_f64((b0 - a0) / step).max(1.0) as usize;
+            for k in 0..n {
+                let a = a0 + (b0 - a0) * k as f64 / n as f64;
+                let b = if k + 1 == n { b0 } else { a0 + (b0 - a0) * (k + 1) as f64 / n as f64 };
+                let mid = 0.5 * (a + b);
+                // Crossfade weights: each entry over what is under it.
+                let mut ws = [0.0f32; MAX_STACK];
+                let mut remaining = 1.0f32;
+                for i in (0..stack.len).rev() {
+                    let w = if i == 0 { 1.0 } else { fade_weight(stack.stack[i].fade, mid) };
+                    ws[i] = remaining * w;
+                    remaining *= 1.0 - w;
+                }
+                for (i, e) in stack.entries().iter().enumerate() {
+                    let st = &lg.states[e.state as usize];
+                    if st.root_motion == RootMotion::Off || ws[i] <= 0.0 {
                         continue;
                     }
-                    acc[j] += w * d[j];
+                    let rate = s.rates[0][e.state as usize];
+                    let (pa, pb) = (e.phase + (a - play.clock) * rate, e.phase + (b - play.clock) * rate);
+                    lv.clear();
+                    leaves(g.graph, st.node, &s.params, 1.0, false, &mut lv);
+                    let total: f32 = lv.iter().filter(|l| !l.additive).map(|l| l.weight).sum();
+                    for l in lv.iter().filter(|l| !l.additive) {
+                        let Some(c) = l.clip else { continue };
+                        let d = root_delta(g.set, c, pa, pb);
+                        let w = ws[i] as f64 * (l.weight / total.max(1e-9)) as f64;
+                        for j in 0..3 {
+                            if st.root_motion == RootMotion::Horizontal && j == 1 {
+                                continue;
+                            }
+                            acc[j] += w * d[j];
+                        }
+                    }
                 }
             }
         }
+        let Some(f) = fired.get(next) else { break };
+        stack = f.layer;
+        seg_start = f.tau;
+        next += 1;
     }
+    s.leaves = lv;
+    s.fired = fired;
     [acc[0] as f32, acc[1] as f32, acc[2] as f32]
 }
 

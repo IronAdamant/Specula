@@ -355,3 +355,94 @@ fn bad_plays_are_reported_and_fall_back() {
     assert_eq!(back, settled);
     assert!(GraphPlay::from_json_fields(&Json::parse(r#"{"graph": "g", "layers": {"base": [{"state": "idle", "oops": 1}]}}"#).unwrap()).is_err());
 }
+
+/// Review round 1, finding 1: a named node reused under another (a DAG) used to slip past the
+/// depth check and blow up exponentially (depth 20: about 1 s per pose; depth 60: never).
+#[test]
+fn shared_node_dags_are_bounded_at_parse() {
+    let dag = |k: usize| {
+        let mut nodes: Vec<String> = (0..k).map(|i| format!(r#""n{i}": {{ "base": "n{}", "add": "n{}" }}"#, i + 1, i + 1)).collect();
+        nodes.push(format!(r#""n{k}": {{ "clip": "walk" }}"#));
+        let states: Vec<String> = (0..=k).rev().map(|i| format!(r#""s{i}": "n{i}""#)).collect();
+        format!(r#"{{ "nodes": {{ {} }}, "states": {{ {} }}, "entry": "s0" }}"#, nodes.join(", "), states.join(", "))
+    };
+    let skel = || Skeleton::from_rig(&rig()).unwrap();
+    // 2^6 = 64 clips: the most one tree may play.
+    let ok = AnimSet::load(&set_text(&dag(6)), skel()).unwrap();
+    assert!(ok.graph("g").is_some());
+    for k in [7usize, 20, 60] {
+        let e = AnimSet::load(&set_text(&dag(k)), skel()).unwrap_err();
+        assert_eq!(e.code, AnimErrorCode::Limit, "depth {k}: {e}");
+        assert!(e.path.starts_with("graphs.g.nodes."), "depth {k}: names the node: {}", e.path);
+    }
+    // A plain chain through named nodes is depth-checked through the names too.
+    let mut chain: Vec<String> = (0..12).map(|i| format!(r#""c{i}": {{ "blend1d": "speed", "points": [[0, "c{}"]] }}"#, i + 1)).collect();
+    chain.push(r#""c12": "walk""#.into());
+    let g = format!(r#"{{ "params": {{ "speed": "float" }}, "nodes": {{ {} }}, "states": {{ "a": "c0" }} }}"#, chain.join(", "));
+    assert_eq!(AnimSet::load(&set_text(&g), skel()).unwrap_err().code, AnimErrorCode::Limit);
+}
+
+/// Review round 1, finding 3: periodic chains longer than the old 8-firing history were never
+/// skipped, so a 9-state cycle truncated and froze.
+#[test]
+fn long_periodic_cycles_resolve_at_any_time() {
+    for n in [2usize, 8, 9, 12, 30] {
+        let states: Vec<String> = (0..n).map(|i| format!(r#""s{i}": "still""#)).collect();
+        let trs: Vec<String> = (0..n).map(|i| format!(r#"{{ "from": "s{i}", "to": "s{}", "exit": "end", "blend": 0.1 }}"#, (i + 1) % n)).collect();
+        let g = format!(r#"{{ "states": {{ {} }}, "transitions": [{}] }}"#, states.join(", "), trs.join(", "));
+        let s = AnimSet::load(&set_text(&g), Skeleton::from_rig(&rig()).unwrap()).unwrap();
+        let gr = Graphed { set: &s, graph: s.graph("g").unwrap(), scale: 1.0 };
+        let mut sc = Scratch::default();
+        for t in [100.5f64, 400.5, 3600.5, 1e6 + 0.5] {
+            let now = play::state_at(gr, &GraphPlay::new("g"), timing(0.0), t, &mut sc);
+            // `still` is 1 s long: state floor(t) mod n.
+            let want = format!("s{}", (t.floor() as usize) % n);
+            assert!(!now[0].truncated, "{n} states at {t}: truncated");
+            assert_eq!(now[0].stack.last().unwrap().state, want, "{n} states at {t}");
+        }
+    }
+}
+
+/// Review round 1, finding 4: zero-time transition loops (a -> b when on, b -> a when on) ran to
+/// the step limit on every pose, and root motion re-resolved every 1/120 s (one 30 s window at
+/// speed 8 took 20 s).
+#[test]
+fn instant_loops_settle_once_and_root_motion_resolves_once() {
+    let mut trs = vec![r#"{ "from": "a", "to": "b", "when": "on", "blend": 0 }"#.to_string(), r#"{ "from": "b", "to": "a", "when": "on", "blend": 0 }"#.to_string()];
+    for _ in 0..200 {
+        trs.push(r#"{ "from": ["a", "b"], "to": "a", "when": ["on", "x > 1", "x > 2", "x > 3"] }"#.to_string());
+    }
+    let g = format!(r#"{{ "params": {{ "on": "bool", "x": "float" }}, "states": {{ "a": "idle", "b": "walk" }}, "transitions": [{}] }}"#, trs.join(", "));
+    let s = AnimSet::load(&set_text(&g), Skeleton::from_rig(&rig()).unwrap()).unwrap();
+    let gr = Graphed { set: &s, graph: s.graph("g").unwrap(), scale: 1.0 };
+    let mut play = GraphPlay::new("g");
+    play.set_param("on", Value::Bool(true));
+    let mut sc = Scratch::default();
+    let tm = Timing { anchor: 0.0, speed: 8.0 };
+    let now = play::state_at(gr, &play, tm, 1.0, &mut sc);
+    // a -> b -> a -> b at the anchor (one firing more than the states), then time moves on.
+    assert!(!now[0].truncated);
+    assert_eq!(now[0].stack.last().unwrap().state, "b");
+    let a = play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc);
+    assert_eq!(a, play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc), "deterministic");
+}
+
+/// Root motion integrated along one resolve agrees with the exact displacement of a leap
+/// played through a blend, and over a window holding a whole periodic chain.
+#[test]
+fn root_motion_follows_blends_and_long_windows() {
+    let s = set();
+    let t = timing(0.0);
+    let mut sc = Scratch::default();
+    // From idle into the leap (0.1 s blend): the 2 m arrive, eased in by the blend.
+    let jump = with(&GraphPlay::new("g"), &[("act", Value::Name("jump".into()))]);
+    let d = play::root_motion(g(&s), &jump, t, 0.0, 1.0, &mut sc);
+    assert!((d[2] - 2.0).abs() < 0.08, "{d:?}");
+    // Split windows add up (to rounding).
+    let mut sum = [0.0f32; 3];
+    for k in 0..10 {
+        let p = play::root_motion(g(&s), &jump, t, k as f64 * 0.1, (k + 1) as f64 * 0.1, &mut sc);
+        sum = [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]];
+    }
+    assert!((sum[2] - d[2]).abs() < 1e-3, "{sum:?} vs {d:?}");
+}
