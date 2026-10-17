@@ -401,9 +401,7 @@ impl NavMesh {
             }
             i += 1;
         }
-        if out.len() <= max_corners && !same_xz(*out.last().expect("start"), end) {
-            out.push(end);
-        } else if out.len() == 1 {
+        if (out.len() <= max_corners && !same_xz(*out.last().expect("start"), end)) || out.len() == 1 {
             out.push(end);
         }
         out
@@ -547,22 +545,12 @@ impl NavMesh {
 
     /// A random point on the navmesh: a polygon chosen by area, then a point inside it.
     pub fn random_point(&self, rng: &mut Rng) -> Option<(PolyRef, Vec3)> {
-        let total: f32 = self.tiles().map(|(_, t)| t.polys.iter().map(|p| area(self, p)).sum::<f32>()).sum();
+        let total = self.total_area();
         if total <= 0.0 {
             return None;
         }
-        let mut pick = rng.f32() * total;
-        let mut chosen = None;
-        'tiles: for (i, t) in self.tiles() {
-            for (k, p) in t.polys.iter().enumerate() {
-                chosen = Some((PolyRef::new(i, k), p));
-                pick -= area(self, p);
-                if pick <= 0.0 {
-                    break 'tiles;
-                }
-            }
-        }
-        let (r, p) = chosen?;
+        let r = self.poly_at_area(rng.f32() * total)?;
+        let p = self.poly(r)?;
         let rect = self.rect(p);
         let x = rect[0] + (rect[2] - rect[0]) * rng.f32();
         let z = rect[1] + (rect[3] - rect[1]) * rng.f32();
@@ -573,11 +561,6 @@ impl NavMesh {
     pub fn corridor_length(&self, from: Vec3, end: Vec3, polys: &[PolyRef]) -> f32 {
         self.straighten(from, end, polys, usize::MAX).windows(2).map(|w| dist(w[0], w[1])).sum()
     }
-}
-
-fn area(mesh: &NavMesh, p: &Poly) -> f32 {
-    let r = mesh.rect(p);
-    (r[2] - r[0]) * (r[3] - r[1])
 }
 
 /// A path as JSON (corners rounded to a millimetre).

@@ -271,6 +271,8 @@ impl AgentSpec {
 #[derive(Clone, Debug)]
 struct SourceEntry {
     version: u64,
+    /// Shown and not on the ui layer (both follow ancestors without changing the version).
+    drawn: bool,
     cols: [[f32; 4]; 4],
     path: String,
     tags: BTreeSet<String>,
@@ -461,7 +463,7 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
     if collider.is_none() && shape.is_none() {
         return None;
     }
-    Some(SourceEntry { version: e.version, cols: m.cols, path: world.path_of(e.id), tags: e.tags.clone(), collider, shape })
+    Some(SourceEntry { version: e.version, drawn: true, cols: m.cols, path: world.path_of(e.id), tags: e.tags.clone(), collider, shape })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -522,6 +524,17 @@ struct MindSlot {
     /// The definition entity it reads (`props.mind = {def: "/path"}`), and its version.
     def_from: Option<(u64, u64)>,
     mind: Option<Mind>,
+}
+
+/// An agent as the `paths` overlay draws it.
+pub struct AgentPath {
+    pub id: u64,
+    pub pos: Vec3,
+    /// Its path ahead: its position, then the next corners.
+    pub corners: Vec<Vec3>,
+    pub target: Option<Vec3>,
+    pub vel: Vec3,
+    pub radius: f32,
 }
 
 /// What the last tick did.
@@ -1093,7 +1106,10 @@ impl Nav {
         }
         // Geometry.
         let new = e.and_then(|e| {
-            let unchanged = self.sources.get(&id).is_some_and(|s| s.version == e.version && s.cols.iter().flatten().zip(e.model().cols.iter().flatten()).all(|(a, b)| a.to_bits() == b.to_bits()));
+            let drawn = e.shown() && !e.in_ui();
+            let unchanged = self.sources.get(&id).is_some_and(|s| {
+                s.version == e.version && s.drawn == drawn && s.cols.iter().flatten().zip(e.model().cols.iter().flatten()).all(|(a, b)| a.to_bits() == b.to_bits())
+            });
             if unchanged {
                 None
             } else {
@@ -1507,7 +1523,7 @@ impl Nav {
         for (id, m) in &self.minds {
             h.write_u64(*id);
             if let Some(mind) = &m.mind {
-                mind.hash(&mut h);
+                mind.hash_into(&mut h);
             }
         }
         for (id, l) in &self.agents {
@@ -1653,15 +1669,14 @@ impl Nav {
         self.queries.push_back((mesh, p));
     }
 
-    /// The agents' positions, corridors and goals for the overlay: (path, position, corners,
-    /// target, velocity, radius).
-    pub fn agent_paths(&self, max_corners: usize) -> Vec<(u64, Vec3, Vec<Vec3>, Option<Vec3>, Vec3, f32)> {
+    /// The agents' positions, corridors and goals, for the overlay.
+    pub fn agent_paths(&self, max_corners: usize) -> Vec<AgentPath> {
         let mut out = Vec::new();
         for (id, link) in &self.agents {
             let Some(slot) = link.mesh.and_then(|m| self.meshes.get(&m)) else { continue };
             let Some(a) = slot.crowd.agent(*id) else { continue };
             let corners = if a.corridor.is_empty() || a.target.is_none() { Vec::new() } else { slot.mesh.straighten(a.pos, a.path_end, &a.corridor, max_corners) };
-            out.push((*id, a.pos, corners, a.target, a.vel, a.params.radius));
+            out.push(AgentPath { id: *id, pos: a.pos, corners, target: a.target, vel: a.vel, radius: a.params.radius });
         }
         out
     }

@@ -57,6 +57,9 @@ pub struct Tile {
     edges: [Vec<Vec<EdgeSpan>>; 4],
     /// Hash of the tile's polygons and links (refreshed when either changes).
     hash: u64,
+    /// Running total of the polygons' areas (for random points), and the whole.
+    area_prefix: Vec<f32>,
+    pub area: f32,
 }
 
 /// What building a tile did.
@@ -212,7 +215,15 @@ impl NavMesh {
             errors: b.errors,
             times_us: b.times_us,
         };
-        self.tiles[index] = Some(Tile { polys, edges: b.edges, hash: 0 });
+        let (cs, mut sum) = (self.cfg.cell_size, 0.0f32);
+        let area_prefix: Vec<f32> = polys
+            .iter()
+            .map(|p| {
+                sum += (p.x1 - p.x0 + 1) as f32 * cs * ((p.z1 - p.z0 + 1) as f32 * cs);
+                sum
+            })
+            .collect();
+        self.tiles[index] = Some(Tile { polys, edges: b.edges, hash: 0, area_prefix, area: sum });
         self.counter += 1;
         self.rebuilt[index] = self.counter;
         self.relink(tx, tz);
@@ -299,6 +310,29 @@ impl NavMesh {
             }
             tile.hash = tile_hash(tile);
         }
+    }
+
+    /// The polygon whose share of the walkable area holds `pick` (0..total area), by tile then
+    /// polygon order.
+    pub fn poly_at_area(&self, mut pick: f32) -> Option<PolyRef> {
+        let mut last = None;
+        for (i, t) in self.tiles() {
+            if t.polys.is_empty() {
+                continue;
+            }
+            last = Some(PolyRef::new(i, t.polys.len() - 1));
+            if pick <= t.area {
+                let k = t.area_prefix.partition_point(|a| *a < pick).min(t.polys.len() - 1);
+                return Some(PolyRef::new(i, k));
+            }
+            pick -= t.area;
+        }
+        last
+    }
+
+    /// The walkable area, square metres.
+    pub fn total_area(&self) -> f32 {
+        self.tiles().map(|(_, t)| t.area).sum()
     }
 
     /// World X/Z bounds of a polygon: `[min_x, min_z, max_x, max_z]`.

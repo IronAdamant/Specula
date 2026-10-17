@@ -57,8 +57,8 @@ fn build_all(mesh: &mut NavMesh, sources: &[Source]) -> [f64; 5] {
             let (lo, hi) = mesh.tile_input_bounds(tx, tz);
             let mine: Vec<&Source> = sources.iter().filter(|s| s.touches(lo, hi)).collect();
             let s = mesh.build_tile(tx, tz, &mine);
-            for i in 0..5 {
-                stages[i] += s.times_us[i] / 1000.0;
+            for (total, us) in stages.iter_mut().zip(s.times_us) {
+                *total += us / 1000.0;
             }
         }
     }

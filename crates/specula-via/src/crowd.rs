@@ -28,7 +28,32 @@ const SPEEDS: [f32; 2] = [1.0, 0.5];
 /// Neighbour search cell size, metres.
 const GRID: f32 = 4.0;
 
+/// An agent as one step's neighbour search sees it.
+#[derive(Clone, Copy, Debug)]
+struct Snap {
+    id: u64,
+    pos: Vec3,
+    vel: Vec3,
+    radius: f32,
+    reciprocal: bool,
+    on_mesh: bool,
+}
+
+/// Buffers a step reuses (reset before use; no state between steps).
+#[derive(Clone, Debug, Default)]
+struct Scratch {
+    snap: Vec<Snap>,
+    /// ((row, column), agent): sorted, so a row's neighbouring cells are contiguous.
+    grid: Vec<((i32, i32), u32)>,
+    near: Vec<(f32, u32)>,
+    others: Vec<Other>,
+    chosen: Vec<Vec3>,
+    push: Vec<Vec3>,
+    order: Vec<u64>,
+}
+
 /// A neighbour as avoidance sees it.
+#[derive(Clone, Copy, Debug)]
 struct Other {
     pos: Vec3,
     vel: Vec3,
@@ -217,6 +242,7 @@ pub struct Crowd {
     table: [(f32, f32); DIRECTIONS],
     /// The last agent whose repath was served (round robin).
     last_served: u64,
+    scratch: Scratch,
 }
 
 impl Crowd {
@@ -226,7 +252,7 @@ impl Crowd {
             let (s, c) = dmath::sin_cos(a);
             (c, s)
         });
-        Crowd { settings, agents: BTreeMap::new(), table, last_served: 0 }
+        Crowd { settings, agents: BTreeMap::new(), table, last_served: 0, scratch: Scratch::default() }
     }
 
     pub fn len(&self) -> usize {
@@ -335,7 +361,9 @@ impl Crowd {
             }
         }
         // 2. Path searches, round robin from the agent after the last one served.
-        let mut order: Vec<u64> = self.agents.iter().filter(|(_, a)| a.need_path && a.poly.is_some() && a.target.is_some()).map(|(k, _)| *k).collect();
+        let mut order = std::mem::take(&mut self.scratch.order);
+        order.clear();
+        order.extend(self.agents.iter().filter(|(_, a)| a.need_path && a.poly.is_some() && a.target.is_some()).map(|(k, _)| *k));
         let split = order.partition_point(|k| *k <= self.last_served);
         order.rotate_left(split);
         for (served, id) in order.iter().enumerate() {
@@ -372,6 +400,7 @@ impl Crowd {
             a.status = if complete { AgentStatus::Moving } else { AgentStatus::Partial };
             self.last_served = *id;
         }
+        self.scratch.order = order;
         // 3. Steering toward the next corner.
         for a in self.agents.values_mut() {
             a.desired = Vec3::ZERO;
@@ -411,55 +440,59 @@ impl Crowd {
                 a.desired = Vec3::new(dx / d * speed, 0.0, dz / d * speed);
             }
         }
-        // 4. Avoidance: neighbours from a grid, sampled velocities.
-        let mut grid: BTreeMap<(i32, i32), Vec<u64>> = BTreeMap::new();
-        let cell = |p: Vec3| (dmath::floor(p.x / GRID) as i32, dmath::floor(p.z / GRID) as i32);
-        for (id, a) in &self.agents {
-            if a.poly.is_some() {
-                grid.entry(cell(a.pos)).or_default().push(*id);
-            }
-        }
-        let mut chosen: Vec<(u64, Vec3)> = Vec::with_capacity(self.agents.len());
-        for (id, a) in &self.agents {
+        // 4. Avoidance: neighbours from a grid (agents sorted by cell), sampled velocities. The
+        // step works on a snapshot in id order, in buffers kept between steps.
+        let mut sc = std::mem::take(&mut self.scratch);
+        sc.snap.clear();
+        sc.snap.extend(self.agents.iter().map(|(id, a)| Snap {
+            id: *id,
+            pos: a.pos,
+            vel: a.vel,
+            radius: a.params.radius,
+            reciprocal: a.params.avoid && a.target.is_some(),
+            on_mesh: a.poly.is_some(),
+        }));
+        let cell = |p: Vec3| (dmath::floor(p.z / GRID) as i32, dmath::floor(p.x / GRID) as i32);
+        sc.grid.clear();
+        sc.grid.extend(sc.snap.iter().enumerate().filter(|(_, a)| a.on_mesh).map(|(i, a)| (cell(a.pos), i as u32)));
+        sc.grid.sort_unstable();
+        sc.chosen.clear();
+        for (i, a) in self.agents.values().enumerate() {
             if a.poly.is_none() {
-                chosen.push((*id, Vec3::ZERO));
+                sc.chosen.push(Vec3::ZERO);
                 continue;
             }
-            let mut near: Vec<(f32, u64)> = Vec::new();
-            let (cx, cz) = cell(a.pos);
+            sc.near.clear();
+            let (cz, cx) = cell(a.pos);
             for gz in cz - 1..=cz + 1 {
-                for gx in cx - 1..=cx + 1 {
-                    for other in grid.get(&(gx, gz)).into_iter().flatten() {
-                        if other == id {
-                            continue;
-                        }
-                        let b = &self.agents[other];
-                        let d = horizontal_distance(a.pos, b.pos);
-                        if d < GRID {
-                            near.push((d, *other));
-                        }
+                let lo = sc.grid.partition_point(|(c, _)| *c < (gz, cx - 1));
+                let hi = sc.grid.partition_point(|(c, _)| *c <= (gz, cx + 1));
+                for &(_, j) in &sc.grid[lo..hi] {
+                    if j as usize == i {
+                        continue;
+                    }
+                    let d = horizontal_distance(a.pos, sc.snap[j as usize].pos);
+                    if d < GRID {
+                        sc.near.push((d, j));
                     }
                 }
             }
-            near.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
-            near.truncate(s.neighbours);
-            let v = if a.params.avoid && !near.is_empty() && a.desired != Vec3::ZERO {
-                let others: Vec<Other> = near
-                    .iter()
-                    .map(|(_, o)| {
-                        let b = &self.agents[o];
-                        Other { pos: b.pos, vel: b.vel, radius: b.params.radius, reciprocal: b.params.avoid && b.target.is_some() }
-                    })
-                    .collect();
-                self.sample(a, &others, &s)
+            sc.near.sort_by(|x, y| x.0.total_cmp(&y.0).then(sc.snap[x.1 as usize].id.cmp(&sc.snap[y.1 as usize].id)));
+            sc.near.truncate(s.neighbours);
+            let v = if a.params.avoid && !sc.near.is_empty() && a.desired != Vec3::ZERO {
+                sc.others.clear();
+                sc.others.extend(sc.near.iter().map(|(_, j)| {
+                    let b = &sc.snap[*j as usize];
+                    Other { pos: b.pos, vel: b.vel, radius: b.radius, reciprocal: b.reciprocal }
+                }));
+                self.sample(a, &sc.others, &s)
             } else {
                 a.desired
             };
-            chosen.push((*id, v));
+            sc.chosen.push(v);
         }
         // 5. Move.
-        for (id, v) in chosen {
-            let a = self.agents.get_mut(&id).expect("listed");
+        for ((_, a), v) in self.agents.iter_mut().zip(sc.chosen.iter().copied()) {
             let dv = v - a.vel;
             let max_dv = a.params.accel * dt;
             let len = dv.length();
@@ -485,39 +518,49 @@ impl Crowd {
                 a.stuck_s = 0.0;
             }
         }
-        // 6. Push overlapping agents apart (crowd-moved ones only).
-        let ids: Vec<u64> = self.agents.keys().copied().collect();
-        let mut push: BTreeMap<u64, Vec3> = BTreeMap::new();
-        for (i, ia) in ids.iter().enumerate() {
-            let a = &self.agents[ia];
-            if a.poly.is_none() {
+        // 6. Push overlapping agents apart (crowd-moved ones only), each pair once, from the
+        // positions after moving.
+        for (snap, a) in sc.snap.iter_mut().zip(self.agents.values()) {
+            snap.pos = a.pos;
+        }
+        sc.grid.clear();
+        sc.grid.extend(sc.snap.iter().enumerate().filter(|(_, a)| a.on_mesh).map(|(i, a)| (cell(a.pos), i as u32)));
+        sc.grid.sort_unstable();
+        sc.push.clear();
+        sc.push.resize(sc.snap.len(), Vec3::ZERO);
+        for i in 0..sc.snap.len() {
+            let a = sc.snap[i];
+            if !a.on_mesh {
                 continue;
             }
-            for ib in &ids[i + 1..] {
-                let b = &self.agents[ib];
-                if b.poly.is_none() {
-                    continue;
+            let (cz, cx) = cell(a.pos);
+            for gz in cz - 1..=cz + 1 {
+                let lo = sc.grid.partition_point(|(c, _)| *c < (gz, cx - 1));
+                let hi = sc.grid.partition_point(|(c, _)| *c <= (gz, cx + 1));
+                for k in lo..hi {
+                    let j = sc.grid[k].1 as usize;
+                    if j <= i {
+                        continue;
+                    }
+                    let b = sc.snap[j];
+                    let r = a.radius + b.radius;
+                    let (dx, dz) = (a.pos.x - b.pos.x, a.pos.z - b.pos.z);
+                    if dx.abs() >= r || dz.abs() >= r {
+                        continue;
+                    }
+                    let d = (dx * dx + dz * dz).sqrt();
+                    if d >= r {
+                        continue;
+                    }
+                    let (nx, nz) = if d > 1.0e-5 { (dx / d, dz / d) } else { (1.0, 0.0) };
+                    let overlap = (r - d) * 0.5;
+                    sc.push[i] = sc.push[i] + Vec3::new(nx * overlap, 0.0, nz * overlap);
+                    sc.push[j] = sc.push[j] - Vec3::new(nx * overlap, 0.0, nz * overlap);
                 }
-                let r = a.params.radius + b.params.radius;
-                let (dx, dz) = (a.pos.x - b.pos.x, a.pos.z - b.pos.z);
-                if dx.abs() >= r || dz.abs() >= r {
-                    continue;
-                }
-                let d = (dx * dx + dz * dz).sqrt();
-                if d >= r {
-                    continue;
-                }
-                let (nx, nz) = if d > 1.0e-5 { (dx / d, dz / d) } else { (1.0, 0.0) };
-                let overlap = (r - d) * 0.5;
-                let pa = push.entry(*ia).or_insert(Vec3::ZERO);
-                *pa = *pa + Vec3::new(nx * overlap, 0.0, nz * overlap);
-                let pb = push.entry(*ib).or_insert(Vec3::ZERO);
-                *pb = *pb - Vec3::new(nx * overlap, 0.0, nz * overlap);
             }
         }
-        for (id, off) in push {
-            let a = self.agents.get_mut(&id).expect("listed");
-            if a.params.external {
+        for ((_, a), off) in self.agents.iter_mut().zip(sc.push.iter().copied()) {
+            if a.params.external || off == Vec3::ZERO {
                 continue;
             }
             if let Some(poly) = a.poly {
@@ -526,6 +569,7 @@ impl Crowd {
                 a.pos = p;
             }
         }
+        self.scratch = sc;
         stats
     }
 
@@ -534,16 +578,16 @@ impl Crowd {
         let vmax = a.params.speed.max(1.0e-3);
         let dl = (a.desired.x * a.desired.x + a.desired.z * a.desired.z).sqrt();
         let (fx, fz) = if dl > 1.0e-6 { (a.desired.x / dl, a.desired.z / dl) } else { (1.0, 0.0) };
-        let mut candidates: Vec<Vec3> = Vec::with_capacity(DIRECTIONS * SPEEDS.len() + 2);
-        candidates.push(a.desired);
-        for speed in SPEEDS {
-            for (c, sn) in self.table {
+        let mut candidates = [Vec3::ZERO; DIRECTIONS * SPEEDS.len() + 2];
+        candidates[0] = a.desired;
+        for (si, speed) in SPEEDS.iter().enumerate() {
+            for (k, (c, sn)) in self.table.iter().enumerate() {
                 // Rotate the table direction by the desired direction.
                 let (x, z) = (fx * c - fz * sn, fz * c + fx * sn);
-                candidates.push(Vec3::new(x * vmax * speed, 0.0, z * vmax * speed));
+                candidates[1 + si * DIRECTIONS + k] = Vec3::new(x * vmax * speed, 0.0, z * vmax * speed);
             }
         }
-        candidates.push(Vec3::ZERO);
+        // The last stays zero: standing still.
         let mut best = (f32::INFINITY, a.desired);
         for v in candidates {
             let mut tmin = s.horizon_s;
@@ -681,6 +725,27 @@ mod tests {
         assert!(closest > 0.45, "agents stay mostly apart (two radii = 0.6): closest {closest}");
         let arrived = c.agents().filter(|(_, a)| a.status == AgentStatus::Arrived).count();
         assert_eq!(arrived, 6, "{:?}", c.agents().map(|(_, a)| (a.status, a.pos)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_head_on_pair_passes_and_arrives() {
+        let m = NavMesh::new(room_config()).map(|mut m| {
+            build_all(&mut m, &scene([-10.0, -10.0, 10.0, 10.0], &[]));
+            m
+        });
+        let m = m.unwrap();
+        let mut c = Crowd::new(CrowdSettings::default());
+        c.upsert(1, AgentParams::default(), Vec3::new(-4.0, 0.0, 0.0)).unwrap();
+        c.upsert(2, AgentParams::default(), Vec3::new(4.0, 0.0, 0.0)).unwrap();
+        c.set_target(1, Some(Vec3::new(4.0, 0.0, 0.0)));
+        c.set_target(2, Some(Vec3::new(-4.0, 0.0, 0.0)));
+        let mut closest = f32::INFINITY;
+        for _ in 0..240 {
+            c.step(&m, 1.0 / 30.0);
+            closest = closest.min(horizontal_distance(c.agent(1).unwrap().pos, c.agent(2).unwrap().pos));
+        }
+        assert!(closest > 0.5, "they pass each other (closest {closest})");
+        assert!(c.agents().all(|(_, a)| a.status == AgentStatus::Arrived), "{:?}", c.agents().map(|(_, a)| (a.status, a.pos)).collect::<Vec<_>>());
     }
 
     #[test]

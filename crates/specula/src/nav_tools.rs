@@ -891,7 +891,7 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
     if paths {
         let mut agents = Vec::new();
         let mut corners_drawn = 0usize;
-        for (id, pos, corners, target, vel, radius) in nav.agent_paths(MAX_DRAWN_CORNERS) {
+        for nav::AgentPath { id, pos, corners, target, vel, radius } in nav.agent_paths(MAX_DRAWN_CORNERS) {
             let y = Vec3::new(0.0, 0.06, 0.0);
             for wnd in corners.windows(2) {
                 p.line(wnd[0] + y, wnd[1] + y, PATH, 2.5);

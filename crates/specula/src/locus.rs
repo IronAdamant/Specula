@@ -24,6 +24,8 @@ use std::collections::BTreeSet;
 const MAX_BOXES: usize = 8192;
 /// Instances listed with every relation (more list only the unsatisfied ones).
 const FULL_DETAIL: usize = 8;
+/// Bytes of placements an answer lists in detail; past them, placements are listed briefly.
+const MAX_ANSWER_BYTES: usize = 48 * 1024;
 
 /// A target as the agent named it.
 #[derive(Clone, Debug, PartialEq)]
@@ -444,13 +446,82 @@ fn mul(a: Vec3, b: Vec3) -> Vec3 {
     Vec3::new(a.x * b.x, a.y * b.y, a.z * b.z)
 }
 
+/// Drawn entities' boxes by grid cell (2 m), so a probe looks only at those near it; boxes too
+/// big for the grid are always checked.
+struct Boxes {
+    list: Vec<(u64, Box3)>,
+    cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    big: Vec<u32>,
+}
+
+const CELL: f32 = 2.0;
+/// Cells one box may occupy before it counts as big.
+const MAX_BOX_CELLS: i64 = 256;
+
+fn cell_range(lo: f32, hi: f32) -> (i64, i64) {
+    (specula_core::dmath::floor(lo / CELL) as i64, specula_core::dmath::floor(hi / CELL) as i64)
+}
+
+fn xz_bounds(b: &Box3) -> (f32, f32, f32, f32) {
+    let c = b.corners();
+    let (mut x0, mut z0, mut x1, mut z1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for (x, z) in c {
+        x0 = x0.min(x);
+        z0 = z0.min(z);
+        x1 = x1.max(x);
+        z1 = z1.max(z);
+    }
+    (x0, z0, x1, z1)
+}
+
+impl Boxes {
+    fn new(list: Vec<(u64, Box3)>) -> Boxes {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<u32>> = std::collections::HashMap::new();
+        let mut big = Vec::new();
+        for (i, (_, b)) in list.iter().enumerate() {
+            let (x0, z0, x1, z1) = xz_bounds(b);
+            let ((cx0, cx1), (cz0, cz1)) = (cell_range(x0, x1), cell_range(z0, z1));
+            if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > MAX_BOX_CELLS || !(x0.is_finite() && x1.is_finite() && z0.is_finite() && z1.is_finite()) {
+                big.push(i as u32);
+                continue;
+            }
+            for cz in cz0..=cz1 {
+                for cx in cx0..=cx1 {
+                    cells.entry((cx as i32, cz as i32)).or_default().push(i as u32);
+                }
+            }
+        }
+        Boxes { list, cells, big }
+    }
+
+    /// Indices of the boxes that may meet the X/Z rectangle, sorted, without repeats.
+    fn near(&self, x0: f32, z0: f32, x1: f32, z1: f32) -> Vec<u32> {
+        let ((cx0, cx1), (cz0, cz1)) = (cell_range(x0, x1), cell_range(z0, z1));
+        let mut out = self.big.clone();
+        if (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > MAX_BOX_CELLS * 4 {
+            out.extend(0..self.list.len() as u32);
+        } else {
+            for cz in cz0..=cz1 {
+                for cx in cx0..=cx1 {
+                    if let Some(v) = self.cells.get(&(cx as i32, cz as i32)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// Answers the solver's probes from the world.
 struct WorldProbe<'a> {
     physics: &'a Physics,
     nav: &'a Nav,
     mesh: Option<u64>,
     exclude: BTreeSet<u64>,
-    boxes: Vec<(u64, Box3)>,
+    boxes: Boxes,
 }
 
 impl Probe for WorldProbe<'_> {
@@ -461,7 +532,8 @@ impl Probe for WorldProbe<'_> {
         if let Some(h) = hits.iter().find(|h| !self.exclude.contains(&h.key) && only.is_none_or(|o| o == h.key)) {
             best = Some((h.point.y, h.key));
         }
-        for (id, b) in &self.boxes {
+        for i in self.boxes.near(x, z, x, z) {
+            let (id, b) = &self.boxes.list[i as usize];
             if self.exclude.contains(id) || only.is_some_and(|o| o != *id) {
                 continue;
             }
@@ -479,7 +551,9 @@ impl Probe for WorldProbe<'_> {
         let shape = specula_physics::Shape::cuboid(Vec3::new(b.half.x.max(1.0e-4), b.half.y.max(1.0e-4), b.half.z.max(1.0e-4)));
         let (keys, _) = self.physics.space.overlap(&shape, &pose, &specula_physics::Filter::default(), 64);
         let mut first = keys.into_iter().filter(|k| !self.exclude.contains(k)).min();
-        for (id, o) in &self.boxes {
+        let (x0, z0, x1, z1) = xz_bounds(b);
+        for i in self.boxes.near(x0, z0, x1, z1) {
+            let (id, o) = &self.boxes.list[i as usize];
             if !self.exclude.contains(id) && first.is_none_or(|f| *id < f) && o.overlaps(b) {
                 first = Some(*id);
             }
@@ -557,6 +631,23 @@ fn placement_json(world: &World, p: &Placement, rels: &[(RelSpec, bool)], full: 
 }
 
 impl crate::Engine {
+    /// The placements as JSON, in detail up to [`MAX_ANSWER_BYTES`], then briefly (position,
+    /// yaw, satisfied and how many relations failed).
+    fn placements_json(&self, list: &[Placement], rels: &[(RelSpec, bool)], full: bool) -> Json {
+        let mut out = Vec::with_capacity(list.len());
+        let mut bytes = 0;
+        for p in list {
+            let mut j = placement_json(&self.world, p, rels, full);
+            bytes += j.to_string().len();
+            if bytes > MAX_ANSWER_BYTES {
+                let failed = p.relations.iter().filter(|r| !r.satisfied).count();
+                j.set("relations", Json::obj([("unsatisfied", Json::from(failed)), ("listed", Json::from(false))]));
+            }
+            out.push(j);
+        }
+        Json::Arr(out)
+    }
+
     fn resolve_spot(&self, s: &Spot) -> Result<(Vec3, Option<u64>), WorldError> {
         match s {
             Spot::Point(p) => Ok((*p, None)),
@@ -793,14 +884,14 @@ impl crate::Engine {
             collide: call.collide,
             seed: call.seed,
         };
-        let mut probe = WorldProbe { physics: &self.physics, nav: &self.nav, mesh, exclude, boxes };
+        let mut probe = WorldProbe { physics: &self.physics, nav: &self.nav, mesh, exclude, boxes: Boxes::new(boxes) };
         let solution = solve(&req, &mut probe);
         let all_ok = solution.placements.iter().all(|p| p.satisfied);
         let full = solution.placements.len() <= FULL_DETAIL;
         let mut out = Json::obj([
             ("satisfied", Json::from(all_ok)),
             ("footprint", Json::obj([("min", r3(lo)), ("max", r3(hi)), ("from", Json::from(footprint_from))])),
-            ("placements", Json::arr(solution.placements.iter().map(|p| placement_json(&self.world, p, &call.relations, full)))),
+            ("placements", self.placements_json(&solution.placements, &call.relations, full)),
             ("candidates", Json::from(solution.placements.iter().map(|p| p.candidates).sum::<usize>())),
             ("ms", Json::from((started.elapsed().as_secs_f64() * 1.0e5).round() / 100.0)),
         ]);

@@ -149,11 +149,14 @@ const NAV_TOL: f32 = 0.05;
 /// Settling looks for ground from this far above the generator's base (a step, metres).
 const SETTLE_STEP: f32 = 0.5;
 
+/// A segment's ends and, for an `against` face, the yaw that turns the object's back to it.
+type Segment = (Vec3, Vec3, Option<f32>);
+
 /// Where candidates come from.
 #[derive(Clone, Debug)]
 enum Gen {
     /// Segments with an optional yaw each (an `against` face) and the base height.
-    Segments(Vec<(Vec3, Vec3, Option<f32>)>),
+    Segments(Vec<Segment>),
     /// An area (X/Z of the box) and the base height.
     Area(Box3, f32),
     /// Around a point (base height in its y).
@@ -221,7 +224,7 @@ impl Request {
         }
         for r in rels {
             if let Rel::Against { target, side, gap } = &r.rel {
-                let mut list: Vec<(f32, usize, (Vec3, Vec3, Option<f32>))> = Vec::new();
+                let mut list: Vec<(f32, usize, Segment)> = Vec::new();
                 for (i, (n, d, along)) in faces(target).into_iter().enumerate() {
                     if let Some(s) = side {
                         // The face looking most toward the side, only.
@@ -439,6 +442,55 @@ pub fn solve(req: &Request, probe: &mut dyn Probe) -> Solution {
     Solution { placements: placed, hints }
 }
 
+/// Small preferences: an even share along a segment, the middle of a gap, close to the start.
+fn preference(req: &Request, c: &Cand, k: usize, count: usize) -> f32 {
+    if c.len > 0.0 && count > 1 {
+        let want = c.len * (k as f32 + 0.5) / count as f32;
+        (c.s - want).abs() * 0.01
+    } else if c.len > 0.0 {
+        (c.s - c.len * 0.5).abs() * 0.001
+    } else {
+        let (dx, dz) = (c.x - req.start.x, c.z - req.start.z);
+        (dx * dx + dz * dz).sqrt() * 0.001
+    }
+}
+
+/// How far off a relation is from the footprint's X/Z alone (a lower bound of its full
+/// measure); `None` for relations that need probes or height.
+fn xz_off(rel: &Rel, fp: &Box3, c: &Cand, placed: &[Placement], facing_yaw: Option<f32>, yaw: f32) -> Option<f32> {
+    Some(match rel {
+        Rel::On { target: Some((b, _)) } => b.overhang(fp),
+        Rel::On { target: None } | Rel::OnNavmesh { .. } => return None,
+        Rel::Against { target, gap, .. } => (target.distance_xz(fp) - gap).abs(),
+        Rel::Along { a, b, offset } => {
+            let (dx, dz) = (b.x - a.x, b.z - a.z);
+            let len = (dx * dx + dz * dz).sqrt().max(1.0e-6);
+            let (lx, lz) = (dz / len * offset, -dx / len * offset);
+            segment_distance((c.x, c.z), (a.x + lx, a.z + lz), (b.x + lx, b.z + lz))
+        }
+        Rel::Between { a, b, t: Some(t) } => {
+            let p = *a + (*b - *a) * *t;
+            ((p.x - c.x) * (p.x - c.x) + (p.z - c.z) * (p.z - c.z)).sqrt()
+        }
+        Rel::Between { a, b, t: None } => segment_distance((c.x, c.z), (a.x, a.z), (b.x, b.z)),
+        Rel::Near { target, min, max } => {
+            let d = target.distance_xz(fp);
+            (d - max).max(0.0) + (min - d).max(0.0)
+        }
+        Rel::Inside { region, .. } => region.overhang(fp),
+        Rel::Facing { .. } => facing_yaw.map_or(0.0, |f| yaw_difference(f, yaw)),
+        Rel::Spacing { min, among, .. } => {
+            let nearest = placed.iter().map(|p| p.footprint.distance_xz(fp)).fold(f32::INFINITY, f32::min);
+            let mut off = if nearest.is_finite() { (min - nearest).max(0.0) } else { 0.0 };
+            for b in among {
+                off += (min - b.distance_xz(fp)).max(0.0);
+            }
+            off
+        }
+        Rel::Avoid { boxes, distance } => boxes.iter().map(|b| (distance - b.distance_xz(fp)).max(0.0)).fold(0.0, f32::max),
+    })
+}
+
 /// Scores one candidate; `None` when it can't beat `bound` (probes skipped).
 #[allow(clippy::too_many_arguments)]
 fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize, placed: &[Placement], probe: &mut dyn Probe, bound: f32) -> Option<Scored> {
@@ -470,6 +522,19 @@ fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize,
                 }
             }
         }
+    }
+    // A lower bound first, from what doesn't depend on height: a candidate that can't beat the
+    // best so far skips its probes (ground rays, navmesh, collisions).
+    let fp_xz = Box3::footprint(req.lo, req.hi, Vec3::new(c.x, c.base - req.lo.y, c.z), yaw);
+    let mut lower = preference(req, c, k, count);
+    for r in rels {
+        if let Some(off) = xz_off(&r.rel, &fp_xz, c, placed, facing_yaw, yaw) {
+            let (tol, w) = if r.rel.is_angle() { (TOL_DEG, DEG_WEIGHT) } else { (TOL_M, 1.0) };
+            lower += (off - tol).max(0.0) * w * if r.soft { 1.0 } else { HARD };
+        }
+    }
+    if lower >= bound {
+        return None;
     }
     // Height: rest on the target (on) or on what is below (settle), else the generator's base.
     let on_target = rels.iter().find_map(|r| match &r.rel {
@@ -663,16 +728,7 @@ fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize,
         score += excess * w * if r.soft { 1.0 } else { HARD };
         reports.push(RelReport { index: i, rel: r.rel.name(), satisfied: off <= tol, off, why });
     }
-    // Small preferences: an even share along a segment, the middle of an area or gap, close.
-    if c.len > 0.0 && count > 1 {
-        let want = c.len * (k as f32 + 0.5) / count as f32;
-        score += (c.s - want).abs() * 0.01;
-    } else if c.len > 0.0 {
-        score += (c.s - c.len * 0.5).abs() * 0.001;
-    } else {
-        let (dx, dz) = (c.x - req.start.x, c.z - req.start.z);
-        score += (dx * dx + dz * dz).sqrt() * 0.001;
-    }
+    score += preference(req, c, k, count);
     let _ = nav_point;
     if score >= bound {
         return None;

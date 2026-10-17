@@ -392,7 +392,7 @@ impl Parser<'_> {
             "wait" | "wait_s" => {
                 self.keys(v, path, &[ty, "label"]);
                 let time = match (ty, body.as_f64()) {
-                    ("wait", Some(t)) if t >= 1.0 && t <= 1.0e6 && t == dmath::floor_f64(t) => Time::Ticks(t as u32),
+                    ("wait", Some(t)) if (1.0..=1.0e6).contains(&t) && t == dmath::floor_f64(t) => Time::Ticks(t as u32),
                     ("wait_s", Some(s)) if s > 0.0 && s <= 1.0e5 => Time::Seconds(s as f32),
                     _ => {
                         let m = if ty == "wait" { "'wait' is a number of ticks (an integer 1..1000000); use 'wait_s' for seconds" } else { "'wait_s' is seconds, 0..100000" };

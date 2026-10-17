@@ -119,8 +119,8 @@ fn split(p: &Poly, a: usize, at: f32) -> (Poly, Poly) {
         return (below, above);
     }
     let mut d = [0.0f32; 12];
-    for i in 0..p.n {
-        d[i] = axis(p.v[i], a) - at;
+    for (di, v) in d.iter_mut().zip(&p.v[..p.n]) {
+        *di = axis(*v, a) - at;
     }
     let mut j = p.n - 1;
     for i in 0..p.n {

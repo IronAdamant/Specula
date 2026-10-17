@@ -498,14 +498,14 @@ impl Mind {
         out
     }
 
-    /// Hash of the running state and blackboard.
-    pub fn hash(&self, h: &mut specula_core::hash::StableHasher) {
+    /// Adds the running state and blackboard to a hash.
+    pub fn hash_into(&self, h: &mut specula_core::hash::StableHasher) {
         h.write_u64(self.states.len() as u64);
         for s in &self.states {
             h.write_bool(s.running);
             h.write_u64(s.cursor as u64);
             h.write_u32(s.count);
-            h.write_u64(s.last_success.map_or(u64::MAX, |t| t));
+            h.write_u64(s.last_success.unwrap_or(u64::MAX));
             h.write_u64(s.chosen.map_or(u64::MAX, |c| c as u64));
             for d in &s.done {
                 h.write_u8(d.map_or(9, |s| s as u8));
@@ -674,7 +674,7 @@ mod tests {
             for t in 0..200u64 {
                 w.sees = (t / 17) % 2 == 1;
                 m.tick(&mut w, t);
-                m.hash(&mut h);
+                m.hash_into(&mut h);
             }
             (h.finish(), w.log)
         };
