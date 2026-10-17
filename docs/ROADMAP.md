@@ -531,10 +531,16 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-13:* Win32 keyboard/mouse/pointer + XInput (runtime-loaded); per-tick action recordings in `specula-input`.
 - [x] **Time**: `time_pause`, `time_step`, `time_resume`, and `time_scale` for fast-forward headless runs.
   *Done 2026-10-13:* `time_control` pause/resume/step/scale.
-- [ ] **Physics, stages P1–P3** ([design/PHYSICS.md](design/PHYSICS.md)):
+- [x] **Physics, stages P1–P3** ([design/PHYSICS.md](design/PHYSICS.md)):
   - P1: queries and triggers
   - P2: kinematic character controller
   - P3: rigid bodies with the Soft Step solver
+
+  *Done 2026-10-18:* `crates/specula-physics`; engine components, `physics_*` tools, a physics hash in `world_hash` and
+  the desync trace; `scripts/physics_check.py`. Still open: 1,000 awake mixed bodies take about 3.5 ms per tick in
+  the space (target 2 ms) plus about 1.3 ms of world write-back and hashing, so a world-side pose-and-body fast path
+  (and a journal change kind for it) is next; module characters still use the module host's `Kinematic` placeholder
+  until a `PhysicsMover` wires P2 in.
 - [ ] **Animation, stage A3** ([design/ANIMATION.md](design/ANIMATION.md)): state machines and blend trees as text
   data, events, root motion, two-bone IK (feet on the ground, hands on handles), look-at.
 - [ ] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
@@ -545,8 +551,10 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **Motion checks as data** *(research)*: foot sliding (foot speed while within ~2.5 cm of the ground), ground
   penetration, joint limits, pops at transitions, root drift. Reported in packets, with thresholds in `style.toml`, so
   a failure is an error.
-- [ ] ➕ **Physics checks as data** *(research)*: playtest assertions on contacts, tunnelling, rest states and energy;
+- [x] ➕ **Physics checks as data** *(research)*: playtest assertions on contacts, tunnelling, rest states and energy;
   colliders and contacts visible in captures.
+  *Done 2026-10-18:* `physics_check` (rest, contacts, penetration, tunnelling, energy gainers, positions), automatic
+  checks in `physics_info` and `perf_frame`, `colliders` and `contacts` sight overlays.
 - [ ] ➕ **Balance lab** *(research)*:
   - designer targets as data (win rate per wave, gold curve, time to kill);
   - headless sweeps across parallel engines;
@@ -573,7 +581,8 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **Save games** (moved earlier from M6): with determinism, a save is a serialisation of simulation state.
 - [ ] ➕ **Async streaming with per-frame budgets, plus HLOD**: no synchronous loads on the simulation thread.
   *Why:* traversal stutter is Unreal's other well-known problem (survey §3).
-- [ ] ➕ **2D physics variant** if the game is 2D.
+- [x] ➕ **2D physics variant** if the game is 2D.
+  *Done 2026-10-18:* `world_env {physics: {plane_2d: true}}` locks bodies to the XY plane. Tile-map colliders later.
 
 **Exit proof:**
 - [x] An agent writes a module that adds a playable character.

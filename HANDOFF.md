@@ -21,8 +21,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   playtest swarms and tool ergonomics, streaming and HLOD, then the M3 exit proof and agent evals); wave 3 (M4: stage
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
-  **Merged so far (2026-10-18):** swarm communication and the module host. Lex, physics and animation are in
-  review rounds.
+  **Merged so far (2026-10-18):** swarm communication, the module host and physics P1-P3. Lex and animation
+  are in review rounds.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
@@ -130,6 +130,9 @@ In practice that means six **foundations** that apply to every change from M1 on
     `tilemap_set`).
   - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
     scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
+  - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
+    `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
+    `world_env {physics}` (gravity, substeps, sleep, 2D mode).
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
@@ -144,12 +147,13 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Game-side crates:** `specula-anim` (clips, A1-A2), `specula-audio` (WASAPI, procedural 3D audio),
   `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
   modelling, tier 1), `specula-gltf`.
-- **Size:** about 129k lines of Rust in 13 crates (15 with `specula-sdk` and `specula-logic`) plus the Sepulcra game and app; about 1,100 tests. **Zero
+- **Size:** about 129k lines of Rust in 13 crates (16 with `specula-sdk`, `specula-logic` and `specula-physics`) plus the Sepulcra game and app; about 1,100 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
-- **No physics** (P1-P4 are M3) and no gameplay-as-data (Lex) on main yet: Sepulcra's rules are hand-written Rust in
-  `games/sepulcra`. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
+- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. No gameplay-as-data
+  (Lex) on main yet: Sepulcra's rules are hand-written Rust in `games/sepulcra`. Module characters move with a
+  simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
   requests can't be preempted.
 - **Animation** stops at stage A2 (clips and state-driven playback); blending, IK and agent-authored motion are M3.
 - **No save games** for players (world files are an editor format), no title screen in the app, settings aren't

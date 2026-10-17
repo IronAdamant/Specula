@@ -26,6 +26,14 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `logic_reload`, `logic_unload`, `logic_status`, `logic_input`, `logic_hook`. Builds are vetted (path crates only;
   no build scripts, proc-macros, Cargo config or toolchain files) and run offline with `panic = "unwind"`. Example
   module `games/ambulo`; edit to reload about 1 s. Engine crates build at `opt-level = 2` in dev
+- **Physics P1-P3:** new crate `specula-physics` (std only): spheres, capsules, boxes, convex hulls, static meshes
+  and heightfields; a two-tree broadphase; GJK and SAT with per-pair feature memory; raycasts, shape casts, overlaps
+  and triggers; a character controller (steps, slopes, ground snap, moving platforms, pushing); Soft Step rigid
+  bodies with sleeping islands, a tunnelling guard and a 2D mode. Engine: collider and body components simulated on
+  the fixed tick and journaled, `world_env {physics}`, tools `physics_raycast`, `physics_cast`, `physics_overlap`,
+  `physics_contacts`, `physics_events`, `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`, sight
+  overlays `colliders` and `contacts`, a physics hash in `world_hash` and the desync trace. Existing worlds keep
+  their files and hashes. `specula-model` gains `collider::fit_limited` (moving hulls are capped at 16 points)
 
 ### Pre-M3 cleanup (2026-10-17)
 
