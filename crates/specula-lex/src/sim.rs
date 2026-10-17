@@ -217,9 +217,14 @@ pub struct RtDiag {
 
 impl RtDiag {
     fn note(&mut self, tick: u32, code: &'static str, msg: &str) {
+        self.note_with(tick, code, || msg.to_owned());
+    }
+
+    /// Counts the problem; formats its message only while messages are still kept.
+    fn note_with(&mut self, tick: u32, code: &'static str, msg: impl FnOnce() -> String) {
         *self.counts.entry(code).or_insert(0) += 1;
         if self.first.len() < MAX_DIAG_MESSAGES {
-            self.first.push(format!("tick {tick}: [{code}] {msg}"));
+            self.first.push(format!("tick {tick}: [{code}] {}", msg()));
         }
     }
 }
@@ -261,9 +266,11 @@ pub struct State {
     /// Since the last full check (outcomes that scan entities are due).
     dirty_full: bool,
     effect_seq: u32,
-    /// This tick: events past the cap, and entity checks done (see [`MAX_WORK_PER_TICK`]).
+    /// This tick: events past the cap, and entity checks done (see [`MAX_WORK_PER_TICK`]),
+    /// separately for commands and for the phases.
     dropped: u64,
     work: u64,
+    command_work: u64,
     /// The state budget in use (see [`MAX_STATE_CELLS`]).
     pub cells: u64,
     /// A wall-clock deadline cut a tick short: the state is no longer a deterministic result.
@@ -303,7 +310,7 @@ impl Sim {
                 Some(h) => bound.push(Some(Arc::clone(h))),
                 None => {
                     return Err(format!(
-                        "native hook '{}' (item '{}') is not provided by any module; register it, or replace the native with Lex building blocks",
+                        "native hook '{}' (item '{}') has no in-process implementation for this headless run (module hooks run in the engine's live tick, not in simulations): register a Natives entry, or replace the native with Lex building blocks",
                         n.hook, n.id
                     ))
                 }
@@ -333,6 +340,7 @@ impl Sim {
             effect_seq: 0,
             dropped: 0,
             work: 0,
+            command_work: 0,
             cells: 0,
             interrupted: false,
             dispatched: 0,
@@ -408,10 +416,11 @@ impl Sim {
         self.st.dispatched = 0;
         self.st.dropped = 0;
         self.st.work = 0;
+        self.st.command_work = 0;
     }
 
     fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: true };
         c.command(call)
     }
 
@@ -426,7 +435,7 @@ impl Sim {
                 refused.push((i, e));
             }
         }
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: false };
         c.tick();
         refused
     }
@@ -458,7 +467,7 @@ impl Sim {
     /// only touches the RNG streams, the diagnostics and the work counter, which are restored.
     pub fn query(&mut self, ex: &Ex) -> Result<Val, RtErr> {
         let (rngs, diag, work) = (self.st.rngs.clone(), self.st.diag.clone(), self.st.work);
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: false };
         let v = c.eval(ex, &Frame::default());
         (self.st.rngs, self.st.diag, self.st.work) = (rngs, diag, work);
         v
@@ -484,6 +493,9 @@ struct Core<'a> {
     depth: u32,
     /// A wall-clock limit, checked as work is spent; passing it interrupts the run.
     deadline: Option<std::time::Instant>,
+    /// Applying a command: work is charged to the commands' budget, so commands can never
+    /// starve the tick's phases (nor the phases the commands).
+    in_command: bool,
 }
 
 fn idx_of(st: &State, id: u32) -> Option<usize> {
@@ -580,14 +592,20 @@ impl Core<'_> {
     /// Adds `n` entity checks to this tick's work; true once the tick is over budget (the
     /// remaining behaviours of the tick are skipped, once noted).
     fn spend(&mut self, n: usize) -> bool {
-        let before = self.st.work;
-        self.st.work = self.st.work.saturating_add(n as u64);
-        if self.st.work > MAX_WORK_PER_TICK && before <= MAX_WORK_PER_TICK {
-            self.note("work_limit", "more than 5 million units of work in one tick (attacks or counts over many entities, many commands?); the rest of the tick's behaviours were skipped");
+        let counter = if self.in_command { &mut self.st.command_work } else { &mut self.st.work };
+        let before = *counter;
+        *counter = counter.saturating_add(n as u64);
+        let now = *counter;
+        if now > MAX_WORK_PER_TICK && before <= MAX_WORK_PER_TICK {
+            if self.in_command {
+                self.note("work_limit", "this tick's commands used more than 5 million units of work (many commands over a large state?); the rest were refused, and the tick's phases ran in full");
+            } else {
+                self.note("work_limit", "more than 5 million units of work in one tick (attacks or counts over many entities?); the rest of the tick's behaviours were skipped");
+            }
         }
         // The wall clock is read every 16k units of work, so a deadline interrupts within a tick.
         if let Some(d) = self.deadline {
-            if before >> 14 != self.st.work >> 14 && std::time::Instant::now() > d {
+            if before >> 14 != now >> 14 && std::time::Instant::now() > d {
                 self.st.interrupted = true;
             }
         }
@@ -595,7 +613,8 @@ impl Core<'_> {
     }
 
     fn over_budget(&self) -> bool {
-        self.st.work > MAX_WORK_PER_TICK || self.st.interrupted
+        let used = if self.in_command { self.st.command_work } else { self.st.work };
+        used > MAX_WORK_PER_TICK || self.st.interrupted
     }
 
     /// What checking `e` against a tag filter costs: each tag looks through the entity's effects.
@@ -606,6 +625,11 @@ impl Core<'_> {
     fn note(&mut self, code: &'static str, msg: &str) {
         let t = self.st.tick;
         self.st.diag.note(t, code, msg);
+    }
+
+    fn note_with(&mut self, code: &'static str, msg: impl FnOnce() -> String) {
+        let t = self.st.tick;
+        self.st.diag.note_with(t, code, msg);
     }
 
     fn emit(&mut self, kind: u16, subject: Option<u32>, other: Option<u32>, value: i64) {
@@ -1391,6 +1415,9 @@ impl Core<'_> {
 
     /// One payload hit on `target`.
     fn deliver(&mut self, def: &AttackDef, vals: &[(i64, i64)], target: u32, source: Option<u32>) {
+        if self.spend(1 + def.payload.len()) {
+            return;
+        }
         self.emit(ev::HIT, Some(target), source, 0);
         for (p, (v, d)) in def.payload.iter().zip(vals) {
             let res = match p {
@@ -1526,7 +1553,8 @@ impl Core<'_> {
                 }
             }
             if self.st.tick >= a.expires {
-                self.st.ents[i].effects.remove(k);
+                let gone = self.st.ents[i].effects.remove(k);
+                self.st.cells = self.st.cells.saturating_sub(effect_cells(gone.mods.len()));
                 self.emit(ev::EFFECT_EXPIRED, Some(id), a.source, i64::from(a.effect));
                 if let Err(e) = self.actions(&def.on_expire, &f) {
                     self.note(e.code, &e.message);
@@ -1672,7 +1700,13 @@ impl Core<'_> {
     fn cleanup(&mut self) {
         // Rules hear about this tick's deaths while the dead can still be read.
         self.dispatch();
-        let freed: u64 = self.st.ents.iter().filter(|e| !e.alive).map(|e| entity_cells(&e.base, &e.beh)).sum();
+        let freed: u64 = self
+            .st
+            .ents
+            .iter()
+            .filter(|e| !e.alive)
+            .map(|e| entity_cells(&e.base, &e.beh) + e.effects.iter().map(|a| effect_cells(a.mods.len())).sum::<u64>())
+            .sum();
         self.st.cells = self.st.cells.saturating_sub(freed);
         self.st.ents.retain(|e| e.alive);
         if self.st.outcome.is_some() {
@@ -1876,6 +1910,10 @@ impl Core<'_> {
             return Ok(());
         }
         let def = &self.r.effects[usize::from(effect)];
+        // Applying looks through the target's effects and evaluates each modifier.
+        if self.spend(1 + def.modifiers.len() + self.st.ents[i].effects.len() * (1 + def.block_tags.len())) {
+            return Ok(());
+        }
         if def.block_tags.iter().any(|t| has_tag(self.r, self.st, &self.st.ents[i], *t)) {
             return Ok(());
         }
@@ -1903,7 +1941,15 @@ impl Core<'_> {
             None => 0,
         };
         // Expired instances are gone for stacking purposes.
-        self.st.ents[i].effects.retain(|a| a.effect != effect || tick < a.expires);
+        let mut freed = 0;
+        self.st.ents[i].effects.retain(|a| {
+            let keep = a.effect != effect || tick < a.expires;
+            if !keep {
+                freed += effect_cells(a.mods.len());
+            }
+            keep
+        });
+        self.st.cells = self.st.cells.saturating_sub(freed);
         let existing = self.st.ents[i].effects.iter().position(|a| a.effect == effect);
         let applied = match (def.stacking, existing) {
             (Stacking::Strongest, Some(k)) => {
@@ -1936,7 +1982,8 @@ impl Core<'_> {
                 let count = self.st.ents[i].effects.iter().filter(|a| a.effect == effect).count();
                 if count >= usize::from(def.max_stacks) {
                     if let Some(oldest) = self.st.ents[i].effects.iter().position(|a| a.effect == effect) {
-                        self.st.ents[i].effects.remove(oldest);
+                        let gone = self.st.ents[i].effects.remove(oldest);
+                        self.st.cells = self.st.cells.saturating_sub(effect_cells(gone.mods.len()));
                     }
                 }
                 self.push_effect(i, effect, magnitude, expires, period, source, mods);
@@ -1960,10 +2007,18 @@ impl Core<'_> {
 
     #[allow(clippy::too_many_arguments)]
     fn push_effect(&mut self, i: usize, effect: u16, magnitude: i64, expires: u32, period: u32, source: Option<u32>, mods: Vec<i64>) {
+        self.spend(1);
         if self.st.ents[i].effects.len() >= MAX_EFFECTS_PER_ENTITY {
-            self.note("effect_limit", &format!("entity {} already carries {MAX_EFFECTS_PER_ENTITY} effects; '{}' was not applied", self.st.ents[i].id, self.r.effects[usize::from(effect)].id));
+            let (id, name) = (self.st.ents[i].id, &self.r.effects[usize::from(effect)].id);
+            self.st.diag.note_with(self.st.tick, "effect_limit", || format!("entity {id} already carries {MAX_EFFECTS_PER_ENTITY} effects; '{name}' was not applied"));
             return;
         }
+        let cells = effect_cells(mods.len());
+        if self.st.cells.saturating_add(cells) > MAX_STATE_CELLS {
+            self.note_with("state_limit", || "the run's state budget is spent; an effect was not applied".to_owned());
+            return;
+        }
+        self.st.cells += cells;
         let seq = self.st.effect_seq;
         self.st.effect_seq += 1;
         let tick = self.st.tick;
@@ -2231,10 +2286,11 @@ impl Core<'_> {
                 Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
             }
         }
-        // The rollback snapshot copies the state, so it costs that much work.
-        let cost = self.st.cells as usize + self.st.pending.len() + self.st.ents.len();
-        if self.spend(cost) {
-            return Err(Rejection::new("work_limit", "this tick's work budget is spent (many commands over a large state); send the rest next tick"));
+        // The rollback snapshot copies the state, so it costs that much, from the commands' own
+        // budget (the tick's phases keep theirs).
+        let cost = self.st.cells + self.st.pending.len() as u64 + self.st.ents.len() as u64;
+        if self.spend(cost as usize) {
+            return Err(Rejection::new("work_limit", "this tick's command budget is spent (many commands over a large state); send the rest next tick"));
         }
         let snapshot = self.st.clone();
         for (res, need) in costs {
@@ -2254,6 +2310,11 @@ impl Core<'_> {
 /// An entity's share of the state budget.
 fn entity_cells(base: &[i64], beh: &[BehState]) -> u64 {
     1 + base.len() as u64 + beh.len() as u64
+}
+
+/// An effect instance's share of the state budget (it is about as big as an entity's few cells).
+fn effect_cells(mods: usize) -> u64 {
+    4 + mods as u64
 }
 
 fn arch_health(r: &Rules, st: &State, e: &Entity) -> i64 {

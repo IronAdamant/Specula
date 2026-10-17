@@ -366,7 +366,7 @@ fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer,
         ops.push(Op::Delete(EntityKey::Path(format!("{sp}/{id}")), base_version(id)));
     }
     let apply = |wd: &mut World| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
-    match swarm.commit(world, tick, w, Kind::Batch, apply) {
+    match swarm.commit_lex(world, tick, w, Kind::Batch, apply) {
         Ok((_, seq)) => {
             let v = versions(world, &c.set).map(|v| v.items).unwrap_or_default();
             let touched: Vec<(String, Json)> = c.puts.iter().map(|(id, _, _)| (id.clone(), Json::from(v.get(id).map(|(_, ver)| *ver)))).collect();
@@ -1276,14 +1276,33 @@ fn simulate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
             return Ok(ToolOutput::text(report.to_string()));
         }
         runs.retain(|r| r.name != name);
-        // Quotas: per session, in all, and by state size; the oldest go first.
-        while runs.iter().filter(|r| r.session == session.id).count() >= MAX_RUNS_PER_SESSION {
-            let oldest = runs.iter().position(|r| r.session == session.id).expect("counted");
-            runs.remove(oldest);
-        }
+        // Quotas: per session, in all, and by state size (entities, attributes, behaviours and
+        // effect instances). Only the saver's own oldest runs make room; another agent's are
+        // never evicted.
         let cells = sim.state().cells;
-        while runs.len() >= MAX_RUNS || (!runs.is_empty() && runs.iter().map(|r| r.sim.state().cells).sum::<u64>() + cells > MAX_SAVED_CELLS) {
-            runs.pop_front();
+        let own_oldest = |runs: &VecDeque<SavedRun>| runs.iter().position(|r| r.session == session.id);
+        while runs.iter().filter(|r| r.session == session.id).count() >= MAX_RUNS_PER_SESSION {
+            let i = own_oldest(&runs).expect("counted");
+            runs.remove(i);
+        }
+        while runs.len() >= MAX_RUNS || runs.iter().map(|r| r.sim.state().cells).sum::<u64>() + cells > MAX_SAVED_CELLS {
+            match own_oldest(&runs) {
+                Some(i) => {
+                    runs.remove(i);
+                }
+                None => {
+                    report.set("save_error", Json::obj([
+                        ("code", Json::from("runs_full")),
+                        ("message", Json::from(format!("the saved runs are full ({} runs, {MAX_RUNS} at most, or {MAX_SAVED_CELLS} state cells in all) and none are yours to replace; nothing was saved", runs.len()))),
+                        ("suggestion", Json::from("ask their owners to lex_session delete, or keep the run's commands and replay them instead of saving")),
+                    ]));
+                    return Ok(ToolOutput::text(report.to_string()));
+                }
+            }
+        }
+        if cells > MAX_SAVED_CELLS {
+            report.set("save_error", Json::from(format!("the run's state ({cells} cells) is bigger than all saved runs may be ({MAX_SAVED_CELLS}); nothing was saved")));
+            return Ok(ToolOutput::text(report.to_string()));
         }
         runs.push_back(SavedRun { name: name.clone(), owner: session.client_name.clone(), session: session.id.clone(), set: set.clone().unwrap_or_default(), sim: Arc::new(sim) });
         report.set("saved_as", Json::from(name));
@@ -1470,7 +1489,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "lex_simulate".into(),
-            description: "Runs a rule set headless and deterministically (same rules, seed and commands: same report and hash) for up to 'ticks' ticks or until an outcome, from a fresh state or a saved run ('from'). 'commands' are player inputs at absolute ticks: [{\"tick\": 0, \"command\": \"place\", \"args\": {\"site\": \"a\", \"stone\": \"warding_1\"}}] (refusals are reported with their code). 'watch' samples expressions every 'sample_every' ticks (at most 200 samples); 'expect' checks assertions at the end (expect_passed). The report is bounded: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native hook calls and the state hash. 'params' overrides params (balance sweeps). save_as keeps the end state for lex_session and later 'from'. Runs on your own connection, so it never stalls other agents or the window.".into(),
+            description: "Runs a rule set headless and deterministically (same rules, seed and commands: same report and hash) for up to 'ticks' ticks or until an outcome, from a fresh state or a saved run ('from'). 'commands' are player inputs at absolute ticks: [{\"tick\": 0, \"command\": \"place\", \"args\": {\"site\": \"a\", \"stone\": \"warding_1\"}}] (refusals are reported with their code). 'watch' samples expressions every 'sample_every' ticks (at most 200 samples); 'expect' checks assertions at the end (expect_passed). The report is bounded: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native hook calls and the state hash. 'params' overrides params (balance sweeps). save_as keeps the end state for lex_session and later 'from'. Runs on your own connection, so it never stalls other agents or the window. A call has 20 s of wall time: one that runs out comes back complete: false, without a hash or outcome (run fewer ticks per call). Limits (state, work per tick, sizes): lex_schema {topic: limits}.".into(),
             input_schema: obj(
                 vec![
                     ("set", set()),
@@ -1483,7 +1502,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("watch", Json::obj([("type", Json::from("array")), ("items", Json::obj([("type", Json::from("string"))])), ("description", Json::from("Expressions to sample, e.g. \"res.dust\", \"count(enemy)\"."))])),
                     ("sample_every", t("integer", "Sample 'watch' every N ticks (0: only at the end).")),
                     ("from", t("string", "Continue a saved run (its rules must be unchanged).")),
-                    ("save_as", t("string", "Keep the end state under this name (16 runs are kept, oldest dropped).")),
+                    ("save_as", t("string", "Keep the end state under this name for lex_session and 'from': only a complete run; 4 per agent session (your oldest is replaced), 16 in all (refused with runs_full when none are yours to replace).")),
                 ],
                 &[],
             ),
@@ -1528,6 +1547,7 @@ pub fn definitions() -> Vec<ToolDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
     fn field_paths_set_and_remove() {
@@ -1737,6 +1757,66 @@ mod tests {
         sw.take_claim(&w, &session("aaaaaa11"), spec).unwrap();
         let patch = EditOp::Patch { id: "gold".into(), set: vec![("start".into(), Json::from(3))], remove: vec![], expect: None };
         assert!(go(&mut w, &mut sw, BOB, edit_of("rules", vec![patch])).0);
+    }
+
+    #[test]
+    fn lex_is_reserved_for_rule_data() {
+        let (mut w, mut sw) = setup();
+        go(&mut w, &mut sw, BOB, edit_of("x", vec![put("g", r#"{"kind": "resource", "start": 1}"#)]));
+        // Ann's statue sits inside her region claim.
+        let mut plaza = SpawnSpec::new(Shape::Group);
+        plaza.name = Some("plaza".into());
+        sw.commit(&mut w, 0, ANN, Kind::Spawn, |wd| wd.spawn(plaza, "ann").map(|e| e.id)).unwrap();
+        let mut statue = SpawnSpec::new(Shape::Cube);
+        statue.name = Some("statue".into());
+        statue.parent = Some(EntityKey::Path("/plaza".into()));
+        statue.position = specula_core::math::Vec3::new(2.0, 0.0, 2.0);
+        sw.commit(&mut w, 0, ANN, Kind::Spawn, |wd| wd.spawn(statue, "ann").map(|e| e.id)).unwrap();
+        let region = ClaimSpec { scope: Scope::region(specula_core::math::Vec3::new(-10.0, -1.0, -10.0), specula_core::math::Vec3::new(10.0, 5.0, 10.0)).unwrap(), lease: DEFAULT_LEASE, note: String::new() };
+        sw.take_claim(&w, &session("aaaaaa11"), region).unwrap();
+        let code = |r: Result<((), Option<u64>), WorldError>| r.err().map(|e| e.code);
+        // Bob can't hide the statue in /lex (reparenting it there), nor put anything there.
+        let reparent = UpdateSpec { parent: Some(Some(EntityKey::Path("/lex".into()))), ..Default::default() };
+        let r = sw.commit(&mut w, 0, BOB, Kind::Set, |wd| wd.update(&EntityKey::Path("/plaza/statue".into()), reparent, "bob").map(|_| ()));
+        assert!(matches!(code(r), Some("reserved") | Some("claimed")));
+        assert!(w.find_path("/plaza/statue").is_ok(), "the statue stayed");
+        let mut cube = SpawnSpec::new(Shape::Cube);
+        cube.name = Some("graffiti".into());
+        cube.parent = Some(EntityKey::Path("/lex".into()));
+        let r = sw.commit(&mut w, 0, BOB, Kind::Spawn, |wd| wd.spawn(cube, "bob").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        // Nor change or delete rule data with world tools.
+        let r = sw.commit(&mut w, 0, BOB, Kind::Delete, |wd| wd.delete(&EntityKey::Path("/lex/x/g".into()), None).map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        // The Lex tools still can, even inside Ann's region.
+        let (refused, out) = go(&mut w, &mut sw, BOB, edit_of("x", vec![EditOp::Delete { id: "g".into(), expect: None }]));
+        assert!(!refused, "{out}");
+    }
+
+    #[test]
+    fn saved_runs_never_evict_another_agents_run() {
+        let tools = Tools::new(mpsc::channel().0, Vec::new());
+        let doc = Json::parse(r#"{"lex": 1, "tick_hz": 10, "items": {"g": {"kind": "resource", "start": 1}}}"#).unwrap();
+        let save = |who: &SessionInfo, name: &str| {
+            let args = Json::obj([("document", doc.clone()), ("ticks", Json::from(1)), ("save_as", Json::from(name))]);
+            output_json(&simulate_tool(&tools, who, &args).unwrap())
+        };
+        let first = session("first111");
+        assert_eq!(save(&first, "keep").get("saved_as").and_then(Json::as_str), Some("keep"));
+        // Five other sessions fill every slot they can.
+        let mut refused = 0;
+        for k in 0..5 {
+            let s = session(&format!("other{k:03}"));
+            for r in 0..4 {
+                if save(&s, &format!("o{k}_{r}")).get("save_error").is_some() {
+                    refused += 1;
+                }
+            }
+        }
+        assert!(refused > 0, "past 16 runs, saves are refused");
+        let runs = tools.lex_runs.0.lock().unwrap();
+        assert!(runs.iter().any(|r| r.name == "keep"), "the first session's run survived");
+        assert!(runs.len() <= MAX_RUNS);
     }
 
     #[test]

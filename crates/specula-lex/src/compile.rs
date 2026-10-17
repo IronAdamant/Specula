@@ -162,6 +162,9 @@ struct Cx<'d> {
     events: Vec<EventDef>,
     /// Event name → index (custom names are many: a linear search per name was quadratic).
     event_idx: BTreeMap<String, u16>,
+    /// More custom events than [`MAX_NAMES`]: already one `too_many`, so the dropped names
+    /// aren't each reported again.
+    events_overflow: bool,
     machines: Vec<MachineDef>,
     natives: Vec<NativeDef>,
 }
@@ -183,6 +186,7 @@ impl<'d> Cx<'d> {
             arch_attrs: Vec::new(),
             events: Vec::new(),
             event_idx: BTreeMap::new(),
+            events_overflow: false,
             machines: Vec::new(),
             natives: Vec::new(),
         }
@@ -190,6 +194,20 @@ impl<'d> Cx<'d> {
 
     fn push(&self, d: Diagnostic) {
         self.diags.borrow_mut().push(d);
+    }
+
+    /// Once more diagnostics exist than a report shows, suggestions aren't worth computing.
+    fn full(&self) -> bool {
+        self.diags.borrow().len() >= MAX_DIAGNOSTICS
+    }
+
+    /// `did_you_mean`, until the diagnostics are [`Cx::full`].
+    fn dym<'a>(&self, key: &str, candidates: impl IntoIterator<Item = &'a str> + Clone) -> Option<String> {
+        if self.full() {
+            None
+        } else {
+            did_you_mean(key, candidates)
+        }
     }
 
     fn ids(&self, kind: &str) -> Vec<String> {
@@ -218,7 +236,14 @@ impl<'d> Cx<'d> {
             if size > MAX_ITEM_BYTES {
                 self.push(
                     v.err(codes::TOO_LARGE, format!("the item is {size} bytes; an item is at most {MAX_ITEM_BYTES} (it is stored as one world entity)"))
-                        .suggest("split it: several waves items join in id order (waves_01, waves_02, ...); move shared parts into an archetype that others extend"),
+                        .suggest(match item.get("kind").and_then(Json::as_str) {
+                            Some("waves") => "split it: several waves items join in id order (waves_01, waves_02, ...)",
+                            Some("archetype") => "move shared parts into a base archetype that this one extends, or split its behaviours over archetypes",
+                            Some("timer") | Some("rule") | Some("command") => "move long action lists into custom events: emit one, and handle it in rules",
+                            Some("sites") => "split the points over several sites items",
+                            Some("machine") => "split it into smaller machines, or move state actions into rules on custom events",
+                            _ => "split it into several smaller items",
+                        }),
                 );
             }
             if !matches!(item, Json::Obj(_)) {
@@ -237,7 +262,7 @@ impl<'d> Cx<'d> {
                         Diagnostic::error(codes::UNKNOWN_REF, id.as_str(), "kind", format!("'{k}' is not an item kind"))
                             .expected(kind_names.join(", "))
                             .got(k.as_str())
-                            .suggest_opt(did_you_mean(k, kind_names.iter().copied())),
+                            .suggest_opt(self.dym(k, kind_names.iter().copied())),
                     ),
                 },
                 Some(other) => self.push(Diagnostic::error(codes::WRONG_TYPE, id.as_str(), "kind", "kind must be a string").got(show(other))),
@@ -261,7 +286,7 @@ impl<'d> Cx<'d> {
             if !self.reg.params.contains_key(name) {
                 self.push(
                     Diagnostic::error(codes::UNKNOWN_REF, "", format!("params.{name}"), format!("there is no param '{name}' to override"))
-                        .suggest_opt(did_you_mean(name, self.reg.params.keys().map(String::as_str))),
+                        .suggest_opt(self.dym(name, self.reg.params.keys().map(String::as_str))),
                 );
             }
         }
@@ -408,6 +433,7 @@ impl<'d> Cx<'d> {
         if self.events.len() > MAX_NAMES {
             self.push(Diagnostic::error(codes::TOO_MANY, "", "", format!("{} distinct events; at most {MAX_NAMES}", self.events.len())));
             self.events.truncate(MAX_NAMES);
+            self.events_overflow = true;
         }
         self.event_idx = self.events.iter().enumerate().map(|(i, e)| (e.name.clone(), i as u16)).collect();
     }
@@ -556,7 +582,7 @@ impl<'d> Cx<'d> {
             Json::Obj(_) => {
                 for (k, _) in v.j.as_object().unwrap_or_default() {
                     if !["base", "unit", "notes"].contains(&k.as_str()) {
-                        self.push(v.sub(k, &Json::Null).err(codes::UNKNOWN_FIELD, format!("'{k}' is not an attribute field")).suggest_opt(did_you_mean(k, ["base", "unit"])));
+                        self.push(v.sub(k, &Json::Null).err(codes::UNKNOWN_FIELD, format!("'{k}' is not an attribute field")).suggest_opt(self.dym(k, ["base", "unit"])));
                     }
                 }
                 let unit = match v.key("unit") {
@@ -587,7 +613,7 @@ impl<'d> Cx<'d> {
                 self.push(
                     Diagnostic::error(codes::UNKNOWN_FIELD, v.item, p, format!("'{k}' is not a field of {}", spec.name))
                         .expected(names.iter().filter(|n| **n != "notes").copied().collect::<Vec<_>>().join(", "))
-                        .suggest_opt(did_you_mean(k, names.iter().copied())),
+                        .suggest_opt(self.dym(k, names.iter().copied())),
                 );
             }
         }
@@ -611,7 +637,7 @@ impl<'d> Cx<'d> {
                 self.push(
                     v.err(codes::UNKNOWN_REF, format!("{} is not a unit", show(v.j)))
                         .expected(names.join(", "))
-                        .suggest_opt(v.j.as_str().and_then(|s| did_you_mean(s, names.iter().copied()))),
+                        .suggest_opt(v.j.as_str().and_then(|s| self.dym(s, names.iter().copied()))),
                 );
                 None
             }
@@ -763,12 +789,17 @@ impl<'d> Cx<'d> {
     }
 
     fn unknown_or_wrong(&self, v: &V, id: &str, want: &str) {
+        if self.full() {
+            // Past what a report shows: no id lists to build.
+            self.push(v.err(codes::UNKNOWN_REF, format!("'{id}' is not {} {want}", article(want))));
+            return;
+        }
         match self.kinds.get(id) {
             Some(k) => self.push(
                 v.err(codes::WRONG_KIND, format!("'{id}' is {} {k}, but {} {want} is expected here", article(k), article(want)))
                     .expected(format!("{} {want} id", article(want)))
                     .got(format!("{id} ({k})"))
-                    .suggest_opt(did_you_mean(id, self.ids(want).iter().map(String::as_str)).or_else(|| Some(format!("{want}s: {}", self.ids(want).join(", "))))),
+                    .suggest_opt(self.dym(id, self.ids(want).iter().map(String::as_str)).or_else(|| Some(format!("{want}s: {}", self.ids(want).join(", "))))),
             ),
             None => {
                 let ids = self.ids(want);
@@ -776,7 +807,7 @@ impl<'d> Cx<'d> {
                     v.err(codes::UNKNOWN_REF, format!("there is no {want} '{id}'"))
                         .expected(format!("{} {want} id", article(want)))
                         .got(id)
-                        .suggest_opt(did_you_mean(id, ids.iter().map(String::as_str)).or_else(|| Some(format!("add an item \"{id}\": {{\"kind\": \"{want}\", ...}}")))),
+                        .suggest_opt(self.dym(id, ids.iter().map(String::as_str)).or_else(|| Some(format!("add an item \"{id}\": {{\"kind\": \"{want}\", ...}}")))),
                 )
             }
         }
@@ -856,7 +887,7 @@ impl<'d> Cx<'d> {
                 None => {
                     self.push(
                         v.warn(codes::UNKNOWN_REF, format!("no archetype or effect has the tag '{name}'"))
-                            .suggest_opt(did_you_mean(&name, self.reg.tags.keys().map(String::as_str)).or_else(|| Some("so this filter never matches".into()))),
+                            .suggest_opt(self.dym(&name, self.reg.tags.keys().map(String::as_str)).or_else(|| Some("so this filter never matches".into()))),
                     );
                     u16::MAX
                 }
@@ -885,11 +916,17 @@ impl<'d> Cx<'d> {
                 if !bound.contains(&n.hook) {
                     self.push(
                         Diagnostic::warning(codes::NATIVE_UNBOUND, n.id.as_str(), "hook", format!("no module provides the native hook '{}' yet, so runs that use it will fail", n.hook))
-                            .suggest(match did_you_mean(&n.hook, bound.iter().map(String::as_str)) {
+                            .suggest(match self.dym(&n.hook, bound.iter().map(String::as_str)) {
                                 Some(close) => format!("{close} (running hooks: {})", bound.iter().take(12).cloned().collect::<Vec<_>>().join(", ")),
                                 None if bound.is_empty() => "no module with hooks is running: build and load one (logic_build), or replace the native with Lex building blocks".into(),
                                 None => format!("running hooks: {}; or replace the native with Lex building blocks", bound.iter().take(12).cloned().collect::<Vec<_>>().join(", ")),
                             }),
+                    );
+                } else {
+                    // Bound in the engine, but headless runs can't call module hooks.
+                    self.push(
+                        Diagnostic::warning(codes::NATIVE_HEADLESS, n.id.as_str(), "hook", format!("module hook '{}' is running, but lex_simulate runs headless and can't call module hooks, so simulating this set is refused", n.hook))
+                            .suggest("test the hook with logic_hook; to simulate the set, replace the native with Lex building blocks (live Lex in the engine's tick will call module hooks)"),
                     );
                 }
             }
@@ -1037,7 +1074,7 @@ impl<'d> Cx<'d> {
             Some(iv) => match iv.j.as_str().and_then(|s| names.iter().position(|n| n == s)) {
                 Some(i) => i as u16,
                 None => {
-                    self.push(iv.err(codes::UNKNOWN_REF, format!("{} is not one of the states", show(iv.j))).suggest_opt(iv.j.as_str().and_then(|s| did_you_mean(s, names.iter().map(String::as_str)))));
+                    self.push(iv.err(codes::UNKNOWN_REF, format!("{} is not one of the states", show(iv.j))).suggest_opt(iv.j.as_str().and_then(|s| self.dym(s, names.iter().map(String::as_str)))));
                     0
                 }
             },
@@ -1083,7 +1120,7 @@ impl<'d> Cx<'d> {
                             Some(x) => match x.j.as_str().and_then(|n| names.iter().position(|m| m == n)) {
                                 Some(i) => i as u16,
                                 None => {
-                                    self.push(x.err(codes::UNKNOWN_REF, format!("{} is not a state of this machine", show(x.j))).suggest_opt(x.j.as_str().and_then(|n| did_you_mean(n, names.iter().map(String::as_str)))));
+                                    self.push(x.err(codes::UNKNOWN_REF, format!("{} is not a state of this machine", show(x.j))).suggest_opt(x.j.as_str().and_then(|n| self.dym(n, names.iter().map(String::as_str)))));
                                     continue;
                                 }
                             },
@@ -1124,10 +1161,11 @@ impl<'d> Cx<'d> {
         };
         match self.event_idx.get(name) {
             Some(i) => Some(*i),
+            None if self.events_overflow => None,
             None => {
                 self.push(
                     v.err(codes::UNKNOWN_REF, format!("no event '{name}' (built-in, or raised by some emit)"))
-                        .suggest_opt(did_you_mean(name, self.events.iter().map(|e| e.name.as_str())).or_else(|| Some(format!("raise it somewhere with {{\"emit\": \"{name}\"}}")))),
+                        .suggest_opt(self.dym(name, self.events.iter().map(|e| e.name.as_str())).or_else(|| Some(format!("raise it somewhere with {{\"emit\": \"{name}\"}}")))),
                 );
                 None
             }
@@ -1176,7 +1214,7 @@ impl<'d> Cx<'d> {
                             v.key("machine")
                                 .unwrap_or(v.clone())
                                 .err(codes::UNKNOWN_REF, format!("machine '{}' state '{}' names behaviour '{n}', which this archetype doesn't have", m.id, s.name))
-                                .suggest_opt(did_you_mean(n, behaviours.iter().map(|b| b.name.as_str()))),
+                                .suggest_opt(self.dym(n, behaviours.iter().map(|b| b.name.as_str()))),
                         );
                     }
                 }
@@ -1217,7 +1255,7 @@ impl<'d> Cx<'d> {
         match self.reg.attrs.get(name) {
             Some((id, _)) if self.reg.arch_attrs[usize::from(a)].contains(id) => Some(*id),
             _ => {
-                self.push(v.err(codes::UNKNOWN_REF, format!("this archetype has no attribute '{name}'")).suggest_opt(did_you_mean(name, has).or_else(|| Some(format!("add \"{name}\" to attributes")))));
+                self.push(v.err(codes::UNKNOWN_REF, format!("this archetype has no attribute '{name}'")).suggest_opt(self.dym(name, has).or_else(|| Some(format!("add \"{name}\" to attributes")))));
                 None
             }
         }
@@ -1235,7 +1273,7 @@ impl<'d> Cx<'d> {
         match self.reg.attrs.get(name) {
             Some(x) => Some(*x),
             None => {
-                self.push(v.err(codes::UNKNOWN_REF, format!("no archetype has an attribute '{name}'")).suggest_opt(did_you_mean(name, self.reg.attrs.keys().map(String::as_str))));
+                self.push(v.err(codes::UNKNOWN_REF, format!("no archetype has an attribute '{name}'")).suggest_opt(self.dym(name, self.reg.attrs.keys().map(String::as_str))));
                 None
             }
         }
@@ -1245,7 +1283,7 @@ impl<'d> Cx<'d> {
         let types: Vec<&str> = schema::BEHAVIOURS.iter().map(|b| b.name).collect();
         let t = self.req(v, "type")?;
         let Some(spec) = t.j.as_str().and_then(schema::behaviour) else {
-            self.push(t.err(codes::UNKNOWN_REF, format!("{} is not a behaviour type", show(t.j))).expected(types.join(", ")).suggest_opt(t.j.as_str().and_then(|s| did_you_mean(s, types.iter().copied()))));
+            self.push(t.err(codes::UNKNOWN_REF, format!("{} is not a behaviour type", show(t.j))).expected(types.join(", ")).suggest_opt(t.j.as_str().and_then(|s| self.dym(s, types.iter().copied()))));
             return None;
         };
         if !self.fields(v, spec, &["type", "name"]) {
@@ -1369,7 +1407,7 @@ impl<'d> Cx<'d> {
                 Some("weakest") => Policy::Weakest,
                 _ => {
                     let names = ["first", "last", "closest", "strongest", "weakest"];
-                    self.push(p.err(codes::INVALID, format!("{} is not a targeting policy", show(p.j))).expected(names.join(", ")).suggest_opt(p.j.as_str().and_then(|s| did_you_mean(s, names))));
+                    self.push(p.err(codes::INVALID, format!("{} is not a targeting policy", show(p.j))).expected(names.join(", ")).suggest_opt(p.j.as_str().and_then(|s| self.dym(s, names))));
                     Policy::First
                 }
             },
@@ -1547,14 +1585,14 @@ impl<'d> Cx<'d> {
                 Some("ignore") => Stacking::Ignore,
                 _ => {
                     let names = ["strongest", "refresh", "stack", "independent", "ignore"];
-                    self.push(s.err(codes::INVALID, format!("{} is not a stacking policy", show(s.j))).expected(names.join(", ")).suggest_opt(s.j.as_str().and_then(|x| did_you_mean(x, names))));
+                    self.push(s.err(codes::INVALID, format!("{} is not a stacking policy", show(s.j))).expected(names.join(", ")).suggest_opt(s.j.as_str().and_then(|x| self.dym(x, names))));
                     Stacking::Strongest
                 }
             },
         };
         let max_stacks = v.key("max_stacks").and_then(|m| self.const_num(&m, Unit::Int)).unwrap_or(1);
         if !(1..=crate::sim::MAX_EFFECTS_PER_ENTITY as i64).contains(&max_stacks) {
-            self.push(v.key("max_stacks").unwrap_or(v.clone()).err(codes::OUT_OF_RANGE, "max_stacks must be from 1 to 1000"));
+            self.push(v.key("max_stacks").unwrap_or(v.clone()).err(codes::OUT_OF_RANGE, "max_stacks must be from 1 to 8 (an entity carries at most 8 effect instances)"));
         }
         EffectDef {
             id: v.item.to_owned(),
@@ -1669,7 +1707,7 @@ impl<'d> Cx<'d> {
                                     Some(s) => {
                                         let mut all: Vec<String> = self.ids("path");
                                         all.extend(self.reg.sites.keys().cloned());
-                                        self.push(nv.err(codes::UNKNOWN_REF, format!("'{s}' is neither a path nor a site")).suggest_opt(did_you_mean(s, all.iter().map(String::as_str))));
+                                        self.push(nv.err(codes::UNKNOWN_REF, format!("'{s}' is neither a path nor a site")).suggest_opt(self.dym(s, all.iter().map(String::as_str))));
                                     }
                                     None => self.push(nv.err(codes::WRONG_TYPE, "a spawn point is a path id or a site name").got(show(n))),
                                 }
@@ -1750,7 +1788,7 @@ impl<'d> Cx<'d> {
                             _ => {
                                 let mut names = vec!["site", "archetype", "entity"];
                                 names.extend(Unit::ALL.iter().map(|u| u.name()));
-                                self.push(tv.err(codes::INVALID, format!("{} is not an argument type", show(t))).expected(names.join(", ")).suggest_opt(tname.and_then(|s| did_you_mean(s, names.iter().copied()))));
+                                self.push(tv.err(codes::INVALID, format!("{} is not an argument type", show(t))).expected(names.join(", ")).suggest_opt(tname.and_then(|s| self.dym(s, names.iter().copied()))));
                                 continue;
                             }
                         };
@@ -1784,7 +1822,7 @@ impl<'d> Cx<'d> {
                             cost.push((*r, e));
                         }
                     }
-                    None => self.push(xv.err(codes::UNKNOWN_REF, format!("there is no resource '{res}'")).suggest_opt(did_you_mean(res, self.reg.resources.keys().map(String::as_str)))),
+                    None => self.push(xv.err(codes::UNKNOWN_REF, format!("there is no resource '{res}'")).suggest_opt(self.dym(res, self.reg.resources.keys().map(String::as_str)))),
                 }
             }
         }
@@ -1861,7 +1899,7 @@ impl<'d> Cx<'d> {
             [one] => *one,
             [] => {
                 let keys: Vec<&str> = v.j.as_object().unwrap_or_default().iter().map(|(k, _)| k.as_str()).collect();
-                let hint = keys.first().and_then(|k| did_you_mean(k, verbs.iter().copied()));
+                let hint = keys.first().and_then(|k| self.dym(k, verbs.iter().copied()));
                 self.push(v.err(codes::INVALID, "an action needs one verb").expected(verbs.join(", ")).got(show(v.j)).suggest_opt(hint));
                 return None;
             }
@@ -1946,7 +1984,7 @@ impl<'d> Cx<'d> {
                             all.extend(self.reg.sites.keys().cloned());
                             let mut e = e;
                             if e.code == codes::UNKNOWN_REF {
-                                e.suggestion = did_you_mean(s, all.iter().map(String::as_str).chain(["self", "target", "other"])).or(e.suggestion);
+                                e.suggestion = self.dym(s, all.iter().map(String::as_str).chain(["self", "target", "other"])).or(e.suggestion);
                             }
                             self.expr_err(&atv, s, e);
                             return None;
@@ -2052,7 +2090,7 @@ impl<'d> Cx<'d> {
                     .map(|(k, _)| k.clone())
                     .collect();
                 let Some(state) = gv.j.as_str().and_then(|s| mdef_states.iter().position(|x| x == s)) else {
-                    self.push(gv.err(codes::UNKNOWN_REF, format!("{} is not a state of machine '{}'", show(gv.j), self.ids("machine")[usize::from(m)])).suggest_opt(gv.j.as_str().and_then(|s| did_you_mean(s, mdef_states.iter().map(String::as_str)))));
+                    self.push(gv.err(codes::UNKNOWN_REF, format!("{} is not a state of machine '{}'", show(gv.j), self.ids("machine")[usize::from(m)])).suggest_opt(gv.j.as_str().and_then(|s| self.dym(s, mdef_states.iter().map(String::as_str)))));
                     return None;
                 };
                 let who = self.who(key("who"), v, act)?;

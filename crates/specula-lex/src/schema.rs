@@ -372,8 +372,8 @@ pub fn to_json(topic: Option<&str>) -> Result<Json, String> {
         None | Some("index") => Json::obj([
             ("format", Json::from("{\"lex\": 1, \"name\": ..., \"tick_hz\": 30, \"items\": {\"<id>\": {\"kind\": ..., ...}}}; ids [a-z][a-z0-9_]*")),
             ("kinds", Json::arr(KINDS.iter().map(|k| Json::obj([("name", Json::from(k.name)), ("doc", Json::from(k.doc))])))),
-            ("topics", Json::arr(["kinds", "behaviours", "actions", "payloads", "expressions", "events", "units", "tick"].map(Json::from))),
-            ("hint", Json::from("lex_schema {topic} gives each topic's fields; lex_validate checks a set and says what to change")),
+            ("topics", Json::arr(["kinds", "behaviours", "actions", "payloads", "expressions", "events", "units", "tick", "limits"].map(Json::from))),
+            ("hint", Json::from("lex_schema {topic} gives each topic's fields (limits: every cap); lex_validate checks a set and says what to change")),
         ]),
         Some("kinds") => list(KINDS),
         Some("behaviours") => list(BEHAVIOURS),
@@ -394,12 +394,43 @@ pub fn to_json(topic: Option<&str>) -> Result<Json, String> {
         Some("tick") => Json::from(
             "1 commands (in order, each atomic) 2 waves due 3 spawns due 4 timers (by id) 5 spawners 6 movement 7 attacks 8 projectiles 9 effects, lifetimes, machines 10 cleanup (remove the dead, clear waves). Entities by id within each phase; entities created during a phase join from the next. Events reach rules after each phase. Outcomes are checked after every change; the first true one ends the run on the spot.",
         ),
+        Some("limits") => limits(),
         Some(other) => {
             return Err(format!(
-                "no schema topic '{other}' (topics: index, kinds, behaviours, actions, payloads, expressions, events, units, tick)"
+                "no schema topic '{other}' (topics: index, kinds, behaviours, actions, payloads, expressions, events, units, tick, limits)"
             ))
         }
     })
+}
+
+/// Every cap a rule set or a run meets, with what happens past it.
+fn limits() -> Json {
+    use crate::compile as c;
+    use crate::sim as r;
+    let row = |what: &str, value: String, past: &str| Json::obj([("limit", Json::from(what)), ("value", Json::from(value)), ("past_it", Json::from(past))]);
+    Json::arr([
+        row("items per set", c::MAX_ITEMS.to_string(), "compile error too_many"),
+        row("item size (compact JSON, bytes)", c::MAX_ITEM_BYTES.to_string(), "compile error too_large (split the item)"),
+        row("attributes per archetype", c::MAX_ATTRS_PER_ARCHETYPE.to_string(), "compile error too_many"),
+        row("behaviours per archetype", c::MAX_BEHAVIOURS.to_string(), "compile error too_many"),
+        row("modifiers per effect", c::MAX_MODIFIERS.to_string(), "compile error too_many"),
+        row("payload entries per attack", c::MAX_PAYLOAD.to_string(), "compile error too_many"),
+        row("tags per filter, grant_tags, block_tags, blocked_by", c::MAX_FILTER_TAGS.to_string(), "compile error too_many"),
+        row("max_stacks, and effect instances per entity", r::MAX_EFFECTS_PER_ENTITY.to_string(), "compile error / effect skipped (effect_limit)"),
+        row("waves", c::MAX_WAVES.to_string(), "compile error too_many"),
+        row("spawns one wave schedules", c::MAX_WAVE_SPAWNS.to_string(), "compile error too_many"),
+        row("spawns waiting in the wave queue", r::MAX_PENDING_SPAWNS.to_string(), "the wave starts without its groups (spawn_limit)"),
+        row("sites, tags, attributes, events, random streams", c::MAX_NAMES.to_string(), "compile error too_many"),
+        row("expression length / nesting", format!("{} chars / {}", crate::expr::MAX_EXPR_CHARS, crate::expr::MAX_EXPR_DEPTH), "compile error too_many"),
+        row("coordinates (mm)", c::MAX_COORD_MM.to_string(), "compile error out_of_range"),
+        row("live entities", r::MAX_ENTITIES.to_string(), "the spawn fails (entity_limit)"),
+        row("spawns per action", r::MAX_SPAWN_COUNT.to_string(), "clamped"),
+        row("run state (cells: entity + attributes + behaviours, effect instances)", r::MAX_STATE_CELLS.to_string(), "the spawn or effect fails (state_limit)"),
+        row("nested action lists", r::MAX_ACTION_DEPTH.to_string(), "that list stops (recursion_limit)"),
+        row("work per tick for the phases, and separately for commands", r::MAX_WORK_PER_TICK.to_string(), "the rest of the tick's behaviours / commands are skipped / refused (work_limit)"),
+        row("events kept and dispatched per tick", r::MAX_EVENTS_PER_TICK.to_string(), "counted only (event_overflow)"),
+        row("diagnostics per validation", c::MAX_DIAGNOSTICS.to_string(), "the rest are counted (too_many)"),
+    ])
 }
 
 pub fn kind(name: &str) -> Option<&'static Spec> {
@@ -424,7 +455,7 @@ mod tests {
 
     #[test]
     fn every_topic_renders() {
-        for t in ["index", "kinds", "behaviours", "actions", "payloads", "expressions", "events", "units", "tick"] {
+        for t in ["index", "kinds", "behaviours", "actions", "payloads", "expressions", "events", "units", "tick", "limits"] {
             assert!(to_json(Some(t)).is_ok(), "{t}");
         }
         assert!(to_json(Some("nope")).unwrap_err().contains("topics:"));

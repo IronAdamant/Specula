@@ -150,7 +150,8 @@ fn natives_need_a_reason_and_a_provider() {
     let d = doc(r#""h": {"kind": "native", "hook": "game.route", "reason": "graph search"}"#);
     let ds = validate(&d, &Options { natives: Some(vec![]), ..Default::default() });
     assert_eq!(one(&ds, "native_unbound").severity, specula_lex::Severity::Warning);
-    assert!(validate(&d, &Options { natives: Some(vec!["game.route".into()]), ..Default::default() }).is_empty());
+    let bound = validate(&d, &Options { natives: Some(vec!["game.route".into()]), ..Default::default() });
+    assert!(!bound.iter().any(|x| x.code == "native_unbound") && bound.iter().all(|x| x.code == "native_headless"), "{bound:?}");
 }
 
 #[test]
@@ -260,6 +261,34 @@ fn sizes_that_cost_memory_or_time_are_refused() {
     let emits: Vec<String> = (0..61_000).map(|i| format!(r#"{{"emit": "e{i}"}}"#)).collect();
     let ds = diags(&format!(r#""t": {{"kind": "timer", "do": [{}]}}"#, emits.join(",")));
     assert!(ds.iter().any(|d| d.code == "too_many" && d.message.contains("events")));
+}
+
+#[test]
+fn past_the_event_cap_one_error_and_no_suggestion_storm() {
+    // 80,000 emits split over small timers: one too_many, not one unknown_ref per dropped name.
+    let mut items = Vec::new();
+    for k in 0..200 {
+        let emits: Vec<String> = (0..400).map(|i| format!(r#"{{"emit": "e{}"}}"#, k * 400 + i)).collect();
+        items.push(format!(r#""t{k:03}": {{"kind": "timer", "do": [{}]}}"#, emits.join(",")));
+    }
+    let ds = diags(&items.join(","));
+    assert_eq!(ds.iter().filter(|d| d.code == "too_many" && d.message.contains("events")).count(), 1, "{:?}", ds.iter().take(3).map(|d| d.to_string()).collect::<Vec<_>>());
+    assert!(!ds.iter().any(|d| d.code == "unknown_ref" && d.message.contains("no event")), "no per-emit errors for names the cap dropped");
+}
+
+#[test]
+fn module_hooks_say_that_headless_runs_cant_call_them() {
+    let d = doc(r#""h": {"kind": "native", "hook": "ambulo/launch", "reason": "physics launch"}"#);
+    let ds = validate(&d, &Options { natives: Some(vec!["ambulo/launch".into()]), ..Default::default() });
+    let w = one(&ds, "native_headless");
+    assert!(w.message.contains("can't call module hooks"), "{w}");
+}
+
+#[test]
+fn too_large_suggestions_fit_the_item() {
+    let emits: Vec<String> = (0..1200).map(|i| format!(r#"{{"emit": "e{i}"}}"#)).collect();
+    let ds = diags(&format!(r#""t": {{"kind": "timer", "do": [{}]}}"#, emits.join(",")));
+    assert!(one(&ds, "too_large").suggestion.as_deref().unwrap().contains("custom events"));
 }
 
 #[test]

@@ -360,7 +360,7 @@ fn native_hooks_are_declared_bound_and_counted() {
     );
     let r = rules(&items);
     let err = Sim::new(r.clone(), 1, &Natives::new()).unwrap_err();
-    assert!(err.contains("test.regen") && err.contains("not provided"), "{err}");
+    assert!(err.contains("test.regen") && err.contains("no in-process implementation"), "{err}");
     let mut natives = Natives::new();
     natives.insert("test.regen".into(), Arc::new(Heal) as Arc<dyn NativeHook>);
     let mut s = Sim::new(r, 1, &natives).unwrap();
@@ -491,6 +491,32 @@ fn commands_share_the_tick_budget() {
     let refused = s.step(&vec![nop; 2000]);
     assert!(!refused.is_empty() && refused.iter().all(|(_, r)| r.code == "work_limit"), "{}", refused.len());
     assert_eq!(s.resource("gold").unwrap() as usize + refused.len(), 2000, "the rest were applied");
+}
+
+#[test]
+fn commands_have_their_own_budget_so_the_tick_still_runs() {
+    // A big state makes each command's rollback snapshot costly; refusing commands must never
+    // skip the tick's behaviours (the tower still fires).
+    let items = r#"
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0], "far": [1000, 0, 0]}},
+        "filler": {"kind": "archetype", "attributes": {"a0": 1, "a1": 1, "a2": 1, "a3": 1, "a4": 1, "a5": 1, "a6": 1, "a7": 1, "a8": 1}},
+        "dummy": {"kind": "archetype", "tags": ["enemy"], "attributes": {"hp": "100pt"}, "behaviours": [{"type": "health", "attribute": "hp"}]},
+        "tower": {"kind": "archetype", "behaviours": [{"type": "attack", "targets": ["enemy"], "range": "5m", "cooldown": "0.1s", "delivery": "instant", "payload": [{"damage": "1pt"}]}]},
+        "fill": {"kind": "command", "do": [{"spawn": "filler", "at": "far", "count": 10000}]},
+        "setup": {"kind": "command", "do": [{"spawn": "tower", "at": "a"}, {"spawn": "dummy", "at": "a"}]},
+        "nop": {"kind": "command", "do": []}
+    "#;
+    let mut s = sim(items, 1);
+    let fill = s.parse_command("fill", &Json::Null).unwrap();
+    for _ in 0..9 {
+        s.apply(&fill).unwrap();
+    }
+    s.apply(&s.parse_command("setup", &Json::Null).unwrap()).unwrap();
+    let dummy = s.entities().last().unwrap().id;
+    let nop = s.parse_command("nop", &Json::Null).unwrap();
+    let refused = s.step(&vec![nop; 40]);
+    assert!(!refused.is_empty(), "some commands are over the commands' budget");
+    assert_eq!(s.attr(dummy, "hp"), Some(99_000), "the tower still fired this tick");
 }
 
 #[test]
