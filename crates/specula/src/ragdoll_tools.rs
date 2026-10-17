@@ -14,7 +14,7 @@ use specula_protocol::{ToolDef, ToolOutput};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RagdollCall {
-    Set { entity: EntityKey, mode: Option<Mode>, strength: Option<f32>, mass: Option<f32>, relocate: Option<bool>, hit: Option<(String, Vec3)>, param: bool },
+    Set { entity: EntityKey, mode: Option<Mode>, strength: Option<f32>, mass: Option<f32>, relocate: Option<bool>, hit: Option<(String, Vec3)>, param: bool, fit: bool },
     Info { entity: EntityKey, checks: bool },
 }
 
@@ -28,7 +28,7 @@ impl RagdollCall {
 pub fn parse(name: &str, args: &Json) -> Option<Result<RagdollCall, String>> {
     let call = match name {
         "ragdoll_set" => (|| {
-            check_keys(args, name, &[&["id", "path", "name", "mode", "strength", "mass", "relocate", "hit", "param"]])?;
+            check_keys(args, name, &[&["id", "path", "name", "mode", "strength", "mass", "relocate", "hit", "param", "fit"]])?;
             let mode = match string_arg(args, "mode")? {
                 None => None,
                 Some(m) => Some(Mode::parse(m).ok_or_else(|| format!("'mode' must be limp, powered or off (got '{m}')"))?),
@@ -45,8 +45,9 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<RagdollCall, String>> {
                     Some((bone, impulse))
                 }
             };
-            if mode.is_none() && hit.is_none() && args.get("strength").is_none() && args.get("mass").is_none() && args.get("relocate").is_none() {
-                return Err("ragdoll_set needs 'mode' (limp, powered, off), a 'hit', or a setting to change".into());
+            let fit = bool_arg(args, "fit")?.unwrap_or(false);
+            if mode.is_none() && hit.is_none() && !fit && args.get("strength").is_none() && args.get("mass").is_none() && args.get("relocate").is_none() {
+                return Err("ragdoll_set needs 'mode' (limp, powered, off), a 'hit', 'fit', or a setting to change".into());
             }
             Ok(RagdollCall::Set {
                 entity: entity_key(args, name)?,
@@ -56,6 +57,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<RagdollCall, String>> {
                 relocate: bool_arg(args, "relocate")?,
                 hit,
                 param: bool_arg(args, "param")?.unwrap_or(true),
+                fit,
             })
         })(),
         "ragdoll_info" => (|| {
@@ -85,6 +87,13 @@ pub fn definitions() -> Vec<ToolDef> {
         ("relocate", t("boolean", "Off: move the entity under the pelvis first, so the next animation starts there (default true)")),
         ("hit", Json::obj([("type", Json::from("object")), ("description", Json::from("{bone, impulse [x,y,z] N·s world}: knock a bone (a bone without a body passes it to its parent's)"))])),
         ("param", t("boolean", "Also set the anim graph's 'ragdoll' bool parameter (if it has one): true when limp, false otherwise (default true)")),
+        (
+            "fit",
+            t(
+                "boolean",
+                "Measure capsule radii from the built mesh (how far each bone's vertices lie from it) and store them in props.ragdoll.radii, so the body lies on its surface, not its bones; copy them into the graph's ragdoll.radius to share them",
+            ),
+        ),
     ]);
     let mut info = id();
     info.push(("checks", t("boolean", "Run the motion checks on the recorded poses (default true)")));
@@ -130,7 +139,7 @@ fn rv3(v: Vec3) -> Json {
 impl crate::Engine {
     pub(crate) fn ragdoll_call(&mut self, call: RagdollCall, w: Writer, tick: u64) -> ToolOutput {
         match call {
-            RagdollCall::Set { entity, mode, strength, mass, relocate, hit, param } => {
+            RagdollCall::Set { entity, mode, strength, mass, relocate, hit, param, fit } => {
                 let id = match self.world.resolve(&entity) {
                     Ok(id) => id,
                     Err(e) => return world_error(&e),
@@ -143,7 +152,19 @@ impl crate::Engine {
                     return world_error(&WorldError::new("no_rig", "its model has no rig (or its recipe or anims file doesn't load): nothing to build a ragdoll from").with("id", id));
                 };
                 let old = e.props.get(PROP).and_then(|j| Spec::from_json(j).ok());
-                let mut spec = old.clone().unwrap_or(Spec { mode: Mode::Off, strength: 1.0, mass: None, relocate: true, hit: None });
+                let mut spec = old.clone().unwrap_or(Spec { mode: Mode::Off, strength: 1.0, mass: None, relocate: true, hit: None, radii: Vec::new() });
+                if fit {
+                    let recipe = e.model.as_ref().map(|m| m.recipe.clone()).unwrap_or_default();
+                    let built = {
+                        let lib = self.library.lock();
+                        lib.handle_for_source(&recipe).and_then(|h| lib.built(h).cloned())
+                    };
+                    let Some(mesh) = built.as_ref().and_then(|b| b.model.lods.first()).filter(|m| m.is_skinned()) else {
+                        return world_error(&WorldError::new("model_building", format!("{recipe}'s skinned mesh isn't built yet: model_build it, then fit")).with("field", "fit"));
+                    };
+                    spec.radii = ragdoll::fit_radii(&set, mesh).into_iter().map(|(b, r)| (set.skeleton.names[b].clone(), r)).collect();
+                    spec.radii.sort_by(|a, b| a.0.cmp(&b.0));
+                }
                 if let Some(m) = mode {
                     spec.mode = m;
                 }
@@ -274,8 +295,17 @@ impl crate::Engine {
                 .map(|g| g.limits.clone())
                 .unwrap_or_else(|| specula_anim::checks::limits_of(&live.set));
             let stem = e.model.as_ref().map(|m| crate::anim_tools::stem_of(&m.recipe)).unwrap_or_default();
-            let report = specula_anim::checks::check_frames(&live.set, &format!("{stem}/ragdoll"), &live.frames, live.frame_dt, &limits, &rules, None);
-            out.set("checks", report.to_json(16));
+            // The skinned mesh (when its build is in) measures penetration and rest by the
+            // surface, not the bones: a body lying down rests on its flesh.
+            let built = e.model.as_ref().and_then(|m| {
+                let lib = self.library.lock();
+                lib.handle_for_source(&m.recipe).and_then(|h| lib.built(h).cloned())
+            });
+            let mesh = built.as_ref().and_then(|b| b.model.lods.first()).filter(|m| m.is_skinned());
+            let report = specula_anim::checks::check_frames(&live.set, &format!("{stem}/ragdoll"), &live.frames, live.frame_dt, &limits, &rules, mesh);
+            let mut checks = report.to_json(16);
+            checks.set("measured_by", Json::from(if mesh.is_some() { "skinned mesh" } else { "bones (the mesh isn't built yet)" }));
+            out.set("checks", checks);
         }
         out
     }

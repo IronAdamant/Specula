@@ -613,7 +613,8 @@ pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &
         let fa = pa.mul(&j.desc.frame_a);
         let fb = pb.mul(&j.desc.frame_b);
         let s = j.state;
-        let (color, slot) = if !s.active {
+        // A sleeping joint holds as it did when it fell asleep: drawn by that.
+        let (color, slot) = if !s.active && s.inactive != Some("asleep") {
             (IDLE, 3)
         } else if s.limit_excess > 0.035 || s.linear_error > 0.05 {
             (PAST, 2)
@@ -673,7 +674,7 @@ pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &
                 ("holding", Json::from(ov::hex(OK))),
                 ("strained (gap > 1 cm or 2 deg)", Json::from(ov::hex(STRAINED))),
                 ("past a limit or apart (> 2 deg past, > 5 cm gap)", Json::from(ov::hex(PAST))),
-                ("inactive", Json::from(ov::hex(IDLE))),
+                ("inactive (a body missing, or none dynamic)", Json::from(ov::hex(IDLE))),
                 ("axis", Json::from(ov::hex(AXIS))),
             ]),
         ),

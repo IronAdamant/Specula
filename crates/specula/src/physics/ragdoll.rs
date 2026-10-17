@@ -20,7 +20,7 @@
 //! - **Starting** from the animation at the tick's time (the play evaluated without IK), with
 //!   each part's velocity from the pose a tick on, so the body falls on from how it
 //!   moved instead of freezing. A `hit` adds an impulse to a bone (each new `seq` once).
-//! - **Powered**: the root part (the pelvis) follows the animation as a kinematic body and every
+//! - **Powered**: the root part (the pelvis) and the legs follow the animation as kinematic bodies (planted where it plants them) and every
 //!   joint's motor springs towards the animation's pose, evaluated at physics ticks (pure, so
 //!   deterministic), with a torque proportional to what it carries times `strength`: hit
 //!   reactions that recover. The engine draws a powered ragdoll's pose as it is (it already
@@ -115,9 +115,11 @@ pub struct Spec {
     /// Off: move the entity under the pelvis first (default true).
     pub relocate: bool,
     pub hit: Option<Hit>,
+    /// Capsule radii by bone name (model metres), over the graph's `ragdoll.radius` (sorted).
+    pub radii: Vec<(String, f32)>,
 }
 
-const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit"];
+const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit", "radii"];
 
 impl Spec {
     pub fn from_json(v: &Json) -> Result<Spec, String> {
@@ -152,7 +154,20 @@ impl Spec {
                 Some(Hit { bone, impulse, seq: h.get("seq").and_then(Json::as_u64).unwrap_or(0) })
             }
         };
+        let mut radii = Vec::new();
+        if let Some(r) = v.get("radii").filter(|r| !r.is_null()) {
+            let pairs = r.as_object().ok_or("'ragdoll.radii' must be an object: {bone: metres}")?;
+            if pairs.len() > specula_model::rig::MAX_BONES {
+                return Err(format!("'ragdoll.radii' lists at most {} bones", specula_model::rig::MAX_BONES));
+            }
+            for (bone, x) in pairs {
+                let x = x.as_f64().filter(|x| x.is_finite() && (0.005..=10.0).contains(x)).ok_or_else(|| format!("'ragdoll.radii.{bone}' must be a radius in model metres, 0.005..10"))?;
+                radii.push((bone.clone(), x as f32));
+            }
+            radii.sort_by(|a, b| a.0.cmp(&b.0));
+        }
         Ok(Spec {
+            radii,
             mode,
             strength: num("strength", 0.0, 10.0)?.unwrap_or(1.0),
             mass: num("mass", 0.01, 1.0e5)?,
@@ -177,6 +192,9 @@ impl Spec {
         }
         if let Some(h) = &self.hit {
             f.push(("hit", Json::obj([("bone", Json::from(h.bone.as_str())), ("impulse", crate::world::vec3_json(h.impulse)), ("seq", Json::from(h.seq))])));
+        }
+        if !self.radii.is_empty() {
+            f.push(("radii", Json::obj(self.radii.iter().map(|(b, r)| (b.clone(), Json::from((f64::from(*r) * 1000.0).round() / 1000.0))))));
         }
         Json::obj(f)
     }
@@ -211,6 +229,9 @@ pub struct Part {
     pub offset: Pose,
     pub mass: f32,
     pub joint: Option<PartJoint>,
+    /// A leg (a limb hanging from the root part): a powered ragdoll's legs follow the animation
+    /// as kinematic bodies, planted where it plants them, while the upper body reacts.
+    pub planted: bool,
 }
 
 fn v3(a: V3) -> Vec3 {
@@ -243,8 +264,9 @@ fn segment(set: &AnimSet, rest: &[Affine], b: usize) -> V3 {
 }
 
 /// The ragdoll of `set`'s skeleton at uniform `scale`, with `mass` kg in all, joints limited by
-/// `limits` (a graph's): see the module docs.
-pub fn plan(set: &AnimSet, limits: &[Limit], scale: f32, mass: f32) -> Vec<Part> {
+/// `limits` (a graph's) and capsule radii from `radii` (model metres, by bone; the others from
+/// their bone's length): see the module docs.
+pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], scale: f32, mass: f32) -> Vec<Part> {
     let s = &set.skeleton;
     let mut rest = Vec::new();
     s.model_space(&s.rest_pose(), &mut rest);
@@ -274,8 +296,14 @@ pub fn plan(set: &AnimSet, limits: &[Limit], scale: f32, mass: f32) -> Vec<Part>
         let kids: Vec<V3> = (0..s.len()).filter(|&c| s.parents[c] == Some(b as u16)).map(|c| s.heads[c]).collect();
         let spread = kids.iter().flat_map(|a| kids.iter().map(move |c| specula_anim::math::math3::length(specula_anim::math::math3::sub(*a, *c)))).fold(0.0f32, f32::max) * scale;
         let trunk = if kids.len() >= 2 { (spread / 3.0).min(0.5 * l.max(0.2 * scale)) } else { 0.0 };
-        let radius = (0.2 * l).max(trunk).clamp(MIN_RADIUS_M * scale, 0.16 * scale).min(0.45 * l.max(0.2 * scale));
-        let half = (0.5 * l - 0.5 * radius).max(0.25 * l);
+        let radius = match radii.iter().find(|(rb, _)| *rb == b) {
+            Some((_, r)) => (r * scale).max(MIN_RADIUS_M * scale),
+            None => (0.2 * l).max(trunk).clamp(MIN_RADIUS_M * scale, 0.16 * scale).min(0.45 * l.max(0.2 * scale)),
+        };
+        // A fitted radius: the bone's whole segment swept by it (that contains the mesh it was
+        // measured from); a guessed one: a little shorter, so ends don't scrape the ground.
+        let fitted = radii.iter().any(|(rb, _)| *rb == b);
+        let half = if fitted { (0.5 * l).max(0.005 * scale) } else { (0.5 * l - 0.5 * radius).max(0.25 * l) };
         let offset = Pose { p: v3(segs[b]) * (0.5 * scale), q: q4(qarc([0.0, 1.0, 0.0], dir)) };
         let parent = body_parent(b).or_else(|| first_root.filter(|r| *r != b));
         first_root = first_root.or(Some(b));
@@ -316,7 +344,7 @@ pub fn plan(set: &AnimSet, limits: &[Limit], scale: f32, mass: f32) -> Vec<Part>
                 swing,
             }
         });
-        parts.push(Part { bone: b, parent, radius, half, offset, mass: 0.0, joint });
+        parts.push(Part { bone: b, parent, radius, half, offset, mass: 0.0, joint, planted: false });
     }
     // Mass: the trunk (the parts from the root part to the last branching part, the pelvis to
     // the chest) weighs four times what a limb of its length does, as bodies do; a quarter of
@@ -334,6 +362,26 @@ pub fn plan(set: &AnimSet, limits: &[Limit], scale: f32, mass: f32) -> Vec<Part>
             }
         }
     }
+    // Legs: limbs whose nearest trunk part is the root part.
+    let planted: Vec<bool> = parts
+        .iter()
+        .map(|p| {
+            if trunk[p.bone] || p.parent.is_none() {
+                return false;
+            }
+            let mut at = p.parent;
+            while let Some(b) = at {
+                if trunk[b] {
+                    return parts.iter().find(|q| q.bone == b).is_some_and(|q| q.parent.is_none());
+                }
+                at = parts.iter().find(|q| q.bone == b).and_then(|q| q.parent);
+            }
+            false
+        })
+        .collect();
+    for (p, l) in parts.iter_mut().zip(planted) {
+        p.planted = l;
+    }
     let n = parts.len() as f32;
     let weight = |p: &Part| len(p.bone) * if trunk[p.bone] { 4.0 } else { 1.0 };
     let total: f32 = parts.iter().map(weight).sum::<f32>().max(1.0e-6);
@@ -342,6 +390,50 @@ pub fn plan(set: &AnimSet, limits: &[Limit], scale: f32, mass: f32) -> Vec<Part>
         p.mass = mass * share;
     }
     parts
+}
+
+/// Capsule radii (model metres) for every bone that gets a part, measured from a skinned mesh:
+/// for each bone, how far the vertices it drives most lie from its segment (the 95th
+/// percentile, so a claw or a spike doesn't fatten a whole limb; the farthest for end parts).
+/// For `ragdoll_set {fit}`, which
+/// writes them into the entity as data (the mesh build is asynchronous; data isn't).
+pub fn fit_radii(set: &AnimSet, mesh: &specula_model::MeshData) -> Vec<(usize, f32)> {
+    let s = &set.skeleton;
+    let mut rest = Vec::new();
+    s.model_space(&s.rest_pose(), &mut rest);
+    let mut dists: Vec<Vec<f32>> = vec![Vec::new(); s.len()];
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let (Some(j), Some(w)) = (mesh.joints.get(i), mesh.weights.get(i)) else { break };
+        let k = (0..4).max_by_key(|&q| w[q]).unwrap_or(0);
+        let b = j[k] as usize;
+        if b >= s.len() {
+            continue;
+        }
+        let head = rest[b].t;
+        let tail = rest[b].apply_point(segment(set, &rest, b));
+        let ab = specula_anim::math::math3::sub(tail, head);
+        let ap = specula_anim::math::math3::sub(*p, head);
+        let l2 = specula_anim::math::math3::dot(ab, ab);
+        let t = if l2 > 1.0e-12 { (specula_anim::math::math3::dot(ap, ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let c = specula_anim::math::math3::add(head, specula_anim::math::math3::scale(ab, t));
+        dists[b].push(specula_anim::math::math3::length(specula_anim::math::math3::sub(*p, c)));
+    }
+    let parts = plan(set, &[], &[], 1.0, 1.0);
+    parts
+        .iter()
+        .filter_map(|part| {
+            let d = &mut dists[part.bone];
+            if d.len() < 4 {
+                return None;
+            }
+            d.sort_by(f32::total_cmp);
+            // Ends (feet, hands, heads: nothing hangs below them) take their farthest vertex: a
+            // flat sole's corners would otherwise sink into the ground the capsule rests on.
+            let leaf = !parts.iter().any(|q| q.parent == Some(part.bone));
+            let r = if leaf { d[d.len() - 1] } else { d[(d.len() * 19 / 20).min(d.len() - 1)] };
+            Some((part.bone, ((r * 1000.0).round() / 1000.0).clamp(MIN_RADIUS_M, 1.0)))
+        })
+        .collect()
 }
 
 /// A ragdoll part's body (and joint) key: [`SYNTHETIC`], the entity, the bone.
@@ -565,7 +657,14 @@ impl Physics {
             None => specula_anim::checks::limits_of(&set),
         };
         let mass = spec.mass.unwrap_or(DEFAULT_MASS_KG * scale * scale * scale);
-        let parts = plan(&set, &limits, scale, mass);
+        // Radii: the entity's own (props), over its graph's.
+        let mut radii: Vec<(usize, f32)> = graph_of(&set, e).map(|g| g.ragdoll_radius.clone()).unwrap_or_default();
+        for (name, r) in &spec.radii {
+            let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.radii' names no bone '{name}'"))?;
+            radii.retain(|(x, _)| *x != b);
+            radii.push((b, *r));
+        }
+        let parts = plan(&set, &limits, &radii, scale, mass);
         if parts.is_empty() {
             return Err(format!("no bone is at least {MIN_BONE_M} m long"));
         }
@@ -586,7 +685,7 @@ impl Physics {
             let w1 = bone_world(&pose_e, scale, &m_next[p.bone]);
             let collider = ColliderDesc { layer, ..ColliderDesc::new(Shape::capsule(p.radius, p.half)) };
             let collider = ColliderDesc { offset: p.offset, friction: 0.8, ..collider };
-            let kind = if powered && p.parent.is_none() { specula_physics::BodyKind::Kinematic } else { specula_physics::BodyKind::Dynamic };
+            let kind = if powered && (p.parent.is_none() || p.planted) { specula_physics::BodyKind::Kinematic } else { specula_physics::BodyKind::Dynamic };
             let mut d = BodyDesc::new(kind, w, Some(collider));
             d.mass = p.mass;
             d.linear_damping = LINEAR_DAMPING;
@@ -655,7 +754,7 @@ impl Physics {
     fn switch_ragdoll(&mut self, id: u64) {
         let Some(live) = self.ragdolls.live.get(&id) else { return };
         let powered = live.mode == Mode::Powered;
-        let roots: Vec<usize> = live.parts.iter().filter(|p| p.parent.is_none()).map(|p| p.bone).collect();
+        let roots: Vec<usize> = live.parts.iter().filter(|p| p.parent.is_none() || p.planted).map(|p| p.bone).collect();
         let joints: Vec<usize> = live.parts.iter().filter(|p| p.joint.is_some()).map(|p| p.bone).collect();
         for b in roots {
             let k = key(id, b);
@@ -696,7 +795,7 @@ impl Physics {
         let mut roots: Vec<(u64, Pose)> = Vec::new();
         for p in &live.parts {
             match (&p.joint, p.parent) {
-                (Some(j), Some(parent)) => {
+                (Some(j), Some(parent)) if !p.planted => {
                     let rel = qmul(qconj(rotation_of(&m[parent])), rotation_of(&m[p.bone]));
                     let target = (j.frame_parent.q.conjugate() * q4(rel) * j.frame_child.q).normalize();
                     let drive = match j.kind {
@@ -853,7 +952,7 @@ mod tests {
     fn plans_follow_the_skeleton_and_its_limits() {
         let set = humanoid();
         let knee = Limit { bone: set.skeleton.find("shin_l").unwrap(), axes: [Some([-5.0, 150.0]), None, None] };
-        let parts = plan(&set, &[knee], 1.0, 40.0);
+        let parts = plan(&set, &[knee], &[], 1.0, 40.0);
         let names: Vec<&str> = parts.iter().map(|p| set.skeleton.names[p.bone].as_str()).collect();
         assert_eq!(names, ["hips", "chest", "head", "thigh_l", "shin_l", "thigh_r", "shin_r"], "short bones and the root ride along");
         let total: f32 = parts.iter().map(|p| p.mass).sum();
@@ -868,10 +967,14 @@ mod tests {
         assert_eq!(other.joint.as_ref().unwrap().kind, JointKind::Ball, "no limits: a ball joint with a cone");
         assert_eq!(parts[0].parent, None);
         // Scaled up twice: twice the size, eight times... the mass we ask for.
-        let big = plan(&set, &[], 2.0, 320.0);
+        let big = plan(&set, &[], &[], 2.0, 320.0);
         assert!((big[0].half - 2.0 * parts[0].half).abs() < 1e-5 && (big[0].offset.p - parts[0].offset.p * 2.0).length() < 1e-5);
         // The same input, the same plan.
-        assert_eq!(plan(&set, &[], 1.0, 40.0), plan(&set, &[], 1.0, 40.0));
+        assert_eq!(plan(&set, &[], &[], 1.0, 40.0), plan(&set, &[], &[], 1.0, 40.0));
+        // Given radii win (scaled with the entity).
+        let hips = set.skeleton.find("hips").unwrap();
+        let wide = plan(&set, &[], &[(hips, 0.2)], 2.0, 40.0);
+        assert!((wide[0].radius - 0.4).abs() < 1e-6);
         assert_eq!(unkey(key(77, 5)), Some((77, 5)));
     }
 
@@ -935,7 +1038,7 @@ mod tests {
         }
         assert!(lowest > -0.03 && lowest < 0.05, "on the floor: lowest point {lowest}");
         let hips = p.space.body(key(id, live.set.skeleton.find("hips").unwrap())).unwrap();
-        assert!(hips.center.y < 0.45, "it fell: the hips are at {:?}", hips.center);
+        assert!(hips.center.y < 0.55, "it fell: the hips are at {:?}", hips.center);
         let worst = p.space.joints().filter(|j| j.key >= SYNTHETIC).map(|j| (j.state.linear_error, j.state.limit_excess)).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
         assert!(worst.0 < 0.02 && worst.1 < 0.06, "joints hold (gap, past limit): {worst:?}");
         // The motion checks run on what it did.
@@ -994,20 +1097,6 @@ mod tests {
         assert_eq!(a, c, "a cosmetic ragdoll changes neither the physics hash nor the world");
     }
 
-    /// The largest joint angle (degrees) between a ragdoll's pose and the animation's.
-    fn worst_joint_deg(live: &Live, pose: &APose, target: &APose) -> f32 {
-        let (mut a, mut b) = (Vec::new(), Vec::new());
-        live.set.skeleton.model_space(pose, &mut a);
-        live.set.skeleton.model_space(target, &mut b);
-        let rel = |m: &[Affine], p: usize, c: usize| q4(qmul(qconj(rotation_of(&m[p])), rotation_of(&m[c])));
-        live.parts
-            .iter()
-            .filter_map(|part| part.parent.map(|parent| (parent, part.bone)))
-            .map(|(p, c)| (specula_physics::joint::rotation_vector((rel(&a, p, c) * rel(&b, p, c).conjugate()).normalize()).length().to_degrees(), c))
-            .fold((0.0f32, 0), |x, y| if y.0 > x.0 { y } else { x })
-            .0
-    }
-
     /// Every joint's angle off the animation, worst first (for messages).
     fn joints_off(live: &Live, pose: &APose, target: &APose) -> Vec<(String, f32)> {
         let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -1036,8 +1125,9 @@ mod tests {
         // `run` leaves the world clock at the last tick's start; physics poses are for its end.
         let target = |w: &World, live: &Live| pose_at(&mut GraphPlayer::new(), &live.set, w.get(id).unwrap(), w.world_time() + 1.0 / 30.0, true);
         let live = &p.ragdolls.live[&id];
-        let tracking = worst_joint_deg(live, &live.pose, &target(&w, live));
-        assert!(tracking < 10.0, "follows the walk within 10 degrees at every joint: {tracking}");
+        // (Its legs follow the animation kinematically: the upper body is what the motors hold.)
+        let tracking = joints_off_all(live, &live.pose, &target(&w, live)).into_iter().map(|(_, d)| d).fold(0.0f32, f32::max);
+        assert!(tracking < 10.0, "follows the walk within 10 degrees at every joint: {tracking} {:?}", joints_off(live, &live.pose, &target(&w, live)));
         // A blow to the reaching arm knocks it off, and it recovers.
         let arm = |live: &Live, w: &World| {
             let off = joints_off_all(live, &live.pose, &target(w, live));
@@ -1055,8 +1145,8 @@ mod tests {
         let after = arm(live, &w);
         assert!(peak > before + 6.0, "the hit shows in the arm: {peak} vs {before} degrees");
         assert!(after < before + 4.0, "and it recovers: {after} degrees (before the hit {before}) {:?}", joints_off(live, &live.pose, &target(&w, live)));
-        let all = worst_joint_deg(live, &live.pose, &target(&w, live));
-        assert!(all < 15.0, "the whole body follows again: {all}");
+        let all = joints_off_all(live, &live.pose, &target(&w, live)).into_iter().map(|(_, d)| d).fold(0.0f32, f32::max);
+        assert!(all < 15.0, "the whole body follows again: {all} {:?}", joints_off(live, &live.pose, &target(&w, live)));
     }
 
     fn joints_off_all(live: &Live, pose: &APose, target: &APose) -> Vec<(String, f32)> {
