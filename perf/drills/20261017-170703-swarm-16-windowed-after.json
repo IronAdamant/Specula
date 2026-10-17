@@ -7,39 +7,39 @@
   "feed": true,
   "build": "release",
   "windowed": true,
-  "when": "2026-10-17T16:28:41",
-  "cpu_busy_pct_before": 6.0,
+  "when": "2026-10-17T17:06:53",
+  "cpu_busy_pct_before": 10.7,
   "frame_pacing_under_load": {
-    "samples": 101,
-    "mean_ms": 8.582,
-    "median_ms": 6.625,
-    "p95_ms": 18.837,
-    "max_ms": 21.197
+    "samples": 97,
+    "mean_ms": 9.758,
+    "median_ms": 13.083,
+    "p95_ms": 18.364,
+    "max_ms": 21.79
   },
   "serve_under_load": {
     "window_ms": 1,
     "frame_period_ms": 4.167,
     "refresh_ms": 4.167,
     "refresh_from": "display",
-    "frame_work_ms": 1.278,
-    "margin_ms": 3.81,
+    "frame_work_ms": 1.478,
+    "margin_ms": 2.712,
     "backlog": false,
     "call_cost_ms": {
-      "read": 0.296,
-      "edit": 0.2,
+      "read": 0.477,
+      "edit": 0.128,
       "render": 8,
       "disk": 8,
       "big": 8,
       "sim": 1,
       "game": 0.5
     },
-    "windows": 101,
-    "backlog_windows": 49,
+    "windows": 97,
+    "backlog_windows": 56,
     "calls": 842,
-    "held_for_next_window": 54,
-    "late_presents": 8,
-    "late_but_ready": 1,
-    "unblocked_presents": 10
+    "held_for_next_window": 38,
+    "late_presents": 7,
+    "late_but_ready": 3,
+    "unblocked_presents": 3
   },
   "attacks": {
     "rejected": 23,
@@ -54,64 +54,64 @@
     },
     "service_resumed": true
   },
-  "wall_s": 1.242,
+  "wall_s": 1.067,
   "world_ops": 5024,
-  "ops_per_s": 4043.8,
+  "ops_per_s": 4710.2,
   "tool_calls": 858,
-  "calls_per_s": 690.6,
+  "calls_per_s": 804.4,
   "latency_ms": {
     "agent_hello": {
-      "p50": 388.53,
-      "p95": 395.64,
-      "max": 397.2,
+      "p50": 126.88,
+      "p95": 132.83,
+      "max": 133.35,
       "n": 16
     },
     "claim_release": {
-      "p50": 6.53,
-      "p95": 24.97,
-      "max": 29.51,
+      "p50": 16.29,
+      "p95": 20.77,
+      "max": 28.01,
       "n": 16
     },
     "claim_renew": {
-      "p50": 8.57,
-      "p95": 22.75,
-      "max": 28.07,
+      "p50": 7.7,
+      "p95": 15.15,
+      "max": 21.02,
       "n": 16
     },
     "claim_take": {
-      "p50": 15.29,
-      "p95": 17.75,
-      "max": 18.43,
+      "p50": 14.33,
+      "p95": 20.23,
+      "max": 21.71,
       "n": 16
     },
     "world_batch": {
-      "p50": 13.55,
-      "p95": 26.02,
-      "max": 32.01,
+      "p50": 14.78,
+      "p95": 27.01,
+      "max": 41.43,
       "n": 304
     },
     "world_changes": {
-      "p50": 15.25,
-      "p95": 26.57,
-      "max": 36.08,
+      "p50": 17.77,
+      "p95": 32.41,
+      "max": 47.04,
       "n": 234
     },
     "world_set": {
-      "p50": 12.27,
-      "p95": 21.35,
-      "max": 26.1,
+      "p50": 15.51,
+      "p95": 22.83,
+      "max": 29.87,
       "n": 64
     },
     "world_spawn": {
-      "p50": 12.52,
-      "p95": 20.99,
-      "max": 25.45,
+      "p50": 15.71,
+      "p95": 25.12,
+      "max": 52.19,
       "n": 112
     },
     "world_undo": {
-      "p50": 13.6,
-      "p95": 18.93,
-      "max": 26.0,
+      "p50": 13.74,
+      "p95": 30.95,
+      "max": 37.71,
       "n": 80
     }
   },
@@ -119,18 +119,18 @@
   "intrusions_leaked": 0,
   "intrusion_other_errors": [],
   "undos": 80,
-  "feed_items": 80477,
+  "feed_items": 80493,
   "feed_gaps": 0,
   "entities": 3856,
-  "state_hash": "2e1a14b72cad801e",
+  "state_hash": "3b9de1776b17a127",
   "replay": {
     "replayable": true,
     "entries": 368,
-    "replay_hash": "2e1a14b72cad801e",
+    "replay_hash": "3b9de1776b17a127",
     "matches": true,
-    "ms": 11.6472
+    "ms": 12.3161
   },
-  "replay_check_s": 0.015,
+  "replay_check_s": 0.024,
   "journal": {
     "first_id": 1,
     "last_id": 368,
@@ -145,8 +145,8 @@
   "claim_rejections_engine": 192,
   "history_sample": [
     {
-      "id": 362,
-      "tick": 30,
+      "id": 340,
+      "tick": 33,
       "by": "agent_00",
       "kind": "undo",
       "changes": 5,
@@ -156,12 +156,12 @@
         "/district_00/tmp_11_2"
       ],
       "undoes": [
-        357
+        335
       ]
     },
     {
-      "id": 357,
-      "tick": 30,
+      "id": 335,
+      "tick": 32,
       "by": "agent_00",
       "kind": "batch",
       "changes": 5,
@@ -170,10 +170,10 @@
         "/district_00/tmp_11_1",
         "/district_00/tmp_11_2"
       ],
-      "undone_by": 362
+      "undone_by": 340
     }
   ],
   "agent_errors": [],
   "problems": [],
-  "cpu_busy_pct_after": 4.2
+  "cpu_busy_pct_after": 8.4
 }

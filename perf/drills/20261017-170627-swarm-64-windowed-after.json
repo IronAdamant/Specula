@@ -7,39 +7,39 @@
   "feed": true,
   "build": "release",
   "windowed": true,
-  "when": "2026-10-17T16:28:50",
-  "cpu_busy_pct_before": 1.6,
+  "when": "2026-10-17T17:06:07",
+  "cpu_busy_pct_before": 5.9,
   "frame_pacing_under_load": {
     "samples": 120,
-    "mean_ms": 16.006,
-    "median_ms": 16.085,
-    "p95_ms": 18.523,
-    "max_ms": 21.025
+    "mean_ms": 16.093,
+    "median_ms": 16.297,
+    "p95_ms": 19.903,
+    "max_ms": 26.013
   },
   "serve_under_load": {
-    "window_ms": 10.782,
+    "window_ms": 10.203,
     "frame_period_ms": 16.667,
     "refresh_ms": 4.167,
     "refresh_from": "display",
-    "frame_work_ms": 4.969,
-    "margin_ms": 2.265,
+    "frame_work_ms": 5.809,
+    "margin_ms": 3.445,
     "backlog": true,
     "call_cost_ms": {
-      "read": 0.657,
-      "edit": 0.2,
+      "read": 1.196,
+      "edit": 0.1,
       "render": 8,
       "disk": 8,
       "big": 8,
       "sim": 1,
       "game": 0.5
     },
-    "windows": 443,
-    "backlog_windows": 380,
-    "calls": 5320,
-    "held_for_next_window": 349,
-    "late_presents": 29,
-    "late_but_ready": 1,
-    "unblocked_presents": 3
+    "windows": 496,
+    "backlog_windows": 481,
+    "calls": 5385,
+    "held_for_next_window": 415,
+    "late_presents": 48,
+    "late_but_ready": 2,
+    "unblocked_presents": 0
   },
   "attacks": {
     "rejected": 23,
@@ -54,64 +54,64 @@
     },
     "service_resumed": true
   },
-  "wall_s": 6.234,
+  "wall_s": 7.926,
   "world_ops": 20096,
-  "ops_per_s": 3223.9,
-  "tool_calls": 5384,
-  "calls_per_s": 863.7,
+  "ops_per_s": 2535.4,
+  "tool_calls": 5449,
+  "calls_per_s": 687.5,
   "latency_ms": {
     "agent_hello": {
-      "p50": 9.25,
-      "p95": 14.72,
-      "max": 22.13,
+      "p50": 277.29,
+      "p95": 302.51,
+      "max": 305.98,
       "n": 64
     },
     "claim_release": {
-      "p50": 6.16,
-      "p95": 26.68,
-      "max": 27.9,
+      "p50": 6.5,
+      "p95": 29.65,
+      "max": 31.17,
       "n": 64
     },
     "claim_renew": {
-      "p50": 44.06,
-      "p95": 88.79,
-      "max": 106.13,
+      "p50": 58.31,
+      "p95": 114.6,
+      "max": 128.51,
       "n": 64
     },
     "claim_take": {
-      "p50": 8.48,
-      "p95": 14.26,
-      "max": 16.99,
+      "p50": 33.48,
+      "p95": 47.92,
+      "max": 54.59,
       "n": 64
     },
     "world_batch": {
-      "p50": 68.89,
-      "p95": 93.08,
-      "max": 123.99,
+      "p50": 78.74,
+      "p95": 114.68,
+      "max": 156.26,
       "n": 1216
     },
     "world_changes": {
-      "p50": 82.05,
-      "p95": 105.06,
-      "max": 129.24,
-      "n": 2888
+      "p50": 103.03,
+      "p95": 137.37,
+      "max": 164.68,
+      "n": 2953
     },
     "world_set": {
-      "p50": 67.26,
-      "p95": 94.57,
-      "max": 99.21,
+      "p50": 69.99,
+      "p95": 110.53,
+      "max": 127.02,
       "n": 256
     },
     "world_spawn": {
-      "p50": 62.99,
-      "p95": 92.66,
-      "max": 103.88,
+      "p50": 74.1,
+      "p95": 114.22,
+      "max": 149.33,
       "n": 448
     },
     "world_undo": {
-      "p50": 64.67,
-      "p95": 87.28,
-      "max": 97.98,
+      "p50": 77.53,
+      "p95": 114.55,
+      "max": 153.81,
       "n": 320
     }
   },
@@ -119,18 +119,18 @@
   "intrusions_leaked": 0,
   "intrusion_other_errors": [],
   "undos": 320,
-  "feed_items": 1304617,
+  "feed_items": 1305522,
   "feed_gaps": 0,
   "entities": 15424,
-  "state_hash": "523c3a72ed5c6df8",
+  "state_hash": "4f75dd98c13337f4",
   "replay": {
     "replayable": true,
     "entries": 1472,
-    "replay_hash": "523c3a72ed5c6df8",
+    "replay_hash": "4f75dd98c13337f4",
     "matches": true,
-    "ms": 47.0438
+    "ms": 53.8791
   },
-  "replay_check_s": 0.066,
+  "replay_check_s": 0.079,
   "journal": {
     "first_id": 1,
     "last_id": 1472,
@@ -145,8 +145,8 @@
   "claim_rejections_engine": 768,
   "history_sample": [
     {
-      "id": 1438,
-      "tick": 191,
+      "id": 1410,
+      "tick": 219,
       "by": "agent_00",
       "kind": "undo",
       "changes": 5,
@@ -156,12 +156,12 @@
         "/district_00/tmp_11_2"
       ],
       "undoes": [
-        1422
+        1371
       ]
     },
     {
-      "id": 1422,
-      "tick": 188,
+      "id": 1371,
+      "tick": 216,
       "by": "agent_00",
       "kind": "batch",
       "changes": 5,
@@ -170,10 +170,10 @@
         "/district_00/tmp_11_1",
         "/district_00/tmp_11_2"
       ],
-      "undone_by": 1438
+      "undone_by": 1410
     }
   ],
   "agent_errors": [],
   "problems": [],
-  "cpu_busy_pct_after": 3.0
+  "cpu_busy_pct_after": 5.1
 }

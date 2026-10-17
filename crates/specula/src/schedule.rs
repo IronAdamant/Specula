@@ -36,8 +36,8 @@
 //!
 //! **Calls.** A call starts only as the first of a window or when the window still has room for
 //! what calls of its [`Class`] cost lately: a decaying maximum per class, which halves every
-//! 50 ms down to the class's guess, so one slow call holds back neither other classes nor its own
-//! for long. A call that doesn't fit waits, at the head of the queue, for the next window. So a
+//! 50 ms down to a floor (50 µs for reads and edits; a capture's guess for renders, disk and big
+//! work), so one slow call holds back neither other classes nor its own for long. A call that doesn't fit waits, at the head of the queue, for the next window. So a
 //! capture lands where the old loop ran it (right after a present) rather than pushing a frame
 //! past its vblank. The order calls are applied in never changes: held calls are the next handled.
 //!
@@ -45,9 +45,9 @@
 //! `FineTimer`), and std rounds timeouts up to whole milliseconds, but a call wakes a wait at
 //! once. So a window waits in whole milliseconds that end by its deadline plus half the base
 //! margin (the caution left out, or a raised margin would let waits run later and frames be late
-//! again); once less than that is left it waits a last millisecond only if it is serving an agent
-//! (whose next call is likely under way) and even a late wake-up leaves the frame on time, else
-//! it ends. Never busy-waits.
+//! again); once less than that is left it takes only what has already arrived and ends. (Waiting
+//! a last millisecond for an agent's next call was tried: the call often came too late to fit,
+//! yet still pushed the frame back.) Never busy-waits.
 //!
 //! Time comes from the [`Inbox`] the calls come from: real time in the engine, a simulated clock
 //! in the tests, which run the whole loop against a simulated display deterministically.
@@ -79,7 +79,7 @@ const BUSY_AFTER: u8 = 4;
 /// Calls queued as a window ends that make it end with a backlog (one sequential agent has at
 /// most one call queued).
 const BACKLOG_CALLS: usize = 2;
-/// A class's cost estimate halves this often (down to its guess).
+/// A class's cost estimate halves this often (down to its floor).
 const COST_HALF_LIFE: Duration = Duration::from_millis(50);
 /// The refresh interval assumed before two presents have been timed.
 const REFRESH_GUESS: Duration = Duration::from_micros(16_667);
@@ -136,14 +136,23 @@ const CLASSES: usize = 7;
 impl Class {
     const ALL: [Class; CLASSES] = [Class::Read, Class::Edit, Class::Render, Class::Disk, Class::Big, Class::Sim, Class::Game];
 
-    /// What a call of this class is assumed to cost before one has been timed, and the least its
-    /// estimate decays to.
+    /// What a call of this class is assumed to cost before one has been timed.
     fn guess(self) -> Duration {
         match self {
             Class::Read | Class::Edit => Duration::from_micros(200),
             Class::Game => Duration::from_micros(500),
             Class::Sim => Duration::from_millis(1),
             Class::Render | Class::Disk | Class::Big => Duration::from_millis(8),
+        }
+    }
+
+    /// The least its estimate decays to: 50 µs for the small classes (what reads and edits
+    /// really cost), the guess for renders, disk and big work (rare, so a long-ago capture
+    /// still counts as one).
+    fn floor(self) -> Duration {
+        match self {
+            Class::Read | Class::Edit | Class::Game | Class::Sim => Duration::from_micros(50),
+            Class::Render | Class::Disk | Class::Big => self.guess(),
         }
     }
 
@@ -330,12 +339,12 @@ impl Schedule {
     }
 
     /// What a call of `class` is expected to cost at `now`: the longest lately, halving every
-    /// [`COST_HALF_LIFE`] since it was measured, never under the class's guess.
+    /// [`COST_HALF_LIFE`] since it was measured, never under the class's floor.
     fn cost(&self, class: Class, now: Instant) -> Duration {
         let (cost, at) = self.costs[class as usize];
         let age = at.map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
         let halvings = age.as_secs_f64() / COST_HALF_LIFE.as_secs_f64();
-        cost.mul_f64(0.5f64.powf(halvings.min(64.0))).max(class.guess())
+        cost.mul_f64(0.5f64.powf(halvings.min(64.0))).max(class.floor())
     }
 
     /// A call of `class` took `took`, measured at `now`.
@@ -461,14 +470,7 @@ impl Schedule {
                     // Never tied to the caution: a margin raised by late frames shrinks the window
                     // by as much, and must not let waits run later in turn.
                     let latest = deadline + self.base_margin() / 2;
-                    let mut wait = whole_ms((latest - now).saturating_sub(TIMER_SLOP));
-                    // Serving an agent whose next call is likely under way: one last wait, if
-                    // even its latest wake-up leaves the frame on time (the deadline plus the
-                    // whole margin is when frame work must start).
-                    let last = wait.is_zero() && !first && now + 2 * TIMER_SLOP <= deadline + self.margin();
-                    if last {
-                        wait = TIMER_SLOP;
-                    }
+                    let wait = whole_ms((latest - now).saturating_sub(TIMER_SLOP));
                     let received = if wait.is_zero() {
                         inbox.try_recv().map_err(|e| match e {
                             TryRecvError::Empty => RecvTimeoutError::Timeout,
@@ -479,7 +481,7 @@ impl Schedule {
                     };
                     match received {
                         Ok(r) => r,
-                        Err(RecvTimeoutError::Timeout) if !wait.is_zero() && !last => continue,
+                        Err(RecvTimeoutError::Timeout) if !wait.is_zero() => continue,
                         Err(RecvTimeoutError::Timeout) => return self.ended(inbox, held),
                         Err(RecvTimeoutError::Disconnected) => return Served::Disconnected,
                     }
@@ -491,7 +493,11 @@ impl Schedule {
             let now = inbox.now();
             if !first && now + self.cost(kind, now) > deadline {
                 held.push_front(request);
-                self.held += 1;
+                // Counted only when it came in time but didn't fit; one that woke a wait past the
+                // deadline just queues for the next window (the frame starts no later for it).
+                if now < deadline {
+                    self.held += 1;
+                }
                 return self.ended(inbox, held);
             }
             first = false;
@@ -696,23 +702,36 @@ mod tests {
     }
 
     /// Simulated time and calls. Timed waits end like Windows' under a 1 ms timer: the timeout
-    /// rounded up to whole milliseconds, then half a tick late; a call arriving first wakes them.
+    /// rounded up to whole milliseconds, then mostly up to 1 ms late, now and then 2; a call arriving first wakes
+    /// them. Agents' round trips vary too.
     struct Sim {
         origin: Instant,
         t: Duration,
         /// Arrivals, in order.
         queue: VecDeque<Call>,
-        /// Clients' round trip from a reply to their next call.
+        /// Clients' typical round trip from a reply to their next call (each one 0.5 to 1.5 times
+        /// it).
         rtt: Duration,
         handled: Vec<u64>,
         next_id: u64,
+        /// Pseudo-random state (xorshift): round trips and timer wake-ups vary, deterministically.
+        seed: u32,
     }
 
     type Shared = Rc<RefCell<Sim>>;
 
     impl Sim {
         fn new(rtt: Duration) -> Shared {
-            Rc::new(RefCell::new(Sim { origin: Instant::now(), t: Duration::ZERO, queue: VecDeque::new(), rtt, handled: Vec::new(), next_id: 0 }))
+            let sim = Sim { origin: Instant::now(), t: Duration::ZERO, queue: VecDeque::new(), rtt, handled: Vec::new(), next_id: 0, seed: 0x2545_f491 };
+            Rc::new(RefCell::new(sim))
+        }
+
+        /// A number in [0, 1).
+        fn random(&mut self) -> f64 {
+            self.seed ^= self.seed << 13;
+            self.seed ^= self.seed >> 17;
+            self.seed ^= self.seed << 5;
+            f64::from(self.seed) / (f64::from(u32::MAX) + 1.0)
         }
 
         fn push(&mut self, at: Duration, cost: Duration, class: Class, client: Option<usize>) {
@@ -726,7 +745,8 @@ mod tests {
             self.t += c.cost;
             self.handled.push(c.id);
             if c.client.is_some() {
-                let at = self.t + self.rtt;
+                let spread = 0.5 + self.random();
+                let at = self.t + self.rtt.mul_f64(spread);
                 self.push(at, c.cost, c.class, c.client);
             }
         }
@@ -750,7 +770,10 @@ mod tests {
 
         fn recv_timeout(&mut self, timeout: Duration) -> Result<Call, RecvTimeoutError> {
             let mut s = self.0.borrow_mut();
-            let fires = s.t + Duration::from_millis(timeout.as_nanos().div_ceil(1_000_000) as u64) + ms(0.5);
+            // Measured on Windows with a 1 ms timer: mostly within 1 ms after the rounded-up
+            // timeout, now and then up to 2 ms.
+            let late = if s.random() < 0.9 { ms(s.random()) } else { ms(1.0 + s.random()) };
+            let fires = s.t + Duration::from_millis(timeout.as_nanos().div_ceil(1_000_000) as u64) + late;
             match s.queue.front().copied() {
                 Some(c) if c.at <= fires => {
                     s.t = s.t.max(c.at);
@@ -771,6 +794,10 @@ mod tests {
         fps: f64,
         late: u64,
         frames: u64,
+        /// Calls that arrived in a window but had to wait for the next one.
+        held: u64,
+        /// The caution at the end.
+        caution: f32,
     }
 
     /// Runs the windowed loop for `seconds` of simulated time: serve, `work` of frame work, then a
@@ -778,7 +805,7 @@ mod tests {
     fn sim_loop(s: &mut Schedule, sim: &Shared, refresh: Duration, work: Duration, seconds: f64) -> Run {
         let mut inbox = SimInbox(Rc::clone(sim));
         let mut held = VecDeque::new();
-        let (start, calls) = (sim.borrow().t, sim.borrow().handled.len());
+        let (start, calls, held_before) = (sim.borrow().t, sim.borrow().handled.len(), s.held);
         let (mut frames, mut late, mut last) = (0, 0, None);
         while sim.borrow().t < start + Duration::from_secs_f64(seconds) {
             let period = s.period();
@@ -806,7 +833,7 @@ mod tests {
         while let Some(c) = held.pop_back() {
             sim.borrow_mut().queue.push_front(c);
         }
-        Run { calls_per_s: calls / elapsed, fps: frames as f64 / elapsed, late, frames }
+        Run { calls_per_s: calls / elapsed, fps: frames as f64 / elapsed, late, frames, held: s.held - held_before, caution: s.caution }
     }
 
     /// Before this schedule, one agent that waits for each reply got one call per frame (60/s
@@ -828,23 +855,29 @@ mod tests {
                 assert!(run.fps > hz * 0.97, "{run:?} at {refresh:?}, round trip {rtt:?}");
                 assert!(run.late * 50 <= run.frames, "{run:?} at {refresh:?}, round trip {rtt:?}");
                 assert_eq!(s.busy_windows, 0, "one agent made a backlog at {refresh:?}, round trip {rtt:?}");
+                // Reviewer finding: waiting past the window for calls that then can't fit costs
+                // frame time for nothing, and a caution kept high takes window time. (A call that
+                // comes in just before the deadline and doesn't fit is held, and the frame starts
+                // at once, no later than it would have: a few of those are fine.)
+                assert!(run.held * 5 <= run.frames, "{run:?} at {refresh:?}, round trip {rtt:?}");
+                assert!(run.caution < 1.5, "{run:?} at {refresh:?}, round trip {rtt:?}");
             }
         }
     }
 
-    /// A slow agent (a round trip of 2 ms, longer than a 240 Hz window) still gets a call in
-    /// most frames, not one call per window at best.
+    /// A slow agent (round trips around 1.2 ms, about a 240 Hz window) is served about once a
+    /// frame, without calls held back or frames pushed late.
     #[test]
-    fn short_windows_wait_for_an_agents_next_call() {
+    fn a_slow_agent_is_served_without_holding_frames_back() {
         let sim = Sim::new(ms(1.2));
         sim.borrow_mut().push(Duration::ZERO, ms(0.1), Class::Edit, Some(0));
         let mut s = Schedule::default();
         s.set_display_refresh(Some(HZ240));
         sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.5);
         let run = sim_loop(&mut s, &sim, HZ240, ms(1.0), 2.0);
-        eprintln!("240 Hz display, round trip 1.2 ms: {run:?}");
-        assert!(run.calls_per_s > 1.5 * run.fps, "{run:?}");
-        assert!(run.late * 20 <= run.frames, "{run:?}");
+        eprintln!("240 Hz display, round trip about 1.2 ms: {run:?}");
+        assert!(run.calls_per_s > 0.9 * run.fps, "{run:?}");
+        assert!(run.late * 50 <= run.frames && run.held * 20 <= run.frames && run.caution < 1.5, "{run:?}");
     }
 
     /// A raised caution shrinks the window; waits must not then run later in turn, or frames
@@ -861,8 +894,9 @@ mod tests {
             sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.1);
             s.caution = MAX_CAUTION;
             let run = sim_loop(&mut s, &sim, HZ240, ms(1.0), 2.0);
-            assert_eq!(run.late, 0, "{run:?}, round trip {rtt:?}");
-            assert!(s.caution < 1.1, "caution {}, round trip {rtt:?}", s.caution);
+            // (A wake-up 2 ms late now and then still nudges it up a little.)
+            assert!(run.late * 50 <= run.frames, "{run:?}, round trip {rtt:?}");
+            assert!(s.caution < 1.5, "caution {}, round trip {rtt:?}", s.caution);
         }
     }
 
@@ -985,7 +1019,8 @@ mod tests {
         s.costed(Class::Read, ms(100.0), t);
         assert_eq!(s.cost(Class::Read, t), ms(100.0));
         assert!(s.cost(Class::Read, t + COST_HALF_LIFE).abs_diff(ms(50.0)) < ms(0.01));
-        assert_eq!(s.cost(Class::Read, t + Duration::from_secs(10)), Class::Read.guess());
+        assert_eq!(s.cost(Class::Read, t + Duration::from_secs(10)), Class::Read.floor());
+        assert_eq!(Class::Read.floor(), Duration::from_micros(50));
         assert_eq!(s.cost(Class::Render, t), Class::Render.guess());
     }
 
