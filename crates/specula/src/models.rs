@@ -80,6 +80,11 @@
 //! lacks) draw their bind pose. [`GpuModels::bone_positions`] gives an entity's bones in world
 //! space at a render time (the sight skeleton overlay).
 //!
+//! A graph-mode `anim` plays one of the set's animation graphs (`specula_anim::play`), posed at
+//! the frame's time with its IK: feet on the world's ground ([`crate::anim::GroundGrid`]),
+//! two-bone reaches and look-at targets. The library lays the world's anim assets (agents'
+//! clips and graphs, [`crate::anim`]) over each build's anim set ([`Library::anim_set`]).
+//!
 //! # Levels of detail
 //!
 //! The size on screen is the projected diameter of the model's bounding sphere in pixels. LOD 0
@@ -90,7 +95,8 @@
 
 use crate::world::{is_gltf_path, AnimSpec, Entity, ModelSource, ModelSpec, ModelState, ResolvedModel, World, WorldError};
 use specula_anim::math::Affine;
-use specula_anim::{AnimSet, Animator, LoopMode, Playback, Skeleton};
+use specula_anim::play::{GraphPlayer, Graphed, Surroundings, Timing};
+use specula_anim::{AnimSet, Animator, LoopMode, Playback, Pose, Skeleton};
 use specula_core::hash::StableHasher;
 use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
@@ -678,6 +684,17 @@ pub struct Library {
     workers: Workers,
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// The world's anim assets by model source (see [`crate::anim`]).
+    anim_assets: Arc<crate::anim::Assets>,
+    /// Per build: the assets' revision it was laid over with, the result and its problems.
+    anim_overlays: RefCell<BTreeMap<u64, AnimOverlay>>,
+}
+
+/// A build's anim set with the world's assets laid over it.
+struct AnimOverlay {
+    revision: u64,
+    set: Arc<AnimSet>,
+    problems: Vec<String>,
 }
 
 fn mtime(path: &Path) -> Option<SystemTime> {
@@ -736,7 +753,54 @@ impl Library {
             workers: Workers::start(workers),
             cache_hits: 0,
             cache_misses: 0,
+            anim_assets: Arc::new(crate::anim::Assets::new()),
+            anim_overlays: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    /// Takes the world's anim assets (overlays are laid again when next asked for).
+    pub fn set_anim_assets(&mut self, assets: Arc<crate::anim::Assets>) {
+        self.anim_assets = assets;
+        self.anim_overlays.get_mut().clear();
+    }
+
+    /// The world's anim assets for a model source.
+    pub fn anim_assets_for(&self, source: &str) -> Option<&crate::anim::AssetSet> {
+        self.anim_assets.get(source)
+    }
+
+    /// The anim set entities of `handle` play: its build's own, with the world's assets for its
+    /// recipe laid over it (a rigged build without an anims file gets one from its rig). `None`
+    /// until built, or for builds without a rig.
+    pub fn anim_set(&self, handle: u32) -> Option<Arc<AnimSet>> {
+        let built = self.built(handle)?;
+        let source = &self.handle_spec(handle)?.recipe;
+        let Some(assets) = self.anim_assets.get(source.as_str()) else { return built.anims.clone() };
+        let mut cache = self.anim_overlays.borrow_mut();
+        if let Some(o) = cache.get(&built.id).filter(|o| o.revision == assets.revision) {
+            return Some(Arc::clone(&o.set));
+        }
+        let base = match &built.anims {
+            Some(set) => Arc::clone(set),
+            None => Arc::new(AnimSet::new(Skeleton::from_rig(built.model.rig.as_ref()?).ok()?)),
+        };
+        let (set, problems) = base.with_overlay(&assets.clips, &assets.graphs);
+        let problems = problems.iter().map(|p| format!("{} '{}': {}", p.kind, p.name, p.error)).collect();
+        let set = Arc::new(set);
+        cache.insert(built.id, AnimOverlay { revision: assets.revision, set: Arc::clone(&set), problems });
+        Some(set)
+    }
+
+    /// What the world's assets for `handle`'s recipe got wrong (left out of its anim set).
+    pub fn anim_overlay_problems(&self, handle: u32) -> Vec<String> {
+        let _ = self.anim_set(handle);
+        let Some(built) = self.built(handle) else { return Vec::new() };
+        self.anim_overlays.borrow().get(&built.id).map(|o| o.problems.clone()).unwrap_or_default()
+    }
+
+    /// A live handle whose spec names `source` and whose build is ready (the first by handle).
+    pub fn handle_for_source(&self, source: &str) -> Option<u32> {
+        (0..self.handles.len() as u32).find(|&h| self.handle_spec(h).is_some_and(|s| s.recipe == source) && self.built(h).is_some())
     }
 
     pub fn root(&self) -> &Path {
@@ -1579,12 +1643,17 @@ fn check_uploadable(model: &Model) -> Result<(), String> {
 /// plays, has no anim, or its model is still building.
 pub fn anim_problem(lib: &Library, e: &Entity) -> Option<String> {
     let a = e.anim.as_ref()?;
-    let built = lib.built(e.resolved_model()?.handle)?;
-    let Some(set) = &built.anims else {
+    let handle = e.resolved_model()?.handle;
+    let built = lib.built(handle)?;
+    let Some(set) = lib.anim_set(handle) else {
         let why = built.anim_note.clone().unwrap_or_else(|| "the model has no rig".into());
-        return Some(format!("'{}' has anim '{}' but no clips to play: {why}", e.name, a.clip));
+        let what = a.graph.as_ref().map_or_else(|| a.clip.clone(), |g| format!("graph {}", g.graph));
+        return Some(format!("'{}' has anim '{what}' but no clips to play: {why}", e.name));
     };
-    let missing = [Some(a.clip.as_str()), a.from.as_ref().map(|f| f.clip.as_str())].into_iter().flatten().find(|c| set.id(c).is_none())?;
+    if a.graph.is_some() {
+        return crate::anim::graph_problem(&set, e, a);
+    }
+    let missing = [Some(a.clip.as_str()), a.from.as_ref().filter(|f| f.graph.is_none()).map(|f| f.clip.as_str())].into_iter().flatten().find(|c| set.id(c).is_none())?;
     let clips: Vec<&str> = set.clips().map(|(_, c)| c.name.as_str()).take(32).collect();
     Some(format!("'{}' plays clip '{missing}', which its anim set lacks: drawn in its bind pose (clips: {})", e.name, clips.join(", ")))
 }
@@ -1612,6 +1681,10 @@ impl SharedLibrary {
 impl ModelSource for SharedLibrary {
     fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError> {
         self.lock().resolve(spec)
+    }
+
+    fn anim_set(&self, handle: u32) -> Option<Arc<AnimSet>> {
+        self.lock().anim_set(handle)
     }
 }
 
@@ -1642,6 +1715,7 @@ pub fn report(spec: &ModelSpec, built: &Built, cached: bool) -> Json {
                 Json::obj([("name", Json::from(c.name.as_str())), ("duration", Json::from(c.duration)), ("loop", Json::from(looping))])
             })),
         );
+        r.set("graphs", Json::arr(set.graphs().take(32).map(|(n, _)| Json::from(n))));
     } else if let Some(rig) = &built.model.rig {
         r.set("bones", Json::from(rig.len()));
         r.set("clips", Json::arr([]));
@@ -1863,6 +1937,8 @@ enum Held<'a> {
 struct EntityAnim {
     build: u64,
     animator: Animator,
+    /// Graph-mode entities' evaluator (made on first use).
+    graph: Option<Box<GraphPlayer>>,
     /// The frame it was last used in.
     used: u64,
 }
@@ -1882,6 +1958,18 @@ struct AnimFrame {
     pool: BTreeMap<u64, Vec<Animator>>,
     model: Vec<Affine>,
     skin: Vec<Affine>,
+    /// What feet stand on (the world's ground entities).
+    ground: Option<Arc<crate::anim::GroundGrid>>,
+    /// A crossfade's other side (a graph faded from or into), reused.
+    fade_player: GraphPlayer,
+    fade_pose: Pose,
+    own_pose: Pose,
+}
+
+/// Model → world of an entity, as the animation library's affine.
+fn affine_of(m: &Mat4) -> Affine {
+    let c = &m.cols;
+    Affine { cols: [[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]], t: [c[3][0], c[3][1], c[3][2]] }
 }
 
 /// The playback of `a` at render time `t` in `set` (`None`: no such clip).
@@ -1900,10 +1988,77 @@ fn playback(set: &AnimSet, a: &AnimSpec, t: f64) -> Option<Playback> {
 }
 
 impl AnimFrame {
+    /// The entity's animator slot for `build` (from the pool, or new).
+    fn entry(&mut self, e: &Entity, build: u64, set: &AnimSet) -> &mut EntityAnim {
+        let frame = self.frame;
+        if !self.entities.get(&e.id).is_some_and(|x| x.build == build) {
+            if let Some(old) = self.entities.remove(&e.id) {
+                let pool = self.pool.entry(old.build).or_default();
+                if pool.len() < ANIMATOR_POOL {
+                    pool.push(old.animator);
+                }
+            }
+            let animator = self.pool.get_mut(&build).and_then(Vec::pop).unwrap_or_else(|| Animator::new(set, specula_anim::ClipId(0)));
+            self.entities.insert(e.id, EntityAnim { build, animator, graph: None, used: frame });
+        }
+        let entry = self.entities.get_mut(&e.id).expect("inserted");
+        entry.used = frame;
+        entry
+    }
+
+    /// A graph-mode (or graph-involving) anim: the graph's pose with IK, crossfaded with `from`
+    /// when it fades. Leaves the pose in `self.model` / `self.skin`. Reuses every buffer.
+    fn evaluate_graph(&mut self, e: &Entity, build: u64, set: &AnimSet, a: &AnimSpec) -> bool {
+        let t = self.time;
+        self.entry(e, build, set);
+        let AnimFrame { entities, model, skin, ground, fade_player, fade_pose, own_pose, .. } = self;
+        let entry = entities.get_mut(&e.id).expect("made by entry");
+        let to_world = affine_of(&e.model());
+        let scale = crate::anim::entity_scale(e);
+        let around = Surroundings { to_world: Some(to_world), ground: ground.as_deref().map(|g| g as &dyn specula_anim::ik::Ground), external: None };
+        // Evaluates one anim (graph or clip) into `out`; false when it has nothing to play.
+        let pose_of = |spec: &AnimSpec, player: &mut GraphPlayer, animator: &mut Animator, out: &mut Pose| -> bool {
+            match &spec.graph {
+                Some(gp) => {
+                    let Some(graph) = set.graph(&gp.graph) else { return false };
+                    let pose = player.evaluate(Graphed { set, graph, scale }, gp, Timing { anchor: spec.start.unwrap_or(0.0), speed: spec.speed }, t, &around);
+                    out.local.clone_from(&pose.local);
+                    true
+                }
+                None => match playback(set, spec, t) {
+                    Some(p) => {
+                        animator.seek(p, None);
+                        out.local.clone_from(&animator.evaluate(set).local);
+                        true
+                    }
+                    None => false,
+                },
+            }
+        };
+        let player = entry.graph.get_or_insert_with(Default::default);
+        if !pose_of(a, player, &mut entry.animator, own_pose) {
+            return false;
+        }
+        // The anim it fades from (either kind), under this one.
+        let w = a.fade_weight(t);
+        if let Some(from) = a.from.as_deref().filter(|_| w < 1.0) {
+            if pose_of(from, fade_player, &mut entry.animator, fade_pose) {
+                specula_anim::blend::blend(fade_pose, own_pose, w, None);
+                std::mem::swap(own_pose, fade_pose);
+            }
+        }
+        set.skeleton.model_space(own_pose, model);
+        set.skeleton.skin_matrices(model, skin);
+        true
+    }
+
     /// Leaves entity `e`'s pose at the frame's time in `self.model` / `self.skin`. False when it
     /// has no clip of `set` to play (it draws the bind pose).
     fn evaluate(&mut self, e: &Entity, build: u64, set: &AnimSet) -> bool {
         let Some(a) = &e.anim else { return false };
+        if a.graph.is_some() || a.from.as_deref().is_some_and(|f| f.graph.is_some()) {
+            return self.evaluate_graph(e, build, set, a);
+        }
         let t = self.time;
         let Some(base) = playback(set, a, t) else { return false };
         let fade = a
@@ -1912,24 +2067,12 @@ impl AnimFrame {
             .filter(|_| a.crossfade > 0.0)
             .and_then(|f| playback(set, f, t))
             .map(|p| (p, (t - a.start.unwrap_or(0.0)) as f32, a.crossfade));
-        let frame = self.frame;
-        let entry = match self.entities.get_mut(&e.id) {
-            Some(x) if x.build == build => x,
-            _ => {
-                if let Some(old) = self.entities.remove(&e.id) {
-                    let pool = self.pool.entry(old.build).or_default();
-                    if pool.len() < ANIMATOR_POOL {
-                        pool.push(old.animator);
-                    }
-                }
-                let animator = self.pool.get_mut(&build).and_then(Vec::pop).unwrap_or_else(|| Animator::new(set, base.clip));
-                self.entities.entry(e.id).or_insert(EntityAnim { build, animator, used: frame })
-            }
-        };
-        entry.used = frame;
+        self.entry(e, build, set);
+        let AnimFrame { entities, model, skin, .. } = self;
+        let entry = entities.get_mut(&e.id).expect("made by entry");
         entry.animator.seek(base, fade);
         entry.animator.evaluate(set);
-        entry.animator.skin(set, &mut self.model, &mut self.skin);
+        entry.animator.skin(set, model, skin);
         true
     }
 }
@@ -1949,6 +2092,10 @@ pub struct GpuModels {
     /// The GPU's pipeline variants as of the last sync: a model needing one not built yet (it is
     /// being built on a worker thread) is held back like a model still building.
     ready: PipelineVariants,
+    /// Per build: the anim set its entities play (the world's assets laid over its own).
+    anim_sets: BTreeMap<u64, Arc<AnimSet>>,
+    /// The world's ground and anim assets as last read (see [`crate::anim::AnimEnv`]).
+    env: crate::anim::AnimEnv,
 }
 
 impl GpuModels {
@@ -1956,9 +2103,14 @@ impl GpuModels {
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
         self.ready = gpu.pipeline_variants();
+        let assets_changed = self.refresh_anim_env(library, world, world_generation);
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
+            if assets_changed {
+                self.anim_sets.clear();
+                self.refresh_anim_sets(&lib, world);
+            }
             return Vec::new();
         }
         self.synced = Some(key);
@@ -2019,7 +2171,79 @@ impl GpuModels {
                 }
             }
         }
+        self.anim_sets.retain(|id, _| self.uploaded.contains_key(id));
+        self.refresh_anim_sets(&library.lock(), world);
         errors
+    }
+
+    /// Reads the world's ground and anim assets again when an entity that matters changed, and
+    /// hands new assets to the library. Cheap when nothing did (an epoch compare); runs without a
+    /// GPU too (headless engines settle graph writes against the library). Returns whether the
+    /// assets changed.
+    pub fn refresh_anim_env(&mut self, library: &SharedLibrary, world: &World, world_generation: u64) -> bool {
+        let changed = self.env.refresh(world, world_generation);
+        if changed {
+            library.lock().set_anim_assets(Arc::clone(&self.env.assets));
+        }
+        self.anim.get_mut().ground = self.env.ground.clone();
+        changed
+    }
+
+    /// Problems with the world's anim assets (entities that aren't valid assets).
+    pub fn anim_asset_problems(&self) -> &[String] {
+        &self.env.asset_problems
+    }
+
+    /// The world's ground for feet (`None`: no ground entities).
+    pub fn ground(&self) -> Option<&Arc<crate::anim::GroundGrid>> {
+        self.env.ground.as_ref()
+    }
+
+    /// Draws of `built`'s finest LOD posed by skinning matrices `skin`, placed by `world`, for an
+    /// offscreen image (filmstrips): the build is uploaded if no entity has it on the GPU yet (it
+    /// goes again at the next sync if none does then). The palette goes into `bones`.
+    pub fn posed_draws(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
+        if !self.uploaded.contains_key(&built.id) {
+            let m = upload(gpu, built).map_err(|e| match e {
+                UploadError::Released => "the model's textures were released; spawn an entity of it (or model_reload) and try again".to_string(),
+                UploadError::Gpu(e) => format!("model upload failed: {e}"),
+            })?;
+            self.uploaded.insert(built.id, m);
+            // The next sync drops it again unless an entity wants it.
+            self.synced = None;
+        }
+        let model = &self.uploaded[&built.id];
+        if let Some(h) = self.held_back_by(true, model) {
+            return Err(match h {
+                Held::Waiting => "the skinned pipeline is still being built; try again in a moment".into(),
+                Held::Failed(f) => format!("the {} pipeline failed to build: {}", variant_names(f), f.error),
+            });
+        }
+        let first = bones.len() as u32;
+        bones.extend(skin.iter().map(Affine::to_cols_array));
+        let cols = world.to_cols_array();
+        for p in &model.lods[0] {
+            out.push(DrawItem { mesh: p.mesh, model: cols, color: p.color, material: p.material, surface: p.surface, skin: model.needs.skinned.then_some(first), bounds: None });
+        }
+        Ok(())
+    }
+
+    /// Each uploaded build's anim set from the library (the world's assets laid over its own).
+    fn refresh_anim_sets(&mut self, lib: &Library, world: &World) {
+        for h in live_handles(world) {
+            let Some(Some(id)) = self.by_handle.get(h as usize).copied() else { continue };
+            if self.anim_sets.contains_key(&id) || !self.uploaded.contains_key(&id) {
+                continue;
+            }
+            if let Some(set) = lib.anim_set(h) {
+                self.anim_sets.insert(id, set);
+            }
+        }
+    }
+
+    /// The anim set a build's entities play.
+    fn set_of<'a>(&'a self, id: u64, model: &'a GpuModel) -> Option<&'a Arc<AnimSet>> {
+        self.anim_sets.get(&id).or(model.anims.as_ref())
     }
 
     /// Messages for builds that failed to upload (they aren't drawn).
@@ -2159,7 +2383,7 @@ impl GpuModels {
     /// overlay. `None` for entities without an uploaded rigged model with an anim set.
     pub fn bone_positions(&self, e: &Entity, time_s: f64) -> Option<Vec<(String, Vec3)>> {
         let (id, model) = self.model_of(e)?;
-        let set = model.anims.as_ref()?;
+        let set = self.set_of(id, model)?;
         let mut a = self.anim.borrow_mut();
         let saved = a.time;
         a.time = time_s;
@@ -2248,7 +2472,7 @@ impl GpuModels {
         // Every part of the LOD shares the entity's palette; each part is culled by its posed
         // sphere.
         let mut posed = None;
-        let skin = match (&model.anims, animated) {
+        let skin = match (self.set_of(id, model), animated) {
             (Some(set), Some(e)) => {
                 let mut a = self.anim.borrow_mut();
                 if a.evaluate(e, id, set) {
@@ -3047,10 +3271,11 @@ mod tests {
         let b = lib.built(creature).unwrap();
         let set = b.anims.as_ref().expect("anims/shambler.json loads");
         let names: Vec<&str> = set.clips().map(|(_, c)| c.name.as_str()).collect();
-        assert_eq!(names, ["idle", "walk", "attack", "death"]);
+        assert_eq!(names, ["idle", "walk", "attack", "death", "shuffle", "still", "flinch"]);
+        assert_eq!(set.graphs().map(|(n, _)| n).collect::<Vec<_>>(), ["creature"]);
         assert_eq!(set.skeleton.len(), b.model.rig.as_ref().unwrap().len());
         let r = report(&ModelSpec::new("recipes/shambler.json"), b, false);
-        assert_eq!(r.get("clips").and_then(Json::as_array).map(|a| a.len()), Some(4));
+        assert_eq!(r.get("clips").and_then(Json::as_array).map(|a| a.len()), Some(7));
         assert_eq!(r.get("bones").and_then(Json::as_u64), Some(set.skeleton.len() as u64));
         let s = lib.built(stone).unwrap();
         assert!(s.anims.is_none() && s.anim_note.is_none(), "unrigged: no anim set, nothing to say");
@@ -3085,7 +3310,8 @@ mod tests {
         let b = lib.built(h.handle).unwrap_or_else(|| panic!("{:?}", lib.handle_error(h.handle)));
         assert!(b.model.lods[0].is_skinned());
         let anims = b.anims.as_ref().expect("the asset's clips");
-        assert_eq!(anims.clips().map(|(_, c)| c.name.clone()).collect::<Vec<_>>(), ["float", "swoop", "death"]);
+        // The trackless "still" clip has nothing to export.
+        assert_eq!(anims.clips().map(|(_, c)| c.name.clone()).collect::<Vec<_>>(), ["float", "swoop", "death", "float_shroud", "swoop_shroud", "flinch"]);
         assert_eq!(report(&spec, b, false).get("source"), Some(&Json::from("gltf")));
         // Unchanged file: same key, same build; a rewritten file rebuilds.
         let first = b.id;
