@@ -474,7 +474,7 @@ def main():
     ap.add_argument("--cells", type=int, default=24, help="the world is cells x cells of 32 m")
     ap.add_argument("--speed", type=float, default=25.0, help="flight speed, m/s")
     ap.add_argument("--memory-mb", type=float, default=None,
-                    help="streaming memory budget, less than the world needs (default 96 MB up to 12 x 12 cells, else 192)")
+                    help="streaming memory budget, less than the world needs (default 96 MB up to 12 x 12 cells, else 128)")
     ap.add_argument("--upload-ms", type=float, default=2.0)
     ap.add_argument("--out", default=str(target / "stream-check"))
     ap.add_argument("--sepulcra-exe", default=str(target / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")))
@@ -483,7 +483,7 @@ def main():
     a = ap.parse_args()
     skip = set(filter(None, a.skip.split(",")))
     if a.memory_mb is None:
-        a.memory_mb = 96.0 if a.cells <= 12 else 192.0
+        a.memory_mb = 96.0 if a.cells <= 12 else 128.0
     if a.port == 7471:
         sys.exit("port 7471 belongs to the live engine; pick another")
     out = Path(a.out)
