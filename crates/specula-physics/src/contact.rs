@@ -120,6 +120,8 @@ struct Clip {
     scratch: Polygon,
     planes: [(Vec3, f32); crate::gjk::MAX_POLY],
     cands: Candidates,
+    /// B's edges for the edge test: endpoints, negated face normals and their cross product.
+    edges: [(Vec3, Vec3, Vec3, Vec3, Vec3); MAX_EDGES],
 }
 
 thread_local! {
@@ -129,6 +131,7 @@ thread_local! {
         scratch: Polygon::default(),
         planes: [(Vec3::ZERO, 0.0); crate::gjk::MAX_POLY],
         cands: Candidates::new(),
+        edges: [(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO); MAX_EDGES],
     });
 }
 
@@ -168,7 +171,16 @@ pub fn collide(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mu
             }
         }
         (None, None) => {
-            let (Some(ca), Some(cb)) = (convex(a, pa), convex(b, pb)) else { return };
+            if let (Shape::Box { half: ha, hull: hulla }, Shape::Box { half: hb, hull: hullb }) = (a, b) {
+                let (wa, wb) = (PosedHull::new(hulla, *pa), PosedHull::new(hullb, *pb));
+                if let (Some(wa), Some(wb)) = (WorldHull::new(&wa), WorldHull::new(&wb)) {
+                    box_vs_box(*ha, pa, &wa, *hb, pb, &wb, margin, out);
+                    return;
+                }
+            }
+            let (Some(ca), Some(cb)) = (convex(a, pa), convex(b, pb)) else {
+                return;
+            };
             convex_vs_convex(&ca, &cb, margin, out);
         }
     }
@@ -274,25 +286,37 @@ fn side_planes<P: Polytope + ?Sized>(p: &P, f: usize, buf: &mut Polygon, planes:
 
 /// Clips `poly` to the inside (`s · x <= d`) of each plane (Sutherland–Hodgman), keeping keys.
 fn clip_polygon(poly: &mut Polygon, planes: &[(Vec3, f32)], scratch: &mut Polygon) {
+    // Ping-pong between the two buffers by reference (no copying the arrays).
+    let (mut src, mut dst) = (&mut *poly, &mut *scratch);
+    let mut swapped = false;
     for (k, (s, d)) in planes.iter().enumerate() {
-        if poly.len == 0 {
-            return;
+        if src.len == 0 {
+            break;
         }
-        scratch.clear();
-        for i in 0..poly.len {
-            let (a, b) = (poly.pts[i], poly.pts[(i + 1) % poly.len]);
-            let (ka, kb) = (poly.keys[i], poly.keys[(i + 1) % poly.len]);
+        dst.clear();
+        for i in 0..src.len {
+            let j = if i + 1 == src.len { 0 } else { i + 1 };
+            let (a, b) = (src.pts[i], src.pts[j]);
+            let (ka, kb) = (src.keys[i], src.keys[j]);
             let (da, db) = (s.dot(a) - d, s.dot(b) - d);
             if da <= 0.0 {
-                scratch.push(a, ka);
+                dst.push(a, ka);
             }
             if (da <= 0.0) != (db <= 0.0) {
                 let t = da / (da - db);
                 let key = 0x8000 | ((k as u32 & 0x3f) << 9) | ((ka.min(kb) & 0x7) << 6) | (ka.max(kb) & 0x3f);
-                scratch.push(a + (b - a) * t, key);
+                dst.push(a + (b - a) * t, key);
             }
         }
-        std::mem::swap(poly, scratch);
+        std::mem::swap(&mut src, &mut dst);
+        swapped = !swapped;
+    }
+    if swapped {
+        // The result is in `scratch`: copy just its points back.
+        let n = scratch.len;
+        poly.pts[..n].copy_from_slice(&scratch.pts[..n]);
+        poly.keys[..n].copy_from_slice(&scratch.keys[..n]);
+        poly.len = n;
     }
 }
 
@@ -332,7 +356,9 @@ fn core_vs_poly<P: Polytope + ?Sized>(core: &Core, r: f32, poly: &P, margin: f32
         let center = poly.center();
         for e in 0..poly.edge_count() {
             let (q0, q1, _, _) = poly.edge(e);
-            let Some(mut axis) = try_normalize(seg.cross(q1 - q0)) else { continue };
+            let Some(mut axis) = try_normalize(seg.cross(q1 - q0)) else {
+                continue;
+            };
             if axis.dot(q0 - center) < 0.0 {
                 axis = -axis;
             }
@@ -406,22 +432,116 @@ fn face_points_for_segment<P: Polytope + ?Sized>(e0: Vec3, e1: Vec3, r: f32, pol
         let s = nf.dot(p) - df - r;
         if s <= margin {
             let on_face = p - nf * (nf.dot(p) - df);
-            out.push(ContactPoint { point: ((p - nf * r) + on_face) * 0.5, normal: -nf, separation: s, id: ((f as u32) << 4) | (i as u32 + 1) });
+            out.push(ContactPoint {
+                point: ((p - nf * r) + on_face) * 0.5,
+                normal: -nf,
+                separation: s,
+                id: ((f as u32) << 4) | (i as u32 + 1),
+            });
         }
     }
     out.len > before
 }
 
-/// The Gauss-map test: do edges with face normals (a, b) and (c, d) (B's normals negated) form
-/// a face of the Minkowski difference?
-fn is_minkowski_face(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> bool {
-    let bxa = b.cross(a);
-    let dxc = d.cross(c);
-    let cba = c.dot(bxa);
-    let dba = d.dot(bxa);
-    let adc = a.dot(dxc);
-    let bdc = b.dot(dxc);
-    cba * dba < 0.0 && adc * bdc < 0.0 && cba * bdc > 0.0
+/// Most edges of a hull's polytope read for the edge test (a 64-point hull has at most 186).
+const MAX_EDGES: usize = 192;
+
+/// Box against box: the separating-axis test on the 15 axes of two oriented boxes (3 + 3 face
+/// axes, 9 edge cross products), then the same clipping as any polytope pair.
+#[allow(clippy::too_many_arguments)]
+fn box_vs_box(ha: Vec3, pa: &Pose, wa: &WorldHull, hb: Vec3, pb: &Pose, wb: &WorldHull, margin: f32, out: &mut Manifold) {
+    out.len = 0;
+    let ra = crate::math::Mat3::from_quat(pa.q);
+    let rb = crate::math::Mat3::from_quat(pb.q);
+    let (ax, bx) = (ra.c, rb.c);
+    let (ha3, hb3) = ([ha.x, ha.y, ha.z], [hb.x, hb.y, hb.z]);
+    let t = pb.p - pa.p;
+    // |a_i · b_j|, with a little slack so near-parallel edges don't make bogus axes.
+    let mut abs_r = [[0.0f32; 3]; 3];
+    for (i, row) in abs_r.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = ax[i].dot(bx[j]).abs() + 1.0e-6;
+        }
+    }
+    // Face axes of A and of B (separation along the axis, pointing from A to B).
+    let mut sa = (f32::MIN, Vec3::Y);
+    for i in 0..3 {
+        let d = t.dot(ax[i]);
+        let rb_sum = hb3[0] * abs_r[i][0] + hb3[1] * abs_r[i][1] + hb3[2] * abs_r[i][2];
+        let s = d.abs() - ha3[i] - rb_sum;
+        if s > sa.0 {
+            sa = (s, if d >= 0.0 { ax[i] } else { -ax[i] });
+        }
+    }
+    if sa.0 > margin {
+        return;
+    }
+    let mut sb = (f32::MIN, Vec3::Y);
+    for j in 0..3 {
+        let d = t.dot(bx[j]);
+        let ra_sum = ha3[0] * abs_r[0][j] + ha3[1] * abs_r[1][j] + ha3[2] * abs_r[2][j];
+        let s = d.abs() - hb3[j] - ra_sum;
+        if s > sb.0 {
+            // B's face normal points from B towards A.
+            sb = (s, if d >= 0.0 { -bx[j] } else { bx[j] });
+        }
+    }
+    if sb.0 > margin {
+        return;
+    }
+    let mut se = (f32::MIN, Vec3::Y, 0usize, 0usize);
+    for i in 0..3 {
+        for j in 0..3 {
+            let c = ax[i].cross(bx[j]);
+            let l = c.length();
+            if l < 1.0e-5 {
+                continue;
+            }
+            let axis = c * (1.0 / l);
+            let d = t.dot(axis);
+            let r_a: f32 = (0..3).map(|k| ha3[k] * ax[k].dot(axis).abs()).sum();
+            let r_b: f32 = (0..3).map(|k| hb3[k] * bx[k].dot(axis).abs()).sum();
+            let s = d.abs() - r_a - r_b;
+            if s > se.0 {
+                se = (s, if d >= 0.0 { axis } else { -axis }, i, j);
+            }
+        }
+    }
+    if se.0 > margin {
+        return;
+    }
+    const REL_EDGE: f32 = 0.90;
+    const REL_FACE: f32 = 0.98;
+    const ABS: f32 = 0.0025;
+    let max_face = sa.0.max(sb.0);
+    if se.0 > REL_EDGE * max_face + ABS {
+        let (_, axis, i, j) = se;
+        // A's edge along a_i nearest B, and B's edge along b_j nearest A.
+        let mut ca = pa.p;
+        let mut cb = pb.p;
+        for k in 0..3 {
+            if k != i {
+                ca = ca + ax[k] * (ha3[k] * axis.dot(ax[k]).signum());
+            }
+            if k != j {
+                cb = cb - bx[k] * (hb3[k] * axis.dot(bx[k]).signum());
+            }
+        }
+        let (ea, eb) = (ax[i] * ha3[i], bx[j] * hb3[j]);
+        let (c1, c2, _, _) = closest_segments(ca - ea, ca + ea, cb - eb, cb + eb);
+        out.push(ContactPoint { point: (c1 + c2) * 0.5, normal: axis, separation: se.0, id: 0x4000_0000 | (i * 3 + j) as u32 });
+        return;
+    }
+    CLIP.with(|cell| {
+        let clip = &mut *cell.borrow_mut();
+        clip.cands.len = 0;
+        if sb.0 > REL_FACE * sa.0 + ABS {
+            face_contact(wb, wb.best_face(sb.1), wa, margin, true, clip);
+        } else {
+            face_contact(wa, wa.best_face(sa.1), wb, margin, false, clip);
+        }
+        clip.cands.reduce(out);
+    });
 }
 
 fn face_query<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B) -> (f32, usize) {
@@ -446,37 +566,49 @@ fn poly_vs_poly<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin
     if sb > margin {
         return;
     }
-    // Edge pairs.
+    // Edge pairs. B's edges (with the cross product of their negated face normals) are read
+    // once, not once per edge of A.
     let center_a = a.center();
     let mut se = f32::MIN;
     let mut edges = (0, 0);
     let mut edge_axis = Vec3::Y;
-    for i in 0..a.edge_count() {
-        let (p0, p1, na0, na1) = a.edge(i);
-        let ea = p1 - p0;
-        for j in 0..b.edge_count() {
+    let nb = b.edge_count().min(MAX_EDGES);
+    CLIP.with(|cell| {
+        let b_edges = &mut cell.borrow_mut().edges;
+        for (j, e) in b_edges.iter_mut().enumerate().take(nb) {
             let (q0, q1, nb0, nb1) = b.edge(j);
-            if !is_minkowski_face(na0, na1, -nb0, -nb1) {
-                continue;
-            }
-            let eb = q1 - q0;
-            let c = ea.cross(eb);
-            let cl = c.length();
-            if cl < 1.0e-5 * (ea.length() * eb.length()).max(1.0e-12) {
-                continue;
-            }
-            let mut axis = c * (1.0 / cl);
-            if axis.dot(p0 - center_a) < 0.0 {
-                axis = -axis;
-            }
-            let s = axis.dot(q0 - p0);
-            if s > se {
-                se = s;
-                edges = (i, j);
-                edge_axis = axis;
+            let (c, d) = (-nb0, -nb1);
+            *e = (q0, q1, c, d, d.cross(c));
+        }
+        for i in 0..a.edge_count() {
+            let (p0, p1, na0, na1) = a.edge(i);
+            let ea = p1 - p0;
+            let bxa = na1.cross(na0);
+            for (j, &(q0, q1, c, d, dxc)) in b_edges.iter().enumerate().take(nb) {
+                // The Gauss-map test (see `is_minkowski_face`), with the cross products hoisted.
+                let (cba, dba, adc, bdc) = (c.dot(bxa), d.dot(bxa), na0.dot(dxc), na1.dot(dxc));
+                if !(cba * dba < 0.0 && adc * bdc < 0.0 && cba * bdc > 0.0) {
+                    continue;
+                }
+                let eb = q1 - q0;
+                let c = ea.cross(eb);
+                let cl = c.length();
+                if cl < 1.0e-5 * (ea.length() * eb.length()).max(1.0e-12) {
+                    continue;
+                }
+                let mut axis = c * (1.0 / cl);
+                if axis.dot(p0 - center_a) < 0.0 {
+                    axis = -axis;
+                }
+                let s = axis.dot(q0 - p0);
+                if s > se {
+                    se = s;
+                    edges = (i, j);
+                    edge_axis = axis;
+                }
             }
         }
-    }
+    });
     if se > margin {
         return;
     }
@@ -488,7 +620,12 @@ fn poly_vs_poly<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin
         let (p0, p1, _, _) = a.edge(edges.0);
         let (q0, q1, _, _) = b.edge(edges.1);
         let (c1, c2, _, _) = closest_segments(p0, p1, q0, q1);
-        out.push(ContactPoint { point: (c1 + c2) * 0.5, normal: edge_axis, separation: se, id: 0x4000_0000 | ((edges.0 as u32) << 12) | edges.1 as u32 });
+        out.push(ContactPoint {
+            point: (c1 + c2) * 0.5,
+            normal: edge_axis,
+            separation: se,
+            id: 0x4000_0000 | ((edges.0 as u32) << 12) | edges.1 as u32,
+        });
         return;
     }
     CLIP.with(|cell| {
@@ -517,7 +654,7 @@ fn face_contact<R: Polytope + ?Sized, I: Polytope + ?Sized>(reff: &R, fr: usize,
             fi = f;
         }
     }
-    let Clip { poly, buf, scratch, planes, cands } = clip;
+    let Clip { poly, buf, scratch, planes, cands, .. } = clip;
     inc.face_points(fi, poly);
     let k = side_planes(reff, fr, buf, planes);
     clip_polygon(poly, &planes[..k], scratch);
@@ -714,7 +851,40 @@ mod tests {
         }
         let hf = Shape::heightfield(3, 3, vec![0.0; 9], (2.0, 2.0)).unwrap();
         let m = run(&Shape::sphere(0.5), Pose::at(v3(0.0, 0.45, 0.0)), &hf, Pose::IDENTITY);
-        assert!(m.len >= 1 && m.as_slice().iter().all(|p| (p.normal + Vec3::Y).length() < 1e-4 && (p.separation + 0.05).abs() < 1e-4), "{m:?}");
+        assert!(
+            m.len >= 1 && m.as_slice().iter().all(|p| (p.normal + Vec3::Y).length() < 1e-4 && (p.separation + 0.05).abs() < 1e-4),
+            "{m:?}"
+        );
+    }
+
+    /// The box-box fast path agrees with the general polytope test on random poses.
+    #[test]
+    fn box_fast_path_matches_the_general_test() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let (a, b) = (Shape::cuboid(v3(0.5, 0.3, 0.4)), Shape::cuboid(v3(0.35, 0.6, 0.25)));
+        let mut compared = 0;
+        for _ in 0..2000 {
+            let pa = Pose::new(v3(rnd(), rnd(), rnd()), Quat::from_euler_xyz_deg(rnd() * 360.0, rnd() * 360.0, rnd() * 360.0));
+            let pb = Pose::new(v3(rnd() * 1.6, rnd() * 1.6, rnd() * 1.6), Quat::from_euler_xyz_deg(rnd() * 360.0, rnd() * 360.0, rnd() * 360.0));
+            let mut fast = Manifold::default();
+            collide(&a, &pa, &b, &pb, 0.02, &mut fast);
+            let (Some(ca), Some(cb)) = (convex(&a, &pa), convex(&b, &pb)) else { panic!() };
+            let mut general = Manifold::default();
+            convex_vs_convex(&ca, &cb, 0.02, &mut general);
+            let min = |m: &Manifold| m.as_slice().iter().map(|p| p.separation).fold(f32::MAX, f32::min);
+            assert_eq!(fast.len > 0, general.len > 0, "{pa:?} {pb:?}\n{fast:?}\n{general:?}");
+            if fast.len > 0 {
+                assert!((min(&fast) - min(&general)).abs() < 2e-3, "{pa:?} {pb:?}\n{fast:?}\n{general:?}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 200, "{compared}");
     }
 
     #[test]

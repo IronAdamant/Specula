@@ -42,7 +42,15 @@ impl Timing {
         s.step(DT);
         self.samples.push(t.elapsed().as_secs_f64() * 1000.0);
         let st = s.report().times;
-        for (acc, v) in self.stages.iter_mut().zip([st.pairs_us, st.narrowphase_us, st.solve_us, st.integrate_us, st.ccd_us, st.sleep_us, st.broadphase_us]) {
+        for (acc, v) in self.stages.iter_mut().zip([
+            st.pairs_us,
+            st.narrowphase_us,
+            st.solve_us,
+            st.integrate_us,
+            st.ccd_us,
+            st.sleep_us,
+            st.broadphase_us,
+        ]) {
             *acc += v;
         }
     }
@@ -77,7 +85,8 @@ fn main() {
         // Narrowphase cost per shape pair, resting contact.
         use specula_core::math::Quat;
         use specula_physics::contact::{collide, Manifold};
-        let hull = Shape::hull(&[v3(-0.4, -0.3, -0.4), v3(0.4, -0.3, -0.4), v3(0.0, -0.3, 0.45), v3(0.0, 0.4, 0.0), v3(0.2, 0.1, 0.2)]).unwrap();
+        let hull =
+            Shape::hull(&[v3(-0.4, -0.3, -0.4), v3(0.4, -0.3, -0.4), v3(0.0, -0.3, 0.45), v3(0.0, 0.4, 0.0), v3(0.2, 0.1, 0.2)]).unwrap();
         let bx = Shape::cuboid(v3(0.4, 0.4, 0.4));
         let cases: Vec<(&str, Shape, Shape)> = vec![
             ("box-box", bx.clone(), bx.clone()),
@@ -132,7 +141,8 @@ fn main() {
     {
         let mut s = Space::default();
         floor(&mut s, 60.0);
-        let hull = Shape::hull(&[v3(-0.4, -0.3, -0.4), v3(0.4, -0.3, -0.4), v3(0.0, -0.3, 0.45), v3(0.0, 0.4, 0.0), v3(0.2, 0.1, 0.2)]).unwrap();
+        let hull =
+            Shape::hull(&[v3(-0.4, -0.3, -0.4), v3(0.4, -0.3, -0.4), v3(0.0, -0.3, 0.45), v3(0.0, 0.4, 0.0), v3(0.2, 0.1, 0.2)]).unwrap();
         for i in 0..1000u64 {
             let shape = match i % 4 {
                 0 => Shape::cuboid(v3(0.4, 0.4, 0.4)),
@@ -175,10 +185,12 @@ fn main() {
     {
         let mut s = Space::new(Settings::default());
         let n = 65usize;
-        let heights: Vec<f32> = (0..n * n).map(|i| {
-            let (x, z) = ((i % n) as f32, (i / n) as f32);
-            0.4 * specula_core::dmath::sin(x * 0.3) * specula_core::dmath::cos(z * 0.25)
-        }).collect();
+        let heights: Vec<f32> = (0..n * n)
+            .map(|i| {
+                let (x, z) = ((i % n) as f32, (i / n) as f32);
+                0.4 * specula_core::dmath::sin(x * 0.3) * specula_core::dmath::cos(z * 0.25)
+            })
+            .collect();
         let hf = Shape::heightfield(n, n, heights, (1.0, 1.0)).unwrap();
         s.insert(1, BodyDesc::new(BodyKind::Static, Pose::IDENTITY, Some(ColliderDesc::new(hf)))).unwrap();
         let count = 100u64;

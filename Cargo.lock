@@ -114,6 +114,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-physics"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula-platform"
 version = "0.3.0"
 dependencies = [

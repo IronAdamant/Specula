@@ -20,11 +20,19 @@ pub const MAX_HEIGHTFIELD_SIDE: usize = 257;
 /// A collision shape in its collider's local frame.
 #[derive(Clone, Debug)]
 pub enum Shape {
-    Sphere { radius: f32 },
+    Sphere {
+        radius: f32,
+    },
     /// A segment along local Y from `-half_height` to `+half_height`, swept by `radius`.
-    Capsule { radius: f32, half_height: f32 },
+    Capsule {
+        radius: f32,
+        half_height: f32,
+    },
     /// Half extents; `hull` is the same box as a polytope (for the polytope tests).
-    Box { half: Vec3, hull: Arc<Hull> },
+    Box {
+        half: Vec3,
+        hull: Arc<Hull>,
+    },
     Hull(Arc<Hull>),
     /// Static only.
     Mesh(Arc<TriMesh>),
@@ -302,11 +310,8 @@ impl Hull {
                 edge_faces.entry((a.min(b), a.max(b))).or_default().push(f as u16);
             }
         }
-        let edges: Vec<Edge> = edge_faces
-            .into_iter()
-            .filter(|(_, f)| f.len() == 2)
-            .map(|((a, b), f)| Edge { v: [a, b], faces: [f[0], f[1]] })
-            .collect();
+        let edges: Vec<Edge> =
+            edge_faces.into_iter().filter(|(_, f)| f.len() == 2).map(|((a, b), f)| Edge { v: [a, b], faces: [f[0], f[1]] }).collect();
         let mut hull = Hull {
             points,
             normals,
@@ -403,7 +408,8 @@ impl Hull {
         }
         let tr = cov[0][0] + cov[1][1] + cov[2][2];
         let at = |i: usize, j: usize| -> f32 { ((if i == j { tr } else { 0.0 }) - cov[i][j]) as f32 };
-        self.unit_inertia = Mat3 { c: [v3(at(0, 0), at(1, 0), at(2, 0)), v3(at(0, 1), at(1, 1), at(2, 1)), v3(at(0, 2), at(1, 2), at(2, 2))] };
+        self.unit_inertia =
+            Mat3 { c: [v3(at(0, 0), at(1, 0), at(2, 0)), v3(at(0, 1), at(1, 1), at(2, 1)), v3(at(0, 2), at(1, 2), at(2, 2))] };
         self.volume = volume as f32;
         self.centroid = r + v3(com[0] as f32, com[1] as f32, com[2] as f32);
     }
@@ -412,10 +418,13 @@ impl Hull {
 /// Indices of the 2D convex hull of `ids` (projected by `at`), counter-clockwise, collinear
 /// points dropped (Andrew's monotone chain: comparisons and cross products only).
 fn convex_loop(ids: &[usize], at: impl Fn(usize) -> (f32, f32)) -> Vec<usize> {
-    let mut pts: Vec<(f32, f32, usize)> = ids.iter().map(|&i| {
-        let (x, y) = at(i);
-        (x, y, i)
-    }).collect();
+    let mut pts: Vec<(f32, f32, usize)> = ids
+        .iter()
+        .map(|&i| {
+            let (x, y) = at(i);
+            (x, y, i)
+        })
+        .collect();
     pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
     if pts.len() < 3 {
         return pts.iter().map(|p| p.2).collect();
@@ -476,15 +485,21 @@ const BVH_LEAF: usize = 4;
 impl TriMesh {
     pub fn new(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Result<TriMesh, PhysicsError> {
         if triangles.is_empty() || triangles.len() > MAX_MESH_TRIANGLES {
-            return Err(PhysicsError::new("invalid_mesh", format!("a mesh collider needs 1 to {MAX_MESH_TRIANGLES} triangles (got {})", triangles.len()))
-                .with("triangles", triangles.len()));
+            return Err(PhysicsError::new(
+                "invalid_mesh",
+                format!("a mesh collider needs 1 to {MAX_MESH_TRIANGLES} triangles (got {})", triangles.len()),
+            )
+            .with("triangles", triangles.len()));
         }
         if !vertices.iter().all(|p| crate::math::is_finite(*p)) {
             return Err(PhysicsError::new("invalid_mesh", "mesh vertices must be finite"));
         }
         if let Some((i, _)) = triangles.iter().enumerate().find(|(_, t)| t.iter().any(|&v| v as usize >= vertices.len())) {
-            return Err(PhysicsError::new("invalid_mesh", format!("triangle {i} uses a vertex index past the {} vertices", vertices.len()))
-                .with("triangle", i));
+            return Err(PhysicsError::new(
+                "invalid_mesh",
+                format!("triangle {i} uses a vertex index past the {} vertices", vertices.len()),
+            )
+            .with("triangle", i));
         }
         let normals: Vec<Vec3> = triangles
             .iter()
@@ -535,10 +550,12 @@ impl TriMesh {
 
     fn build_bvh(&mut self) {
         let n = self.triangles.len();
-        let centroids: Vec<Vec3> = (0..n).map(|i| {
-            let [a, b, c] = self.triangle(i);
-            (a + b + c) * (1.0 / 3.0)
-        }).collect();
+        let centroids: Vec<Vec3> = (0..n)
+            .map(|i| {
+                let [a, b, c] = self.triangle(i);
+                (a + b + c) * (1.0 / 3.0)
+            })
+            .collect();
         let mut order: Vec<u32> = (0..n as u32).collect();
         let mut nodes = Vec::with_capacity(2 * n / BVH_LEAF + 1);
         self.build_node(&mut nodes, &mut order, 0, n, &centroids);
@@ -555,7 +572,13 @@ impl TriMesh {
         }
         let cb = Aabb::of_points(order[start..end].iter().map(|&t| centroids[t as usize]));
         let ext = cb.max - cb.min;
-        let axis = if ext.x >= ext.y && ext.x >= ext.z { 0 } else if ext.y >= ext.z { 1 } else { 2 };
+        let axis = if ext.x >= ext.y && ext.x >= ext.z {
+            0
+        } else if ext.y >= ext.z {
+            1
+        } else {
+            2
+        };
         order[start..end].sort_by(|&a, &b| {
             crate::math::get(centroids[a as usize], axis).total_cmp(&crate::math::get(centroids[b as usize], axis)).then(a.cmp(&b))
         });
@@ -647,7 +670,10 @@ impl Heightfield {
             ));
         }
         if heights.len() != columns * rows {
-            return Err(PhysicsError::new("invalid_heightfield", format!("{columns} x {rows} samples need {} heights (got {})", columns * rows, heights.len())));
+            return Err(PhysicsError::new(
+                "invalid_heightfield",
+                format!("{columns} x {rows} samples need {} heights (got {})", columns * rows, heights.len()),
+            ));
         }
         if !heights.iter().all(|h| h.is_finite()) || !(cell.0 > 0.0 && cell.1 > 0.0 && cell.0.is_finite() && cell.1.is_finite()) {
             return Err(PhysicsError::new("invalid_heightfield", "heights must be finite and cell sizes positive"));

@@ -97,9 +97,11 @@ impl Space {
         if body.kind != BodyKind::Kinematic {
             return Err(PhysicsError::new("not_kinematic", "characters are kinematic bodies").with("key", key));
         }
-        let col = body.collider.ok_or_else(|| PhysicsError::new("no_collider", "a character needs a collider (a capsule)").with("key", key))?;
+        let col =
+            body.collider.ok_or_else(|| PhysicsError::new("no_collider", "a character needs a collider (a capsule)").with("key", key))?;
         if col.shape.is_static_only() {
-            return Err(PhysicsError::new("static_only_shape", "a character's collider must be convex (capsule, sphere, box or hull)").with("key", key));
+            return Err(PhysicsError::new("static_only_shape", "a character's collider must be convex (capsule, sphere, box or hull)")
+                .with("key", key));
         }
         let shape = col.shape.clone();
         let up = normalize_or(cfg.up, Vec3::Y);
@@ -252,7 +254,9 @@ impl Space {
         if up_dot <= 0.05 {
             return false;
         }
-        let Some(inward) = try_normalize(-(h.normal - m.up * up_dot)) else { return false };
+        let Some(inward) = try_normalize(-(h.normal - m.up * up_dot)) else {
+            return false;
+        };
         let origin = h.point + m.up * 0.02 + inward * 0.01;
         let (found, _) = self.raycast(origin, -m.up, 0.06, &m.filter, 1);
         found.first().is_some_and(|r| r.normal.dot(m.up) >= m.min_ground_dot)

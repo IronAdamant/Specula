@@ -283,7 +283,8 @@ fn the_character_walks_steps_and_respects_slopes() {
     ground(&mut s);
     for i in 0..4 {
         let step = ColliderDesc::new(Shape::cuboid(v3(0.25, 0.1 + 0.1 * i as f32, 2.0)));
-        s.insert(10 + i, BodyDesc::new(BodyKind::Static, Pose::at(v3(2.0 + 0.5 * i as f32, 0.1 + 0.1 * i as f32, 0.0)), Some(step))).unwrap();
+        s.insert(10 + i, BodyDesc::new(BodyKind::Static, Pose::at(v3(2.0 + 0.5 * i as f32, 0.1 + 0.1 * i as f32, 0.0)), Some(step)))
+            .unwrap();
     }
     let ledge = ColliderDesc::new(Shape::cuboid(v3(1.0, 0.3, 2.0)));
     s.insert(20, BodyDesc::new(BodyKind::Static, Pose::at(v3(3.75 + 1.0, 0.8 + 0.3, 0.0)), Some(ledge))).unwrap();

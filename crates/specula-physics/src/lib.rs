@@ -38,7 +38,9 @@ pub mod tree;
 pub use character::{CharacterConfig, CharacterMove};
 pub use math::{Aabb, Pose};
 pub use shape::Shape;
-pub use space::{BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, Settings, Space, StepReport};
+pub use space::{
+    BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, Settings, Space, StepReport,
+};
 
 use specula_core::Json;
 

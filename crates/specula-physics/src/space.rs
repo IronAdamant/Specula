@@ -26,7 +26,7 @@ use crate::contact::{collide, Manifold, MAX_POINTS};
 use crate::math::{Aabb, Mat3, Pose, Quat, Vec3};
 use crate::query::{self, CastHit, RayHit};
 use crate::shape::Shape;
-use crate::solver::{self, Constraint, SolverBody, SolverPoint, Softness, Tuning, STATIC};
+use crate::solver::{self, Constraint, Softness, SolverBody, SolverPoint, Tuning, STATIC};
 use crate::tree::Tree;
 use crate::PhysicsError;
 use specula_core::hash::StableHasher;
@@ -239,6 +239,8 @@ struct CPoint {
 
 #[derive(Clone, Debug)]
 struct Contact {
+    /// `(lower key, higher key)`.
+    key: (u64, u64),
     a: u32,
     b: u32,
     points: [CPoint; MAX_POINTS],
@@ -247,8 +249,6 @@ struct Contact {
     trigger: bool,
     friction: f32,
     restitution: f32,
-    /// Updated this step (one of its bodies moves).
-    sim: bool,
 }
 
 /// What happened during a step.
@@ -412,7 +412,12 @@ pub struct Space {
     by_key: BTreeMap<u64, u32>,
     static_tree: Tree,
     dynamic_tree: Tree,
-    contacts: BTreeMap<(u64, u64), Contact>,
+    /// Contacts in a slab, found by pair key through `pairs` (key order is the order every
+    /// pass uses); `sim` lists this step's pairs (those with a moving body) in key order.
+    contacts: Vec<Option<Contact>>,
+    contact_free: Vec<u32>,
+    pairs: BTreeMap<(u64, u64), u32>,
+    sim: Vec<u32>,
     /// Bodies whose fat box changed (or that were added) since pairs were last found.
     moved: BTreeSet<u64>,
     islands: BTreeMap<u32, Vec<u64>>,
@@ -451,7 +456,10 @@ impl Space {
             by_key: BTreeMap::new(),
             static_tree: Tree::default(),
             dynamic_tree: Tree::default(),
-            contacts: BTreeMap::new(),
+            contacts: Vec::new(),
+            contact_free: Vec::new(),
+            pairs: BTreeMap::new(),
+            sim: Vec::new(),
             moved: BTreeSet::new(),
             islands: BTreeMap::new(),
             next_island: 0,
@@ -537,9 +545,12 @@ impl Space {
         }
         if self.by_key.len() >= self.settings.max_bodies {
             self.refused += 1;
-            return Err(PhysicsError::new("budget", format!("physics holds at most {} bodies (Settings::max_bodies)", self.settings.max_bodies))
-                .with("limit", self.settings.max_bodies)
-                .with("key", key));
+            return Err(PhysicsError::new(
+                "budget",
+                format!("physics holds at most {} bodies (Settings::max_bodies)", self.settings.max_bodies),
+            )
+            .with("limit", self.settings.max_bodies)
+            .with("key", key));
         }
         let mut b = Body {
             key,
@@ -600,14 +611,20 @@ impl Space {
 
     /// The contact keys a body is in, sorted.
     fn pairs_of(&self, key: u64) -> Vec<(u64, u64)> {
-        let mut out: Vec<(u64, u64)> = self.contacts.range((key, 0)..=(key, u64::MAX)).map(|(k, _)| *k).collect();
+        let mut out: Vec<(u64, u64)> = self.pairs.range((key, 0)..=(key, u64::MAX)).map(|(k, _)| *k).collect();
         out.extend(self.reverse.range((key, 0)..=(key, u64::MAX)).map(|(b, a)| (*a, *b)));
         out.sort_unstable();
         out
     }
 
+    fn contact(&self, slot: u32) -> &Contact {
+        self.contacts[slot as usize].as_ref().expect("live contact")
+    }
+
     fn drop_contact(&mut self, k: (u64, u64)) -> Option<Contact> {
-        let c = self.contacts.remove(&k)?;
+        let slot = self.pairs.remove(&k)?;
+        let c = self.contacts[slot as usize].take().expect("live contact");
+        self.contact_free.push(slot);
         self.reverse.remove(&(k.1, k.0));
         if c.touching {
             self.touching_count -= 1;
@@ -617,7 +634,9 @@ impl Space {
 
     /// Removes a body; bodies resting on it wake up. Returns whether it existed.
     pub fn remove(&mut self, key: u64) -> bool {
-        let Some(&s) = self.by_key.get(&key) else { return false };
+        let Some(&s) = self.by_key.get(&key) else {
+            return false;
+        };
         // Wake what touched it and drop its contacts.
         for p in self.pairs_of(key) {
             let c = self.drop_contact(p).expect("listed");
@@ -658,7 +677,9 @@ impl Space {
 
     /// Teleports a body (wakes it; a kinematic body's pending target is dropped).
     pub fn set_pose(&mut self, key: u64, pose: Pose) {
-        let Some(&s) = self.by_key.get(&key) else { return };
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
         self.wake_slot(s);
         let b = self.slot_mut(s);
         b.desc.pose = pose;
@@ -684,7 +705,9 @@ impl Space {
     }
 
     pub fn set_velocity(&mut self, key: u64, v: Vec3, w: Vec3) {
-        let Some(&s) = self.by_key.get(&key) else { return };
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
         self.wake_slot(s);
         let b = self.slot_mut(s);
         b.desc.velocity = v;
@@ -695,7 +718,9 @@ impl Space {
     /// A kinematic body arrives at `target` at the end of the next step, moving there at the
     /// matching velocity (so it pushes what it meets).
     pub fn move_kinematic(&mut self, key: u64, target: Pose) {
-        let Some(&s) = self.by_key.get(&key) else { return };
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
         if self.slot(s).desc.kind != BodyKind::Kinematic {
             self.set_pose(key, target);
             return;
@@ -705,7 +730,9 @@ impl Space {
 
     /// Adds `impulse` (N·s) at world point `at` to a dynamic body (wakes it).
     pub fn apply_impulse(&mut self, key: u64, impulse: Vec3, at: Vec3) {
-        let Some(&s) = self.by_key.get(&key) else { return };
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
         if !self.slot(s).is_dynamic() {
             return;
         }
@@ -760,12 +787,15 @@ impl Space {
 
     /// Contact pairs in key order (touching ones, or all).
     pub fn contacts(&self, touching_only: bool) -> impl Iterator<Item = ContactView> + '_ {
-        self.contacts.iter().filter(move |(_, c)| !touching_only || c.touching).map(|((a, b), c)| ContactView {
+        self.pairs.iter().map(|(k, s)| (k, self.contact(*s))).filter(move |(_, c)| !touching_only || c.touching).map(|((a, b), c)| ContactView {
             a: *a,
             b: *b,
             touching: c.touching,
             trigger: c.trigger,
-            points: c.points[..c.len].iter().map(|p| (p.point, oriented(p.normal, self.slot(c.a).key, *a), p.separation, p.normal_impulse)).collect(),
+            points: c.points[..c.len]
+                .iter()
+                .map(|p| (p.point, oriented(p.normal, self.slot(c.a).key, *a), p.separation, p.normal_impulse))
+                .collect(),
         })
     }
 
@@ -774,7 +804,7 @@ impl Space {
         let mut out: Vec<u64> = self
             .pairs_of(key)
             .into_iter()
-            .filter(|k| self.contacts.get(k).is_some_and(|c| c.touching))
+            .filter(|k| self.pairs.get(k).is_some_and(|s| self.contact(*s).touching))
             .map(|(a, b)| if a == key { b } else { a })
             .collect();
         out.sort_unstable();
@@ -870,7 +900,9 @@ impl Space {
 
     /// Whether two bodies' colliders make a pair (kinds, triggers, layers).
     fn should_pair(a: &Body, b: &Body) -> bool {
-        let (Some(ca), Some(cb)) = (&a.desc.collider, &b.desc.collider) else { return false };
+        let (Some(ca), Some(cb)) = (&a.desc.collider, &b.desc.collider) else {
+            return false;
+        };
         if ca.mask & cb.layer == 0 || cb.mask & ca.layer == 0 {
             return false;
         }
@@ -889,7 +921,9 @@ impl Space {
         let mut cands = std::mem::take(&mut self.candidates);
         cands.clear();
         for &key in &self.moved {
-            let Some(&s) = self.by_key.get(&key) else { continue };
+            let Some(&s) = self.by_key.get(&key) else {
+                continue;
+            };
             let b = self.slot(s);
             let Some(fat) = self.fat(b) else { continue };
             let mut visit = |other: u32| {
@@ -912,10 +946,10 @@ impl Space {
         cands.dedup();
         let mut dropped = 0usize;
         for &(ka, kb) in &cands {
-            if self.contacts.contains_key(&(ka, kb)) {
+            if self.pairs.contains_key(&(ka, kb)) {
                 continue;
             }
-            if self.contacts.len() >= self.settings.max_pairs {
+            if self.pairs.len() >= self.settings.max_pairs {
                 dropped += 1;
                 continue;
             }
@@ -925,21 +959,66 @@ impl Space {
             let trigger = ca.is_trigger || cb.is_trigger;
             let friction = (ca.friction * cb.friction).sqrt();
             let restitution = ca.restitution.max(cb.restitution);
-            self.contacts.insert(
-                (ka, kb),
-                Contact { a: sa, b: sb, points: [CPoint::default(); MAX_POINTS], len: 0, touching: false, trigger, friction, restitution, sim: false },
-            );
+            let c = Contact {
+                key: (ka, kb),
+                a: sa,
+                b: sb,
+                points: [CPoint::default(); MAX_POINTS],
+                len: 0,
+                touching: false,
+                trigger,
+                friction,
+                restitution,
+            };
+            let slot = match self.contact_free.pop() {
+                Some(slot) => {
+                    self.contacts[slot as usize] = Some(c);
+                    slot
+                }
+                None => {
+                    self.contacts.push(Some(c));
+                    (self.contacts.len() - 1) as u32
+                }
+            };
+            self.pairs.insert((ka, kb), slot);
             self.reverse.insert((kb, ka));
             self.report.new_pairs += 1;
         }
         if dropped > 0 {
             self.report.errors.push(
-                PhysicsError::new("budget", format!("{dropped} new contact pairs were dropped: physics keeps at most {} pairs (Settings::max_pairs)", self.settings.max_pairs))
-                    .with("limit", self.settings.max_pairs)
-                    .with("dropped", dropped),
+                PhysicsError::new(
+                    "budget",
+                    format!(
+                        "{dropped} new contact pairs were dropped: physics keeps at most {} pairs (Settings::max_pairs)",
+                        self.settings.max_pairs
+                    ),
+                )
+                .with("limit", self.settings.max_pairs)
+                .with("dropped", dropped),
             );
         }
         self.candidates = cands;
+    }
+
+    /// This step's pairs (`sim`), in key order: those with a moving body. Found from the awake
+    /// bodies when they are few (sleeping worlds cost nearly nothing), else by one pass.
+    fn collect_sim(&mut self) {
+        let mut sim = std::mem::take(&mut self.sim);
+        sim.clear();
+        let active = |c: &Contact| self.slot(c.a).active() || self.slot(c.b).active();
+        if self.awake.len() * 8 < self.pairs.len() {
+            let mut keys: Vec<(u64, u64)> = Vec::new();
+            for &k in &self.awake {
+                keys.extend(self.pairs.range((k, 0)..=(k, u64::MAX)).map(|(p, _)| *p));
+                keys.extend(self.reverse.range((k, 0)..=(k, u64::MAX)).map(|(b, a)| (*a, *b)));
+            }
+            keys.sort_unstable();
+            keys.dedup();
+            sim.extend(keys.into_iter().map(|k| self.pairs[&k]).filter(|s| active(self.contact(*s))));
+        } else {
+            sim.extend(self.pairs.values().copied().filter(|s| active(self.contact(*s))));
+        }
+        self.sim = sim;
     }
 
     /// Contact points for every active pair (step 2).
@@ -952,12 +1031,11 @@ impl Space {
         let mut m = Manifold::default();
         let mut touching_delta: isize = 0;
         let mut deepest: Option<(f32, u64, u64)> = None;
-        for (&(ka, kb), c) in self.contacts.iter_mut() {
+        self.collect_sim();
+        for &slot in &self.sim {
+            let c = self.contacts[slot as usize].as_mut().expect("live contact");
+            let (ka, kb) = c.key;
             let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
-            c.sim = a.active() || b.active();
-            if !c.sim {
-                continue;
-            }
             let fa = fat_of(&self.static_tree, &self.dynamic_tree, a);
             let fb = fat_of(&self.static_tree, &self.dynamic_tree, b);
             if !fa.overlaps(&fb) {
@@ -991,7 +1069,14 @@ impl Space {
                     let trig = if ca.is_trigger { a.key } else { b.key };
                     let other = if ca.is_trigger { b.key } else { a.key };
                     let p = deepest.map_or(Vec3::ZERO, |p| p.point);
-                    events.push(Event { kind: if c.touching { EventKind::TriggerEnter } else { EventKind::TriggerExit }, a: trig, b: other, point: p, normal: Vec3::ZERO, speed: 0.0 });
+                    events.push(Event {
+                        kind: if c.touching { EventKind::TriggerEnter } else { EventKind::TriggerExit },
+                        a: trig,
+                        b: other,
+                        point: p,
+                        normal: Vec3::ZERO,
+                        speed: 0.0,
+                    });
                 }
                 continue;
             }
@@ -1021,9 +1106,17 @@ impl Space {
             }
             if c.touching && !was {
                 let p = c.points[..c.len].iter().fold(c.points[0], |d, p| if p.separation < d.separation { *p } else { d });
-                let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center)) - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
+                let rel = (b.desc.velocity + b.desc.angular_velocity.cross(p.point - b.center))
+                    - (a.desc.velocity + a.desc.angular_velocity.cross(p.point - a.center));
                 let normal = oriented(p.normal, a.key, ka);
-                events.push(Event { kind: EventKind::ContactBegin, a: ka, b: kb, point: p.point, normal, speed: (-rel.dot(p.normal)).max(0.0) });
+                events.push(Event {
+                    kind: EventKind::ContactBegin,
+                    a: ka,
+                    b: kb,
+                    point: p.point,
+                    normal,
+                    speed: (-rel.dot(p.normal)).max(0.0),
+                });
             } else if !c.touching && was {
                 events.push(end_event(c, ka, kb));
             }
@@ -1041,6 +1134,9 @@ impl Space {
         for k in remove {
             self.drop_contact(k);
         }
+        // Dropped pairs leave this step's list (their slots are only reused by later steps).
+        let contacts = &self.contacts;
+        self.sim.retain(|s| contacts[*s as usize].is_some());
         for s in wake {
             self.wake_slot(s);
         }
@@ -1054,9 +1150,15 @@ impl Space {
         self.report = StepReport { step: self.steps + 1, ..StepReport::default() };
         if self.refused > 0 {
             self.report.errors.push(
-                PhysicsError::new("budget", format!("{} bodies were refused: physics holds at most {} (Settings::max_bodies)", self.refused, self.settings.max_bodies))
-                    .with("limit", self.settings.max_bodies)
-                    .with("refused", self.refused),
+                PhysicsError::new(
+                    "budget",
+                    format!(
+                        "{} bodies were refused: physics holds at most {} (Settings::max_bodies)",
+                        self.refused, self.settings.max_bodies
+                    ),
+                )
+                .with("limit", self.settings.max_bodies)
+                .with("refused", self.refused),
             );
             self.refused = 0;
         }
@@ -1117,7 +1219,7 @@ impl Space {
         self.report.bodies = self.by_key.len();
         self.report.awake = awake;
         self.report.sleeping = self.dynamic_count - self.awake.iter().filter(|k| self.get(**k).is_some_and(|b| b.is_dynamic())).count();
-        self.report.pairs = self.contacts.len();
+        self.report.pairs = self.pairs.len();
         self.report.touching = self.touching_count;
         self.report.kinetic_energy = ke;
         self.report.potential_energy = pe;
@@ -1198,8 +1300,9 @@ impl Space {
         let h = dt / settings.substeps.max(1) as f32;
         let soft = Softness::new(hertz, settings.contact_damping_ratio, h);
         let static_soft = Softness::new(2.0 * hertz, settings.contact_damping_ratio, h);
-        for (i, c) in self.contacts.values().enumerate() {
-            if !c.sim || c.trigger || c.len == 0 {
+        for &slot in &self.sim {
+            let c = self.contact(slot);
+            if c.trigger || c.len == 0 {
                 continue;
             }
             let (a, b) = (self.slot(c.a), self.slot(c.b));
@@ -1231,7 +1334,7 @@ impl Space {
                 soft: if both_dynamic { soft } else { static_soft },
                 points,
                 len: c.len,
-                contact: i as u32,
+                contact: slot,
             });
         }
         self.report.constraints = cons.len();
@@ -1246,20 +1349,12 @@ impl Space {
         };
         solver::step(&mut cons, &mut sbodies, dt, &tuning);
         // Store impulses for next step's warm start.
-        let mut by_index: Vec<Option<&Constraint>> = vec![None; self.contacts.len()];
-        for c in &cons {
-            by_index[c.contact as usize] = Some(c);
-        }
-        for (i, c) in self.contacts.values_mut().enumerate() {
-            if !c.sim {
-                continue;
-            }
-            if let Some(sc) = by_index[i] {
-                for k in 0..c.len {
-                    c.points[k].normal_impulse = sc.points[k].normal_impulse;
-                    c.points[k].tangent_impulse = sc.points[k].tangent_impulse;
-                    c.points[k].max_normal_impulse = sc.points[k].max_normal_impulse;
-                }
+        for sc in &cons {
+            let c = self.contacts[sc.contact as usize].as_mut().expect("live contact");
+            for k in 0..c.len {
+                c.points[k].normal_impulse = sc.points[k].normal_impulse;
+                c.points[k].tangent_impulse = sc.points[k].tangent_impulse;
+                c.points[k].max_normal_impulse = sc.points[k].max_normal_impulse;
             }
         }
         // Write dynamic bodies back.
@@ -1315,7 +1410,9 @@ impl Space {
             if !b.is_dynamic() || b.desc.sleeping || b.solver == NONE {
                 continue;
             }
-            let Some(col) = &b.desc.collider else { continue };
+            let Some(col) = &b.desc.collider else {
+                continue;
+            };
             if col.is_trigger {
                 continue;
             }
@@ -1344,7 +1441,9 @@ impl Space {
             });
             for o in cands {
                 let ob = self.slot(o);
-                let Some(oc) = &ob.desc.collider else { continue };
+                let Some(oc) = &ob.desc.collider else {
+                    continue;
+                };
                 if oc.is_trigger || oc.mask & layer == 0 || mask_bits & oc.layer == 0 {
                     continue;
                 }
@@ -1409,8 +1508,9 @@ impl Space {
             x
         }
         let mut keep_awake: Vec<u32> = Vec::new();
-        for c in self.contacts.values() {
-            if !c.sim || !c.touching || c.trigger {
+        for &slot in &self.sim {
+            let c = self.contact(slot);
+            if !c.touching || c.trigger {
                 continue;
             }
             let (a, b) = (self.slot(c.a), self.slot(c.b));
@@ -1469,7 +1569,9 @@ impl Space {
     // Queries
 
     fn passes(&self, b: &Body, f: &Filter) -> bool {
-        let Some(c) = &b.desc.collider else { return false };
+        let Some(c) = &b.desc.collider else {
+            return false;
+        };
         if f.exclude == Some(b.key) || c.layer & f.mask == 0 {
             return false;
         }
@@ -1478,7 +1580,9 @@ impl Space {
 
     /// Ray hits sorted by distance (ties by key), at most `max_hits`, and how many there were.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32, filter: &Filter, max_hits: usize) -> (Vec<Hit>, usize) {
-        let Some(d) = crate::math::try_normalize(dir) else { return (Vec::new(), 0) };
+        let Some(d) = crate::math::try_normalize(dir) else {
+            return (Vec::new(), 0);
+        };
         let mut hits: Vec<Hit> = Vec::new();
         let mut visit = |s: u32, cur: f32| -> f32 {
             let b = self.slot(s);
@@ -1486,7 +1590,9 @@ impl Space {
                 return cur;
             }
             let c = b.desc.collider.as_ref().expect("passes");
-            if let Some(RayHit { distance, point, normal, triangle }) = query::ray_shape(&c.shape, &b.desc.pose.mul(&c.offset), origin, d, max) {
+            if let Some(RayHit { distance, point, normal, triangle }) =
+                query::ray_shape(&c.shape, &b.desc.pose.mul(&c.offset), origin, d, max)
+            {
                 hits.push(Hit { key: b.key, at: distance, point, normal, triangle, initially_overlapping: false });
             }
             cur
@@ -1510,7 +1616,14 @@ impl Space {
             }
             let c = b.desc.collider.as_ref().expect("passes");
             if let Some(h) = query::cast_shape(shape, pose, delta, &c.shape, &b.desc.pose.mul(&c.offset), skin) {
-                hits.push(Hit { key: b.key, at: h.fraction, point: h.point, normal: h.normal, triangle: h.triangle, initially_overlapping: h.initially_overlapping });
+                hits.push(Hit {
+                    key: b.key,
+                    at: h.fraction,
+                    point: h.point,
+                    normal: h.normal,
+                    triangle: h.triangle,
+                    initially_overlapping: h.initially_overlapping,
+                });
             }
         }
         hits.sort_by(|a, b| a.at.total_cmp(&b.at).then(a.key.cmp(&b.key)));
@@ -1566,8 +1679,12 @@ impl Space {
     /// Why a body collides (or doesn't) with what is near it: bodies whose boxes overlap its
     /// own, each with whether they pair, and if not, why (layers, triggers, kinds).
     pub fn neighbours(&self, key: u64, limit: usize) -> Vec<(u64, Option<&'static str>)> {
-        let Some(b) = self.get(key) else { return Vec::new() };
-        let Some(bounds) = b.aabb() else { return Vec::new() };
+        let Some(b) = self.get(key) else {
+            return Vec::new();
+        };
+        let Some(bounds) = b.aabb() else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         for s in self.candidates_in(&bounds.expand(self.settings.aabb_margin)) {
             let o = self.slot(s);
@@ -1611,8 +1728,9 @@ impl Space {
             h.write_f32(b.sleep_time);
             h.write_bool(b.target.is_some());
         }
-        h.write_u64(self.contacts.len() as u64);
-        for (&(a, b), c) in &self.contacts {
+        h.write_u64(self.pairs.len() as u64);
+        for (&(a, b), &slot) in &self.pairs {
+            let c = self.contact(slot);
             h.write_u64(a);
             h.write_u64(b);
             h.write_bool(c.touching);
@@ -1676,7 +1794,10 @@ fn validate(d: &BodyDesc) -> Result<(), PhysicsError> {
         if c.shape.is_static_only() && d.kind != BodyKind::Static {
             return Err(PhysicsError::new(
                 "static_only_shape",
-                format!("'{}' colliders have no volume, so only static bodies can use them; use a box, sphere, capsule or hull", c.shape.name()),
+                format!(
+                    "'{}' colliders have no volume, so only static bodies can use them; use a box, sphere, capsule or hull",
+                    c.shape.name()
+                ),
             )
             .with("field", "collider.shape")
             .with("kind", d.kind.name()));
@@ -1786,4 +1907,3 @@ fn angular_velocity_to(from: Quat, to: Quat, inv_dt: f32) -> Vec3 {
     let angle = 2.0 * specula_core::dmath::atan2(s, d.w);
     v * (angle / s * inv_dt)
 }
-

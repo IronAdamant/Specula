@@ -265,7 +265,13 @@ fn cast_convex<B: Support>(caster: &Convex, delta: Vec3, target: &B, target_radi
             if i == 0 && (c.overlap || gap < 0.0) {
                 // Already touching at the start.
                 let n = crate::math::try_normalize(c.a - c.b).unwrap_or(-crate::math::normalize_or(delta, Vec3::Y));
-                return Some(CastHit { fraction: 0.0, point: c.b + n * target_radius, normal: n, initially_overlapping: true, triangle: 0 });
+                return Some(CastHit {
+                    fraction: 0.0,
+                    point: c.b + n * target_radius,
+                    normal: n,
+                    initially_overlapping: true,
+                    triangle: 0,
+                });
             }
             let n = crate::math::try_normalize(c.a - c.b).unwrap_or(-crate::math::normalize_or(delta, Vec3::Y));
             return Some(CastHit { fraction: t, point: c.b + n * target_radius, normal: n, initially_overlapping: false, triangle: 0 });
@@ -347,7 +353,9 @@ mod tests {
         // Touches when the centre reaches y = 0.5 (+ skin): fraction about 0.25.
         assert!((h.fraction - 0.25).abs() < 0.002 && h.normal.y > 0.999, "{h:?}");
         let cube = Shape::cuboid(v3(0.5, 0.5, 0.5));
-        let h = cast_shape(&cube, &Pose::at(v3(-3.0, 0.5, 0.0)), v3(6.0, 0.0, 0.0), &Shape::sphere(0.5), &Pose::at(v3(1.0, 0.5, 0.0)), 0.01).unwrap();
+        let h =
+            cast_shape(&cube, &Pose::at(v3(-3.0, 0.5, 0.0)), v3(6.0, 0.0, 0.0), &Shape::sphere(0.5), &Pose::at(v3(1.0, 0.5, 0.0)), 0.01)
+                .unwrap();
         assert!((h.fraction - 3.0 / 6.0).abs() < 0.003 && h.normal.x < -0.999, "{h:?}");
         // Moving away: no hit. Starting inside: fraction 0.
         assert!(cast_shape(&Shape::sphere(0.5), &Pose::at(v3(0.0, 3.0, 0.0)), v3(0.0, 1.0, 0.0), &ground, &gp, 0.01).is_none());
@@ -355,7 +363,8 @@ mod tests {
         assert!(h.initially_overlapping && h.fraction == 0.0);
         // Against a mesh.
         let floor = Shape::mesh(vec![v3(-5.0, 0.0, -5.0), v3(5.0, 0.0, -5.0), v3(0.0, 0.0, 5.0)], vec![[0, 2, 1]]).unwrap();
-        let h = cast_shape(&Shape::capsule(0.3, 0.6), &Pose::at(v3(0.0, 2.0, 0.0)), v3(0.0, -4.0, 0.0), &floor, &Pose::IDENTITY, 0.01).unwrap();
+        let h =
+            cast_shape(&Shape::capsule(0.3, 0.6), &Pose::at(v3(0.0, 2.0, 0.0)), v3(0.0, -4.0, 0.0), &floor, &Pose::IDENTITY, 0.01).unwrap();
         assert!((h.fraction - (2.0 - 0.9) / 4.0).abs() < 0.003, "{h:?}");
     }
 

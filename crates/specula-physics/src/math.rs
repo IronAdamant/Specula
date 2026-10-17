@@ -5,8 +5,8 @@
 //! across platforms (docs/design/DETERMINISM.md, rule 4). No FMA, no reordering: expressions are
 //! written out in the order they are evaluated.
 
-pub use specula_core::math::{Quat, Vec3};
 use specula_core::dmath;
+pub use specula_core::math::{Quat, Vec3};
 
 /// Lengths below this are treated as zero when normalising.
 pub const TINY: f32 = 1.0e-12;
@@ -101,7 +101,13 @@ pub fn normalize_or(a: Vec3, fallback: Vec3) -> Vec3 {
 /// the same `n` always gives the same pair).
 pub fn basis(n: Vec3) -> (Vec3, Vec3) {
     // Pick the axis least aligned with n.
-    let a = if n.x.abs() < 0.57735 { Vec3::X } else if n.y.abs() < 0.57735 { Vec3::Y } else { Vec3::Z };
+    let a = if n.x.abs() < 0.57735 {
+        Vec3::X
+    } else if n.y.abs() < 0.57735 {
+        Vec3::Y
+    } else {
+        Vec3::Z
+    };
     let t1 = normalize_or(n.cross(a), Vec3::X);
     let t2 = n.cross(t1);
     (t1, t2)
@@ -154,13 +160,7 @@ impl Mat3 {
 
     pub fn transpose(&self) -> Mat3 {
         let m = self;
-        Mat3 {
-            c: [
-                v3(m.c[0].x, m.c[1].x, m.c[2].x),
-                v3(m.c[0].y, m.c[1].y, m.c[2].y),
-                v3(m.c[0].z, m.c[1].z, m.c[2].z),
-            ],
-        }
+        Mat3 { c: [v3(m.c[0].x, m.c[1].x, m.c[2].x), v3(m.c[0].y, m.c[1].y, m.c[2].y), v3(m.c[0].z, m.c[1].z, m.c[2].z)] }
     }
 
     pub fn mul(&self, o: &Mat3) -> Mat3 {
@@ -306,7 +306,8 @@ pub struct Aabb {
 }
 
 impl Aabb {
-    pub const EMPTY: Aabb = Aabb { min: Vec3 { x: f32::MAX, y: f32::MAX, z: f32::MAX }, max: Vec3 { x: -f32::MAX, y: -f32::MAX, z: -f32::MAX } };
+    pub const EMPTY: Aabb =
+        Aabb { min: Vec3 { x: f32::MAX, y: f32::MAX, z: f32::MAX }, max: Vec3 { x: -f32::MAX, y: -f32::MAX, z: -f32::MAX } };
 
     pub fn new(min: Vec3, max: Vec3) -> Aabb {
         Aabb { min, max }
