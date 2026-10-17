@@ -210,6 +210,23 @@ impl Claims {
         ids.iter().filter_map(|id| self.claims.get(id))
     }
 
+    /// `Err(claimed)` if another agent's live claim covers `path` (on it or an ancestor): `what`
+    /// says what `w` was trying to do there.
+    pub fn check_path(&self, path: &str, w: Writer, now: Instant, what: &str) -> Result<(), WorldError> {
+        match self.covering(path).find(|c| !c.lets(w, now)) {
+            None => Ok(()),
+            Some(c) => {
+                let message = format!(
+                    "{what}: {} holds claim {} on {}, which covers {path}; ask them to release or share it",
+                    c.owner,
+                    c.id,
+                    c.scope.describe()
+                );
+                Err(claim_error("claimed", c, now, message).with("entity_path", path))
+            }
+        }
+    }
+
     /// Path claims covering `path` (on it or an ancestor, or `/`).
     fn covering<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Claim> + 'a {
         let mut prefixes: Vec<&str> = vec!["/"];

@@ -41,7 +41,9 @@ background and tone mapping; window_view points the human's window. world_save /
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
 perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. A game running in \
-the engine adds its own tools (play_*). Coordinates: metres, right-handed, +Y up; a top-down view puts \
+the engine adds its own tools (play_*). Game logic as code: a module is a Rust cdylib depending only on specula-sdk; \
+logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
+world; logic_status, logic_input and logic_hook inspect, drive and call it. Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
 suggestion; the hosted game's name is reserved: name_reserved); \
@@ -200,6 +202,8 @@ pub enum Command {
     /// The task board, intents, notes, roll-ups, leases, swarm settings and the desync detector
     /// (see [`crate::swarm_tools`]).
     Swarm(crate::swarm_tools::SwarmCall),
+    /// The module host's tools (see [`crate::logic::tools`]).
+    Logic(crate::logic::tools::LogicCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -287,6 +291,12 @@ impl ToolHandler for Tools {
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        // Builds and library loads run on this connection's thread; only the swap goes to the engine.
+        match name {
+            "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
+            "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
+            _ => {}
+        }
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
         } else {
@@ -459,7 +469,7 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             Some(call) => call.map(Command::Sight),
             None => match crate::swarm_tools::parse(other, args) {
                 Some(call) => call.map(Command::Swarm),
-                None => Err(format!("unknown tool '{other}'")),
+                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
             },
         },
     }
@@ -746,7 +756,7 @@ pub(crate) fn string_arg<'a>(args: &'a Json, key: &str) -> Result<Option<&'a str
     }
 }
 
-fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
+pub(crate) fn parse_spawn(args: &Json) -> Result<SpawnSpec, String> {
     check_keys(args, "world_spawn", &[SPAWN_KEYS, LOOK_KEYS, COMPONENT_KEYS])?;
     parse_spawn_fields(args)
 }
@@ -1134,7 +1144,7 @@ fn two_d_arg(args: &Json) -> Result<Option<crate::two_d::TwoD>, String> {
     }
 }
 
-fn parse_set(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
+pub(crate) fn parse_set(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     check_keys(args, "world_set", &[SET_KEYS, LOOK_KEYS, COMPONENT_KEYS])?;
     parse_set_fields(args)
 }
@@ -2309,6 +2319,7 @@ fn definitions() -> Vec<ToolDef> {
     .into_iter()
     .chain(crate::sight_tools::definitions())
     .chain(crate::swarm_tools::definitions())
+    .chain(crate::logic::tools::definitions())
     .collect()
 }
 

@@ -24,7 +24,11 @@ use crate::claims::{Claim, ClaimSpec, Claims};
 use crate::intents::Intents;
 use crate::leases::Leases;
 use crate::journal::{self, Journal, Kind, UndoRequest, Undone, Writer};
-use crate::world::{Change, World, WorldError};
+use crate::world::{Change, Mark, World, WorldError};
+
+/// Attribution prefix of game modules' world changes (`module:<name>`): no agent may take a name
+/// starting with it.
+pub const MODULE_PREFIX: &str = "module:";
 use specula_core::Json;
 use specula_protocol::SessionInfo;
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,7 +151,7 @@ impl Swarm {
         if let Some(token) = resume {
             return self.resume(session, name, role, &token);
         }
-        if self.reserved.contains(&name) {
+        if self.reserved.contains(&name) || name.starts_with(MODULE_PREFIX) {
             return Err(WorldError::new(
                 "name_reserved",
                 format!("'{name}' is reserved (the hosted game or the engine writes under it); pick another name"),
@@ -334,6 +338,14 @@ impl Swarm {
     ) -> Result<T, WorldError> {
         let mark = world.mark();
         let out = call(world);
+        self.check_game_changes(world, mark, tick, game, w).map(|()| out)
+    }
+
+    /// The tail of [`Swarm::game_tool`] for changes already made since `mark` (a module's load,
+    /// unload or hook an agent asked for): checks them as `w`'s against claims, step by step, and
+    /// journals them under `game`, via `w`. On rejection the world is back at `mark` (ids it used
+    /// are never handed out again; the journal notes them).
+    pub fn check_game_changes(&mut self, world: &mut World, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
@@ -344,11 +356,23 @@ impl Swarm {
             return Err(e.with("game", game));
         }
         let changes = world.take_changes();
-        let count = changes.len();
-        if let Some(seq) = self.journal.append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
-            self.board.note_entry(w, seq, count);
+        if changes.is_empty() {
+            // Nothing to journal, but ids may have been used (and rolled back): replays must
+            // hand out the same ones next.
+            self.journal.note_next_id(world.next_id());
+        } else {
+            let count = changes.len();
+            if let Some(seq) = self.journal.append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
+                self.board.note_entry(w, seq, count);
+            }
         }
-        Ok(out)
+        Ok(())
+    }
+
+    /// Refuses `w` acting on what `path` names (a module's root, `/<name>`) while another agent
+    /// holds a live claim covering it.
+    pub fn check_claimed_path(&self, path: &str, w: Writer, what: &str) -> Result<(), WorldError> {
+        self.claims.check_path(path, w, Instant::now(), what)
     }
 
     /// Journals the hosted game's own changes (ticks, frames, start): exempt from claims.

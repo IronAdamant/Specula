@@ -13,9 +13,12 @@ members = [
     "crates/specula-text",
     "crates/specula-audio",
     "crates/specula-ui",
+    "crates/specula-sdk",
+    "crates/specula-logic",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
+    "games/ambulo",
 ]
 
 [workspace.package]
@@ -41,9 +44,53 @@ specula-protocol = { path = "crates/specula-protocol" }
 specula-text = { path = "crates/specula-text" }
 specula-audio = { path = "crates/specula-audio" }
 specula-ui = { path = "crates/specula-ui" }
+specula-sdk = { path = "crates/specula-sdk" }
+specula-logic = { path = "crates/specula-logic" }
 
 [profile.dev]
 opt-level = 1
+
+# Engine crates at opt-level 2 in dev: they run hot and change less often than game code.
+# Measured 2026-10-18 (this machine, shared): clean `cargo build -p specula` 58.5 s -> 61.3 s,
+# incremental after an edit in the specula crate 2.40 s -> 2.70 s; headless call rate (one agent,
+# scripts/call_rate.py) world_set 1289 -> 1917 calls/s, world_spawn 1282 -> 1889,
+# world_query 1234 -> 1477, engine_info unchanged.
+[profile.dev.package.specula-core]
+opt-level = 2
+[profile.dev.package.specula-model]
+opt-level = 2
+[profile.dev.package.specula-anim]
+opt-level = 2
+[profile.dev.package.specula-gltf]
+opt-level = 2
+[profile.dev.package.specula-platform]
+opt-level = 2
+[profile.dev.package.specula-input]
+opt-level = 2
+[profile.dev.package.specula-gpu]
+opt-level = 2
+[profile.dev.package.specula-protocol]
+opt-level = 2
+[profile.dev.package.specula-text]
+opt-level = 2
+[profile.dev.package.specula-audio]
+opt-level = 2
+[profile.dev.package.specula-ui]
+opt-level = 2
+[profile.dev.package.specula-logic]
+opt-level = 2
+[profile.dev.package.specula-sdk]
+opt-level = 2
+[profile.dev.package.specula]
+opt-level = 2
+
+# Game modules (hot-reloaded cdylibs, docs/design/MODULES.md): no debug info, so an edit links
+# faster (~0.52 s vs 0.63 s for ambulo) and the library is 2 MB instead of 13 MB, which the engine
+# copies and maps at every reload. Panic locations still work (they don't need debug info).
+# opt-level 0 was measured too: no faster for a thin module (linking dominates).
+[profile.dev.package.ambulo]
+debug = 0
+strip = "debuginfo"
 
 [profile.release]
 lto = "thin"
