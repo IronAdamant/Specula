@@ -14,6 +14,7 @@ name = "sepulcra"
 version = "0.1.0"
 dependencies = [
  "specula-core",
+ "specula-lex",
 ]
 
 [[package]]
@@ -41,6 +42,7 @@ dependencies = [
  "specula-gltf",
  "specula-gpu",
  "specula-input",
+ "specula-lex",
  "specula-logic",
  "specula-model",
  "specula-physics",
@@ -95,6 +97,13 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-platform",
+]
+
+[[package]]
+name = "specula-lex"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]
 
 [[package]]
