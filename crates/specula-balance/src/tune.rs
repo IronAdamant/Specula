@@ -204,6 +204,9 @@ impl TuneJob {
                     1
                 }),
             };
+            if step > max.saturating_sub(min) {
+                diags.push(Diagnostic::error(codes::OUT_OF_RANGE, id.as_str(), "step", format!("'step' is wider than the range searched ({})", human(max.saturating_sub(min), p.unit, rules.tick_hz))));
+            }
             space.push(Space { id: id.clone(), unit: p.unit, min, max, base: p.value.clamp(min, max), step });
         }
         if diags.iter().any(Diagnostic::is_error) {
@@ -312,7 +315,7 @@ impl TuneJob {
                     for d in 0..self.space.len() {
                         for sign in [1, -1] {
                             let mut x = b.clone();
-                            x[d] = (x[d] + sign * k * self.space[d].step).clamp(self.space[d].min, self.space[d].max);
+                            x[d] = x[d].saturating_add(sign * k.saturating_mul(self.space[d].step)).clamp(self.space[d].min, self.space[d].max);
                             if !seen(&x, &[]) {
                                 return vec![x];
                             }
@@ -412,7 +415,7 @@ impl TuneJob {
             let [min, max, base, step] = stored[..] else { return Err("param.stored is [min, max, base, step]".into()) };
             let unit = p.get("unit").and_then(Json::as_str).and_then(Unit::from_name).ok_or("param.unit is a Lex unit name")?;
             let id = p.get("id").and_then(Json::as_str).ok_or("param.id is missing")?.to_owned();
-            if min >= max || step < 1 || !(min..=max).contains(&base) {
+            if min >= max || step < 1 || step > max.saturating_sub(min) || !(min..=max).contains(&base) {
                 return Err(format!("param '{id}': min below max, base inside, step at least 1"));
             }
             space.push(Space { id, unit, min, max, base, step });

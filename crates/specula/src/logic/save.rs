@@ -205,10 +205,21 @@ impl LogicHost {
         for (name, s) in &self.shared {
             h.write_str(name);
             h.write_u64(s.seed);
-            for (k, v) in &s.store {
-                h.write_str(k);
-                bytes(&mut h, v);
-            }
+            // The store (up to a MiB) is hashed again only after it changed.
+            let store = match s.store_hash.get() {
+                Some(x) => x,
+                None => {
+                    let mut sh = StableHasher::with_seed(0x6c6f_6769_6332);
+                    for (k, v) in &s.store {
+                        sh.write_str(k);
+                        bytes(&mut sh, v);
+                    }
+                    let x = sh.finish();
+                    s.store_hash.set(Some(x));
+                    x
+                }
+            };
+            h.write_u64(store);
             for (stream, rng) in &s.rngs {
                 let (a, b) = rng.to_parts();
                 h.write_str(stream);

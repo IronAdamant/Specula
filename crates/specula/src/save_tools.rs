@@ -25,9 +25,42 @@ const MAX_LABEL: usize = 200;
 const MAX_LIST: u64 = 100;
 /// Files save_list looks at (the rest are counted).
 const MAX_SCANNED: usize = 4096;
+/// Save writers running at once (each holds a copy of the world).
+const MAX_WRITERS: usize = 2;
+/// Requests a game may hand the engine per frame (more are answered `too_many_requests`).
+const MAX_GAME_REQUESTS: usize = 16;
+
+/// A header string as shown in answers: a string, clipped to `max` characters.
+fn clip(v: Option<&Json>, max: usize) -> Json {
+    match v.and_then(Json::as_str) {
+        Some(s) => Json::from(s.chars().take(max).collect::<String>()),
+        None => Json::Null,
+    }
+}
+
+/// Who wrote a save (from its header), if it reads.
+fn save_owner(path: &std::path::Path) -> Option<String> {
+    read_head(path).ok().and_then(|(_, h)| savegame::peek(&h).ok()).and_then(|(_, h)| h.get("created_by").and_then(Json::as_str).map(|s| s.chars().take(128).collect()))
+}
+
+/// A header's fields as answers show them: known keys only, typed and clipped.
+fn header_summary(h: &Json) -> Vec<(&'static str, Json)> {
+    let num = |k: &str| h.get(k).and_then(Json::as_u64).map_or(Json::Null, Json::from);
+    vec![
+        ("label", clip(h.get("label"), MAX_LABEL)),
+        ("game", clip(h.get("game"), 64)),
+        ("tick", num("tick")),
+        ("tick_hz", num("tick_hz")),
+        ("entities", num("entities")),
+        ("created_by", clip(h.get("created_by"), 128)),
+        ("created_unix_s", num("created_unix_s")),
+        ("engine", clip(h.get("engine"), 32)),
+        ("world_hash", clip(h.get("world_hash"), 16)),
+    ]
+}
 
 pub enum SaveCall {
-    Write { name: String, label: Option<String>, overwrite: bool },
+    Write { name: String, label: Option<String>, overwrite: bool, force: bool },
     Read { name: String, force: bool, inspect: bool },
     List { cursor: usize, limit: usize },
     Delete { name: String, force: bool },
@@ -63,12 +96,17 @@ fn name_of(args: &Json) -> Result<String, String> {
 pub fn parse(name: &str, args: &Json) -> Option<Result<SaveCall, String>> {
     let parsed = match name {
         "save_write" => (|| {
-            check_keys(args, name, &[&["name", "label", "overwrite"]])?;
+            check_keys(args, name, &[&["name", "label", "overwrite", "force"]])?;
             let label = string_arg(args, "label")?.map(str::to_owned);
             if label.as_ref().is_some_and(|l| l.chars().count() > MAX_LABEL) {
                 return Err(format!("'label' is at most {MAX_LABEL} characters"));
             }
-            Ok(SaveCall::Write { name: name_of(args)?, label, overwrite: bool_arg(args, "overwrite")?.unwrap_or(false) })
+            Ok(SaveCall::Write {
+                name: name_of(args)?,
+                label,
+                overwrite: bool_arg(args, "overwrite")?.unwrap_or(false),
+                force: bool_arg(args, "force")?.unwrap_or(false),
+            })
         })(),
         "save_read" => (|| {
             check_keys(args, name, &[&["name", "force", "inspect"]])?;
@@ -109,8 +147,9 @@ pub fn definitions() -> Vec<ToolDef> {
              versioned, checksummed file. save_read of it continues bit-identically: the same world_hash and subsystem \
              hashes tick for tick as this run (check with desync_trace + desync_compare). Physics is synced with the \
              world first (as the next tick would). Returns the tick, hashes, section sizes and timings. An existing save \
-             is only replaced with overwrite: true.",
-            schema(vec![name(), ("label", t("string", "A note shown by save_list (\"before wave 4\"), up to 200 characters")), ("overwrite", t("boolean", "Replace an existing save of that name"))], &["name"]),
+             is only replaced with overwrite: true (another agent's only with force: true too). At most two saves are \
+             written at once (busy: call again).",
+            schema(vec![name(), ("label", t("string", "A note shown by save_list (\"before wave 4\"), up to 200 characters")), ("overwrite", t("boolean", "Replace an existing save of that name")), ("force", t("boolean", "Replace another agent's save"))], &["name"]),
         ),
         def(
             "save_read",
@@ -267,7 +306,7 @@ impl Engine {
             SaveCall::List { .. } => self.join_save_writes(None),
         }
         match call {
-            SaveCall::Write { name, label, overwrite } => match self.write_save(&name, label, overwrite, by) {
+            SaveCall::Write { name, label, overwrite, force } => match self.write_save(&name, label, overwrite, force, by) {
                 Ok(j) => out(j),
                 Err(e) => fail(&e),
             },
@@ -288,21 +327,26 @@ impl Engine {
     }
 
     /// `save_write`, all on this thread (player saves; tests).
-    pub(crate) fn write_save(&mut self, name: &str, label: Option<String>, overwrite: bool, by: &str) -> Result<Json, SaveError> {
+    pub(crate) fn write_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str) -> Result<Json, SaveError> {
         self.join_save_writes(Some(name));
-        self.begin_save(name, label, overwrite, by)?.finish()
+        self.begin_save(name, label, overwrite, force, by)?.finish()
     }
 
     /// The engine-thread part of a save: the state's bytes and owned copies of the world (the
     /// costly rendering, compression and writing happen in [`SaveJob::finish`], anywhere).
-    pub(crate) fn begin_save(&mut self, name: &str, label: Option<String>, overwrite: bool, by: &str) -> Result<SaveJob, SaveError> {
+    pub(crate) fn begin_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str) -> Result<SaveJob, SaveError> {
         validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
         let path = self.save_path(name);
-        if path.exists() && !overwrite {
-            let by = read_head(&path).ok().and_then(|(_, h)| savegame::peek(&h).ok()).and_then(|(_, h)| h.get("created_by").cloned()).unwrap_or(Json::Null);
-            return Err(SaveError::new("save_exists", format!("a save named '{name}' exists; pass overwrite: true to replace it, or pick another name"))
-                .with("name", name)
-                .with("created_by", by));
+        if path.exists() {
+            let owner = save_owner(&path);
+            if !overwrite {
+                return Err(SaveError::new("save_exists", format!("a save named '{name}' exists; pass overwrite: true to replace it, or pick another name"))
+                    .with("name", name)
+                    .with("created_by", owner.map_or(Json::Null, Json::from)));
+            }
+            if let Some(o) = owner.filter(|o| o != by && !force) {
+                return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {o}; pass force: true to replace it anyway, or pick another name")).with("created_by", o));
+            }
         }
         let t0 = Instant::now();
         let tick = self.clock.tick();
@@ -388,10 +432,17 @@ impl Engine {
     /// `save_write` from an agent: the state is taken now, between ticks; the file is written
     /// on a worker thread, which answers the call when it's on disk (the window keeps drawing).
     pub(crate) fn handle_save_write(&mut self, request: crate::tools::Request) {
-        let crate::tools::Command::SaveGame(SaveCall::Write { name, label, overwrite }) = request.command else { return };
+        let crate::tools::Command::SaveGame(SaveCall::Write { name, label, overwrite, force }) = request.command else { return };
         let by = self.swarm.agent_name(&request.session);
         self.join_save_writes(Some(&name));
-        match self.begin_save(&name, label, overwrite, &by) {
+        // Each writer holds a copy of the world: at most MAX_WRITERS at once.
+        self.save_writes.retain(|(_, h)| !h.is_finished());
+        if self.save_writes.len() >= MAX_WRITERS {
+            let e = SaveError::new("busy", format!("{MAX_WRITERS} saves are being written; call again in a moment")).with("writing", Json::arr(self.save_writes.iter().map(|(n, _)| Json::from(n.as_str()))));
+            let _ = request.reply.send(fail(&e));
+            return;
+        }
+        match self.begin_save(&name, label, overwrite, force, &by) {
             Err(e) => {
                 let _ = request.reply.send(fail(&e));
             }
@@ -425,7 +476,7 @@ impl Engine {
     /// `save_read {inspect}`: the header and sections of a save that reads cleanly.
     fn inspect_save(&self, name: &str) -> Result<Json, SaveError> {
         let f = self.read_file(name)?;
-        let mut j = f.meta.clone();
+        let mut j = Json::obj(header_summary(&f.meta));
         j.set("name", Json::from(name));
         j.set("version", Json::from(f.version));
         j.set("sections", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len())))));
@@ -547,8 +598,8 @@ impl Engine {
             ("loaded", Json::from(name)),
             ("tick", Json::from(tick)),
             ("game", Json::from(game)),
-            ("label", meta.get("label").cloned().unwrap_or(Json::Null)),
-            ("created_by", meta.get("created_by").cloned().unwrap_or(Json::Null)),
+            ("label", clip(meta.get("label"), MAX_LABEL)),
+            ("created_by", clip(meta.get("created_by"), 128)),
             ("restored", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(true))))),
             ("world_hash", Json::obj([("saved", Json::from(world_saved)), ("now", Json::from(hex(world_now))), ("match", Json::from(hex(world_now) == world_saved))])),
             ("subsystems", Json::Arr(subsystems)),
@@ -578,17 +629,10 @@ impl Engine {
                 let item = match read_head(&p).and_then(|(size, h)| savegame::peek(&h).map(|(v, h)| (size, v, h))) {
                     Ok((size, version, h)) => {
                         let created = h.get("created_unix_s").and_then(Json::as_u64).unwrap_or(0);
-                        let j = Json::obj([
-                            ("name", Json::from(name.as_str())),
-                            ("label", h.get("label").cloned().unwrap_or(Json::Null)),
-                            ("game", h.get("game").cloned().unwrap_or(Json::Null)),
-                            ("tick", h.get("tick").cloned().unwrap_or(Json::Null)),
-                            ("created_by", h.get("created_by").cloned().unwrap_or(Json::Null)),
-                            ("created_unix_s", Json::from(created)),
-                            ("bytes", Json::from(size)),
-                            ("version", Json::from(version)),
-                        ]);
-                        (created, name, j)
+                        let mut f = vec![("name", Json::from(name.as_str()))];
+                        f.extend(header_summary(&h));
+                        f.extend([("bytes", Json::from(size)), ("version", Json::from(version))]);
+                        (created, name, Json::obj(f))
                     }
                     Err(e) => (0, name.clone(), Json::obj([("name", Json::from(name.as_str())), ("unreadable", e.to_json())])),
                 };
@@ -628,10 +672,12 @@ impl Engine {
         let Some(game) = self.game.as_mut() else { return };
         let mut requests = Vec::new();
         game.take_requests(&mut requests);
-        for req in requests.into_iter().take(4) {
+        for (i, req) in requests.into_iter().enumerate() {
             let by = self.game_name.clone();
             let result = match &req {
-                GameRequest::Save { slot, label } => self.write_save(slot, label.clone(), true, &by).map_err(|e| e.to_json()),
+                _ if i >= MAX_GAME_REQUESTS => Err(SaveError::new("too_many_requests", format!("at most {MAX_GAME_REQUESTS} requests a frame")).to_json()),
+                // The player's own slot: their Save replaces it (they asked).
+                GameRequest::Save { slot, label } => self.write_save(slot, label.clone(), true, true, &by).map_err(|e| e.to_json()),
                 GameRequest::Load { slot } => self.read_save(slot, true, Writer::new(&by, None)).map_err(|e| e.to_json()),
                 GameRequest::List => Ok(self.list_saves(0, MAX_LIST as usize)),
             };
@@ -656,7 +702,7 @@ mod tests {
             assert!(validate_save_name(bad).is_err(), "{bad}");
         }
         let args = Json::parse(r#"{"name": "slot_1", "label": "before wave 4"}"#).unwrap();
-        assert!(matches!(parse("save_write", &args), Some(Ok(SaveCall::Write { overwrite: false, .. }))));
+        assert!(matches!(parse("save_write", &args), Some(Ok(SaveCall::Write { overwrite: false, force: false, .. }))));
         let bad = Json::parse(r#"{"name": "slot_1", "lable": "x"}"#).unwrap();
         assert!(parse("save_write", &bad).unwrap().is_err());
         assert!(parse("world_spawn", &args).is_none());

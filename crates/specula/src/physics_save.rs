@@ -15,6 +15,8 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 pub const BRIDGE_VERSION: u32 = 1;
 /// A section bigger than this is refused (20,000 bodies with every field is about 6 MB).
 const MAX_ITEMS: usize = 1 << 20;
+/// A problem's saved text, at most (clipped when written, so whatever is written reads back).
+const MAX_PROBLEM_TEXT: usize = 4096;
 
 fn bad(e: DecodeError) -> WorldError {
     WorldError::new("bad_save", format!("the save's physics section is damaged: {e}"))
@@ -55,7 +57,13 @@ impl Physics {
         w.len_u32(self.problems.len());
         for (id, j) in &self.problems {
             w.u64(*id);
-            w.str(&j.to_string());
+            // Clipped to what a load reads back (entity paths can be long).
+            let text = j.to_string();
+            let mut end = text.len().min(MAX_PROBLEM_TEXT);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            w.str(&text[..end]);
         }
         w.bool(self.settings_applied);
         w.u64(self.next_event);
@@ -116,7 +124,7 @@ impl Physics {
         let mut problems = BTreeMap::new();
         for _ in 0..n {
             let id = r.u64("problems.id").map_err(bad)?;
-            let text = r.str("problems.error", 4096).map_err(bad)?;
+            let text = r.str("problems.error", MAX_PROBLEM_TEXT).map_err(bad)?;
             problems.insert(id, Json::parse(&text).unwrap_or(Json::from(text)));
         }
         let settings_applied = r.bool("settings_applied").map_err(bad)?;

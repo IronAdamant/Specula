@@ -28,6 +28,8 @@ const WALL_BUDGET: Duration = Duration::from_secs(25);
 const MAX_POINTS: usize = 64;
 const MAX_SEEDS: usize = 256;
 const MAX_RUNS: usize = 16_384;
+/// Bytes of point results one answer lists (the rest come with `next_start`).
+const MAX_RESPONSE_BYTES: usize = 96 * 1024;
 /// Worker threads all balance calls use at once (each call gets at least one).
 fn thread_cap() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get()).saturating_sub(2).clamp(1, 16)
@@ -277,13 +279,23 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
     let res = sweep(&doc, &t, &points[start..end], &seeds, &opts);
     drop(grant);
     let secs = started.elapsed().as_secs_f64();
-    let done: Vec<Json> = res.points.iter().enumerate().filter_map(|(i, p)| p.as_ref().map(|p| {
+    // Points listed in order while they fit the byte budget; the rest come again from next_start.
+    let mut done: Vec<Json> = Vec::new();
+    let mut bytes = 0usize;
+    let mut cut_at = None;
+    for (i, p) in res.points.iter().enumerate() {
+        let Some(p) = p else { continue };
         let mut j = p.to_json(detailed);
         j.set("index", Json::from(start + i));
-        j
-    })).collect();
+        bytes += j.to_string().len();
+        if bytes > MAX_RESPONSE_BYTES && !done.is_empty() {
+            cut_at = Some(start + i);
+            break;
+        }
+        done.push(j);
+    }
     let first_unfinished = res.unfinished.first().map(|i| start + i);
-    let next = first_unfinished.or((end < points.len()).then_some(end));
+    let next = [cut_at, first_unfinished].into_iter().flatten().min().or((end < points.len()).then_some(end));
     let best = res.points.iter().flatten().filter(|p| p.errors.is_empty()).fold(None, |b: Option<&specula_balance::PointResult>, p| match b {
         Some(b) if b.loss <= p.loss => Some(b),
         _ => Some(p),

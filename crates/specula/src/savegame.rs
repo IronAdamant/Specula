@@ -35,8 +35,10 @@ pub const EXTENSION: &str = "specsave";
 pub const MAX_FILE_BYTES: u64 = 1 << 30;
 pub const MAX_HEADER_BYTES: usize = 1 << 20;
 pub const MAX_SECTIONS: usize = 32;
-/// A decoded section at most this big.
+/// A decoded section at most this big, and all of a save's sections together at most
+/// [`MAX_DECODED_BYTES`] (checked from the table before anything is decompressed).
 pub const MAX_SECTION_BYTES: usize = 512 << 20;
+pub const MAX_DECODED_BYTES: u64 = 512 << 20;
 /// Sections smaller than this are stored raw (compressing them saves nothing).
 const RAW_BELOW: usize = 256;
 
@@ -237,6 +239,10 @@ fn decode_with(bytes: &[u8], table: &[Migration], target: u32) -> Result<SaveFil
     if table_json.len() > MAX_SECTIONS {
         return Err(SaveError::new("too_large", format!("{} sections; at most {MAX_SECTIONS}", table_json.len())).at(16));
     }
+    let declared: u64 = table_json.iter().map(|s| s.get("bytes").and_then(Json::as_u64).unwrap_or(0)).fold(0u64, u64::saturating_add);
+    if declared > MAX_DECODED_BYTES {
+        return Err(SaveError::new("too_large", format!("the sections decode to {declared} bytes in all; a save is read up to {MAX_DECODED_BYTES}")).at(16));
+    }
     let mut sections: Vec<Section> = Vec::with_capacity(table_json.len());
     for (i, s) in table_json.iter().enumerate() {
         let bad = |m: String| SaveError::new("invalid_header", format!("sections[{i}]: {m}")).at(16);
@@ -414,6 +420,32 @@ mod tests {
             }
         }
         assert!(errors.len() >= 4, "the fuzzer should reach several checks: {errors:?}");
+    }
+
+    /// A small file whose table promises huge sections is refused before anything is inflated.
+    #[test]
+    fn the_decoded_total_is_capped_before_decompressing() {
+        let table: Vec<Json> = (0..4)
+            .map(|i| {
+                Json::obj([
+                    ("name", Json::from(format!("s{i}"))),
+                    ("codec", Json::from("zlib")),
+                    ("bytes", Json::from(256u64 << 20)),
+                    ("stored", Json::from(0u64)),
+                    ("crc32", Json::from("00000000")),
+                ])
+            })
+            .collect();
+        let header = Json::obj([("format", Json::from(FORMAT)), ("sections", Json::Arr(table))]).to_string();
+        let mut w = ByteWriter::new();
+        w.raw(MAGIC);
+        w.u32(VERSION);
+        w.len_u32(header.len());
+        w.raw(header.as_bytes());
+        let crc = crc32(w.bytes());
+        w.u32(crc);
+        let e = decode(w.bytes()).unwrap_err();
+        assert_eq!(e.code, "too_large", "{e}");
     }
 
     #[test]

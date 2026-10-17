@@ -283,6 +283,15 @@ impl Space {
             if fat.is_some() != (b.proxy != NONE) || fat.is_some_and(|(st, _)| st != b.in_static_tree) {
                 return Err(mismatch(format!("body {key}'s collider differs between the world and the snapshot"), key));
             }
+            // Numbers the step divides by, compares or puts in the trees must be real numbers.
+            let finite3 = |v: Vec3| crate::math::is_finite(v);
+            let q_ok = |q: Quat| q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite();
+            let fat_ok = fat.is_none_or(|(_, f)| finite3(f.min) && finite3(f.max) && f.min.x <= f.max.x && f.min.y <= f.max.y && f.min.z <= f.max.z);
+            let target_ok = target.is_none_or(|t| finite3(t.p) && q_ok(t.q));
+            let all = [pose.p, velocity, angular_velocity, com, center, declared_velocity.0, declared_velocity.1, c0];
+            if !(all.iter().all(|v| finite3(*v)) && q_ok(pose.q) && q_ok(q0) && fat_ok && target_ok && sleep_time.is_finite() && inv_mass.is_finite() && inner_radius.is_finite() && outer_radius.is_finite()) {
+                return Err(decode(r.error("invalid", f, format!("body {key} has a number that isn't finite (or an inside-out box)"))));
+            }
             bodies.push(BodyState {
                 key,
                 kind,
@@ -321,6 +330,11 @@ impl Space {
             let (Some(&sa), Some(&sb)) = (self.by_key.get(&ka), self.by_key.get(&kb)) else {
                 return Err(mismatch(format!("contact ({ka}, {kb}) names a body the snapshot doesn't have"), ka));
             };
+            // Only bodies that make a pair (colliders in the broadphase, kinds, layers) have one.
+            let (ba, bb) = (self.slot(sa), self.slot(sb));
+            if ba.proxy == NONE || bb.proxy == NONE || !Space::should_pair(ba, bb) {
+                return Err(mismatch(format!("contact ({ka}, {kb}) is between bodies that don't make a pair"), ka));
+            }
             let touching = r.bool(f).map_err(d)?;
             let trigger = r.bool(f).map_err(d)?;
             let friction = r.f32(f).map_err(d)?;
@@ -367,6 +381,16 @@ impl Space {
             if !self.by_key.contains_key(k) {
                 return Err(mismatch(format!("the snapshot names body {k}, which the world didn't rebuild"), *k));
             }
+        }
+        // The awake set is what the bodies' kinds and sleep flags say it is (the step visits it;
+        // islands are looked up leniently, so they need no such check).
+        let want_awake: Vec<u64> = bodies
+            .iter()
+            .filter(|b| b.kind == BodyKind::Kinematic as u8 || (b.kind == BodyKind::Dynamic as u8 && !b.sleeping))
+            .map(|b| b.key)
+            .collect();
+        if want_awake != awake {
+            return Err(decode(r.error("invalid", "awake", "the awake set doesn't match the bodies' kinds and sleep flags")));
         }
         // Everything checks: apply.
         self.settings = settings;

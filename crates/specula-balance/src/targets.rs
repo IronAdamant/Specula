@@ -408,6 +408,10 @@ impl Targets {
             }
             let id = t.get("id").and_then(Json::as_str).map(str::to_owned).unwrap_or_else(|| format!("t{i}"));
             let item = id.as_str();
+            if id.is_empty() || id.len() > 64 {
+                r.err(codes::OUT_OF_RANGE, "", &format!("{path}.id"), "a target's 'id' is 1..64 characters");
+                continue;
+            }
             if targets.iter().any(|x| x.id == id) {
                 r.err(codes::DUPLICATE, item, "id", format!("two targets are called '{id}'"));
             }
