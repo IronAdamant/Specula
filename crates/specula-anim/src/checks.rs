@@ -729,8 +729,10 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
 
 /// Checks the transition caused by changing parameters from `from` to `to` after `settle_s`
 /// seconds: the pops it makes (excess per-frame joint jumps over the window the blend spans,
-/// against both sides moving on their own), plus penetration and limits over the window.
-pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String, Value)], to: &[(String, Value)], settle_s: f32, rules: &MotionRules) -> Report {
+/// against both sides moving on their own), plus penetration and floating over the window (a
+/// blend that lifts the body off its feet hovers).
+#[allow(clippy::too_many_arguments)]
+pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String, Value)], to: &[(String, Value)], settle_s: f32, rules: &MotionRules, mesh: Option<&specula_model::MeshData>) -> Report {
     let mut before = GraphPlay::new(graph_name);
     for (n, v) in from {
         before.set_param(n, v.clone());
@@ -789,6 +791,8 @@ pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String
     let height = skel.heads.iter().chain(&skel.tails).map(|p| p[1]).fold(0.0f32, f32::max).max(0.1);
     let to_human = 1.8 / height;
     ctx.check(&mut out, "pops", worst * 100.0 * to_human, "cm", Some(worst_at), Some(worst_bone), vec![("blend_s", blend as f32), ("unscaled_cm", worst * 100.0), ("height_m", height)]);
-    ground_penetration(&ctx, &s, None, &mut out);
+    ground_penetration(&ctx, &s, mesh, &mut out);
+    let tracks = foot_tracks(g.set, &s, &feet_of(g.set, Some(g.graph), None), mesh);
+    floating(&ctx, &s, &tracks, &mut out);
     out
 }

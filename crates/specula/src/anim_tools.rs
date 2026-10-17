@@ -1098,7 +1098,7 @@ impl Engine {
                     Ok(p) => p,
                     Err(e) => return e,
                 };
-                report.checks.extend(checks::check_transition(g, &rig, &graph_used, &from, &to, t.settle_s, &rules).checks);
+                report.checks.extend(checks::check_transition(g, &rig, &graph_used, &from, &to, t.settle_s, &rules, mesh).checks);
             }
         }
         let mut out = report.to_json(max_checks);
@@ -1264,10 +1264,10 @@ impl Engine {
                         .iter()
                         .map(|&t| if t < ts { player.evaluate(g, &before, t0, t, &Surroundings::default()).clone() } else { player.evaluate(g, &after, t1, t, &Surroundings::default()).clone() })
                         .collect();
-                    let report = with_checks.then(|| checks::check_transition(g, &rig, graph_name, &from, &to, tr.settle_s, &rules));
+                    let report = with_checks.then(|| checks::check_transition(g, &rig, graph_name, &from, &to, tr.settle_s, &rules, mesh));
                     let name_of = |p: &GraphPlay, tm: Timing, t: f64, sc: &mut Scratch| aplay::state_at(g, p, tm, t, sc)[0].stack.last().map(|e| e.state.clone()).unwrap_or_default();
                     let (a, b) = (name_of(&before, t0, ts, &mut sc), name_of(&after, t1, w1, &mut sc));
-                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b} at {:.2}S", 0.15), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report, travel: vec![0.0; n] });
+                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b}, switched at {:.2}S", ts), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report, travel: vec![0.0; n] });
                 }
             }
         }

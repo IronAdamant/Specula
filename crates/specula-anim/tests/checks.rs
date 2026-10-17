@@ -89,12 +89,12 @@ fn cuts_pop_and_blends_do_not() {
     let walk = vec![("act".to_string(), Value::Name("walk".into())), ("speed".to_string(), Value::Num(0.7))];
     let mut raise = walk.clone();
     raise[0].1 = Value::Name("raise".into());
-    let blended = checks::check_transition(g, "t", "g", &walk, &raise, 0.5, &rules);
+    let blended = checks::check_transition(g, "t", "g", &walk, &raise, 0.5, &rules, None);
     let pop = find(&blended, "pops");
     assert!(pop.passed, "a 0.4 s blend: {pop:?}");
     let mut cut = raise.clone();
     cut.push(("cut".to_string(), Value::Bool(true)));
-    let cut_r = checks::check_transition(g, "t", "g", &walk, &cut, 0.5, &rules);
+    let cut_r = checks::check_transition(g, "t", "g", &walk, &cut, 0.5, &rules, None);
     let pop = find(&cut_r, "pops");
     assert!(!pop.passed && pop.value > 15.0, "a cut: {pop:?}");
     // A state held by its parameters, with travel at its match_speed: planted.

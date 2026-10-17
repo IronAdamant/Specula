@@ -53,8 +53,8 @@ fn close(a: &Affine, b: &Affine, tol: f32) -> bool {
     (0..3).all(|c| (0..3).all(|k| (a.cols[c][k] - b.cols[c][k]).abs() <= tol) && (a.t[c] - b.t[c]).abs() <= tol)
 }
 
-fn pose(set: &AnimSet, clip: usize, t: f32) -> Vec<Affine> {
-    let id = set.clips().nth(clip).unwrap().0;
+fn pose(set: &AnimSet, name: &str, t: f32) -> Vec<Affine> {
+    let id = set.id(name).unwrap();
     let mut p = set.skeleton.rest_pose();
     blend::sample(&set.skeleton, set.clip(id), set.track_bones(id), t, Base::Rest, &mut p);
     let mut m = Vec::new();
@@ -103,9 +103,11 @@ fn check(label: &str, model: &Model, set: Option<&AnimSet>, imp: &Import) {
         return;
     };
     let iset = imp.anim_set().expect("rigged").unwrap_or_else(|e| panic!("{label}: {e}"));
-    assert_eq!(set.len(), iset.len(), "{label}: clips");
+    // Clips without tracks (neutral additive-layer bases) have nothing to export.
+    let exported: Vec<_> = set.clips().filter(|(_, c)| !c.tracks.is_empty()).collect();
+    assert_eq!(exported.len(), iset.len(), "{label}: clips");
     let (mut worst_joint, mut worst_vertex) = (0.0f32, 0.0f32);
-    for (k, ((_, c0), (_, c1))) in set.clips().zip(iset.clips()).enumerate() {
+    for ((_, c0), (_, c1)) in exported.into_iter().zip(iset.clips()) {
         assert_eq!((&c0.name, c0.duration, c0.looping, c0.distance), (&c1.name, c1.duration, c1.looping, c1.distance), "{label}: clip");
         assert_eq!((&c0.events, &c0.curves), (&c1.events, &c1.curves), "{label}/{}: events and curves", c0.name);
         assert_eq!(c0.tracks.len(), c1.tracks.len());
@@ -115,7 +117,7 @@ fn check(label: &str, model: &Model, set: Option<&AnimSet>, imp: &Import) {
         let steps = 48;
         for s in 0..=steps {
             let t = c0.duration * s as f32 / steps as f32;
-            let (p0, p1) = (pose(set, k, t), pose(&iset, k, t));
+            let (p0, p1) = (pose(set, &c0.name, t), pose(&iset, &c1.name, t));
             for (j, (x, y)) in p0.iter().zip(&p1).enumerate() {
                 assert!(close(x, y, 1e-4), "{label}/{} t={t}: bone {} {x:?} vs {y:?}", c0.name, set.skeleton.names[j]);
                 worst_joint = worst_joint.max((0..3).map(|q| (x.t[q] - y.t[q]).abs()).fold(0.0, f32::max));

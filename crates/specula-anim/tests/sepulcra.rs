@@ -45,7 +45,7 @@ fn every_anim_file_has_a_creature() {
 fn creature_clips_are_complete() {
     let expect: &[(&str, &[&str])] = &[
         ("shambler", &["idle", "walk", "attack", "death", "shuffle", "still", "flinch"]),
-        ("skeleton_runner", &["idle", "sprint", "jog", "leap", "death", "still", "flinch"]),
+        ("skeleton_runner", &["idle", "sprint", "jog", "leap", "death", "claw", "still", "flinch"]),
         ("wraith", &["float", "swoop", "death", "float_shroud", "swoop_shroud", "still", "flinch"]),
         ("bone_colossus", &["walk", "lumber", "idle", "summon", "death", "still", "flinch"]),
         ("brazier_fire", &["flicker"]),
@@ -124,7 +124,7 @@ fn creature_motion_passes_its_style_rules() {
         // Slowed by frost or runes: the slow end of the locomotion blend.
         all.checks.extend(checks::check_state(g, name, "creature", "move", &act("move", speed * 0.4), 3.0, &rules, Some(mesh)).unwrap().checks);
         for (a, b) in [("idle", "move"), ("move", "idle"), ("move", "attack"), ("attack", "move"), ("move", "special"), ("move", "death"), ("attack", "death")] {
-            all.checks.extend(checks::check_transition(g, name, "creature", &act(a, speed), &act(b, speed), 1.37, &rules).checks);
+            all.checks.extend(checks::check_transition(g, name, "creature", &act(a, speed), &act(b, speed), 1.37, &rules, Some(mesh)).checks);
         }
     }
     let failures: Vec<String> = all.failures().map(|c| format!("{} {} {:.2} {} (limit {}) {:?}", c.subject, c.check, c.value, c.unit, c.limit, c.bone)).collect();
@@ -206,4 +206,4 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "3141c037f0c6c29f";
+const PINNED: &str = "4a4b48e570970a00";

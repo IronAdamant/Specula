@@ -22,12 +22,14 @@ LOOK AT THE PNGs before claiming anything about them. Standard library only; ASC
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from specula_mcp import ROOT, Engine
 
-EXE = ROOT / "target" / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
+TARGET = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
+EXE = TARGET / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
 CREATURES = [("recipes/shambler.json", 0.8), ("recipes/skeleton_runner.json", 2.2), ("recipes/wraith.json", 1.4), ("recipes/bone_colossus.json", 0.4)]
 
 
@@ -45,7 +47,7 @@ def main():
     exe = Path(args.exe)
     if not exe.exists():
         sys.exit(f"{exe} not found: cargo build -p sepulcra-app --release")
-    out = Path(args.out) if args.out else ROOT / "target" / "anim-graph-check" / args.adapter
+    out = Path(args.out) if args.out else TARGET / "anim-graph-check" / args.adapter
     out.mkdir(parents=True, exist_ok=True)
     extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720", "--", "--seed", "7", "--mute"]
     summary = {"adapter": args.adapter}

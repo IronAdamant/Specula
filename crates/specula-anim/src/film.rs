@@ -124,15 +124,15 @@ mod tests {
         let mut img = vec![0u8; (w * h * 4) as usize];
         draw_text(&mut img, w, 1, 1, "AB", [255, 0, 0]);
         // 'A' top row is .XXX. → pixels 2..4 of row 1.
-        let px = |x: u32, y: u32| img[((y * w + x) * 4) as usize];
-        assert_eq!((px(1, 1), px(2, 1), px(4, 1), px(5, 1)), (0, 255, 255, 0));
+        let px = |img: &[u8], x: u32, y: u32| img[((y * w + x) * 4) as usize];
+        assert_eq!((px(&img, 1, 1), px(&img, 2, 1), px(&img, 4, 1), px(&img, 5, 1)), (0, 255, 255, 0));
         // Clipped, never out of bounds.
         draw_text(&mut img, w, 38, 10, "WWW", [1, 1, 1]);
         let tile = vec![9u8; 4 * 4 * 4];
         blit(&mut img, w, 38, 10, &tile, 4, 4);
-        assert_eq!(px(39, 11), 9);
+        assert_eq!(px(&img, 39, 11), 9);
         fill(&mut img, w, 0, 0, 2, 2, [7, 7, 7, 7]);
-        assert_eq!(px(1, 1), 7);
+        assert_eq!(px(&img, 1, 1), 7);
         let eye = frame_eye([0.0, 1.0, 0.0], 1.0, 90.0, 0.0, 60.0);
         assert!(eye[0] > 1.9 && eye[2].abs() < 1e-5);
     }

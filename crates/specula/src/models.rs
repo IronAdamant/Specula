@@ -2203,12 +2203,12 @@ impl GpuModels {
     /// offscreen image (filmstrips): the build is uploaded if no entity has it on the GPU yet (it
     /// goes again at the next sync if none does then). The palette goes into `bones`.
     pub fn posed_draws(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
-        if !self.uploaded.contains_key(&built.id) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = self.uploaded.entry(built.id) {
             let m = upload(gpu, built).map_err(|e| match e {
                 UploadError::Released => "the model's textures were released; spawn an entity of it (or model_reload) and try again".to_string(),
                 UploadError::Gpu(e) => format!("model upload failed: {e}"),
             })?;
-            self.uploaded.insert(built.id, m);
+            slot.insert(m);
             // The next sync drops it again unless an entity wants it.
             self.synced = None;
         }

@@ -66,7 +66,7 @@ fn main() {
             let r = checks::check_state(g, &format!("{name}(slowed)"), "creature", "move", &slow, 3.0, &rules, Some(mesh)).unwrap();
             report.checks.extend(r.checks);
             for (a, b) in [("idle", "move"), ("move", "idle"), ("move", "attack"), ("attack", "move"), ("move", "special"), ("move", "death"), ("attack", "death")] {
-                report.checks.extend(checks::check_transition(g, name, "creature", &act(a), &act(b), 1.37, &rules).checks);
+                report.checks.extend(checks::check_transition(g, name, "creature", &act(a), &act(b), 1.37, &rules, Some(mesh)).checks);
             }
         }
         let mut lines: Vec<_> = report.checks.iter().filter(|c| all || !c.passed || c.check == "foot_sliding" || c.check == "pops").collect();
