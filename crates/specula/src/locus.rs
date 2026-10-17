@@ -349,7 +349,8 @@ pub fn definition() -> specula_protocol::ToolDef {
                       rests on, and each relation: satisfied, off (m or degrees), why. If any hard relation fails, \
                       nothing is written: the answer (error 'unsatisfied') gives the nearest valid (collision-free) \
                       alternative and hints; on_unsatisfied: \"alternative\" writes that instead. dry_run: true only \
-                      reports."
+                      reports and applies nothing: it sees physics and navigation as of the last tick (colliders moved \
+                      or removed since then may answer at their old place; the real call sees them as they are)."
             .into(),
         input_schema: Json::obj([
             ("type", Json::from("object")),
@@ -919,7 +920,8 @@ impl crate::Engine {
                 continue;
             }
             let (a, b) = e.world_aabb();
-            if a.x > rhi.x || b.x < rlo.x || a.z > rhi.z || b.z < rlo.z || a.y > rhi.y || b.y < rlo.y {
+            // X/Z only: settling looks for ground tens of metres below.
+            if a.x > rhi.x || b.x < rlo.x || a.z > rhi.z || b.z < rlo.z {
                 continue;
             }
             if boxes.len() >= MAX_BOXES {

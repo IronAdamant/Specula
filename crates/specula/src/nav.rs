@@ -43,6 +43,9 @@ pub const MAX_MESHES: usize = 16;
 pub const MAX_MINDS: usize = 1024;
 /// Per-tick hashes kept.
 const HASHES: usize = 1024;
+/// Columns of tile grid (with borders) rebuilt per tick at most (about 1-3 ms of work; a tile
+/// at the default settings is 3,364).
+pub const COLUMNS_PER_TICK: usize = 16_384;
 /// Recent nav_path answers kept for the `paths` overlay.
 const QUERIES: usize = 4;
 
@@ -281,6 +284,19 @@ struct SourceEntry {
     collider: Option<(Source, bool)>,
     /// Drawn-primitive geometry (no collider).
     shape: Option<Source>,
+}
+
+/// Whether `e`'s parent chain is still `ancestors` (itself first): a subtree moved to a parent
+/// with the same world transform changes no version or matrix below it.
+fn same_ancestors(world: &World, e: &Entity, ancestors: &[u64]) -> bool {
+    let mut at = Some(e.id);
+    for &a in ancestors {
+        if at != Some(a) {
+            return false;
+        }
+        at = world.get(a).and_then(|x| x.parent);
+    }
+    at.is_none()
 }
 
 /// `sources.under` resolved: `None` (no filter), `Some(None)` (the path doesn't exist: nothing),
@@ -1134,7 +1150,10 @@ impl Nav {
         let new = e.and_then(|e| {
             let drawn = e.shown() && !e.in_ui();
             let unchanged = self.sources.get(&id).is_some_and(|s| {
-                s.version == e.version && s.drawn == drawn && s.cols.iter().flatten().zip(e.model().cols.iter().flatten()).all(|(a, b)| a.to_bits() == b.to_bits())
+                s.version == e.version
+                    && s.drawn == drawn
+                    && s.cols.iter().flatten().zip(e.model().cols.iter().flatten()).all(|(a, b)| a.to_bits() == b.to_bits())
+                    && same_ancestors(world, e, &s.ancestors)
             });
             if unchanged {
                 None
@@ -1190,7 +1209,10 @@ impl Nav {
                 }
             }
             None => {
-                self.minds.remove(&id);
+                if self.minds.remove(&id).is_some() {
+                    self.forget_mind_goals(id);
+                    self.reindex_definitions();
+                }
                 self.mind_problems.remove(&id);
             }
         }
@@ -1342,8 +1364,28 @@ impl Nav {
         );
     }
 
+    /// What a mind left on its agent (goal, owner, facing, patrol index) goes with it.
+    fn forget_mind_goals(&mut self, id: u64) {
+        if let Some(l) = self.agents.get_mut(&id) {
+            l.mind_goal = None;
+            l.goal_owner = None;
+            l.face = None;
+            l.patrol_index = 0;
+            l.unreachable_ticks = 0;
+        }
+    }
+
+    /// The definition indexes from the live minds (they only grow between rebuilds).
+    fn reindex_definitions(&mut self) {
+        self.def_ids = self.minds.values().filter_map(|m| m.def_from.map(|(d, _)| d)).collect();
+        self.def_paths = self.minds.values().filter_map(|m| m.def_path.clone()).collect();
+    }
+
     /// Reads `props.mind` into a running mind (a problem when it doesn't validate).
     fn load_mind(&mut self, world: &World, id: u64, props: Json) {
+        if self.def_paths.len() + self.def_ids.len() > 2 * self.minds.len() + 32 {
+            self.reindex_definitions();
+        }
         let version = props.clone();
         let def_json = props.get("def").cloned().unwrap_or(Json::Null);
         let def_path = def_json.as_str().map(str::to_owned);
@@ -1397,12 +1439,16 @@ impl Nav {
                         }
                         m
                     }
-                    None => Mind::new(Arc::new(d), bb, 30),
+                    None => {
+                        self.forget_mind_goals(id);
+                        Mind::new(Arc::new(d), bb, 30)
+                    }
                 };
                 self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: Some(mind) });
                 self.mind_problems.remove(&id);
             }
             Err(diags) => {
+                self.forget_mind_goals(id);
                 self.minds.insert(id, MindSlot { props: version, def_from: from, def_path, mind: None });
                 self.mind_problems.insert(id, Json::obj([("invalid_mind", Json::arr(diags.iter().map(Diagnostic::to_json)))]));
             }
@@ -1412,7 +1458,12 @@ impl Nav {
     /// Rebuilds up to `budget` dirty tiles of a mesh (all with `None`), in tile order.
     pub fn rebuild(&mut self, mesh_id: u64, budget: Option<usize>, world: &World) -> usize {
         let Some(slot) = self.meshes.get_mut(&mesh_id) else { return 0 };
-        let n = budget.unwrap_or(usize::MAX).min(slot.dirty.len());
+        // Per tick: at most `budget` tiles and about COLUMNS_PER_TICK columns of work (a tile's
+        // grid with its border), always at least one tile.
+        let d = slot.mesh.derived();
+        let side = (slot.settings.config.tile_cells + 2 * d.border) as usize;
+        let by_work = (COLUMNS_PER_TICK / (side * side)).max(1);
+        let n = budget.map_or(usize::MAX, |b| b.min(by_work)).min(slot.dirty.len());
         let take: Vec<(u32, u32)> = slot.dirty.iter().take(n).copied().collect();
         if take.is_empty() && budget.is_some() {
             slot.last_rebuild.clear();
@@ -1628,6 +1679,8 @@ impl Nav {
                 Some(Goal::Entity(g)) => h.write_u64(*g),
                 None => h.write_u8(0),
             }
+            h.write_u64(l.goal_owner.map_or(u64::MAX, |n| n as u64));
+            h.write_u64(l.face.map_or(u64::MAX, |f| u64::from(f.to_bits())));
         }
         h.finish()
     }
@@ -1992,6 +2045,63 @@ mod tests {
         let p = w.get(g).unwrap().world_position();
         // (The thief's cube carves the navmesh around it: the nearest walkable point is ~0.7 m off.)
         assert!(horizontal(p, Vec3::new(at.x + 3.0, 0.0, at.z)) < 1.0, "walked to the thief: {p:?} {:?}", nav.agent_json(&w, g));
+    }
+
+    #[test]
+    fn a_subtree_moved_under_another_parent_leaves_or_joins_under() {
+        let mut w = World::default();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("level".into());
+        w.spawn(s, "t").unwrap();
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("floor".into());
+        s.parent = Some(EntityKey::Path("/level".into()));
+        s.position = Vec3::new(0.0, -0.5, 0.0);
+        s.scale = Vec3::new(20.0, 1.0, 20.0);
+        w.spawn(s, "t").unwrap();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("props".into());
+        s.parent = Some(EntityKey::Path("/level".into()));
+        let props = w.spawn(s, "t").unwrap().id;
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("crate".into());
+        s.parent = Some(EntityKey::Id(props));
+        s.position = Vec3::new(3.0, 0.5, 3.0);
+        w.spawn(s, "t").unwrap();
+        let m = navmesh(&mut w);
+        let mut settings = MeshSettings::from_json(w.get(m).unwrap().props.get(MESH_KEY).unwrap()).unwrap();
+        settings.sources.under = Some("/level".into());
+        w.update(&EntityKey::Id(m), UpdateSpec { props: Some(Json::obj([(MESH_KEY, settings.to_json())])), ..Default::default() }, "t").unwrap();
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        assert!(nav.meshes[&m].mesh.nearest(Vec3::new(3.0, 0.0, 3.0), Vec3::new(0.01, 0.5, 0.01)).is_none(), "the crate carves");
+        // Move /level/props to the top level (same world transform): the crate leaves /level.
+        w.update(&EntityKey::Id(props), UpdateSpec { parent: Some(None), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 20);
+        let mut fresh = Nav::default();
+        build_now(&mut fresh, &w, 0, m);
+        assert_eq!(nav.meshes[&m].mesh.hash(), fresh.meshes[&m].mesh.hash(), "incremental equals a full build");
+        assert!(nav.meshes[&m].mesh.nearest(Vec3::new(3.0, 0.0, 3.0), Vec3::new(0.01, 0.5, 0.01)).is_some(), "it no longer carves");
+    }
+
+    #[test]
+    fn a_replaced_mind_drops_the_old_goal() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let go = Json::parse(r#"{"do": "move_to", "target": [8, 0, 8]}"#).unwrap();
+        let a = walker(&mut w, "a", Vec3::new(-7.5, 0.5, -7.5), vec![(MIND_KEY, Json::obj([("def", go)]))]);
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        run(&mut nav, &mut w, 10);
+        let wait = Json::parse(r#"{"wait": 100000}"#).unwrap();
+        w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(MIND_KEY, Json::obj([("def", wait)]))])), ..Default::default() }, "t").unwrap();
+        // (It slows to a stop: 8 m/s² from 2 m/s takes a quarter second.)
+        run(&mut nav, &mut w, 20);
+        let p0 = w.get(a).unwrap().world_position();
+        run(&mut nav, &mut w, 60);
+        let p1 = w.get(a).unwrap().world_position();
+        assert!(horizontal(p0, p1) < 0.05, "stands still once its mind only waits: {p0:?} -> {p1:?}");
     }
 
     #[test]

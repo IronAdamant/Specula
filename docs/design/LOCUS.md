@@ -112,8 +112,9 @@ write). Changes and details:
   `against` turns its back to the face.
 - `spacing` and `near` measure the gap between footprints, not between centres.
 - Collisions: physics overlap (the footprint box shrunk 5 mm, raised 1 cm) against non-trigger colliders, and the
-  upright boxes of drawn entities without colliders (at most 8,192, in a 2 m grid; boxes covering more than 256 cells
-  are always checked). The moved entity's subtree and `ignore` are left out.
+  upright boxes of drawn entities without colliders around the relations' area (in X/Z; at most 8,192, in a 2 m
+  grid; boxes covering more than 256 cells are always checked). `on_navmesh {reachable_from}` floods the navmesh once
+  per call. A dry run applies nothing and sees physics as of the last tick. The moved entity's subtree and `ignore` are left out.
 - A candidate first gets a lower bound from what doesn't depend on height (the X/Z relations and the preference);
   if that can't beat the best so far, its ground rays, navmesh queries and collision checks are skipped.
 - Errors: `unsatisfied` (with the nearest valid alternatives and hints), `no_free_spot` (some instance has no

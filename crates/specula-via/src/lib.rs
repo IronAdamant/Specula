@@ -69,8 +69,11 @@ impl std::error::Error for NavError {}
 
 /// Most tiles one navmesh has.
 pub const MAX_TILES: usize = 4096;
-/// Most columns (cells) one navmesh covers.
+/// Most columns (cells) one navmesh covers, and most a full build rasterises (tiles with their
+/// borders).
 pub const MAX_COLUMNS: u64 = 16 * 1024 * 1024;
+/// Widest a tile's grid with its border may be (a rebuild's work is about its square).
+pub const MAX_TILE_SIDE: u64 = 160;
 /// Most solid spans in one column (more are dropped, reported as a budget error).
 pub const MAX_SPANS_PER_COLUMN: usize = 64;
 /// Most polygons in one tile.
@@ -177,8 +180,15 @@ impl Config {
         }
         let tiles = d.tiles_x as usize * d.tiles_z as usize;
         let side = u64::from(self.tile_cells + 2 * d.border);
-        if tiles as u64 * side * side > 4 * MAX_COLUMNS {
-            return Err(NavError::new("budget", format!("building {tiles} tiles of {side} x {side} columns (with their borders) is too much work: raise cell_size or tile_cells"))
+        if side > MAX_TILE_SIDE {
+            return Err(NavError::new(
+                "budget",
+                format!("a tile with its erosion border is {side} columns across, more than {MAX_TILE_SIDE}: lower tile_cells (or agent_radius / cell_size)"),
+            )
+            .with("field", "tile_cells"));
+        }
+        if tiles as u64 * side * side > MAX_COLUMNS {
+            return Err(NavError::new("budget", format!("building {tiles} tiles of {side} x {side} columns (with their borders) is too much work: raise cell_size or shrink the bounds"))
                 .with("field", "cell_size"));
         }
         if tiles > MAX_TILES {
@@ -217,7 +227,9 @@ mod tests {
     fn borders_wider_than_tiles_are_refused() {
         let e = Config::huge_border().validate().unwrap_err();
         assert_eq!((e.code, e.details[0].1.as_str()), ("budget", Some("tile_cells")), "{e:?}");
-        assert!(Config { tile_cells: 128, ..Config::huge_border() }.validate().is_ok());
+        assert!(Config { tile_cells: 128, ..Config::huge_border() }.validate().is_err(), "128 + 2 x 103 is wider than 160");
+        assert!(Config { tile_cells: 120, agent_radius: 0.3, ..Config::huge_border() }.validate().is_ok());
+        assert!(Config { tile_cells: 256, cell_size: 0.0396, agent_radius: 10.0, ..Config::default() }.validate().is_err());
         assert!(Config::default().validate().is_ok());
     }
 }

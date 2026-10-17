@@ -351,7 +351,8 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "What minds are doing and why: the running path through the tree, each utility node's option \
                           scores and their considerations, the blackboard, a trace of recent decisions (what started, \
                           what took over, what stopped), problems, and the agent's navigation state. One entity, or a \
-                          page of all minds by id."
+                          page of all minds by id. Reads show the state as of the last tick (a props.mind written with \
+                          world_set appears after the next tick; ai_set shows it at once)."
                 .into(),
             input_schema: schema(status, &[]),
         },
