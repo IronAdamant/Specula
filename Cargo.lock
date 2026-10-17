@@ -42,6 +42,7 @@ dependencies = [
  "specula-gltf",
  "specula-gpu",
  "specula-input",
+ "specula-lex",
  "specula-logic",
  "specula-model",
  "specula-physics",

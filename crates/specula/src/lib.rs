@@ -24,6 +24,7 @@ pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+mod lex_tools;
 mod luts;
 pub mod meshes;
 pub mod models;
@@ -1412,6 +1413,7 @@ impl Engine {
             },
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
+            Command::Lex(call) => lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
@@ -2030,6 +2032,8 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::Lex(call) if call.is_read() => Class::Read,
+        Command::Lex(_) => Class::Edit,
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)
