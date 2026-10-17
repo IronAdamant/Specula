@@ -129,3 +129,40 @@ fn saves_from_other_content_or_damaged_ones_are_refused_before_anything_changes(
     let Err(e) = c.game.parse_state(&bytes) else { panic!("other content must be refused") };
     assert!(e.contains("content_changed"), "{e}");
 }
+
+/// The Save requests the game made since the last call (slot names), dropping its list refreshes.
+fn saves_asked(host: &mut Host) -> Vec<String> {
+    let mut out = Vec::new();
+    host.game.take_requests(&mut out);
+    out.into_iter().filter_map(|r| if let specula::game::GameRequest::Save { slot, .. } = r { Some(slot) } else { None }).collect()
+}
+
+#[test]
+fn wave_starts_autosave_in_turn_when_switched_on() {
+    let content = Arc::new(Content::builtin());
+    let mut h = Host::new(content, 7);
+    h.call("play_new", r#"{"seed": 7, "layout": "centre"}"#);
+    // Headless (agents' runs): off by default.
+    h.call("play_command", r#"{"action": "call_wave"}"#);
+    h.tick();
+    assert_eq!(saves_asked(&mut h), Vec::<String>::new(), "no autosave headless unless switched on");
+    // Settings switches it on (the same button a player presses).
+    h.call("play_ui", r#"{"press": "menu_button"}"#);
+    h.call("play_ui", r#"{"press": "settings"}"#);
+    h.call("play_ui", r#"{"press": "autosave"}"#);
+    h.call("play_ui", r#"{"press": "settings_back"}"#);
+    h.call("play_ui", r#"{"press": "resume"}"#);
+    saves_asked(&mut h);
+    // A wave called early (a command) and the next starting on its own (a tick), in turn.
+    h.call("play_command", r#"{"action": "call_wave"}"#);
+    assert_eq!(saves_asked(&mut h), ["sepulcra_autosave_2"], "wave 2 (called early) saves to autosave 2");
+    let mut asked = Vec::new();
+    for _ in 0..60 * 60 * 5 {
+        h.tick();
+        asked.extend(saves_asked(&mut h));
+        if !asked.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(asked, ["sepulcra_autosave_1"], "wave 3 (started by the clock) saves to autosave 1");
+}

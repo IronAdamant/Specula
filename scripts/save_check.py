@@ -121,6 +121,17 @@ def run(args, work):
         if not ok:
             problems.append(what)
 
+    def keep_shot(label, shot):
+        entry = {"png": shot["image"]["path"], "packet": shot["image"]["packet_path"]}
+        if args.keep:
+            args.keep.mkdir(parents=True, exist_ok=True)
+            for k in ("path", "packet_path"):
+                dst = args.keep / f"{label}{Path(shot['image'][k]).suffix}"
+                shutil.copy(shot["image"][k], dst)
+                entry["kept_" + k] = str(dst)
+        report.setdefault("captures", {})[label] = entry
+        print(f"  capture {label}: {entry.get('kept_path', entry['png'])}")
+
     pa, pb = args.ports
     with Engine(exe, pa, work / "a.log", *common, "--captures", str(work / "cap-a"), "--worlds", str(work / "worlds-a"),
                 "--", "--seed", "7", cwd=str(ROOT)):
@@ -180,51 +191,72 @@ def run(args, work):
         report["subsystems_compared"] = names
         for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic"):
             check(name in names, f"subsystem {name} was compared")
-        # The player's way: the pause menu's Save game and Load game (play_ui presses the buttons
-        # a click, a key or a pad's accept would).
-        print("B: the player saves and loads from the pause menu")
+        # The player's way: the pause menu's Save / Load screen (play_ui presses the buttons a
+        # click, a key or a pad's accept would): slots, overwrite / load / delete confirmations.
+        print("B: the player saves and loads from the Save / Load screen")
         b.json("play_ui", press="menu_button")
-        shot = b.frame(width=1280, height=720, include_ui=True)
-        report["menu_capture"] = {"png": shot["image"]["path"], "packet": shot["image"]["packet_path"]}
-        if args.keep:
-            for k in ("path", "packet_path"):
-                dst = args.keep / Path(shot["image"][k]).name
-                args.keep.mkdir(parents=True, exist_ok=True)
-                shutil.copy(shot["image"][k], dst)
-                report["menu_capture"]["kept_" + k] = str(dst)
-        print(f"  pause menu capture: {report['menu_capture']}")
-        before = b.json("play_state")
-        pressed = b.json("play_ui", press="save")
-        check(pressed.get("action") == "save_game", f"the menu's Save game sends save_game ({pressed.get('action')})")
-        def slot_written():
-            listed = b.json("save_list")
-            found = next((s for s in listed["saves"] if s["name"] == "sepulcra_slot_1"), None)
-            return found if found and not found.get("writing") else None
+        keep_shot("menu", b.frame(width=1280, height=720, include_ui=True))
+        pressed = b.json("play_ui", press="saves")
+        check(pressed.get("action") == "open_saves", f"the pause menu opens the Save / Load screen ({pressed.get('action')})")
 
-        slot = wait_for("the player's save", slot_written)
-        check(slot is not None and slot["created_by"] == "sepulcra" and slot["tick"] == b.json("time_control", action="info")["tick"],
-              "the player's save is in the slot, written by the game at this tick")
+        def slot(name, want=True):
+            def probe():
+                listed = b.json("save_list")
+                found = next((s for s in listed["saves"] if s["name"] == name), None)
+                if want:
+                    return found if found and not found.get("writing") else None
+                return {"gone": True} if found is None else None
+            return wait_for(name, probe)
+
+        before = b.json("play_state")
+        b.json("play_ui", press="save_1")
+        s1 = slot("sepulcra_slot_1")
+        check(s1 is not None and s1["created_by"] == "sepulcra" and s1["tick"] == b.json("time_control", action="info")["tick"],
+              "Save on an empty slot writes it at once, as the game, at this tick")
+        check("Wave" in (s1 or {}).get("label", ""), f"the slot says what it holds ({(s1 or {}).get('label')})")
+        b.json("play_ui", press="save_2")
+        check(slot("sepulcra_slot_2") is not None, "a second slot")
+        wait_for("the screen's list", lambda: True)
+        time.sleep(0.2)
+        keep_shot("saves", b.frame(width=1280, height=720, include_ui=True))
+        # Saving over a used slot asks first.
+        b.json("play_ui", press="save_1")
+        keep_shot("confirm_overwrite", b.frame(width=1280, height=720, include_ui=True))
+        ui = b.json("play_ui")
+        check("confirm" in json.dumps(ui), "saving over slot 1 asks first")
+        b.json("play_ui", press="confirm_no")
+        # Deleting asks too.
+        b.json("play_ui", press="delete_2")
+        b.json("play_ui", press="confirm_yes")
+        check(slot("sepulcra_slot_2", want=False) is not None, "Delete (confirmed) removes slot 2")
+        b.json("play_ui", press="saves_back")
         b.json("play_ui", press="resume")
         step(b, 300)
         moved = b.json("play_state")
         check(moved["tick"] > before["tick"], "the run went on after saving")
         b.json("play_ui", press="menu_button")
-        b.json("play_ui", press="load")
+        b.json("play_ui", press="saves")
+        time.sleep(0.2)
+        b.json("play_ui", press="load_1")
+        b.json("play_ui", press="confirm_yes")
         after = wait_for("the player's load", lambda: (lambda st: st if st["tick"] == before["tick"] else None)(b.json("play_state", include=["log"])))
         after = after or b.json("play_state", include=["log"])
-        check(after["state_hash"] == before["state_hash"] and after["tick"] == before["tick"], "Load game brought the saved run back")
+        check(after["state_hash"] == before["state_hash"] and after["tick"] == before["tick"], "Load (confirmed) brought the saved run back")
         check(after["paused"] is True, "and it waits, paused under the menu")
         said = [m["message"] for m in after.get("log", {}).get("items", after.get("log", [])) if isinstance(m, dict)]
-        check(any(m.startswith("Game loaded") for m in said), f"the player is told ({said[:2]})")
+        check(any(m.startswith("Game loaded") for m in said), f"the player is told ({said[:3]})")
+        # The wave-start autosave (off headless; Settings switches it on).
+        b.json("play_ui", press="settings")
+        b.json("play_ui", press="autosave")
+        b.json("play_ui", press="settings_back")
+        b.json("play_ui", press="resume")
+        b.call("play_command", action="call_wave")
+        step(b, 2)
+        auto = wait_for("an autosave", lambda: next((s for s in b.json("save_list")["saves"] if s["name"].startswith("sepulcra_autosave_") and not s.get("writing")), None))
+        log = [m["message"] for m in b.json("play_state", include=["log"]).get("log", {}).get("items", []) if isinstance(m, dict)]
+        check(auto is not None and "Autosave" in auto.get("label", ""), f"a wave start autosaves ({(auto or {}).get('name')}; log {log[:3]})")
         # What the loaded world looks like (the slab and the stones adopted, enemies rebuilt).
-        world_shot = b.frame(width=1280, height=720, eye=[0, 38, 30], target=[0, 0, 0])
-        report["world_capture"] = {"png": world_shot["image"]["path"], "packet": world_shot["image"]["packet_path"]}
-        if args.keep:
-            for k in ("path", "packet_path"):
-                dst = args.keep / ("loaded_" + Path(world_shot["image"][k]).name)
-                shutil.copy(world_shot["image"][k], dst)
-                report["world_capture"]["kept_" + k] = str(dst)
-        print(f"  loaded world capture: {report['world_capture']}")
+        keep_shot("loaded_world", b.frame(width=1280, height=720, eye=[0, 38, 30], target=[0, 0, 0]))
         # Loads read and check off the engine thread: another agent's calls keep answering.
         other = Mcp(url_for(pb), "save-check-bystander")
         latencies, done = [], threading.Event()

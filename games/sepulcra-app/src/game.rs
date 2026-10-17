@@ -50,8 +50,12 @@ const GLYPHS: [(&str, Option<PadStyle>); 4] =
 
 /// What the open confirmation dialog will do on "yes".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Confirm {
+pub(crate) enum Confirm {
     Restart,
+    /// The saves screen: save over player slot N, load a slot, delete player slot N.
+    Overwrite(u8),
+    Load(saves::Slot),
+    Delete(u8),
 }
 
 /// The game, as the engine hosts it.
@@ -115,6 +119,12 @@ pub struct SepulcraGame {
     fire_buf: Vec<(CellId, Vec3)>,
     /// The pause menu's Save and Load, for the engine (see `saves`).
     requests: Vec<specula::game::GameRequest>,
+    /// The player's slots as the last save_list showed them (the saves screen).
+    slots: Vec<saves::SlotInfo>,
+    /// "Saving…" / "Loading…" while a request runs.
+    saves_status: Option<String>,
+    /// Autosave at the start of each wave (Settings; on by default with a window).
+    autosave_on: bool,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -180,6 +190,9 @@ impl SepulcraGame {
             hud_texts: hud::Texts::default(),
             fire_buf: Vec::new(),
             requests: Vec::new(),
+            slots: Vec::new(),
+            saves_status: None,
+            autosave_on: false,
         }
     }
 
@@ -212,8 +225,13 @@ impl SepulcraGame {
     /// Applies a command now (at the current tick) and journals it.
     pub fn command(&mut self, world: &mut World, cmd: Command) -> Result<(), Rejection> {
         let tick = self.state.tick();
+        let before = self.pending.len();
         self.state.apply(&cmd, &mut self.pending)?;
         self.journal.push((tick, cmd));
+        // Calling a wave early starts it here, not in a tick.
+        if let Some(wave) = wave_started(&self.pending[before..]) {
+            self.autosave(wave);
+        }
         self.messages_from_pending();
         self.sounds(&self.pending.clone());
         // Show it at once, even while the engine clock is paused.
@@ -567,7 +585,10 @@ impl SepulcraGame {
             }
             "confirm_yes" => {
                 self.hud.show("confirm", false);
-                if self.confirm.take() == Some(Confirm::Restart) {
+                let asked = self.confirm.take();
+                if let Some(c) = asked.filter(|c| *c != Confirm::Restart) {
+                    self.confirmed(c);
+                } else if asked == Some(Confirm::Restart) {
                     self.hud.show("pause", false);
                     let (seed, content) = (self.state.seed(), self.content());
                     self.restart(world, agent, content, seed, None);
@@ -582,8 +603,13 @@ impl SepulcraGame {
                 self.hud.show("defeat", false);
                 self.new_run(world, agent);
             }
-            "save_game" => self.request(specula::game::GameRequest::Save { slot: saves::PLAYER_SLOT.into(), label: Some(format!("wave {} of {}", self.state.wave(), self.state.waves_total())) }),
-            "load_game" => self.request(specula::game::GameRequest::Load { slot: saves::PLAYER_SLOT.into() }),
+            "open_saves" => self.open_saves(),
+            "close_saves" => self.close_saves(),
+            "toggle_autosave" => self.autosave_on = !self.autosave_on,
+            a if a.contains(':') && ["save_slot", "load_slot", "delete_slot", "load_auto"].iter().any(|p| a.starts_with(p)) => {
+                let (verb, n) = a.split_once(':').unwrap_or((a, ""));
+                self.saves_action(verb, n.parse().unwrap_or(0));
+            }
             "close_result" => {
                 self.hud.show("victory", false);
                 self.hud.show("defeat", false);
@@ -709,6 +735,12 @@ impl SepulcraGame {
         hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
         if self.confirm == Some(Confirm::Restart) {
             self.hud.state.set_str("confirm_title", "Restart this run?").set_str("confirm_body", "The slab, your stones and the waves start over with the same seed.");
+        } else if let Some((title, body)) = self.confirm.and_then(|c| self.confirm_text(c)) {
+            self.hud.state.set_str("confirm_title", &title).set_str("confirm_body", &body);
+        }
+        self.hud.state.set_str("autosave_text", if self.autosave_on { "On" } else { "Off" });
+        if self.hud.visible("saves") {
+            self.fill_saves();
         }
         if let Some(cam) = camera {
             let groups = self.threat_groups();
@@ -998,6 +1030,8 @@ impl Game for SepulcraGame {
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
         let ui_dir = assets.join("ui");
         self.hud = Hud::new(Some(&ui_dir), crate::controls::bindings().expect("the built-in bindings are valid (tested)"));
+        // Autosaves are for people playing: on with a window, off headless (agents' runs).
+        self.autosave_on = ctx.windowed;
         if ctx.windowed {
             self.controls.enable_gamepads();
             if !self.mute {
@@ -1016,6 +1050,8 @@ impl Game for SepulcraGame {
     fn tick(&mut self, ctx: &mut Ctx) {
         self.events.clear();
         self.events.append(&mut self.pending);
+        // Events before this come from commands (their autosave was already asked for).
+        let from_steps = self.events.len();
         let mut stepped = 0;
         if !self.paused {
             for _ in 0..self.speed {
@@ -1034,6 +1070,10 @@ impl Game for SepulcraGame {
         }
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
+        // The rotating autosave as a wave starts (the save holds this tick, wave and all).
+        if let Some(wave) = wave_started(&events[from_steps..]) {
+            self.autosave(wave);
+        }
         // Flashes keep fading after the run ends (no more steps, but time still passes).
         let advance = if self.paused { 0 } else { u64::from(self.speed).max(stepped) };
         self.pres_ticks += advance;
@@ -1202,7 +1242,7 @@ impl Game for SepulcraGame {
         self.log = c.log;
         self.confirm = c.confirm;
         self.radial_cell = c.radial_cell;
-        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls"] {
+        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls", "saves"] {
             let open = c.screens.iter().any(|s| s == screen);
             if self.hud.visible(screen) != open {
                 self.hud.show(screen, open);
@@ -1211,6 +1251,11 @@ impl Game for SepulcraGame {
         // Presentation caches are rebuilt on the next frame.
         self.hover_key = None;
     }
+}
+
+/// The last wave started among `events`, if any.
+fn wave_started(events: &[Event]) -> Option<u16> {
+    events.iter().rev().find_map(|e| if let Event::WaveStarted { wave, .. } = e { Some(*wave) } else { None })
 }
 
 #[cfg(test)]

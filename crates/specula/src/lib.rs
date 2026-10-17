@@ -740,6 +740,10 @@ impl Engine {
             self.record_tick_hash();
         }
         self.world.set_clock_s(self.clock.seconds());
+        if ticks > 0 {
+            // A tick may have asked for something (the game's wave-start autosave).
+            self.serve_game_requests();
+        }
     }
 
     /// The game's per-frame update: input, camera, title.

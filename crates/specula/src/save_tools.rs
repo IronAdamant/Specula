@@ -785,6 +785,8 @@ impl Engine {
                 let result = w.handle.join().unwrap_or_else(|_| Err(SaveError::new("internal", "the save writer stopped unexpectedly")));
                 self.deliver(w.dest, result);
             }
+            // What the game asked for as it heard back (its list refresh).
+            self.serve_game_requests();
         }
         if self.save_load.as_ref().is_some_and(|l| l.handle.as_ref().is_none_or(|h| h.is_finished())) {
             let mut l = self.save_load.take().expect("checked");
@@ -795,6 +797,7 @@ impl Engine {
                 Err(_) => Err(SaveError::new("internal", "the save reader stopped unexpectedly")),
             };
             self.deliver(l.dest, result);
+            self.serve_game_requests();
         }
     }
 
