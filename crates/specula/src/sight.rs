@@ -1238,6 +1238,30 @@ mod tests {
         }
         eprintln!("ui occluders: {} rects; {missed} of {opaque} opaque pixels left visible", out.len());
         assert!(opaque > 5000 && missed * 10 < opaque, "{missed} of {opaque} opaque pixels left visible");
+        // Sepulcra's inspect panel as the HUD drew it (logged live at 1280x720; play_ui reports
+        // its rect rounded, [1013, 270, 257, 179]): the fill reaches x = 1269.2 and y = 449.6, so
+        // column 1269 and row 449 are its anti-aliased edge (coverage 0.2 and 0.6), not occluders;
+        // the edges are exact on all four sides.
+        let panel = OverlayQuad {
+            radius: 5.4,
+            border: 0.9,
+            color_bottom: Some([0.133, 0.149, 0.176, 1.0]),
+            border_color: [[0.31, 0.345, 0.4, 1.0], [0.078, 0.09, 0.11, 1.0]],
+            ..solid([1012.7, 270.4, 256.5, 179.2], 1.0)
+        };
+        let (pw, ph) = (1280, 720);
+        ui_occluders(&[panel], pw, ph, &mut out);
+        let covered = |x: u32, y: u32| out.iter().any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]);
+        let alpha = |x: u32, y: u32| overlay_alpha(&panel, x as f32 + 0.5, y as f32 + 0.5);
+        let (x0, x1) = (out.iter().map(|r| r[0]).min().unwrap(), out.iter().map(|r| r[0] + r[2] - 1).max().unwrap());
+        let (y0, y1) = (out.iter().map(|r| r[1]).min().unwrap(), out.iter().map(|r| r[1] + r[3] - 1).max().unwrap());
+        assert_eq!((x0, x1, y0, y1), (1013, 1268, 271, 448), "{out:?}");
+        for (x, y) in [(1012, 360), (1269, 360), (1140, 270), (1140, 449)] {
+            assert!(!covered(x, y) && alpha(x, y) < UI_OCCLUDER_ALPHA, "({x}, {y}): alpha {}", alpha(x, y));
+        }
+        for (x, y) in [(1013, 360), (1268, 360), (1140, 271), (1140, 448)] {
+            assert!(covered(x, y) && alpha(x, y) >= UI_OCCLUDER_ALPHA, "({x}, {y}): alpha {}", alpha(x, y));
+        }
         // Past the GPU's limit: the largest are kept.
         let many: Vec<_> = (0..specula_gpu::MAX_ID_OCCLUDERS + 3).map(|i| solid([0.0, 0.0, if i % 1000 == 1 && i < 3000 { 1.0 } else { 2.0 }, 1.0], 1.0)).collect();
         assert_eq!(ui_occluders(&many, w, h, &mut out), 3);

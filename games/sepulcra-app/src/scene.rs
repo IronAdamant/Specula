@@ -867,3 +867,39 @@ fn bolt_pos(p: &Projectile) -> Vec3 {
     }
     pos
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sepulcra::content::Content;
+    use std::sync::Arc;
+
+    /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
+    /// whatever they showed before: the colour check in `looks::tests` only holds if these are
+    /// what the world gets.
+    #[test]
+    fn cursor_and_range_dots_wear_the_highlight_glows() {
+        let state = State::new(Arc::new(Content::builtin()), 7);
+        let mut world = World::default();
+        let mut scene = Scene::build(&mut world, "test", &state);
+        let cell = state.content().map.cell_ref("top:10,12").unwrap();
+        let glow_of = |world: &World, id: u64| {
+            let e = world.get(id).expect("entity");
+            (e.color, e.look.surface.emissive, e.shown())
+        };
+        for (look, want) in [
+            (CursorLook::Valid(cell), highlight::VALID),
+            (CursorLook::Selected(cell), highlight::SELECTED),
+            (CursorLook::Invalid(cell), highlight::INVALID),
+            (CursorLook::Selected(cell), highlight::SELECTED),
+            (CursorLook::Valid(cell), highlight::VALID),
+        ] {
+            scene.show_cursor(&mut world, &state, look);
+            assert_eq!(glow_of(&world, scene.cursor), (want.color, want.emissive, true), "{look:?}");
+        }
+        scene.show_range(&mut world, &state, Some((cell, 6.5)));
+        for &d in &scene.ring {
+            assert_eq!(glow_of(&world, d), (highlight::RANGE_DOT.color, highlight::RANGE_DOT.emissive, true));
+        }
+    }
+}
