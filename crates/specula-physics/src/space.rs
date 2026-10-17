@@ -333,6 +333,8 @@ pub struct StepReport {
     /// Energy the step added to the bodies it moved (J; above zero = gained: pushes from
     /// kinematic bodies or penetration recovery; a closed system should not gain).
     pub energy_change: f64,
+    /// The bodies that gained the most energy this step: `(key, joules)`, at most 4.
+    pub energy_gainers: Vec<(u64, f64)>,
     pub errors: Vec<PhysicsError>,
     pub times: StageTimes,
 }
@@ -434,6 +436,8 @@ pub struct Space {
     reverse: BTreeSet<(u64, u64)>,
     touching_count: usize,
     dynamic_count: usize,
+    /// The last step's length (predicts motion for fat boxes and speculative margins).
+    dt: f32,
     // Reused buffers.
     active: Vec<u32>,
     solver_bodies: Vec<SolverBody>,
@@ -471,6 +475,7 @@ impl Space {
             reverse: BTreeSet::new(),
             touching_count: 0,
             dynamic_count: 0,
+            dt: 1.0 / 60.0,
             active: Vec::new(),
             solver_bodies: Vec::new(),
             constraints: Vec::new(),
@@ -871,6 +876,7 @@ impl Space {
         let want_static = b.desc.kind == BodyKind::Static;
         let aabb = b.aabb();
         let (proxy, in_static) = (b.proxy, b.in_static_tree);
+        let ahead = b.desc.velocity * self.dt;
         match aabb {
             None => {
                 if proxy != NONE {
@@ -893,8 +899,10 @@ impl Space {
                 }
                 let proxy = self.slot(s).proxy;
                 let tree = if want_static { &mut self.static_tree } else { &mut self.dynamic_tree };
-                // Static boxes need no slack: they don't move.
-                let fat = if want_static { aabb } else { aabb.expand(margin) };
+                // Static boxes need no slack: they don't move. Moving ones are fattened by the
+                // margin and by the motion one step at their velocity predicts, so pairs exist
+                // before fast bodies arrive.
+                let fat = if want_static { aabb } else { aabb.swept(ahead).expand(margin) };
                 if proxy == NONE {
                     let p = tree.insert(fat, s);
                     let b = self.slot_mut(s);
@@ -1041,7 +1049,9 @@ impl Space {
 
     /// Contact points for every active pair (step 2).
     fn narrowphase(&mut self) {
-        let margin = self.settings.speculative_distance;
+        let base = self.settings.speculative_distance;
+        let max_margin = base + 4.0 * self.settings.aabb_margin;
+        let dt = self.dt;
         let slop = self.settings.linear_slop;
         let mut remove: Vec<(u64, u64)> = Vec::new();
         let mut wake: Vec<u32> = Vec::new();
@@ -1066,6 +1076,12 @@ impl Space {
             let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
             let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
             let was = c.touching;
+            // Speculative contacts reach as far as the pair can close in one step (at least the
+            // base distance), so a fast approach is caught before it overlaps.
+            let closing = (a.desc.velocity - b.desc.velocity).length()
+                + a.desc.angular_velocity.length() * a.outer_radius
+                + b.desc.angular_velocity.length() * b.outer_radius;
+            let margin = (base + closing * dt).min(max_margin);
             // Bounding spheres apart: no points (cheap early out).
             let reach = a.outer_radius + b.outer_radius + margin;
             let far = crate::math::len_sq(a.center - b.center) > reach * reach;
@@ -1184,6 +1200,7 @@ impl Space {
             return &self.report;
         }
         self.steps += 1;
+        self.dt = dt;
         let mut t = Instant::now();
         let mut lap = |acc: &mut f64| {
             let now = Instant::now();
@@ -1212,8 +1229,11 @@ impl Space {
         active.clear();
         active.extend(self.awake.iter().map(|k| self.by_key[k]));
         self.active = active;
-        let (ke0, pe0) = self.energy();
-        let energy_before = ke0 + pe0;
+        let before: Vec<f64> = self.active.iter().map(|s| {
+            let (k, p) = self.body_energy(*s);
+            k + p
+        }).collect();
+        let energy_before: f64 = before.iter().sum();
         self.solve(dt);
         lap(&mut times.solve_us);
         self.integrate_kinematic(dt);
@@ -1242,6 +1262,19 @@ impl Space {
         self.report.kinetic_energy = ke;
         self.report.potential_energy = pe;
         self.report.energy_change = ke + pe - energy_before;
+        // Who gained the most (what to look at when energy rises).
+        let mut gains: Vec<(f64, u64)> = self
+            .active
+            .iter()
+            .zip(&before)
+            .map(|(s, e0)| {
+                let (k, p) = self.body_energy(*s);
+                (k + p - e0, self.slot(*s).key)
+            })
+            .filter(|(d, _)| *d > 0.0)
+            .collect();
+        gains.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        self.report.energy_gainers = gains.into_iter().take(4).map(|(d, k)| (k, d)).collect();
         times.total_us = (Instant::now() - t_start).as_secs_f64() * 1e6;
         self.report.times = times;
         &self.report
@@ -1250,19 +1283,20 @@ impl Space {
     /// Kinetic and potential energy of the dynamic bodies this step moves (sleeping bodies
     /// hold still, so they never change it).
     fn energy(&self) -> (f64, f64) {
-        let g = self.settings.gravity;
-        let (mut ke, mut pe) = (0.0f64, 0.0f64);
-        for &s in &self.active {
-            let b = self.slot(s);
-            if b.is_dynamic() && b.inv_mass > 0.0 {
-                let m = 1.0 / b.inv_mass;
-                let v = b.desc.velocity;
-                let w = b.desc.angular_velocity;
-                ke += 0.5 * f64::from(m) * f64::from(v.dot(v)) + 0.5 * f64::from(w.dot(b.inertia_world().mul_vec(w)));
-                pe += -f64::from(m) * f64::from(g.dot(b.center));
-            }
+        self.active.iter().map(|s| self.body_energy(*s)).fold((0.0, 0.0), |(k, p), (k2, p2)| (k + k2, p + p2))
+    }
+
+    /// One dynamic body's kinetic and potential energy (zero for others).
+    fn body_energy(&self, s: u32) -> (f64, f64) {
+        let b = self.slot(s);
+        if !b.is_dynamic() || b.inv_mass == 0.0 {
+            return (0.0, 0.0);
         }
-        (ke, pe)
+        let m = 1.0 / b.inv_mass;
+        let v = b.desc.velocity;
+        let w = b.desc.angular_velocity;
+        let ke = 0.5 * f64::from(m) * f64::from(v.dot(v)) + 0.5 * f64::from(w.dot(b.inertia_world().mul_vec(w)));
+        (ke, -f64::from(m) * f64::from(self.settings.gravity.dot(b.center)))
     }
 
     fn solve(&mut self, dt: f32) {

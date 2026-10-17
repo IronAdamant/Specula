@@ -172,6 +172,26 @@ fn restitution_bounces_and_friction_holds_on_slopes() {
     }
 }
 
+/// A bouncing ball at a 30 Hz tick moves up to ~35 cm a tick; speculative contacts scaled by
+/// the closing speed catch every landing, so it never sinks into the floor.
+#[test]
+fn bouncing_balls_never_sink_into_the_floor() {
+    let mut s = Space::new(Settings { substeps: 8, ..Settings::default() });
+    ground(&mut s);
+    let mut c = ColliderDesc::new(Shape::sphere(0.3));
+    c.restitution = 0.7;
+    s.insert(2, BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.0, 6.0, 0.0)), Some(c))).unwrap();
+    let mut deepest = 0.0f32;
+    for _ in 0..300 {
+        let r = s.step(1.0 / 30.0);
+        if let Some((d, _, _)) = r.deepest {
+            deepest = deepest.min(d);
+        }
+    }
+    assert!(deepest > -0.02, "sank {deepest} m into the floor");
+    assert!((s.body(2).unwrap().pose.p.y - 0.3).abs() < 0.01);
+}
+
 #[test]
 fn fast_bodies_do_not_tunnel_through_thin_walls() {
     for ccd in [true, false] {

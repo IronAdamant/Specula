@@ -912,16 +912,22 @@ impl crate::Engine {
                 ])
             }
             CheckSpec::Energy { max_gain_j } => {
-                let worst = window().fold(None, |m: Option<(f64, u64)>, r| match m {
-                    Some(y) if y.0 >= r.energy_change => Some(y),
-                    _ => Some((r.energy_change, r.tick)),
+                let worst = window().fold(None, |m: Option<&physics::TickRecord>, r| match m {
+                    Some(y) if y.energy_change >= r.energy_change => Some(y),
+                    _ => Some(r),
                 });
-                let gain = worst.map_or(0.0, |(e, _)| e.max(0.0));
+                let gain = worst.map_or(0.0, |r| r.energy_change.max(0.0));
+                let gainers = worst.map(|r| r.gainers.iter().filter(|(_, j)| *j > 0.0).map(|(k, j)| {
+                    let mut e = entity_json(world, *k);
+                    e.set("joules", Json::from((j * 1000.0).round() / 1000.0));
+                    e
+                }).collect::<Vec<_>>()).unwrap_or_default();
                 Json::obj([
                     ("check", Json::from("energy")),
                     ("pass", Json::from(gain <= f64::from(*max_gain_j))),
                     ("max_gain_j", Json::from((gain * 1000.0).round() / 1000.0)),
-                    ("tick", Json::from(worst.map(|(_, t)| t))),
+                    ("tick", Json::from(worst.map(|r| r.tick))),
+                    ("gained_most", Json::Arr(gainers)),
                     ("note", Json::from("energy a tick added to the bodies it moved: kinematic pushes and penetration recovery add some; a closed system should not")),
                 ])
             }

@@ -685,6 +685,7 @@ pub(crate) fn body_arg(args: &Json) -> Result<Option<Option<Body>>, String> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicsSettings {
     pub gravity: [f32; 3],
+    /// Solver substeps per 1/60 s (scaled to the tick rate).
     pub substeps: u32,
     pub sleep: bool,
     /// 2D: dynamic bodies stay in the XY plane (Specula's 2D plane) and turn about Z only.
@@ -800,11 +801,14 @@ impl PhysicsPatch {
     }
 }
 
-/// The world's settings as the space's.
-pub fn space_settings(s: &PhysicsSettings) -> specula_physics::Settings {
+/// The world's settings as the space's, for a tick rate of `hz`. `substeps` counts per 1/60 s,
+/// so a slower tick (the engine's 30 Hz without a game) takes proportionally more and the
+/// solver sees the same substep length (as stiff) at any tick rate.
+pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings {
+    let per_tick = (s.substeps * 60).div_ceil(hz.max(1)).clamp(1, 64);
     specula_physics::Settings {
         gravity: Vec3::new(s.gravity[0], s.gravity[1], s.gravity[2]),
-        substeps: s.substeps,
+        substeps: per_tick,
         sleep: s.sleep,
         plane_2d: s.plane_2d,
         contact_hertz: s.contact_hertz,
@@ -868,6 +872,8 @@ pub struct TickRecord {
     pub awake: usize,
     /// Joules: kinetic energy of the awake bodies.
     pub kinetic: f64,
+    /// The bodies that gained the most energy: `(id, joules)`.
+    pub gainers: [(u64, f64); 2],
 }
 
 /// The engine's physics: the space and its bridge to the world.
@@ -1315,7 +1321,8 @@ impl Physics {
     /// snapshot and journals them.
     pub fn tick(&mut self, world: &mut World, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
         let started = std::time::Instant::now();
-        let want = space_settings(settings);
+        let hz = (1.0 / dt).round() as u32;
+        let want = space_settings(settings, hz);
         if self.space.settings != want {
             self.space.settings = want;
         }
@@ -1354,6 +1361,7 @@ impl Physics {
             ccd: report.events.iter().filter(|e| e.kind == EventKind::Ccd).count(),
             awake: report.awake,
             kinetic: report.kinetic_energy,
+            gainers: [0, 1].map(|i| report.energy_gainers.get(i).copied().unwrap_or((0, 0.0))),
         });
         if self.hashes.len() == HASHES {
             self.hashes.pop_front();
