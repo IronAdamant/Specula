@@ -226,6 +226,8 @@ fn main() {
         println!("[{:?}] {} {}", m.severity, m.id_name, m.message);
     }
     println!("validation errors: {errors}; {frame_no} frames in {:.1} s", start.elapsed().as_secs_f64());
+    // Closed before a possible `exit` (which skips destructors); off Windows the stub has no Drop.
+    #[allow(clippy::drop_non_drop)]
     drop(window);
     if errors > 0 {
         std::process::exit(1);

@@ -23,10 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Build
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+      - name: Clippy (Linux: the cfg(not(windows)) side)
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   android-check:
     # F6 (portable by design): every crate must at least type-check for a mobile ARM target, so
