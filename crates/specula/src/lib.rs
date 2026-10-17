@@ -639,8 +639,12 @@ impl Engine {
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
                 let (tick, swarm) = (self.clock.tick(), &mut self.swarm);
-                let journal = &mut |w: &mut World, agent: &str, phase| swarm.game_changes(w, tick, agent, logic::tools::kind(phase));
-                self.logic.tick(&mut self.world, tick, self.clock.hz(), journal);
+                // The game's rules: journaled, exempt from claims.
+                let commit = &mut |w: &mut World, _: world::Mark, agent: &str, phase| {
+                    swarm.game_changes(w, tick, agent, logic::tools::kind(phase));
+                    Ok(())
+                };
+                self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
             }
             self.clock.finish_tick();
             let _h = profile::zone("tick_hash");

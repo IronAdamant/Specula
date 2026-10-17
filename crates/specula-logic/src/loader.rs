@@ -19,8 +19,8 @@ type CallFn = unsafe extern "C" fn(*const HostApi, u32, *const u8, usize) -> u32
 type EntryFn = extern "C" fn() -> *const ModuleApi;
 
 /// Most bytes a module may send in one reply (an answer to a hook, an error): beyond it the call
-/// fails rather than growing without bound.
-pub const MAX_REPLY_BYTES: usize = 4 << 20;
+/// fails rather than growing without bound (replies reach agents, and tokens are a cost).
+pub const MAX_REPLY_BYTES: usize = 256 << 10;
 
 /// Why a library couldn't become a module.
 #[derive(Clone, Debug, PartialEq, Eq)]

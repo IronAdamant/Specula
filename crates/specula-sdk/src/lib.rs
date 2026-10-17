@@ -5,6 +5,8 @@
 //! state, and a module is a stateless set of functions behind a versioned C ABI ([`abi`]).
 //!
 //! ```text
+//! #![deny(unsafe_code)] // not forbid: export_module! allows unsafe code for its one export
+//!
 //! use specula_sdk::{Cx, Module, ModuleInfo, Patch, SdkError};
 //!
 //! #[derive(Default)]
@@ -31,6 +33,12 @@
 //! *actions* (never raw keys) and events, all in a fixed order, and its maps are ordered
 //! ([`std::collections::BTreeMap`]). Use [`dmath`] for trigonometry and exponentials, never
 //! `f32::sin` and friends. Don't spawn threads or read the clock: nothing in the SDK needs them.
+//!
+//! **Module crates** depend on this crate only (by path; registry crates, build scripts and
+//! proc-macros are refused by `logic_build`), are `crate-type = ["cdylib"]`, and say
+//! `#![deny(unsafe_code)]`, not `forbid`: [`export_module!`] expands to one exported function
+//! marked `#[allow(unsafe_code)]` (`#[no_mangle]` counts as unsafe code), which `forbid` would
+//! reject (E0453) and `deny` lets through. Module code runs with the engine's privileges.
 //!
 //! See `docs/design/MODULES.md` for the lifecycle, the ABI and the build loop.
 

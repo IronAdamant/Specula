@@ -5,6 +5,14 @@
 //! in arrival order, one Cargo runs at a time, and a request for a build that is already queued
 //! (same module, profile and mode) joins it instead of queueing another. A request never joins
 //! a build that has already *started*, because the source may have changed since it began.
+//!
+//! **What a module may build from** (checked before Cargo builds anything, see [`vet`]): crates
+//! by path under the request's `root` only (no registry or git crates: zero third-party crates,
+//! AGENTS.md rule 1), no build scripts, no proc-macros, and no `.cargo/` configuration between the
+//! module and the root (a `rustc-wrapper` or linker there would run). Cargo runs `--offline`, so
+//! nothing is downloaded. A module, and anything it builds, still runs with the engine's
+//! privileges: these checks keep builds zero-dependency and free of build-time code, they are no
+//! sandbox.
 
 use crate::diag::{self, Diagnostic, Message};
 use crate::fix::{self, Applied};
@@ -33,11 +41,19 @@ pub struct BuildRequest {
     pub fix: bool,
     /// Kill Cargo after this long.
     pub timeout: Duration,
+    /// Every crate the build uses, the module included, must live under one of these folders
+    /// (the engine's project).
+    pub roots: Vec<PathBuf>,
+    /// Cargo's `--target-dir` (default: Cargo's own choice, e.g. `CARGO_TARGET_DIR`).
+    pub target_dir: Option<PathBuf>,
 }
 
 impl BuildRequest {
+    /// `roots` defaults to `dir`'s Cargo workspace root.
     pub fn new(dir: impl Into<PathBuf>) -> BuildRequest {
-        BuildRequest { dir: dir.into(), release: false, check: false, fix: false, timeout: Duration::from_secs(300) }
+        let dir = dir.into();
+        let roots = vec![workspace_root(&dir)];
+        BuildRequest { dir, release: false, check: false, fix: false, timeout: Duration::from_secs(300), roots, target_dir: None }
     }
 
     fn key(&self) -> (PathBuf, bool, bool, bool) {
@@ -240,6 +256,102 @@ pub fn workspace_root(dir: &Path) -> PathBuf {
     dir
 }
 
+/// Refuses a build that would use more than the module's own path crates (see the module docs):
+/// `Err((code, message))` naming the offending package, target or file. Codes: `outside_root`,
+/// `cargo_config`, `metadata_failed`, `third_party_crate`, `build_script`, `proc_macro`.
+///
+/// `cargo metadata` may rewrite the workspace's `Cargo.lock` while resolving; if the build is
+/// refused (or metadata fails) the lock file is put back as it was.
+pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
+    let roots: Vec<PathBuf> = req.roots.iter().map(|r| fix::canonical(r)).collect();
+    let dir = fix::canonical(&req.dir);
+    let Some(root) = roots.iter().filter(|r| dir.starts_with(r)).max_by_key(|r| r.components().count()).cloned() else {
+        let list: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+        return Err(("outside_root", format!("{} is not inside {}", dir.display(), list.join(" or "))));
+    };
+    // Folder-level Cargo config between the module and the root (the root's own is the project's).
+    let mut at = Some(dir.as_path());
+    while let Some(d) = at.filter(|d| *d != root && d.starts_with(&root)) {
+        let cfg = d.join(".cargo");
+        if cfg.exists() {
+            return Err(("cargo_config", format!("{} configures Cargo for this module (a wrapper or linker there would run); modules use the project's configuration only: remove it", cfg.display())));
+        }
+        at = d.parent();
+    }
+    let lock = workspace_root(&dir).join("Cargo.lock");
+    let lock_before = std::fs::read(&lock).ok();
+    let restore = || match &lock_before {
+        Some(bytes) => {
+            if std::fs::read(&lock).ok().as_deref() != Some(bytes.as_slice()) {
+                let _ = std::fs::write(&lock, bytes);
+            }
+        }
+        None => {
+            let _ = std::fs::remove_file(&lock);
+        }
+    };
+    let out = Command::new(cargo_program())
+        .args(["metadata", "--format-version", "1", "--offline", "--color", "never", "--manifest-path"])
+        .arg(dir.join("Cargo.toml"))
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .output();
+    let out = match out {
+        Ok(o) => o,
+        Err(e) => {
+            restore();
+            return Err(("metadata_failed", format!("cannot run {}: {e}", cargo_program().display())));
+        }
+    };
+    if !out.status.success() {
+        restore();
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = last[last.len().saturating_sub(6)..].join(" | ");
+        return Err((
+            "metadata_failed",
+            format!("cargo metadata --offline failed (modules may use only path crates under the project, e.g. specula-sdk): {tail}"),
+        ));
+    }
+    let meta = specula_core::Json::parse(&String::from_utf8_lossy(&out.stdout))
+        .map_err(|e| ("metadata_failed", format!("cargo metadata printed no JSON: {e:?}")));
+    let checked = meta.and_then(|m| check_metadata(&m, &roots));
+    if checked.is_err() {
+        restore();
+    }
+    checked
+}
+
+/// The rules of [`vet`] over `cargo metadata` output: every package is a path crate under one of
+/// `roots`, with no build script and no proc-macro target.
+pub fn check_metadata(meta: &specula_core::Json, roots: &[PathBuf]) -> Result<(), (&'static str, String)> {
+    use specula_core::Json;
+    let roots: Vec<PathBuf> = roots.iter().map(|r| fix::canonical(r)).collect();
+    for p in meta.get("packages").and_then(Json::as_array).unwrap_or_default() {
+        let name = p.get("name").and_then(Json::as_str).unwrap_or("?");
+        if let Some(source) = p.get("source").and_then(Json::as_str) {
+            return Err(("third_party_crate", format!("package '{name}' comes from {source}: modules may depend only on path crates in the project (zero third-party crates)")));
+        }
+        let manifest = PathBuf::from(p.get("manifest_path").and_then(Json::as_str).unwrap_or_default());
+        let canon = fix::canonical(&manifest);
+        if !roots.iter().any(|r| canon.starts_with(r)) {
+            let list: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+            return Err(("outside_root", format!("package '{name}' ({}) is outside the project ({})", manifest.display(), list.join(" or "))));
+        }
+        for t in p.get("targets").and_then(Json::as_array).unwrap_or_default() {
+            let kinds: Vec<&str> = t.get("kind").and_then(Json::as_array).unwrap_or_default().iter().filter_map(Json::as_str).collect();
+            let src = t.get("src_path").and_then(Json::as_str).unwrap_or("?");
+            if kinds.contains(&"custom-build") {
+                return Err(("build_script", format!("package '{name}' has a build script ({src}); nothing in a module's build may run code at build time: remove it")));
+            }
+            if kinds.contains(&"proc-macro") {
+                return Err(("proc_macro", format!("package '{name}' is a proc-macro crate ({src}); modules may not use proc-macros (they run code at build time)")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The Cargo to run: the one that launched us (`$CARGO`), else `cargo` on the PATH.
 pub fn cargo_program() -> PathBuf {
     std::env::var_os("CARGO").map_or_else(|| PathBuf::from("cargo"), PathBuf::from)
@@ -248,6 +360,14 @@ pub fn cargo_program() -> PathBuf {
 /// The default [`Runner`]: Cargo, with fix rounds when asked.
 pub fn run_cargo(req: &BuildRequest) -> BuildReport {
     let start = Instant::now();
+    if let Err((code, message)) = vet(req) {
+        return BuildReport {
+            error: Some((code, message)),
+            command: format!("{} metadata --offline", cargo_program().display()),
+            build_time: start.elapsed(),
+            ..BuildReport::default()
+        };
+    }
     let mut report = cargo_once(req);
     let mut rounds = 0;
     while req.fix && rounds < MAX_FIX_ROUNDS && report.fixable() > 0 {
@@ -279,6 +399,7 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
         if req.check { "check" } else { "build" }.into(),
         "--lib".into(),
         "--message-format=json".into(),
+        "--offline".into(),
         "--color".into(),
         "never".into(),
         "--manifest-path".into(),
@@ -286,6 +407,10 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
     ];
     if req.release {
         args.push("--release".into());
+    }
+    if let Some(t) = &req.target_dir {
+        args.push("--target-dir".into());
+        args.push(t.to_string_lossy().into_owned());
     }
     let program = cargo_program();
     let mut report = BuildReport {
@@ -459,6 +584,45 @@ mod tests {
         assert!(!r.ok);
         assert_eq!(r.error.as_ref().map(|e| e.0), Some("cargo_failed"));
         assert_eq!(svc.load(), (false, 0));
+    }
+
+    #[test]
+    fn metadata_rules_name_what_they_refuse() {
+        use specula_core::Json;
+        let root = fix::canonical(&std::env::temp_dir());
+        let roots = vec![root.clone()];
+        let r = root.display().to_string().replace('\\', "/");
+        let pkg = |name: &str, source: &str, kinds: &str| {
+            format!(r#"{{"name": "{name}", "source": {source}, "manifest_path": "{r}/{name}/Cargo.toml", "targets": [{{"kind": [{kinds}], "src_path": "{r}/{name}/x.rs"}}]}}"#)
+        };
+        let meta = |pkgs: &[String]| Json::parse(&format!(r#"{{"packages": [{}]}}"#, pkgs.join(","))).unwrap();
+        let ok = pkg("m", "null", r#""cdylib""#);
+        assert_eq!(check_metadata(&meta(std::slice::from_ref(&ok)), &roots), Ok(()));
+        let reg = pkg("itoa", r#""registry+https://github.com/rust-lang/crates.io-index""#, r#""lib""#);
+        let e = check_metadata(&meta(&[ok.clone(), reg]), &roots).unwrap_err();
+        assert_eq!(e.0, "third_party_crate");
+        assert!(e.1.contains("itoa"), "{}", e.1);
+        let bs = pkg("m2", "null", r#""cdylib", "custom-build""#);
+        assert_eq!(check_metadata(&meta(&[bs]), &roots).unwrap_err().0, "build_script");
+        let pm = pkg("derive", "null", r#""proc-macro""#);
+        assert_eq!(check_metadata(&meta(&[pm]), &roots).unwrap_err().0, "proc_macro");
+        let elsewhere = Json::parse(r#"{"packages": [{"name": "far", "source": null, "manifest_path": "/somewhere/else/far/Cargo.toml", "targets": []}]}"#).unwrap();
+        assert_eq!(check_metadata(&elsewhere, &[root.join("specula-nowhere")]).unwrap_err().0, "outside_root");
+    }
+
+    #[test]
+    fn folder_cargo_config_and_paths_outside_the_root_are_refused() {
+        let base = std::env::temp_dir().join(format!("specula-vet-{}", std::process::id()));
+        let module = base.join("mods").join("m");
+        std::fs::create_dir_all(base.join("mods").join(".cargo")).unwrap();
+        std::fs::create_dir_all(&module).unwrap();
+        let mut req = BuildRequest::new(&module);
+        req.roots = vec![base.clone()];
+        assert_eq!(vet(&req).unwrap_err().0, "cargo_config");
+        req.roots = vec![base.join("other")];
+        std::fs::create_dir_all(&req.roots[0]).unwrap();
+        assert_eq!(vet(&req).unwrap_err().0, "outside_root");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -273,12 +273,23 @@ pub(crate) fn request(host: &HostApi, req: &Value) -> Result<Value, SdkError> {
     };
     match status {
         status::OK => Ok(value),
-        _ => Err(SdkError::from_value(&value)),
+        _ => {
+            let e = SdkError::from_value(&value);
+            if e.code == "too_many_requests" {
+                // The engine has given up on this call: end it here, even if the module would
+                // ignore the error and keep asking (`call` catches this; the engine reports
+                // `too_many_requests` and disables the module).
+                panic!("the engine stopped this call: too many requests");
+            }
+            Err(e)
+        }
     }
 }
 
 /// Exports module type `$ty` (which implements [`crate::Module`] and `Default`) from a
-/// `cdylib`. Use it once per library:
+/// `cdylib`. Use it once per library. It expands to one `#[no_mangle]` function marked
+/// `#[allow(unsafe_code)]`, so module crates use `#![deny(unsafe_code)]` (which that allow
+/// overrides), not `forbid` (which it can't: E0453).
 ///
 /// ```text
 /// #[derive(Default)]

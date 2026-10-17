@@ -8,16 +8,16 @@
 //! swap goes to the engine thread, applied at a tick boundary like any other command (about a
 //! millisecond: describe, stop the old build, start the new one).
 
-use super::{Journal, LogicHost, Origin, Phase};
+use super::{root_of, LogicHost, Origin, Phase};
 use crate::game::Clock;
 use crate::journal::{Kind, Writer};
 use crate::swarm::Swarm;
 use crate::tools::{argument_error, bool_arg, check_keys, int_arg, string_arg, Command, Request};
-use crate::world::{World, WorldError};
+use crate::world::{Mark, World, WorldError};
 use specula_core::Json;
 use specula_logic::{BuildReport, BuildRequest, BuildService, ModuleCode};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -51,11 +51,37 @@ fn engine_root() -> PathBuf {
 
 /// `path` (relative to the engine's working directory, or absolute) as a canonical path that
 /// must exist and lie under the working directory: agents may only build and load code from
-/// the project the engine runs in.
+/// the project the engine runs in. Checked by its text first (no `..`, no UNC, device or
+/// verbatim prefixes, absolute paths spelled under the root), so a refused path is never looked
+/// up on disk (or on the network); then by the file system, so links can't lead out either.
 fn project_path(path: &str, what: &str) -> Result<PathBuf, String> {
     let root = engine_root();
+    let outside = || format!("'{what}' must be inside the engine's working directory ({}); {path} is not", root.display());
+    if path.starts_with(r"\\") || path.starts_with("//") || path.contains('\0') {
+        return Err(outside());
+    }
     let p = Path::new(path);
-    let joined = if p.is_absolute() { p.to_owned() } else { root.join(p) };
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("'{what}' may not contain '..': give the path below {}", root.display()));
+    }
+    let joined = if p.is_absolute() || p.has_root() {
+        // Spelled under the root (case-insensitively on Windows, where paths are)?
+        let norm = |s: &Path| {
+            let t = s.to_string_lossy().replace('\\', "/");
+            let t = t.trim_end_matches('/').to_owned();
+            if cfg!(windows) { t.to_lowercase() } else { t }
+        };
+        let (a, r) = (norm(p), norm(&root));
+        if !(a == r || a.starts_with(&format!("{r}/"))) {
+            return Err(outside());
+        }
+        p.to_owned()
+    } else {
+        if p.components().any(|c| matches!(c, Component::Prefix(_))) {
+            return Err(outside());
+        }
+        root.join(p)
+    };
     if !joined.exists() {
         return Err(format!("'{what}' {path} does not exist (relative paths start at {})", root.display()));
     }
@@ -236,14 +262,30 @@ fn open(library: &Path) -> Result<ModuleCode, WorldError> {
     })
 }
 
-/// Applies a module-host command on the engine thread, at a tick boundary.
-/// `w` is the calling agent: hooks it calls are checked against other agents' claims, as
-/// game tools are.
+/// What an agent's load, unload or hook commits: the module's changes checked against other
+/// agents' claims as `w`'s, and journaled under the module's name via `w`.
+fn agent_commit<'a>(swarm: &'a mut Swarm, tick: u64, w: Writer<'a>) -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> + 'a {
+    move |world: &mut World, mark: Mark, agent: &str, _: Phase| swarm.check_game_changes(world, mark, tick, agent, w)
+}
+
+/// Who may load, replace or unload a module: anyone, unless another agent holds a live claim
+/// covering the module's root (`/<name>`). Claiming a module's root is how an agent owns it;
+/// `claim_share` lets others work on it too. (The start and stop changes are also checked
+/// against claims like any other write.)
+fn check_module_owner(swarm: &Swarm, module: &str, w: Writer, doing: &str) -> Result<(), WorldError> {
+    swarm.check_claimed_path(&root_of(module), w, &format!("{doing} module '{module}' is refused")).map_err(|e| e.with("module", module))
+}
+
+/// Applies a module-host command on the engine thread, at a tick boundary. `w` is the calling
+/// agent: what its loads, unloads and hooks change is checked against other agents' claims, and
+/// a module whose root (`/<name>`) another agent has claimed can't be replaced or unloaded.
 pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &Clock, swarm: &mut Swarm, w: Writer) -> ToolOutput {
     let (tick, hz) = (clock.tick(), clock.hz());
-    let journal: &mut Journal<'_> = &mut |w: &mut World, agent: &str, phase: Phase| swarm.game_changes(w, tick, agent, kind(phase));
     let result = match call {
-        LogicCall::Load { code, origin, seed, open_ms } => host.load(code, origin, seed, world, tick, hz, journal).map(|mut report| {
+        LogicCall::Load { code, origin, seed, open_ms } => LogicHost::name_of(&code)
+            .and_then(|name| check_module_owner(swarm, &name, w, "loading"))
+            .and_then(|()| host.load(code, origin, seed, world, tick, hz, &mut agent_commit(swarm, tick, w)))
+            .map(|mut report| {
             // Opening the library (on the caller's thread) is part of the reload's time.
             let mut timings = report.get("timings_ms").cloned().unwrap_or(Json::Null);
             timings.set("open", Json::from(open_ms));
@@ -257,24 +299,19 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &
             ])),
             None => Err(WorldError::new("no_module", format!("no module '{module}' is loaded; give 'library' to load one")).with("module", module.as_str())),
         },
-        LogicCall::Unload { module, forget } => host.unload(&module, forget, world, tick, hz, journal),
+        LogicCall::Unload { module, forget } => check_module_owner(swarm, &module, w, "unloading")
+            .and_then(|()| host.unload(&module, forget, world, tick, hz, &mut agent_commit(swarm, tick, w))),
         LogicCall::Status { module, detailed } => host.status(module.as_deref(), detailed).map(|mut j| {
             j.set("builds", builds_json());
             j
         }),
         LogicCall::Input { module, actions, ticks } => host.hold(&module, &actions, ticks),
+        // Like a game tool: the hook's changes may not reach into another agent's claim (if
+        // they do, nothing the hook did is kept and the error says whose claim).
         LogicCall::Hook { hook, args, reason } => {
-            // Like a game tool: the hook's changes may not reach into another agent's claim (if
-            // they do, the world is rolled back and the error says whose claim).
-            let agent = super::agent_of(hook.split('/').next().unwrap_or_default());
-            let call = |wd: &mut World| host.call_hook(&hook, &args, &reason, w.name, wd, tick, hz, &mut |_: &mut World, _: &str, _: Phase| {});
-            swarm.game_tool(world, tick, &agent, w, call).and_then(|r| r)
+            host.call_hook(&hook, &args, &reason, w.name, world, tick, hz, &mut agent_commit(swarm, tick, w))
         }
     };
-    // Module names are attribution: no agent may introduce itself as one.
-    for m in host.modules() {
-        swarm.reserve(&super::agent_of(&m));
-    }
     output(result)
 }
 
@@ -334,12 +371,11 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         if !dir.join("Cargo.toml").is_file() {
             return Err(format!("{path} has no Cargo.toml: 'path' is a module crate's folder"));
         }
-        // Zero-dependency builds run no build scripts (AGENTS.md), modules included.
-        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-        if dir.join("build.rs").exists() || manifest.lines().any(|l| l.trim_start().starts_with("build =") || l.trim_start().starts_with("build=")) {
-            return Err(format!("{path} has a build script; modules build without one (remove build.rs / build = ...)"));
-        }
+        // What the build may use (path crates under the root, no build scripts, proc-macros,
+        // registry crates or folder-level Cargo config) is checked by the build service against
+        // `cargo metadata` before Cargo builds anything.
         let mut req = BuildRequest::new(dir);
+        req.roots = vec![engine_root()];
         req.check = bool_arg(args, "check")?.unwrap_or(false);
         req.fix = bool_arg(args, "fix")?.unwrap_or(false);
         req.release = bool_arg(args, "release")?.unwrap_or(false);
@@ -471,8 +507,9 @@ pub fn builds_json() -> Json {
 
 /// A journal for tests: drops the changes.
 #[cfg(test)]
-pub(crate) fn no_journal() -> impl FnMut(&mut World, &str, Phase) {
-    |w: &mut World, _: &str, _: Phase| {
+pub(crate) fn no_journal() -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> {
+    |w: &mut World, _: Mark, _: &str, _: Phase| {
         w.take_changes();
+        Ok(())
     }
 }

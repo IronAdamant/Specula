@@ -14,6 +14,10 @@
 //! Edit a constant, call `logic_build {"path": "games/ambulo"}`, and the running world picks it
 //! up at the next tick.
 
+// Modules deny unsafe code; `export_module!` allows it for its one exported symbol (deny, unlike
+// forbid, lets that allow through).
+#![deny(unsafe_code)]
+
 use specula_sdk::{dmath, Cx, HookDef, Id, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, Value, Vec3};
 
 /// Walking speed, metres per second.
@@ -55,7 +59,8 @@ impl Module for Ambulo {
         if cx.find(ROOT)?.is_none() {
             cx.spawn(Spawn::new("group").name("ambulo"))?;
         }
-        if cx.query(Some("ground"), None, 1)?.is_empty() {
+        // Our own ground (another game's "ground" elsewhere in the world isn't under the player).
+        if cx.query(Some("ground"), Some(ROOT), 1)?.is_empty() {
             cx.spawn(
                 Spawn::new("cube")
                     .name("ground")

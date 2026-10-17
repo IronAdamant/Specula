@@ -4,13 +4,13 @@
 //! survive. Compile errors come back as data, machine-applicable fixes are applied, and a
 //! panicking build is disabled with the world intact.
 //!
-//! Works on a copy of the module (under `target/module-tests`, its own workspace and target
-//! folder), so the repository's sources are never touched and the running `cargo test` doesn't
-//! hold the build lock it needs. Skips (passing) where module libraries can't be loaded (not
+//! Works on a copy of the module (under `<target dir>/module-tests`, its own workspace and target
+//! folder, with the project's Cargo configuration beside it), so the repository's sources are
+//! never touched and the running `cargo test` doesn't hold the build lock it needs. Skips (passing) where module libraries can't be loaded (not
 //! Windows yet) or Cargo isn't available.
 
 use specula::logic::{LogicHost, Origin, Phase};
-use specula::world::World;
+use specula::world::{Mark, World, WorldError};
 use specula_core::Json;
 use specula_logic::{BuildRequest, BuildService, ModuleCode};
 use std::path::{Path, PathBuf};
@@ -24,9 +24,10 @@ struct Run {
     tick: u64,
 }
 
-fn journal() -> impl FnMut(&mut World, &str, Phase) {
-    |w: &mut World, _: &str, _: Phase| {
+fn journal() -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> {
+    |w: &mut World, _: Mark, _: &str, _: Phase| {
         w.take_changes();
+        Ok(())
     }
 }
 
@@ -76,8 +77,21 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 /// The ambulo crate as its own workspace, depending on this repository's SDK.
-fn module_copy(repo: &Path) -> PathBuf {
-    let dir = repo.join("target").join("module-tests").join("ambulo");
+/// Where the copy goes: under Cargo's target folder (`CARGO_TARGET_DIR` if set), next to a copy
+/// of the project's `.cargo` (the toolchain linker), as the root its build may use.
+fn module_base(repo: &Path) -> PathBuf {
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| repo.join("target"), PathBuf::from);
+    let base = specula_logic::fix::canonical(&target).join("module-tests");
+    std::fs::create_dir_all(base.join(".cargo")).unwrap();
+    let cfg = repo.join(".cargo").join("config.toml");
+    if cfg.exists() {
+        std::fs::write(base.join(".cargo").join("config.toml"), std::fs::read(cfg).unwrap()).unwrap();
+    }
+    base
+}
+
+fn module_copy(repo: &Path, base: &Path) -> PathBuf {
+    let dir = base.join("ambulo");
     let _ = std::fs::remove_dir_all(dir.join("src"));
     copy_dir(&repo.join("games").join("ambulo"), &dir);
     let sdk = repo.join("crates").join("specula-sdk");
@@ -109,13 +123,17 @@ fn edit_rebuild_reload_while_the_world_runs() {
     }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let repo = specula_logic::fix::canonical(&repo);
-    let dir = module_copy(&repo);
+    let base = module_base(&repo);
+    let dir = module_copy(&repo, &base);
     let src = dir.join("src").join("lib.rs");
-    let copies = dir.join("target").join("loaded");
+    let copies = base.join("loaded");
     let builds = BuildService::default();
     let build = |fix: bool| {
         let mut req = BuildRequest::new(&dir);
         req.fix = fix;
+        // The copy, and the SDK it depends on in the repository.
+        req.roots = vec![base.clone(), repo.clone()];
+        req.target_dir = Some(base.join("target"));
         builds.build(req)
     };
 

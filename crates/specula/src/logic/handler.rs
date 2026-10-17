@@ -3,7 +3,7 @@
 //! the world (state, RNG positions, events) is undone if the call fails, as the world is.
 
 use super::character::CharacterMover;
-use super::{EventRec, LogLine, Shared, LOG_LINES};
+use super::{EventRec, LogLine, Shared, LOG_LINES, MAX_PENDING_EVENTS};
 use crate::world::{EntityKey, World, WorldError};
 use specula_core::rng::Rng;
 use specula_core::Json;
@@ -12,8 +12,10 @@ use std::collections::VecDeque;
 
 /// Most entity ids one `query` returns.
 pub const MAX_QUERY: u64 = 4096;
-/// Most events one module may emit per tick.
+/// Most events one module may emit per call.
 pub const MAX_EVENTS_PER_CALL: usize = 256;
+/// Largest event data, encoded.
+pub const MAX_EVENT_BYTES: usize = 4096;
 /// A module's state store: at most this many keys and encoded bytes.
 pub const MAX_STATE_KEYS: usize = 1024;
 pub const MAX_STATE_BYTES: usize = 1 << 20;
@@ -32,26 +34,14 @@ pub(super) struct ModuleHandler<'a> {
     pub mover: &'a mut dyn CharacterMover,
     /// Events emitted by this call (merged by the host only if the call succeeds).
     pub events: Vec<EventRec>,
+    /// Events already waiting for the next tick (they and this call's share
+    /// [`MAX_PENDING_EVENTS`]).
+    pub pending_events: usize,
     pub log: &'a mut VecDeque<LogLine>,
     /// `(key, value before)` for every state write, to undo a failed call.
     pub state_undo: Vec<(String, Option<Value>)>,
     /// `(stream, state before)` for every stream touched, to undo a failed call.
     pub rng_undo: Vec<(String, Option<Rng>)>,
-}
-
-impl ModuleHandler<'_> {
-    /// Puts the state store and RNG streams back as they were before the call.
-    pub fn undo(&mut self) {
-        for (key, before) in self.state_undo.drain(..).rev() {
-            self.shared.put(&key, before);
-        }
-        for (stream, before) in self.rng_undo.drain(..).rev() {
-            match before {
-                Some(r) => self.shared.rngs.insert(stream, r),
-                None => self.shared.rngs.remove(&stream),
-            };
-        }
-    }
 }
 
 /// The SDK's error map from a world error: `{code, message, ...details}`.
@@ -189,9 +179,19 @@ impl specula_logic::Handler for ModuleHandler<'_> {
                     return Err(refuse("invalid_field", "an event name is [a-z][a-z0-9_]{0,63}"));
                 }
                 if self.events.len() >= MAX_EVENTS_PER_CALL {
-                    return Err(refuse("too_many_events", format!("at most {MAX_EVENTS_PER_CALL} events per tick")));
+                    return Err(refuse("too_many_events", format!("at most {MAX_EVENTS_PER_CALL} events per call")));
+                }
+                if self.pending_events + self.events.len() >= MAX_PENDING_EVENTS {
+                    return Err(refuse(
+                        "too_many_events",
+                        format!("{MAX_PENDING_EVENTS} events are already waiting for the next tick; emit fewer"),
+                    ));
                 }
                 let data = req.get("data").cloned().unwrap_or_default();
+                let bytes = data.encode().len();
+                if bytes > MAX_EVENT_BYTES {
+                    return Err(refuse("event_too_big", format!("event data is {bytes} bytes encoded; at most {MAX_EVENT_BYTES} (keep big data in the state store or entity props)")));
+                }
                 self.events.push(EventRec { name: name.to_owned(), data, from: self.module.to_owned(), tick: self.tick });
                 Ok(Value::Null)
             }

@@ -20,24 +20,55 @@ the first choice; modules are the escape hatch, and Lex calls into them through 
 
 ```
 logic_build {path}            (connection thread)               (engine thread, at a tick boundary)
-  cargo build --message-format=json ──► diagnostics as data
+  cargo metadata --offline: path crates only, no build code
+  cargo build --offline --message-format=json ──► diagnostics as data
   copy lib to <target>/specula-modules/<name>-<pid>-<n>.dll
   LoadLibrary the copy, check ABI table ──────────────────────► describe (name, actions, hooks)
-                                                                 old build: stop(reload); unload
-                                                                 new build: start(reloaded = true)
+                                                                 one transaction:
+                                                                   old build: stop(reload)
+                                                                   new build: start(reloaded = true)
+                                                                   commit (claims, journal) or roll back
+                                                                 old build unloads
                                                                  every tick: tick(actions, events)
 ```
 
-- **Load or reload.** The new build is opened and ABI-checked off the engine thread, then described on it. Only if that
-  succeeds does the old build of the same name stop and unload; the new one starts with `reloaded = true`. A build
-  that fails to compile, load or describe never replaces a running one.
+- **Load or reload is one transaction.** The new build is opened and ABI-checked off the engine thread, then described
+  on it. Then the old build of the same name stops (`stop(reload)`), the new one starts (`reloaded = true`), and their
+  world changes are committed: checked against the calling agent's claims and journaled. If the new build fails to
+  start or a claim refuses the changes, the world, the state store and the RNG positions are rolled back, and the old
+  build keeps running (`start_failed`, or `claimed`). Only after a commit does the old library unload. So a build that
+  fails to compile, load, describe or start never replaces a running one.
 - **Versioned copies.** The library is copied to a name no other load uses before loading, so Cargo can overwrite the
   original while the module runs (Windows locks loaded DLLs). The copy is deleted after unloading; copies left by
   engines that died are swept by pid at the next load.
 - **Tick order.** Running modules tick after the hosted game's tick, in `(order, name)` order, each with its input
   actions for the tick and the events emitted during the previous tick.
-- **Unload.** `stop(unload)` runs first (ambulo deletes what it spawned). The state store and RNG positions stay for a
-  later load unless `forget_state`.
+- **Unload.** `stop(unload)` runs first (ambulo deletes what it spawned) and its changes are committed like a load's: a
+  claim that refuses them refuses the unload. If `stop` itself fails, its changes are dropped and the module unloads
+  anyway. The state store and RNG positions stay for a later load unless `forget_state`.
+- **Who may load, replace or unload a module.** Anyone, unless another agent holds a live claim covering the module's
+  root, `/<name>` (where a module keeps its things by convention: ambulo's are under `/ambulo`). Claiming a module's root
+  is how an agent owns it; `claim_share` lets others rebuild it too (as in the exit proof, where a second agent edits
+  the module). The start and stop changes are checked against claims as the caller's as well, so a module can't be used
+  to reach into someone else's claim.
+
+## Trust: module code runs with the engine's privileges
+
+A module is native code in the engine's process: it can do anything the engine can (files, network, other processes).
+The rules below keep builds **zero-dependency** and free of **build-time code**, and keep a module's *world* changes
+inside claims, but they are no sandbox. Only load modules from people (and agents) you would let edit the engine.
+
+What `logic_build` lets a module build from, checked against `cargo metadata --offline` before Cargo compiles anything
+(`specula_logic::build::vet`):
+- every crate in the build is a **path crate under the engine's working directory**; registry and git crates are
+  refused (`third_party_crate`, naming the package; AGENTS.md rule 1), and so are path crates elsewhere
+  (`outside_root`);
+- **no build scripts** (`build_script`) and **no proc-macros** (`proc_macro`), anywhere in the build: they run code at
+  build time;
+- **no `.cargo/` folder** between the module and the working directory (`cargo_config`): a `rustc-wrapper` or linker
+  there would run; the project's own `.cargo/config.toml` applies;
+- Cargo runs `--offline`, so nothing is downloaded; if resolving would change `Cargo.lock` and the build is refused, the
+  lock file is put back.
 
 ## The engine owns all state
 
@@ -61,7 +92,8 @@ in engine memory, not in world files; that comes with save games.)
 - Modules run in a fixed order, on the engine thread, at tick boundaries. Agent input (`logic_input`) is applied per
   tick.
 - A failed call changes nothing: world changes are rolled back (`World::rollback_to`), and so are state writes, RNG
-  draws and events. Ids handed out during the failed call are not reused (the world's rule).
+  draws and events. Ids handed out during the failed call are not reused (the world's rule), and the journal is told
+  about them, so `world_hash {verify}` still replays to the live hash.
 - Each load is recorded with its tick, generation and **build hash** (hash of the library bytes) in `logic_status`
   (DETERMINISM.md rule 8). Module world changes are journaled as `module:<name>` (like a hosted game's ticks), and
   `world_hash {verify}` replays them to the live hash (checked by `scripts/module_reload.py`).
@@ -97,9 +129,12 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
 - **Panics never cross the boundary.** The SDK catches them in `call` (with message and `file:line:column` from a
   chained panic hook in the module's own copy of std) and returns `PANIC`; the engine's trampolines catch their own.
   The engine then rolls the call back and disables the module.
-- **Bounded work.** At most 200,000 requests per call (then `too_many_requests` and the call fails), replies ≤ 4 MiB,
-  queries ≤ 4,096 ids, ≤ 256 events per tick per module. An infinite loop that makes no requests can't be stopped
-  (no preemption); the tick's time shows it in `logic_status` (`tick_us`).
+- **Bounded work.** At most 10,000 requests per call: past that each request is refused, the call fails with
+  `too_many_requests` and the module is **disabled**, like after a panic (a deterministic cutoff, no wall clock; a
+  runaway costs one frame a few tens of milliseconds, once). Replies ≤ 256 KiB; queries ≤ 4,096 ids; ≤ 256 events per
+  call, each ≤ 4 KiB encoded, and ≤ 1,024 waiting for the next tick (`too_many_events`, `event_too_big`);
+  `logic_status` shows small event data only and cuts echoed errors to a few hundred bytes. An infinite loop that makes
+  no requests can't be stopped (no preemption); the tick's time shows it in `logic_status` (`tick_us`).
 - Additive changes (new ops, new keys) keep the version; anything else bumps it. Layout is pinned by
   `abi::tests::layout_is_pinned`.
 - `ModuleCode::of::<M>()` runs a module type linked into the engine through the same function pointer and messages:
@@ -114,13 +149,25 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
 | `logic_unload {module, forget_state?}` | Stop and unload. |
 | `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds. |
 | `logic_input {module, actions, ticks?}` | Hold actions for N ticks (buttons true/false, axes numbers, 2D axes `[x, y]`). |
-| `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). Its world changes are checked against other agents' claims, as `play_*` tools' are; a rejection rolls the world back (the module's state store keeps what the hook wrote). |
+| `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). Its world changes are checked against other agents' claims, as `play_*` tools' are; a refusal keeps nothing the hook did. |
 
-Paths must lie under the engine's working directory, and modules may not have build scripts (zero-dep rule).
+Paths must lie under the engine's working directory (checked by their text first: no `..`, no UNC or device paths;
+then on disk). What a build may use: see *Trust* above. Agent names starting with `module:` are reserved for modules'
+attribution, loaded or not.
+
+### Writing a module crate
+
+- Depend on `specula-sdk` only (a path dependency); `crate-type = ["cdylib"]`; no `build.rs`.
+- Put `#![deny(unsafe_code)]` at the top, not `forbid`: `export_module!` expands to one `#[allow(unsafe_code)]`
+  exported function (`#[no_mangle]` counts as unsafe code), which `forbid` wouldn't let through (E0453).
+- Give it `debug = 0` and `strip = "debuginfo"` in the workspace's `[profile.dev.package.<name>]` (see build times).
+- Keep its things under `/<name>` and look things up there (ambulo's ground query is scoped to `/ambulo`, so a world
+  with another game's ground still gets its own).
 
 ### Diagnostics as data and fixes
 
-`logic_build` runs `cargo build --lib --message-format=json` and returns, per diagnostic of the module's own package:
+`logic_build` runs `cargo build --lib --offline --message-format=json` and returns, per diagnostic of the module's own
+package (plus the errors of any other crate in the build, tagged with its `package`):
 `level`, `code` (`E0308`, `unused_mut`), `message`, `file` (relative to the module), `line`, `column`, `end_line`,
 `end_column`, `label`, `notes` (help/note children) and `fixes` (each with `replacement` and rustc's
 `applicability`). Errors come first; at most 30 are listed (the rest counted); `detailed` adds rustc's rendering.
@@ -164,18 +211,20 @@ The contract between Lex (gameplay as data) and modules:
 2. **Discover.** `LogicHost::hooks() -> Vec<HookInfo>` lists the running modules' hooks (`qualified()`, `doc`, `args`
    as JSON); `logic_status` shows them to agents. Lex validates a rule's `native` references against this list (an
    unknown hook is a schema error that names the available ones).
-3. **Call.** `LogicHost::call_hook(hook, args: &Json, reason: &str, caller: &str, world, tick, tick_hz, journal)
+3. **Call.** `LogicHost::call_hook(hook, args: &Json, reason: &str, caller: &str, world, tick, tick_hz, commit)
    -> Result<Json, WorldError>`. `reason` is required (1..300 characters): why a hook instead of data. `caller` names
    who asked (`lex`, or the agent). The module's `Module::hook(cx, name, args)` runs with full `Cx` access (world,
    state, RNG, controller) and answers a `Value` (returned as JSON).
 4. **Log.** Every use is logged (`tick, hook, caller, reason, ok`; last 256) and counted per hook (`hook_counts`), so
    the data language can grow from evidence: the hooks used most are the next Lex features.
 5. **Fail safely.** A failing hook changes nothing (rolled back) and returns `hook_failed` with the module's
-   structured error; a panicking one also disables its module.
-6. **Journal.** The hook's world changes are handed to the `journal` callback: Lex passes one that records them as
-   part of its own tick (or a no-op to leave them pending for its own journaling); the `logic_hook` tool journals them
-   as the module's. The host records the call in full (`Recording::Full`, needed for the rollback) and restores the
-   caller's mode after, so call it with no snapshot-mode changes pending (take them first).
+   structured error; a panicking or runaway one also disables its module.
+6. **Commit.** The hook's world changes since a `Mark` are handed to the `commit` callback
+   (`FnMut(&mut World, Mark, &str /* module:<name> */, Phase) -> Result<(), WorldError>`): Lex passes one that journals
+   them as part of its own tick (exempt from claims, like the game's rules; `Ok(())`), the `logic_hook` tool one that
+   checks them against the calling agent's claims first. An `Err` refuses them, and the host rolls back everything the
+   hook did. The host records the call in full (`Recording::Full`, needed for the rollback) and restores the caller's
+   mode after, so call it with no snapshot-mode changes pending (take them first).
 
 Integration (after both lanes merge): the integrator connects Lex's `native` effect to `LogicHost::call_hook` with
 `caller = "lex"` and the rule's reason, and runs hooks inside Lex's tick so their changes are attributed with it.

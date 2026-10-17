@@ -2,27 +2,32 @@
 //!
 //! The engine owns all state. A module is code the [`LogicHost`] calls through the SDK's C ABI
 //! (`specula_logic::ModuleCode`) at tick boundaries:
-//! - **load / reload** ([`LogicHost::load`]): the new build is described and checked first, so a
-//!   broken one never replaces a working one; then the old build stops, the new one takes its
-//!   name and starts with `reloaded = true`. The world, the module's state store and its RNG
-//!   positions carry over, because none of them live in the module.
+//! - **load / reload** ([`LogicHost::load`]) is a transaction: the new build is described, the
+//!   old one stops, the new one starts, and the result is committed (claims checked, journaled).
+//!   If the new build fails to start or a claim refuses its changes, everything is rolled back
+//!   and the old build keeps running: a broken build never replaces a working one. The world,
+//!   the module's state store and its RNG positions carry over, because none of them live in the
+//!   module.
 //! - **tick** ([`LogicHost::tick`]): every running module in `(order, name)` order, each with its
 //!   input actions for the tick and the events of the previous one.
-//! - **failure:** a call that fails changes nothing (world changes, state writes and RNG draws
-//!   are rolled back); a panic also disables the module, with a structured error saying where.
+//! - **failure:** a call that fails changes nothing (world changes, state writes, RNG draws and
+//!   events are rolled back; the ids it used are noted, never reused); a panic or a runaway
+//!   (too many requests in one call) also disables the module, with a structured error.
 //! - **hooks** ([`LogicHost::call_hook`]): named native behaviours modules declare, the escape
 //!   hatch for Lex; every use is logged with its caller and reason.
 //!
-//! Module world changes are attributed to `module:<name>` and journaled like a hosted game's
-//! (exempt from claims: modules are the game's rules). Each load is recorded with its tick and
-//! build hash (DETERMINISM.md rule 8).
+//! Each call's world changes go through a [`Commit`]: the engine's ticks journal them as
+//! `module:<name>` (like a hosted game's, exempt from claims: modules are the game's rules);
+//! loads, unloads and hooks an agent asks for are checked against other agents' claims as that
+//! agent's (see `tools::handle`). Each load is recorded with its tick and build hash
+//! (DETERMINISM.md rule 8).
 
 pub mod character;
 mod handler;
 pub mod input;
 pub mod tools;
 
-use crate::world::{Recording, World, WorldError};
+use crate::world::{Mark, Recording, World, WorldError};
 use character::{CharacterMover, Kinematic};
 use handler::ModuleHandler;
 use input::ModuleInput;
@@ -38,15 +43,19 @@ use std::time::{Duration, Instant};
 
 /// Most modules loaded at once.
 pub const MAX_MODULES: usize = 32;
-/// Most requests one module call may make (a runaway loop fails the call instead of the frame).
-pub const MAX_REQUESTS_PER_CALL: u64 = 200_000;
+/// Most requests one module call may make. A call that makes more fails and disables its module
+/// (a deterministic cutoff, no wall clock): at roughly 2-4 µs a request, a runaway costs one frame
+/// at most a few tens of milliseconds, once. ambulo makes about 8 a tick.
+pub const MAX_REQUESTS_PER_CALL: u64 = 10_000;
 /// Log lines, loads, hook uses and events kept for `logic_status`.
 pub(crate) const LOG_LINES: usize = 256;
 const LOADS_KEPT: usize = 64;
 const HOOK_USES_KEPT: usize = 256;
 const EVENTS_KEPT: usize = 64;
-/// Most events delivered per tick (beyond it the oldest are dropped, counted).
-const MAX_EVENTS_PER_TICK: usize = 1024;
+/// Most events waiting for the next tick (emits past it are refused: `too_many_events`).
+pub(crate) const MAX_PENDING_EVENTS: usize = 1024;
+/// Event data shown by `logic_status` up to this many encoded bytes (else only its size).
+const SHOWN_EVENT_BYTES: usize = 256;
 
 /// What a module call was, for journaling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,9 +66,12 @@ pub enum Phase {
     Stop,
 }
 
-/// Journals the world changes a module call left (`agent` is `module:<name>`). The engine
-/// journals them like a hosted game's; tests just take them.
-pub type Journal<'a> = dyn FnMut(&mut World, &str, Phase) + 'a;
+/// Commits the world changes a module call made since `mark` (`agent` is `module:<name>`):
+/// journals them, after checking them against claims where an agent asked for the call. `Err`
+/// refuses them; the world must then be back at `mark` (the host makes sure) and the host undoes
+/// the rest of the call. Called after a failed call too, with nothing pending, so the journal
+/// learns about ids the failed call used.
+pub type Commit<'a> = dyn FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> + 'a;
 
 /// Where a module came from: rebuilt with `logic_build`, reloaded with `logic_reload`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -114,6 +126,13 @@ impl EventRec {
     fn to_value(&self) -> Value {
         Value::map().with("name", self.name.as_str()).with("data", self.data.clone()).with("from", self.from.as_str()).with("tick", self.tick)
     }
+
+    /// For `logic_status`: small data in full, big data as its size.
+    fn to_status_json(&self) -> Json {
+        let bytes = self.data.encode().len();
+        let data = if bytes <= SHOWN_EVENT_BYTES { self.data.to_json() } else { Json::obj([("omitted_bytes", Json::from(bytes))]) };
+        Json::obj([("name", Json::from(self.name.as_str())), ("data", data), ("from", Json::from(self.from.as_str())), ("tick", Json::from(self.tick))])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,7 +143,7 @@ pub(crate) struct LogLine {
 }
 
 /// What the engine keeps for a module across reloads (and unloads, unless forgotten).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Shared {
     pub store: BTreeMap<String, Value>,
     /// Encoded size of `store` (keys + values).
@@ -159,7 +178,7 @@ struct Slot {
     origin: Origin,
     generation: u64,
     loaded_tick: u64,
-    /// Why the module stopped running (a panic), if it did.
+    /// Why the module stopped running (a panic or a runaway), if it did.
     disabled: Option<Json>,
     ticks: u64,
     failures: u64,
@@ -169,13 +188,92 @@ struct Slot {
     input: ModuleInput,
 }
 
+/// A module call that failed: its status and a bounded error (see [`failure_json`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Failure {
+    pub status: u32,
+    pub json: Json,
+}
+
+impl Failure {
+    /// Panics and runaways stop the module: calling it again would do the same.
+    fn disables(&self) -> bool {
+        self.status == status::PANIC || self.json.get("code").and_then(Json::as_str) == Some("too_many_requests")
+    }
+}
+
+/// Why a call didn't happen: the module failed, or its changes were refused (claims).
+#[derive(Debug)]
+pub(crate) enum CallError {
+    Module(Failure),
+    Refused(WorldError),
+}
+
+/// A successful call's result and what to undo if its commit is refused.
+struct Done {
+    reply: Value,
+    events: Vec<EventRec>,
+    state_undo: Vec<(String, Option<Value>)>,
+    rng_undo: Vec<(String, Option<Rng>)>,
+}
+
+/// Puts the state store and RNG streams back as they were before a call.
+fn undo_shared(shared: &mut Shared, state_undo: Vec<(String, Option<Value>)>, rng_undo: Vec<(String, Option<Rng>)>) {
+    for (key, before) in state_undo.into_iter().rev() {
+        shared.put(&key, before);
+    }
+    for (stream, before) in rng_undo.into_iter().rev() {
+        match before {
+            Some(r) => shared.rngs.insert(stream, r),
+            None => shared.rngs.remove(&stream),
+        };
+    }
+}
+
+/// The parts of the host one call needs (split from [`LogicHost`] so a call can run code that
+/// isn't in a slot yet).
+struct CallParts<'a> {
+    shared: &'a mut Shared,
+    mover: &'a mut dyn CharacterMover,
+    log: &'a mut VecDeque<LogLine>,
+    pending_events: usize,
+}
+
+/// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
+/// world (back to where the call began), state and RNG are rolled back here.
+#[allow(clippy::too_many_arguments)]
+fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input: &Value, world: &mut World, tick: u64, what: &str) -> Result<Done, Failure> {
+    let agent = agent_of(name);
+    let mark = world.mark();
+    let mut h = ModuleHandler {
+        world,
+        module: name,
+        agent: &agent,
+        tick,
+        shared: parts.shared,
+        mover: parts.mover,
+        events: Vec::new(),
+        pending_events: parts.pending_events,
+        log: parts.log,
+        state_undo: Vec::new(),
+        rng_undo: Vec::new(),
+    };
+    let out = code.call(call, input, &mut h, MAX_REQUESTS_PER_CALL);
+    if out.ok() {
+        Ok(Done { reply: out.reply, events: h.events, state_undo: h.state_undo, rng_undo: h.rng_undo })
+    } else {
+        undo_shared(h.shared, std::mem::take(&mut h.state_undo), std::mem::take(&mut h.rng_undo));
+        world.rollback_to(mark);
+        Err(Failure { status: out.status, json: failure_json(&out, name, what, tick) })
+    }
+}
+
 /// See the module docs.
 pub struct LogicHost {
     slots: BTreeMap<String, Slot>,
     shared: BTreeMap<String, Shared>,
     /// Emitted this tick, delivered next tick.
     pending_events: Vec<EventRec>,
-    events_dropped: u64,
     recent_events: VecDeque<EventRec>,
     log: VecDeque<LogLine>,
     loads: VecDeque<Json>,
@@ -193,7 +291,6 @@ impl Default for LogicHost {
             slots: BTreeMap::new(),
             shared: BTreeMap::new(),
             pending_events: Vec::new(),
-            events_dropped: 0,
             recent_events: VecDeque::new(),
             log: VecDeque::new(),
             loads: VecDeque::new(),
@@ -205,8 +302,15 @@ impl Default for LogicHost {
     }
 }
 
-fn agent_of(module: &str) -> String {
-    format!("module:{module}")
+/// `module:<name>`: attribution of a module's world changes.
+pub fn agent_of(module: &str) -> String {
+    format!("{}{module}", crate::swarm::MODULE_PREFIX)
+}
+
+/// The path a module's things live under by convention, and the one a claim protects it by:
+/// `/<name>`.
+pub fn root_of(module: &str) -> String {
+    format!("/{module}")
 }
 
 fn push_bounded<T>(q: &mut VecDeque<T>, item: T, max: usize) {
@@ -216,7 +320,19 @@ fn push_bounded<T>(q: &mut VecDeque<T>, item: T, max: usize) {
     q.push_back(item);
 }
 
-/// A call's failure as data: the module's error map, plus what kind of failure.
+/// Cuts a string to `max` characters (marking the cut).
+fn cut(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        let mut t: String = s.chars().take(max).collect();
+        t.push_str("...");
+        t
+    }
+}
+
+/// A call's failure as bounded data: the module's `code`, `message` (≤ 1,000 characters) and
+/// `location`, up to 16 more small fields of its error, and what failed.
 fn failure_json(out: &specula_logic::CallOutcome, module: &str, what: &str, tick: u64) -> Json {
     let kind = match out.status {
         status::PANIC => "panic",
@@ -225,10 +341,28 @@ fn failure_json(out: &specula_logic::CallOutcome, module: &str, what: &str, tick
         status::UNKNOWN_ENTRY => "unknown_entry",
         _ => "unknown_status",
     };
-    let mut j = out.reply.to_json();
-    if !matches!(j, Json::Obj(_)) {
-        j = Json::obj([("detail", j)]);
+    let mut f: Vec<(String, Json)> = Vec::new();
+    match &out.reply {
+        Value::Map(m) => {
+            for (k, v) in m {
+                let j = match (k.as_str(), v) {
+                    ("message", Value::Str(s)) => Json::from(cut(s, 1000)),
+                    (_, Value::Str(s)) => Json::from(cut(s, 300)),
+                    _ => v.to_json(),
+                };
+                if f.len() < 19 && (matches!(k.as_str(), "code" | "message" | "location") || j.to_string().len() <= 256) {
+                    f.push((k.clone(), j));
+                }
+            }
+        }
+        other => {
+            let j = other.to_json();
+            if j.to_string().len() <= 256 {
+                f.push(("detail".into(), j));
+            }
+        }
     }
+    let mut j = Json::Obj(f);
     j.set("failure", Json::from(kind));
     j.set("module", Json::from(module));
     j.set("call", Json::from(what));
@@ -245,6 +379,21 @@ impl specula_logic::Handler for NoWorld {
     }
 }
 
+/// `describe`, checked.
+fn describe(code: &ModuleCode, tick: u64) -> Result<(Info, ModuleInput), WorldError> {
+    let described = code.call(entry::DESCRIBE, &Value::Null, &mut NoWorld, 0);
+    if !described.ok() {
+        let f = failure_json(&described, "?", "describe", tick);
+        return Err(WorldError::new("describe_failed", "the module failed to describe itself; nothing was replaced").with("failure", f));
+    }
+    let info = parse_info(&described.reply, code.sdk_version())?;
+    let input = ModuleInput::new(described.reply.get("actions").and_then(Value::as_str).unwrap_or_default()).map_err(|e| {
+        WorldError::new("bad_actions", format!("the module's actions are not a valid specula.input.v1 map: {e}"))
+            .with("module", info.name.as_str())
+    })?;
+    Ok((info, input))
+}
+
 impl LogicHost {
     pub fn new() -> LogicHost {
         LogicHost::default()
@@ -258,6 +407,11 @@ impl LogicHost {
 
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    /// The module name a library describes itself with (to check claims before loading it).
+    pub fn name_of(code: &ModuleCode) -> Result<String, WorldError> {
+        describe(code, 0).map(|(info, _)| info.name)
     }
 
     /// Names of the loaded modules, in tick order.
@@ -277,61 +431,59 @@ impl LogicHost {
         self.slots.get(name).map(|s| &s.origin)
     }
 
-    /// One call into module `name` with the world recorded in full, so a failure rolls back
-    /// exactly; on success the changes are handed to `journal`.
-    #[allow(clippy::too_many_arguments)]
-    fn call(
-        &mut self,
+    fn parts<'a>(
+        shared: &'a mut BTreeMap<String, Shared>,
+        mover: &'a mut Box<dyn CharacterMover>,
+        log: &'a mut VecDeque<LogLine>,
+        pending: usize,
         name: &str,
-        call: u32,
-        input: &Value,
-        world: &mut World,
-        tick: u64,
-        phase: Phase,
-        journal: &mut Journal<'_>,
-    ) -> Result<Value, (specula_logic::CallOutcome, Json)> {
+    ) -> CallParts<'a> {
+        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending }
+    }
+
+    /// One call into loaded module `name`, committed through `commit`; on failure or refusal
+    /// nothing it did is kept.
+    #[allow(clippy::too_many_arguments)]
+    fn call(&mut self, name: &str, call: u32, input: &Value, world: &mut World, tick: u64, phase: Phase, commit: &mut Commit<'_>) -> Result<Value, CallError> {
         let slot = self.slots.get(name).expect("callers check the module exists");
-        let shared = self.shared.entry(name.to_owned()).or_default();
         let agent = agent_of(name);
         let before = world.recording();
         world.set_recording(Recording::Full);
         let mark = world.mark();
-        let mut h = ModuleHandler {
-            world,
-            module: name,
-            agent: &agent,
-            tick,
-            shared,
-            mover: &mut *self.mover,
-            events: Vec::new(),
-            log: &mut self.log,
-            state_undo: Vec::new(),
-            rng_undo: Vec::new(),
+        let what = match phase {
+            Phase::Start => "start",
+            Phase::Tick => "tick",
+            Phase::Hook => "hook",
+            Phase::Stop => "stop",
         };
-        let out = slot.code.call(call, input, &mut h, MAX_REQUESTS_PER_CALL);
-        if out.ok() {
-            let events = std::mem::take(&mut h.events);
-            world.set_recording(before);
-            journal(world, &agent, phase);
-            self.pending_events.extend(events);
-            Ok(out.reply)
-        } else {
-            h.undo();
-            world.rollback_to(mark);
-            world.set_recording(before);
-            let what = match phase {
-                Phase::Start => "start",
-                Phase::Tick => "tick",
-                Phase::Hook => "hook",
-                Phase::Stop => "stop",
-            };
-            let j = failure_json(&out, name, what, tick);
-            Err((out, j))
-        }
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len(), name);
+        let result = match invoke(&slot.code, name, parts, call, input, world, tick, what) {
+            Ok(done) => match commit(world, mark, &agent, phase) {
+                Ok(()) => {
+                    self.pending_events.extend(done.events);
+                    Ok(done.reply)
+                }
+                Err(e) => {
+                    world.rollback_to(mark);
+                    let shared = self.shared.get_mut(name).expect("made by parts");
+                    undo_shared(shared, done.state_undo, done.rng_undo);
+                    Err(CallError::Refused(e))
+                }
+            },
+            Err(f) => {
+                // Nothing is pending, but ids the call used must reach the journal.
+                let at = world.mark();
+                let _ = commit(world, at, &agent, phase);
+                Err(CallError::Module(f))
+            }
+        };
+        world.set_recording(before);
+        result
     }
 
-    /// Loads `code` at this tick boundary: as a new module, or replacing the running build of
-    /// the same name (see the module docs). The world changes `start` makes go to `journal`.
+    /// Loads `code` at this tick boundary, as a new module or replacing the running build of the
+    /// same name, as one transaction (see the module docs): `Err` leaves everything as it was,
+    /// the old build running. `commit` checks and journals the stop and start changes.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -341,41 +493,32 @@ impl LogicHost {
         world: &mut World,
         tick: u64,
         tick_hz: u32,
-        journal: &mut Journal<'_>,
+        commit: &mut Commit<'_>,
     ) -> Result<Json, WorldError> {
         let t0 = Instant::now();
-        let described = code.call(entry::DESCRIBE, &Value::Null, &mut NoWorld, 0);
-        if !described.ok() {
-            let f = failure_json(&described, "?", "describe", tick);
-            return Err(WorldError::new("describe_failed", "the module failed to describe itself; nothing was replaced").with("failure", f));
-        }
-        let info = parse_info(&described.reply, code.sdk_version())?;
+        let (info, mut input) = describe(&code, tick)?;
         let name = info.name.clone();
-        let mut input = ModuleInput::new(
-            described.reply.get("actions").and_then(Value::as_str).unwrap_or_default(),
-        )
-        .map_err(|e| {
-            WorldError::new("bad_actions", format!("the module's actions are not a valid specula.input.v1 map: {e}"))
-                .with("module", name.as_str())
-        })?;
+        let agent = agent_of(&name);
         let reloaded = self.slots.contains_key(&name);
         if !reloaded && self.slots.len() >= MAX_MODULES {
             return Err(WorldError::new("too_many_modules", format!("at most {MAX_MODULES} modules at once; unload one first")));
         }
-        // The new build is good to go: the old one stops (its changes kept even if it fails).
+        let before = world.recording();
+        world.set_recording(Recording::Full);
+        let mark = world.mark();
+        let saved = self.shared.get(&name).cloned();
+        let mut events = Vec::new();
+        // 1. The old build stops (a disabled one isn't called again).
         let mut stop_error = None;
-        if reloaded {
-            // A disabled build isn't called again, not even to stop.
-            if self.slots[&name].disabled.is_none() {
-                let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
-                if let Err((_, j)) = self.call(&name, entry::STOP, &stop, world, tick, Phase::Stop, journal) {
-                    stop_error = Some(j);
-                }
+        if let Some(old) = self.slots.get(&name).filter(|s| s.disabled.is_none()) {
+            let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
+            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len(), &name);
+            match invoke(&old.code, &name, parts, entry::STOP, &stop, world, tick, "stop") {
+                Ok(done) => events.extend(done.events),
+                Err(f) => stop_error = Some(f.json),
             }
-            let old = self.slots.remove(&name).expect("checked");
-            input.adopt_holds(&old.input);
-            // `old` drops here: its library unloads before the new one runs.
         }
+        // 2. The new one starts.
         let shared = self.shared.entry(name.clone()).or_default();
         if let Some(s) = seed {
             shared.seed = s;
@@ -383,8 +526,55 @@ impl LogicHost {
         }
         shared.loads += 1;
         let generation = shared.loads;
+        let start = Value::map()
+            .with("tick", tick)
+            .with("tick_hz", tick_hz)
+            .with("seed", shared.seed)
+            .with("reloaded", reloaded)
+            .with("generation", generation);
+        let t1 = Instant::now();
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len() + events.len(), &name);
+        let started = invoke(&code, &name, parts, entry::START, &start, world, tick, "start");
+        let start_ms = t1.elapsed().as_secs_f64() * 1000.0;
+        // 3. Commit, or put everything back.
+        let refused = match started {
+            Err(f) => Some(
+                WorldError::new(
+                    "start_failed",
+                    if reloaded {
+                        format!("the new build of '{name}' failed to start; nothing changed and the running build stays")
+                    } else {
+                        format!("module '{name}' failed to start; it was not loaded")
+                    },
+                )
+                .with("failure", f.json),
+            ),
+            Ok(done) => {
+                events.extend(done.events);
+                commit(world, mark, &agent, Phase::Start).err()
+            }
+        };
+        if let Some(e) = refused {
+            world.rollback_to(mark);
+            match saved {
+                Some(s) => self.shared.insert(name.clone(), s),
+                None => self.shared.remove(&name),
+            };
+            let at = world.mark();
+            let _ = commit(world, at, &agent, Phase::Start);
+            world.set_recording(before);
+            return Err(e.with("module", name.as_str()));
+        }
+        world.set_recording(before);
+        self.pending_events.extend(events);
+        if let Some(old) = self.slots.remove(&name) {
+            input.adopt(old.input);
+            // `old` drops here: its library unloads.
+        }
         let build_hash = format!("{:016x}", code.build_hash());
         let sdk = info.sdk.clone();
+        let hooks: Vec<Json> = info.hooks.iter().map(|h| Json::from(h.qualified())).collect();
+        let actions: Vec<Json> = input.names().map(Json::from).collect();
         self.slots.insert(
             name.clone(),
             Slot {
@@ -402,24 +592,6 @@ impl LogicHost {
                 input,
             },
         );
-        let start = Value::map()
-            .with("tick", tick)
-            .with("tick_hz", tick_hz)
-            .with("seed", self.shared[&name].seed)
-            .with("reloaded", reloaded)
-            .with("generation", generation);
-        let t1 = Instant::now();
-        let started = self.call(&name, entry::START, &start, world, tick, Phase::Start, journal);
-        let start_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        let slot = self.slots.get_mut(&name).expect("just inserted");
-        let start_error = match started {
-            Ok(_) => None,
-            Err((_, j)) => {
-                // A module that can't start can't tick either.
-                slot.disabled = Some(j.clone());
-                Some(j)
-            }
-        };
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let event = if reloaded { "reload" } else { "load" };
         let record = Json::obj([
@@ -434,19 +606,16 @@ impl LogicHost {
         let mut report = vec![
             ("module", Json::from(name.as_str())),
             ("event", Json::from(event)),
-            ("status", Json::from(if start_error.is_some() { "disabled" } else { "running" })),
+            ("status", Json::from("running")),
             ("generation", Json::from(generation)),
             ("loaded_at_tick", Json::from(tick)),
             ("build_hash", Json::from(build_hash)),
             ("sdk", Json::from(sdk)),
             ("abi", Json::from(specula_logic::abi::ABI_VERSION)),
-            ("actions", Json::arr(slot.input.names().map(Json::from))),
-            ("hooks", Json::arr(slot.info.hooks.iter().map(|h| Json::from(h.qualified())))),
+            ("actions", Json::arr(actions)),
+            ("hooks", Json::arr(hooks)),
             ("timings_ms", Json::obj([("start", Json::from(start_ms)), ("load", Json::from(total_ms))])),
         ];
-        if let Some(e) = start_error {
-            report.push(("start_error", e));
-        }
         if let Some(e) = stop_error {
             report.push(("old_stop_error", e));
         }
@@ -454,17 +623,25 @@ impl LogicHost {
     }
 
     /// Stops and unloads module `name` (`stop` with reason `unload` runs first). `forget` also
-    /// drops its state store and RNG streams; otherwise a later load continues from them.
-    pub fn unload(&mut self, name: &str, forget: bool, world: &mut World, tick: u64, tick_hz: u32, journal: &mut Journal<'_>) -> Result<Json, WorldError> {
+    /// drops its state store and RNG streams; otherwise a later load continues from them. If
+    /// `commit` refuses the stop's changes (another agent's claim), nothing changes and the
+    /// module stays; if the stop itself fails, its changes are dropped and the module is
+    /// unloaded anyway.
+    pub fn unload(&mut self, name: &str, forget: bool, world: &mut World, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) -> Result<Json, WorldError> {
         if !self.slots.contains_key(name) {
             return Err(self.no_module(name));
         }
         let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "unload");
-        let stop_error = if self.slots[name].disabled.is_none() {
-            self.call(name, entry::STOP, &stop, world, tick, Phase::Stop, journal).err().map(|(_, j)| j)
-        } else {
-            None
-        };
+        let mut stop_error = None;
+        if self.slots[name].disabled.is_none() {
+            match self.call(name, entry::STOP, &stop, world, tick, Phase::Stop, commit) {
+                Ok(_) => {}
+                Err(CallError::Module(f)) => stop_error = Some(f.json),
+                Err(CallError::Refused(e)) => {
+                    return Err(e.with("module", name).with("hint", "the module stays loaded: its stop would change what that claim protects"))
+                }
+            }
+        }
         let slot = self.slots.remove(name).expect("checked");
         if forget {
             self.shared.remove(name);
@@ -525,19 +702,27 @@ impl LogicHost {
         Ok(Json::obj([("module", Json::from(name)), ("held", held)]))
     }
 
+    /// Stops calling a module after a panic or a runaway.
+    fn disable(&mut self, name: &str, why: Json, tick: u64) {
+        if let Some(slot) = self.slots.get_mut(name) {
+            slot.disabled = Some(why.clone());
+        }
+        push_bounded(
+            &mut self.loads,
+            Json::obj([("tick", Json::from(tick)), ("module", Json::from(name)), ("event", Json::from("disabled")), ("why", why.clone())]),
+            LOADS_KEPT,
+        );
+        eprintln!("specula: module '{name}' was disabled at tick {tick}: {why}");
+    }
+
     /// One simulation tick of every running module (call after the tick's other systems; the
-    /// tick number is the one being run).
-    pub fn tick(&mut self, world: &mut World, tick: u64, tick_hz: u32, journal: &mut Journal<'_>) {
+    /// tick number is the one being run). `commit` journals each module's changes.
+    pub fn tick(&mut self, world: &mut World, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) {
         if self.slots.is_empty() {
             self.pending_events.clear();
             return;
         }
-        let mut delivering = std::mem::take(&mut self.pending_events);
-        if delivering.len() > MAX_EVENTS_PER_TICK {
-            let extra = delivering.len() - MAX_EVENTS_PER_TICK;
-            delivering.drain(..extra);
-            self.events_dropped += extra as u64;
-        }
+        let delivering = std::mem::take(&mut self.pending_events);
         let events = Value::List(delivering.iter().map(EventRec::to_value).collect());
         for name in self.modules() {
             let slot = self.slots.get_mut(&name).expect("listed");
@@ -547,24 +732,26 @@ impl LogicHost {
             let actions = slot.input.take_tick();
             let input = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("actions", actions).with("events", events.clone());
             let t = Instant::now();
-            let result = self.call(&name, entry::TICK, &input, world, tick, Phase::Tick, journal);
+            let result = self.call(&name, entry::TICK, &input, world, tick, Phase::Tick, commit);
             let took = t.elapsed();
             let slot = self.slots.get_mut(&name).expect("listed");
             slot.ticks += 1;
             slot.tick_total += took;
             slot.tick_max = slot.tick_max.max(took);
-            if let Err((out, j)) = result {
-                slot.failures += 1;
-                if out.status == status::PANIC {
-                    slot.disabled = Some(j.clone());
-                    push_bounded(
-                        &mut self.loads,
-                        Json::obj([("tick", Json::from(tick)), ("module", Json::from(name.as_str())), ("event", Json::from("disabled")), ("why", j.clone())]),
-                        LOADS_KEPT,
-                    );
-                    eprintln!("specula: module '{name}' panicked at tick {tick} and was disabled: {}", j);
+            match result {
+                Ok(_) => {}
+                Err(CallError::Module(f)) => {
+                    slot.failures += 1;
+                    slot.last_error = Some(f.json.clone());
+                    if f.disables() {
+                        self.disable(&name, f.json, tick);
+                    }
                 }
-                slot.last_error = Some(j);
+                Err(CallError::Refused(e)) => {
+                    // Tick commits only journal; a refusal is an engine bug, but keep going.
+                    slot.failures += 1;
+                    slot.last_error = Some(e.to_json());
+                }
             }
         }
         for e in delivering {
@@ -579,7 +766,7 @@ impl LogicHost {
 
     /// Calls native hook `hook` (`module/name`) with `args`, for `caller` (an agent, or `lex`)
     /// who says why in `reason` (required: every use is logged, so Lex can grow from evidence).
-    /// The hook's world changes go to `journal`.
+    /// The hook's world changes go through `commit`; a failure or refusal keeps none of them.
     #[allow(clippy::too_many_arguments)]
     pub fn call_hook(
         &mut self,
@@ -590,7 +777,7 @@ impl LogicHost {
         world: &mut World,
         tick: u64,
         tick_hz: u32,
-        journal: &mut Journal<'_>,
+        commit: &mut Commit<'_>,
     ) -> Result<Json, WorldError> {
         let reason = reason.trim();
         if reason.is_empty() || reason.chars().count() > 300 {
@@ -616,7 +803,7 @@ impl LogicHost {
             .with("args", Value::from_json(args))
             .with("reason", reason)
             .with("caller", caller);
-        let result = self.call(module, entry::HOOK, &input, world, tick, Phase::Hook, journal);
+        let result = self.call(module, entry::HOOK, &input, world, tick, Phase::Hook, commit);
         *self.hook_counts.entry(hook.to_owned()).or_default() += 1;
         push_bounded(
             &mut self.hook_uses,
@@ -631,13 +818,12 @@ impl LogicHost {
         );
         match result {
             Ok(v) => Ok(v.to_json()),
-            Err((out, j)) => {
-                if out.status == status::PANIC {
-                    if let Some(s) = self.slots.get_mut(module) {
-                        s.disabled = Some(j.clone());
-                    }
+            Err(CallError::Refused(e)) => Err(e.with("hook", hook)),
+            Err(CallError::Module(f)) => {
+                if f.disables() {
+                    self.disable(module, f.json.clone(), tick);
                 }
-                Err(WorldError::new("hook_failed", format!("hook {hook} failed; nothing it did was kept")).with("failure", j))
+                Err(WorldError::new("hook_failed", format!("hook {hook} failed; nothing it did was kept")).with("failure", f.json))
             }
         }
     }
@@ -710,7 +896,7 @@ impl LogicHost {
             Json::obj([("tick", Json::from(l.tick)), ("module", Json::from(l.module.as_str())), ("message", Json::from(l.message.as_str()))])
         }));
         let events = self.recent_events.iter().rev().filter(|e| keep(&e.from)).take(n).collect::<Vec<_>>();
-        let events = Json::arr(events.into_iter().rev().map(|e| e.to_value().to_json()));
+        let events = Json::arr(events.into_iter().rev().map(EventRec::to_status_json));
         let hook_uses = Json::arr(
             self.hook_uses
                 .iter()
@@ -728,7 +914,7 @@ impl LogicHost {
             ("loads", tail(&self.loads)),
             ("log", log),
             ("events", events),
-            ("events_dropped", Json::from(self.events_dropped)),
+            ("events_pending", Json::from(self.pending_events.len())),
             ("hook_uses", hook_uses),
             ("hook_counts", Json::obj(self.hook_counts.iter().filter(|(h, _)| keep(h.split('/').next().unwrap_or_default())).map(|(h, c)| (h.as_str(), Json::from(*c))))),
         ]))
@@ -777,6 +963,7 @@ fn parse_info(v: &Value, sdk_of_library: &str) -> Result<Info, WorldError> {
         name,
     })
 }
+
 
 #[cfg(test)]
 mod tests;

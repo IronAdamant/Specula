@@ -58,13 +58,29 @@ impl ModuleInput {
         self.map.actions().iter().map(|a| a.name.as_str())
     }
 
-    /// Takes over what an agent held on the build this one replaces (by action name).
-    pub fn adopt_holds(&mut self, old: &ModuleInput) {
+    /// Takes over the input of the build this one replaces. With the same action map it carries
+    /// on exactly (window state, keys held down, agent holds); otherwise by action name: what
+    /// agents hold, the latched state, and what each action reported last tick. Either way a
+    /// button held across a reload doesn't report `pressed` again.
+    pub fn adopt(&mut self, old: ModuleInput) {
+        if old.map == self.map {
+            *self = old;
+            return;
+        }
         for (name, h) in &old.holds {
             if self.map.index_of(name).is_some() {
                 self.holds.insert(name.clone(), *h);
             }
         }
+        for (i, a) in old.map.actions().iter().enumerate() {
+            if let Some(j) = self.map.index_of(&a.name) {
+                if self.map.actions()[j].kind == a.kind {
+                    self.last[j] = old.last[i];
+                    self.latch[j] = old.latch[i];
+                }
+            }
+        }
+        self.time_s = old.time_s;
     }
 
     /// One window frame's input.
@@ -217,6 +233,16 @@ mod tests {
         assert!(e.contains("[x, y]"), "{e}");
         assert!(ModuleInput::new("{\"format\": \"nope\"}").is_err());
         assert!(ModuleInput::new("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reload_mid_hold_is_no_new_press() {
+        let mut old = ModuleInput::new(MAP).unwrap();
+        old.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 10).unwrap();
+        assert_eq!(state(&old.take_tick(), "jump"), Some((true, true, false, 1.0, 0.0)));
+        let mut new = ModuleInput::new(MAP).unwrap();
+        new.adopt(old);
+        assert_eq!(state(&new.take_tick(), "jump"), Some((true, false, false, 1.0, 0.0)), "still held, not pressed again");
     }
 
     #[test]

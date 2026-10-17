@@ -10,10 +10,12 @@ is saved for review.
     cargo build -p specula && python scripts/module_reload.py [--port 7496] [--window] [--adapter integrated]
 
 The module's source is edited in place and always restored (even if the check fails). Results
-go to target/module-reload/ (summary.json, captures, engine log). ASCII output only.
+go to <target>/module-reload/ (summary.json, captures, engine log), where <target> is $CARGO_TARGET_DIR
+or ./target; the engine binary is taken from there too. ASCII output only.
 """
 import argparse
 import json
+import os
 import sys
 import threading
 import time
@@ -55,10 +57,11 @@ def build(mcp, **extra):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7496)
-    ap.add_argument("--exe", default=str(ROOT / "target" / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
+    ap.add_argument("--exe", default=str(target / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
     ap.add_argument("--window", action="store_true", help="open the window (default headless)")
     ap.add_argument("--adapter", default=None, help="discrete | integrated | <index>")
-    ap.add_argument("--out", default=str(ROOT / "target" / "module-reload"))
+    ap.add_argument("--out", default=str(target / "module-reload"))
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
