@@ -79,9 +79,13 @@ falls at wave 4-5, no defence falls at wave 2), scripted strategies (early wave 
 stones, the game's pause and speed 4, HUD buttons, dry runs, refused moves with their codes, the game's own recording
 replayed, captures) and two engine-only playtests (a crate settling under physics checks, a world edit undone).
 
-Result (2026-10-18, `perf/playtests/20261018-045650-sepulcra-suite.json`, RTX 4090 laptop, a machine shared with other
-sessions): **26 of 26 passed, 26 replays verified by hash in separate fresh engines**, 58.6 s wall with 8 engines in
-parallel against 241.9 s with one (4.1 times faster). The negative control (the centre seed-7 replay with its seed
+Result (2026-10-18, RTX 4090 laptop, a machine shared with other sessions): **26 of 26 passed, 26 replays verified by
+hash in separate fresh engines**. On the lane as merged with Lex (`perf/playtests/20261018-053843-sepulcra-suite.json`)
+the suite took 46.2 s wall with 8 engines in parallel against 313.9 s with one, 6.8 times faster. An earlier run before
+that merge (`20261018-045650`) took 58.6 s against 241.9 s, 4.1 times faster. Load from other sessions moves both
+figures. A replay recorded in a **windowed engine on the Intel iGPU** also verifies in a headless engine on the
+discrete GPU, with the same end hash as a headless run (`af131660c03bdebc`, centre layout, seed 7). With the window
+open, the playtest ran at about 8,400 ticks a second and the window's frame median stayed at 10.5-11.5 ms. The negative control (the centre seed-7 replay with its seed
 changed and its hashes kept) diverged at tick 300 on `game.sim`, as it must. A playtest itself takes 4 ms to 1.3 s;
 engine start-up (2-5 s, Vulkan with the validation layer) and shut-down dominate each job.
 
@@ -91,4 +95,7 @@ engine start-up (2-5 s, Vulkan with the validation layer) and shut-down dominate
   and let a worker record and verify without restarting. The world hash's dependence on history is the obstacle.
 - **Balance lab**: sweeps are playtests with parameters; the swarm script is its runner.
 - **Agent evals**: an eval is a playtest whose spec checks the world an agent built; the same runner and report.
-- **Lex**: once rules are data, specs can set rule parameters per run (seam: a `lex_*` call as a step).
+- **Lex**: `lex_*` tools are refused inside a playtest for now. They validate and simulate on the caller's
+  connection thread and then wait for the engine thread, which the playtest is running on, so the call would
+  deadlock. Edit rule sets before the run. To let specs set rule parameters per run (the balance lab), `lex_edit`
+  needs an engine-thread path that a step can take.

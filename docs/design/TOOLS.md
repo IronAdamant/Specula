@@ -13,7 +13,8 @@ An engine hosting Sepulcra lists **82 tools**: 74 of the engine's and 8 of the g
 `agent_hello`, `engine_info`, `time_control`, `window_view`, `swarm_settings`.
 
 `tools/list` is **96.5 KB** of compact JSON, very roughly 24,000 tokens that every agent's context carries before its
-first call. The biggest definitions: `world_spawn` 9.3 KB, `world_set` 8.6 KB (they describe the same components
+first call. Since Lex merged (nine `lex_*` tools) it is **91 tools and 105.5 KB**; the counts below are from the
+audit's 82. The biggest definitions: `world_spawn` 9.3 KB, `world_set` 8.6 KB (they describe the same components
 twice), `sight_frame` 5.0 KB, `world_env` 3.5 KB, `sight_compare` 3.3 KB, `sight_orbit` 3.0 KB.
 
 ## Against the guidance
