@@ -329,6 +329,10 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   `moving: true`) get hulls of at most 16 points (physics' cap); `mesh` uses the most detailed LOD within physics'
   mesh limits and is static only; a sideways capsule becomes a hull (physics capsules stand along +Y); notes say
   when the fit changed what was asked.
+- Cost (via_bench, release, A/B against the commit before these additions, three alternating runs each on a
+  machine 45-80% busy with other lanes' builds, so only the comparison means anything): build 113-135 ms vs 76-146,
+  one tile 1.5-2.2 ms vs 1.1-1.4, 40 m paths 0.51-0.92 ms vs 0.60-0.67, 100 agents 0.96-1.8 ms vs 1.1-2.3 per step:
+  within the noise. Without links or areas the new paths are the old ones (default filter; no links to look up).
 
 **AI.**
 - *Amendment: sequences are reactive by default too:* each tick a running sequence first re-checks the conditions
