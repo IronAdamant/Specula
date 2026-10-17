@@ -175,14 +175,41 @@ or impossible to bolt on later.
 The goal is a swarm that can build an entire game while the owner directs. Each item lands with the milestone in
 brackets.
 
-- [ ] **Agent identity and roles** (M1): sessions carry agent id, name and role; `agent_hello`.
-- [ ] **Claims, versions and journal** (M1): the safety layer (see M1).
-- [ ] **Batch edits, `world_batch`** (M1): many changes per call, all or nothing.
+- [x] **Agent identity and roles** (M1): sessions carry agent id, name and role; `agent_hello`.
+  *Done 2026-10-13:* identity keys and resume tokens (claims and undo survive reconnects).
+- [x] **Claims, versions and journal** (M1): the safety layer (see M1).
+  *Done 2026-10-13:* region/subtree claims with leases, `expect_version`, `world_history` / `world_changes` /
+  `world_undo`. M1 exit proof: four agents built separate districts at once, and all five intrusions were refused.
+- [x] **Batch edits, `world_batch`** (M1): many changes per call, all or nothing.
   *Why:* fewer round trips means fewer tokens, and the world never holds half-finished work.
-- [ ] **Response budgets** (M1, enforced from then on): every tool response is bounded and paged.
+- [x] **Response budgets** (M1, enforced from then on): every tool response is bounded and paged.
   *Why:* swarm cost scales with tokens per call.
-- [ ] **Task board** (M1–M2): `task_post`, `task_take`, `task_done`, with tasks linked to claims.
+
+**Swarm communication** (owner, 2026-10-17: agents in a swarm must know what's been done, so nothing overwrites
+anything, "much to the frustration of the parent agent"). Today, claims, versions and the journal protect *world*
+entities only; everything else is the gap.
+
+- [ ] **Everything through the protocol** (M3: text project data; M4: binary assets). Recipes, UI screens, sounds,
+  style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
+  imported images, models and audio follow with the asset studio.
+  *Why:* two agents editing one recipe file today can silently clobber each other.
+- [ ] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
+  - Tasks are linked to claims and journal entries.
+  - The parent assigns work; children report status, blockers and questions.
+  - Undone and blocked work is visible to everyone.
+
   *Why:* claims protect data; the board shares intent, so two agents don't both build the tavern.
+- [ ] **Intents and notes** (M3): before working, an agent declares its planned scope ("rework the east gate"), and
+  overlaps with other intents or claims are flagged *before* any edit. Agents can also leave notes on entities, files
+  and tasks for whoever comes next, as handoffs.
+- [ ] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
+  original. In M4, a suggested three-way merge for text data, where the engine knows the schema.
+- [ ] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
+  changes, 2 refused, 1 open question"), so a parent reads a report, not a log.
+- [ ] **Resource leases** (M3, with headless playtest swarms): ports, GPU time and scratch folders leased per agent,
+  for swarms that run their own engines.
+  *Why:* this session's lanes clobbered a shared scratch folder, one killed other lanes' engines, and engines
+  collided on ports.
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
 - [ ] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
@@ -196,6 +223,8 @@ brackets.
 - [ ] **Scale drills** (every milestone from M1): 16, then 64 concurrent agents. Measure throughput, conflict rate,
   token cost and reject reasons.
 - [ ] **Cost and progress dashboard** (M5): tokens per agent, tasks done, rejects. Shown in the editor.
+- [ ] **The swarm, seen by humans** (M5): the editor shows the task board, intents, claims, notes and roll-ups live,
+  so a human can see who is doing what, step in, or hand a task to an agent. Same protocol, no separate system.
 
 ---
 
