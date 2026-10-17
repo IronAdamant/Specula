@@ -805,7 +805,7 @@ impl<'d> Cx<'d> {
         }
         if let Some(bound) = &opts.natives {
             for n in &self.natives {
-                if !bound.iter().any(|b| *b == n.hook) {
+                if !bound.contains(&n.hook) {
                     self.push(
                         Diagnostic::warning(codes::NATIVE_UNBOUND, n.id.as_str(), "hook", format!("no module provides the native hook '{}' yet, so runs that use it will fail", n.hook))
                             .suggest("a module must register this hook (the module host), or replace the native with Lex building blocks"),
@@ -1134,7 +1134,7 @@ impl<'d> Cx<'d> {
 
     fn behaviour(&self, v: &V, a: u16, machine: Option<u16>) -> Option<Beh> {
         let types: Vec<&str> = schema::BEHAVIOURS.iter().map(|b| b.name).collect();
-        let Some(t) = self.req(v, "type") else { return None };
+        let t = self.req(v, "type")?;
         let Some(spec) = t.j.as_str().and_then(schema::behaviour) else {
             self.push(t.err(codes::UNKNOWN_REF, format!("{} is not a behaviour type", show(t.j))).expected(types.join(", ")).suggest_opt(t.j.as_str().and_then(|s| did_you_mean(s, types.iter().copied()))));
             return None;

@@ -518,6 +518,15 @@ impl Core<'_> {
         idx_of(self.st, id).ok_or_else(|| rt("no_entity", format!("{what} (entity {id}) no longer exists")))
     }
 
+    /// Like [`Core::ent`], but the entity must also be alive (for changes to it).
+    fn ent_alive(&self, id: Option<u32>, what: &str) -> Result<usize, RtErr> {
+        let i = self.ent(id, what)?;
+        if !self.st.ents[i].alive {
+            return Err(rt("no_entity", format!("{what} (entity {}) has died or been removed this tick", self.st.ents[i].id)));
+        }
+        Ok(i)
+    }
+
     // ---- expressions ----
 
     fn eval(&mut self, ex: &Ex, f: &Frame) -> Result<Val, RtErr> {
@@ -1253,20 +1262,25 @@ impl Core<'_> {
     }
 
     fn phase_effects(&mut self) {
+        // Native behaviours declared for this phase run first.
+        if self.r.natives.iter().any(|n| n.phase == Phase::Effects) {
+            self.phase_behaviours(Phase::Effects);
+            if self.decided() {
+                return;
+            }
+        }
         let n = self.st.ents.len();
         for i in 0..n {
             if !self.st.ents[i].alive {
                 continue;
             }
             self.effects_of(i);
-            if !self.st.ents[i].alive {
-                continue;
+            if self.st.ents[i].alive {
+                self.lifetimes(i);
             }
-            self.lifetimes(i);
-            if !self.st.ents[i].alive {
-                continue;
+            if self.st.ents[i].alive {
+                self.transitions(i, None);
             }
-            self.transitions(i, None);
             if self.decided() {
                 return;
             }
@@ -1431,6 +1445,8 @@ impl Core<'_> {
     }
 
     fn cleanup(&mut self) {
+        // Rules hear about this tick's deaths while the dead can still be read.
+        self.dispatch();
         self.st.ents.retain(|e| e.alive);
         if self.st.outcome.is_some() {
             return;
@@ -1800,7 +1816,7 @@ impl Core<'_> {
             }
             Action::Change { who, attr, op, value } => {
                 let id = self.eval_ent(who, f)?;
-                let i = self.ent(id, "the entity to change")?;
+                let i = self.ent_alive(id, "the entity to change")?;
                 let v = self.int(value, f)?;
                 let arch = &self.r.archetypes[usize::from(self.st.ents[i].arch)];
                 let Some(_) = arch.slot_of(*attr) else {
@@ -1878,14 +1894,14 @@ impl Core<'_> {
             }
             Action::Become { who, arch, keep } => {
                 let id = self.eval_ent(who, f)?;
-                let i = self.ent(id, "the entity to change")?;
+                let i = self.ent_alive(id, "the entity to change")?;
                 let Val::Arch(Some(to)) = self.eval(arch, f)? else { return Err(rt("no_archetype", "the archetype to become is none (e.g. no next tier)")) };
                 self.become_(i, to, keep)?;
             }
             Action::NextWave => self.start_wave()?,
             Action::Goto { who, machine, state } => {
                 let id = self.eval_ent(who, f)?;
-                let i = self.ent(id, "the entity")?;
+                let i = self.ent_alive(id, "the entity")?;
                 if self.r.archetypes[usize::from(self.st.ents[i].arch)].machine != Some(*machine) {
                     return Err(rt("no_machine", format!("entity {} doesn't run machine '{}'", self.st.ents[i].id, self.r.machines[usize::from(*machine)].id)));
                 }

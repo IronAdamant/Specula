@@ -16,6 +16,9 @@
 //! ```
 
 #![forbid(unsafe_code)]
+// Errors are the product here: they carry the path, expected, got and suggestion an agent acts
+// on, and they're on the cold path, so their size doesn't matter.
+#![allow(clippy::result_large_err)]
 
 pub mod compile;
 pub mod diag;

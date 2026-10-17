@@ -65,8 +65,8 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
             let rest: String = chars[i..].iter().collect();
             let mut suffix = String::new();
             for s in ["m/s", "pt", "m", "s", "t", "%", "x"] {
-                if rest.starts_with(s) {
-                    let after = rest[s.len()..].chars().next();
+                if let Some(tail) = rest.strip_prefix(s) {
+                    let after = tail.chars().next();
                     if after.is_none_or(|a| !(a.is_ascii_alphanumeric() || a == '_')) {
                         suffix = s.to_owned();
                         break;
