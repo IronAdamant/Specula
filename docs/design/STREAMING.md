@@ -18,7 +18,7 @@ synchronously, every frame's streaming work has a measured budget, and a miss is
 | **glTF imports** (meshes, textures, mip chains) | the same workers | CPU, then the GPU | GPU uploads streamed; textures stay once uploaded (their pixels leave the CPU) |
 | **GPU meshes of builds** | engine thread, queued uploads | GPU | **yes**: per LOD, coarsest first, within the frame budget; evicted under `memory_mb` |
 | **HLOD proxies** | the HLOD worker thread (`specula-hlod`) | GPU | **yes**: per cell, within the frame budget; evicted under `memory_mb` |
-| **2D textures** (sprites, tilesets) | `two_d` loader thread | GPU | already asynchronous (decode off-thread, upload when ready); not budgeted yet |
+| **2D textures** (sprites, tilesets) | `two_d` loader thread | GPU | **yes**: decoded off-thread, queued uploads within the frame budget (first, before meshes); a texture that doesn't fit waits a frame, still "loading" so captures wait for it |
 | **World state** (entities, components) | `world_load` / `--world` | CPU | **no**: the simulation is always whole (see Determinism) |
 | **Audio** | rendered on a worker at start (Sepulcra's procedural sounds) | CPU mixer | no (small); streamed music is the M5 audio item |
 | **Pipelines** | at start and at window attach; variants on a worker | GPU | never mid-game (`pipelines_after_warm` budget) |
@@ -172,7 +172,7 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 
 ## What agents see
 
-- `perf_frame.streaming`: settings and who set them, wanted / standing-in / blocked builds, blocked proxies, this frame's uploads (count, KB, ms, deferred, memory-blocked,
+- `perf_frame.streaming`: settings and who set them, 2D texture uploads (`textures_2d`: count, MB, held back), wanted / standing-in / blocked builds, blocked proxies, this frame's uploads (count, KB, ms, deferred, memory-blocked,
   evicted), the upload-ms series, totals, resident and budget MB, live / uploaded / partial / wanted / pending builds,
   sources, cells, the learned ms/MB, HLOD (cells current, stale, building, window cells and covered entities, proxy
   draws, build ms), the GPU's queued-upload counters; budget misses in `errors`.
@@ -220,9 +220,11 @@ both ways. Loading still had 5 frames of 2,353 with `frame/stream` over twice th
 
 ## Later
 
-- Disk-backed world regions (above).
-- 2D textures through the same budget; texture eviction with CPU copies or re-import.
-- Dithered cross-fades for the few cells whose members aren't all static (today they never merge).
-- A worker-side `part_mesh` (re-indexing off the engine thread) if profiles show it matters.
-- Sub-allocated device memory (one `vkAllocateMemory` per mesh today; `maxMemoryAllocationCount` is 4096 on some
-  drivers, which the memory budget and proxies keep well clear of in the proof world).
+- Disk-backed world regions (above): a world bigger than memory. It needs the world file format to load a region as a
+  journaled edit at a tick boundary (world files and save games), and isn't needed for traversal without stutter,
+  which is what this design is for.
+- 2D textures are never evicted (sprite sheets and tilesets are few and small next to meshes); evicting them would
+  mean keeping CPU copies or re-reading the file, like textured models already do.
+- `part_mesh` (re-indexing a level's parts) runs on the engine thread inside the upload budget: measured at 0.3-0.5 ms
+  for 40-60 items a frame in the proof world, so it stays there until a profile says otherwise.
+- Cells whose members aren't all static never merge, so no proxy swaps for them and nothing to cross-fade.

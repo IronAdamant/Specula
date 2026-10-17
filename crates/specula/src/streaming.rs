@@ -584,6 +584,8 @@ pub struct Streamer {
     ms_per_item: f64,
     ms_per_mb: f64,
     totals: FrameUpload,
+    /// 2D textures (sprites, tilesets) uploaded within the budget, and frames that held one back.
+    textures_2d: FrameUpload,
     frames_over: u64,
     misses: VecDeque<Json>,
     /// Bytes wanted but blocked by the memory budget at the last pump.
@@ -646,6 +648,7 @@ impl Streamer {
             ms_per_item: 0.1,
             ms_per_mb: 2.0,
             totals: FrameUpload::default(),
+            textures_2d: FrameUpload::default(),
             frames_over: 0,
             misses: VecDeque::new(),
             blocked_bytes: 0,
@@ -836,16 +839,12 @@ impl Streamer {
     /// One frame (or headless loop): files changed entities, recomputes what is wanted (at most
     /// every [`UPDATE_EVERY`]), schedules proxy builds and uploads within the frame's budget.
     ///
-    /// `new_frame`: the window's frame (or a headless loop) starts a fresh upload budget; a
-    /// capture's call (false) uses what is left of the current one.
+    /// `new_frame`: the window's frame (or a headless loop; after [`Streamer::begin_frame`]):
+    /// passes are sliced; a capture's call (false) runs them whole. Both use what is left of the
+    /// frame's upload budget.
     pub fn frame(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, world: &World, generation: u64, new_frame: bool) {
         let now = Instant::now();
         self.frame = FrameUpload::default();
-        if new_frame {
-            self.spent_ms = 0.0;
-            self.frame_items = 0;
-            self.frame_bytes = 0;
-        }
         if !self.cfg.enabled {
             return;
         }
@@ -1271,6 +1270,34 @@ impl Streamer {
         self.totals.evicted += self.frame.evicted;
     }
 
+    /// Starts a frame's upload budget (the window's frame or a headless loop): 2D textures
+    /// ([`Streamer::allowance`]), then [`Streamer::frame`] and captures' calls share it.
+    pub fn begin_frame(&mut self) {
+        self.spent_ms = 0.0;
+        self.frame_items = 0;
+        self.frame_bytes = 0;
+    }
+
+    /// What is left of this frame's upload budget for other uploads (2D textures): `None` when
+    /// streaming is off (no budget).
+    pub fn allowance(&self) -> Option<crate::two_d::Allowance> {
+        self.cfg.enabled.then(|| crate::two_d::Allowance {
+            ms: (self.cfg.upload_ms - self.spent_ms).max(0.0),
+            bytes: ((self.cfg.upload_mb * 1_048_576.0) as u64).saturating_sub(self.frame_bytes),
+            first_free: self.frame_items == 0,
+        })
+    }
+
+    /// Other uploads (2D textures) made against [`Streamer::allowance`].
+    pub fn charge(&mut self, used: crate::two_d::Used) {
+        self.spent_ms += used.ms;
+        self.frame_items += used.items;
+        self.frame_bytes += used.bytes;
+        self.textures_2d.items += used.items;
+        self.textures_2d.bytes += used.bytes;
+        self.textures_2d.deferred += used.deferred;
+    }
+
     fn miss(&mut self, j: Json) {
         if self.misses.len() == MAX_MISSES {
             self.misses.pop_front();
@@ -1534,6 +1561,14 @@ impl Streamer {
                     ("deferred", Json::from(t.deferred)),
                     ("memory_blocked", Json::from(t.memory_blocked)),
                     ("evicted", Json::from(t.evicted)),
+                ]),
+            ),
+            (
+                "textures_2d",
+                Json::obj([
+                    ("uploads", Json::from(self.textures_2d.items)),
+                    ("mb", mb(self.textures_2d.bytes)),
+                    ("deferred", Json::from(self.textures_2d.deferred)),
                 ]),
             ),
             ("resident_mb", mb(resident)),

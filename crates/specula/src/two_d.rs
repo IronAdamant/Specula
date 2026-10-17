@@ -1545,6 +1545,24 @@ enum Job {
 }
 
 /// What the loader thread sends back.
+/// What is left of a frame's upload budget (see `Streamer::allowance`).
+#[derive(Clone, Copy, Debug)]
+pub struct Allowance {
+    pub ms: f64,
+    pub bytes: u64,
+    /// Nothing was uploaded yet this frame: the first texture goes whatever its size.
+    pub first_free: bool,
+}
+
+/// What a [`TwoDGpu::pump`] uploaded, and whether the budget held a texture back.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Used {
+    pub items: u32,
+    pub bytes: u64,
+    pub ms: f64,
+    pub deferred: u32,
+}
+
 enum Done {
     Texture { key: String, stamp: Stamp, hash: Option<u64>, image: Result<png::Image, String> },
     Unchanged(String),
@@ -1635,6 +1653,8 @@ pub struct TwoDGpu {
     pub chunk_uploads: u64,
     /// Textures loaded or reloaded since start-up.
     pub texture_loads: u64,
+    /// A finished texture the last pump's budget held back (uploaded first by the next one).
+    held: Option<Done>,
 }
 
 impl TwoDGpu {
@@ -1653,13 +1673,14 @@ impl TwoDGpu {
             problem_count: 0,
             chunk_uploads: 0,
             texture_loads: 0,
+            held: None,
         }
     }
 
-    /// Starts a frame: the problems list empties and finished work is uploaded.
-    pub fn begin_frame(&mut self, gpu: &mut Gpu) {
+    /// Starts a frame's draws: the problems list empties (finished loads are uploaded by
+    /// [`TwoDGpu::pump`], within the frame's upload budget).
+    pub fn begin_frame(&mut self) {
         self.problem_count = 0;
-        self.pump(gpu);
     }
 
     /// The problems of the items drawn since [`TwoDGpu::begin_frame`] (at most 16).
@@ -1806,20 +1827,37 @@ impl TwoDGpu {
         }
     }
 
-    /// Uploads whatever the loader finished.
-    pub fn pump(&mut self, gpu: &mut Gpu) {
+    /// Uploads what the loader finished, queued (never waiting for the GPU) and within
+    /// `allowance` when given (the first texture of a frame always goes; one that doesn't fit
+    /// waits for the next pump, still counted as loading).
+    pub fn pump(&mut self, gpu: &mut Gpu, allowance: Option<Allowance>) -> Used {
+        let started = std::time::Instant::now();
+        let mut used = Used::default();
         loop {
-            let done = match &self.loader {
-                Some((_, rx)) => match rx.try_recv() {
-                    Ok(d) => d,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.loader_stopped();
-                        return;
-                    }
+            let done = match self.held.take() {
+                Some(d) => d,
+                None => match &self.loader {
+                    Some((_, rx)) => match rx.try_recv() {
+                        Ok(d) => d,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.loader_stopped();
+                            break;
+                        }
+                    },
+                    None => break,
                 },
-                None => return,
             };
+            if let (Some(a), Done::Texture { image: Ok(img), .. }) = (allowance, &done) {
+                let bytes = u64::from(img.width) * u64::from(img.height) * 4;
+                let first = a.first_free && used.items == 0;
+                let spent = started.elapsed().as_secs_f64() * 1e3;
+                if !first && (spent >= a.ms || used.bytes + bytes > a.bytes || !gpu.upload_slot_free()) {
+                    self.held = Some(done);
+                    used.deferred += 1;
+                    break;
+                }
+            }
             match done {
                 Done::Unchanged(key) => {
                     if let Some(e) = self.textures.get_mut(&key) {
@@ -1837,14 +1875,17 @@ impl TwoDGpu {
                     entry.stamp = stamp;
                     entry.hash = hash;
                     let uploaded = image.and_then(|img| {
-                        gpu.upload_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
+                        gpu.queue_texture(img.width, img.height, TextureFormat::Rgba8Srgb, &img.rgba)
                             .map(|id| LoadedTexture { id, size: [img.width, img.height] })
                             .map_err(|e| format!("{key}: {e}"))
                     });
                     match uploaded {
                         Ok(t) => {
+                            used.items += 1;
+                            used.bytes += u64::from(t.size[0]) * u64::from(t.size[1]) * 4;
+                            // Frames in flight may still sample the old one: freed once they finish.
                             if let Some(old) = entry.current.replace(t) {
-                                gpu.destroy_texture(old.id);
+                                gpu.retire_texture(old.id);
                             }
                             self.texture_loads += 1;
                             self.errors.remove(&key);
@@ -1858,6 +1899,8 @@ impl TwoDGpu {
                 }
             }
         }
+        used.ms = started.elapsed().as_secs_f64() * 1e3;
+        used
     }
 
     /// Change checks in flight on the loader thread.
@@ -1903,13 +1946,13 @@ impl TwoDGpu {
         let stale = self.cells.get(&key).is_some_and(|l| l.grid.width() != grid.width() || l.grid.height() != grid.height());
         if stale {
             if let Some(l) = self.cells.remove(&key) {
-                gpu.destroy_texture(l.id);
+                gpu.retire_texture(l.id);
             }
         }
         // Formatted only when needed: a warm frame allocates nothing here.
         let name = || format!("tilemap {id} layer {li}");
         match self.cells.get_mut(&key) {
-            None => match gpu.upload_texture(grid.width(), grid.height(), TextureFormat::Rgba8Unorm, &grid.encode()) {
+            None => match gpu.queue_texture(grid.width(), grid.height(), TextureFormat::Rgba8Unorm, &grid.encode()) {
                 Ok(tid) => {
                     self.cells.insert(key, LayerTexture { id: tid, grid: grid.clone() });
                     self.errors.remove(&name());
@@ -2084,14 +2127,14 @@ impl TwoDGpu {
         let dead: Vec<String> = self.textures.keys().filter(|k| !paths.contains(k.as_str())).cloned().collect();
         for k in dead {
             if let Some(TexEntry { current: Some(t), .. }) = self.textures.remove(&k) {
-                gpu.destroy_texture(t.id);
+                gpu.retire_texture(t.id);
             }
             self.errors.remove(&k);
         }
         let dead: Vec<(u64, usize)> = self.cells.keys().filter(|k| !layers.contains(k)).copied().collect();
         for k in dead {
             if let Some(l) = self.cells.remove(&k) {
-                gpu.destroy_texture(l.id);
+                gpu.retire_texture(l.id);
             }
         }
         self.errors.retain(|k, _| !k.starts_with("tilemap ") || layers.iter().any(|(id, li)| *k == format!("tilemap {id} layer {li}")));

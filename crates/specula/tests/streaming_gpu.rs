@@ -82,6 +82,7 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let frame = |stream: &mut Streamer, models: &mut GpuModels, gpu: &mut specula_gpu::Gpu, cam: Camera| {
         stream.sync_models(models, gpu, &shared, &world, 0);
         stream.set_window(Some((cam, 1280, 720)));
+        stream.begin_frame();
         stream.frame(gpu, models, &shared, &world, 0, true);
         // The window draws (and flushes the batch), here an offscreen render's flush.
         gpu.flush_uploads().unwrap();

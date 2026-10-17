@@ -721,8 +721,26 @@ impl GpuInner {
         levels: &[&[u8]],
         sampler: TextureSampler,
     ) -> Result<TextureId, GpuError> {
-        let (offsets, total) = self.level_plan(width, height, format, levels)?;
         let vk_sampler = self.descriptors.sampler(&self.device, sampler)?;
+        self.queue_image(width, height, format, levels, Some(vk_sampler), "material texture")
+    }
+
+    /// [`GpuInner::upload_texture`] without waiting (see [`GpuInner::queue_texture_levels`]).
+    pub fn queue_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        self.queue_image(width, height, format, &[pixels], None, "texture")
+    }
+
+    /// A queued sampled image; `sampler` None: the default (linear) one.
+    fn queue_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        levels: &[&[u8]],
+        vk_sampler: Option<VkSampler>,
+        what: &str,
+    ) -> Result<TextureId, GpuError> {
+        let (offsets, total) = self.level_plan(width, height, format, levels)?;
         let slot = self.descriptors.alloc_slot()?;
         let image = match self.device.create_image_with(
             vk_format(format),
@@ -733,7 +751,7 @@ impl GpuInner {
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
             MemoryKind::Textures,
-            "material texture",
+            what,
         ) {
             Ok(i) => i,
             Err(e) => {
@@ -758,7 +776,10 @@ impl GpuInner {
         let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
         crate::stream::record_image_copy(&self.device, cmd, &staged, image.handle, &mut regions);
         // A fresh slot: no pending frame reads it.
-        self.descriptors.write_texture_with(&self.device, slot, image.view, vk_sampler);
+        match vk_sampler {
+            Some(s) => self.descriptors.write_texture_with(&self.device, slot, image.view, s),
+            None => self.descriptors.write_texture(&self.device, slot, image.view),
+        }
         let id = self.next_id();
         self.textures.map.insert(id, Texture { image, slot, format, width, height, levels: levels.len() as u32 });
         self.uploads.queued(id, total);

@@ -1230,6 +1230,11 @@ impl Gpu {
         self.inner.queue_texture_levels(width, height, format, levels, sampler)
     }
 
+    /// [`Gpu::upload_texture`] without waiting (see [`Gpu::queue_mesh`]): sprites and tilesets.
+    pub fn queue_texture(&mut self, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> Result<TextureId, GpuError> {
+        self.inner.queue_texture(width, height, format, pixels)
+    }
+
     /// Frees a mesh without waiting: it goes once every frame and upload batch submitted so far
     /// has finished on the GPU (checked by polling fences, never by a wait). The id is invalid
     /// at once. Unknown ids are ignored.

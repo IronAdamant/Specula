@@ -966,8 +966,9 @@ impl Engine {
         let reload = self.library.lock().poll(force);
         // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
         self.two_d.poll_files(force);
-        if self.two_d.loading() > 0 {
-            self.two_d.pump(&mut self.gpu);
+        // With streaming on, finished loads are uploaded within the frame's budget (stream_tick).
+        if self.two_d.loading() > 0 && !self.stream.enabled() {
+            self.two_d.pump(&mut self.gpu, None);
         }
         // Garbage collection, whether or not anything is drawn (a headless engine never syncs
         // GPU meshes). Cheap part, every GC_UNWANTED_EVERY while builds are in flight after the
@@ -1078,7 +1079,7 @@ impl Engine {
     /// reported. `owners` gets each draw's entity (sight's ID buffer).
     fn build_draws_2d(&mut self, view_proj: &Mat4, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>, mut owners: Option<&mut Vec<u64>>) {
         out.clear();
-        self.two_d.begin_frame(&mut self.gpu);
+        self.two_d.begin_frame();
         for e in self.world.two_d_entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) {
@@ -1109,7 +1110,12 @@ impl Engine {
     /// asked for): their texture files are checked for changes now and the capture waits for
     /// that, so it shows the files as they are at the request, whatever the periodic poll did.
     fn two_d_loading(&mut self, view_proj: &Mat4, include_ui: bool, fresh: bool) -> usize {
-        self.two_d.pump(&mut self.gpu);
+        // Within what is left of the frame's upload budget (a texture held back counts as loading).
+        let allowance = self.stream.allowance();
+        let used = self.two_d.pump(&mut self.gpu, allowance);
+        if allowance.is_some() {
+            self.stream.charge(used);
+        }
         let mut waiting = 0;
         // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
         // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.

@@ -409,6 +409,13 @@ impl Engine {
     /// within the frame's budget.
     pub(crate) fn stream_tick(&mut self, window: Option<(Camera, u32, u32)>) {
         self.stream.set_window(window);
+        self.stream.begin_frame();
+        // 2D textures first (few and small; a sprite never waits behind a far cell's meshes).
+        let allowance = self.stream.allowance();
+        let used = self.two_d.pump(&mut self.gpu, allowance);
+        if allowance.is_some() {
+            self.stream.charge(used);
+        }
         let generation = self.world_generation;
         self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation, true);
     }
