@@ -2772,6 +2772,76 @@ mod tests {
         world.refresh_model_handles(&changed);
     }
 
+    /// Graph anims (A3): parameter writes settle and blend, are checked against the graph, round
+    /// trip through JSON, and the world's anim assets lay over the recipe's anim set.
+    #[test]
+    fn graph_anims_settle_on_write_and_world_assets_lay_over() {
+        use specula_anim::graph::Value;
+        use specula_anim::play::GraphPlay;
+        let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let mut spec = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        spec.name = Some("walker".into());
+        let mut play = GraphPlay::new("creature");
+        play.set_param("act", Value::Name("idle".into()));
+        spec.anim = Some(AnimSpec::graph(play));
+        let id = world.spawn(spec, "t").unwrap().id;
+        settle_shared(&shared, &mut world);
+        // Start walking at 5 s: the play settles (idle stays under the 0.3 s blend), speed is added.
+        world.set_clock_s(5.0);
+        let mut walk = GraphPlay::new("creature");
+        walk.set_param("act", Value::Name("move".into()));
+        walk.set_param("speed", Value::Num(0.8));
+        world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(walk))), ..Default::default() }, "t").unwrap();
+        let a = world.get(id).unwrap().anim.clone().unwrap();
+        let gp = a.graph.as_deref().unwrap();
+        assert_eq!(a.start, Some(5.0));
+        assert_eq!(gp.param("act"), Some(&Value::Name("move".into())));
+        assert!((gp.clock - 5.0).abs() < 1e-9, "graph time ran from the spawn's anchor (0) to 5 s");
+        assert_eq!(gp.layers[0].stack.iter().map(|e| e.state.as_str()).collect::<Vec<_>>(), ["idle"], "settled at the write: the move starts from the anchor");
+        // A second write with only `speed` keeps `act` (parameters merge).
+        world.set_clock_s(6.0);
+        let mut faster = GraphPlay::new("creature");
+        faster.set_param("speed", Value::Num(0.4));
+        world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(faster))), ..Default::default() }, "t").unwrap();
+        let a = world.get(id).unwrap().anim.clone().unwrap();
+        let gp = a.graph.as_deref().unwrap();
+        assert_eq!((gp.param("act"), gp.param("speed")), (Some(&Value::Name("move".into())), Some(&Value::Num(0.4))));
+        assert_eq!(gp.layers[0].stack.last().unwrap().state, "move", "the move fired and blended in by 6 s");
+        // JSON round trip (world files, world_set).
+        let back = AnimSpec::from_json(&a.to_json()).unwrap();
+        assert_eq!(back, a);
+        // Unknown parameters and graphs are refused with the field.
+        let mut bad = GraphPlay::new("creature");
+        bad.set_param("pace", Value::Num(2.0));
+        let e = world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(bad))), ..Default::default() }, "t").unwrap_err();
+        assert_eq!(e.detail("field"), Some(&Json::from("anim.params.pace")), "{e:?}");
+        let e = world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(GraphPlay::new("dance")))), ..Default::default() }, "t").unwrap_err();
+        assert_eq!(e.detail("field"), Some(&Json::from("anim.graph")));
+        // A world anim asset replaces the recipe's graph for every shambler.
+        let graph = r#"{"params": {"act": {"type": "enum", "values": ["idle", "move", "attack", "special", "death"]}, "speed": "float"},
+                        "states": {"idle": "attack", "move": "walk"},
+                        "transitions": [{"from": "idle", "to": "move", "when": "act == move"}]}"#;
+        let mut asset = SpawnSpec::new(crate::world::Shape::Group);
+        asset.name = Some("creature".into());
+        asset.tags.insert(crate::anim::ASSET_TAG.into());
+        asset.props = Json::obj([(crate::anim::ASSET_PROP, Json::obj([("for", Json::from("recipes/shambler.json")), ("kind", Json::from("graph")), ("data", Json::parse(graph).unwrap())]))]);
+        world.spawn(asset, "t").unwrap();
+        let mut models = GpuModels::default();
+        assert!(models.refresh_anim_env(&shared, &world, 0), "the asset is new");
+        assert!(!models.refresh_anim_env(&shared, &world, 0), "nothing changed since");
+        let handle = world.get(id).unwrap().resolved_model().unwrap().handle;
+        let set = shared.lock().anim_set(handle).unwrap();
+        assert_eq!(set.graph("creature").unwrap().layers[0].states.len(), 2, "the world's graph");
+        assert_eq!(set.graph("creature").unwrap().params.len(), 2);
+        // An entity of the model now settles against it: 'look' is gone.
+        let mut look = GraphPlay::new("creature");
+        look.set_param("look", Value::Num(1.0));
+        assert!(world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(look))), ..Default::default() }, "t").is_err());
+        assert!(anim_problem(&shared.lock(), world.get(id).unwrap()).is_some(), "its stored 'look' parameter is reported");
+    }
+
     #[test]
     fn every_sepulcra_recipe_builds_in_the_engine() {
         let mut lib = Library::new(&sepulcra(), None);

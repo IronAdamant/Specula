@@ -32,7 +32,7 @@
       "duty": 0.46, "lift": 0.16, "bounce": 0.04, "sway": 0.015, "roll": 3, "twist": 9, "lean": 5, "nod": 3,
       "wobble": [ { "bone": "jaw", "axis": "x", "deg": 8, "cycles": 2 } ] },
     { "name": "leap", "kind": "leap", "duration": 0.95, "distance": 3.0, "height": 0.9,
-      "note": "Lane jump. The graph plays it with horizontal root motion: the simulation moves the entity, the pose keeps only the arc.",
+      "note": "Lane jump. The graph plays it with full root motion: the simulation moves the entity along its own arc, the pose keeps the crouch, tuck and landing.",
       "pelvis": "hips", "spine": ["spine", "chest"], "head": "head",
       "legs": [ { "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l", "foot_pitch": -16, "ankle_y": 0.07 },
                 { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r", "foot_pitch": 34, "ankle_y": 0.07 } ],
@@ -61,7 +61,7 @@
         "idle": "idle",
         "move": { "play": "locomotion", "match_speed": "speed" },
         "attack": { "play": "idle", "speed": 1.6 },
-        "special": { "play": "leap", "root_motion": "horizontal", "ik": { "feet": 0 } },
+        "special": { "play": "leap", "root_motion": "full", "ik": { "feet": 0, "look": 0 } },
         "death": { "play": "death", "ik": { "feet": 0, "look": 0 } } },
       "entry": "idle",
       "transitions": [

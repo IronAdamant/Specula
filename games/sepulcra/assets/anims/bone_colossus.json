@@ -72,8 +72,8 @@
       "states": {
         "idle": "idle",
         "move": { "play": "locomotion", "match_speed": "speed" },
-        "attack": "summon",
-        "special": "summon",
+        "attack": { "play": "summon", "ik": { "look": 0 } },
+        "special": { "play": "summon", "ik": { "look": 0 } },
         "death": { "play": "death", "ik": { "feet": 0, "look": 0 } } },
       "entry": "idle",
       "transitions": [
