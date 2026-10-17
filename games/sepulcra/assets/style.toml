@@ -1,0 +1,39 @@
+# Sepulcra's measurable style rules. A rule broken is an error (anim_check, the motion_checks
+# example, the creature tests). The look itself is in STYLE.md; recipe palettes and materials are
+# in style.json.
+
+[motion]
+# Thresholds for the motion checks (specula-anim checks.rs). Feet are "on the ground" when their
+# sole is within contact_m of it.
+contact_m = 0.025
+foot_sliding_cm_s = 6.0
+floating_cm = 2.5
+ground_penetration_cm = 3.0
+joint_limits_deg = 5.0
+pops_cm = 6.0
+root_drift_cm = 2.0
+loop_seam_mm = 1.0
+# A leap's apex (the root's highest point over its takeoff height) against the height it was made with.
+leap_apex_cm = 5.0
+sample_hz = 60
+
+[motion.allow]
+# Deliberate style, each with its reason. "rig/subject": clips are "rig/clip", graph states
+# "rig/graph.state", transitions "rig/graph.from->to"; * matches anything.
+#
+# The shambler drags its right leg (STYLE.md: "a dragging right leg makes the walk lurch"): that
+# foot scrapes the ground on purpose. The left foot is still checked.
+"shambler*" = ["foot_sliding:foot_r"]
+# Its special is a climb up a cliff face: the feet scrabble at the rock, not on the ground.
+"shambler/climb" = ["foot_sliding"]
+# The runner's bones fly apart when it dies (a scatter, not a fall): no joints are left to limit.
+# They come to rest on the ground like every other death (floating and penetration still apply).
+"skeleton_runner/*death" = ["joint_limits"]
+# Wraiths rise away and fade when destroyed: their death leaves the hover band on purpose.
+"wraith/*death" = ["hover"]
+
+[motion.hover]
+# Flyers have no feet on the ground: instead of foot sliding and floating, their lowest point
+# (the shroud's hem) keeps to a band above the ground, in cm (STYLE.md: the shroud floats a hand
+# over the ground and never drags through it, even in a dive).
+"wraith/*" = [3, 90]

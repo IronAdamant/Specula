@@ -29,6 +29,9 @@ pub enum AnimErrorCode {
     Limit,
     /// The skeleton is unusable (bad parents, non-finite rest pose, unsupported rest frames).
     InvalidRig,
+    /// Transitions that can all fire at once around a loop of states: the layer would cycle
+    /// without time passing.
+    InstantCycle,
 }
 
 /// An animation error. `path` points into the source, e.g. `clips[2].tracks[0].times[3]`.
