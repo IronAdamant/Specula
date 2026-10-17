@@ -804,7 +804,9 @@ impl crate::Engine {
                     Rel::Avoid { boxes: BoxSet::new(boxes), distance: *distance }
                 }
                 RelSpec::OnNavmesh { mesh: m, reachable_from } => {
-                    mesh = Some(self.nav.find_mesh(m.as_deref())?);
+                    let mid = self.nav.find_mesh(m.as_deref())?;
+                    crate::nav::ready_mesh(&self.nav, mid)?;
+                    mesh = Some(mid);
                     Rel::OnNavmesh { reachable_from: reachable_from.as_ref().map(|s| self.resolve_spot(s).map(|r| r.0)).transpose()? }
                 }
             };

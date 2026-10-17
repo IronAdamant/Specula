@@ -324,6 +324,42 @@ impl Triangle {
     }
 }
 
+/// A source as one tile reads it: all its triangles, or only those listed (from
+/// [`Source::bucket`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Input<'a> {
+    pub source: &'a Source,
+    pub only: Option<&'a [u32]>,
+}
+
+impl<'a> Input<'a> {
+    pub fn all(source: &'a Source) -> Input<'a> {
+        Input { source, only: None }
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        match self.only {
+            Some(list) if !self.source.aligned => list.len(),
+            _ => self.source.triangle_count(),
+        }
+    }
+
+    /// The triangles this tile reads.
+    pub fn triangles(&self) -> impl Iterator<Item = &'a Triangle> + 'a {
+        let (src, only) = (self.source, self.only);
+        let listed = only.map(move |l| l.iter().filter_map(move |&i| src.triangles.get(i as usize)));
+        let all = only.is_none().then(|| src.triangles.iter());
+        listed.into_iter().flatten().chain(all.into_iter().flatten())
+    }
+}
+
+/// Work a tile build costs, in grid columns: its grid with the border, plus 16 per triangle.
+pub fn tile_work(cfg: &Config, inputs: &[Input]) -> u64 {
+    let d = Derived::of(cfg);
+    let side = u64::from(cfg.tile_cells) + 2 * u64::from(d.border);
+    side * side + 16 * inputs.iter().map(|i| i.triangle_count() as u64).sum::<u64>()
+}
+
 /// One piece of input geometry: the triangles of a convex solid (a box, hull, sphere or capsule:
 /// every column it covers is solid from its lowest to its highest point) or of a surface (a mesh
 /// or heightfield: only the triangles themselves are solid).
@@ -362,6 +398,19 @@ impl Source {
         } else {
             self.triangles.len()
         }
+    }
+
+    /// Which of its triangles each tile of `mesh` reads (for big sources: a tile then looks at
+    /// its own triangles only, not all of them).
+    pub fn bucket(&self, mesh: &mesh::NavMesh) -> std::collections::BTreeMap<(u32, u32), Vec<u32>> {
+        let mut out: std::collections::BTreeMap<(u32, u32), Vec<u32>> = std::collections::BTreeMap::new();
+        for (i, t) in self.triangles.iter().enumerate() {
+            let (lo, hi) = t.aabb();
+            for tile in mesh.tiles_touching(lo, hi) {
+                out.entry(tile).or_default().push(i as u32);
+            }
+        }
+        out
     }
 
     /// Whether the source's bounds meet the box `lo..hi`.

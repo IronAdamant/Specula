@@ -596,7 +596,7 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
         (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
             // Overlap where an entity under the path already sits in the region. Rule data
             // (/lex) sits nowhere.
-            if p == "/lex" || p.starts_with("/lex/") {
+            if p == "/lex" || p.starts_with("/lex/") || under_nav(p) {
                 return false;
             }
             let root = if p == "/" { None } else { world.find_path(p).ok() };
@@ -634,6 +634,29 @@ pub fn touches_rule_data(change: &Change) -> bool {
     }
 }
 
+fn under_nav(p: &str) -> bool {
+    p == "/nav" || p.starts_with("/nav/")
+}
+
+/// Navmesh settings: the `/nav` group and the `/nav/<name>` entities holding `props.navmesh`
+/// (data, not things in the world; see [`crate::nav`]).
+fn is_nav_data(e: &crate::world::Entity) -> bool {
+    e.props.get(crate::nav::MESH_KEY).is_some() || (e.parent.is_none() && e.name == "nav" && e.shape == crate::world::Shape::Group)
+}
+
+/// Navmesh settings staying under `/nav` (before and after): like rule data, they sit nowhere,
+/// so only path claims cover them.
+fn nav_data_only(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, after } => under_nav(path) && is_nav_data(after),
+        Change::Delete { path, before } => under_nav(path) && is_nav_data(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_nav(path) && prev_path.as_deref().is_none_or(under_nav) && is_nav_data(after) && before.as_deref().is_none_or(is_nav_data)
+        }
+        _ => false,
+    }
+}
+
 /// Rule data staying in `/lex` (before and after): exempt from region scopes.
 fn rule_data_only(change: &Change) -> bool {
     match change {
@@ -652,7 +675,7 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
     // Lex rule data has no place in the world: only path claims cover it. Anything else, in
     // /lex or moving through it, is checked at both ends like any entity.
-    if rule_data_only(change) {
+    if rule_data_only(change) || nav_data_only(change) {
         return points;
     }
     match change {
@@ -719,6 +742,33 @@ mod tests {
     fn set(w: &mut World, path: &str, change: UpdateSpec) -> Vec<Change> {
         w.update(&EntityKey::Path(path.into()), change, "x").unwrap();
         w.take_changes()
+    }
+
+    #[test]
+    fn navmesh_settings_sit_nowhere_but_path_claims_cover_them() {
+        let now = Instant::now();
+        let mut w = world();
+        let mut c = Claims::default();
+        // Bob's region around the origin, where /nav and its settings live.
+        take(&mut c, &w, BOB, Scope::Region { min: Vec3::new(-5.0, -5.0, -5.0), max: Vec3::new(5.0, 5.0, 5.0) }, now).unwrap();
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("nav".into());
+        w.spawn(g, "ann").unwrap();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("default".into());
+        s.parent = Some(EntityKey::Path("/nav".into()));
+        s.props = Json::obj([(crate::nav::MESH_KEY, Json::obj([("cell_size", Json::from(0.15))]))]);
+        w.spawn(s, "ann").unwrap();
+        let changes = w.take_changes();
+        assert!(c.check(&w, &changes, ANN, now).is_ok(), "settings aren't in bob's region");
+        // A cube under /nav is in the world like any other.
+        let cube = spawn(&mut w, "/nav/crate", Vec3::ZERO, "ann");
+        assert!(c.check(&w, &cube, ANN, now).is_err());
+        // A path claim on /nav covers the settings.
+        let mut c2 = Claims::default();
+        take(&mut c2, &w, BOB, Scope::Path("/nav".into()), now).unwrap();
+        let edit = set(&mut w, "/nav/default", UpdateSpec { props: Some(Json::obj([(crate::nav::MESH_KEY, Json::obj([("cell_size", Json::from(0.2))]))])), ..Default::default() });
+        assert!(c2.check(&w, &edit, ANN, now).is_err());
     }
 
     #[test]

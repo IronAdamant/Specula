@@ -6,7 +6,7 @@
 //! navmesh is the same whatever order its tiles were built in.
 
 use crate::build::{self, opposite, EdgeSpan, TileBuild};
-use crate::{Config, Derived, NavError, Source};
+use crate::{Config, Derived, Input, NavError, Source};
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -190,6 +190,12 @@ impl NavMesh {
     /// Builds (or rebuilds) tile `(tx, tz)` from the sources that touch it (in a fixed order),
     /// and relinks it with its neighbours.
     pub fn build_tile(&mut self, tx: u32, tz: u32, sources: &[&Source]) -> TileStats {
+        let inputs: Vec<Input> = sources.iter().map(|s| Input::all(s)).collect();
+        self.build_tile_from(tx, tz, &inputs)
+    }
+
+    /// [`NavMesh::build_tile`] from inputs that may list only some of a source's triangles.
+    pub fn build_tile_from(&mut self, tx: u32, tz: u32, sources: &[Input]) -> TileStats {
         let b: TileBuild = build::build_tile(&self.cfg, &self.d, tx, tz, sources, &mut self.scratch);
         let index = self.tile_index(tx, tz);
         let polys: Vec<Poly> = b
@@ -494,6 +500,35 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn buckets_build_the_same_tiles() {
+        let mut mesh = NavMesh::new(room_config()).unwrap();
+        // A wavy sheet of many triangles over the whole room.
+        let mut tris = Vec::new();
+        let h = |i: usize, j: usize| 0.2 * (((i * 7 + j * 13) % 5) as f32) / 5.0;
+        let p = |i: usize, j: usize| Vec3::new(-10.0 + i as f32 * 0.5, h(i, j), -10.0 + j as f32 * 0.5);
+        for j in 0..40 {
+            for i in 0..40 {
+                tris.push(Triangle([p(i, j), p(i, j + 1), p(i + 1, j + 1)]));
+                tris.push(Triangle([p(i, j), p(i + 1, j + 1), p(i + 1, j)]));
+            }
+        }
+        let sheet = Source::new(tris, false);
+        build_all(&mut mesh, std::slice::from_ref(&sheet));
+        let full = mesh.hash();
+        let buckets = sheet.bucket(&mesh);
+        let mut other = NavMesh::new(room_config()).unwrap();
+        let (nx, nz) = other.tile_count();
+        for tz in 0..nz {
+            for tx in 0..nx {
+                let only = buckets.get(&(tx, tz)).map(Vec::as_slice).unwrap_or(&[]);
+                other.build_tile_from(tx, tz, &[Input { source: &sheet, only: Some(only) }]);
+            }
+        }
+        assert_eq!(other.hash(), full);
+        assert!(buckets.values().map(Vec::len).max().unwrap() < sheet.triangles.len() / 4, "each tile reads a part");
     }
 
     #[test]

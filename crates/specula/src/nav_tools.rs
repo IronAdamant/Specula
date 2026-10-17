@@ -248,7 +248,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("bounds", t("object", "{min: [x,y,z], max: [x,y,z]} the navmesh covers")),
                     ("margin", t("number", "Metres added around the sources' bounds when bounds aren't given (default 1)")),
                     ("sources", t("object", "{colliders: true, shapes: true, kinematic: false, under: \"/level\", exclude_tags: [..]}")),
-                    ("tiles_per_tick", t("integer", "Dirty tiles rebuilt per fixed tick after edits (default 8)")),
+                    ("tiles_per_tick", t("integer", "Tile rebuild work per fixed tick after edits, in default-size tiles (default 8; a tile with many triangles costs more)")),
                     ("expect_version", t("integer", "Refuse unless the navmesh entity is at this version")),
                 ],
                 &[],
@@ -402,7 +402,10 @@ impl crate::Engine {
                     (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return world_error(&e),
                 };
                 // Reads see the navmesh as of the last tick (edits rebuild tiles on the tick).
-                let Some(slot) = self.nav.meshes.get(&mid) else { return world_error(&WorldError::new("no_navmesh", "that navmesh is gone")) };
+                let slot = match nav::ready_mesh(&self.nav, mid) {
+                    Ok(s) => s,
+                    Err(e) => return world_error(&e),
+                };
                 let ext = Vec3::new(1.0, slot.settings.config.agent_height, 1.0);
                 let started = std::time::Instant::now();
                 let Some(p) = slot.mesh.find_path(from, to, ext, max_nodes) else {
@@ -440,7 +443,10 @@ impl crate::Engine {
                     Ok(a) => a,
                     Err(e) => return world_error(&e),
                 };
-                let Some(slot) = self.nav.meshes.get(&mid) else { return world_error(&WorldError::new("no_navmesh", "that navmesh is gone")) };
+                let slot = match nav::ready_mesh(&self.nav, mid) {
+                    Ok(s) => s,
+                    Err(e) => return world_error(&e),
+                };
                 let mut out = Json::obj([("mesh", Json::from(slot.path.as_str()))]);
                 if let Some(a) = at {
                     let h = slot.settings.config.agent_height;
@@ -754,9 +760,18 @@ impl crate::Engine {
             }
             None => {}
         }
-        // Check everything before writing.
+        // Check everything before writing (a tile too wide is refused here; only old world data
+        // is narrowed when read).
         let props = settings.to_json();
-        MeshSettings::from_json(&props)?;
+        let read = MeshSettings::from_json(&props)?;
+        if read.config.tile_cells != settings.config.tile_cells {
+            return Err(WorldError::new(
+                "invalid_value",
+                format!("'tile_cells' {} is too wide: with its border a tile is at most {} cells, so at most {} here", settings.config.tile_cells, specula_via::MAX_TILE_SIDE, read.config.tile_cells),
+            )
+            .with("field", "tile_cells")
+            .with("max", Json::from(read.config.tile_cells)));
+        }
         let mut ops = Vec::new();
         if self.world.find_path("/nav").is_err() {
             let mut g = SpawnSpec::new(Shape::Group);
@@ -781,20 +796,39 @@ impl crate::Engine {
         if let Some(p) = self.nav.problems.get(&id) {
             return Err(WorldError::new("navmesh_invalid", "the navmesh entity was written but its settings don't build").with("problem", p.clone()).with("journal", Json::from(seq)));
         }
-        let (tiles, ms) = nav::build_now(&mut self.nav, &self.world, self.world_generation, id);
+        // Built within a per-call budget; the rest is built on the ticks (the old settings'
+        // navmesh, if any, serves until the new one is complete).
+        let (tiles, ms) = nav::build_within(&mut self.nav, &self.world, self.world_generation, id, Some(nav::BUILD_CALL_WORK));
         let slot = self.nav.meshes.get(&id).ok_or_else(|| WorldError::new("navmesh_invalid", "the navmesh entity was written but didn't build").with("journal", Json::from(seq)))?;
         let mut out = slot.mesh.summary_json();
         out.set("path", Json::from(path.as_str()));
         out.set("settings", slot.settings.to_json());
         out.set("tiles_built", Json::from(tiles));
         out.set("ms", Json::from((ms * 1000.0).round() / 1000.0));
+        let (left, total) = match &slot.next {
+            Some(n) => (n.queue.len(), n.mesh.tile_count()),
+            None => (slot.dirty.len(), slot.mesh.tile_count()),
+        };
+        out.set("complete", Json::from(left == 0));
+        if left > 0 {
+            out.set("tiles_left", Json::from(left));
+            out.set("tiles", Json::from(total.0 as usize * total.1 as usize));
+            out.set(
+                "note",
+                Json::from(if slot.next.is_some() {
+                    "the rest is built over the next ticks; the navmesh with the old settings serves until then (nav_info shows progress)"
+                } else {
+                    "the rest is built over the next ticks; queries answer navmesh_building until then (nav_info shows progress)"
+                }),
+            );
+        }
         if slot.models_skipped > 0 {
             out.set("models_without_collider", Json::from(slot.models_skipped));
         }
         if !slot.errors.is_empty() {
             out.set("errors", Json::arr(slot.errors.iter().cloned()));
         }
-        if slot.mesh.poly_count() == 0 {
+        if left == 0 && slot.mesh.poly_count() == 0 {
             out.set(
                 "warning",
                 Json::from("the navmesh is empty: no walkable surface wide enough for agent_radius and tall enough for agent_height (check the floor's slope, the bounds' height and the sources)"),

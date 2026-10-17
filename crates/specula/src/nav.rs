@@ -24,7 +24,7 @@ use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::rng::Rng;
 use specula_core::{dmath, Json};
 use specula_mens::{self as mens, Arg, ArgKind, Def, Diagnostic, Mind, Phase, Status, Verb, Vocabulary};
-use specula_via::{AgentParams, AgentStatus, Crowd, CrowdSettings, NavError, NavMesh, PathResult, Source, Triangle};
+use specula_via::{AgentParams, AgentStatus, Crowd, CrowdSettings, Input, NavError, NavMesh, PathResult, Source, Triangle};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -530,6 +530,86 @@ pub struct MeshSlot {
     pub models_skipped: usize,
     /// `sources.under` as last resolved (a rename or a new entity there rebuilds every tile).
     under: Option<Option<u64>>,
+    /// Every tile built: the navmesh serves queries and agents. A first build fills `mesh` in
+    /// place (queries say "building" meanwhile).
+    pub ready: bool,
+    /// New settings being built beside the serving navmesh, swapped in when complete.
+    pub next: Option<Box<NextMesh>>,
+    /// Big sources' triangles by tile, for this grid.
+    buckets: Buckets,
+    /// Created by a world load (or engine start): built in full before its first tick.
+    complete_first: bool,
+}
+
+/// Triangles of big sources by tile, per source entity.
+type Buckets = BTreeMap<u64, BTreeMap<(u32, u32), Vec<u32>>>;
+
+/// A navmesh being built for new settings while the old one serves.
+pub struct NextMesh {
+    pub settings: MeshSettings,
+    pub mesh: NavMesh,
+    pub queue: BTreeSet<(u32, u32)>,
+    props: Json,
+    buckets: Buckets,
+}
+
+/// Sources with more triangles than this are bucketed by tile.
+const BUCKET_MIN: usize = 256;
+/// Work units (grid columns, 16 per triangle) per default-size tile: `tiles_per_tick` counts these.
+pub const TILE_WORK: u64 = 4_096;
+/// Work one nav_build call does before leaving the rest to the ticks (tens of milliseconds).
+pub const BUILD_CALL_WORK: u64 = 600_000;
+
+/// Builds queued tiles of `mesh` in tile order, at most `budget` work units (at least one tile;
+/// `None`: all). Returns the tiles built and the work done.
+#[allow(clippy::too_many_arguments)]
+fn build_queue(
+    mesh: &mut NavMesh,
+    queue: &mut BTreeSet<(u32, u32)>,
+    buckets: &mut Buckets,
+    settings: &MeshSettings,
+    sources: &BTreeMap<u64, SourceEntry>,
+    world: &World,
+    budget: Option<u64>,
+    errors: &mut VecDeque<Json>,
+) -> (usize, u64) {
+    if queue.is_empty() {
+        return (0, 0);
+    }
+    let under = under_of(world, &settings.sources);
+    let picked: Vec<(u64, &Source)> = sources.iter().filter_map(|(id, s)| s.pick(&settings.sources, under).map(|src| (*id, src))).collect();
+    for (id, src) in &picked {
+        if !src.aligned && src.triangles.len() > BUCKET_MIN && !buckets.contains_key(id) {
+            buckets.insert(*id, src.bucket(mesh));
+        }
+    }
+    let (mut built, mut work) = (0usize, 0u64);
+    while let Some(&(tx, tz)) = queue.iter().next() {
+        let (lo, hi) = mesh.tile_input_bounds(tx, tz);
+        let inputs: Vec<Input> = picked
+            .iter()
+            .filter(|(_, s)| s.touches(lo, hi))
+            .filter_map(|(id, s)| match buckets.get(id) {
+                Some(b) => b.get(&(tx, tz)).map(|l| Input { source: s, only: Some(l.as_slice()) }),
+                None => Some(Input::all(s)),
+            })
+            .collect();
+        let cost = specula_via::tile_work(mesh.config(), &inputs);
+        if budget.is_some_and(|b| built > 0 && work + cost > b) {
+            break;
+        }
+        queue.remove(&(tx, tz));
+        work += cost;
+        built += 1;
+        let stats = mesh.build_tile_from(tx, tz, &inputs);
+        for e in &stats.errors {
+            if errors.len() == 16 {
+                errors.pop_front();
+            }
+            errors.push_back(e.to_json());
+        }
+    }
+    (built, work)
 }
 
 /// Where an agent was told to go.
@@ -616,6 +696,9 @@ pub struct Nav {
     /// they only decide when to look).
     def_ids: BTreeSet<u64>,
     def_paths: BTreeSet<String>,
+    /// A full look at a newly loaded world (or the first one) is under way: navmeshes made now
+    /// are built in full before their first tick.
+    rescanning: bool,
     /// The last mind that ran (the budget's round robin), and buffers reused every tick.
     mind_cursor: u64,
     mind_order: Vec<u64>,
@@ -768,6 +851,9 @@ impl EngineHost<'_> {
 
     /// Ticks without a complete path (counts up while the crowd says partial).
     fn unreachable(&mut self) -> u32 {
+        if self.mesh().is_some_and(|s| !s.ready) {
+            return 0;
+        }
         let partial = self.crowd_agent().is_some_and(|a| matches!(a.status, AgentStatus::Partial | AgentStatus::OffMesh));
         match self.link.as_deref_mut() {
             Some(l) => {
@@ -1092,9 +1178,13 @@ impl Nav {
             }
             Some(_) => {
                 self.reset();
+                self.rescanning = true;
                 None
             }
-            None => None,
+            None => {
+                self.rescanning = true;
+                None
+            }
         };
         match changed {
             Some(mut ids) => {
@@ -1125,6 +1215,7 @@ impl Nav {
             }
         }
         self.synced = Some((generation, epoch));
+        self.rescanning = false;
     }
 
     /// Brings one entity up to date (gone entities are forgotten).
@@ -1205,9 +1296,16 @@ impl Nav {
             let old = self.sources.remove(&id);
             for m in self.meshes.values_mut() {
                 let under = under_of(world, &m.settings.sources);
+                m.buckets.remove(&id);
                 for s in [old.as_ref(), new.as_ref()].into_iter().flatten() {
                     if let Some(src) = s.pick(&m.settings.sources, under) {
                         m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
+                    }
+                    if let Some(n) = m.next.as_deref_mut() {
+                        n.buckets.remove(&id);
+                        if let Some(src) = s.pick(&n.settings.sources, under_of(world, &n.settings.sources)) {
+                            n.queue.extend(n.mesh.tiles_touching(src.lo, src.hi));
+                        }
                     }
                 }
             }
@@ -1219,8 +1317,16 @@ impl Nav {
                 for m in self.meshes.values_mut() {
                     // (A deleted `under` root: its whole old area is dirty anyway.)
                     let under = under_of(world, &m.settings.sources).map(|u| u.or(old.ancestors.last().copied()));
+                    m.buckets.remove(&id);
                     if let Some(src) = old.pick(&m.settings.sources, under) {
                         m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
+                    }
+                    if let Some(n) = m.next.as_deref_mut() {
+                        n.buckets.remove(&id);
+                        let under = under_of(world, &n.settings.sources).map(|u| u.or(old.ancestors.last().copied()));
+                        if let Some(src) = old.pick(&n.settings.sources, under) {
+                            n.queue.extend(n.mesh.tiles_touching(src.lo, src.hi));
+                        }
                     }
                 }
             }
@@ -1296,6 +1402,12 @@ impl Nav {
                 dirty.insert((tx, tz));
             }
         }
+        // New settings for a navmesh that serves: build beside it; it keeps serving until done.
+        if let Some(slot) = self.meshes.get_mut(&e.id).filter(|s| s.ready && !self.rescanning) {
+            slot.next = Some(Box::new(NextMesh { settings, mesh, queue: dirty, props: props.clone(), buckets: BTreeMap::new() }));
+            slot.props = props;
+            return;
+        }
         self.meshes.insert(
             e.id,
             MeshSlot {
@@ -1311,6 +1423,10 @@ impl Nav {
                 errors: VecDeque::new(),
                 models_skipped: 0,
                 under: under_of(world, &settings_sources),
+                ready: false,
+                next: None,
+                buckets: BTreeMap::new(),
+                complete_first: self.rescanning,
             },
         );
         self.relink_agents(world);
@@ -1512,36 +1628,43 @@ impl Nav {
         }
     }
 
-    /// Rebuilds up to `budget` dirty tiles of a mesh (all with `None`), in tile order.
-    pub fn rebuild(&mut self, mesh_id: u64, budget: Option<usize>, world: &World) -> usize {
+    /// Builds a navmesh's queued work within `budget` work units (all with `None`): the new
+    /// settings' navmesh first (swapped in when complete), else dirty tiles of the serving one.
+    /// Returns the tiles built.
+    pub fn rebuild(&mut self, mesh_id: u64, budget: Option<u64>, world: &World) -> usize {
         let Some(slot) = self.meshes.get_mut(&mesh_id) else { return 0 };
-        // Per tick: at most `budget` tiles and about COLUMNS_PER_TICK columns of work (a tile's
-        // grid with its border), always at least one tile.
-        let d = slot.mesh.derived();
-        let side = (slot.settings.config.tile_cells + 2 * d.border) as usize;
-        let by_work = (COLUMNS_PER_TICK / (side * side)).max(1);
-        let n = budget.map_or(usize::MAX, |b| b.min(by_work)).min(slot.dirty.len());
-        let take: Vec<(u32, u32)> = slot.dirty.iter().take(n).copied().collect();
-        if take.is_empty() && budget.is_some() {
-            slot.last_rebuild.clear();
-            return 0;
-        }
-        let under = under_of(world, &slot.settings.sources);
-        let picked: Vec<(&SourceEntry, &Source)> = self.sources.values().filter_map(|s| s.pick(&slot.settings.sources, under).map(|src| (s, src))).collect();
-        for &(tx, tz) in &take {
-            slot.dirty.remove(&(tx, tz));
-            let (lo, hi) = slot.mesh.tile_input_bounds(tx, tz);
-            let mine: Vec<&Source> = picked.iter().filter(|(_, s)| s.touches(lo, hi)).map(|(_, s)| *s).collect();
-            let stats = slot.mesh.build_tile(tx, tz, &mine);
-            for e in &stats.errors {
-                if slot.errors.len() == 16 {
-                    slot.errors.pop_front();
-                }
-                slot.errors.push_back(e.to_json());
+        let mut built = 0;
+        let mut spent = 0u64;
+        if let Some(n) = slot.next.as_deref_mut() {
+            let (b, w) = build_queue(&mut n.mesh, &mut n.queue, &mut n.buckets, &n.settings, &self.sources, world, budget, &mut slot.errors);
+            built += b;
+            spent += w;
+            if n.queue.is_empty() {
+                let n = *slot.next.take().expect("present");
+                slot.settings = n.settings;
+                slot.mesh = n.mesh;
+                slot.props = n.props;
+                slot.buckets = n.buckets;
+                slot.dirty.clear();
+                slot.under = under_of(world, &slot.settings.sources);
+                // Polygon refs of the old grid mean nothing now: the crowd starts over.
+                slot.crowd = Crowd::new(CrowdSettings::default());
+                self.relink_agents(world);
+                let Some(slot) = self.meshes.get_mut(&mesh_id) else { return built };
+                slot.rebuilt_tiles += built as u64;
+                return built;
+            }
+            if budget.is_some_and(|b| spent >= b) {
+                slot.rebuilt_tiles += built as u64;
+                return built;
             }
         }
-        if budget.is_none() {
-            // A full build: count models that would have fed it with a collider.
+        let rest = budget.map(|b| b.saturating_sub(spent).max(1));
+        let (b, _) = build_queue(&mut slot.mesh, &mut slot.dirty, &mut slot.buckets, &slot.settings, &self.sources, world, rest, &mut slot.errors);
+        built += b;
+        if slot.dirty.is_empty() && !slot.ready {
+            slot.ready = true;
+            // A first build: count models that would have fed it with a collider.
             let (lo, hi) = (slot.settings.config.bounds_min, slot.settings.config.bounds_max);
             slot.models_skipped = world
                 .persistent_entities()
@@ -1552,9 +1675,8 @@ impl Nav {
                 })
                 .count();
         }
-        slot.rebuilt_tiles += take.len() as u64;
-        slot.last_rebuild = take.clone();
-        take.len()
+        slot.rebuilt_tiles += built as u64;
+        built
     }
 
     /// One fixed tick: sync, rebuild dirty tiles, minds, crowds, write-back. The caller records
@@ -1572,18 +1694,37 @@ impl Nav {
                 let u = under_of(world, &slot.settings.sources);
                 if u != slot.under {
                     slot.under = u;
+                    slot.buckets.clear();
                     let (nx, nz) = slot.mesh.tile_count();
                     for tz in 0..nz {
                         for tx in 0..nx {
                             slot.dirty.insert((tx, tz));
                         }
                     }
+                    if let Some(n) = slot.next.as_deref_mut() {
+                        n.buckets.clear();
+                        let (nx, nz) = n.mesh.tile_count();
+                        for tz in 0..nz {
+                            for tx in 0..nx {
+                                n.queue.insert((tx, tz));
+                            }
+                        }
+                    }
                 }
             }
         }
-        let ids: Vec<(u64, usize)> = self.meshes.iter().map(|(k, m)| (*k, m.settings.tiles_per_tick)).collect();
+        // Navmeshes a world load brought are complete before their first tick (the run that saved
+        // the world had them complete); others build within their per-tick work.
+        let ids: Vec<(u64, Option<u64>)> = self
+            .meshes
+            .iter_mut()
+            .map(|(k, m)| {
+                let all = std::mem::take(&mut m.complete_first);
+                (*k, if all { None } else { Some(m.settings.tiles_per_tick as u64 * TILE_WORK) })
+            })
+            .collect();
         for (mid, budget) in ids {
-            report.tiles_rebuilt += self.rebuild(mid, Some(budget), world);
+            report.tiles_rebuilt += self.rebuild(mid, budget, world);
         }
         // Minds decide (their actions set agents' goals), within a per-tick work budget: round
         // robin by id from the one after the last that ran; at least one runs.
@@ -1645,7 +1786,7 @@ impl Nav {
         }
         // Crowds step.
         for slot in self.meshes.values_mut() {
-            if slot.crowd.is_empty() {
+            if slot.crowd.is_empty() || !slot.ready {
                 continue;
             }
             let s = slot.crowd.step(&slot.mesh, dt);
@@ -1731,6 +1872,11 @@ impl Nav {
             h.write_u64(m.mesh.hash());
             h.write_u64(m.crowd.hash());
             h.write_u64(m.dirty.len() as u64);
+            h.write_bool(m.ready);
+            if let Some(n) = &m.next {
+                h.write_u64(n.mesh.hash());
+                h.write_u64(n.queue.len() as u64);
+            }
         }
         h.write_u64(self.minds.len() as u64);
         h.write_u64(self.mind_cursor);
@@ -1833,6 +1979,17 @@ impl Nav {
                 let mut j = m.mesh.summary_json();
                 j.set("path", Json::from(m.path.as_str()));
                 j.set("dirty_tiles", Json::from(m.dirty.len()));
+                j.set("ready", Json::from(m.ready));
+                if !m.ready {
+                    let (nx, nz) = m.mesh.tile_count();
+                    let total = nx as usize * nz as usize;
+                    j.set("building", Json::obj([("tiles_built", Json::from(total - m.dirty.len())), ("tiles", Json::from(total))]));
+                }
+                if let Some(n) = &m.next {
+                    let (nx, nz) = n.mesh.tile_count();
+                    let total = nx as usize * nz as usize;
+                    j.set("building_new_settings", Json::obj([("tiles_built", Json::from(total - n.queue.len())), ("tiles", Json::from(total))]));
+                }
                 j.set("rebuilt_tiles", Json::from(m.rebuilt_tiles));
                 j.set("agents", Json::from(m.crowd.len()));
                 if m.models_skipped > 0 {
@@ -1914,10 +2071,33 @@ impl Nav {
 }
 
 /// Builds every tile of a navmesh now (nav_build). Returns (tiles built, milliseconds).
+/// A navmesh that serves queries: every tile built once (a first build in progress is a
+/// structured `navmesh_building` error with its progress, not "unreachable").
+pub fn ready_mesh(nav: &Nav, mid: u64) -> Result<&MeshSlot, crate::world::WorldError> {
+    let slot = nav.meshes.get(&mid).ok_or_else(|| crate::world::WorldError::new("no_navmesh", "that navmesh is gone"))?;
+    if !slot.ready {
+        let (nx, nz) = slot.mesh.tile_count();
+        let total = nx as usize * nz as usize;
+        return Err(crate::world::WorldError::new("navmesh_building", format!("'{}' is still being built ({} of {total} tiles): it finishes over the next ticks", slot.path, total - slot.dirty.len()))
+            .with("tiles_built", Json::from(total - slot.dirty.len()))
+            .with("tiles", Json::from(total)));
+    }
+    Ok(slot)
+}
+
 pub fn build_now(nav: &mut Nav, world: &World, generation: u64, mesh: u64) -> (usize, f64) {
+    build_within(nav, world, generation, mesh, None)
+}
+
+/// Builds a navmesh's queued work now, within `budget` work units (`None`: all). Returns (tiles
+/// built, milliseconds).
+pub fn build_within(nav: &mut Nav, world: &World, generation: u64, mesh: u64, budget: Option<u64>) -> (usize, f64) {
     nav.sync(world, generation);
+    if let Some(m) = nav.meshes.get_mut(&mesh) {
+        m.complete_first = false;
+    }
     let started = std::time::Instant::now();
-    let n = nav.rebuild(mesh, None, world);
+    let n = nav.rebuild(mesh, budget, world);
     (n, started.elapsed().as_secs_f64() * 1000.0)
 }
 
@@ -2173,7 +2353,7 @@ mod tests {
         run(&mut nav, &mut w, 10);
         let wait = Json::parse(r#"{"wait": 100000}"#).unwrap();
         w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(MIND_KEY, Json::obj([("def", wait)]))])), ..Default::default() }, "t").unwrap();
-        // (It slows to a stop: 8 m/s² from 2 m/s takes a quarter second.)
+        // (It slows to a stop: 8 m/sÂ² from 2 m/s takes a quarter second.)
         run(&mut nav, &mut w, 20);
         let p0 = w.get(a).unwrap().world_position();
         run(&mut nav, &mut w, 60);
@@ -2271,6 +2451,88 @@ mod tests {
             ran += nav.last.as_ref().unwrap().minds;
         }
         assert!(ran >= 300, "{ran}");
+    }
+
+    #[test]
+    fn new_settings_build_beside_the_serving_navmesh_and_loads_build_in_full() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        assert!(nav.meshes[&m].ready);
+        let probe = |nav: &Nav| nav.meshes[&m].mesh.find_path(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, 0.0, 5.0), Vec3::new(1.0, 2.0, 1.0), 4096).is_some_and(|p| p.complete());
+        assert!(probe(&nav));
+        // New settings (a finer grid, one tile of work per tick): the old navmesh keeps serving.
+        let mut s = MeshSettings::from_json(w.get(m).unwrap().props.get(MESH_KEY).unwrap()).unwrap();
+        s.config.cell_size = 0.1;
+        s.tiles_per_tick = 1;
+        w.update(&EntityKey::Id(m), UpdateSpec { props: Some(Json::obj([(MESH_KEY, s.to_json())])), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 1);
+        assert!(nav.meshes[&m].next.is_some() && probe(&nav), "still serving while the new one builds");
+        let mut ticks = 1;
+        while nav.meshes[&m].next.is_some() && ticks < 400 {
+            run(&mut nav, &mut w, 1);
+            ticks += 1;
+            assert!(probe(&nav));
+        }
+        assert!(nav.meshes[&m].next.is_none() && nav.meshes[&m].settings.config.cell_size == 0.1, "swapped in after {ticks} ticks");
+        // A world load (a new generation): the navmesh is complete at the first tick.
+        let mut loaded = Nav::default();
+        let physics = Physics::default();
+        loaded.tick(&mut w, &physics, 7, 0, 1.0 / 30.0, 30);
+        assert!(loaded.meshes[&m].ready && probe(&loaded));
+        assert_eq!(loaded.meshes[&m].mesh.hash(), nav.meshes[&m].mesh.hash());
+    }
+
+    #[test]
+    fn a_big_heightfield_builds_in_slices_reading_only_its_own_triangles() {
+        let mut w = World::default();
+        let n = 65u32;
+        let heights: Vec<f32> = (0..n * n).map(|k| 0.15 * (((k % n) * 7 + (k / n) * 13) % 5) as f32 / 5.0).collect();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("terrain".into());
+        s.collider = Some(crate::physics::Collider {
+            shape: crate::physics::ColliderShape::Heightfield { columns: n, rows: n, cell: [1.0, 1.0], heights: Arc::new(heights) },
+            ..Default::default()
+        });
+        w.spawn(s, "t").unwrap();
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("nav".into());
+        w.spawn(g, "t").unwrap();
+        let settings = MeshSettings {
+            config: specula_via::Config { bounds_min: Vec3::new(-33.0, -2.0, -33.0), bounds_max: Vec3::new(33.0, 4.0, 33.0), ..Default::default() },
+            sources: Sources::default(),
+            tiles_per_tick: 2,
+        };
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("default".into());
+        s.parent = Some(EntityKey::Path("/nav".into()));
+        s.props = Json::obj([(MESH_KEY, settings.to_json())]);
+        let m = w.spawn(s, "t").unwrap().id;
+        let mut nav = Nav::default();
+        nav.sync(&w, 0);
+        // One call does a slice; queries say "building" until the ticks finish it.
+        let (first, _) = build_within(&mut nav, &w, 0, m, Some(40_000));
+        let total = { let (nx, nz) = nav.meshes[&m].mesh.tile_count(); (nx * nz) as usize };
+        assert!(first > 0 && first < total, "{first} of {total}");
+        assert_eq!(ready_mesh(&nav, m).err().map(|e| e.code), Some("navmesh_building".into()));
+        // The heightfield is bucketed: a tile reads its own few hundred triangles of 8,192.
+        let b = &nav.meshes[&m].buckets;
+        let most = b.values().flat_map(|t| t.values()).map(Vec::len).max().unwrap();
+        assert!(most < 1_000, "{most}");
+        let physics = Physics::default();
+        let mut ticks = 0;
+        while !nav.meshes[&m].ready && ticks < 1_000 {
+            nav.tick(&mut w, &physics, 0, ticks, 1.0 / 30.0, 30);
+            ticks += 1;
+        }
+        assert!(ready_mesh(&nav, m).is_ok() && ticks > 1, "{ticks} ticks");
+        // The slices make the same navmesh as one full build.
+        let mut whole = Nav::default();
+        whole.sync(&w, 0);
+        build_now(&mut whole, &w, 0, m);
+        assert_eq!(whole.meshes[&m].mesh.hash(), nav.meshes[&m].mesh.hash());
     }
 
     #[test]

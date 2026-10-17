@@ -7,7 +7,7 @@
 //! depends only on its triangles and their order, never on the tiles around it or on the order
 //! tiles are built in.
 
-use crate::{Config, Derived, NavError, Source, Triangle, MAX_POLYS_PER_TILE, MAX_SPANS_PER_COLUMN, MAX_TILE_TRIANGLES};
+use crate::{Config, Derived, Input, NavError, Triangle, MAX_POLYS_PER_TILE, MAX_SPANS_PER_COLUMN, MAX_TILE_TRIANGLES};
 use specula_core::dmath;
 use specula_core::math::Vec3;
 
@@ -218,7 +218,7 @@ pub struct Scratch {
 }
 
 /// Builds tile `(tx, tz)` from the sources that touch it (in a fixed order).
-pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Source], scratch: &mut Scratch) -> TileBuild {
+pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input], scratch: &mut Scratch) -> TileBuild {
     let t = cfg.tile_cells as i32;
     let b = d.border as i32;
     let w = t + 2 * b;
@@ -247,16 +247,18 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
     let mut budget = MAX_TILE_TRIANGLES;
     let mut pieces = std::mem::take(&mut scratch.pieces);
     pieces.clear();
-    for src in sources {
-        if src.triangle_count() > budget {
-            let total: usize = sources.iter().map(|s| s.triangle_count()).sum();
+    for input in sources {
+        let src = input.source;
+        let count = input.triangle_count();
+        if count > budget {
+            let total: usize = sources.iter().map(Input::triangle_count).sum();
             out.errors.push(
                 NavError::new("budget", format!("a tile takes at most {MAX_TILE_TRIANGLES} triangles; {total} touched it, the rest were left out"))
                     .with("tile", crate::Json::arr([crate::Json::from(tx), crate::Json::from(tz)])),
             );
             break;
         }
-        budget -= src.triangle_count();
+        budget -= count;
         if src.aligned {
             if fill_box(cfg, d, &grid, src.lo, src.hi, &mut cols) {
                 out.triangles += 12;
@@ -265,7 +267,7 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
             // A convex solid fills each column from its lowest to its highest point; the top's
             // walkability is the highest piece's.
             pieces.clear();
-            for tri in &src.triangles {
+            for tri in input.triangles() {
                 if rasterise(cfg, d, &grid, tri, &mut |c, lo, hi, walk| pieces.push((c, lo, hi, walk))) {
                     out.triangles += 1;
                 }
@@ -290,7 +292,7 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
                 add_span(&mut cols[c], Span { min: lo, max: hi, walk }, d.climb_q);
             }
         } else {
-            for tri in &src.triangles {
+            for tri in input.triangles() {
                 if rasterise(cfg, d, &grid, tri, &mut |c, lo, hi, walk| {
                     add_span(&mut cols[c], Span { min: lo, max: hi, walk }, d.climb_q);
                 }) {
@@ -759,6 +761,7 @@ fn rasterise(cfg: &Config, d: &Derived, grid: &Grid, tri: &Triangle, emit: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Source;
 
     fn quad(x0: f32, z0: f32, x1: f32, z1: f32, y: f32) -> [Triangle; 2] {
         let (a, b, c, d) = (Vec3::new(x0, y, z0), Vec3::new(x1, y, z0), Vec3::new(x1, y, z1), Vec3::new(x0, y, z1));
@@ -795,8 +798,9 @@ mod tests {
         let floor = Source::new(quad(-3.0, -3.0, 3.0, 3.0, 0.0).to_vec(), false);
         let (lo, hi) = (Vec3::new(-1.03, 0.0, -0.61), Vec3::new(0.77, 1.1, 1.24));
         let mut s = Scratch::default();
-        let by_tris = build_tile(&cfg, &d, 0, 0, &[&floor, &Source::new(crate::mesh::tests::cuboid(lo, hi), true)], &mut s);
-        let by_box = build_tile(&cfg, &d, 0, 0, &[&floor, &Source::aligned_box(lo, hi)], &mut s);
+        let (tris, aligned) = (Source::new(crate::mesh::tests::cuboid(lo, hi), true), Source::aligned_box(lo, hi));
+        let by_tris = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&tris)], &mut s);
+        let by_box = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&aligned)], &mut s);
         assert_eq!(by_tris.rects, by_box.rects);
     }
 
@@ -808,7 +812,7 @@ mod tests {
         // A T of 0.4 m walls, 2 m tall: their tops are too narrow, even where they meet.
         let a = Source::new(crate::mesh::tests::cuboid(Vec3::new(-3.0, 0.0, -0.2), Vec3::new(3.0, 2.0, 0.2)), true);
         let b = Source::new(crate::mesh::tests::cuboid(Vec3::new(-0.2, 0.0, 0.2), Vec3::new(0.2, 2.0, 3.0)), true);
-        let t = build_tile(&cfg, &d, 0, 0, &[&floor, &a, &b], &mut Scratch::default());
+        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&a), Input::all(&b)], &mut Scratch::default());
         assert!(!t.rects.is_empty());
         assert!(t.rects.iter().all(|r| r.h.iter().all(|h| *h < 1.0)), "nothing on the walls: {:?}", t.rects.iter().filter(|r| r.h[0] > 1.0).collect::<Vec<_>>());
     }
@@ -818,7 +822,7 @@ mod tests {
         let cfg = Config { bounds_min: Vec3::new(0.0, -1.0, 0.0), bounds_max: Vec3::new(4.8, 3.0, 4.8), tile_cells: 32, ..Config::default() };
         let d = Derived::of(&cfg);
         let floor = Source::new(quad(0.0, 0.0, 4.8, 4.8, 0.0).to_vec(), false);
-        let t = build_tile(&cfg, &d, 0, 0, &[&floor], &mut Scratch::default());
+        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor)], &mut Scratch::default());
         assert_eq!(t.rects.len(), 1, "{:?}", t.rects);
         let r = &t.rects[0];
         // Radius 0.3 m at 0.15 m cells: two columns eroded from each side.
