@@ -20,11 +20,9 @@
 //! from each body's position and rotation change since the step began. Points are stored
 //! densely (a pair uses only the points it has), since every pass streams them.
 //!
-//! **Joints (P4)** slot in beside the contacts: each joint type adds `prepare`, `warm_start`,
-//! `solve(use_bias)` and `relax` passes run in the same places as the contact passes below
-//! (joints first, as in Box2D), with their own softness (joint Hz), built from the same
-//! [`Row`]s. The body arrays, substepping and island linking (touching pairs in
-//! [`crate::space`]) need no change.
+//! **Joints (P4)** ([`crate::joint`]) run beside the contacts: warm start, solve with bias and
+//! relax in the same places as the contact passes (joints first, as in Box2D), with their own
+//! softness (joint Hz), built from the same [`Row`]s.
 //!
 //! Locked axes (2D mode, or a body's own locks) zero the matching inverse mass and inertia
 //! components, so constraint masses stay consistent with what the body can do.
@@ -94,7 +92,7 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: &Local, b: &Local) -> Row {
+    pub(crate) fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: &Local, b: &Local) -> Row {
         let rxa = ra.cross(dir);
         let rxb = rb.cross(dir);
         let aa = a.inv_inertia.mul_vec(rxa);
@@ -105,12 +103,12 @@ impl Row {
 
     /// Relative velocity along the row (B minus A).
     #[inline]
-    fn velocity(&self, a: &Local, b: &Local) -> f32 {
+    pub(crate) fn velocity(&self, a: &Local, b: &Local) -> f32 {
         self.dir.dot(b.v - a.v) + self.rxb.dot(b.w) - self.rxa.dot(a.w)
     }
 
     #[inline]
-    fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
+    pub(crate) fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
         let p = self.dir * l;
         a.v = a.v - mul(a.inv_mass, p);
         a.w = a.w - self.aa * l;
@@ -172,19 +170,19 @@ pub struct Tuning {
 const MAX_ROTATION_PER_SUBSTEP: f32 = 0.25 * std::f32::consts::PI;
 
 /// A constraint's body state in locals (zero masses for static and kinematic bodies).
-struct Local {
-    v: Vec3,
-    w: Vec3,
-    dp: Vec3,
-    dq: Quat,
-    inv_mass: Vec3,
-    inv_inertia: Mat3,
+pub(crate) struct Local {
+    pub(crate) v: Vec3,
+    pub(crate) w: Vec3,
+    pub(crate) dp: Vec3,
+    pub(crate) dq: Quat,
+    pub(crate) inv_mass: Vec3,
+    pub(crate) inv_inertia: Mat3,
     moves: bool,
 }
 
 impl Local {
     #[inline]
-    fn load(bodies: &[SolverBody], i: u32) -> Local {
+    pub(crate) fn load(bodies: &[SolverBody], i: u32) -> Local {
         if i == STATIC {
             return Local { v: Vec3::ZERO, w: Vec3::ZERO, dp: Vec3::ZERO, dq: Quat::IDENTITY, inv_mass: Vec3::ZERO, inv_inertia: Mat3::ZERO, moves: false };
         }
@@ -201,7 +199,7 @@ impl Local {
     }
 
     #[inline]
-    fn store(&self, bodies: &mut [SolverBody], i: u32) {
+    pub(crate) fn store(&self, bodies: &mut [SolverBody], i: u32) {
         if self.moves {
             let b = &mut bodies[i as usize];
             b.v = self.v;
@@ -354,17 +352,21 @@ pub fn restitution(constraints: &[Constraint], points: &mut [SolverPoint], bodie
     }
 }
 
-/// Runs a whole step on prepared bodies and constraints.
-pub fn step(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
+/// Runs a whole step on prepared bodies, contacts and joints (joints before contacts in every
+/// pass, as in Box2D: contacts get the last word, so nothing sinks).
+pub fn step(constraints: &[Constraint], points: &mut [SolverPoint], joints: &mut [crate::joint::JointConstraint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
     let n = t.substeps.max(1);
     let h = dt / n as f32;
     let inv_h = 1.0 / h;
     prepare(constraints, points, bodies);
     for _ in 0..n {
         integrate_velocities(bodies, h, t.max_linear_speed);
+        crate::joint::warm_start(joints, bodies);
         warm_start(constraints, points, bodies);
+        crate::joint::solve(joints, bodies, h, true);
         solve(constraints, points, bodies, inv_h, t.push_speed, true);
         integrate_positions(bodies, h);
+        crate::joint::solve(joints, bodies, h, false);
         solve(constraints, points, bodies, inv_h, t.push_speed, false);
     }
     restitution(constraints, points, bodies, t.restitution_threshold);
