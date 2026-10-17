@@ -55,8 +55,11 @@ const MAX_PRESENT: usize = 32;
 const MAX_STEPS_PER_TICK: u32 = 64;
 /// Refusals and hook failures kept for `status`.
 const RECENT: usize = 16;
-/// `journal` pages (default, most).
+/// `journal` pages (default, most), and the most bytes of commands one page lists.
 const JOURNAL_PAGE: (usize, usize) = (500, 5_000);
+const JOURNAL_BYTES: usize = 256 * 1024;
+/// The largest command args (compact JSON): the journal keeps them.
+const MAX_ARGS_BYTES: usize = 4096;
 
 /// What the main thread does for `lex_live`.
 pub enum LiveCall {
@@ -186,6 +189,10 @@ struct Host<'a> {
     calls: &'a mut u64,
     failures: &'a mut u64,
     recent: &'a mut VecDeque<Json>,
+    /// An agent's command made this call: its hooks' world changes are checked against
+    /// claims as that agent's (refused: rolled back, and the command with them). The run's
+    /// own ticks are the rules' output, exempt like a hosted game's.
+    writer: Option<Writer<'a>>,
 }
 
 impl NativeHost for Host<'_> {
@@ -196,10 +203,13 @@ impl NativeHost for Host<'_> {
         a.push(("lex_tick".into(), Json::from(lex_tick)));
         let reason: String = hook.reason.chars().take(300).collect();
         let reason = if reason.trim().is_empty() { "a Lex native".to_owned() } else { reason };
-        let (swarm, agent, tick) = (&mut *self.swarm, self.agent, self.tick);
-        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
-            swarm.game_changes(w, tick, agent, Kind::GameTick);
-            Ok(())
+        let (swarm, agent, tick, writer) = (&mut *self.swarm, self.agent, self.tick, self.writer);
+        let commit = &mut |w: &mut World, mark: Mark, _: &str, _| match writer {
+            Some(by) => swarm.check_game_changes(w, mark, tick, agent, by),
+            None => {
+                swarm.game_changes(w, tick, agent, Kind::GameTick);
+                Ok(())
+            }
         };
         match self.logic.call_hook(&hook.hook, &Json::Obj(a), &reason, agent, self.world, self.tick, self.hz, commit) {
             Ok(_) => Ok(()),
@@ -261,13 +271,17 @@ impl Live {
                 if run.journal.len() >= MAX_JOURNAL {
                     return error("journal_full", format!("this run has journaled {MAX_JOURNAL} commands; stop it and start another to keep runs replayable"));
                 }
+                // Another agent's claim on the run (its world group) holds its input too.
+                if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{set}"), w, "send commands to this live run") {
+                    return world_error(&e);
+                }
                 let call = match run.sim.parse_command(&name, &args) {
                     Ok(c) => c,
                     Err(r) => return ToolOutput::error(r.to_json().to_pretty()),
                 };
                 let at = run.sim.tick();
                 let Env { world, logic, swarm, tick, hz, .. } = env;
-                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent };
+                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, writer: Some(w) };
                 match run.sim.apply_hosted(&call, &mut host) {
                     Ok(()) => {
                         run.journal.push((at, name.clone(), args.clone(), by.to_owned()));
@@ -303,12 +317,17 @@ impl Live {
             }
             LiveCall::Journal { set, offset, limit } => {
                 let Some(run) = self.runs.get(&set) else { return no_run(self, &set) };
+                let mut bytes = 0;
                 let page: Vec<Json> = run
                     .journal
                     .iter()
                     .skip(offset)
                     .take(limit)
                     .map(|(t, n, a, by)| Json::obj([("tick", Json::from(*t)), ("command", Json::from(n.as_str())), ("args", a.clone()), ("by", Json::from(by.as_str()))]))
+                    .take_while(|j| {
+                        bytes += j.to_string().len();
+                        bytes <= JOURNAL_BYTES
+                    })
                     .collect();
                 let next = (offset + page.len() < run.journal.len()).then_some(offset + page.len());
                 let j = Json::obj([
@@ -401,7 +420,7 @@ impl Live {
             let target = (u128::from(done) * u128::from(lex_hz) / u128::from(hz)).min(u128::from(u32::MAX)) as u32;
             let mut steps = 0;
             while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK {
-                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent };
+                let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, writer: None };
                 run.sim.step_hosted(&[], &mut host);
                 steps += 1;
             }
@@ -591,7 +610,11 @@ fn parse(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Result<Liv
         "command" => {
             check_keys(args, "lex_live command", &[&["action", "set", "command", "args"]])?;
             let name = crate::tools::string_arg(args, "command")?.ok_or("'command' is required: a command id of the set")?.to_owned();
-            LiveCall::Command { set: set()?, name, args: args.get("args").cloned().unwrap_or(Json::Null) }
+            let cargs = args.get("args").cloned().unwrap_or(Json::Null);
+            if cargs.to_string().len() > MAX_ARGS_BYTES {
+                return Err(format!("'args' is larger than {MAX_ARGS_BYTES} bytes (the run journals every command's args)"));
+            }
+            LiveCall::Command { set: set()?, name, args: cargs }
         }
         "status" => {
             check_keys(args, "lex_live status", &[&["action", "set"]])?;
@@ -637,6 +660,32 @@ fn present_arg(args: &Json) -> Result<Vec<Present>, String> {
         out.push(Present { tags, spawn: spec_json });
     }
     Ok(out)
+}
+
+pub fn definitions() -> Vec<ToolDef> {
+    let t = |ty: &str, d: &str| Json::obj([("type", Json::from(ty)), ("description", Json::from(d))]);
+    vec![ToolDef {
+        name: "lex_live".into(),
+        description: "Runs a stored Lex rule set live in the engine: the engine steps it on its own tick (its tick_hz; time_control pauses, steps and fast-forwards it with everything else) and shows its entities as world entities under /lex_live/<set> (models and positions from 'present' rules), journaled as the run's tick under lex:<set>. Natives the hosted game implements run in-process; any other native calls the module hook it names (module/name) with its reason. action: start {set, seed?, params?, present?: [{tags: [..], spawn: {shape, color, scale, model ...}}]}, command {set, command, args} (applied at once at the run's tick, journaled), status {set?}, journal {set, offset?, limit?} (the accepted commands with their ticks: lex_simulate with the same seed, params and commands reaches the same hash), stop {set}. At most 4 runs; 2000 shown entities each.".into(),
+        input_schema: Json::obj([
+            ("type", Json::from("object")),
+            (
+                "properties",
+                Json::obj([
+                    ("action", t("string", "start, command, status (default), journal or stop.")),
+                    ("set", t("string", "The rule set's name (it lives at /lex/<set>).")),
+                    ("seed", t("integer", "start: the run's seed (default 1; a decimal string for values above 2^53).")),
+                    ("params", t("object", "start: param overrides, param id -> value in the param's unit.")),
+                    ("present", t("array", "start: [{tags: [\"enemy\"], spawn: {shape: \"sphere\", color: [0.8,0.2,0.2], scale: [0.6,0.6,0.6]}}]; the first rule whose tags an entity's archetype has (\"!tag\" excludes) shows it. Default: every entity as a 0.5 m cube.")),
+                    ("command", t("string", "command: the command id.")),
+                    ("args", t("object", "command: its args (sites and archetypes by name, entities by id or by a site name).")),
+                    ("offset", t("integer", "journal: the first command to list (default 0).")),
+                    ("limit", t("integer", "journal: commands per page, 1..5000 (default 500).")),
+                ]),
+            ),
+            ("required", Json::arr([])),
+        ]),
+    }]
 }
 
 #[cfg(test)]
@@ -783,6 +832,23 @@ mod tests {
     }
 
     #[test]
+    fn another_agents_claim_on_the_run_holds_its_commands() {
+        use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
+        let mut rig = Rig::new(30);
+        let session = |id: &str| SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let (ann, bob) = (session("aaaaaa11"), session("bbbbbb22"));
+        let live = vec![ann.clone(), bob.clone()];
+        rig.swarm.hello(&ann, "ann".into(), "builder".into(), None, &live).unwrap();
+        rig.swarm.hello(&bob, "bob".into(), "builder".into(), None, &live).unwrap();
+        assert!(!rig.call(start(Vec::new())).is_error);
+        rig.swarm.take_claim(&rig.world, &bob, ClaimSpec { scope: Scope::path("/lex_live/t").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let out = rig.call(LiveCall::Command { set: "t".into(), name: "build".into(), args: Json::parse(r#"{"at": "a"}"#).unwrap() });
+        assert!(out.is_error && json(&out).get("error") == Some(&Json::from("claimed")), "{}", json(&out));
+        let st = json(&rig.call(LiveCall::Status { set: Some("t".into()) }));
+        assert_eq!(st.get("runs").and_then(Json::as_array).unwrap()[0].get("commands").and_then(Json::as_u64), Some(0), "nothing was applied");
+    }
+
+    #[test]
     fn runs_are_bounded_and_unique() {
         let mut rig = Rig::new(30);
         assert!(!rig.call(start(Vec::new())).is_error);
@@ -794,30 +860,4 @@ mod tests {
         let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new() };
         assert_eq!(json(&rig.call(LiveCall::Start(Box::new(s)))).get("error"), Some(&Json::from("runs_full")));
     }
-}
-
-pub fn definitions() -> Vec<ToolDef> {
-    let t = |ty: &str, d: &str| Json::obj([("type", Json::from(ty)), ("description", Json::from(d))]);
-    vec![ToolDef {
-        name: "lex_live".into(),
-        description: "Runs a stored Lex rule set live in the engine: the engine steps it on its own tick (its tick_hz; time_control pauses, steps and fast-forwards it with everything else) and shows its entities as world entities under /lex_live/<set> (models and positions from 'present' rules), journaled as the run's tick under lex:<set>. Natives the hosted game implements run in-process; any other native calls the module hook it names (module/name) with its reason. action: start {set, seed?, params?, present?: [{tags: [..], spawn: {shape, color, scale, model ...}}]}, command {set, command, args} (applied at once at the run's tick, journaled), status {set?}, journal {set, offset?, limit?} (the accepted commands with their ticks: lex_simulate with the same seed, params and commands reaches the same hash), stop {set}. At most 4 runs; 2000 shown entities each.".into(),
-        input_schema: Json::obj([
-            ("type", Json::from("object")),
-            (
-                "properties",
-                Json::obj([
-                    ("action", t("string", "start, command, status (default), journal or stop.")),
-                    ("set", t("string", "The rule set's name (it lives at /lex/<set>).")),
-                    ("seed", t("integer", "start: the run's seed (default 1; a decimal string for values above 2^53).")),
-                    ("params", t("object", "start: param overrides, param id -> value in the param's unit.")),
-                    ("present", t("array", "start: [{tags: [\"enemy\"], spawn: {shape: \"sphere\", color: [0.8,0.2,0.2], scale: [0.6,0.6,0.6]}}]; the first rule whose tags an entity's archetype has (\"!tag\" excludes) shows it. Default: every entity as a 0.5 m cube.")),
-                    ("command", t("string", "command: the command id.")),
-                    ("args", t("object", "command: its args (sites and archetypes by name, entities by id or by a site name).")),
-                    ("offset", t("integer", "journal: the first command to list (default 0).")),
-                    ("limit", t("integer", "journal: commands per page, 1..5000 (default 500).")),
-                ]),
-            ),
-            ("required", Json::arr([])),
-        ]),
-    }]
 }

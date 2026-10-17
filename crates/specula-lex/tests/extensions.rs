@@ -149,10 +149,13 @@ fn natives_validate_their_streams_data_and_args() {
     assert!(c.contains(&("invalid".into(), "attributes.x".into())), "{c:?}");
 }
 
+/// One host call: the hook, the entity, the args and the tick.
+type Call = (String, Option<u32>, Vec<(String, i64)>, u32);
+
 /// A host for the natives a run leaves to one: it records the calls.
 #[derive(Default)]
 struct Recorder {
-    calls: Arc<Mutex<Vec<(String, Option<u32>, Vec<(String, i64)>, u32)>>>,
+    calls: Arc<Mutex<Vec<Call>>>,
     fail: bool,
 }
 

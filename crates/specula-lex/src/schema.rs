@@ -407,7 +407,7 @@ pub fn to_json(topic: Option<&str>) -> Result<Json, String> {
             ("semantics", Json::from("integers only; / truncates toward zero; overflow saturates; x / 0 is 0 and is reported in the run's diagnostics")),
         ]),
         Some("tick") => Json::from(
-            "1 commands (in order, each atomic) 2 waves due 3 spawns due 4 timers (by id) 5 spawners 6 movement 7 attacks 8 projectiles 9 effects, lifetimes, machines 10 cleanup (remove the dead, clear waves). Entities by id within each phase; entities created during a phase join from the next. Events reach rules after each phase. Outcomes are checked after every change; the first true one ends the run on the spot.",
+            "1 commands (in order, each atomic) 2 waves due 3 spawns due 4 timers (by id) 5 spawners 6 movement 7 attacks 8 projectiles 9 effects, lifetimes, machines 10 cleanup (remove the dead, clear waves). Entities by id within each phase (by (order, id) in the behaviour phases when archetypes declare order); entities created during a phase join from the next. Events reach rules after each phase. Outcomes are checked after every change; the first true one ends the run on the spot.",
         ),
         Some("limits") => limits(),
         Some(other) => {

@@ -128,14 +128,14 @@ fn inexact_durations_warn_with_both_neighbours() {
 #[test]
 fn param_overrides_are_range_checked() {
     let d = doc(r#""speed": {"kind": "param", "type": "speed", "value": 1, "min": 0.5, "max": 2}"#);
-    let ok = Options { overrides: vec![("speed".into(), Json::from(1.5))], natives: None };
+    let ok = Options { overrides: vec![("speed".into(), Json::from(1.5))], ..Default::default() };
     let c = compile(&d, &ok).unwrap();
     assert_eq!(c.rules.params[0].value, 1500);
-    let bad = Options { overrides: vec![("speed".into(), Json::from(3.0))], natives: None };
+    let bad = Options { overrides: vec![("speed".into(), Json::from(3.0))], ..Default::default() };
     let ds = compile(&d, &bad).unwrap_err();
     let e = one(&ds, "out_of_range");
     assert_eq!(e.expected.as_deref(), Some("0.5m/s..=2m/s"));
-    let typo = Options { overrides: vec![("sped".into(), Json::from(1.0))], natives: None };
+    let typo = Options { overrides: vec![("sped".into(), Json::from(1.0))], ..Default::default() };
     let ds = compile(&d, &typo).unwrap_err();
     assert_eq!(one(&ds, "unknown_ref").suggestion.as_deref(), Some("did you mean 'speed'?"));
     // The override changes the rules' hash.

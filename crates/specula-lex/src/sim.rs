@@ -537,7 +537,7 @@ impl Sim {
         self.begin();
         let mut refused = Vec::new();
         for (i, c) in commands.iter().enumerate() {
-            if let Err(e) = self.command(c, host.as_mut().map(|h| -> &mut dyn NativeHost { &mut **h })) {
+            if let Err(e) = self.command(c, host.as_deref_mut().map(|h| -> &mut dyn NativeHost { h })) {
                 refused.push((i, e));
             }
         }

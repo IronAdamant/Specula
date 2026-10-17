@@ -1,7 +1,9 @@
 # Design: Lex, gameplay as data
 
 Status: designed and built 2026-10-17 (M3, the Lex lane): the `specula-lex` crate (parse, validate, compile, a
-deterministic runtime) and the engine's `lex_*` tools. Foundations **F1** (swarm-first) and **F2** (determinism).
+deterministic runtime) and the engine's `lex_*` tools. Grown 2026-10-18 by the whole-Sepulcra port (the building
+blocks marked *(Sepulcra port)* below, [Grown from Sepulcra](#grown-from-sepulcra-2026-10-18)) and live Lex in the
+engine ([Live Lex](#live-lex-lex_live)). Foundations **F1** (swarm-first) and **F2** (determinism).
 Roadmap item: "Gameplay as data: Lex" in [ROADMAP.md](../ROADMAP.md); research: [AGENT_GAMEMAKING.md](../research/AGENT_GAMEMAKING.md).
 
 **Goal:** agents build a game's rules as typed text data, checked on every edit by a validator whose errors say
@@ -89,8 +91,9 @@ Expressions are short strings: `"res.dust >= arg.stone.cost"`, `"waves.ticks_lef
   division by zero is a compile error.
 - **Names:** `self`, `other`, `target`, `arg.<name>` (command arguments), `res.<resource>`, `$<param>`, `tick`,
   `magnitude` (inside effects), `event.value` (in rules), `waves.current|total|remaining|ticks_left|all_cleared`.
-  Members: an entity's attributes and `alive`, `archetype`, `next`, `path_remaining`; an archetype's base attributes
-  and `next`.
+  Members: an entity's attributes and `alive`, `archetype`, `next`, `path_remaining`, `x`, `y`, `z` (its position);
+  an archetype's base attributes and `next`; a site's `x`, `y`, `z` (`arg.site.x`) *(Sepulcra port)*. `x`, `y` and
+  `z` are reserved: no attribute may be named so.
 - **Functions:** `min`, `max`, `clamp`, `abs`, `if(c, a, b)`, `exists(x)`, `has(x, tag)`, `count(tag)`,
   `dist(a, b)`, `occupied(site, tag)`, `rand(stream, lo, hi)`, `chance(stream, ratio)`.
 - **Which names exist where** is checked per field: `target` exists in attack payloads, projectile hits and rules on
@@ -103,16 +106,17 @@ Expressions are short strings: `"res.dust >= arg.stone.cost"`, `"waves.ticks_lef
 | `param` | A named, typed, ranged number (`type`, `value`, `min`, `max`). Used as `$name` anywhere. The balance lab tunes these. |
 | `resource` | A global counter: `start`, `min`, `max`, `unit`. Changes clamp to the range. |
 | `path` | A polyline (`points` in metres, optional `loop`). |
-| `sites` | Named positions (`points: {"top:8,16": [x, y, z]}`): build spots and spawn points. |
-| `archetype` | An entity template: `tags`, `attributes`, `behaviours`, optional `machine`, `next` (upgrade chain), `extends`, `abstract`, `on_spawn`. |
+| `sites` | Named positions (`points: {"top:8,16": [x, y, z]}`): build spots and spawn points. Several items merge; a command's site arg can be limited to one item (`{"type": "site", "of": "build_spots"}`, else `wrong_site`) *(Sepulcra port)*. |
+| `archetype` | An entity template: `tags`, `attributes`, `behaviours`, optional `machine`, `next` (upgrade chain), `extends`, `abstract`, `on_spawn`, `order` (an int expression evaluated once, after `on_spawn`: behaviour phases then run entities by (order, id), e.g. towers firing in grid order) *(Sepulcra port)*. |
 | `effect` | GAS-style: `duration` (`instant`, a duration or `infinite`), `period`, `modifiers`, `stacking`, `max_stacks`, `grant_tags`, `block_tags`, `on_apply`, `on_period`, `on_expire`. |
 | `machine` | A state machine: `initial`, `states` with `behaviours` (which are active), `on_enter`, `on_exit`, `transitions` (`when`, `after`, `on`). |
-| `waves` | An encounter schedule: `start`, `rng` stream, `waves` with `duration`, `on_start`, `scale` (attribute ratios for spawns) and `groups` (`archetype`, `count`, `at`, `start`, `every`). Several waves items join in id order into one schedule (`waves_01`, `waves_02`, ...), so a long schedule fits the 16 KB item limit; only the first sets `start` and `rng`. |
+| `waves` | An encounter schedule: `start`, `rng` stream, `waves` with `duration`, `on_start`, `scale` (attribute ratios for spawns) and `groups` (`archetype`, `count`, `at`, `start`, `every`, `with`). A group's `with` sets attributes per spawn, evaluated when the wave is scheduled, right after that spawn's point is drawn, in attribute-name order (so `rand(waves, ...)` draws interleave with the point draws the same way in every run, whatever the key order) *(Sepulcra port)*. Several waves items join in id order into one schedule (`waves_01`, `waves_02`, ...), so a long schedule fits the 16 KB item limit; only the first sets `start` and `rng`. |
 | `timer` | `start`, `every`, `count`, `when`, `do`. |
 | `rule` | A trigger: `on` an event, filtered by `tags` and `when`, `do` actions. |
 | `command` | Player (or agent) input as data: typed `args`, `cost`, `require` (each with a rejection `code`), `do`. |
 | `outcome` | `result` (`won`, `lost` or any name), `when`, `priority`. The first true outcome ends the run. |
-| `native` | A declared escape hatch: `hook` (the native function's name), `reason` (required), `phase`. |
+| `native` | A declared escape hatch: `hook` (the native function's name), `reason` (required), `phase`, `streams` (the random streams it draws from) and `data` (the data items it reads) *(Sepulcra port)*. |
+| `data` | A table for native hooks: any JSON in `value` (a map, a curve), at most 16 KB like every item. The rules' hash covers it *(Sepulcra port)*. |
 
 **Archetypes and inheritance.** `extends` copies the parent's tags (unioned), attributes (child overrides by name)
 and behaviours (child replaces a parent's behaviour with the same `name`, which defaults to the type). Tier chains
@@ -129,11 +133,11 @@ entity's context (constants fold at compile time).
 | `follow_path` | move | `path` (an id, or `@spawn` for the path it was spawned on), `speed`, `scale`, `on_arrive`. Exposes `path_remaining`. |
 | `patrol` | move | `path`, `speed`, `scale`, `mode` (`loop`, `pingpong`). |
 | `chase` | move | `targets` (tag filter), `range`, `speed`, `scale`, `reach`, `on_reach`. |
-| `attack` | act | `targets`, `range`, `cooldown`, `policy` (`first`, `last`, `closest`, `strongest`, `weakest`), `delivery` (`instant`, `pulse`, `projectile`), `projectile`, `muzzle`, `blocked_by` (tags), `payload`. `projectile` is `{archetype, with}`: the projectile archetype and attribute values set on it when fired. |
+| `attack` | act | `targets`, `when`, `range`, `cooldown`, `policy` (`first`, `last`, `closest`, `strongest`, `weakest`), `delivery` (`instant`, `pulse`, `projectile`), `projectile`, `muzzle`, `blocked_by` (tags), `payload`. `projectile` is `{archetype, with}`: the projectile archetype and attribute values set on it when fired. `when` is an extra test per candidate (`self` the attacker, `target` the candidate), e.g. Sepulcra's range across faces; splash ignores it *(Sepulcra port)*. |
 | `projectile` | projectiles | `speed`, `homing`, `splash`. Carries the attack's payload, evaluated when fired. |
-| `spawner` | spawn | `archetype`, `every`, `count`, `start`. |
+| `spawner` | spawn | `archetype`, `every`, `count`, `start`, `with` (attribute values for each summon, evaluated for the spawner) *(Sepulcra port)*. |
 | `lifetime` | effects | `duration`, `on_expire`. |
-| `native` | its declared phase | `hook`, `args`. |
+| `native` | its declared phase | `hook`, `args`, `on` (named action lists the hook runs with `trigger`, `self` the entity: e.g. `on.arrive` costs a life) *(Sepulcra port)*. |
 
 **Payloads** are what an attack does to what it hits: `{"damage": "10pt"}` (an instant hit on the target's health
 attribute) and `{"effect": "slow", "magnitude": "35%", "duration": "1.5s"}`. Magnitudes are evaluated when the attack
@@ -152,7 +156,9 @@ attribute values), `despawn` (removed, no death), `kill` (dies, `on_death` runs)
 (`magnitude`, `duration`), `emit` an event, `become` another archetype in place (keeps the id, position, effects and
 the state of behaviours with the same name and type; `keep` lists attributes to carry over), `next_wave`, `goto` a
 machine state, `outcome`, `if` / `then` / `else`, and `native`. An entity spawned at another entity that follows a
-path continues that path from where it stands (summons), and joins its wave.
+path continues that path from where it stands (summons), and joins its wave. **Any spawn that joins a wave gets
+that wave's `scale`**, whoever spawned it (the schedule, a summoner, a rule): a boss's summons are as tough as the
+wave around them *(Sepulcra port; before, only scheduled spawns were scaled)*.
 
 ### Effects: attributes, modifiers, stacking, tags
 
@@ -203,6 +209,9 @@ runs these phases in this order (fixed and documented, because replays depend on
    machine transitions.
 10. **Cleanup**: events are dispatched, the dead and despawned are removed, waves whose spawns are all done and gone
     are cleared.
+
+When some archetype declares `order`, phases 5 to 7 (and natives declared for the effects phase) run entities by
+(order, id) instead of id; the per-entity effects, lifetimes and machines of phase 9 stay in id order.
 
 Entities created during a phase join from the next phase. **Outcomes** are checked whenever something they could
 read changed: those that read only resources, waves and the tick right after each entity's step, so a loss stops
@@ -281,21 +290,37 @@ and uses it as a behaviour (`{"type": "native", "hook": "flow_route"}`) or an ac
   unordered containers: the same calls give the same results.
 - Every declared hook carries its `reason`. `lex_validate` lists them, and every run reports how often each was
   called, so the project's escape-hatch log is data: the most-used reasons are the next Lex features.
+- *(Sepulcra port)* **Binding.** `NativeHook::bind(&self, rules, native)` runs once per run (`Sim::new`): a hook
+  resolves attribute, tag and stream names to ids (`Rules::attr`, `tag`, `stream`) and reads its `data` items there,
+  and returns the bound hook (or refuses the run with its reason). Hooks that run per entity per tick use the id
+  API: `get` / `base` / `base_many` / `set` / `set_many` (one lookup for many attributes), `has`, `alive`,
+  `position`, `each_tagged` (no allocation), `range` / `chance` on a declared stream, `wave`.
+- *(Sepulcra port)* **Triggers and refusals.** `cx.trigger("arrive")` runs the behaviour's `on.arrive` actions at
+  once (so a hook decides *when*, the rules say *what*: tombstones stay data). In a command, `return
+  Err(cx.refuse("enemy_in_the_way", "..."))` rolls the command back and refuses it with that code.
+- *(Sepulcra port)* **Caching.** A bound hook is shared by a run's clones, so what it derives from the state (flow
+  fields from walls) is keyed by `cx.generation()`: a pair (the state value's identity, a counter bumped when an
+  entity appears, leaves, changes archetype or gains or loses an effect instance). Every clone, including a
+  command's rollback snapshot, is a new identity, so a key can never match two different states. Positions and
+  attribute values are not covered.
+- *(Sepulcra port)* **Hosts.** `Sim::new_hosted` leaves hooks without an in-process implementation to a
+  `NativeHost` passed to `step_hosted` / `apply_hosted` (live Lex calls module hooks through it, synchronously, in
+  rule order). A host can't touch the run's state.
 - A hook's build hash belongs in the journal like any module reload (DETERMINISM.md rule 8).
 
 **With the module host (docs/design/MODULES.md, merged).** Discovery is wired: every Lex snapshot carries
 `LogicHost::hooks()` (`module/name`), so `lex_edit` and `lex_validate` warn with `native_unbound` naming the
 running hooks when a set's `native` names one no module provides, and with `native_headless` when a module does
 provide it (so the agent knows `lex_simulate` will still refuse the set). The
-Calls are **not** wired to
-`LogicHost::call_hook` yet, on purpose: a module hook runs against the shared engine World (its Cx reads and
-writes world entities, journaled as Lex's tick), while every Lex run today is headless, on a protocol thread, over
-Lex's own integer state. Calling hooks from `lex_simulate` would write a what-if run's effects into the real world
-and make runs depend on world state outside the rule set (no longer deterministic or repeatable). The join point
-is **live Lex**: the engine stepping a set on its own tick on the main thread, presenting entities into the
-world; there a `NativeHook` adapter calls `call_hook(hook, args, reason, "lex", world, tick, hz, commit)` with a
-commit closure that journals the changes as Lex's tick (MODULES.md item 6). Headless runs keep using natives
-registered in-process (`Natives`), which is how a module's logic can also be tested headless.
+Calls are **not** made from
+`lex_simulate`, on purpose: a module hook runs against the shared engine World (its Cx reads and writes world
+entities), while `lex_simulate` is headless, on a protocol thread, over Lex's own integer state. Calling hooks
+there would write a what-if run's effects into the real world and make runs depend on world state outside the rule
+set. They are made by **live Lex** ([below](#live-lex-lex_live)): there the run's `NativeHost` calls
+`call_hook(hook, args, reason, "lex:<set>", world, tick, hz, commit)` with a commit that journals the changes as
+the run's tick (MODULES.md item 6). Headless runs use natives registered in-process: the hosted game's
+(`Game::lex_natives`, e.g. Sepulcra's), which `lex_simulate`, `lex_live` and validation all see (no
+`native_unbound` / `native_headless` warning for them).
 
 ## Room for Navigation & AI
 
@@ -306,7 +331,9 @@ Movement is a behaviour type, so navigation slots in without changing the langua
 - **Behaviour trees and utility AI** become item kinds (`tree`, `utility`) whose leaves are Lex actions and
   conditions; an archetype names one the way it names a `machine`. Machines already gate behaviours by state, which
   is the hook a tree needs ("run this behaviour while this node is active").
-- Until then, a game whose movement needs graph search (Sepulcra's flow fields with walls) uses a native hook.
+- Until then, a game whose movement needs graph search (Sepulcra's flow fields with walls) uses a native hook:
+  Sepulcra's `sepulcra.ground` keeps its state in plain attributes (`c_from`, `c_to`, `prog`, `elen`, ...) and sets
+  `path_remaining`, so a `navigate` behaviour can replace it without changing anything else in the rule set.
 
 ## Tools (the engine side)
 
@@ -350,6 +377,7 @@ named `notes` is data.
 | `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; the wall clock is read as work is spent, and a call that passes 20 s stops part-way and comes back `complete: false`, without a hash or an outcome, and can't be saved: run fewer ticks per call, splitting a long run into complete calls joined with `save_as` / `from`. |
 | `lex_import` / `lex_export` | A whole document in (one validated, journaled edit; `replace` deletes items it doesn't have) or out (canonical text to save as `*.lex.json`). |
 | `lex_session` | Saved runs: list them, inspect one's entities (paged; attributes in human units, effects, machine state) or delete one. |
+| `lex_live` | Runs a stored set live in the engine (see [Live Lex](#live-lex-lex_live)): `start`, `command`, `status`, `journal`, `stop`. |
 
 Saved runs (`save_as`, then `from`) let an agent run to a point, look, add commands and continue, or branch
 what-ifs from one state. A run remembers its rules' hash; continuing it after the rules changed is refused with
@@ -385,41 +413,122 @@ takes `params: {"name": value}` overrides, checked against the range, and the co
 "compile with these values, run N seeds". The run summary is the objective's input (win rate, wave reached,
 resources over time via `watch`).
 
-## Proof: Sepulcra in Lex (partial, this lane)
+## Proof: Sepulcra in Lex
 
-`games/sepulcra/lex/slice.lex.json` expresses a slice of Sepulcra in Lex: ground waves from the middle gorge along
-the central lane, the warding stone, brazier cairn and rune pillar (bolts, lobs with splash, pulses that slow), three
-tiers each, grave-dust income, costs, drops, selling, calling waves early, tombstones and win/lose. The test
-`games/sepulcra/tests/lex_parity.rs` runs it next to the hand-written sim on the same content
-(`lex/slice_waves.json` with the built-in slab, stones and enemies) and commands, and compares every tick: dust,
-tombstones, the wave, the outcome, which commands were refused, and every enemy's and projectile's position (to
-the millimetre) and every enemy's HP (to the milli-HP). **Result (2026-10-17): identical on every tick** of full
-runs for five seeds (all won, some with leaks: the boss-free slice leaks shamblers and runners on some seeds), and
-for undefended runs that lose; a one-point change to one rule (warding damage 10 → 11) is caught. The scenario
-places, is refused for lack of dust, upgrades all three stones, calls waves early, sells and places again.
+**The slice (2026-10-17).** `games/sepulcra/lex/slice.lex.json` expresses one gorge, one lane and three stones; the
+test `lex_parity.rs` runs it next to the hand-written sim and matches every tick (kept as the smallest example).
 
-How the slice had to be written to match (the honest list):
+**The whole game (2026-10-18).** `games/sepulcra/lex/sepulcra.lex.json` (the rules, written by hand) plus
+`lex/slab_01.lex.json` (the level: the slab as a `data` item and the sites the rules name, generated from
+`data/slab_01.json` by `examples/lex_slab.rs`; a test keeps them in step) are all of Sepulcra: every layout, the four
+stones in three tiers (attributes per tier, one attack per stone kind), roots from wave 5 on tier II+ stones, walls
+(placing, refusing a wall under an enemy, breaking them when walled in, removing them with an HP-scaled refund),
+climbing, range across faces (each ground stone's attack `when`), lane jumps, wraiths circling the ring, the colossus
+and its summons, ten waves with HP scales and incomes, grave-dust, drops, selling, calling waves early,
+tombstones, win and lose. `tests/lex_parity.rs` runs it next to the hand-written sim on the same content and
+commands and compares **every tick**: dust, tombstones, wave, outcome, which commands were refused, every enemy's
+position (mm) and HP (milli-HP), every projectile's position, every stone's cell and tier, every wall's cell and HP.
 
-- **Projectile speeds** are the hand-written sim's whole millimetres per tick: it truncates 20 m/s to 666 mm a
-  tick, Lex carries the remainder like every movement, so the slice says `19.98m/s`.
-- **Firing order**: the hand-written sim fires stones in cell order, Lex in entity (creation) order; the scenario
-  places stones in increasing cell order, so the orders agree. A full port either keeps that rule or gives Lex a
-  sort key per archetype.
-- **Rejection codes** differ where the two models differ: an upgrade with no stone on the cell is `no_stone` there
-  and `no_entity` here (the test compares which commands were refused, not their codes).
-- **Wave bookkeeping**: Lex counts `died` and `removed`; the hand-written sim's leaks are Lex's removals.
+**Results (2026-10-18), identical on every tick:**
 
-What the slice leaves out, and why (each is a later lane or a native hook): flow fields that change with walls
-(graph navigation: the Navigation & AI lane, or a `sepulcra.flow_route` native until then), climbing and range
-across faces (the slab's faces need a face-aware range check: a native or a later `range` option), lane jumps
-(graph navigation), flyers' seeded circling (a path generated from a seeded choice: a later path feature or a
-native), roots (nature: an aura effect on cells, needs cells as data), walls, and the colossus's summons (the
-`spawner` behaviour continues the summoner's path, which covers it once movement is on the graph).
+- every built-in layout (centre-heavy, no anti-air, full block, none) on seeds 1 and 7 (in `cargo test`);
+- a "chaos" player that tries everything, often wrongly (stones on lanes, the graveyard and cliff rock, upgrades
+  past the last tier, selling nothing, walls under enemies' feet and on cells they are stepping into, walls
+  everywhere, removing walls, calling waves), on 6 seeds with 20 to 60 refusals each, and with 4,000 starting dust
+  on 4 seeds so whole games play out: walls broken (27 in all), walls attacked (191), lane jumps (13) and summons
+  (10) all happen, still identical;
+- the release sweep (`LEX_SWEEP_SEEDS=1000 cargo test -p sepulcra --release --test lex_parity -- --ignored
+  sweep --nocapture`): **4,100 whole games, 46.2 million ticks, in 74 s on 32 threads**: centre-heavy won 999 of
+  1,000 (as DESIGN.md's balance table says), no anti-air, full block and no defence lost all 1,000, and 100 rich
+  chaos games (95 lost, 5 won).
+
+**Through the tools alone.** `scripts/sepulcra_lex_tools.py` starts the game headless and, over MCP with the lex
+tools only, imports the slab, writes the rules item by item with `lex_edit` (42 edits; the set is a draft until
+the last lands, then valid with no warnings), checks the export equals the two documents, and simulates the games
+in `lex/proof.json` (centre-heavy seed 7 won at tick 21852, no anti-air seed 1 lost at 11860, full block seed 2
+lost at 6882) to their recorded hashes. Changing warding damage 10 → 11 changes the game; `world_undo` brings the
+hash back; a notes edit changes nothing. Then it plays the centre-heavy game **live** (`lex_live`, commands at
+their ticks under `time_control step`): the live run ends at the same tick with the same hash, its journal replays
+headless to that hash, and its entities are world entities.
+
+**Cost.** 8 µs a tick for the whole game in a release build (0.5 µs for the hand-written sim, ×15): a 12-minute
+game in about 170 ms (`cargo test -p sepulcra --release --test lex_parity -- --ignored bench_full --nocapture`).
+The movement hooks read and write each enemy's state in one lookup (`base_many` / `set_many`) and rebuild flow
+fields only when the walls change.
+
+**The escape-hatch log** (each native's `reason` is in the set; `lex_validate` lists them):
+
+| Native | Phase | Why no building block fits |
+|---|---|---|
+| `sepulcra.ground` | move | Dijkstra flow fields on the slab's cell graph that change with walls; breaking the wall on the cheapest route when none is open; climbing speed; roots; lane jumps by a seeded chance. Lex has no graph navigation yet (the navigation lane's `navigate`). |
+| `sepulcra.air` | move | Flyers circle the air ring a drawn number of hops in a drawn direction, then dive: a path generated from seeded choices. |
+| `sepulcra.spot` | (action) | A stone's cell (it fires in cell order), face and rim distances: facts of the slab's geometry, which sites don't carry. The range rule itself is Lex (`when`). |
+| `sepulcra.wall_clear` | (action) | "No wall under an enemy" is a question about the movement graph's edges, which only the movement hook knows. |
+
+What each says Lex should grow next: graph navigation (with walls as costs, breaching and jumps as edge kinds),
+generated paths (a ring with a drawn start, direction and length), and sites that carry values (a cell id, a
+face), which would retire `spot`.
+
+**Unavoidable differences (the honest list):**
+
+- **Projectile speeds** are the hand-written sim's whole millimetres per tick (it truncates 22 m/s to 733 mm a
+  tick; Lex carries the remainder like every movement, so the set says `21.99m/s`).
+- **Refusal codes** differ where the models differ (the tests compare *which* commands are refused): a stone on a
+  lane is `wrong_site` (the arg is limited to `build_spots`) where the sim says `not_buildable`; an upgrade of an
+  empty cell is `no_entity` there, `no_stone` here; Lex checks a command's `cost` before its `require`s, so a poor
+  player placing on an occupied spot hears `not_enough_dust` first.
+- **Bookkeeping**: Lex's waves count `died` and `removed`; the sim's leaks and strandings are both removals.
+- **State hashes** differ (each hashes its own layout); parity is judged on everything observable, listed above.
+- **Events**: presentation events (a wall's quarter marks, a leap, "attacking a wall") are not Lex events; the hooks
+  could `emit` them when a presentation needs them.
+- **Stone order** needs `order: "self.cell"` (stones fire in cell order in the sim, in id order by default in Lex).
+
+### Grown from Sepulcra (2026-10-18)
+
+Each feature is general, validated, bounded and tested (`crates/specula-lex/tests/extensions.rs`): `data` items;
+native `streams`, `data`, binding, the id API, `trigger` with a native behaviour's `on` lists, `refuse`,
+`generation`, hosts; attack `when`; archetype `order`; group `with`; spawner `with`; wave scale for every spawn
+that joins a wave; site args limited to one sites item (`of`); `x`, `y`, `z` of entities and sites. Native args are
+capped at 16 (evaluated into a fixed buffer, no allocation per call). `RUNTIME_VERSION` stays 1: the only result
+change is the wave scale of spawns that join a wave without being scheduled (summons), which no rule set used before.
+
+## Live Lex (`lex_live`)
+
+The engine runs a stored set live (`crates/specula/src/lex_live.rs`): compiled on the caller's thread, then stepped
+on the main thread every engine tick, after the hosted game and the modules, by as many Lex ticks as its own
+`tick_hz` has accumulated (a 30 Hz set under a 60 Hz engine steps every other tick), so `time_control` pauses, steps
+and fast-forwards it with everything else. At most 4 runs at once.
+
+- **Presentation.** Each live entity matching a `present` rule (`{tags, spawn}`, first match wins; default: every
+  entity as a 0.5 m cube) is a world entity `/lex_live/<set>/e<id>` (props `lex_live: {id, archetype}`), moved to
+  the entity's position each tick and deleted when it ends; at most 2,000 per run (the rest are counted, not
+  shown). These writes are the rules' output, like a hosted game's: journaled replay-only under `lex:<set>`,
+  coalesced per tick, exempt from claims. Starting and stopping are the caller's edits (claim-checked, undoable).
+- **Commands** (`action: command`) apply at once at the run's current tick, exactly as `lex_simulate` applies a
+  command stamped with that tick, and are journaled with it. `journal` pages them as `lex_simulate` commands, so
+  `lex_simulate {seed, params, ticks, commands}` reproduces the live hash.
+- **Natives.** Hooks the hosted game implements run in-process; any other declared hook is a module hook, called
+  through the module host with the native's `reason` and caller `lex:<set>`; its world changes are journaled as the
+  run's tick. A failing hook is a run-time diagnostic (in a command: a refusal), counted in `status`.
+- **Live = headless.** A module hook can't change the run's state, only the world, so with the same seed, params and
+  commands at the same ticks, a live run and `lex_simulate` reach the same hash (tested in `lex_live.rs`, and on a
+  whole game of Sepulcra by `scripts/sepulcra_lex_tools.py`).
+- **Input**: a hosted game turns its input into the set's commands (Sepulcra's `--rules lex`, below); generic input
+  bindings are later work.
+
+**Sepulcra on Lex in the window.** `sepulcra --rules lex` (the app, after `--`) runs the game's rules from the
+set: the Lex run decides every player and agent command and the outcome, while the hand-written sim steps in
+lockstep as the reference and feeds the scene, HUD and sound; every tick the two are compared (a difference is a
+desync, shown in `play_state` with its tick). `play_record` adds the Lex hash at the recording's end and
+`play_replay` replays the recording through Lex too. `python scripts/sepulcra_play.py --adapter integrated --rules
+lex` plays a whole game to a win on the Intel iGPU with parity on every tick, the replay verified and the Lex hash
+replayed (2026-10-18: won at tick 21852, 21,852 ticks compared, 0 validation errors).
 
 ## Later
 
 - A schema-guided three-way merge of items (M4 conflict help) and a text diff in refused edits.
 - More stacking and modifier channels as games need them (GAS "aggregators").
 - Behaviour trees and utility AI (Navigation & AI lane), and `navigate`.
-- Live Lex in the window: the engine stepping a set on its own clock and presenting entities, once the module host
-  defines how a game binds presentation to simulation.
+- Input bindings for live runs (window and gamepad input mapped to a set's commands without a hosted game), and
+  presenting a live run with the game's own looks instead of `present` rules.
+- A cell-graph `navigate` behaviour (the navigation lane) to replace `sepulcra.ground` and `sepulcra.air`.
