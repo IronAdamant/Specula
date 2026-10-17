@@ -11,6 +11,5 @@ publish = false
 
 [dependencies]
 specula-core = { workspace = true }
-
-[dev-dependencies]
+# The rules as Lex data (lex/*.lex.json) and the native hooks they call (src/lex.rs).
 specula-lex = { workspace = true }

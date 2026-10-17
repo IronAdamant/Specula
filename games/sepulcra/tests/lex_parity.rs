@@ -270,3 +270,105 @@ fn a_changed_rule_is_caught() {
     let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default();
     assert!(msg.contains("diverge"), "it failed for the right reason (a divergence, not a compile or parse error): {msg}");
 }
+
+// ---- the whole game (lex/sepulcra.lex.json + lex/slab_01.lex.json, src/lex.rs) ----
+
+mod full {
+    use std::sync::Arc;
+
+    use sepulcra::content::Content;
+    use sepulcra::lex::Snapshot;
+    use sepulcra::script::{run, Journal, Script};
+    use sepulcra::sim::{Command, Event, Outcome, State};
+    use specula_lex::CommandCall;
+
+    const CENTRE: &str = include_str!("../data/layouts/centre.json");
+    const NO_AIR: &str = include_str!("../data/layouts/no_air.json");
+    const FULL_BLOCK: &str = include_str!("../data/layouts/full_block.json");
+    const NONE: &str = include_str!("../data/layouts/none.json");
+    pub const LAYOUTS: [(&str, &str); 4] = [("centre", CENTRE), ("no_air", NO_AIR), ("full_block", FULL_BLOCK), ("none", NONE)];
+
+    pub fn content() -> Arc<Content> {
+        Arc::new(Content::builtin())
+    }
+
+    pub fn rules() -> Arc<specula_lex::Rules> {
+        sepulcra::lex::compiled(&[]).unwrap_or_else(|e| panic!("the rule set must compile:\n{e}"))
+    }
+
+    /// The end of a parity run.
+    #[derive(Debug)]
+    pub struct End {
+        pub snap: Snapshot,
+        pub refused: usize,
+        pub lex_hash: u64,
+    }
+
+    /// Steps both sims with the same commands per tick and panics at the first difference.
+    pub fn parity(rules: &Arc<specula_lex::Rules>, c: &Arc<Content>, seed: u64, journal: &[(u32, Command)], max_ticks: u32) -> End {
+        let mut s = State::new(c.clone(), seed);
+        let mut l = sepulcra::lex::sim(rules.clone(), seed).expect("the hooks bind");
+        let mut refused = 0;
+        let mut k = 0;
+        while s.tick() < max_ticks && s.outcome() == Outcome::Running {
+            let tick = s.tick();
+            let mut now = Vec::new();
+            while k < journal.len() && journal[k].0 <= tick {
+                now.push(journal[k].1);
+                k += 1;
+            }
+            // A command whose args name nothing in the rule set (a stone on a lane cell) is Lex's
+            // refusal; the rest are applied in order, like the hand-written sim's.
+            let calls: Vec<Result<CommandCall, specula_lex::Rejection>> = now.iter().map(|x| sepulcra::lex::command_call(&l, c, x)).collect();
+            let ev = s.step(&now);
+            let parsed: Vec<CommandCall> = calls.iter().filter_map(|x| x.as_ref().ok().cloned()).collect();
+            let index: Vec<usize> = calls.iter().enumerate().filter(|(_, x)| x.is_ok()).map(|(i, _)| i).collect();
+            let lr = l.step(&parsed);
+            let s_refused: Vec<usize> = ev.iter().filter_map(|e| if let Event::Rejected { index, .. } = e { Some(usize::from(*index)) } else { None }).collect();
+            let mut l_refused: Vec<usize> = calls.iter().enumerate().filter(|(_, x)| x.is_err()).map(|(i, _)| i).collect();
+            l_refused.extend(lr.iter().map(|(i, _)| index[*i]));
+            l_refused.sort_unstable();
+            let why: Vec<String> = calls.iter().filter_map(|x| x.as_ref().err().map(|r| r.code.clone())).chain(lr.iter().map(|(_, r)| format!("{}: {}", r.code, r.message))).collect();
+            assert_eq!(s_refused, l_refused, "seed {seed} tick {tick}: refused commands differ ({now:?}); lex said {why:?}");
+            refused += s_refused.len();
+            let (a, b) = (Snapshot::of_state(&s), Snapshot::of_lex(&l, &c.map));
+            if let Some(d) = a.diff(&b) {
+                let diag = &l.state().diag;
+                panic!("seed {seed} tick {tick}: the sims diverge: {d}\nlex diagnostics: {:?} {:?}", diag.counts, diag.first);
+            }
+        }
+        let diag = &l.state().diag;
+        assert!(diag.counts.is_empty(), "seed {seed}: lex run-time problems: {:?} {:?}", diag.counts, diag.first);
+        End { snap: Snapshot::of_state(&s), refused, lex_hash: l.hash() }
+    }
+
+    /// A layout's applied commands (with their ticks) as the hand-written sim plays it.
+    pub fn journal(c: &Arc<Content>, layout: &str, seed: u64) -> (Journal, Outcome, u32) {
+        let script = Script::parse(layout, c, "layout").expect("layout");
+        let r = run(c.clone(), seed, &script, None, |_, _| {});
+        (r.journal, r.outcome, r.ticks)
+    }
+}
+
+#[test]
+fn the_rule_set_compiles_without_warnings_and_its_slab_matches_the_map() {
+    let doc = sepulcra::lex::document().expect("documents");
+    let compiled = compile(&doc, &Options::default()).unwrap_or_else(|d| panic!("{}", d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n")));
+    let warnings: Vec<String> = compiled.warnings.iter().map(|w| w.to_string()).collect();
+    assert!(warnings.is_empty(), "warnings: {warnings:#?}");
+    let regenerated = sepulcra::lex::slab_document_text(sepulcra::content::SLAB_01_JSON).unwrap();
+    assert_eq!(regenerated, sepulcra::lex::SLAB_LEX.replace("\r\n", "\n"), "lex/slab_01.lex.json is out of date: cargo run -p sepulcra --example lex_slab -- --write");
+}
+
+#[test]
+fn every_layout_matches_the_hand_written_sim_tick_by_tick() {
+    let (c, rules) = (full::content(), full::rules());
+    for (name, layout) in full::LAYOUTS {
+        for seed in [1u64, 7] {
+            let (journal, outcome, ticks) = full::journal(&c, layout, seed);
+            let end = full::parity(&rules, &c, seed, &journal, u32::MAX);
+            eprintln!("{name} seed {seed}: {:?} at tick {} (rust {outcome:?} at {ticks}), tombstones {}, lex hash {:016x}", end.snap.outcome, end.snap.tick, end.snap.tombstones, end.lex_hash);
+            assert_eq!(end.snap.tick, ticks, "{name} seed {seed}");
+        }
+    }
+}

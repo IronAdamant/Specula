@@ -574,6 +574,10 @@ pub enum Ex {
     Attr(Box<Ex>, u16),
     Alive(Box<Ex>),
     PathRemaining(Box<Ex>),
+    /// An entity's position on one axis (0 x, 1 y, 2 z).
+    Pos(Box<Ex>, u8),
+    /// A site's position on one axis.
+    SitePos(Box<Ex>, u8),
     ArchOf(Box<Ex>),
     /// An archetype's `next` (from an archetype value).
     Next(Box<Ex>),
@@ -714,7 +718,18 @@ impl<'a> Scope<'a> {
 const ROOTS: [&str; 11] = ["self", "other", "target", "arg", "res", "tick", "magnitude", "event", "waves", "true", "false"];
 /// The functions, for "did you mean" and "X is a function" hints.
 pub const FUNCS: [&str; 12] = ["min", "max", "clamp", "abs", "if", "exists", "has", "count", "dist", "occupied", "rand", "chance"];
-const ENTITY_FIELDS: [&str; 4] = ["alive", "archetype", "next", "path_remaining"];
+const ENTITY_FIELDS: [&str; 7] = ["alive", "archetype", "next", "path_remaining", "x", "y", "z"];
+/// Names an attribute can't have: they are built-in entity fields.
+pub const RESERVED_FIELDS: [&str; 7] = ENTITY_FIELDS;
+
+fn axis(m: &str) -> Option<u8> {
+    match m {
+        "x" => Some(0),
+        "y" => Some(1),
+        "z" => Some(2),
+        _ => None,
+    }
+}
 const WAVE_FIELDS: [&str; 5] = ["current", "total", "remaining", "ticks_left", "all_cleared"];
 
 /// Compiles a source string to a typed, folded expression.
@@ -944,10 +959,15 @@ fn member(base: Ex, ty: Ty, m: &str, col: usize, sc: &Scope, arch_hint: Option<u
             "archetype" => Ok((Ex::ArchOf(Box::new(base)), Ty::Arch)),
             "next" => Ok((Ex::Next(Box::new(Ex::ArchOf(Box::new(base)))), Ty::Arch)),
             "path_remaining" => Ok((Ex::PathRemaining(Box::new(base)), Ty::Num(Unit::Distance))),
+            "x" | "y" | "z" => Ok((Ex::Pos(Box::new(base), axis(m).expect("an axis")), Ty::Num(Unit::Distance))),
             _ => {
                 let (id, unit) = attr(arch_hint)?;
                 Ok((Ex::Attr(Box::new(base), id), Ty::Num(unit)))
             }
+        },
+        Ty::Site => match axis(m) {
+            Some(a) => Ok((Ex::SitePos(Box::new(base), a), Ty::Num(Unit::Distance))),
+            None => Err(ExprError::new(codes::UNKNOWN_REF, format!("a site has no member '{m}'"), col).suggest("a site has x, y and z (its position)")),
         },
         Ty::Arch => match m {
             "next" => Ok((Ex::Next(Box::new(base)), Ty::Arch)),
@@ -1207,7 +1227,7 @@ pub fn scans_entities(ex: &Ex) -> bool {
     use Ex::*;
     match ex {
         Count(_) | Occupied(..) => true,
-        Attr(a, _) | Alive(a) | PathRemaining(a) | ArchOf(a) | Next(a) | ArchAttr(a, _) | Neg(a) | Not(a) | Abs(a) | Exists(a) | Has(a, _) | Chance(_, a) => scans_entities(a),
+        Attr(a, _) | Alive(a) | PathRemaining(a) | Pos(a, _) | SitePos(a, _) | ArchOf(a) | Next(a) | ArchAttr(a, _) | Neg(a) | Not(a) | Abs(a) | Exists(a) | Has(a, _) | Chance(_, a) => scans_entities(a),
         Arith(_, a, b) | Cmp(_, a, b) | And(a, b) | Or(a, b) | Min(a, b) | Max(a, b) | Dist(a, b) | Rand(_, a, b) => scans_entities(a) || scans_entities(b),
         If(a, b, c) | Clamp(a, b, c) => scans_entities(a) || scans_entities(b) || scans_entities(c),
         _ => false,
@@ -1296,6 +1316,8 @@ fn fold(ex: Ex) -> Result<Ex, ExprError> {
         Attr(e, a) => Attr(f(e)?, a),
         Alive(e) => Alive(f(e)?),
         PathRemaining(e) => PathRemaining(f(e)?),
+        Pos(e, a) => Pos(f(e)?, a),
+        SitePos(e, a) => SitePos(f(e)?, a),
         ArchOf(e) => ArchOf(f(e)?),
         Next(e) => Next(f(e)?),
         ArchAttr(e, a) => ArchAttr(f(e)?, a),
