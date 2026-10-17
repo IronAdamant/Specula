@@ -693,6 +693,9 @@ These are researched designs, written before implementation so the foundations h
   efficiency problems; hard truths. Written 2026-10-13. [ ] Reviewed with the owner.
 - [x] [research/RUST_AT_SCALE.md](research/RUST_AT_SCALE.md): compile times, unsafe and the language as strengths;
   measured baseline. Written 2026-10-13. [ ] Reviewed with the owner.
+- [x] [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md): how agents build games and where they fail,
+  gameplay as data (Lex), placement by relations (Locus), taste by picking and measuring, balance by simulation,
+  animation metrics; proposals for M3 and M4. Written 2026-10-17. [ ] Reviewed with the owner.
 - [ ] Still to research when their lane starts: audio (WASAPI, mixing, Vorbis), navigation (navmesh generation),
   global-illumination baking, particle systems, asset streaming, Linux/Wayland and macOS/Metal backends.
 
