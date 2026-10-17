@@ -104,6 +104,27 @@ pub fn fill(sheet: &mut [u8], sw: u32, x0: u32, y0: u32, w: u32, h: u32, rgba: [
     }
 }
 
+/// Mean luma (Rec. 709 weights on the sRGB bytes, 0..1) of the `w × h` rectangle at `(x, y)` of
+/// an RGBA image `iw` wide (clipped to it); 0 for an empty rectangle. What a darkness warning
+/// reads: below about 0.1 a subject is hard to make out.
+pub fn mean_luma(rgba: &[u8], iw: u32, x: u32, y: u32, w: u32, h: u32) -> f32 {
+    let ih = (rgba.len() / 4) as u32 / iw.max(1);
+    let (x1, y1) = ((x + w).min(iw), (y + h).min(ih));
+    let (mut sum, mut n) = (0.0f64, 0u64);
+    for yy in y.min(y1)..y1 {
+        for xx in x.min(x1)..x1 {
+            let i = ((yy * iw + xx) * 4) as usize;
+            sum += 0.2126 * rgba[i] as f64 + 0.7152 * rgba[i + 1] as f64 + 0.0722 * rgba[i + 2] as f64;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        (sum / n as f64 / 255.0) as f32
+    }
+}
+
 /// A camera eye for framing a sphere (`centre`, `radius`) seen from `az`/`el` degrees (azimuth 0
 /// = from +Z, the creature's front; 90 = from +X, its left side) with vertical field of view
 /// `fov_deg`: the eye position (look at `centre`, +Y up).

@@ -140,3 +140,32 @@ pops_cm = 3
     assert_eq!(fs.bone.as_deref(), Some("foot_r"), "the exempt foot is left out");
     assert!(fs.detail.iter().any(|(k, _)| *k == "exempt_feet"));
 }
+
+fn check(name: &'static str, value: f32, passed: bool, exempt: bool, bone: Option<&str>) -> checks::Check {
+    checks::Check { check: name, subject: "x/y".into(), value, limit: 6.0, unit: "cm", passed, exempt, at_s: None, bone: bone.map(str::to_string), detail: Vec::new() }
+}
+
+/// Review round 1, finding 8: a report's `errors` were never capped by `max_checks`.
+#[test]
+fn report_json_is_bounded() {
+    let r = checks::Report { checks: vec![check("pops", 9.0, false, false, None); 50], notes: vec!["n".into(); 40] };
+    let j = r.to_json(5);
+    assert_eq!(j.get("errors").and_then(|e| e.as_array()).map(|a| a.len()), Some(5));
+    assert_eq!(j.get("errors_omitted").and_then(|e| e.as_f64()), Some(45.0));
+    assert_eq!(j.get("checks").and_then(|e| e.as_array()).map(|a| a.len()), Some(5));
+    assert_eq!(j.get("notes").and_then(|e| e.as_array()).map(|a| a.len()), Some(checks::MAX_NOTES));
+    assert!(j.to_string().len() < 4096, "{} bytes", j.to_string().len());
+}
+
+/// Flyers keep a hover band; exemptions are listed for labels.
+#[test]
+fn hover_bands_from_toml() {
+    let r = MotionRules::from_toml("[motion.hover]\n\"wraith/*\" = [3, 90]\n[motion.allow]\n\"wraith/*death\" = [\"hover\"]\n", "t").unwrap();
+    assert_eq!(r.hover_band("wraith/float"), Some([3.0, 90.0]));
+    assert_eq!(r.hover_band("shambler/walk"), None);
+    assert!(r.allows("wraith/death", "hover", None));
+    assert!(MotionRules::from_toml("[motion.hover]\n\"w\" = [9, 3]\n", "t").is_err(), "low above high");
+    assert!(MotionRules::from_toml("[motion.hover]\n\"w\" = 3\n", "t").is_err());
+    let rep = checks::Report { checks: vec![check("foot_sliding", 0.0, true, true, Some("foot_r")), check("hover", 50.0, true, true, None), check("pops", 1.0, true, false, None)], notes: Vec::new() };
+    assert_eq!(rep.exemptions(), ["foot_sliding:foot_r", "hover"]);
+}

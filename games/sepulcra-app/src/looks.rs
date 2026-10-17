@@ -217,7 +217,8 @@ pub enum Act {
     Move,
     /// Breaking a wall.
     Attack,
-    /// A runner leaping a cracked ledge, a wraith's dive, the colossus raising shamblers.
+    /// A runner leaping a cracked ledge, a wraith's dive, the colossus raising shamblers, a
+    /// shambler hauling itself up a cliff.
     Special,
     Death,
 }
@@ -242,8 +243,8 @@ pub struct Creature {
     pub recipe: &'static str,
     /// Uniform scale over the recipe's real size (STYLE.md: a little oversized to read at range).
     pub scale: f32,
-    /// How long its special plays (the colossus's summon), and its death, in seconds at pace 1
-    /// (the anim set's clip lengths; a test checks).
+    /// How long its special plays (the colossus's summon; one haul of a shambler's climb, which
+    /// loops), and its death, in seconds at pace 1 (the anim set's clip lengths; a test checks).
     pub special_s: f32,
     pub death_s: f32,
     /// How strongly its head follows the look target (the graveyard).

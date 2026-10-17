@@ -785,9 +785,16 @@ pub trait ModelSource: Send + Sync {
     fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError>;
 
     /// The anim set (clips and graphs, with any the world's anim assets add) of the build a
-    /// handle names, once built: graph parameter writes settle against it.
+    /// handle names, once built.
     fn anim_set(&self, _handle: u32) -> Option<Arc<specula_anim::AnimSet>> {
         None
+    }
+
+    /// The anim set a graph write to an entity of `handle` settles against: the build's own with
+    /// `assets` (the world's, as of the write) laid over it. A build still in flight is waited
+    /// for, so what a write stores never depends on how fast models build (foundation F2).
+    fn anim_set_for_write(&self, handle: u32, _assets: &crate::anim::Assets) -> Option<Arc<specula_anim::AnimSet>> {
+        self.anim_set(handle)
     }
 }
 
@@ -2033,6 +2040,9 @@ pub struct World {
     transient_shapes: crate::two_d::ShapeBudget,
     /// The two budgets (perf.toml `[budgets]`).
     shape_limits: crate::two_d::ShapeLimits,
+    /// The anim assets in the world, as graph writes settle against them (derived from the
+    /// entities, refreshed inside `update`; never hashed or saved).
+    anim_assets: crate::anim::AssetCache,
 }
 
 /// The shape2d spec of an entity's 2D component, if it has one.
@@ -2243,6 +2253,18 @@ impl World {
     /// See the field: unchanged means no persistent entity changed in any way since it was read.
     pub fn draw_epoch(&self) -> u64 {
         self.draw_epoch
+    }
+
+    /// Brings the world's anim assets (what graph writes settle against) up to date.
+    pub(crate) fn refresh_anim_assets(&mut self) {
+        let mut cache = std::mem::take(&mut self.anim_assets);
+        cache.refresh(self);
+        self.anim_assets = cache;
+    }
+
+    /// The world's anim assets as of the last graph write.
+    pub fn anim_assets(&self) -> &crate::anim::Assets {
+        &self.anim_assets.assets
     }
 
     /// The ids of the persistent entities that changed (were spawned, changed, moved, removed)
@@ -2755,6 +2777,9 @@ impl World {
         check_update(&change)?;
         let id = self.resolve(key)?;
         self.check_version(id, change.expect_version)?;
+        if matches!(&change.anim, Some(Some(a)) if a.graph.is_some()) {
+            self.refresh_anim_assets();
+        }
         let e = &self.entities[&id];
         if change.profile.is_some() && e.shape != Shape::Lathe {
             return Err(WorldError::new(

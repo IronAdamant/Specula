@@ -5,7 +5,8 @@
 //! | check | measures | unit |
 //! |---|---|---|
 //! | `foot_sliding` | feet's ground speed while their soles are within `contact_m` (2.5 cm) of the ground, weighted `2 − 2^(h/contact)` (the standard foot-skating metric), averaged over contact frames; the fastest frame is reported too | cm/s |
-//! | `floating` | how high the lowest sole stays above the ground over the whole subject (a creature that never touches down hovers) | cm |
+//! | `floating` | how high the lowest sole stays above the ground over the whole subject (a creature that never touches down hovers); for play-once subjects (deaths, leaps, strikes) how high the body (its soles, or its lowest point when it is off its feet) rests at the end | cm |
+//! | `hover` | for flyers (`[motion.hover]`): how far the body's lowest point leaves the subject's hover band above the ground, within `floating_cm` | cm |
 //! | `ground_penetration` | how far the lowest joint (or skinned vertex, when a mesh is given) goes below the ground | cm |
 //! | `joint_limits` | the largest excess past a graph's `limits` (Euler degrees, rest-relative) | deg |
 //! | `pops` | at a transition: the largest per-frame joint jump beyond what the states moved on their own, scaled to a 1.8 m figure (a giant's hand may travel further in a frame than a person's) | cm/frame |
@@ -32,9 +33,15 @@
 //! sample_hz = 60
 //!
 //! [motion.allow]          # what a subject is exempt from: "rig/subject" (* matches anything)
-//! "shambler/*death" = ["ground_penetration"]       # the crumble sinks into the ground on purpose
+//! "skeleton_runner/*death" = ["joint_limits"]      # the bones fly apart: no joints left to limit
 //! "shambler/*walk" = ["foot_sliding:foot_r"]       # one check for one bone: the dragged foot scrapes
+//!
+//! [motion.hover]          # flyers: the band (cm above the ground) the body's lowest point keeps
+//! "wraith/*" = [3, 90]
 //! ```
+//!
+//! A hover subject has no feet on the ground: `foot_sliding` and `floating` don't apply to it,
+//! `hover` does (exempt a flyer's death from it to let it rise away).
 //!
 //! Foot sliding is measured per foot and reported for the worst one; an exempt foot is left out.
 
@@ -50,8 +57,10 @@ use crate::skeleton::Pose;
 
 /// Most frames one subject is sampled at (40 s at 60 Hz).
 pub const MAX_FRAMES: usize = 2400;
+/// Most notes a report's JSON lists.
+pub const MAX_NOTES: usize = 16;
 /// Check names, in report order.
-pub const CHECKS: [&str; 7] = ["foot_sliding", "floating", "ground_penetration", "joint_limits", "pops", "root_drift", "loop_seam"];
+pub const CHECKS: [&str; 8] = ["foot_sliding", "floating", "ground_penetration", "joint_limits", "pops", "root_drift", "loop_seam", "hover"];
 
 /// Thresholds (the `[motion]` table of `style.toml`).
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +76,8 @@ pub struct MotionRules {
     pub sample_hz: f32,
     /// `(subject pattern, checks it is exempt from)`.
     pub allow: Vec<(String, Vec<String>)>,
+    /// `(subject pattern, [lowest, highest] cm)`: flyers' hover bands (the first match counts).
+    pub hover: Vec<(String, [f32; 2])>,
     /// Where the rules came from (a file path, or "defaults").
     pub source: String,
 }
@@ -84,6 +95,7 @@ impl Default for MotionRules {
             loop_seam_mm: 1.0,
             sample_hz: 60.0,
             allow: Vec::new(),
+            hover: Vec::new(),
             source: "defaults".into(),
         }
     }
@@ -130,7 +142,17 @@ impl MotionRules {
                         r.allow.push((subject.clone(), names));
                     }
                 }
-                other => return Err(err(&p, AnimErrorCode::UnknownField, format!("'{other}' is not a motion rule (contact_m, foot_sliding_cm_s, floating_cm, ground_penetration_cm, joint_limits_deg, pops_cm, root_drift_cm, loop_seam_mm, sample_hz, allow)"))),
+                "hover" => {
+                    let bands = v.as_object().ok_or_else(|| err(&p, AnimErrorCode::WrongType, "[motion.hover] maps \"rig/subject\" to [lowest_cm, highest_cm]"))?;
+                    for (subject, band) in bands {
+                        let bp = format!("{p}.{subject}");
+                        let pair = band.as_array().filter(|a| a.len() == 2).ok_or_else(|| err(&bp, AnimErrorCode::WrongType, "[lowest_cm, highest_cm]"))?;
+                        let lo = crate::error::num(&pair[0], &format!("{bp}[0]"), -1e4, 1e4)?;
+                        let hi = crate::error::num(&pair[1], &format!("{bp}[1]"), lo, 1e4)?;
+                        r.hover.push((subject.clone(), [lo, hi]));
+                    }
+                }
+                other => return Err(err(&p, AnimErrorCode::UnknownField, format!("'{other}' is not a motion rule (contact_m, foot_sliding_cm_s, floating_cm, ground_penetration_cm, joint_limits_deg, pops_cm, root_drift_cm, loop_seam_mm, sample_hz, allow, hover)"))),
             }
         }
         Ok(r)
@@ -148,10 +170,15 @@ impl MotionRules {
         })
     }
 
+    /// The hover band (cm) of `subject`, when it is a flyer's.
+    pub fn hover_band(&self, subject: &str) -> Option<[f32; 2]> {
+        self.hover.iter().find(|(pat, _)| glob(pat, subject)).map(|(_, b)| *b)
+    }
+
     fn limit(&self, check: &str) -> f32 {
         match check {
             "foot_sliding" => self.foot_sliding_cm_s,
-            "floating" => self.floating_cm,
+            "floating" | "hover" => self.floating_cm,
             "ground_penetration" => self.ground_penetration_cm,
             "joint_limits" => self.joint_limits_deg,
             "pops" => self.pops_cm,
@@ -172,6 +199,8 @@ impl MotionRules {
             ("root_drift_cm", Json::Num(self.root_drift_cm as f64)),
             ("loop_seam_mm", Json::Num(self.loop_seam_mm as f64)),
             ("sample_hz", Json::Num(self.sample_hz as f64)),
+            ("allow", Json::obj(self.allow.iter().map(|(p, c)| (p.clone(), Json::arr(c.iter().map(|n| Json::Str(n.clone()))))))),
+            ("hover", Json::obj(self.hover.iter().map(|(p, b)| (p.clone(), Json::arr([Json::Num(b[0] as f64), Json::Num(b[1] as f64)]))))),
         ])
     }
 }
@@ -267,23 +296,48 @@ impl Report {
         self.checks.iter().all(|c| c.passed)
     }
 
-    /// `{passed, errors: [...], checks: [...]}` (`checks` at most `max_checks`, failures first).
+    /// `{passed, errors: [...], checks: [...]}`: `checks` at most `max_checks`, failures first;
+    /// `errors` at most `max_checks` too (the rest counted in `errors_omitted`); notes at most
+    /// [`MAX_NOTES`].
     pub fn to_json(&self, max_checks: usize) -> Json {
         let mut sorted: Vec<&Check> = self.checks.iter().collect();
         sorted.sort_by_key(|c| c.passed);
         let shown: Vec<Json> = sorted.iter().take(max_checks).map(|c| c.to_json()).collect();
+        let failed = self.failures().count();
         let mut out = vec![
             ("passed", Json::Bool(self.passed())),
-            ("errors", Json::arr(self.failures().filter_map(Check::error_json))),
+            ("errors", Json::arr(self.failures().take(max_checks).filter_map(Check::error_json))),
             ("checks", Json::Arr(shown)),
         ];
+        if failed > max_checks {
+            out.push(("errors_omitted", Json::from(failed - max_checks)));
+        }
         if !self.notes.is_empty() {
-            out.push(("notes", Json::arr(self.notes.iter().map(|n| Json::Str(n.clone())))));
+            out.push(("notes", Json::arr(self.notes.iter().take(MAX_NOTES).map(|n| Json::Str(n.clone())))));
+            if self.notes.len() > MAX_NOTES {
+                out.push(("notes_omitted", Json::from(self.notes.len() - MAX_NOTES)));
+            }
         }
         if self.checks.len() > max_checks {
             out.push(("checks_omitted", Json::from(self.checks.len() - max_checks)));
         }
         Json::obj(out)
+    }
+
+    /// Names of the checks that passed only because the rules exempt them (`"check"` or
+    /// `"check:bone"`), for labels.
+    pub fn exemptions(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in self.checks.iter().filter(|c| c.exempt) {
+            let n = match &c.bone {
+                Some(b) if c.check == "foot_sliding" => format!("{}:{b}", c.check),
+                _ => c.check.to_string(),
+            };
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
     }
 }
 
@@ -546,6 +600,48 @@ fn floating(ctx: &Ctx, s: &Sampled, tracks: &[FootTrack], out: &mut Report) {
     }
 }
 
+/// Scratch for [`lowest_at`].
+type SkinScratch = (Vec<Affine>, Vec<Affine>, Vec<V3>, Vec<V3>);
+
+/// The lowest point of the body at frame `k`: skinned vertices with a mesh, else joints (not the
+/// root) and bone ends. Travel doesn't change heights.
+fn lowest_at(set: &AnimSet, s: &Sampled, mesh: Option<&specula_model::MeshData>, k: usize, scratch: &mut SkinScratch) -> f32 {
+    match mesh {
+        Some(m) => {
+            let (model, sk, pos, nor) = scratch;
+            set.skeleton.model_space(&s.poses[k], model);
+            set.skeleton.skin_matrices(model, sk);
+            crate::skin::skin_into(m, sk, pos, nor);
+            pos.iter().map(|p| p[1]).fold(f32::MAX, f32::min)
+        }
+        None => (1..s.heads[k].len()).flat_map(|b| [s.heads[k][b][1], s.tails[k][b][1]]).fold(f32::MAX, f32::min),
+    }
+}
+
+/// A play-once subject should come to rest on the ground: how high its lowest point (soles
+/// standing, the body lying) is at the end.
+fn floating_end(ctx: &Ctx, s: &Sampled, mesh: Option<&specula_model::MeshData>, out: &mut Report) {
+    let Some(last) = s.heads.len().checked_sub(1) else { return };
+    let h = lowest_at(ctx.set, s, mesh, last, &mut SkinScratch::default());
+    ctx.check(out, "floating", h.max(0.0) * 100.0, "cm", Some(last as f32 * s.dt), None, vec![("end_lowest_m", h)]);
+}
+
+/// A flyer's lowest point stays within its hover band (every fourth frame and the last).
+fn hover(ctx: &Ctx, s: &Sampled, band: [f32; 2], mesh: Option<&specula_model::MeshData>, out: &mut Report) {
+    let Some(last) = s.heads.len().checked_sub(1) else { return };
+    let mut scratch = SkinScratch::default();
+    let (mut worst, mut at, mut low, mut high) = (0.0f32, 0.0f32, f32::MAX, f32::MIN);
+    for k in (0..=last).step_by(4).chain((last % 4 != 0).then_some(last)) {
+        let h = lowest_at(ctx.set, s, mesh, k, &mut scratch) * 100.0;
+        (low, high) = (low.min(h), high.max(h));
+        let excess = (band[0] - h).max(h - band[1]).max(0.0);
+        if excess > worst {
+            (worst, at) = (excess, k as f32 * s.dt);
+        }
+    }
+    ctx.check(out, "hover", worst, "cm", Some(at), None, vec![("lowest_cm", low), ("highest_cm", high), ("band_low_cm", band[0]), ("band_high_cm", band[1])]);
+}
+
 fn ground_penetration(ctx: &Ctx, s: &Sampled, mesh: Option<&specula_model::MeshData>, out: &mut Report) {
     if s.heads.is_empty() {
         return;
@@ -661,11 +757,34 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
     let tracks = foot_tracks(set, &s, &feet, mesh);
     // Feet only matter for clips that stand or move on them (not deaths, not once-off moves).
     let grounded = (clip.looping != LoopMode::Once || clip.distance > 0.0) && !clip.tracks.is_empty();
-    if grounded {
-        foot_sliding(&ctx, &s, &tracks, &mut out);
-    }
-    if clip.looping != LoopMode::Once && !clip.tracks.is_empty() {
-        floating(&ctx, &s, &tracks, &mut out);
+    match rules.hover_band(&ctx.subject) {
+        Some(band) => hover(&ctx, &s, band, mesh, &mut out),
+        None if clip.tracks.is_empty() => {}
+        None => {
+            if grounded {
+                foot_sliding(&ctx, &s, &tracks, &mut out);
+            }
+            // A clip that moves no foot nor anything above one (a flinch on the upper body) leaves
+            // the feet where the rest pose has them: nothing to check.
+            let skel = &set.skeleton;
+            let above = |b: usize, foot: usize| {
+                let mut x = Some(foot as u16);
+                while let Some(i) = x {
+                    if i as usize == b {
+                        return true;
+                    }
+                    x = skel.parents[i as usize];
+                }
+                false
+            };
+            let moves_feet = set.track_bones(id).iter().any(|&b| feet.iter().any(|&f| above(b as usize, f)));
+            if !moves_feet {
+            } else if clip.looping != LoopMode::Once {
+                floating(&ctx, &s, &tracks, &mut out);
+            } else {
+                floating_end(&ctx, &s, mesh, &mut out);
+            }
+        }
     }
     ground_penetration(&ctx, &s, mesh, &mut out);
     joint_limits(&ctx, &s, &limits_of(set), &mut out);
@@ -707,9 +826,18 @@ pub fn check_state(g: Graphed, rig: &str, graph_name: &str, state: &str, params:
     // Feet IK weight 0 marks a state off its feet (a death, a leap).
     let feet_off = st.ik.iter().any(|(i, w)| matches!(g.graph.ik[*i as usize].solver, crate::graph::Solver::Feet(_)) && *w == 0.0);
     let tracks = foot_tracks(g.set, &s, &feet, mesh);
-    if !feet_off {
-        foot_sliding(&ctx, &s, &tracks, &mut out);
-        floating(&ctx, &s, &tracks, &mut out);
+    let once = !g.graph.node_loops[st.node.0 as usize];
+    match rules.hover_band(&ctx.subject) {
+        Some(band) => hover(&ctx, &s, band, mesh, &mut out),
+        None if feet_off => floating_end(&ctx, &s, mesh, &mut out),
+        None => {
+            foot_sliding(&ctx, &s, &tracks, &mut out);
+            if once {
+                floating_end(&ctx, &s, mesh, &mut out);
+            } else {
+                floating(&ctx, &s, &tracks, &mut out);
+            }
+        }
     }
     ground_penetration(&ctx, &s, mesh, &mut out);
     let mut limits = g.graph.limits.clone();
@@ -792,7 +920,12 @@ pub fn check_transition(g: Graphed, rig: &str, graph_name: &str, from: &[(String
     let to_human = 1.8 / height;
     ctx.check(&mut out, "pops", worst * 100.0 * to_human, "cm", Some(worst_at), Some(worst_bone), vec![("blend_s", blend as f32), ("unscaled_cm", worst * 100.0), ("height_m", height)]);
     ground_penetration(&ctx, &s, mesh, &mut out);
-    let tracks = foot_tracks(g.set, &s, &feet_of(g.set, Some(g.graph), None), mesh);
-    floating(&ctx, &s, &tracks, &mut out);
+    match rules.hover_band(&ctx.subject) {
+        Some(band) => hover(&ctx, &s, band, mesh, &mut out),
+        None => {
+            let tracks = foot_tracks(g.set, &s, &feet_of(g.set, Some(g.graph), None), mesh);
+            floating(&ctx, &s, &tracks, &mut out);
+        }
+    }
     out
 }

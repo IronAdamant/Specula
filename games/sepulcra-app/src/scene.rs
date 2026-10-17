@@ -429,12 +429,15 @@ impl Scene {
         p
     }
 
-    /// What an enemy's clip should show this tick.
-    fn act_of(e: &Enemy) -> Act {
+    /// What an enemy's clip should show this tick: its special is a runner's leap, a wraith's
+    /// dive and a climber hauling itself up a cliff (the colossus's summon comes from events).
+    fn act_of(e: &Enemy, map: &sepulcra::map::Map) -> Act {
         match e.motion {
             Motion::Ground { leap: true, .. } => Act::Special,
             Motion::Air { diving: true, .. } => Act::Special,
             _ if e.attacking.is_some() => Act::Attack,
+            // The same test the simulation's climb speed uses.
+            Motion::Ground { from, to, len, .. } if len > 0 && (map.cell(from).kind.is_climb() || map.cell(to).kind.is_climb()) => Act::Special,
             Motion::Ground { len: 0, .. } => Act::Idle,
             _ => Act::Move,
         }
@@ -470,7 +473,7 @@ impl Scene {
                 let def = content.enemy(e.kind);
                 let creature = looks::creature(&def.id);
                 let phase = (e.id % 17) as f32 * 0.137;
-                let act = Scene::act_of(e);
+                let act = Scene::act_of(e, &content.map);
                 let speed = Scene::ground_speed(state, e, pos, tick);
                 let yaw = facing(Vec3::ZERO - pos, 0.0);
                 let props = Json::obj([("enemy", Json::from(e.id)), ("kind", Json::from(def.id.as_str()))]);
@@ -488,7 +491,7 @@ impl Scene {
                 continue;
             }
             let busy = self.enemies.get(&e.id).is_some_and(|m| m.busy_until > now);
-            let act = if busy { Act::Special } else { Scene::act_of(e) };
+            let act = if busy { Act::Special } else { Scene::act_of(e, &content.map) };
             let speed = Scene::ground_speed(state, e, pos, tick);
             let pace = self.pace;
             let Some(m) = self.enemies.get_mut(&e.id) else { continue };

@@ -813,15 +813,18 @@ fn hover(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32
     let yaw = o.num("yaw", 0.0, -90.0, 90.0)?;
     let lean = o.num("lean", 0.0, -80.0, 80.0)?;
     let distance = o.num("distance", 0.0, 0.0, 100.0)?;
-    let (chain, chain_deg, chain_roll, delay) = match o.get("chain") {
+    // Arms held back (degrees about X, positive = back), as when gliding forward.
+    let sweep = o.num("sweep", 0.0, -90.0, 90.0)?;
+    let (chain, chain_deg, chain_roll, delay, trail) = match o.get("chain") {
         Some(v) => {
             let mut co = Obj::new(v, &o.at("chain"), "a chain")?;
             let bones = bone_list(&mut co, "bones", skel)?;
-            let r = (bones, co.num("deg", 8.0, -90.0, 90.0)?, co.num("roll", 4.0, -90.0, 90.0)?, co.num("delay", 0.12, 0.0, 1.0)?);
-            co.finish("bones, deg, roll, delay")?;
+            // `trail`: each link held back by that much (a shroud streaming behind).
+            let r = (bones, co.num("deg", 8.0, -90.0, 90.0)?, co.num("roll", 4.0, -90.0, 90.0)?, co.num("delay", 0.12, 0.0, 1.0)?, co.num("trail", 0.0, -90.0, 90.0)?);
+            co.finish("bones, deg, roll, delay, trail")?;
             r
         }
-        None => (Vec::new(), 0.0, 0.0, 0.0),
+        None => (Vec::new(), 0.0, 0.0, 0.0, 0.0),
     };
     if bobs != specula_core::dmath::round(bobs) {
         return Err(err(&o.at("bobs"), AnimErrorCode::OutOfRange, "bobs per loop must be a whole number"));
@@ -835,14 +838,14 @@ fn hover(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32
             f.rot(pelvis, qeuler([lean + pitch * sin_turns(bobs * s + 0.25), yaw * sin_turns(s), roll * sin_turns(s + 0.1)]));
             for (k, &b) in chain.iter().enumerate() {
                 let ph = bobs * s - k as f32 * delay;
-                f.rot(b, qeuler([chain_deg * sin_turns(ph), 0.0, chain_roll * cos_turns(s - k as f32 * delay)]));
+                f.rot(b, qeuler([trail + chain_deg * sin_turns(ph), 0.0, chain_roll * cos_turns(s - k as f32 * delay)]));
             }
             if let Some(h) = body.head {
                 f.rot(h, qeuler([-0.6 * pitch * sin_turns(bobs * s + 0.25), -0.5 * yaw * sin_turns(s), -0.5 * roll * sin_turns(s + 0.1)]));
             }
             for a in &body.arms {
                 let c = sin_turns(bobs * s - a.phase - a.lag);
-                f.rot(a.upper, qeuler([-a.swing * c, 0.0, a.roll * cos_turns(s - a.phase)]));
+                f.rot(a.upper, qeuler([sweep - a.swing * c, 0.0, a.roll * cos_turns(s - a.phase)]));
                 if let Some(fo) = a.fore {
                     f.rot(fo, qaxis([1.0, 0.0, 0.0], -a.bend * (0.6 + 0.4 * c)));
                 }
@@ -1030,6 +1033,9 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
     let rise = o.num("rise", 1.0, -100.0, 100.0)?;
     let spin = o.num("spin", 270.0, -3600.0, 3600.0)?;
     let spread = o.num("spread", 2.5, 0.0, 50.0)?;
+    // Scatter: the height the bones come to rest at (the bone line, so the bones' own thickness
+    // lies on the ground rather than in it).
+    let floor = o.num("floor", 0.06, 0.0, 10.0)?;
     let seed = o.num("seed", 1.0, 0.0, 1e9)? as u64;
     let ns = body.spine.len().max(1) as f32;
     let bend_body = |f: &mut Frame, w: f32, crouch_drop: f32| {
@@ -1123,7 +1129,6 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
                     for b in 1..skel.len() {
                         let (v, axis, w) = launch[b];
                         let p0 = g0[b].t;
-                        let floor = 0.06f32;
                         // Ballistic flight until the joint reaches the floor, then it rests.
                         let land = {
                             let (a, bb, c) = (-4.9f32, v[1], p0[1] - floor);
@@ -1136,6 +1141,13 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
                         // Spin about the joint, then move it.
                         let about = Affine::translate(math3::add(p0, off)).then_after(&rm.then_after(&Affine::translate(math3::scale(p0, -1.0))));
                         g[b] = about.then_after(&g0[b]);
+                        // A spinning bone never passes into the ground: its lower end stays on
+                        // the floor (it rolls over it instead).
+                        let tail = g[b].apply_point(math3::sub(skel.tails[b], skel.heads[b]));
+                        let under = floor - g[b].t[1].min(tail[1]);
+                        if under > 0.0 {
+                            g[b].t[1] += under;
+                        }
                     }
                     let mut f = Frame::new(skel.len(), body.legs.len());
                     f.d = deltas_from_globals(skel, &g);

@@ -18,6 +18,12 @@ use std::sync::Arc;
 pub const MAX_ROWS: usize = 12;
 /// Frames per filmstrip row.
 pub const MAX_FRAMES: u32 = 16;
+/// Largest filmstrip sheet side in pixels (tiles shrink to fit; the sight tools' cap).
+pub const MAX_SHEET_PX: u32 = 2048;
+/// Most tiles one filmstrip renders (rows × frames).
+pub const MAX_RENDERS: usize = 128;
+/// Below this mean luma (0..1) a tile's subject is reported as too dark to judge.
+pub const DARK_LUMA: f32 = 0.1;
 /// Largest clip or graph JSON `anim_get` returns whole (bigger ones are summarised).
 pub const MAX_JSON_BYTES: usize = 24 * 1024;
 /// Longest window `anim_state` and entity filmstrips look at (seconds).
@@ -454,6 +460,22 @@ fn stem_of(source: &str) -> String {
     }
 }
 
+/// The folder under `/anims/` a source's assets live in: its whole path, with `/` as `:`
+/// (`recipes/shambler.json` → `recipes:shambler.json`), so sources sharing a file stem don't share
+/// a folder. Longer than a name may be, it keeps the end; [`Engine::anim_set`] refuses to touch
+/// an asset whose `for` is another source either way.
+fn folder_of(source: &str) -> String {
+    let flat: String = source.chars().map(|c| if c == '/' || c == '\\' { ':' } else if c.is_control() { '_' } else { c }).collect();
+    let flat = flat.trim().trim_matches(':').to_string();
+    let n = flat.chars().count();
+    let flat: String = flat.chars().skip(n.saturating_sub(crate::world::MAX_NAME_CHARS)).collect();
+    if flat.is_empty() || flat == "." || flat == ".." {
+        "model".into()
+    } else {
+        flat
+    }
+}
+
 /// Parameters for `graph` from JSON (checked), or the defaults with any enum parameter that has a
 /// value named `state` set to it.
 fn params_for(graph: &AnimGraph, params: Option<&Json>, state: Option<&str>) -> Result<Vec<(String, Value)>, ToolOutput> {
@@ -536,8 +558,6 @@ struct FilmRow {
     times: Vec<f64>,
     poses: Vec<Pose>,
     report: Option<Report>,
-    /// Where the row goes over the ground (the clip's travel), per frame.
-    travel: Vec<f32>,
 }
 
 impl Engine {
@@ -713,8 +733,7 @@ impl Engine {
             SetWhat::Clip(_) => "clip",
             SetWhat::Delete => {
                 // Whichever exists (a clip or a graph of that name).
-                let stem = stem_of(source);
-                let clip_path = format!("/anims/{stem}/clips/{name}");
+                let clip_path = format!("/anims/{}/clips/{name}", folder_of(source));
                 if self.world.find_path(&clip_path).is_ok() {
                     "clip"
                 } else {
@@ -723,10 +742,14 @@ impl Engine {
             }
             _ => "graph",
         };
-        let stem = stem_of(source);
+        let stem = folder_of(source);
         let folder = format!("/anims/{stem}/{}s", kind);
         let path = format!("{folder}/{name}");
         let existing = self.world.find_path(&path).ok();
+        // Never another source's asset (two sources whose folders came out the same).
+        if let Some(other) = existing.and_then(|id| self.world.get(id)).and_then(|e| eanim::asset_of(e).ok()).map(|a| a.source.to_string()).filter(|f| f != source) {
+            return error("asset_conflict", format!("{path} holds the {kind} '{name}' for {other}, not {source}: move or delete it first"));
+        }
         // The data to write.
         let data = match &what {
             SetWhat::Clip(j) | SetWhat::Graph(j) => Some(j.clone()),
@@ -1188,6 +1211,9 @@ impl Engine {
         let scale = scale.unwrap_or(1.0);
         let rows = if rows.is_empty() { set.clips().take(MAX_ROWS).map(|(_, c)| Row::Clip(c.name.clone())).collect() } else { rows };
         let n = frames.max(2) as usize;
+        if rows.len() * n > MAX_RENDERS {
+            return error("too_many_tiles", format!("{} rows of {n} frames is {} tiles; at most {MAX_RENDERS} per call (fewer rows or frames)", rows.len(), rows.len() * n));
+        }
         // Poses first (CPU), so a bad row fails before any rendering.
         let mut film: Vec<FilmRow> = Vec::new();
         for row in &rows {
@@ -1206,8 +1232,7 @@ impl Engine {
                         })
                         .collect();
                     let report = with_checks.then(|| checks::check_clip(&set, &rig, id, &rules, mesh));
-                    let travel = times.iter().map(|t| c.speed() * *t as f32).collect();
-                    film.push(FilmRow { label: format!("{} {:.2}S {}", c.name, c.duration, c.looping.name()), subject: format!("{rig}/{}", c.name), times, poses, report, travel });
+                    film.push(FilmRow { label: format!("{} {:.2}S {}", c.name, c.duration, c.looping.name()), subject: format!("{rig}/{}", c.name), times, poses, report });
                 }
                 Row::State(s) => {
                     let Some(graph) = set.graph(graph_name) else { return error("unknown_graph", format!("{source} has no graph '{graph_name}'")) };
@@ -1228,14 +1253,8 @@ impl Engine {
                     let mut player = GraphPlayer::new();
                     let poses = times.iter().map(|&t| player.evaluate(g, &play, timing, t, &Surroundings::default()).clone()).collect();
                     let report = if with_checks { Some(checks::check_state(g, &rig, graph_name, &s.state, &params, 3.0, &rules, mesh).unwrap_or_default()) } else { None };
-                    let st = &graph.layers[0].states[graph.layers[0].state(&s.state).expect("checked") as usize];
-                    let v = st.match_speed.map_or(0.0, |p| match play.param(&graph.params[p as usize].name) {
-                        Some(Value::Num(x)) => *x,
-                        _ => 0.0,
-                    }) / scale;
-                    let travel = times.iter().map(|t| v * *t as f32).collect();
                     let shown: Vec<String> = params.iter().map(|(n, v)| format!("{n}={}", short(v))).collect();
-                    film.push(FilmRow { label: format!("{}.{} {}", graph_name, s.state, shown.join(" ").replace('"', "")), subject: format!("{rig}/{graph_name}.{}", s.state), times, poses, report, travel });
+                    film.push(FilmRow { label: format!("{}.{} {}", graph_name, s.state, shown.join(" ").replace('"', "")), subject: format!("{rig}/{graph_name}.{}", s.state), times, poses, report });
                 }
                 Row::Transition(tr) => {
                     let Some(graph) = set.graph(graph_name) else { return error("unknown_graph", format!("{source} has no graph '{graph_name}'")) };
@@ -1267,12 +1286,14 @@ impl Engine {
                     let report = with_checks.then(|| checks::check_transition(g, &rig, graph_name, &from, &to, tr.settle_s, &rules, mesh));
                     let name_of = |p: &GraphPlay, tm: Timing, t: f64, sc: &mut Scratch| aplay::state_at(g, p, tm, t, sc)[0].stack.last().map(|e| e.state.clone()).unwrap_or_default();
                     let (a, b) = (name_of(&before, t0, ts, &mut sc), name_of(&after, t1, w1, &mut sc));
-                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b}, switched at {:.2}S", ts), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report, travel: vec![0.0; n] });
+                    film.push(FilmRow { label: format!("{graph_name}.{a}->{b}, switched at {:.2}S", ts), subject: format!("{rig}/{graph_name}.{a}->{b}"), times, poses, report });
                 }
             }
         }
-        // Layout: frames in a row, a label strip under each row.
+        // Layout: frames in a row, a label strip under each row; tiles shrink so neither side
+        // passes MAX_SHEET_PX.
         let label_h = 2 * film::CHAR_H + 6;
+        let tile = fit_tile(tile, n as u32, film.len() as u32, label_h);
         let (sw, sh) = (n as u32 * tile, film.len() as u32 * (tile + label_h));
         let mut sheet = vec![0u8; (sw * sh * 4) as usize];
         film::fill(&mut sheet, sw, 0, 0, sw, sh, [14, 17, 26, 255]);
@@ -1280,17 +1301,17 @@ impl Engine {
         let skel = &set.skeleton;
         let mut out_rows = Vec::new();
         let (mut model, mut skin) = (Vec::new(), Vec::new());
-        for (ri, row) in film.iter().enumerate() {
-            let y0 = ri as u32 * (tile + label_h);
-            // One camera per row: fit every pose (side view, from the creature's left).
+        // Every row's poses fitted (side view, from the creature's left); one camera distance for
+        // the whole sheet, so sizes compare across rows.
+        let mut fits = Vec::new();
+        for row in &film {
             let mut lo = [f32::MAX; 3];
             let mut hi = [f32::MIN; 3];
-            for (k, p) in row.poses.iter().enumerate() {
+            for p in &row.poses {
                 skel.model_space(p, &mut model);
                 for (b, m) in model.iter().enumerate() {
                     let tail = m.apply_point(specula_anim::math::math3::sub(skel.tails[b], skel.heads[b]));
                     for q in [m.t, tail] {
-                        let q = [q[0], q[1], q[2] + row.travel[k] * 0.0];
                         for i in 0..3 {
                             lo[i] = lo[i].min(q[i]);
                             hi[i] = hi[i].max(q[i]);
@@ -1302,9 +1323,17 @@ impl Engine {
             let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
             // Joints and bone ends lie inside the mesh: a margin for its skin.
             let radius = 0.58 * specula_anim::math::math3::length([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]) + 0.1;
-            let fov = 30.0;
+            fits.push((centre, radius));
+        }
+        let radius = fits.iter().map(|f| f.1).fold(0.1f32, f32::max);
+        let fov = 30.0;
+        let mut dark = Vec::new();
+        for (ri, row) in film.iter().enumerate() {
+            let y0 = ri as u32 * (tile + label_h);
+            let centre = fits[ri].0;
             let eye = film::frame_eye(centre, radius, 90.0, 12.0, fov);
             let mut tiles = Vec::new();
+            let mut lumas = Vec::new();
             for (k, pose) in row.poses.iter().enumerate() {
                 skel.model_space(pose, &mut model);
                 skel.skin_matrices(&model, &mut skin);
@@ -1323,23 +1352,27 @@ impl Engine {
                 if let Err(e) = self.film_tile(Vec3::new(eye[0], eye[1], eye[2]), Vec3::new(centre[0], centre[1], centre[2]), fov, &draws, &bones, tile, &mut sheet, sw, x0, y0) {
                     return ToolOutput::error(e);
                 }
+                let l = film::mean_luma(&sheet, sw, x0 + tile / 4, y0 + tile / 4, tile / 2, tile / 2);
+                if l < DARK_LUMA {
+                    dark.push(format!("{} frame {k}", row.subject));
+                }
+                lumas.push(round(l as f64, 3));
                 film::draw_text(&mut sheet, sw, x0 + 3, y0 + 3, &format!("{:.2}", row.times[k]), [200, 200, 190]);
                 tiles.push(Json::arr([x0, y0, tile, tile].map(Json::from)));
             }
-            // Labels: the subject, and the checks that failed (or "checks ok").
+            // Labels: the subject, and the checks that failed (or "checks ok", with what the rules
+            // exempt it from).
             film::draw_text(&mut sheet, sw, 4, y0 + tile + 2, &row.label, [230, 226, 214]);
-            let verdict = match &row.report {
-                None => String::new(),
-                Some(r) if r.passed() => "CHECKS OK".to_string(),
-                Some(r) => r.failures().take(3).map(|c| format!("FAIL {} {:.1}{}", c.check, c.value, c.unit)).collect::<Vec<_>>().join("  "),
-            };
+            let verdict = row.report.as_ref().map(verdict_of).unwrap_or_default();
             let colour = if row.report.as_ref().is_some_and(|r| !r.passed()) { [255, 120, 100] } else { [140, 220, 160] };
             film::draw_text(&mut sheet, sw, 4, y0 + tile + 4 + film::CHAR_H, &verdict, colour);
             let mut j = Json::obj([
                 ("subject", Json::from(row.subject.as_str())),
                 ("label", Json::from(row.label.as_str())),
+                ("verdict", Json::from(verdict.as_str())),
                 ("times_s", Json::arr(row.times.iter().map(|t| round(*t, 4)))),
                 ("tiles", Json::Arr(tiles)),
+                ("luma", Json::Arr(lumas)),
             ]);
             if let Some(r) = &row.report {
                 j.set("checks", r.to_json(12));
@@ -1347,17 +1380,21 @@ impl Engine {
             out_rows.push(j);
         }
         let failed: usize = film.iter().filter_map(|r| r.report.as_ref()).map(|r| r.failures().count()).sum();
-        let packet = Json::obj([
+        let mut packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("kind", Json::from("anim_filmstrip")),
             ("recipe", Json::from(source)),
             ("view", Json::from("side (from the model's left, +X), 12 deg up, neutral stage with a ground plane at y = 0")),
+            ("scale", Json::from(format!("one camera distance for every row (framing a {:.2} m radius): sizes compare across rows", radius))),
             ("frames", Json::from(n)),
             ("tile", Json::from(tile)),
             ("rows", Json::Arr(out_rows)),
             ("checks_failed", Json::from(failed)),
             ("rules", rules.to_json()),
         ]);
+        if !dark.is_empty() {
+            packet.set("warnings", Json::arr([Json::from(format!("too dark to judge (mean luma under {DARK_LUMA}): {}", dark.iter().take(8).cloned().collect::<Vec<_>>().join(", ")))]));
+        }
         self.film_output(sw, sh, &sheet, packet)
     }
 
@@ -1379,9 +1416,17 @@ impl Engine {
         let (lo, hi) = capture::subtree_bounds(&self.world, id).unwrap_or((e.world_position(), e.world_position()));
         let centre = (lo + hi) * 0.5;
         let radius = ((hi - lo).length() * 0.5).max(0.5) * 1.15;
-        // Along its way (lanes run between raised blocks) and high enough to see over them.
-        let views = [(35.0f32, 24.0f32, "front quarter"), (-145.0, 24.0, "back quarter")];
+        // The feet: the lowest third of the body, from the front and low, so a foot on a step and
+        // one below it both show.
+        let feet_h = (hi.y - lo.y) * 0.34;
+        let feet_centre = Vec3::new(centre.x, lo.y + feet_h * 0.5, centre.z);
+        let feet_radius = ((hi.x - lo.x).max(hi.z - lo.z) * 0.5).max(feet_h).max(0.3) * 1.1;
+        // Along its way (lanes run between raised blocks), high enough to see over them; then the
+        // feet. Each view is lit from the camera too (the world's night leaves a creature's front
+        // in the dark).
+        let views = [(35.0f32, 24.0f32, "front quarter", centre, radius), (-145.0, 24.0, "back quarter", centre, radius), (8.0, 6.0, "feet (front, low)", feet_centre, feet_radius)];
         let label_h = 2 * film::CHAR_H + 6;
+        let tile = fit_tile(tile, n as u32, views.len() as u32, label_h);
         let (sw, sh) = (n as u32 * tile, views.len() as u32 * (tile + label_h));
         let mut sheet = vec![0u8; (sw * sh * 4) as usize];
         film::fill(&mut sheet, sw, 0, 0, sw, sh, [14, 17, 26, 255]);
@@ -1393,24 +1438,41 @@ impl Engine {
         };
         let overlays = sight_overlay::Spec::default();
         let mut rows = Vec::new();
-        for (vi, (az, el, name)) in views.iter().enumerate() {
+        let mut dark = Vec::new();
+        for (vi, (az, el, name, c, r)) in views.iter().enumerate() {
             let y0 = vi as u32 * (tile + label_h);
-            let eye = film::frame_eye([centre.x, centre.y, centre.z], radius, az + yaw, *el, 35.0);
-            let camera = Camera::new(Vec3::new(eye[0], eye[1], eye[2]), centre, 35.0);
+            let eye = film::frame_eye([c.x, c.y, c.z], *r, az + yaw, *el, 35.0);
+            let eye = Vec3::new(eye[0], eye[1], eye[2]);
+            let dist = (eye - *c).length();
+            let fill = specula_gpu::PointLight { position: [eye.x, eye.y, eye.z], color: [1.0, 0.95, 0.88], intensity: 0.45 * dist * dist, range: dist * 3.0 };
+            let camera = Camera::new(eye, *c, 35.0);
             let mut tiles = Vec::new();
+            let mut lumas = Vec::new();
             for (k, &t) in times.iter().enumerate() {
-                let opts = capture::ViewOpts { include_ui: false, lod: Some(0), time_s: t, overlays: &overlays, caption: None, ids: false };
-                let r = match self.render_view(camera, tile, tile, &opts) {
+                let opts = capture::ViewOpts { include_ui: false, lod: Some(0), time_s: t, overlays: &overlays, caption: None, ids: false, fill: Some(fill) };
+                let rend = match self.render_view(camera, tile, tile, &opts) {
                     Ok(r) => r,
                     Err(e) => return ToolOutput::error(e),
                 };
                 let x0 = k as u32 * tile;
-                film::blit(&mut sheet, sw, x0, y0, &r.rgba, tile, tile);
+                film::blit(&mut sheet, sw, x0, y0, &rend.rgba, tile, tile);
+                // How bright the subject came out (its screen box, else the tile's middle).
+                let bx = rend.subjects.iter().find(|s| s.id == id).and_then(|s| s.json.get("screen")).and_then(Json::as_array).filter(|a| a.len() == 4).map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0).max(0.0) as u32).collect::<Vec<_>>());
+                let l = match bx {
+                    Some(b) if b[2] > 0 && b[3] > 0 => film::mean_luma(&sheet, sw, x0 + b[0], y0 + b[1], b[2].min(tile), b[3].min(tile)),
+                    _ => film::mean_luma(&sheet, sw, x0 + tile / 4, y0 + tile / 4, tile / 2, tile / 2),
+                };
+                if l < DARK_LUMA {
+                    dark.push(format!("{name} frame {k}"));
+                }
+                lumas.push(round(l as f64, 3));
                 film::draw_text(&mut sheet, sw, x0 + 3, y0 + 3, &format!("+{:.2}", t - t0), [200, 200, 190]);
                 tiles.push(Json::arr([x0, y0, tile, tile].map(Json::from)));
             }
+            let scale = radius / r.max(1e-3);
             film::draw_text(&mut sheet, sw, 4, y0 + tile + 2, &format!("{} {name}", path.rsplit('/').next().unwrap_or(&path)), [230, 226, 214]);
-            rows.push(Json::obj([("view", Json::from(*name)), ("tiles", Json::Arr(tiles))]));
+            film::draw_text(&mut sheet, sw, 4, y0 + tile + 4 + film::CHAR_H, &format!("scale {scale:.2}x, lit from the camera"), [170, 175, 185]);
+            rows.push(Json::obj([("view", Json::from(*name)), ("tiles", Json::Arr(tiles)), ("luma", Json::Arr(lumas)), ("framed_radius_m", round(*r as f64, 3)), ("scale", round(scale as f64, 3))]));
         }
         let state = self.anim_state(&EntityKey::Id(id), Some(t0), window_s as f64);
         let state_json = state.content.iter().find_map(|c| match c {
@@ -1425,20 +1487,118 @@ impl Engine {
             ("frames", Json::from(n)),
             ("tile", Json::from(tile)),
             ("rows", Json::Arr(rows)),
+            ("lighting", Json::from("the world's lights plus a fill light at each camera")),
             ("note", Json::from("the entity's play at future times in the world as it is now (a moving entity is filmed in place)")),
         ]);
         if let Some(s) = state_json {
             packet.set("state", s);
         }
+        if let Some(f) = self.feet_in_world(&e, &times) {
+            packet.set("feet_in_world", f);
+        }
         if with_checks {
             let check = self.anim_check(None, Some(EntityKey::Id(id)), "creature", None, None, Vec::new(), None, 12);
             if let Some(Content::Text(t)) = check.content.first() {
-                if let Ok(j) = Json::parse(t) {
+                if let Ok(mut j) = Json::parse(t) {
+                    j.set("stage", Json::from("these checks play the entity's state on a flat stage; feet_in_world checks its feet on the world's own ground"));
                     packet.set("checks", j);
                 }
             }
         }
+        if !dark.is_empty() {
+            packet.set("warnings", Json::arr([Json::from(format!("too dark to judge (mean luma under {DARK_LUMA}): {}", dark.iter().take(8).cloned().collect::<Vec<_>>().join(", ")))]));
+        }
         self.film_output(sw, sh, &sheet, packet)
+    }
+
+    /// The feet IK on the world's ground at each of `times`: per foot the ground under it, how
+    /// high the ankle stands over it after the IK, and how high the animation had it over its
+    /// own ground; the check (`feet_on_ground`) is the largest difference against the rules'
+    /// `contact_m` (a foot the IK couldn't put where the animation meant it). `None` for an
+    /// entity without a graph play with feet IK.
+    fn feet_in_world(&mut self, e: &crate::world::Entity, times: &[f64]) -> Option<Json> {
+        let a = e.anim.as_ref()?;
+        let gp = a.graph.as_deref()?;
+        let set = crate::anim::anim_set_of(&self.world, e)?;
+        let graph = set.graph(&gp.graph)?;
+        let feet = graph.ik.iter().find_map(|k| match &k.solver {
+            specula_anim::graph::Solver::Feet(f) => Some(f.clone()),
+            _ => None,
+        })?;
+        let source = e.resolved_model().and_then(|r| self.library.lock().handle_spec(r.handle).map(|s| s.recipe.to_string()));
+        let contact = source.and_then(|s| self.motion_rules(&s).ok()).map_or(MotionRules::default().contact_m, |r| r.contact_m);
+        let g = Graphed { set: &set, graph, scale: crate::anim::entity_scale(e) };
+        let timing = Timing { anchor: a.start.unwrap_or(0.0), speed: a.speed };
+        let ground = self.models.ground().cloned();
+        let m = e.model();
+        let c = &m.cols;
+        let to_world = specula_anim::math::Affine { cols: [[c[0][0], c[0][1], c[0][2]], [c[1][0], c[1][1], c[1][2]], [c[2][0], c[2][1], c[2][2]]], t: [c[3][0], c[3][1], c[3][2]] };
+        let around = Surroundings { to_world: Some(to_world), ground: ground.as_deref().map(|g| g as &dyn specula_anim::ik::Ground), external: None };
+        let (mut planted, mut free) = (GraphPlayer::new(), GraphPlayer::new());
+        planted.report_ik = true;
+        let mut frames = Vec::new();
+        let (mut worst, mut worst_at, mut worst_leg) = (0.0f32, times.first().copied().unwrap_or(0.0), 0usize);
+        for &t in times {
+            planted.evaluate(g, gp, timing, t, &around);
+            free.evaluate(g, gp, timing, t, &Surroundings { to_world: Some(to_world), ground: None, external: None });
+            let Some(r) = planted.ik.solvers.iter().find_map(|(_, _, f)| *f) else { continue };
+            let mut legs = Vec::new();
+            for (i, leg) in feet.legs.iter().enumerate().take(r.count) {
+                let res = r.legs[i];
+                let after = to_world.apply_point(planted.model()[leg.end].t);
+                let before = free.model()[leg.end].t;
+                let meant = to_world.apply_point(before)[1] - to_world.apply_point([before[0], 0.0, before[2]])[1];
+                let mut f = vec![("ground_m", res.ground.map_or(Json::Null, |g| round(g as f64, 4))), ("offset_m", round(res.offset as f64, 4)), ("miss_m", round(res.reach.miss as f64, 4))];
+                if let Some(gh) = res.ground {
+                    let stands = after[1] - gh;
+                    f.push(("ankle_over_ground_m", round(stands as f64, 4)));
+                    f.push(("animated_over_ground_m", round(meant as f64, 4)));
+                    let err = (stands - meant).abs();
+                    if err > worst {
+                        (worst, worst_at, worst_leg) = (err, t, i);
+                    }
+                }
+                legs.push(Json::obj(f));
+            }
+            frames.push(Json::obj([("time_s", round(t, 4)), ("pelvis_m", round(r.pelvis as f64, 4)), ("feet", Json::Arr(legs))]));
+        }
+        let passed = worst <= contact;
+        Some(Json::obj([
+            ("frames", Json::Arr(frames)),
+            ("ground", Json::from(if ground.is_some() { "the world's ground entities" } else { "none (no entity is tagged 'ground'): feet keep their animated height" })),
+            (
+                "check",
+                Json::obj([
+                    ("check", Json::from("feet_on_ground")),
+                    ("value", round(worst as f64 * 100.0, 3)),
+                    ("limit", round(contact as f64 * 100.0, 3)),
+                    ("unit", Json::from("cm")),
+                    ("passed", Json::from(passed)),
+                    ("at_s", round(worst_at, 4)),
+                    ("leg", Json::from(worst_leg)),
+                ]),
+            ),
+        ]))
+    }
+}
+
+/// A tile size that keeps a sheet of `cols × rows` tiles (each row with a `label_h` strip under
+/// it) within [`MAX_SHEET_PX`] on both sides.
+fn fit_tile(tile: u32, cols: u32, rows: u32, label_h: u32) -> u32 {
+    tile.min(MAX_SHEET_PX / cols.max(1)).min((MAX_SHEET_PX / rows.max(1)).saturating_sub(label_h)).max(16)
+}
+
+/// A row's verdict label: what failed, or "checks ok" with what the rules exempted.
+fn verdict_of(r: &Report) -> String {
+    if r.passed() {
+        let ex = r.exemptions();
+        if ex.is_empty() {
+            "CHECKS OK".to_string()
+        } else {
+            format!("CHECKS OK (EXEMPT: {})", ex.join(", "))
+        }
+    } else {
+        r.failures().take(3).map(|c| format!("FAIL {} {:.1}{}", c.check, c.value, c.unit)).collect::<Vec<_>>().join("  ")
     }
 }
 
@@ -1472,6 +1632,26 @@ mod tests {
         }
     }
 
+    /// Review round 1, finding 6: sheets went up to 5120 x 4080 px.
+    #[test]
+    fn sheets_stay_within_the_sight_cap() {
+        let label_h = 2 * film::CHAR_H + 6;
+        for (tile, cols, rows) in [(320u32, 16u32, 12u32), (320, 16, 3), (320, 2, 12), (64, 16, 12), (160, 8, 7)] {
+            let t = fit_tile(tile, cols, rows, label_h);
+            assert!(t <= tile && cols * t <= MAX_SHEET_PX && rows * (t + label_h) <= MAX_SHEET_PX, "{tile} {cols}x{rows}: {t}");
+        }
+        assert_eq!(fit_tile(160, 8, 7, label_h), 160, "small sheets keep their tile");
+        assert!(MAX_ROWS * MAX_FRAMES as usize > MAX_RENDERS, "the render cap binds");
+    }
+
+    #[test]
+    fn verdicts_name_exemptions() {
+        let c = |exempt: bool, passed: bool| specula_anim::checks::Check { check: "ground_penetration", subject: "s".into(), value: 9.0, limit: 3.0, unit: "cm", passed, exempt, at_s: None, bone: None, detail: Vec::new() };
+        assert_eq!(verdict_of(&Report { checks: vec![c(false, true)], notes: Vec::new() }), "CHECKS OK");
+        assert_eq!(verdict_of(&Report { checks: vec![c(true, true)], notes: Vec::new() }), "CHECKS OK (EXEMPT: ground_penetration)");
+        assert!(verdict_of(&Report { checks: vec![c(false, false)], notes: Vec::new() }).starts_with("FAIL ground_penetration 9.0cm"));
+    }
+
     #[test]
     fn merge_patches_and_stems() {
         let a = Json::parse(r#"{"states": {"idle": "idle", "move": "walk"}, "entry": "idle"}"#).unwrap();
@@ -1480,5 +1660,12 @@ mod tests {
         assert_eq!(stem_of("recipes/shambler.json"), "shambler");
         assert_eq!(stem_of("models/hero.glb"), "hero");
         assert_eq!(stem_of("a b/odd name!.json"), "odd_name_");
+        // Review round 1, finding 7: asset folders come from the whole source path.
+        assert_eq!(folder_of("recipes/shambler.json"), "recipes:shambler.json");
+        assert_ne!(folder_of("recipes/shambler.json"), folder_of("models/shambler.glb"));
+        assert_ne!(folder_of("a/shambler.json"), folder_of("b/shambler.json"));
+        let long = format!("{}/x.json", "d".repeat(300));
+        assert!(folder_of(&long).chars().count() <= crate::world::MAX_NAME_CHARS && folder_of(&long).ends_with("x.json"));
+        assert!(crate::world::validate_name(&folder_of("a\\b/ c.json ")).is_ok());
     }
 }

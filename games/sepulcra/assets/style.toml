@@ -22,10 +22,16 @@ sample_hz = 60
 # The shambler drags its right leg (STYLE.md: "a dragging right leg makes the walk lurch"): that
 # foot scrapes the ground on purpose. The left foot is still checked.
 "shambler*" = ["foot_sliding:foot_r"]
-# The dead sink into the graveyard soil: the shambler crumbles into it, the runner's bones
-# scatter and settle half-buried (flying apart, they have no joints to limit either).
-"shambler/*death" = ["ground_penetration"]
-"skeleton_runner/*death" = ["ground_penetration", "joint_limits"]
-# Wraiths fly: their model has no ground (the shroud floats 25 cm over its origin and dives
-# below it when swooping).
-"wraith/*" = ["ground_penetration", "floating", "foot_sliding"]
+# Its special is a climb up a cliff face: the feet scrabble at the rock, not on the ground.
+"shambler/climb" = ["foot_sliding"]
+# The runner's bones fly apart when it dies (a scatter, not a fall): no joints are left to limit.
+# They come to rest on the ground like every other death (floating and penetration still apply).
+"skeleton_runner/*death" = ["joint_limits"]
+# Wraiths rise away and fade when destroyed: their death leaves the hover band on purpose.
+"wraith/*death" = ["hover"]
+
+[motion.hover]
+# Flyers have no feet on the ground: instead of foot sliding and floating, their lowest point
+# (the shroud's hem) keeps to a band above the ground, in cm (STYLE.md: the shroud floats a hand
+# over the ground and never drags through it, even in a dive).
+"wraith/*" = [3, 90]

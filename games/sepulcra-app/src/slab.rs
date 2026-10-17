@@ -254,7 +254,6 @@ fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
     [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)]
 }
 
-/// Builds the slab under `/slab` (replacing an old one). Returns the group's id.
 /// Marks a slab piece as ground: creatures' feet stand on its top (the anim graphs' feet IK).
 fn ground(world: &mut World, agent: &str, id: u64) {
     if id != 0 {
@@ -262,6 +261,7 @@ fn ground(world: &mut World, agent: &str, id: u64) {
     }
 }
 
+/// Builds the slab under `/slab` (replacing an old one). Returns the group's id.
 pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
     if let Some(old) = ents::top_level(world, "slab") {
         ents::delete(world, old);

@@ -44,10 +44,10 @@ fn every_anim_file_has_a_creature() {
 #[test]
 fn creature_clips_are_complete() {
     let expect: &[(&str, &[&str])] = &[
-        ("shambler", &["idle", "walk", "attack", "death", "shuffle", "still", "flinch"]),
+        ("shambler", &["idle", "walk", "attack", "death", "climb", "shuffle", "still", "flinch"]),
         ("skeleton_runner", &["idle", "sprint", "jog", "leap", "death", "claw", "still", "flinch"]),
-        ("wraith", &["float", "swoop", "death", "float_shroud", "swoop_shroud", "still", "flinch"]),
-        ("bone_colossus", &["walk", "lumber", "idle", "summon", "death", "still", "flinch"]),
+        ("wraith", &["float", "glide", "dive", "swoop", "death", "float_shroud", "glide_shroud", "dive_shroud", "swoop_shroud", "still", "flinch"]),
+        ("bone_colossus", &["walk", "lumber", "idle", "summon", "pound", "death", "still", "flinch"]),
         ("brazier_fire", &["flicker"]),
     ];
     for (name, clips) in expect {
@@ -206,4 +206,4 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "4a4b48e570970a00";
+const PINNED: &str = "2d89c91b6cf8d334";

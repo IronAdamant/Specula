@@ -134,11 +134,18 @@ The decision that shaped everything: the engine already evaluates clips as a pur
 capture at a time always shows the same pose. Graphs keep that. A **play** (an entity's `anim` in graph mode) is data:
 parameter values, the graph clock at an anchor and, per layer, a short blend stack (state, phase, crossfade). Its pose
 at any time is computed by running the state machines forward from the anchor with constant parameters: conditions
-fire at once, exit times at the moment the phase reaches them. Periodic chains (attack → idle → attack) are detected
-and skipped whole periods at a time, so the cost is bounded however far the time is from the anchor (`MAX_STEPS`
-otherwise, reported as `truncated`). **Writing parameters settles the play** at the write's time (the world does it
-in `World::update`): blends stay continuous, fired triggers are consumed, and parameters not given keep their values.
-There is no per-frame state, so captures, replays and the window agree.
+fire at once, exit times at the moment the phase reaches them. Periodic chains of any length (attack → idle →
+attack) are detected (the last firing of every transition is kept) and skipped whole periods at a time, so the cost is
+bounded however far the time is from the anchor (`MAX_STEPS` otherwise, reported as `truncated`). One instant fires at
+most one transition more than the layer has states, so zero-time loops (`a → b when on`, `b → a when on`) stop
+deterministically instead of spinning. Blend trees are bounded at parse time by their real depth and clip count
+(named nodes reused under each other count every use; at most 64 clips). **Writing parameters settles the play** at
+the write's time (the world does it in `World::update`): blends stay continuous, fired triggers are consumed, and
+parameters not given keep their values. The write waits for the model's build if it is still in flight and lays the
+world's anim assets as of that write over it, so what is stored (and hashed) never depends on build timing or on
+when the engine last looked at the world; without an anim set (a failed build, no rig) parameters still merge.
+There is no per-frame state, so captures, replays and the window agree. `root_motion` integrates along the stacks
+of one resolve.
 
 ### Determinism: what is simulation, what is cosmetic
 
@@ -162,23 +169,32 @@ then damped spring, for additive hit layers), `breathe`, `chain` (spring-chain s
 clip, seamless loops: tails, shrouds, cloth strips), and `"body": "auto"` (a gait from a rig's bone names). Gaits
 now lift and land feet in place (`clear`) with the toe up, found by the foot-sliding check (the shambler's walk went
 from 16 to 0.08 cm/s). Agents write clips and graphs with `anim_set`: they become Group entities tagged `anim_asset`
-under `/anims/<recipe>/`, so they are journaled, claimable, undoable and saved, and the library lays them over the
-recipe's own set for every entity of that model. *Limit:* props hold 16 KiB, so long keyframed clips should be
+under `/anims/<source path with / as :>/` (`/anims/recipes:shambler.json/graphs/creature`, so two sources sharing
+a file stem never share a folder; writing over another source's asset is refused), so they are journaled,
+claimable, undoable and saved, and the library lays them over the recipe's own set for every entity of that model. *Limit:* props hold 16 KiB, so long keyframed clips should be
 generator specs.
 
 ### Motion checks as data (`checks.rs`)
 
-Foot sliding (soles within 2.5 cm, weighted `2 − 2^(h/H)`, per foot), floating, ground penetration (skinned
-vertices), joint limits, pops at transitions (excess per-frame joint jump, scaled to a 1.8 m figure), root drift and
-loop seams, for clips, graph states held with parameters and parameter changes. Thresholds and precise exemptions
-(`"rig/subject" = ["check", "check:bone"]`) come from the game's `style.toml` `[motion]` table; a value over its limit
-is an error. On Sepulcra the checks found real defects, now fixed: the runner hovered 7.8 cm, the colossus's hands
-went 33 cm into the slab walking and 2 m in its death. Self-intersection is not checked yet.
+Foot sliding (soles within 2.5 cm, weighted `2 − 2^(h/H)`, per foot), floating (for play-once subjects such as
+deaths and leaps: how high the body rests at the end), ground penetration (skinned vertices), joint limits, pops at
+transitions (excess per-frame joint jump, scaled to a 1.8 m figure), root drift, loop seams and, for flyers, a hover
+band (`[motion.hover]`: the body's lowest point stays within it; feet checks don't apply), for clips, graph states
+held with parameters and parameter changes. Thresholds and precise exemptions (`"rig/subject" = ["check",
+"check:bone"]`) come from the game's `style.toml` `[motion]` table; a value over its limit is an error, and an
+exemption shows on filmstrip labels ("CHECKS OK (EXEMPT: ...)"). On Sepulcra the checks found real defects, now
+fixed: the runner hovered 7.8 cm, the colossus's hands went 33 cm into the slab walking and 2 m in its death, the
+shambler's death sank 73 cm and the wraith's shroud dipped 15 cm under the floor in its swoop. Self-intersection is
+not checked yet.
 
 ### Animation sight
 
 `anim_filmstrip` renders contact sheets (rows of clips, states or transitions on a neutral stage, or an entity's own
-play in the world) with each row's checks attached, saved like captures with a packet. The `filmstrip` and
+play in the world) with each row's checks attached, saved like captures with a packet. Sheets stay within 2048 px a
+side (tiles shrink) and 128 tiles a call; a stage sheet uses one camera distance for every row, so sizes compare.
+Entity sheets add a low front view of the feet, light each view from the camera, warn about tiles too dark to judge
+(mean luma under 0.1 in the subject's box) and report `feet_in_world`: per frame the ground under each foot, the
+ankle's height over it after the IK against the animation's, and a `feet_on_ground` check. The `filmstrip` and
 `motion_checks` examples do the same offline.
 
 ### Tools

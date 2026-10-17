@@ -128,7 +128,11 @@ def main():
         res = mcp.call("anim_filmstrip", path=live, frames=6, tile=160, window_s=1.5)
         packet = json.loads(next(c["text"] for c in res["content"] if c["type"] == "text"))
         summary["live_sheet"] = packet["image"]["path"]
-        print(f"  filmstrip {live}: {packet['image']['path']}, checks passed {packet.get('checks', {}).get('passed')}")
+        print(f"  filmstrip {live}: {packet['image']['path']}, checks passed {packet.get('checks', {}).get('passed')}, warnings {packet.get('warnings')}")
+        if packet.get("warnings"):
+            fail(f"live filmstrip: {packet['warnings']}")
+        if max(packet["image"]["width"], packet["image"]["height"]) > 2048:
+            fail(f"sheet {packet['image']['width']}x{packet['image']['height']}")
 
         # Feet on uneven ground: a shambler straddling the graveyard's 12 cm step plants one foot
         # on each level and lowers its hips (feet IK on the slab's 'ground' pieces).
@@ -145,8 +149,14 @@ def main():
             fail(f"feet on the step: {feet}")
         res = mcp.call("anim_filmstrip", id=spawn["id"], frames=4, tile=192, window_s=1.5)
         packet = json.loads(next(c["text"] for c in res["content"] if c["type"] == "text"))
-        print(f"  filmstrip step_test: {packet['image']['path']}")
-        summary["step_test"] = {"feet": feet, "sheet": packet["image"]["path"]}
+        fiw = packet.get("feet_in_world") or {}
+        check = fiw.get("check", {})
+        print(f"  filmstrip step_test: {packet['image']['path']}, feet_on_ground {check.get('value')} cm (limit {check.get('limit')}) passed {check.get('passed')}, warnings {packet.get('warnings')}")
+        if not check.get("passed"):
+            fail(f"feet on the step, in the world: {json.dumps(fiw)[:600]}")
+        if packet.get("warnings"):
+            fail(f"step filmstrip: {packet['warnings']}")
+        summary["step_test"] = {"feet": feet, "sheet": packet["image"]["path"], "feet_in_world": fiw}
         mcp.call("world_delete", id=spawn["id"])
 
         # Live authoring: a graph patch and a keyed clip, journaled, then undone.

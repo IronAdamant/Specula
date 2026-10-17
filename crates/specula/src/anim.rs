@@ -12,7 +12,7 @@
 //!   [`specula_anim::ik::Ground`] trait.
 //! - **Anim assets**: clips and graphs agents write live (the `anim_set` tool) are ordinary Group
 //!   entities tagged [`ASSET_TAG`] with `props.anim_asset = {for, kind, data}`, normally under
-//!   `/anims/<recipe stem>/`. So they are journaled, undoable, claimable, saved with the world
+//!   `/anims/<source path, / as :>/`. So they are journaled, undoable, claimable, saved with the world
 //!   and hashed like everything else. They lay over the recipe's own anim set (same-named clips
 //!   and graphs replace, new ones add; see [`specula_anim::AnimSet::with_overlay`]) for every
 //!   model whose recipe is `for`. Props hold at most 16 KiB, so a keyframed clip that big is
@@ -41,6 +41,14 @@ pub const ASSET_PROP: &str = "anim_asset";
 pub const SOFT_EDGE_M: f32 = 0.08;
 /// Grid cell (m) of the ground index.
 const CELL_M: f32 = 2.0;
+/// Coarse cell (m) for boxes spanning more than [`FINE_MAX_CELLS`] fine cells.
+const COARSE_M: f32 = 64.0;
+/// Most cells (per axis) a box is filed under on either level; bigger ones go to a short list
+/// every query looks at, so indexing one box is bounded work however large it is.
+const FINE_MAX_CELLS: i32 = 8;
+const COARSE_MAX_CELLS: i32 = 16;
+/// Most boxes on that list (larger than about 1 km); the rest are left out and counted.
+pub const MAX_HUGE_GROUND: usize = 64;
 /// Most ground boxes indexed (the rest are ignored and reported).
 pub const MAX_GROUND_BOXES: usize = 65_536;
 /// Most anim assets read from the world.
@@ -49,6 +57,13 @@ pub const MAX_ASSETS: usize = 1024;
 /// The anim set (with the world's assets laid over it) of entity `e`'s model, once built.
 pub fn anim_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
     world.model_source()?.anim_set(e.resolved_model()?.handle)
+}
+
+/// The anim set a graph write to `e` settles against: waits for a build in flight and lays the
+/// world's own assets (as of now) over it, so the result never depends on build timing or on
+/// when the engine last looked at the world.
+fn write_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
+    world.model_source()?.anim_set_for_write(e.resolved_model()?.handle, world.anim_assets())
 }
 
 /// World metres per model metre of an entity (the mean of its axis scales), for `match_speed`.
@@ -77,11 +92,27 @@ pub fn check_params(graph: &AnimGraph, name: &str, params: &[(String, Value)]) -
 }
 
 /// What [`World::update`] does with a new graph anim on `e`: checks the graph and parameters
-/// against the model's anim set (when it is built: before that the anim is stored as given) and,
-/// when the entity already plays the same graph and the write gives no `layers`, settles the old
-/// play at the write's time and lays the new parameters over the old ones.
+/// against the model's anim set (waiting for a build in flight) and, when the entity already
+/// plays the same graph and the write gives no `layers`, settles the old play at the write's
+/// time and lays the new parameters over the old ones. Without an anim set (no rig, a failed
+/// build, no model library) nothing can be checked or settled, but the parameters still merge.
 pub(crate) fn settle_update(world: &World, e: &Entity, new: &mut AnimSpec) -> Result<(), WorldError> {
-    let Some(set) = anim_set_of(world, e) else { return Ok(()) };
+    let Some(set) = write_set_of(world, e) else {
+        let gp = new.graph.as_mut().expect("graph mode");
+        let old = e.anim.as_ref().and_then(|a| a.graph.as_deref().filter(|og| og.graph == gp.graph).map(|og| (a, og)));
+        if let (Some((old_anim, old_play)), true) = (old, gp.layers.is_empty()) {
+            let mut merged = old_play.clone();
+            for (n, v) in &gp.params {
+                merged.set_param(n, v.clone());
+            }
+            **gp = merged;
+            // The play keeps its own anchor (its clock and states are as of it).
+            new.start = old_anim.start;
+            new.from = None;
+            new.crossfade = 0.0;
+        }
+        return Ok(());
+    };
     let gp = new.graph.as_mut().expect("graph mode");
     let Some(graph) = set.graph(&gp.graph) else {
         let names: Vec<&str> = set.graphs().map(|(n, _)| n).collect();
@@ -137,12 +168,18 @@ struct GroundBox {
 pub struct GroundGrid {
     boxes: Vec<GroundBox>,
     cells: BTreeMap<(i32, i32), Vec<u32>>,
-    /// Ground entities left out past [`MAX_GROUND_BOXES`].
+    coarse: BTreeMap<(i32, i32), Vec<u32>>,
+    huge: Vec<u32>,
+    /// Ground entities left out past [`MAX_GROUND_BOXES`] (or [`MAX_HUGE_GROUND`]).
     pub dropped: usize,
 }
 
 fn cell_of(v: f32) -> i32 {
     (v / CELL_M).floor() as i32
+}
+
+fn coarse_of(v: f32) -> i32 {
+    (v / COARSE_M).floor() as i32
 }
 
 impl GroundGrid {
@@ -159,17 +196,41 @@ impl GroundGrid {
                 continue;
             }
             let (lo, hi) = e.world_aabb();
-            let b = GroundBox { min: [lo.x, lo.z], max: [hi.x, hi.z], top: hi.y };
-            let i = g.boxes.len() as u32;
-            g.boxes.push(b);
-            let r = SOFT_EDGE_M;
-            for cx in cell_of(b.min[0] - r)..=cell_of(b.max[0] + r) {
-                for cz in cell_of(b.min[1] - r)..=cell_of(b.max[1] + r) {
-                    g.cells.entry((cx, cz)).or_default().push(i);
-                }
-            }
+            g.insert(GroundBox { min: [lo.x, lo.z], max: [hi.x, hi.z], top: hi.y });
         }
         g
+    }
+
+    /// Files a box under the fine grid, the coarse one or the huge list, by its size.
+    fn insert(&mut self, b: GroundBox) {
+        if !(b.min.iter().chain(&b.max).all(|v| v.is_finite()) && b.top.is_finite()) {
+            self.dropped += 1;
+            return;
+        }
+        let r = SOFT_EDGE_M;
+        let (x0, x1, z0, z1) = (b.min[0] - r, b.max[0] + r, b.min[1] - r, b.max[1] + r);
+        let i = self.boxes.len() as u32;
+        let span = |f: fn(f32) -> i32| (f(x1) as i64 - f(x0) as i64).max(f(z1) as i64 - f(z0) as i64) + 1;
+        let (fine, coarse) = (span(cell_of), span(coarse_of));
+        if fine <= FINE_MAX_CELLS as i64 {
+            for cx in cell_of(x0)..=cell_of(x1) {
+                for cz in cell_of(z0)..=cell_of(z1) {
+                    self.cells.entry((cx, cz)).or_default().push(i);
+                }
+            }
+        } else if coarse <= COARSE_MAX_CELLS as i64 {
+            for cx in coarse_of(x0)..=coarse_of(x1) {
+                for cz in coarse_of(z0)..=coarse_of(z1) {
+                    self.coarse.entry((cx, cz)).or_default().push(i);
+                }
+            }
+        } else if self.huge.len() < MAX_HUGE_GROUND {
+            self.huge.push(i);
+        } else {
+            self.dropped += 1;
+            return;
+        }
+        self.boxes.push(b);
     }
 
     pub fn len(&self) -> usize {
@@ -183,7 +244,10 @@ impl GroundGrid {
 
 impl Ground for GroundGrid {
     fn height(&self, x: f32, z: f32, top: f32, depth: f32) -> Option<f32> {
-        let cand = self.cells.get(&(cell_of(x), cell_of(z)))?;
+        let none: &[u32] = &[];
+        let fine = self.cells.get(&(cell_of(x), cell_of(z))).map_or(none, Vec::as_slice);
+        let coarse = self.coarse.get(&(coarse_of(x), coarse_of(z))).map_or(none, Vec::as_slice);
+        let cand = || fine.iter().chain(coarse).chain(&self.huge);
         let r = SOFT_EDGE_M;
         let reach = |b: &GroundBox| b.top <= top && b.top >= top - depth;
         // Signed distance from (x, z) to a box's rectangle (negative inside).
@@ -199,9 +263,9 @@ impl Ground for GroundGrid {
         // The base: the highest box the point is on. Then every higher box within r eases the
         // ground up towards its top (reaching it at its edge), so the height is continuous both
         // stepping up and stepping off.
-        let base = cand.iter().map(|&i| &self.boxes[i as usize]).filter(|b| reach(b) && dist(b) <= 0.0).map(|b| b.top).fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.max(t))))?;
+        let base = cand().map(|&i| &self.boxes[i as usize]).filter(|b| reach(b) && dist(b) <= 0.0).map(|b| b.top).fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.max(t))))?;
         let mut h = base;
-        for &i in cand {
+        for &i in cand() {
             let b = &self.boxes[i as usize];
             let d = dist(b);
             if b.top > base && reach(b) && d > 0.0 && d < r {
@@ -283,6 +347,39 @@ pub fn assets_of(world: &World) -> (Assets, Vec<String>) {
     (out, problems)
 }
 
+/// The world's anim assets, read again only when an asset entity changed (from the world's
+/// change log). The world keeps one, refreshed inside its own mutations, so a graph write
+/// settles against the assets as they are at that write, whatever ran before it (a batch, an
+/// undo, a load).
+#[derive(Clone, Debug, Default)]
+pub struct AssetCache {
+    /// The draw epoch last looked at.
+    seen: Option<u64>,
+    ids: BTreeSet<u64>,
+    pub assets: Arc<Assets>,
+}
+
+impl AssetCache {
+    pub fn refresh(&mut self, world: &World) {
+        let epoch = world.draw_epoch();
+        if self.seen == Some(epoch) {
+            return;
+        }
+        let stale = match self.seen.and_then(|s| world.draw_changes_since(s)) {
+            None => true,
+            Some(mut changed) => changed.any(|id| self.ids.contains(&id) || world.get(id).is_some_and(|x| x.tags.contains(ASSET_TAG))),
+        };
+        self.seen = Some(epoch);
+        if stale {
+            self.ids = world.persistent_entities().filter(|e| e.tags.contains(ASSET_TAG)).map(|e| e.id).collect();
+            let (a, _) = assets_of(world);
+            if *self.assets != a {
+                self.assets = Arc::new(a);
+            }
+        }
+    }
+}
+
 /// What the engine last built ground and assets from, so a frame only rebuilds them when an
 /// entity that matters changed.
 #[derive(Default)]
@@ -342,15 +439,39 @@ mod tests {
 
     fn grid(boxes: &[([f32; 2], [f32; 2], f32)]) -> GroundGrid {
         let mut g = GroundGrid::default();
-        for (i, (min, max, top)) in boxes.iter().enumerate() {
-            g.boxes.push(GroundBox { min: *min, max: *max, top: *top });
-            for cx in cell_of(min[0] - SOFT_EDGE_M)..=cell_of(max[0] + SOFT_EDGE_M) {
-                for cz in cell_of(min[1] - SOFT_EDGE_M)..=cell_of(max[1] + SOFT_EDGE_M) {
-                    g.cells.entry((cx, cz)).or_default().push(i as u32);
-                }
-            }
+        for (min, max, top) in boxes {
+            g.insert(GroundBox { min: *min, max: *max, top: *top });
         }
         g
+    }
+
+    /// Review round 1, finding 5: every box used to be filed under every 2 m cell it covers (a
+    /// 1 km plane took 60 ms to index, 8 km 8.6 s). Large boxes go to a coarse grid or a short list.
+    #[test]
+    fn large_ground_is_indexed_in_bounded_work() {
+        for side in [1000.0f32, 4000.0, 8000.0, 100_000.0] {
+            let mut world = World::default();
+            let mut s = crate::world::SpawnSpec::new(Shape::Cube);
+            s.scale = specula_core::math::Vec3::new(side, 1.0, side);
+            s.tags.insert(GROUND_TAG.into());
+            world.spawn(s, "t").unwrap();
+            let t = std::time::Instant::now();
+            let g = GroundGrid::of(&world);
+            let took = t.elapsed();
+            assert_eq!(g.len(), 1);
+            assert!(g.cells.len() + g.coarse.len() <= 256, "{side} m: {} cells", g.cells.len() + g.coarse.len());
+            assert!(took.as_millis() < 20, "{side} m: {took:?}");
+            // The cube's top is 0.5 m: anywhere on it, edges included.
+            assert_eq!(g.height(0.0, 0.0, 1.0, 1.0), Some(0.5));
+            assert_eq!(g.height(side * 0.49, -side * 0.49, 1.0, 1.0), Some(0.5));
+            assert!(g.height(side, 0.0, 1.0, 1.0).is_none());
+        }
+        // Mixed sizes: a step on a big plane still eases (fine and coarse boxes together).
+        let g = grid(&[([-300.0, -300.0], [300.0, 300.0], 0.0), ([1.0, -5.0], [5.0, 5.0], 0.12)]);
+        assert_eq!(g.height(3.0, 0.0, 0.5, 1.0), Some(0.12));
+        assert_eq!(g.height(-3.0, 0.0, 0.5, 1.0), Some(0.0));
+        let mid = g.height(1.0 - SOFT_EDGE_M * 0.5, 0.0, 0.5, 1.0).unwrap();
+        assert!(mid > 0.0 && mid < 0.12, "{mid}");
     }
 
     #[test]
