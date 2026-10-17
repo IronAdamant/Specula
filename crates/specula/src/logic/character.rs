@@ -53,19 +53,31 @@ impl Kinematic {
             if e.id == me || c.is_trigger || !e.shown() {
                 continue;
             }
-            let half = match c.shape {
-                ColliderShape::Box { size } => size * 0.5,
-                ColliderShape::Sphere { radius } => Vec3::new(radius, radius, radius),
-                ColliderShape::Capsule { radius, height } => Vec3::new(radius, height * 0.5, radius),
+            // The collider's local box.
+            let bounds = |pts: &[Vec3]| pts.iter().fold((Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY), Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+            let (llo, lhi) = match &c.shape {
+                ColliderShape::Box { size } => (*size * -0.5, *size * 0.5),
+                ColliderShape::Sphere { radius } => (Vec3::new(-radius, -radius, -radius), Vec3::new(*radius, *radius, *radius)),
+                ColliderShape::Capsule { radius, height } => (Vec3::new(-radius, -height * 0.5, -radius), Vec3::new(*radius, height * 0.5, *radius)),
+                ColliderShape::Hull { points } => bounds(points),
+                ColliderShape::Mesh { vertices, .. } => bounds(vertices),
+                ColliderShape::Heightfield { columns, rows, cell, heights } => {
+                    let (hx, hz) = ((columns.saturating_sub(1)) as f32 * cell[0] * 0.5, (rows.saturating_sub(1)) as f32 * cell[1] * 0.5);
+                    let (y0, y1) = heights.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), h| (a.min(*h), b.max(*h)));
+                    (Vec3::new(-hx, y0, -hz), Vec3::new(hx, y1, hz))
+                }
             };
+            if llo.x > lhi.x {
+                continue;
+            }
             let m = e.model();
             let mut lo = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
             let mut hi = -lo;
             for i in 0..8 {
                 let corner = Vec3::new(
-                    c.offset.x + if i & 1 == 0 { -half.x } else { half.x },
-                    c.offset.y + if i & 2 == 0 { -half.y } else { half.y },
-                    c.offset.z + if i & 4 == 0 { -half.z } else { half.z },
+                    c.offset.x + if i & 1 == 0 { llo.x } else { lhi.x },
+                    c.offset.y + if i & 2 == 0 { llo.y } else { lhi.y },
+                    c.offset.z + if i & 4 == 0 { llo.z } else { lhi.z },
                 );
                 let p = m.transform_point(corner);
                 lo = lo.min(p);
@@ -95,8 +107,8 @@ impl CharacterMover for Kinematic {
                 .with("field", "motion"));
         }
         let e = world.get(id).ok_or_else(|| WorldError::new("not_found", format!("no entity with id {id}")).with("id", id))?;
-        let (radius, height) = match e.collider.as_ref().map(|c| c.shape) {
-            Some(ColliderShape::Capsule { radius, height }) => (radius * e.scale.x.abs(), height * e.scale.y.abs()),
+        let (radius, height) = match e.collider.as_ref().map(|c| &c.shape) {
+            Some(&ColliderShape::Capsule { radius, height }) => (radius * e.scale.x.abs(), height * e.scale.y.abs()),
             _ => (0.3, 1.8),
         };
         let feet = e.world_position();
@@ -150,7 +162,7 @@ mod tests {
             name: Some(name.into()),
             position: pos,
             scale,
-            collider: Some(Collider { shape: ColliderShape::Box { size: Vec3::ONE }, offset: Vec3::ZERO, is_trigger: false, layer: "default".into() }),
+            collider: Some(Collider { shape: ColliderShape::Box { size: Vec3::ONE }, ..Collider::default() }),
             ..SpawnSpec::new(Shape::Cube)
         };
         world.spawn(spec, "t").unwrap().id

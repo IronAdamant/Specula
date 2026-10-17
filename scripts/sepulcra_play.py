@@ -219,6 +219,8 @@ def main():
                     "draw_list": perf.get("draw_list"),
                     "draw_list_zone_ms": {"mean": draw_zone.get("mean_ms"), "p95": draw_zone.get("p95_ms")},
                     "draw_cache": perf.get("draw_cache"),
+                    "physics": perf.get("physics"),
+                    "physics_zone_ms": {k: zones.get(k, {}).get("p95_ms") for k in ("frame/sim", "frame/sim/physics")},
                 }
                 print(f"  perf at wave {st['wave']} ({st['enemies']} enemies): game_frame {perf.get('game_frame')} "
                       f"sim_tick {perf.get('sim_tick')} pacing {perf.get('frame_pacing')}")

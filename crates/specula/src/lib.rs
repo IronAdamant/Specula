@@ -31,6 +31,8 @@ pub mod orbit;
 mod perf;
 pub mod persist;
 pub mod rollup;
+pub mod physics;
+mod physics_tools;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -483,6 +485,8 @@ struct Engine {
     frame_floor: (u32, Option<String>),
     /// Game-logic modules (hot-reloaded libraries; see [`logic`]).
     logic: logic::LogicHost,
+    /// The physics simulation and its bridge to the world (see [`physics`]).
+    physics: physics::Physics,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -576,6 +580,7 @@ impl Engine {
             board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
             logic: logic::LogicHost::new(),
+            physics: physics::Physics::default(),
         })
     }
 
@@ -597,6 +602,7 @@ impl Engine {
         self.hash_cache = None;
         self.tick_hashes.clear();
         self.trace.clear();
+        self.physics.reset();
         problems
     }
 
@@ -674,6 +680,8 @@ impl Engine {
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
             }
+            // Physics steps on the same fixed tick, after the game moved what it moves.
+            self.physics_tick();
             self.clock.finish_tick();
             let _h = profile::zone("tick_hash");
             self.record_tick_hash();
@@ -1601,6 +1609,7 @@ impl Engine {
                 let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
                 ToolOutput::text(list.to_string())
             }
+            Command::Physics(call) => self.physics_call(call, w, tick),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
         };
@@ -1631,6 +1640,14 @@ impl Engine {
             ("journal_last_id", Json::from(self.swarm.journal.last_seq())),
             ("recent", Json::arr(self.tick_hashes.range(start..).map(pair))),
         ]);
+        // Physics state the world doesn't hold (warm starts, sleep timers, exact rotations).
+        if let Some(h) = self.physics.hash() {
+            let pstart = self.physics.hashes.len().saturating_sub(recent);
+            out.set(
+                "physics",
+                Json::obj([("state_hash", Json::from(journal::hex(h))), ("recent", Json::arr(self.physics.hashes.range(pstart..).map(pair)))]),
+            );
+        }
         if let Some(t) = tick {
             let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
             let oldest = self.tick_hashes.front().map(|(t, _)| *t);
@@ -1901,6 +1918,7 @@ impl Engine {
             // With a window: how agents' calls are served between presents.
             ("serve", if self.windowed { self.schedule.to_json() } else { Json::Null }),
             ("sim_tick", pacing.tick.to_json()),
+            ("physics", self.physics.summary_json(&self.world.env().physics)),
             ("game_frame", pacing.game_frame.to_json()),
             (
                 "game_overlay",
@@ -2011,6 +2029,7 @@ fn call_class(command: &Command) -> Class {
         Command::Time(TimeOp::Step(_)) => Class::Sim,
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
+        Command::Physics(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)

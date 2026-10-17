@@ -43,6 +43,7 @@ dependencies = [
  "specula-input",
  "specula-logic",
  "specula-model",
+ "specula-physics",
  "specula-platform",
  "specula-protocol",
  "specula-sdk",
@@ -111,6 +112,13 @@ version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-gpu",
+]
+
+[[package]]
+name = "specula-physics"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]
 
 [[package]]

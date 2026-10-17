@@ -353,7 +353,10 @@ pub fn frame_extra_schema() -> Vec<(&'static str, Json)> {
                          bounds (oriented boxes of on-screen subjects: cyan visible, red fully hidden), labels (entity \
                          names at their screen centres, no overlaps, max_labels), claims (claimed regions and subtrees \
                          tinted per owner, with owner names), skeletons (bones and joints of rigged models, rest pose), \
-                         lods (each model's LOD level and triangles). The packet's 'overlays' says what was drawn.",
+                         lods (each model's LOD level and triangles), colliders (physics collider wireframes: grey \
+                         static, yellow kinematic, green awake, blue asleep, magenta triggers), contacts (physics contact \
+                         points with their normals: red penetrating, orange touching, green speculative). The packet's \
+                         'overlays' says what was drawn.",
                     ),
                 ),
             ]),

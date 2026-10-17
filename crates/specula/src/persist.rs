@@ -1130,8 +1130,9 @@ mod tests {
                 offset: Vec3::ZERO,
                 is_trigger: i == 1,
                 layer: "terrain".into(),
+                ..Default::default()
             });
-            s.body = Some(Body { kind: BodyKind::Static, mass: 1.0 });
+            s.body = Some(Body::new(BodyKind::Static, 1.0));
             w.spawn(s, "bob").unwrap();
         }
         let mut glass = SpawnSpec::new(Shape::Lathe);
@@ -1506,8 +1507,8 @@ mod tests {
         assert_eq!(e.field.as_deref(), Some("path"));
         let e = broken(slab, r#""path":"/slab/stones","#, r#""path":"/slab/stones","colour":1,"#);
         assert_eq!(e.field.as_deref(), Some("colour"));
-        let e = broken(slab, r#""layer":"terrain""#, r#""layer":"terrain","mask":3"#);
-        assert_eq!(e.field.as_deref(), Some("collider.mask"), "{e}");
+        let e = broken(slab, r#""layer":"terrain""#, r#""layer":"terrain","masks":3"#);
+        assert_eq!(e.field.as_deref(), Some("collider.masks"), "{e}");
         let e = broken("world.json", r#""intensity":0.7"#, r#""intensity":0.7,"radius":2"#);
         assert_eq!(e.field.as_deref(), Some("light.radius"), "{e}");
         let e = broken(slab, "\"entities\": [", "\"entities\": [[");

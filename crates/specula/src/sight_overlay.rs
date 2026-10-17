@@ -1,6 +1,6 @@
 //! Debug overlays drawn into sight captures (`sight_frame {overlays: [...]}`): a ground grid
 //! with metre labels, world and entity axes, bounding boxes, entity labels, claim regions,
-//! skeletons and model LODs.
+//! skeletons, model LODs, and physics colliders and contacts.
 //!
 //! Everything is drawn with the GPU overlay (`FrameDesc::overlay`), after the scene and its
 //! post-processing, **on top of everything** (an x-ray: a box behind a wall still shows; the ID
@@ -30,10 +30,15 @@ pub enum Kind {
     Claims,
     Skeletons,
     Lods,
+    /// Physics collider wireframes (see [`crate::physics_tools`]).
+    Colliders,
+    /// Physics contact points and normals.
+    Contacts,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [Kind::Grid, Kind::Axes, Kind::Bounds, Kind::Labels, Kind::Claims, Kind::Skeletons, Kind::Lods];
+    pub const ALL: [Kind; 9] =
+        [Kind::Grid, Kind::Axes, Kind::Bounds, Kind::Labels, Kind::Claims, Kind::Skeletons, Kind::Lods, Kind::Colliders, Kind::Contacts];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -44,6 +49,8 @@ impl Kind {
             Kind::Claims => "claims",
             Kind::Skeletons => "skeletons",
             Kind::Lods => "lods",
+            Kind::Colliders => "colliders",
+            Kind::Contacts => "contacts",
         }
     }
 

@@ -888,6 +888,7 @@ pub fn night(world: &mut World) {
             samples: Some(8),
             resolution: Some(0.5),
         }),
+        physics: None,
     };
     if let Err(e) = world.set_env(&patch) {
         eprintln!("sepulcra: lighting: {e}");
