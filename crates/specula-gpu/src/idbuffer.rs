@@ -25,6 +25,14 @@
 //!   3. **raster**, every draw again with no depth test and the same face rules, marks each id
 //!      rasterized at all (one flag): an id with no visible pixel but rasterized fragments was
 //!      hidden by something (`occluded`); one never rasterized was sub-pixel or culled.
+//!
+//!   **Occluders** ([`crate::Gpu::render_with_ids_occluded`]: a game's opaque interface panels,
+//!   drawn over the frame as overlay quads) come first: `vkCmdClearAttachments` sets the ID depth
+//!   to the near plane inside each rectangle, so steps 1 and 2 (depth tested, strictly nearer)
+//!   count nothing there, while step 3 (no depth test) still marks what lies under them as
+//!   rasterized: an entity entirely under a panel is `occluded`, one partly under it counts only
+//!   its uncovered pixels. The id image stays 0 (no id) there. One clear per rectangle, before
+//!   any draw; nothing else changes, and without occluders nothing is recorded.
 //! - `id_resolve` (depth only, read): a full-screen pass counts each id of each pixel's final set
 //!   once (pixels and min/max box, with atomics: sums and extremes don't depend on order; only
 //!   pixels on the edge of an id's region touch the atomics, as runs and extremes, because
@@ -543,12 +551,24 @@ fn record_id_buffer(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p:
     let compare = if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS };
     // SAFETY: `cmd` is recording; every referenced struct outlives its call; the descriptor set
     // (material textures, for the alpha-mask cut) is compatible with `f.layout`, every ID
-    // pipeline's layout; see `draw_batches` for the draws.
+    // pipeline's layout; see `draw_batches` for the draws. The occluder clear names the instance's
+    // depth attachment and rectangles inside its render area (clamped by `set_occluders`), one layer.
     unsafe {
         (dev.fns.cmd_begin_rendering)(cmd, &rendering);
         (dev.fns.cmd_set_viewport)(cmd, 0, 1, &viewport);
         (dev.fns.cmd_set_scissor)(cmd, 0, 1, &area);
         ctx.descriptors.bind(dev, cmd, f.layout);
+        if !ctx.id_occluders.is_empty() {
+            // Occluders: the depth at the near plane, which no draw passes (strictly nearer for
+            // meshes; a 2D item exactly on the near plane, 5 cm from the eye, would).
+            let near = VkClearAttachment {
+                aspect_mask: VK_IMAGE_ASPECT_DEPTH_BIT,
+                color_attachment: 0,
+                clear_value: VkClearValue { float32: [if frame.reverse_z { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0] },
+            };
+            // Every rectangle lies inside the render area (`set_occluders` clamped them).
+            (dev.fns.cmd_clear_attachments)(cmd, 1, &near, ctx.id_occluders.len() as u32, ctx.id_occluders.as_ptr());
+        }
         // Opaque draws, then blended ones, then all of them; each step's 2D items after its
         // meshes (as the scene draws them after its opaque meshes).
         for step in [Step::Opaque, Step::Insert, Step::Raster] {
@@ -665,6 +685,8 @@ pub struct IdResources {
     /// The ID render being recorded, and the last one finished (whose results the buffers hold).
     pending: Option<Last>,
     last: Option<Last>,
+    /// The ID render being recorded's occluders, clamped to its extent (reused).
+    occluders: Vec<VkClearRect>,
 }
 
 /// What an ID render's results describe.
@@ -815,6 +837,19 @@ impl IdResources {
         })
     }
 
+    /// The occluders of the ID render about to be recorded: `[x, y, width, height]` pixel
+    /// rectangles, clamped to `extent` (whose rectangles must lie inside the render area);
+    /// empty ones are dropped.
+    pub fn set_occluders(&mut self, rects: &[[u32; 4]], extent: VkExtent2D) {
+        self.occluders.clear();
+        self.occluders.extend(rects.iter().filter_map(|&r| clamp_rect(r, extent)));
+    }
+
+    /// What [`IdResources::set_occluders`] kept.
+    pub fn occluders(&self) -> &[VkClearRect] {
+        &self.occluders
+    }
+
     /// The next capture's epoch. Slots of older epochs count as free, so they are cleared (returns
     /// true) only while `seen_dirty` (new memory, or the epoch wrapped) — and stay "to clear" until
     /// a render that cleared them completes ([`IdResources::finished`]).
@@ -912,6 +947,17 @@ impl IdResources {
             dev.destroy_buffer(&g.buffer);
         }
     }
+}
+
+/// `[x, y, width, height]` clamped to `extent`, as a one-layer clear rectangle (`None` when empty).
+fn clamp_rect(r: [u32; 4], extent: VkExtent2D) -> Option<VkClearRect> {
+    let (x0, y0) = (r[0].min(extent.width), r[1].min(extent.height));
+    let (x1, y1) = (r[0].saturating_add(r[2]).min(extent.width), r[1].saturating_add(r[3]).min(extent.height));
+    (x1 > x0 && y1 > y0).then(|| VkClearRect {
+        rect: VkRect2D { offset: VkOffset2D { x: x0 as i32, y: y0 as i32 }, extent: VkExtent2D { width: x1 - x0, height: y1 - y0 } },
+        base_array_layer: 0,
+        layer_count: 1,
+    })
 }
 
 /// What one id covers in a capture.
@@ -1410,6 +1456,104 @@ mod tests {
             gpu.render_with_ids(other, &frame, &ids).unwrap();
             assert!(gpu.id_coverage(target, 28).is_err(), "the shared readback now holds the other target's ids");
             gpu.destroy_target(other);
+            gpu.destroy_target(target);
+            gpu.destroy_mesh(mesh);
+            let errors: Vec<_> = gpu.take_validation_messages().into_iter().filter(|m| m.severity >= crate::Severity::Warning).collect();
+            assert!(errors.is_empty(), "adapter {}: {errors:#?}", a.index);
+        }
+    }
+
+    #[test]
+    fn occluder_rects_clamp_to_the_capture() {
+        let e = VkExtent2D { width: 100, height: 50 };
+        let r = |x, y, w, h| VkRect2D { offset: VkOffset2D { x, y }, extent: VkExtent2D { width: w, height: h } };
+        let mut res = IdResources::default();
+        res.set_occluders(&[[10, 10, 20, 5], [90, 40, 30, 30], [100, 0, 5, 5], [5, 5, 0, 9], [u32::MAX, 1, u32::MAX, 1]], e);
+        let kept: Vec<_> = res.occluders().iter().map(|c| (c.rect, c.base_array_layer, c.layer_count)).collect();
+        assert_eq!(kept, [(r(10, 10, 20, 5), 0, 1), (r(90, 40, 10, 10), 0, 1)], "clamped; empty and off-image ones dropped");
+    }
+
+    /// Occluders (a HUD's opaque panels) hide what is under them from the ID counts, opaque and
+    /// blended alike, keep the "rasterized" flag (so: occluded), leave the image alone, and change
+    /// nothing when there are none.
+    #[test]
+    fn occluders_hide_what_is_under_them() {
+        if !crate::is_available() {
+            eprintln!("occluders_hide_what_is_under_them: SKIPPED — Vulkan is not available");
+            return;
+        }
+        for a in crate::enumerate_adapters().unwrap() {
+            let options = GpuOptions { validation: Validation::On, adapter: crate::AdapterPreference::Index(a.index), ..Default::default() };
+            let mut gpu = match Gpu::new(&options) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("occluders_hide_what_is_under_them: SKIPPED on adapter {} — {e}", a.index);
+                    continue;
+                }
+            };
+            let (v, i) = cube();
+            let mesh = gpu.upload_mesh(&v, &i).unwrap();
+            let (w, h) = (320u32, 240u32);
+            let target = gpu.create_target(w, h).unwrap();
+            let f = 1.0 / 20f32.to_radians().tan();
+            let vp = [f / (w as f32 / h as f32), 0.0, 0.0, 0.0, 0.0, -f, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.05, 10.0];
+            let draws = [
+                // 1: a wall across the middle.
+                DrawItem::new(mesh, trs([0.0, 0.0, 0.0], [4.0, 3.0, 0.2]), [0.5, 0.5, 0.5, 1.0]),
+                // 2: a glass pane in front of its left part.
+                glass(mesh, [-1.0, 0.0, 2.0], [1.0, 1.0, 0.1]),
+                // 3: a cube in front of its right part.
+                DrawItem::new(mesh, trs([1.2, 0.0, 1.0], [0.8, 0.8, 0.8]), [0.0, 1.0, 0.0, 1.0]),
+            ];
+            let frame = FrameDesc { view_proj: vp, draws: &draws, reverse_z: true, ..Default::default() };
+            gpu.render_with_ids(target, &frame, &[1, 2, 3]).unwrap();
+            let plain = gpu.read_rgba8(target).unwrap();
+            let before_img = gpu.read_ids(target).unwrap();
+            let before = gpu.id_coverage(target, 3).unwrap();
+            gpu.render_with_ids_occluded(target, &frame, &[1, 2, 3], &[]).unwrap();
+            assert_eq!(gpu.id_coverage(target, 3).unwrap(), before, "adapter {}: no occluders, the same counts", a.index);
+            let (glass_c, cube_c) = (before.per_id[1], before.per_id[2]);
+            assert!(cube_c.pixels > 100, "adapter {}: the cube shows: {cube_c:?}", a.index);
+            // A panel over the whole glass pane (and the wall around it), one over the cube's left
+            // half, and one hanging off the image's corner.
+            let glass_box = if before.blended_counted {
+                [glass_c.min[0] - 2, glass_c.min[1] - 2, glass_c.max[0] - glass_c.min[0] + 5, glass_c.max[1] - glass_c.min[1] + 5]
+            } else {
+                [60, 60, 80, 120] // uncounted: any panel over the left part
+            };
+            let mid = (cube_c.min[0] + cube_c.max[0]) / 2;
+            let half = [cube_c.min[0], 0, mid - cube_c.min[0], h];
+            let corner = [w - 10, h - 10, 40, 40];
+            let rects = [glass_box, half, corner];
+            gpu.render_with_ids_occluded(target, &frame, &[1, 2, 3], &rects).unwrap();
+            assert!(gpu.read_rgba8(target).unwrap() == plain, "adapter {}: occluders change the image", a.index);
+            let img = gpu.read_ids(target).unwrap();
+            let after = gpu.id_coverage(target, 3).unwrap();
+            let inside = |p: usize| {
+                let (x, y) = ((p as u32) % w, (p as u32) / w);
+                rects.iter().any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3])
+            };
+            // Opaque ids: exactly the earlier pixels outside the panels.
+            for (p, (&now, &was)) in img.ids.iter().zip(&before_img.ids).enumerate() {
+                assert_eq!(now, if inside(p) { 0 } else { was }, "adapter {}: pixel {p}", a.index);
+            }
+            let wall_left = before_img.ids.iter().enumerate().filter(|&(p, &id)| id == 1 && !inside(p)).count() as u64;
+            assert_eq!(after.per_id[0].opaque_pixels, wall_left, "adapter {}: the wall keeps its uncovered pixels", a.index);
+            // The cube: half hidden, its box starts at the panel's edge.
+            let c = after.per_id[2];
+            assert!(c.pixels > 0 && c.pixels < cube_c.pixels * 2 / 3, "adapter {}: half the cube: {c:?} of {cube_c:?}", a.index);
+            assert_eq!(c.min[0], mid, "adapter {}: its box starts right of the panel", a.index);
+            // The glass: entirely under a panel: nothing counted, yet rasterized (so: occluded).
+            let g = after.per_id[1];
+            if after.blended_counted {
+                assert_eq!((g.pixels, g.rasterized), (0, Some(true)), "adapter {}: the covered pane: {g:?}", a.index);
+                assert_eq!(c.rasterized, Some(true));
+            } else {
+                assert!(!g.counted);
+            }
+            let many = vec![[0, 0, 1, 1]; crate::MAX_ID_OCCLUDERS + 1];
+            let e = gpu.render_with_ids_occluded(target, &frame, &[1, 2, 3], &many).unwrap_err();
+            assert_eq!(e.limit.map(|l| l.what), Some(crate::Limit::IdOccluders), "{e}");
             gpu.destroy_target(target);
             gpu.destroy_mesh(mesh);
             let errors: Vec<_> = gpu.take_validation_messages().into_iter().filter(|m| m.severity >= crate::Severity::Warning).collect();

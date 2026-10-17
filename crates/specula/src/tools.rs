@@ -1944,7 +1944,11 @@ fn definitions() -> Vec<ToolDef> {
                     ),
                     (
                         "include_ui",
-                        boolean("Also draw and list layer \"ui\" entities (the game's cursor, range rings); default false"),
+                        boolean(
+                            "Also draw and list layer \"ui\" entities (the game's cursor, range rings) and a hosted game's \
+                             interface, whose opaque panels (alpha >= 0.9) hide what is under them in visible_px / \
+                             occluded; default false",
+                        ),
                     ),
                     (
                         "lod",

@@ -326,6 +326,54 @@ fn sky_then_glass_keeps_depth_state() {
     });
 }
 
+/// The horizon has no crisp line: the gradient above it (which leaves the horizon colour at a
+/// slope of `horizon_sharpness`) used to meet the flat start of the ground's smoothstep with a
+/// slope break, a visible edge once there was no mist to hide it. Now the sky side eases out of
+/// the horizon over a small band (`HORIZON_BAND` in `shaders/sky.frag`), so the luminance leaves
+/// the horizon gently and the change is steepest at the band's top, not at the horizon.
+#[test]
+fn sky_horizon_has_no_crisp_line() {
+    every_adapter("sky_horizon", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        // Level camera: the horizon is the image's middle row boundary (row H/2 - 1 is just above).
+        let view_proj = mul(&perspective_vk_reverse_z(30f32.to_radians(), W as f32 / H as f32, 0.05), &look_at_rh([0.0; 3], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]));
+        let mut env = Environment { tonemap: false, exposure: 1.0, ..Default::default() };
+        // High contrast, no disc or glow: a white horizon over a white ground (flat below the
+        // horizon) under a black zenith, with a sharp falloff.
+        env.sky = specula_gpu::SkySettings {
+            enabled: true,
+            zenith: [0.0; 3],
+            horizon: [1.0; 3],
+            ground: [1.0; 3],
+            intensity: 1.0,
+            horizon_sharpness: 8.0,
+            disc_size_deg: 0.0,
+            disc_intensity: 0.0,
+            glow: 0.0,
+        };
+        let target = gpu.create_target(W, H).unwrap();
+        gpu.render(target, &FrameDesc { view_proj, reverse_z: true, environment: env, ..Default::default() }).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        write_png(&format!("features_sky_horizon_{}.png", gpu.adapter().index), &rgba, W, H);
+        gpu.destroy_target(target);
+        let lum = |y: u32| srgb_to_linear(pixel(&rgba, W, W / 2, y)[1] as f32 / 255.0);
+        let h = H / 2 - 1; // just above the horizon
+        let below = lum(H / 2 + 3);
+        // How much darker the sky gets over the first 4 rows above the horizon, and over 4 rows
+        // 16..20 rows up (where the old curve had already flattened somewhat).
+        let first = lum(h) - lum(h - 4);
+        let later = lum(h - 16) - lum(h - 20);
+        eprintln!("{test}: below {below:.4}, at the horizon {:.4}; drop over rows 0..4 above: {first:.4}, rows 16..20: {later:.4}", lum(h));
+        assert!(below > 0.97 && lum(h) > 0.95, "the horizon and ground are near white: {below} {}", lum(h));
+        assert!(later > 0.02, "the gradient still falls off above the band: {later}");
+        // The old curve: first ≈ 1.2 × later (steepest at the horizon, a crisp line under the
+        // flat ground). Eased: first ≈ 0.4 × later.
+        assert!(first < 0.6 * later, "the sky leaves the horizon at a slope break (rows 0..4 drop {first}, rows 16..20 drop {later})");
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
 #[test]
 fn fog_thickens_with_distance_and_depth() {
     every_adapter("fog", |test, adapter| {

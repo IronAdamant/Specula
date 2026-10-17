@@ -2087,6 +2087,8 @@ pub struct FrameContext<'a> {
     pub textures: &'a Textures,
     /// The ID buffer passes' pipelines, resources and ids (captures that ask for them).
     pub ids: Option<crate::idbuffer::IdFrame>,
+    /// Rectangles that hide what is under them in the ID buffer (empty without `ids`).
+    pub id_occluders: &'a [VkClearRect],
 }
 
 /// The scene features a frame prepared in `scratch` uses, given whether it renders a shadow map.

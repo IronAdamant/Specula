@@ -24,7 +24,7 @@
 //! the creature does (or how fast) changes.
 
 use crate::ents;
-use crate::looks::{self, palette::*, Act, Creature, Part};
+use crate::looks::{self, highlight, palette::*, Act, Creature, Part};
 use crate::slab::{self, SlabGeo};
 use sepulcra::content::Attack;
 use sepulcra::map::{CellKind, Face};
@@ -193,12 +193,12 @@ impl Scene {
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
-        let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, RUNE_GLOW).glow(1.4);
+        let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, highlight::VALID.color).glow(highlight::VALID.emissive);
         let cursor = ents::part(world, agent, ui, &cursor_part);
         ents::show(world, agent, cursor, false);
         let ring_g = sub(world, ui, "range");
         let ring = (0..RING_DOTS)
-            .map(|i| ents::part_named(world, agent, ring_g, &format!("dot_{i:02}"), &Part::cube("", Vec3::ZERO, Vec3::new(0.16, 0.16, 0.5), RUNE_PALE).glow(2.0)))
+            .map(|i| ents::part_named(world, agent, ring_g, &format!("dot_{i:02}"), &Part::cube("", Vec3::ZERO, Vec3::new(0.16, 0.16, 0.5), highlight::RANGE_DOT.color).glow(highlight::RANGE_DOT.emissive)))
             .collect();
         ents::show(world, agent, ring_g, false);
         let mut scene = Scene {
@@ -727,14 +727,14 @@ impl Scene {
             return;
         }
         self.cursor_shown = look;
-        let (cell, color) = match look {
+        let (cell, glow) = match look {
             CursorLook::Hidden => {
                 ents::show(world, &self.agent, self.cursor, false);
                 return;
             }
-            CursorLook::Valid(c) => (c, RUNE_GLOW),
-            CursorLook::Invalid(c) => (c, INVALID),
-            CursorLook::Selected(c) => (c, RUNE_PALE),
+            CursorLook::Valid(c) => (c, highlight::VALID),
+            CursorLook::Invalid(c) => (c, highlight::INVALID),
+            CursorLook::Selected(c) => (c, highlight::SELECTED),
         };
         let map = &state.content().map;
         let (anchor, normal) = self.geo.anchor(map, cell);
@@ -749,7 +749,14 @@ impl Scene {
                 _ => (anchor + normal * 0.03, Vec3::new(0.06, h, w)),
             }
         };
-        let change = UpdateSpec { position: Some(pos), scale: Some(scale), color: Some(color), visible: Some(true), ..UpdateSpec::default() };
+        let change = UpdateSpec {
+            position: Some(pos),
+            scale: Some(scale),
+            color: Some(glow.color),
+            look: LookPatch { emissive: Some(glow.emissive), ..LookPatch::default() },
+            visible: Some(true),
+            ..UpdateSpec::default()
+        };
         ents::update(world, &self.agent, self.cursor, change);
     }
 
@@ -859,4 +866,40 @@ fn bolt_pos(p: &Projectile) -> Vec3 {
         }
     }
     pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sepulcra::content::Content;
+    use std::sync::Arc;
+
+    /// The cursor and the range dots wear the `looks::highlight` glows (colour and emissive),
+    /// whatever they showed before: the colour check in `looks::tests` only holds if these are
+    /// what the world gets.
+    #[test]
+    fn cursor_and_range_dots_wear_the_highlight_glows() {
+        let state = State::new(Arc::new(Content::builtin()), 7);
+        let mut world = World::default();
+        let mut scene = Scene::build(&mut world, "test", &state);
+        let cell = state.content().map.cell_ref("top:10,12").unwrap();
+        let glow_of = |world: &World, id: u64| {
+            let e = world.get(id).expect("entity");
+            (e.color, e.look.surface.emissive, e.shown())
+        };
+        for (look, want) in [
+            (CursorLook::Valid(cell), highlight::VALID),
+            (CursorLook::Selected(cell), highlight::SELECTED),
+            (CursorLook::Invalid(cell), highlight::INVALID),
+            (CursorLook::Selected(cell), highlight::SELECTED),
+            (CursorLook::Valid(cell), highlight::VALID),
+        ] {
+            scene.show_cursor(&mut world, &state, look);
+            assert_eq!(glow_of(&world, scene.cursor), (want.color, want.emissive, true), "{look:?}");
+        }
+        scene.show_range(&mut world, &state, Some((cell, 6.5)));
+        for &d in &scene.ring {
+            assert_eq!(glow_of(&world, d), (highlight::RANGE_DOT.color, highlight::RANGE_DOT.emissive, true));
+        }
+    }
 }

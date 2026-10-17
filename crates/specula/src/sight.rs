@@ -574,6 +574,10 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
 ///   the ID buffer's per-pixel sets hold: `visible_px` and `screen_box_exact` are then lower
 ///   bounds (it shows at least that much), and it is never `no_pixels`/`occluded`.
 ///
+/// With `include_ui`, a hosted game's opaque interface counts as in front of everything
+/// ([`ui_occluders`]): pixels under its panels count for no entity, and an entity entirely under
+/// them is `occluded`. Sight's own debug overlays never hide anything.
+///
 /// Its `area` (for ranking) becomes the exact box's.
 pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
     let by_entity: std::collections::HashMap<u64, specula_gpu::IdCoverage> =
@@ -604,6 +608,99 @@ pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[
         let exact_area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
         // An approximate box is a lower bound (possibly empty): rank by what it may cover.
         s.area = if approx { exact_area.max(s.projected_area) } else { exact_area };
+    }
+}
+
+/// How opaque a hosted game's interface must be to hide the scene under it in sight's counts
+/// (`include_ui`): at this alpha or more at most a tenth of the scene shows through, which no
+/// player reads as "visible". Solid panels and buttons (alpha 1, or a menu's 0.96) hide; modal
+/// dimming (0.6), drop shadows and other translucent washes don't.
+pub const UI_OCCLUDER_ALPHA: f32 = 0.9;
+
+/// The pixel rectangles `[x, y, width, height]` where a hosted game's interface (`quads`, the
+/// game's overlay only, never sight's debug overlays) is at least [`UI_OCCLUDER_ALPHA`] opaque,
+/// for `Gpu::render_with_ids_occluded`: entities under them count no pixels there. Returns how
+/// many rectangles past `specula_gpu::MAX_ID_OCCLUDERS` were left out (the smallest go first).
+///
+/// The rectangles never cover a pixel the interface leaves more transparent; they may miss some
+/// opaque ones (under-occlusion only). Per quad, as `shaders/overlay.frag` draws it:
+/// - **counted:** untextured rects whose fill (both gradient ends) is opaque enough, inset to
+///   where the anti-aliased (`feather`) edge's coverage times that alpha reaches the threshold,
+///   and past the border when the border is more transparent than that; a pixel counts when its
+///   centre lies inside. Rounded corners: the rect's cross minus the corner squares,
+///   plus the square inscribed in the rounded rect (the corners' outer slivers are left out).
+///   The clip rect cuts them as the shader does (whole pixels).
+/// - **left out:** textured quads (glyphs, icons, images: their alpha is per texel, unknown here),
+///   triangles (vector icons and meshes), a border ring around a too-transparent fill, and
+///   non-finite geometry. Quads drawn later never make a pixel more transparent (premultiplied
+///   "over"), so the union is right whatever the order.
+pub fn ui_occluders(quads: &[specula_gpu::OverlayQuad], width: u32, height: u32, out: &mut Vec<[u32; 4]>) -> usize {
+    out.clear();
+    for q in quads {
+        ui_quad_occluders(q, width, height, out);
+    }
+    let max = specula_gpu::MAX_ID_OCCLUDERS;
+    if out.len() <= max {
+        return 0;
+    }
+    // Deterministic: the largest first (a stable sort keeps list order among equals).
+    out.sort_by_key(|r| std::cmp::Reverse(u64::from(r[2]) * u64::from(r[3])));
+    let dropped = out.len() - max;
+    out.truncate(max);
+    dropped
+}
+
+fn ui_quad_occluders(q: &specula_gpu::OverlayQuad, width: u32, height: u32, out: &mut Vec<[u32; 4]>) {
+    let alpha = |c: [f32; 4]| if c[3].is_nan() { 0.0 } else { c[3].clamp(0.0, 1.0) };
+    let fill = alpha(q.color).min(q.color_bottom.map_or(1.0, alpha));
+    if q.texture.is_some() || q.triangle.is_some() || fill < UI_OCCLUDER_ALPHA || !q.rect.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    let num = |x: f32, lo: f32, hi: f32| if x.is_finite() { x.clamp(lo, hi) } else { lo };
+    let [x, y, w, h] = q.rect;
+    let (w, h) = (w.max(0.0), h.max(0.0));
+    let radius = num(q.radius, 0.0, 1.0e6).min(0.5 * w.min(h));
+    let border = num(q.border, 0.0, 1.0e6);
+    let feather = num(q.feather, 1.0, specula_gpu::MAX_OVERLAY_FEATHER);
+    // How far inside (sd <= -k, sd the shader's signed distance) a pixel centre must be for its
+    // alpha to reach the threshold T. The alpha is `a * coverage` with `a` the weakest colour
+    // that can show there: the edge's coverage `0.5 - sd / feather` reaches T / a at
+    // sd = (0.5 - T / a) * feather. A border at least T opaque counts with the fill (alpha >=
+    // min of the two times the edge's coverage); a more transparent one is left out: the fill
+    // starts where the inner edge's coverage `0.5 - (sd + border)` reaches T / fill.
+    let border_alpha = alpha(q.border_color[0]).min(alpha(q.border_color[1]));
+    let t = UI_OCCLUDER_ALPHA;
+    let k = if border > 0.0 && border_alpha < t {
+        ((t / fill - 0.5) * feather).max(border + t / fill - 0.5)
+    } else {
+        let a = if border > 0.0 { fill.min(border_alpha) } else { fill };
+        (t / a - 0.5) * feather
+    };
+    // The region sd <= -k: the rounded rect inset by k, corner radius r.
+    let (x0, y0, x1, y1) = (x + k, y + k, x + w - k, y + h - k);
+    let r = (radius - k).max(0.0);
+    let d = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+    // The clip in whole pixels, as `build_overlay` snaps it: pixels [c0, c1).
+    let clip = match q.clip {
+        None => [0.0, 0.0, width as f32, height as f32],
+        Some(c) if c.iter().all(|v| v.is_finite()) => [c[0].round(), c[1].round(), (c[0] + c[2]).round(), (c[1] + c[3]).round()],
+        Some(_) => return,
+    };
+    let pieces: &[[f32; 4]] = if r > 0.0 {
+        &[[x0 + r, y0, x1 - r, y1], [x0, y0 + r, x1, y1 - r], [x0 + d, y0 + d, x1 - d, y1 - d]]
+    } else {
+        &[[x0, y0, x1, y1]]
+    };
+    for p in pieces {
+        // Pixel i counts when its centre i + 0.5 lies in [lo, hi] and in the clip's [c0, c1).
+        let span = |lo: f32, hi: f32, c0: f32, c1: f32, size: u32| {
+            let first = (lo - 0.5).ceil().max(c0).max(0.0);
+            let end = ((hi - 0.5).floor() + 1.0).min(c1).min(size as f32);
+            (end > first).then_some((first as u32, (end - first) as u32))
+        };
+        if let (Some((px, pw)), Some((py, ph))) = (span(p[0], p[2], clip[0], clip[2], width), span(p[1], p[3], clip[1], clip[3], height)) {
+            out.push([px, py, pw, ph]);
+        }
     }
 }
 
@@ -1062,6 +1159,178 @@ mod tests {
         apply_visibility(&mut s, &[1], &[pushed_out]);
         assert_eq!((s[0].json.get("visible_px"), s[0].json.get("visible_px_approx")), (Some(&Json::from(0)), Some(&Json::from(true))));
         assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("occluded").is_none());
+    }
+
+    /// `shaders/overlay.frag`'s alpha for an untextured quad at a pixel centre (a replica, to check
+    /// the occluders against).
+    fn overlay_alpha(q: &specula_gpu::OverlayQuad, px: f32, py: f32) -> f32 {
+        let clip = q.clip.map_or([-1.0e9, -1.0e9, 1.0e9, 1.0e9], |c| [c[0].round(), c[1].round(), (c[0] + c[2]).round(), (c[1] + c[3]).round()]);
+        if px < clip[0] || py < clip[1] || px >= clip[2] || py >= clip[3] {
+            return 0.0;
+        }
+        let [x, y, w, h] = q.rect;
+        let (w, h) = (w.max(0.0), h.max(0.0));
+        let (lx, ly) = (px - x, py - y);
+        let (hx, hy) = (0.5 * w, 0.5 * h);
+        let r = q.radius.clamp(0.0, hx.min(hy));
+        let (qx, qy) = ((lx - hx).abs() - (hx - r), (ly - hy).abs() - (hy - r));
+        let sd = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+        let outer = (0.5 - sd / q.feather.clamp(1.0, specula_gpu::MAX_OVERLAY_FEATHER)).clamp(0.0, 1.0);
+        let t = (ly / h.max(1.0e-6)).clamp(0.0, 1.0);
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        let fill = mix(q.color[3], q.color_bottom.map_or(q.color[3], |c| c[3])).clamp(0.0, 1.0);
+        if q.border > 0.0 {
+            let inner = (0.5 - (sd + q.border)).clamp(0.0, 1.0).min(outer);
+            let b = mix(q.border_color[0][3], q.border_color[1][3]).clamp(0.0, 1.0);
+            fill * inner + b * (outer - inner)
+        } else {
+            fill * outer
+        }
+    }
+
+    #[test]
+    fn ui_occluders_cover_only_opaque_interface_pixels() {
+        use specula_gpu::{OverlayKind, OverlayQuad, OverlayTriangle, TextureId};
+        let (w, h) = (160u32, 120u32);
+        let solid = |rect: [f32; 4], a: f32| OverlayQuad::solid(rect, [0.2, 0.22, 0.25, a]);
+        let mut out = Vec::new();
+        // A square opaque panel: exactly its pixels.
+        assert_eq!(ui_occluders(&[solid([10.0, 8.0, 20.0, 12.0], 1.0)], w, h, &mut out), 0);
+        assert_eq!(out, [[10, 8, 20, 12]]);
+        // Never: translucent washes, textured quads (glyphs), triangles, a soft shadow.
+        let never = [
+            solid([0.0, 0.0, 160.0, 120.0], 0.6),
+            OverlayQuad::textured([0.0, 0.0, 50.0, 50.0], [0.0, 0.0, 1.0, 1.0], TextureId(1), OverlayKind::AlphaMask, [1.0; 4]),
+            OverlayQuad { triangle: Some(OverlayTriangle { points: [[0.0, 0.0], [90.0, 0.0], [0.0, 90.0]], colors: [[1.0; 4]; 3] }), ..OverlayQuad::default() },
+            OverlayQuad { feather: 9.0, ..solid([20.0, 20.0, 60.0, 30.0], 0.63) },
+            OverlayQuad { color_bottom: Some([0.0, 0.0, 0.0, 0.5]), ..solid([0.0, 0.0, 40.0, 40.0], 1.0) },
+            solid([f32::NAN, 0.0, 40.0, 40.0], 1.0),
+        ];
+        assert_eq!(ui_occluders(&never, w, h, &mut out), 0);
+        assert!(out.is_empty(), "{out:?}");
+        // Shapes as a HUD draws them: rounded, bordered, feathered, gradients, clipped, off the
+        // edge. Every occluded pixel is opaque enough; few opaque pixels are missed.
+        let quads = [
+            OverlayQuad { radius: 6.0, border: 1.0, border_color: [[0.3, 0.35, 0.4, 1.0], [0.08, 0.09, 0.11, 1.0]], ..solid([10.0, 8.0, 40.5, 30.25], 1.0) },
+            OverlayQuad { radius: 10.0, border: 2.0, border_color: [[0.4, 0.4, 0.4, 0.3]; 2], ..solid([60.0, 10.0, 50.0, 40.0], 0.96) },
+            OverlayQuad { feather: 6.0, color_bottom: Some([0.1, 0.1, 0.1, 0.92]), ..solid([5.0, 60.0, 70.0, 40.0], 1.0) },
+            OverlayQuad { radius: 4.0, clip: Some([100.0, 70.0, 30.4, 20.6]), ..solid([90.0, 60.0, 60.0, 50.0], 1.0) },
+            OverlayQuad { radius: 30.0, ..solid([130.0, 90.0, 60.0, 60.0], 1.0) },
+        ];
+        assert_eq!(ui_occluders(&quads, w, h, &mut out), 0);
+        let inside = |x: u32, y: u32| out.iter().any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]);
+        let (mut opaque, mut missed) = (0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                // "Over", in list order.
+                let a = quads.iter().fold(0.0f32, |below, q| {
+                    let top = overlay_alpha(q, x as f32 + 0.5, y as f32 + 0.5);
+                    top + below * (1.0 - top)
+                });
+                if inside(x, y) {
+                    assert!(a >= UI_OCCLUDER_ALPHA - 1.0e-4, "pixel ({x}, {y}) is occluded at alpha {a}: {out:?}");
+                }
+                if a >= UI_OCCLUDER_ALPHA {
+                    opaque += 1;
+                    missed += usize::from(!inside(x, y));
+                }
+            }
+        }
+        eprintln!("ui occluders: {} rects; {missed} of {opaque} opaque pixels left visible", out.len());
+        assert!(opaque > 5000 && missed * 10 < opaque, "{missed} of {opaque} opaque pixels left visible");
+        // Sepulcra's inspect panel as the HUD drew it (logged live at 1280x720; play_ui reports
+        // its rect rounded, [1013, 270, 257, 179]): the fill reaches x = 1269.2 and y = 449.6, so
+        // column 1269 and row 449 are its anti-aliased edge (coverage 0.2 and 0.6), not occluders;
+        // the edges are exact on all four sides.
+        let panel = OverlayQuad {
+            radius: 5.4,
+            border: 0.9,
+            color_bottom: Some([0.133, 0.149, 0.176, 1.0]),
+            border_color: [[0.31, 0.345, 0.4, 1.0], [0.078, 0.09, 0.11, 1.0]],
+            ..solid([1012.7, 270.4, 256.5, 179.2], 1.0)
+        };
+        let (pw, ph) = (1280, 720);
+        ui_occluders(&[panel], pw, ph, &mut out);
+        let covered = |x: u32, y: u32| out.iter().any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]);
+        let alpha = |x: u32, y: u32| overlay_alpha(&panel, x as f32 + 0.5, y as f32 + 0.5);
+        let (x0, x1) = (out.iter().map(|r| r[0]).min().unwrap(), out.iter().map(|r| r[0] + r[2] - 1).max().unwrap());
+        let (y0, y1) = (out.iter().map(|r| r[1]).min().unwrap(), out.iter().map(|r| r[1] + r[3] - 1).max().unwrap());
+        assert_eq!((x0, x1, y0, y1), (1013, 1268, 271, 448), "{out:?}");
+        for (x, y) in [(1012, 360), (1269, 360), (1140, 270), (1140, 449)] {
+            assert!(!covered(x, y) && alpha(x, y) < UI_OCCLUDER_ALPHA, "({x}, {y}): alpha {}", alpha(x, y));
+        }
+        for (x, y) in [(1013, 360), (1268, 360), (1140, 271), (1140, 448)] {
+            assert!(covered(x, y) && alpha(x, y) >= UI_OCCLUDER_ALPHA, "({x}, {y}): alpha {}", alpha(x, y));
+        }
+        // Past the GPU's limit: the largest are kept.
+        let many: Vec<_> = (0..specula_gpu::MAX_ID_OCCLUDERS + 3).map(|i| solid([0.0, 0.0, if i % 1000 == 1 && i < 3000 { 1.0 } else { 2.0 }, 1.0], 1.0)).collect();
+        assert_eq!(ui_occluders(&many, w, h, &mut out), 3);
+        assert_eq!(out.len(), specula_gpu::MAX_ID_OCCLUDERS);
+        assert!(out.iter().all(|r| r[2] > 1), "the 1 px ones went first");
+    }
+
+    /// From the interface's quads to the subjects, with the ID buffer simulated on the CPU: the
+    /// GPU's occluder clear leaves the opaque ids 0 inside each rectangle (exactly what
+    /// `vkCmdClearAttachments` does, checked on real GPUs in specula-gpu's idbuffer tests) and its
+    /// raster step still marks everything drawn as rasterized.
+    #[test]
+    fn opaque_ui_panels_hide_what_is_under_them() {
+        use specula_gpu::{IdImage, OverlayQuad};
+        let mut world = World::default();
+        spawn(&mut world, Shape::Cube, "under", Vec3::new(-2.0, 0.0, 0.0));
+        spawn(&mut world, Shape::Cube, "half", Vec3::new(0.0, 0.0, 0.0));
+        spawn(&mut world, Shape::Cube, "clear", Vec3::new(2.0, 0.0, 0.0));
+        let (w, h) = (64u32, 48u32);
+        let cam = cam(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 50.0);
+        // Synthetic opaque ids: "under" in [12, 20) x [10, 18), "half" in [25, 40) x [10, 20),
+        // "clear" in [45, 55) x [30, 40).
+        let mut ids = vec![0u32; (w * h) as usize];
+        for (id, x0, y0, x1, y1) in [(1u32, 12u32, 10u32, 20u32, 18u32), (2, 25, 10, 40, 20), (3, 45, 30, 55, 40)] {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    ids[(y * w + x) as usize] = id;
+                }
+            }
+        }
+        let run = |quads: &[OverlayQuad]| {
+            let mut rects = Vec::new();
+            ui_occluders(quads, w, h, &mut rects);
+            let mut img = IdImage { width: w, height: h, ids: ids.clone() };
+            for (p, id) in img.ids.iter_mut().enumerate() {
+                let (x, y) = (p as u32 % w, p as u32 / w);
+                if rects.iter().any(|r| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]) {
+                    *id = 0;
+                }
+            }
+            let mut cov = img.coverage(3);
+            for c in &mut cov {
+                c.rasterized = Some(true); // all three were drawn
+            }
+            let mut s = frame(&world, cam, w, h);
+            assert!(s.iter().all(|s| s.on_screen));
+            apply_visibility(&mut s, &[1, 2, 3], &cov);
+            s
+        };
+        let get = |s: &[Subject], i: usize, k: &str| s[i].json.get(k).cloned();
+        // An opaque panel over x 10..30, y 8..20, and a translucent wash over everything.
+        let hud = [OverlayQuad::solid([10.0, 8.0, 20.0, 12.0], [0.2, 0.2, 0.2, 1.0]), OverlayQuad::solid([0.0, 0.0, 64.0, 48.0], [0.0, 0.0, 0.0, 0.5])];
+        let with_ui = run(&hud);
+        let without = run(&[]);
+        // Entirely under the panel: nothing shows, something hid it.
+        assert_eq!((get(&with_ui, 0, "visible_px"), get(&with_ui, 0, "occluded")), (Some(Json::from(0)), Some(Json::from(true))));
+        assert_eq!(get(&with_ui, 0, "screen_box_exact"), Some(Json::Null));
+        // Partly under it: only its uncovered columns 30..40, and the exact box shrinks to them.
+        assert_eq!(get(&with_ui, 1, "visible_px"), Some(Json::from(100)));
+        assert_eq!(get(&with_ui, 1, "screen_box_exact"), Some(Json::arr([30, 10, 10, 10].map(Json::from))));
+        assert_eq!(get(&with_ui, 1, "occluded"), None);
+        // Clear of it (the translucent wash hides nothing): as without the interface.
+        assert_eq!(with_ui[2].json, without[2].json);
+        // No interface (include_ui false): the counts are the ID buffer's own.
+        assert_eq!(get(&without, 0, "visible_px"), Some(Json::from(64)));
+        assert_eq!(get(&without, 1, "visible_px"), Some(Json::from(150)));
+        assert_eq!(get(&without, 1, "screen_box_exact"), Some(Json::arr([25, 10, 15, 10].map(Json::from))));
+        let mut rects = vec![[1, 2, 3, 4]];
+        assert_eq!((ui_occluders(&[], w, h, &mut rects), rects.len()), (0, 0));
     }
 
     #[test]

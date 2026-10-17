@@ -48,6 +48,24 @@ vec3 display(vec3 c) {
     return max(c, vec3(0.0));
 }
 
+// The sky side of the horizon eases in over this band of dir.y (about 2.3 degrees): the gradient
+// `1 - (1 - y)^k` leaves the horizon at slope k while the ground's smoothstep leaves it flat, and
+// that slope break read as a crisp line. Inside the band a cubic Hermite runs from the horizon
+// colour at slope 0 to the gradient's own value and slope at the band's top (C1 everywhere, and
+// monotonic: the gradient is concave for k >= 1 and nearly linear below 1). Above the band and
+// below the horizon nothing changes.
+const float HORIZON_BAND = 0.04;
+
+float sky_t(float y, float k) {
+    if (y >= HORIZON_BAND) {
+        return 1.0 - pow(1.0 - y, k);
+    }
+    float top = 1.0 - pow(1.0 - HORIZON_BAND, k);
+    float slope = k * pow(1.0 - HORIZON_BAND, k - 1.0) * HORIZON_BAND; // per unit of u
+    float u = max(y, 0.0) / HORIZON_BAND;
+    return top * u * u * (3.0 - 2.0 * u) + slope * u * u * (u - 1.0);
+}
+
 void main() {
     Frame f = pc.frame;
     vec2 ndc = v_uv * 2.0 - 1.0;
@@ -57,8 +75,7 @@ void main() {
 
     vec3 c;
     if (dir.y >= 0.0) {
-        float t = 1.0 - pow(1.0 - dir.y, f.sky_params.x);
-        c = mix(f.sky_horizon.rgb, f.sky_zenith.rgb, t);
+        c = mix(f.sky_horizon.rgb, f.sky_zenith.rgb, sky_t(dir.y, f.sky_params.x));
     } else {
         c = mix(f.sky_horizon.rgb, f.sky_ground.rgb, smoothstep(0.0, 0.15, -dir.y));
     }

@@ -59,6 +59,30 @@ pub mod palette {
 
 use palette::*;
 
+/// A glowing marker: its colour (sRGB) and emissive strength.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glow {
+    pub color: [f32; 3],
+    pub emissive: f32,
+}
+
+/// The player's highlights on the slab (STYLE.md: rune cyan for the cursor and selection). They
+/// glow in the family's saturated colour: a pale colour (`RUNE_PALE`) times a glow lands in the
+/// tone curve's shoulder on every channel and reads as white, worse under a brazier's fire, and
+/// the grade's negative vibrance takes the rest of its little saturation (the "near-white slab"
+/// under a selected stone). See `highlights_read_as_player_cyan` in the tests.
+pub mod highlight {
+    use super::palette::*;
+    use super::Glow;
+    /// The build cursor on a free cell.
+    pub const VALID: Glow = Glow { color: RUNE_GLOW, emissive: 1.4 };
+    pub const INVALID: Glow = Glow { color: super::palette::INVALID, emissive: 1.4 };
+    /// The mark under a selected stone or wall (its panel is open): the cursor's cyan, brighter.
+    pub const SELECTED: Glow = Glow { color: RUNE_GLOW, emissive: 2.0 };
+    /// The dots of a range ring.
+    pub const RANGE_DOT: Glow = Glow { color: RUNE_GLOW, emissive: 2.0 };
+}
+
 /// One primitive of a model.
 #[derive(Clone, Debug)]
 pub struct Part {
@@ -322,5 +346,79 @@ mod tests {
         assert!(stone_light("brazier", 0).is_some() && stone_light("warding", 1).is_none() && stone_light("warding", 2).is_some());
         assert!(wall_spec(3).check().is_ok() && tombstone_spec(9).check().is_ok() && fence_spec(1).check().is_ok());
         assert!(underside_spec(1, 15.0).check().is_ok());
+    }
+
+    /// sRGB to linear, as the engine converts the colours it is given.
+    fn lin(c: [f32; 3]) -> [f32; 3] {
+        c.map(|v| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) })
+    }
+
+    /// The ACES fit the engine tone maps with (`shaders/mesh.frag`, the post tonemap pass).
+    fn aces(x: f32) -> f32 {
+        ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0)
+    }
+
+    /// Linear to sRGB, as the target encodes it.
+    fn srgb(c: f32) -> f32 {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.003_130_8 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    fn saturation(c: [f32; 3]) -> f32 {
+        let (max, min) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+        (max - min) / max.max(1e-6)
+    }
+
+    /// The player's highlights stay player cyan where they are lit the most: on the slab under a
+    /// brazier's fire, in the night's ambient and moonlight. The skeptic's "near-white slab under
+    /// a selected brazier" was the selection mark itself (`RUNE_PALE` at glow 1.4, identical
+    /// under a warding stone and with the fire's light off): a pale colour times a glow is past
+    /// the tone curve's shoulder on every channel. The fire only adds a little red on top.
+    ///
+    /// This is a **pre-grade** model: lighting (ambient, moon on a flat top, the fire with the
+    /// engine's falloff), emission, exposure, ACES and the sRGB encoding. It leaves out what only
+    /// lowers saturation further: the grade (`game::night`: saturation 0.8, vibrance -1), bloom
+    /// spreading the glow, fog, SSAO and the moon's specular. So its numbers are upper bounds:
+    /// it puts the new selection mark at about saturation 0.49 (the bound below is 0.45) where a live capture measured
+    /// about (153, 240, 232), saturation 0.36, still clearly cyan; and the old mark at about 0.05
+    /// (near-white), which the grade only whitens. That `show_cursor` really applies these glows
+    /// is `scene::tests::cursor_and_range_dots_wear_the_highlight_glows`.
+    #[test]
+    fn highlights_read_as_player_cyan() {
+        let mut world = specula::world::World::default();
+        crate::game::night(&mut world);
+        let env = &world.env().light;
+        let ambient = lin(env.ambient_color).map(|c| c * env.ambient_intensity);
+        // The moon on a flat top face.
+        let moon = lin(env.sun_color).map(|c| c * env.sun_intensity * env.sun_direction[1].max(0.0));
+        // A brazier's fire straight above the mark's top face (6 cm over the stone's base), with
+        // the engine's falloff (`gather_light` in shaders/mesh_frag.glsl).
+        for tier in 0..3 {
+            let fire = stone_light("brazier", tier).expect("a brazier has its fire");
+            let d = fire.offset.y - 0.06;
+            assert!(d > 1.0, "the fire burns in the bowl, well above the base: {d} m");
+            let window = (1.0 - (d / fire.range).powi(4)).clamp(0.0, 1.0);
+            let k = fire.intensity * window * window / (d * d + 0.0025);
+            let fire_light = lin(fire.color.expect("fire colour")).map(|c| c * k);
+            let light: [f32; 3] = std::array::from_fn(|i| ambient[i] + moon[i] + fire_light[i]);
+            // Tone mapped, then sRGB encoded: the values written to the image (before the grade).
+            let shown = |g: Glow| {
+                let a = lin(g.color);
+                std::array::from_fn::<f32, 3, _>(|i| srgb(aces(env.exposure * a[i] * (g.emissive + light[i]))))
+            };
+            for (what, g) in [("the build cursor", highlight::VALID), ("the selection mark", highlight::SELECTED), ("a range dot", highlight::RANGE_DOT)] {
+                let c = shown(g);
+                assert!(saturation(c) >= 0.45 && c[1] > c[0] && c[2] > c[0], "tier {tier}: {what} shows {c:?}: not player cyan");
+            }
+            // Brighter than the hover, so a selection reads as one.
+            assert!(shown(highlight::SELECTED)[1] > shown(highlight::VALID)[1]);
+            // What it was: near-white.
+            let old = shown(Glow { color: RUNE_PALE, emissive: 1.4 });
+            assert!(saturation(old) < 0.1 && old.iter().all(|&c| c > 0.85), "tier {tier}: the old mark showed {old:?}");
+        }
     }
 }
