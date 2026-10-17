@@ -1498,17 +1498,51 @@ impl Engine {
         if let Some(s) = state_json {
             packet.set("state", s);
         }
-        if let Some(f) = self.feet_in_world(&e, &times) {
-            packet.set("feet_in_world", f);
-        }
+        // The verdict (as on stage sheets): the state's checks, then the feet on the real ground.
+        let mut verdict: Vec<String> = Vec::new();
+        let mut failed = false;
         if with_checks {
             let check = self.anim_check(None, Some(EntityKey::Id(id)), "creature", None, None, Vec::new(), None, 12);
             if let Some(Content::Text(t)) = check.content.first() {
                 if let Ok(mut j) = Json::parse(t) {
+                    if j.get("passed").and_then(Json::as_bool) == Some(true) {
+                        let mut ex: Vec<String> = Vec::new();
+                        for c in j.get("checks").and_then(Json::as_array).into_iter().flatten().filter(|c| c.get("exempt").and_then(Json::as_bool) == Some(true)) {
+                            let name = c.get("check").and_then(Json::as_str).unwrap_or_default();
+                            let n = match (name, c.get("bone").and_then(Json::as_str)) {
+                                ("foot_sliding", Some(b)) => format!("{name}:{b}"),
+                                _ => name.to_string(),
+                            };
+                            if !ex.contains(&n) {
+                                ex.push(n);
+                            }
+                        }
+                        verdict.push(if ex.is_empty() { "CHECKS OK".into() } else { format!("CHECKS OK (EXEMPT: {})", ex.join(", ")) });
+                    } else if j.get("passed").is_some() {
+                        failed = true;
+                        let errs = j.get("errors").and_then(Json::as_array).into_iter().flatten().take(3);
+                        let errs: Vec<String> = errs.map(|e| format!("FAIL {} {:.1}{}", e.get("check").and_then(Json::as_str).unwrap_or("?"), e.get("value").and_then(Json::as_f64).unwrap_or(0.0), e.get("unit").and_then(Json::as_str).unwrap_or(""))).collect();
+                        verdict.push(errs.join("  "));
+                    }
                     j.set("stage", Json::from("these checks play the entity's state on a flat stage; feet_in_world checks its feet on the world's own ground"));
                     packet.set("checks", j);
                 }
             }
+        }
+        if let Some(f) = self.feet_in_world(&e, &times) {
+            if let Some(c) = f.get("check") {
+                let ok = c.get("passed").and_then(Json::as_bool) == Some(true);
+                failed |= !ok;
+                verdict.push(format!("FEET ON GROUND {}", if ok { "OK".to_string() } else { format!("FAIL {:.1}CM", c.get("value").and_then(Json::as_f64).unwrap_or(0.0)) }));
+            }
+            packet.set("feet_in_world", f);
+        }
+        if !verdict.is_empty() {
+            let v = verdict.join(", ");
+            let colour = if failed { [255, 120, 100] } else { [140, 220, 160] };
+            // Under the first row, after its scale note.
+            film::draw_text(&mut sheet, sw, 4 + 36 * film::CHAR_W, tile + 4 + film::CHAR_H, &v, colour);
+            packet.set("verdict", Json::from(v));
         }
         if !dark.is_empty() {
             packet.set("warnings", Json::arr([Json::from(format!("too dark to judge (mean luma under {DARK_LUMA}): {}", dark.iter().take(8).cloned().collect::<Vec<_>>().join(", ")))]));
