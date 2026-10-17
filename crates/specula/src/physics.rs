@@ -407,11 +407,108 @@ impl Body {
 
     /// Hashes the body: kind and mass as before physics, the rest only when not default (so
     /// older worlds keep their hashes).
+    /// Hashes the body: kind and mass as before physics (plain bodies keep their old hashes),
+    /// then the motion fields directly (no JSON: moving bodies are hashed every tick).
     pub(crate) fn hash(&self, h: &mut StableHasher) {
         h.write_str(self.kind.name());
         h.write_f32(self.mass);
         if !self.is_plain() {
-            h.write_str(&self.to_json().to_string());
+            h.write_u8(0xb0);
+            self.hash_fixed(h);
+            for v in [self.velocity, self.angular_velocity] {
+                [v.x, v.y, v.z].iter().for_each(|c| h.write_f32(*c));
+            }
+            h.write_bool(self.sleeping);
+        }
+    }
+
+    /// Everything but the motion state (velocities, sleeping).
+    fn hash_fixed(&self, h: &mut StableHasher) {
+        h.write_f32(self.linear_damping);
+        h.write_f32(self.angular_damping);
+        h.write_f32(self.gravity_scale);
+        h.write_bool(self.ccd);
+        self.lock_position.iter().chain(&self.lock_rotation).for_each(|l| h.write_bool(*l));
+        match self.character {
+            None => h.write_u8(0),
+            Some(c) => {
+                h.write_u8(1);
+                [c.step_height, c.max_slope_deg, c.snap_distance, c.push_force].iter().for_each(|v| h.write_f32(*v));
+                h.write_bool(c.gravity);
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// The JSON text of box, sphere and capsule colliders, by [`Collider::field_hash`]: their
+    /// world-hash contribution is that text (the layout from before physics, so existing worlds
+    /// keep their hashes), built once per distinct collider instead of every tick a body moves.
+    /// A pure cache: the result never depends on what is in it.
+    static COLLIDER_TEXT: std::cell::RefCell<std::collections::BTreeMap<u64, Arc<str>>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Distinct collider texts kept (cleared when full).
+const COLLIDER_TEXT_CACHE: usize = 4096;
+
+impl Collider {
+    /// A hash of every field, computed directly.
+    pub fn field_hash(&self) -> u64 {
+        let mut h = StableHasher::with_seed(0x436f_6c6c_6964_6572);
+        let v3 = |h: &mut StableHasher, v: &Vec3| [v.x, v.y, v.z].iter().for_each(|c| h.write_f32(*c));
+        h.write_str(self.shape.name());
+        match &self.shape {
+            ColliderShape::Box { size } => v3(&mut h, size),
+            ColliderShape::Sphere { radius } => h.write_f32(*radius),
+            ColliderShape::Capsule { radius, height } => {
+                h.write_f32(*radius);
+                h.write_f32(*height);
+            }
+            ColliderShape::Hull { points } => {
+                h.write_u64(points.len() as u64);
+                points.iter().for_each(|p| v3(&mut h, p));
+            }
+            ColliderShape::Mesh { vertices, triangles } => {
+                h.write_u64(vertices.len() as u64);
+                vertices.iter().for_each(|p| v3(&mut h, p));
+                h.write_u64(triangles.len() as u64);
+                triangles.iter().flatten().for_each(|i| h.write_u32(*i));
+            }
+            ColliderShape::Heightfield { columns, rows, cell, heights } => {
+                h.write_u32(*columns);
+                h.write_u32(*rows);
+                cell.iter().chain(heights.iter()).for_each(|v| h.write_f32(*v));
+            }
+        }
+        v3(&mut h, &self.offset);
+        h.write_bool(self.is_trigger);
+        h.write_str(&self.layer);
+        match &self.mask {
+            None => h.write_u8(0),
+            Some(m) => {
+                h.write_u64(m.len() as u64 + 1);
+                m.iter().for_each(|l| h.write_str(l));
+            }
+        }
+        h.write_f32(self.friction);
+        h.write_f32(self.restitution);
+        h.finish()
+    }
+
+    /// The collider's part of the world hash.
+    pub(crate) fn hash(&self, h: &mut StableHasher) {
+        let key = self.field_hash();
+        match self.shape {
+            ColliderShape::Box { .. } | ColliderShape::Sphere { .. } | ColliderShape::Capsule { .. } => COLLIDER_TEXT.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if cache.len() >= COLLIDER_TEXT_CACHE && !cache.contains_key(&key) {
+                    cache.clear();
+                }
+                let text = cache.entry(key).or_insert_with(|| self.to_json().to_string().into());
+                h.write_str(text);
+            }),
+            // Shapes newer than the hash format: their fields, directly.
+            _ => h.write_u64(key),
         }
     }
 }
@@ -448,6 +545,23 @@ pub(crate) fn check_pair(c: Option<&Collider>, b: Option<&Body>) -> Result<(), W
                 format!("'{}' colliders have no volume, so only static bodies may use them; use a box, sphere, capsule or hull", c.shape.name()),
             )
             .with("field", "collider.shape"));
+        }
+    }
+    if let (Some(c), Some(b)) = (c, b) {
+        if let ColliderShape::Hull { points } = &c.shape {
+            let max = specula_physics::shape::MAX_MOVING_HULL_POINTS;
+            if b.kind != BodyKind::Static && points.len() > max {
+                return Err(WorldError::new(
+                    "invalid_component",
+                    format!(
+                        "a hull on a {} body takes at most {max} points (this one has {}): hull pairs cost edges x edges; simplify it, or make the body static (static hulls take up to {MAX_HULL_POINTS})",
+                        b.kind.name(),
+                        points.len()
+                    ),
+                )
+                .with("field", "collider.points")
+                .with("limit", max));
+            }
         }
     }
     if let Some(b) = b {
@@ -900,6 +1014,8 @@ pub struct Physics {
     pub errors: VecDeque<Json>,
     /// Wall-clock milliseconds of the last few ticks (sync + characters + step + write-back).
     pub tick_ms: VecDeque<f64>,
+    /// The world's settings reached the space once (later changes wake sleeping bodies).
+    settings_applied: bool,
 }
 
 impl Default for Physics {
@@ -920,6 +1036,7 @@ impl Default for Physics {
             last: None,
             errors: VecDeque::new(),
             tick_ms: VecDeque::new(),
+            settings_applied: false,
         }
     }
 }
@@ -1042,20 +1159,21 @@ impl Physics {
     fn shape_key(c: Option<&Collider>, scale: Vec3, b: Option<&Body>) -> u64 {
         let mut h = StableHasher::with_seed(0x7368_6170_6531);
         if let Some(c) = c {
-            h.write_str(&c.to_json().to_string());
+            h.write_u64(c.field_hash());
         }
         [scale.x, scale.y, scale.z].iter().for_each(|v| h.write_f32(*v));
         if let Some(b) = b {
             // What can't change without rebuilding the body (motion state can).
-            let fixed = Body { velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, sleeping: false, ..*b };
-            h.write_str(&fixed.to_json().to_string());
+            h.write_str(b.kind.name());
+            h.write_f32(b.mass);
+            b.hash_fixed(&mut h);
         }
         h.finish()
     }
 
     fn shape_for(&mut self, c: &Collider, scale: Vec3) -> Result<Shape, String> {
         let mut h = StableHasher::with_seed(0x7368_6170_6532);
-        h.write_str(&c.to_json().to_string());
+        h.write_u64(c.field_hash());
         [scale.x, scale.y, scale.z].iter().for_each(|v| h.write_f32(*v));
         let key = h.finish();
         if let Some(s) = self.shapes.get(&key) {
@@ -1324,10 +1442,26 @@ impl Physics {
         let hz = (1.0 / dt).round() as u32;
         let want = space_settings(settings, hz);
         if self.space.settings != want {
+            // New gravity, substeps or 2D mode: resting bodies must feel it.
+            let wake = self.space.settings.gravity != want.gravity || self.space.settings.plane_2d != want.plane_2d || self.space.settings.substeps != want.substeps || self.space.settings.sleep != want.sleep;
             self.space.settings = want;
+            // (Not on the first tick: a loaded world's resting bodies start asleep.)
+            if wake && self.settings_applied {
+                self.space.wake_all();
+            }
         }
+        self.settings_applied = true;
         self.sync(world, generation);
         if self.space.is_empty() {
+            // Report the empty state's hash once (world_hash must not show a stale one).
+            let empty = self.space.hash();
+            if self.hashes.back().is_some_and(|(_, h)| *h != empty) {
+                if self.hashes.len() == HASHES {
+                    self.hashes.pop_front();
+                }
+                self.hashes.push_back((tick, empty));
+                self.last = None;
+            }
             return;
         }
         self.move_characters(world, dt);
@@ -1681,5 +1815,122 @@ mod tests {
         assert!(!p.problems.is_empty(), "too many layer names are reported");
         let first = p.problems.values().next().unwrap();
         assert!(first.get("error").and_then(Json::as_str).unwrap().contains("layer"), "{first}");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Review round 1 regressions.
+
+    /// Finding 2: a 1000 x 0.01 x 1000 plate (and other thin boxes) syncs without a panic and
+    /// holds a crate.
+    #[test]
+    fn thin_plates_sync_and_hold() {
+        let mut w = World::default();
+        let mut s = SpawnSpec::new(WShape::Cube);
+        s.name = Some("plate".into());
+        s.scale = Vec3::new(1000.0, 0.01, 1000.0);
+        s.collider = Some(Collider::default());
+        w.spawn(s, "t").unwrap();
+        let mut s = SpawnSpec::new(WShape::Cube);
+        s.name = Some("sliver".into());
+        s.position = Vec3::new(30.0, 5.0, 0.0);
+        s.scale = Vec3::new(1.0e-3, 1.0e-3, 1.0e-3);
+        s.collider = Some(Collider { shape: ColliderShape::Box { size: Vec3::new(1.0e-4, 1.0e-4, 1.0e-4) }, ..Default::default() });
+        w.spawn(s, "t").unwrap();
+        let id = crate_at(&mut w, "crate", Vec3::new(0.0, 2.0, 0.0));
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 240);
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let e = w.get(id).unwrap();
+        assert!((e.position.y - 0.505).abs() < 0.02 && e.body.unwrap().sleeping, "{:?}", e.position);
+    }
+
+    /// Finding 4: an idle character beside a crate doesn't keep it awake or bump its version.
+    #[test]
+    fn an_idle_character_leaves_its_neighbours_alone() {
+        let mut w = World::default();
+        floor(&mut w);
+        let crate_id = crate_at(&mut w, "crate", Vec3::new(0.62, 0.5, 0.0));
+        let mut c = SpawnSpec::new(WShape::Group);
+        c.name = Some("hero".into());
+        c.position = Vec3::new(-0.3, 0.95, 0.0);
+        c.collider = Some(Collider { shape: ColliderShape::Capsule { radius: 0.3, height: 1.8 }, ..Default::default() });
+        let mut body = Body::new(BodyKind::Kinematic, 70.0);
+        body.character = Some(CharacterSpec::default());
+        c.body = Some(body);
+        let hero = w.spawn(c, "t").unwrap().id;
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 300);
+        let (v_crate, v_hero) = (w.get(crate_id).unwrap().version, w.get(hero).unwrap().version);
+        run(&mut w, &mut p, None, 120);
+        assert!(w.get(crate_id).unwrap().body.unwrap().sleeping);
+        assert_eq!((w.get(crate_id).unwrap().version, w.get(hero).unwrap().version), (v_crate, v_hero));
+    }
+
+    /// Finding 6: a hull with more than 16 points is refused on a moving body, by the world.
+    #[test]
+    fn big_hulls_are_static_only() {
+        let pts: Vec<Vec3> = (0..20).map(|i| {
+            let a = i as f32 * 2.399;
+            let y = 1.0 - 2.0 * (i as f32 + 0.5) / 20.0;
+            let r = (1.0 - y * y).sqrt();
+            Vec3::new(specula_core::dmath::cos(a) * r, y, specula_core::dmath::sin(a) * r)
+        }).collect();
+        let hull = Collider { shape: ColliderShape::Hull { points: Arc::new(pts) }, ..Default::default() };
+        let e = check_pair(Some(&hull), Some(&Body::new(BodyKind::Dynamic, 1.0))).unwrap_err();
+        assert_eq!((e.code, e.detail("field").and_then(Json::as_str)), ("invalid_component", Some("collider.points")));
+        check_pair(Some(&hull), Some(&Body::new(BodyKind::Static, 1.0))).unwrap();
+        check_pair(Some(&hull), None).unwrap();
+    }
+
+    /// Finding 7: old-layout colliders hash exactly as before (their JSON text), from the cache;
+    /// bodies hash without JSON.
+    #[test]
+    fn collider_hashes_keep_the_old_layout() {
+        for c in [
+            Collider::default(),
+            Collider { shape: ColliderShape::Capsule { radius: 0.3, height: 1.8 }, layer: "player".into(), is_trigger: true, ..Default::default() },
+            Collider { shape: ColliderShape::Sphere { radius: 0.25 }, offset: Vec3::new(0.0, 1.0, 0.0), ..Default::default() },
+        ] {
+            for _ in 0..2 {
+                let (mut a, mut b) = (StableHasher::with_seed(9), StableHasher::with_seed(9));
+                c.hash(&mut a);
+                b.write_str(&c.to_json().to_string());
+                assert_eq!(a.finish(), b.finish());
+            }
+        }
+        let (mut a, mut b) = (StableHasher::with_seed(9), StableHasher::with_seed(9));
+        Body::new(BodyKind::Dynamic, 3.0).hash(&mut a);
+        b.write_str("dynamic");
+        b.write_f32(3.0);
+        assert_eq!(a.finish(), b.finish(), "plain bodies hash as before physics");
+        let mut moving = Body::new(BodyKind::Dynamic, 3.0);
+        moving.velocity = Vec3::new(1.0, 0.0, 0.0);
+        let (mut c, mut d) = (StableHasher::with_seed(9), StableHasher::with_seed(9));
+        moving.hash(&mut c);
+        moving.velocity = Vec3::new(1.0, 0.0, 1.0e-7);
+        moving.hash(&mut d);
+        assert_ne!(c.finish(), d.finish());
+    }
+
+    /// Findings 9 and 10: settings changes wake sleeping bodies; an emptied space reports its
+    /// (empty) hash instead of a stale one.
+    #[test]
+    fn settings_changes_wake_and_empty_spaces_hash() {
+        let mut w = World::default();
+        let floor_id = floor(&mut w);
+        let id = crate_at(&mut w, "crate", Vec3::new(0.0, 0.5, 0.0));
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 120);
+        assert!(w.get(id).unwrap().body.unwrap().sleeping);
+        w.set_env(&crate::world::EnvPatch { physics: Some(PhysicsPatch { gravity: Some([0.0, 9.81, 0.0]), ..Default::default() }), ..Default::default() }).unwrap();
+        run(&mut w, &mut p, None, 30);
+        let e = w.get(id).unwrap();
+        assert!(!e.body.unwrap().sleeping && e.position.y > 1.0, "gravity upwards lifts it: {:?}", e.position);
+        let stale = p.hash().unwrap();
+        w.delete(&EntityKey::Id(id), None).unwrap();
+        w.delete(&EntityKey::Id(floor_id), None).unwrap();
+        run(&mut w, &mut p, None, 2);
+        assert_ne!(p.hash(), Some(stale));
+        assert_eq!(p.hash(), Some(specula_physics::Space::default().hash()));
     }
 }

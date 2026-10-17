@@ -1371,9 +1371,7 @@ impl Entity {
         h.write_str(&self.props.to_string());
         match &self.collider {
             None => h.write_u8(0),
-            Some(c) => {
-                h.write_str(&c.to_json().to_string());
-            }
+            Some(c) => c.hash(h),
         }
         match self.body {
             None => h.write_u8(0),

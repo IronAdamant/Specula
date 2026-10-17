@@ -674,17 +674,25 @@ impl crate::Engine {
                 let Some(body) = self.world.get(id).and_then(|e| e.body).filter(|b| b.kind == BodyKind::Dynamic) else {
                     return world_error(&WorldError::new("not_dynamic", "physics_impulse needs a dynamic body (body.kind \"dynamic\")").with("id", id));
                 };
-                let Some(view) = self.physics.space.body(id) else {
-                    return world_error(&WorldError::new("not_simulated", "this body isn't simulated yet (it joins at the next physics tick); see physics_explain").with("id", id));
+                // Bring physics up to date with the world first (a body made dynamic this tick,
+                // other impulses since the last tick), so its mass is the one it has now.
+                self.physics.sync(&self.world, self.world_generation);
+                let Some((dv, dw)) = self.physics.space.impulse_delta(id, impulse, at, angular) else {
+                    let why = self.physics.problems.get(&id).cloned().unwrap_or_else(|| Json::from("not simulated yet"));
+                    return world_error(
+                        &WorldError::new("not_simulated", "physics doesn't simulate this body (see 'why' and physics_explain), so it can't take an impulse")
+                            .with("id", id)
+                            .with("why", why),
+                    );
                 };
-                // The velocity change the impulse makes, from the body physics simulates.
-                let (v, w_new) = self.physics.space.impulse_response(id, impulse, at.unwrap_or(view.center), angular).expect("a dynamic body");
-                let new = Body { velocity: v, angular_velocity: w_new, sleeping: false, ..body };
+                // Impulses add up: the change goes on top of the body's velocity as the world has
+                // it now (which already holds this tick's earlier impulses).
+                let new = Body { velocity: body.velocity + dv, angular_velocity: body.angular_velocity + dw, sleeping: false, ..body };
                 let change = UpdateSpec { body: Some(Some(new)), ..Default::default() };
                 let by = w.name.to_owned();
                 match self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => {
-                        let b = self.world.get(id).and_then(|e| e.body).expect("set");
+                        let b = self.world.get(id).and_then(|e| e.body).unwrap_or(new);
                         ToolOutput::text(
                             Json::obj([
                                 ("id", Json::from(id)),
@@ -996,7 +1004,7 @@ fn draw_shape(p: &mut Painter, shape: &Shape, pose: &Pose, color: [f32; 4], budg
             }
         }
         Shape::Mesh(_) | Shape::Heightfield(_) => {
-            let mesh = shape.triangles().expect("a mesh");
+            let Some(mesh) = shape.triangles() else { return };
             for t in 0..mesh.triangles.len() {
                 if *budget == 0 {
                     break;
