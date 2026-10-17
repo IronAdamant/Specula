@@ -1,6 +1,7 @@
 # Design: Locus, placement by relations
 
-Status: designed 2026-10-18 (M3 lane "Locus, navigation and AI"); implementation notes at the end. ROADMAP M3
+Status: designed and built 2026-10-18 (M3 lane "Locus, navigation and AI"); implementation notes at
+[the end](#implementation-2026-10-18). ROADMAP M3
 "Placement by relations: Locus"; research in [AGENT_GAMEMAKING.md](../research/AGENT_GAMEMAKING.md) §1 ("Agents are
 bad at raw coordinates and good at relations") and §3. Siblings: [NAVIGATION.md](NAVIGATION.md) (the navmesh it
 places on), [PHYSICS.md](PHYSICS.md) (the queries it checks collisions with).
@@ -96,3 +97,31 @@ boxes gathered once). The response is capped and lists instances in order.
 Relations between instances of one call beyond spacing (stacking a pile, "in a circle around"), optimisation of a
 whole scene at once (Holodeck's constraint optimiser), and style rules (`style.toml`) as placement preferences. The
 format leaves room for each.
+
+## Implementation (2026-10-18)
+
+Built as designed in `crates/specula-locus` (`geom`: upright boxes; `solve`: the solver and the `Probe` trait) and
+`crates/specula/src/locus.rs` (the tool, target resolution, the probe over physics, drawn boxes and the navmesh, the
+write). Changes and details:
+
+- *Amendment: settling looks for ground from half a metre above the generator's base*, then from high up if nothing is
+  there. Rays from high above landed an object between two points on a crate that stood between them. `on` still rays
+  from just above its target's top.
+- *Amendment: `inside` with y bounds doesn't switch settling off;* it is a constraint, not a height.
+- `along` turns the object's local X along the line (its front, +Z or `front`, faces across it); `facing` overrides;
+  `against` turns its back to the face.
+- `spacing` and `near` measure the gap between footprints, not between centres.
+- Collisions: physics overlap (the footprint box shrunk 5 mm, raised 1 cm) against non-trigger colliders, and the
+  upright boxes of drawn entities without colliders (at most 8,192, in a 2 m grid; boxes covering more than 256 cells
+  are always checked). The moved entity's subtree and `ignore` are left out.
+- A candidate first gets a lower bound from what doesn't depend on height (the X/Z relations and the preference);
+  if that can't beat the best so far, its ground rays, navmesh queries and collision checks are skipped.
+- Errors: `unsatisfied` (with the nearest valid alternatives and hints), `no_free_spot` (some instance has no
+  collision-free spot near the asked one), `no_placement`, `footprint_unknown`; argument errors name the field. The
+  answer lists every relation for up to 8 instances (then only failures) and at most 48 KB of placements in detail.
+- Writes go through the swarm commit path as one `batch` journal entry (claims, conflict help, `world_undo`). Spawns
+  with `count` > 1 are named `name_1`, `name_2`...
+
+Measured in `scripts/nav_check.py` (dev build): a table against a wall inside a room, a crate on it, four pillars along
+a wall, a lamp between two of them, a bench near the table facing it and clear of the pillars, and refusals with hints
+and alternatives, each placement within a few milliseconds.

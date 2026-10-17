@@ -15,7 +15,7 @@ two runs give the same world, physics and nav hashes (checked).
     python scripts/nav_check.py --big              # also a 100 m x 100 m build for timing
 
 Everything goes to <target>/nav-check/ (CARGO_TARGET_DIR when set): one PNG and one JSON per
-capture, plus summary.json. LOOK at the PNGs (and have the sight-skeptic check the claims)
+capture, plus summary.json (--out picks another folder). LOOK at the PNGs (and have the sight-skeptic check the claims)
 before calling it good. Standard library only; output is ASCII.
 """
 import argparse
@@ -362,7 +362,11 @@ def main():
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--big", action="store_true")
     ap.add_argument("--exe", default=str(TARGET / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    ap.add_argument("--out", default=None, help="output folder (default <target>/nav-check)")
     a = ap.parse_args()
+    global OUT
+    if a.out:
+        OUT = Path(a.out)
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)

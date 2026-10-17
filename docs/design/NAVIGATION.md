@@ -1,6 +1,7 @@
 # Design: navigation and AI
 
-Status: designed 2026-10-18 (M3 lane "Locus, navigation and AI"); implementation notes at the end. ROADMAP M3
+Status: designed and built 2026-10-18 (M3 lane "Locus, navigation and AI"); what was built, and where it departs from
+this design (with why), is in [Implementation](#implementation-2026-10-18) at the end. ROADMAP M3
 "Navigation and AI". Rules it follows: [DETERMINISM.md](DETERMINISM.md) (F2), [PHYSICS.md](PHYSICS.md) (the P2
 character controller it matches), [AGENTS.md](../../AGENTS.md). Placement by relations is its sibling:
 [LOCUS.md](LOCUS.md).
@@ -176,3 +177,86 @@ triangles, 64 spans per column, 16,384 polygons per tile, 4,096 expanded nodes p
 Off-mesh links (jumps, ladders), area costs (mud, water), dynamic obstacles carved without a rebuild, hierarchical
 pathfinding for huge worlds, formations. Each fits the structure (links are portals with a kind; costs are per polygon)
 and waits for a game that needs it.
+
+## Implementation (2026-10-18)
+
+Built as designed, with these changes and details. Each amendment says why.
+
+**Files.** `crates/specula-via` (`build`: one tile; `mesh`: tiles, links, hash; `query`: nearest, A*, shortcut,
+funnel, surface moves, random points; `crowd`; `examples/via_bench.rs`), `crates/specula-mens` (`def`: parse and
+check; `run`: the runner), `crates/specula/src/nav.rs` (the bridge), `crates/specula/src/nav_tools.rs` (tools,
+overlays, the tick hook). Live checks: `scripts/nav_check.py` (a courtyard: Locus, navmesh, edits, a guard that patrols
+and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (Sepulcra's slab).
+
+**Generation.**
+- *Amendment: convex solids fill their columns.* Rasterising only surfaces (as Recast does) leaves the inside of a
+  closed box as open space; a wall taller than an agent then has walkable "rooms" inside it. Boxes, hulls, spheres and
+  capsules are solids: each column they cover is solid from their lowest to their highest point. Meshes and
+  heightfields stay surfaces.
+- *Amendment: an axis-aligned box fast path.* Unrotated cubes and box colliders (most greybox) fill their columns
+  directly instead of clipping 12 triangles per column: a tile's rasterisation went from 99 ms to 2.5 ms for the
+  benchmark's 100 tiles. The result is the same as the triangles' except in columns a face only touches along a
+  column line.
+- *Amendment: tiny islands are dropped.* Erosion leaves single walkable cells where narrow wall tops meet (a cell two
+  steps from every edge survives a two-cell radius). Islands under 8 cells that don't reach the tile's border are
+  removed (Recast's minimum region area does the same).
+- Faces lying exactly on a column line count for the columns on both sides (conservative: a wall on a line erodes a
+  column more).
+- Tile builds reuse their buffers; links are kept sorted, so a navmesh built tile by tile equals one built at once
+  (tested).
+
+**Queries.**
+- *Amendment: a visibility shortcut after A*.* A* over large rectangles can bend a path at a polygon corner it never
+  needed (its node positions are portal entry points). After the search, a navmesh raycast tries the straight walk to
+  the end, then from each funnel corner to the farthest later one it can reach; the polygons it crosses replace the
+  detour. Used by `nav_path` and by crowd repaths.
+- A*'s nodes live in a small open-addressing map (lookups only, never iterated) instead of an ordered map.
+- The funnel works out portals as it reaches them, so steering (3 corners ahead) never builds a long corridor's
+  portal list.
+- Random points pick a tile by area, then a polygon by a per-tile running total (bounded, no full scan per sample).
+
+**Crowds.**
+- *Amendment: repaths are budgeted by work, not only by count:* at most 32 searches and 2,048 expanded polygons per
+  step (at least one search always runs), round robin by id.
+- *Amendment: no periodic repath every 2 s; every 8 s.* Corridors are checked every step (tiles rebuilt under them, the
+  agent leaving them, the target moving 0.5 m), which is what periodic repaths were for.
+- `remaining` is exact over the next three corners and a straight line past them (exact on the last stretch, where
+  arrival slows the agent).
+- Neighbours come from agents sorted by grid cell (rows contiguous); avoidance reads a snapshot, so agents never see
+  each other's half-updated state; overlap push-apart uses the same grid. A step allocates nothing once warm.
+
+**Engine.**
+- Sources: as designed, plus *amendment: whatever is below something that moves on its own* (a nav agent, a dynamic
+  body, a character) never feeds a navmesh: a character's visible body, a child cube without a collider, used to
+  carve a hole where it stood. When an entity starts or stops moving on its own, its subtree is looked at again.
+- Agents and minds are re-read only when their `props` change (versions change at every write-back).
+- Navmesh changes rebuild everything (a new grid) and re-link agents; edits mark the tiles their old and new bounds
+  touch (plus the erosion border); `tiles_per_tick` (default 8) of them rebuild per tick.
+- Write-back: crowd-moved agents get position (and, at the top level, yaw from their velocity or a `face` action);
+  physics characters get `body.velocity` (x, z; the vertical part kept) and physics walks them. Journal kind `nav`.
+- `world_hash` reports `nav` (navmeshes, crowds, minds, agents' runtime goals); the desync trace carries a `nav`
+  subsystem hash; `perf_frame` has a `nav` section.
+- *Limit:* hidden state (corridors, minds' running nodes, patrol indices) isn't saved in world files: a reloaded world
+  rebuilds its navmeshes and restarts its minds from the root (deterministically, but not bit-identically to the run
+  that saved it). Agents below a parent get only their position written (no yaw).
+
+**AI.**
+- *Amendment: sequences are reactive by default too:* each tick a running sequence first re-checks the conditions
+  before its running child and halts it if one fails (`"reactive": false` resumes without checking). Without it
+  `[if sees, do chase]` kept chasing after sight was lost.
+- Labels are `label` (node `name`s would collide with verb arguments). A blackboard holds at most 64 keys.
+- `ai_set` refuses invalid definitions with every diagnostic (path, code, message, hint: the nearest valid name).
+
+**The Lex seam, as built.** `specula_mens::{Def, Mind, Host, Vocabulary}` is the whole contract: a Lex item of kind
+`tree` or `utility` holds a definition, parses it with Lex's own vocabulary, and calls `Mind::tick(&mut host, tick)`.
+Lex's `navigate` behaviour can set an agent's goal through `props.nav_agent.goal` (or, in engine code, the nav agent
+link) and read `Nav::path_remaining(entity)` as `path_remaining`. Neither crate depends on Lex.
+
+**Measured (2026-10-18; i9-13900HX, one thread, release, shared machine so roughly +-30%).** `via_bench`: a 64 m x
+64 m set of 64 rooms with 1.6 m doorways and 150 crates (439 boxes, 10 x 10 tiles, 1,454 polygons) builds in
+28-33 ms (target 50; 108-151 ms as triangles); one tile rebuilds in 0.30-0.34 ms (target 2); paths of 40 m or more
+across it take 0.16-0.18 ms on average (p95 0.31-0.34 ms, about 450 polygons expanded; target 0.2); 100 agents
+step in 0.33-0.43 ms (max 0.7-1.0 ms; the first second's repath burst 1.3-1.8 ms; target 0.5). In the engine (dev
+profile, engine crates at opt-level 2): the courtyard's navmesh (16 tiles) builds in 6-9 ms, Sepulcra's slab (49
+tiles, 219 polygons) in 22-33 ms, a 100 m x 100 m field of 400 boxes (196 tiles, 2,548 polygons) in 102 ms; a nav
+tick with a guard, a thief and 8 walkers averages 0.02-0.06 ms.
