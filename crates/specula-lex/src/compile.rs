@@ -1936,6 +1936,7 @@ impl<'d> Cx<'d> {
                         schema::Field { name: "when", ty: "", required: true, doc: "" },
                         schema::Field { name: "code", ty: "", required: true, doc: "" },
                         schema::Field { name: "message", ty: "", required: false, doc: "" },
+                        schema::Field { name: "details", ty: "", required: false, doc: "" },
                     ],
                 };
                 if !self.fields(&r, &spec, &[]) {
@@ -1944,9 +1945,11 @@ impl<'d> Cx<'d> {
                 let cond = self.req(&r, "when").and_then(|w| self.bool_expr(&w, &sc));
                 let code = self.req(&r, "code").and_then(|c| self.string(&c));
                 let message = r.key("message").and_then(|m| self.string(&m));
+                // Numbers for the refusal, like native args (at most 16, numbers or expressions).
+                let details = r.key("details").map(|d| self.native_args(&d, &sc)).unwrap_or_default();
                 if let (Some(cond), Some(code)) = (cond, code) {
                     let message = message.unwrap_or_else(|| format!("refused: {code}"));
-                    require.push(Require { cond, code, message });
+                    require.push(Require { cond, code, message, details });
                 }
             }
         }

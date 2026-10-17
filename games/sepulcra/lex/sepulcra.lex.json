@@ -229,7 +229,7 @@
       "args": { "stone": { "type": "entity", "tags": ["stone"] } },
       "require": [
         { "when": "exists(arg.stone.next)", "code": "max_tier", "message": "the stone is at its last tier" },
-        { "when": "res.dust >= arg.stone.next.cost", "code": "not_enough_dust", "message": "not enough grave-dust" }
+        { "when": "res.dust >= arg.stone.next.cost", "code": "not_enough_dust", "message": "not enough grave-dust", "details": { "need": "arg.stone.next.cost", "have": "res.dust" } }
       ],
       "do": [
         { "add": "dust", "amount": "-arg.stone.next.cost" },

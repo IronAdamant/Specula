@@ -433,6 +433,8 @@ pub struct Require {
     pub cond: Ex,
     pub code: String,
     pub message: String,
+    /// Numbers the refusal carries (`need`, `have`), evaluated when it refuses.
+    pub details: Vec<(String, Ex)>,
 }
 
 #[derive(Clone, Debug)]

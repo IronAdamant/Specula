@@ -408,3 +408,35 @@ fn the_generation_moves_when_granted_tags_run_out() {
     assert!(g[1..out].iter().all(|x| x.0 == g[1].0), "steady while warded: {g:?}");
     assert_eq!(g[g.len() - 2].0, g[g.len() - 1].0, "and settles once the effect is gone: {g:?}");
 }
+
+/// Refuses with numbers: the refusal carries them as details.
+struct Picky;
+
+impl NativeHook for Picky {
+    fn run(&self, cx: &mut NativeCtx<'_, '_>) -> Result<(), String> {
+        Err(cx.refuse_with("in_the_way", "something stands there", &[("enemy", 42), ("cell", 7)]))
+    }
+}
+
+/// Requirements and hooks refuse with machine-readable numbers (`need`, `have`, `enemy`).
+#[test]
+fn refusals_carry_details_from_requirements_and_hooks() {
+    let items = with_base(
+        r#""picky": {"kind": "native", "hook": "test.picky", "reason": "a test"},
+           "buy": {"kind": "command", "args": {"n": "int"},
+                   "require": [{"when": "res.gold >= arg.n * 2", "code": "not_enough_gold", "message": "too poor", "details": {"need": "arg.n * 2", "have": "res.gold"}}],
+                   "do": [{"add": "gold", "amount": 1}]},
+           "poke": {"kind": "command", "do": [{"native": "picky"}]}"#,
+    );
+    let mut n = Natives::new();
+    n.insert("test.picky".into(), Arc::new(Picky) as Arc<dyn NativeHook>);
+    let mut s = Sim::new(rules(&items), 1, &n).unwrap();
+    let r = cmd(&mut s, "buy", r#"{"n": 3}"#).unwrap_err();
+    assert_eq!((r.code.as_str(), r.details.clone()), ("not_enough_gold", vec![("need".into(), Json::from(6)), ("have".into(), Json::from(0))]));
+    let r = cmd(&mut s, "poke", "{}").unwrap_err();
+    assert_eq!(r.code, "in_the_way");
+    assert!(r.details.contains(&("enemy".into(), Json::from(42))) && r.details.contains(&("cell".into(), Json::from(7))), "{r:?}");
+    // Details are numbers or expressions, like native args.
+    let bad = with_base(r#""b": {"kind": "command", "require": [{"when": "true", "code": "x", "details": {"d": "spots"}}], "do": []}"#);
+    assert!(!codes(&bad).is_empty(), "a site is not a number");
+}

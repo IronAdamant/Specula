@@ -169,7 +169,7 @@ pub const KINDS: &[Spec] = &[
         fields: &[
             f("args", "{name: \"site\" | \"archetype\" | \"entity\" | unit name | {type, tags, of}}", false, "entity args accept an entity id or a site name (its occupant); of: a sites item id, so a site arg accepts only that item's sites"),
             f("cost", "{resource: expr}", false, "checked first (rejection not_enough_<resource>), then paid"),
-            f("require", "[{when, code, message?}]", false, "checked in order; the first false is the rejection"),
+            f("require", "[{when, code, message?, details?}]", false, "checked in order; the first false is the rejection, with details: {name: number expression} evaluated then (e.g. need, have)"),
             f("do", "actions", true, "what happens"),
         ],
     },

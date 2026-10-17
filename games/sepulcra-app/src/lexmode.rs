@@ -39,15 +39,22 @@ pub struct LexRules {
     pub last_refusal: Option<(String, String)>,
 }
 
+/// The game's id of the Lex run's enemy `lex_id`: the enemies of both runs, in id order, are
+/// the same enemies (the parity check compares them so), so it is the one at the same rank.
+fn enemy_of(sim: &Sim, state: &State, lex_id: i64) -> Option<sepulcra::sim::EnemyId> {
+    let r = sim.rules();
+    let enemy = r.tag("enemy")?;
+    let rank = sim.entities().iter().filter(|e| e.alive && r.archetypes[usize::from(e.arch)].tags.binary_search(&enemy).is_ok()).position(|e| i64::from(e.id) == lex_id)?;
+    state.enemies().get(rank).map(|e| e.id)
+}
+
 /// A Lex refusal as the game's [`Rejection`] (Lex's codes are the game's for the rules it
-/// states; the generic ones map by the command). `reference` supplies the details (need and
-/// have, the enemy in the way) when it refused the same way.
-fn rejection_of(code: &str, cmd: &Command, state: &State, reference: Option<&Rejection>) -> Rejection {
-    if let Some(r) = reference.filter(|r| r.code() == code) {
-        return *r;
-    }
+/// states; the generic ones map by the command), with Lex's own details: `need` and `have`
+/// from the rule's cost or requirement, the enemy in the way from the hook (as the game's id).
+fn rejection_of(l: &specula_lex::Rejection, cmd: &Command, sim: &Sim, state: &State) -> Rejection {
+    let detail = |k: &str| l.details.iter().find(|(n, _)| n == k).and_then(|(_, v)| v.as_i64());
     let walls = matches!(cmd, Command::PlaceWall { .. } | Command::RemoveWall { .. });
-    match code {
+    match l.code.as_str() {
         "unknown_cell" | "unknown_site" => Rejection::UnknownCell,
         "unknown_stone" | "unknown_archetype" => Rejection::UnknownStone,
         "not_buildable" => Rejection::NotBuildable,
@@ -60,9 +67,12 @@ fn rejection_of(code: &str, cmd: &Command, state: &State, reference: Option<&Rej
         "no_entity" if walls => Rejection::NoWall,
         "no_entity" => Rejection::NoStone,
         "max_tier" => Rejection::MaxTier,
-        "not_enough_dust" => Rejection::NotEnoughDust { need: 0, have: state.dust() },
+        "not_enough_dust" => {
+            let clamp = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+            Rejection::NotEnoughDust { need: detail("need").map_or(0, clamp), have: detail("have").map_or(state.dust(), clamp) }
+        }
         "wall_exists" => Rejection::WallExists,
-        "enemy_in_the_way" => Rejection::EnemyInTheWay { enemy: 0 },
+        "enemy_in_the_way" => Rejection::EnemyInTheWay { enemy: detail("enemy").and_then(|id| enemy_of(sim, state, id)).unwrap_or(0) },
         "no_more_waves" => Rejection::NoMoreWaves,
         // game_over, and Lex's own failures (work_limit, runtime_error): nothing the player can
         // fix by choosing differently; `lex` in the answer has the real code.
@@ -108,9 +118,9 @@ impl LexRules {
                 self.accepted += 1;
                 Ok(())
             }
-            (Err(l), Err(r)) => {
+            (Err(l), Err(_)) => {
                 self.refused += 1;
-                let mine = rejection_of(&l.code, cmd, state, Some(&r));
+                let mine = rejection_of(&l, cmd, &self.sim, state);
                 self.last_refusal = Some((l.code, l.message));
                 Err(mine)
             }
@@ -125,7 +135,7 @@ impl LexRules {
             (Err(l), Ok(())) => {
                 self.refused += 1;
                 self.note(state.tick(), format!("Lex refused {cmd:?} ({}), the reference would accept it", l.code));
-                let mine = rejection_of(&l.code, cmd, state, None);
+                let mine = rejection_of(&l, cmd, &self.sim, state);
                 self.last_refusal = Some((l.code, l.message));
                 Err(mine)
             }
@@ -257,6 +267,50 @@ mod tests {
         assert_eq!(reference.ticks, state.tick());
         let (tick, hash, outcome) = LexRules::replay(&content, 5, &journal, u32::MAX).unwrap();
         assert_eq!((tick, hash, outcome.as_deref()), (lex.sim.tick(), lex.sim.hash(), Some("won")), "the replay reaches the same Lex hash");
+    }
+
+    /// Lex mode's refusals carry Lex's own details: the dust an upgrade needs and has, and the
+    /// enemy in a wall's way (as the game's id), equal to what the reference would say.
+    #[test]
+    fn lex_refusals_carry_need_have_and_the_enemy() {
+        let content = Arc::new(Content::builtin());
+        let mut state = State::new(Arc::clone(&content), 3);
+        let mut lex = LexRules::new(&content, 3).unwrap();
+        let cell = |s: &str| content.map.cell_ref(s).unwrap();
+        let warding = content.stone_kind("warding").unwrap();
+        // Spend dust on stones, then ask for an upgrade it can't pay for.
+        let mut ev = Vec::new();
+        for c in ["top:8,12", "top:12,8", "top:7,12", "top:12,11", "top:7,7", "top:11,7"] {
+            let cmd = Command::PlaceStone { cell: cell(c), stone: warding };
+            if lex.decide(&state, &cmd).is_ok() {
+                state.apply(&cmd, &mut ev).unwrap();
+            }
+        }
+        let up = Command::Upgrade { cell: cell("top:8,12") };
+        let reference = state.check(&up);
+        assert!(matches!(reference, Err(Rejection::NotEnoughDust { .. })), "{reference:?}");
+        assert_eq!(lex.decide(&state, &up), reference, "need and have from Lex");
+        assert_eq!(lex.desync, None);
+        // Walk until an enemy stands in a wall's way (a fresh run: dust for a wall, since Lex
+        // checks costs before the hook and the reference checks the enemy first).
+        let mut state = State::new(Arc::clone(&content), 3);
+        let mut lex = LexRules::new(&content, 3).unwrap();
+        let mut found = false;
+        'ticks: for _ in 0..6000 {
+            state.step_into(&[], &mut ev);
+            ev.clear();
+            lex.step(&state);
+            for c in content.map.cells() {
+                let wall = Command::PlaceWall { cell: c.id };
+                if let r @ Err(Rejection::EnemyInTheWay { .. }) = state.check(&wall) {
+                    assert_eq!(lex.decide(&state, &wall), r, "the same enemy, by the game's id");
+                    found = true;
+                    break 'ticks;
+                }
+            }
+        }
+        assert!(found, "an enemy got in a wall's way");
+        assert_eq!(lex.desync, None, "{:?}", lex.desync);
     }
 
     #[test]

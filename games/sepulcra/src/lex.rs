@@ -603,7 +603,7 @@ impl Bound {
             (from == i64::from(cell.0) || to == i64::from(cell.0)).then_some(id)
         });
         match blocker {
-            Some(id) => Err(cx.refuse("enemy_in_the_way", format!("enemy {id} stands on or is stepping into {}", self.map.cell_name(cell)))),
+            Some(id) => Err(cx.refuse_with("enemy_in_the_way", format!("enemy {id} stands on or is stepping into {}", self.map.cell_name(cell)), &[("enemy", i64::from(id))])),
             None => Ok(()),
         }
     }

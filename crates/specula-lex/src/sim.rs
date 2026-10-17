@@ -67,7 +67,7 @@ pub struct RtErr {
     pub code: &'static str,
     pub message: String,
     /// A native hook refused the command it ran in with this code ([`NativeCtx::refuse`]).
-    pub refusal: Option<String>,
+    pub refusal: Option<(String, Vec<(String, i64)>)>,
 }
 
 fn rt(code: &'static str, message: impl Into<String>) -> RtErr {
@@ -644,7 +644,7 @@ struct Core<'a> {
     /// Runs the natives the run left to a host (live Lex), if any.
     host: Option<&'a mut dyn NativeHost>,
     /// Set by [`NativeCtx::refuse`] while a command is applied.
-    refusal: Option<String>,
+    refusal: Option<(String, Vec<(String, i64)>)>,
     /// Scratch for ordered phases.
     order: &'a mut Vec<(i64, u32)>,
     order_key: &'a mut Option<(u64, u32, u32)>,
@@ -2542,7 +2542,15 @@ impl Core<'_> {
         for req in &def.require {
             match self.eval(&req.cond, &f) {
                 Ok(Val::Bool(true)) => {}
-                Ok(_) => return Err(Rejection::new(req.code.as_str(), req.message.as_str())),
+                Ok(_) => {
+                    let mut r = Rejection::new(req.code.as_str(), req.message.as_str());
+                    for (k, e) in &req.details {
+                        if let Ok(v) = self.int(e, &f) {
+                            r = r.with(k, Json::from(v));
+                        }
+                    }
+                    return Err(r);
+                }
                 Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
             }
         }
@@ -2562,8 +2570,12 @@ impl Core<'_> {
             // The snapshot is a new state value (a fresh instance), so nothing a native cached
             // for the abandoned one can be mistaken for it.
             *self.st = snapshot;
-            if let Some(code) = e.refusal {
-                return Err(Rejection::new(code, e.message).with("command", Json::from(def.id.as_str())));
+            if let Some((code, details)) = e.refusal {
+                let mut r = Rejection::new(code, e.message).with("command", Json::from(def.id.as_str()));
+                for (k, v) in details {
+                    r = r.with(&k, Json::from(v));
+                }
+                return Err(r);
             }
             return Err(Rejection::new("runtime_error", format!("command '{}' failed and was rolled back: {}", def.id, e.message)).with("cause", Json::from(e.code)));
         }
@@ -2860,8 +2872,14 @@ impl NativeCtx<'_, '_> {
     /// error (`return Err(cx.refuse("enemy_in_the_way", "..."))`). The command is rolled back
     /// and refused with that code. Outside a command it is an ordinary failure.
     pub fn refuse(&mut self, code: &str, message: impl Into<String>) -> String {
+        self.refuse_with(code, message, &[])
+    }
+
+    /// [`NativeCtx::refuse`] with numbers the refusal carries (`enemy`, `need`; at most 16).
+    pub fn refuse_with(&mut self, code: &str, message: impl Into<String>, details: &[(&str, i64)]) -> String {
         if self.core.in_command {
-            self.core.refusal = Some(code.to_owned());
+            let details = details.iter().take(crate::compile::MAX_NATIVE_ARGS).map(|(k, v)| ((*k).to_owned(), *v)).collect();
+            self.core.refusal = Some((code.to_owned(), details));
         }
         message.into()
     }
