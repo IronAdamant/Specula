@@ -525,6 +525,10 @@ struct Folder {
 /// The lock file an engine holds while it owns a world folder (never swept, never a reason to
 /// refuse adoption).
 const LOCK: &str = "world.lock";
+/// The swarm's task board, saved next to the world by the engine (`crate::board`; never swept,
+/// never a reason to refuse adoption).
+const BOARD: &str = "board.json";
+const BOARD_TMP: &str = "board.json.tmp";
 
 /// Whether a file starts like one we write: `{` then `"format": "specula.world/v1"`, ignoring
 /// whitespace (so a CRLF checkout still counts).
@@ -556,7 +560,7 @@ fn scan(dir: &Path) -> Result<Folder, PersistError> {
                 has_index = true;
             } else if (name == INDEX_TMP || is_subtree_file(&name)) && starts_like_ours(&entry.path()) {
                 folder.ours.push(name);
-            } else if name != LOCK {
+            } else if name != LOCK && name != BOARD && name != BOARD_TMP {
                 foreign.get_or_insert(name);
             }
         }

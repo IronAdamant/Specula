@@ -92,6 +92,13 @@ pub trait Game {
         Json::Null
     }
 
+    /// The game's own simulation state as hashes by subsystem (`("sim", h)`, `("economy", h)`…),
+    /// pushed into `out` as every tick begins, for the desync detector: `desync_compare` names
+    /// the subsystems that differ between two runs. State a game keeps outside the world is
+    /// invisible to the world's hash, so report it here. Runs every tick: keep it cheap and
+    /// deterministic (same state, same hashes, on every machine). Default: none.
+    fn state_hashes(&self, _out: &mut Vec<(&'static str, u64)>) {}
+
     /// A copy of everything the game keeps (simulation, presentation, cached entity ids), taken
     /// before an agent's game tool runs while agents hold claims. If a claim rejects the tool's
     /// world changes, the engine rolls the world back and hands this to [`Game::restore`], so game

@@ -1,0 +1,240 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "comms-headless",
+  "agents": 64,
+  "rounds": 12,
+  "batch": 20,
+  "feed": true,
+  "build": "release",
+  "windowed": false,
+  "adapter": null,
+  "frame_floor": null,
+  "when": "2026-10-18T00:40:30",
+  "cpu_busy_pct_before": 0.6,
+  "swarm_settings": {
+    "frame_floor_fps": 60,
+    "hardware": {
+      "gpu": "NVIDIA GeForce RTX 4090 Laptop GPU",
+      "gpu_kind": "discrete",
+      "vendor_id": "0x10de",
+      "vram_mb": 16048,
+      "vram_note": "device-local heap",
+      "cpu_threads": 32,
+      "display_refresh_hz": null,
+      "refresh_from": null
+    },
+    "suggested_frame_floor_fps": 60,
+    "windowed": false
+  },
+  "comms": {
+    "intent_overlaps_flagged": 64,
+    "intent_overlaps_missed": 0,
+    "conflict_help": 64,
+    "leases": 128,
+    "notes": 64,
+    "progress": 192,
+    "questions": 64,
+    "tasks_done": 64,
+    "questions_answered": 64,
+    "rollup_ms": 9.8,
+    "rollup_sample": "agent_00: 322 changes in 23 entries (13 delete, 55 set, 254 spawn) on 254 entities under /district_00, 5 undone; 13 refused; tasks: 1 done (last done: 'build /district_00')",
+    "task_rollup_sample": "task 1 'build /district_00' (done, agent_00): 321 changes in 22 entries (13 delete, 55 set, 253 spawn) on 253 entities under /district_00, 5 undone; 13 refused; result: 241 entities in /district_00",
+    "tasks_with_changes": 64,
+    "board_counts": {
+      "open": 0,
+      "taken": 0,
+      "blocked": 0,
+      "done": 64,
+      "cancelled": 0
+    }
+  },
+  "attacks": {
+    "rejected": 23,
+    "leaked": [],
+    "wrong": []
+  },
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 6.502,
+  "world_ops": 20096,
+  "ops_per_s": 3090.6,
+  "tool_calls": 6458,
+  "calls_per_s": 993.2,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 19.8,
+      "p95": 31.08,
+      "max": 36.2,
+      "n": 64
+    },
+    "claim_release": {
+      "p50": 1.08,
+      "p95": 15.44,
+      "max": 23.3,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 49.97,
+      "p95": 71.55,
+      "max": 88.53,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 21.05,
+      "p95": 36.56,
+      "max": 45.21,
+      "n": 64
+    },
+    "intent_clear": {
+      "p50": 31.16,
+      "p95": 46.11,
+      "max": 60.87,
+      "n": 128
+    },
+    "intent_declare": {
+      "p50": 27.48,
+      "p95": 53.55,
+      "max": 62.3,
+      "n": 128
+    },
+    "lease_release": {
+      "p50": 36.23,
+      "p95": 58.82,
+      "max": 68.53,
+      "n": 64
+    },
+    "lease_take": {
+      "p50": 19.69,
+      "p95": 35.1,
+      "max": 47.24,
+      "n": 128
+    },
+    "note_add": {
+      "p50": 19.19,
+      "p95": 33.41,
+      "max": 45.08,
+      "n": 64
+    },
+    "task_done": {
+      "p50": 34.44,
+      "p95": 61.24,
+      "max": 74.11,
+      "n": 64
+    },
+    "task_list": {
+      "p50": 21.22,
+      "p95": 39.95,
+      "max": 46.81,
+      "n": 64
+    },
+    "task_take": {
+      "p50": 21.6,
+      "p95": 37.38,
+      "max": 49.38,
+      "n": 64
+    },
+    "task_update": {
+      "p50": 62.1,
+      "p95": 81.36,
+      "max": 103.07,
+      "n": 256
+    },
+    "world_batch": {
+      "p50": 67.23,
+      "p95": 85.89,
+      "max": 106.91,
+      "n": 1216
+    },
+    "world_changes": {
+      "p50": 72.29,
+      "p95": 91.73,
+      "max": 114.87,
+      "n": 2938
+    },
+    "world_set": {
+      "p50": 62.95,
+      "p95": 79.9,
+      "max": 97.77,
+      "n": 320
+    },
+    "world_spawn": {
+      "p50": 65.62,
+      "p95": 80.47,
+      "max": 94.12,
+      "n": 448
+    },
+    "world_undo": {
+      "p50": 63.37,
+      "p95": 77.04,
+      "max": 96.57,
+      "n": 320
+    }
+  },
+  "intrusions_rejected": 768,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 320,
+  "feed_items": 1310312,
+  "feed_gaps": 0,
+  "entities": 15424,
+  "state_hash": "b923ef79a4b834f3",
+  "replay": {
+    "replayable": true,
+    "entries": 1472,
+    "replay_hash": "b923ef79a4b834f3",
+    "matches": true,
+    "ms": 44.740500000000004
+  },
+  "replay_check_s": 0.061,
+  "journal": {
+    "first_id": 1,
+    "last_id": 1472,
+    "agent_entries": 1472,
+    "game_entries": 0,
+    "approx_bytes": 27969856,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "ee9471e83e35674b"
+  },
+  "claim_rejections_engine": 768,
+  "history_sample": [
+    {
+      "id": 1294,
+      "tick": 188,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_4",
+        "/district_00/tmp_11_3",
+        "/district_00/tmp_11_2"
+      ],
+      "undoes": [
+        1266
+      ]
+    },
+    {
+      "id": 1266,
+      "tick": 186,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_0",
+        "/district_00/tmp_11_1",
+        "/district_00/tmp_11_2"
+      ],
+      "undone_by": 1294
+    }
+  ],
+  "agent_errors": [],
+  "problems": [],
+  "cpu_busy_pct_after": 6.4
+}

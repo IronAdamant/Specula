@@ -227,6 +227,10 @@ impl GpuInner {
         &self.adapter
     }
 
+    pub fn memory_stats(&self) -> crate::MemoryStats {
+        self.device.memory_stats(&self.instance)
+    }
+
     pub fn validation_enabled(&self) -> bool {
         self.instance.validation_enabled()
     }

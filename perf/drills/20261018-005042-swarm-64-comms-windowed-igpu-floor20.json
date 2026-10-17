@@ -1,0 +1,273 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "comms-windowed-igpu-floor20",
+  "agents": 64,
+  "rounds": 12,
+  "batch": 20,
+  "feed": true,
+  "build": "release",
+  "windowed": true,
+  "adapter": "integrated",
+  "frame_floor": 20,
+  "comms": {
+    "intent_overlaps_flagged": 64,
+    "intent_overlaps_missed": 0,
+    "conflict_help": 64,
+    "leases": 128,
+    "notes": 64,
+    "progress": 192,
+    "questions": 64,
+    "tasks_done": 64,
+    "questions_answered": 64,
+    "rollup_ms": 27.6,
+    "rollup_sample": "agent_00: 322 changes in 23 entries (13 delete, 55 set, 254 spawn) on 254 entities under /district_00, 5 undone; 13 refused; tasks: 1 done (last done: 'build /district_00')",
+    "task_rollup_sample": "task 1 'build /district_00' (done, agent_00): 321 changes in 22 entries (13 delete, 55 set, 253 spawn) on 253 entities under /district_00, 5 undone; 13 refused; result: 241 entities in /district_00",
+    "tasks_with_changes": 64,
+    "board_counts": {
+      "open": 0,
+      "taken": 0,
+      "blocked": 0,
+      "done": 64,
+      "cancelled": 0
+    }
+  },
+  "when": "2026-10-18T00:50:20",
+  "cpu_busy_pct_before": 12.5,
+  "swarm_settings": {
+    "frame_floor_fps": 20,
+    "hardware": {
+      "gpu": "Intel(R) RaptorLake-S Mobile Graphics Controller",
+      "gpu_kind": "integrated",
+      "vendor_id": "0x8086",
+      "vram_mb": 16253,
+      "vram_note": "shared with the CPU (system memory)",
+      "cpu_threads": 32,
+      "display_refresh_hz": 240,
+      "refresh_from": "display"
+    },
+    "suggested_frame_floor_fps": 60,
+    "windowed": true
+  },
+  "frame_pacing_under_load": {
+    "samples": 120,
+    "mean_ms": 49.32,
+    "median_ms": 49.617,
+    "p95_ms": 53.774,
+    "max_ms": 67.546
+  },
+  "serve_under_load": {
+    "window_ms": 44.511,
+    "frame_period_ms": 50,
+    "refresh_ms": 4.167,
+    "refresh_from": "display",
+    "frame_work_ms": 7.238,
+    "margin_ms": 4.104,
+    "backlog": true,
+    "frame_floor_fps": 20,
+    "call_cost_ms": {
+      "read": 0.695,
+      "edit": 0.05,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+    },
+    "windows": 358,
+    "backlog_windows": 164,
+    "calls": 6377,
+    "held_for_next_window": 145,
+    "late_presents": 27,
+    "late_but_ready": 5,
+    "unblocked_presents": 4
+  },
+  "attacks": {
+    "rejected": 23,
+    "leaked": [],
+    "wrong": []
+  },
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 7.956,
+  "world_ops": 20096,
+  "ops_per_s": 2526.0,
+  "tool_calls": 6375,
+  "calls_per_s": 801.3,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 26.08,
+      "p95": 52.72,
+      "max": 68.88,
+      "n": 64
+    },
+    "claim_release": {
+      "p50": 14.65,
+      "p95": 28.16,
+      "max": 30.08,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 61.39,
+      "p95": 98.32,
+      "max": 114.71,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 25.11,
+      "p95": 48.42,
+      "max": 61.67,
+      "n": 64
+    },
+    "intent_clear": {
+      "p50": 39.0,
+      "p95": 86.01,
+      "max": 109.33,
+      "n": 128
+    },
+    "intent_declare": {
+      "p50": 35.4,
+      "p95": 58.81,
+      "max": 74.74,
+      "n": 128
+    },
+    "lease_release": {
+      "p50": 40.61,
+      "p95": 100.12,
+      "max": 127.63,
+      "n": 64
+    },
+    "lease_take": {
+      "p50": 30.27,
+      "p95": 52.4,
+      "max": 59.88,
+      "n": 128
+    },
+    "note_add": {
+      "p50": 24.02,
+      "p95": 43.64,
+      "max": 61.15,
+      "n": 64
+    },
+    "task_done": {
+      "p50": 49.21,
+      "p95": 93.76,
+      "max": 113.19,
+      "n": 64
+    },
+    "task_list": {
+      "p50": 31.67,
+      "p95": 56.42,
+      "max": 61.51,
+      "n": 64
+    },
+    "task_take": {
+      "p50": 29.26,
+      "p95": 49.43,
+      "max": 56.46,
+      "n": 64
+    },
+    "task_update": {
+      "p50": 76.36,
+      "p95": 104.22,
+      "max": 129.98,
+      "n": 256
+    },
+    "world_batch": {
+      "p50": 79.75,
+      "p95": 106.44,
+      "max": 149.76,
+      "n": 1216
+    },
+    "world_changes": {
+      "p50": 89.79,
+      "p95": 114.26,
+      "max": 174.03,
+      "n": 2855
+    },
+    "world_set": {
+      "p50": 74.24,
+      "p95": 99.55,
+      "max": 114.76,
+      "n": 320
+    },
+    "world_spawn": {
+      "p50": 79.03,
+      "p95": 103.65,
+      "max": 157.23,
+      "n": 448
+    },
+    "world_undo": {
+      "p50": 81.49,
+      "p95": 99.24,
+      "max": 130.33,
+      "n": 320
+    }
+  },
+  "intrusions_rejected": 768,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 320,
+  "feed_items": 1295059,
+  "feed_gaps": 0,
+  "entities": 15424,
+  "state_hash": "a8fbe4574d100dad",
+  "replay": {
+    "replayable": true,
+    "entries": 1472,
+    "replay_hash": "a8fbe4574d100dad",
+    "matches": true,
+    "ms": 55.1926
+  },
+  "replay_check_s": 0.074,
+  "journal": {
+    "first_id": 1,
+    "last_id": 1472,
+    "agent_entries": 1472,
+    "game_entries": 0,
+    "approx_bytes": 27969856,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "ee9471e83e35674b"
+  },
+  "claim_rejections_engine": 768,
+  "history_sample": [
+    {
+      "id": 1378,
+      "tick": 249,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_4",
+        "/district_00/tmp_11_3",
+        "/district_00/tmp_11_2"
+      ],
+      "undoes": [
+        1361
+      ]
+    },
+    {
+      "id": 1361,
+      "tick": 246,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_0",
+        "/district_00/tmp_11_1",
+        "/district_00/tmp_11_2"
+      ],
+      "undone_by": 1378
+    }
+  ],
+  "agent_errors": [],
+  "problems": [],
+  "cpu_busy_pct_after": 25.8
+}

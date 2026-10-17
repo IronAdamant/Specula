@@ -911,6 +911,50 @@ pub fn parse_args(args: &[String]) -> Result<(Option<u64>, bool), String> {
     Ok((seed, mute))
 }
 
+/// [`Game::state_hashes`] for a simulation state: `sim` (everything, [`State::hash`]) and its
+/// parts `economy` (dust, tombstones, wave, outcome), `enemies`, `defences` (stones and walls) and
+/// `projectiles`. Cheap: a few hundred words per tick.
+pub(crate) fn state_hashes(state: &State, out: &mut Vec<(&'static str, u64)>) {
+    use specula_core::hash::StableHasher;
+    out.push(("sim", state.hash()));
+    let mut h = StableHasher::with_seed(1);
+    for v in [i64::from(state.dust()), i64::from(state.tombstones()), i64::from(state.wave()), state.outcome() as i64] {
+        h.write_i64(v);
+    }
+    h.write_u64(state.next_wave_tick().map_or(u64::MAX, u64::from));
+    out.push(("economy", h.finish()));
+    let mut h = StableHasher::with_seed(2);
+    for e in state.enemies() {
+        h.write_u64(u64::from(e.id));
+        h.write_u64(u64::from(e.kind.0));
+        for v in [e.hp, e.pos.x, e.pos.y, e.pos.z, e.slow, e.remaining] {
+            h.write_i64(i64::from(v));
+        }
+        h.write_bool(e.alive);
+    }
+    out.push(("enemies", h.finish()));
+    let mut h = StableHasher::with_seed(3);
+    for (cell, s) in state.stones() {
+        h.write_u64(u64::from(cell.0));
+        h.write_u64(u64::from(s.kind.0) << 8 | u64::from(s.tier));
+        h.write_i64(i64::from(s.invested));
+        h.write_u64(u64::from(s.ready_at));
+    }
+    for (cell, w) in state.walls() {
+        h.write_u64(u64::from(cell.0) | 1 << 32);
+        h.write_i64(i64::from(w.hp));
+    }
+    out.push(("defences", h.finish()));
+    let mut h = StableHasher::with_seed(4);
+    for p in state.projectiles() {
+        h.write_u64(u64::from(p.id));
+        for v in [p.pos.x, p.pos.y, p.pos.z] {
+            h.write_i64(i64::from(v));
+        }
+    }
+    out.push(("projectiles", h.finish()));
+}
+
 impl Game for SepulcraGame {
     fn name(&self) -> &str {
         "sepulcra"
@@ -1077,6 +1121,12 @@ impl Game for SepulcraGame {
         self.status_json()
     }
 
+    /// The desync detector's view of the simulation (it lives outside the world): the whole
+    /// state's hash, and its parts, so a divergence names what diverged first.
+    fn state_hashes(&self, out: &mut Vec<(&'static str, u64)>) {
+        state_hashes(&self.state, out);
+    }
+
     fn checkpoint(&self) -> Option<Box<dyn Any>> {
         Some(Box::new(Checkpoint {
             state: self.state.clone(),
@@ -1124,5 +1174,33 @@ impl Game for SepulcraGame {
         }
         // Presentation caches are rebuilt on the next frame.
         self.hover_key = None;
+    }
+}
+
+#[cfg(test)]
+mod desync_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn hashes(state: &State) -> Vec<(&'static str, u64)> {
+        let mut out = Vec::new();
+        state_hashes(state, &mut out);
+        out
+    }
+
+    /// The desync detector's subsystem hashes: equal for equal runs; the seed is in `sim`.
+    #[test]
+    fn subsystem_hashes_follow_the_simulation() {
+        let content = Arc::new(Content::builtin());
+        let (mut a, mut b) = (State::new(Arc::clone(&content), 7), State::new(Arc::clone(&content), 7));
+        for _ in 0..200 {
+            a.step(&[]);
+            b.step(&[]);
+        }
+        assert_eq!(hashes(&a), hashes(&b));
+        let names: Vec<&str> = hashes(&a).iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["sim", "economy", "enemies", "defences", "projectiles"]);
+        let (seven, eight) = (State::new(Arc::clone(&content), 7), State::new(content, 8));
+        assert_ne!(hashes(&seven)[0].1, hashes(&eight)[0].1, "the seed is in sim");
     }
 }

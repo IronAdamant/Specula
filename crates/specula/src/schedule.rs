@@ -22,8 +22,11 @@
 //! windows sized for it stretch the gaps.)
 //!
 //! **Under a backlog** (at least two calls still queued as windows end, four windows running) the
-//! loop presents on every n-th vblank, n the most that keeps 60 fps (4 at 240 Hz, 1 at 60 Hz), and
-//! agents get the rest of each period, at least a quarter of it. A present usually finds a free
+//! loop presents on every n-th vblank, n the most that keeps the *frame floor* (60 fps by default:
+//! 4 at 240 Hz, 1 at 60 Hz), and agents get the rest of each period, at least a quarter of it. The
+//! floor is a setting ([`Schedule::set_frame_floor`]; `perf.toml` `[swarm] frame_floor_fps` and
+//! the `swarm_settings` tool): the lead agent lowers it before deploying a swarm on a strong
+//! machine (frames traded for agent throughput) and keeps it at 60 on a laptop. A present usually finds a free
 //! image then and returns at once, so with n > 1 the window is steered by feedback instead: each
 //! frame it moves half the way to calling `present` a margin before the period is up (an early
 //! frame waits in the swapchain's queue for its vblank). One sequential agent never has two calls
@@ -72,8 +75,12 @@ pub const MIN_SERVE: Duration = Duration::from_millis(1);
 pub const MAX_SERVE: Duration = Duration::from_millis(50);
 /// The serve window while the window is minimized (nothing is presented).
 pub const MINIMIZED_SERVE: Duration = Duration::from_millis(16);
-/// Under a backlog, frames come at least this often (60 fps), on whole vblanks.
-const BUSY_FRAME: Duration = Duration::from_micros(16_667);
+/// Under a backlog, frames come at least this often, on whole vblanks: the frame floor's default
+/// (60 fps) and its range. Below 20 fps a human can't follow the window well enough to step in
+/// (F5), and the serve window is at most [`MAX_SERVE`] anyway.
+pub const DEFAULT_FRAME_FLOOR_FPS: u32 = 60;
+pub const MIN_FRAME_FLOOR_FPS: u32 = 20;
+pub const MAX_FRAME_FLOOR_FPS: u32 = 240;
 /// Windows ending with a backlog, in a row, that make one (and as many clear ones end it).
 const BUSY_AFTER: u8 = 4;
 /// Calls queued as a window ends that make it end with a backlog (one sequential agent has at
@@ -104,6 +111,11 @@ fn median(v: &[Duration]) -> Duration {
     sorted.copy_from_slice(v);
     sorted.sort_unstable();
     sorted[v.len() / 2]
+}
+
+/// The longest period that still gives `fps` frames a second.
+fn floor_period(fps: u32) -> Duration {
+    Duration::from_nanos(1_000_000_000 / u64::from(fps.clamp(MIN_FRAME_FLOOR_FPS, MAX_FRAME_FLOOR_FPS)))
 }
 
 /// `d` rounded down to whole milliseconds.
@@ -228,6 +240,8 @@ pub struct Schedule {
     work: Duration,
     /// The margin's multiple, 1 to [`MAX_CAUTION`].
     caution: f32,
+    /// Under a backlog, frames come at least this often (the frame floor, as a period).
+    busy_frame: Duration,
     /// Windows that ended with a backlog, counted up to `2 * BUSY_AFTER` and down by clear
     /// ones; a backlog from [`BUSY_AFTER`].
     pressure: u8,
@@ -259,6 +273,7 @@ impl Default for Schedule {
             since_probe: 0,
             work: Duration::ZERO,
             caution: 1.0,
+            busy_frame: floor_period(DEFAULT_FRAME_FLOOR_FPS),
             pressure: 0,
             windows: 0,
             calls: 0,
@@ -284,6 +299,7 @@ impl Schedule {
             ("frame_work_ms", ms(self.work)),
             ("margin_ms", ms(self.margin())),
             ("backlog", Json::from(self.busy())),
+            ("frame_floor_fps", Json::from(self.frame_floor_fps())),
             ("call_cost_ms", Json::obj(Class::ALL.map(|c| (c.name(), ms(self.cost(c, now)))))),
             ("windows", Json::from(self.windows)),
             ("backlog_windows", Json::from(self.busy_windows)),
@@ -295,6 +311,18 @@ impl Schedule {
         ])
     }
 
+    /// Sets the frame floor: under a backlog the window still gets at least `fps` frames a second
+    /// (clamped to [`MIN_FRAME_FLOOR_FPS`]..=[`MAX_FRAME_FLOOR_FPS`]; a floor over the display's
+    /// rate means every vblank).
+    pub fn set_frame_floor(&mut self, fps: u32) {
+        self.busy_frame = floor_period(fps);
+    }
+
+    /// The frame floor in frames a second.
+    pub fn frame_floor_fps(&self) -> u32 {
+        (1_000_000_000 / self.busy_frame.as_nanos().max(1)) as u32
+    }
+
     /// The current serve window.
     pub fn window(&self) -> Duration {
         self.serve
@@ -302,6 +330,16 @@ impl Schedule {
 
     fn refresh(&self) -> Duration {
         self.display.or(self.refresh).unwrap_or(REFRESH_GUESS)
+    }
+
+    /// The display's refresh interval as known so far (reported by the OS, or measured), and
+    /// where it came from (`display`, `probes`); `None` before any frame.
+    pub fn refresh_known(&self) -> Option<(Duration, &'static str)> {
+        match (self.display, self.refresh) {
+            (Some(d), _) => Some((d, "display")),
+            (None, Some(r)) => Some((r, "probes")),
+            _ => None,
+        }
     }
 
     /// The display's refresh interval as the OS reports it (`None`: unknown, so probes measure
@@ -316,14 +354,16 @@ impl Schedule {
     }
 
     /// The time between presents the window is sized for: the refresh interval, or under a
-    /// backlog the most whole refreshes that keep 60 fps.
+    /// backlog the most whole refreshes that keep the frame floor.
     pub fn period(&self) -> Duration {
         let refresh = self.refresh();
         if !self.busy() {
             return refresh;
         }
-        // A little slack, so 240 Hz measured at 4.17 ms still gives 4.
-        let n = (BUSY_FRAME + refresh / 8).as_nanos() / refresh.as_nanos();
+        // A little slack, so 240 Hz measured at 4.17 ms still gives 4 at 60 fps; small enough
+        // (1/256 of a refresh) that no whole-hertz display up to 360 Hz falls below the floor
+        // (1/8 let a floor of 52 at 100 Hz give 50 fps).
+        let n = (self.busy_frame + refresh / 256).as_nanos() / refresh.as_nanos();
         refresh * n.max(1) as u32
     }
 
@@ -601,6 +641,62 @@ mod tests {
         assert_eq!(s.period(), HZ60);
         run(&mut s, HZ60, ms(20.0), 30);
         assert_eq!(s.window(), HZ60 / 4);
+    }
+
+    /// Owner decision 2026-10-17: the frame floor is a setting the lead agent picks from the
+    /// operator's hardware. Lower floors present on fewer vblanks under a backlog and give agents
+    /// the rest; the default stays 60 fps, and out-of-range values are clamped.
+    #[test]
+    fn the_frame_floor_sets_how_many_vblanks_a_backlog_skips() {
+        let mut s = Schedule::default();
+        assert_eq!(s.frame_floor_fps(), DEFAULT_FRAME_FLOOR_FPS);
+        run(&mut s, HZ60, ms(2.0), 60);
+        s.pressure = BUSY_AFTER;
+        assert_eq!(s.period(), HZ60, "60 fps at 60 Hz: every vblank");
+        s.set_frame_floor(30);
+        assert_eq!((s.frame_floor_fps(), s.period()), (30, HZ60 * 2));
+        run(&mut s, HZ60, ms(2.0), 30);
+        assert_eq!(run(&mut s, HZ60, ms(2.0), 60), 0, "no frame misses its every-other vblank");
+        assert!(s.window() > HZ60, "agents get most of two refreshes: {:?}", s.window());
+        s.set_frame_floor(20);
+        assert_eq!(s.period(), HZ60 * 3);
+        s.set_frame_floor(1);
+        assert_eq!(s.frame_floor_fps(), MIN_FRAME_FLOOR_FPS, "clamped");
+        s.set_frame_floor(1000);
+        assert_eq!((s.frame_floor_fps(), s.period()), (MAX_FRAME_FLOOR_FPS, HZ60), "a floor over the display's rate: every vblank");
+        // At 240 Hz the default skips to every 4th vblank; 30 fps to every 8th.
+        let mut s = Schedule::default();
+        run(&mut s, HZ240, ms(1.0), 60);
+        s.pressure = BUSY_AFTER;
+        assert_eq!(s.period(), HZ240 * 4);
+        s.set_frame_floor(30);
+        assert_eq!(s.period(), HZ240 * 8);
+        // Without a backlog the floor changes nothing.
+        s.pressure = 0;
+        assert_eq!(s.period(), HZ240);
+    }
+
+    /// Review round 3: the floor is a promise ("at least frame_floor_fps"): on every whole-hertz
+    /// display from 24 to 360 Hz and every floor, a backlog presents at least that often (every
+    /// vblank when the floor is above the display's rate), and skips as many vblanks as it can.
+    #[test]
+    fn the_frame_floor_holds_on_every_display_rate() {
+        for hz in 24u64..=360 {
+            let refresh = Duration::from_nanos(1_000_000_000 / hz);
+            let mut s = Schedule::default();
+            s.set_display_refresh(Some(refresh));
+            s.pressure = BUSY_AFTER;
+            for fps in MIN_FRAME_FLOOR_FPS..=MAX_FRAME_FLOOR_FPS {
+                s.set_frame_floor(fps);
+                let (period, floor) = (s.period(), floor_period(fps));
+                if u64::from(fps) > hz {
+                    assert_eq!(period, refresh, "{fps} fps at {hz} Hz: every vblank");
+                } else {
+                    assert!(period <= floor, "{fps} fps at {hz} Hz: period {period:?} > {floor:?}");
+                    assert!(period + refresh > floor, "{fps} fps at {hz} Hz: could skip another vblank");
+                }
+            }
+        }
     }
 
     /// Drivers whose present returns at once while a swapchain image is free (frames slower than

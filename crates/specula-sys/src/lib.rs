@@ -13,6 +13,7 @@
 //! | `user32` | `specula-platform` |
 //! | `vulkan-1` | never linked — loaded at runtime via [`dynlib::Library`] |
 //! | `xinput1_4` / `xinput9_1_0` | never linked — loaded at runtime by `specula-platform` (gamepads) |
+//! | `iphlpapi` | never linked — loaded at runtime by [`net`] (which ports have listeners) |
 //!
 //! Tests and examples must not declare imports from a DLL their dependencies already declare;
 //! add the function here (or to the owning crate) instead.
@@ -33,6 +34,174 @@ pub mod kernel32 {
         pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
         pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
         pub fn CloseHandle(handle: *mut c_void) -> i32;
+        pub fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+    }
+
+    /// `SYSTEM_POWER_STATUS`.
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct SystemPowerStatus {
+        pub ac_line_status: u8,
+        pub battery_flag: u8,
+        pub battery_life_percent: u8,
+        pub system_status_flag: u8,
+        pub battery_life_time: u32,
+        pub battery_full_life_time: u32,
+    }
+}
+
+/// Which TCP ports something listens on, read from the OS's connection table: no socket is
+/// opened, so asking never trips a firewall prompt and never races the listener.
+///
+/// On Windows this runtime-loads `iphlpapi.dll` ([`dynlib`]) and reads `GetExtendedTcpTable`
+/// (`TCP_TABLE_OWNER_PID_LISTENER`) for IPv4 and IPv6. Elsewhere it reports `unsupported`.
+pub mod net {
+    use std::collections::BTreeSet;
+    use std::fmt;
+
+    /// Why the listener table couldn't be read.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct NetError {
+        /// `unsupported`, `load_failed`, `no_symbol` or `table_failed`.
+        pub code: &'static str,
+        pub message: String,
+        /// The Win32 error code, when there is one.
+        pub os_code: Option<u32>,
+    }
+
+    impl fmt::Display for NetError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}: {}", self.code, self.message)?;
+            if let Some(c) = self.os_code {
+                write!(f, " (OS error {c})")?;
+            }
+            Ok(())
+        }
+    }
+
+    impl std::error::Error for NetError {}
+
+    /// Ports (any local address, IPv4 or IPv6) with a listening TCP socket right now.
+    pub fn tcp_listening_ports() -> Result<BTreeSet<u16>, NetError> {
+        #[cfg(windows)]
+        {
+            windows::listening()
+        }
+        #[cfg(not(windows))]
+        {
+            Err(NetError { code: "unsupported", message: "reading the TCP listener table is not implemented on this platform yet".into(), os_code: None })
+        }
+    }
+
+    #[cfg(windows)]
+    mod windows {
+        use super::NetError;
+        use crate::dynlib::Library;
+        use std::collections::BTreeSet;
+        use std::ffi::c_void;
+        use std::sync::OnceLock;
+
+        type GetExtendedTcpTable = unsafe extern "system" fn(*mut c_void, *mut u32, i32, u32, u32, u32) -> u32;
+
+        const AF_INET: u32 = 2;
+        const AF_INET6: u32 = 23;
+        const TCP_TABLE_OWNER_PID_LISTENER: u32 = 3;
+        const NO_ERROR: u32 = 0;
+        const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+        /// `MIB_TCPROW_OWNER_PID` and `MIB_TCP6ROW_OWNER_PID` sizes, and where `dwLocalPort` sits.
+        const ROW4: usize = 24;
+        const PORT4: usize = 8;
+        const ROW6: usize = 56;
+        const PORT6: usize = 20;
+
+        fn library() -> Result<&'static Library, NetError> {
+            static LIB: OnceLock<Result<Library, NetError>> = OnceLock::new();
+            LIB.get_or_init(|| {
+                Library::open("iphlpapi.dll").map_err(|e| NetError { code: "load_failed", message: e.to_string(), os_code: e.os_code })
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+        }
+
+        pub fn listening() -> Result<BTreeSet<u16>, NetError> {
+            let lib = library()?;
+            let sym = lib
+                .symbol("GetExtendedTcpTable")
+                .ok_or(NetError { code: "no_symbol", message: "iphlpapi.dll has no GetExtendedTcpTable".into(), os_code: None })?;
+            // SAFETY: the symbol is GetExtendedTcpTable, whose signature is
+            // DWORD(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG); `lib` lives for the process.
+            let get: GetExtendedTcpTable = unsafe { std::mem::transmute::<*mut c_void, GetExtendedTcpTable>(sym) };
+            let mut ports = BTreeSet::new();
+            for (af, row, port_at) in [(AF_INET, ROW4, PORT4), (AF_INET6, ROW6, PORT6)] {
+                let words = table(get, af)?;
+                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
+                let count = words.first().copied().unwrap_or(0) as usize;
+                for i in 0..count {
+                    let at = 4 + i * row + port_at;
+                    let Some(b) = bytes.get(at..at + 4) else { break };
+                    // dwLocalPort: the port in network byte order in its low 16 bits.
+                    ports.insert(u16::from_be_bytes([b[0], b[1]]));
+                }
+            }
+            Ok(ports)
+        }
+
+        /// One listener table, as 32-bit words (the rows are 4-byte aligned).
+        fn table(get: GetExtendedTcpTable, af: u32) -> Result<Vec<u32>, NetError> {
+            let mut size: u32 = 0;
+            // The table can grow between the size query and the read: retry a few times.
+            for _ in 0..4 {
+                let mut buf = vec![0u32; (size as usize).div_ceil(4).max(1)];
+                let mut len = (buf.len() * 4) as u32;
+                // SAFETY: `buf` is writable for `len` bytes and 4-byte aligned; `len` is a valid
+                // in/out size; the other arguments are plain values the API documents.
+                let rc = unsafe { get(buf.as_mut_ptr().cast(), &mut len, 0, af, TCP_TABLE_OWNER_PID_LISTENER, 0) };
+                match rc {
+                    NO_ERROR => return Ok(buf),
+                    ERROR_INSUFFICIENT_BUFFER => size = len + 256,
+                    code => {
+                        return Err(NetError { code: "table_failed", message: format!("GetExtendedTcpTable (address family {af}) failed"), os_code: Some(code) })
+                    }
+                }
+            }
+            Err(NetError { code: "table_failed", message: "the TCP table kept growing while being read".into(), os_code: Some(ERROR_INSUFFICIENT_BUFFER) })
+        }
+    }
+}
+
+/// The machine's power source, for hints about how much it can spare (a laptop on battery
+/// shouldn't be pushed). `None` where unknown (other platforms, or the OS doesn't say).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Power {
+    /// The machine has a system battery (a laptop or handheld, most likely).
+    pub has_battery: bool,
+    /// Running on mains power (`None`: unknown).
+    pub on_ac: Option<bool>,
+}
+
+/// See [`Power`].
+pub fn power() -> Option<Power> {
+    #[cfg(windows)]
+    {
+        let mut st = kernel32::SystemPowerStatus::default();
+        // SAFETY: `st` is a writable SYSTEM_POWER_STATUS of the documented layout.
+        if unsafe { kernel32::GetSystemPowerStatus(&mut st) } == 0 {
+            return None;
+        }
+        // BatteryFlag: 128 = no system battery, 255 = unknown. ACLineStatus: 0 off, 1 on, 255 unknown.
+        if st.battery_flag == 255 {
+            return None;
+        }
+        let on_ac = match st.ac_line_status {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        Some(Power { has_battery: st.battery_flag & 128 == 0, on_ac })
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
@@ -268,6 +437,27 @@ pub mod dynlib {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_listener_table_sees_a_loopback_listener() {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        match super::net::tcp_listening_ports() {
+            Ok(ports) => assert!(ports.contains(&port), "port {port} not among {} listeners", ports.len()),
+            Err(e) if e.code == "unsupported" => eprintln!("skipped: {e}"),
+            Err(e) => panic!("{e}"),
+        }
+        drop(l);
+    }
+
+    #[test]
+    fn power_status_answers_or_says_unknown() {
+        // Any answer is fine (machines differ); it must not crash, and battery-less machines are
+        // never reported as on battery.
+        if let Some(p) = super::power() {
+            assert!(p.has_battery || p.on_ac != Some(false), "{p:?}");
+        }
+    }
+
     use super::*;
 
     #[cfg(windows)]
