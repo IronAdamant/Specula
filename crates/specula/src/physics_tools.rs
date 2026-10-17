@@ -299,10 +299,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PhysicsCall, String>> {
             if [impulse.x, impulse.y, impulse.z, angular.x, angular.y, angular.z].iter().any(|c| c.abs() > 1.0e7) {
                 return Err("impulses must be within ±1e7 N·s".to_string());
             }
-            let at = match vec3_arg(args, "at")? {
-                Some(p) => Some(p),
-                None => None,
-            };
+            let at = vec3_arg(args, "at")?;
             Ok(PhysicsCall::Impulse { entity: entity_key(args, name)?, impulse, at, angular })
         })(),
         _ => return None,
@@ -956,7 +953,9 @@ const PENETRATING: [f32; 4] = [1.0, 0.25, 0.25, 1.0];
 const TOUCHING: [f32; 4] = [1.0, 0.6, 0.2, 1.0];
 const SPECULATIVE: [f32; 4] = [0.4, 1.0, 0.5, 0.9];
 
-fn circle(p: &mut Painter, c: Vec3, a: Vec3, b: Vec3, r: f32, color: [f32; 4], from: f32, to: f32, steps: usize) {
+/// An arc of radius `r` around `c` in the plane of unit axes `(a, b)`, from angle `span.0` to
+/// `span.1` (radians).
+fn circle(p: &mut Painter, c: Vec3, (a, b): (Vec3, Vec3), r: f32, color: [f32; 4], (from, to): (f32, f32), steps: usize) {
     let mut prev = None;
     for i in 0..=steps {
         let t = from + (to - from) * i as f32 / steps as f32;
@@ -975,20 +974,20 @@ fn draw_shape(p: &mut Painter, shape: &Shape, pose: &Pose, color: [f32; 4], budg
     match shape {
         Shape::Sphere { radius } => {
             for (a, b) in [(x, y), (y, z), (z, x)] {
-                circle(p, pose.p, a, b, *radius, color, 0.0, tau, 24);
+                circle(p, pose.p, (a, b), *radius, color, (0.0, tau), 24);
             }
         }
         Shape::Capsule { radius, half_height } => {
             let (top, bot) = (pose.point(Vec3::Y * *half_height), pose.point(Vec3::Y * -*half_height));
-            circle(p, top, x, z, *radius, color, 0.0, tau, 20);
-            circle(p, bot, x, z, *radius, color, 0.0, tau, 20);
+            circle(p, top, (x, z), *radius, color, (0.0, tau), 20);
+            circle(p, bot, (x, z), *radius, color, (0.0, tau), 20);
             for d in [x, -x, z, -z] {
                 p.line(top + d * *radius, bot + d * *radius, color, 1.5);
             }
             let pi = std::f32::consts::PI;
             for a in [x, z] {
-                circle(p, top, a, y, *radius, color, 0.0, pi, 10);
-                circle(p, bot, a, y, *radius, color, pi, tau, 10);
+                circle(p, top, (a, y), *radius, color, (0.0, pi), 10);
+                circle(p, bot, (a, y), *radius, color, (pi, tau), 10);
             }
         }
         Shape::Box { hull, .. } | Shape::Hull(hull) => {

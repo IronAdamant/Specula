@@ -55,6 +55,7 @@ post_fxaa = 0.8
 [budgets.zones]                  # CPU ms per frame (p95) per zone path; "thread:path" for other threads
 "frame/requests" = 6.0           # agents' tool calls (sight_frame renders count here)
 "frame/sim" = 4.0                # fixed ticks run this frame
+"frame/sim/physics" = 2.0        # physics: sync, characters, step, write-back (PHYSICS.md: 1,000 awake bodies target)
 "frame/game_frame" = 2.0
 "frame/draw_list/sync_meshes" = 1.0   # lathe and model meshes uploaded for the window
 "frame/draw_list" = 1.5           # building the window's draws (mesh sync included)

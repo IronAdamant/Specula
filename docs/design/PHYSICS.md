@@ -1,7 +1,10 @@
 # Design: physics
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F4**; stages P1–P4 land in M3 (P4 moved from M4 with ragdolls, owner 2026-10-17)
-([ROADMAP.md](../ROADMAP.md)).
+Status: researched 2026-10-13; **P1–P3 implemented 2026-10-18** (crate `specula-physics`, engine bridge
+`crates/specula/src/physics.rs`, tools `crates/specula/src/physics_tools.rs`); P4 (joints, ragdolls) is next. Foundation
+**F4**; stages P1–P4 land in M3 (P4 moved from M4 with ragdolls, owner 2026-10-17) ([ROADMAP.md](../ROADMAP.md)).
+What was built, and where it departs from the design below (with why), is in
+[Implementation](#implementation-2026-10-18) at the end.
 
 **Goal:** the physics most games need, written from scratch (zero-dep):
 - deterministic ([DETERMINISM.md](DETERMINISM.md))
@@ -149,3 +152,110 @@ Targets on the reference integrated GPU machine's CPU, to be confirmed in M3:
 
 We read these for the techniques and write our own code. No source is copied, which keeps both zero-dep and licensing
 clean.
+
+## Implementation (2026-10-18)
+
+P1–P3 as designed above, with these changes and details. Each amendment says why.
+
+**Crates and files.** `crates/specula-physics` (pure, `#![forbid(unsafe_code)]`, depends only on `specula-core`):
+`shape` (shapes, hull builder, triangle-mesh BVH, heightfields, mass properties), `tree` (dynamic AABB tree), `gjk`
+(support mappings, GJK), `contact` (narrowphase), `query` (raycasts, shape casts, overlaps), `solver` (Soft Step),
+`space` (the world: bodies, pairs, step, sleep, tunnelling guard, events, hash), `character` (P2). The engine bridge is
+`crates/specula/src/physics.rs`; the tools and overlays are `crates/specula/src/physics_tools.rs`. Live check:
+`scripts/physics_check.py`; benchmark: `cargo run --release -p specula-physics --example bench`.
+
+**Components (world data).** `collider: {shape: box | sphere | capsule | hull (4–64 points) | mesh (≤ 4,096 vertices,
+8,192 triangles; static only) | heightfield (2–129 per side; static only), offset, is_trigger, layer, mask (layer
+names it collides with), friction, restitution}`; `body: {kind, mass, velocity, angular_velocity, linear_damping,
+angular_damping, gravity_scale, sleeping, ccd, lock_position, lock_rotation, character}`. A collider alone is static.
+Shapes are in local (scaled) units. Defaults are left out of the JSON and the hash, so worlds from before keep their
+files and hashes. `world_env {physics: {gravity, substeps, sleep, plane_2d, contact_hertz, enabled}}`.
+- *Amendment: layers need no config table.* Layer names map to mask bits on first use (64 names at most; past that a
+  collider is refused with a structured error). Agents still use names only. A table can come with game config later.
+- *Amendment: the character controller is part of `body` (`body.character`)*, not a third component: a character is a
+  kinematic body walked by the controller, and keeping it in `body` kept the world model's reserved components as they
+  were.
+- *Not done: auto-colliders from models.* Model builds are asynchronous, so a collider that appears "when the build
+  finishes" would make physics depend on wall-clock time (F2). The deterministic route is a tool that fits a collider
+  from the built model and writes it into the entity as data (a journaled change at a tick boundary). Deferred.
+
+**Broadphase.** The dynamic AABB tree as designed, in two trees (static, moving) as Box2D v3 does. Pairs are only
+searched for bodies whose fat box changed. *Amendment:* moving bodies' fat boxes also include one step of motion at
+their velocity, so pairs exist before fast bodies arrive. Tree traversal order never reaches the simulation: every
+result is sorted by key.
+
+**Narrowphase.** As designed: closed-form sphere/capsule pairs (two points for parallel capsules); GJK on cores for
+spheres and capsules against polytopes; SAT with Gauss-map pruning plus clipping for polytope pairs, reduced to four
+points; per-triangle tests for meshes and heightfields with internal-edge flags (flat or concave seams snap to the
+triangle normal). Plus:
+- *Amendment: no EPA.* When a sphere's or capsule's core is inside a polytope, a SAT over the polytope's faces (and
+  segment × edge axes) finds the shallowest exit exactly; EPA isn't needed for any pair we have.
+- *Amendment: a normal per contact point*, not one per manifold, so a body on several mesh triangles keeps one
+  manifold (Bullet's choice rather than Box2D's).
+- A box-box fast path (the 15-axis oriented-box test, then the same clipping), checked against the general test on
+  random poses.
+- Feature ids per point carry warm-start impulses across ticks.
+
+**Solver.** Soft Step as designed: substeps of integrate, warm start, solve (soft, push-out capped at 3 m/s), integrate
+positions, relax; then restitution. Contacts 30 Hz, damping ratio 10 (static contacts twice as stiff), friction as a
+disc per point. Jacobian rows are precomputed per step. Joints (P4) slot in beside contacts (see `solver.rs`'s docs).
+- *Amendment: `substeps` counts per 1/60 s* and scales with the tick rate. The engine ticks at 30 Hz without a game;
+  four substeps per 30 Hz tick made a 10-box tower sway. Scaling keeps the substep length (the solver's stiffness) the
+  same at any tick rate.
+- *Amendment: the speculative distance follows the closing speed.* Box2D uses a fixed 2 cm plus continuous collision
+  for fast bodies. At 30 Hz a bouncing ball between those (moving 15 cm a tick, under the guard's threshold) sank
+  ~10 cm into the floor; with the margin at 2 cm + closing speed × dt (capped at 42 cm) it never sinks.
+
+**Islands and sleeping.** Union-find each step over touching awake dynamic pairs; an island at rest for 0.5 s sleeps
+whole, and wakes whole when touched, when a support is removed, or when an agent moves or changes a member. Only awake
+bodies and their pairs are visited (an awake set and a contact slab with a pair-key index), so sleeping bodies cost
+nothing.
+
+**Continuous collision: a tunnelling guard.** As in Box2D v3: a dynamic body that moved more than half its thickness
+(the radius of the largest sphere it surely contains) in a step casts that sphere from where it was to where it is
+against static colliders, and stops at the first hit (`ccd` events). Dynamic-versus-dynamic tunnelling isn't guarded;
+such bodies are reported as fast (`physics_check no_tunnelling`, `physics_explain`). A full time-of-impact solver for
+bullets is still "Later".
+
+**Character controller (P2).** As designed (sweep-and-slide, step up, slope limit, snap, platforms, capped pushing),
+plus: the edge of a walkable surface counts as ground (a rounded collider resting on a corner gets a tilted normal; a
+short ray just inside the edge checks the surface), and on the ground a rounded collider rides over edges lower than
+the step height. The controller's memory (grounded, ground) is part of the physics hash.
+
+**Engine integration.** Each fixed tick, after the hosted game's tick: entities whose components or world transforms
+changed since the last tick are synced (through the world's change log; a full compare when the log doesn't reach
+back, which keeps physics state); characters walk; the space steps; bodies it moved are written back (position,
+rotation, body velocity and sleep state, converted into the parent's frame), journaled as kind `physics` like a game's
+changes (after-only, coalesced, exempt from claims). Kinematic bodies that game code moves by setting their position
+sweep there (pushing what they meet) unless the jump is over 2 m (a teleport). Transient entities take no part.
+
+**Determinism.** Twin runs (two engine processes, same calls) end in the same world hash and physics hash
+(`scripts/physics_check.py`); scenes built in any insertion order step to bit-identical states (unit test); the journal
+replays physics changes exactly (`world_hash verify`). `world_hash` reports the physics state hash per tick next to the
+world's. *Limit:* hidden state (warm-start impulses, sleep timers, the exact rotation behind `rotation_deg`) isn't saved
+in world files, so a reloaded world continues deterministically from the load, but not bit-identically to the run that
+saved it.
+
+**2D.** `world_env {physics: {plane_2d: true}}` keeps dynamic bodies in the XY plane (Specula's 2D plane) turning about
+Z only, by locking axes in the solver. Shapes stay 3D (a circle is a sphere, a 2D box a thin box), so 2D games get the
+same solver, queries and checks. Tile-map colliders are a follow-up.
+
+**Agent tools.** `physics_raycast`, `physics_cast`, `physics_overlap` (the design's `physics_query`, split by kind so
+each schema stays small), `physics_contacts`, `physics_events` (cursor), `physics_info`, `physics_explain` (the
+"why did it fall through" answer: contacts, neighbours and the layer mask that filtered them, the tunnelling
+indicator), `physics_check` (scenario assertions as data), `physics_impulse`. Sight overlays `colliders` and
+`contacts`. `perf_frame` has a `physics` section (stage times, counts, budget errors, automatic checks);
+`perf.example.toml` budgets the `frame/sim/physics` zone.
+
+**Bounded work.** Bodies (20,000) and pairs (65,536) are capped, as are triangles per mesh pair (32), events per step
+and every query result; a cap that bites is a structured `budget` error in `physics_info` and `perf_frame`.
+
+**Measured (2026-10-18, i9-13900HX, one thread, release, shared machine so ±30%).** `bench` at 60 Hz, 4 substeps:
+20-row pyramid settles (top box 3 cm low) and sleeps; 10,000 sleeping bodies 0.001 ms a tick (target: nearly nothing);
+100 characters on a heightfield 0.010–0.015 ms each (target 0.05); 1,000 awake mixed bodies piling up 4.3–5.6 ms a tick
+(target 2 ms: **not met yet**; narrowphase and solver about half each). The next steps there are friction at the
+manifold centre instead of per point, SIMD rows (Box2D's wide solver) and deterministic parallel narrowphase.
+
+**Deferred.** P4 (joints, ragdolls); dynamic-versus-dynamic continuous collision; auto-colliders from models; compound
+colliders (one collider per entity: build compounds from child entities with static colliders, or a hull); tile-map
+colliders for 2D; the 1,000-awake-bodies budget; parallel or SIMD solving (deterministic merges, per determinism rule 7).
