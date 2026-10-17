@@ -201,7 +201,7 @@ fn sliders_slide_on_their_axis_within_limits() {
     let st = s.joint(10).unwrap().state;
     assert!((st.position - 1.0).abs() < 0.02, "stopped at the end of the rail: {}", st.position);
     assert!(st.linear_error < 0.005 && st.angular_error < 0.01, "on the rail, not turning: {st:?}");
-    assert!((p.p.x - 0.7071).abs() < 0.03 && (p.p.y - (3.0 - 0.7071)).abs() < 0.03, "{:?}", p.p);
+    assert!((p.p.x - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.03 && (p.p.y - (3.0 - std::f32::consts::FRAC_1_SQRT_2)).abs() < 0.03, "{:?}", p.p);
 }
 
 #[test]

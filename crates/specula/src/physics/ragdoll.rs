@@ -448,7 +448,7 @@ pub fn owner_of(k: u64) -> u64 {
 
 /// `(entity, bone)` of a ragdoll key.
 pub fn unkey(k: u64) -> Option<(u64, usize)> {
-    (k >= SYNTHETIC).then(|| ((k & !SYNTHETIC) >> 8, (k & 0xff) as usize))
+    (k >= SYNTHETIC).then_some(((k & !SYNTHETIC) >> 8, (k & 0xff) as usize))
 }
 
 // ---------------------------------------------------------------------------------------------

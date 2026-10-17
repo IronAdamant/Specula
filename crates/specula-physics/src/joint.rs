@@ -402,6 +402,7 @@ fn angular_row(n: Vec3, a: &Local, b: &Local) -> Row {
 }
 
 /// A soft equality row: drives `c` (which grows at the row's velocity) to zero.
+#[allow(clippy::too_many_arguments)]
 fn equality(row: &Row, c: f32, acc: &mut f32, a: &mut Local, b: &mut Local, soft: &Softness, use_bias: bool, max_push: f32) {
     let (bias, ms, is) = soft_terms(soft, c, use_bias, max_push);
     let l = -row.mass * ms * (row.velocity(a, b) + bias) - is * *acc;

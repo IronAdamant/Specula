@@ -2803,7 +2803,7 @@ fn desc_hash(d: &JointDesc) -> u64 {
     let mut h = StableHasher::with_seed(0x4a6f_696e_7431);
     h.write_u8(d.kind as u8);
     for k in [d.a, d.b] {
-        h.write_u64(k.map_or(u64::MAX, |k| k));
+        h.write_u64(k.unwrap_or(u64::MAX));
     }
     for f in [d.frame_a, d.frame_b] {
         [f.p.x, f.p.y, f.p.z, f.q.x, f.q.y, f.q.z, f.q.w].iter().for_each(|v| h.write_f32(*v));
