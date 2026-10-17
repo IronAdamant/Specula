@@ -21,9 +21,12 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
+import threading
 import time
+import zlib
 from pathlib import Path
 
 from specula_mcp import ROOT, Engine, Mcp, url_for
@@ -31,6 +34,32 @@ from specula_mcp import ROOT, Engine, Mcp, url_for
 
 def exe_path(name):
     return Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / (name + (".exe" if sys.platform == "win32" else ""))
+
+
+def wait_for(what, probe, timeout=10.0):
+    """Polls `probe` until it returns something truthy (background saves and loads answer
+    later); returns it, or None after `timeout` seconds."""
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end:
+        got = probe()
+        if got:
+            return got
+        time.sleep(0.05)
+    print(f"  (timed out waiting for {what})")
+    return None
+
+
+def bomb(path, mib=300):
+    """A small save whose world section inflates to `mib` MiB of zeros (the review's bomb)."""
+    data = bytes(mib << 20)
+    comp = zlib.compress(data, 6)
+    hdr = {"format": "specula.save", "game": "sepulcra", "tick": 0, "tick_hz": 30,
+           "sections": [{"name": "world", "codec": "zlib", "bytes": len(data), "stored": len(comp), "crc32": "%08x" % (zlib.crc32(data) & 0xffffffff)}]}
+    t = json.dumps(hdr).encode()
+    out = b"SPECSAVE" + struct.pack("<II", 1, len(t)) + t + comp
+    out += struct.pack("<I", zlib.crc32(out) & 0xffffffff)
+    path.write_bytes(out)
+    return len(out)
 
 
 def step(m, n):
@@ -167,8 +196,12 @@ def run(args, work):
         before = b.json("play_state")
         pressed = b.json("play_ui", press="save")
         check(pressed.get("action") == "save_game", f"the menu's Save game sends save_game ({pressed.get('action')})")
-        listed = b.json("save_list")
-        slot = next((s for s in listed["saves"] if s["name"] == "sepulcra_slot_1"), None)
+        def slot_written():
+            listed = b.json("save_list")
+            found = next((s for s in listed["saves"] if s["name"] == "sepulcra_slot_1"), None)
+            return found if found and not found.get("writing") else None
+
+        slot = wait_for("the player's save", slot_written)
         check(slot is not None and slot["created_by"] == "sepulcra" and slot["tick"] == b.json("time_control", action="info")["tick"],
               "the player's save is in the slot, written by the game at this tick")
         b.json("play_ui", press="resume")
@@ -177,7 +210,8 @@ def run(args, work):
         check(moved["tick"] > before["tick"], "the run went on after saving")
         b.json("play_ui", press="menu_button")
         b.json("play_ui", press="load")
-        after = b.json("play_state", include=["log"])
+        after = wait_for("the player's load", lambda: (lambda st: st if st["tick"] == before["tick"] else None)(b.json("play_state", include=["log"])))
+        after = after or b.json("play_state", include=["log"])
         check(after["state_hash"] == before["state_hash"] and after["tick"] == before["tick"], "Load game brought the saved run back")
         check(after["paused"] is True, "and it waits, paused under the menu")
         said = [m["message"] for m in after.get("log", {}).get("items", after.get("log", [])) if isinstance(m, dict)]
@@ -191,12 +225,36 @@ def run(args, work):
                 shutil.copy(world_shot["image"][k], dst)
                 report["world_capture"]["kept_" + k] = str(dst)
         print(f"  loaded world capture: {report['world_capture']}")
+        # Loads read and check off the engine thread: another agent's calls keep answering.
+        other = Mcp(url_for(pb), "save-check-bystander")
+        latencies, done = [], threading.Event()
+
+        def poke():
+            while not done.is_set():
+                t0 = time.perf_counter()
+                other.json("world_list", limit=1)
+                latencies.append((time.perf_counter() - t0) * 1000)
+                time.sleep(0.01)
+
+        size = bomb(work / "saves" / "bomb.specsave")
+        th = threading.Thread(target=poke)
+        th.start()
+        res = b.request("tools/call", {"name": "save_read", "arguments": {"name": "bomb", "force": True}})
+        err = json.loads(res["content"][0]["text"])
+        check(res.get("isError") and err.get("error") == "too_large", f"a {size}-byte decompression bomb is refused ({err.get('error')}: {err.get('message', '')[:90]})")
         if args.stress:
             started = time.perf_counter()
             big = b.json("save_read", name="stress", force=True)
             print(f"B: stress load: match={big['match']} ms {big['timings_ms']} (call {(time.perf_counter() - started) * 1000:.1f} ms)")
             report["stress_load"] = big
             check(big["match"], "the stress save loads with matching hashes")
+        done.set()
+        th.join()
+        lat = sorted(latencies)
+        if lat:
+            print(f"  bystander world_list during the loads: {len(lat)} calls, median {lat[len(lat) // 2]:.1f} ms, max {lat[-1]:.1f} ms")
+            report["bystander_during_loads_ms"] = {"median": lat[len(lat) // 2], "max": lat[-1], "calls": len(lat)}
+        other.close()
         b.close()
     return problems, report
 

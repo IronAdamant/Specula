@@ -14,6 +14,7 @@ use crate::savegame::{self, SaveError, Section, EXTENSION};
 use crate::tools::{bool_arg, check_keys, int_arg, string_arg};
 use crate::world::Recording;
 use crate::Engine;
+use specula_core::hash::hash_str;
 use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
 use std::path::PathBuf;
@@ -36,11 +37,6 @@ fn clip(v: Option<&Json>, max: usize) -> Json {
         Some(s) => Json::from(s.chars().take(max).collect::<String>()),
         None => Json::Null,
     }
-}
-
-/// Who wrote a save (from its header), if it reads.
-fn save_owner(path: &std::path::Path) -> Option<String> {
-    read_head(path).ok().and_then(|(_, h)| savegame::peek(&h).ok()).and_then(|(_, h)| h.get("created_by").and_then(Json::as_str).map(|s| s.chars().take(128).collect()))
 }
 
 /// A header's fields as answers show them: known keys only, typed and clipped.
@@ -192,6 +188,12 @@ fn io(path: &std::path::Path, e: std::io::Error) -> SaveError {
     SaveError::new(code, format!("{}: {e}", path.display())).with("file", path.display().to_string())
 }
 
+/// The owner a save's header records: a hash of the writer's identity key (agent_hello's
+/// identity, the same one claims go by), never the key itself.
+fn owner_hash(key: &str) -> String {
+    hex(hash_str(&format!("specula-save-owner:{key}")))
+}
+
 /// Reads the first bytes of a save: enough for its header (save_list never reads whole files).
 fn read_head(path: &std::path::Path) -> Result<(u64, Vec<u8>), SaveError> {
     use std::io::Read as _;
@@ -209,6 +211,168 @@ fn read_head(path: &std::path::Path) -> Result<(u64, Vec<u8>), SaveError> {
         buf.extend([0u8; 4]);
     }
     Ok((size, buf))
+}
+
+/// Whose a save is.
+enum Owner {
+    /// The caller's (its header's owner is the caller's identity).
+    Mine,
+    /// Another writer's (the name it was saved under, for messages).
+    Theirs(String),
+    /// The header doesn't read (or predates owners): nobody can be sure, so it's treated as theirs.
+    Unknown,
+}
+
+fn owner_of(path: &std::path::Path, key: &str) -> Owner {
+    let Ok((_, h)) = read_head(path).and_then(|(_, h)| savegame::peek(&h)) else { return Owner::Unknown };
+    match h.get("owner").and_then(Json::as_str) {
+        Some(o) if o == owner_hash(key) => Owner::Mine,
+        Some(_) => Owner::Theirs(clip(h.get("created_by"), 128).as_str().unwrap_or("another agent").to_owned()),
+        None => Owner::Unknown,
+    }
+}
+
+fn whose(o: &Owner) -> String {
+    match o {
+        Owner::Theirs(n) => n.clone(),
+        _ => "an unknown writer (the header doesn't say)".into(),
+    }
+}
+
+/// Where a background save's or load's answer goes.
+pub(crate) enum Dest {
+    /// An agent's tool call.
+    Tool(std::sync::mpsc::Sender<ToolOutput>),
+    /// The hosted game's request (its menu): answered with `Game::request_done`.
+    Game(GameRequest),
+}
+
+/// A save being written on a worker thread.
+pub(crate) struct Writing {
+    name: String,
+    handle: std::thread::JoinHandle<Result<Json, SaveError>>,
+    dest: Dest,
+}
+
+/// A save being read and checked on a worker thread.
+pub(crate) struct Loading {
+    name: String,
+    force: bool,
+    /// Who asked: name and identity key (`None`: the game, for the player).
+    by: String,
+    key: Option<String>,
+    /// The world's revision when the load started (changes since then are unsaved ones).
+    revision: u64,
+    /// The world generation physics was restored for.
+    generation: u64,
+    started: Instant,
+    handle: Option<std::thread::JoinHandle<Result<Prepared, SaveError>>>,
+    dest: Dest,
+}
+
+/// A save read, decoded and checked off the engine thread, ready to swap in.
+pub(crate) struct Prepared {
+    meta: Json,
+    tick: u64,
+    world: crate::world::World,
+    physics: crate::physics::Physics,
+    physics_bytes: Option<Vec<u8>>,
+    game_bytes: Option<Vec<u8>>,
+    logic: Option<crate::logic::LogicSnapshot>,
+    sections: Vec<String>,
+    notes: Vec<Json>,
+    /// The hashes may not match although the state is right: another dmath or Lex runtime.
+    hashes_reliable: bool,
+    read_ms: f64,
+}
+
+/// Reads a save file (bounded) and decodes it.
+fn read_file(path: &std::path::Path) -> Result<savegame::SaveFile, SaveError> {
+    let size = std::fs::metadata(path).map_err(|e| io(path, e))?.len();
+    if size > savegame::MAX_FILE_BYTES {
+        return Err(SaveError::new("too_large", format!("{} is {size} bytes; saves are read up to {}", path.display(), savegame::MAX_FILE_BYTES)));
+    }
+    let bytes = std::fs::read(path).map_err(|e| io(path, e))?;
+    savegame::decode(&bytes).map_err(|e| e.with("file", path.display().to_string()))
+}
+
+/// `save_read {inspect}`: the header and sections of a save that reads cleanly.
+fn inspect(path: &std::path::Path, name: &str) -> Result<Json, SaveError> {
+    let f = read_file(path)?;
+    let mut j = Json::obj(header_summary(&f.meta));
+    j.set("name", Json::from(name));
+    j.set("version", Json::from(f.version));
+    j.set("sections", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len())))));
+    j.set("reads", Json::from(true));
+    Ok(j)
+}
+
+/// Everything about a load that can run off the engine thread: read, decode, check the header
+/// against the engine, load the world, parse module state, restore physics against the world.
+fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hosted: Option<String>, hz: u32, generation: u64) -> Result<Prepared, SaveError> {
+    let t0 = Instant::now();
+    let f = read_file(path)?;
+    let meta = f.meta;
+    let game = meta.get("game").and_then(Json::as_str).map(str::to_owned);
+    if game != hosted {
+        return Err(SaveError::new(
+            "wrong_game",
+            format!("the save is from {} but this engine hosts {}", game.as_deref().unwrap_or("no game"), hosted.as_deref().unwrap_or("no game")),
+        ));
+    }
+    let save_hz = meta.get("tick_hz").and_then(Json::as_u64).unwrap_or(0);
+    if save_hz != u64::from(hz) {
+        return Err(SaveError::new("wrong_tick_rate", format!("the save ticks at {save_hz} Hz, this engine at {hz} Hz")));
+    }
+    let Some(tick) = meta.get("tick").and_then(Json::as_u64).filter(|t| *t < 1 << 53) else {
+        return Err(SaveError::new("invalid_header", "the header's 'tick' must be a whole number"));
+    };
+    // Versions that change results: a mismatch means the hashes can't be expected to match.
+    let mut notes = Vec::new();
+    let mut hashes_reliable = true;
+    for (key, now) in [("dmath", u64::from(specula_core::dmath::VERSION)), ("lex_runtime", u64::from(specula_lex::RUNTIME_VERSION))] {
+        let saved = meta.get(key).and_then(Json::as_u64);
+        if saved != Some(now) {
+            hashes_reliable = false;
+            notes.push(Json::obj([
+                ("warning", Json::from("version_mismatch")),
+                ("what", Json::from(key)),
+                ("saved", Json::from(saved)),
+                ("now", Json::from(now)),
+                ("note", Json::from("saved with another version of code that changes results: the run continues, but it isn't expected to match the saving run's hashes")),
+            ]));
+        }
+    }
+    let sections: Vec<String> = f.sections.iter().map(|s| s.name.clone()).collect();
+    let mut by_name: std::collections::BTreeMap<String, Vec<u8>> = f.sections.into_iter().map(|s| (s.name, s.data)).collect();
+    // The world: unpacked (its section's bytes dropped at once), each file handed over, not copied.
+    let world_bytes = by_name.remove("world").ok_or_else(|| SaveError::new("missing_section", "the save has no world section").in_section("world"))?;
+    let mut files = savegame::unpack_files(&world_bytes)?;
+    drop(world_bytes);
+    let (world, _) = crate::persist::load_with_limits(limits, |file| match files.iter_mut().find(|(n, _)| n == file) {
+        Some((_, text)) => Ok(std::mem::take(text)),
+        None => Err(crate::persist::PersistError::new("not_found", format!("the save's world has no file {file}"))),
+    })
+    .map_err(|e| SaveError::new("corrupt_section", format!("the save's world doesn't load: {e}")).in_section("world").with("cause", e.to_json()))?;
+    drop(files);
+    let logic = match by_name.get("logic") {
+        Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
+        None => None,
+    };
+    let physics_bytes = by_name.remove("physics");
+    let mut physics = crate::physics::Physics::default();
+    if let Some(b) = &physics_bytes {
+        physics.restore_state(&world, generation, tick, b).map_err(|e| {
+            let mut s = SaveError::new(e.code, e.message.clone()).in_section("physics");
+            s.details = e.details.clone();
+            s
+        })?;
+    }
+    let game_bytes = by_name.remove("game");
+    if game_bytes.is_some() && hosted.is_none() {
+        return Err(SaveError::new("wrong_game", "the save has game state but no game is hosted"));
+    }
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, logic, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -236,6 +400,7 @@ impl SaveJob {
         let t1 = Instant::now();
         let files = crate::persist::render_plan(&self.world);
         let mut sections = vec![Section { name: "world".into(), data: savegame::pack_files(&files) }];
+        drop(files);
         sections.extend(self.sections);
         let sizes = Json::obj(sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len()))));
         // What a load would refuse isn't written.
@@ -305,53 +470,93 @@ impl Engine {
         subs
     }
 
+    /// Whether a save of `name` is being written or read now.
+    fn save_busy(&self, name: &str) -> Option<SaveError> {
+        let writing = self.save_writes.iter().any(|w| w.name == name);
+        let loading = self.save_load.as_ref().is_some_and(|l| l.name == name);
+        (writing || loading).then(|| SaveError::new("busy", format!("the save '{name}' is being {} now; call again in a moment", if writing { "written" } else { "read" })).with("retry_after_ms", 100))
+    }
+
+    /// The save tools answered on the engine thread at once (`save_list`, `save_delete`).
     pub(crate) fn handle_save(&mut self, call: SaveCall, w: Writer, by: &str) -> ToolOutput {
-        // What follows reads saves: let writes still running land first.
-        match &call {
-            SaveCall::Write { name, .. } | SaveCall::Read { name, .. } | SaveCall::Delete { name, .. } => self.join_save_writes(Some(name)),
-            SaveCall::List { .. } => self.join_save_writes(None),
-        }
         match call {
-            SaveCall::Write { name, label, overwrite, force } => match self.write_save(&name, label, overwrite, force, by) {
-                Ok(j) => out(j),
-                Err(e) => fail(&e),
-            },
-            SaveCall::Read { name, inspect: true, .. } => match self.inspect_save(&name) {
-                Ok(j) => out(j),
-                Err(e) => fail(&e),
-            },
-            SaveCall::Read { name, force, .. } => match self.read_save(&name, force, w) {
-                Ok(j) => out(j),
-                Err(e) => fail(&e),
-            },
             SaveCall::List { cursor, limit } => out(self.list_saves(cursor, limit)),
-            SaveCall::Delete { name, force } => match self.delete_save(&name, force, by) {
+            SaveCall::Delete { name, force } => match self.delete_save(&name, force, w.session.unwrap_or(by)) {
                 Ok(j) => out(j),
                 Err(e) => fail(&e),
             },
+            // Writes and reads run in the background (handle_save_request).
+            SaveCall::Write { .. } | SaveCall::Read { .. } => fail(&SaveError::new("internal", "save_write and save_read are answered in the background")),
         }
     }
 
-    /// `save_write`, all on this thread (player saves; tests).
-    pub(crate) fn write_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str) -> Result<Json, SaveError> {
-        self.join_save_writes(Some(name));
-        self.begin_save(name, label, overwrite, force, by)?.finish()
+    /// `save_write` and `save_read` from agents: started here, finished on worker threads, answered
+    /// when done (see [`Engine::poll_saves`]); the window keeps drawing meanwhile.
+    pub(crate) fn handle_save_request(&mut self, request: crate::tools::Request) {
+        let crate::tools::Command::SaveGame(call) = request.command else { return };
+        let by = self.swarm.agent_name(&request.session);
+        let key = self.swarm.key(&request.session);
+        let reply = request.reply;
+        let started = match call {
+            SaveCall::Write { name, label, overwrite, force } => self.start_save(&name, label, overwrite, force, &by, &key, Dest::Tool(reply.clone())),
+            SaveCall::Read { name, inspect: true, .. } => {
+                // Reading and checking a file needs nothing of the engine's: all on a worker.
+                let path = self.save_path(&name);
+                let tx = reply.clone();
+                std::thread::Builder::new()
+                    .name("specula-save-inspect".into())
+                    .spawn(move || {
+                        let _ = tx.send(match inspect(&path, &name) {
+                            Ok(j) => out(j),
+                            Err(e) => fail(&e),
+                        });
+                    })
+                    .map(drop)
+                    .map_err(|e| SaveError::new("io", format!("could not start a reader: {e}")))
+            }
+            SaveCall::Read { name, force, .. } => self.start_load(&name, force, &by, Some(key), Dest::Tool(reply.clone())),
+            other => {
+                let _ = reply.send(self.handle_save(other, Writer::new(&by, Some(&key)), &by));
+                return;
+            }
+        };
+        if let Err(e) = started {
+            let _ = reply.send(fail(&e));
+        }
+    }
+
+    /// Takes the state (engine thread) and starts a writer.
+    #[allow(clippy::too_many_arguments)]
+    fn start_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str, key: &str, dest: Dest) -> Result<(), SaveError> {
+        validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
+        if let Some(e) = self.save_busy(name) {
+            return Err(e);
+        }
+        // Each writer holds a copy of the world: at most MAX_WRITERS at once.
+        if self.save_writes.len() >= MAX_WRITERS {
+            return Err(SaveError::new("busy", format!("{MAX_WRITERS} saves are being written; call again in a moment"))
+                .with("writing", Json::arr(self.save_writes.iter().map(|w| Json::from(w.name.as_str()))))
+                .with("retry_after_ms", 200));
+        }
+        let job = self.begin_save(name, label, overwrite, force, by, key)?;
+        let handle = std::thread::Builder::new().name("specula-save".into()).spawn(move || job.finish()).map_err(|e| SaveError::new("io", format!("could not start a save writer: {e}")))?;
+        self.save_writes.push(Writing { name: name.to_owned(), handle, dest });
+        Ok(())
     }
 
     /// The engine-thread part of a save: the state's bytes and owned copies of the world (the
     /// costly rendering, compression and writing happen in [`SaveJob::finish`], anywhere).
-    pub(crate) fn begin_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str) -> Result<SaveJob, SaveError> {
-        validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
+    pub(crate) fn begin_save(&mut self, name: &str, label: Option<String>, overwrite: bool, force: bool, by: &str, key: &str) -> Result<SaveJob, SaveError> {
         let path = self.save_path(name);
         if path.exists() {
-            let owner = save_owner(&path);
+            let owner = owner_of(&path, key);
             if !overwrite {
                 return Err(SaveError::new("save_exists", format!("a save named '{name}' exists; pass overwrite: true to replace it, or pick another name"))
                     .with("name", name)
-                    .with("created_by", owner.map_or(Json::Null, Json::from)));
+                    .with("written_by", whose(&owner)));
             }
-            if let Some(o) = owner.filter(|o| o != by && !force) {
-                return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {o}; pass force: true to replace it anyway, or pick another name")).with("created_by", o));
+            if !matches!(owner, Owner::Mine) && !force {
+                return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to replace it anyway, or pick another name", whose(&owner))));
             }
         }
         let t0 = Instant::now();
@@ -391,6 +596,7 @@ impl Engine {
             ("dmath", Json::from(specula_core::dmath::VERSION)),
             ("lex_runtime", Json::from(specula_lex::RUNTIME_VERSION)),
             ("created_by", Json::from(by)),
+            ("owner", Json::from(owner_hash(key))),
             ("created_unix_s", Json::from(created)),
         ];
         if let Some(l) = &label {
@@ -422,145 +628,84 @@ impl Engine {
         })
     }
 
-    /// Waits for background save writes (of `name`, or all) to land, so what follows reads them.
-    pub(crate) fn join_save_writes(&mut self, name: Option<&str>) {
-        let mut keep = Vec::new();
-        for (n, h) in std::mem::take(&mut self.save_writes) {
-            if name.is_none_or(|x| x == n) || h.is_finished() {
-                let _ = h.join();
-            } else {
-                keep.push((n, h));
-            }
+    /// The checks a load can do now (claims, unsaved changes), then a reader on a worker thread.
+    fn start_load(&mut self, name: &str, force: bool, by: &str, key: Option<String>, dest: Dest) -> Result<(), SaveError> {
+        validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
+        if let Some(e) = self.save_busy(name) {
+            return Err(e);
         }
-        self.save_writes = keep;
-    }
-
-    /// `save_write` from an agent: the state is taken now, between ticks; the file is written
-    /// on a worker thread, which answers the call when it's on disk (the window keeps drawing).
-    pub(crate) fn handle_save_write(&mut self, request: crate::tools::Request) {
-        let crate::tools::Command::SaveGame(SaveCall::Write { name, label, overwrite, force }) = request.command else { return };
-        let by = self.swarm.agent_name(&request.session);
-        self.join_save_writes(Some(&name));
-        // Each writer holds a copy of the world: at most MAX_WRITERS at once.
-        self.save_writes.retain(|(_, h)| !h.is_finished());
-        if self.save_writes.len() >= MAX_WRITERS {
-            let e = SaveError::new("busy", format!("{MAX_WRITERS} saves are being written; call again in a moment")).with("writing", Json::arr(self.save_writes.iter().map(|(n, _)| Json::from(n.as_str()))));
-            let _ = request.reply.send(fail(&e));
-            return;
+        if self.save_load.is_some() {
+            return Err(SaveError::new("busy", "another save is being loaded; call again in a moment").with("retry_after_ms", 200));
         }
-        match self.begin_save(&name, label, overwrite, force, &by) {
-            Err(e) => {
-                let _ = request.reply.send(fail(&e));
-            }
-            Ok(job) => {
-                let reply = request.reply;
-                let spawned = std::thread::Builder::new().name("specula-save".into()).spawn(move || {
-                    let answer = match job.finish() {
-                        Ok(j) => out(j),
-                        Err(e) => fail(&e),
-                    };
-                    let _ = reply.send(answer);
-                });
-                match spawned {
-                    Ok(h) => self.save_writes.push((name, h)),
-                    Err(e) => eprintln!("specula: could not start a save writer: {e}"),
-                }
-            }
-        }
-    }
-
-    fn read_file(&self, name: &str) -> Result<savegame::SaveFile, SaveError> {
+        self.check_load_allowed(force, by, key.as_deref(), None)?;
         let path = self.save_path(name);
-        let size = std::fs::metadata(&path).map_err(|e| io(&path, e))?.len();
-        if size > savegame::MAX_FILE_BYTES {
-            return Err(SaveError::new("too_large", format!("{} is {size} bytes; saves are read up to {}", path.display(), savegame::MAX_FILE_BYTES)));
-        }
-        let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
-        savegame::decode(&bytes).map_err(|e| e.with("file", path.display().to_string()))
+        let (limits, hz) = (self.world.shape_limits(), self.clock.hz());
+        let hosted = self.game.as_ref().map(|_| self.game_name.clone());
+        let generation = self.world_generation + 1;
+        let handle = std::thread::Builder::new()
+            .name("specula-load".into())
+            .spawn(move || prepare_load(&path, limits, hosted, hz, generation))
+            .map_err(|e| SaveError::new("io", format!("could not start a save reader: {e}")))?;
+        self.save_load = Some(Loading {
+            name: name.to_owned(),
+            force,
+            by: by.to_owned(),
+            key,
+            revision: self.world.revision(),
+            generation,
+            started: Instant::now(),
+            handle: Some(handle),
+            dest,
+        });
+        Ok(())
     }
 
-    /// `save_read {inspect}`: the header and sections of a save that reads cleanly.
-    fn inspect_save(&self, name: &str) -> Result<Json, SaveError> {
-        let f = self.read_file(name)?;
-        let mut j = Json::obj(header_summary(&f.meta));
-        j.set("name", Json::from(name));
-        j.set("version", Json::from(f.version));
-        j.set("sections", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len())))));
-        j.set("reads", Json::from(true));
-        Ok(j)
-    }
-
-    /// `save_read`: see the module docs. Everything that can fail is checked before anything
-    /// live changes.
-    pub(crate) fn read_save(&mut self, name: &str, force: bool, w: Writer) -> Result<Json, SaveError> {
-        let t0 = Instant::now();
-        self.swarm.check_replace_world(w).map_err(|e| {
+    /// Claims and unsaved changes: checked when a load starts and again when it swaps in
+    /// (`since`: the world's revision when it started; changes after it are unsaved too).
+    fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<(), SaveError> {
+        self.swarm.check_replace_world(Writer::new(by, key)).map_err(|e| {
             let mut s = SaveError::new("claimed", e.message.clone());
             s.details = e.details.clone();
             s
         })?;
+        if force {
+            return Ok(());
+        }
+        if since.is_some_and(|r| r != self.world.revision()) {
+            return Err(SaveError::new("unsaved_changes", "the world changed while the save was loading; save_write first, or load with force: true to discard the changes"));
+        }
         self.finish_autosave(true);
         self.save_board_now();
-        if self.dirty() && !force {
+        if self.dirty() {
             return Err(SaveError::new("unsaved_changes", "the live world has changes not in a world folder or save; world_save or save_write first, or pass force: true to discard them")
                 .with("current_world", self.world_name.clone().map_or(Json::Null, Json::from)));
         }
-        let f = self.read_file(name)?;
-        let meta = &f.meta;
-        let game = meta.get("game").and_then(Json::as_str).map(str::to_owned);
-        let hosted = self.game.as_ref().map(|_| self.game_name.clone());
-        if game != hosted {
-            return Err(SaveError::new(
-                "wrong_game",
-                format!("the save is from {} but this engine hosts {}", game.as_deref().unwrap_or("no game"), hosted.as_deref().unwrap_or("no game")),
-            ));
-        }
-        let hz = meta.get("tick_hz").and_then(Json::as_u64).unwrap_or(0);
-        if hz != u64::from(self.clock.hz()) {
-            return Err(SaveError::new("wrong_tick_rate", format!("the save ticks at {hz} Hz, this engine at {} Hz", self.clock.hz())));
-        }
-        let Some(tick) = meta.get("tick").and_then(Json::as_u64).filter(|t| *t < 1 << 53) else {
-            return Err(SaveError::new("invalid_header", "the header's 'tick' must be a whole number"));
-        };
-        // The world.
-        let world_bytes = f.section("world").ok_or_else(|| SaveError::new("missing_section", "the save has no world section").in_section("world"))?;
-        let files = savegame::unpack_files(world_bytes)?;
-        let (world, _) = crate::persist::load_with_limits(self.world.shape_limits(), |file| {
-            files
-                .iter()
-                .find(|(n, _)| n == file)
-                .map(|(_, t)| t.clone())
-                .ok_or_else(|| crate::persist::PersistError::new("not_found", format!("the save's world has no file {file}")))
-        })
-        .map_err(|e| SaveError::new("corrupt_section", format!("the save's world doesn't load: {e}")).in_section("world").with("cause", e.to_json()))?;
-        // The game's state.
-        let parsed = match (f.section("game"), self.game.as_ref()) {
-            (Some(bytes), Some(g)) => Some(g.parse_state(bytes).map_err(|m| SaveError::new("game_state", format!("the game can't load this save: {m}")).in_section("game"))?),
-            (Some(_), None) => return Err(SaveError::new("wrong_game", "the save has game state but no game is hosted")),
-            (None, _) => None,
-        };
-        // Modules and physics, checked against the save's world.
-        let logic = match f.section("logic") {
-            Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
-            None => None,
-        };
-        let generation = self.world_generation + 1;
-        let mut physics = crate::physics::Physics::default();
-        if let Some(b) = f.section("physics") {
-            physics.restore_state(&world, generation, tick, b).map_err(|e| {
-                let mut s = SaveError::new(e.code, e.message.clone()).in_section("physics");
-                s.details = e.details.clone();
-                s
-            })?;
-        }
-        let parse_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        // Everything checks: make it live.
+        Ok(())
+    }
+
+    /// Swaps a prepared save in (engine thread): checks again, then the clock, world, physics,
+    /// modules and game, and reports the hashes now against the saved ones.
+    fn finish_load(&mut self, l: &Loading, p: Prepared) -> Result<Json, SaveError> {
         let t1 = Instant::now();
-        self.clock.set_tick(tick);
-        let mut notes: Vec<Json> = self.replace_world(world, &format!("save:{name}")).into_iter().map(Json::from).collect();
-        debug_assert_eq!(self.world_generation, generation);
+        self.check_load_allowed(l.force, &l.by, l.key.as_deref(), Some(l.revision))?;
+        let parsed = match (&p.game_bytes, self.game.as_ref()) {
+            (Some(bytes), Some(g)) => Some(g.parse_state(bytes).map_err(|m| SaveError::new("game_state", format!("the game can't load this save: {m}")).in_section("game"))?),
+            _ => None,
+        };
+        let mut physics = p.physics;
+        if self.world_generation + 1 != l.generation {
+            // Another world came in meanwhile: restore for the generation this load will make.
+            physics = crate::physics::Physics::default();
+            if let Some(b) = &p.physics_bytes {
+                physics.restore_state(&p.world, self.world_generation + 1, p.tick, b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("physics"))?;
+            }
+        }
+        // Everything checks: make it live.
+        self.clock.set_tick(p.tick);
+        let mut notes: Vec<Json> = p.notes;
+        notes.extend(self.replace_world(p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
         self.physics = physics;
-        if let Some(snap) = logic {
+        if let Some(snap) = p.logic {
             notes.extend(self.logic.apply_state(snap));
         } else if !self.logic.is_empty() {
             notes.push(Json::from("the save has no module state; running modules keep theirs"));
@@ -580,20 +725,21 @@ impl Engine {
         self.last_advance = Instant::now();
         let apply_ms = t1.elapsed().as_secs_f64() * 1000.0;
         // Hashes now against the saved ones.
+        let meta = &p.meta;
         let world_now = self.state_hash();
         let world_saved = meta.get("world_hash").and_then(Json::as_str).unwrap_or("");
         let subs_now = self.subsystem_hashes();
         let saved_subs = meta.get("subsystems").and_then(Json::as_object).unwrap_or_default();
         let mut all_match = hex(world_now) == world_saved;
         let mut subsystems = Vec::new();
-        let mut names: Vec<String> = saved_subs.iter().map(|(k, _)| k.clone()).collect();
+        let mut names: Vec<String> = saved_subs.iter().take(32).map(|(k, _)| k.chars().take(64).collect()).collect();
         for (n, _) in &subs_now {
             if !names.iter().any(|x| x == n) {
                 names.push((*n).to_owned());
             }
         }
         for n in names {
-            let saved = saved_subs.iter().find(|(k, _)| *k == n).and_then(|(_, v)| v.as_str()).map(str::to_owned);
+            let saved = saved_subs.iter().find(|(k, _)| *k == n).and_then(|(_, v)| v.as_str()).map(|s| s.chars().take(16).collect::<String>());
             let now = subs_now.iter().find(|(k, _)| *k == n).map(|(_, h)| hex(*h));
             let same = saved == now;
             all_match &= same;
@@ -601,24 +747,91 @@ impl Engine {
         }
         let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
         Ok(Json::obj([
-            ("loaded", Json::from(name)),
-            ("tick", Json::from(tick)),
-            ("game", Json::from(game)),
+            ("loaded", Json::from(l.name.as_str())),
+            ("tick", Json::from(p.tick)),
+            ("game", clip(meta.get("game"), 64)),
             ("label", clip(meta.get("label"), MAX_LABEL)),
             ("created_by", clip(meta.get("created_by"), 128)),
-            ("restored", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(true))))),
-            ("world_hash", Json::obj([("saved", Json::from(world_saved)), ("now", Json::from(hex(world_now))), ("match", Json::from(hex(world_now) == world_saved))])),
+            ("restored", Json::obj(p.sections.iter().map(|s| (s.as_str(), Json::from(true))))),
+            ("world_hash", Json::obj([("saved", clip(meta.get("world_hash"), 16)), ("now", Json::from(hex(world_now))), ("match", Json::from(hex(world_now) == world_saved))])),
             ("subsystems", Json::Arr(subsystems)),
             ("match", Json::from(all_match)),
+            ("hash_match_reliable", Json::from(p.hashes_reliable)),
             ("entities", Json::from(self.world.persistent_len())),
-            ("timings_ms", Json::obj([("read_and_check", ms(parse_ms)), ("apply", ms(apply_ms)), ("total", ms(t0.elapsed().as_secs_f64() * 1000.0))])),
+            (
+                "timings_ms",
+                Json::obj([
+                    ("read_and_check", ms(p.read_ms)),
+                    ("apply", ms(apply_ms)),
+                    ("total", ms(l.started.elapsed().as_secs_f64() * 1000.0)),
+                ]),
+            ),
             ("notes", Json::arr(notes.into_iter().take(20))),
             ("next", Json::from("world_save {name} keeps the loaded world as world files; desync_trace from this tick on compares with the saving run's")),
         ]))
     }
 
-    /// `save_list`.
-    fn list_saves(&self, cursor: usize, limit: usize) -> Json {
+    /// Whether background saves or loads are running (the headless loop wakes for them).
+    pub(crate) fn saves_in_flight(&self) -> bool {
+        !self.save_writes.is_empty() || self.save_load.is_some()
+    }
+
+    /// Answers background saves and loads that finished (every loop iteration).
+    pub(crate) fn poll_saves(&mut self) {
+        if self.save_writes.iter().any(|w| w.handle.is_finished()) {
+            let (done, running): (Vec<Writing>, Vec<Writing>) = std::mem::take(&mut self.save_writes).into_iter().partition(|w| w.handle.is_finished());
+            self.save_writes = running;
+            for w in done {
+                let result = w.handle.join().unwrap_or_else(|_| Err(SaveError::new("internal", "the save writer stopped unexpectedly")));
+                self.deliver(w.dest, result);
+            }
+        }
+        if self.save_load.as_ref().is_some_and(|l| l.handle.as_ref().is_none_or(|h| h.is_finished())) {
+            let mut l = self.save_load.take().expect("checked");
+            let Some(handle) = l.handle.take() else { return };
+            let result = match handle.join() {
+                Ok(Ok(p)) => self.finish_load(&l, p),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(SaveError::new("internal", "the save reader stopped unexpectedly")),
+            };
+            self.deliver(l.dest, result);
+        }
+    }
+
+    /// Waits for every background save and load and answers them (shutdown).
+    pub(crate) fn join_saves(&mut self) {
+        for w in std::mem::take(&mut self.save_writes) {
+            let result = w.handle.join().unwrap_or_else(|_| Err(SaveError::new("internal", "the save writer stopped unexpectedly")));
+            self.deliver(w.dest, result);
+        }
+        if let Some(mut l) = self.save_load.take() {
+            if let Some(h) = l.handle.take() {
+                let _ = h.join();
+            }
+            self.deliver(l.dest, Err(SaveError::new("shutting_down", "the engine is shutting down; the save wasn't loaded")));
+        }
+    }
+
+    fn deliver(&mut self, dest: Dest, result: Result<Json, SaveError>) {
+        match dest {
+            Dest::Tool(tx) => {
+                let _ = tx.send(match result {
+                    Ok(j) => out(j),
+                    Err(e) => fail(&e),
+                });
+            }
+            Dest::Game(req) => {
+                let Some(game) = self.game.as_mut() else { return };
+                self.world.set_recording(Recording::Snapshot);
+                game.request_done(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, &req, result.map_err(|e| e.to_json()));
+                self.world.set_recording(Recording::Full);
+                self.journal_game(Kind::GameFrame);
+            }
+        }
+    }
+
+    /// `save_list` (never waits for writes: saves being written are listed as such).
+    pub(crate) fn list_saves(&self, cursor: usize, limit: usize) -> Json {
         let mut found = Vec::new();
         let mut skipped = 0usize;
         if let Ok(dir) = std::fs::read_dir(&self.saves_dir) {
@@ -632,15 +845,16 @@ impl Engine {
                     continue;
                 }
                 let Some(name) = p.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
+                let writing = self.save_writes.iter().any(|w| w.name == name);
                 let item = match read_head(&p).and_then(|(size, h)| savegame::peek(&h).map(|(v, h)| (size, v, h))) {
                     Ok((size, version, h)) => {
                         let created = h.get("created_unix_s").and_then(Json::as_u64).unwrap_or(0);
                         let mut f = vec![("name", Json::from(name.as_str()))];
                         f.extend(header_summary(&h));
-                        f.extend([("bytes", Json::from(size)), ("version", Json::from(version))]);
+                        f.extend([("bytes", Json::from(size)), ("version", Json::from(version)), ("writing", Json::from(writing))]);
                         (created, name, Json::obj(f))
                     }
-                    Err(e) => (0, name.clone(), Json::obj([("name", Json::from(name.as_str())), ("unreadable", e.to_json())])),
+                    Err(e) => (0, name.clone(), Json::obj([("name", Json::from(name.as_str())), ("unreadable", e.to_json()), ("writing", Json::from(writing))])),
                 };
                 found.push(item);
             }
@@ -650,48 +864,56 @@ impl Engine {
         let total = found.len();
         let page: Vec<Json> = found.into_iter().skip(cursor).take(limit).map(|(_, _, j)| j).collect();
         let next = (cursor + page.len() < total).then_some(cursor + page.len());
+        let writing: Vec<Json> = self.save_writes.iter().map(|w| Json::from(w.name.as_str())).collect();
         Json::obj([
             ("saves", Json::Arr(page)),
             ("total", Json::from(total)),
             ("not_listed", Json::from(skipped)),
             ("next_cursor", Json::from(next)),
+            ("writing", Json::Arr(writing)),
             ("dir", Json::from(self.saves_dir.display().to_string())),
         ])
     }
 
-    /// `save_delete`.
-    fn delete_save(&mut self, name: &str, force: bool, by: &str) -> Result<Json, SaveError> {
+    /// `save_delete` (`key`: the caller's identity, which must be the save's owner unless `force`).
+    pub(crate) fn delete_save(&mut self, name: &str, force: bool, key: &str) -> Result<Json, SaveError> {
+        if let Some(e) = self.save_busy(name) {
+            return Err(e);
+        }
         let path = self.save_path(name);
         if !path.exists() {
             return Err(SaveError::new("not_found", format!("there is no save named '{name}'")).with("suggestion", "save_list"));
         }
-        let owner = read_head(&path).ok().and_then(|(_, h)| savegame::peek(&h).ok()).and_then(|(_, h)| h.get("created_by").and_then(Json::as_str).map(str::to_owned));
-        if !force && owner.as_deref().is_some_and(|o| o != by) {
-            return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to delete it anyway", owner.unwrap_or_default())));
+        let owner = owner_of(&path, key);
+        if !force && !matches!(owner, Owner::Mine) {
+            return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to delete it anyway", whose(&owner))));
         }
         std::fs::remove_file(&path).map_err(|e| io(&path, e))?;
         Ok(Json::obj([("deleted", Json::from(name))]))
     }
 
-    /// Serves the hosted game's player-facing requests (its menu's Save and Load).
+    /// Serves the hosted game's player-facing requests (its menu's Save, Load, List and Delete).
+    /// Saves and loads run in the background like agents' and are answered when done.
     pub(crate) fn serve_game_requests(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
         let mut requests = Vec::new();
         game.take_requests(&mut requests);
+        let by = self.game_name.clone();
+        let key = format!("game:{by}");
         for (i, req) in requests.into_iter().enumerate() {
-            let by = self.game_name.clone();
-            let result = match &req {
-                _ if i >= MAX_GAME_REQUESTS => Err(SaveError::new("too_many_requests", format!("at most {MAX_GAME_REQUESTS} requests a frame")).to_json()),
-                // The player's own slot: their Save replaces it (they asked).
-                GameRequest::Save { slot, label } => self.write_save(slot, label.clone(), true, true, &by).map_err(|e| e.to_json()),
-                GameRequest::Load { slot } => self.read_save(slot, true, Writer::new(&by, None)).map_err(|e| e.to_json()),
-                GameRequest::List => Ok(self.list_saves(0, MAX_LIST as usize)),
+            let started = match &req {
+                _ if i >= MAX_GAME_REQUESTS => Err(SaveError::new("too_many_requests", format!("at most {MAX_GAME_REQUESTS} requests a frame"))),
+                // The player's own slots: their Save replaces what is there (they confirmed it).
+                GameRequest::Save { slot, label } => self.start_save(slot, label.clone(), true, true, &by, &key, Dest::Game(req.clone())).map(|()| None),
+                GameRequest::Load { slot } => self.start_load(slot, true, &by, None, Dest::Game(req.clone())).map(|()| None),
+                GameRequest::List => Ok(Some(self.list_saves(0, MAX_LIST as usize))),
+                GameRequest::Delete { slot } => self.delete_save(slot, true, &key).map(Some),
             };
-            let Some(game) = self.game.as_mut() else { return };
-            self.world.set_recording(Recording::Snapshot);
-            game.request_done(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, &req, result);
-            self.world.set_recording(Recording::Full);
-            self.journal_game(Kind::GameFrame);
+            match started {
+                Ok(None) => {}
+                Ok(Some(j)) => self.deliver(Dest::Game(req), Ok(j)),
+                Err(e) => self.deliver(Dest::Game(req), Err(e)),
+            }
         }
     }
 }
@@ -715,5 +937,19 @@ mod tests {
         for d in definitions() {
             assert!(d.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && d.name.len() <= 64);
         }
+    }
+
+    #[test]
+    fn owners_are_identities_not_names() {
+        let dir = std::env::temp_dir().join(format!("specula-owner-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("x.specsave");
+        let meta = Json::obj([("format", Json::from(savegame::FORMAT)), ("created_by", Json::from("ann")), ("owner", Json::from(owner_hash("key-1")))]);
+        std::fs::write(&path, savegame::encode(&meta, &[])).unwrap();
+        assert!(matches!(owner_of(&path, "key-1"), Owner::Mine));
+        assert!(matches!(owner_of(&path, "key-2"), Owner::Theirs(n) if n == "ann"), "another agent, even one now called ann");
+        std::fs::write(&path, b"not a save").unwrap();
+        assert!(matches!(owner_of(&path, "key-1"), Owner::Unknown));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

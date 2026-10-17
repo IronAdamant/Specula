@@ -141,6 +141,7 @@ impl SepulcraGame {
             (GameRequest::Load { .. }, Ok(_)) => format!("Game loaded: wave {} of {}", self.state.wave(), self.state.waves_total()),
             (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("not_found") => "No saved game yet".into(),
             (_, Err(e)) => format!("Couldn't {}: {}", if matches!(req, GameRequest::Save { .. }) { "save" } else { "load" }, e.get("message").and_then(Json::as_str).unwrap_or("unknown error")),
+            (GameRequest::Delete { .. }, Ok(_)) => "Save deleted".into(),
             (GameRequest::List, Ok(_)) => return,
         };
         let failed = result.is_err();

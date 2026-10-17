@@ -43,18 +43,32 @@ const MAX_JOBS_PER_SESSION: usize = 4;
 struct Grant(usize);
 
 impl Grant {
-    fn take(wanted: Option<usize>) -> Grant {
+    /// Up to `wanted` of the threads not in use; `None` when every one is (the cap holds: the
+    /// caller answers `busy`).
+    fn take(wanted: Option<usize>) -> Option<Grant> {
         let cap = thread_cap();
         let want = wanted.unwrap_or(cap).clamp(1, cap);
         let mut busy = BUSY.load(Ordering::SeqCst);
         loop {
-            let got = want.min(cap.saturating_sub(busy)).max(1);
+            let got = want.min(cap.saturating_sub(busy));
+            if got == 0 {
+                return None;
+            }
             match BUSY.compare_exchange(busy, busy + got, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return Grant(got),
+                Ok(_) => return Some(Grant(got)),
                 Err(now) => busy = now,
             }
         }
     }
+}
+
+/// The answer when every balance worker thread is in use.
+fn busy() -> ToolOutput {
+    err(
+        "busy",
+        format!("all {} balance worker threads are in use by other calls; call again shortly", thread_cap()),
+        vec![("retry_after_ms", Json::from(1000))],
+    )
 }
 
 impl Drop for Grant {
@@ -98,8 +112,12 @@ fn targets_arg(args: &Json) -> Result<Targets, ToolOutput> {
         (Some(_), Some(_)) => return Err(err("invalid_argument", "give 'targets' or 'targets_file', not both", vec![])),
         (Some(t), None) => Targets::parse(t),
         (None, Some(path)) => {
-            let p = crate::logic::tools::project_path(path, "targets_file").map_err(|m| err("invalid_argument", m, vec![]))?;
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(u64::MAX);
+            let p = crate::logic::tools::project_path(path, "targets_file").map_err(|m| err(if m.contains("does not exist") { "not_found" } else { "invalid_argument" }, m, vec![]))?;
+            let size = match std::fs::metadata(&p) {
+                Ok(m) if m.is_file() => m.len(),
+                Ok(_) => return Err(err("not_found", format!("{path} is not a file"), vec![])),
+                Err(e) => return Err(err(if e.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" }, format!("{path}: {e}"), vec![])),
+            };
             if size > specula_balance::targets::MAX_DOC_BYTES as u64 {
                 return Err(err("too_large", format!("{path} is {size} bytes; a targets file is at most {}", specula_balance::targets::MAX_DOC_BYTES), vec![]));
             }
@@ -274,7 +292,7 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
     if start >= points.len() {
         return err("invalid_argument", format!("'start' {start} is past the {} points", points.len()), vec![]);
     }
-    let grant = Grant::take(threads);
+    let Some(grant) = Grant::take(threads) else { return busy() };
     let opts = SweepOptions { threads: grant.0, deadline: Some(started + WALL_BUDGET) };
     let res = sweep(&doc, &t, &points[start..end], &seeds, &opts);
     drop(grant);
@@ -423,11 +441,17 @@ fn tune_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
             }
         }
     };
-    let grant = Grant::take(threads);
+    let Some(grant) = Grant::take(threads) else { return busy() };
     let opts = SweepOptions { threads: grant.0, deadline: Some(started + WALL_BUDGET) };
     let (n, cut) = job.advance(&doc, &t, evals_now, &opts);
     let validate = crate::tools::bool_arg(args, "validate").ok().flatten().unwrap_or(job.done());
+    // Held-out validation is part of the answer only when it finished inside the wall budget.
     let held = if validate && !cut && started.elapsed() < WALL_BUDGET { job.validate(&doc, &t, &opts) } else { None };
+    let held_status = match (&held, validate) {
+        (Some(_), _) => "done",
+        (None, false) => "not_requested",
+        (None, true) => "unfinished",
+    };
     drop(grant);
     let best = job.best().cloned();
     let mut out = Json::obj([
@@ -447,11 +471,15 @@ fn tune_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         })),
         ("held_out", held.as_ref().map_or(Json::Null, |h| h.to_json(false))),
         ("held_out_hit", held.as_ref().map_or(Json::Null, |h| Json::from(h.hit))),
+        ("held_out_status", Json::from(held_status)),
+        ("finished", Json::from(job.done() && held.is_some())),
         ("seconds", Json::from((started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0)),
         ("state", job.to_json()),
     ]);
     if !job.done() {
         out.set("next", Json::from(if name.is_some() { "call balance_tune again with the same job (and set and targets) to continue" } else { "pass 'job' to keep it in the engine, or 'state' back to resume" }));
+    } else if held_status == "unfinished" {
+        out.set("next", Json::from("the tuning is done but the held-out check ran out of time: call balance_tune again with the same job (or this state) and validate: true"));
     }
     playtest(&mut out);
     // Keep it (bounded; a session's own oldest job makes room; another session's never does).
@@ -559,8 +587,13 @@ mod tests {
         for d in definitions() {
             assert!(d.name.starts_with("balance_") && d.name.len() <= 64);
         }
-        let a = Grant::take(Some(1000));
+        let a = Grant::take(Some(1000)).expect("threads are free");
         assert!(a.0 >= 1 && a.0 <= thread_cap());
-        drop(a);
+        // With every thread taken, the next call is told to wait (the cap holds).
+        let rest = Grant::take(None);
+        if a.0 + rest.as_ref().map_or(0, |g| g.0) >= thread_cap() {
+            assert!(Grant::take(Some(1)).is_none());
+        }
+        drop((a, rest));
     }
 }

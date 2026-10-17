@@ -160,6 +160,8 @@ pub enum GameRequest {
     Load { slot: String },
     /// `save_list`: the saves there are (newest first), for a load screen.
     List,
+    /// `save_delete` of the save named `slot` (the player asked, and confirmed).
+    Delete { slot: String },
 }
 
 /// What a game can touch.

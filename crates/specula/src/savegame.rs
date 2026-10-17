@@ -39,6 +39,10 @@ pub const MAX_SECTIONS: usize = 32;
 /// [`MAX_DECODED_BYTES`] (checked from the table before anything is decompressed).
 pub const MAX_SECTION_BYTES: usize = 512 << 20;
 pub const MAX_DECODED_BYTES: u64 = 512 << 20;
+/// Decoded bytes per byte of file, at most (plus [`MAX_RATIO_SLACK`]): world text compresses
+/// about 20 to 1, so this leaves room while refusing decompression bombs.
+pub const MAX_RATIO: u64 = 64;
+pub const MAX_RATIO_SLACK: u64 = 16 << 20;
 /// Sections smaller than this are stored raw (compressing them saves nothing).
 const RAW_BELOW: usize = 256;
 
@@ -150,10 +154,20 @@ pub fn migrate_with(mut file: SaveFile, table: &[Migration], target: u32) -> Res
 
 /// The file bytes for `meta` (an object; its `sections` key is replaced) and `sections`.
 pub fn encode(meta: &Json, sections: &[Section]) -> Vec<u8> {
+    let compressed = encode_with(meta, sections, true);
+    // A save so repetitive it compresses past the ratio loads refuse is stored raw instead.
+    let declared: u64 = sections.iter().map(|s| s.data.len() as u64).sum();
+    if declared > MAX_RATIO_SLACK + MAX_RATIO * compressed.len() as u64 {
+        return encode_with(meta, sections, false);
+    }
+    compressed
+}
+
+fn encode_with(meta: &Json, sections: &[Section], compress: bool) -> Vec<u8> {
     let mut table = Vec::new();
     let mut body = Vec::new();
     for s in sections {
-        let (codec, stored) = if s.data.len() < RAW_BELOW { ("raw", s.data.clone()) } else { ("zlib", deflate::zlib_compress(&s.data, Level::Fast)) };
+        let (codec, stored) = if s.data.len() < RAW_BELOW || !compress { ("raw", s.data.clone()) } else { ("zlib", deflate::zlib_compress(&s.data, Level::Fast)) };
         table.push(Json::obj([
             ("name", Json::from(s.name.as_str())),
             ("codec", Json::from(codec)),
@@ -242,6 +256,11 @@ fn decode_with(bytes: &[u8], table: &[Migration], target: u32) -> Result<SaveFil
     let declared: u64 = table_json.iter().map(|s| s.get("bytes").and_then(Json::as_u64).unwrap_or(0)).fold(0u64, u64::saturating_add);
     if declared > MAX_DECODED_BYTES {
         return Err(SaveError::new("too_large", format!("the sections decode to {declared} bytes in all; a save is read up to {MAX_DECODED_BYTES}")).at(16));
+    }
+    // Real saves compress world text about 20 to 1: a file that claims far more is a bomb.
+    let ratio_cap = MAX_RATIO_SLACK + MAX_RATIO * bytes.len() as u64;
+    if declared > ratio_cap {
+        return Err(SaveError::new("too_large", format!("the sections claim {declared} bytes from a {}-byte file; saves decode to at most {MAX_RATIO} times their size (plus {MAX_RATIO_SLACK} bytes)", bytes.len())).at(16));
     }
     let mut sections: Vec<Section> = Vec::with_capacity(table_json.len());
     for (i, s) in table_json.iter().enumerate() {
@@ -420,6 +439,44 @@ mod tests {
             }
         }
         assert!(errors.len() >= 4, "the fuzzer should reach several checks: {errors:?}");
+    }
+
+    /// The review's bomb: a half-megabyte file whose world section inflates to hundreds of MiB
+    /// is refused by its compression ratio, before anything is inflated.
+    #[test]
+    fn decompression_bombs_are_refused_by_ratio() {
+        let data = vec![0u8; 200 << 20];
+        let stored = deflate::zlib_compress(&data, Level::Fast);
+        let table = Json::arr([Json::obj([
+            ("name", Json::from("world")),
+            ("codec", Json::from("zlib")),
+            ("bytes", Json::from(data.len())),
+            ("stored", Json::from(stored.len())),
+            ("crc32", Json::from(format!("{:08x}", crc32(&data)))),
+        ])]);
+        drop(data);
+        let header = Json::obj([("format", Json::from(FORMAT)), ("sections", table)]).to_string();
+        let mut w = ByteWriter::new();
+        w.raw(MAGIC);
+        w.u32(VERSION);
+        w.len_u32(header.len());
+        w.raw(header.as_bytes());
+        w.raw(&stored);
+        let crc = crc32(w.bytes());
+        w.u32(crc);
+        assert!(w.len() < 1 << 20, "a small file");
+        let e = decode(w.bytes()).unwrap_err();
+        assert_eq!(e.code, "too_large", "{e}");
+        assert!(e.message.contains("times their size"), "refused by the ratio, before inflating: {e}");
+    }
+
+    /// Very repetitive data is stored raw rather than past the ratio loads refuse.
+    #[test]
+    fn repetitive_saves_still_load() {
+        let meta = Json::obj([("format", Json::from(FORMAT))]);
+        let sections = vec![Section { name: "world".into(), data: vec![b'a'; 40 << 20] }];
+        let bytes = encode(&meta, &sections);
+        assert_eq!(decode(&bytes).unwrap().sections, sections);
     }
 
     /// A small file whose table promises huge sections is refused before anything is inflated.

@@ -340,7 +340,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     };
     engine.finish_autosave(true);
     // Save games still being written land before the process ends.
-    engine.join_save_writes(None);
+    engine.join_saves();
     engine.autosave(true);
     engine.save_board_blocking();
     // Parked captures and model calls hold reply channels: answer them now, or their callers
@@ -436,8 +436,10 @@ struct Engine {
     worlds_dir: PathBuf,
     /// Where save games live (`--saves`, default `./saves`; see `save_tools`).
     saves_dir: PathBuf,
-    /// Save games being written on worker threads, by name.
-    save_writes: Vec<(String, std::thread::JoinHandle<()>)>,
+    /// Save games being written on worker threads.
+    save_writes: Vec<save_tools::Writing>,
+    /// A save game being read and checked on a worker thread (one at a time).
+    save_load: Option<save_tools::Loading>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -567,6 +569,7 @@ impl Engine {
             worlds_dir: PathBuf::from("worlds"),
             saves_dir: PathBuf::from("saves"),
             save_writes: Vec::new(),
+            save_load: None,
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
@@ -1264,6 +1267,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.poll_saves();
             self.serve_captures();
             self.advance_clock();
             let now = Instant::now();
@@ -1346,7 +1350,7 @@ impl Engine {
             // (and about 60 times a second while perf_capture records frames).
             let most = if self.profiler.capturing() { Duration::from_millis(16) } else { Duration::from_millis(100) };
             let mut wait = self.clock.until_next().min(most);
-            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() {
+            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() || self.saves_in_flight() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
@@ -1366,6 +1370,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.poll_saves();
             self.serve_captures();
         }
         Ok(())
@@ -1399,8 +1404,8 @@ impl Engine {
             self.handle_sight(request);
             return;
         }
-        if matches!(request.command, Command::SaveGame(save_tools::SaveCall::Write { .. })) {
-            self.handle_save_write(request);
+        if matches!(request.command, Command::SaveGame(save_tools::SaveCall::Write { .. } | save_tools::SaveCall::Read { .. })) {
+            self.handle_save_request(request);
             return;
         }
         let by = self.swarm.agent_name(&request.session);
