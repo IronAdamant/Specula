@@ -62,7 +62,10 @@ handoffs on entities, paths and tasks; world_rollup summarises the journal per a
 writes (stale_version, claimed) carry a 'conflict' object (base, theirs, yours, overlap) to rebase from; lease_take \
 hands out ports, GPU time and scratch folders for agents that run their own engines; swarm_settings shows the \
 operator's hardware and sets the window's frame floor before a swarm is deployed; desync_trace and desync_compare \
-find the first tick and component where two runs (or a run and its journal replay) differ.";
+find the first tick and component where two runs (or a run and its journal replay) differ. playtest_run runs a headless \
+playtest as data (tool calls at ticks, expectations on their answers, captures) and records a replay that verifies by \
+hash; playtest_report polls it. Heavy tools (sight_frame, perf_frame, engine_info, world_list, world_query, world_history, \
+play_state) answer concisely; pass response_format: \"detailed\" for everything.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
