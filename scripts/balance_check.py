@@ -134,6 +134,24 @@ def main():
         res = other.request("tools/call", {"name": "balance_tune", "arguments": {"set": SET, "targets_file": TARGETS, "job": "proof"}})
         check(res.get("isError") and "job_owned" in res["content"][0]["text"], "another agent can't continue the job")
         report["tune"] = {"best": best, "held_out": held, "seconds": [a["seconds"], b["seconds"]]}
+
+        # Several play styles at once, and runs listed one by one (what playtests replay).
+        styles = "games/sepulcra/lex/slice_styles.targets.json"
+        st = lab.json("balance_sweep", set=SET, targets_file=styles, points=[{"runner_hp": 118}])
+        p = st["points"][0]
+        names = [q["policy"] for q in p.get("policies", [])]
+        check(names == ["dust_gated", "braziers", "rusher"], f"each play style's numbers are listed ({names})")
+        brz = next((q for q in p.get("policies", []) if q["policy"] == "braziers"), {})
+        check(not p["hit"] and brz.get("outcomes", {}).get("lost"), "runner_hp 118 (tuned for one build order) loses the brazier build: the point misses")
+        listed = lab.json("balance_sweep", set=SET, targets_file=styles, points=[{"runner_hp": 61, "shambler_hp": 139}], seeds=[10001, 10002], runs=True)
+        runs = listed["points"][0].get("runs_listed", [])
+        check(len(runs) == 6 and all(r["applied"] and r["outcome"] for r in runs) and len(listed.get("policies", [])) == 3,
+              f"runs: true lists each run with the steps it applied ({len(runs)} runs)")
+        res = lab.request("tools/call", {"name": "balance_sweep", "arguments": {"set": SET, "targets_file": styles, "seeds": "train", "runs": True, "points": [{"runner_hp": 61}] * 2}})
+        check(not res.get("isError"), "runs: true with 48 runs a point (16 seeds x 3 styles) is answered")
+        too_many = lab.request("tools/call", {"name": "balance_sweep", "arguments": {"set": SET, "targets_file": styles, "seeds": list(range(1, 50)), "runs": True}})
+        check(too_many.get("isError") and "at most 128" in too_many["content"][0]["text"], "a point with more runs than can be listed is refused with the cap")
+        report["styles"] = {"runner_hp_118": {q["policy"]: {"loss": q["loss"], "hit": q["hit"], "outcomes": q["outcomes"]} for q in p.get("policies", [])}}
         lab.close()
         other.close()
     if args.out:

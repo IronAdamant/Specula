@@ -245,6 +245,13 @@ pub fn prepare(doc: &Document, targets: &Targets, point: &Point) -> Result<Runne
 
 /// Runs every point on every seed (see the module docs).
 pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64], opts: &SweepOptions) -> SweepResult {
+    sweep_keeping(doc, targets, points, seeds, opts, false).0
+}
+
+/// [`sweep`], also handing back each finished point's runs (policy-major, each policy's in seed
+/// order; empty for points that didn't finish) when `keep_runs`: what each run did and measured,
+/// to replay elsewhere (a playtest in a game engine) and compare.
+pub fn sweep_keeping(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64], opts: &SweepOptions, keep_runs: bool) -> (SweepResult, Vec<Vec<RunResult>>) {
     // Compiling a big rule set takes a while: past the deadline, points aren't compiled at all
     // (they are reported unfinished, like points whose runs didn't all finish).
     let late = || opts.deadline.is_some_and(|d| Instant::now() > d);
@@ -277,6 +284,7 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
     let mut out: Vec<Option<PointResult>> = Vec::with_capacity(points.len());
     let mut unfinished = Vec::new();
     let mut runs_done = 0;
+    let mut kept = Vec::new();
     let mut k = 0;
     for (i, p) in points.iter().enumerate() {
         match &prepared[i] {
@@ -303,12 +311,27 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
                 runs_done += done.len();
                 if done.len() == per_point {
                     out.push(Some(aggregate(p.clone(), runner.rules.hash, targets, &done)));
+                    if keep_runs {
+                        kept.push(done);
+                    }
                 } else {
                     unfinished.push(i);
                     out.push(None);
+                    if keep_runs {
+                        kept.push(Vec::new());
+                    }
                 }
             }
         }
     }
-    SweepResult { points: out, unfinished, runs_done }
+    if keep_runs {
+        // Points that never ran (compile errors, past the deadline) keep their place.
+        let mut by_point = Vec::with_capacity(points.len());
+        let mut it = kept.into_iter();
+        for p in &prepared {
+            by_point.push(if matches!(p, Some(Ok(_))) { it.next().unwrap_or_default() } else { Vec::new() });
+        }
+        return (SweepResult { points: out, unfinished, runs_done }, by_point);
+    }
+    (SweepResult { points: out, unfinished, runs_done }, Vec::new())
 }

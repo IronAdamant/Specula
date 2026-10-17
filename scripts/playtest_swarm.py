@@ -61,12 +61,15 @@ def short(report):
 
 class Swarm:
     def __init__(self, exe, out, workers=4, lead_port=7493, use_lead=False, engine_args=(), game_args=(), verify=True,
-                 keep_scratch=False, log=print, session_format=None):
+                 keep_scratch=False, log=print, session_format=None, ports_per_worker=None):
         self.exe, self.out = Path(exe), Path(out)
         self.workers = max(1, min(int(workers), MAX_WORKERS))
         self.lead_port, self.use_lead = lead_port, use_lead
         self.engine_args, self.game_args = list(engine_args), list(game_args)
         self.verify, self.keep_scratch, self.log = verify, keep_scratch, log
+        # Each worker leases a port per engine it runs at once: two (record, then verify), or one
+        # without verification (more workers from a small port pool).
+        self.ports_per_worker = ports_per_worker or (2 if verify else 1)
         # The playtesting session's default response_format (agent_hello), when set.
         self.session_format = session_format
         self.lock = threading.Lock()
@@ -162,7 +165,7 @@ class Swarm:
             ver_dir = job / "verify"
             ver_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(replay_src, ver_dir / "replay.json")
-            with self.started(self.engine(ports[1], ver_dir, "engine", scratch / "pipeline-cache")) as eng:
+            with self.started(self.engine(ports[-1], ver_dir, "engine", scratch / "pipeline-cache")) as eng:
                 mcp = self.session(eng, worker)
                 v = finish(mcp, mcp.json("playtest_run", replay="replay.json"))
                 mcp.close()
@@ -181,7 +184,7 @@ class Swarm:
             lead.json("agent_hello", name=name, role="playtester")
             try:
                 # Inside the try: whatever was leased is released, even if the second lease fails.
-                ports = lead.json("lease_take", kind="port", count=2, note="playtest engines", lease_s=3600)
+                ports = lead.json("lease_take", kind="port", count=self.ports_per_worker, note="playtest engines", lease_s=3600)
                 scratch = lead.json("lease_take", kind="scratch", note="playtest working folders", lease_s=3600)
                 port_list, folder = ports["ports"], Path(scratch["dir"])
                 self.log(f"  {name}: ports {port_list}, scratch {folder}")

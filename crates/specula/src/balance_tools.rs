@@ -10,7 +10,8 @@
 //! together are capped. Every result is flagged `needs_human_playtest`.
 
 use crate::tools::{check_keys, int_arg, string_arg, Tools};
-use specula_balance::sweep::{sweep, Point, SweepOptions};
+use specula_balance::sweep::{sweep_keeping, Point, SweepOptions};
+use specula_balance::RunResult;
 use specula_balance::targets::{catalogue, Targets};
 use specula_balance::tune::{TuneJob, TuneOptions, TuneParam, MAX_EVALS};
 use specula_balance::PLAYTEST_NOTE;
@@ -28,6 +29,8 @@ const WALL_BUDGET: Duration = Duration::from_secs(25);
 const MAX_POINTS: usize = 64;
 const MAX_SEEDS: usize = 256;
 const MAX_RUNS: usize = 16_384;
+/// Runs one call may list one by one (`runs: true`), what each did included.
+const MAX_LISTED_RUNS: usize = 128;
 /// Bytes of point results one answer lists (the rest come with `next_start`).
 const MAX_RESPONSE_BYTES: usize = 96 * 1024;
 /// Worker threads all balance calls use at once (each call gets at least one).
@@ -265,7 +268,7 @@ fn targets_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput
 }
 
 fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
-    if let Err(m) = check_keys(args, "balance_sweep", &[&["set", "document", "targets", "targets_file", "points", "grid", "seeds", "threads", "start", "detailed"]]) {
+    if let Err(m) = check_keys(args, "balance_sweep", &[&["set", "document", "targets", "targets_file", "points", "grid", "seeds", "threads", "start", "detailed", "runs"]]) {
         return err("invalid_argument", m, vec![]);
     }
     let started = Instant::now();
@@ -286,15 +289,26 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         Err(m) => return err("invalid_argument", m, vec![]),
     };
     let detailed = crate::tools::bool_arg(args, "detailed").ok().flatten().unwrap_or(false);
-    // This call's slice of the points: at most MAX_POINTS and MAX_RUNS runs.
-    let per_call = MAX_POINTS.min((MAX_RUNS / (seeds.len() * t.policies.len().max(1))).max(1));
+    let list_runs = crate::tools::bool_arg(args, "runs").ok().flatten().unwrap_or(false);
+    let runs_per_point = seeds.len() * t.policies.len().max(1);
+    if list_runs && runs_per_point > MAX_LISTED_RUNS {
+        return err(
+            "invalid_argument",
+            format!("'runs: true' lists at most {MAX_LISTED_RUNS} runs a call, and each point here is {runs_per_point} ({} seeds x {} policies): pass fewer seeds", seeds.len(), t.policies.len()),
+            vec![],
+        );
+    }
+    // This call's slice of the points: at most MAX_POINTS and MAX_RUNS runs (MAX_LISTED_RUNS
+    // when they are listed).
+    let cap = if list_runs { MAX_LISTED_RUNS } else { MAX_RUNS };
+    let per_call = MAX_POINTS.min((cap / runs_per_point).max(1));
     let end = (start + per_call).min(points.len());
     if start >= points.len() {
         return err("invalid_argument", format!("'start' {start} is past the {} points", points.len()), vec![]);
     }
     let Some(grant) = Grant::take(threads) else { return busy() };
     let opts = SweepOptions { threads: grant.0, deadline: Some(started + WALL_BUDGET) };
-    let res = sweep(&doc, &t, &points[start..end], &seeds, &opts);
+    let (res, kept) = sweep_keeping(&doc, &t, &points[start..end], &seeds, &opts, list_runs);
     drop(grant);
     let secs = started.elapsed().as_secs_f64();
     // Points listed in order while they fit the byte budget; the rest come again from next_start.
@@ -305,6 +319,9 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         let Some(p) = p else { continue };
         let mut j = p.to_json(detailed);
         j.set("index", Json::from(start + i));
+        if list_runs {
+            j.set("runs_listed", Json::arr(kept.get(i).into_iter().flatten().map(|r| run_json(&t, r))));
+        }
         bytes += j.to_string().len();
         if bytes > MAX_RESPONSE_BYTES && !done.is_empty() {
             cut_at = Some(start + i);
@@ -334,8 +351,34 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
     if !res.unfinished.is_empty() {
         out.set("note", Json::from("the wall budget ran out: points from next_start on didn't finish; call again with start: next_start"));
     }
+    if list_runs {
+        // Each policy's steps once; runs_listed[].applied names them by index.
+        out.set(
+            "policies",
+            Json::arr(t.policies.iter().map(|p| {
+                Json::obj([("name", Json::from(p.name.as_str())), ("steps", Json::arr(p.steps.iter().map(|s| Json::obj([("command", Json::from(s.command.as_str())), ("args", s.args.clone())]))))])
+            })),
+        );
+    }
     playtest(&mut out);
     ToolOutput::text(out.to_string())
+}
+
+/// One run as data: who played, what it did when (`applied`: [tick, step index] into its
+/// policy's steps), how it ended and what it measured. Enough to replay it elsewhere (a
+/// playtest in a game engine) and compare.
+fn run_json(t: &Targets, r: &RunResult) -> Json {
+    let r4 = |v: f64| Json::from((v * 10_000.0).round() / 10_000.0);
+    Json::obj([
+        ("seed", Json::from(r.seed)),
+        ("policy", Json::from(t.policies.get(r.policy).map_or("", |p| p.name.as_str()))),
+        ("outcome", r.outcome.as_ref().map_or(Json::Null, |(o, _)| Json::from(o.as_str()))),
+        ("outcome_tick", r.outcome.as_ref().map_or(Json::Null, |(_, k)| Json::from(*k))),
+        ("ticks", Json::from(r.ticks)),
+        ("resources", Json::Obj(r.resources.iter().map(|(id, v)| (id.clone(), r4(*v))).collect())),
+        ("values", Json::Obj(t.targets.iter().zip(&r.values).map(|(x, v)| (x.id.clone(), v.map_or(Json::Null, r4))).collect())),
+        ("applied", Json::arr(r.trace.iter().map(|(k, s)| Json::arr([Json::from(*k), Json::from(u32::from(*s))])))),
+    ])
 }
 
 fn tune_param(v: &Json) -> Result<TuneParam, String> {
@@ -537,6 +580,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("seeds", t("string", "\"train\" (default), \"holdout\", or an array of seeds")),
                         ("start", t("integer", "First point index (next_start of an unfinished call)")),
                         ("detailed", t("boolean", "More per-point detail")),
+                        ("runs", t("boolean", "List every run (at most 128 a call): seed, policy, outcome and its tick, end resources, each target's value, and the policy steps it applied with their ticks (to replay as playtests in a game engine and compare)")),
                         threads.clone(),
                     ])
                     .collect(),

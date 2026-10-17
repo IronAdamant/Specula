@@ -26,6 +26,8 @@ pub struct RunResult {
     /// When each applied step was applied: (tick, step index), in order. What the policy did,
     /// as plain timed commands (a playtest replays them in a game engine).
     pub trace: Vec<(u32, u16)>,
+    /// Every resource at the end, in its human unit (id, value).
+    pub resources: Vec<(String, f64)>,
     /// Stopped by the wall clock: not a result (see [`Runner::run`]).
     pub interrupted: bool,
 }
@@ -65,7 +67,7 @@ impl Runner {
         let hz = self.rules.tick_hz;
         let mut sim = match Sim::new(Arc::clone(&self.rules), seed, &Natives::new()) {
             Ok(s) => s,
-            Err(_) => return RunResult { seed, policy, values: vec![None; b.metrics.len()], outcome: None, ticks: 0, applied: 0, skipped: 0, trace: Vec::new(), interrupted: true },
+            Err(_) => return RunResult { seed, policy, values: vec![None; b.metrics.len()], outcome: None, ticks: 0, applied: 0, skipped: 0, trace: Vec::new(), resources: Vec::new(), interrupted: true },
         };
         sim.set_deadline(deadline);
         // Resource samples: (metric index, tick) → value.
@@ -184,6 +186,7 @@ impl Runner {
             };
             values.push(v);
         }
-        RunResult { seed, policy, values, outcome, ticks: sim.tick(), applied, skipped, trace, interrupted }
+        let resources = self.rules.resources.iter().zip(&res).map(|(r, v)| (r.id.clone(), *v as f64 / r.unit.per_human(hz) as f64)).collect();
+        RunResult { seed, policy, values, outcome, ticks: sim.tick(), applied, skipped, trace, resources, interrupted }
     }
 }

@@ -175,3 +175,43 @@ fn tune_styles() {
     let held = job.validate(&d, &t, &opts(8)).unwrap();
     println!("held out: {}", held.to_json(false));
 }
+
+/// What a run did is data: its trace (each applied policy step with its tick) replayed as plain
+/// timed commands, with no policy, gives the same run. This is what turns lab runs into
+/// playtests in a game engine (scripts/balance_playtests.py).
+#[test]
+fn a_runs_trace_replays_it_without_the_policy() {
+    use specula_balance::sweep::sweep_keeping;
+    use specula_lex::{compile, Natives, Options, Sim};
+    let d = doc();
+    let t = Targets::parse_text(STYLES).unwrap();
+    let point: Point = vec![("runner_hp".to_owned(), Json::from(61)), ("shambler_hp".to_owned(), Json::from(139))];
+    let seeds = [10_001, 10_002, 10_003];
+    let (res, runs) = sweep_keeping(&d, &t, std::slice::from_ref(&point), &seeds, &opts(4), true);
+    assert!(res.unfinished.is_empty());
+    let runs = &runs[0];
+    assert_eq!(runs.len(), 3 * seeds.len());
+    let rules = std::sync::Arc::new(compile(&d, &Options { overrides: point.clone(), natives: None }).unwrap().rules);
+    for r in runs {
+        let policy = &t.policies[r.policy];
+        let mut sim = Sim::new(std::sync::Arc::clone(&rules), r.seed, &Natives::new()).unwrap();
+        let mut next = 0;
+        while sim.tick() < r.ticks && sim.outcome().is_none() {
+            while let Some(&(tick, step)) = r.trace.get(next) {
+                if tick != sim.tick() {
+                    break;
+                }
+                let s = &policy.steps[usize::from(step)];
+                let call = sim.parse_command(&s.command, &s.args).unwrap();
+                sim.apply(&call).unwrap_or_else(|e| panic!("{} seed {}: step {step} at {tick} refused: {e:?}", policy.name, r.seed));
+                next += 1;
+            }
+            sim.step(&[]);
+        }
+        assert_eq!(next, r.trace.len(), "every traced step was applied");
+        assert_eq!(sim.outcome().map(|(o, k)| (o.to_owned(), k)), r.outcome, "{} seed {}", policy.name, r.seed);
+        assert_eq!(sim.tick(), r.ticks);
+        let dust = r.resources.iter().find(|(id, _)| id == "dust").unwrap().1;
+        assert_eq!(sim.resource("dust").unwrap() as f64, dust, "{} seed {}", policy.name, r.seed);
+    }
+}
