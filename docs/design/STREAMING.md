@@ -41,14 +41,20 @@ Now, with streaming on (the default):
   to vertex, index and fragment reads. The batch is submitted **before the next frame on the same queue** (`present`
   and every offscreen render flush it first), so that frame already draws the new mesh: a barrier's second scope
   reaches everything later in submission order. Nothing waits. Three slots cycle; a slot is reused once its fence has
-  signalled (polled with a zero timeout). Only if all three are in flight (the GPU three batches behind) does queuing
-  wait, for the oldest, and `upload_stats().slot_waits` counts it.
+  signalled (polled once a frame, at the flush, with a zero timeout: on the Intel driver even a zero-timeout poll can
+  take milliseconds while the GPU is saturated). Only if all three are in flight (the GPU three batches behind) does
+  queuing wait, for the oldest, and `upload_stats().slot_waits` counts it.
+- **Mesh blocks:** queued meshes are ranges of 16 MB device-local blocks (first fit, freed ranges coalesce), not an
+  allocation each. On the Intel iGPU a `vkAllocateMemory` costs about 0.3 ms and a free as much, which capped streaming
+  at a few meshes a frame (and some drivers allow only 4096 allocations). One empty block is kept as a spare.
 - **Deferred frees** (`Gpu::retire_mesh`, `retire_texture`): the resource is freed once the first batch submitted
   after the retirement has finished. A fence signal covers everything submitted earlier on the queue, so every frame
   that could have read the resource is done by then. When nothing else is queued, an empty batch carries the fence.
+  Frees are spread out: at most 0.25 ms of them per poll.
 - **CPU work in the budget.** Re-indexing a build's parts (`part_mesh`) and generated tangents run inside the upload
   budget; building models and generating proxies run on worker threads.
-- Headless engines flush once per loop, so retired memory is freed without frames.
+- Headless engines flush once per loop (and a minimized window once per serve window), so retired memory is freed
+  without frames.
 
 Synchronous `upload_mesh` and `destroy_mesh` stay for loading and tools; a synchronous destroy of a mesh whose queued
 copy may still be pending finishes the batches first.
@@ -66,14 +72,19 @@ perf.toml `[streaming]`, per adapter in `[streaming.integrated]` etc., and live 
 | `cell_m` | 32 | cell size |
 | `radius_m` | 384 | members load within this of a camera |
 | `hlod`, `hlod_min_m`, `hlod_radius_m` | on, 48, 4096 | proxies, never nearer than 48 m, wanted within 4 km |
-| `preload` | 1.25 | members load at this times a proxied cell's switch distance |
+| `preload` | 1.25 | members load at this times a proxied cell's switch distance (at least 1.15: past the window's 10% hysteresis) |
 | `settle_s` | 1.0 | quiet time before a changed cell's proxy is rebuilt |
 | `capture_wait` | true | captures wait for what their view needs |
 | `enabled` | true | off: the old path (everything uploaded at once, no proxies) |
 
-The pump estimates each item's cost from its bytes and a learned ms/MB rate and stops **before** an item that would
-overrun the time or byte budget (the first item of a frame always goes, so huge items still make progress). Misses are
-structured `perf_frame` errors with `{error, metric, value, budget, unit, adapter}`:
+The budget covers all of a frame's streaming work: filing changed entities and recomputing the wanted set count against
+it before any upload, and captures' own pumps (an agent's sight call between frames) share what is left of the frame's
+budget instead of getting one each. The pump estimates each item's cost from a learned fixed cost per item plus a
+learned rate per MB (samples past three times the estimate are clipped: a driver stall must not starve later frames)
+and stops **before** an item that would overrun the time or byte budget (the first item of a frame always goes, so
+huge items still make progress; a proxy uploads one material group per item, a build one LOD). Misses are structured
+`perf_frame` errors with `{error, metric, value, budget, unit, adapter}`, and `stream_state.recent_misses` names the
+slowest item of each:
 
 - `stream_upload_over_budget`: the p95 of upload ms over frames that uploaded is above `upload_ms`;
 - `stream_upload_spike`: one frame took over twice `upload_ms` (one item bigger than the budget, typically);
@@ -84,17 +95,24 @@ Measurements). The `frame/stream` CPU zone also takes a `[budgets.zones]` budget
 
 ## Priority by distance and view
 
-**Cells.** Persistent model entities are filed into `cell_m` squares (XZ) by their origin. The index is patched from
-the world's draw changes (as the window's draw cache is), rebuilt only when the world is replaced.
+**Cells.** Persistent model entities are filed into `cell_m` squares (XZ) by their origin; distances are measured to
+the box of the members' world boxes (their builds' bounds once built), so a big model near the camera loads whichever
+cell its origin is in. The index is patched from the world's draw changes (as the window's draw cache is: an entity
+that stays in its cell is updated in place), rebuilt only when the world is replaced.
 
 **Sources.** The window's camera every frame, and each capture's camera for 10 s after it (at most four), so an agent's
 next capture from about the same place finds its view resident.
 
-**Wanted** (recomputed at most every 100 ms, or when a source jumps a cell): a cell's members are wanted when a source
-is within `radius_m`, unless the cell's proxy is current and the source is beyond `preload` × its switch distance
-(the proxy draws them). Priority is the distance to the cell's box, halved inside the window's view frustum and
-quartered for captures (an agent is waiting); transient model entities (a game's presentation) are always wanted
-first. Proxies are wanted within `hlod_radius_m`, at half the priority of their cell (they're cheap and cover a lot).
+**Wanted** (recomputed when a new capture view or a jump of the window's camera asks for it at once; otherwise at most
+every 100 ms while the window's camera moves or the world or the builds change, and at least once a second): a cell's
+members are wanted when a source is within `radius_m`, unless the cell's proxy is current and the source is beyond
+`preload` × its switch distance (the proxy draws them). A cell whose proxy is stale or still coming (an edit, a build
+landing) has its mergeable members stand in for it as far as proxies are wanted (`hlod_radius_m`), so it never vanishes
+while its proxy is rebuilt. Models that can't be merged (glass, textured, animated, moving) are drawn only within
+`radius_m`: raise it for long views of such models. Priority is the distance to the cell's box, halved inside the
+window's view frustum and quartered for captures (an agent is waiting); transient model entities (a game's
+presentation) are always wanted first. Proxies are wanted within `hlod_radius_m`, at half the priority of their cell
+(they're cheap and cover a lot); built proxies of cells no longer wanted are dropped.
 
 **Progressive levels.** A build uploads one LOD per item, **coarsest first**. An entity whose chosen level isn't
 resident yet draws the finest resident one (`LodStats::coarser`); it is never drawn from a level finer than the data.
@@ -105,9 +123,12 @@ sharpens, and nothing waits.
 
 Uploaded builds and proxies count against `memory_mb` (`GpuModel::bytes`, proxy bytes). Before an upload that would go
 over, what **no source wants** is evicted, least recently wanted first (builds and proxies by the same clock) through
-`retire_*`: never a wait. Textured glTF builds are kept (their pixels left the CPU at upload; a re-upload would mean a
-re-import). If the wanted set alone exceeds the budget, the lower-priority remainder stays out and is reported. Nothing
-is evicted eagerly: a small world never evicts.
+`retire_*`: never a wait. A textured glTF build's pixels left the CPU at upload, so when an evicted one is wanted again
+the library imports it again (its entities show as building meanwhile). If the wanted set alone exceeds the budget, the
+lower-priority remainder stays out and is reported (`stream_memory_over_budget`); once nothing more can be evicted in a
+frame the rest are skipped at once, and captures don't wait for them. Nothing is evicted eagerly: a small world never
+evicts. Mesh-block slack (fragmentation, the spare block) is outside `memory_mb` and reported in
+`perf_frame.streaming.gpu` (`mesh_block_mb` vs `mesh_block_used_mb`).
 
 ## HLOD
 
@@ -115,7 +136,7 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 
 - **Members:** persistent, shown, non-`ui` model entities without `anim`, without a kinematic or dynamic body, with a
   ready build whose coarsest level is opaque (`standard` presets) and untextured. Everything else in the cell draws on
-  its own, always.
+  its own (within `radius_m`).
 - **Geometry:** each member's **coarsest reachable LOD** (`min(lods - 1, 3)`), transformed into the proxy's frame (the
   members' centre, rounded to a metre, for precision far from the origin), normals by the inverse transpose, the part
   and entity colours baked into the vertex colours in linear light exactly as the shader multiplies them (a white tint
@@ -130,8 +151,9 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
   switch distance (hysteresis), and leaves only once every member is resident (their coarsest level, which is what the
   proxy showed). Captures decide afresh, without hysteresis (reproducible).
 - **Staleness:** a cell's content key hashes its members' ids, content hashes and builds. A change makes the proxy
-  stale at once (no longer drawn; the members draw), and a new one is built once the cell has been quiet for
-  `settle_s`, so an agent editing a far cell never sees a ghost of the old content.
+  stale at once (no longer drawn; the members stand in, see Wanted), and a new one is built once the cell has been quiet
+  for `settle_s`, so an agent editing a far cell never sees a ghost of the old content. An edit of a mergeable entity in
+  a cell the window draws as a proxy updates the cover at once, not at the next periodic update.
 - **Drawing:** covered members are skipped in `GpuModels::draw_model` by a bitset indexed by entity id
   (`hlod::covers`, one branch per model draw); proxy draws are appended after the entity draws. The draw-list build
   itself (sight.rs, the draw cache) is untouched apart from owner id 0 for proxy draws in captures.
