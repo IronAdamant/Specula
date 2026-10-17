@@ -131,7 +131,8 @@ pub fn defs() -> Vec<ToolDef> {
                           press it now, e.g. hidden, disabled or under a modal) and answers the action it sent. Ids: \
                           build_<warding|pillar|brazier|obelisk|wall> (the build bar; _on while selected), call_wave, \
                           pause_button, resume_button, speed_button, menu_button; on a selected stone or wall: upgrade, \
-                          sell, unwall, deselect; in the pause menu: resume, settings, controls, restart (then \
+                          sell, unwall, deselect; in the pause menu: resume, save and load (the player's save slot, \
+                          as save_write / save_read of sepulcra_slot_1), settings, controls, restart (then \
                           confirm_yes / confirm_no); after the run: new_run."
                 .into(),
             input_schema: schema(

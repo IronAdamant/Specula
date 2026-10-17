@@ -1,0 +1,239 @@
+{
+  "save": {
+    "saved": "proof",
+    "file": "<work>\\saves\\proof.specsave",
+    "tick": 600,
+    "world_hash": "d8f66e7b7d4d4633",
+    "subsystems": {
+      "sim": "bfae7b5c8b40cf04",
+      "economy": "aee340d2e46b6330",
+      "enemies": "eec0f5c7ea35dfea",
+      "defences": "164a00c39ed3365d",
+      "projectiles": "7dd71b200a4deb39",
+      "physics": "1a5b7b58a50da4fb",
+      "logic": "b103f77b34a4a2e1"
+    },
+    "bytes": 19190,
+    "sections": {
+      "world": 72558,
+      "game": 1964,
+      "physics": 18945,
+      "logic": 220
+    },
+    "timings_ms": {
+      "engine_thread": 0.98,
+      "render_and_encode": 5.68,
+      "write": 3.44,
+      "total": 10.96
+    },
+    "notes": []
+  },
+  "stress_save": {
+    "saved": "stress",
+    "file": "<work>\\saves\\stress.specsave",
+    "tick": 1500,
+    "world_hash": "4557bd490d510f1e",
+    "subsystems": {
+      "sim": "3c47d05ce1ff358e",
+      "economy": "8a17d72fbc3d2570",
+      "enemies": "b967937d48e83abb",
+      "defences": "41a615df056b33c7",
+      "projectiles": "7dd71b200a4deb39",
+      "physics": "dae8c1565ed25fe6",
+      "logic": "b103f77b34a4a2e1"
+    },
+    "bytes": 90105,
+    "sections": {
+      "world": 2007703,
+      "game": 1936,
+      "physics": 18945,
+      "logic": 196
+    },
+    "timings_ms": {
+      "engine_thread": 17.64,
+      "render_and_encode": 95.48,
+      "write": 2.99,
+      "total": 116.55
+    },
+    "notes": []
+  },
+  "load": {
+    "loaded": "proof",
+    "tick": 600,
+    "game": "sepulcra",
+    "label": "save_check",
+    "created_by": "saver",
+    "restored": {
+      "world": true,
+      "game": true,
+      "physics": true,
+      "logic": true
+    },
+    "world_hash": {
+      "saved": "d8f66e7b7d4d4633",
+      "now": "d8f66e7b7d4d4633",
+      "match": true
+    },
+    "subsystems": [
+      {
+        "name": "sim",
+        "saved": "bfae7b5c8b40cf04",
+        "now": "bfae7b5c8b40cf04",
+        "match": true
+      },
+      {
+        "name": "economy",
+        "saved": "aee340d2e46b6330",
+        "now": "aee340d2e46b6330",
+        "match": true
+      },
+      {
+        "name": "enemies",
+        "saved": "eec0f5c7ea35dfea",
+        "now": "eec0f5c7ea35dfea",
+        "match": true
+      },
+      {
+        "name": "defences",
+        "saved": "164a00c39ed3365d",
+        "now": "164a00c39ed3365d",
+        "match": true
+      },
+      {
+        "name": "projectiles",
+        "saved": "7dd71b200a4deb39",
+        "now": "7dd71b200a4deb39",
+        "match": true
+      },
+      {
+        "name": "physics",
+        "saved": "1a5b7b58a50da4fb",
+        "now": "1a5b7b58a50da4fb",
+        "match": true
+      },
+      {
+        "name": "logic",
+        "saved": "b103f77b34a4a2e1",
+        "now": "b103f77b34a4a2e1",
+        "match": true
+      }
+    ],
+    "match": true,
+    "entities": 263,
+    "timings_ms": {
+      "read_and_check": 25.37,
+      "apply": 4.03,
+      "total": 30.05
+    },
+    "notes": [],
+    "next": "world_save {name} keeps the loaded world as world files; desync_trace from this tick on compares with the saving run's"
+  },
+  "compare": {
+    "match": true,
+    "common_ticks": 900,
+    "from_tick": 601,
+    "to_tick": 1500,
+    "a": {
+      "game": "sepulcra",
+      "ticks": 900,
+      "from_tick": 601,
+      "to_tick": 1500,
+      "entities_from_tick": 168,
+      "entity_changes": 6300
+    },
+    "b": {
+      "game": "sepulcra",
+      "ticks": 900,
+      "from_tick": 601,
+      "to_tick": 1500,
+      "entities_from_tick": 0,
+      "entity_changes": 6300
+    }
+  },
+  "subsystems_compared": [
+    "defences",
+    "economy",
+    "enemies",
+    "logic",
+    "physics",
+    "projectiles",
+    "sim"
+  ],
+  "menu_capture": {
+    "png": "<work>\\cap-b\\run-1792267431-24572\\frame_00001.png",
+    "packet": "<work>\\cap-b\\run-1792267431-24572\\frame_00001.json",
+    "kept_path": "target\\save-check\\frame_00001.png",
+    "kept_packet_path": "target\\save-check\\frame_00001.json"
+  },
+  "stress_load": {
+    "loaded": "stress",
+    "tick": 1500,
+    "game": "sepulcra",
+    "label": "10000 extra entities",
+    "created_by": "saver",
+    "restored": {
+      "world": true,
+      "game": true,
+      "physics": true,
+      "logic": true
+    },
+    "world_hash": {
+      "saved": "4557bd490d510f1e",
+      "now": "4557bd490d510f1e",
+      "match": true
+    },
+    "subsystems": [
+      {
+        "name": "sim",
+        "saved": "3c47d05ce1ff358e",
+        "now": "3c47d05ce1ff358e",
+        "match": true
+      },
+      {
+        "name": "economy",
+        "saved": "8a17d72fbc3d2570",
+        "now": "8a17d72fbc3d2570",
+        "match": true
+      },
+      {
+        "name": "enemies",
+        "saved": "b967937d48e83abb",
+        "now": "b967937d48e83abb",
+        "match": true
+      },
+      {
+        "name": "defences",
+        "saved": "41a615df056b33c7",
+        "now": "41a615df056b33c7",
+        "match": true
+      },
+      {
+        "name": "projectiles",
+        "saved": "7dd71b200a4deb39",
+        "now": "7dd71b200a4deb39",
+        "match": true
+      },
+      {
+        "name": "physics",
+        "saved": "dae8c1565ed25fe6",
+        "now": "dae8c1565ed25fe6",
+        "match": true
+      },
+      {
+        "name": "logic",
+        "saved": "b103f77b34a4a2e1",
+        "now": "b103f77b34a4a2e1",
+        "match": true
+      }
+    ],
+    "match": true,
+    "entities": 10274,
+    "timings_ms": {
+      "read_and_check": 109.71,
+      "apply": 16.63,
+      "total": 130.43
+    },
+    "notes": [],
+    "next": "world_save {name} keeps the loaded world as world files; desync_trace from this tick on compares with the saving run's"
+  }
+}

@@ -1408,6 +1408,8 @@ impl Engine {
         let session = self.swarm.key(&request.session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
+        // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
+        let game_call = matches!(request.command, Command::Game { .. });
         let output = match request.command {
             Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
@@ -1641,6 +1643,9 @@ impl Engine {
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
         };
+        if game_call {
+            self.serve_game_requests();
+        }
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);

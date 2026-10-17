@@ -151,6 +151,46 @@ def run(args, work):
         report["subsystems_compared"] = names
         for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic"):
             check(name in names, f"subsystem {name} was compared")
+        # The player's way: the pause menu's Save game and Load game (play_ui presses the buttons
+        # a click, a key or a pad's accept would).
+        print("B: the player saves and loads from the pause menu")
+        b.json("play_ui", press="menu_button")
+        shot = b.frame(width=1280, height=720, include_ui=True)
+        report["menu_capture"] = {"png": shot["image"]["path"], "packet": shot["image"]["packet_path"]}
+        if args.keep:
+            for k in ("path", "packet_path"):
+                dst = args.keep / Path(shot["image"][k]).name
+                args.keep.mkdir(parents=True, exist_ok=True)
+                shutil.copy(shot["image"][k], dst)
+                report["menu_capture"]["kept_" + k] = str(dst)
+        print(f"  pause menu capture: {report['menu_capture']}")
+        before = b.json("play_state")
+        pressed = b.json("play_ui", press="save")
+        check(pressed.get("action") == "save_game", f"the menu's Save game sends save_game ({pressed.get('action')})")
+        listed = b.json("save_list")
+        slot = next((s for s in listed["saves"] if s["name"] == "sepulcra_slot_1"), None)
+        check(slot is not None and slot["created_by"] == "sepulcra" and slot["tick"] == b.json("time_control", action="info")["tick"],
+              "the player's save is in the slot, written by the game at this tick")
+        b.json("play_ui", press="resume")
+        step(b, 300)
+        moved = b.json("play_state")
+        check(moved["tick"] > before["tick"], "the run went on after saving")
+        b.json("play_ui", press="menu_button")
+        b.json("play_ui", press="load")
+        after = b.json("play_state", include=["log"])
+        check(after["state_hash"] == before["state_hash"] and after["tick"] == before["tick"], "Load game brought the saved run back")
+        check(after["paused"] is True, "and it waits, paused under the menu")
+        said = [m["message"] for m in after.get("log", {}).get("items", after.get("log", [])) if isinstance(m, dict)]
+        check(any(m.startswith("Game loaded") for m in said), f"the player is told ({said[:2]})")
+        # What the loaded world looks like (the slab and the stones adopted, enemies rebuilt).
+        world_shot = b.frame(width=1280, height=720, eye=[0, 38, 30], target=[0, 0, 0])
+        report["world_capture"] = {"png": world_shot["image"]["path"], "packet": world_shot["image"]["packet_path"]}
+        if args.keep:
+            for k in ("path", "packet_path"):
+                dst = args.keep / ("loaded_" + Path(world_shot["image"][k]).name)
+                shutil.copy(world_shot["image"][k], dst)
+                report["world_capture"]["kept_" + k] = str(dst)
+        print(f"  loaded world capture: {report['world_capture']}")
         if args.stress:
             started = time.perf_counter()
             big = b.json("save_read", name="stress", force=True)
@@ -170,6 +210,7 @@ def main():
     ap.add_argument("--window", action="store_true", help="open the windows (default headless)")
     ap.add_argument("--adapter", default=None, help="discrete | integrated | <index>")
     ap.add_argument("--out", type=Path, help="save the report as JSON here")
+    ap.add_argument("--keep", type=Path, help="copy the pause menu capture and its packet here")
     args = ap.parse_args()
     if 7471 in args.ports:
         sys.exit("never run on 7471 (the interactive engine's port)")
