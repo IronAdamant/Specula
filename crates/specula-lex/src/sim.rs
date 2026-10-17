@@ -346,6 +346,8 @@ pub struct Sim {
     deadline: Option<std::time::Instant>,
     /// Scratch for ordered phases (see [`Rules::ordered`]); not state.
     order: Vec<(i64, u32)>,
+    /// What `order` was built for: (state instance, next id, entity count).
+    order_key: Option<(u64, u32, u32)>,
 }
 
 impl std::fmt::Debug for Sim {
@@ -420,7 +422,7 @@ impl Sim {
             gen: 0,
             instance: Instance::fresh(),
         };
-        Ok(Sim { rules, natives: bound, st, deadline: None, order: Vec::new() })
+        Ok(Sim { rules, natives: bound, st, deadline: None, order: Vec::new(), order_key: None })
     }
 
     pub fn rules(&self) -> &Arc<Rules> {
@@ -511,6 +513,7 @@ impl Sim {
             host,
             refusal: None,
             order: &mut self.order,
+            order_key: &mut self.order_key,
         }
     }
 
@@ -596,6 +599,7 @@ struct Core<'a> {
     refusal: Option<String>,
     /// Scratch for ordered phases.
     order: &'a mut Vec<(i64, u32)>,
+    order_key: &'a mut Option<(u64, u32, u32)>,
     /// Nested action lists (on_spawn spawning, on_apply applying, on_enter switching...).
     depth: u32,
     /// A wall-clock limit, checked as work is spent; passing it interrupts the run.
@@ -1198,9 +1202,15 @@ impl Core<'_> {
         // spawned during it join from the next phase, and nobody leaves the list mid-phase).
         let ordered = self.r.ordered;
         if ordered {
-            self.order.clear();
-            self.order.extend(self.st.ents.iter().map(|e| (e.order, e.id)));
-            self.order.sort_unstable();
+            // Keys never change after a spawn, so the sorted list stays valid while no entity
+            // has come or gone (ids only grow; a restored or cloned state is a new instance).
+            let key = (self.st.instance.0, self.st.next_id, self.st.ents.len() as u32);
+            if self.order_key.as_ref() != Some(&key) || self.order.len() != n {
+                self.order.clear();
+                self.order.extend(self.st.ents.iter().map(|e| (e.order, e.id)));
+                self.order.sort_unstable();
+                *self.order_key = Some(key);
+            }
         }
         for k in 0..n {
             if self.over_budget() {
@@ -2710,6 +2720,38 @@ impl NativeCtx<'_, '_> {
             return Err(format!("entity {id} ({}) has no attribute '{name}'", self.core.r.archetypes[usize::from(self.core.st.ents[i].arch)].id));
         }
         self.core.modify_base(i, attr, ModOp::Set, value, self.entity);
+        Ok(())
+    }
+
+    /// Base values of several attributes of one entity in one lookup (`None` if it lacks one).
+    pub fn base_many<const N: usize>(&self, id: u32, attrs: [u16; N]) -> Option<[i64; N]> {
+        let e = &self.core.st.ents[idx_of(self.core.st, id)?];
+        let arch = &self.core.r.archetypes[usize::from(e.arch)];
+        let mut out = [0i64; N];
+        for (o, a) in out.iter_mut().zip(attrs) {
+            *o = e.base[arch.slot_of(a)?];
+        }
+        Some(out)
+    }
+
+    /// Sets several base values of one entity in one lookup, as [`NativeCtx::set`] would (a
+    /// health attribute among them still kills at once).
+    pub fn set_many(&mut self, id: u32, values: &[(u16, i64)]) -> Result<(), String> {
+        let i = idx_of(self.core.st, id).ok_or_else(|| format!("no entity {id}"))?;
+        let r: &Rules = self.core.r;
+        let arch = &r.archetypes[usize::from(self.core.st.ents[i].arch)];
+        for (a, v) in values {
+            let Some(slot) = arch.slot_of(*a) else {
+                let name = r.attrs.get(usize::from(*a)).map_or("?", |x| x.name.as_str());
+                return Err(format!("entity {id} ({}) has no attribute '{name}'", arch.id));
+            };
+            if arch.health == Some(*a) {
+                self.core.modify_base(i, *a, ModOp::Set, *v, self.entity);
+            } else {
+                self.core.st.ents[i].base[slot] = *v;
+            }
+        }
+        self.core.st.mark();
         Ok(())
     }
 

@@ -111,6 +111,9 @@ struct Bound {
 /// What the ground hook derives from the run's walls and rooting stones.
 #[derive(Default)]
 struct Cache {
+    /// The generation, breach penalty and root radius the view below was made for.
+    key: Option<((u64, u64), i64, i64)>,
+    view: Option<View>,
     gen: Option<(u64, u64)>,
     /// Wall cells with their entity, by cell; and rooting stones' cells, sorted.
     walls: Vec<(CellId, u32)>,
@@ -127,6 +130,7 @@ struct Derived {
 }
 
 /// One call's view of the derived state.
+#[derive(Clone)]
 struct View {
     fields: Arc<Fields>,
     blocked: Arc<Vec<bool>>,
@@ -226,6 +230,12 @@ impl Bound {
     fn view(&self, cx: &NativeCtx<'_, '_>, breach: i64, radius: i64) -> View {
         let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         let gen = cx.generation();
+        let key = Some((gen, breach, radius));
+        if c.key == key {
+            if let Some(v) = &c.view {
+                return v.clone();
+            }
+        }
         if c.gen != Some(gen) {
             let (mut walls, mut roots) = (Vec::new(), Vec::new());
             cx.each_tagged(self.t.wall, |id, p| {
@@ -270,7 +280,10 @@ impl Bound {
             c.rooted = Some((c.roots.clone(), radius, Arc::new(rooted)));
         }
         let d = c.fields.as_ref().expect("built above");
-        View { fields: Arc::clone(&d.fields), blocked: Arc::clone(&d.blocked), rooted: Arc::clone(&c.rooted.as_ref().expect("built above").2) }
+        let v = View { fields: Arc::clone(&d.fields), blocked: Arc::clone(&d.blocked), rooted: Arc::clone(&c.rooted.as_ref().expect("built above").2) };
+        c.key = key;
+        c.view = Some(v.clone());
+        v
     }
 
     fn wall_at(&self, cell: CellId) -> Option<u32> {
@@ -302,9 +315,9 @@ impl Bound {
         let breach = cx.arg("breach").unwrap_or(0);
         let root_slow = cx.arg("root_slow").unwrap_or(0);
         let radius = cx.arg("root_radius").unwrap_or(0);
-        let (mut from, mut to) = (base(cx, a.c_from)?, base(cx, a.c_to)?);
-        let (mut prog, mut len, mut leap) = (base(cx, a.prog)?, base(cx, a.elen)?, base(cx, a.leap)? != 0);
-        let (mut carry, mut stuck) = (base(cx, a.carry)?, base(cx, a.stuck)?);
+        let missing = || format!("entity {me} lacks an attribute sepulcra.ground needs (see games/sepulcra/src/lex.rs)");
+        let [mut from, mut to, mut prog, mut len, leap0, mut carry, mut stuck] = cx.base_many(me, [a.c_from, a.c_to, a.prog, a.elen, a.leap, a.carry, a.stuck]).ok_or_else(missing)?;
+        let mut leap = leap0 != 0;
         if to < 0 {
             // Fresh: stand still on the spawn cell (a summoner hands over its cell in c_from).
             let start = if from >= 0 { self.cell_id(from, "c_from")? } else { self.cell_at(cx.position(me).unwrap_or_default()).ok_or_else(|| format!("entity {me} spawned off the slab's cells"))? };
@@ -400,19 +413,20 @@ impl Bound {
         let rest = v.fields.remaining(class, jumper, to_c);
         let remaining = if rest == UNREACHABLE { UNREACHABLE } else { rest.saturating_add((len - prog) as i32) };
         let near = if prog * 2 < len { from_c } else { to_c };
-        for (attr, val) in [
-            (a.c_from, i64::from(from_c.0)),
-            (a.c_to, i64::from(to_c.0)),
-            (a.prog, prog),
-            (a.elen, len),
-            (a.leap, i64::from(leap)),
-            (a.carry, carry),
-            (a.stuck, stuck),
-            (a.cell, i64::from(near.0)),
-            (a.face, face_index(map.cell(near).face)),
-        ] {
-            cx.set(me, attr, val)?;
-        }
+        cx.set_many(
+            me,
+            &[
+                (a.c_from, i64::from(from_c.0)),
+                (a.c_to, i64::from(to_c.0)),
+                (a.prog, prog),
+                (a.elen, len),
+                (a.leap, i64::from(leap)),
+                (a.carry, carry),
+                (a.stuck, stuck),
+                (a.cell, i64::from(near.0)),
+                (a.face, face_index(map.cell(near).face)),
+            ],
+        )?;
         cx.set_pos(me, p3(p))?;
         cx.set_path_remaining(me, i64::from(remaining))?;
         if let Some(list) = end {
@@ -460,9 +474,9 @@ impl Bound {
         let a = &self.a;
         let air = &self.map.air;
         let n = air.ring.len() as i64;
-        let base = |cx: &NativeCtx, attr: u16| cx.base(me, attr).ok_or_else(|| format!("entity {me} lacks an attribute sepulcra.air needs (see games/sepulcra/src/lex.rs)"));
-        let (mut ring, dir, mut hops) = (base(cx, a.ring)?, base(cx, a.dir)?, base(cx, a.hops)?);
-        let (mut diving, mut prog, mut len, mut carry) = (base(cx, a.diving)? != 0, base(cx, a.prog)?, base(cx, a.elen)?, base(cx, a.carry)?);
+        let missing = || format!("entity {me} lacks an attribute sepulcra.air needs (see games/sepulcra/src/lex.rs)");
+        let [mut ring, dir, mut hops, diving0, mut prog, mut len, mut carry] = cx.base_many(me, [a.ring, a.dir, a.hops, a.diving, a.prog, a.elen, a.carry]).ok_or_else(missing)?;
+        let mut diving = diving0 != 0;
         let dir = if dir < 0 { -1 } else { 1 };
         if ring < 0 {
             let here = cx.position(me).unwrap_or_default();
@@ -499,9 +513,7 @@ impl Bound {
         let p = Pos::lerp(from, to, prog as i32, len as i32);
         let seg = i64::from(air.ring[0].dist(air.ring[1]));
         let remaining = (len - prog) + hops * seg + if diving { 0 } else { i64::from(air.ring_half) };
-        for (attr, val) in [(a.ring, ring), (a.hops, hops), (a.diving, i64::from(diving)), (a.prog, prog), (a.elen, len), (a.carry, carry), (a.face, -1)] {
-            cx.set(me, attr, val)?;
-        }
+        cx.set_many(me, &[(a.ring, ring), (a.hops, hops), (a.diving, i64::from(diving)), (a.prog, prog), (a.elen, len), (a.carry, carry), (a.face, -1)])?;
         cx.set_pos(me, p3(p))?;
         cx.set_path_remaining(me, remaining)?;
         if arrived {

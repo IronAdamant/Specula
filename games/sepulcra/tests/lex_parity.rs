@@ -301,26 +301,51 @@ mod full {
     pub struct End {
         pub snap: Snapshot,
         pub refused: usize,
+        /// How often the hand-written sim saw these: walls broken, lane jumps, walls attacked, summons.
+        pub broke: u32,
+        pub jumped: u32,
+        pub attacked: u32,
+        pub summoned: u32,
         pub lex_hash: u64,
     }
 
     /// Steps both sims with the same commands per tick and panics at the first difference.
     pub fn parity(rules: &Arc<specula_lex::Rules>, c: &Arc<Content>, seed: u64, journal: &[(u32, Command)], max_ticks: u32) -> End {
-        let mut s = State::new(c.clone(), seed);
-        let mut l = sepulcra::lex::sim(rules.clone(), seed).expect("the hooks bind");
-        let mut refused = 0;
         let mut k = 0;
-        while s.tick() < max_ticks && s.outcome() == Outcome::Running {
-            let tick = s.tick();
+        parity_with(rules, c, seed, max_ticks, |s| {
             let mut now = Vec::new();
-            while k < journal.len() && journal[k].0 <= tick {
+            while k < journal.len() && journal[k].0 <= s.tick() {
                 now.push(journal[k].1);
                 k += 1;
             }
+            now
+        })
+    }
+
+    /// [`parity`] with the commands chosen each tick by `player`, which sees the state first.
+    pub fn parity_with(rules: &Arc<specula_lex::Rules>, c: &Arc<Content>, seed: u64, max_ticks: u32, mut player: impl FnMut(&State) -> Vec<Command>) -> End {
+        let mut s = State::new(c.clone(), seed);
+        let mut l = sepulcra::lex::sim(rules.clone(), seed).expect("the hooks bind");
+        let mut refused = 0;
+        let (mut broke, mut jumped, mut attacked, mut summoned) = (0, 0, 0, 0);
+        while s.tick() < max_ticks && s.outcome() == Outcome::Running {
+            let tick = s.tick();
+            let now = player(&s);
             // A command whose args name nothing in the rule set (a stone on a lane cell) is Lex's
             // refusal; the rest are applied in order, like the hand-written sim's.
             let calls: Vec<Result<CommandCall, specula_lex::Rejection>> = now.iter().map(|x| sepulcra::lex::command_call(&l, c, x)).collect();
+            let boss_wave = s.enemies().iter().any(|e| c.enemy(e.kind).summon.is_some());
             let ev = s.step(&now);
+            for e in &ev {
+                match e {
+                    Event::WallBroken { .. } => broke += 1,
+                    Event::Jumped { .. } => jumped += 1,
+                    Event::AttackingWall { .. } => attacked += 1,
+                    // Wave 10 sends shamblers up the cliffs only: one on the top face is a summon.
+                    Event::Spawned { kind, pos, .. } if boss_wave && pos.y == 0 && c.enemy(*kind).id == "shambler" => summoned += 1,
+                    _ => {}
+                }
+            }
             let parsed: Vec<CommandCall> = calls.iter().filter_map(|x| x.as_ref().ok().cloned()).collect();
             let index: Vec<usize> = calls.iter().enumerate().filter(|(_, x)| x.is_ok()).map(|(i, _)| i).collect();
             let lr = l.step(&parsed);
@@ -339,7 +364,7 @@ mod full {
         }
         let diag = &l.state().diag;
         assert!(diag.counts.is_empty(), "seed {seed}: lex run-time problems: {:?} {:?}", diag.counts, diag.first);
-        End { snap: Snapshot::of_state(&s), refused, lex_hash: l.hash() }
+        End { snap: Snapshot::of_state(&s), refused, broke, jumped, attacked, summoned, lex_hash: l.hash() }
     }
 
     /// A layout's applied commands (with their ticks) as the hand-written sim plays it.
@@ -358,6 +383,176 @@ fn the_rule_set_compiles_without_warnings_and_its_slab_matches_the_map() {
     assert!(warnings.is_empty(), "warnings: {warnings:#?}");
     let regenerated = sepulcra::lex::slab_document_text(sepulcra::content::SLAB_01_JSON).unwrap();
     assert_eq!(regenerated, sepulcra::lex::SLAB_LEX.replace("\r\n", "\n"), "lex/slab_01.lex.json is out of date: cargo run -p sepulcra --example lex_slab -- --write");
+}
+
+/// A player that tries everything, often wrongly: stones on any cell (lanes, the graveyard,
+/// cliff rock), upgrades past the last tier, selling what isn't there, walls under enemies'
+/// feet and on cells they are stepping into, walls everywhere until enemies must break them,
+/// removing walls, calling waves. Every refusal and every acceptance must agree, and the
+/// state must match on every tick.
+fn chaos_player(c: &sepulcra::Content, seed: u64, calls: bool) -> impl FnMut(&State) -> Vec<Command> + '_ {
+    use sepulcra::{CellId, Motion, StoneKind};
+    let mut rng = specula_core::rng::Rng::named(seed, "chaos");
+    let n = c.map.cells().len() as u32;
+    let buildable: Vec<CellId> = c.map.cells().iter().filter(|x| x.kind.buildable()).map(|x| x.id).collect();
+    let wallable: Vec<CellId> = c.map.cells().iter().filter(|x| x.kind.wallable()).map(|x| x.id).collect();
+    move |s: &State| {
+        let mut out = Vec::new();
+        if s.tick() % 20 != 0 {
+            return out;
+        }
+        for _ in 0..rng.below(3) {
+            let any = CellId(rng.below(n) as u16);
+            let pick = |rng: &mut specula_core::rng::Rng, v: &[CellId]| v[rng.below(v.len() as u32) as usize];
+            let stone_cell = |rng: &mut specula_core::rng::Rng| s.stones().map(|(c, _)| c).nth(rng.below(s.stones().count().max(1) as u32) as usize);
+            let enemy_cell = |rng: &mut specula_core::rng::Rng| {
+                let ground: Vec<(CellId, CellId)> = s.enemies().iter().filter_map(|e| match e.motion {
+                    Motion::Ground { from, to, .. } => Some((from, to)),
+                    Motion::Air { .. } => None,
+                }).collect();
+                (!ground.is_empty()).then(|| {
+                    let (f, t) = ground[rng.below(ground.len() as u32) as usize];
+                    if rng.below(2) == 0 { f } else { t }
+                })
+            };
+            let cmd = match rng.below(100) {
+                0..=24 => Command::PlaceStone { cell: if rng.below(4) == 0 { any } else { pick(&mut rng, &buildable) }, stone: StoneKind(rng.below(c.stones.len() as u32) as u8) },
+                25..=39 => Command::Upgrade { cell: stone_cell(&mut rng).filter(|_| rng.below(5) != 0).unwrap_or(any) },
+                40..=46 => Command::Sell { cell: stone_cell(&mut rng).filter(|_| rng.below(5) != 0).unwrap_or(any) },
+                47..=59 => Command::PlaceWall { cell: enemy_cell(&mut rng).unwrap_or(any) },
+                60..=79 => Command::PlaceWall { cell: if rng.below(5) == 0 { any } else { pick(&mut rng, &wallable) } },
+                80..=93 => Command::RemoveWall { cell: s.walls().map(|(c, _)| c).nth(rng.below(s.walls().count().max(1) as u32) as usize).filter(|_| rng.below(4) != 0).unwrap_or(any) },
+                _ if calls => Command::CallWave,
+                _ => Command::Upgrade { cell: any },
+            };
+            out.push(cmd);
+        }
+        out
+    }
+}
+
+#[test]
+fn a_player_trying_everything_matches_the_hand_written_sim_tick_by_tick() {
+    let (c, rules) = (full::content(), full::rules());
+    let mut outcomes = Vec::new();
+    for seed in 1..=6u64 {
+        let end = full::parity_with(&rules, &c, seed, 30_000, chaos_player(&c, seed, true));
+        eprintln!("chaos seed {seed}: {:?} at tick {}, dust {}, walls {}, stones {}, refused {}", end.snap.outcome, end.snap.tick, end.snap.dust, end.snap.walls.len(), end.snap.stones.len(), end.refused);
+        assert!(end.refused > 10, "the player is refused often: {}", end.refused);
+        outcomes.push(end.snap.outcome.clone());
+    }
+    assert!(outcomes.iter().all(Option::is_some), "every run finishes: {outcomes:?}");
+}
+
+/// The same player with dust to spare and no early calls, so whole games play out: every tier,
+/// roots, cliff ledges, walls everywhere (enemies walled in break them, runners leap out), and
+/// the colossus with its summons. The start dust is a param override in Lex and an edited
+/// waves.json for the hand-written sim.
+#[test]
+fn a_rich_player_trying_everything_matches_over_whole_games() {
+    use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
+    let waves = WAVES_JSON.replace("\"start_dust\": 150", "\"start_dust\": 4000");
+    assert_ne!(waves, WAVES_JSON);
+    let c = Arc::new(Content::from_texts(SLAB_01_JSON, STONES_JSON, ENEMIES_JSON, &waves).unwrap());
+    let rules = sepulcra::lex::compiled(&[("start_dust", Json::from(4000))]).unwrap();
+    let mut seen = [0u32; 4];
+    for seed in 1..=4u64 {
+        let end = full::parity_with(&rules, &c, seed, 40_000, chaos_player(&c, seed, false));
+        eprintln!(
+            "rich chaos seed {seed}: {:?} at tick {} wave {}, dust {}, walls {}, stones {}, refused {}, walls broken {}, attacked {}, jumps {}, summons {}",
+            end.snap.outcome, end.snap.tick, end.snap.wave, end.snap.dust, end.snap.walls.len(), end.snap.stones.len(), end.refused, end.broke, end.attacked, end.jumped, end.summoned
+        );
+        assert!(end.snap.wave >= 5, "seed {seed}: plays into the later waves (wave {})", end.snap.wave);
+        for (k, v) in [end.broke, end.attacked, end.jumped, end.summoned].into_iter().enumerate() {
+            seen[k] += v;
+        }
+    }
+    assert!(seen.iter().all(|n| *n > 0), "walls broken, walls attacked, lane jumps and summons all happen: {seen:?}");
+}
+
+/// Many seeds on every core (`LEX_SWEEP_SEEDS`, default 250 per layout, plus 100 rich chaos
+/// games): `cargo test -p sepulcra --release --test lex_parity -- --ignored sweep --nocapture`.
+#[test]
+#[ignore]
+fn sweep_every_layout_and_many_seeds() {
+    use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
+    let seeds: u64 = std::env::var("LEX_SWEEP_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(250);
+    let (c, rules) = (full::content(), full::rules());
+    let rich_c = Arc::new(Content::from_texts(SLAB_01_JSON, STONES_JSON, ENEMIES_JSON, &WAVES_JSON.replace("\"start_dust\": 150", "\"start_dust\": 4000")).unwrap());
+    let rich_rules = sepulcra::lex::compiled(&[("start_dust", Json::from(4000))]).unwrap();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
+    let t = std::time::Instant::now();
+    let results: Vec<(String, u64, Option<String>, u32)> = std::thread::scope(|sc| {
+        let jobs: Vec<_> = (0..threads)
+            .map(|k| {
+                let (c, rules, rich_c, rich_rules) = (&c, &rules, &rich_c, &rich_rules);
+                sc.spawn(move || {
+                    let mut out = Vec::new();
+                    for seed in (1..=seeds).filter(|s| s % threads == k) {
+                        for (name, layout) in full::LAYOUTS {
+                            let (journal, _, _) = full::journal(c, layout, seed);
+                            let end = full::parity(rules, c, seed, &journal, u32::MAX);
+                            out.push((name.to_owned(), seed, end.snap.outcome, end.snap.tick));
+                        }
+                    }
+                    for seed in (1..=100u64).filter(|s| s % threads == k) {
+                        let end = full::parity_with(rich_rules, rich_c, seed, 40_000, chaos_player(rich_c, seed, false));
+                        out.push(("rich_chaos".to_owned(), seed, end.snap.outcome, end.snap.tick));
+                    }
+                    out
+                })
+            })
+            .collect();
+        jobs.into_iter().flat_map(|j| j.join().expect("a parity run diverged (see the panic above)")).collect()
+    });
+    let mut by: std::collections::BTreeMap<(String, Option<String>), u32> = std::collections::BTreeMap::new();
+    let mut ticks = 0u64;
+    for (name, _, outcome, t) in &results {
+        *by.entry((name.clone(), outcome.clone())).or_default() += 1;
+        ticks += u64::from(*t);
+    }
+    eprintln!("{} runs, {ticks} ticks, identical on every tick, in {:.1} s on {threads} threads: {by:?}", results.len(), t.elapsed().as_secs_f64());
+}
+
+/// What the interpreter and the hooks cost against hand-written Rust on the whole game (F3):
+/// `cargo test -p sepulcra --release --test lex_parity -- --ignored bench_full --nocapture`.
+#[test]
+#[ignore]
+fn bench_full_game_lex_against_rust() {
+    let (c, rules) = (full::content(), full::rules());
+    let layout = full::LAYOUTS[0].1;
+    let runs = 20u64;
+    let journals: Vec<_> = (0..runs).map(|seed| full::journal(&c, layout, seed).0).collect();
+    let t = std::time::Instant::now();
+    let mut ticks = 0u64;
+    for seed in 0..runs {
+        let s = sepulcra::script::replay(c.clone(), seed, &journals[seed as usize], u32::MAX, |_, _| {});
+        ticks += u64::from(s.tick());
+    }
+    let rust = t.elapsed();
+    let t = std::time::Instant::now();
+    for seed in 0..runs {
+        let mut l = sepulcra::lex::sim(rules.clone(), seed).unwrap();
+        let j = &journals[seed as usize];
+        let mut k = 0;
+        while l.outcome().is_none() {
+            let mut now = Vec::new();
+            while k < j.len() && j[k].0 <= l.tick() {
+                now.push(sepulcra::lex::command_call(&l, &c, &j[k].1).unwrap());
+                k += 1;
+            }
+            l.step(&now);
+        }
+    }
+    let lexed = t.elapsed();
+    let per = |d: std::time::Duration| d.as_secs_f64() * 1e6 / ticks as f64;
+    println!(
+        "{runs} centre-heavy games, {ticks} ticks: rust {:.2} us/tick, lex {:.2} us/tick (x{:.1}); a 12-minute game in lex: {:.0} ms",
+        per(rust),
+        per(lexed),
+        lexed.as_secs_f64() / rust.as_secs_f64(),
+        per(lexed) * 21_600.0 / 1000.0
+    );
 }
 
 #[test]
