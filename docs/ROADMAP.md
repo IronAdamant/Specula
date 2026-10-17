@@ -217,9 +217,11 @@ entities only; everything else is the gap.
   *Done 2026-10-18:* `lease_*` tools: ports (checked against the OS listener table, never a wildcard bind), advisory GPU ms per second, scratch folders.
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
-- [ ] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
+- [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
   with results gathered into one report.
   *Why:* this is where swarms beat studios. QA scales with agents, not headcount.
+  *Done 2026-10-18:* `scripts/playtest_swarm.py` (tasks on the board, leased ports and scratch folders, a fresh
+  `--headless --paused` engine to record and another to verify each replay, one report).
 - [ ] **Review queue** (M4): agents submit finished work with captures attached; the owner approves or rejects batches.
 - [ ] **Director pattern** (M4–M5): one lead agent turns the game design doc into tasks, assigns roles and tracks
   progress on the board, with the owner as final reviewer.
@@ -578,16 +580,22 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **Specula agent evals** *(research)*: a fixed suite of realistic tasks with verifiable outcomes (build a room
   that passes these checks, add a patrolling enemy, make wave 3 10% harder without breaking wave 4). It runs after
   every tool change, with a held-out set, and doubles as the public benchmark for marketing.
-- [ ] ➕ **Tool ergonomics** *(research)*: `response_format` (concise/detailed) on heavy tools; an audit of tool count,
+- [x] ➕ **Tool ergonomics** *(research)*: `response_format` (concise/detailed) on heavy tools; an audit of tool count,
   naming and error messages against agent-tool design guidance.
+  *Done 2026-10-18:* concise answers by default on the heavy tools (a typical 20-call session uses 53% fewer bytes),
+  compact JSON, `{error, message}` errors, defaults per call, per agent (`agent_hello`) or per engine
+  (`--response-format`); audit in [design/TOOLS.md](design/TOOLS.md) with the remaining fixes listed (tools scoped by
+  role, the duplicated component schemas).
 - [x] ➕ **Animation sight**: filmstrips and contact sheets per clip and state, plus checks as data: foot sliding,
   ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
   *Done 2026-10-18:* `anim_filmstrip` contact sheets (clips, states, transitions, live entities) with each row's
   checks, scale labels, root rise and darkness warnings in the packet; `scripts/anim_graph_check.py`.
 - [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
-- [ ] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
+- [x] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
   *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.
+  *Done 2026-10-18:* playtests as data for any game (`playtest_run`, `playtest_report`; steps, expectations, `until`,
+  replays verified by checkpoint hashes); design in [design/PLAYTESTS.md](design/PLAYTESTS.md).
 - [x] **Desync detector**: when two runs' hashes diverge, report the first tick and the component that differs.
   *Done 2026-10-18:* per-tick hash ring, `desync_trace` and `desync_compare` (files, live, or the journal replayed); Sepulcra reports subsystem hashes; `scripts/desync_check.py`.
 - [x] ➕ **Input actions with rebinding** ("jump", not "Space"), with device-correct glyphs.
@@ -606,7 +614,10 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-18:* `games/ambulo`; `crates/specula/tests/module_reload.rs`, `scripts/module_reload.py`.
 - [x] Another agent changes that module while the world keeps running.
   *Done 2026-10-18:* same proof; edit to reload about 1 s.
-- [ ] A headless suite of 20+ replays runs across parallel engines and passes.
+- [x] A headless suite of 20+ replays runs across parallel engines and passes.
+  *Done 2026-10-18:* `scripts/playtest_suite.py`: 26 Sepulcra playtests (every layout, wins and expected losses, ten
+  strategies, engine-only checks) pass with every replay verified in a fresh engine; 8 engines take about 55 s against
+  about 5-8 min serially; a replay with its seed changed diverges as it should (`perf/playtests/`).
 - [ ] The playable build holds budget on the integrated GPU.
 
 ---

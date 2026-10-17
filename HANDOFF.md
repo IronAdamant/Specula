@@ -22,7 +22,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
-  animation A3). Wave 2 is running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
+  animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes). Wave 2 is
+  running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
@@ -117,7 +118,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   --seed 7` (see its TESTPLAN.md).
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
   `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
-  `--perf FILE`, and `-- GAME ARGS` for a hosted game.
+  `--perf FILE`, `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`, and
+  `-- GAME ARGS` for a hosted game.
+- **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
+  `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):
   - World: `world_spawn`, `world_set`, `world_delete`, `world_list`, `world_query` (paged filters), `world_batch`
     (atomic), `world_env`, `world_save` / `world_load` (text world files), `world_hash` (per-tick simulation hash).
@@ -138,6 +142,7 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
     `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
     `world_env {physics}` (gravity, substeps, sleep, 2D mode).
+  - Playtests: `playtest_run` (a spec as data: steps, expectations, replays) and `playtest_report`.
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
