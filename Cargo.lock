@@ -14,6 +14,7 @@ name = "sepulcra"
 version = "0.1.0"
 dependencies = [
  "specula-core",
+ "specula-lex",
 ]
 
 [[package]]

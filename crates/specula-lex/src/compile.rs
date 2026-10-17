@@ -1035,8 +1035,9 @@ impl<'d> Cx<'d> {
         let v = V { item, path: String::new(), j: eff };
         self.fields(&V { item, path: String::new(), j: &self.doc.items[id] }, schema::kind("archetype").expect("kind"), &["kind"]);
         let tags = v.key("tags").map(|t| self.tag_ids(&t)).unwrap_or_default();
-        let machine = v.key("machine").and_then(|m| self.ref_of(&m, "machine"));
-        let next = v.key("next").and_then(|n| self.ref_of(&n, "archetype"));
+        // `null` clears an inherited machine or next tier.
+        let machine = v.key("machine").filter(|m| !m.j.is_null()).and_then(|m| self.ref_of(&m, "machine"));
+        let next = v.key("next").filter(|n| !n.j.is_null()).and_then(|n| self.ref_of(&n, "archetype"));
         let abstract_ = v.key("abstract").and_then(|b| self.bool_field(&b)).unwrap_or(false);
         let sc = Scope { me: Me::Arch(a), ..Scope::new(&self.reg, "an archetype") };
         let act = Act { scope: sc, machine };
