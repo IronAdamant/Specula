@@ -515,6 +515,10 @@ impl Engine {
             self.game_overlay((w, h), camera, true, &mut quads);
         }
         let hud = quads.len();
+        // Its opaque panels hide the scene under them in the ID counts, as they hide it from a
+        // player (sight's debug overlays, added below, never do).
+        let mut occluders = Vec::new();
+        let occluders_dropped = if opts.include_ui && opts.ids { sight::ui_occluders(&quads[..hud], w, h, &mut occluders) } else { 0 };
         // Debug overlays get what the game's interface leaves of the GPU's limit.
         let budget = specula_gpu::MAX_OVERLAY_QUADS - hud;
         if painted && !second_render {
@@ -525,7 +529,7 @@ impl Engine {
         frame.overlay = &quads;
         {
             let _z = profile::zone("sight.render");
-            let rendered = if opts.ids { self.gpu.render_with_ids(target, &frame, &ids) } else { self.gpu.render(target, &frame) };
+            let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
             rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
         let ids_json = if opts.ids {
@@ -540,13 +544,21 @@ impl Engine {
             };
             sight::apply_visibility(&mut subjects, &entities, &counts.per_id);
             let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
-            Json::obj([
+            let mut j = Json::obj([
                 ("entities", Json::from(entities.len())),
                 ("visible", Json::from(counts.per_id.iter().filter(|c| c.pixels > 0 || c.approx).count())),
                 ("blended_counted", Json::from(counts.blended_counted)),
                 ("gpu_ms", Json::from(gpu_ms)),
                 ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
-            ])
+            ]);
+            if opts.include_ui {
+                // How many opaque interface rectangles hid what was under them.
+                j.set("ui_occluders", Json::from(occluders.len()));
+                if occluders_dropped > 0 {
+                    j.set("ui_occluders_dropped", Json::from(occluders_dropped));
+                }
+            }
+            j
         } else {
             Json::obj([("off", Json::from(true))])
         };

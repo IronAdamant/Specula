@@ -417,7 +417,7 @@ pub fn definitions() -> Vec<ToolDef> {
             ("camera", t("string", "Look through your named camera instead of eye/target")),
             ("camera_of", t("string", "With camera: that agent's camera of that name")),
             ("time_s", t("number", "Animation time in seconds (default: now)")),
-            ("include_ui", t("boolean", "Also draw ui-layer entities")),
+            ("include_ui", t("boolean", "Also draw ui-layer entities and a hosted game's interface (its opaque panels hide what is under them)")),
             ("lod", t("integer", "Draw every model at this LOD")),
         ]
     };
@@ -485,7 +485,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("fov_y_deg", t("number", "Vertical field of view, 10..120 (default 50)")),
                         ("max_subjects", t("integer", "Subjects listed per view, 0..20 (default 8)")),
                         ("time_s", t("number", "Animation time (default: now)")),
-                        ("include_ui", t("boolean", "Also draw ui-layer entities")),
+                        ("include_ui", t("boolean", "Also draw ui-layer entities and a hosted game's interface (its opaque panels hide what is under them)")),
                         ("lod", t("integer", "Draw every model at this LOD")),
                     ],
                     overlay_props(),
