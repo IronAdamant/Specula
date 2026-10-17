@@ -67,7 +67,7 @@ a module host's timeout), so an agent can branch on a code everywhere.
 
 **Scripts keep detailed answers.** `scripts/specula_mcp.py` asks for `response_format: "detailed"` on the tools with a
 format unless a call passes its own, and the scripts with their own MCP clients (`call_rate.py`, `swarm_drill.py`,
-`world_roundtrip.py`, `window_check.py`, `lex_check.py` and the raw calls in `model_gallery.py`, `physics_check.py`,
+`world_roundtrip.py`, `window_check.py`, `lex_check.py` and the raw calls in `anim_graph_check.py`, `model_gallery.py`, `physics_check.py`,
 `two_d_check.py`, `sepulcra_play.py`) wrap their arguments in `specula_mcp.detailed()`, so the verification scripts
 read what they always read. An agent (and a client made with `detailed=False`) gets the concise defaults. Review round
 1 found the gap: concise `engine_info` had left out a null `last_autosave_error`, which `world_roundtrip.py` reads.

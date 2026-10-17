@@ -26,7 +26,7 @@ import os
 import sys
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine
+from specula_mcp import ROOT, Engine, detailed
 
 TARGET = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
 EXE = TARGET / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
@@ -56,7 +56,7 @@ def main():
         mcp.hello("anim-check", role="animator")
 
         def raw(tool, **a):
-            return mcp.request("tools/call", {"name": tool, "arguments": a})
+            return mcp.request("tools/call", {"name": tool, "arguments": detailed(tool, a)})
 
         tools = mcp.tools()
         anim_tools = sorted(t for t in tools if t.startswith("anim_"))
