@@ -1,0 +1,179 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "windowed-after",
+  "agents": 64,
+  "rounds": 12,
+  "batch": 20,
+  "feed": true,
+  "build": "release",
+  "windowed": true,
+  "when": "2026-10-17T16:28:50",
+  "cpu_busy_pct_before": 1.6,
+  "frame_pacing_under_load": {
+    "samples": 120,
+    "mean_ms": 16.006,
+    "median_ms": 16.085,
+    "p95_ms": 18.523,
+    "max_ms": 21.025
+  },
+  "serve_under_load": {
+    "window_ms": 10.782,
+    "frame_period_ms": 16.667,
+    "refresh_ms": 4.167,
+    "refresh_from": "display",
+    "frame_work_ms": 4.969,
+    "margin_ms": 2.265,
+    "backlog": true,
+    "call_cost_ms": {
+      "read": 0.657,
+      "edit": 0.2,
+      "render": 8,
+      "disk": 8,
+      "big": 8,
+      "sim": 1,
+      "game": 0.5
+    },
+    "windows": 443,
+    "backlog_windows": 380,
+    "calls": 5320,
+    "held_for_next_window": 349,
+    "late_presents": 29,
+    "late_but_ready": 1,
+    "unblocked_presents": 3
+  },
+  "attacks": {
+    "rejected": 23,
+    "leaked": [],
+    "wrong": []
+  },
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 6.234,
+  "world_ops": 20096,
+  "ops_per_s": 3223.9,
+  "tool_calls": 5384,
+  "calls_per_s": 863.7,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 9.25,
+      "p95": 14.72,
+      "max": 22.13,
+      "n": 64
+    },
+    "claim_release": {
+      "p50": 6.16,
+      "p95": 26.68,
+      "max": 27.9,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 44.06,
+      "p95": 88.79,
+      "max": 106.13,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 8.48,
+      "p95": 14.26,
+      "max": 16.99,
+      "n": 64
+    },
+    "world_batch": {
+      "p50": 68.89,
+      "p95": 93.08,
+      "max": 123.99,
+      "n": 1216
+    },
+    "world_changes": {
+      "p50": 82.05,
+      "p95": 105.06,
+      "max": 129.24,
+      "n": 2888
+    },
+    "world_set": {
+      "p50": 67.26,
+      "p95": 94.57,
+      "max": 99.21,
+      "n": 256
+    },
+    "world_spawn": {
+      "p50": 62.99,
+      "p95": 92.66,
+      "max": 103.88,
+      "n": 448
+    },
+    "world_undo": {
+      "p50": 64.67,
+      "p95": 87.28,
+      "max": 97.98,
+      "n": 320
+    }
+  },
+  "intrusions_rejected": 768,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 320,
+  "feed_items": 1304617,
+  "feed_gaps": 0,
+  "entities": 15424,
+  "state_hash": "523c3a72ed5c6df8",
+  "replay": {
+    "replayable": true,
+    "entries": 1472,
+    "replay_hash": "523c3a72ed5c6df8",
+    "matches": true,
+    "ms": 47.0438
+  },
+  "replay_check_s": 0.066,
+  "journal": {
+    "first_id": 1,
+    "last_id": 1472,
+    "agent_entries": 1472,
+    "game_entries": 0,
+    "approx_bytes": 27969856,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "ee9471e83e35674b"
+  },
+  "claim_rejections_engine": 768,
+  "history_sample": [
+    {
+      "id": 1438,
+      "tick": 191,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_4",
+        "/district_00/tmp_11_3",
+        "/district_00/tmp_11_2"
+      ],
+      "undoes": [
+        1422
+      ]
+    },
+    {
+      "id": 1422,
+      "tick": 188,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "paths": [
+        "/district_00/tmp_11_0",
+        "/district_00/tmp_11_1",
+        "/district_00/tmp_11_2"
+      ],
+      "undone_by": 1438
+    }
+  ],
+  "agent_errors": [],
+  "problems": [],
+  "cpu_busy_pct_after": 3.0
+}
