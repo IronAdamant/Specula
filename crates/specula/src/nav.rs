@@ -412,8 +412,11 @@ pub struct AgentSpec {
     pub avoid_flags: Vec<String>,
 }
 
+/// Area preferences: costs by area name, areas avoided by name, areas avoided by flag.
+pub type AreaPrefs = (Vec<(String, f32)>, Vec<String>, Vec<String>);
+
 /// `{name: cost}` (0.1..1000) and lists of names, as nav_agent and nav_path take them.
-pub fn parse_area_prefs(v: &Json, prefix: &str) -> Result<(Vec<(String, f32)>, Vec<String>, Vec<String>), world::WorldError> {
+pub fn parse_area_prefs(v: &Json, prefix: &str) -> Result<AreaPrefs, world::WorldError> {
     let costs = match v.get("area_costs") {
         None | Some(Json::Null) => Vec::new(),
         Some(Json::Obj(pairs)) if pairs.len() <= specula_via::MAX_AREAS => pairs

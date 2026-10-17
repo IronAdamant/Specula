@@ -174,9 +174,9 @@ triangles, 64 spans per column, 16,384 polygons per tile, 4,096 expanded nodes p
 
 ## Not in this design
 
-Off-mesh links (jumps, ladders), area costs (mud, water), dynamic obstacles carved without a rebuild, hierarchical
-pathfinding for huge worlds, formations. Each fits the structure (links are portals with a kind; costs are per polygon)
-and waits for a game that needs it.
+Dynamic obstacles carved without a rebuild, hierarchical pathfinding for huge worlds, formations. Each fits the
+structure and waits for a game that needs it. (Off-mesh links and area costs were added in M3: see "Links, areas,
+saves and model colliders" below.)
 
 ## Implementation (2026-10-18)
 
@@ -296,6 +296,39 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   budget was lowered, ticks 4.9 ms while rebuilding (was 5.1 s in one call); `world_place` with `avoid` 4,000
   tagged boxes: 34 ms for one instance, 140 ms for 8 (was minutes); 64 instances against 4,000: refused with
   `budget` after about 4 M units.
+
+**Links, areas, saves and model colliders (M3 additions, 2026-10-18).**
+- *Off-mesh links* are navmesh data: `props.navmesh.links` (nav_build `links`), at most 256, each `{from, to,
+  kind: jump | drop | ladder, bidirectional (not for drops by default), cost, area, radius}`. Each end is found on the
+  navmesh (the nearest polygon within `radius`) and found again when the tiles around it rebuild; the navmesh hash
+  covers them. A* treats a link as an edge from its take-off polygon to its landing one (cost: its length times
+  its cost and its area's); the funnel ends a stretch at a take-off point, so a path is surface stretches joined by
+  hops (`nav_path` lists them as `offmesh: [{corner, kind}]`); shortcuts never cross a link. A crowd agent at a
+  take-off point crosses on its own clock (a jump in an arc, drops at 1.5x and ladders at half speed), outside
+  avoidance and push-apart, and lands on the far polygon; a physics character is carried (its position written, its
+  velocity zeroed) while it crosses. Changing only the links resets them in place: no tile rebuilds, agents search
+  again. The navmesh overlay draws each link as an arc (red when an end found no navmesh).
+- *Areas:* `props.navmesh.areas` names up to 31 areas `{name, cost (0.1..1000, times the distance), flags}`; id 0
+  is plain ground. An entity's `props.nav_area` gives its walkable surfaces an area (`"water"`), or, as
+  `{area, volume: true}`, marks the open space inside its unit box (scaled, turned and placed; it may be hidden and
+  adds no geometry). Spans carry the area of the surface forming their top (equal tops: the larger id, so order
+  never matters), marks apply after, rectangles never mix areas. Searches take a filter (a cost per area and an
+  exclusion mask): `nav_agent` and `nav_path` take `area_costs` (by name; `ground` for plain ground),
+  `avoid_areas` and `avoid_flags`. The A* heuristic is scaled by the cheapest cost, so it never overestimates; an
+  excluded area is a wall for paths and for moving (an agent standing in one may still leave it); a shortcut
+  crosses only areas costing no more than ground or already on the corridor. The overlay colours named areas.
+- *Saves:* `Nav::save_state()` (crowds with the hash of the navmesh their polygon refs belong to, minds' whole
+  running state and blackboards via `Mind::save`, agents' runtime goals, facing, patrol indices, the mind round
+  robin, and the nav state hash; floats as bits) and `Nav::restore_state(world, generation, save)` (re-reads the
+  world, builds every navmesh in full, puts the state back and checks the nav hash, else `state_mismatch` naming
+  what differs and navigation starts fresh). A world loaded with its save continues tick for tick like the run that
+  saved it (a test runs both side by side for 165 ticks). The save-game lane wires these into the save file.
+- *Model colliders:* `model_collider {entity, kind: auto | recipe | box | capsule | hull | mesh, moving?}` fits a
+  collider to a model entity's built mesh with `specula-model`'s fitting and writes it as the entity's collider
+  (journaled, claims, undo), so models collide and carve navmeshes. Moving bodies (dynamic, kinematic or
+  `moving: true`) get hulls of at most 16 points (physics' cap); `mesh` uses the most detailed LOD within physics'
+  mesh limits and is static only; a sideways capsule becomes a hull (physics capsules stand along +Y); notes say
+  when the fit changed what was asked.
 
 **AI.**
 - *Amendment: sequences are reactive by default too:* each tick a running sequence first re-checks the conditions

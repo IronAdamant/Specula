@@ -49,13 +49,14 @@ pub enum NavCall {
     Check { def: Json, vocabulary: bool },
     SetMind { entity: EntityKey, def: Json, blackboard: Option<Json>, as_definition: bool, remove: bool, expect_version: Option<u64> },
     Status { entity: Option<EntityKey>, after: u64, limit: usize },
+    ModelCollider { entity: EntityKey, kind: String, moving: Option<bool>, expect_version: Option<u64> },
 }
 
 impl NavCall {
     pub fn class(&self) -> Class {
         match self {
             NavCall::Build { .. } => Class::Big,
-            NavCall::Agent { .. } | NavCall::SetMind { .. } => Class::Edit,
+            NavCall::Agent { .. } | NavCall::SetMind { .. } | NavCall::ModelCollider { .. } => Class::Edit,
             _ => Class::Read,
         }
     }
@@ -192,9 +193,98 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
                 limit: int_arg(args, "limit", 1, 32)?.unwrap_or(8) as usize,
             })
         })(),
+        "model_collider" => (|| {
+            check_keys(args, name, &[&["id", "path", "name", "kind", "moving", "expect_version"]])?;
+            let kind = string_arg(args, "kind")?.unwrap_or("auto").to_owned();
+            if !["auto", "recipe", "box", "capsule", "hull", "mesh"].contains(&kind.as_str()) {
+                return Err(format!("'kind' must be auto, recipe, box, capsule, hull or mesh (not '{kind}')"));
+            }
+            Ok(NavCall::ModelCollider { entity: entity_key(args, name)?, kind, moving: bool_arg(args, "moving")?, expect_version: int_arg(args, "expect_version", 1, u64::MAX >> 11)? })
+        })(),
         _ => return None,
     };
     Some(call)
+}
+
+/// A physics collider fitted to a model's mesh (its model space, which is the entity's local
+/// space), and a note when the fit changed what was asked. Moving bodies get hulls of at most
+/// 16 points (physics refuses more); meshes are for static bodies only.
+fn fit_model_collider(model: &specula_model::Model, kind: &str, moving: bool) -> Result<(crate::physics::Collider, Option<String>), WorldError> {
+    use crate::physics::{Collider, ColliderShape};
+    use specula_model::{Collider as Fit, ColliderKind};
+    let mesh = model.lods.first().ok_or_else(|| WorldError::new("no_mesh", "the model has no mesh to fit"))?;
+    if mesh.positions.len() < 4 {
+        return Err(WorldError::new("no_mesh", "the model's mesh has fewer than 4 points"));
+    }
+    let cap = if moving { specula_model::collider::MAX_MOVING_HULL_POINTS } else { specula_model::collider::MAX_HULL_POINTS };
+    let v = |p: [f32; 3]| Vec3::new(p[0], p[1], p[2]);
+    if kind == "mesh" {
+        if moving {
+            return Err(WorldError::new("static_only", "a mesh collider is for static bodies only (this one moves): use hull").with("field", "kind"));
+        }
+        // The most detailed LOD that fits physics' mesh limits.
+        let lod = model
+            .lods
+            .iter()
+            .find(|m| m.positions.len() <= crate::physics::MAX_MESH_VERTICES && m.indices.len() / 3 <= crate::physics::MAX_MESH_TRIANGLES && m.indices.len() >= 3)
+            .ok_or_else(|| {
+                WorldError::new(
+                    "budget",
+                    format!("no LOD of the model fits a mesh collider ({} vertices, {} triangles at most): use hull", crate::physics::MAX_MESH_VERTICES, crate::physics::MAX_MESH_TRIANGLES),
+                )
+            })?;
+        let vertices: Vec<Vec3> = lod.positions.iter().map(|p| v(*p)).collect();
+        let triangles: Vec<[u32; 3]> = lod.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        let note = (!std::ptr::eq(lod, mesh)).then(|| "the full-detail mesh is past physics' mesh limits: a lower LOD was used".to_string());
+        return Ok((Collider { shape: ColliderShape::Mesh { vertices: std::sync::Arc::new(vertices), triangles: std::sync::Arc::new(triangles) }, ..Collider::default() }, note));
+    }
+    let (fit, mut note) = match kind {
+        "recipe" if model.collider != Fit::None => {
+            let hull_too_big = matches!(&model.collider, Fit::ConvexHull { points, .. } if points.len() > cap);
+            if hull_too_big {
+                let (f, n) = specula_model::collider::fit_limited(ColliderKind::ConvexHull, &mesh.positions, cap);
+                (f, Some(n.unwrap_or_else(|| format!("the recipe's hull has more than {cap} points (a moving body's limit): refitted"))))
+            } else {
+                (model.collider.clone(), None)
+            }
+        }
+        "recipe" => return Err(WorldError::new("no_collider", "the model's recipe asks for no collider: pass kind auto, box, capsule, hull or mesh").with("field", "kind")),
+        "box" => specula_model::collider::fit_limited(ColliderKind::Aabb, &mesh.positions, cap),
+        "capsule" => specula_model::collider::fit_limited(ColliderKind::Capsule, &mesh.positions, cap),
+        _ => specula_model::collider::fit_limited(ColliderKind::ConvexHull, &mesh.positions, cap),
+    };
+    let shape_of = |fit: &Fit, note: &mut Option<String>| -> Option<(ColliderShape, Vec3)> {
+        match fit {
+            Fit::None => None,
+            Fit::Aabb { min, max } => {
+                let (lo, hi) = (v(*min), v(*max));
+                let size = (hi - lo).max(Vec3::new(0.01, 0.01, 0.01));
+                Some((ColliderShape::Box { size }, (lo + hi) * 0.5))
+            }
+            Fit::Capsule { a, b, radius } => {
+                let (a, b) = (v(*a), v(*b));
+                // Physics capsules stand along +Y.
+                if (a.x - b.x).abs() > 1.0e-3 || (a.z - b.z).abs() > 1.0e-3 {
+                    *note = Some("the fitted capsule lies sideways; physics capsules stand along +Y, so a hull was used".to_string());
+                    return None;
+                }
+                let r = radius.max(0.01);
+                Some((ColliderShape::Capsule { radius: r, height: ((a.y - b.y).abs() + 2.0 * r).max(2.0 * r) }, (a + b) * 0.5))
+            }
+            Fit::ConvexHull { points, .. } => Some((ColliderShape::Hull { points: std::sync::Arc::new(points.iter().map(|p| v(*p)).collect()) }, Vec3::ZERO)),
+        }
+    };
+    let shaped = match shape_of(&fit, &mut note) {
+        Some(s) => s,
+        None => {
+            let (hull, n) = specula_model::collider::fit_limited(ColliderKind::ConvexHull, &mesh.positions, cap);
+            if n.is_some() {
+                note = n;
+            }
+            shape_of(&hull, &mut note).ok_or_else(|| WorldError::new("no_fit", "no collider could be fitted to the model"))?
+        }
+    };
+    Ok((Collider { shape: shaped.0, offset: shaped.1, ..Collider::default() }, note))
 }
 
 pub fn definitions() -> Vec<ToolDef> {
@@ -375,6 +465,29 @@ pub fn definitions() -> Vec<ToolDef> {
                           world_set appears after the next tick; ai_set shows it at once)."
                 .into(),
             input_schema: schema(status, &[]),
+        },
+        ToolDef {
+            name: "model_collider".into(),
+            description: "Fit a physics collider to a model entity's built mesh and write it as the entity's collider \
+                          (journaled, undoable, claims apply), so the model collides and carves navmeshes (models \
+                          only feed a navmesh through a collider). kind: auto (a convex hull), recipe (the recipe's own \
+                          fitted collider), box, capsule (upright), hull, or mesh (exact triangles, static bodies only). \
+                          A moving body (dynamic or kinematic, or moving: true) gets a hull of at most 16 points, as \
+                          physics requires. Returns the collider, its point count and a note when the fit changed what \
+                          was asked."
+                .into(),
+            input_schema: schema(
+                {
+                    let mut p = ids();
+                    p.extend([
+                        ("kind", t("string", "auto | recipe | box | capsule | hull | mesh (default auto)")),
+                        ("moving", t("boolean", "Fit for a moving body (default: whether its body is dynamic or kinematic)")),
+                        ("expect_version", t("integer", "Refuse unless the entity is at this version")),
+                    ]);
+                    p
+                },
+                &[],
+            ),
         },
     ]
 }
@@ -662,6 +775,10 @@ impl crate::Engine {
                     Err(e) => world_error(&e),
                 }
             }
+            NavCall::ModelCollider { entity, kind, moving, expect_version } => match self.model_collider(&entity, &kind, moving, expect_version, w, tick) {
+                Ok(j) => ToolOutput::text(j.to_pretty()),
+                Err(e) => world_error(&e),
+            },
             NavCall::Status { entity, after, limit } => {
                 match entity {
                     Some(k) => match self.world.resolve(&k) {
@@ -694,6 +811,46 @@ impl crate::Engine {
                 }
             }
         }
+    }
+
+    /// model_collider: a collider fitted to a model entity's built mesh, written as its collider.
+    fn model_collider(&mut self, entity: &EntityKey, kind: &str, moving: Option<bool>, expect_version: Option<u64>, w: Writer, tick: u64) -> Result<Json, WorldError> {
+        let id = self.world.resolve(entity)?;
+        let e = self.world.get(id).expect("resolved");
+        if e.shape != Shape::Model {
+            return Err(WorldError::new("not_a_model", "model_collider fits a collider to a model entity (shape \"model\")").with("id", id));
+        }
+        let Some(r) = e.resolved_model().filter(|r| r.state == crate::world::ModelState::Ready) else {
+            return Err(WorldError::new("model_not_ready", format!("the model isn't built yet ({}): call again when it is", e.model_state())).with("id", id));
+        };
+        let moving = moving.unwrap_or(e.body.is_some_and(|b| b.kind != crate::physics::BodyKind::Static));
+        let built = self.library.lock().built(r.handle).cloned().ok_or_else(|| WorldError::new("model_not_ready", "the model's build is gone: call again").with("id", id))?;
+        let (collider, note) = fit_model_collider(&built.model, kind, moving)?;
+        collider.validate()?;
+        let shape = collider.shape.name();
+        let points = match &collider.shape {
+            crate::physics::ColliderShape::Hull { points } => points.len(),
+            crate::physics::ColliderShape::Mesh { vertices, .. } => vertices.len(),
+            _ => 0,
+        };
+        let change = UpdateSpec { collider: Some(Some(collider.clone())), expect_version, ..Default::default() };
+        let by = w.name.to_owned();
+        let (_, seq) = self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))?;
+        let mut out = Json::obj([
+            ("id", Json::from(id)),
+            ("path", Json::from(self.world.path_of(id))),
+            ("shape", Json::from(shape)),
+            ("moving", Json::from(moving)),
+            ("collider", collider.to_json()),
+            ("journal", Json::from(seq)),
+        ]);
+        if points > 0 {
+            out.set("points", Json::from(points));
+        }
+        if let Some(n) = note {
+            out.set("note", Json::from(n));
+        }
+        Ok(out)
     }
 
     /// nav_build: settings from the arguments, the navmesh entity written, every tile built.
@@ -1086,4 +1243,43 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
         ));
     }
     details
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::physics::ColliderShape;
+
+    fn model(recipe: &str) -> specula_model::Model {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let style = specula_model::Style::parse(&std::fs::read_to_string(assets.join("style.json")).unwrap()).unwrap();
+        specula_model::build(&std::fs::read_to_string(assets.join("recipes").join(recipe)).unwrap(), &specula_model::BuildParams::new(&style)).unwrap()
+    }
+
+    #[test]
+    fn colliders_fit_models_within_physics_limits() {
+        let m = model("tombstone.json");
+        // A moving body: a hull of at most 16 points, which physics accepts.
+        let (c, _) = fit_model_collider(&m, "auto", true).unwrap();
+        match &c.shape {
+            ColliderShape::Hull { points } => assert!((4..=16).contains(&points.len()), "{}", points.len()),
+            s => panic!("{s:?}"),
+        }
+        c.validate().unwrap();
+        // A static body may have a finer hull, or the exact mesh.
+        let (fine, _) = fit_model_collider(&m, "hull", false).unwrap();
+        assert!(matches!(&fine.shape, ColliderShape::Hull { points } if points.len() >= 4));
+        fine.validate().unwrap();
+        let (mesh, _) = fit_model_collider(&m, "mesh", false).unwrap();
+        assert!(matches!(mesh.shape, ColliderShape::Mesh { .. }));
+        mesh.validate().unwrap();
+        assert_eq!(fit_model_collider(&m, "mesh", true).unwrap_err().code, "static_only");
+        // A box holds the model's bounds.
+        let (b, _) = fit_model_collider(&m, "box", false).unwrap();
+        let ColliderShape::Box { size } = b.shape else { panic!("{:?}", b.shape) };
+        let (lo, hi) = (m.bounds.min, m.bounds.max);
+        assert!((size.x - (hi[0] - lo[0])).abs() < 1.0e-3 && (b.offset.y - (lo[1] + hi[1]) * 0.5).abs() < 1.0e-3, "{size:?} {:?}", b.offset);
+        // Deterministic.
+        assert_eq!(fit_model_collider(&m, "auto", true).unwrap().0, c);
+    }
 }

@@ -49,7 +49,8 @@ world; logic_status, logic_input and logic_hook inspect, drive and call it. Game
 deterministically). Navigation and AI: nav_build makes a navmesh from the world's geometry (edits rebuild only the tiles they touch), \
 nav_path and nav_point query it, nav_agent makes an entity walk it with the crowd, ai_set gives it a mind (behaviour \
 trees and utility AI as validated JSON; ai_check validates, ai_status shows why it does what it does), nav_info \
-reports; sight_frame overlays navmesh and paths show them. Coordinates: metres, right-handed, +Y up; a top-down view puts \
+reports, model_collider fits a collider to a model so it collides and carves navmeshes; navmeshes take off-mesh links \
+and named areas (nav_build links, areas; props.nav_area); sight_frame overlays navmesh and paths show them. Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
 suggestion; the hosted game's name is reserved: name_reserved); \

@@ -1097,8 +1097,7 @@ mod tests {
         let around = m.find_path_filtered(from, to, ext, 4096, &costly).unwrap();
         assert!(around.complete() && around.length > 20.0, "around the water: {} {:?}", around.length, around.corners);
         assert!(around.corners.iter().any(|c| c.x > 7.5), "{:?}", around.corners);
-        let mut dry = Filter::default();
-        dry.exclude = 1 << 1;
+        let dry = Filter { exclude: 1 << 1, ..Filter::default() };
         let walled = m.find_path_filtered(from, to, ext, 4096, &dry).unwrap();
         assert!(walled.complete() && walled.corners.iter().any(|c| c.x > 7.5), "{:?}", walled.corners);
         // An agent that may not swim walks around.

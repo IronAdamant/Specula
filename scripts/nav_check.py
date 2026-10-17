@@ -345,6 +345,7 @@ def run(m, failures, label, big):
     err2, gone2 = tool(m, "nav_path", mesh="temp", **{"from": [-8, 0, -4], "to": [8, 0, 4]})
     check(not tool(m, "engine_info")[0] and err2 and "no_navmesh" in json.dumps(gone2),
           "a deleted navmesh: queries answer from the last tick, then 'no_navmesh'; the engine lives", failures)
+    feats = features(m, failures)
     # Determinism and journal.
     hashes = m.json("world_hash", recent=1, verify=True)
     check(hashes["verify"]["matches"], "the journal replays the world exactly (nav writes included)", failures)
@@ -365,11 +366,64 @@ def run(m, failures, label, big):
         "rebuild_tiles_for_blocker": touched,
         "nav_tick_ms": info["tick_ms"],
         "caught_at_step": caught,
+        "features": feats,
     }
     if big:
         out["big"] = big_build(m, failures)
     (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2))
     return out
+
+
+def features(m, failures):
+    """Off-mesh links, areas and fitted model colliders, on two platforms with a 4 m gap at x 300."""
+    print("Links, areas, model colliders")
+    m.json("world_batch", ops=[
+        {"op": "spawn", "shape": "cube", "name": "plat_w", "position": [294, -0.5, 0], "scale": [8, 1, 12], "color": "#8a8f98", "collider": {"shape": "box"}},
+        {"op": "spawn", "shape": "cube", "name": "plat_e", "position": [306, -0.5, 0], "scale": [8, 1, 12], "color": "#8a8f98", "collider": {"shape": "box"}},
+        # A pool on the west platform (x 290..296), marked as water by a volume.
+        {"op": "spawn", "shape": "cube", "name": "pool", "position": [293, 0.01, 0], "scale": [6, 0.02, 3], "color": "#2a5a9a"},
+        {"op": "spawn", "shape": "group", "name": "pool_area", "position": [293, 0, 0], "scale": [6, 1, 3], "props": {"nav_area": {"area": "water", "volume": True}}},
+        {"op": "spawn", "shape": "model", "name": "tomb", "recipe": "recipes/tombstone.json", "position": [306, 0, 2]},
+    ])
+    links = [{"from": [297.6, 0, 0], "to": [302.4, 0, 0], "kind": "jump"}]
+    areas = [{"name": "water", "cost": 5, "flags": ["wet"]}]
+    b = build_all(m, name="gap", bounds={"min": [288, -1, -7], "max": [312, 4, 7]}, links=links, areas=areas)
+    check(b.get("offmesh_links_found") == 1, f"nav_build with a jump link: found on the navmesh ({b.get('offmesh_links_found')} of 1)", failures)
+    p = m.json("nav_path", mesh="gap", **{"from": [292, 0, -4], "to": [308, 0, 4]})
+    check(p["complete"] and [o["kind"] for o in p.get("offmesh", [])] == ["jump"], f"nav_path across the gap: {p['status']}, over {p.get('offmesh')}", failures)
+    dry = m.json("nav_path", mesh="gap", avoid_areas=["water"], **{"from": [293, 0, -4.5], "to": [293, 0, 4.5]})
+    check(dry["complete"] and all(not (290 < c[0] < 295.9 and abs(c[2]) < 1.5) for c in dry["corners"]) and any(c[0] > 295.9 for c in dry["corners"]),
+          f"avoid_areas water: the path goes round the pool ({dry['length']} m, {dry['corner_count']} corners)", failures)
+    # An agent jumps the gap.
+    m.json("world_spawn", shape="cube", name="jumper", position=[292, 0.5, -3], scale=[0.5, 1, 0.5], color="#e0c040",
+           props={"nav_agent": {"mesh": "gap", "speed": 3, "goal": [308, 0, -3]}})
+    high = 0.0
+    for _ in range(20):
+        m.json("time_control", action="step", ticks=15)
+        high = max(high, pos(m, "/jumper")[1])
+    j = pos(m, "/jumper")
+    check(dist_xz(j, [308, 0, -3]) < 0.6 and high > 0.8, f"an agent jumped the gap in an arc (highest {high:.2f} m) and arrived at {j}", failures)
+    # A model gets a fitted collider and carves the navmesh.
+    for _ in range(100):
+        e = m.json("world_query", path_prefix="/tomb", fields=["path", "model_state"], limit=1)["items"]
+        if e and e[0].get("model_state") == "ready":
+            break
+        time.sleep(0.05)
+    before = m.json("nav_point", mesh="gap", at=[306, 0, 2])
+    c = m.json("model_collider", path="/tomb", kind="auto", moving=True)
+    check(c["shape"] == "hull" and 4 <= c["points"] <= 16, f"model_collider: a hull of {c['points']} points for a moving body", failures)
+    c = m.json("model_collider", path="/tomb")
+    m.json("time_control", action="step", ticks=10)
+    after = m.json("nav_point", mesh="gap", at=[306, 0, 2])
+    check(before["on_navmesh"] and not after["on_navmesh"], f"the fitted collider ({c['shape']}, {c.get('points')} points) carves the navmesh under the tombstone", failures)
+    # A picture: the link's arc, the water area's colour, the carved tombstone, the query paths.
+    m.json("nav_path", mesh="gap", **{"from": [292, 0, -4], "to": [308, 0, 4]})
+    m.json("nav_path", mesh="gap", avoid_areas=["water"], **{"from": [293, 0, -4.5], "to": [293, 0, 4.5]})
+    shot = save("features_top", m.call("sight_frame", overlays=["navmesh", "paths"], ortho={"height_m": 16}, eye=[300, 30, 0.01], target=[300, 0, 0], width=1200, height=800))
+    nm = next((n for n in shot.get("overlays", {}).get("navmesh", {}).get("navmeshes", []) if n["path"] == "/nav/gap"), {})
+    check(len(nm.get("offmesh_links", [])) == 1 and nm["offmesh_links"][0]["found"] and [a["name"] for a in nm.get("areas", [])] == ["water"],
+          "the features capture lists the link (found) and the water area", failures)
+    return {"link_path_m": p["length"], "dry_path_m": dry["length"], "jump_high_m": round(high, 3), "tomb_hull_points": c.get("points")}
 
 
 def big_build(m, failures):
@@ -408,7 +462,7 @@ def main():
     failures = []
     runs = []
     for i in range(2):
-        args = ["--adapter", a.adapter, "--captures", str(OUT / "captures"), "--worlds", str(OUT / f"worlds{i}")]
+        args = ["--adapter", a.adapter, "--captures", str(OUT / "captures"), "--worlds", str(OUT / f"worlds{i}"), "--assets", str(ROOT / "games" / "sepulcra" / "assets")]
         if not a.windowed:
             args.append("--headless")
         with Engine(a.exe, a.port + i, OUT / f"engine{i}.log", *args, cwd=str(OUT)) as eng:
