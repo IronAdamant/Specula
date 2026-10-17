@@ -191,6 +191,7 @@ entities only; everything else is the gap.
 - [ ] **Everything through the protocol** (M3: text project data; M4: binary assets). Recipes, UI screens, sounds,
   style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
   imported images, models and audio follow with the asset studio.
+  *M3 progress 2026-10-18:* Lex rules (stored as world entities). Recipes, UI screens, sounds and style files remain.
   *Why:* two agents editing one recipe file today can silently clobber each other.
 - [x] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
   - Tasks are linked to claims and journal entries.
@@ -515,6 +516,12 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   Every edit is validated against a schema, and errors say what to change, because grammar and compiler feedback is
   what makes agents' output valid. `lex_*` tools read, edit, validate and simulate, with the journal, claims and undo.
   Code modules stay the escape hatch; each use is logged with why, so Lex grows by evidence.
+  *Core done 2026-10-18:* `crates/specula-lex` (13 item kinds, integer units, typed expressions, GAS-like effects, a
+  fixed phase order, a limits table), the 9 `lex_*` tools (rule sets stored as `/lex` entities, so versions, claims,
+  journal and undo apply; only the Lex tools write `/lex`), and a Sepulcra slice in Lex that matches the Rust sim
+  tick for tick (`games/sepulcra/tests/lex_parity.rs`, `scripts/lex_check.py`). Design: [design/LEX.md](design/LEX.md).
+  Still open: the full Sepulcra port (flow fields, walls, climbing, flyers, the colossus) and Lex running live in the
+  window, where native effects call module hooks (`logic_hook`); headless runs use in-process natives.
   *Proof:* rebuild Sepulcra's rules in Lex through tools alone, with replays still matching.
 - [ ] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
   facing, spacing, avoid, inside a region, on the navmesh) and solves positions deterministically. Unsatisfied

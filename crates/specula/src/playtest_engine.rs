@@ -432,7 +432,7 @@ impl Engine {
 
     /// A playtest's call, as its agent: answered at once or later through the receiver.
     fn playtest_dispatch(&mut self, a: &Active, tool: &str, args: &Json, server: &Server) -> Result<Pending, ToolOutput> {
-        if let Some((_, why)) = playtest::FORBIDDEN.iter().find(|(n, _)| *n == tool) {
+        if let Some(why) = playtest::forbidden(tool) {
             return Err(error("forbidden", format!("a playtest can't call {tool}: {why}"), vec![]));
         }
         // As over MCP: response_format of the heavy tools is applied to the answer.

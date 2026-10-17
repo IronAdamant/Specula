@@ -43,7 +43,9 @@ frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU ti
 perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. A game running in \
 the engine adds its own tools (play_*). Game logic as code: a module is a Rust cdylib depending only on specula-sdk; \
 logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
-world; logic_status, logic_input and logic_hook inspect, drive and call it. Coordinates: metres, right-handed, +Y up; a top-down view puts \
+world; logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
+(lex_schema describes the language; lex_edit changes a set with validation, lex_simulate runs it headless and \
+deterministically). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
 suggestion; the hosted game's name is reserved: name_reserved); \
@@ -211,6 +213,8 @@ pub enum Command {
     Physics(crate::physics_tools::PhysicsCall),
     /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
     Playtest(crate::playtest_engine::PlaytestCall),
+    /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
+    Lex(crate::lex_tools::LexCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -275,6 +279,10 @@ pub struct Tools {
     to_engine: Sender<Request>,
     /// Tools the hosted game added (answered by the game on the engine thread).
     game_tools: Vec<ToolDef>,
+    /// Saved `lex_simulate` runs.
+    pub(crate) lex_runs: crate::lex_tools::Runs,
+    /// One `lex_edit` per rule set at a time (held on protocol threads only).
+    pub(crate) lex_locks: crate::lex_tools::Locks,
 }
 
 impl Tools {
@@ -286,7 +294,25 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools }
+        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default() }
+    }
+
+    /// Sends a command to the main thread and waits for its answer.
+    pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
+        let (reply, answer) = mpsc::channel();
+        let deadline = Instant::now() + APPLY_DEADLINE;
+        let request = Request { session: session.clone(), command, reply, deadline };
+        if self.to_engine.send(request).is_err() {
+            return ToolOutput::error("the engine is shutting down");
+        }
+        answer.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => {
+                ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied")
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                ToolOutput::error("the engine is shutting down or skipped the command; it was not applied")
+            }
+        })
     }
 }
 
@@ -321,6 +347,9 @@ impl Tools {
         let arguments = shaped.as_ref().map_or(arguments, |(_, a)| a);
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
+        } else if name.starts_with("lex_") {
+            // Lex tools do their heavy work (validation, simulation) on this thread.
+            return crate::lex_tools::call(self, session, name, arguments);
         } else {
             parse(name, arguments)
         };
@@ -328,20 +357,7 @@ impl Tools {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
-        let (reply, answer) = mpsc::channel();
-        let deadline = Instant::now() + APPLY_DEADLINE;
-        let request = Request { session: session.clone(), command, reply, deadline };
-        if self.to_engine.send(request).is_err() {
-            return ToolOutput::error("the engine is shutting down");
-        }
-        let out = answer.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => {
-                ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied")
-            }
-            mpsc::RecvTimeoutError::Disconnected => {
-                ToolOutput::error("the engine is shutting down or skipped the command; it was not applied")
-            }
-        });
+        let out = self.send(session, command);
         match shaped {
             Some((format, _)) => crate::response::shape(name, format, out),
             None => out,
@@ -2320,6 +2336,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
     .chain(crate::playtest_engine::definitions())
+    .chain(crate::lex_tools::definitions())
     .collect()
 }
 

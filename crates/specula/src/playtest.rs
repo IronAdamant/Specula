@@ -72,6 +72,16 @@ pub const FORBIDDEN: [(&str, &str); 6] = [
     ("logic_reload", "module reloads run outside the engine thread: reload before the playtest"),
 ];
 
+/// Tool namespaces a playtest may not call: they do their work on the caller's connection thread
+/// and then wait for the engine thread, which the playtest is running on.
+const FORBIDDEN_PREFIXES: [(&str, &str); 1] =
+    [("lex_", "lex_* tools validate and simulate outside the engine thread: edit rule sets before the playtest (lex_simulate checks a set headless on its own)")];
+
+/// Why a playtest can't call `tool`, if it can't.
+pub fn forbidden(tool: &str) -> Option<&'static str> {
+    FORBIDDEN.iter().find(|(n, _)| *n == tool).or_else(|| FORBIDDEN_PREFIXES.iter().find(|(p, _)| tool.starts_with(p))).map(|(_, why)| *why)
+}
+
 /// A spec (or replay) problem: which field, and what to change.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpecError {
@@ -215,7 +225,7 @@ fn call_name(v: &Json, field: &str) -> Result<String, SpecError> {
     if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         return Err(SpecError::new(format!("{field}.call"), format!("'{name}' is not a tool name")));
     }
-    if let Some((_, why)) = FORBIDDEN.iter().find(|(n, _)| *n == name) {
+    if let Some(why) = forbidden(&name) {
         return Err(SpecError::new(format!("{field}.call"), format!("a playtest can't call {name}: {why}")));
     }
     Ok(name)
@@ -1331,6 +1341,7 @@ mod tests {
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 5, "call": "x"}, {"at": 1, "call": "y"}]}"#).field, "steps[1].at");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0, "call": "time_control"}]}"#).field, "steps[0].call");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0}]}"#).field, "steps[0]");
+        assert_eq!(err(r#"{"name": "a", "end": [{"call": "lex_edit"}]}"#).field, "end[0].call", "connection-thread tools");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 9, "call": "x"}], "ticks": 5}"#).field, "ticks");
         assert_eq!(err(r#"{"name": "a", "until": {"call": "x"}}"#).field, "until.expect");
         assert_eq!(err(r#"{"name": "a", "end": [{"at": 1, "call": "x"}]}"#).field, "end[0].at");
