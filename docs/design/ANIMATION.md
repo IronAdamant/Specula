@@ -1,7 +1,8 @@
 # Design: skeletal animation
 
 Status: researched 2026-10-13. A1–A2 built in M2; **A3, agent-authored motion, motion checks and animation sight
-built 2026-10-18** (see [A3 as built](#a3-as-built-2026-10-18) at the end). A4 (ragdolls) waits for physics P4.
+built 2026-10-18** (see [A3 as built](#a3-as-built-2026-10-18) at the end); **A4 (ragdolls and powered ragdolls)
+built 2026-10-18** on physics P4 (see [A4 as built](#a4-as-built-2026-10-18)).
 Foundation **F4** ([ROADMAP.md](../ROADMAP.md)).
 
 **Goal:** characters and creatures that move well, are cheap on low-end GPUs, deterministic where gameplay depends on
@@ -228,5 +229,57 @@ leg can't reach where the animation meant the foot to be). The `filmstrip` and
 - Powered ragdolls drive their joint motors towards the graph's own pose: `GraphPlayer::evaluate` gives the target
   local rotations at any time (pure, so physics can ask at its ticks).
 - Graph `limits` (Euler ranges per bone) are the joint limits a ragdoll's constraints take.
-- What is still needed: physics P4 joints, a model-space → local pose conversion for the physics pose (as
+- What was still needed (done, below): physics P4 joints, a model-space → local pose conversion for the physics pose (as
   `gen::deltas_from_globals` does), and the engine supplying the external pose per entity.
+
+## A4 as built (2026-10-18)
+
+Code: `crates/specula/src/physics/ragdoll.rs` (the plan, live ragdolls), `crates/specula/src/ragdoll_tools.rs`
+(`ragdoll_set`, `ragdoll_info`), `specula_anim::checks::check_frames`, the graph's `ragdoll.radius`, and the renderer
+reading the world's external poses (`World::external_pose`, `models.rs`). Joints are physics P4
+([PHYSICS.md](PHYSICS.md#p4-as-built-2026-10-18)).
+
+- **Data.** A model entity's `props.ragdoll` turns it on: `{mode: limp | powered | off, strength, mass, relocate,
+  radii, hit: {bone, impulse, seq}}`. World data, so journaled, undoable and claimable for saved entities, and games
+  write it for their transient presentation. `ragdoll_set` writes it and the graph's bool `ragdoll` parameter in one
+  change (`fit: true` also measures the radii).
+- **The plan** (pure, deterministic, unit-tested): every bone at least 5 cm long except the root gets a capsule along
+  its segment; shorter bones ride with their parent as the pose had them. Each part is joined to its nearest ancestor
+  part at its head: a **hinge** where the graph's `limits` give one axis (knees), else a **ball joint** twisting about the
+  bone (twist from the limit on the axis the bone lies along, else ±30°) inside a cone (from the other limits, else
+  50°). Frames come from the rest pose, so joint angles are rest-relative like the limits. Mass (40 kg × scale³ by
+  default) goes three quarters by length, the trunk (the parts from the pelvis to the last branching part) weighing
+  four times a limb of its length, and a quarter shared equally (no part many times lighter than its neighbour: big
+  mass ratios make chains soft). Joint friction (0.6 N·m per carried kg) and damping let it come to rest instead of
+  jittering. Parts of one ragdoll never collide with each other.
+- **Radii.** From the graph's `ragdoll: {radius: {bone: m}}` (model metres), over by `props.ragdoll.radii`, else a
+  fifth of the bone's length (a branching trunk bone a third of how far apart its branches start). `ragdoll_set {fit}`
+  measures them from the built skinned mesh (the 95th percentile of how far each bone's vertices lie from it, the
+  farthest for end parts) and writes them as data: the mesh build is asynchronous, data isn't. A fitted capsule spans the
+  bone's whole segment. *Found by the motion check:* with guessed radii the shambler's hump sank 50 cm into the ground;
+  fitted, 0.05 cm. Sepulcra's shambler graph carries its fitted radii, the feet thinner than measured (a capsule as wide
+  as the toes' reach sinks the soles the walk plants).
+- **Limp** (deaths, falls): starts from the play evaluated at the tick's time without IK and without its ragdoll state
+  (which would play this very pose), each part moving on at the velocity the animation had (the pose a tick on); a
+  `hit` knocks a bone once per `seq` (a bone without a body passes it to its parent's). The engine records the pose each
+  tick (150 frames) and sets it as the entity's external pose; the graph's `{external: true}` nodes play it, so
+  `any → ragdoll when ragdoll` blends into it.
+- **Powered** (hit reactions): the pelvis and the legs follow the animation as kinematic bodies (planted where it
+  plants them; dynamic legs fought the ground wherever the raw animation, before feet IK, dips into it), and each upper
+  body joint's motor drives towards the animation's pose at the end of each physics tick (`GraphPlayer::evaluate`, pure,
+  so deterministic) at 60 Hz with a torque cap of `strength` × 25 N·m per kg it carries. The renderer draws it as it is
+  (it already follows the animation). Measured: within 10° of the walk at every joint; a 21 N·s blow to the shambler's
+  reaching arm (strength 0.6) knocks it 9° further off, and it recovers within 1.5 s.
+- **Off** (getting up): with `relocate` (default) the entity moves under the pelvis, the last pose stays the external
+  pose for 2 s (so the graph's transition out blends from where the body lies), and the parts go.
+- **Saved vs transient.** Saved entities' ragdolls are simulation (hashed; twin runs step the same). Transient ones are
+  cosmetic (they land on static colliders but never touch the simulation or its hash). Like warm starts, ragdoll bodies
+  aren't saved in world files: a loaded world's ragdoll starts again from the animation.
+- **Motion checks on ragdolls.** `check_frames` runs ground penetration, where the body comes to rest (`floating` at
+  the end), joint limits and pops where physics takes over (the first frames' change of per-frame motion; later
+  changes are impacts) on the recorded poses; `ragdoll_info` reports them with the game's `style.toml` thresholds,
+  measured by the skinned mesh when it is built. The shambler's limp death passes them all (penetration 0.05 cm,
+  floating 1.45 cm, pops 2 cm against Sepulcra's 3, 2.5 and 6 cm).
+- **Sepulcra**: shamblers die as ragdolls (knocked back from where they faced, `props.ragdoll` and the `ragdoll`
+  parameter set together) onto the slab, whose ground pieces got box colliders; the other creatures keep their death
+  clips (the runner's bones scatter, the wraith fades, the colossus crumbles: not falls).
