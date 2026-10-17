@@ -85,3 +85,11 @@ post_fxaa = 0.3
 # lease_ports = [7500, 7599]    # ports lease_take {kind: "port"} hands out (never the engine's own)
 # scratch_root = "scratch"      # where scratch-folder leases are made
 # gpu_ms_per_s = 1000           # GPU time per second shared by GPU leases (advisory)
+
+# Live Lex runs (lex_live): what they may spend, in deterministic work units (a Lex tick costs its work
+# plus one per entity plus one), so steps land on the same engine ticks on every machine. One setting for
+# every adapter.
+# [lex_live]
+# work_per_tick = 2000000       # work all runs together may do per engine tick; past it a run falls behind
+# step_work = 5000000           # work one Lex tick may do (at most Lex's own cap); past it the run halts
+# backstop_ms = 1000            # wall time one Lex tick may take (not deterministic: a backstop only)

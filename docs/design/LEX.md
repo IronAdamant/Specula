@@ -297,7 +297,10 @@ and uses it as a behaviour (`{"type": "native", "hook": "flow_route"}`) or an ac
   `position`, `each_tagged` (no allocation), `range` / `chance` on a declared stream, `wave`.
 - *(Sepulcra port)* **Triggers and refusals.** `cx.trigger("arrive")` runs the behaviour's `on.arrive` actions at
   once (so a hook decides *when*, the rules say *what*: tombstones stay data). In a command, `return
-  Err(cx.refuse("enemy_in_the_way", "..."))` rolls the command back and refuses it with that code.
+  Err(cx.refuse("enemy_in_the_way", "..."))` rolls the command back and refuses it with that code;
+  `cx.refuse_with(code, message, &[("enemy", id)])` adds numbers to the refusal (at most 16).
+- **Refusal details.** A `require` may carry `details: {name: number expression}` (at most 16, like native args),
+  evaluated when it refuses: Sepulcra's upgrade says `{need, have}` with `not_enough_dust`, like a `cost` does.
 - *(Sepulcra port)* **Caching.** A bound hook is shared by a run's clones, so what it derives from the state (flow
   fields from walls) is keyed by `cx.generation()`: a pair (the state value's identity, a counter bumped when an
   entity appears, leaves, changes archetype or gains or loses an effect instance). Every clone, including a
@@ -539,12 +542,27 @@ and fast-forwards it with everything else. At most 4 runs at once.
 - **Live = headless.** A module hook can't change the run's state, only the world, so with the same seed, params and
   commands at the same ticks, a live run and `lex_simulate` reach the same hash (tested in `lex_live.rs`, and on a
   whole game of Sepulcra by `scripts/sepulcra_lex_tools.py`).
-- **Input**: a hosted game turns its input into the set's commands (Sepulcra's `--rules lex`, below); generic input
-  bindings are later work.
+- **Input** (F6: actions, not keys). `start {input}` makes a run playable without a hosted game: `{actions, bindings}`
+  where `actions` is a `specula.input.v1` action map (keyboard, mouse, gamepad, touch: the same format and
+  latching as module actions) and each binding is `{action, on: pressed | released | held, command, args}`;
+  `"$x"` / `"$y"` in `args` become the action's value in thousandths. `input` may instead name a `data` item of
+  the set holding the same object, so the controls live in the rule set. Bindings are checked when the run starts
+  (actions and commands must exist). Once per engine tick, before the run steps, the actions' state is taken
+  (window frames latched since the last tick, plus what agents hold with `lex_live {action: input, actions,
+  ticks}`) and each binding that fires applies its command at the run's tick like an agent's, journaled with `by:
+  "input"` (so `journal` still replays headless); refusals land in `status.recent`. A hosted game can still turn
+  its own input into commands (Sepulcra's `--rules lex`, below).
+- **Halts and restarts.** `halted` says whether the run is `resumable`: a work-cap halt (the tick finished) and a
+  panic inside a command (the command was undone) leave the state whole, so `resume` carries on from that tick; a
+  panic in a tick, or the wall-time backstop, cut a tick off part-way, so only `restart` (tick 0 again, with the
+  same seed, params, `present` and `input`) runs it again.
+- **Settings.** perf.toml `[lex_live]` sets `work_per_tick`, `step_work` and `backstop_ms` (one setting for
+  every adapter, since the work limits decide where steps land); `status` shows them under `budget`, and each run's
+  `work: {last_tick, this_engine_tick}`.
 
 **Sepulcra on Lex in the window.** `sepulcra --rules lex` (the app, after `--`) runs the game's rules from the
 set: the Lex run decides every player and agent command (a refusal answers with the game's code and Lex's own under
-`lex`) and the outcome (the victory and defeat screens, and when the game stops stepping, follow the Lex run), while
+`lex`, and its numbers from Lex: `need` and `have`, the enemy in the way as the game's id) and the outcome (the victory and defeat screens, and when the game stops stepping, follow the Lex run), while
 the hand-written sim steps in lockstep as the reference and feeds the scene, HUD and sound. The reference judges
 each command first; every tick the two are compared. Any difference, or a command they judge differently, is a
 **desync**: the game stops there (neither sim steps again; a command Lex accepted but the reference refused is
@@ -559,6 +577,6 @@ replayed (2026-10-18: won at tick 21852, 21,852 ticks compared, 0 validation err
 - A schema-guided three-way merge of items (M4 conflict help) and a text diff in refused edits.
 - More stacking and modifier channels as games need them (GAS "aggregators").
 - Behaviour trees and utility AI (Navigation & AI lane), and `navigate`.
-- Input bindings for live runs (window and gamepad input mapped to a set's commands without a hosted game), and
-  presenting a live run with the game's own looks instead of `present` rules.
+- Presenting a live run with the game's own looks instead of `present` rules, and pointer input in world terms
+  (a bound command taking the site under the cursor).
 - A cell-graph `navigate` behaviour (the navigation lane) to replace `sepulcra.ground` and `sepulcra.air`.

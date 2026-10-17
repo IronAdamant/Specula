@@ -709,6 +709,25 @@ impl LogicHost {
         }
     }
 
+    /// The gamepads' states as last polled (opened at first use; empty without XInput), for
+    /// other input readers in the same frame (live Lex runs), polling them if no module did.
+    pub fn pad_states(&mut self, poll: bool) -> &[specula_platform::gamepad::GamepadState] {
+        match self.pads.get_or_insert_with(|| specula_platform::gamepad::Gamepads::new().ok()) {
+            Some(p) => {
+                if poll {
+                    p.poll();
+                }
+                p.states()
+            }
+            None => &[],
+        }
+    }
+
+    /// Whether any module reads input (and so polled the gamepads this frame).
+    pub fn reads_input(&self) -> bool {
+        self.slots.values().any(|s| !s.input.is_empty())
+    }
+
     /// `logic_input`: an agent holds actions of module `name` for `ticks` ticks.
     pub fn hold(&mut self, name: &str, actions: &Json, ticks: u64) -> Result<Json, WorldError> {
         let Some(slot) = self.slots.get_mut(name) else { return Err(self.no_module(name)) };

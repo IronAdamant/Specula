@@ -272,6 +272,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
+    engine.lex_live.set_limits(perf_cfg.lex_live);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     if let Some(name) = args.world {
@@ -743,6 +744,11 @@ impl Engine {
         self.input.clear();
         ui.drain_events(&mut self.input);
         self.logic.feed_window(&self.input, dt.as_secs_f32());
+        if self.lex_live.has_input() {
+            let poll = !self.logic.reads_input();
+            let pads = self.logic.pad_states(poll);
+            self.lex_live.feed_window(&self.input, pads, dt.as_secs_f32());
+        }
         // A human taking the controls takes the camera back from an agent's (window_view).
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");

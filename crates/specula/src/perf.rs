@@ -483,6 +483,8 @@ pub struct PerfConfig {
     /// `[swarm]`: the window's frame floor under a backlog and the resource lease pools (see
     /// [`SwarmConfig`]).
     pub swarm: SwarmConfig,
+    /// `[lex_live]`: live Lex runs' work limits (see [`crate::lex_live::Limits`]).
+    pub lex_live: crate::lex_live::Limits,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -495,6 +497,7 @@ impl Default for PerfConfig {
             history_frames: HISTORY,
             shapes: crate::two_d::ShapeLimits::default(),
             swarm: SwarmConfig::default(),
+            lex_live: crate::lex_live::LIMITS,
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -550,7 +553,8 @@ impl PerfConfig {
                     }
                 }
                 "swarm" => cfg.swarm = SwarmConfig::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm)")),
+                "lex_live" => cfg.lex_live = crate::lex_live::Limits::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, lex_live)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;
@@ -1549,6 +1553,17 @@ mod tests {
         let metrics: Vec<&str> = errors.iter().map(|e| e.get("metric").and_then(Json::as_str).unwrap()).collect();
         assert!(metrics.contains(&"gpu_pass.scene") && !metrics.contains(&"gpu_pass.shadow"), "{metrics:?}");
         assert!(metrics.contains(&"zone.frame/sim") && metrics.contains(&"zone.specula-autosave:autosave.write"));
+    }
+
+    #[test]
+    fn the_lex_live_section_sets_the_live_work_limits() {
+        let cfg = PerfConfig::parse("[lex_live]\nwork_per_tick = 500000\nstep_work = 1000000\nbackstop_ms = 250\n").unwrap();
+        assert_eq!(cfg.lex_live, crate::lex_live::Limits { work_per_tick: 500_000, step_work: 1_000_000, backstop: Duration::from_millis(250) });
+        assert_eq!(PerfConfig::default().lex_live, crate::lex_live::LIMITS);
+        for bad in ["work_per_tick = 0", "step_work = 9000000", "backstop_ms = 1", "work = 3"] {
+            let err = PerfConfig::parse(&format!("[lex_live]\n{bad}\n")).unwrap_err();
+            assert!(err.contains("[lex_live]"), "{bad}: {err}");
+        }
     }
 
     #[test]
