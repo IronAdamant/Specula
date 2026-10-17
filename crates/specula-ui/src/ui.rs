@@ -1832,7 +1832,7 @@ impl Measure for Meas<'_> {
         let role = self.theme.role(*role);
         let Some(fi) = self.fonts.index(&role.font) else { return [0.0, role.size * self.scale * 1.2] };
         let rt = &mut self.rt[i];
-        let wrap_key = wrap.map_or(-1.0, |w| w);
+        let wrap_key = wrap.unwrap_or(-1.0);
         let size = role.size * self.scale;
         if !rt.laid_ok || rt.laid_text != rt.text || rt.laid_wrap != wrap_key || rt.laid_size != size || rt.laid_font != fi {
             let mut style = TextStyle::new(role.size).with_scale(self.scale);
