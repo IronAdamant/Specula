@@ -1,7 +1,8 @@
 # Design: skeletal animation
 
-Status: researched 2026-10-13, not yet implemented. Foundation **F4**. Stages A1–A2 land in M2 and A3–A4 in M3
-([ROADMAP.md](../ROADMAP.md)).
+Status: researched 2026-10-13. A1–A2 built in M2; **A3, agent-authored motion, motion checks and animation sight
+built 2026-10-18** (see [A3 as built](#a3-as-built-2026-10-18) at the end). A4 (ragdolls) waits for physics P4.
+Foundation **F4** ([ROADMAP.md](../ROADMAP.md)).
 
 **Goal:** characters and creatures that move well, are cheap on low-end GPUs, deterministic where gameplay depends on
 them, and checkable by agents.
@@ -106,3 +107,92 @@ spec when implementing.
   [glTF tutorial on skins](https://github.khronos.org/glTF-Tutorials/gltfTutorial/gltfTutorial_020_Skins.html).
 - Jason Gregory, *Game Engine Architecture*, animation chapter: pipeline, blend trees and compression.
 - Kavan et al., "Skinning with Dual Quaternions" (2007): for the later dual-quaternion upgrade.
+
+## A3 as built (2026-10-18)
+
+What exists, where, and the decisions behind it. Code: `crates/specula-anim` (`graph`, `play`, `ik`, `checks`,
+`film`, new `gen` kinds) and the engine's `crates/specula/src/anim.rs` and `anim_tools.rs`.
+
+### Graphs as data (`graph.rs`)
+
+Graphs are strict JSON (like every anim format: unknown fields, names and impossible values are errors with a path
+and a code), kept in an anim-set file under `"graphs"` or written live as world assets. A graph has:
+
+- **parameters**: `float` (range, default), `bool`, `trigger`, `enum` (values), `vec3` (IK and look-at targets);
+- **nodes** (blend trees): clips, `blend1d`, `blend2d` (gradient band interpolation), `{base, add}` additive,
+  and `{external: true}` (see A4 below); children play in step by normalised phase;
+- **states** in **layers** (the base layer, plus override or additive layers with a weight and a mask): each plays a
+  node at a speed or with `match_speed` (the rate that keeps feet planted at a ground-speed parameter), with
+  `root_motion`, per-state IK weights and an `on_enter` event;
+- **transitions**, tried in order: from a state, a list or `*`; conditions as short strings (`"act == move and
+  speed > 0.1"`, `"hit"`), an exit phase (`"end"`), a blend time, `keep_phase`;
+- **IK** (`feet`, `two_bone`, `look_at`), **joint limits** and the bones the checks treat as **feet**.
+
+### Plays as pure functions of time (`play.rs`)
+
+The decision that shaped everything: the engine already evaluates clips as a pure function of render time, so a
+capture at a time always shows the same pose. Graphs keep that. A **play** (an entity's `anim` in graph mode) is data:
+parameter values, the graph clock at an anchor and, per layer, a short blend stack (state, phase, crossfade). Its pose
+at any time is computed by running the state machines forward from the anchor with constant parameters: conditions
+fire at once, exit times at the moment the phase reaches them. Periodic chains (attack → idle → attack) are detected
+and skipped whole periods at a time, so the cost is bounded however far the time is from the anchor (`MAX_STEPS`
+otherwise, reported as `truncated`). **Writing parameters settles the play** at the write's time (the world does it
+in `World::update`): blends stay continuous, fired triggers are consumed, and parameters not given keep their values.
+There is no per-frame state, so captures, replays and the window agree.
+
+### Determinism: what is simulation, what is cosmetic
+
+- **Deterministic** (exact `f64` time, IEEE basic operations, `dmath`): state resolution, events, and
+  `play::root_motion(t0, t1)`; sampled at simulation ticks they can feed a simulation (a character controller's
+  desired velocity). Plays are hashed and journaled like every component.
+- **Cosmetic**: render-time poses with IK (feet planted on the ground the renderer finds, look-at). Nothing in a
+  simulation reads them. Sepulcra's simulation stays headless; its scene sets parameters.
+
+### IK (`ik.rs`)
+
+Analytic two-bone IK (keeps the animated bend plane; optional end rotation), feet planted on a `Ground` (each foot
+keeps its animated height above the real ground under it, the pelvis moves by the lowest foot's offset), and look-at
+shared along a chain, clamped. The engine's ground is the tops of entities tagged `ground`, with soft edges so a
+foot crossing a step eases over it; physics queries can replace that behind the same trait.
+
+### Agent-authored motion (`gen.rs`, tools)
+
+New generator kinds: `keys` (poses at times, Catmull–Rom; feet planted when legs are given), `pose`, `recoil` (snap
+then damped spring, for additive hit layers), `breathe`, `chain` (spring-chain secondary motion baked over a source
+clip, seamless loops: tails, shrouds, cloth strips), and `"body": "auto"` (a gait from a rig's bone names). Gaits
+now lift and land feet in place (`clear`) with the toe up, found by the foot-sliding check (the shambler's walk went
+from 16 to 0.08 cm/s). Agents write clips and graphs with `anim_set`: they become Group entities tagged `anim_asset`
+under `/anims/<recipe>/`, so they are journaled, claimable, undoable and saved, and the library lays them over the
+recipe's own set for every entity of that model. *Limit:* props hold 16 KiB, so long keyframed clips should be
+generator specs.
+
+### Motion checks as data (`checks.rs`)
+
+Foot sliding (soles within 2.5 cm, weighted `2 − 2^(h/H)`, per foot), floating, ground penetration (skinned
+vertices), joint limits, pops at transitions (excess per-frame joint jump, scaled to a 1.8 m figure), root drift and
+loop seams, for clips, graph states held with parameters and parameter changes. Thresholds and precise exemptions
+(`"rig/subject" = ["check", "check:bone"]`) come from the game's `style.toml` `[motion]` table; a value over its limit
+is an error. On Sepulcra the checks found real defects, now fixed: the runner hovered 7.8 cm, the colossus's hands
+went 33 cm into the slab walking and 2 m in its death. Self-intersection is not checked yet.
+
+### Animation sight
+
+`anim_filmstrip` renders contact sheets (rows of clips, states or transitions on a neutral stage, or an entity's own
+play in the world) with each row's checks attached, saved like captures with a packet. The `filmstrip` and
+`motion_checks` examples do the same offline.
+
+### Tools
+
+`anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`; parameters are written with `world_set {anim:
+{graph, params}}`.
+
+### The seam for A4 (ragdolls)
+
+- `{external: true}` nodes play a pose supplied from outside (`play::Surroundings::external`): a ragdoll's pose from
+  physics joints becomes a graph state, and transitions blend to and from it like any other ("any → ragdoll when
+  dead", "ragdoll → get_up when grounded").
+- Powered ragdolls drive their joint motors towards the graph's own pose: `GraphPlayer::evaluate` gives the target
+  local rotations at any time (pure, so physics can ask at its ticks).
+- Graph `limits` (Euler ranges per bone) are the joint limits a ragdoll's constraints take.
+- What is still needed: physics P4 joints, a model-space → local pose conversion for the physics pose (as
+  `gen::deltas_from_globals` does), and the engine supplying the external pose per entity.
