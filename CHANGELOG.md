@@ -26,6 +26,13 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `logic_reload`, `logic_unload`, `logic_status`, `logic_input`, `logic_hook`. Builds are vetted (path crates only;
   no build scripts, proc-macros, Cargo config or toolchain files) and run offline with `panic = "unwind"`. Example
   module `games/ambulo`; edit to reload about 1 s. Engine crates build at `opt-level = 2` in dev
+- **Lex, gameplay as data:** new crate `specula-lex` (std only): rule sets as JSON with 13 item kinds (params,
+  resources, paths, sites, archetypes, effects, machines, waves, timers, rules, commands, outcomes, natives), exact
+  integer units, a typed expression language, GAS-like effects with stacking policies and tags, a fixed phase order,
+  structured diagnostics with suggestions, and bounded work, memory and replies. Tools `lex_schema`, `lex_list`,
+  `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`, `lex_import`, `lex_export`, `lex_session`; rule sets live as
+  `/lex/<set>/<item>` entities (only the Lex tools write `/lex`). A slice of Sepulcra in Lex matches the hand-written
+  sim tick for tick across seeds
 - **Physics P1-P3:** new crate `specula-physics` (std only): spheres, capsules, boxes, convex hulls, static meshes
   and heightfields; a two-tree broadphase; GJK and SAT with per-pair feature memory; raycasts, shape casts, overlaps
   and triggers; a character controller (steps, slopes, ground snap, moving platforms, pushing); Soft Step rigid
