@@ -2,11 +2,16 @@
 //! in `sepulcra::lex`), with the hand-written sim kept as the reference.
 //!
 //! The Lex run is the authority: it decides every player and agent command (a refusal there is
-//! the game's refusal) and the outcome. The hand-written state steps in lockstep with the same
-//! commands and feeds the presentation (scene, HUD, sounds), and every tick the two are compared
-//! (dust, tombstones, wave, outcome, every enemy's and projectile's position and HP, the stones
-//! and walls): a difference is a desync, kept with its tick and shown in `play_state`. A
-//! scripted build order (`play_new` with a layout) is judged by both and must agree.
+//! the game's refusal, with Lex's own code and message under `lex` in the answer) and the outcome
+//! (the victory and defeat screens, and when the run stops stepping, follow the Lex run). The
+//! hand-written state steps in lockstep with the same commands and feeds the presentation
+//! (scene, HUD, sounds), and every tick the two are compared (dust, tombstones, wave, outcome,
+//! every enemy's and projectile's position and HP, the stones and walls). Any difference, or a
+//! command the two judge differently, is a **desync**: the game stops there (neither steps
+//! again), says so on screen, and `play_state.rules` has the tick and what differed. A command
+//! Lex accepts but the reference refuses is taken back out of the Lex run, so the two never drift
+//! apart silently. A scripted build order (`play_new` with a layout) is judged by both and must
+//! agree.
 //!
 //! Recordings stay the hand-written sim's format (the same commands); `play_replay` replays
 //! them through Lex too and reports its hash.
@@ -30,6 +35,39 @@ pub struct LexRules {
     /// Commands the Lex run accepted / refused.
     pub accepted: u64,
     pub refused: u64,
+    /// Lex's refusal of the last command decided (its code and message).
+    pub last_refusal: Option<(String, String)>,
+}
+
+/// A Lex refusal as the game's [`Rejection`] (Lex's codes are the game's for the rules it
+/// states; the generic ones map by the command). `reference` supplies the details (need and
+/// have, the enemy in the way) when it refused the same way.
+fn rejection_of(code: &str, cmd: &Command, state: &State, reference: Option<&Rejection>) -> Rejection {
+    if let Some(r) = reference.filter(|r| r.code() == code) {
+        return *r;
+    }
+    let walls = matches!(cmd, Command::PlaceWall { .. } | Command::RemoveWall { .. });
+    match code {
+        "unknown_cell" | "unknown_site" => Rejection::UnknownCell,
+        "unknown_stone" | "unknown_archetype" => Rejection::UnknownStone,
+        "not_buildable" => Rejection::NotBuildable,
+        "not_wallable" => Rejection::NotWallable,
+        "wrong_site" if walls => Rejection::NotWallable,
+        "wrong_site" => Rejection::NotBuildable,
+        "occupied" => Rejection::Occupied,
+        "no_stone" => Rejection::NoStone,
+        "no_wall" => Rejection::NoWall,
+        "no_entity" if walls => Rejection::NoWall,
+        "no_entity" => Rejection::NoStone,
+        "max_tier" => Rejection::MaxTier,
+        "not_enough_dust" => Rejection::NotEnoughDust { need: 0, have: state.dust() },
+        "wall_exists" => Rejection::WallExists,
+        "enemy_in_the_way" => Rejection::EnemyInTheWay { enemy: 0 },
+        "no_more_waves" => Rejection::NoMoreWaves,
+        // game_over, and Lex's own failures (work_limit, runtime_error): nothing the player can
+        // fix by choosing differently; `lex` in the answer has the real code.
+        _ => Rejection::GameOver,
+    }
 }
 
 impl LexRules {
@@ -49,32 +87,57 @@ impl LexRules {
         }
         let rules = Self::rules()?;
         let sim = sepulcra::lex::sim(Arc::clone(&rules), seed)?;
-        Ok(LexRules { rules, sim, desync: None, checked: 0, accepted: 0, refused: 0 })
+        Ok(LexRules { rules, sim, desync: None, checked: 0, accepted: 0, refused: 0, last_refusal: None })
     }
 
     /// The Lex run's verdict on a command at its current tick (applied when accepted). `state`
-    /// is the reference: if it would judge differently, that is a desync.
+    /// is the reference, asked first: if it judges differently, that is a desync (and a command
+    /// the reference can't take is taken back out of the Lex run).
     pub fn decide(&mut self, state: &State, cmd: &Command) -> Result<(), Rejection> {
-        let lex = sepulcra::lex::command_call(&self.sim, state.content(), cmd).and_then(|c| self.sim.apply(&c));
+        self.last_refusal = None;
+        if let Some((t, d)) = &self.desync {
+            self.last_refusal = Some(("desync".into(), format!("the rules diverged at tick {t} ({d}); the run is stopped")));
+            return Err(Rejection::GameOver);
+        }
         let reference = state.check(cmd);
+        // Kept only when the reference refuses (Lex may accept, and must then be undone).
+        let before = reference.is_err().then(|| self.sim.clone());
+        let lex = sepulcra::lex::command_call(&self.sim, state.content(), cmd).and_then(|c| self.sim.apply(&c));
         match (lex, reference) {
             (Ok(()), Ok(())) => {
                 self.accepted += 1;
                 Ok(())
             }
-            (Err(_), Err(r)) => {
+            (Err(l), Err(r)) => {
                 self.refused += 1;
-                Err(r)
+                let mine = rejection_of(&l.code, cmd, state, Some(&r));
+                self.last_refusal = Some((l.code, l.message));
+                Err(mine)
             }
             (Ok(()), Err(r)) => {
+                if let Some(b) = before {
+                    self.sim = b;
+                }
                 self.note(state.tick(), format!("Lex accepted {cmd:?}, the reference refused it ({})", r.code()));
+                self.last_refusal = Some(("desync".into(), "Lex accepted the command but the reference refused it; the run is stopped".into()));
                 Err(r)
             }
             (Err(l), Ok(())) => {
                 self.refused += 1;
                 self.note(state.tick(), format!("Lex refused {cmd:?} ({}), the reference would accept it", l.code));
-                Err(Rejection::GameOver)
+                let mine = rejection_of(&l.code, cmd, state, None);
+                self.last_refusal = Some((l.code, l.message));
+                Err(mine)
             }
+        }
+    }
+
+    /// The game's outcome by the Lex rules.
+    pub fn result(&self) -> sepulcra::Outcome {
+        match self.outcome() {
+            Some("won") => sepulcra::Outcome::Won,
+            Some(_) => sepulcra::Outcome::Lost,
+            None => sepulcra::Outcome::Running,
         }
     }
 

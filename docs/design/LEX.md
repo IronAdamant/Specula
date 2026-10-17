@@ -489,8 +489,12 @@ Each feature is general, validated, bounded and tested (`crates/specula-lex/test
 native `streams`, `data`, binding, the id API, `trigger` with a native behaviour's `on` lists, `refuse`,
 `generation`, hosts; attack `when`; archetype `order`; group `with`; spawner `with`; wave scale for every spawn
 that joins a wave; site args limited to one sites item (`of`); `x`, `y`, `z` of entities and sites. Native args are
-capped at 16 (evaluated into a fixed buffer, no allocation per call). `RUNTIME_VERSION` stays 1: the only result
-change is the wave scale of spawns that join a wave without being scheduled (summons), which no rule set used before.
+capped at 16 (evaluated into a fixed buffer, no allocation per call; a host gets them as `NativeArgs`, borrowed).
+A native call costs work like an action (one unit plus one per arg) and `each_tagged` scans are charged per entity,
+so hooks share the tick's work budget. The generation also moves on the tick granted tags run out, so a hook's tag
+cache can't serve tags that ended. `RUNTIME_VERSION` is **2**: spawns that join a wave without being scheduled
+(summons, `on_death` and `on_spawn` spawns) get its scale, and the state hash covers phase `order` keys and wave
+groups' `with` values (both were left out before, so hashes from version 1 differ for sets that use them).
 
 ## Live Lex (`lex_live`)
 
@@ -499,17 +503,32 @@ on the main thread every engine tick, after the hosted game and the modules, by 
 `tick_hz` has accumulated (a 30 Hz set under a 60 Hz engine steps every other tick), so `time_control` pauses, steps
 and fast-forwards it with everything else. At most 4 runs at once.
 
+- **Budgets.** All live runs together get 8 ms of each engine tick (they take turns going first): a run short of
+  its target tick when that is spent falls behind (`behind` in `status`) and catches up on later ticks. One Lex tick
+  may take at most 50 ms (the run's deadline, checked as it spends work); a run past it, or one whose in-process
+  native panics, is **halted** with a structured error in `status` (`halted: {error: tick_overrun |
+  native_panicked, message, tick}`), takes no more commands, and is stopped and started again by an agent. The
+  engine goes on.
+
 - **Presentation.** Each live entity matching a `present` rule (`{tags, spawn}`, first match wins; default: every
   entity as a 0.5 m cube) is a world entity `/lex_live/<set>/e<id>` (props `lex_live: {id, archetype}`), moved to
-  the entity's position each tick and deleted when it ends; at most 2,000 per run (the rest are counted, not
-  shown). These writes are the rules' output, like a hosted game's: journaled replay-only under `lex:<set>`,
-  coalesced per tick, exempt from claims. Starting and stopping are the caller's edits (claim-checked, undoable).
+  the entity's position after each Lex step and deleted when it ends; at most 2,000 per run (the rest are counted,
+  not shown). An entity (or the run's group) someone deleted is shown again; a write that fails is kept as
+  `present_error` and presenting goes on. These writes are the rules' output, like a hosted game's: journaled
+  replay-only under `lex:<set>`, coalesced per tick, exempt from claims. **Claims:** region claims don't cover
+  `/lex_live` at all (its entities move with the simulation, wherever the rules take them, so a region claim would
+  either block a run from starting or be crossed every tick); path claims on `/lex_live/<set>` do, and another
+  agent's path claim refuses starting, stopping and commanding that run. Starting and stopping are the caller's
+  edits (undoable).
 - **Commands** (`action: command`) apply at once at the run's current tick, exactly as `lex_simulate` applies a
   command stamped with that tick, and are journaled with it. `journal` pages them as `lex_simulate` commands, so
   `lex_simulate {seed, params, ticks, commands}` reproduces the live hash.
 - **Natives.** Hooks the hosted game implements run in-process; any other declared hook is a module hook, called
-  through the module host with the native's `reason` and caller `lex:<set>`; its world changes are journaled as the
-  run's tick. A failing hook is a run-time diagnostic (in a command: a refusal), counted in `status`.
+  through the module host with the native's `reason` and caller `lex:<set>`. In the run's own ticks its world
+  changes are journaled as the run's tick. In a command they are staged with the command: checked against claims as
+  the commanding agent's and journaled only if the whole command succeeds; a refused command (a failing hook, a
+  `require`, a claim) rolls back the world and the run together. A failing hook is a run-time diagnostic (in a
+  command: a refusal), counted in `status`.
 - **Live = headless.** A module hook can't change the run's state, only the world, so with the same seed, params and
   commands at the same ticks, a live run and `lex_simulate` reach the same hash (tested in `lex_live.rs`, and on a
   whole game of Sepulcra by `scripts/sepulcra_lex_tools.py`).
@@ -517,9 +536,13 @@ and fast-forwards it with everything else. At most 4 runs at once.
   bindings are later work.
 
 **Sepulcra on Lex in the window.** `sepulcra --rules lex` (the app, after `--`) runs the game's rules from the
-set: the Lex run decides every player and agent command and the outcome, while the hand-written sim steps in
-lockstep as the reference and feeds the scene, HUD and sound; every tick the two are compared (a difference is a
-desync, shown in `play_state` with its tick). `play_record` adds the Lex hash at the recording's end and
+set: the Lex run decides every player and agent command (a refusal answers with the game's code and Lex's own under
+`lex`) and the outcome (the victory and defeat screens, and when the game stops stepping, follow the Lex run), while
+the hand-written sim steps in lockstep as the reference and feeds the scene, HUD and sound. The reference judges
+each command first; every tick the two are compared. Any difference, or a command they judge differently, is a
+**desync**: the game stops there (neither sim steps again; a command Lex accepted but the reference refused is
+taken back out of the Lex run, so nothing drifts silently), a dialog says so (with "start again"), and
+`play_state.rules` has `parity: desync` with the tick and what differed. `play_record` adds the Lex hash at the recording's end and
 `play_replay` replays the recording through Lex too. `python scripts/sepulcra_play.py --adapter integrated --rules
 lex` plays a whole game to a win on the Intel iGPU with parity on every tick, the replay verified and the Lex hash
 replayed (2026-10-18: won at tick 21852, 21,852 ticks compared, 0 validation errors).

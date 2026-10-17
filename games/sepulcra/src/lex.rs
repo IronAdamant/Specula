@@ -117,12 +117,14 @@ struct Cache {
     /// Views by (generation, breach penalty, root radius), newest last.
     views: Vec<(ViewKey, View)>,
     /// Flow fields and blocked cells by (wall cells, breach penalty), newest last.
-    fields: Vec<(Vec<CellId>, i64, Arc<Fields>, Arc<Vec<bool>>)>,
+    fields: Vec<FieldsEntry>,
     /// Rooted cells by (rooting stones' cells, radius), newest last.
     rooted: Vec<(Vec<CellId>, i64, Arc<Vec<bool>>)>,
 }
 
 type ViewKey = ((u64, u64), i64, i64);
+/// (wall cells, breach penalty) and what they give: flow fields and blocked cells.
+type FieldsEntry = (Vec<CellId>, i64, Arc<Fields>, Arc<Vec<bool>>);
 
 /// Entries each list keeps (a handful of states stepping at once, a few wall layouts).
 const CACHED: usize = 16;

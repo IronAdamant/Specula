@@ -168,6 +168,12 @@ fn data_error(e: &DataError) -> ToolOutput {
     )
 }
 
+/// With the Lex rules deciding: their own refusal code and message (`--rules lex`).
+fn lex_refusal(game: &SepulcraGame) -> Option<(&'static str, Json)> {
+    let (code, message) = game.lex.as_ref()?.last_refusal.as_ref()?;
+    Some(("lex", Json::obj([("code", Json::from(code.as_str())), ("message", Json::from(message.as_str()))])))
+}
+
 fn rejection_json(r: &Rejection) -> Vec<(&'static str, Json)> {
     let mut d = vec![("code", Json::from(r.code()))];
     match *r {
@@ -480,6 +486,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
                 Err(r) => {
                     let msg = game.explain(&cmd, r);
                     let mut d = rejection_json(&r);
+                    d.extend(lex_refusal(game));
                     d.push(("command", command_to_json(&cmd, &content)));
                     d.push(("tick", Json::from(game.state.tick())));
                     d.push(("dust", Json::from(game.state.dust())));
@@ -515,6 +522,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
                     Err(r) => {
                         let mut d = vec![("accepted", Json::Bool(false)), ("command", command_to_json(&cmd, &content))];
                         d.extend(rejection_json(&r));
+                        d.extend(lex_refusal(game));
                         d.push(("message", Json::from(game.explain(&cmd, r))));
                         Json::obj(d)
                     }

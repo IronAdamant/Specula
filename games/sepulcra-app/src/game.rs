@@ -49,6 +49,8 @@ const GLYPHS: [(&str, Option<PadStyle>); 4] =
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Confirm {
     Restart,
+    /// The Lex rules and the reference disagreed: the run stopped ("yes" starts it again).
+    Desync,
 }
 
 /// The game, as the engine hosts it.
@@ -196,6 +198,41 @@ impl SepulcraGame {
         }
     }
 
+    /// Whether the run goes on: with the Lex rules on, by their outcome (and a desync stops it).
+    pub(crate) fn running(&self) -> bool {
+        match &self.lex {
+            Some(l) => l.outcome().is_none() && l.desync.is_none(),
+            None => self.state.outcome() == Outcome::Running,
+        }
+    }
+
+    /// The outcome the game shows and acts on: the Lex rules' with them on.
+    pub(crate) fn outcome(&self) -> Outcome {
+        self.lex.as_ref().map_or(self.state.outcome(), |l| l.result())
+    }
+
+    /// (ended, desynced) by the Lex rules, to see what a step or a command changed.
+    fn lex_flags(&self) -> (bool, bool) {
+        self.lex.as_ref().map_or((false, false), |l| (l.outcome().is_some(), l.desync.is_some()))
+    }
+
+    /// With the Lex rules on, they end the run: the reference's own `Won`/`Lost` give way to
+    /// theirs (in `self.events`), and a desync stops the game with a dialog saying why.
+    fn lex_verdicts(&mut self, was: (bool, bool)) {
+        let Some(lex) = &self.lex else { return };
+        let (result, desync) = (lex.result(), lex.desync.clone());
+        self.events.retain(|e| !matches!(e, Event::Won | Event::Lost));
+        if result != Outcome::Running && !was.0 {
+            self.events.push(if result == Outcome::Won { Event::Won } else { Event::Lost });
+        }
+        if let (Some((tick, _)), false) = (desync, was.1) {
+            self.confirm = Some(Confirm::Desync);
+            self.hud.show("pause", false);
+            self.hud.show("confirm", true);
+            self.say(format!("Rules desync at tick {tick}: the run stopped (play_state has what differed)"));
+        }
+    }
+
     /// Where the game's assets live: `assets/` next to the executable when it was shipped
     /// with one, else the source tree's (`games/sepulcra/assets`).
     pub fn default_assets() -> PathBuf {
@@ -227,7 +264,15 @@ impl SepulcraGame {
         let tick = self.state.tick();
         // With the Lex rules on, they decide (the state is their reference).
         if let Some(lex) = &mut self.lex {
-            lex.decide(&self.state, &cmd)?;
+            let was = (lex.outcome().is_some(), lex.desync.is_some());
+            let verdict = lex.decide(&self.state, &cmd);
+            if verdict.is_err() {
+                // A disagreement stops the game here (the dialog shows at once).
+                let events = std::mem::take(&mut self.events);
+                self.lex_verdicts(was);
+                self.events = events;
+            }
+            verdict?;
         }
         self.state.apply(&cmd, &mut self.pending)?;
         self.journal.push((tick, cmd));
@@ -319,7 +364,7 @@ impl SepulcraGame {
 
     /// The pause menu (Escape, the pad's Start): pauses the game under it.
     pub(crate) fn open_menu(&mut self, world: &mut World) {
-        if self.state.outcome() == Outcome::Running {
+        if self.running() {
             self.set_paused(world, true);
             self.hud.show("pause", true);
         }
@@ -508,7 +553,7 @@ impl SepulcraGame {
                 return;
             }
             Action::NewGame => {
-                if self.state.outcome() != Outcome::Running {
+                if !self.running() {
                     self.new_run(world, agent);
                 } else {
                     self.say("The run is still going (N starts a new game after the end)".into());
@@ -598,7 +643,7 @@ impl SepulcraGame {
             }
             "confirm_yes" => {
                 self.hud.show("confirm", false);
-                if self.confirm.take() == Some(Confirm::Restart) {
+                if matches!(self.confirm.take(), Some(Confirm::Restart | Confirm::Desync)) {
                     self.hud.show("pause", false);
                     let (seed, content) = (self.state.seed(), self.content());
                     self.restart(world, agent, content, seed, None);
@@ -712,7 +757,8 @@ impl SepulcraGame {
                 s.wall(cell).map(|w| Inspect::Wall { hp: w.hp, max_hp: w.max_hp, refund: (w.cost as i64 * i64::from(content.rules.refund_percent) / 100 * i64::from(w.hp) / i64::from(w.max_hp.max(1))) as i32 })
             }
         });
-        let next = s.next_wave_tick().filter(|_| s.outcome() == Outcome::Running);
+        let running = self.running();
+        let next = s.next_wave_tick().filter(|_| running);
         let left = next.map(|t| t.saturating_sub(s.tick()));
         let info = HudInfo {
             content: &content,
@@ -729,7 +775,7 @@ impl SepulcraGame {
             inspect,
             kills: s.wave_stats().iter().map(|w| w.killed).sum(),
             run_time_s: f64::from(s.tick()) / f64::from(TICK_HZ),
-            outcome: s.outcome(),
+            outcome: self.outcome(),
             volume: self.volume,
             reduced_motion: self.reduced_motion,
             glyph_style: GLYPHS[self.glyphs].0,
@@ -738,6 +784,12 @@ impl SepulcraGame {
         hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
         if self.confirm == Some(Confirm::Restart) {
             self.hud.state.set_str("confirm_title", "Restart this run?").set_str("confirm_body", "The slab, your stones and the waves start over with the same seed.");
+        }
+        if self.confirm == Some(Confirm::Desync) {
+            let (tick, what) = self.lex.as_ref().and_then(|l| l.desync.clone()).unwrap_or_default();
+            let what: String = what.chars().take(160).collect();
+            let body = format!("The Lex rules and the reference parted at tick {tick}: {what}. The run stopped there. Start it again?");
+            self.hud.state.set_str("confirm_title", "The rules disagree").set_str("confirm_body", &body);
         }
         if let Some(cam) = camera {
             let groups = self.threat_groups();
@@ -799,7 +851,7 @@ impl SepulcraGame {
             ("waves_total", Json::from(u32::from(s.waves_total()))),
             ("dust", Json::from(s.dust())),
             ("tombstones", Json::from(s.tombstones())),
-            ("outcome", Json::from(outcome_name(s.outcome()))),
+            ("outcome", Json::from(outcome_name(self.outcome()))),
             ("tick", Json::from(s.tick())),
             ("enemies", Json::from(s.enemies().len())),
             ("paused", Json::from(self.paused)),
@@ -1077,9 +1129,10 @@ impl Game for SepulcraGame {
         self.events.clear();
         self.events.append(&mut self.pending);
         let mut stepped = 0;
+        let was = self.lex_flags();
         if !self.paused {
             for _ in 0..self.speed {
-                if self.state.outcome() != Outcome::Running {
+                if !self.running() {
                     break;
                 }
                 if let Some((_, player)) = &mut self.autoplay {
@@ -1098,6 +1151,7 @@ impl Game for SepulcraGame {
                 stepped += 1;
             }
         }
+        self.lex_verdicts(was);
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
         // Flashes keep fading after the run ends (no more steps, but time still passes).
@@ -1282,5 +1336,103 @@ mod desync_tests {
         assert_eq!(names, ["sim", "economy", "enemies", "defences", "projectiles"]);
         let (seven, eight) = (State::new(Arc::clone(&content), 7), State::new(content, 8));
         assert_ne!(hashes(&seven)[0].1, hashes(&eight)[0].1, "the seed is in sim");
+    }
+}
+
+/// Review round 1 (finding 6): with `--rules lex`, the Lex run decides the outcome, and a
+/// disagreement with the reference stops the game visibly.
+#[cfg(test)]
+mod lex_rules_tests {
+    use super::*;
+    use specula::game::Clock;
+
+    fn lex_game(seed: u64) -> (SepulcraGame, World, Clock) {
+        let mut g = SepulcraGame::new(Arc::new(Content::builtin()), seed);
+        let mut world = World::default();
+        let clock = Clock::new(g.tick_hz());
+        g.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        g.rules_lex = true;
+        g.start_lex();
+        assert!(g.lex.is_some());
+        (g, world, clock)
+    }
+
+    fn tick(g: &mut SepulcraGame, world: &mut World, clock: &mut Clock) {
+        g.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        clock.finish_tick();
+    }
+
+    #[test]
+    fn a_desync_stops_the_game_with_a_dialog() {
+        let (mut g, mut world, mut clock) = lex_game(3);
+        for _ in 0..5 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert!(g.running());
+        // The Lex run takes a stone the reference never saw: the next comparison differs.
+        let content = g.state.content().clone();
+        let cmd = Command::PlaceStone { cell: content.map.cell_ref("top:8,12").unwrap(), stone: content.stone_kind("warding").unwrap() };
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &cmd).unwrap();
+        lex.sim.apply(&call).unwrap();
+        tick(&mut g, &mut world, &mut clock);
+        let at = g.state.tick();
+        assert!(!g.running(), "stopped");
+        assert_eq!(g.confirm, Some(Confirm::Desync));
+        assert!(g.hud.visible("confirm"), "the dialog is up");
+        for _ in 0..10 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert_eq!(g.state.tick(), at, "neither sim steps after a desync");
+        let rules = g.status_json().get("rules").cloned().unwrap();
+        assert_eq!(rules.get("parity").and_then(Json::as_str), Some("desync"), "{rules}");
+        // Commands are refused, with the reason as data.
+        let r = g.command(&mut world, Command::CallWave);
+        assert_eq!(r, Err(Rejection::GameOver));
+        assert_eq!(g.lex.as_ref().unwrap().last_refusal.as_ref().map(|r| r.0.as_str()), Some("desync"));
+    }
+
+    #[test]
+    fn lex_judges_commands_first_and_nothing_drifts() {
+        let (mut g, mut world, _clock) = lex_game(4);
+        let content = g.state.content().clone();
+        let cell = content.map.cell_ref("top:8,12").unwrap();
+        let warding = content.stone_kind("warding").unwrap();
+        // Both refuse: the game's rejection with Lex's own code beside it.
+        let lane = Command::PlaceStone { cell: content.map.cell_ref("top:9,14").unwrap(), stone: warding };
+        let r = g.command(&mut world, lane).unwrap_err();
+        assert_eq!(r, Rejection::NotBuildable);
+        assert!(g.lex.as_ref().unwrap().last_refusal.is_some());
+        assert!(g.running(), "agreeing refusals are no desync");
+        // The reference has the stone, Lex doesn't: Lex would accept, the reference refuses ...
+        let mut pending = Vec::new();
+        g.state.apply(&Command::PlaceStone { cell, stone: warding }, &mut pending).unwrap();
+        let hash = g.lex.as_ref().unwrap().sim.hash();
+        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        assert_eq!(r, Err(Rejection::Occupied));
+        assert_eq!(g.lex.as_ref().unwrap().sim.hash(), hash, "... and the Lex run takes it back");
+        assert!(!g.running(), "a desync");
+        assert_eq!(g.confirm, Some(Confirm::Desync), "shown at once");
+
+        // The other way round: Lex refuses with its code mapped, not game_over.
+        let (mut g, mut world, _clock) = lex_game(4);
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &Command::PlaceStone { cell, stone: warding }).unwrap();
+        lex.sim.apply(&call).unwrap();
+        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        assert_eq!(r, Err(Rejection::Occupied));
+        assert!(g.state.stone(cell).is_none(), "the reference didn't take it either");
+        assert!(!g.running());
+    }
+
+    #[test]
+    fn the_end_screens_follow_the_lex_outcome() {
+        let (mut g, _world, _clock) = lex_game(5);
+        // The reference saying "won" while Lex runs on shows nothing (the comparison catches it).
+        g.events.push(Event::Won);
+        g.lex_verdicts((false, false));
+        assert!(!g.events.iter().any(|e| matches!(e, Event::Won)));
+        assert!(g.running());
+        assert_eq!(g.outcome(), Outcome::Running);
     }
 }

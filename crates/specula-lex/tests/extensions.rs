@@ -160,8 +160,8 @@ struct Recorder {
 }
 
 impl NativeHost for Recorder {
-    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: &[(String, i64)], tick: u32) -> Result<(), String> {
-        self.calls.lock().unwrap().push((hook.hook.clone(), entity, args.to_vec(), tick));
+    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: specula_lex::NativeArgs<'_>, tick: u32) -> Result<(), String> {
+        self.calls.lock().unwrap().push((hook.hook.clone(), entity, args.iter().map(|(k, v)| (k.to_owned(), v)).collect(), tick));
         if self.fail {
             Err("the module said no".into())
         } else {
@@ -366,4 +366,45 @@ fn the_generation_moves_with_entities_not_with_attributes() {
     assert_eq!(g[0], g[1], "attribute writes don't move it");
     assert_ne!(g[1], g[2], "a spawn does");
     assert_ne!(g[3].0, g[4].0, "a clone is another state");
+}
+
+/// Records the generation, and whether the entity has `warded`, at each call.
+struct TagProbe(Arc<Mutex<Vec<(u64, bool)>>>);
+
+impl NativeHook for TagProbe {
+    fn run(&self, cx: &mut NativeCtx<'_, '_>) -> Result<(), String> {
+        let warded = cx.entity().is_some_and(|me| cx.has_tag(me, "warded"));
+        self.0.lock().unwrap().push((cx.generation().1, warded));
+        Ok(())
+    }
+}
+
+/// Review round 1 (finding 7): granted tags running out change what natives see, so the
+/// generation moves on the tick they run out (a cache keyed on it can't serve stale tags).
+#[test]
+fn the_generation_moves_when_granted_tags_run_out() {
+    let items = with_base(
+        r#""probe": {"kind": "native", "hook": "test.tags", "phase": "move", "reason": "a test"},
+           "ward": {"kind": "effect", "duration": "3t", "grant_tags": ["warded"]},
+           "ward_it": {"kind": "command", "args": {"t": "entity"}, "do": [{"apply": "ward", "to": "arg.t"}]},
+           "watcher": {"kind": "archetype", "attributes": {"mark": 0}, "behaviours": [{"type": "native", "hook": "probe"}]}"#,
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut n = Natives::new();
+    n.insert("test.tags".into(), Arc::new(TagProbe(seen.clone())) as Arc<dyn NativeHook>);
+    let mut s = Sim::new(rules(&items), 1, &n).unwrap();
+    cmd(&mut s, "make", r#"{"what": "watcher", "at": "a"}"#).unwrap();
+    s.step(&[]);
+    let id = s.entities()[0].id;
+    cmd(&mut s, "ward_it", &format!(r#"{{"t": {id}}}"#)).unwrap();
+    for _ in 0..6 {
+        s.step(&[]);
+    }
+    let g = seen.lock().unwrap().clone();
+    // g[0] before the ward; g[1..] the six ticks after it.
+    assert!(g[1].1, "warded: {g:?}");
+    let out = g.iter().skip(1).position(|x| !x.1).expect("the ward runs out") + 1;
+    assert_ne!(g[out - 1].0, g[out].0, "the generation moved on the tick the tags ran out: {g:?}");
+    assert!(g[1..out].iter().all(|x| x.0 == g[1].0), "steady while warded: {g:?}");
+    assert_eq!(g[g.len() - 2].0, g[g.len() - 1].0, "and settles once the effect is gone: {g:?}");
 }
