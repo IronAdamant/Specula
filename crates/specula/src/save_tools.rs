@@ -444,8 +444,8 @@ impl Engine {
         })?;
         self.finish_autosave(true);
         self.save_board_now();
-        if self.dirty() && !force && self.world_name.is_some() {
-            return Err(SaveError::new("unsaved_changes", "the live world has unsaved changes; world_save first, or pass force: true to discard them")
+        if self.dirty() && !force {
+            return Err(SaveError::new("unsaved_changes", "the live world has changes not in a world folder or save; world_save or save_write first, or pass force: true to discard them")
                 .with("current_world", self.world_name.clone().map_or(Json::Null, Json::from)));
         }
         let f = self.read_file(name)?;

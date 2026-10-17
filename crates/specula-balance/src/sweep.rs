@@ -172,8 +172,11 @@ pub fn prepare(doc: &Document, targets: &Targets, point: &Point) -> Result<Runne
 
 /// Runs every point on every seed (see the module docs).
 pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64], opts: &SweepOptions) -> SweepResult {
-    let prepared: Vec<Result<Runner, Vec<Diagnostic>>> = points.iter().map(|p| prepare(doc, targets, p)).collect();
-    let jobs: Vec<(usize, usize)> = (0..points.len()).filter(|i| prepared[*i].is_ok()).flat_map(|i| (0..seeds.len()).map(move |s| (i, s))).collect();
+    // Compiling a big rule set takes a while: past the deadline, points aren't compiled at all
+    // (they are reported unfinished, like points whose runs didn't all finish).
+    let late = || opts.deadline.is_some_and(|d| Instant::now() > d);
+    let prepared: Vec<Option<Result<Runner, Vec<Diagnostic>>>> = points.iter().map(|p| if late() { None } else { Some(prepare(doc, targets, p)) }).collect();
+    let jobs: Vec<(usize, usize)> = (0..points.len()).filter(|i| matches!(prepared[*i], Some(Ok(_)))).flat_map(|i| (0..seeds.len()).map(move |s| (i, s))).collect();
     let results: Vec<Mutex<Option<RunResult>>> = (0..jobs.len()).map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let threads = opts.threads.clamp(1, 64).min(jobs.len().max(1));
@@ -185,7 +188,7 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
                 }
                 let j = next.fetch_add(1, Ordering::Relaxed);
                 let Some(&(p, s)) = jobs.get(j) else { break };
-                let Ok(runner) = &prepared[p] else { continue };
+                let Some(Ok(runner)) = &prepared[p] else { continue };
                 let r = runner.run(seeds[s], opts.deadline);
                 *results[j].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
             });
@@ -198,7 +201,11 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
     let mut k = 0;
     for (i, p) in points.iter().enumerate() {
         match &prepared[i] {
-            Err(diags) => out.push(Some(PointResult {
+            None => {
+                unfinished.push(i);
+                out.push(None);
+            }
+            Some(Err(diags)) => out.push(Some(PointResult {
                 point: p.clone(),
                 rules_hash: None,
                 runs: 0,
@@ -209,7 +216,7 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
                 skipped_steps: 0,
                 errors: diags.clone(),
             })),
-            Ok(runner) => {
+            Some(Ok(runner)) => {
                 let mine = &results[k..k + seeds.len()];
                 k += seeds.len();
                 let done: Vec<RunResult> = mine.iter().flatten().filter(|r| !r.interrupted).cloned().collect();

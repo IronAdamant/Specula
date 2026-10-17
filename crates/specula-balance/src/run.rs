@@ -31,6 +31,7 @@ pub struct Runner {
     pub bound: Bound,
     spawned: usize,
     died: usize,
+    removed: usize,
 }
 
 /// A stored value in its human unit (points, metres, seconds...).
@@ -44,8 +45,8 @@ fn human(v: i64, ty: Ty, hz: u32) -> f64 {
 impl Runner {
     pub fn new(rules: Arc<Rules>, bound: Bound) -> Runner {
         let event = |name: &str| rules.events.iter().position(|e| e.name == name).unwrap_or(usize::MAX);
-        let (spawned, died) = (event("spawned"), event("died"));
-        Runner { rules, bound, spawned, died }
+        let (spawned, died, removed) = (event("spawned"), event("died"), event("removed"));
+        Runner { rules, bound, spawned, died, removed }
     }
 
     /// Plays one seed. Deterministic: the same rules, targets and seed give the same result on
@@ -91,6 +92,9 @@ impl Runner {
                     if let Some(ent) = sim.entity(id) {
                         born.insert(id, (now, ent.arch));
                     }
+                } else if k == self.removed {
+                    // Gone without dying: no time to kill (and nothing to keep).
+                    born.remove(&id);
                 } else if k == self.died {
                     if let Some((t0, arch)) = born.remove(&id) {
                         let tags = &self.rules.archetypes[usize::from(arch)].tags;

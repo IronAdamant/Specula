@@ -340,10 +340,11 @@ fn tune_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         Ok(x) => x,
         Err(e) => return e,
     };
-    let rules_hash = match base_rules(&doc) {
-        Ok(r) => r.hash,
+    let rules = match base_rules(&doc) {
+        Ok(r) => r,
         Err(e) => return e,
     };
+    let rules_hash = rules.hash;
     let threads = match threads_arg(args) {
         Ok(t) => t,
         Err(e) => return e,
@@ -380,7 +381,17 @@ fn tune_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
             j
         }
         (None, Some(state)) => match TuneJob::from_json(state) {
-            Ok(j) => j,
+            Ok(j) => {
+                // It must fit these rules: the params exist, with the unit and inside the range.
+                let misfit = j.space.iter().find(|s| !rules.params.iter().any(|p| p.id == s.id && p.unit == s.unit && p.min <= s.min && s.max <= p.max));
+                if let Some(s) = misfit {
+                    return err("invalid_state", format!("'state' tunes '{}', which these rules don't have with that unit and range", s.id), vec![("params", params_json(&rules))]);
+                }
+                if j.tick_hz != rules.tick_hz {
+                    return err("invalid_state", format!("'state' was made at {} Hz, these rules tick at {} Hz", j.tick_hz, rules.tick_hz), vec![]);
+                }
+                j
+            }
             Err(m) => return err("invalid_state", format!("'state' isn't a tune job: {m}"), vec![]),
         },
         (None, None) => {

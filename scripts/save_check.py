@@ -50,7 +50,7 @@ def build_ambulo(m):
 
 def crates(m):
     ops = [{"op": "spawn", "shape": "group", "name": "crates", "position": [70, 0, 0]},
-           {"op": "spawn", "shape": "cube", "parent": "/crates", "name": "floor", "position": [0, -0.5, 0], "scale": [16, 1, 16],
+           {"op": "spawn", "shape": "cube", "parent": "/crates", "name": "floor", "position": [0, -0.5, 0], "scale": [40, 1, 40],
             "collider": {"shape": "box"}}]
     for i in range(24):
         ops.append({"op": "spawn", "shape": "sphere" if i % 4 == 0 else "cube", "parent": "/crates", "name": f"c{i}",
