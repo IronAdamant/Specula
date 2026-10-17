@@ -470,6 +470,16 @@ fn params_for(graph: &AnimGraph, params: Option<&Json>, state: Option<&str>) -> 
     }
 }
 
+/// A parameter value for a label (numbers to two places).
+fn short(v: &Value) -> String {
+    match v {
+        Value::Num(x) => format!("{x:.2}"),
+        Value::Bool(b) => b.to_string(),
+        Value::Name(n) => n.clone(),
+        Value::Vec3(p) => format!("{:.1},{:.1},{:.1}", p[0], p[1], p[2]),
+    }
+}
+
 fn value_json(v: &Value) -> Json {
     v.to_json()
 }
@@ -1224,7 +1234,7 @@ impl Engine {
                         _ => 0.0,
                     }) / scale;
                     let travel = times.iter().map(|t| v * *t as f32).collect();
-                    let shown: Vec<String> = params.iter().map(|(n, v)| format!("{n}={}", v.to_json())).collect();
+                    let shown: Vec<String> = params.iter().map(|(n, v)| format!("{n}={}", short(v))).collect();
                     film.push(FilmRow { label: format!("{}.{} {}", graph_name, s.state, shown.join(" ").replace('"', "")), subject: format!("{rig}/{graph_name}.{}", s.state), times, poses, report, travel });
                 }
                 Row::Transition(tr) => {
@@ -1290,7 +1300,8 @@ impl Engine {
             }
             lo[1] = lo[1].min(0.0);
             let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
-            let radius = 0.5 * specula_anim::math::math3::length([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]) + 0.1;
+            // Joints and bone ends lie inside the mesh: a margin for its skin.
+            let radius = 0.58 * specula_anim::math::math3::length([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]) + 0.1;
             let fov = 30.0;
             let eye = film::frame_eye(centre, radius, 90.0, 12.0, fov);
             let mut tiles = Vec::new();
@@ -1368,7 +1379,8 @@ impl Engine {
         let (lo, hi) = capture::subtree_bounds(&self.world, id).unwrap_or((e.world_position(), e.world_position()));
         let centre = (lo + hi) * 0.5;
         let radius = ((hi - lo).length() * 0.5).max(0.5) * 1.15;
-        let views = [(90.0f32, 10.0f32, "side"), (0.0, 18.0, "front")];
+        // Along its way (lanes run between raised blocks) and high enough to see over them.
+        let views = [(35.0f32, 24.0f32, "front quarter"), (-145.0, 24.0, "back quarter")];
         let label_h = 2 * film::CHAR_H + 6;
         let (sw, sh) = (n as u32 * tile, views.len() as u32 * (tile + label_h));
         let mut sheet = vec![0u8; (sw * sh * 4) as usize];
