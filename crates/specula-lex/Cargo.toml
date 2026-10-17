@@ -1,0 +1,12 @@
+[package]
+name = "specula-lex"
+description = "Lex: gameplay rules as typed text data, validated with actionable errors and run deterministically"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }

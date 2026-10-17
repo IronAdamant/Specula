@@ -16,6 +16,7 @@ members = [
     "crates/specula-sdk",
     "crates/specula-logic",
     "crates/specula-physics",
+    "crates/specula-lex",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -48,6 +49,7 @@ specula-ui = { path = "crates/specula-ui" }
 specula-sdk = { path = "crates/specula-sdk" }
 specula-logic = { path = "crates/specula-logic" }
 specula-physics = { path = "crates/specula-physics" }
+specula-lex = { path = "crates/specula-lex" }
 
 [profile.dev]
 opt-level = 1
