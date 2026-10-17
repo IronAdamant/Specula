@@ -9,7 +9,7 @@ use crate::journal::{self, ChangesQuery, Cursor, HistoryQuery, Kind, UndoRequest
 use crate::perf::{CaptureSpec, ZonesQuery, MAX_CAPTURE_FRAMES};
 use crate::sight::Camera;
 use crate::world::{
-    self, parse_material, Body, BodyKind, Collider, ColliderShape, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
+    self, parse_material, Body, Collider, EntityKey, EnvPatch, LightSpec, LookPatch, Op,
     Profile, Query, Shape, SpawnSpec, UpdateSpec, MATERIAL_NAMES,
 };
 use specula_core::math::Vec3;
@@ -24,7 +24,7 @@ each has a name unique among its siblings and a path like /slab/stones/ward_03; 
 parent, and 'group' entities hold children without drawing anything. Add things with world_spawn (or many at \
 once, all-or-nothing, with world_batch), change them with world_set, remove subtrees with world_delete, and find \
 them with world_query (filters, paged) or world_list. Address an entity by id, path, or a bare name that is \
-unique in the world. Entities carry tags, free-form props (game data), and reserved collider/body components. \
+unique in the world. Entities carry tags, free-form props (game data), and physics collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
 newer change. Shape 'model' builds a procedural model from a recipe file (model_build reports on one without \
 spawning). 2D: shapes sprite (textured quads, sheets, flipbook animation, billboards), tilemap (layered tile grids; \
@@ -33,7 +33,7 @@ entity's local XY plane (metres, +Y up); a 2D game looks at the world XY plane w
 (orthographic, down -Z). Entities can be hidden (visible: false) or put on the 'ui' layer (left out of captures); a hosted \
 game's 'transient' entities are its presentation (never saved or journaled, read-only to agents). LOOK with sight_frame: it returns the rendered image plus a subject list giving each entity's \
 on-screen rectangle (its projected bounding box, computed by the engine); overlays (grid, axes, bounds, labels, \
-claims, skeletons, lods) draw debug aids into it. Keep your own named cameras with camera_set (fixed, or following \
+claims, skeletons, lods, colliders, contacts) draw debug aids into it. Keep your own named cameras with camera_set (fixed, or following \
 an entity) and look through them (or another agent's) with sight_frame {camera}; sight_orbit returns a turntable \
 contact sheet of one entity; sight_compare marks a 'before' and diffs the world against it later; sight_query \
 answers one entity's on-screen facts without an image. world_env sets the sun, ambient light, \
@@ -101,7 +101,7 @@ const FRAME_KEYS: &[&str] =
 pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
-    "background", "shadow", "bloom", "fxaa", "sky", "fog", "grading", "ssao",
+    "background", "shadow", "bloom", "fxaa", "sky", "fog", "grading", "ssao", "physics",
 ];
 
 /// Rejects keys of `args` (an object, or null for none) that are in none of `allowed`.
@@ -204,6 +204,8 @@ pub enum Command {
     Swarm(crate::swarm_tools::SwarmCall),
     /// The module host's tools (see [`crate::logic::tools`]).
     Logic(crate::logic::tools::LogicCall),
+    /// The physics tools (see [`crate::physics_tools`]).
+    Physics(crate::physics_tools::PhysicsCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -469,7 +471,10 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
             Some(call) => call.map(Command::Sight),
             None => match crate::swarm_tools::parse(other, args) {
                 Some(call) => call.map(Command::Swarm),
-                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                None => match crate::physics_tools::parse(other, args) {
+                    Some(call) => call.map(Command::Physics),
+                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                },
             },
         },
     }
@@ -902,41 +907,9 @@ fn props_arg(args: &Json) -> Result<Option<Json>, String> {
     }
 }
 
-/// A size (the world checks its range), or `default`.
-fn size_arg(args: &Json, key: &str, default: Option<f32>) -> Result<f32, String> {
-    match num_arg(args, key)? {
-        Some(v) => Ok(v),
-        None => default.ok_or_else(|| format!("'collider.{key}' is required (metres)")),
-    }
-}
-
-/// `collider`: `{shape: box|sphere|capsule, size | radius (+ height), offset?, is_trigger?, layer?}`
-/// or `false` to remove it.
+/// `collider` (see [`crate::physics::collider_arg`]).
 fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
-    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule, size?|radius?, height?, offset?, \
-                       is_trigger?, layer?}";
-    let c = match args.get("collider") {
-        None | Some(Json::Null) => return Ok(None),
-        Some(Json::Bool(false)) => return Ok(Some(None)),
-        Some(c @ Json::Obj(_)) => c,
-        Some(_) => return Err(ERR.into()),
-    };
-    check_keys(c, "collider", &[&["shape", "size", "radius", "height", "offset", "is_trigger", "layer"]])
-        .map_err(|e| e.replacen('\'', "'collider.", 1))?;
-    let shape = match c.get("shape").and_then(Json::as_str) {
-        Some("box") => ColliderShape::Box { size: vec3_arg(c, "size")?.unwrap_or(Vec3::ONE) },
-        Some("sphere") => ColliderShape::Sphere { radius: size_arg(c, "radius", Some(0.5))? },
-        Some("capsule") => {
-            ColliderShape::Capsule { radius: size_arg(c, "radius", None)?, height: size_arg(c, "height", None)? }
-        }
-        _ => return Err(ERR.into()),
-    };
-    Ok(Some(Some(Collider {
-        shape,
-        offset: vec3_arg(c, "offset")?.unwrap_or(Vec3::ZERO),
-        is_trigger: bool_arg(c, "is_trigger")?.unwrap_or(false),
-        layer: string_arg(c, "layer")?.unwrap_or("default").to_owned(),
-    })))
+    crate::physics::collider_arg(args)
 }
 
 /// `anim`: a clip name, `{clip, speed?, loop?, time_offset?, start?, crossfade?}`, or `false` to
@@ -949,21 +922,9 @@ fn anim_arg(args: &Json) -> Result<Option<Option<world::AnimSpec>>, String> {
     }
 }
 
-/// `body`: `"static"|"kinematic"|"dynamic"`, `{kind, mass?}`, or `false` to remove it.
+/// `body` (see [`crate::physics::body_arg`]).
 fn body_arg(args: &Json) -> Result<Option<Option<Body>>, String> {
-    const ERR: &str = "'body' must be false, \"static\", \"kinematic\", \"dynamic\" or {kind, mass? (kg)}";
-    let (kind, mass) = match args.get("body") {
-        None | Some(Json::Null) => return Ok(None),
-        Some(Json::Bool(false)) => return Ok(Some(None)),
-        Some(Json::Str(k)) => (k.as_str(), None),
-        Some(b @ Json::Obj(_)) => {
-            check_keys(b, "body", &[&["kind", "mass"]]).map_err(|e| e.replacen('\'', "'body.", 1))?;
-            (b.get("kind").and_then(Json::as_str).ok_or(ERR)?, num_arg(b, "mass")?)
-        }
-        Some(_) => return Err(ERR.into()),
-    };
-    let kind = BodyKind::parse(kind).ok_or(ERR)?;
-    Ok(Some(Some(Body { kind, mass: mass.unwrap_or(1.0) })))
+    crate::physics::body_arg(args)
 }
 
 /// Optional finite number. Its range is checked by the world (or by [`num_in`] for non-world
@@ -1076,6 +1037,7 @@ pub(crate) fn parse_env(args: &Json) -> Result<EnvPatch, String> {
         fog: effect_arg(args, "fog", crate::effects::FogPatch::parse)?,
         grading: effect_arg(args, "grading", crate::effects::GradingPatch::parse)?,
         ssao: effect_arg(args, "ssao", crate::effects::SsaoPatch::parse)?,
+        physics: effect_arg(args, "physics", crate::physics::PhysicsPatch::parse)?,
     };
     world::check_env(&patch).map_err(value_error)?;
     Ok(patch)
@@ -1588,16 +1550,24 @@ fn definitions() -> Vec<ToolDef> {
             (
                 "collider",
                 described(
-                    "Reserved for physics (stored, not simulated yet): {shape: box (size [x,y,z], default 1) | sphere \
-                     (radius, default 0.5) | capsule (radius, height = total height along local +Y), offset?, \
-                     is_trigger?, layer?}, in local units; false removes it",
+                    "Physics collider, in local (scaled) units; simulated each tick (a collider alone is static). \
+                     {shape: box (size [x,y,z], default 1) | sphere (radius, default 0.5) | capsule (radius, height = \
+                     total height along local +Y) | hull (points: 4..64 [x,y,z]) | mesh (vertices [[x,y,z]...], \
+                     triangles [[a,b,c]...]; static only) | heightfield (columns, rows 2..129, cell [x,z] m, heights \
+                     row by row along +Z; static only), offset?, is_trigger? (reports enter/exit, never blocks), \
+                     layer? (a name, default \"default\"), mask? (layer names it collides with; default all), \
+                     friction? (default 0.6), restitution? (bounce 0..1)}; false removes it",
                 ),
             ),
             (
                 "body",
                 described(
-                    "Reserved for physics (stored, not simulated yet): \"static\", \"kinematic\", \"dynamic\" or \
-                     {kind, mass (kg, default 1)}; false removes it",
+                    "Physics body: \"static\", \"kinematic\", \"dynamic\" or {kind, mass (kg, default 1), velocity \
+                     [x,y,z] m/s, angular_velocity rad/s, linear_damping, angular_damping, gravity_scale, sleeping, \
+                     ccd (tunnelling guard, default true), lock_position / lock_rotation (axes, e.g. \"z\"), \
+                     character (kinematic only: true or {step_height, max_slope_deg, snap_distance, push_force, \
+                     gravity}; walks at velocity, jumps with velocity.y)}. Physics writes velocity and sleeping \
+                     back every tick it moves; false removes it",
                 ),
             ),
             (
@@ -1931,7 +1901,7 @@ fn definitions() -> Vec<ToolDef> {
                           ids: false skips the ID buffer. Without \
                           eye/target (or a named camera from camera_set) \
                           the camera frames the whole world from a three-quarter view. overlays draws debug aids \
-                          into the image (grid, axes, bounds, labels, claims, skeletons, lods). Large worlds return \
+                          into the image (grid, axes, bounds, labels, claims, skeletons, lods, colliders, contacts). Large worlds return \
                           the biggest on-screen subjects first (max_subjects; subjects: \"on_screen\" or \"visible\" \
                           filters); the full list is saved at packet_path. If models in view are still building, it \
                           waits for them (up to 10 s, other calls go on meanwhile) and then renders the world as it \
@@ -2047,6 +2017,7 @@ fn definitions() -> Vec<ToolDef> {
                     ("fog", object("Height fog: {enabled, color, density, falloff, height, start_distance, sun_scatter}")),
                     ("grading", object("Colour grading: {enabled, temperature -1..1 (+ warm), tint -1..1 (+ magenta), contrast 0..4, saturation 0..4, vibrance -1..1, lift [r,g,b] -1..1, gamma [r,g,b] 0.1..10, gain [r,g,b] 0..4, lut (PNG path under the assets root, 32x32x32 as 1024x32), lut_strength 0..1, vignette 0..1, vignette_radius 0..0.99, grain 0..4}")),
                     ("ssao", object("Ambient occlusion: {enabled, radius 0.05..10 m, intensity 0..4, samples 4..16, resolution 0.25..1 of the frame}")),
+                    ("physics", object("Physics: {gravity [x,y,z] m/s² (default [0,-9.81,0]), substeps 1..16 (default 4), sleep (default true), plane_2d (dynamic bodies stay in the XY plane, turning about Z), contact_hertz 1..1000 (default 30), enabled}")),
                 ],
                 &[],
             ),
@@ -2320,11 +2291,13 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::sight_tools::definitions())
     .chain(crate::swarm_tools::definitions())
     .chain(crate::logic::tools::definitions())
+    .chain(crate::physics_tools::definitions())
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::world::{BodyKind, ColliderShape};
     use super::*;
 
     fn args(text: &str) -> Json {
@@ -2483,7 +2456,7 @@ mod tests {
         assert_eq!((c.add_tags, c.props), (vec!["a".to_string()], Some(args(r#"{"k":null}"#))));
         let (_, c) = parse_set(&args(r#"{"id":1,"parent":7,"collider":false,"body":"dynamic"}"#)).unwrap();
         assert_eq!((c.parent, c.collider), (Some(Some(EntityKey::Id(7))), Some(None)));
-        assert_eq!(c.body, Some(Some(Body { kind: BodyKind::Dynamic, mass: 1.0 })));
+        assert_eq!(c.body, Some(Some(Body::new(BodyKind::Dynamic, 1.0))));
         assert!(parse_set(&args(r##"{"id":1,"expect_version":0,"color":"#fff"}"##)).is_err());
     }
 
@@ -2505,7 +2478,7 @@ mod tests {
         assert_eq!(s.props, args(r#"{"hp":3}"#));
         let c = s.collider.unwrap();
         assert_eq!((c.shape, c.is_trigger, c.layer.as_str()), (ColliderShape::Capsule { radius: 0.3, height: 1.8 }, true, "player"));
-        assert_eq!(s.body, Some(Body { kind: BodyKind::Kinematic, mass: 70.0 }));
+        assert_eq!(s.body, Some(Body::new(BodyKind::Kinematic, 70.0)));
         let s = parse_spawn(&args(r#"{"shape":"cube","collider":{"shape":"box"}}"#)).unwrap();
         assert_eq!(s.collider.unwrap().shape, ColliderShape::Box { size: Vec3::ONE });
         for bad in [

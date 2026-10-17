@@ -43,6 +43,7 @@ dependencies = [
  "specula-input",
  "specula-logic",
  "specula-model",
+ "specula-physics",
  "specula-platform",
  "specula-protocol",
  "specula-sdk",

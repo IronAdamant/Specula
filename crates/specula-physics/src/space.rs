@@ -498,6 +498,12 @@ impl Space {
         self.by_key.keys().copied()
     }
 
+    /// Keys of the bodies the last step moved (kinematic and awake dynamic bodies, including
+    /// those that fell asleep in it), in key order.
+    pub fn stepped(&self) -> impl Iterator<Item = u64> + '_ {
+        self.active.iter().filter_map(|s| self.slots[*s as usize].as_ref().map(|b| b.key))
+    }
+
     pub fn report(&self) -> &StepReport {
         &self.report
     }
@@ -746,6 +752,18 @@ impl Space {
         mask(&mut dw, la);
         b.desc.velocity = b.desc.velocity + dv;
         b.desc.angular_velocity = b.desc.angular_velocity + dw;
+    }
+
+    /// The velocities a dynamic body would have after `impulse` at world point `at` plus an
+    /// angular impulse (nothing changes; `None` for other bodies).
+    pub fn impulse_response(&self, key: u64, impulse: Vec3, at: Vec3, angular: Vec3) -> Option<(Vec3, Vec3)> {
+        let b = self.get(key).filter(|b| b.is_dynamic())?;
+        let (ll, la) = locks(b, self.settings.plane_2d);
+        let mut dv = impulse * b.inv_mass;
+        let mut dw = b.inv_inertia_world.mul_vec((at - b.center).cross(impulse) + angular);
+        mask(&mut dv, ll);
+        mask(&mut dw, la);
+        Some((b.desc.velocity + dv, b.desc.angular_velocity + dw))
     }
 
     pub fn body(&self, key: u64) -> Option<BodyView<'_>> {

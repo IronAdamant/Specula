@@ -788,6 +788,13 @@ impl Engine {
             report.drawn.push("lods");
             report.details.push(("lods", Json::obj([("models", Json::Arr(list)), ("total", Json::from(total))])));
         }
+        if spec.has(Kind::Colliders) || spec.has(Kind::Contacts) {
+            let (colliders, contacts) = (spec.has(Kind::Colliders), spec.has(Kind::Contacts));
+            for (k, d) in crate::physics_tools::paint(&self.physics, world, &mut p, spec, colliders, contacts) {
+                report.drawn.push(k);
+                report.details.push((k, d));
+            }
+        }
         if spec.has(Kind::Labels) {
             for (s, e, _) in shown.iter().take(spec.max_labels * 4) {
                 let at = centre(&p, e, s);

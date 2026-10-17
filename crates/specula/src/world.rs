@@ -11,8 +11,8 @@
 //! - **Versions.** Every change bumps the entity's `version`; writers may pass `expect_version`
 //!   and a stale write is rejected with the current state (optimistic concurrency for swarms).
 //! - **Components.** Besides the look, entities carry `tags`, free-form `props` (game data until
-//!   game modules define real components) and the reserved physics components `collider` and
-//!   `body` (F4): stored, validated and saved, not simulated yet.
+//!   game modules define real components) and the physics components `collider` and `body`
+//!   (F4, see [`crate::physics`]): stored, validated, saved and simulated on the fixed tick.
 //! - **Animation.** Model entities with a rig may carry an [`AnimSpec`] (`anim`): which clip of
 //!   their anim set plays, how fast, from when on the engine clock, crossfading from the previous
 //!   clip. The pose is a pure function of the render time (see [`AnimSpec`]), so a capture at a
@@ -76,9 +76,7 @@ pub const PROFILE_POINTS: RangeInclusive<usize> = 2..=256;
 pub const PROFILE_RADIUS: RangeInclusive<f32> = 0.0..=1.0e5;
 pub const PROFILE_HEIGHT: RangeInclusive<f32> = -1.0e5..=1.0e5;
 pub const SEGMENTS: RangeInclusive<u32> = 3..=256;
-/// Collider sizes and radii, metres.
-pub const COLLIDER_SIZE: RangeInclusive<f32> = 1.0e-4..=1.0e5;
-pub const MASS: RangeInclusive<f32> = 1.0e-6..=1.0e9;
+pub use crate::physics::{COLLIDER_SIZE, MASS};
 
 fn invalid(field: &str, message: String) -> WorldError {
     WorldError::new("invalid_value", message).with("field", field)
@@ -184,9 +182,7 @@ pub fn check_profile(p: &Profile) -> Result<(), WorldError> {
     Ok(())
 }
 
-fn check_body(b: &Body) -> Result<(), WorldError> {
-    check_num("body.mass", b.mass, &MASS)
-}
+use crate::physics::check_body;
 
 fn check_tags<'a>(tags: impl IntoIterator<Item = &'a String>) -> Result<(), WorldError> {
     tags.into_iter().try_for_each(|t| validate_tag(t).map_err(|e| e.with("field", "tags")))
@@ -239,7 +235,8 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
         }
         a.check()?;
     }
-    s.body.as_ref().map_or(Ok(()), check_body)
+    s.body.as_ref().map_or(Ok(()), check_body)?;
+    crate::physics::check_pair(s.collider.as_ref(), s.body.as_ref())
 }
 
 /// Everything [`World::update`] can check without the world.
@@ -299,6 +296,7 @@ pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
         p.fog.map(|e| e.check()),
         p.grading.map(|e| e.check()),
         p.ssao.map(|e| e.check()),
+        p.physics.map(|e| e.check()),
     ];
     for result in effects.into_iter().flatten() {
         result.map_err(|(field, message)| invalid(&field, message))?;
@@ -906,111 +904,7 @@ impl LightSpec {
     }
 }
 
-/// Collision shape, in the entity's local (scaled) coordinates. Reserved for physics (F4).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ColliderShape {
-    /// Full extents (a unit cube's collider is `size: [1, 1, 1]`).
-    Box { size: Vec3 },
-    Sphere { radius: f32 },
-    /// Along local +Y; `height` is the total height including both caps (≥ 2 × radius).
-    Capsule { radius: f32, height: f32 },
-}
-
-/// Reserved for physics (F4): stored, validated and saved; not simulated yet.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Collider {
-    pub shape: ColliderShape,
-    pub offset: Vec3,
-    /// Reports overlaps instead of blocking.
-    pub is_trigger: bool,
-    /// Collision layer name (layers are named in the game's config, never bit numbers).
-    pub layer: String,
-}
-
-impl Collider {
-    pub fn to_json(&self) -> Json {
-        let mut f = match self.shape {
-            ColliderShape::Box { size } => vec![("shape", Json::from("box")), ("size", vec3_json(size))],
-            ColliderShape::Sphere { radius } => vec![("shape", Json::from("sphere")), ("radius", Json::from(radius))],
-            ColliderShape::Capsule { radius, height } => vec![
-                ("shape", Json::from("capsule")),
-                ("radius", Json::from(radius)),
-                ("height", Json::from(height)),
-            ],
-        };
-        if self.offset != Vec3::ZERO {
-            f.push(("offset", vec3_json(self.offset)));
-        }
-        if self.is_trigger {
-            f.push(("is_trigger", Json::from(true)));
-        }
-        if self.layer != "default" {
-            f.push(("layer", Json::from(self.layer.as_str())));
-        }
-        Json::obj(f)
-    }
-
-    fn validate(&self) -> Result<(), WorldError> {
-        match self.shape {
-            ColliderShape::Box { size } => {
-                [size.x, size.y, size.z].iter().try_for_each(|v| check_num("collider.size", *v, &COLLIDER_SIZE))?
-            }
-            ColliderShape::Sphere { radius } => check_num("collider.radius", radius, &COLLIDER_SIZE)?,
-            ColliderShape::Capsule { radius, height } => {
-                check_num("collider.radius", radius, &COLLIDER_SIZE)?;
-                check_num("collider.height", height, &COLLIDER_SIZE)?;
-                if height < 2.0 * radius {
-                    return Err(invalid(
-                        "collider.height",
-                        "'collider.height' is the total height and must be at least 2 x radius".into(),
-                    ));
-                }
-            }
-        }
-        check_point("collider.offset", self.offset)?;
-        validate_tag(&self.layer).map_err(|e| e.with("field", "collider.layer"))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BodyKind {
-    /// Never moves (walls, terrain).
-    Static,
-    /// Moved by game code, pushes dynamic bodies (doors, characters).
-    Kinematic,
-    /// Moved by the simulation (crates, debris).
-    Dynamic,
-}
-
-impl BodyKind {
-    pub const ALL: [BodyKind; 3] = [BodyKind::Static, BodyKind::Kinematic, BodyKind::Dynamic];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            BodyKind::Static => "static",
-            BodyKind::Kinematic => "kinematic",
-            BodyKind::Dynamic => "dynamic",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<BodyKind> {
-        BodyKind::ALL.into_iter().find(|k| k.name() == s)
-    }
-}
-
-/// Reserved for physics (F4): stored, validated and saved; not simulated yet.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Body {
-    pub kind: BodyKind,
-    /// Kilograms; used by dynamic bodies.
-    pub mass: f32,
-}
-
-impl Body {
-    pub fn to_json(self) -> Json {
-        Json::obj([("kind", Json::from(self.kind.name())), ("mass", Json::from(self.mass))])
-    }
-}
+pub use crate::physics::{Body, BodyKind, Collider, ColliderShape};
 
 /// Scene-wide lighting and background.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1021,11 +915,18 @@ pub struct Env {
     /// The grading LUT, a PNG strip under the assets root (none by default). The engine loads it
     /// and sets `light.grading.lut`; the world keeps only the path.
     pub grading_lut: crate::effects::AssetPath,
+    /// Gravity, substeps, sleeping, 2D (see [`crate::physics`]).
+    pub physics: crate::physics::PhysicsSettings,
 }
 
 impl Default for Env {
     fn default() -> Self {
-        Env { light: Environment::default(), background: [0.10, 0.11, 0.13], grading_lut: crate::effects::AssetPath::NONE }
+        Env {
+            light: Environment::default(),
+            background: [0.10, 0.11, 0.13],
+            grading_lut: crate::effects::AssetPath::NONE,
+            physics: crate::physics::PhysicsSettings::default(),
+        }
     }
 }
 
@@ -1048,6 +949,7 @@ impl Env {
             ("fog", crate::effects::FogPatch::to_json(&l.fog, false)),
             ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, false)),
             ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, false)),
+            ("physics", crate::physics::PhysicsPatch::to_json(&self.physics)),
         ])
     }
 
@@ -1071,6 +973,7 @@ impl Env {
             ("fog", crate::effects::FogPatch::to_json(&l.fog, true)),
             ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, true)),
             ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, true)),
+            ("physics", crate::physics::PhysicsPatch::to_json(&self.physics)),
         ])
     }
 }
@@ -1093,6 +996,7 @@ pub struct EnvPatch {
     pub fog: Option<crate::effects::FogPatch>,
     pub grading: Option<crate::effects::GradingPatch>,
     pub ssao: Option<crate::effects::SsaoPatch>,
+    pub physics: Option<crate::physics::PhysicsPatch>,
 }
 
 impl EnvPatch {
@@ -1143,6 +1047,9 @@ impl EnvPatch {
         }
         if let Some(p) = &self.ssao {
             p.apply(&mut env.light.ssao);
+        }
+        if let Some(p) = &self.physics {
+            p.apply(&mut env.physics);
         }
     }
 }
@@ -1470,10 +1377,7 @@ impl Entity {
         }
         match self.body {
             None => h.write_u8(0),
-            Some(b) => {
-                h.write_str(b.kind.name());
-                h.write_f32(b.mass);
-            }
+            Some(b) => b.hash(h),
         }
         // Fields added after the first hash format: written only when not default, so worlds
         // without them keep their hashes.
@@ -2829,6 +2733,11 @@ impl World {
             )
             .with("field", field));
         }
+        if change.collider.is_some() || change.body.is_some() {
+            let collider = change.collider.as_ref().map_or(e.collider.as_ref(), Option::as_ref);
+            let body = change.body.as_ref().map_or(e.body.as_ref(), Option::as_ref);
+            crate::physics::check_pair(collider, body)?;
+        }
         // A 2D component's new value, worked out before anything changes.
         let mut new_two_d = None;
         if change.two_d.is_some() || change.tiles.is_some() {
@@ -3795,6 +3704,7 @@ impl World {
         crate::effects::FogPatch::hash(&l.fog, &mut h);
         crate::effects::GradingPatch::hash(&l.grading, &self.env.grading_lut, &mut h);
         crate::effects::SsaoPatch::hash_if_set(&l.ssao, &mut h);
+        crate::physics::PhysicsPatch::hash_if_set(&self.env.physics, &mut h);
         h.write_u64(self.persistent_len() as u64);
         for e in self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e) {
             h.write_u64(e.content_hash());
@@ -4325,8 +4235,9 @@ mod tests {
             offset: Vec3::ZERO,
             is_trigger: false,
             layer: "default".into(),
+            ..Default::default()
         });
-        spec.body = Some(Body { kind: BodyKind::Kinematic, mass: 80.0 });
+        spec.body = Some(Body::new(BodyKind::Kinematic, 80.0));
         let id = w.spawn(spec, "t").unwrap().id;
         let e = w.get(id).unwrap();
         assert_eq!(e.props.to_string(), r#"{"a":{"b":[{"c":2,"d":1}],"y":2},"z":1}"#, "keys sorted recursively");
@@ -4353,6 +4264,7 @@ mod tests {
                     offset: Vec3::ZERO,
                     is_trigger: false,
                     layer: "default".into(),
+                    ..Default::default()
                 })),
                 ..Default::default()
             },
@@ -4515,7 +4427,7 @@ mod tests {
             spawn(&mut w, |s| s.light = Some(LightSpec { intensity: f32::NAN, range: 1.0, color: None, offset: Vec3::ZERO })),
             Some(Some("light.intensity".into()))
         );
-        assert_eq!(spawn(&mut w, |s| s.body = Some(Body { kind: BodyKind::Dynamic, mass: 0.0 })), Some(Some("body.mass".into())));
+        assert_eq!(spawn(&mut w, |s| s.body = Some(Body::new(BodyKind::Dynamic, 0.0))), Some(Some("body.mass".into())));
         assert_eq!(w.len(), 0);
         let id = w.spawn(SpawnSpec::new(Shape::Cube), "game").unwrap().id;
         let bad = UpdateSpec { position: Some(Vec3::new(0.0, f32::NAN, 0.0)), ..Default::default() };
