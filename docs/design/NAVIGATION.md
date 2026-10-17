@@ -202,6 +202,9 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   removed (Recast's minimum region area does the same).
 - Faces lying exactly on a column line count for the columns on both sides (conservative: a wall on a line erodes a
   column more).
+- Margins are the agent radius to within a column: an obstacle's edge inside a column makes the whole column its
+  border, so the walkable area can come up to one `cell_size` closer than the radius (0.15-0.3 m for a 0.3 m radius
+  at 0.15 m cells; tested at a doorway's jambs). Use a smaller `cell_size` for tighter margins.
 - Tile builds reuse their buffers; links are kept sorted, so a navmesh built tile by tile equals one built at once
   (tested).
 

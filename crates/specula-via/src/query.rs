@@ -637,6 +637,16 @@ mod tests {
         let p = mesh.find_path(Vec3::new(-8.0, 0.0, -4.0), Vec3::new(8.0, 0.0, 4.0), Vec3::new(1.0, 1.8, 1.0), 4096).unwrap();
         assert!(p.complete());
         assert_eq!(p.corners.len(), 2, "the straight line fits through the doorway: {:?}", p.corners);
+        // Every polygon keeps the radius (less at most a cell: a wall's edge inside a column
+        // counts for the whole column) from the divider's jambs at z = +-1.2.
+        for (_, t) in mesh.tiles() {
+            for poly in &t.polys {
+                let r = mesh.rect(poly);
+                if r[2] > -0.2 && r[0] < 0.2 {
+                    assert!(r[3] <= 1.2 - 0.3 + 0.15 + 1.0e-4 && r[1] >= -1.2 + 0.3 - 0.15 - 1.0e-4, "too close to a jamb: {r:?}");
+                }
+            }
+        }
         // A path that must turn still turns at the doorway (the eroded opening steps a column at
         // its mouth, so up to four corners), and its corridor is linked.
         let q = mesh.find_path(Vec3::new(-8.0, 0.0, -10.0), Vec3::new(8.0, 0.0, -10.0), Vec3::new(1.0, 1.8, 1.0), 4096).unwrap();

@@ -891,7 +891,7 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
     if paths {
         let mut agents = Vec::new();
         let mut corners_drawn = 0usize;
-        for nav::AgentPath { id, pos, corners, target, vel, radius } in nav.agent_paths(MAX_DRAWN_CORNERS) {
+        for nav::AgentPath { id, pos, corners, target, vel, radius } in nav.agent_paths(world, MAX_DRAWN_CORNERS) {
             let y = Vec3::new(0.0, 0.06, 0.0);
             for wnd in corners.windows(2) {
                 p.line(wnd[0] + y, wnd[1] + y, PATH, 2.5);
@@ -916,8 +916,9 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
                 ]));
             }
         }
-        let mut queries = 0;
+        let (mut queries, mut query_corners) = (0, 0);
         for (_, q) in &nav.queries {
+            query_corners += q.corners.len();
             let y = Vec3::new(0.0, 0.09, 0.0);
             for wnd in q.corners.windows(2) {
                 p.line(wnd[0] + y, wnd[1] + y, QUERY, 3.0);
@@ -931,7 +932,8 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
             "paths",
             Json::obj([
                 ("agents", Json::Arr(agents)),
-                ("corners", Json::from(corners_drawn)),
+                ("agent_corners", Json::from(corners_drawn)),
+                ("query_corners", Json::from(query_corners)),
                 ("queries", Json::from(queries)),
                 (
                     "legend",

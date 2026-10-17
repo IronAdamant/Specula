@@ -1239,7 +1239,18 @@ impl Nav {
         }
         let external = e.body.is_some_and(|b| b.character.is_some());
         let (_, scale) = physics::world_pose(world, e);
-        let offset_y = if external { 0.0 } else { e.local_bounds().map_or(0.0, |(lo, _)| -lo.y * scale.y) };
+        // The origin's height above the feet: a character's collider bottom, else its drawn bottom.
+        let collider_bottom = e.collider.as_ref().and_then(|c| match c.shape {
+            ColliderShape::Capsule { height, .. } => Some(c.offset.y - height * 0.5),
+            ColliderShape::Sphere { radius } => Some(c.offset.y - radius),
+            ColliderShape::Box { size } => Some(c.offset.y - size.y * 0.5),
+            _ => None,
+        });
+        let offset_y = match (external, collider_bottom) {
+            (true, Some(lo)) => -lo * scale.y,
+            (true, None) => 0.0,
+            (false, _) => e.local_bounds().map_or(0.0, |(lo, _)| -lo.y * scale.y),
+        };
         let mut problem = None;
         if let Some(mid) = mesh {
             let slot = self.meshes.get_mut(&mid).expect("found");
@@ -1670,13 +1681,19 @@ impl Nav {
     }
 
     /// The agents' positions, corridors and goals, for the overlay.
-    pub fn agent_paths(&self, max_corners: usize) -> Vec<AgentPath> {
+    /// Agents are drawn where their entities are now (a character physics moved after this
+    /// tick's steering is ahead of the crowd's copy), at their feet.
+    pub fn agent_paths(&self, world: &World, max_corners: usize) -> Vec<AgentPath> {
         let mut out = Vec::new();
         for (id, link) in &self.agents {
             let Some(slot) = link.mesh.and_then(|m| self.meshes.get(&m)) else { continue };
             let Some(a) = slot.crowd.agent(*id) else { continue };
-            let corners = if a.corridor.is_empty() || a.target.is_none() { Vec::new() } else { slot.mesh.straighten(a.pos, a.path_end, &a.corridor, max_corners) };
-            out.push(AgentPath { id: *id, pos: a.pos, corners, target: a.target, vel: a.vel, radius: a.params.radius });
+            let pos = world.get(*id).map_or(a.pos, |e| e.world_position() - Vec3::new(0.0, link.offset_y, 0.0));
+            let walking = !a.corridor.is_empty() && a.target.is_some();
+            let corners = if walking { slot.mesh.straighten(pos, a.path_end, &a.corridor, max_corners) } else { Vec::new() };
+            // The goal where the path ends (on the navmesh), not a target entity's centre.
+            let target = if walking { Some(a.path_end) } else { a.target };
+            out.push(AgentPath { id: *id, pos, corners, target, vel: a.vel, radius: a.params.radius });
         }
         out
     }
