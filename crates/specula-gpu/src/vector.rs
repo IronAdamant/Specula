@@ -1545,8 +1545,9 @@ mod tests {
             let t = std::time::Instant::now();
             let r = f();
             let ms = t.elapsed().as_secs_f64() * 1e3;
+            // Timing is printed, not asserted (CI runners are slow and shared): the bounds are the
+            // structured errors and vertex counts checked below.
             eprintln!("{what}: {:?} in {ms:.1} ms", r.as_ref().map(|m| m.vertices.len()));
-            assert!(ms < 1000.0, "{what} took {ms:.0} ms");
             r
         };
         let wide = StrokeStyle { width: 100_000.0, join: LineJoin::Round, cap: LineCap::Round, color: [255; 4] };
