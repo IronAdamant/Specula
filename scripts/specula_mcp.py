@@ -15,11 +15,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# Tools that answer concisely by default (`response_format`, see docs/design/TOOLS.md). Scripts
+# check engine data in depth, so this client asks them for detailed answers unless a call passes
+# its own response_format (or the client is made with detailed=False, as an agent would see them).
+# A script with its own MCP client wraps its arguments in `detailed(tool, args)`.
+DETAILED_BY_DEFAULT = {"sight_frame", "perf_frame", "engine_info", "world_list", "world_query", "world_history", "play_state",
+                       "logic_status", "playtest_run", "playtest_report"}
+
+
+def detailed(tool, args):
+    """`args` asking `tool` for its detailed answer (when it has a format and the call doesn't choose)."""
+    if tool in DETAILED_BY_DEFAULT and "response_format" not in (args or {}):
+        return dict(args or {}, response_format="detailed")
+    return args
+
+
 class Mcp:
     """Minimal MCP client over Streamable HTTP (JSON responses)."""
 
-    def __init__(self, url, client_name):
+    def __init__(self, url, client_name, detailed=True):
         self.url, self.session, self.next_id = url, None, 1
+        self.detailed = detailed
         self.request("initialize", {
             "protocolVersion": "2025-11-25",
             "capabilities": {},
@@ -45,6 +61,8 @@ class Mcp:
         return reply["result"]
 
     def call(self, tool, **args):
+        if self.detailed:
+            args = detailed(tool, args)
         result = self.request("tools/call", {"name": tool, "arguments": args})
         if result.get("isError"):
             raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
@@ -148,8 +166,8 @@ class Engine:
         self.startup_s = time.perf_counter() - start
         return self
 
-    def mcp(self, client_name):
-        return Mcp(url_for(self.port), client_name)
+    def mcp(self, client_name, detailed=True):
+        return Mcp(url_for(self.port), client_name, detailed)
 
     def stop(self):
         if self.proc is None or self.proc.poll() is not None:
