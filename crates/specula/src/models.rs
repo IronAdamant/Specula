@@ -3428,8 +3428,9 @@ mod tests {
         let started = Instant::now();
         let h = lib.resolve(&ModelSpec::new("recipes/heavy.json")).unwrap();
         let b = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap();
-        let took = started.elapsed();
-        assert!(took < Duration::from_millis(100), "resolving took {took:?}");
+        // Both still building when resolve returns is the proof it didn't wait; the time is printed,
+        // not asserted (CI runners are slow and shared).
+        eprintln!("resolving took {:?}", started.elapsed());
         assert_eq!((h.state, b.state), (ModelState::Building, ModelState::Building));
         // The light build lands while the heavy one may still run.
         settle(&mut lib);
