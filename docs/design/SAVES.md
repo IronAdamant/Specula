@@ -1,6 +1,8 @@
 # Design: save games
 
-Status: designed and built 2026-10-18 (M3 lane "save games and the balance lab"). Foundations **F2** (determinism)
+Status: designed and built 2026-10-18 (M3 lane "save games and the balance lab"); review round 1 fixed the same day
+(last-wave saves, crafted-save panics, loads off the engine thread, ownership by identity), and Sepulcra's player
+saves grew slots, autosaves and a saves screen. Foundations **F2** (determinism)
 and **F1** (swarm-first tools). Roadmap item: "Save games" in [ROADMAP.md](../ROADMAP.md). Rules it follows:
 [DETERMINISM.md](DETERMINISM.md); the parts it saves are designed in [MODULES.md](MODULES.md),
 [PHYSICS.md](PHYSICS.md) and [LEX.md](LEX.md).
@@ -48,12 +50,20 @@ module's build hash; a load reports a missing or different build, DETERMINISM.md
 
 ## Loading
 
+A load runs in two halves. **On a worker thread**: read the file, decode it, run the migrations, parse and check
+every section (the world through `world_load`'s validation, the game's state, the module state) and rebuild physics
+against the save's world. **On the engine thread**: only the swap, a few milliseconds. Agents' calls keep being
+answered while a big save is read (measured below), and the engine thread never inflates a crafted file. Before the
+swap the engine checks again that nothing changed meanwhile (claims taken, unsaved edits made since the load started).
+
 `save_read` checks everything that can fail **before anything live changes**: the file (size, framing, checksum,
 every section's CRC, migrations), the game and tick rate (`wrong_game`, `wrong_tick_rate`), the world (loaded through
 the same validation as `world_load`), the game's state (`Game::parse_state`: Sepulcra refuses a save made with other
 content, `content_changed`), the module state, and physics, which is restored into a scratch `Physics` against the
 save's world (bodies rebuilt in id order with the saved layer bits and build scales, then the hidden state put back
-and the space's hash compared with the saved one: `save_mismatch` if they differ). Then, in one go: the clock jumps to
+and the space's hash compared with the saved one: `save_mismatch` if they differ). A save from a build with another
+`dmath` or Lex runtime version still loads, with a note that its hashes can't be compared (the state is right; the
+arithmetic that produced the saved hashes may differ). Then, in one go: the clock jumps to
 tick `T`, the world is replaced, physics, modules and the game take their state, and the hashes are compared again
 with the header's; the answer says per subsystem whether it matches (`match: true` is the expected answer).
 
@@ -83,29 +93,46 @@ crc32            u32 LE of everything before it
   versions of their own (physics, logic, the game's, Lex's), each refused cleanly when unknown.
 - **Bounded, structured errors.** File ≤ 1 GiB, header ≤ 1 MiB, ≤ 32 sections, each decoded section ≤ 512 MiB
   (decompression stops at the declared size), every count checked against the bytes left before anything is
-  allocated. A damaged file is a `SaveError` with a code (`not_a_save`, `truncated`, `checksum`, `corrupt_section`,
+  allocated. **Decompression bombs** are refused from the section table, before inflating anything: the sections may
+  decode to at most 64 times the file's size plus 16 MiB (`too_large`). A real save that would compress better than
+  that (very repetitive worlds) is written with that section raw, so every save the engine writes reads back. A damaged file is a `SaveError` with a code (`not_a_save`, `truncated`, `checksum`, `corrupt_section`,
   `invalid_header`, `too_large`, `unknown_codec`, `trailing`, `unsupported_version`, `no_migration`), the section, the
   byte offset, and what to do.
 - **Fuzzed.** Unit tests cut every save at every length, flip bits everywhere, and run thousands of random edits with the
   checksum fixed up so the parsers behind it are exercised; nothing panics. The game, physics, logic and Lex sections
   are fuzzed the same way, and decoded state is checked against the rules it will run under (indices into maps, kinds,
-  tiers, waves, paths, effects; ranges of positions and amounts), so a hand-made save is an error, never a panic in a
-  later tick.
+  tiers, waves, paths, effects; ranges of positions, amounts, ticks, ids and counters; counters cross-checked with the
+  lists they count, such as a wave's pending and alive enemies), so a hand-made save is an error, never a panic in a
+  later tick. The Sepulcra and Lex fuzzers also write extreme values (0, 1, -1, MIN, MAX) into 1-8-byte fields and then
+  **step hundreds of ticks** after every load that is accepted (`SPECULA_FUZZ_ROUNDS` runs more); the crash file a
+  review found is a test (`games/sepulcra-app/tests/data/crash_1_57.specsave`). Waves are 1-based in saves, as in the
+  sims: a save in the last wave, or between the last wave's clearing and the victory, loads.
 - **Atomic writes.** Temporary file, `sync_all`, rename: a crash leaves the old save or the new one.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `save_write {name, label?, overwrite?}` | Saves at the current tick. The engine thread takes the state and owned copies of the world (Sepulcra's world: ~3 ms); rendering, compression and writing run on a worker thread, which answers when the file is on disk. An existing save is replaced only with `overwrite` (the error names who wrote it). |
-| `save_read {name, force?, inspect?}` | Loads (see above). Refused while other agents hold claims (`claimed`: it replaces everything they work on) and when the live world has unsaved changes (`force` discards them). `inspect` only checks and describes the file. |
-| `save_list {cursor?, limit?}` | Saves, newest first (reads only headers). |
+| `save_write {name, label?, overwrite?, force?}` | Saves at the current tick. The engine thread takes the state and owned copies of the world (Sepulcra's world: ~3 ms); rendering, compression and writing run on a worker thread, which answers when the file is on disk. At most two saves are written at once (each holds a copy of the world): a third is `busy` with `retry_after_ms`. An existing save is replaced only with `overwrite`, and another agent's save (or one whose header can't be read) also needs `force`. |
+| `save_read {name, force?, inspect?}` | Loads (see above). Refused while other agents hold claims (`claimed`: it replaces everything they work on) and when the live world has unsaved changes (`force` discards them). `inspect` only checks and describes the file, also on a worker. One load at a time; a save being written or read is `busy`. |
+| `save_list {cursor?, limit?}` | Saves, newest first (reads only headers). Never waits for a save being written: that one is listed with `writing: true`. |
 | `save_delete {name, force?}` | Only the agent that wrote a save may delete it, unless `force`. |
 
-**Players** save and load from Sepulcra's pause menu (Escape or the pad's Start, then *Save game* / *Load game*): menus
-work with a pad, mouse, touch or keys (F6). The game asks the engine through `Game::take_requests` (`GameRequest::Save`,
-`Load`, `List`) and hears back through `Game::request_done`; it shows a toast and, after a load, stays paused under
-the menu. One slot for now (`sepulcra_slot_1`); agents press the same buttons with `play_ui`.
+**Ownership is an identity, not a name.** A save's header keeps who wrote it twice: the display name, and an owner key
+derived from the writer's identity (`agent_hello`'s identity, or `game:<name>` for the hosted game's own saves), so an
+agent that takes another's display name can't overwrite or delete its saves without `force`.
+
+**Players** save and load from Sepulcra's **Saved games** screen (pause menu, then *Save / Load*; it works with a pad,
+a mouse, touch or the keys, F6): three slots (`sepulcra_slot_1..3`) and two autosaves (`sepulcra_autosave_1..2`),
+each showing what it holds (wave and tombstones), time played and when it was saved (UTC); empty slots say so and
+their Load is greyed. Saving over a used slot, loading (the run in play is lost) and deleting each ask first, with
+*No* as the default. **Autosave** writes the next autosave in turn as each wave starts (wave 1 to autosave 1, wave 2
+to autosave 2, ...): **on by default with a window, off headless** (agents' runs and playtests don't fill the disk),
+and Settings switches it. The game asks the engine through `Game::take_requests` (`GameRequest::Save`, `Load`,
+`List`, `Delete`) and hears back through `Game::request_done`: saves and loads run in the background like agents',
+the screen says "Saving..." or "Loading..." meanwhile, and a toast says how it went ("Game saved", "Autosaved",
+"Game loaded: wave 3 of 10", or the error). After a load the game waits, paused under the menu. Agents press the same
+buttons with `play_ui` (`saves`, `save_1`, `load_2`, `delete_3`, `load_auto_1`, `confirm_yes`).
 
 ## Proof and numbers
 
@@ -119,8 +146,13 @@ the menu. One slot for now (`sepulcra_slot_1`); agents press the same buttons wi
   walking, saved at tick 600 in engine A, loaded in a fresh engine B; `desync_compare` of the two runs' traces over the
   next 900 ticks reports `match: true` with world, `sim`, `economy`, `enemies`, `defences`, `projectiles`, `physics`
   and `logic` compared. Measured (2026-10-18, release, headless, i9-13900HX, shared): the save is 19 KB on disk
-  (world 73 KB, game 2 KB, physics 19 KB, logic 0.2 KB before compression), 5-6 ms to write; loading takes 26 ms. With
-  10,000 extra static entities: 90 KB on disk (2.0 MB of world text), loading 150 ms.
+  (world 73 KB, game 2 KB, physics 19 KB, logic 0.2 KB before compression), 5-6 ms to write; loading takes about 50 ms
+  (37 ms reading and checking on the worker, 7 ms swapping on the engine thread). With 10,000 extra static entities:
+  90 KB on disk (2.0 MB of world text), loading about 350 ms of which 48 ms on the engine thread; another agent's
+  `world_list` answers in 20 ms (median, 77 ms worst) while such loads run. A 300 KB decompression bomb claiming
+  300 MB is refused without inflating. The script also drives the player's Saved games screen through `play_ui`
+  (save two slots, a confirmed delete, a refused overwrite, a confirmed load back to the same state hash, a wave-start
+  autosave) and keeps its captures (`--keep`).
 
 ## Lex
 
@@ -133,10 +165,7 @@ lands, its sets' states become a `lex` section, one `Sim::save_state` per runnin
 
 ## Later
 
-- More player slots and a load screen with labels (save_list has the data); a title screen's Continue.
+- A title screen's Continue (the newest of the slots and autosaves).
 - Saving the swarm's coordination with a save (task board, claims) if the owner wants "save the whole studio"; today
   the board is saved with world folders.
-- Background *loads* (reading, decompressing and checking on a worker thread; only the swap on the engine thread).
-  Today a load runs on the engine thread: memory is capped (512 MiB decoded in all), but a crafted file that
-  inflates to the cap can hold the engine thread for seconds.
 - Save thumbnails (a capture in the header) for load screens.
