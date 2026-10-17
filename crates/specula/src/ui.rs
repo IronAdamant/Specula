@@ -7,6 +7,7 @@
 //! Input events are forwarded to the engine thread, which drains them once per frame.
 
 use specula_platform::{Event, RawWindow, Window, WindowDesc};
+use std::cell::Cell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -22,6 +23,8 @@ enum ToUi {
 pub struct UiThread {
     pub raw: RawWindow,
     close_requests: Receiver<()>,
+    /// A close was requested (checked many times per frame, so it is remembered).
+    closing: Cell<bool>,
     /// Keyboard, mouse and focus events, in order.
     events: Receiver<Event>,
     to_ui: Sender<ToUi>,
@@ -51,7 +54,7 @@ impl UiThread {
             })
             .map_err(|e| format!("cannot start the window thread: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(raw)) => Ok(UiThread { raw, close_requests, events, to_ui, handle: Some(handle) }),
+            Ok(Ok(raw)) => Ok(UiThread { raw, close_requests, closing: Cell::new(false), events, to_ui, handle: Some(handle) }),
             Ok(Err(e)) => {
                 let _ = handle.join();
                 Err(e)
@@ -60,9 +63,12 @@ impl UiThread {
         }
     }
 
-    /// True once the user asked to close the window (close button, Alt+F4).
+    /// True once the user asked to close the window (close button, Alt+F4), and from then on.
     pub fn close_requested(&self) -> bool {
-        self.close_requests.try_recv().is_ok()
+        if !self.closing.get() && self.close_requests.try_recv().is_ok() {
+            self.closing.set(true);
+        }
+        self.closing.get()
     }
 
     /// Input events since the last call, oldest first. Appends to `out` so a frame can reuse it.
