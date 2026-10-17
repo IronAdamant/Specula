@@ -6,7 +6,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
 
 - **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
   re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
-  is playable as a vertical slice and is the engine's dogfood. **M3 has not started.**
+  is playable as a vertical slice and is the engine's dogfood. **M3 and M4 are in progress.**
 - **Started early:** the owner had planned to restart on 2026-10-21, but upgraded their plan and gave the go-ahead
   the night of 2026-10-17. The pre-M3 work is pushed (`d634afe`, CI green).
 - **Owner answers, 2026-10-17** (diary):
