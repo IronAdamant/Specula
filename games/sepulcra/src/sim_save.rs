@@ -53,10 +53,30 @@ fn w_pos(w: &mut ByteWriter, p: Pos) {
 const MAX_COORD: i32 = 10_000_000;
 /// Hit points, distances, dust and the like within a hundred million of their unit.
 const MAX_AMOUNT: i32 = 100_000_000;
+/// Ticks and counters (ids, sequence numbers) the tick adds to: far below `u32::MAX` (a run of
+/// 2^30 ticks is over a year at 30 Hz).
+const MAX_COUNTER: u32 = 1 << 30;
+
+/// A tick or counter in `0..=MAX_COUNTER`.
+fn counter(r: &mut ByteReader<'_>, field: &str) -> Result<u32, StateError> {
+    let v = r.u32(field).map_err(decode)?;
+    if v > MAX_COUNTER {
+        return Err(invalid(r, format!("{field} {v} is out of range")));
+    }
+    Ok(v)
+}
+
+fn opt_counter(r: &mut ByteReader<'_>, field: &str) -> Result<Option<u32>, StateError> {
+    let v = r.opt_u32(field).map_err(decode)?;
+    if v.is_some_and(|v| v > MAX_COUNTER) {
+        return Err(invalid(r, format!("{field} is out of range")));
+    }
+    Ok(v)
+}
 
 fn r_pos(r: &mut ByteReader<'_>) -> Result<Pos, StateError> {
     let p = Pos { x: r.i32("pos").map_err(decode)?, y: r.i32("pos").map_err(decode)?, z: r.i32("pos").map_err(decode)? };
-    if [p.x, p.y, p.z].iter().any(|c| c.abs() > MAX_COORD) {
+    if [p.x, p.y, p.z].iter().any(|c| c.unsigned_abs() > MAX_COORD as u32) {
         return Err(invalid(r, format!("position {p:?} is out of range")));
     }
     Ok(p)
@@ -128,10 +148,11 @@ impl Bounds {
         }
     }
 
+    /// An enemy's or a pending spawn's wave: 1-based (wave 1 is the first), so `1..=waves`.
     fn wave(&self, r: &mut ByteReader<'_>) -> Result<u16, StateError> {
         let w = r.u16("wave").map_err(decode)?;
-        if usize::from(w) >= self.waves.max(1) {
-            return Err(invalid(r, format!("wave {w} (the content has {})", self.waves)));
+        if w == 0 || usize::from(w) > self.waves {
+            return Err(invalid(r, format!("wave {w} (waves are 1..={})", self.waves)));
         }
         Ok(w)
     }
@@ -291,12 +312,12 @@ impl State {
         let b = Bounds::of(&content);
         let d = decode;
         let seed = r.u64("seed").map_err(d)?;
-        let tick = r.u32("tick").map_err(d)?;
+        let tick = counter(&mut r, "tick")?;
         let wave = r.u16("wave").map_err(d)?;
         if usize::from(wave) > b.waves {
             return Err(invalid(&r, format!("wave {wave} (the content has {})", b.waves)));
         }
-        let next_wave_tick = r.opt_u32("next_wave_tick").map_err(d)?;
+        let next_wave_tick = opt_counter(&mut r, "next_wave_tick")?;
         let dust = amount(&mut r, "dust", -MAX_AMOUNT)?;
         let tombstones = amount(&mut r, "tombstones", -MAX_AMOUNT)?;
         let outcome = match r.u8("outcome").map_err(d)? {
@@ -306,14 +327,14 @@ impl State {
             v => return Err(invalid(&r, format!("outcome {v}"))),
         };
         let (rng_waves, rng_jump, rng_drops) = (r_rng(&mut r)?, r_rng(&mut r)?, r_rng(&mut r)?);
-        let next_enemy = r.u32("next_enemy").map_err(d)?;
-        let next_projectile = r.u32("next_projectile").map_err(d)?;
-        let next_seq = r.u32("next_seq").map_err(d)?;
+        let next_enemy = counter(&mut r, "next_enemy")?;
+        let next_projectile = counter(&mut r, "next_projectile")?;
+        let next_seq = counter(&mut r, "next_seq")?;
         let n = r.count("pending", MAX_ITEMS, 12).map_err(d)?;
         let mut pending = Vec::with_capacity(n);
         for _ in 0..n {
-            let tick = r.u32("pending.tick").map_err(d)?;
-            let seq = r.u32("pending.seq").map_err(d)?;
+            let tick = counter(&mut r, "pending.tick")?;
+            let seq = counter(&mut r, "pending.seq")?;
             let enemy = b.enemy_kind(&mut r)?;
             let wave = b.wave(&mut r)?;
             let at = match r.u8("pending.at").map_err(d)? {
@@ -332,7 +353,7 @@ impl State {
         let n = r.count("enemies", MAX_ITEMS, 60).map_err(d)?;
         let mut enemies = Vec::with_capacity(n);
         for _ in 0..n {
-            let id = r.u32("enemy.id").map_err(d)?;
+            let id = counter(&mut r, "enemy.id")?;
             let kind = b.enemy_kind(&mut r)?;
             let wave = b.wave(&mut r)?;
             let hp = amount(&mut r, "hp", -MAX_AMOUNT)?;
@@ -358,17 +379,17 @@ impl State {
                 v => return Err(invalid(&r, format!("motion kind {v}"))),
             };
             let slow = amount(&mut r, "slow", -MAX_AMOUNT)?;
-            let slow_until = r.u32("slow_until").map_err(d)?;
+            let slow_until = counter(&mut r, "slow_until")?;
             let attacking = if r.bool("attacking").map_err(d)? { Some(b.cell(&mut r)?) } else { None };
             let remaining = amount(&mut r, "remaining", -MAX_AMOUNT)?;
             let alive = r.bool("alive").map_err(d)?;
             let carry = r.i64("carry").map_err(d)?;
             // The movement remainder is always under one tick's worth (see `World::budget`).
-            if carry.abs() >= i64::from(TICK_HZ) * 1000 {
+            if carry.unsigned_abs() >= u64::from(TICK_HZ) * 1000 {
                 return Err(invalid(&r, format!("movement remainder {carry} is out of range")));
             }
-            let next_summon = r.u32("next_summon").map_err(d)?;
-            let stuck = r.u32("stuck").map_err(d)?;
+            let next_summon = counter(&mut r, "next_summon")?;
+            let stuck = counter(&mut r, "stuck")?;
             if enemies.last().is_some_and(|e: &Enemy| e.id >= id) {
                 return Err(invalid(&r, "enemy ids must increase".into()));
             }
@@ -380,7 +401,7 @@ impl State {
             let cell = b.cell(&mut r)?;
             let (kind, tier) = b.stone(&mut r)?;
             let invested = amount(&mut r, "invested", -MAX_AMOUNT)?;
-            let ready_at = r.u32("ready_at").map_err(d)?;
+            let ready_at = counter(&mut r, "ready_at")?;
             stones.insert(cell, Stone { kind, tier, invested, ready_at });
         }
         let n = r.count("walls", b.cells, 14).map_err(d)?;
@@ -392,7 +413,7 @@ impl State {
         let n = r.count("projectiles", MAX_ITEMS, 44).map_err(d)?;
         let mut projectiles = Vec::with_capacity(n);
         for _ in 0..n {
-            let id = r.u32("projectile.id").map_err(d)?;
+            let id = counter(&mut r, "projectile.id")?;
             let (stone, tier) = b.stone(&mut r)?;
             let (origin, pos, aim) = (r_pos(&mut r)?, r_pos(&mut r)?, r_pos(&mut r)?);
             let target = r.opt_u32("target").map_err(d)?;
@@ -407,19 +428,35 @@ impl State {
         let mut wave_stats = Vec::with_capacity(n);
         for _ in 0..n {
             wave_stats.push(WaveStats {
-                started_at: r.opt_u32("started_at").map_err(d)?,
-                cleared_at: r.opt_u32("cleared_at").map_err(d)?,
-                spawned: r.u32("spawned").map_err(d)?,
-                killed: r.u32("killed").map_err(d)?,
-                leaked: r.u32("leaked").map_err(d)?,
-                tombstones_lost: r.i32("tombstones_lost").map_err(d)?,
-                stranded: r.u32("stranded").map_err(d)?,
-                dust_from_kills: r.i32("dust_from_kills").map_err(d)?,
+                started_at: opt_counter(&mut r, "started_at")?,
+                cleared_at: opt_counter(&mut r, "cleared_at")?,
+                spawned: counter(&mut r, "spawned")?,
+                killed: counter(&mut r, "killed")?,
+                leaked: counter(&mut r, "leaked")?,
+                tombstones_lost: amount(&mut r, "tombstones_lost", -MAX_AMOUNT)?,
+                stranded: counter(&mut r, "stranded")?,
+                dust_from_kills: amount(&mut r, "dust_from_kills", -MAX_AMOUNT)?,
                 pending: r.u32("pending").map_err(d)?,
                 alive: r.u32("alive").map_err(d)?,
             });
         }
         r.finish().map_err(d)?;
+        // Cross-checks: ids below the next ids, and every counter the tick counts down agrees with
+        // the lists it counts (the tick subtracts from them).
+        if enemies.iter().any(|e| e.id >= next_enemy) || projectiles.iter().any(|p| p.id >= next_projectile) || pending.iter().any(|p| p.seq >= next_seq) {
+            return Err(invalid(&r, "an id is not below the next id".into()));
+        }
+        if usize::from(wave) > b.waves {
+            return Err(invalid(&r, format!("wave {wave} (the content has {})", b.waves)));
+        }
+        for (i, s) in wave_stats.iter().enumerate() {
+            let w = (i + 1) as u16;
+            let pending_n = pending.iter().filter(|p| p.wave == w).count() as u32;
+            let alive_n = enemies.iter().filter(|e| e.alive && e.wave == w).count() as u32;
+            if s.pending != pending_n || s.alive != alive_n {
+                return Err(invalid(&r, format!("wave {w}'s counts (pending {}, alive {}) don't match its spawns and enemies ({pending_n}, {alive_n})", s.pending, s.alive)));
+            }
+        }
         // Derived state, as the tick keeps it.
         let cells = b.cells;
         let mut blocked = vec![false; cells];
@@ -497,6 +534,115 @@ mod tests {
         }
     }
 
+    /// Mutates `bytes` `rounds` times (bit flips, and whole 1/2/4/8-byte fields set to 0, -1,
+    /// MIN, MAX and the like), loads each, and steps whatever loads `ticks` ticks.
+    fn fuzz(c: &Arc<Content>, bytes: &[u8], mut seed: u64, rounds: usize, ticks: u32) {
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let extremes: [u64; 8] = [0, u64::MAX, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffff];
+        let mut loaded = 0;
+        // SPECULA_FUZZ_ROUNDS raises the rounds for a long local run.
+        let rounds = std::env::var("SPECULA_FUZZ_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(rounds);
+        for _ in 0..rounds {
+            let mut x = bytes.to_vec();
+            for _ in 0..1 + next() % 3 {
+                let i = 12 + (next() as usize) % (x.len() - 12);
+                if next() % 2 == 0 {
+                    x[i] ^= (next() >> 40) as u8 | 1;
+                } else {
+                    let width = [1usize, 2, 4, 8][(next() % 4) as usize];
+                    let v = extremes[(next() % 8) as usize].to_le_bytes();
+                    let end = (i + width).min(x.len());
+                    x[i..end].copy_from_slice(&v[..end - i]);
+                }
+            }
+            if let Ok(mut s) = State::from_bytes(Arc::clone(c), &x) {
+                loaded += 1;
+                let mut ev = Vec::new();
+                for _ in 0..ticks {
+                    s.step_into(&[], &mut ev);
+                    ev.clear();
+                }
+            }
+        }
+        assert!(loaded > 0, "some damage is harmless (a dust amount, a position): the fuzzer must reach the tick");
+    }
+
+    /// Saves in the last wave and on the tick before victory load and step on identically (wave
+    /// numbers are 1-based: the last wave is `waves`, which a load once refused).
+    #[test]
+    fn saves_in_the_last_wave_and_before_victory_load() {
+        let c = content();
+        let mut s = State::new(Arc::clone(&c), 7);
+        let layout = Script::parse(include_str!("../data/layouts/centre.json"), &c, "centre.json").expect("layout");
+        let mut p = Player::new(layout);
+        let mut ev = Vec::new();
+        let mut last_wave = None;
+        while s.outcome() == Outcome::Running {
+            let before = s.clone();
+            let _ = p.drive(&mut s, &mut ev);
+            s.step_into(&[], &mut ev);
+            ev.clear();
+            if s.wave() == s.waves_total() && last_wave.is_none() {
+                last_wave = Some(s.clone());
+            }
+            if s.outcome() == Outcome::Won {
+                // The tick before victory.
+                let bytes = before.to_bytes();
+                let mut b = State::from_bytes(Arc::clone(&c), &bytes).expect("a save right before victory loads");
+                let mut a = before;
+                a.step_into(&[], &mut ev);
+                b.step_into(&[], &mut ev);
+                assert_eq!(a.hash(), b.hash());
+                assert_eq!(b.outcome(), Outcome::Won);
+            }
+        }
+        assert_eq!(s.outcome(), Outcome::Won, "the centre layout wins seed 7");
+        let mut a = last_wave.expect("the last wave started");
+        let mut b = State::from_bytes(Arc::clone(&c), &a.to_bytes()).expect("a save in the last wave loads");
+        for _ in 0..3000 {
+            a.step_into(&[], &mut ev);
+            b.step_into(&[], &mut ev);
+            assert_eq!(a.hash(), b.hash());
+        }
+    }
+
+    /// A save whose per-wave counters disagree with its lists is refused (the tick counts them
+    /// down: a zeroed pending count once overflowed).
+    #[test]
+    fn counters_that_disagree_with_their_lists_are_refused() {
+        let c = content();
+        let mut s = played(&c, 7, 1);
+        let layout = Script::parse(include_str!("../data/layouts/centre.json"), &c, "centre.json").expect("layout");
+        let mut p = Player::new(layout);
+        let mut ev = Vec::new();
+        while !(s.wave() == 2 && s.pending_spawns() > 2) {
+            let _ = p.drive(&mut s, &mut ev);
+            s.step_into(&[], &mut ev);
+            ev.clear();
+        }
+        let mut bad = s.clone();
+        bad.w.wave_stats[1].pending = 0;
+        let e = State::from_bytes(Arc::clone(&c), &bad.to_bytes()).unwrap_err();
+        assert!(e.message.contains("counts"), "{e}");
+        let mut bad = s.clone();
+        bad.w.wave_stats[1].alive += 1;
+        assert!(State::from_bytes(Arc::clone(&c), &bad.to_bytes()).is_err());
+        let mut bad = s.clone();
+        bad.w.enemies[0].carry = i64::MIN;
+        assert!(State::from_bytes(Arc::clone(&c), &bad.to_bytes()).is_err(), "the minimum carry is out of range, not an overflow");
+        let mut bad = s.clone();
+        bad.w.pending[0].wave = 0;
+        assert!(State::from_bytes(Arc::clone(&c), &bad.to_bytes()).is_err(), "wave 0 doesn't exist");
+        let mut bad = s;
+        bad.w.enemies[0].pos.x = i32::MIN;
+        assert!(State::from_bytes(Arc::clone(&c), &bad.to_bytes()).is_err());
+    }
+
     #[test]
     fn damaged_or_foreign_state_is_an_error_never_a_panic() {
         let c = content();
@@ -505,24 +651,13 @@ mod tests {
         for cut in 0..bytes.len() {
             assert!(State::from_bytes(Arc::clone(&c), &bytes[..cut]).is_err(), "cut {cut}");
         }
-        // Random damage: errors, or a state that steps without panicking.
-        let mut seed = 0xdead_beef_u64;
-        for _ in 0..1500 {
-            let mut x = bytes.clone();
-            for _ in 0..2 {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                let i = 12 + (seed as usize) % (x.len() - 12);
-                x[i] ^= (seed >> 40) as u8 | 1;
-            }
-            if let Ok(mut s) = State::from_bytes(Arc::clone(&c), &x) {
-                let mut ev = Vec::new();
-                for _ in 0..30 {
-                    s.step_into(&[], &mut ev);
-                }
-            }
-        }
+        // Random damage: errors, or a state that steps on without panicking, for a long while
+        // (counters run down, waves end and start, the run can be won or lost).
+        fuzz(&c, &bytes, 0xdead_beef, 1500, 400);
+        // A state with enemies alive and spawns pending in several waves, fuzzed hard on whole
+        // fields (extreme values where the tick adds, subtracts or indexes).
+        let busy = played(&c, 7, 2400);
+        fuzz(&c, &busy.to_bytes(), 0x5eed_0002, 1200, 3000);
         // Other content.
         let mut other = Content::builtin();
         other.hash ^= 1;

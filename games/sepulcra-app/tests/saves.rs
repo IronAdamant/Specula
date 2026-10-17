@@ -85,6 +85,32 @@ fn a_loaded_run_continues_tick_for_tick() {
     assert_eq!(b.game.journal(), a.game.journal(), "the run's recording carried over");
 }
 
+/// The review's fuzzer found a one-bit change (an enemy's movement remainder set to `i64::MIN`)
+/// that a load accepted and the next tick panicked on. Loading it now refuses the game section;
+/// whatever does load must step without panicking.
+#[test]
+fn the_fuzzers_crash_file_is_refused_not_a_crash() {
+    let bytes = include_bytes!("data/crash_1_57.specsave");
+    let file = specula::savegame::decode(bytes).expect("the container itself is intact");
+    let content = Arc::new(Content::builtin());
+    let mut b = Host::new(Arc::clone(&content), 7);
+    let tick = file.meta.get("tick").and_then(Json::as_u64).unwrap();
+    let parsed = b.game.parse_state(file.section("game").unwrap());
+    let files = specula::savegame::unpack_files(file.section("world").unwrap()).unwrap();
+    match parsed {
+        Err(e) => assert!(e.contains("bad_state"), "{e}"),
+        Ok(state) => {
+            b.world = load(&files);
+            b.clock.set_tick(tick);
+            let Host { game, world, clock } = &mut b;
+            game.apply_state(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, state);
+            for _ in 0..3000 {
+                b.tick();
+            }
+        }
+    }
+}
+
 #[test]
 fn saves_from_other_content_or_damaged_ones_are_refused_before_anything_changes() {
     let content = Arc::new(Content::builtin());

@@ -51,8 +51,26 @@ fn w_p3(w: &mut ByteWriter, p: P3) {
     p.iter().for_each(|v| w.i64(*v));
 }
 
+/// Coordinates in mm: the compiler allows ±10⁹ m, so anything beyond is damage (and squares of
+/// sums stay inside an `i64`'s range of what the sim computes).
+const MAX_COORD_MM: i64 = 1_000_000_000_000;
+/// Movement remainders stay below one tick's worth of any real speed.
+const MAX_CARRY: i64 = 1_000_000_000_000;
+
 fn r_p3(r: &mut ByteReader<'_>) -> Result<P3, SnapshotError> {
-    Ok([r.i64("pos").map_err(dec)?, r.i64("pos").map_err(dec)?, r.i64("pos").map_err(dec)?])
+    let p = [r.i64("pos").map_err(dec)?, r.i64("pos").map_err(dec)?, r.i64("pos").map_err(dec)?];
+    if p.iter().any(|v| v.unsigned_abs() > MAX_COORD_MM as u64) {
+        return Err(bad(r, format!("position {p:?} is out of range")));
+    }
+    Ok(p)
+}
+
+fn r_carry(r: &mut ByteReader<'_>) -> Result<i64, SnapshotError> {
+    let c = r.i64("carry").map_err(dec)?;
+    if c.unsigned_abs() > MAX_CARRY as u64 {
+        return Err(bad(r, format!("movement remainder {c} is out of range")));
+    }
+    Ok(c)
 }
 
 fn w_opt32(w: &mut ByteWriter, v: Option<u32>) {
@@ -312,15 +330,21 @@ impl Sim {
                         let p = r.u16("path").map_err(d)?;
                         let seg = r.u32("seg").map_err(d)?;
                         let path = has.then_some(p);
-                        if let Some(p) = path {
-                            match r0.paths.get(usize::from(p)) {
-                                Some(pd) if (seg as usize) < pd.seg.len().max(1) => {}
-                                _ => return Err(bad(&r, format!("path {p} segment {seg}"))),
-                            }
+                        let progress = r.i64("progress").map_err(d)?;
+                        // On its segment: a segment index the path has, progress along it.
+                        let seg_len = match path {
+                            Some(p) => match r0.paths.get(usize::from(p)).and_then(|pd| pd.seg.get(seg as usize)) {
+                                Some(len) => *len,
+                                None => return Err(bad(&r, format!("path {p} segment {seg}"))),
+                            },
+                            None => 0,
+                        };
+                        if !(0..=seg_len.max(0)).contains(&progress) {
+                            return Err(bad(&r, format!("progress {progress} along a segment {seg_len} mm long")));
                         }
-                        BehState::Path { path, seg, progress: r.i64("progress").map_err(d)?, carry: r.i64("carry").map_err(d)?, fwd: r.bool("fwd").map_err(d)?, done: r.bool("done").map_err(d)? }
+                        BehState::Path { path, seg, progress, carry: r_carry(&mut r)?, fwd: r.bool("fwd").map_err(d)?, done: r.bool("done").map_err(d)? }
                     }
-                    2 => BehState::Chase { target: r.opt_u32("target").map_err(d)?, carry: r.i64("carry").map_err(d)?, reached: r.bool("reached").map_err(d)? },
+                    2 => BehState::Chase { target: r.opt_u32("target").map_err(d)?, carry: r_carry(&mut r)?, reached: r.bool("reached").map_err(d)? },
                     3 => BehState::Attack { ready_at: r.u32("ready_at").map_err(d)? },
                     4 => {
                         let target = r.opt_u32("target").map_err(d)?;
@@ -333,7 +357,7 @@ impl Sim {
                             Some(BehKind::Attack(def)) if def.projectile.is_some() && def.payload.len() == payload.len() => {}
                             _ => return Err(bad(&r, format!("a projectile fired by archetype {} behaviour {} that doesn't fire one like it", attack.0, attack.1))),
                         }
-                        BehState::Projectile(Box::new(Proj { target, aim, payload, attack, source: r.opt_u32("source").map_err(d)?, carry: r.i64("carry").map_err(d)? }))
+                        BehState::Projectile(Box::new(Proj { target, aim, payload, attack, source: r.opt_u32("source").map_err(d)?, carry: r_carry(&mut r)? }))
                     }
                     5 => BehState::Spawner { next: r.u32("next").map_err(d)? },
                     6 => BehState::Lifetime { expires: r.u32("expires").map_err(d)? },
@@ -353,16 +377,17 @@ impl Sim {
             } else {
                 None
             };
-            let mut opt = |what: &str, limit: usize| -> Result<Option<u16>, SnapshotError> {
+            // `first` is the lowest valid value: waves are 1-based (wave 1 is the first).
+            let mut opt = |what: &str, first: usize, limit: usize| -> Result<Option<u16>, SnapshotError> {
                 let has = r.bool(what).map_err(d)?;
                 let v = r.u16(what).map_err(d)?;
-                if has && usize::from(v) >= limit {
-                    return Err(bad(&r, format!("{what} {v} (the rules have {limit})")));
+                if has && (usize::from(v) < first || usize::from(v) >= limit + first) {
+                    return Err(bad(&r, format!("{what} {v} (valid: {first}..{})", limit + first)));
                 }
                 Ok(has.then_some(v))
             };
             let waves = r0.waves.as_ref().map_or(0, |w| w.waves.len());
-            let (wave, site, spawn_path) = (opt("wave", waves)?, opt("site", r0.sites.len())?, opt("spawn_path", r0.paths.len())?);
+            let (wave, site, spawn_path) = (opt("wave", 1, waves)?, opt("site", 0, r0.sites.len())?, opt("spawn_path", 0, r0.paths.len())?);
             let path_remaining = r.i64("path_remaining").map_err(d)?;
             ents.push(Entity { id, arch, alive, pos, base, effects, beh, state, wave, site, spawn_path, path_remaining });
         }
@@ -384,7 +409,7 @@ impl Sim {
         let mut pending = Vec::with_capacity(n);
         for _ in 0..n {
             let (tick, seq, arch, wave) = (r.u32("pending.tick").map_err(d)?, r.u32("pending.seq").map_err(d)?, r.u16("pending.arch").map_err(d)?, r.u16("pending.wave").map_err(d)?);
-            if usize::from(arch) >= r0.archetypes.len() || usize::from(wave) >= waves {
+            if usize::from(arch) >= r0.archetypes.len() || wave == 0 || usize::from(wave) > waves {
                 return Err(bad(&r, format!("a pending spawn of archetype {arch} in wave {wave}")));
             }
             let at = match (r.u8("pending.at").map_err(d)?, r.u16("pending.at").map_err(d)?) {
@@ -427,6 +452,28 @@ impl Sim {
         r.finish().map_err(d)?;
         if interrupted {
             return Err(bad(&r, "the saved run was cut short by a wall clock: it isn't a result to continue".into()));
+        }
+        // Ticks and counters the run adds to stay far from overflow; ids below the next ones.
+        const MAX_COUNTER: u32 = 1 << 30;
+        if [tick, next_id, next_seq, effect_seq].iter().any(|v| *v > MAX_COUNTER) || pending.iter().any(|p| p.seq >= next_seq || p.tick > MAX_COUNTER) {
+            return Err(bad(&r, "a tick, id or sequence number is out of range".into()));
+        }
+        // Counts the run adds to (per wave, per event, per hook, per diagnostic).
+        const MAX_COUNT: u64 = 1 << 62;
+        let wave_counts = wave_stats.iter().flat_map(|s| [s.spawned, s.died, s.removed]).any(|v| v > MAX_COUNTER);
+        let counts = event_counts.iter().chain(&native_calls).chain(diag.counts.values()).chain([&dropped, &work, &command_work]).any(|v| *v > MAX_COUNT);
+        let ticks = wave_stats.iter().flat_map(|s| [s.started_at, s.cleared_at]).chain([next_wave_tick]).flatten().any(|t| t > MAX_COUNTER);
+        if wave_counts || counts || ticks {
+            return Err(bad(&r, "a count or tick is out of range".into()));
+        }
+        // Every counter the tick counts down agrees with the lists it counts.
+        for (i, s) in wave_stats.iter().enumerate() {
+            let w = (i + 1) as u16;
+            let pending_n = pending.iter().filter(|p| p.wave == w).count() as u32;
+            let alive_n = ents.iter().filter(|e| e.alive && e.wave == Some(w)).count() as u32;
+            if s.pending != pending_n || s.alive != alive_n {
+                return Err(bad(&r, format!("wave {w}'s counts (pending {}, alive {}) don't match its spawns and entities ({pending_n}, {alive_n})", s.pending, s.alive)));
+            }
         }
         sim.st = State {
             tick,
@@ -529,21 +576,49 @@ mod tests {
         for cut in 0..bytes.len() {
             assert!(Sim::restore(Arc::clone(&rules), &Natives::new(), &bytes[..cut]).is_err(), "cut {cut}");
         }
+        // Bit flips and whole fields set to extremes; whatever loads steps on a long while.
         let mut x = 0x2545_f491_4f6c_dd1du64;
-        for _ in 0..2000 {
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let extremes: [u64; 8] = [0, u64::MAX, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x8000_0000_0000_0000, 0x7fff_ffff_ffff_ffff];
+        let mut loaded = 0;
+        // SPECULA_FUZZ_ROUNDS raises the rounds for a long local run.
+        let rounds = std::env::var("SPECULA_FUZZ_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000usize);
+        for _ in 0..rounds {
             let mut m = bytes.clone();
-            for _ in 0..2 {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                let i = 12 + (x as usize) % (m.len() - 12);
-                m[i] ^= (x >> 32) as u8 | 1;
+            for _ in 0..1 + next() % 3 {
+                let i = 12 + (next() as usize) % (m.len() - 12);
+                if next() % 2 == 0 {
+                    m[i] ^= (next() >> 32) as u8 | 1;
+                } else {
+                    let width = [1usize, 2, 4, 8][(next() % 4) as usize];
+                    let v = extremes[(next() % 8) as usize].to_le_bytes();
+                    let end = (i + width).min(m.len());
+                    m[i..end].copy_from_slice(&v[..end - i]);
+                }
             }
             if let Ok(mut s) = Sim::restore(Arc::clone(&rules), &Natives::new(), &m) {
-                for _ in 0..20 {
+                loaded += 1;
+                for _ in 0..300 {
                     s.step(&[]);
                 }
             }
+        }
+        assert!(loaded > 0, "the fuzzer must reach the tick");
+        // Counters that disagree with their lists, and wave 0, are refused.
+        let mut bad = a.clone();
+        if let Some(w) = bad.st.wave_stats.iter_mut().find(|w| w.alive > 0) {
+            w.alive += 1;
+            assert!(Sim::restore(Arc::clone(&rules), &Natives::new(), &bad.save_state()).is_err());
+        }
+        let mut bad = a.clone();
+        if let Some(e) = bad.st.ents.iter_mut().find(|e| e.wave.is_some()) {
+            e.wave = Some(0);
+            assert!(Sim::restore(Arc::clone(&rules), &Natives::new(), &bad.save_state()).is_err());
         }
         // Other rules (another param value is another hash).
         let other = RULES.replace("\"start\": 20", "\"start\": 21");
