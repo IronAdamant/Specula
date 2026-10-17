@@ -15,6 +15,12 @@
 //!       { "metric": "time_to_kill", "archetype": "shambler", "target": 6, "tolerance": 1.5 } ] }
 //! ```
 //!
+//! **Several play styles:** `"policies": [{"name": "greedy", "weight"?, "every", "wait_on",
+//! "steps"}, ...]` instead of `"policy"` plays every point with each policy on the same seeds,
+//! so targets must hold across play styles: a target (optionally only for the `policies` it
+//! lists) hits when it hits under each of them, and its loss is the policies' weighted sum.
+//! Results list each policy's own numbers.
+//!
 //! [`Targets::parse`] checks the document's shape; [`Targets::bind`] checks it against a
 //! compiled rule set (resources, archetypes, tags, waves, commands, expressions exist; durations
 //! become ticks at the rules' rate). Both report every problem as a Lex [`Diagnostic`] (`item` is
@@ -32,6 +38,8 @@ pub const FORMAT_VERSION: u64 = 1;
 pub const MAX_TARGETS: usize = 64;
 pub const MAX_STEPS: usize = 512;
 pub const MAX_SEEDS: usize = 1024;
+/// Play styles per document (every point runs each on every seed).
+pub const MAX_POLICIES: usize = 8;
 /// Longest run (two hours at 30 Hz), as `lex_simulate`.
 pub const MAX_TICKS: u64 = 216_000;
 /// A targets document is small data.
@@ -131,6 +139,8 @@ pub struct Target {
     pub tolerance: f64,
     /// Its share of the loss (default 1).
     pub weight: f64,
+    /// The policies it applies to (by name; empty: all of them).
+    pub policies: Vec<String>,
 }
 
 /// One scripted command of the policy.
@@ -151,6 +161,10 @@ pub struct Step {
 /// is skipped (and counted). A step that isn't due yet stops the try.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
+    /// Its name in results (`default` for a document's single `policy`).
+    pub name: String,
+    /// Its share of each target's loss (default 1).
+    pub weight: f64,
     pub every: Dur,
     pub wait_on: Vec<String>,
     pub steps: Vec<Step>,
@@ -161,7 +175,8 @@ pub struct Policy {
 pub struct Targets {
     pub name: String,
     pub ticks: Option<Dur>,
-    pub policy: Policy,
+    /// Who plays: one policy, or several play styles (see the module docs).
+    pub policies: Vec<Policy>,
     pub train: Vec<u64>,
     pub holdout: Vec<u64>,
     pub targets: Vec<Target>,
@@ -301,7 +316,7 @@ impl Targets {
         if doc.as_object().is_none() {
             return Err(vec![Diagnostic::error(codes::WRONG_TYPE, "", "", "a targets document is a JSON object")]);
         }
-        r.keys(doc, "", "", &["balance", "name", "ticks", "seeds", "policy", "targets"]);
+        r.keys(doc, "", "", &["balance", "name", "ticks", "seeds", "policy", "policies", "targets"]);
         match doc.get("balance").and_then(Json::as_u64) {
             Some(FORMAT_VERSION) => {}
             Some(v) => {
@@ -333,62 +348,31 @@ impl Targets {
                 r.err(codes::WRONG_TYPE, "seeds", "", "'seeds' is {\"train\": N or [seeds], \"holdout\": N or [seeds], \"base\": first seed}");
             }
         }
-        // The policy.
-        let mut policy = Policy { every: Dur::Seconds(Dec::int(1)), wait_on: vec!["not_enough_dust".into()], steps: Vec::new() };
-        match doc.get("policy") {
-            None => {}
-            Some(p @ Json::Obj(_)) => {
-                r.keys(p, "policy", "", &["every", "wait_on", "steps"]);
-                if let Some(e) = r.dur(p, "every", "policy", "") {
-                    policy.every = e;
-                }
-                if let Some(w) = p.get("wait_on") {
-                    match w.as_array().and_then(|a| a.iter().map(|c| c.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()) {
-                        Some(list) => policy.wait_on = list,
-                        None => {
-                            r.err(codes::WRONG_TYPE, "policy", "wait_on", "'wait_on' lists rejection codes (strings) a step waits on, e.g. [\"not_enough_dust\"]");
-                        }
-                    }
-                }
-                let steps = p.get("steps").and_then(Json::as_array).unwrap_or_default();
-                if steps.len() > MAX_STEPS {
-                    r.err(codes::TOO_MANY, "policy", "steps", format!("at most {MAX_STEPS} steps"));
-                }
-                for (i, s) in steps.iter().take(MAX_STEPS).enumerate() {
-                    let path = format!("steps[{i}]");
-                    if s.as_object().is_none() {
-                        r.err(codes::WRONG_TYPE, "policy", &path, "a step is {\"command\": id, \"args\": {...}, \"at\"?, \"after_wave\"?, \"when\"?}");
-                        continue;
-                    }
-                    r.keys(s, "policy", &path, &["command", "args", "at", "after_wave", "when"]);
-                    let Some(command) = r.string(s, "command", "policy", &path) else {
-                        if s.get("command").is_none() {
-                            r.err(codes::MISSING_FIELD, "policy", &join(&path, "command"), "'command' (a command id) is required");
-                        }
-                        continue;
-                    };
-                    let after_wave = match s.get("after_wave") {
-                        None => None,
-                        Some(v) => match v.as_u64().filter(|w| *w <= 10_000) {
-                            Some(w) => Some(w as u16),
-                            None => {
-                                r.err(codes::OUT_OF_RANGE, "policy", &join(&path, "after_wave"), "'after_wave' is a wave number (1 = once the first wave has started)");
-                                None
-                            }
-                        },
-                    };
-                    policy.steps.push(Step {
-                        command,
-                        args: s.get("args").cloned().unwrap_or(Json::Null),
-                        at: r.dur(s, "at", "policy", &path),
-                        after_wave,
-                        when: r.string(s, "when", "policy", &path),
-                    });
+        // Who plays: one policy, or several.
+        let mut policies = Vec::new();
+        match (doc.get("policy"), doc.get("policies")) {
+            (Some(_), Some(_)) => {
+                r.err(codes::INVALID, "policy", "", "give 'policy' (one build order) or 'policies' (several play styles), not both");
+            }
+            (Some(p), None) => {
+                if let Some(p) = read_policy(&mut r, p, "", false) {
+                    policies.push(p);
                 }
             }
-            Some(_) => {
-                r.err(codes::WRONG_TYPE, "policy", "", "'policy' is {\"every\", \"wait_on\", \"steps\": [...]}");
+            (None, Some(Json::Arr(list))) if !list.is_empty() && list.len() <= MAX_POLICIES => {
+                for (i, p) in list.iter().enumerate() {
+                    if let Some(p) = read_policy(&mut r, p, &format!("policies[{i}]"), true) {
+                        if policies.iter().any(|q: &Policy| q.name == p.name) {
+                            r.err(codes::DUPLICATE, "policy", &format!("policies[{i}].name"), format!("two policies are called '{}'", p.name));
+                        }
+                        policies.push(p);
+                    }
+                }
             }
+            (None, Some(_)) => {
+                r.err(codes::WRONG_TYPE, "policy", "policies", format!("'policies' lists 1..{MAX_POLICIES} policies, each {{\"name\", \"weight\"?, \"every\", \"wait_on\", \"steps\"}}"));
+            }
+            (None, None) => policies.push(Policy::empty("default")),
         }
         // Targets.
         let list = doc.get("targets").and_then(Json::as_array).unwrap_or_default();
@@ -422,7 +406,7 @@ impl Targets {
                 continue;
             };
             // `unit` is what to_json says the numbers are in: read back, ignored.
-            let base = ["id", "metric", "target", "tolerance", "weight", "unit"];
+            let base = ["id", "metric", "target", "tolerance", "weight", "unit", "policies"];
             let mut allowed: Vec<&str> = base.to_vec();
             let metric = match metric_name.as_str() {
                 "win_rate" => Some(Metric::Outcome { result: "won".into() }),
@@ -499,19 +483,47 @@ impl Targets {
             if !(0.0..=1000.0).contains(&weight) {
                 r.err(codes::OUT_OF_RANGE, item, "weight", "'weight' is 0..1000");
             }
+            // Which play styles it holds for (default: all).
+            let mut only = Vec::new();
+            match t.get("policies") {
+                None => {}
+                Some(Json::Arr(names)) if !names.is_empty() => {
+                    for n in names {
+                        match n.as_str() {
+                            Some(n) if policies.iter().any(|p| p.name == n) => only.push(n.to_owned()),
+                            Some(n) => {
+                                let d = r.err(codes::UNKNOWN_REF, item, "policies", format!("no policy is called '{n}'"));
+                                d.suggestion = did_you_mean(n, policies.iter().map(|p| p.name.as_str()));
+                            }
+                            None => {
+                                r.err(codes::WRONG_TYPE, item, "policies", "'policies' lists policy names");
+                            }
+                        }
+                    }
+                }
+                Some(_) => {
+                    r.err(codes::WRONG_TYPE, item, "policies", "'policies' lists the names of the policies this target holds for (default: all)");
+                }
+            }
             if let (Some(metric), Some(target), Some(tolerance)) = (metric, target, tolerance) {
                 if let Metric::Outcome { .. } | Metric::WaveCleared { .. } = metric {
                     if !(0.0..=1.0).contains(&target) {
                         r.err(codes::OUT_OF_RANGE, item, "target", format!("'{metric_name}' is a fraction of runs: the target is 0..1")).suggestion = Some(format!("write {}", target / 100.0));
                     }
                 }
-                targets.push(Target { id, metric, target, tolerance: tolerance.max(f64::MIN_POSITIVE), weight });
+                targets.push(Target { id, metric, target, tolerance: tolerance.max(f64::MIN_POSITIVE), weight, policies: only });
             }
         }
         if r.diags.iter().any(Diagnostic::is_error) {
             return Err(r.diags);
         }
-        Ok(Targets { name, ticks, policy, train, holdout, targets })
+        Ok(Targets { name, ticks, policies, train, holdout, targets })
+    }
+
+    /// Whether target `t` counts under policy `p` (both indices).
+    pub fn applies(&self, t: usize, p: usize) -> bool {
+        let only = &self.targets[t].policies;
+        only.is_empty() || only.iter().any(|n| *n == self.policies[p].name)
     }
 
     /// Checks the document against a compiled rule set and resolves names, commands and times.
@@ -609,50 +621,16 @@ impl Targets {
             };
             bound.push(b);
         }
-        let mut steps = Vec::with_capacity(self.policy.steps.len());
-        for (i, s) in self.policy.steps.iter().enumerate() {
-            let path = format!("steps[{i}]");
-            let call = match specula_lex::sim::parse_command(rules, &s.command, &s.args) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    let mut d = Diagnostic::error(codes::INVALID, "policy", &path, format!("command '{}' doesn't take these args: {} ({})", s.command, e.message, e.code));
-                    if e.code == "unknown_command" || !rules.commands.iter().any(|c| c.id == s.command) {
-                        d = d.suggest_opt(did_you_mean(&s.command, rules.commands.iter().map(|c| c.id.as_str())));
-                    }
-                    diags.push(d);
-                    None
-                }
-            };
-            let when = match &s.when {
-                None => None,
-                Some(src) => match compile_query(rules, src) {
-                    Ok(q) if q.ty == Ty::Bool => Some(q),
-                    Ok(_) => {
-                        diags.push(Diagnostic::error(codes::WRONG_TYPE, "policy", format!("{path}.when"), format!("'{src}' must be a condition (true or false)")));
-                        None
-                    }
-                    Err(mut d) => {
-                        d.item = "policy".into();
-                        d.path = format!("{path}.when");
-                        diags.push(d);
-                        None
-                    }
-                },
-            };
-            if let Some(w) = s.after_wave {
-                if usize::from(w) > waves {
-                    diags.push(Diagnostic::error(codes::OUT_OF_RANGE, "policy", format!("{path}.after_wave"), format!("wave {w}, but the rules have {waves} waves")));
-                }
-            }
-            if let Some(call) = call {
-                steps.push(BoundStep { call, at: s.at.map(|d| d.ticks(hz)), after_wave: s.after_wave, when });
-            }
+        let mut policies = Vec::with_capacity(self.policies.len());
+        let many = self.policies.len() > 1;
+        for (k, policy) in self.policies.iter().enumerate() {
+            let at = if many { format!("policies[{k}].") } else { String::new() };
+            policies.push(bind_policy(rules, policy, &at, hz, waves, &mut diags));
         }
-        let every = self.policy.every.ticks(hz).max(1);
         if diags.iter().any(Diagnostic::is_error) {
             return Err(diags);
         }
-        Ok(Bound { ticks: ticks as u32, every: every.min(u64::from(u32::MAX)) as u32, wait_on: self.policy.wait_on.clone(), steps, metrics: bound, warnings: diags })
+        Ok(Bound { ticks: ticks as u32, policies, metrics: bound, warnings: diags })
     }
 
     /// The canonical JSON form (what `balance_targets` shows back).
@@ -685,34 +663,175 @@ impl Targets {
                 _ => {}
             }
             f.extend([("target", Json::from(t.target)), ("tolerance", Json::from(t.tolerance)), ("weight", Json::from(t.weight)), ("unit", Json::from(t.metric.unit()))]);
-            Json::obj(f)
-        });
-        let steps = self.policy.steps.iter().map(|s| {
-            let mut f = vec![("command", Json::from(s.command.as_str())), ("args", s.args.clone())];
-            if let Some(a) = &s.at {
-                f.push(("at", dur(a)));
-            }
-            if let Some(w) = s.after_wave {
-                f.push(("after_wave", Json::from(u32::from(w))));
-            }
-            if let Some(w) = &s.when {
-                f.push(("when", Json::from(w.as_str())));
+            if !t.policies.is_empty() {
+                f.push(("policies", Json::arr(t.policies.iter().map(|n| Json::from(n.as_str())))));
             }
             Json::obj(f)
         });
+        let policy = |p: &Policy, named: bool| {
+            let steps = p.steps.iter().map(|s| {
+                let mut f = vec![("command", Json::from(s.command.as_str())), ("args", s.args.clone())];
+                if let Some(a) = &s.at {
+                    f.push(("at", dur(a)));
+                }
+                if let Some(w) = s.after_wave {
+                    f.push(("after_wave", Json::from(u32::from(w))));
+                }
+                if let Some(w) = &s.when {
+                    f.push(("when", Json::from(w.as_str())));
+                }
+                Json::obj(f)
+            });
+            let mut f = Vec::new();
+            if named {
+                f.extend([("name", Json::from(p.name.as_str())), ("weight", Json::from(p.weight))]);
+            }
+            f.extend([("every", dur(&p.every)), ("wait_on", Json::arr(p.wait_on.iter().map(|c| Json::from(c.as_str())))), ("steps", Json::arr(steps))]);
+            Json::obj(f)
+        };
         let seeds = |v: &[u64]| Json::arr(v.iter().map(|s| Json::from(*s)));
         let mut out = vec![("balance", Json::from(FORMAT_VERSION)), ("name", Json::from(self.name.as_str()))];
         if let Some(t) = &self.ticks {
             out.push(("ticks", dur(t)));
         }
         out.push(("seeds", Json::obj([("train", seeds(&self.train)), ("holdout", seeds(&self.holdout))])));
-        out.push((
-            "policy",
-            Json::obj([("every", dur(&self.policy.every)), ("wait_on", Json::arr(self.policy.wait_on.iter().map(|c| Json::from(c.as_str())))), ("steps", Json::arr(steps))]),
-        ));
+        match self.policies.as_slice() {
+            [one] if one.name == "default" && one.weight == 1.0 => out.push(("policy", policy(one, false))),
+            many => out.push(("policies", Json::arr(many.iter().map(|p| policy(p, true))))),
+        }
         out.push(("targets", Json::arr(targets)));
         Json::obj(out)
     }
+}
+
+impl Policy {
+    /// A policy that does nothing (the default when a document names none).
+    pub fn empty(name: &str) -> Policy {
+        Policy { name: name.into(), weight: 1.0, every: Dur::Seconds(Dec::int(1)), wait_on: vec!["not_enough_dust".into()], steps: Vec::new() }
+    }
+}
+
+/// Reads one policy (`at` is its path prefix, e.g. `policies[1]`; `named`: in a `policies` list,
+/// where it needs a name).
+fn read_policy(r: &mut Reader, p: &Json, at: &str, named: bool) -> Option<Policy> {
+    let mut policy = Policy::empty("default");
+    if p.as_object().is_none() {
+        let shape = if named { "a policy is {\"name\", \"weight\"?, \"every\", \"wait_on\", \"steps\": [...]}" } else { "'policy' is {\"every\", \"wait_on\", \"steps\": [...]}" };
+        r.err(codes::WRONG_TYPE, "policy", at, shape);
+        return None;
+    }
+    if named {
+        r.keys(p, "policy", at, &["name", "weight", "every", "wait_on", "steps"]);
+        match p.get("name").and_then(Json::as_str) {
+            Some(n) if !n.is_empty() && n.len() <= 32 && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') => policy.name = n.to_owned(),
+            Some(_) => {
+                r.err(codes::OUT_OF_RANGE, "policy", &join(at, "name"), "a policy's 'name' is 1..32 letters, digits, '_' or '-'");
+            }
+            None => {
+                r.err(codes::MISSING_FIELD, "policy", &join(at, "name"), "each policy in 'policies' needs a 'name' (it labels its results)");
+            }
+        }
+        if let Some(w) = r.num(p, "weight", "policy", at) {
+            if !(0.0..=1000.0).contains(&w) {
+                r.err(codes::OUT_OF_RANGE, "policy", &join(at, "weight"), "a policy's 'weight' is 0..1000");
+            }
+            policy.weight = w;
+        }
+    } else {
+        r.keys(p, "policy", at, &["every", "wait_on", "steps"]);
+    }
+    if let Some(e) = r.dur(p, "every", "policy", at) {
+        policy.every = e;
+    }
+    if let Some(w) = p.get("wait_on") {
+        match w.as_array().and_then(|a| a.iter().map(|c| c.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()) {
+            Some(list) => policy.wait_on = list,
+            None => {
+                r.err(codes::WRONG_TYPE, "policy", &join(at, "wait_on"), "'wait_on' lists rejection codes (strings) a step waits on, e.g. [\"not_enough_dust\"]");
+            }
+        }
+    }
+    let steps = p.get("steps").and_then(Json::as_array).unwrap_or_default();
+    if steps.len() > MAX_STEPS {
+        r.err(codes::TOO_MANY, "policy", &join(at, "steps"), format!("at most {MAX_STEPS} steps"));
+    }
+    for (i, s) in steps.iter().take(MAX_STEPS).enumerate() {
+        let path = join(at, &format!("steps[{i}]"));
+        if s.as_object().is_none() {
+            r.err(codes::WRONG_TYPE, "policy", &path, "a step is {\"command\": id, \"args\": {...}, \"at\"?, \"after_wave\"?, \"when\"?}");
+            continue;
+        }
+        r.keys(s, "policy", &path, &["command", "args", "at", "after_wave", "when"]);
+        let Some(command) = r.string(s, "command", "policy", &path) else {
+            if s.get("command").is_none() {
+                r.err(codes::MISSING_FIELD, "policy", &join(&path, "command"), "'command' (a command id) is required");
+            }
+            continue;
+        };
+        let after_wave = match s.get("after_wave") {
+            None => None,
+            Some(v) => match v.as_u64().filter(|w| *w <= 10_000) {
+                Some(w) => Some(w as u16),
+                None => {
+                    r.err(codes::OUT_OF_RANGE, "policy", &join(&path, "after_wave"), "'after_wave' is a wave number (1 = once the first wave has started)");
+                    None
+                }
+            },
+        };
+        policy.steps.push(Step {
+            command,
+            args: s.get("args").cloned().unwrap_or(Json::Null),
+            at: r.dur(s, "at", "policy", &path),
+            after_wave,
+            when: r.string(s, "when", "policy", &path),
+        });
+    }
+    Some(policy)
+}
+
+/// Resolves one policy's steps against rules (`at`: its path prefix in diagnostics).
+fn bind_policy(rules: &Rules, policy: &Policy, at: &str, hz: u32, waves: usize, diags: &mut Vec<Diagnostic>) -> BoundPolicy {
+    let mut steps = Vec::with_capacity(policy.steps.len());
+    for (i, s) in policy.steps.iter().enumerate() {
+        let path = format!("{at}steps[{i}]");
+        let call = match specula_lex::sim::parse_command(rules, &s.command, &s.args) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                let mut d = Diagnostic::error(codes::INVALID, "policy", &path, format!("command '{}' doesn't take these args: {} ({})", s.command, e.message, e.code));
+                if e.code == "unknown_command" || !rules.commands.iter().any(|c| c.id == s.command) {
+                    d = d.suggest_opt(did_you_mean(&s.command, rules.commands.iter().map(|c| c.id.as_str())));
+                }
+                diags.push(d);
+                None
+            }
+        };
+        let when = match &s.when {
+            None => None,
+            Some(src) => match compile_query(rules, src) {
+                Ok(q) if q.ty == Ty::Bool => Some(q),
+                Ok(_) => {
+                    diags.push(Diagnostic::error(codes::WRONG_TYPE, "policy", format!("{path}.when"), format!("'{src}' must be a condition (true or false)")));
+                    None
+                }
+                Err(mut d) => {
+                    d.item = "policy".into();
+                    d.path = format!("{path}.when");
+                    diags.push(d);
+                    None
+                }
+            },
+        };
+        if let Some(w) = s.after_wave {
+            if usize::from(w) > waves {
+                diags.push(Diagnostic::error(codes::OUT_OF_RANGE, "policy", format!("{path}.after_wave"), format!("wave {w}, but the rules have {waves} waves")));
+            }
+        }
+        if let Some(call) = call {
+            steps.push(BoundStep { call, at: s.at.map(|d| d.ticks(hz)), after_wave: s.after_wave, when });
+        }
+    }
+    let every = policy.every.ticks(hz).max(1);
+    BoundPolicy { name: policy.name.clone(), weight: policy.weight, every: every.min(u64::from(u32::MAX)) as u32, wait_on: policy.wait_on.clone(), steps }
 }
 
 fn dec_str(d: Dec) -> String {
@@ -748,13 +867,22 @@ pub struct BoundStep {
     pub when: Option<Query>,
 }
 
+/// A policy resolved against rules.
+#[derive(Clone, Debug)]
+pub struct BoundPolicy {
+    pub name: String,
+    pub weight: f64,
+    pub every: u32,
+    pub wait_on: Vec<String>,
+    pub steps: Vec<BoundStep>,
+}
+
 /// Targets resolved against one compiled rule set (see [`Targets::bind`]).
 #[derive(Clone, Debug)]
 pub struct Bound {
     pub ticks: u32,
-    pub every: u32,
-    pub wait_on: Vec<String>,
-    pub steps: Vec<BoundStep>,
+    /// Each policy, in the document's order.
+    pub policies: Vec<BoundPolicy>,
     pub metrics: Vec<BoundMetric>,
     pub warnings: Vec<Diagnostic>,
 }
@@ -778,10 +906,40 @@ mod tests {
         assert_eq!(t.train, vec![1, 2, 3, 4]);
         assert_eq!(t.holdout, vec![90, 91]);
         assert_eq!(t.ticks.unwrap().ticks(30), 18_000);
-        assert_eq!(t.policy.every.ticks(30), 15);
+        assert_eq!(t.policies[0].every.ticks(30), 15);
         assert_eq!(t.targets[1].metric, Metric::Leaks { wave: Some(3) });
         let again = Targets::parse(&t.to_json()).unwrap();
         assert_eq!(again, t);
+    }
+
+    #[test]
+    fn several_policies_parse_round_trip_and_are_checked() {
+        let t = doc(r#"{"balance": 1, "policies": [
+                {"name": "greedy", "every": "1s", "steps": [{"command": "place", "args": {}}]},
+                {"name": "turtle", "weight": 2, "steps": []}],
+            "targets": [{"metric": "win_rate", "target": 0.6, "tolerance": 0.1},
+                        {"id": "close", "metric": "expr", "expr": "res.tombstones", "target": 7, "tolerance": 1, "policies": ["turtle"]}]}"#)
+        .unwrap();
+        assert_eq!(t.policies.iter().map(|p| (p.name.as_str(), p.weight)).collect::<Vec<_>>(), [("greedy", 1.0), ("turtle", 2.0)]);
+        assert!(t.applies(0, 0) && t.applies(0, 1), "a target without 'policies' holds for all");
+        assert!(!t.applies(1, 0) && t.applies(1, 1));
+        assert_eq!(Targets::parse(&t.to_json()).unwrap(), t, "round trip");
+        // One unnamed policy still writes back as 'policy'.
+        let one = doc(r#"{"balance": 1, "policy": {"steps": []}, "targets": [{"metric": "win_rate", "target": 1, "tolerance": 0.1}]}"#).unwrap();
+        assert!(one.to_json().get("policy").is_some() && one.to_json().get("policies").is_none());
+        let e = doc(r#"{"balance": 1, "policy": {}, "policies": [{"name": "a"}], "targets": [{"metric": "win_rate", "target": 1, "tolerance": 0.1}]}"#).unwrap_err();
+        assert!(e.iter().any(|d| d.code == "invalid" && d.item == "policy"), "{e:?}");
+        let e = doc(r#"{"balance": 1, "policies": [{"name": "a"}, {"name": "a"}, {"steps": []}, {"name": "b c"}],
+            "targets": [{"metric": "win_rate", "target": 1, "tolerance": 0.1, "policies": ["aa"]}]}"#)
+        .unwrap_err();
+        let got: Vec<(&str, &str)> = e.iter().map(|d| (d.code, d.path.as_str())).collect();
+        assert!(got.contains(&("duplicate", "policies[1].name")), "{got:?}");
+        assert!(got.contains(&("missing_field", "policies[2].name")), "{got:?}");
+        assert!(got.contains(&("out_of_range", "policies[3].name")), "{got:?}");
+        let unknown = e.iter().find(|d| d.code == "unknown_ref").expect("an unknown policy name");
+        assert!(unknown.suggestion.as_deref().unwrap_or("").contains("'a'"), "{unknown:?}");
+        let many = format!(r#"{{"balance": 1, "policies": [{}], "targets": [{{"metric": "win_rate", "target": 1, "tolerance": 0.1}}]}}"#, (0..9).map(|i| format!(r#"{{"name": "p{i}"}}"#)).collect::<Vec<_>>().join(","));
+        assert!(doc(&many).is_err(), "at most {MAX_POLICIES} policies");
     }
 
     #[test]

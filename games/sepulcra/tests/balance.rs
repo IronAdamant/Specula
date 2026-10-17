@@ -29,7 +29,7 @@ fn the_slice_targets_validate_and_bind() {
     assert!(t.train.iter().all(|s| !t.holdout.contains(s)), "held-out seeds are unseen");
     let rules = specula_lex::compile(&doc(), &Default::default()).expect("compiles").rules;
     let bound = t.bind(&rules).unwrap_or_else(|d| panic!("{d:#?}"));
-    assert_eq!(bound.steps.len(), 6);
+    assert_eq!(bound.policies[0].steps.len(), 6);
     // A typo is caught with a suggestion, against the rules.
     let bad = TARGETS.replace("\"archetype\": \"runner\"", "\"archetype\": \"runer\"");
     let e = Targets::parse_text(&bad).unwrap().bind(&rules).unwrap_err();
@@ -125,4 +125,53 @@ fn explore() {
     for p in res.points.iter().flatten() {
         println!("{}", p.to_json(false));
     }
+}
+
+const STYLES: &str = include_str!("../lex/slice_styles.targets.json");
+
+/// Several play styles at once (`policies`): every point is played by each style on the same
+/// seeds, each style's numbers are reported, and a target hits only when it hits under every
+/// style. The value tuned for one build order (`runner_hp` 118, above) is a close call for that
+/// build but a loss for the brazier-first build: one policy hides that, three show it.
+#[test]
+fn targets_must_hold_across_play_styles() {
+    let d = doc();
+    let t = Targets::parse_text(STYLES).unwrap_or_else(|e| panic!("{e:#?}"));
+    let names: Vec<&str> = t.policies.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["dust_gated", "braziers", "rusher"]);
+    let points: Vec<Point> = [26, 118].iter().map(|hp| vec![("runner_hp".to_owned(), Json::from(*hp))]).collect();
+    let one = sweep(&d, &t, &points, &t.train, &opts(1));
+    let many = sweep(&d, &t, &points, &t.train, &opts(7));
+    assert_eq!(one.points, many.points, "the thread count changes nothing");
+    let tuned = one.points[1].as_ref().unwrap();
+    assert_eq!(tuned.runs, 3 * t.train.len(), "each style on each seed");
+    let style = |n: &str| tuned.policies.iter().find(|p| p.name == n).unwrap();
+    println!("runner_hp 118: {}", tuned.to_json(false));
+    assert!(style("dust_gated").hit, "the build it was tuned for still gets its close call");
+    assert!(!style("braziers").hit && style("braziers").outcomes.iter().any(|(o, _)| o == "lost"), "the brazier build loses: {:?}", style("braziers"));
+    assert!(!tuned.hit, "so the point misses: the targets don't hold across styles");
+    let weighted: f64 = tuned.policies.iter().map(|p| p.weight * p.loss).sum();
+    assert!((tuned.loss - weighted).abs() < 1e-9, "the loss is the styles' weighted sum");
+    let wins = &tuned.stats[0];
+    assert!(!wins.hit && wins.mean.is_some_and(|m| m < 1.0), "the pooled win rate shows the losses: {wins:?}");
+    // The JSON lists each style.
+    let j = tuned.to_json(false);
+    assert_eq!(j.get("policies").and_then(Json::as_array).map(|a| a.len()), Some(3));
+}
+
+/// Tuning against all three styles at once: `cargo test -p sepulcra --release --test balance --
+/// --ignored --nocapture tune_styles`.
+#[test]
+#[ignore]
+fn tune_styles() {
+    let d = doc();
+    let t = Targets::parse_text(STYLES).unwrap();
+    let tune = [TuneParam::new("runner_hp").range(20, 160).step(1), TuneParam::new("shambler_hp").range(20, 160).step(1)];
+    let mut job = TuneJob::new(&d, &tune, TuneOptions { budget: 30, init: None, seed: 7 }).unwrap();
+    job.advance(&d, &t, usize::MAX, &opts(8));
+    for e in &job.evals {
+        println!("  eval {} loss {:.4} hit {}", Json::Obj(job.point(&e.x)), e.loss, e.hit);
+    }
+    let held = job.validate(&d, &t, &opts(8)).unwrap();
+    println!("held out: {}", held.to_json(false));
 }

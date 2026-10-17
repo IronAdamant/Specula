@@ -13,6 +13,8 @@ use crate::targets::{Bound, BoundMetric};
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunResult {
     pub seed: u64,
+    /// Which policy played (an index into the targets' policies).
+    pub policy: usize,
     /// One value per target (`None`: undefined in this run, e.g. no kills to time).
     pub values: Vec<Option<f64>>,
     /// The outcome's result and the tick it was decided.
@@ -21,6 +23,9 @@ pub struct RunResult {
     /// Policy steps applied and skipped (refused for a code not in `wait_on`).
     pub applied: u32,
     pub skipped: u32,
+    /// When each applied step was applied: (tick, step index), in order. What the policy did,
+    /// as plain timed commands (a playtest replays them in a game engine).
+    pub trace: Vec<(u32, u16)>,
     /// Stopped by the wall clock: not a result (see [`Runner::run`]).
     pub interrupted: bool,
 }
@@ -49,15 +54,18 @@ impl Runner {
         Runner { rules, bound, spawned, died, removed }
     }
 
-    /// Plays one seed. Deterministic: the same rules, targets and seed give the same result on
-    /// every machine and thread. A `deadline` stops the run between (or inside) ticks; it then
-    /// comes back `interrupted` and must not be counted.
-    pub fn run(&self, seed: u64, deadline: Option<Instant>) -> RunResult {
+    /// Plays one seed with policy `policy` (an index into the targets' policies; out of range
+    /// plays nothing). Deterministic: the same rules, targets, policy and seed give the same
+    /// result on every machine and thread. A `deadline` stops the run between (or inside) ticks;
+    /// it then comes back `interrupted` and must not be counted.
+    pub fn run(&self, policy: usize, seed: u64, deadline: Option<Instant>) -> RunResult {
         let b = &self.bound;
+        let none = crate::targets::BoundPolicy { name: String::new(), weight: 0.0, every: 1, wait_on: Vec::new(), steps: Vec::new() };
+        let plays = b.policies.get(policy).unwrap_or(&none);
         let hz = self.rules.tick_hz;
         let mut sim = match Sim::new(Arc::clone(&self.rules), seed, &Natives::new()) {
             Ok(s) => s,
-            Err(_) => return RunResult { seed, values: vec![None; b.metrics.len()], outcome: None, ticks: 0, applied: 0, skipped: 0, interrupted: true },
+            Err(_) => return RunResult { seed, policy, values: vec![None; b.metrics.len()], outcome: None, ticks: 0, applied: 0, skipped: 0, trace: Vec::new(), interrupted: true },
         };
         sim.set_deadline(deadline);
         // Resource samples: (metric index, tick) → value.
@@ -78,8 +86,9 @@ impl Runner {
         let mut ttk: Vec<(f64, u32)> = vec![(0.0, 0); b.metrics.len()];
         let mut next = 0usize;
         let (mut applied, mut skipped) = (0u32, 0u32);
+        let mut trace = Vec::new();
         sample(&sim, &mut samples, 0);
-        let every = b.every.max(1);
+        let every = plays.every.max(1);
         let note_events = |sim: &Sim, born: &mut BTreeMap<u32, (u32, u16)>, ttk: &mut Vec<(f64, u32)>| {
             if !wants_ttk {
                 return;
@@ -115,7 +124,7 @@ impl Runner {
             let now = sim.tick();
             if now % every == 0 {
                 // The policy: due steps in order; a wait stops the try, a refusal skips the step.
-                while let Some(s) = b.steps.get(next) {
+                while let Some(s) = plays.steps.get(next) {
                     let wave = sim.state().wave;
                     let due = s.at.is_none_or(|a| u64::from(now) >= a)
                         && s.after_wave.is_none_or(|w| wave >= w)
@@ -126,9 +135,10 @@ impl Runner {
                     match sim.apply(&s.call) {
                         Ok(()) => {
                             applied += 1;
+                            trace.push((now, next as u16));
                             note_events(&sim, &mut born, &mut ttk);
                         }
-                        Err(r) if b.wait_on.contains(&r.code) => break,
+                        Err(r) if plays.wait_on.contains(&r.code) => break,
                         Err(_) => skipped += 1,
                     }
                     next += 1;
@@ -174,6 +184,6 @@ impl Runner {
             };
             values.push(v);
         }
-        RunResult { seed, values, outcome, ticks: sim.tick(), applied, skipped, interrupted }
+        RunResult { seed, policy, values, outcome, ticks: sim.tick(), applied, skipped, trace, interrupted }
     }
 }

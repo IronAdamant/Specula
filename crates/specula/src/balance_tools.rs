@@ -232,7 +232,7 @@ fn targets_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput
         return ToolOutput::text(
             Json::obj([
                 ("metrics", catalogue()),
-                ("format", Json::from("{\"balance\": 1, \"name\", \"ticks\": \"12m\", \"seeds\": {\"train\": 24, \"holdout\": 24, \"base\": 1}, \"policy\": {\"every\": \"1s\", \"wait_on\": [codes], \"steps\": [{\"command\", \"args\", \"at\"?, \"after_wave\"?, \"when\"?}]}, \"targets\": [{\"id\", \"metric\", ..., \"target\", \"tolerance\", \"weight\"?}]}")),
+                ("format", Json::from("{\"balance\": 1, \"name\", \"ticks\": \"12m\", \"seeds\": {\"train\": 24, \"holdout\": 24, \"base\": 1}, \"policy\": {\"every\": \"1s\", \"wait_on\": [codes], \"steps\": [{\"command\", \"args\", \"at\"?, \"after_wave\"?, \"when\"?}]} or \"policies\": [{\"name\", \"weight\"?, \"every\", \"wait_on\", \"steps\"}] (several play styles: every target must hold under each), \"targets\": [{\"id\", \"metric\", ..., \"target\", \"tolerance\", \"weight\"?, \"policies\"?: [names]}]}")),
                 ("example", Json::from("games/sepulcra/lex/slice.targets.json")),
             ])
             .to_string(),
@@ -287,7 +287,7 @@ fn sweep_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
     };
     let detailed = crate::tools::bool_arg(args, "detailed").ok().flatten().unwrap_or(false);
     // This call's slice of the points: at most MAX_POINTS and MAX_RUNS runs.
-    let per_call = MAX_POINTS.min((MAX_RUNS / seeds.len()).max(1));
+    let per_call = MAX_POINTS.min((MAX_RUNS / (seeds.len() * t.policies.len().max(1))).max(1));
     let end = (start + per_call).min(points.len());
     if start >= points.len() {
         return err("invalid_argument", format!("'start' {start} is past the {} points", points.len()), vec![]);
