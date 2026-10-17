@@ -738,7 +738,7 @@ impl Run {
     }
 
     /// The next thing to do. Call it again after doing it.
-    pub fn next(&mut self) -> Action {
+    pub fn next_action(&mut self) -> Action {
         loop {
             if self.status.is_some() || self.phase == Phase::Done {
                 return Action::Finish;
@@ -1193,11 +1193,11 @@ mod tests {
     fn drive(run: &mut Run, answer: impl Fn(&str, u64) -> ToolOutput) -> Vec<String> {
         let mut log = Vec::new();
         for _ in 0..100_000 {
-            match run.next() {
+            match run.next_action() {
                 Action::Call(why) => {
                     let (call, _) = run.call_of(why);
                     log.push(format!("{}@{}", call, run.tick));
-                    let out = answer(&call.to_owned(), run.tick);
+                    let out = answer(call, run.tick);
                     run.complete(&out);
                 }
                 Action::Hash(p) => {
@@ -1303,7 +1303,7 @@ mod tests {
         // A run whose state differs from tick 100 on.
         let mut off = Run::new(s, Some(exp));
         for _ in 0..1000 {
-            match off.next() {
+            match off.next_action() {
                 Action::Call(_) => off.complete(&ok("{}")),
                 Action::Hash(p) => {
                     let h = if off.tick >= 100 { off.tick + 1 } else { off.tick };
@@ -1348,7 +1348,7 @@ mod tests {
         assert_eq!(run.status(), Some(Status::Failed));
         let mut c = Run::new(spec(r#"{"name": "s", "ticks": 10}"#), None);
         c.stop(Status::Cancelled, "asked");
-        assert_eq!(c.next(), Action::Finish);
+        assert_eq!(c.next_action(), Action::Finish);
         assert_eq!(c.report(false).get("reason").unwrap().as_str(), Some("asked"));
     }
 

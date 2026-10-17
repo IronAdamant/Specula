@@ -290,6 +290,7 @@ impl Tools {
 impl ToolHandler for Tools {
     fn tools(&self) -> Vec<ToolDef> {
         let mut all = definitions();
+        crate::response::add_to_schemas(&mut all);
         all.extend(self.game_tools.iter().cloned());
         all
     }
@@ -301,6 +302,12 @@ impl ToolHandler for Tools {
             "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
             _ => {}
         }
+        // response_format of the heavy tools: taken out here, applied to the answer below.
+        let shaped = match crate::response::split(name, arguments) {
+            Ok(s) => s,
+            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+        };
+        let arguments = shaped.as_ref().map_or(arguments, |(_, a)| a);
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
         } else {
@@ -316,14 +323,18 @@ impl ToolHandler for Tools {
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
-        answer.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|e| match e {
+        let out = answer.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|e| match e {
             mpsc::RecvTimeoutError::Timeout => {
                 ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied")
             }
             mpsc::RecvTimeoutError::Disconnected => {
                 ToolOutput::error("the engine is shutting down or skipped the command; it was not applied")
             }
-        })
+        });
+        match shaped {
+            Some((format, _)) => crate::response::shape(name, format, out),
+            None => out,
+        }
     }
 }
 

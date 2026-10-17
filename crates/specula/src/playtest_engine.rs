@@ -146,12 +146,29 @@ struct Active {
     started: Instant,
     was_paused: bool,
     /// A call answered later (a capture waiting for builds).
-    waiting: Option<(Receiver<ToolOutput>, Instant)>,
+    waiting: Option<Pending>,
     /// Where to write the replay: (as given, resolved).
     record: Option<(String, PathBuf)>,
     game_tools: Vec<String>,
     waiters: Vec<Waiter>,
     cancel: bool,
+}
+
+/// A call's answer still to come: the receiver, when to give up, and the answer's shape.
+struct Pending {
+    rx: Receiver<ToolOutput>,
+    deadline: Instant,
+    tool: String,
+    format: Option<Format>,
+}
+
+impl Pending {
+    fn answer(&self, out: ToolOutput) -> ToolOutput {
+        match self.format {
+            Some(f) => crate::response::shape(&self.tool, f, out),
+            None => out,
+        }
+    }
 }
 
 struct Finished {
@@ -338,10 +355,10 @@ impl Engine {
         // Fewer ticks between time checks with a window (its frames come first).
         let chunk = if self.windowed { 16 } else { 64 };
         loop {
-            if let Some((rx, deadline)) = &a.waiting {
-                match rx.try_recv() {
-                    Ok(out) => a.run.complete(&out),
-                    Err(TryRecvError::Empty) if Instant::now() < *deadline => break,
+            if let Some(p) = &a.waiting {
+                match p.rx.try_recv() {
+                    Ok(out) => a.run.complete(&p.answer(out)),
+                    Err(TryRecvError::Empty) if Instant::now() < p.deadline => break,
                     Err(_) => a.run.complete(&error("no_answer", format!("the call wasn't answered within {} s", CALL_WAIT.as_secs()), vec![])),
                 }
                 a.waiting = None;
@@ -352,14 +369,14 @@ impl Engine {
             if a.started.elapsed() > Duration::from_secs(a.run.spec.max_wall_s) {
                 a.run.stop(Status::Error, format!("ran past max_wall_s ({} s)", a.run.spec.max_wall_s));
             }
-            match a.run.next() {
+            match a.run.next_action() {
                 Action::Call(why) => {
                     let (tool, args) = a.run.call_of(why);
                     let (tool, args) = (tool.to_owned(), args.clone());
                     match self.playtest_dispatch(&a, &tool, &args, server) {
-                        Ok(rx) => match rx.try_recv() {
-                            Ok(out) => a.run.complete(&out),
-                            Err(TryRecvError::Empty) => a.waiting = Some((rx, Instant::now() + CALL_WAIT)),
+                        Ok(p) => match p.rx.try_recv() {
+                            Ok(out) => a.run.complete(&p.answer(out)),
+                            Err(TryRecvError::Empty) => a.waiting = Some(p),
                             Err(TryRecvError::Disconnected) => a.run.complete(&error("no_answer", "the call was dropped unanswered", vec![])),
                         },
                         Err(out) => a.run.complete(&out),
@@ -403,10 +420,14 @@ impl Engine {
     }
 
     /// A playtest's call, as its agent: answered at once or later through the receiver.
-    fn playtest_dispatch(&mut self, a: &Active, tool: &str, args: &Json, server: &Server) -> Result<Receiver<ToolOutput>, ToolOutput> {
+    fn playtest_dispatch(&mut self, a: &Active, tool: &str, args: &Json, server: &Server) -> Result<Pending, ToolOutput> {
         if let Some((_, why)) = playtest::FORBIDDEN.iter().find(|(n, _)| *n == tool) {
             return Err(error("forbidden", format!("a playtest can't call {tool}: {why}"), vec![]));
         }
+        // As over MCP: response_format of the heavy tools is applied to the answer.
+        let shaped = crate::response::split(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_pretty()))?;
+        let format = shaped.as_ref().map(|(f, _)| *f);
+        let args = shaped.as_ref().map_or(args, |(_, a)| a);
         let command = if a.game_tools.iter().any(|t| t == tool) {
             Command::Game { name: tool.to_owned(), args: args.clone() }
         } else {
@@ -415,7 +436,7 @@ impl Engine {
         let (reply, answer) = mpsc::channel();
         let request = Request { session: a.session.clone(), command, reply, deadline: Instant::now() + Duration::from_secs(25) };
         self.handle(request, server);
-        Ok(answer)
+        Ok(Pending { rx: answer, deadline: Instant::now() + CALL_WAIT, tool: tool.to_owned(), format })
     }
 
     /// The hashes a playtest checkpoint records: the world, physics and the game's subsystems.

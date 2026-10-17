@@ -62,13 +62,23 @@ pub fn defs() -> Vec<ToolDef> {
             name: "play_state".into(),
             description: "Sepulcra's state: wave, dust, tombstones, outcome, tick, timers, counts and the state hash. \
                           include lists any of enemies, stones, walls, waves, log (recent messages); lists are paged \
-                          with offset/limit (default 50, max 200)."
+                          with offset/limit (default 50, max 200). Concise by default (compact; enemies by kind only \
+                          when present); response_format detailed adds the presentation (HUD, audio, scene), content \
+                          hash, projectiles, pending spawns and each enemy's max_hp and remaining_m."
                 .into(),
             input_schema: schema(
                 vec![
                     ("include", obj([("type", Json::from("array")), ("items", obj([("type", Json::from("string")), ("enum", Json::arr(["enemies", "stones", "walls", "waves", "log"].map(Json::from)))]))])),
                     ("offset", prop("integer", "First list item (default 0)")),
                     ("limit", prop("integer", "List items per list (default 50, max 200)")),
+                    (
+                        "response_format",
+                        obj([
+                            ("type", Json::from("string")),
+                            ("enum", Json::arr(["concise", "detailed"].map(Json::from))),
+                            ("description", Json::from("concise (default) or detailed (see the description)")),
+                        ]),
+                    ),
                 ],
                 &[],
             ),
@@ -350,7 +360,12 @@ fn page<T>(items: impl Iterator<Item = T>, offset: usize, limit: usize, f: impl 
 }
 
 fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
-    check_keys(args, &["include", "offset", "limit"])?;
+    check_keys(args, &["include", "offset", "limit", "response_format"])?;
+    let detailed = match str_arg(args, "response_format")? {
+        None | Some("concise") => false,
+        Some("detailed") => true,
+        Some(_) => return Err(error("bad_argument", "'response_format' must be \"concise\" or \"detailed\"", vec![("field", Json::from("response_format"))])),
+    };
     let offset = uint_arg(args, "offset", 1 << 20)?.unwrap_or(0) as usize;
     let limit = (uint_arg(args, "limit", MAX_LIMIT as u64)?.unwrap_or(DEFAULT_LIMIT as u64) as usize).clamp(1, MAX_LIMIT);
     let s: &State = &game.state;
@@ -362,23 +377,33 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     }
     let mut out = game.status_json();
     out.set("seed", Json::from(s.seed().to_string()));
-    out.set("seconds", Json::from(f64::from(s.tick()) / f64::from(TICK_HZ)));
-    out.set("next_wave_in_s", s.next_wave_tick().map_or(Json::Null, |t| Json::from(f64::from(t.saturating_sub(s.tick())) / f64::from(TICK_HZ))));
-    out.set("tombstones_max", Json::from(content.rules.tombstones));
-    out.set("enemies_by_kind", Json::obj(by_kind.into_iter().map(|(k, n)| (k, Json::from(n)))));
-    out.set("pending_spawns", Json::from(s.pending_spawns()));
+    let next_wave = s.next_wave_tick().map(|t| f64::from(t.saturating_sub(s.tick())) / f64::from(TICK_HZ));
+    if detailed {
+        out.set("seconds", Json::from(f64::from(s.tick()) / f64::from(TICK_HZ)));
+        out.set("next_wave_in_s", next_wave.map_or(Json::Null, Json::from));
+        out.set("tombstones_max", Json::from(content.rules.tombstones));
+        out.set("enemies_by_kind", Json::obj(by_kind.into_iter().map(|(k, n)| (k, Json::from(n)))));
+        out.set("pending_spawns", Json::from(s.pending_spawns()));
+    } else {
+        out.set("next_wave_in_s", next_wave.map_or(Json::Null, |x| Json::from((x * 10.0).round() / 10.0)));
+        out.set("enemies_by_kind", Json::obj(by_kind.into_iter().filter(|(_, n)| *n > 0).map(|(k, n)| (k, Json::from(n)))));
+    }
     out.set("stones", Json::from(s.stones().count()));
     out.set("walls", Json::from(s.walls().count()));
-    out.set("projectiles", Json::from(s.projectiles().len()));
+    if detailed {
+        out.set("projectiles", Json::from(s.projectiles().len()));
+    }
     out.set("commands_recorded", Json::from(game.journal.len()));
     out.set("layout", game.autoplay.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str())));
     out.set("state_hash", Json::from(format!("{:016x}", s.hash())));
-    out.set("content_hash", Json::from(format!("{:016x}", content.hash)));
-    let mut presentation = game.presentation_json();
-    if let Some(scene) = &game.scene {
-        presentation.set("scene", scene.counts());
+    if detailed {
+        out.set("content_hash", Json::from(format!("{:016x}", content.hash)));
+        let mut presentation = game.presentation_json();
+        if let Some(scene) = &game.scene {
+            presentation.set("scene", scene.counts());
+        }
+        out.set("presentation", presentation);
     }
-    out.set("presentation", presentation);
     let include: Vec<&str> = match args.get("include") {
         None | Some(Json::Null) => Vec::new(),
         Some(Json::Arr(a)) => a.iter().filter_map(Json::as_str).collect(),
@@ -393,10 +418,12 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
                     ("id", Json::from(e.id)),
                     ("kind", Json::from(content.enemy(e.kind).id.as_str())),
                     ("hp", Json::from(e.hp as f64 / 1000.0)),
-                    ("max_hp", Json::from(e.max_hp as f64 / 1000.0)),
                     ("pos", Json::arr([r(x), r(y), r(z)])),
-                    ("remaining_m", Json::from(e.remaining as f64 / 1000.0)),
                 ]);
+                if detailed {
+                    j.set("max_hp", Json::from(e.max_hp as f64 / 1000.0));
+                    j.set("remaining_m", Json::from(e.remaining as f64 / 1000.0));
+                }
                 j.set("cell", e.cell().map_or(Json::Null, |c| Json::from(map.cell_name(c))));
                 j.set("flying", Json::from(matches!(e.motion, Motion::Air { .. })));
                 if e.is_slowed(s.tick()) {
@@ -440,7 +467,7 @@ fn state(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
         };
         out.set(what, list);
     }
-    Ok(ToolOutput::text(out.to_pretty()))
+    Ok(ToolOutput::text(if detailed { out.to_pretty() } else { out.to_string() }))
 }
 
 fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput, ToolOutput> {

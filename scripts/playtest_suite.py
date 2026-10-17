@@ -167,7 +167,7 @@ def suite():
         "steps": [
             new(7),
             {"at": 1, "call": "play_ui", "args": {"press": "build_wall", "limit": 5}, "expect": {"pressed": "build_wall"}},
-            {"at": 2, "call": "play_state", "expect": {"presentation.hud.selected": "wall"}},
+            {"at": 2, "call": "play_state", "args": {"response_format": "detailed"}, "expect": {"presentation.hud.selected": "wall"}},
             {"at": 3, "call": "play_ui", "args": {"press": "call_wave", "limit": 5}, "expect": {"pressed": "call_wave"}},
             {"at": 4, "call": "play_state", "expect": {"wave": 1}},
         ],
