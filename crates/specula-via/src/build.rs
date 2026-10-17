@@ -7,7 +7,7 @@
 //! depends only on its triangles and their order, never on the tiles around it or on the order
 //! tiles are built in.
 
-use crate::{Config, Derived, Input, NavError, Triangle, MAX_POLYS_PER_TILE, MAX_SPANS_PER_COLUMN, MAX_TILE_TRIANGLES};
+use crate::{Config, Derived, Input, Mark, NavError, Triangle, MAX_POLYS_PER_TILE, MAX_SPANS_PER_COLUMN, MAX_TILE_TRIANGLES};
 use specula_core::dmath;
 use specula_core::math::Vec3;
 
@@ -35,6 +35,8 @@ struct Span {
     min: u16,
     max: u16,
     walk: bool,
+    /// The area of the surface forming its top (0: plain ground).
+    area: u8,
 }
 
 /// The open space above a walkable span.
@@ -45,6 +47,7 @@ struct Open {
     link: [u8; 4],
     dist: u16,
     alive: bool,
+    area: u8,
 }
 
 /// One rectangle of a tile, in global column coordinates (inclusive).
@@ -58,6 +61,8 @@ pub struct Rect {
     pub h: [f32; 4],
     /// Links to rectangles of the same tile: (other rectangle, side, first, last column along the side).
     pub links: Vec<(u32, u8, i32, i32)>,
+    /// Its area (every column of a rectangle has the same).
+    pub area: u8,
 }
 
 /// An open span on a tile's edge, for linking with the neighbouring tile.
@@ -165,7 +170,13 @@ fn add_span(col: &mut Vec<Span>, mut s: Span, merge: u16) -> bool {
         } else {
             s.walk
         };
-        s = Span { min: c.min.min(s.min), max: c.max.max(s.max), walk };
+        // The top's area (equal tops: the larger id, so the order spans come in never matters).
+        let area = match c.max.cmp(&s.max) {
+            std::cmp::Ordering::Greater => c.area,
+            std::cmp::Ordering::Less => s.area,
+            std::cmp::Ordering::Equal => c.area.max(s.area),
+        };
+        s = Span { min: c.min.min(s.min), max: c.max.max(s.max), walk, area };
         col.remove(i);
     }
     if col.len() >= MAX_SPANS_PER_COLUMN {
@@ -217,8 +228,9 @@ pub struct Scratch {
     poly_of: Vec<u32>,
 }
 
-/// Builds tile `(tx, tz)` from the sources that touch it (in a fixed order).
-pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input], scratch: &mut Scratch) -> TileBuild {
+/// Builds tile `(tx, tz)` from the sources that touch it (in a fixed order); `marks` give the
+/// open space inside them their area.
+pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input], marks: &[Mark], scratch: &mut Scratch) -> TileBuild {
     let t = cfg.tile_cells as i32;
     let b = d.border as i32;
     let w = t + 2 * b;
@@ -259,8 +271,9 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input]
             break;
         }
         budget -= count;
+        let area = input.area;
         if src.aligned {
-            if fill_box(cfg, d, &grid, src.lo, src.hi, &mut cols) {
+            if fill_box(cfg, d, &grid, src.lo, src.hi, area, &mut cols) {
                 out.triangles += 12;
             }
         } else if src.solid {
@@ -289,12 +302,12 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input]
                     }
                     i += 1;
                 }
-                add_span(&mut cols[c], Span { min: lo, max: hi, walk }, d.climb_q);
+                add_span(&mut cols[c], Span { min: lo, max: hi, walk, area }, d.climb_q);
             }
         } else {
             for tri in input.triangles() {
                 if rasterise(cfg, d, &grid, tri, &mut |c, lo, hi, walk| {
-                    add_span(&mut cols[c], Span { min: lo, max: hi, walk }, d.climb_q);
+                    add_span(&mut cols[c], Span { min: lo, max: hi, walk, area }, d.climb_q);
                 }) {
                     out.triangles += 1;
                 }
@@ -342,7 +355,16 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input]
             for (i, s) in col.iter().enumerate() {
                 let ceil = col.get(i + 1).map_or(u16::MAX, |n| n.min);
                 if s.walk && ceil.saturating_sub(s.max) >= d.height_q && s.max <= d.max_q {
-                    opens.push(Open { floor: s.max, ceil, link: [NO_LINK; 4], dist: u16::MAX, alive: true });
+                    // A mark the column's centre and floor are inside gives its area (the last
+                    // one listed wins).
+                    let (wx, wz) = (cfg.bounds_min.x + (grid.gx0 + lx) as f32 * cfg.cell_size + cfg.cell_size * 0.5, cfg.bounds_min.z + (grid.gz0 + lz) as f32 * cfg.cell_size + cfg.cell_size * 0.5);
+                    let fy = cfg.bounds_min.y + f32::from(s.max) * cfg.cell_height;
+                    let area = marks
+                        .iter()
+                        .rev()
+                        .find(|m| wx >= m.lo.x && wx <= m.hi.x && wz >= m.lo.z && wz <= m.hi.z && fy >= m.lo.y - cfg.cell_height && fy <= m.hi.y)
+                        .map_or(s.area, |m| m.area);
+                    opens.push(Open { floor: s.max, ceil, link: [NO_LINK; 4], dist: u16::MAX, alive: true, area });
                 }
             }
         }
@@ -504,7 +526,8 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input]
                     truncated = true;
                     break 'rows;
                 }
-                let free = |opens: &[Open], poly_of: &[u32], n: u32| opens[n as usize].alive && poly_of[n as usize] == NO_POLY;
+                let area = opens[g as usize].area;
+                let free = |opens: &[Open], poly_of: &[u32], n: u32| opens[n as usize].alive && poly_of[n as usize] == NO_POLY && opens[n as usize].area == area;
                 let mut row = vec![g];
                 loop {
                     let last = *row.last().expect("not empty");
@@ -571,6 +594,7 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input]
                     z1: grid.gz0 + lz + ht as i32 - 1,
                     h: [f(0, 0), f(0, wd - 1), f(ht - 1, 0), f(ht - 1, wd - 1)],
                     links: Vec::new(),
+                    area,
                 });
                 grids.push(rows);
                 origin.push((lx, lz));
@@ -660,7 +684,7 @@ fn fits(opens: &[Open], rows: &[Vec<u32>]) -> bool {
 /// Fills the tile's columns an axis-aligned solid box covers: columns it overlaps get a span
 /// from its bottom to its top, walkable (its top is flat); columns it only touches along a
 /// column line get a non-walkable span, as its side faces would. False when it misses them.
-fn fill_box(cfg: &Config, d: &Derived, grid: &Grid, lo: Vec3, hi: Vec3, cols: &mut [Vec<Span>]) -> bool {
+fn fill_box(cfg: &Config, d: &Derived, grid: &Grid, lo: Vec3, hi: Vec3, area: u8, cols: &mut [Vec<Span>]) -> bool {
     let (bmin, cs, ch) = (cfg.bounds_min, cfg.cell_size, cfg.cell_height);
     if hi.y < bmin.y || lo.y > cfg.bounds_max.y {
         return false;
@@ -688,7 +712,7 @@ fn fill_box(cfg: &Config, d: &Derived, grid: &Grid, lo: Vec3, hi: Vec3, cols: &m
             let (r0, r1) = (bmin.x + gx as f32 * cs, bmin.x + (gx + 1) as f32 * cs);
             let inside = inside_z && r1 > lo.x && r0 < hi.x;
             let (lx, lz) = (gx as i32 - grid.gx0, gz as i32 - grid.gz0);
-            add_span(&mut cols[grid.col(lx, lz)], Span { min: smin, max: smax, walk: inside }, d.climb_q);
+            add_span(&mut cols[grid.col(lx, lz)], Span { min: smin, max: smax, walk: inside, area }, d.climb_q);
         }
     }
     true
@@ -783,12 +807,12 @@ mod tests {
     #[test]
     fn spans_merge_by_top() {
         let mut col = Vec::new();
-        add_span(&mut col, Span { min: 0, max: 10, walk: true }, 1);
-        add_span(&mut col, Span { min: 5, max: 20, walk: false }, 1);
-        assert_eq!(col, vec![Span { min: 0, max: 20, walk: false }]);
-        add_span(&mut col, Span { min: 30, max: 31, walk: true }, 1);
-        add_span(&mut col, Span { min: 19, max: 21, walk: true }, 1);
-        assert_eq!(col, vec![Span { min: 0, max: 21, walk: true }, Span { min: 30, max: 31, walk: true }]);
+        add_span(&mut col, Span { min: 0, max: 10, walk: true, area: 0 }, 1);
+        add_span(&mut col, Span { min: 5, max: 20, walk: false, area: 2 }, 1);
+        assert_eq!(col, vec![Span { min: 0, max: 20, walk: false, area: 2 }]);
+        add_span(&mut col, Span { min: 30, max: 31, walk: true, area: 0 }, 1);
+        add_span(&mut col, Span { min: 19, max: 21, walk: true, area: 1 }, 1);
+        assert_eq!(col, vec![Span { min: 0, max: 21, walk: true, area: 1 }, Span { min: 30, max: 31, walk: true, area: 0 }]);
     }
 
     #[test]
@@ -799,8 +823,8 @@ mod tests {
         let (lo, hi) = (Vec3::new(-1.03, 0.0, -0.61), Vec3::new(0.77, 1.1, 1.24));
         let mut s = Scratch::default();
         let (tris, aligned) = (Source::new(crate::mesh::tests::cuboid(lo, hi), true), Source::aligned_box(lo, hi));
-        let by_tris = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&tris)], &mut s);
-        let by_box = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&aligned)], &mut s);
+        let by_tris = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&tris)], &[], &mut s);
+        let by_box = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&aligned)], &[], &mut s);
         assert_eq!(by_tris.rects, by_box.rects);
     }
 
@@ -812,7 +836,7 @@ mod tests {
         // A T of 0.4 m walls, 2 m tall: their tops are too narrow, even where they meet.
         let a = Source::new(crate::mesh::tests::cuboid(Vec3::new(-3.0, 0.0, -0.2), Vec3::new(3.0, 2.0, 0.2)), true);
         let b = Source::new(crate::mesh::tests::cuboid(Vec3::new(-0.2, 0.0, 0.2), Vec3::new(0.2, 2.0, 3.0)), true);
-        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&a), Input::all(&b)], &mut Scratch::default());
+        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor), Input::all(&a), Input::all(&b)], &[], &mut Scratch::default());
         assert!(!t.rects.is_empty());
         assert!(t.rects.iter().all(|r| r.h.iter().all(|h| *h < 1.0)), "nothing on the walls: {:?}", t.rects.iter().filter(|r| r.h[0] > 1.0).collect::<Vec<_>>());
     }
@@ -822,7 +846,7 @@ mod tests {
         let cfg = Config { bounds_min: Vec3::new(0.0, -1.0, 0.0), bounds_max: Vec3::new(4.8, 3.0, 4.8), tile_cells: 32, ..Config::default() };
         let d = Derived::of(&cfg);
         let floor = Source::new(quad(0.0, 0.0, 4.8, 4.8, 0.0).to_vec(), false);
-        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor)], &mut Scratch::default());
+        let t = build_tile(&cfg, &d, 0, 0, &[Input::all(&floor)], &[], &mut Scratch::default());
         assert_eq!(t.rects.len(), 1, "{:?}", t.rects);
         let r = &t.rects[0];
         // Radius 0.3 m at 0.15 m cells: two columns eroded from each side.

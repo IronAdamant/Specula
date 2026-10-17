@@ -96,6 +96,9 @@ pub struct PathResult {
     pub polys: Vec<PolyRef>,
     /// The string-pulled path: the start, the corners, the end (on the navmesh).
     pub corners: Vec<Vec3>,
+    /// Off-mesh links on it: (index of the corner where it starts, the link's kind); the next
+    /// corner is where it lands.
+    pub offmesh: Vec<(usize, crate::LinkKind)>,
     pub status: PathStatus,
     /// Polygons expanded.
     pub visited: usize,
@@ -199,24 +202,61 @@ impl NavMesh {
     /// A path from `start` to `end` (each snapped to the nearest polygon within `extent`):
     /// A* over polygons, then the funnel. `None` when `start` is off the navmesh.
     pub fn find_path(&self, start: Vec3, end: Vec3, extent: Vec3, max_nodes: usize) -> Option<PathResult> {
+        self.find_path_filtered(start, end, extent, max_nodes, &crate::Filter::default())
+    }
+
+    /// [`NavMesh::find_path`] weighing areas with `filter` (an excluded goal is unreachable).
+    pub fn find_path_filtered(&self, start: Vec3, end: Vec3, extent: Vec3, max_nodes: usize, filter: &crate::Filter) -> Option<PathResult> {
         let (sp, s) = self.nearest(start, extent)?;
-        let goal = self.nearest(end, extent);
+        let goal = self.nearest(end, extent).filter(|(p, _)| self.poly(*p).is_some_and(|q| filter.cost_of(q.area).is_some()));
         let target = goal.map_or(end, |(_, e)| e);
-        let (polys, status, visited) = self.search(sp, s, goal.map(|(p, _)| p), target, max_nodes.clamp(1, MAX_NODES.1));
+        let (polys, status, visited) = self.search_filtered(sp, s, goal.map(|(p, _)| p), target, max_nodes.clamp(1, MAX_NODES.1), filter);
         let last = *polys.last().expect("the start is in the path");
         let end_point = match status {
             PathStatus::Complete => target,
             _ => self.poly(last).map_or(s, |p| self.closest_on_poly(p, target)),
         };
-        let polys = self.shortcut(s, end_point, polys);
-        let corners = self.straighten(s, end_point, &polys, usize::MAX);
+        let polys = self.shortcut_filtered(s, end_point, polys, filter);
+        let (corners, offmesh) = self.corners_through(s, end_point, &polys);
         let length = corners.windows(2).map(|w| dist(w[0], w[1])).sum();
-        Some(PathResult { polys, corners, status, visited, length })
+        Some(PathResult { polys, corners, offmesh, status, visited, length })
+    }
+
+    /// The whole string-pulled path through a corridor that may cross off-mesh links: each
+    /// stretch on the surface funnelled, each link a straight hop. Returns the corners and, per
+    /// link, the index of its take-off corner and its kind.
+    pub fn corners_through(&self, start: Vec3, end: Vec3, polys: &[PolyRef]) -> (Vec<Vec3>, Vec<(usize, crate::LinkKind)>) {
+        let mut corners = Vec::new();
+        let mut links = Vec::new();
+        let (mut from, mut rest) = (start, polys);
+        while let Some((k, t)) = self.first_traverse(rest) {
+            let part = self.straighten(from, t.from_pos, &rest[..=k], usize::MAX);
+            let skip = usize::from(!corners.is_empty());
+            corners.extend(part.into_iter().skip(skip));
+            if !same_xz(*corners.last().expect("start"), t.from_pos) || corners.len() == 1 {
+                corners.push(t.from_pos);
+            }
+            links.push((corners.len() - 1, t.kind));
+            corners.push(t.to_pos);
+            from = t.to_pos;
+            rest = &rest[k + 1..];
+        }
+        let part = self.straighten(from, end, rest, usize::MAX);
+        let skip = usize::from(!corners.is_empty());
+        corners.extend(part.into_iter().skip(skip));
+        (corners, links)
     }
 
     /// A* from polygon `sp` (at `s`) toward `goal` (at `target`); a goal of `None` is unreachable
     /// by definition, so the search returns the polygon closest to `target`.
     pub fn search(&self, sp: PolyRef, s: Vec3, goal: Option<PolyRef>, target: Vec3, max_nodes: usize) -> (Vec<PolyRef>, PathStatus, usize) {
+        self.search_filtered(sp, s, goal, target, max_nodes, &crate::Filter::default())
+    }
+
+    /// [`NavMesh::search`] with area costs and exclusions, across off-mesh links too: crossing a
+    /// polygon costs its distance times its area's cost, a link its length times its cost and
+    /// its area's.
+    pub fn search_filtered(&self, sp: PolyRef, s: Vec3, goal: Option<PolyRef>, target: Vec3, max_nodes: usize, filter: &crate::Filter) -> (Vec<PolyRef>, PathStatus, usize) {
         struct Node {
             poly: PolyRef,
             g: f32,
@@ -230,7 +270,8 @@ impl NavMesh {
         let mut open: BinaryHeap<Reverse<(u32, PolyRef, u32)>> = BinaryHeap::new();
         nodes.push(Node { poly: sp, g: 0.0, pos: s, parent: NONE, closed: false });
         index.insert(sp.0, 0);
-        open.push(Reverse(((dist(s, target) * H_SCALE).to_bits(), sp, 0)));
+        let h_scale = H_SCALE * filter.min_cost();
+        open.push(Reverse(((dist(s, target) * h_scale).to_bits(), sp, 0)));
         // The polygon nearest the target so far (by its entry point), for unreachable goals.
         let mut best = (self.poly(sp).map_or(f32::INFINITY, |p| dist(self.closest_on_poly(p, target), target)), sp, 0u32);
         let mut visited = 0usize;
@@ -256,25 +297,38 @@ impl NavMesh {
                 break;
             }
             let Some(p) = self.poly(cur) else { continue };
-            for l in &p.links {
-                let slot = index.get(l.to.0);
+            // (The start polygon may be excluded: an agent standing in it has to leave.)
+            let here = filter.cost_of(p.area).unwrap_or(1.0);
+            let portals = p.links.iter().map(|l| {
+                let (a, b) = self.portal(p, l);
+                (l.to, closest_on_segment(pos, a, b), None)
+            });
+            let hops = self.traverses_from(cur).filter_map(|t| {
+                let c = filter.cost_of(t.area)?;
+                Some((t.to, t.to_pos, Some((t.from_pos, dist(t.from_pos, t.to_pos) * t.cost.max(0.01) * c))))
+            });
+            for (to, np, hop) in portals.chain(hops) {
+                let Some(next_cost) = self.poly(to).and_then(|q| filter.cost_of(q.area)) else { continue };
+                let slot = index.get(to.0);
                 if slot.is_some_and(|i| nodes[i as usize].closed) {
                     continue;
                 }
-                let (a, b) = self.portal(p, l);
-                let np = closest_on_segment(pos, a, b);
-                let mut ng = g + dist(pos, np);
+                let mut ng = match hop {
+                    Some((off, c)) => g + dist(pos, off) * here + c,
+                    None => g + dist(pos, np) * here,
+                };
                 let h;
-                if Some(l.to) == goal {
-                    ng += dist(np, target);
+                if Some(to) == goal {
+                    ng += dist(np, target) * next_cost;
                     h = 0.0;
                 } else {
                     let d = dist(np, target);
-                    h = d * H_SCALE;
-                    if d < best.0 || (d == best.0 && l.to < best.1) {
-                        best = (d, l.to, NONE);
+                    h = d * h_scale;
+                    if d < best.0 || (d == best.0 && to < best.1) {
+                        best = (d, to, NONE);
                     }
                 }
+                let l_to = to;
                 let ni = match slot {
                     Some(i) if ng >= nodes[i as usize].g => continue,
                     Some(i) => {
@@ -286,15 +340,15 @@ impl NavMesh {
                     }
                     None => {
                         let i = nodes.len() as u32;
-                        nodes.push(Node { poly: l.to, g: ng, pos: np, parent: ci, closed: false });
-                        index.insert(l.to.0, i);
+                        nodes.push(Node { poly: l_to, g: ng, pos: np, parent: ci, closed: false });
+                        index.insert(l_to.0, i);
                         i
                     }
                 };
-                if best.1 == l.to {
+                if best.1 == l_to {
                     best.2 = ni;
                 }
-                open.push(Reverse(((ng + h).to_bits(), l.to, ni)));
+                open.push(Reverse(((ng + h).to_bits(), l_to, ni)));
             }
         }
         let end = match found {
@@ -333,7 +387,9 @@ impl NavMesh {
         let mut portals = vec![(start, start)];
         let mut next = 0usize;
         let mut closed = false;
-        let mut fetch = |portals: &mut Vec<(Vec3, Vec3)>, i: usize| -> bool {
+        // A corridor crossing an off-mesh link ends this stretch where the link takes off.
+        let mut end = end;
+        let mut fetch = |portals: &mut Vec<(Vec3, Vec3)>, i: usize, end: &mut Vec3| -> bool {
             while portals.len() <= i && !closed {
                 match polys.get(next..next + 2).and_then(|w| self.portal_between(w[0], w[1])) {
                     Some(p) => {
@@ -341,7 +397,10 @@ impl NavMesh {
                         next += 1;
                     }
                     None => {
-                        portals.push((end, end));
+                        if let Some(t) = polys.get(next..next + 2).and_then(|w| self.traverse_between(w[0], w[1])) {
+                            *end = t.from_pos;
+                        }
+                        portals.push((*end, *end));
                         closed = true;
                     }
                 }
@@ -354,7 +413,7 @@ impl NavMesh {
         let mut apex_i;
         let mut i = 1;
         let mut guard = 0usize;
-        while fetch(&mut portals, i) {
+        while fetch(&mut portals, i, &mut end) {
             guard += 1;
             if guard > polys.len() * 4 + 16 || out.len() > max_corners {
                 break;
@@ -470,13 +529,32 @@ impl NavMesh {
     /// later corner of the string-pulled path, the polygons it crosses replace the detour (A*
     /// over large polygons can bend a path at a polygon's corner it never needed).
     pub fn shortcut(&self, s: Vec3, end: Vec3, polys: Vec<PolyRef>) -> Vec<PolyRef> {
+        self.shortcut_filtered(s, end, polys, &crate::Filter::default())
+    }
+
+    /// [`NavMesh::shortcut`] that never shortens across an off-mesh link (each stretch is
+    /// shortened on its own) or into areas the corridor avoided: a straight walk is taken only
+    /// over areas the filter allows that cost no more than plain ground or that the corridor
+    /// already crosses.
+    pub fn shortcut_filtered(&self, s: Vec3, end: Vec3, polys: Vec<PolyRef>, filter: &crate::Filter) -> Vec<PolyRef> {
+        if let Some((k, t)) = self.first_traverse(&polys) {
+            let mut out = self.shortcut_filtered(s, t.from_pos, polys[..=k].to_vec(), filter);
+            out.extend(self.shortcut_filtered(t.to_pos, end, polys[k + 1..].to_vec(), filter));
+            return out;
+        }
+        let areas: std::collections::BTreeSet<u8> = polys.iter().filter_map(|p| self.poly(*p).map(|q| q.area)).collect();
+        let ok_area = |r: &PolyRef| self.poly(*r).is_some_and(|q| filter.cost_of(q.area).is_some_and(|c| c <= 1.0 || areas.contains(&q.area)));
+        self.shortcut_plain(s, end, polys, &ok_area)
+    }
+
+    fn shortcut_plain(&self, s: Vec3, end: Vec3, polys: Vec<PolyRef>, ok_area: &dyn Fn(&PolyRef) -> bool) -> Vec<PolyRef> {
         if polys.len() <= 2 {
             return polys;
         }
         let (start, last) = (polys[0], *polys.last().expect("not empty"));
         let budget = polys.len() * 4 + 64;
         let (ok, ray) = self.raycast(start, s, end, budget);
-        if ok && ray.last() == Some(&last) {
+        if ok && ray.last() == Some(&last) && ray.iter().all(ok_area) {
             return ray;
         }
         let corners = self.straighten(s, end, &polys, 64);
@@ -495,7 +573,7 @@ impl NavMesh {
                     return polys;
                 }
                 let (ok, ray) = self.raycast(from, corners[i], corners[j], budget);
-                if ok && (j + 1 < corners.len() || ray.last() == Some(&last)) {
+                if ok && (j + 1 < corners.len() || ray.last() == Some(&last)) && ray.iter().all(ok_area) {
                     step = Some((j, ray));
                     break;
                 }
@@ -515,6 +593,11 @@ impl NavMesh {
     /// where there are neighbours, sliding along edges where there are none. Returns the polygon
     /// it ends on and the point (on the surface).
     pub fn move_along(&self, start: PolyRef, from: Vec3, to: Vec3) -> (PolyRef, Vec3) {
+        self.move_along_filtered(start, from, to, &crate::Filter::default())
+    }
+
+    /// [`NavMesh::move_along`] where polygons of excluded areas are walls.
+    pub fn move_along_filtered(&self, start: PolyRef, from: Vec3, to: Vec3, filter: &crate::Filter) -> (PolyRef, Vec3) {
         let Some(mut p) = self.poly(start) else { return (start, from) };
         let mut cur = start;
         let mut pos = from;
@@ -525,7 +608,7 @@ impl NavMesh {
             let r = self.rect(p);
             let Some((side, ex, ez)) = self.exit(p, pos, to) else { break };
             let exit = Vec3::new(ex, self.height(p, ex, ez), ez);
-            match self.across(p, side, ex, ez) {
+            match self.across(p, side, ex, ez).filter(|(_, q)| filter.cost_of(q.area).is_some()) {
                 Some((nr, q)) => {
                     cur = nr;
                     p = q;
@@ -627,7 +710,7 @@ impl NavMesh {
 pub fn path_json(p: &PathResult, max_corners: usize) -> Json {
     let r = |v: f32| Json::from((f64::from(v) * 1000.0).round() / 1000.0);
     let corners: Vec<Json> = p.corners.iter().take(max_corners).map(|c| Json::arr([r(c.x), r(c.y), r(c.z)])).collect();
-    Json::obj([
+    let out = Json::obj([
         ("status", Json::from(p.status.name())),
         ("complete", Json::from(p.complete())),
         ("length", r(p.length)),
@@ -635,7 +718,13 @@ pub fn path_json(p: &PathResult, max_corners: usize) -> Json {
         ("corner_count", Json::from(p.corners.len())),
         ("polygons", Json::from(p.polys.len())),
         ("visited", Json::from(p.visited)),
-    ])
+    ]);
+    let mut out = out;
+    if !p.offmesh.is_empty() {
+        // Each link: the corner it takes off from (the next corner is where it lands).
+        out.set("offmesh", Json::arr(p.offmesh.iter().map(|(i, k)| Json::obj([("corner", Json::from(*i)), ("kind", Json::from(k.name()))]))));
+    }
+    out
 }
 
 /// Distance in X/Z (for arrival tests).

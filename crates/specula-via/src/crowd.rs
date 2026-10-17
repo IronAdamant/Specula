@@ -13,7 +13,7 @@
 
 use crate::mesh::{NavMesh, PolyRef};
 use crate::query::horizontal_distance;
-use crate::NavError;
+use crate::{Filter, LinkKind, NavError};
 use specula_core::dmath;
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
@@ -183,6 +183,39 @@ pub struct CrowdAgent {
     /// Seconds moving without getting anywhere.
     pub stuck_s: f32,
     pub repaths: u64,
+    /// How its path searches weigh areas.
+    pub filter: Filter,
+    /// Crossing an off-mesh link (jumping, dropping, climbing) right now.
+    pub crossing: Option<Crossing>,
+}
+
+/// An agent on its way across an off-mesh link.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crossing {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub kind: LinkKind,
+    /// Seconds since it took off, and how long the crossing takes.
+    pub t: f32,
+    pub duration: f32,
+    /// Where it lands.
+    pub to_poly: PolyRef,
+    pub link: u32,
+}
+
+impl Crossing {
+    /// Where the crossing is at `u` (0..1): a straight line, raised in an arc for a jump.
+    pub fn at(&self, u: f32) -> Vec3 {
+        let u = u.clamp(0.0, 1.0);
+        let p = self.from + (self.to - self.from) * u;
+        match self.kind {
+            LinkKind::Jump => {
+                let lift = (horizontal_distance(self.from, self.to) * 0.25).clamp(0.3, 2.0);
+                p + Vec3::new(0.0, 4.0 * lift * u * (1.0 - u), 0.0)
+            }
+            LinkKind::Drop | LinkKind::Ladder => p,
+        }
+    }
 }
 
 impl CrowdAgent {
@@ -206,6 +239,8 @@ impl CrowdAgent {
             remaining: 0.0,
             stuck_s: 0.0,
             repaths: 0,
+            filter: Filter::default(),
+            crossing: None,
         }
     }
 
@@ -222,7 +257,115 @@ impl CrowdAgent {
             ("corridor", Json::from(self.corridor.len())),
             ("stuck_s", r(self.stuck_s)),
             ("repaths", Json::from(self.repaths)),
+            ("crossing", self.crossing.map_or(Json::Null, |c| Json::obj([("kind", Json::from(c.kind.name())), ("to", v(c.to)), ("progress", r(c.t / c.duration.max(1.0e-3)))]))),
         ])
+    }
+
+    /// Every field, exactly (floats as their bits): [`Crowd::restore`] reads it back.
+    fn save(&self) -> Json {
+        let f = |v: f32| Json::from(v.to_bits());
+        let v = |p: Vec3| Json::arr([f(p.x), f(p.y), f(p.z)]);
+        let pr = &self.params;
+        Json::obj([
+            ("params", Json::arr([f(pr.radius), f(pr.speed), f(pr.accel), f(pr.arrive), Json::from(pr.avoid), Json::from(pr.external)])),
+            ("pos", v(self.pos)),
+            ("vel", v(self.vel)),
+            ("desired", v(self.desired)),
+            ("poly", self.poly.map_or(Json::Null, |p| Json::from(p.0))),
+            ("poly_at", Json::from(self.poly_at)),
+            ("target", self.target.map_or(Json::Null, v)),
+            ("status", Json::from(self.status as u32)),
+            ("corridor", Json::arr(self.corridor.iter().map(|p| Json::from(p.0)))),
+            ("path_end", v(self.path_end)),
+            ("path_for", v(self.path_for)),
+            ("path_made", Json::from(self.path_made)),
+            ("path_age", f(self.path_age)),
+            ("need_path", Json::from(self.need_path)),
+            ("corner", self.corner.map_or(Json::Null, v)),
+            ("remaining", f(self.remaining)),
+            ("stuck_s", f(self.stuck_s)),
+            ("repaths", Json::from(self.repaths)),
+            ("filter", Json::arr(self.filter.cost.iter().map(|c| f(*c)).chain([Json::from(self.filter.exclude)]))),
+            (
+                "crossing",
+                self.crossing.map_or(Json::Null, |c| {
+                    Json::arr([v(c.from), v(c.to), Json::from(c.kind as u32), f(c.t), f(c.duration), Json::from(c.to_poly.0), Json::from(c.link)])
+                }),
+            ),
+        ])
+    }
+
+    fn restore(j: &Json) -> Option<CrowdAgent> {
+        let f = |j: &Json| j.as_u64().and_then(|b| u32::try_from(b).ok()).map(f32::from_bits);
+        let v = |j: &Json| {
+            let a = j.as_array()?;
+            Some(Vec3::new(f(a.first()?)?, f(a.get(1)?)?, f(a.get(2)?)?))
+        };
+        let opt_v = |k: &str| match j.get(k) {
+            None | Some(Json::Null) => Some(None),
+            Some(x) => v(x).map(Some),
+        };
+        let poly = |x: &Json| x.as_u64().and_then(|b| u32::try_from(b).ok()).map(PolyRef);
+        let p = j.get("params")?.as_array()?;
+        let params = AgentParams {
+            radius: f(p.first()?)?,
+            speed: f(p.get(1)?)?,
+            accel: f(p.get(2)?)?,
+            arrive: f(p.get(3)?)?,
+            avoid: p.get(4)?.as_bool()?,
+            external: p.get(5)?.as_bool()?,
+        };
+        let status = match j.get("status")?.as_u64()? {
+            0 => AgentStatus::Idle,
+            1 => AgentStatus::Waiting,
+            2 => AgentStatus::Moving,
+            3 => AgentStatus::Arrived,
+            4 => AgentStatus::Partial,
+            _ => AgentStatus::OffMesh,
+        };
+        let fl = j.get("filter")?.as_array()?;
+        let mut filter = Filter::default();
+        for (k, c) in filter.cost.iter_mut().enumerate() {
+            *c = f(fl.get(k)?)?;
+        }
+        filter.exclude = u32::try_from(fl.get(crate::MAX_AREAS)?.as_u64()?).ok()?;
+        let crossing = match j.get("crossing") {
+            None | Some(Json::Null) => None,
+            Some(c) => {
+                let c = c.as_array()?;
+                let kind = match c.get(2)?.as_u64()? {
+                    0 => LinkKind::Jump,
+                    1 => LinkKind::Drop,
+                    _ => LinkKind::Ladder,
+                };
+                Some(Crossing { from: v(c.first()?)?, to: v(c.get(1)?)?, kind, t: f(c.get(3)?)?, duration: f(c.get(4)?)?, to_poly: poly(c.get(5)?)?, link: u32::try_from(c.get(6)?.as_u64()?).ok()? })
+            }
+        };
+        Some(CrowdAgent {
+            params,
+            pos: v(j.get("pos")?)?,
+            vel: v(j.get("vel")?)?,
+            desired: v(j.get("desired")?)?,
+            poly: match j.get("poly") {
+                None | Some(Json::Null) => None,
+                Some(x) => Some(poly(x)?),
+            },
+            poly_at: j.get("poly_at")?.as_u64()?,
+            target: opt_v("target")?,
+            status,
+            corridor: j.get("corridor")?.as_array()?.iter().map(poly).collect::<Option<Vec<_>>>()?,
+            path_end: v(j.get("path_end")?)?,
+            path_for: v(j.get("path_for")?)?,
+            path_made: j.get("path_made")?.as_u64()?,
+            path_age: f(j.get("path_age")?)?,
+            need_path: j.get("need_path")?.as_bool()?,
+            corner: opt_v("corner")?,
+            remaining: f(j.get("remaining")?)?,
+            stuck_s: f(j.get("stuck_s")?)?,
+            repaths: j.get("repaths")?.as_u64()?,
+            filter,
+            crossing,
+        })
     }
 }
 
@@ -316,6 +459,52 @@ impl Crowd {
         }
     }
 
+    /// How an agent's path searches weigh areas (a change searches again).
+    pub fn set_filter(&mut self, id: u64, filter: Filter) {
+        if let Some(a) = self.agents.get_mut(&id) {
+            if a.filter != filter {
+                a.filter = filter;
+                a.need_path = true;
+            }
+        }
+    }
+
+    /// The crowd's whole state, exactly: every agent and the repath round robin. Polygon refs
+    /// are only meaningful on the same navmesh (the caller checks its hash).
+    pub fn save(&self) -> Json {
+        Json::obj([
+            ("last_served", Json::from(self.last_served)),
+            ("agents", Json::arr(self.agents.iter().map(|(id, a)| Json::obj([("id", Json::from(*id)), ("agent", a.save())])))),
+        ])
+    }
+
+    /// Restores [`Crowd::save`]'s state (settings stay as they are).
+    pub fn restore(&mut self, j: &Json) -> Result<(), NavError> {
+        let bad = |what: &str| NavError::new("invalid_save", format!("the crowd's saved state is damaged ({what})"));
+        let last = j.get("last_served").and_then(Json::as_u64).ok_or_else(|| bad("last_served"))?;
+        let mut agents = BTreeMap::new();
+        for a in j.get("agents").and_then(Json::as_array).ok_or_else(|| bad("agents"))? {
+            let id = a.get("id").and_then(Json::as_u64).ok_or_else(|| bad("id"))?;
+            let st = a.get("agent").and_then(CrowdAgent::restore).ok_or_else(|| bad("an agent"))?;
+            agents.insert(id, st);
+        }
+        if agents.len() > MAX_AGENTS {
+            return Err(bad("too many agents"));
+        }
+        self.agents = agents;
+        self.last_served = last;
+        Ok(())
+    }
+
+    /// Every agent searches its path again (off-mesh links changed).
+    pub fn invalidate_paths(&mut self) {
+        for a in self.agents.values_mut() {
+            if a.target.is_some() {
+                a.need_path = true;
+            }
+        }
+    }
+
     /// Where an externally moved agent is now (before the next step).
     pub fn set_position(&mut self, id: u64, pos: Vec3) {
         if let Some(a) = self.agents.get_mut(&id) {
@@ -328,8 +517,11 @@ impl Crowd {
         let s = self.settings;
         let mut stats = StepStats { agents: self.agents.len(), ..StepStats::default() };
         let counter = mesh.counter();
-        // 1. Polygons and corridors.
+        // 1. Polygons and corridors (an agent crossing a link has neither until it lands).
         for a in self.agents.values_mut() {
+            if a.crossing.is_some() {
+                continue;
+            }
             let valid = a.poly.and_then(|p| mesh.poly(p)).is_some_and(|p| {
                 mesh.contains_xz(p, a.pos) && (mesh.height(p, a.pos.x, a.pos.z) - a.pos.y).abs() <= s.extent.y
             }) && a.poly.is_some_and(|p| !mesh.rebuilt_since(p.tile(), a.poly_at));
@@ -369,7 +561,7 @@ impl Crowd {
         // 2. Path searches, round robin from the agent after the last one served.
         let mut order = std::mem::take(&mut self.scratch.order);
         order.clear();
-        order.extend(self.agents.iter().filter(|(_, a)| a.need_path && a.poly.is_some() && a.target.is_some()).map(|(k, _)| *k));
+        order.extend(self.agents.iter().filter(|(_, a)| a.need_path && a.poly.is_some() && a.target.is_some() && a.crossing.is_none()).map(|(k, _)| *k));
         let split = order.partition_point(|k| *k <= self.last_served);
         order.rotate_left(split);
         for (served, id) in order.iter().enumerate() {
@@ -379,9 +571,9 @@ impl Crowd {
             }
             let a = self.agents.get_mut(id).expect("listed");
             let (poly, target) = (a.poly.expect("filtered"), a.target.expect("filtered"));
-            let goal = mesh.nearest(target, s.extent);
+            let goal = mesh.nearest(target, s.extent).filter(|(p, _)| mesh.poly(*p).is_some_and(|q| a.filter.cost_of(q.area).is_some()));
             let end = goal.map_or(target, |(_, e)| e);
-            let (polys, status, visited) = mesh.search(poly, a.pos, goal.map(|(p, _)| p), end, s.max_nodes);
+            let (polys, status, visited) = mesh.search_filtered(poly, a.pos, goal.map(|(p, _)| p), end, s.max_nodes, &a.filter);
             stats.nodes += visited;
             stats.repaths += 1;
             let complete = status == crate::query::PathStatus::Complete && polys.last() == goal.map(|(p, _)| p).as_ref();
@@ -390,7 +582,7 @@ impl Crowd {
             } else {
                 polys.last().and_then(|p| mesh.poly(*p)).map_or(a.pos, |p| mesh.closest_on_poly(p, end))
             };
-            let mut polys = mesh.shortcut(a.pos, a.path_end, polys);
+            let mut polys = mesh.shortcut_filtered(a.pos, a.path_end, polys, &a.filter);
             let complete = complete && polys.len() <= s.max_corridor;
             if polys.len() > s.max_corridor {
                 // A long way: walk the first part, then search again from there.
@@ -410,6 +602,9 @@ impl Crowd {
         // 3. Steering toward the next corner.
         for a in self.agents.values_mut() {
             a.desired = Vec3::ZERO;
+            if a.crossing.is_some() {
+                continue;
+            }
             if a.poly.is_none() || a.target.is_none() {
                 a.corner = None;
                 continue;
@@ -419,13 +614,26 @@ impl Crowd {
                 a.corner = None;
                 continue;
             }
+            // At an off-mesh link's take-off point: start across it.
+            let ahead = mesh.first_traverse(&a.corridor);
+            if let Some((0, t)) = ahead {
+                if horizontal_distance(a.pos, t.from_pos) <= a.params.arrive.max(a.params.radius) && (a.pos.y - t.from_pos.y).abs() <= s.extent.y {
+                    let speed = (a.params.speed * t.kind.speed_share()).max(0.1);
+                    let duration = ((t.to_pos - a.pos).length() / speed).max(0.2);
+                    a.crossing = Some(Crossing { from: a.pos, to: t.to_pos, kind: t.kind, t: 0.0, duration, to_poly: t.to, link: t.link });
+                    a.corridor.drain(..1);
+                    a.corner = Some(t.to_pos);
+                    a.status = AgentStatus::Moving;
+                    continue;
+                }
+            }
             // The next few corners; past them the rest counts as a straight line (exact on the
             // last stretch, where arrival slows the agent).
             let corners = mesh.straighten(a.pos, a.path_end, &a.corridor, 3);
             let last = *corners.last().expect("start");
             a.remaining = corners.windows(2).map(|w| (w[0] - w[1]).length()).sum::<f32>() + (a.path_end - last).length();
             let to_end = horizontal_distance(a.pos, a.path_end);
-            if to_end <= a.params.arrive.max(1.0e-3) {
+            if to_end <= a.params.arrive.max(1.0e-3) && ahead.is_none() {
                 a.corner = None;
                 a.remaining = 0.0;
                 if a.status == AgentStatus::Moving {
@@ -456,7 +664,7 @@ impl Crowd {
             vel: a.vel,
             radius: a.params.radius,
             reciprocal: a.params.avoid && a.target.is_some(),
-            on_mesh: a.poly.is_some(),
+            on_mesh: a.poly.is_some() && a.crossing.is_none(),
         }));
         let cell = |p: Vec3| (dmath::floor(p.z / GRID) as i32, dmath::floor(p.x / GRID) as i32);
         sc.grid.clear();
@@ -464,7 +672,7 @@ impl Crowd {
         sc.grid.sort_unstable();
         sc.chosen.clear();
         for (i, a) in self.agents.values().enumerate() {
-            if a.poly.is_none() {
+            if a.poly.is_none() || a.crossing.is_some() {
                 sc.chosen.push(Vec3::ZERO);
                 continue;
             }
@@ -505,8 +713,27 @@ impl Crowd {
             };
             sc.chosen.push(v);
         }
-        // 5. Move.
+        // 5. Move (crossing agents along their link: position written for external ones too,
+        // since nothing else can carry them across).
         for ((_, a), v) in self.agents.iter_mut().zip(sc.chosen.iter().copied()) {
+            if let Some(mut c) = a.crossing {
+                c.t += dt;
+                let u = c.t / c.duration;
+                let p = c.at(u);
+                a.vel = (c.to - c.from) * (1.0 / c.duration);
+                a.pos = p;
+                stats.moving += 1;
+                if u >= 1.0 {
+                    a.pos = c.to;
+                    a.poly = Some(c.to_poly);
+                    a.poly_at = counter;
+                    a.crossing = None;
+                    a.vel = Vec3::ZERO;
+                } else {
+                    a.crossing = Some(c);
+                }
+                continue;
+            }
             let dv = v - a.vel;
             let max_dv = a.params.accel * dt;
             let len = dv.length();
@@ -522,7 +749,7 @@ impl Crowd {
                 continue;
             }
             let before = a.pos;
-            let (np, p) = mesh.move_along(poly, a.pos, a.pos + a.vel * dt);
+            let (np, p) = mesh.move_along_filtered(poly, a.pos, a.pos + a.vel * dt, &a.filter);
             a.poly = Some(np);
             a.pos = p;
             let moved = horizontal_distance(before, p);
@@ -575,11 +802,11 @@ impl Crowd {
             }
         }
         for ((_, a), off) in self.agents.iter_mut().zip(sc.push.iter().copied()) {
-            if a.params.external || off == Vec3::ZERO {
+            if a.params.external || off == Vec3::ZERO || a.crossing.is_some() {
                 continue;
             }
             if let Some(poly) = a.poly {
-                let (np, p) = mesh.move_along(poly, a.pos, a.pos + off);
+                let (np, p) = mesh.move_along_filtered(poly, a.pos, a.pos + off, &a.filter);
                 a.poly = Some(np);
                 a.pos = p;
             }
@@ -671,6 +898,18 @@ impl Crowd {
             v(&mut h, a.path_end);
             h.write_f32(a.path_age);
             h.write_bool(a.need_path);
+            h.write_f32(a.stuck_s);
+            a.filter.hash_into(&mut h);
+            match a.crossing {
+                Some(c) => {
+                    h.write_u8(1 + c.kind as u8);
+                    h.write_f32(c.t);
+                    h.write_f32(c.duration);
+                    v(&mut h, c.to);
+                    h.write_u32(c.to_poly.0);
+                }
+                None => h.write_u8(0),
+            }
         }
         h.finish()
     }
@@ -680,6 +919,7 @@ impl Crowd {
 mod tests {
     use super::*;
     use crate::mesh::tests::{build_all, room_config, scene};
+    use crate::Source;
 
     fn mesh() -> NavMesh {
         let mut m = NavMesh::new(room_config()).unwrap();
@@ -786,6 +1026,119 @@ mod tests {
         run(&mut a, &m, 30);
         run(&mut b, &m, 30);
         assert_eq!(a.hash(), b.hash(), "still deterministic");
+    }
+
+    /// Two floors with a 2 m gap between them (x -10..-1 and 1..10), a jump link across it.
+    fn gap_mesh(bidirectional: bool, kind: LinkKind) -> NavMesh {
+        let mut m = NavMesh::new(room_config()).unwrap();
+        let floors = vec![Source::new(crate::mesh::tests::quad(-10.0, -10.0, -1.0, 10.0, 0.0), false), Source::new(crate::mesh::tests::quad(1.0, -10.0, 10.0, 10.0, 0.0), false)];
+        build_all(&mut m, &floors);
+        m.set_offmesh_links(vec![crate::OffMeshLink {
+            from: Vec3::new(-1.5, 0.0, 0.0),
+            to: Vec3::new(1.5, 0.0, 0.0),
+            kind,
+            bidirectional,
+            cost: 1.0,
+            area: 0,
+            radius: 0.5,
+        }]);
+        m
+    }
+
+    #[test]
+    fn paths_and_agents_cross_off_mesh_links() {
+        let m = gap_mesh(false, LinkKind::Jump);
+        assert!(m.resolved_link(0).is_some());
+        let p = m.find_path(Vec3::new(-5.0, 0.0, 3.0), Vec3::new(5.0, 0.0, -3.0), Vec3::new(1.0, 2.0, 1.0), 4096).unwrap();
+        assert!(p.complete(), "{p:?}");
+        assert_eq!(p.offmesh.len(), 1);
+        let (k, kind) = p.offmesh[0];
+        assert_eq!(kind, LinkKind::Jump);
+        assert!(horizontal_distance(p.corners[k], Vec3::new(-1.5, 0.0, 0.0)) < 0.3 && horizontal_distance(p.corners[k + 1], Vec3::new(1.5, 0.0, 0.0)) < 0.3, "{:?}", p.corners);
+        // One way: back across is unreachable.
+        let back = m.find_path(Vec3::new(5.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 2.0, 1.0), 4096).unwrap();
+        assert!(!back.complete());
+        // An agent jumps it (in an arc) and arrives.
+        let mut c = Crowd::new(CrowdSettings::default());
+        c.upsert(1, AgentParams::default(), Vec3::new(-5.0, 0.0, 3.0)).unwrap();
+        c.set_target(1, Some(Vec3::new(5.0, 0.0, -3.0)));
+        let (mut crossed, mut high) = (false, 0.0f32);
+        for _ in 0..400 {
+            c.step(&m, 1.0 / 30.0);
+            let a = c.agent(1).unwrap();
+            if a.crossing.is_some() {
+                crossed = true;
+                high = high.max(a.pos.y);
+            }
+        }
+        let a = c.agent(1).unwrap();
+        assert!(crossed && high > 0.2, "jumped in an arc ({high})");
+        assert_eq!(a.status, AgentStatus::Arrived, "{a:?}");
+    }
+
+    #[test]
+    fn area_costs_steer_paths_and_exclusions_wall_them_off() {
+        // A floor whose middle strip (z -2..2 across the whole width but a 2 m gap at x 8..10) is water.
+        let mut m = NavMesh::new(room_config()).unwrap();
+        let floor = Source::new(crate::mesh::tests::quad(-10.0, -10.0, 10.0, 10.0, 0.0), false);
+        let water = [crate::Mark { lo: Vec3::new(-10.0, -0.5, -2.0), hi: Vec3::new(8.0, 0.5, 2.0), area: 1 }];
+        let (nx, nz) = m.tile_count();
+        for tz in 0..nz {
+            for tx in 0..nx {
+                m.build_tile_from(tx, tz, &[crate::Input::all(&floor)], &water);
+            }
+        }
+        let (from, to) = (Vec3::new(-5.0, 0.0, -6.0), Vec3::new(-5.0, 0.0, 6.0));
+        let ext = Vec3::new(1.0, 2.0, 1.0);
+        let plain = m.find_path(from, to, ext, 4096).unwrap();
+        assert!(plain.complete() && plain.length < 13.0, "straight through: {}", plain.length);
+        let mut costly = Filter::default();
+        costly.cost[1] = 10.0;
+        let around = m.find_path_filtered(from, to, ext, 4096, &costly).unwrap();
+        assert!(around.complete() && around.length > 20.0, "around the water: {} {:?}", around.length, around.corners);
+        assert!(around.corners.iter().any(|c| c.x > 7.5), "{:?}", around.corners);
+        let mut dry = Filter::default();
+        dry.exclude = 1 << 1;
+        let walled = m.find_path_filtered(from, to, ext, 4096, &dry).unwrap();
+        assert!(walled.complete() && walled.corners.iter().any(|c| c.x > 7.5), "{:?}", walled.corners);
+        // An agent that may not swim walks around.
+        let mut c = Crowd::new(CrowdSettings::default());
+        c.upsert(1, AgentParams::default(), from).unwrap();
+        c.set_filter(1, dry);
+        c.set_target(1, Some(to));
+        for _ in 0..600 {
+            c.step(&m, 1.0 / 30.0);
+            let a = c.agent(1).unwrap();
+            let in_water = a.pos.x < 7.9 && a.pos.z > -1.9 && a.pos.z < 1.9;
+            assert!(!in_water, "{:?}", a.pos);
+        }
+        assert_eq!(c.agent(1).unwrap().status, AgentStatus::Arrived);
+    }
+
+    #[test]
+    fn a_restored_crowd_continues_exactly() {
+        let m = gap_mesh(true, LinkKind::Jump);
+        let make = || {
+            let mut c = Crowd::new(CrowdSettings::default());
+            for i in 0..12u64 {
+                c.upsert(i + 1, AgentParams::default(), Vec3::new(-8.0 + (i % 4) as f32, 0.0, -6.0 + (i / 4) as f32 * 2.0)).unwrap();
+                c.set_target(i + 1, Some(Vec3::new(6.0 - (i % 3) as f32, 0.0, 6.0 - (i % 5) as f32)));
+            }
+            c
+        };
+        let mut a = make();
+        run(&mut a, &m, 75);
+        let saved = a.save();
+        let mut b = Crowd::new(CrowdSettings::default());
+        b.restore(&Json::parse(&saved.to_string()).unwrap()).unwrap();
+        assert_eq!(a.hash(), b.hash());
+        for _ in 0..200 {
+            a.step(&m, 1.0 / 30.0);
+            b.step(&m, 1.0 / 30.0);
+            assert_eq!(a.hash(), b.hash());
+        }
+        assert!(a.agents().any(|(_, x)| x.pos.x > 1.0), "some crossed");
+        assert!(b.restore(&Json::parse(r#"{"agents": 3}"#).unwrap()).is_err());
     }
 
     #[test]

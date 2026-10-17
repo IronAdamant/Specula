@@ -24,7 +24,7 @@ use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::rng::Rng;
 use specula_core::{dmath, Json};
 use specula_mens::{self as mens, Arg, ArgKind, Def, Diagnostic, Mind, Phase, Status, Verb, Vocabulary};
-use specula_via::{AgentParams, AgentStatus, Crowd, CrowdSettings, Input, NavError, NavMesh, PathResult, Source, Triangle};
+use specula_via::{AgentParams, AgentStatus, Crowd, CrowdSettings, Filter, Input, LinkKind, Mark, NavError, NavMesh, OffMeshLink, PathResult, Source, Triangle};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -35,6 +35,10 @@ pub const MESH_KEY: &str = "navmesh";
 pub const AGENT_KEY: &str = "nav_agent";
 pub const MIND_KEY: &str = "mind";
 pub const DEF_KEY: &str = "mind_def";
+/// An entity's area: `props.nav_area = "water"` (its walkable surfaces) or
+/// `{"area": "mud", "volume": true}` (its world bounds mark the open space inside them; it feeds
+/// no geometry).
+pub const AREA_KEY: &str = "nav_area";
 /// Entities with this tag never feed a navmesh.
 pub const IGNORE_TAG: &str = "nav_ignore";
 /// Most navmeshes one world has.
@@ -96,15 +100,62 @@ impl Default for Sources {
     }
 }
 
+/// A named area of a navmesh: what crossing it costs (times the distance) and its flags (agents
+/// and queries may avoid areas by name or by flag).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AreaDef {
+    pub name: String,
+    pub cost: f32,
+    pub flags: Vec<String>,
+}
+
+/// Most named areas one navmesh has (ids 1..=31; 0 is plain ground).
+pub const MAX_AREA_DEFS: usize = specula_via::MAX_AREAS - 1;
+
 /// A navmesh's settings (`props.navmesh`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshSettings {
     pub config: specula_via::Config,
     pub sources: Sources,
     pub tiles_per_tick: usize,
+    /// Named areas (`props.nav_area` on entities refers to them).
+    pub areas: Vec<AreaDef>,
+    /// Off-mesh links (jumps, drops, ladders); their `area` is an index into `areas` plus one.
+    pub links: Vec<OffMeshLink>,
 }
 
 impl MeshSettings {
+    pub fn new(config: specula_via::Config, sources: Sources, tiles_per_tick: usize) -> MeshSettings {
+        MeshSettings { config, sources, tiles_per_tick, areas: Vec::new(), links: Vec::new() }
+    }
+
+    /// An area's id (0: plain ground, or a name it doesn't have).
+    pub fn area_id(&self, name: &str) -> u8 {
+        self.areas.iter().position(|a| a.name == name).map_or(0, |i| (i + 1) as u8)
+    }
+
+    /// The same settings but for the off-mesh links (a change of links alone rebuilds nothing).
+    pub fn same_but_links(&self, o: &MeshSettings) -> bool {
+        self.config == o.config && self.sources == o.sources && self.tiles_per_tick == o.tiles_per_tick && self.areas == o.areas
+    }
+
+    /// A search filter: the areas' costs, overridden by `costs` (by name), with the areas named
+    /// in `avoid` or flagged with one of `avoid_flags` excluded.
+    pub fn filter(&self, costs: &[(String, f32)], avoid: &[String], avoid_flags: &[String]) -> Filter {
+        let mut f = Filter::default();
+        for (i, a) in self.areas.iter().enumerate() {
+            let id = i + 1;
+            f.cost[id] = costs.iter().find(|(n, _)| *n == a.name).map_or(a.cost, |(_, c)| *c);
+            if avoid.contains(&a.name) || a.flags.iter().any(|fl| avoid_flags.contains(fl)) {
+                f.exclude |= 1 << id;
+            }
+        }
+        if let Some((_, c)) = costs.iter().find(|(n, _)| n == "ground") {
+            f.cost[0] = *c;
+        }
+        f
+    }
+
     pub fn to_json(&self) -> Json {
         let c = &self.config;
         let mut src = vec![
@@ -119,7 +170,7 @@ impl MeshSettings {
             src.push(("exclude_tags", Json::arr(self.sources.exclude_tags.iter().map(|t| Json::from(t.as_str())))));
         }
         let exact = |v: Vec3| Json::arr([Json::from(v.x), Json::from(v.y), Json::from(v.z)]);
-        Json::obj([
+        let j = Json::obj([
             ("cell_size", Json::from(c.cell_size)),
             ("cell_height", Json::from(c.cell_height)),
             ("agent_radius", Json::from(c.agent_radius)),
@@ -130,12 +181,43 @@ impl MeshSettings {
             ("bounds", Json::obj([("min", exact(c.bounds_min)), ("max", exact(c.bounds_max))])),
             ("sources", Json::obj(src)),
             ("tiles_per_tick", Json::from(self.tiles_per_tick)),
-        ])
+        ]);
+        let mut j = j;
+        if !self.areas.is_empty() {
+            j.set(
+                "areas",
+                Json::arr(self.areas.iter().map(|a| {
+                    Json::obj([("name", Json::from(a.name.as_str())), ("cost", Json::from(a.cost)), ("flags", Json::arr(a.flags.iter().map(|f| Json::from(f.as_str()))))])
+                })),
+            );
+        }
+        if !self.links.is_empty() {
+            j.set(
+                "links",
+                Json::arr(self.links.iter().map(|l| {
+                    let mut o = Json::obj([
+                        ("from", exact(l.from)),
+                        ("to", exact(l.to)),
+                        ("kind", Json::from(l.kind.name())),
+                        ("bidirectional", Json::from(l.bidirectional)),
+                        ("cost", Json::from(l.cost)),
+                        ("radius", Json::from(l.radius)),
+                    ]);
+                    if l.area > 0 {
+                        if let Some(a) = self.areas.get(usize::from(l.area) - 1) {
+                            o.set("area", Json::from(a.name.as_str()));
+                        }
+                    }
+                    o
+                })),
+            );
+        }
+        j
     }
 
     /// Reads `props.navmesh` (every key optional; missing ones take defaults).
     pub fn from_json(v: &Json) -> Result<MeshSettings, world::WorldError> {
-        const KEYS: [&str; 10] = ["cell_size", "cell_height", "agent_radius", "agent_height", "max_step", "max_slope_deg", "tile_cells", "bounds", "sources", "tiles_per_tick"];
+        const KEYS: [&str; 12] = ["cell_size", "cell_height", "agent_radius", "agent_height", "max_step", "max_slope_deg", "tile_cells", "bounds", "sources", "tiles_per_tick", "areas", "links"];
         if let Json::Obj(pairs) = v {
             if let Some((k, _)) = pairs.iter().find(|(k, _)| !KEYS.contains(&k.as_str())) {
                 return Err(invalid("navmesh", format!("'{k}' is not a navmesh setting ({})", KEYS.join(", "))));
@@ -223,8 +305,90 @@ impl MeshSettings {
                 _ => return Err(invalid("tiles_per_tick", "'tiles_per_tick' must be 1..256")),
             },
         };
-        Ok(MeshSettings { config, sources, tiles_per_tick })
+        let areas = parse_areas(v.get("areas"))?;
+        let mut s = MeshSettings { config, sources, tiles_per_tick, areas, links: Vec::new() };
+        s.links = parse_links(v.get("links"), &s)?;
+        Ok(s)
     }
+}
+
+fn parse_areas(v: Option<&Json>) -> Result<Vec<AreaDef>, world::WorldError> {
+    let list = match v {
+        None | Some(Json::Null) => return Ok(Vec::new()),
+        Some(Json::Arr(l)) if l.len() <= MAX_AREA_DEFS => l,
+        Some(_) => return Err(invalid("areas", format!("'areas' must be an array of at most {MAX_AREA_DEFS} {{name, cost?, flags?}}"))),
+    };
+    let mut out: Vec<AreaDef> = Vec::new();
+    for (i, a) in list.iter().enumerate() {
+        let bad = |m: String| invalid("areas", format!("areas[{i}]: {m}"));
+        let Json::Obj(pairs) = a else { return Err(bad("must be {name, cost?, flags?}".into())) };
+        if let Some((k, _)) = pairs.iter().find(|(k, _)| !["name", "cost", "flags"].contains(&k.as_str())) {
+            return Err(bad(format!("'{k}' is not an area setting (name, cost, flags)")));
+        }
+        let name = a.get("name").and_then(Json::as_str).filter(|n| !n.is_empty() && n.len() <= 32 && *n != "ground").ok_or_else(|| bad("'name' must be 1..32 characters (not \"ground\")".into()))?;
+        if out.iter().any(|o| o.name == name) {
+            return Err(bad(format!("'{name}' is named twice")));
+        }
+        let cost = match a.get("cost") {
+            None | Some(Json::Null) => 1.0,
+            Some(c) => c.as_f64().filter(|c| (0.1..=1000.0).contains(c)).ok_or_else(|| bad("'cost' must be 0.1..1000".into()))? as f32,
+        };
+        let flags = match a.get("flags") {
+            None | Some(Json::Null) => Vec::new(),
+            Some(Json::Arr(f)) if f.len() <= 8 => f.iter().map(|x| x.as_str().filter(|s| !s.is_empty() && s.len() <= 32).map(str::to_owned).ok_or_else(|| bad("'flags' must be names".into()))).collect::<Result<_, _>>()?,
+            Some(_) => return Err(bad("'flags' must be at most 8 names".into())),
+        };
+        out.push(AreaDef { name: name.to_owned(), cost, flags });
+    }
+    Ok(out)
+}
+
+fn parse_links(v: Option<&Json>, s: &MeshSettings) -> Result<Vec<OffMeshLink>, world::WorldError> {
+    let list = match v {
+        None | Some(Json::Null) => return Ok(Vec::new()),
+        Some(Json::Arr(l)) if l.len() <= specula_via::MAX_OFFMESH_LINKS => l,
+        Some(_) => return Err(invalid("links", format!("'links' must be an array of at most {} links", specula_via::MAX_OFFMESH_LINKS))),
+    };
+    let mut out = Vec::new();
+    for (i, l) in list.iter().enumerate() {
+        let bad = |m: String| invalid("links", format!("links[{i}]: {m}"));
+        let Json::Obj(pairs) = l else { return Err(bad("must be {from, to, kind?, bidirectional?, cost?, area?, radius?}".into())) };
+        const LKEYS: [&str; 7] = ["from", "to", "kind", "bidirectional", "cost", "area", "radius"];
+        if let Some((k, _)) = pairs.iter().find(|(k, _)| !LKEYS.contains(&k.as_str())) {
+            return Err(bad(format!("'{k}' is not a link setting ({})", LKEYS.join(", "))));
+        }
+        let from = l.get("from").and_then(point_of).ok_or_else(|| bad("'from' must be a point [x, y, z]".into()))?;
+        let to = l.get("to").and_then(point_of).ok_or_else(|| bad("'to' must be a point [x, y, z]".into()))?;
+        let kind = match l.get("kind") {
+            None | Some(Json::Null) => LinkKind::Jump,
+            Some(k) => k.as_str().and_then(LinkKind::parse).ok_or_else(|| bad("'kind' must be jump, drop or ladder".into()))?,
+        };
+        let bidirectional = match l.get("bidirectional") {
+            None | Some(Json::Null) => kind != LinkKind::Drop,
+            Some(b) => b.as_bool().ok_or_else(|| bad("'bidirectional' must be true or false".into()))?,
+        };
+        let num = |k: &str, d: f32, lo: f64, hi: f64| -> Result<f32, world::WorldError> {
+            match l.get(k) {
+                None | Some(Json::Null) => Ok(d),
+                Some(x) => x.as_f64().filter(|f| (lo..=hi).contains(f)).map(|f| f as f32).ok_or_else(|| bad(format!("'{k}' must be {lo}..{hi}"))),
+            }
+        };
+        let area = match l.get("area") {
+            None | Some(Json::Null) => 0,
+            Some(a) => {
+                let n = a.as_str().ok_or_else(|| bad("'area' must be an area's name".into()))?;
+                match s.area_id(n) {
+                    0 => return Err(bad(format!("no area '{n}' in 'areas'"))),
+                    id => id,
+                }
+            }
+        };
+        if (to - from).length() > 64.0 {
+            return Err(bad("a link spans at most 64 m".into()));
+        }
+        out.push(OffMeshLink { from, to, kind, bidirectional, cost: num("cost", 1.0, 0.1, 1000.0)?, area, radius: num("radius", 0.5, 0.05, 5.0)? });
+    }
+    Ok(out)
 }
 
 /// A nav agent's settings (`props.nav_agent`).
@@ -239,11 +403,40 @@ pub struct AgentSpec {
     pub avoid: bool,
     /// Where to go when no mind decides (a point or an entity).
     pub goal: Option<Json>,
+    /// Area costs for this agent (by area name; "ground" is plain ground), overriding the
+    /// navmesh's; areas it never enters, by name or by flag.
+    pub area_costs: Vec<(String, f32)>,
+    pub avoid_areas: Vec<String>,
+    pub avoid_flags: Vec<String>,
+}
+
+/// `{name: cost}` (0.1..1000) and lists of names, as nav_agent and nav_path take them.
+pub fn parse_area_prefs(v: &Json, prefix: &str) -> Result<(Vec<(String, f32)>, Vec<String>, Vec<String>), world::WorldError> {
+    let costs = match v.get("area_costs") {
+        None | Some(Json::Null) => Vec::new(),
+        Some(Json::Obj(pairs)) if pairs.len() <= specula_via::MAX_AREAS => pairs
+            .iter()
+            .map(|(k, c)| {
+                c.as_f64().filter(|c| (0.1..=1000.0).contains(c)).map(|c| (k.clone(), c as f32)).ok_or_else(|| invalid("area_costs", format!("'{prefix}area_costs.{k}' must be 0.1..1000")))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(invalid("area_costs", format!("'{prefix}area_costs' must be {{area: cost}}"))),
+    };
+    let names = |k: &str| -> Result<Vec<String>, world::WorldError> {
+        match v.get(k) {
+            None | Some(Json::Null) => Ok(Vec::new()),
+            Some(Json::Arr(l)) if l.len() <= specula_via::MAX_AREAS => {
+                l.iter().map(|x| x.as_str().map(str::to_owned).ok_or_else(|| invalid(k, format!("'{prefix}{k}' must be names")))).collect()
+            }
+            Some(_) => Err(invalid(k, format!("'{prefix}{k}' must be an array of names"))),
+        }
+    };
+    Ok((costs, names("avoid_areas")?, names("avoid_flags")?))
 }
 
 impl AgentSpec {
     pub fn from_json(v: &Json) -> Result<AgentSpec, world::WorldError> {
-        const KEYS: [&str; 7] = ["mesh", "speed", "radius", "accel", "arrive", "avoid", "goal"];
+        const KEYS: [&str; 10] = ["mesh", "speed", "radius", "accel", "arrive", "avoid", "goal", "area_costs", "avoid_areas", "avoid_flags"];
         let Json::Obj(pairs) = v else { return Err(invalid("nav_agent", "props.nav_agent must be an object")) };
         if let Some((k, _)) = pairs.iter().find(|(k, _)| !KEYS.contains(&k.as_str())) {
             return Err(invalid("nav_agent", format!("'{k}' is not a nav_agent setting ({})", KEYS.join(", "))));
@@ -262,7 +455,11 @@ impl AgentSpec {
             Some(g) if point_of(g).is_some() || g.as_str().is_some_and(|s| !s.is_empty()) || g.as_u64().is_some() => Some(g.clone()),
             Some(_) => return Err(invalid("goal", "'nav_agent.goal' must be a point [x, y, z] or an entity (path, unique name or id)")),
         };
+        let (area_costs, avoid_areas, avoid_flags) = parse_area_prefs(v, "nav_agent.")?;
         Ok(AgentSpec {
+            area_costs,
+            avoid_areas,
+            avoid_flags,
             mesh: v.get("mesh").and_then(Json::as_str).map(str::to_owned),
             speed: num("speed", 2.0, 0.0, 100.0)?,
             radius: match v.get("radius") {
@@ -297,6 +494,9 @@ struct SourceEntry {
     collider: Option<(Source, bool)>,
     /// Drawn-primitive geometry (no collider).
     shape: Option<Source>,
+    /// `props.nav_area`: the area its surfaces get, or (a volume) the world box that marks one.
+    area: Option<String>,
+    mark: Option<(Vec3, Vec3)>,
 }
 
 /// Whether `e`'s parent chain is still `ancestors` (itself first): a subtree moved to a parent
@@ -319,13 +519,27 @@ fn under_of(world: &World, s: &Sources) -> Option<Option<u64>> {
 }
 
 impl SourceEntry {
-    fn pick(&self, s: &Sources, under: Option<Option<u64>>) -> Option<&Source> {
+    fn passes(&self, s: &Sources, under: Option<Option<u64>>) -> bool {
         match under {
-            Some(Some(u)) if !self.ancestors.contains(&u) => return None,
-            Some(None) => return None,
+            Some(Some(u)) if !self.ancestors.contains(&u) => return false,
+            Some(None) => return false,
             _ => {}
         }
-        if s.exclude_tags.iter().any(|t| self.tags.contains(t)) {
+        !s.exclude_tags.iter().any(|t| self.tags.contains(t))
+    }
+
+    /// An area volume this navmesh reads.
+    fn mark_for(&self, s: &Sources, under: Option<Option<u64>>) -> Option<(Vec3, Vec3)> {
+        self.mark.filter(|_| self.passes(s, under))
+    }
+
+    /// The world box whose tiles change when this entry comes, goes or changes.
+    fn bounds_for(&self, s: &Sources, under: Option<Option<u64>>) -> Option<(Vec3, Vec3)> {
+        self.pick(s, under).map(|src| (src.lo, src.hi)).or_else(|| self.mark_for(s, under))
+    }
+
+    fn pick(&self, s: &Sources, under: Option<Option<u64>>) -> Option<&Source> {
+        if !self.passes(s, under) {
             return None;
         }
         match &self.collider {
@@ -468,11 +682,39 @@ fn moves(world: &World, e: &Entity) -> bool {
 
 /// Whether an entity can feed a navmesh at all (and, if so, its geometry).
 fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
-    if e.transient || !e.shown() || e.in_ui() || e.shape.is_2d() || e.tags.contains(IGNORE_TAG) {
+    let (area, volume) = match e.props.get(AREA_KEY) {
+        Some(Json::Str(a)) => (Some(a.clone()), false),
+        Some(o @ Json::Obj(_)) => (o.get("area").and_then(Json::as_str).map(str::to_owned), o.get("volume").and_then(Json::as_bool).unwrap_or(false)),
+        _ => (None, false),
+    };
+    // An area volume may be hidden (it is a marker, not geometry).
+    if e.transient || (!e.shown() && !volume) || e.in_ui() || e.shape.is_2d() || e.tags.contains(IGNORE_TAG) {
         return None;
     }
     if e.props.get(MESH_KEY).is_some() || moves(world, e) {
         return None;
+    }
+    let ancestors_of = || {
+        let mut ancestors = vec![e.id];
+        let mut at = e.parent;
+        while let Some(p) = at {
+            ancestors.push(p);
+            at = world.get(p).and_then(|x| x.parent);
+        }
+        ancestors
+    };
+    if volume {
+        // The volume is the entity's unit box (-0.5..0.5 scaled, turned and placed).
+        let m = e.model();
+        let mut lo = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut hi = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+        for i in 0..8 {
+            let c = m.transform_point(Vec3::new(if i & 1 == 0 { -0.5 } else { 0.5 }, if i & 2 == 0 { -0.5 } else { 0.5 }, if i & 4 == 0 { -0.5 } else { 0.5 }));
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+        let mark = area.is_some().then_some((lo, hi));
+        return Some(SourceEntry { version: e.version, drawn: true, cols: e.model().cols, ancestors: ancestors_of(), tags: e.tags.clone(), collider: None, shape: None, area, mark });
     }
     let m = e.model();
     let collider = match &e.collider {
@@ -499,13 +741,7 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
     if collider.is_none() && shape.is_none() {
         return None;
     }
-    let mut ancestors = vec![e.id];
-    let mut at = e.parent;
-    while let Some(p) = at {
-        ancestors.push(p);
-        at = world.get(p).and_then(|x| x.parent);
-    }
-    Some(SourceEntry { version: e.version, drawn: true, cols: m.cols, ancestors, tags: e.tags.clone(), collider, shape })
+    Some(SourceEntry { version: e.version, drawn: true, cols: m.cols, ancestors: ancestors_of(), tags: e.tags.clone(), collider, shape, area, mark: None })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -581,8 +817,15 @@ fn build_queue(
         return (0, 0);
     }
     let under = under_of(world, &settings.sources);
-    let picked: Vec<(u64, &Source)> = sources.iter().filter_map(|(id, s)| s.pick(&settings.sources, under).map(|src| (*id, src))).collect();
-    for (id, src) in &picked {
+    let area_of = |e: &SourceEntry| e.area.as_deref().map_or(0, |n| settings.area_id(n));
+    let picked: Vec<(u64, &Source, u8)> = sources.iter().filter_map(|(id, s)| s.pick(&settings.sources, under).map(|src| (*id, src, area_of(s)))).collect();
+    let all_marks: Vec<Mark> = sources
+        .values()
+        .filter_map(|s| s.mark_for(&settings.sources, under).map(|(lo, hi)| Mark { lo, hi, area: area_of(s) }))
+        .filter(|m| m.area > 0)
+        .collect();
+    let mut marks: Vec<Mark> = Vec::new();
+    for (id, src, _) in &picked {
         if !src.aligned && src.triangles.len() > BUCKET_MIN && !buckets.contains_key(id) {
             buckets.insert(*id, src.bucket(mesh));
         }
@@ -592,12 +835,14 @@ fn build_queue(
         let (lo, hi) = mesh.tile_input_bounds(tx, tz);
         let inputs: Vec<Input> = picked
             .iter()
-            .filter(|(_, s)| s.touches(lo, hi))
-            .filter_map(|(id, s)| match buckets.get(id) {
-                Some(b) => b.get(&(tx, tz)).map(|l| Input { source: s, only: Some(l.as_slice()) }),
-                None => Some(Input::all(s)),
+            .filter(|(_, s, _)| s.touches(lo, hi))
+            .filter_map(|(id, s, area)| match buckets.get(id) {
+                Some(b) => b.get(&(tx, tz)).map(|l| Input { source: s, only: Some(l.as_slice()), area: *area }),
+                None => Some(Input { source: s, only: None, area: *area }),
             })
             .collect();
+        marks.clear();
+        marks.extend(all_marks.iter().filter(|m| m.lo.x <= hi.x && m.hi.x >= lo.x && m.lo.z <= hi.z && m.hi.z >= lo.z));
         let cost = specula_via::tile_work(mesh.config(), &inputs);
         if budget.is_some_and(|b| built > 0 && work + cost > b) {
             break;
@@ -605,7 +850,7 @@ fn build_queue(
         queue.remove(&(tx, tz));
         work += cost;
         built += 1;
-        let stats = mesh.build_tile_from(tx, tz, &inputs);
+        let stats = mesh.build_tile_from(tx, tz, &inputs, &marks);
         for e in &stats.errors {
             if errors.len() == 16 {
                 errors.pop_front();
@@ -1313,13 +1558,13 @@ impl Nav {
                 let under = under_of(world, &m.settings.sources);
                 m.buckets.remove(&id);
                 for s in [old.as_ref(), new.as_ref()].into_iter().flatten() {
-                    if let Some(src) = s.pick(&m.settings.sources, under) {
-                        m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
+                    if let Some((lo, hi)) = s.bounds_for(&m.settings.sources, under) {
+                        m.dirty.extend(m.mesh.tiles_touching(lo, hi));
                     }
                     if let Some(n) = m.next.as_deref_mut() {
                         n.buckets.remove(&id);
-                        if let Some(src) = s.pick(&n.settings.sources, under_of(world, &n.settings.sources)) {
-                            n.queue.extend(n.mesh.tiles_touching(src.lo, src.hi));
+                        if let Some((lo, hi)) = s.bounds_for(&n.settings.sources, under_of(world, &n.settings.sources)) {
+                            n.queue.extend(n.mesh.tiles_touching(lo, hi));
                         }
                     }
                 }
@@ -1333,14 +1578,14 @@ impl Nav {
                     // (A deleted `under` root: its whole old area is dirty anyway.)
                     let under = under_of(world, &m.settings.sources).map(|u| u.or(old.ancestors.last().copied()));
                     m.buckets.remove(&id);
-                    if let Some(src) = old.pick(&m.settings.sources, under) {
-                        m.dirty.extend(m.mesh.tiles_touching(src.lo, src.hi));
+                    if let Some((lo, hi)) = old.bounds_for(&m.settings.sources, under) {
+                        m.dirty.extend(m.mesh.tiles_touching(lo, hi));
                     }
                     if let Some(n) = m.next.as_deref_mut() {
                         n.buckets.remove(&id);
                         let under = under_of(world, &n.settings.sources).map(|u| u.or(old.ancestors.last().copied()));
-                        if let Some(src) = old.pick(&n.settings.sources, under) {
-                            n.queue.extend(n.mesh.tiles_touching(src.lo, src.hi));
+                        if let Some((lo, hi)) = old.bounds_for(&n.settings.sources, under) {
+                            n.queue.extend(n.mesh.tiles_touching(lo, hi));
                         }
                     }
                 }
@@ -1402,6 +1647,14 @@ impl Nav {
     }
 
     fn make_mesh(&mut self, world: &World, e: &Entity, settings: MeshSettings, props: Json) {
+        // Only the off-mesh links changed: set them in place (nothing to rebuild).
+        if let Some(slot) = self.meshes.get_mut(&e.id).filter(|s| s.settings.same_but_links(&settings) && s.next.is_none()) {
+            slot.mesh.set_offmesh_links(settings.links.clone());
+            slot.settings.links = settings.links;
+            slot.props = props;
+            slot.crowd.invalidate_paths();
+            return;
+        }
         let settings_sources = settings.sources.clone();
         let mesh = match NavMesh::new(settings.config) {
             Ok(m) => m,
@@ -1410,6 +1663,8 @@ impl Nav {
                 return;
             }
         };
+        let mut mesh = mesh;
+        mesh.set_offmesh_links(settings.links.clone());
         let (nx, nz) = mesh.tile_count();
         let mut dirty = BTreeSet::new();
         for tz in 0..nz {
@@ -1501,6 +1756,7 @@ impl Nav {
             if let Err(err) = slot.crowd.upsert(id, params, pos) {
                 problem = Some(err.to_json());
             }
+            slot.crowd.set_filter(id, slot.settings.filter(&spec.area_costs, &spec.avoid_areas, &spec.avoid_flags));
         } else {
             problem = Some(Json::from(match &spec.mesh {
                 Some(m) => format!("no navmesh '{m}' (build one with nav_build)"),
@@ -1826,6 +2082,7 @@ impl Nav {
         for &(id, mid) in &links {
             let Some(a) = self.meshes.get(&mid).and_then(|s| s.crowd.agent(id)) else { continue };
             let (pos, vel, moving) = (a.pos, a.vel, a.desired != Vec3::ZERO || a.vel != Vec3::ZERO);
+            let crossing = a.crossing.is_some();
             let link = self.agents.get_mut(&id).expect("listed");
             let Some(e) = world.get(id) else { continue };
             let speed2 = vel.x * vel.x + vel.z * vel.z;
@@ -1862,14 +2119,18 @@ impl Nav {
                     }
                 }
             }
-            if link.external {
+            if link.external && !crossing {
                 if let Some(b) = e.body {
                     let v = Vec3::new(vel.x, b.velocity.y, vel.z);
                     if v != b.velocity {
                         change.body = Some(Some(physics::Body { velocity: v, sleeping: false, ..b }));
                     }
                 }
-            } else if moving || link.written.is_none() {
+            } else if moving || link.written.is_none() || crossing {
+                // (A physics character crossing a link is carried: no velocity of its own.)
+                if let Some(b) = e.body.filter(|b| link.external && b.velocity != Vec3::ZERO) {
+                    change.body = Some(Some(physics::Body { velocity: Vec3::ZERO, sleeping: false, ..b }));
+                }
                 let want = pos + Vec3::new(0.0, link.offset_y, 0.0);
                 let local = match e.parent.and_then(|p| world.get(p)) {
                     Some(parent) => parent.model().inverse().unwrap_or(Mat4::IDENTITY).transform_point(want),
@@ -1917,6 +2178,7 @@ impl Nav {
         h.write_u64(self.meshes.len() as u64);
         for (id, m) in &self.meshes {
             h.write_u64(*id);
+            // (The mesh hash covers its off-mesh links.)
             h.write_u64(m.mesh.hash());
             h.write_u64(m.crowd.hash());
             h.write_u64(m.dirty.len() as u64);
@@ -2222,6 +2484,8 @@ mod tests {
             config: specula_via::Config { bounds_min: Vec3::new(-10.0, -1.0, -10.0), bounds_max: Vec3::new(10.0, 4.0, 10.0), tile_cells: 32, ..Default::default() },
             sources: Sources::default(),
             tiles_per_tick: 8,
+            areas: Vec::new(),
+            links: Vec::new(),
         };
         let mut s = SpawnSpec::new(Shape::Group);
         s.name = Some("default".into());
@@ -2582,6 +2846,8 @@ mod tests {
             config: specula_via::Config { bounds_min: Vec3::new(-33.0, -2.0, -33.0), bounds_max: Vec3::new(33.0, 4.0, 33.0), ..Default::default() },
             sources: Sources::default(),
             tiles_per_tick: 2,
+            areas: Vec::new(),
+            links: Vec::new(),
         };
         let mut s = SpawnSpec::new(Shape::Group);
         s.name = Some("default".into());
@@ -2706,6 +2972,96 @@ mod tests {
         let (fx, fz) = (f[0], f[2]);
         let l = (fx * fx + fz * fz).sqrt() * (moved.x * moved.x + moved.z * moved.z).sqrt();
         assert!(l > 0.0 && (fx * moved.x + fz * moved.z) / l > 0.8, "front {fx},{fz} moved {moved:?} rot {:?}", e.rotation_deg);
+    }
+
+    /// A navmesh entity with these extra settings (bounds of the test room).
+    fn navmesh_with(w: &mut World, extra: &[(&str, Json)]) -> u64 {
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("nav".into());
+        w.spawn(g, "t").unwrap();
+        let mut j = MeshSettings::new(
+            specula_via::Config { bounds_min: Vec3::new(-10.0, -1.0, -10.0), bounds_max: Vec3::new(10.0, 4.0, 10.0), tile_cells: 32, ..Default::default() },
+            Sources::default(),
+            8,
+        )
+        .to_json();
+        for (k, v) in extra {
+            j.set(*k, v.clone());
+        }
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("default".into());
+        s.parent = Some(EntityKey::Path("/nav".into()));
+        s.props = Json::obj([(MESH_KEY, j)]);
+        w.spawn(s, "t").unwrap().id
+    }
+
+    #[test]
+    fn an_agent_jumps_a_gap_by_an_off_mesh_link_and_links_change_without_a_rebuild() {
+        let mut w = World::default();
+        cube(&mut w, "west", Vec3::new(-5.5, -0.5, 0.0), Vec3::new(9.0, 1.0, 20.0));
+        cube(&mut w, "east", Vec3::new(5.5, -0.5, 0.0), Vec3::new(9.0, 1.0, 20.0));
+        let link = Json::parse(r#"[{"from": [-1.3, 0, 0], "to": [1.3, 0, 0], "kind": "jump"}]"#).unwrap();
+        let m = navmesh_with(&mut w, &[("links", link)]);
+        let a = walker(&mut w, "w", Vec3::new(-6.0, 0.5, 2.0), vec![]);
+        w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(3.0)), ("goal", Json::arr([Json::from(6.0), Json::from(0.0), Json::from(-2.0)]))]))])), ..Default::default() }, "t").unwrap();
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        assert!(nav.meshes[&m].mesh.resolved_link(0).is_some(), "{:?}", nav.problems);
+        let built = nav.meshes[&m].rebuilt_tiles;
+        let mut flew = 0.0f32;
+        for _ in 0..12 {
+            run(&mut nav, &mut w, 20);
+            flew = flew.max(w.get(a).unwrap().world_position().y);
+        }
+        let p = w.get(a).unwrap().world_position();
+        assert!(horizontal(p, Vec3::new(6.0, 0.0, -2.0)) < 0.5 && flew > 0.8, "{p:?} highest {flew}");
+        // Moving the link only resets the links.
+        let moved = Json::parse(r#"[{"from": [-1.3, 0, 5], "to": [1.3, 0, 5], "kind": "jump"}]"#).unwrap();
+        let mut j = w.get(m).unwrap().props.get(MESH_KEY).unwrap().clone();
+        j.set("links", moved);
+        w.update(&EntityKey::Id(m), UpdateSpec { props: Some(Json::obj([(MESH_KEY, j)])), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 1);
+        let slot = &nav.meshes[&m];
+        assert_eq!(slot.rebuilt_tiles, built, "no tiles rebuilt");
+        assert!(slot.mesh.resolved_link(0).is_some_and(|r| (r.start_pos.z - 5.0).abs() < 0.5));
+        // Bad links are refused with the field.
+        let err = MeshSettings::from_json(&Json::parse(r#"{"links": [{"from": [0,0,0], "to": [1,0,0], "kind": "fly"}]}"#).unwrap()).unwrap_err();
+        assert!(err.message.contains("kind"), "{}", err.message);
+    }
+
+    #[test]
+    fn agents_avoid_areas_marked_by_volumes() {
+        let mut w = World::default();
+        cube(&mut w, "floor", Vec3::new(0.0, -0.5, 0.0), Vec3::new(20.0, 1.0, 20.0));
+        // A pool across most of the room (x -10..6), marked by a volume that adds no geometry.
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("pool".into());
+        s.position = Vec3::new(-2.0, 0.0, 0.0);
+        s.scale = Vec3::new(16.0, 1.0, 3.0);
+        s.props = Json::obj([(AREA_KEY, Json::obj([("area", Json::from("water")), ("volume", Json::from(true))]))]);
+        w.spawn(s, "t").unwrap();
+        let areas = Json::parse(r#"[{"name": "water", "cost": 5, "flags": ["wet"]}]"#).unwrap();
+        let m = navmesh_with(&mut w, &[("areas", areas)]);
+        let a = walker(&mut w, "w", Vec3::new(-5.0, 0.5, -6.0), vec![]);
+        let goal = Json::arr([Json::from(-5.0), Json::from(0.0), Json::from(6.0)]);
+        w.update(
+            &EntityKey::Id(a),
+            UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(3.0)), ("goal", goal), ("avoid_flags", Json::arr([Json::from("wet")]))]))])), ..Default::default() },
+            "t",
+        )
+        .unwrap();
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let wet = nav.meshes[&m].mesh.tiles().flat_map(|(_, t)| t.polys.iter()).filter(|p| p.area == 1).count();
+        assert!(wet > 0, "the volume marked polygons");
+        let mut swam = false;
+        for _ in 0..20 {
+            run(&mut nav, &mut w, 20);
+            let p = w.get(a).unwrap().world_position();
+            swam |= p.x < 5.8 && p.z.abs() < 1.3;
+        }
+        let p = w.get(a).unwrap().world_position();
+        assert!(!swam && horizontal(p, Vec3::new(-5.0, 0.0, 6.0)) < 0.5, "walked around: {p:?}");
     }
 
     #[test]

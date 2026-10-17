@@ -6,7 +6,7 @@
 //! navmesh is the same whatever order its tiles were built in.
 
 use crate::build::{self, opposite, EdgeSpan, TileBuild};
-use crate::{Config, Derived, Input, NavError, Source};
+use crate::{Config, Derived, Input, LinkKind, Mark, NavError, OffMeshLink, Source, MAX_OFFMESH_LINKS};
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -48,6 +48,31 @@ pub struct Poly {
     pub z1: i32,
     pub h: [f32; 4],
     pub links: Vec<Link>,
+    /// Its area (0: plain ground; see [`crate::Filter`]).
+    pub area: u8,
+}
+
+/// An off-mesh link found on the navmesh: the polygons and points at its ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedLink {
+    pub start: PolyRef,
+    pub start_pos: Vec3,
+    pub end: PolyRef,
+    pub end_pos: Vec3,
+}
+
+/// One way across an off-mesh link: from polygon `from` at `from_pos` to `to` at `to_pos`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Traverse {
+    /// The link's index in [`NavMesh::offmesh_links`].
+    pub link: u32,
+    pub from: PolyRef,
+    pub from_pos: Vec3,
+    pub to: PolyRef,
+    pub to_pos: Vec3,
+    pub kind: LinkKind,
+    pub cost: f32,
+    pub area: u8,
 }
 
 /// One built tile.
@@ -87,6 +112,12 @@ pub struct NavMesh {
     rebuilt: Vec<u64>,
     counter: u64,
     scratch: build::Scratch,
+    /// Off-mesh links (data) and where each was found on the navmesh (re-found when the tiles
+    /// around its ends rebuild).
+    offmesh: Vec<OffMeshLink>,
+    resolved: Vec<Option<ResolvedLink>>,
+    /// Ways across links from each polygon: (link, reversed), sorted.
+    from_poly: std::collections::BTreeMap<PolyRef, Vec<(u32, bool)>>,
 }
 
 impl NavMesh {
@@ -94,7 +125,110 @@ impl NavMesh {
         cfg.validate()?;
         let d = Derived::of(&cfg);
         let n = d.tiles_x as usize * d.tiles_z as usize;
-        Ok(NavMesh { cfg, d, tiles: vec![None; n], rebuilt: vec![0; n], counter: 0, scratch: build::Scratch::default() })
+        Ok(NavMesh {
+            cfg,
+            d,
+            tiles: vec![None; n],
+            rebuilt: vec![0; n],
+            counter: 0,
+            scratch: build::Scratch::default(),
+            offmesh: Vec::new(),
+            resolved: Vec::new(),
+            from_poly: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Sets the off-mesh links (at most [`MAX_OFFMESH_LINKS`]; the rest are left out) and finds
+    /// them on the navmesh.
+    pub fn set_offmesh_links(&mut self, links: Vec<OffMeshLink>) {
+        let mut links = links;
+        links.truncate(MAX_OFFMESH_LINKS);
+        self.resolved = vec![None; links.len()];
+        self.offmesh = links;
+        for i in 0..self.offmesh.len() {
+            self.resolved[i] = self.resolve(&self.offmesh[i]);
+        }
+        self.index_links();
+    }
+
+    pub fn offmesh_links(&self) -> &[OffMeshLink] {
+        &self.offmesh
+    }
+
+    /// Where link `i` was found (`None`: an end has no navmesh near it).
+    pub fn resolved_link(&self, i: usize) -> Option<ResolvedLink> {
+        self.resolved.get(i).copied().flatten()
+    }
+
+    fn resolve(&self, l: &OffMeshLink) -> Option<ResolvedLink> {
+        let ext = Vec3::new(l.radius.max(self.cfg.cell_size), self.cfg.agent_height.max(0.5), l.radius.max(self.cfg.cell_size));
+        let (s, sp) = self.nearest(l.from, ext)?;
+        let (e, ep) = self.nearest(l.to, ext)?;
+        (s != e).then_some(ResolvedLink { start: s, start_pos: sp, end: e, end_pos: ep })
+    }
+
+    fn index_links(&mut self) {
+        self.from_poly.clear();
+        for (i, r) in self.resolved.iter().enumerate() {
+            let Some(r) = r else { continue };
+            self.from_poly.entry(r.start).or_default().push((i as u32, false));
+            if self.offmesh[i].bidirectional {
+                self.from_poly.entry(r.end).or_default().push((i as u32, true));
+            }
+        }
+        for v in self.from_poly.values_mut() {
+            v.sort_unstable();
+        }
+    }
+
+    /// Re-finds the links with an end near tile `(tx, tz)` (it was just rebuilt or cleared).
+    fn reresolve_near(&mut self, tx: u32, tz: u32) {
+        if self.offmesh.is_empty() {
+            return;
+        }
+        let r = self.tile_rect(tx, tz);
+        let mut any = false;
+        for i in 0..self.offmesh.len() {
+            let l = self.offmesh[i];
+            let m = l.radius.max(self.cfg.cell_size) + self.cfg.cell_size;
+            let near = |p: Vec3| p.x >= r[0] - m && p.x <= r[2] + m && p.z >= r[1] - m && p.z <= r[3] + m;
+            // Refs into the rebuilt tile changed even when the ends are elsewhere.
+            let stale = self.resolved[i].is_some_and(|v| v.start.tile() == self.tile_index(tx, tz) || v.end.tile() == self.tile_index(tx, tz));
+            if near(l.from) || near(l.to) || stale {
+                self.resolved[i] = self.resolve(&l);
+                any = true;
+            }
+        }
+        if any {
+            self.index_links();
+        }
+    }
+
+    /// Ways across off-mesh links starting at polygon `p`.
+    pub fn traverses_from(&self, p: PolyRef) -> impl Iterator<Item = Traverse> + '_ {
+        self.from_poly.get(&p).into_iter().flatten().filter_map(move |&(i, rev)| {
+            let r = self.resolved.get(i as usize).copied().flatten()?;
+            let l = self.offmesh[i as usize];
+            let (from, from_pos, to, to_pos) = if rev { (r.end, r.end_pos, r.start, r.start_pos) } else { (r.start, r.start_pos, r.end, r.end_pos) };
+            Some(Traverse { link: i, from, from_pos, to, to_pos, kind: l.kind, cost: l.cost, area: l.area })
+        })
+    }
+
+    /// The way across a link from `a` to `b`, when that's how they connect (not a portal).
+    pub fn traverse_between(&self, a: PolyRef, b: PolyRef) -> Option<Traverse> {
+        if self.poly(a).is_some_and(|p| p.links.iter().any(|l| l.to == b)) {
+            return None;
+        }
+        self.traverses_from(a).find(|t| t.to == b)
+    }
+
+    /// The first link a corridor crosses: its index in the corridor (the polygon before it) and
+    /// the way across.
+    pub fn first_traverse(&self, polys: &[PolyRef]) -> Option<(usize, Traverse)> {
+        if self.from_poly.is_empty() {
+            return None;
+        }
+        polys.windows(2).enumerate().find_map(|(k, w)| self.traverse_between(w[0], w[1]).map(|t| (k, t)))
     }
 
     pub fn config(&self) -> &Config {
@@ -191,12 +325,13 @@ impl NavMesh {
     /// and relinks it with its neighbours.
     pub fn build_tile(&mut self, tx: u32, tz: u32, sources: &[&Source]) -> TileStats {
         let inputs: Vec<Input> = sources.iter().map(|s| Input::all(s)).collect();
-        self.build_tile_from(tx, tz, &inputs)
+        self.build_tile_from(tx, tz, &inputs, &[])
     }
 
-    /// [`NavMesh::build_tile`] from inputs that may list only some of a source's triangles.
-    pub fn build_tile_from(&mut self, tx: u32, tz: u32, sources: &[Input]) -> TileStats {
-        let b: TileBuild = build::build_tile(&self.cfg, &self.d, tx, tz, sources, &mut self.scratch);
+    /// [`NavMesh::build_tile`] from inputs that may list only some of a source's triangles (and
+    /// carry areas), with area marks.
+    pub fn build_tile_from(&mut self, tx: u32, tz: u32, sources: &[Input], marks: &[Mark]) -> TileStats {
+        let b: TileBuild = build::build_tile(&self.cfg, &self.d, tx, tz, sources, marks, &mut self.scratch);
         let index = self.tile_index(tx, tz);
         let polys: Vec<Poly> = b
             .rects
@@ -208,6 +343,7 @@ impl NavMesh {
                 z1: r.z1,
                 h: r.h,
                 links: r.links.iter().map(|&(q, side, lo, hi)| Link { side, lo, hi, to: PolyRef::new(index, q as usize) }).collect(),
+                area: r.area,
             })
             .collect();
         let stats = TileStats {
@@ -233,6 +369,7 @@ impl NavMesh {
         self.counter += 1;
         self.rebuilt[index] = self.counter;
         self.relink(tx, tz);
+        self.reresolve_near(tx, tz);
         stats
     }
 
@@ -246,6 +383,7 @@ impl NavMesh {
         self.counter += 1;
         self.rebuilt[index] = self.counter;
         self.relink(tx, tz);
+        self.reresolve_near(tx, tz);
     }
 
     /// Recomputes the links between tile `(tx, tz)` and its four neighbours.
@@ -396,6 +534,26 @@ impl NavMesh {
             h.write_u64(i as u64);
             h.write_u64(t.hash);
         }
+        h.write_u64(self.offmesh.len() as u64);
+        for (l, r) in self.offmesh.iter().zip(&self.resolved) {
+            for v in [l.from, l.to] {
+                h.write_f32(v.x);
+                h.write_f32(v.y);
+                h.write_f32(v.z);
+            }
+            h.write_u8(l.kind as u8);
+            h.write_bool(l.bidirectional);
+            h.write_f32(l.cost);
+            h.write_u8(l.area);
+            h.write_f32(l.radius);
+            match r {
+                Some(r) => {
+                    h.write_u32(r.start.0);
+                    h.write_u32(r.end.0);
+                }
+                None => h.write_u32(u32::MAX),
+            }
+        }
         h.finish()
     }
 
@@ -408,6 +566,8 @@ impl NavMesh {
             ("tiles_built", Json::from(built)),
             ("polygons", Json::from(self.poly_count())),
             ("links", Json::from(links)),
+            ("offmesh_links", Json::from(self.offmesh.len())),
+            ("offmesh_links_found", Json::from(self.resolved.iter().filter(|r| r.is_some()).count())),
             ("hash", Json::from(format!("{:016x}", self.hash()))),
         ])
     }
@@ -423,6 +583,7 @@ fn tile_hash(t: &Tile) -> u64 {
         for v in p.h {
             h.write_f32(v);
         }
+        h.write_u8(p.area);
         h.write_u64(p.links.len() as u64);
         for l in &p.links {
             h.write_u8(l.side);
@@ -524,7 +685,7 @@ pub(crate) mod tests {
         for tz in 0..nz {
             for tx in 0..nx {
                 let only = buckets.get(&(tx, tz)).map(Vec::as_slice).unwrap_or(&[]);
-                other.build_tile_from(tx, tz, &[Input { source: &sheet, only: Some(only) }]);
+                other.build_tile_from(tx, tz, &[Input { source: &sheet, only: Some(only), area: 0 }], &[]);
             }
         }
         assert_eq!(other.hash(), full);

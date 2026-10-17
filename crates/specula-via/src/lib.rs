@@ -27,6 +27,7 @@ pub mod mesh;
 pub mod query;
 
 pub use crowd::{AgentParams, Crowd, CrowdAgent, CrowdSettings};
+pub use mesh::ResolvedLink;
 pub use mesh::{Link, NavMesh, Poly, PolyRef, TileStats};
 pub use query::{PathResult, PathStatus};
 pub use crowd::AgentStatus;
@@ -330,11 +331,13 @@ impl Triangle {
 pub struct Input<'a> {
     pub source: &'a Source,
     pub only: Option<&'a [u32]>,
+    /// The area its walkable surfaces get (0: plain ground).
+    pub area: u8,
 }
 
 impl<'a> Input<'a> {
     pub fn all(source: &'a Source) -> Input<'a> {
-        Input { source, only: None }
+        Input { source, only: None, area: 0 }
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -352,6 +355,115 @@ impl<'a> Input<'a> {
         listed.into_iter().flatten().chain(all.into_iter().flatten())
     }
 }
+
+/// Areas a navmesh tells apart: 0 is plain ground, 1.. are named in its settings.
+pub const MAX_AREAS: usize = 32;
+
+/// A volume whose open space takes an area (water, mud, a road): the columns whose centre and
+/// floor lie inside the box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub lo: Vec3,
+    pub hi: Vec3,
+    pub area: u8,
+}
+
+/// How a path search weighs areas: a cost multiplier per area (distance across a polygon times
+/// its area's cost) and the areas it may not enter at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Filter {
+    pub cost: [f32; MAX_AREAS],
+    /// Bit `a`: area `a` is excluded.
+    pub exclude: u32,
+}
+
+impl Default for Filter {
+    fn default() -> Filter {
+        Filter { cost: [1.0; MAX_AREAS], exclude: 0 }
+    }
+}
+
+impl Filter {
+    /// The cost multiplier of an area (`None`: excluded).
+    pub fn cost_of(&self, area: u8) -> Option<f32> {
+        let a = usize::from(area).min(MAX_AREAS - 1);
+        (self.exclude & (1 << a) == 0).then(|| self.cost[a])
+    }
+
+    /// The smallest multiplier (scales the A* heuristic so it never overestimates).
+    pub fn min_cost(&self) -> f32 {
+        self.cost.iter().copied().fold(f32::INFINITY, f32::min).clamp(0.01, 1.0)
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Filter::default()
+    }
+
+    pub fn hash_into(&self, h: &mut specula_core::hash::StableHasher) {
+        for c in self.cost {
+            h.write_u32(c.to_bits());
+        }
+        h.write_u32(self.exclude);
+    }
+}
+
+/// How an off-mesh link is crossed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkKind {
+    /// An arc through the air.
+    Jump,
+    /// Falling down (one way unless said otherwise).
+    Drop,
+    /// Climbing, at half speed.
+    Ladder,
+}
+
+impl LinkKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            LinkKind::Jump => "jump",
+            LinkKind::Drop => "drop",
+            LinkKind::Ladder => "ladder",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<LinkKind> {
+        match s {
+            "jump" => Some(LinkKind::Jump),
+            "drop" => Some(LinkKind::Drop),
+            "ladder" => Some(LinkKind::Ladder),
+            _ => None,
+        }
+    }
+
+    /// Speed while crossing, as a share of the agent's.
+    pub fn speed_share(self) -> f32 {
+        match self {
+            LinkKind::Jump => 1.0,
+            LinkKind::Drop => 1.5,
+            LinkKind::Ladder => 0.5,
+        }
+    }
+}
+
+/// A connection the surface doesn't have (a gap to jump, a ledge to drop from, a ladder): from
+/// one point on the navmesh to another, as data (navmesh settings).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OffMeshLink {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub kind: LinkKind,
+    pub bidirectional: bool,
+    /// Path cost multiplier of crossing it (times its length).
+    pub cost: f32,
+    /// Its area (filters may exclude it).
+    pub area: u8,
+    /// How far (X/Z) from its end points the navmesh may be found.
+    pub radius: f32,
+}
+
+/// Most off-mesh links one navmesh holds.
+pub const MAX_OFFMESH_LINKS: usize = 256;
 
 /// Work a tile build costs, in grid columns: its grid with the border, plus 16 per triangle.
 pub fn tile_work(cfg: &Config, inputs: &[Input]) -> u64 {

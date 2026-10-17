@@ -42,7 +42,7 @@ pub enum Spot {
 
 pub enum NavCall {
     Build { name: String, args: Json, expect_version: Option<u64> },
-    Path { mesh: Option<String>, from: Spot, to: Spot, max_nodes: usize, max_corners: usize },
+    Path { mesh: Option<String>, from: Spot, to: Spot, max_nodes: usize, max_corners: usize, prefs: Json },
     Point { mesh: Option<String>, at: Option<Spot>, random: usize, radius: Option<f32>, seed: u64 },
     Agent { entity: EntityKey, patch: Json, remove: bool, expect_version: Option<u64> },
     Info { mesh: Option<String>, agents: bool, after: u64, limit: usize },
@@ -90,7 +90,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
             check_keys(
                 args,
                 name,
-                &[&["name", "agent", "like", "cell_size", "cell_height", "tile_cells", "bounds", "margin", "sources", "tiles_per_tick", "expect_version"]],
+                &[&["name", "agent", "like", "cell_size", "cell_height", "tile_cells", "bounds", "margin", "sources", "tiles_per_tick", "areas", "links", "expect_version"]],
             )?;
             let name = string_arg(args, "name")?.unwrap_or("default").to_owned();
             crate::world::validate_name(&name).map_err(|e| e.message)?;
@@ -98,8 +98,10 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
             Ok(NavCall::Build { name, args: args.clone(), expect_version })
         })(),
         "nav_path" => (|| {
-            check_keys(args, name, &[&["mesh", "from", "to", "max_nodes", "max_corners"]])?;
+            check_keys(args, name, &[&["mesh", "from", "to", "max_nodes", "max_corners", "area_costs", "avoid_areas", "avoid_flags"]])?;
+            nav::parse_area_prefs(args, "").map_err(|e| e.message)?;
             Ok(NavCall::Path {
+                prefs: args.clone(),
                 mesh: string_arg(args, "mesh")?.map(str::to_owned),
                 from: need_spot(args, "from")?,
                 to: need_spot(args, "to")?,
@@ -123,10 +125,14 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
             })
         })(),
         "nav_agent" => (|| {
-            check_keys(args, name, &[&["id", "path", "name", "mesh", "speed", "radius", "accel", "arrive", "avoid", "goal", "remove", "expect_version"]])?;
+            check_keys(
+                args,
+                name,
+                &[&["id", "path", "name", "mesh", "speed", "radius", "accel", "arrive", "avoid", "goal", "area_costs", "avoid_areas", "avoid_flags", "remove", "expect_version"]],
+            )?;
             let entity = entity_key(args, name)?;
             let mut patch: Vec<(String, Json)> = Vec::new();
-            for k in ["mesh", "speed", "radius", "accel", "arrive", "avoid", "goal"] {
+            for k in ["mesh", "speed", "radius", "accel", "arrive", "avoid", "goal", "area_costs", "avoid_areas", "avoid_flags"] {
                 if let Some(v) = args.get(k) {
                     patch.push((k.to_owned(), v.clone()));
                 }
@@ -213,6 +219,9 @@ pub fn definitions() -> Vec<ToolDef> {
         ("arrive", t("number", "Arrived within this distance of the goal, m (default 0.25)")),
         ("avoid", t("boolean", "Steer around other agents (default true)")),
         ("goal", spot("Where to go when it has no mind (null stops it)")),
+        ("area_costs", t("object", "{area: cost} overriding the navmesh's area costs for this agent")),
+        ("avoid_areas", t("array", "Areas it never enters, by name")),
+        ("avoid_flags", t("array", "Areas it never enters, by flag")),
         ("remove", t("boolean", "Stop being a nav agent")),
         ("expect_version", t("integer", "Refuse unless the entity is at this version")),
     ]);
@@ -252,6 +261,8 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("margin", t("number", "Metres added around the sources' bounds when bounds aren't given (default 1)")),
                     ("sources", t("object", "{colliders: true, shapes: true, kinematic: false, under: \"/level\", exclude_tags: [..]}")),
                     ("tiles_per_tick", t("integer", "Tile rebuild work per fixed tick after edits and while a build finishes, in default-size tiles (about 2 ms each; default 2; a tile with many triangles costs more)")),
+                    ("areas", t("array", "Named areas, at most 31: [{name, cost?: 1 (0.1..1000, times the distance), flags?: [names]}]. Entities get one with props.nav_area: \"water\" (their walkable surfaces) or {area, volume: true} (their bounds mark the floor inside; they add no geometry). null removes them")),
+                    ("links", t("array", "Off-mesh links, at most 256: [{from: [x,y,z], to: [x,y,z], kind?: jump|drop|ladder (default jump), bidirectional? (default: not for drops), cost?: 1, area?: name, radius?: 0.5 (how far from the navmesh its ends may be)}]. Paths and agents use them; changing only links rebuilds nothing. null removes them")),
                     ("expect_version", t("integer", "Refuse unless the navmesh entity is at this version")),
                 ],
                 &[],
@@ -271,6 +282,9 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("to", spot("Goal")),
                     ("max_nodes", t("integer", "Polygons the search may expand (default 4096)")),
                     ("max_corners", t("integer", "Corners to return, 2..256 (default 64)")),
+                    ("area_costs", t("object", "{area: cost} overriding the navmesh's area costs (\"ground\" is plain ground)")),
+                    ("avoid_areas", t("array", "Areas the path may not enter, by name")),
+                    ("avoid_flags", t("array", "Areas the path may not enter, by flag")),
                 ],
                 &["from", "to"],
             ),
@@ -402,7 +416,7 @@ impl crate::Engine {
                 Ok(j) => ToolOutput::text(j.to_pretty()),
                 Err(e) => world_error(&e),
             },
-            NavCall::Path { mesh, from, to, max_nodes, max_corners } => {
+            NavCall::Path { mesh, from, to, max_nodes, max_corners, prefs } => {
                 let (mid, from, to) = match (self.nav.find_mesh(mesh.as_deref()), self.spot(&from), self.spot(&to)) {
                     (Ok(m), Ok(f), Ok(t)) => (m, f, t),
                     (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return world_error(&e),
@@ -413,8 +427,10 @@ impl crate::Engine {
                     Err(e) => return world_error(&e),
                 };
                 let ext = Vec3::new(1.0, slot.settings.config.agent_height, 1.0);
+                let (costs, avoid, avoid_flags) = nav::parse_area_prefs(&prefs, "").unwrap_or_default();
+                let filter = slot.settings.filter(&costs, &avoid, &avoid_flags);
                 let started = std::time::Instant::now();
-                let Some(p) = slot.mesh.find_path(from, to, ext, max_nodes) else {
+                let Some(p) = slot.mesh.find_path_filtered(from, to, ext, max_nodes, &filter) else {
                     let near = slot.mesh.nearest(from, Vec3::new(10.0, 10.0, 10.0)).map(|(_, p)| r3(p));
                     return world_error(
                         &WorldError::new("start_off_navmesh", "'from' isn't on the navmesh (nothing within 1 m across and an agent height up or down)")
@@ -687,7 +703,7 @@ impl crate::Engine {
         // Start from the current settings when rebuilding one.
         let mut settings = match existing.and_then(|id| self.world.get(id)).and_then(|e| e.props.get(nav::MESH_KEY)) {
             Some(p) => MeshSettings::from_json(p)?,
-            None => MeshSettings { config: specula_via::Config::default(), sources: Sources::default(), tiles_per_tick: nav::DEFAULT_TILES_PER_TICK },
+            None => MeshSettings::new(specula_via::Config::default(), Sources::default(), nav::DEFAULT_TILES_PER_TICK),
         };
         let c = &mut settings.config;
         if let Some(like) = args.get("like").filter(|v| !v.is_null()) {
@@ -781,8 +797,20 @@ impl crate::Engine {
         }
         // Check everything before writing (a tile too wide is refused here; only old world data
         // is narrowed when read).
-        let props = settings.to_json();
+        let mut props = settings.to_json();
+        for k in ["areas", "links"] {
+            if let Some(v) = args.get(k) {
+                if v.is_null() {
+                    if let Json::Obj(pairs) = &mut props {
+                        pairs.retain(|(n, _)| n != k);
+                    }
+                } else {
+                    props.set(k, v.clone());
+                }
+            }
+        }
         let read = MeshSettings::from_json(&props)?;
+        let props = read.to_json();
         if read.config.tile_cells != settings.config.tile_cells {
             return Err(WorldError::new(
                 "invalid_value",
@@ -866,6 +894,15 @@ const QUERY: [f32; 4] = [1.0, 0.5, 0.15, 1.0];
 const AGENT_RING: [f32; 4] = [0.35, 0.95, 1.0, 1.0];
 const GOAL: [f32; 4] = [1.0, 0.35, 0.85, 1.0];
 const DIRTY: [f32; 4] = [1.0, 0.45, 0.1, 1.0];
+const LINK: [f32; 4] = [1.0, 0.95, 0.3, 1.0];
+const LINK_MISSING: [f32; 4] = [1.0, 0.2, 0.2, 1.0];
+
+/// Fill and edge of a named area's polygons (by id; plain ground uses the tile colours).
+fn area_color(area: u8) -> ([f32; 4], [f32; 4]) {
+    const P: [[f32; 3]; 6] = [[0.85, 0.35, 0.95], [0.95, 0.75, 0.2], [0.95, 0.35, 0.35], [0.3, 0.9, 0.9], [0.6, 0.95, 0.3], [0.95, 0.55, 0.75]];
+    let c = P[usize::from(area.saturating_sub(1)) % P.len()];
+    ([c[0] * 0.8, c[1] * 0.8, c[2] * 0.8, 0.4], [c[0], c[1], c[2], 0.95])
+}
 
 fn tile_color(tx: u32, tz: u32) -> ([f32; 4], [f32; 4]) {
     if (tx + tz) % 2 == 0 {
@@ -900,12 +937,13 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
             let mut polys = 0usize;
             for (index, tile) in mesh.tiles() {
                 let (tx, tz) = mesh.tile_coords(index);
-                let (fill, edge) = tile_color(tx, tz);
+                let ground = tile_color(tx, tz);
                 for poly in &tile.polys {
                     if drawn >= MAX_DRAWN_POLYS {
                         omitted += 1;
                         continue;
                     }
+                    let (fill, edge) = if poly.area == 0 { ground } else { area_color(poly.area) };
                     let r = mesh.rect(poly);
                     let at = |x: f32, z: f32| Vec3::new(x, mesh.height(poly, x, z), z) + lift;
                     let corners = [at(r[0], r[1]), at(r[2], r[1]), at(r[2], r[3]), at(r[0], r[3])];
@@ -925,20 +963,65 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
                     p.line(c[i], c[(i + 1) % 4], DIRTY, 2.0);
                 }
             }
-            list.push(Json::obj([
+            // Off-mesh links: an arc from take-off to landing (red where an end found no navmesh).
+            let mut links = Vec::new();
+            for (i, l) in mesh.offmesh_links().iter().enumerate() {
+                let found = mesh.resolved_link(i);
+                let (a, b) = found.map_or((l.from, l.to), |r| (r.start_pos, r.end_pos));
+                let color = if found.is_some() { LINK } else { LINK_MISSING };
+                let lift_m = match l.kind {
+                    specula_via::LinkKind::Jump => ((b - a).length() * 0.25).clamp(0.3, 2.0),
+                    _ => 0.0,
+                };
+                let mut prev = a + lift;
+                for k in 1..=12 {
+                    let u = k as f32 / 12.0;
+                    let q = a + (b - a) * u + Vec3::new(0.0, 4.0 * lift_m * u * (1.0 - u), 0.0) + lift;
+                    p.line(prev, q, color, 2.5);
+                    prev = q;
+                }
+                p.dot(a + lift, 5.0, color);
+                p.dot(b + lift, if l.bidirectional { 5.0 } else { 3.0 }, color);
+                if links.len() < 32 {
+                    links.push(Json::obj([("from", r3(a)), ("to", r3(b)), ("kind", Json::from(l.kind.name())), ("bidirectional", Json::from(l.bidirectional)), ("found", Json::from(found.is_some()))]));
+                }
+            }
+            let areas: Vec<Json> = slot
+                .settings
+                .areas
+                .iter()
+                .enumerate()
+                .map(|(i, a)| Json::obj([("name", Json::from(a.name.as_str())), ("color", Json::from(ov::hex(area_color((i + 1) as u8).1)))]))
+                .collect();
+            let mut j = Json::obj([
                 ("path", Json::from(slot.path.as_str())),
                 ("polygons", Json::from(mesh.poly_count())),
                 ("drawn", Json::from(polys)),
                 ("tiles_built", Json::from(mesh.tiles().count())),
                 ("dirty_tiles", Json::from(slot.dirty.len())),
-            ]));
+            ]);
+            if !links.is_empty() {
+                j.set("offmesh_links", Json::Arr(links));
+            }
+            if !areas.is_empty() {
+                j.set("areas", Json::Arr(areas));
+            }
+            list.push(j);
         }
         details.push((
             "navmesh",
             Json::obj([
                 ("navmeshes", Json::Arr(list)),
                 ("omitted_polygons", Json::from(omitted)),
-                ("legend", Json::obj([("polygons", Json::from("green / blue by tile (alternating)")), ("dirty_tile", Json::from(ov::hex(DIRTY)))])),
+                (
+                    "legend",
+                    Json::obj([
+                        ("polygons", Json::from("green / blue by tile (alternating); named areas in their own colour (see each navmesh's areas)")),
+                        ("dirty_tile", Json::from(ov::hex(DIRTY))),
+                        ("offmesh_link", Json::from(ov::hex(LINK))),
+                        ("offmesh_link_not_found", Json::from(ov::hex(LINK_MISSING))),
+                    ]),
+                ),
             ]),
         ));
     }
