@@ -32,8 +32,9 @@ use specula_core::Json;
 use crate::clip::{Channel, Clip, Curve, Event, Interp, Keys, LoopMode, Track};
 use crate::error::{err, num, vecn, AnimError, AnimErrorCode, Obj};
 use crate::math::{
-    self, cos_turns, frac, inverse, math3, qaxis, qconj, qeuler, qfrom_cols, qframe, qmul, qnorm, qrot, sin_turns, smoothstep, Affine, Transform, V3, Q, QID,
+    self, cos_turns, frac, inverse, math3, qaxis, qconj, qeuler, qframe, qmul, qnorm, qrot, rotation_of, sin_turns, smoothstep, Affine, Transform, V3, Q, QID,
 };
+use crate::set::AnimSet;
 use crate::skeleton::Skeleton;
 
 /// Generator kinds.
@@ -48,9 +49,15 @@ pub const MAX_WOBBLES: usize = 64;
 
 use specula_model::rig::MAX_BONES;
 
-/// Generates the clip a spec describes, for `skel`. Errors carry paths under `path`.
+/// Generates the clip a spec describes, for `skel`. Errors carry paths under `path`. Kinds that
+/// build on other clips (`chain`) need [`generate_in`].
 pub fn generate(spec: &Json, path: &str, skel: &Skeleton) -> Result<Clip, AnimError> {
-    generate_inner(spec, skel).map_err(|e| e.under(path))
+    generate_inner(spec, skel, None).map_err(|e| e.under(path))
+}
+
+/// [`generate`] for a clip of `set`: generators may build on the set's clips.
+pub fn generate_in(spec: &Json, path: &str, set: &AnimSet) -> Result<Clip, AnimError> {
+    generate_inner(spec, &set.skeleton, Some(set)).map_err(|e| e.under(path))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -343,11 +350,6 @@ fn fk(skel: &Skeleton, d: &[Transform]) -> Vec<Affine> {
     out
 }
 
-/// Rotation of an affine's (possibly scaled) linear part.
-fn rotation_of(m: &Affine) -> Q {
-    qfrom_cols([math3::normalize(m.cols[0]), math3::normalize(m.cols[1]), math3::normalize(m.cols[2])])
-}
-
 /// Solves every leg with a foot target; returns the largest stretch ratio asked for.
 fn solve(skel: &Skeleton, body: &Body, f: &mut Frame) -> f32 {
     let mut worst = 0.0f32;
@@ -420,7 +422,8 @@ struct Out {
     frames: Vec<Frame>,
 }
 
-fn generate_inner(spec: &Json, skel: &Skeleton) -> Result<Clip, AnimError> {
+fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result<Clip, AnimError> {
+    let _ = set;
     if !skel.model_aligned() {
         return Err(err("", AnimErrorCode::InvalidRig, "generators need model-aligned rest frames (recipe rigs)"));
     }
