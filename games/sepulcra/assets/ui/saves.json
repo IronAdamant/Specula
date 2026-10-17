@@ -31,9 +31,9 @@
                 { "type": "label", "text": "{slot1_title}", "role": "small" },
                 { "type": "label", "text": "{slot1_detail}", "role": "small", "visible": "slot1_used" }
               ] },
-              { "type": "button", "id": "save_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:1", "tooltip": "Save this run here." },
-              { "type": "button", "id": "load_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:1", "enabled": "slot1_used" },
-              { "type": "button", "id": "delete_1", "style": "compact", "min_width": 44, "min_height": 40, "icon": "cross", "action": "delete_slot:1", "enabled": "slot1_used", "tooltip": "Delete this save." }
+              { "type": "button", "id": "save_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:1", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:1", "enabled": "slot1_used" },
+              { "type": "button", "id": "delete_1", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:1", "enabled": "slot1_used", "tooltip": "Delete this save." }
             ]
           },
           {
@@ -44,9 +44,9 @@
                 { "type": "label", "text": "{slot2_title}", "role": "small" },
                 { "type": "label", "text": "{slot2_detail}", "role": "small", "visible": "slot2_used" }
               ] },
-              { "type": "button", "id": "save_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:2", "tooltip": "Save this run here." },
-              { "type": "button", "id": "load_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:2", "enabled": "slot2_used" },
-              { "type": "button", "id": "delete_2", "style": "compact", "min_width": 44, "min_height": 40, "icon": "cross", "action": "delete_slot:2", "enabled": "slot2_used", "tooltip": "Delete this save." }
+              { "type": "button", "id": "save_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:2", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:2", "enabled": "slot2_used" },
+              { "type": "button", "id": "delete_2", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:2", "enabled": "slot2_used", "tooltip": "Delete this save." }
             ]
           },
           {
@@ -57,9 +57,9 @@
                 { "type": "label", "text": "{slot3_title}", "role": "small" },
                 { "type": "label", "text": "{slot3_detail}", "role": "small", "visible": "slot3_used" }
               ] },
-              { "type": "button", "id": "save_3", "style": "compact", "min_width": 76, "min_height": 40, "text": "Save", "action": "save_slot:3", "tooltip": "Save this run here." },
-              { "type": "button", "id": "load_3", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_slot:3", "enabled": "slot3_used" },
-              { "type": "button", "id": "delete_3", "style": "compact", "min_width": 44, "min_height": 40, "icon": "cross", "action": "delete_slot:3", "enabled": "slot3_used", "tooltip": "Delete this save." }
+              { "type": "button", "id": "save_3", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:3", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_3", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:3", "enabled": "slot3_used" },
+              { "type": "button", "id": "delete_3", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:3", "enabled": "slot3_used", "tooltip": "Delete this save." }
             ]
           },
           { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
@@ -72,7 +72,7 @@
                 { "type": "label", "text": "{auto1_title}", "role": "small" },
                 { "type": "label", "text": "{auto1_detail}", "role": "small", "visible": "auto1_used" }
               ] },
-              { "type": "button", "id": "load_auto_1", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_auto:1", "enabled": "auto1_used" }
+              { "type": "button", "id": "load_auto_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_auto:1", "enabled": "auto1_used" }
             ]
           },
           {
@@ -83,7 +83,7 @@
                 { "type": "label", "text": "{auto2_title}", "role": "small" },
                 { "type": "label", "text": "{auto2_detail}", "role": "small", "visible": "auto2_used" }
               ] },
-              { "type": "button", "id": "load_auto_2", "style": "compact", "min_width": 76, "min_height": 40, "text": "Load", "action": "load_auto:2", "enabled": "auto2_used" }
+              { "type": "button", "id": "load_auto_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_auto:2", "enabled": "auto2_used" }
             ]
           },
           { "type": "button", "id": "saves_back", "style": "primary", "text": "Back", "action": "close_saves" },
