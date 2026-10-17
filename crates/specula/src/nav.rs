@@ -719,7 +719,7 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
             hi = hi.max(c);
         }
         let mark = area.is_some().then_some((lo, hi));
-        return Some(SourceEntry { version: e.version, drawn: true, cols: e.model().cols, ancestors: ancestors_of(), tags: e.tags.clone(), collider: None, shape: None, area, mark });
+        return Some(SourceEntry { version: e.version, drawn: e.shown() && !e.in_ui(), cols: e.model().cols, ancestors: ancestors_of(), tags: e.tags.clone(), collider: None, shape: None, area, mark });
     }
     let m = e.model();
     let collider = match &e.collider {
