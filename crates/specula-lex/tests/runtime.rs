@@ -465,6 +465,10 @@ fn chained_waves_cannot_queue_without_bound() {
     assert!(s.state().diag.counts.contains_key("spawn_limit"), "{:?}", s.state().diag);
     let pending: u32 = s.state().wave_stats.iter().map(|w| w.pending).sum();
     assert!(pending as usize <= specula_lex::sim::MAX_PENDING_SPAWNS, "{pending}");
+    // The skipped wave still counts as started, and clears (it has nothing to wait for).
+    s.step(&[]);
+    let w3 = s.state().wave_stats[2];
+    assert!(w3.started_at.is_some() && w3.cleared_at.is_some(), "{w3:?}");
 }
 
 #[test]

@@ -877,6 +877,8 @@ impl Core<'_> {
             let m = format!("wave {number} on_start: {}", e.message);
             self.note(e.code, &m);
         }
+        // Started either way, so a wave skipped by the queue cap still clears (nothing pending).
+        self.st.wave_stats[w].started_at = Some(self.st.tick);
         let total: usize = def.groups.iter().map(|g| g.count as usize).sum();
         if self.st.pending.len().saturating_add(total) > MAX_PENDING_SPAWNS {
             self.note("spawn_limit", &format!("wave {number} would queue {total} spawns on top of {} pending (most {MAX_PENDING_SPAWNS}); its groups were skipped", self.st.pending.len()));
@@ -892,7 +894,6 @@ impl Core<'_> {
     fn schedule_wave(&mut self, w: usize, number: u16) {
         let waves = self.r.waves.as_ref().expect("scheduling a wave");
         let def = &waves.waves[w];
-        self.st.wave_stats[w].started_at = Some(self.st.tick);
         let mut fresh = Vec::new();
         for g in &def.groups {
             for k in 0..g.count {

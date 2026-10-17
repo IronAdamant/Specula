@@ -294,7 +294,8 @@ The world hash covers the rule sets, so a replay that changes the rules diverges
 claims and the journal). Everything costly runs on the calling agent's protocol thread: an edit takes a snapshot,
 applies its ops, validates the set before and after (uncapped, so a set with hundreds of errors can still be fixed
 one at a time), and sends a commit that carries the entity id and version of every item it validated against.
-Edits to one set queue behind a per-set lock (held on protocol threads only, never by the main thread), so agents
+Edits to one set queue behind a per-set lock (held on protocol threads only, never by the main thread; an edit
+that waits more than 10 s answers `busy` with nothing applied, inside the caller's timeout), so agents
 editing different items of a set don't fail each other: 8 agents × 5 edits to their own items of a 500-item set
 all succeed. If something outside `lex_edit` changed the set meanwhile (`world_set`, `world_undo`), or an item
 was deleted and put again (a new entity, caught by its id), the commit is refused and the edit is redone on the

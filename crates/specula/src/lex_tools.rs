@@ -138,6 +138,29 @@ pub struct Commit {
 #[derive(Default)]
 pub struct Locks(Mutex<BTreeMap<String, Arc<Mutex<()>>>>);
 
+/// How long an edit waits for its set's lock before giving up with `busy` (nothing applied),
+/// well inside an agent's call timeout, so a queued edit never lands after its caller gave up.
+const EDIT_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `f` holding the set's edit lock, or answers `busy` when the queue is too long.
+fn locked(tools: &Tools, set: &str, f: impl FnOnce() -> ToolOutput) -> Result<ToolOutput, ToolOutput> {
+    let lock = tools.lex_locks.for_set(set);
+    let deadline = Instant::now() + EDIT_LOCK_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(_held) => return Ok(f()),
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                let _held = p.into_inner();
+                return Ok(f());
+            }
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(err("busy", format!("other agents' edits to set '{set}' kept it busy for {} s; nothing was applied, so try again (or claim_take /lex/{set} to work alone)", EDIT_LOCK_WAIT.as_secs())));
+            }
+        }
+    }
+}
+
 impl Locks {
     fn for_set(&self, set: &str) -> Arc<Mutex<()>> {
         let mut m = self.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -1069,9 +1092,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     let set = set_arg(args, true)?.expect("required");
     let ops = parse_ops(args)?;
     let e = Edit { set, header: header_args(args)?, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace: false, tool: "lex_edit" };
-    let lock = tools.lex_locks.for_set(&e.set);
-    let _held = lock.lock().unwrap_or_else(|p| p.into_inner());
-    Ok(edit_in(&mut EngineStore { tools, session }, &e))
+    Ok(locked(tools, &e.set, || edit_in(&mut EngineStore { tools, session }, &e)).unwrap_or_else(|busy| busy))
 }
 
 fn import_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
@@ -1089,9 +1110,7 @@ fn import_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Tool
     let header = Header { name: Some(doc.name.clone()).filter(|n| !n.is_empty()), tick_hz: Some(doc.tick_hz), notes: Some(doc.notes.clone()) };
     let replace = crate::tools::bool_arg(args, "replace")?.unwrap_or(true);
     let e = Edit { set, header, ops, allow_errors: bool_of(args, "allow_errors")?, dry_run: bool_of(args, "dry_run")?, replace, tool: "lex_import" };
-    let lock = tools.lex_locks.for_set(&e.set);
-    let _held = lock.lock().unwrap_or_else(|p| p.into_inner());
-    Ok(edit_in(&mut EngineStore { tools, session }, &e))
+    Ok(locked(tools, &e.set, || edit_in(&mut EngineStore { tools, session }, &e)).unwrap_or_else(|busy| busy))
 }
 
 fn export_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
