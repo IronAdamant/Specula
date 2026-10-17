@@ -229,10 +229,9 @@ fn stale(world: &World, journal: &Journal, e: WorldError, yours: &Yours) -> Worl
     if now.version == expected {
         // Nothing outside this command changed it: an earlier op of the same batch did (and was
         // rolled back with the rest).
-        let advice = format!(
-            "an earlier op in this same batch changed it (each op bumps the version): in the later op use the version the              earlier one produces ({}), or leave expect_version out of the later op",
-            expected + 1
-        );
+        let advice = "an earlier op in this same batch changed it (each op bumps the version): in the later op expect the \
+                      version after your earlier ops on it, or leave expect_version out of the later op"
+            .to_owned();
         return e.with(
             "conflict",
             Json::obj([
@@ -378,7 +377,8 @@ mod tests {
         let e = help(&w, &j, e, &Yours { fields: vec!["color".into()] });
         let c = e.detail("conflict").unwrap();
         assert_eq!(c.get("same_batch"), Some(&Json::from(true)));
-        assert!(c.get("rebase").unwrap().as_str().unwrap().contains("(2)"));
+        let advice = c.get("rebase").unwrap().as_str().unwrap();
+        assert!(advice.contains("after your earlier ops") && !advice.contains("  "), "{advice}");
     }
 
     #[test]

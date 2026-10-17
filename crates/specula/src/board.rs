@@ -490,8 +490,11 @@ pub struct Board {
     /// Bumped by every change that is saved (the engine saves the board when it moved).
     revision: u64,
     /// Rendered `board.json` lines of tasks, by id: (version, line). Only tasks that changed
-    /// since the last save are rendered again (F3).
-    rendered: BTreeMap<u64, (u64, String)>,
+    /// since the last save are rendered again (F3). The key is the version and the work
+    /// counters (journal links change those without a new version).
+    rendered: BTreeMap<u64, ((u64, TaskWork), String)>,
+    /// Rendered note lines, by id (notes never change once left).
+    rendered_notes: BTreeMap<u64, String>,
 }
 
 impl Board {
@@ -545,6 +548,7 @@ impl Board {
         self.entry_task.insert(seq, id);
         if let Some(t) = self.tasks.get_mut(&id) {
             t.work.entries += 1;
+            self.revision += 1;
             t.work.changes += changes as u64;
         }
     }
@@ -554,6 +558,7 @@ impl Board {
         let Some(id) = self.current(w).map(|t| t.id) else { return };
         if let Some(t) = self.tasks.get_mut(&id) {
             t.work.refused += 1;
+            self.revision += 1;
         }
     }
 
@@ -1073,12 +1078,19 @@ impl Board {
         let tasks = &self.tasks;
         self.rendered.retain(|id, _| tasks.contains_key(id));
         for t in self.tasks.values() {
-            if self.rendered.get(&t.id).is_none_or(|(v, _)| *v != t.version) {
-                self.rendered.insert(t.id, (t.version, Self::task_line(t)));
+            let key = (t.version, t.work);
+            if self.rendered.get(&t.id).is_none_or(|(k, _)| *k != key) {
+                self.rendered.insert(t.id, (key, Self::task_line(t)));
             }
         }
-        let mut out = String::with_capacity(self.rendered.values().map(|(_, l)| l.len() + 2).sum::<usize>() + self.notes.len() * 200 + 256);
-        self.write_into(&mut out, |id| &self.rendered[&id].1);
+        let notes = &self.notes;
+        self.rendered_notes.retain(|id, _| notes.contains_key(id));
+        for n in self.notes.values() {
+            self.rendered_notes.entry(n.id).or_insert_with(|| n.to_json().to_string());
+        }
+        let size = self.rendered.values().map(|(_, l)| l.len() + 2).sum::<usize>() + self.rendered_notes.values().map(|l| l.len() + 2).sum::<usize>();
+        let mut out = String::with_capacity(size + 256);
+        self.write_into(&mut out, |id| &self.rendered[&id].1, |id| &self.rendered_notes[&id]);
         out
     }
 
@@ -1091,7 +1103,7 @@ impl Board {
         j.to_string()
     }
 
-    fn write_into<'a>(&'a self, out: &mut String, line: impl Fn(u64) -> &'a str) {
+    fn write_into<'a>(&'a self, out: &mut String, line: impl Fn(u64) -> &'a str, note: impl Fn(u64) -> &'a str) {
         out.push_str(&format!(
             "{{\"format\": \"{FORMAT}\", \"next_task\": {}, \"next_note\": {}, \"seq\": {},\n\"tasks\": [",
             self.next_task, self.next_note, self.seq
@@ -1101,9 +1113,9 @@ impl Board {
             out.push_str(line(*id));
         }
         out.push_str("\n],\n\"notes\": [");
-        for (i, n) in self.notes.values().enumerate() {
+        for (i, id) in self.notes.keys().enumerate() {
             out.push_str(if i == 0 { "\n" } else { ",\n" });
-            out.push_str(&n.to_json().to_string());
+            out.push_str(note(*id));
         }
         out.push_str("\n]}\n");
     }
@@ -1111,8 +1123,9 @@ impl Board {
     /// The board as `board.json` text.
     pub fn render(&self) -> String {
         let lines: BTreeMap<u64, String> = self.tasks.values().map(|t| (t.id, Self::task_line(t))).collect();
+        let notes: BTreeMap<u64, String> = self.notes.values().map(|n| (n.id, n.to_json().to_string())).collect();
         let mut out = String::new();
-        self.write_into(&mut out, |id| &lines[&id]);
+        self.write_into(&mut out, |id| &lines[&id], |id| &notes[&id]);
         out
     }
 
@@ -1432,6 +1445,13 @@ mod tests {
         assert_eq!(first, b.render());
         b.take(ANN, 1, 1, None).unwrap();
         assert_eq!(b.render_cached(), b.render(), "a changed task is rendered again");
+        // Review round 2: journal links change the work counters without a new version.
+        let r = b.revision();
+        b.note_entry(ANN, 9, 3);
+        assert!(b.revision() > r, "work counters are saved too");
+        assert_eq!(b.render_cached(), b.render(), "and rendered again");
+        b.add_note(ANN, 2, NoteTarget::Task(1), "n".into()).unwrap();
+        assert_eq!(b.render_cached(), b.render(), "notes are cached by id");
     }
 
     #[test]
