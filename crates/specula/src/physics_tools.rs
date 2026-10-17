@@ -443,7 +443,7 @@ fn definitions_physics() -> Vec<ToolDef> {
             name: "physics_events".into(),
             description: "What happened in recent physics ticks, oldest first: contact_begin / contact_end (a, b, point, \
                           normal, approach speed), trigger_enter / trigger_exit (a = the trigger), ccd (the tunnelling \
-                          guard stopped fast body a at static b). Each has seq and tick; pass after = the last seq you \
+                          guard stopped fast body a at b: static, or a moving body that was not fast itself). Each has seq and tick; pass after = the last seq you \
                           saw to get only newer ones. The last 4096 are kept."
                 .into(),
             input_schema: schema(
@@ -790,10 +790,10 @@ impl crate::Engine {
                 ("distance_per_tick_m", round(per_tick)),
                 ("thickness_m", round(view.inner_radius)),
                 ("fast", Json::from(view.inner_radius > 0.0 && per_tick > 0.5 * view.inner_radius)),
-                ("guarded_against_static", Json::from(ccd)),
+                ("guarded", Json::from(ccd)),
                 (
                     "note",
-                    Json::from("fast = moves more than half its thickness per tick: it can pass through thin dynamic bodies; the guard (ccd) stops it at static colliders"),
+                    Json::from("fast = moves more than half its thickness per tick; the guard (ccd) stops it at static colliders and at moving bodies that were not fast that tick (two fast bodies can still pass through each other)"),
                 ),
             ]),
         );

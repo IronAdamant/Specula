@@ -222,6 +222,34 @@ fn fast_bodies_do_not_tunnel_through_thin_walls() {
 }
 
 #[test]
+fn fast_bodies_do_not_tunnel_through_thin_dynamic_bodies() {
+    // A bullet at 300 m/s and a free-floating 5 cm plate: the guard casts against the plate too.
+    for ccd in [true, false] {
+        let mut s = Space::new(Settings { gravity: Vec3::ZERO, ..Settings::default() });
+        let mut plate = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(5.0, 0.0, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.025, 2.0, 2.0)))));
+        plate.mass = 20.0;
+        s.insert(1, plate).unwrap();
+        let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::ZERO), Some(ColliderDesc::new(Shape::sphere(0.1))));
+        d.velocity = v3(300.0, 0.0, 0.0);
+        d.ccd = ccd;
+        s.insert(2, d).unwrap();
+        let mut guarded = false;
+        for _ in 0..30 {
+            let r = s.step(DT);
+            guarded |= r.events.iter().any(|e| e.kind == EventKind::Ccd && e.a == 2 && e.b == 1);
+        }
+        let (x, plate_v) = (s.body(2).unwrap().pose.p.x, s.body(1).unwrap().velocity.x);
+        if ccd {
+            assert!(guarded, "the guard fired on the dynamic plate");
+            assert!(x < s.body(1).unwrap().pose.p.x, "the bullet stayed on its side: x = {x}");
+            assert!(plate_v > 0.5, "and hit it: the plate moves at {plate_v} m/s");
+        } else {
+            assert!(x > 5.0, "without the guard it passes through: x = {x}");
+        }
+    }
+}
+
+#[test]
 fn triggers_report_enter_and_exit() {
     let mut s = Space::default();
     let mut zone = ColliderDesc::new(Shape::cuboid(v3(2.0, 0.5, 2.0)));

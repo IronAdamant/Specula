@@ -1720,11 +1720,23 @@ impl Space {
     }
 
     /// Fast dynamic bodies cast their inner sphere from where they were to where they are
-    /// against static colliders, and stop at the first hit (Box2D v3's continuous step, with a
-    /// sphere core).
+    /// against static colliders, and against the dynamic and kinematic bodies that weren't fast
+    /// this step (where those ended up), and stop at the first hit (Box2D v3's continuous step,
+    /// with a sphere core, its bullets against non-bullets). Two fast bodies don't stop each
+    /// other (that would depend on which went first); they stay listed as fast.
     fn tunnelling_guard(&mut self, dt: f32) {
         let slots = std::mem::take(&mut self.active);
         let mut fast_total = 0;
+        // This step's fast bodies, by key (they aren't targets).
+        let mut fast_keys: Vec<u64> = slots
+            .iter()
+            .filter_map(|&s| {
+                let b = self.slot(s);
+                let moving = b.is_dynamic() && !b.desc.sleeping && b.solver != NONE && b.desc.collider.as_ref().is_some_and(|c| !c.is_trigger);
+                (moving && b.inner_radius > 0.0 && (b.center - b.c0).length() > 0.5 * b.inner_radius).then_some(b.key)
+            })
+            .collect();
+        fast_keys.sort_unstable();
         for &s in &slots {
             let b = self.slot(s);
             if !b.is_dynamic() || b.desc.sleeping || b.solver == NONE {
@@ -1759,13 +1771,29 @@ impl Space {
                 cands.push(o);
                 true
             });
-            for o in cands {
+            let statics = cands.len();
+            self.dynamic_tree.query(&swept, |o| {
+                if o != s {
+                    cands.push(o);
+                }
+                true
+            });
+            for (i, o) in cands.into_iter().enumerate() {
                 let ob = self.slot(o);
                 let Some(oc) = &ob.desc.collider else {
                     continue;
                 };
                 if oc.is_trigger || oc.mask & layer == 0 || mask_bits & oc.layer == 0 {
                     continue;
+                }
+                if i >= statics {
+                    // A moving target: one that pairs with this body, isn't jointed to it
+                    // without collisions, and wasn't fast itself.
+                    let b = self.slot(s);
+                    let pair = (key.min(ob.key), key.max(ob.key));
+                    if !Space::should_pair(b, ob) || self.no_collide.contains_key(&pair) || fast_keys.binary_search(&ob.key).is_ok() {
+                        continue;
+                    }
                 }
                 let op = ob.desc.pose.mul(&oc.offset);
                 if let Some(h) = query::cast_shape(&probe, &start, delta, &oc.shape, &op, self.settings.linear_slop) {
