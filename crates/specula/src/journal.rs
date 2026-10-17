@@ -343,11 +343,13 @@ struct Ring {
     evicted: u64,
     /// The newest id lost from this ring (evicted, or dropped by a rebase); 0 = none.
     lost_upto: u64,
+    /// The newest tick of an evicted entry (`None`: nothing evicted since the base).
+    evicted_tick: Option<u64>,
 }
 
 impl Ring {
     fn new(max_entries: usize, max_bytes: usize) -> Ring {
-        Ring { entries: VecDeque::new(), bytes: 0, max_entries: max_entries.max(1), max_bytes, evicted: 0, lost_upto: 0 }
+        Ring { entries: VecDeque::new(), bytes: 0, max_entries: max_entries.max(1), max_bytes, evicted: 0, lost_upto: 0, evicted_tick: None }
     }
 
     fn push(&mut self, entry: Entry) {
@@ -358,6 +360,7 @@ impl Ring {
             self.bytes -= old.bytes;
             self.evicted += 1;
             self.lost_upto = old.seq;
+            self.evicted_tick = Some(self.evicted_tick.map_or(old.tick, |t| t.max(old.tick)));
         }
     }
 
@@ -627,15 +630,11 @@ impl Journal {
         merged(self.agents.upto_rev(u64::MAX), self.game.upto_rev(u64::MAX), true).take(scan).filter(move |e| e.touches(id))
     }
 
-    /// The first tick whose changes are all still kept: past the newest tick either ring has
-    /// evicted entries of (0 while nothing was evicted).
+    /// The first trace tick whose incoming changes are all still kept: a trace tick `T` holds the
+    /// entries stamped `T - 1`, so it is the newest tick of any evicted entry (in either ring)
+    /// plus 2. 0 while nothing was evicted. A tick partly evicted is never reported complete.
     pub fn complete_from_tick(&self) -> u64 {
-        [&self.agents, &self.game]
-            .into_iter()
-            .filter(|r| r.evicted > 0)
-            .filter_map(|r| r.entries.front().map(|e| e.tick + 1))
-            .max()
-            .unwrap_or(0)
+        [&self.agents, &self.game].into_iter().filter_map(|r| r.evicted_tick.map(|t| t + 2)).max().unwrap_or(0)
     }
 
     /// The world the entries apply to (empty, or the world as loaded).

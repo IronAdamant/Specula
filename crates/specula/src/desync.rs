@@ -39,6 +39,9 @@ pub const MAX_TICKS: usize = 4096;
 const MAX_NAMED: usize = 20;
 /// Trace files read at most this big.
 pub const MAX_TRACE_BYTES: u64 = 256 << 20;
+/// Entity hashes one `desync_compare {b: "replay"}` call may spend on per-tick world hashes
+/// (about 40 ms): past it the answer hands back `next_from_tick` to continue.
+pub const REPLAY_BUDGET: usize = 1_500_000;
 /// Entity fields left out of digests (bookkeeping, or derived from the parent).
 const IGNORED: [&str; 6] = ["id", "version", "created_by", "modified_by", "model_state", "world_position"];
 
@@ -411,7 +414,12 @@ pub fn compare(a: &Trace, b: &Trace) -> Result<Json, crate::world::WorldError> {
 
 /// This engine against its own journal: replays it from the base tick by tick and compares with
 /// the recorded hashes; then names live entities whose state differs from the full replay.
-pub fn against_replay(log: &TickLog, journal: &Journal, live: &World) -> Json {
+pub fn against_replay(log: &TickLog, journal: &Journal, live: &World, from_tick: Option<u64>) -> Json {
+    against_replay_within(log, journal, live, from_tick, REPLAY_BUDGET)
+}
+
+/// [`against_replay`] with `budget` entity hashes for this call.
+fn against_replay_within(log: &TickLog, journal: &Journal, live: &World, from_tick: Option<u64>, budget: usize) -> Json {
     if !journal.replayable() {
         return Json::obj([
             ("replayable", Json::from(false)),
@@ -424,7 +432,10 @@ pub fn against_replay(log: &TickLog, journal: &Journal, live: &World) -> Json {
     let mut next = 0;
     let mut first = None;
     let mut compared = 0;
-    let mut cached: Option<u64> = None;
+    // (hash, next_id) of the last hash taken, valid until the replay moves on.
+    let mut cached: Option<(u64, u64)> = None;
+    let mut spent = 0usize;
+    let mut resume = None;
     for r in log.records() {
         let mut moved = false;
         while next < entries.len() && entries[next].tick < r.tick {
@@ -436,18 +447,43 @@ pub fn against_replay(log: &TickLog, journal: &Journal, live: &World) -> Json {
             next += 1;
             moved = true;
         }
+        if moved {
+            cached = None;
+        }
+        if from_tick.is_some_and(|f| r.tick < f) {
+            continue; // compared by an earlier call
+        }
         // Rejected commands use ids without an entry: the recorded counter is the truth.
         w.replay_next_id(r.next_id);
-        let h = match (moved, cached) {
-            (false, Some(h)) if w.next_id() == r.next_id => h,
-            _ => w.state_hash(),
+        let h = match cached {
+            Some((h, id)) if id == w.next_id() => h,
+            _ => {
+                // Bounded work per call: hashing costs about one step per entity.
+                let cost = w.len().max(1);
+                if compared > 0 && spent + cost > budget {
+                    resume = Some(r.tick);
+                    break;
+                }
+                spent += cost;
+                w.state_hash()
+            }
         };
-        cached = Some(h);
+        cached = Some((h, w.next_id()));
         compared += 1;
-        if h != r.world && first.is_none() {
+        if h != r.world {
             first = Some(Json::obj([("tick", Json::from(r.tick)), ("recorded", Json::from(hex(r.world))), ("replayed", Json::from(hex(h)))]));
             break;
         }
+    }
+    if let Some(t) = resume {
+        return Json::obj([
+            ("replayable", Json::from(true)),
+            ("done", Json::from(false)),
+            ("ticks_compared", Json::from(compared)),
+            ("from_tick", Json::from(from_tick)),
+            ("next_from_tick", Json::from(t)),
+            ("message", Json::from("no divergence so far; call again with from_tick: next_from_tick to go on (each call does bounded work)")),
+        ]);
     }
     let full = journal.replay().expect("replayable");
     let mut differing = Vec::new();
@@ -475,6 +511,7 @@ pub fn against_replay(log: &TickLog, journal: &Journal, live: &World) -> Json {
     let matches = first.is_none() && count == 0 && full.state_hash() == live.state_hash();
     Json::obj([
         ("replayable", Json::from(true)),
+        ("done", Json::from(true)),
         ("match", Json::from(matches)),
         ("ticks_compared", Json::from(compared)),
         ("first_divergent_tick", first.unwrap_or(Json::Null)),
@@ -548,32 +585,36 @@ mod tests {
     #[test]
     fn the_live_world_is_checked_against_its_own_replay() {
         let (log, j, w) = run(8, None, None);
-        let r = against_replay(&log, &j, &w);
+        let r = against_replay(&log, &j, &w, None);
         assert_eq!((r.get("match"), r.get("ticks_compared")), (Some(&Json::from(true)), Some(&Json::from(8))));
         // A change that bypasses the journal is caught and named.
         let mut w = w;
         w.set_recording(Recording::Off);
         w.update(&EntityKey::Path("/mover".into()), UpdateSpec { scale: Some(Vec3::ONE * 2.0), ..Default::default() }, "sneaky").unwrap();
-        let r = against_replay(&log, &j, &w);
+        let r = against_replay(&log, &j, &w, None);
         assert_eq!(r.get("match"), Some(&Json::from(false)));
         let e = &r.get("entities").unwrap().as_array().unwrap()[0];
         assert_eq!(e.get("fields"), Some(&Json::arr([Json::from("scale")])));
     }
 
-    /// Review finding: entity lists were reported complete for ticks whose changes one journal
-    /// ring had already evicted.
+    /// Review round 3: a big world over many ticks stalled the engine thread (1.1 s); each call
+    /// is bounded and hands back a cursor, and the calls together compare every tick.
     #[test]
-    fn entity_lists_are_complete_only_past_evicted_ticks() {
-        let mut w = World::default();
-        w.set_recording(Recording::Full);
-        let mut j = Journal::with_limits(&World::default(), "empty", 4, 1 << 30);
-        assert_eq!(j.complete_from_tick(), 0);
-        for t in 0..10u64 {
-            let mut s = SpawnSpec::new(Shape::Cube);
-            s.name = Some(format!("c{t}"));
-            journal::commit(&mut w, &mut j, t, Writer::from("ann"), Kind::Spawn, None, |w| w.spawn(s, "ann").map(|_| ())).unwrap();
+    fn replay_checks_are_bounded_and_resume() {
+        let (log, j, w) = run(40, None, None);
+        let (mut from, mut calls, mut total) = (None, 0, 0);
+        loop {
+            let r = against_replay_within(&log, &j, &w, from, 10);
+            calls += 1;
+            total += r.get("ticks_compared").and_then(Json::as_u64).unwrap();
+            if r.get("done") == Some(&Json::from(true)) {
+                assert_eq!(r.get("match"), Some(&Json::from(true)));
+                break;
+            }
+            from = r.get("next_from_tick").and_then(Json::as_u64);
+            assert!(calls < 10);
         }
-        assert_eq!(j.complete_from_tick(), 7, "ticks 0..=5 were evicted, tick 6 is the oldest kept");
+        assert_eq!((total, calls), (40, 4), "10 ticks per call");
     }
 
     #[test]

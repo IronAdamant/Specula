@@ -23,7 +23,7 @@ pub enum SwarmCall {
     TaskDone { id: u64, summary: String, cancel: bool, expect: Option<u64> },
     /// `mine`: the caller's own (as owner); `ready_for_me`: open tasks the caller may take now.
     /// `events_since`: also the board events after this board_seq (the feed).
-    TaskList { query: TaskQuery, mine: bool, ready_for_me: bool, events_since: Option<u64> },
+    TaskList { query: TaskQuery, mine: bool, ready_for_me: bool, events_since: Option<u64>, ack_board_warning: bool },
     TaskGet { id: u64, events: usize },
     IntentDeclare { scopes: Vec<Scope>, text: String, task: Option<u64>, lease: Duration, replace: Option<u64> },
     IntentList { owner: Option<String>, mine: bool, path_prefix: Option<String>, after: Option<u64>, limit: usize },
@@ -40,7 +40,8 @@ pub enum SwarmCall {
     /// `frame_floor_fps: None` only reports.
     Settings { frame_floor_fps: Option<u32> },
     DesyncTrace { from: Option<u64>, to: Option<u64> },
-    DesyncCompare { a: TraceRef, b: TraceRef },
+    /// `from_tick`: with `b: "replay"`, continue a bounded check from here.
+    DesyncCompare { a: TraceRef, b: TraceRef, from_tick: Option<u64> },
 }
 
 /// What a note is left on, before the entity is resolved.
@@ -252,7 +253,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
                 Some(a) => {
                     check_keys(a, "answer", &[&["question", "text"]])?;
                     let q = int_arg(a, "question", 1, 1000)?.ok_or("'answer' needs 'question' (its id) and 'text'")?;
-                    Some((q as u32, text_arg(a, "text", MAX_TEXT, true)?.expect("required")))
+                    Some((q as u32, text_arg(a, "text", crate::board::MAX_QA_TEXT, true)?.expect("required")))
                 }
             };
             let assignee = match args.get("assign") {
@@ -266,7 +267,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
                     status,
                     blocker: text_arg(args, "blocker", MAX_TEXT, false)?,
                     progress: text_arg(args, "progress", MAX_TEXT, false)?,
-                    question: text_arg(args, "question", MAX_TEXT, false)?.filter(|q| !q.trim().is_empty()),
+                    question: text_arg(args, "question", crate::board::MAX_QA_TEXT, false)?.filter(|q| !q.trim().is_empty()),
                     answer,
                     title: text_arg(args, "title", MAX_TITLE, false)?.filter(|t| !t.trim().is_empty()),
                     detail: text_arg(args, "detail", MAX_DETAIL, false)?,
@@ -295,7 +296,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
             check_keys(
                 args,
                 name,
-                &[&["status", "owner", "mine", "posted_by", "assignee", "ready", "ready_for_me", "path_prefix", "tag", "parent", "changed_since", "events_since", "cursor", "limit"]],
+                &[&["status", "owner", "mine", "posted_by", "assignee", "ready", "ready_for_me", "path_prefix", "tag", "parent", "changed_since", "events_since", "ack_board_warning", "cursor", "limit"]],
             )?;
             Ok(SwarmCall::TaskList {
                 query: TaskQuery {
@@ -315,6 +316,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
                 mine: bool_arg(args, "mine")?.unwrap_or(false),
                 ready_for_me: bool_arg(args, "ready_for_me")?.unwrap_or(false),
                 events_since: int_arg(args, "events_since", 0, MAX_ID)?,
+                ack_board_warning: bool_arg(args, "ack_board_warning")?.unwrap_or(false),
             })
         })(),
         "task_get" => (|| {
@@ -444,12 +446,16 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
             Ok(SwarmCall::DesyncTrace { from, to })
         })(),
         "desync_compare" => (|| {
-            check_keys(args, name, &[&["a", "b"]])?;
+            check_keys(args, name, &[&["a", "b", "from_tick"]])?;
             let (a, b) = (trace_ref(args, "a")?, trace_ref(args, "b")?);
             if a == TraceRef::Replay || (b == TraceRef::Replay && a != TraceRef::Live) {
                 return Err("\"replay\" compares this engine with its own journal: give a: \"live\", b: \"replay\"".into());
             }
-            Ok(SwarmCall::DesyncCompare { a, b })
+            let from_tick = int_arg(args, "from_tick", 0, MAX_ID)?;
+            if from_tick.is_some() && b != TraceRef::Replay {
+                return Err("'from_tick' continues a b: \"replay\" check (pass the next_from_tick it returned)".into());
+            }
+            Ok(SwarmCall::DesyncCompare { a, b, from_tick })
         })(),
         _ => return None,
     };
@@ -569,6 +575,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("parent", t("integer", "Subtasks of this task")),
                         ("changed_since", t("integer", "Only tasks changed after this board_seq")),
                         ("events_since", t("integer", "Also return board events (posts, takes, progress, intents, leases...) after this board_seq")),
+                        ("ack_board_warning", t("boolean", "Stop showing board_warning (the world's board.json was unreadable and moved aside)")),
                     ],
                     page(),
                 ]
@@ -722,8 +729,15 @@ pub fn definitions() -> Vec<ToolDef> {
              \"live\" (this engine now). Reports first_divergent_tick, last_matching_tick, the subsystems whose hashes differ \
              and the entities (with fields) that changed differently going into that tick, as 'components'. a: \"live\", \
              b: \"replay\" checks this engine against its own journal replayed tick by tick, and names entities whose live \
-             state the journal doesn't explain. Script: scripts/desync_check.py.",
-            schema(vec![("a", t("string", "\"live\" or a trace file")), ("b", t("string", "\"live\", \"replay\" or a trace file"))], &["a", "b"]),
+             state the journal doesn't explain; each replay call does bounded work and returns next_from_tick (done: false) to continue. Script: scripts/desync_check.py.",
+            schema(
+                vec![
+                    ("a", t("string", "\"live\" or a trace file")),
+                    ("b", t("string", "\"live\", \"replay\" or a trace file")),
+                    ("from_tick", t("integer", "With b: \"replay\": continue from the next_from_tick of the last call")),
+                ],
+                &["a", "b"],
+            ),
         ),
     ]
 }

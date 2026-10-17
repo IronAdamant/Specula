@@ -99,6 +99,8 @@ def scenario(args, work, game):
                   f"components={result.get('components')}")
             for side, m in (("a", a), ("b", b)):
                 replay = m.json("desync_compare", a="live", b="replay")
+                while not replay.get("done", True):  # bounded calls: continue from the cursor
+                    replay = m.json("desync_compare", a="live", b="replay", from_tick=replay["next_from_tick"])
                 if not replay.get("match"):
                     problems.append(f"{label}: run {side} doesn't match its own journal replay: {replay}")
             if perturb is None:

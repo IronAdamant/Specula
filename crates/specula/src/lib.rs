@@ -1970,6 +1970,9 @@ impl Engine {
         if let Some(e) = &self.board_io.error {
             info.set("board_save_error", e.clone());
         }
+        if let Some(w) = &self.board_io.warning {
+            info.set("board_warning", w.clone());
+        }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));
         }

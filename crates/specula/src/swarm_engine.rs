@@ -27,6 +27,11 @@ pub(crate) struct BoardSaver {
     pub saved: u64,
     job: Option<(u64, std::sync::mpsc::Receiver<WriteResult>)>,
     pub error: Option<Json>,
+    /// The world's `board.json` couldn't be read (shown by engine_info and task_list until an
+    /// agent acknowledges it with `task_list {ack_board_warning: true}`).
+    pub warning: Option<Json>,
+    /// It couldn't be moved aside either: the board isn't saved there (that would overwrite it).
+    pub blocked: bool,
 }
 
 impl BoardSaver {
@@ -116,7 +121,7 @@ impl Engine {
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskPost(_) | SwarmCall::TaskTake { .. } | SwarmCall::TaskUpdate { .. } | SwarmCall::TaskDone { .. } => hello_required("tasks"),
-            SwarmCall::TaskList { mut query, mine, ready_for_me, events_since } => {
+            SwarmCall::TaskList { mut query, mine, ready_for_me, events_since, ack_board_warning } => {
                 if mine {
                     query.owner = Some(by.clone());
                 }
@@ -131,6 +136,12 @@ impl Engine {
                 }
                 if let Some(t) = self.swarm.board.current(w) {
                     j.set("your_current_task", Json::from(t.id));
+                }
+                if ack_board_warning {
+                    self.board_io.warning = None;
+                }
+                if let Some(warning) = &self.board_io.warning {
+                    j.set("board_warning", warning.clone());
                 }
                 out(j)
             }
@@ -199,7 +210,10 @@ impl Engine {
             SwarmCall::Rollup(q) => out(crate::rollup::rollup(&self.swarm, &q, now)),
             SwarmCall::LeaseTake { want, note, lease } if named => {
                 let pools = self.lease_pools(server);
-                match self.swarm.leases.take(w, (want, note, lease), &pools, &crate::leases::port_free, now) {
+                // The OS's listener table, read once per call (no socket is opened to ask).
+                let listening = matches!(want, crate::leases::Want::Ports(_)).then(specula_sys::net::tcp_listening_ports).and_then(Result::ok);
+                let free = |p: u16| crate::leases::port_free(p, listening.as_ref());
+                match self.swarm.leases.take(w, (want, note, lease), &pools, &free, now) {
                     Ok(l) => {
                         let j = l.to_json(now);
                         let text = format!("{} lease {}", l.resource.kind(), l.id);
@@ -287,9 +301,9 @@ impl Engine {
                     Err(e) => fail(&WorldError::new("io", format!("could not write {}: {e}", path.display())).with("file", path.display().to_string())),
                 }
             }
-            SwarmCall::DesyncCompare { a, b } => {
+            SwarmCall::DesyncCompare { a, b, from_tick } => {
                 if b == TraceRef::Replay {
-                    let mut j = desync::against_replay(&self.trace, &self.swarm.journal, &self.world);
+                    let mut j = desync::against_replay(&self.trace, &self.swarm.journal, &self.world, from_tick);
                     j.set("a", Json::from("live"));
                     j.set("b", Json::from("replay"));
                     return out(j);
@@ -452,6 +466,9 @@ impl Engine {
 
     /// Where the board is written: the current world's folder, once the world has been saved there.
     fn board_dir(&self) -> Option<PathBuf> {
+        if self.board_io.blocked {
+            return None;
+        }
         let dir = self.worlds_dir.join(self.world_name.as_ref()?);
         dir.join("world.json").exists().then_some(dir)
     }
@@ -522,16 +539,45 @@ impl Engine {
     /// the file is kept until the next save replaces it).
     pub(crate) fn load_board(&mut self, dir: &Path) -> Option<String> {
         let path = dir.join(BOARD_FILE);
-        let (board, warning) = match std::fs::read_to_string(&path) {
+        let problem = match std::fs::read_to_string(&path) {
             Ok(text) => match Board::parse(&text) {
-                Ok(b) => (b, None),
-                Err(e) => (Board::default(), Some(format!("task board {} not loaded: {e}", path.display()))),
+                Ok(b) => {
+                    self.swarm.board = b;
+                    None
+                }
+                Err(e) => Some(format!("not loaded: {e}")),
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Board::default(), None),
-            Err(e) => (Board::default(), Some(format!("task board {} not read: {e}", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.swarm.board = Board::default();
+                None
+            }
+            Err(e) => Some(format!("not read: {e}")),
         };
-        self.swarm.board = board;
+        self.board_io.warning = None;
+        self.board_io.blocked = false;
+        if let Some(why) = problem {
+            // Keep the unreadable file (a later save must not overwrite it): move it aside, or
+            // stop saving the board here while it can't be moved.
+            self.swarm.board = Board::default();
+            let aside = (1..1000).map(|n| dir.join(format!("{BOARD_FILE}.unreadable-{n}"))).find(|p| !p.exists());
+            let moved = aside.as_ref().filter(|to| std::fs::rename(&path, to).is_ok());
+            let message = match moved {
+                Some(to) => format!("task board {} {why}; it was moved to {} and the board starts empty", path.display(), to.display()),
+                None => {
+                    self.board_io.blocked = true;
+                    format!("task board {} {why}; it couldn't be moved aside, so the board is not saved here until it is fixed or removed", path.display())
+                }
+            };
+            self.board_io.warning = Some(Json::obj([
+                ("error", Json::from("board_unreadable")),
+                ("message", Json::from(message.as_str())),
+                ("file", Json::from(path.display().to_string())),
+                ("moved_to", Json::from(moved.map(|p| p.display().to_string()))),
+            ]));
+            self.board_io.saved = self.swarm.board.revision();
+            return Some(message);
+        }
         self.board_io.saved = self.swarm.board.revision();
-        warning
+        None
     }
 }

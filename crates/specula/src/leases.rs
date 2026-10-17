@@ -7,8 +7,9 @@
 //! while it works, and releases it after.
 //!
 //! - **Ports**: `count` free ports from the pool (`perf.toml` `[swarm] lease_ports`, default
-//!   7500-7599, never this engine's own port). A port is handed out only when no live lease has it
-//!   *and* it can be bound on 127.0.0.1 right now (another program may be using it).
+//!   7500-7599, never this engine's own port). A port is handed out only when no live lease has it,
+//!   nothing listens on it (the OS's TCP listener table, read without opening a socket) *and* it
+//!   can be bound on 127.0.0.1 right now. Nothing is ever bound on a wildcard address.
 //! - **GPU time**: a share in milliseconds of GPU time per second, out of `gpu_ms_per_s` (1000 =
 //!   one whole GPU). Advisory: engines don't enforce it, but agents that lease before rendering
 //!   heavily stay within what the machine can give (the window keeps its frames).
@@ -98,13 +99,13 @@ impl Lease {
     }
 }
 
-/// Whether a port can be bound right now, on every interface and on loopback. (On Windows a
-/// loopback bind succeeds while another program listens on 0.0.0.0 at that port, so both are
-/// tried. No connect probe: a refused connect takes about a second on Windows, on the engine
-/// thread.)
-pub fn port_free(port: u16) -> bool {
-    use std::net::{Ipv4Addr, TcpListener};
-    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_ok() && TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+/// Whether `port` is free: nothing listens on it (the OS's listener table, IPv4 and IPv6, any
+/// address: `listening`), and it can be bound on 127.0.0.1 right now. Nothing is ever bound on
+/// a wildcard address (that would leave localhost, and makes firewalls ask). Without the table
+/// (other platforms) only the loopback bind is tried, which on Windows misses a listener bound to
+/// another address on the same port.
+pub fn port_free(port: u16, listening: Option<&std::collections::BTreeSet<u16>>) -> bool {
+    !listening.is_some_and(|l| l.contains(&port)) && std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
 }
 
 /// See the module docs.
@@ -331,13 +332,20 @@ mod tests {
         assert!(l.take(ANN, (Want::Ports(2), String::new(), DEFAULT_LEASE), &pools(&root), &busy, later).is_ok());
     }
 
-    /// Review finding: a listener on 0.0.0.0 left the loopback bind free on Windows.
+    /// Review findings: a listener on another address left the loopback bind free on Windows,
+    /// and probing with a wildcard bind left localhost (and made the firewall ask). The listener
+    /// table sees every listener without opening a socket.
     #[test]
     fn a_port_someone_listens_on_is_not_free() {
-        let any = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
-        assert!(!port_free(any.local_addr().unwrap().port()));
         let lo = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        assert!(!port_free(lo.local_addr().unwrap().port()));
+        let port = lo.local_addr().unwrap().port();
+        assert!(!port_free(port, None), "the loopback bind fails");
+        let table: std::collections::BTreeSet<u16> = [port + 1].into();
+        assert!(!port_free(port + 1, Some(&table)), "a port in the table is busy whatever the bind says");
+        match specula_sys::net::tcp_listening_ports() {
+            Ok(ports) => assert!(!port_free(port, Some(&ports)) && ports.contains(&port)),
+            Err(e) => eprintln!("listener table unavailable here: {e}"),
+        }
     }
 
     #[test]

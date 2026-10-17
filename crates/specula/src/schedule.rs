@@ -360,8 +360,10 @@ impl Schedule {
         if !self.busy() {
             return refresh;
         }
-        // A little slack, so 240 Hz measured at 4.17 ms still gives 4.
-        let n = (self.busy_frame + refresh / 8).as_nanos() / refresh.as_nanos();
+        // A little slack, so 240 Hz measured at 4.17 ms still gives 4 at 60 fps; small enough
+        // (1/256 of a refresh) that no whole-hertz display up to 360 Hz falls below the floor
+        // (1/8 let a floor of 52 at 100 Hz give 50 fps).
+        let n = (self.busy_frame + refresh / 256).as_nanos() / refresh.as_nanos();
         refresh * n.max(1) as u32
     }
 
@@ -672,6 +674,29 @@ mod tests {
         // Without a backlog the floor changes nothing.
         s.pressure = 0;
         assert_eq!(s.period(), HZ240);
+    }
+
+    /// Review round 3: the floor is a promise ("at least frame_floor_fps"): on every whole-hertz
+    /// display from 24 to 360 Hz and every floor, a backlog presents at least that often (every
+    /// vblank when the floor is above the display's rate), and skips as many vblanks as it can.
+    #[test]
+    fn the_frame_floor_holds_on_every_display_rate() {
+        for hz in 24u64..=360 {
+            let refresh = Duration::from_nanos(1_000_000_000 / hz);
+            let mut s = Schedule::default();
+            s.set_display_refresh(Some(refresh));
+            s.pressure = BUSY_AFTER;
+            for fps in MIN_FRAME_FLOOR_FPS..=MAX_FRAME_FLOOR_FPS {
+                s.set_frame_floor(fps);
+                let (period, floor) = (s.period(), floor_period(fps));
+                if u64::from(fps) > hz {
+                    assert_eq!(period, refresh, "{fps} fps at {hz} Hz: every vblank");
+                } else {
+                    assert!(period <= floor, "{fps} fps at {hz} Hz: period {period:?} > {floor:?}");
+                    assert!(period + refresh > floor, "{fps} fps at {hz} Hz: could skip another vblank");
+                }
+            }
+        }
     }
 
     /// Drivers whose present returns at once while a swapchain image is free (frames slower than

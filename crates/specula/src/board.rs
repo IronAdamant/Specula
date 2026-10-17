@@ -58,7 +58,13 @@ pub const MAX_TEXT: usize = 2000;
 /// Dependencies, paths, entities, claims and tags per task.
 pub const MAX_LINKS: usize = 64;
 /// Questions per task.
-pub const MAX_QUESTIONS: usize = 32;
+pub const MAX_QUESTIONS: usize = 16;
+/// A question's or an answer's text.
+pub const MAX_QA_TEXT: usize = 1000;
+/// The whole board's text (tasks and notes, roughly as saved): about 24 MiB, so saving, loading
+/// and the file stay bounded whatever agents post. Past it, edits that add text are refused
+/// with `board_full` (posting first drops the oldest finished tasks to make room).
+pub const MAX_BOARD_BYTES: usize = 24 << 20;
 /// Journal entries linked to tasks that are remembered (the journal's own bound).
 const MAX_ENTRY_LINKS: usize = crate::journal::MAX_ENTRIES;
 /// Listings stop adding items past this many bytes and hand back a cursor.
@@ -206,9 +212,26 @@ pub struct Task {
     /// Bumped by every change (`expect_version`).
     pub version: u64,
     pub work: TaskWork,
+    /// Its text's size as last measured (see [`MAX_BOARD_BYTES`]); not saved.
+    pub size: usize,
 }
 
 impl Task {
+    /// Its text's size, roughly as saved (strings plus a little per item).
+    pub fn measure(&self) -> usize {
+        let strs = |v: &[String]| v.iter().map(|x| x.len() + 8).sum::<usize>();
+        512 + self.title.len()
+            + self.detail.len()
+            + self.progress.len()
+            + self.blocker.len()
+            + self.result.len()
+            + self.questions.iter().map(|q| 64 + q.by.len() + q.text.len() + q.answer.as_ref().map_or(0, |(b, t)| b.len() + t.len() + 32)).sum::<usize>()
+            + self.events.iter().map(|e| 96 + e.by.len() + e.text.len()).sum::<usize>()
+            + strs(&self.paths)
+            + strs(&self.tags)
+            + 24 * (self.deps.len() + self.entities.len() + self.claims.len())
+    }
+
     pub fn open_questions(&self) -> usize {
         self.questions.iter().filter(|q| q.answer.is_none()).count()
     }
@@ -357,6 +380,14 @@ pub struct Note {
 }
 
 impl Note {
+    pub fn measure(&self) -> usize {
+        let target = match &self.target {
+            NoteTarget::Entity { path, .. } | NoteTarget::Path(path) => path.len(),
+            NoteTarget::Task(_) => 0,
+        };
+        160 + self.by.len() + self.text.len() + target
+    }
+
     pub fn to_json(&self) -> Json {
         Json::obj([
             ("id", Json::from(self.id)),
@@ -489,6 +520,8 @@ pub struct Board {
     entry_task: BTreeMap<u64, u64>,
     /// Bumped by every change that is saved (the engine saves the board when it moved).
     revision: u64,
+    /// The board's text size (tasks' `size` plus notes; see [`MAX_BOARD_BYTES`]).
+    bytes: usize,
     /// Rendered `board.json` lines of tasks, by id: (version, line). Only tasks that changed
     /// since the last save are rendered again (F3). The key is the version and the work
     /// counters (journal links change those without a new version).
@@ -588,6 +621,9 @@ impl Board {
             t.updated_seq = e.seq;
             t.updated_tick = tick;
             t.version += 1;
+            let size = t.measure();
+            self.bytes = (self.bytes + size).saturating_sub(t.size);
+            t.size = size;
         }
         if self.events.len() >= MAX_EVENTS {
             self.events.pop_front();
@@ -607,9 +643,44 @@ impl Board {
         }
     }
 
-    /// Makes room for one more task: drops the oldest finished one. Refused when every kept
-    /// task is still open or in progress.
-    fn make_room(&mut self) -> Result<(), WorldError> {
+    /// The board's text size now (see [`MAX_BOARD_BYTES`]).
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Refuses adding about `more` bytes of text past [`MAX_BOARD_BYTES`].
+    fn check_budget(&self, more: usize) -> Result<(), WorldError> {
+        if self.bytes + more <= MAX_BOARD_BYTES {
+            return Ok(());
+        }
+        Err(err(
+            "board_full",
+            format!(
+                "the board holds about {} MiB of text, its limit is {} MiB: finish or cancel tasks (posting drops the oldest \
+                 finished ones), delete notes (note_delete), or keep texts shorter",
+                self.bytes >> 20,
+                MAX_BOARD_BYTES >> 20
+            ),
+        )
+        .with("bytes", self.bytes)
+        .with("adding", more)
+        .with("budget", MAX_BOARD_BYTES))
+    }
+
+    fn remove_task(&mut self, id: u64) {
+        if let Some(t) = self.tasks.remove(&id) {
+            self.bytes = self.bytes.saturating_sub(t.size);
+        }
+    }
+
+    /// Makes room for a task of about `size` bytes: drops the oldest finished tasks while the board
+    /// is at its count or byte limit. Refused when every kept task is still open or in progress.
+    fn make_room(&mut self, size: usize) -> Result<(), WorldError> {
+        while self.bytes + size > MAX_BOARD_BYTES {
+            let Some(old) = self.tasks.values().find(|t| t.status.finished()).map(|t| t.id) else { break };
+            self.remove_task(old);
+        }
+        self.check_budget(size)?;
         if self.tasks.len() < MAX_TASKS {
             return Ok(());
         }
@@ -620,7 +691,7 @@ impl Board {
             )
             .with("tasks", self.tasks.len()));
         };
-        self.tasks.remove(&old);
+        self.remove_task(old);
         Ok(())
     }
 
@@ -637,7 +708,8 @@ impl Board {
         if let Some(p) = spec.parent.filter(|p| !self.tasks.contains_key(p)) {
             return Err(err("task_not_found", format!("parent {p} is not a task on the board")).with("task", p));
         }
-        self.make_room()?;
+        let size = 1024 + spec.title.len() + spec.detail.len() + spec.paths.iter().chain(&spec.tags).map(|x| x.len() + 8).sum::<usize>();
+        self.make_room(size)?;
         self.next_task += 1;
         let id = self.next_task;
         let task = Task {
@@ -667,6 +739,7 @@ impl Board {
             updated_seq: 0,
             version: 0,
             work: TaskWork::default(),
+            size: 0,
         };
         let title = task.title.clone();
         self.tasks.insert(id, task);
@@ -833,6 +906,11 @@ impl Board {
                 _ => {}
             }
         }
+        let adding = 256
+            + [&p.progress, &p.blocker, &p.question, &p.title, &p.detail].iter().map(|x| x.as_ref().map_or(0, String::len)).sum::<usize>()
+            + p.answer.as_ref().map_or(0, |(_, a)| a.len() + 64)
+            + p.add_paths.iter().chain(&p.add_tags).map(|x| x.len() + 8).sum::<usize>();
+        self.check_budget(adding).map_err(|e| e.with("task", id))?;
         if p.question.is_some() && t.questions.len() >= MAX_QUESTIONS {
             return Err(err("too_many_questions", format!("a task holds at most {MAX_QUESTIONS} questions")).with("task", id));
         }
@@ -1010,8 +1088,11 @@ impl Board {
             }
         }
         if self.notes.len() >= MAX_NOTES {
-            self.notes.pop_first();
+            if let Some((_, old)) = self.notes.pop_first() {
+                self.bytes = self.bytes.saturating_sub(old.measure());
+            }
         }
+        self.check_budget(160 + text.len())?;
         self.next_note += 1;
         let id = self.next_note;
         let task = match &target {
@@ -1019,7 +1100,9 @@ impl Board {
             _ => None,
         };
         let seq = self.event(w.name, tick, "note", task, short(&text, 80));
-        self.notes.insert(id, Note { id, by: w.name.to_owned(), by_key: w.session.map(str::to_owned), target, text, tick, seq });
+        let note = Note { id, by: w.name.to_owned(), by_key: w.session.map(str::to_owned), target, text, tick, seq };
+        self.bytes += note.measure();
+        self.notes.insert(id, note);
         Ok(&self.notes[&id])
     }
 
@@ -1032,6 +1115,7 @@ impl Board {
                 .with("by", n.by.as_str()));
         }
         let n = self.notes.remove(&id).expect("checked");
+        self.bytes = self.bytes.saturating_sub(n.measure());
         let task = match &n.target {
             NoteTarget::Task(t) => Some(*t),
             _ => None,
@@ -1206,6 +1290,7 @@ impl Board {
                     updated_seq: num(t, "updated_seq"),
                     version: num(t, "version"),
                     work: TaskWork { entries: num(&work, "journal_entries"), changes: num(&work, "changes"), refused: num(&work, "refused") },
+                    size: 0,
                 },
             );
             b.next_task = b.next_task.max(id);
@@ -1222,6 +1307,10 @@ impl Board {
             b.notes.insert(id, Note { id, by: text(n, "by"), by_key: None, target, text: text(n, "text"), tick: num(n, "tick"), seq: num(n, "seq") });
             b.next_note = b.next_note.max(id);
         }
+        for t in b.tasks.values_mut() {
+            t.size = t.measure();
+        }
+        b.bytes = b.tasks.values().map(|t| t.size).sum::<usize>() + b.notes.values().map(Note::measure).sum::<usize>();
         Ok(b)
     }
 }
@@ -1462,6 +1551,44 @@ mod tests {
         b.done(PARENT, 0, a, "not needed".into(), true, None).unwrap();
         assert_eq!(b.list(&TaskQuery { ready: true, limit: 10, ..TaskQuery::default() }).get("total"), Some(&Json::from(1)));
         b.take(ANN, 0, c, None).unwrap();
+    }
+
+    /// Review round 3: the board's text is bounded as a whole (about 1.7 G characters were
+    /// possible), and a looping agent can't fill it with questions.
+    #[test]
+    fn the_board_has_a_byte_budget() {
+        let mut b = Board::default();
+        let big = "x".repeat(MAX_DETAIL);
+        let mut posted = 0;
+        let full = loop {
+            match b.post(PARENT, 0, TaskSpec { detail: big.clone(), ..spec("t") }) {
+                Ok(_) => posted += 1,
+                Err(e) => break e,
+            }
+            assert!(posted < MAX_TASKS, "the count limit came first");
+        };
+        assert_eq!(full.code, "board_full", "{full:?}");
+        assert!(b.bytes() <= MAX_BOARD_BYTES && b.bytes() > MAX_BOARD_BYTES - 64 * 1024);
+        // Finished tasks make room again.
+        b.take(ANN, 0, 1, None).unwrap();
+        b.done(ANN, 0, 1, String::new(), false, None).unwrap();
+        b.post(PARENT, 0, TaskSpec { detail: big.clone(), ..spec("again") }).unwrap();
+        assert!(b.get(1).is_none());
+        // A full board refuses more text on a task, but not a status change.
+        let more = TaskPatch { detail: Some(big.clone()), ..TaskPatch::default() };
+        assert_eq!(b.update(PARENT, 0, 2, more).unwrap_err().code, "board_full");
+        b.take(ANN, 0, 2, None).unwrap();
+        // The measure survives a save and load.
+        let back = Board::parse(&b.render()).unwrap();
+        assert_eq!(back.bytes(), b.bytes());
+        // Questions are capped per task.
+        let mut b = Board::default();
+        b.post(PARENT, 0, spec("t")).unwrap();
+        for i in 0..MAX_QUESTIONS {
+            b.update(BOB, 0, 1, TaskPatch { question: Some(format!("q{i}")), ..TaskPatch::default() }).unwrap();
+        }
+        let more = b.update(BOB, 0, 1, TaskPatch { question: Some("again?".into()), ..TaskPatch::default() });
+        assert_eq!(more.unwrap_err().code, "too_many_questions");
     }
 
     #[test]
