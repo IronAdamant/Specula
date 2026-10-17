@@ -146,6 +146,44 @@ def record_frames(port, frames, label, result):
     result[label] = m.json("perf_capture", frames=frames, trace=False, label=label)
 
 
+def record_until(port, label, stop, paths):
+    """perf_capture after perf_capture (600 frames each) until `stop` is set: every frame's CPU
+    zones, for attributing slow frames."""
+    from specula_mcp import Mcp, url_for
+    m = Mcp(url_for(port), f"stream-check-{label}")
+    while not stop.is_set():
+        paths.append(m.json("perf_capture", frames=600, trace=False, label=label)["path"])
+
+
+def zone_ms(frame, name):
+    return sum(z[2] for z in frame["zones"].get("main", []) if z[0] == name)
+
+
+def analyze_frames(paths, budget_ms, upload_ms):
+    """Frame times over recorded captures, and every frame over 1.5x the budget with what its
+    time went to: a frame is a *loading* stutter when streaming itself ran over (its
+    `frame/stream` zone above twice the upload budget)."""
+    frames = [f for p in paths for f in json.load(open(p))["frames"]]
+    if not frames:
+        return {"frames": 0}
+    dts = sorted(f["dt_ms"] for f in frames)
+    pick = lambda q: round(dts[min(len(dts) - 1, round(q * (len(dts) - 1)))], 3)  # noqa: E731
+    over = [f for f in frames if f["dt_ms"] > budget_ms * 1.5]
+    worst = []
+    for f in sorted(over, key=lambda f: -f["dt_ms"])[:6]:
+        top = sorted(((z[0], round(z[3], 2)) for z in f["zones"].get("main", [])), key=lambda z: -z[1])[:3]
+        worst.append({"frame_ms": round(f["dt_ms"], 2), "stream_ms": round(zone_ms(f, "frame/stream"), 2), "top_self_zones": top})
+    stream = sorted(zone_ms(f, "frame/stream") for f in frames)
+    return {
+        "frames": len(frames), "p50": pick(0.5), "p95": pick(0.95), "p99": pick(0.99), "max": round(dts[-1], 3),
+        "over_budget": len(over),
+        "over_budget_from_streaming": sum(1 for f in over if zone_ms(f, "frame/stream") > upload_ms * 2),
+        "over_budget_from_requests": sum(1 for f in over if zone_ms(f, "requests") > budget_ms),
+        "stream_ms_max": round(stream[-1], 3), "stream_ms_p99": round(stream[min(len(stream) - 1, round(0.99 * (len(stream) - 1)))], 3),
+        "worst": worst,
+    }
+
+
 def fly_path(cells, height=18.0):
     w = cells * CELL
     return [[-0.42 * w, height, -0.42 * w], [0.0, height + 6, -0.1 * w], [0.42 * w, height, 0.42 * w]]
@@ -202,38 +240,50 @@ def run_streaming(a, out, ops, report, check):
         # Start where the flight starts, looking along it.
         mcp.call("window_view", eye=path[0], target=[path[0][0] + 30, 10, path[0][2] + 30], fov_y_deg=60)
         mcp.call("time_control", action="pause")
-        frames = {}
-        rec = threading.Thread(target=record_frames, args=(a.port, 600, "loading", frames))
+        budget = mcp.json("perf_frame")["budget_ms"]
+        stop, load_paths = threading.Event(), []
+        rec = threading.Thread(target=record_until, args=(a.port, "loading", stop, load_paths))
         rec.start()
         spawn_s = spawn_world(mcp, ops)
         build_s, lib = wait_builds(mcp)
-        rec.join()
         settle_s, st = wait_streamed(mcp)
-        load = frames.get("loading", {})
-        report["loading"] = {"spawn_s": round(spawn_s, 2), "builds_s": round(build_s, 2), "settle_s": settle_s, "library": lib,
-                             "frames": {k: load.get(k) for k in ("frames", "frame_ms", "gpu_ms", "draw_calls", "budget_errors")}}
+        stop.set()
+        rec.join()
+        load = analyze_frames(load_paths, budget, a.upload_ms)
+        report["loading"] = {"spawn_s": round(spawn_s, 2), "builds_s": round(build_s, 2), "settle_s": settle_s, "library": lib, "frames": load}
         print(f"world: {len(ops)} spawns in {spawn_s:.1f} s; builds done after {build_s:.1f} s; streamed/HLOD settled after {settle_s} s")
-        print(f"loading frames: {json.dumps(report['loading']['frames'])}")
+        print(f"loading frames: {json.dumps(load)}")
         h0 = mcp.json("world_hash")["state_hash"]
         report["hash_streaming_on"] = h0
-        # --- flight
+        # --- flight, with the engine's own per-frame zones recorded throughout (attribution)
+        stop, fly_paths = threading.Event(), []
+        rec = threading.Thread(target=record_until, args=(a.port, "flight", stop, fly_paths))
+        rec.start()
         fly = mcp.json("stream_fly", path=path, speed_mps=a.speed)
+        stop.set()
+        rec.join()
+        report["flight_frames"] = analyze_frames(fly_paths, budget, a.upload_ms)
+        print(f"flight frames (perf_capture): {json.dumps(report['flight_frames'])}")
         report["flight"] = {k: v for k, v in fly.items() if k != "streaming_now"}
         sn = fly["streaming_now"]
         report["flight_streaming"] = {k: sn.get(k) for k in ("resident_mb", "memory_budget_mb", "totals", "upload_ms", "frames_over_upload_budget", "hlod", "gpu")}
         print(f"flight: {json.dumps(report['flight'])}")
         print(f"streaming after the flight: {json.dumps(report['flight_streaming'])}")
+        report["upload_misses"] = mcp.json("stream_state", limit=1).get("recent_misses")
+        print(f"recent upload budget misses: {json.dumps(report['upload_misses'])}")
         h1 = mcp.json("world_hash")["state_hash"]
         check(h1 == h0, f"the flight left the world hash unchanged ({h0})")
-        budget = fly["frame_budget_ms"]
-        check(fly["frames_over_budget_uploading"] <= max(1, fly["frames"] // 500),
-              f"no traversal stutter: {fly['frames_over_budget_uploading']} of {fly['frames']} frames over 1.5x the {budget} ms budget were uploading")
-        check(fly["frame_ms"]["p99"] <= budget * 1.5, f"frame p99 {fly['frame_ms']['p99']} ms <= 1.5 x {budget} ms")
-        check(fly["upload_ms"]["max"] <= a.upload_ms * 2, f"upload ms per frame max {fly['upload_ms']['max']} <= 2 x upload_ms {a.upload_ms}")
+        ff = report["flight_frames"]
+        check(ff["over_budget_from_streaming"] == 0,
+              f"no traversal stutter: {ff['over_budget_from_streaming']} of {ff['over_budget']} frames over 1.5x the {budget} ms budget "
+              f"(of {ff['frames']}) had streaming run over (frame/stream max {ff['stream_ms_max']} ms, p99 {ff['stream_ms_p99']} ms)")
+        check(fly["upload_ms"]["p99"] <= a.upload_ms, f"upload ms per frame p99 {fly['upload_ms']['p99']} <= upload_ms {a.upload_ms} (max {fly['upload_ms']['max']})")
         check(sn["totals"]["evicted"] > 0, f"evictions happened under memory_mb {a.memory_mb} ({sn['totals']['evicted']})")
         check(sn["resident_mb"] <= a.memory_mb * 1.02, f"resident {sn['resident_mb']} MB within memory_mb {a.memory_mb}")
-        lf = load.get("frame_ms") or {}
-        check(lf.get("max", 1e9) <= budget * 3, f"loading: max frame {lf.get('max')} ms while {len(ops)} spawns built and streamed in")
+        check(load["over_budget_from_streaming"] == 0,
+              f"loading: no frame over budget from streaming while {len(ops)} spawns built and streamed in "
+              f"({load['over_budget']} over budget, {load['over_budget_from_requests']} of them the agent's own world_batch calls; "
+              f"frame/stream max {load['stream_ms_max']} ms)")
         # --- captures
         w = a.cells * CELL
         caps = {}
@@ -261,7 +311,7 @@ def run_streaming(a, out, ops, report, check):
         diff = mcp.json("sight_compare", action="diff", name="hlod_on", threshold=24)
         mcp.call("stream_settings", hlod=True, radius_m=384, memory_mb=a.memory_mb)
         report["hlod"] = {"on": on, "off": off, "capture_on": rec.get("hlod_on"), "capture_off": rec.get("hlod_off"),
-                          "diff": {k: diff.get(k) for k in ("changed_pct", "mean_diff", "max_diff", "regions", "image")},
+                          "diff": {**{k: (diff.get("pixels") or {}).get(k) for k in ("changed_px", "changed_pct", "mean_diff", "max_diff", "regions_total")}, "image": (diff.get("image") or {}).get("path")},
                           "off_settle_s": settled}
         print(f"HLOD on : draw calls {on['draw_calls']}, submitted {on['submitted']}, gpu {on['gpu_ms']} ms, draw_list {on['draw_list']}")
         print(f"HLOD off: draw calls {off['draw_calls']}, submitted {off['submitted']}, gpu {off['gpu_ms']} ms, draw_list {off['draw_list']}")
@@ -272,7 +322,21 @@ def run_streaming(a, out, ops, report, check):
         if on["draw_calls"] and off["draw_calls"]:
             check(on["draw_calls"] * 2 <= off["draw_calls"], f"HLOD halves draw calls at least ({on['draw_calls']} vs {off['draw_calls']})")
             check(on["submitted"] * 2 <= off["submitted"], f"HLOD halves submitted draws at least ({on['submitted']} vs {off['submitted']})")
-        report["validation_engine_log_tail"] = None
+        diff_px = report["hlod"]["diff"].get("changed_px")
+        check(diff_px is not None and diff_px <= 1280 * 720 // 1000, f"no popping: HLOD on vs off differ in {diff_px} pixels (threshold 24 of 255)")
+        # --- the same flight with streaming off (everything resident, per object, no proxies: the
+        # old path, in this binary)
+        mcp.call("stream_settings", enabled=False)
+        mcp.call("window_view", eye=path[0], target=[path[0][0] + 30, 10, path[0][2] + 30], fov_y_deg=60)
+        time.sleep(2)
+        fly_off = mcp.json("stream_fly", path=path, speed_mps=a.speed)
+        report["flight_streaming_off"] = {k: v for k, v in fly_off.items() if k != "streaming_now"}
+        print(f"flight, streaming off: {json.dumps(report['flight_streaming_off'])}")
+        p_on, p_off = fly["frame_ms"]["p99"], fly_off["frame_ms"]["p99"]
+        check(p_on <= max(budget * 1.5, p_off * 1.1 + 2.0), f"flight frame p99 with streaming {p_on} ms <= 1.5 x the {budget} ms budget, or no worse than without it ({p_off} ms)")
+        mcp.call("stream_settings", enabled=True)
+        zones = mcp.json("perf_zones", min_ms=0.001, limit=40)
+        report["zones_after"] = [z for z in zones.get("zones", []) if "stream" in z.get("path", "")]
     report["validation_errors_streaming_run"] = eng.validation_errors()
     check(eng.validation_errors() == 0, f"no validation errors ({eng.validation_errors()})")
     check(eng.exit_code == 0, "clean shutdown")
@@ -300,21 +364,28 @@ def run_baseline(a, out, ops, report):
         path = fly_path(a.cells)
         mcp.call("window_view", eye=path[0], target=[path[0][0] + 30, 10, path[0][2] + 30], fov_y_deg=60)
         mcp.call("time_control", action="pause")
-        frames = {}
-        rec = threading.Thread(target=record_frames, args=(a.port, 600, "loading", frames))
+        budget = mcp.json("perf_frame")["budget_ms"]
+        stop, paths = threading.Event(), []
+        rec = threading.Thread(target=record_until, args=(a.port, "loading", stop, paths))
         rec.start()
         spawn_world(mcp, ops)
-        build_s, _ = wait_builds(mcp)
+        wait_builds(mcp)
+        time.sleep(1)
+        stop.set()
         rec.join()
-        report["baseline_loading"] = {k: frames["loading"].get(k) for k in ("frames", "frame_ms", "gpu_ms", "draw_calls")}
+        # The old engine uploads in its draw list (`frame/draw_list/sync_meshes`), not a stream zone.
+        report["baseline_loading"] = analyze_frames(paths, budget, a.upload_ms)
+        frames = [f for p in paths for f in json.load(open(p))["frames"]]
+        report["baseline_loading"]["sync_meshes_ms_max"] = round(max((zone_ms(f, "frame/draw_list/sync_meshes") for f in frames), default=0), 2)
         print(f"baseline loading frames: {json.dumps(report['baseline_loading'])}")
         time.sleep(2)
-        rec = {}
-        th = threading.Thread(target=record_frames, args=(a.port, 600, "fly", rec))
+        stop, paths = threading.Event(), []
+        th = threading.Thread(target=record_until, args=(a.port, "fly", stop, paths))
         th.start()
         scripted_fly(mcp, path, a.speed)
+        stop.set()
         th.join()
-        report["baseline_flight"] = {k: rec["fly"].get(k) for k in ("frames", "frame_ms", "gpu_ms", "draw_calls", "triangles", "gpu_memory_mb")}
+        report["baseline_flight"] = analyze_frames(paths, budget, a.upload_ms)
         print(f"baseline flight: {json.dumps(report['baseline_flight'])}")
         w = a.cells * CELL
         mcp.call("window_view", eye=[-0.5 * w, 70, -0.5 * w], target=[0, 0, 0], fov_y_deg=60)

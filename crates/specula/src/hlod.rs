@@ -331,6 +331,8 @@ struct CellProxy {
     uploaded: Option<Uploaded>,
     /// Built, waiting for upload.
     ready: Option<ProxyData>,
+    /// The groups of `ready` uploaded so far, and the key they belong to.
+    staged: (u64, Vec<(MeshId, Material, Surface, u32)>),
     /// The key of the build running for it.
     building: Option<u64>,
     /// The window draws its proxy now (its members' bits are set in the window's cover).
@@ -400,9 +402,7 @@ impl Hlod {
                     set_bit(&mut self.window_cover, id, false);
                 }
             }
-            if let Some(u) = c.uploaded {
-                retire(gpu, &u);
-            }
+            retire_cell(gpu, c);
         }
     }
 
@@ -417,9 +417,7 @@ impl Hlod {
     /// Drops every proxy (streaming or HLOD switched off, or the world was replaced).
     pub fn clear(&mut self, gpu: &mut Gpu) {
         for (_, c) in std::mem::take(&mut self.cells) {
-            if let Some(u) = c.uploaded {
-                retire(gpu, &u);
-            }
+            retire_cell(gpu, c);
         }
         self.window_cover.clear();
         self.capture_cover.clear();
@@ -486,8 +484,8 @@ impl Hlod {
         }
     }
 
-    /// Takes finished builds (kept when still current).
-    fn collect(&mut self) {
+    /// Takes finished builds (kept when still current). Never waits.
+    pub fn collect(&mut self) {
         let Some(w) = &mut self.worker else { return };
         while let Ok((cell, made, ms)) = w.done.try_recv() {
             w.in_flight = w.in_flight.saturating_sub(1);
@@ -509,40 +507,51 @@ impl Hlod {
         }
     }
 
-    /// Built proxies waiting for upload: `(priority, cell, bytes)`.
+    /// Built proxies waiting for upload: `(priority, cell, bytes of the next group)`.
     pub fn uploads(&self) -> impl Iterator<Item = (f32, CellKey, u64)> + '_ {
         self.cells.iter().filter_map(|(k, c)| {
             let r = c.ready.as_ref()?;
             let want = c.want?;
-            let bytes = r.groups.iter().map(|g| g.vertices.len() as u64 * 28 + g.indices.len() as u64 * 4).sum();
-            Some((want, *k, bytes))
+            let next = if c.staged.0 == r.key { c.staged.1.len() } else { 0 };
+            let g = r.groups.get(next)?;
+            Some((want, *k, group_bytes(g)))
         })
     }
 
-    /// Uploads cell `cell`'s built proxy (queued: never waits); the old one is retired.
-    /// Returns the bytes uploaded.
+    /// Uploads the next group of cell `cell`'s built proxy (queued: never waits; one group per
+    /// call, so one item stays small); with the last group the proxy replaces the old one, which
+    /// is retired. Returns the bytes uploaded.
     pub fn upload(&mut self, cell: CellKey, gpu: &mut Gpu) -> Result<u64, String> {
         let Some(c) = self.cells.get_mut(&cell) else { return Ok(0) };
-        let Some(p) = c.ready.take() else { return Ok(0) };
-        let mut draws = Vec::with_capacity(p.groups.len());
-        let mut bytes = 0;
-        for g in &p.groups {
-            match gpu.queue_mesh(&g.vertices, &g.indices, &MeshStreams::default()) {
-                Ok(mesh) => {
-                    draws.push((mesh, g.material, g.surface, (g.indices.len() / 3) as u32));
-                    bytes += g.vertices.len() as u64 * 28 + g.indices.len() as u64 * 4;
+        let Some(r) = &c.ready else { return Ok(0) };
+        if c.staged.0 != r.key {
+            // Groups of an older build: gone.
+            for (m, ..) in c.staged.1.drain(..) {
+                gpu.retire_mesh(m);
+            }
+            c.staged.0 = r.key;
+        }
+        let Some(g) = r.groups.get(c.staged.1.len()) else { return Ok(0) };
+        match gpu.queue_mesh(&g.vertices, &g.indices, &MeshStreams::default()) {
+            Ok(mesh) => c.staged.1.push((mesh, g.material, g.surface, (g.indices.len() / 3) as u32)),
+            Err(e) => {
+                for (m, ..) in c.staged.1.drain(..) {
+                    gpu.retire_mesh(m);
                 }
-                Err(e) => {
-                    for (m, ..) in draws {
-                        gpu.retire_mesh(m);
-                    }
-                    self.stats.failed += 1;
-                    let msg = format!("HLOD proxy of cell {cell:?} not uploaded: {e}");
-                    self.last_error = Some(msg.clone());
-                    return Err(msg);
-                }
+                c.ready = None;
+                self.stats.failed += 1;
+                let msg = format!("HLOD proxy of cell {cell:?} not uploaded: {e}");
+                self.last_error = Some(msg.clone());
+                return Err(msg);
             }
         }
+        let uploaded_now = group_bytes(g);
+        if c.staged.1.len() < r.groups.len() {
+            return Ok(uploaded_now);
+        }
+        let p = c.ready.take().expect("checked");
+        let draws = std::mem::take(&mut c.staged.1);
+        let bytes = p.groups.iter().map(group_bytes).sum();
         let members: Vec<u64> = c.content.members.iter().copied().filter(|id| !p.left_out.contains(id)).collect();
         let new = Uploaded { key: p.key, origin: p.origin, draws, bytes, hash: p.hash, left_out: p.left_out, members };
         if let Some(old) = c.uploaded.replace(new) {
@@ -555,12 +564,16 @@ impl Hlod {
             retire(gpu, &old);
         }
         self.stats.uploaded += 1;
-        Ok(bytes)
+        Ok(uploaded_now)
     }
 
     /// GPU bytes of the uploaded proxies.
     pub fn resident_bytes(&self) -> u64 {
-        self.cells.values().filter_map(|c| c.uploaded.as_ref()).map(|u| u.bytes).sum()
+        let staged = |c: &CellProxy| match &c.ready {
+            Some(r) if c.staged.0 == r.key => r.groups.iter().take(c.staged.1.len()).map(group_bytes).sum(),
+            _ => 0,
+        };
+        self.cells.values().map(|c| c.uploaded.as_ref().map_or(0, |u| u.bytes) + staged(c)).sum()
     }
 
     /// Uploaded proxies of cells not wanted now, least recently wanted first: `(frame, cell)`.
@@ -728,6 +741,20 @@ fn retire(gpu: &mut Gpu, u: &Uploaded) {
     for (m, ..) in &u.draws {
         gpu.retire_mesh(*m);
     }
+}
+
+/// Retires everything a cell holds on the GPU: its proxy and a part-uploaded one.
+fn retire_cell(gpu: &mut Gpu, c: CellProxy) {
+    if let Some(u) = c.uploaded {
+        retire(gpu, &u);
+    }
+    for (m, ..) in c.staged.1 {
+        gpu.retire_mesh(m);
+    }
+}
+
+fn group_bytes(g: &Group) -> u64 {
+    g.vertices.len() as u64 * 28 + g.indices.len() as u64 * 4
 }
 
 #[cfg(test)]

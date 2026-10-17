@@ -191,6 +191,9 @@ struct FlyFrame {
     submitted: u32,
     not_resident: u32,
     hlod_cells: u32,
+    evicted: u32,
+    /// The frame's slowest upload: `(ms, KB, what)`.
+    slowest: (f64, u64, &'static str),
 }
 
 /// A flight in progress.
@@ -257,6 +260,24 @@ impl Fly {
             Json::obj([("mean", r(s.mean)), ("p50", r(s.p50)), ("p95", r(s.p95)), ("p99", r(p99)), ("max", r(s.max))])
         };
         let over: Vec<&FlyFrame> = f.iter().filter(|x| x.dt_ms > self.budget_ms * 1.5).collect();
+        let mut worst: Vec<&FlyFrame> = f.iter().collect();
+        worst.sort_by(|a, b| b.dt_ms.total_cmp(&a.dt_ms));
+        let r2 = |x: f64| Json::from((x * 100.0).round() / 100.0);
+        let worst = worst.iter().take(5).map(|x| {
+            Json::obj([("frame_ms", r2(x.dt_ms)), ("cpu_ms", r2(x.cpu_ms)), ("upload_ms", r2(x.upload_ms)), ("uploads", Json::from(x.uploads))])
+        });
+        let mut by_upload: Vec<&FlyFrame> = f.iter().filter(|x| x.uploads > 0).collect();
+        by_upload.sort_by(|a, b| b.upload_ms.total_cmp(&a.upload_ms));
+        let worst_uploads = by_upload.iter().take(5).map(|x| {
+            Json::obj([
+                ("frame_ms", r2(x.dt_ms)),
+                ("upload_ms", r2(x.upload_ms)),
+                ("uploads", Json::from(x.uploads)),
+                ("kb", Json::from(x.kb)),
+                ("evicted", Json::from(x.evicted)),
+                ("slowest", Json::obj([("what", Json::from(x.slowest.2)), ("ms", r2(x.slowest.0)), ("kb", Json::from(x.slowest.1))])),
+            ])
+        });
         let uploading = f.iter().filter(|x| x.uploads > 0).count();
         Json::obj([
             ("frames", Json::from(f.len())),
@@ -274,6 +295,10 @@ impl Fly {
             // Frames 1.5x over the frame budget (missed vsync), and how many uploaded meanwhile.
             ("frames_over_budget", Json::from(over.len())),
             ("frames_over_budget_uploading", Json::from(over.iter().filter(|x| x.uploads > 0).count())),
+            // The longest frames, with what streaming did in them.
+            ("worst_frames", Json::arr(worst)),
+            // The frames that spent longest uploading, with their slowest item.
+            ("worst_upload_frames", Json::arr(worst_uploads)),
             ("draw_calls", stat(f.iter().map(|x| f64::from(x.draws)).collect())),
             ("submitted_draws", stat(f.iter().map(|x| f64::from(x.submitted)).collect())),
             ("hlod_cells", stat(f.iter().map(|x| f64::from(x.hlod_cells)).collect())),
@@ -342,6 +367,8 @@ impl Engine {
             submitted: stats.as_ref().map_or(0, |s| s.draws.submitted),
             not_resident: self.lod_window.not_resident,
             hlod_cells: self.stream.hlod.stats.window_cells,
+            evicted: f.evicted,
+            slowest: f.slowest,
         });
     }
 

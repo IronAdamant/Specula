@@ -306,7 +306,7 @@ impl GpuInner {
             self.device.destroy_buffer(&buffer);
             return Err(e);
         }
-        Ok(self.finish_mesh(buffer, layout, vertices, indices.len()))
+        Ok(self.finish_mesh(buffer, layout, vertices, indices.len(), None))
     }
 
     /// [`GpuInner::upload_mesh`] without waiting: the copy goes into the current upload batch,
@@ -314,26 +314,33 @@ impl GpuInner {
     pub fn queue_mesh(&mut self, vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> Result<MeshId, GpuError> {
         let layout = mesh_layout(vertices, indices, streams)?;
         let total = layout.total;
-        let buffer = create_mesh_buffer(&self.device, total)?;
-        let staged = match self.uploads.stage(&self.device, self.cmd_pool, total) {
-            Ok(s) => s,
-            Err(e) => {
-                self.device.destroy_buffer(&buffer);
-                return Err(e);
+        // A range of a mesh block, not an allocation of its own (see `stream.rs`).
+        let (block, at, handle, size) = self.uploads.blocks.alloc(&self.device, total)?;
+        let staged = {
+            let _z = specula_core::profile::zone("gpu.stage");
+            match self.uploads.stage(&self.device, self.cmd_pool, total) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.uploads.retire(crate::stream::Retired::Range(block, at, size));
+                    return Err(e);
+                }
             }
         };
         // SAFETY: `staged.dst` points to at least `total` bytes of mapped staging memory that no
         // submitted batch uses (its slot is recording).
         unsafe { layout.write(staged.dst, vertices, indices) };
         let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
-        crate::stream::record_buffer_copy(&self.device, cmd, &staged, buffer.handle, total);
-        let id = self.finish_mesh(buffer, layout, vertices, indices.len());
+        crate::stream::record_buffer_copy(&self.device, cmd, &staged, handle, at, total);
+        // The block's buffer, borrowed: never destroyed through the mesh (`Mesh::pooled`).
+        let buffer = Buffer { handle, memory: VK_NULL_HANDLE, mapped: ptr::null_mut(), bytes: size, kind: MemoryKind::Meshes };
+        let id = self.finish_mesh(buffer, layout, vertices, indices.len(), Some((block, at, size)));
         self.uploads.queued(id.0, total);
         Ok(id)
     }
 
     /// Registers an uploaded mesh buffer: starts its pipeline variants and hands out its id.
-    fn finish_mesh(&mut self, buffer: Buffer, layout: MeshLayout, vertices: &[Vertex], index_count: usize) -> MeshId {
+    /// `pooled`: the mesh lives at `(block, offset, bytes)` of a mesh block.
+    fn finish_mesh(&mut self, buffer: Buffer, layout: MeshLayout, vertices: &[Vertex], index_count: usize, pooled: Option<(u32, u64, u64)>) -> MeshId {
         // The first mesh with skin or UVs starts building those pipeline variants on a worker;
         // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
         if layout.skin.is_some() || layout.surface.is_some() {
@@ -343,15 +350,18 @@ impl GpuInner {
         }
         let id = self.next_id();
         let bounds = mesh_bounds(vertices);
+        let base = pooled.map_or(0, |p| p.1);
         self.meshes.insert(
             id,
             Mesh {
                 buffer,
-                index_offset: layout.index_offset,
+                base,
+                pooled,
+                index_offset: base + layout.index_offset,
                 index_count: index_count as u32,
                 bounds,
-                skin_offset: layout.skin.as_ref().map(|_| layout.skin_offset),
-                surface_offset: layout.surface.as_ref().map(|_| layout.surface_offset),
+                skin_offset: layout.skin.as_ref().map(|_| base + layout.skin_offset),
+                surface_offset: layout.surface.as_ref().map(|_| base + layout.surface_offset),
                 joints: layout.joints,
             },
         );
@@ -364,7 +374,10 @@ impl GpuInner {
             return;
         }
         if let Some(m) = self.meshes.remove(&mesh.0) {
-            self.uploads.retire(crate::stream::Retired::Buffer(m.buffer));
+            self.uploads.retire(match m.pooled {
+                Some((block, at, size)) => crate::stream::Retired::Range(block, at, size),
+                None => crate::stream::Retired::Buffer(m.buffer),
+            });
         }
     }
 
@@ -456,7 +469,10 @@ impl GpuInner {
                 self.device.wait_idle();
             }
         }
-        self.device.destroy_buffer(&m.buffer);
+        match m.pooled {
+            Some((block, at, size)) => self.uploads.blocks.free(&self.device, block, at, size),
+            None => self.device.destroy_buffer(&m.buffer),
+        }
     }
 
     /// Wait until no window frame in flight can still read a resource about to be freed.
@@ -1160,7 +1176,10 @@ impl Drop for GpuInner {
             w.destroy(&self.instance, dev, self.cmd_pool);
         }
         for (_, m) in self.meshes.drain() {
-            dev.destroy_buffer(&m.buffer);
+            // Block meshes went with the blocks (`uploads.destroy` above).
+            if m.pooled.is_none() {
+                dev.destroy_buffer(&m.buffer);
+            }
         }
         for (_, t) in self.textures.map.drain() {
             dev.destroy_image(&t.image);
@@ -1327,7 +1346,7 @@ fn level_regions(width: u32, height: u32, offsets: &[u64]) -> Vec<VkBufferImageC
 }
 
 /// A device-local buffer for a mesh's vertex and index streams.
-fn create_mesh_buffer(dev: &Device, total: u64) -> Result<Buffer, GpuError> {
+pub(crate) fn create_mesh_buffer(dev: &Device, total: u64) -> Result<Buffer, GpuError> {
     dev.create_buffer(
         total,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,

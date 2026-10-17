@@ -37,11 +37,17 @@ use specula_core::Json;
 use specula_gpu::{DrawItem, Gpu, MaterialTextures, MeshStreams, TextureId};
 use specula_model::{MaterialKind, MeshData};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+
+/// Hash maps keyed by ids: the stable (unkeyed, fast) hasher, not SipHash.
+type IdMap<K, V> = HashMap<K, V, specula_core::hash::StableBuildHasher>;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
-/// Priorities and wanted sets are recomputed at most this often (sooner when a source jumps).
+/// While the window's camera moves (a quarter cell, or turns), priorities and wanted sets are
+/// recomputed at most this often; at once when the world, the builds or the sources change.
 pub const UPDATE_EVERY: Duration = Duration::from_millis(100);
+/// Otherwise at least this often (cells settling for their proxies).
+pub const UPDATE_IDLE: Duration = Duration::from_secs(1);
 /// A capture's camera stays a stream source this long after the capture.
 pub const CAPTURE_SOURCE_FOR: Duration = Duration::from_secs(10);
 /// Capture sources kept at once (the oldest goes).
@@ -225,8 +231,6 @@ struct Member {
     world: Mat4,
     pos: Vec3,
     tint: [f32; 3],
-    /// The entity's content hash (transform, colour, model, everything saved).
-    hash: u64,
     /// May be merged into an HLOD proxy as far as the entity goes (shown, not `ui`, no anim, no
     /// moving body); its build decides the rest.
     mergeable: bool,
@@ -244,7 +248,6 @@ impl Member {
             world,
             pos: e.world_position(),
             tint: e.color,
-            hash: e.content_hash(),
             mergeable: e.shown() && !e.in_ui() && e.anim.is_none() && !moving && e.id < hlod::MAX_COVER_ID,
             changed: now,
         }
@@ -279,7 +282,7 @@ struct Index {
     key: Option<(u64, u32)>,
     /// The world's draw epoch it reflects.
     epoch: u64,
-    cell_of: HashMap<u64, CellKey>,
+    cell_of: IdMap<u64, CellKey>,
     cells: BTreeMap<CellKey, Cell>,
     rebuilds: u64,
     patches: u64,
@@ -365,6 +368,8 @@ struct Source {
     fov_y_deg: f32,
     viewport_h: u32,
     view_proj: Mat4,
+    /// Which way it looks (unit).
+    dir: Vec3,
     /// Capture sources expire.
     until: Option<Instant>,
 }
@@ -405,6 +410,8 @@ pub struct FrameUpload {
     /// Wanted items that didn't fit the memory budget even after eviction.
     pub memory_blocked: u32,
     pub evicted: u32,
+    /// The frame's slowest item: `(ms, KB, what)`.
+    pub slowest: (f64, u64, &'static str),
 }
 
 /// Streaming's state (see the module docs).
@@ -419,19 +426,23 @@ pub struct Streamer {
     /// Live builds (the streamed path's view of what entities use).
     live: BTreeMap<u64, Arc<Built>>,
     /// Wanted builds and their priority (lower first).
-    want: HashMap<u64, f32>,
+    want: IdMap<u64, f32>,
     /// The update each build was last wanted in.
-    last_wanted: HashMap<u64, u64>,
+    last_wanted: IdMap<u64, u64>,
     sources: Vec<Source>,
     updates: u64,
     last_update: Option<Instant>,
     force_update: bool,
-    /// Where the window's eye was at the last update.
-    window_eye: Option<Vec3>,
+    /// Where the window's eye was and which way it looked at the last update.
+    window_eye: Option<(Vec3, Vec3)>,
+    /// The window's camera moved (or turned) since the last update.
+    window_moved: bool,
     pub frame: FrameUpload,
     /// Upload ms per frame that uploaded something.
     upload_ms: Series,
-    /// Milliseconds per MB uploaded (smoothed): estimates an item's cost before doing it.
+    /// Milliseconds per item and per MB uploaded (smoothed): estimate an item's cost before
+    /// doing it.
+    ms_per_item: f64,
     ms_per_mb: f64,
     totals: FrameUpload,
     frames_over: u64,
@@ -463,15 +474,17 @@ impl Streamer {
             index: Index::default(),
             hlod: Hlod::default(),
             live: BTreeMap::new(),
-            want: HashMap::new(),
-            last_wanted: HashMap::new(),
+            want: IdMap::default(),
+            last_wanted: IdMap::default(),
             sources: Vec::new(),
             updates: 0,
             last_update: None,
             force_update: true,
             window_eye: None,
+            window_moved: false,
             frame: FrameUpload::default(),
             upload_ms: Series::default(),
+            ms_per_item: 0.1,
             ms_per_mb: 2.0,
             totals: FrameUpload::default(),
             frames_over: 0,
@@ -540,15 +553,20 @@ impl Streamer {
     pub fn set_window(&mut self, camera: Option<(Camera, u32, u32)>) {
         self.sources.retain(|s| s.kind != SourceKind::Window);
         if let Some((cam, w, h)) = camera {
-            if self.window_eye.is_none_or(|e| (e - cam.eye).length() > self.cfg.cell_m * 0.25) {
-                self.force_update = self.force_update || self.window_eye.is_none_or(|e| (e - cam.eye).length() > self.cfg.cell_m);
-            }
+            let dir = (cam.target - cam.eye).normalize();
+            self.window_moved = match self.window_eye {
+                None => true,
+                Some((e, d)) => (e - cam.eye).length() > self.cfg.cell_m * 0.25 || d.dot(dir) < 0.97,
+            };
+            // A jump (a teleport, a new view) is wanted at once.
+            self.force_update |= self.window_eye.is_none_or(|(e, _)| (e - cam.eye).length() > self.cfg.cell_m * 2.0);
             self.sources.push(Source {
                 kind: SourceKind::Window,
                 eye: cam.eye,
                 fov_y_deg: cam.fov_y_deg,
                 viewport_h: h,
                 view_proj: cam.view_proj(w, h),
+                dir,
                 until: None,
             });
         }
@@ -567,7 +585,8 @@ impl Streamer {
             self.sources.remove(oldest);
             captures = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
         }
-        self.sources.push(Source { kind: SourceKind::Capture, eye: camera.eye, fov_y_deg: camera.fov_y_deg, viewport_h: h, view_proj: camera.view_proj(w, h), until });
+        let dir = (camera.target - camera.eye).normalize();
+        self.sources.push(Source { kind: SourceKind::Capture, eye: camera.eye, fov_y_deg: camera.fov_y_deg, viewport_h: h, view_proj: camera.view_proj(w, h), dir, until });
         self.force_update = true;
     }
 
@@ -641,8 +660,14 @@ impl Streamer {
         }
         let _z = specula_core::profile::zone("stream");
         self.sources.retain(|s| s.until.is_none_or(|t| t > now));
-        let changed = self.index.sync(world, generation, self.cfg.cell_m, now);
-        let due = self.force_update || changed || self.last_update.is_none_or(|t| now.duration_since(t) >= UPDATE_EVERY);
+        let changed = {
+            let _z = specula_core::profile::zone("index");
+            self.index.sync(world, generation, self.cfg.cell_m, now)
+        };
+        // Finished proxy builds are taken every frame (their uploads go by priority).
+        self.hlod.collect();
+        let since = self.last_update.map_or(Duration::MAX, |t| now.duration_since(t));
+        let due = self.force_update || changed || since >= UPDATE_IDLE || (self.window_moved && since >= UPDATE_EVERY);
         if due {
             self.update(world, models, library, gpu, now);
         }
@@ -655,11 +680,13 @@ impl Streamer {
         self.updates += 1;
         self.last_update = Some(now);
         self.force_update = false;
-        self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| s.eye);
+        self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| (s.eye, s.dir));
+        self.window_moved = false;
         let frame = self.updates;
         let hlod_on = self.hlod_on();
         // HLOD contents of changed cells (and of cells still waiting for builds).
         {
+            let _z = specula_core::profile::zone("hlod_content");
             let lib = library.lock();
             let mut gone = Vec::new();
             for (k, c) in &mut self.index.cells {
@@ -673,7 +700,7 @@ impl Streamer {
                     .content(*k)
                     .is_some_and(|ct| !ct.complete && ct.waiting_on.iter().any(|&h| lib.built(h).is_some() || lib.handle_error(h).is_some()));
                 if hlod_on && (c.dirty || waiting) {
-                    let content = content_of(c, &lib);
+                    let content = content_of(c, &lib, world);
                     if self.hlod.content(*k) != Some(&content) {
                         self.hlod.set_content(*k, content);
                     }
@@ -688,6 +715,7 @@ impl Streamer {
             self.hlod.retain(|k| cells.contains_key(&k), gpu);
         }
         // Wanted builds and proxies.
+        let want_zone = specula_core::profile::zone("want");
         self.want.clear();
         let cfg = &self.cfg;
         let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
@@ -737,9 +765,11 @@ impl Streamer {
         }
         let live = &self.live;
         self.last_wanted.retain(|b, _| live.contains_key(b));
+        drop(want_zone);
         if hlod_on {
             let cells = &self.index.cells;
             let lib = library.lock();
+            let _z = specula_core::profile::zone("hlod_schedule");
             self.hlod.schedule(now, self.cfg.settle_s, |key, content| inputs_of(cells.get(&key)?, content, &lib));
         }
     }
@@ -747,6 +777,7 @@ impl Streamer {
     /// Uploads within the frame's budget, evicting under the memory budget (see the module
     /// docs).
     fn pump(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary) {
+        let _z = specula_core::profile::zone("pump");
         enum Item {
             Build(u64),
             Proxy(CellKey),
@@ -778,9 +809,15 @@ impl Streamer {
         let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
         let mut resident = models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes();
         let mut blocked = 0u64;
-        for (_, item, est) in items {
+        let count = items.len() as u32;
+        for (i, (_, item, est)) in items.into_iter().enumerate() {
             let spent = started.elapsed().as_secs_f64() * 1e3;
-            let est_ms = est as f64 / 1_048_576.0 * self.ms_per_mb;
+            if spent >= budget_ms {
+                self.frame.deferred += count - i as u32;
+                break;
+            }
+            // An item's cost: a fixed part (buffer creation, recording) plus its size.
+            let est_ms = self.ms_per_item + est as f64 / 1_048_576.0 * self.ms_per_mb;
             if self.frame.items > 0 && (spent + est_ms > budget_ms || self.frame.bytes + est > budget_bytes) {
                 self.frame.deferred += 1;
                 continue;
@@ -799,14 +836,24 @@ impl Streamer {
                 Item::Proxy(cell) => self.hlod.upload(cell, gpu),
             };
             let ms = t.elapsed().as_secs_f64() * 1e3;
+            if ms > self.frame.slowest.0 {
+                let what = match item {
+                    Item::Build(_) => "model_lod",
+                    Item::Proxy(_) => "hlod_group",
+                };
+                self.frame.slowest = (ms, *done.as_ref().unwrap_or(&0) / 1024, what);
+            }
             match done {
                 Ok(bytes) => {
                     self.frame.items += 1;
                     self.frame.bytes += bytes;
                     resident += bytes;
-                    if bytes > 64 * 1024 {
-                        // Learn the cost per MB from items big enough to measure.
-                        let rate = ms / (bytes as f64 / 1_048_576.0);
+                    // Learn the costs: small items give the fixed part, big ones the part per MB.
+                    let mb = bytes as f64 / 1_048_576.0;
+                    if bytes < 64 * 1024 {
+                        self.ms_per_item = (self.ms_per_item * 0.9 + ms * 0.1).clamp(0.001, 50.0);
+                    } else {
+                        let rate = (ms - self.ms_per_item).max(0.0) / mb;
                         self.ms_per_mb = (self.ms_per_mb * 0.8 + rate * 0.2).clamp(0.05, 200.0);
                     }
                 }
@@ -834,6 +881,14 @@ impl Streamer {
                     ("unit", Json::from("ms")),
                     ("items", Json::from(self.frame.items)),
                     ("kb", Json::from(self.frame.bytes / 1024)),
+                    (
+                        "slowest_item",
+                        Json::obj([
+                            ("what", Json::from(self.frame.slowest.2)),
+                            ("ms", Json::from((self.frame.slowest.0 * 1000.0).round() / 1000.0)),
+                            ("kb", Json::from(self.frame.slowest.1)),
+                        ]),
+                    ),
                 ]));
             }
         }
@@ -1061,6 +1116,7 @@ impl Streamer {
             ("sources", Json::from(self.sources.len())),
             ("cells", Json::from(self.index.cells.len())),
             ("index", Json::obj([("rebuilds", Json::from(self.index.rebuilds)), ("patches", Json::from(self.index.patches))])),
+            ("ms_per_item", Json::from((self.ms_per_item * 1000.0).round() / 1000.0)),
             ("ms_per_mb", Json::from((self.ms_per_mb * 1000.0).round() / 1000.0)),
             ("hlod", self.hlod.json()),
             (
@@ -1074,6 +1130,9 @@ impl Streamer {
                     ("retired_pending", Json::from(g.retired_pending)),
                     ("freed", Json::from(g.freed)),
                     ("dedicated_staging", Json::from(g.dedicated_staging)),
+                    ("mesh_blocks", Json::from(g.mesh_blocks)),
+                    ("mesh_block_mb", mb(g.mesh_block_bytes)),
+                    ("mesh_block_used_mb", mb(g.mesh_block_used)),
                 ]),
             ),
         ])
@@ -1148,7 +1207,7 @@ impl Streamer {
 
 /// What cell `c` merges: its mergeable members whose build is ready, opaque and untextured at
 /// its coarsest level (see `hlod`).
-fn content_of(c: &Cell, lib: &crate::models::Library) -> Content {
+fn content_of(c: &Cell, lib: &crate::models::Library, world: &World) -> Content {
     let mut h = StableHasher::with_seed(0x4365_6c6c_0000_0001);
     let mut ct = Content { complete: true, ..Content::default() };
     let mut first = true;
@@ -1182,7 +1241,8 @@ fn content_of(c: &Cell, lib: &crate::models::Library) -> Content {
             ct.hi = ct.hi.max(centre);
         }
         h.write_u64(m.id);
-        h.write_u64(m.hash);
+        // The entity's content hash: transform, colour, model, everything saved (cached by the world).
+        h.write_u64(world.get(m.id).map_or(0, Entity::content_hash));
         h.write_u64(built.id);
         h.write_u64(level as u64);
         ct.members.push(m.id);
@@ -1289,12 +1349,19 @@ fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibr
     for (i, part) in lod.parts.iter().enumerate() {
         let Some((_, preset)) = model.materials.iter().find(|(n, _)| *n == part.material) else { continue };
         let textured = built.materials.get(&part.material).filter(|m| m.textured() && !lod.uvs.is_empty() && preset.kind == MaterialKind::Standard);
-        let p = part_mesh(lod, i, textured.is_some());
+        let p = {
+            let _z = specula_core::profile::zone("part_mesh");
+            part_mesh(lod, i, textured.is_some())
+        };
         if p.indices.is_empty() {
             continue;
         }
         let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
-        let mesh = match gpu.queue_mesh(&p.vertices, &p.indices, &streams) {
+        let queued = {
+            let _z = specula_core::profile::zone("queue_mesh");
+            gpu.queue_mesh(&p.vertices, &p.indices, &streams)
+        };
+        let mesh = match queued {
             Ok(m) => m,
             Err(e) => return fail(gpu, models, &textures, &parts, e.to_string()),
         };

@@ -19,6 +19,11 @@
 //! - Batches cycle through [`MAX_SLOTS`] slots (command buffer, fence, arena). A slot is reused
 //!   when its fence has signalled (polled, never waited) — only when every slot is still in
 //!   flight does queuing wait, for the oldest (the GPU is that far behind).
+//! - **Mesh blocks.** Queued meshes are carved out of device-local blocks of [`BLOCK_BYTES`]
+//!   (first fit, freed ranges coalesce) instead of one `vkAllocateMemory` each: on the Intel iGPU
+//!   an allocation costs about 0.3 ms and a free as much, which would cap streaming at a few
+//!   meshes a frame (and `maxMemoryAllocationCount` is 4096 on some drivers). A block is freed
+//!   once it is empty and another empty one is kept.
 //!
 //! Engine code bounds what it queues per frame (bytes and time, perf.toml `[streaming]`), so a
 //! batch is a few MB at most; an item larger than the arena gets its own staging buffer.
@@ -26,12 +31,17 @@
 use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
 use crate::vk::*;
 use crate::{GpuError, MemoryKind};
+use std::collections::VecDeque;
 use std::ptr;
+use std::time::{Duration, Instant};
 
 /// Batches that may be recorded or in flight at once.
 pub const MAX_SLOTS: usize = 3;
 /// Staging bytes each slot keeps mapped (items that don't fit get a buffer of their own).
 pub const ARENA_BYTES: u64 = 8 << 20;
+/// Time one poll spends freeing retired resources at most (freeing memory can take a driver a
+/// while; what's left goes at the next poll). At least one is freed per poll.
+pub const FREE_BUDGET: Duration = Duration::from_micros(250);
 
 /// What the queued path did, for statistics (perf_frame `streaming.gpu`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,6 +62,10 @@ pub struct UploadStats {
     pub freed: u64,
     /// Items that did not fit a slot's arena and got their own staging buffer.
     pub dedicated_staging: u64,
+    /// Device-local mesh blocks, the bytes they hold and the bytes meshes use in them.
+    pub mesh_blocks: u32,
+    pub mesh_block_bytes: u64,
+    pub mesh_block_used: u64,
 }
 
 /// A resource to free once the GPU is past it.
@@ -59,6 +73,118 @@ pub(crate) enum Retired {
     Buffer(Buffer),
     /// An image and its bindless slot.
     Image(Image, u32),
+    /// A mesh's range of a block: `(block, offset, bytes)`.
+    Range(u32, u64, u64),
+}
+
+/// Device-local block size queued meshes are carved from (a bigger mesh gets a block its size).
+pub const BLOCK_BYTES: u64 = 16 << 20;
+/// Mesh ranges start on this alignment (index and vertex offsets stay aligned).
+const RANGE_ALIGN: u64 = 256;
+
+struct Block {
+    buffer: Buffer,
+    /// Free ranges `(offset, bytes)`, sorted by offset, never adjacent.
+    free: Vec<(u64, u64)>,
+    used: u64,
+}
+
+impl Block {
+    fn take(&mut self, bytes: u64) -> Option<u64> {
+        let i = self.free.iter().position(|&(_, n)| n >= bytes)?;
+        let (at, n) = self.free[i];
+        if n == bytes {
+            self.free.remove(i);
+        } else {
+            self.free[i] = (at + bytes, n - bytes);
+        }
+        self.used += bytes;
+        Some(at)
+    }
+
+    fn give(&mut self, at: u64, bytes: u64) {
+        let i = self.free.partition_point(|&(o, _)| o < at);
+        self.free.insert(i, (at, bytes));
+        // Coalesce with the next, then the previous.
+        if i + 1 < self.free.len() && self.free[i].0 + self.free[i].1 == self.free[i + 1].0 {
+            self.free[i].1 += self.free[i + 1].1;
+            self.free.remove(i + 1);
+        }
+        if i > 0 && self.free[i - 1].0 + self.free[i - 1].1 == self.free[i].0 {
+            self.free[i - 1].1 += self.free[i].1;
+            self.free.remove(i);
+        }
+        self.used = self.used.saturating_sub(bytes);
+    }
+}
+
+/// The mesh blocks (see the module docs).
+#[derive(Default)]
+pub(crate) struct Blocks {
+    blocks: Vec<Option<Block>>,
+}
+
+impl Blocks {
+    /// A range of `bytes` for a mesh: `(block, offset, its buffer, the range's size)`.
+    pub fn alloc(&mut self, dev: &Device, bytes: u64) -> Result<(u32, u64, VkBuffer, u64), GpuError> {
+        let size = bytes.div_ceil(RANGE_ALIGN) * RANGE_ALIGN;
+        for (i, b) in self.blocks.iter_mut().enumerate() {
+            if let Some(b) = b {
+                if let Some(at) = b.take(size) {
+                    return Ok((i as u32, at, b.buffer.handle, size));
+                }
+            }
+        }
+        let block_bytes = size.max(BLOCK_BYTES);
+        let buffer = crate::gpu::create_mesh_buffer(dev, block_bytes)?;
+        let mut block = Block { buffer, free: vec![(0, block_bytes)], used: 0 };
+        let at = block.take(size).expect("a fresh block holds it");
+        let handle = block.buffer.handle;
+        let i = match self.blocks.iter().position(Option::is_none) {
+            Some(i) => {
+                self.blocks[i] = Some(block);
+                i
+            }
+            None => {
+                self.blocks.push(Some(block));
+                self.blocks.len() - 1
+            }
+        };
+        Ok((i as u32, at, handle, size))
+    }
+
+    /// Gives a range back (no frame or batch may still use it); an empty block is freed when
+    /// another empty one exists.
+    pub fn free(&mut self, dev: &Device, block: u32, at: u64, bytes: u64) {
+        let Some(Some(b)) = self.blocks.get_mut(block as usize) else { return };
+        b.give(at, bytes);
+        if b.used == 0 {
+            let empty = self.blocks.iter().flatten().filter(|b| b.used == 0).count();
+            if empty > 1 {
+                if let Some(b) = self.blocks[block as usize].take() {
+                    dev.destroy_buffer(&b.buffer);
+                }
+            }
+        }
+    }
+
+    /// `(blocks, bytes held, bytes used)`.
+    pub fn usage(&self) -> (u32, u64, u64) {
+        let live = self.blocks.iter().flatten();
+        let (mut n, mut held, mut used) = (0, 0, 0);
+        for b in live {
+            n += 1;
+            held += b.buffer.bytes;
+            used += b.used;
+        }
+        (n, held, used)
+    }
+
+    fn destroy(&mut self, dev: &Device) {
+        for b in self.blocks.drain(..).flatten() {
+            dev.destroy_buffer(&b.buffer);
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,13 +216,15 @@ pub(crate) struct Uploads {
     /// Retired since the last submission: freed after the next batch.
     retired_now: Vec<Retired>,
     /// `(serial that must finish, resource)`.
-    retired: Vec<(u64, Retired)>,
+    retired: VecDeque<(u64, Retired)>,
     stats: UploadStats,
     /// Ids of the meshes and textures recorded into batches not yet known finished, with the
     /// serial (`u64::MAX`: still recording) — a synchronous destroy of one must wait for it.
     pending_ids: Vec<(u32, u64)>,
     /// Bindless slots of freed images, for the caller to give back (`take_freed_slots`).
     freed_slots: Vec<u32>,
+    /// Where queued meshes live.
+    pub blocks: Blocks,
 }
 
 /// Where staged bytes go: the buffer, the offset in it, and a pointer to write them at.
@@ -111,6 +239,7 @@ impl Uploads {
         let mut s = self.stats;
         s.in_flight = self.slots.iter().filter(|s| s.state != SlotState::Free).count() as u32;
         s.retired_pending = (self.retired.len() + self.retired_now.len()) as u32;
+        (s.mesh_blocks, s.mesh_block_bytes, s.mesh_block_used) = self.blocks.usage();
         s
     }
 
@@ -124,7 +253,10 @@ impl Uploads {
         if let Some(i) = self.recording {
             return Ok(self.slots[i].cmd);
         }
-        self.poll(dev);
+        {
+            let _z = specula_core::profile::zone("gpu.poll");
+            self.poll(dev);
+        }
         let i = match self.slots.iter().position(|s| s.state == SlotState::Free) {
             Some(i) => i,
             None if self.slots.len() < MAX_SLOTS => {
@@ -143,6 +275,7 @@ impl Uploads {
                     })
                     .expect("slots exist");
                 self.stats.slot_waits += 1;
+                let _z = specula_core::profile::zone("gpu.slot_wait");
                 if dev.wait_fence(self.slots[oldest].fence).is_err() {
                     dev.wait_idle();
                 }
@@ -156,7 +289,10 @@ impl Uploads {
             dev.wait_idle();
             Self::release_slot(dev, slot);
         }
-        dev.begin(slot.cmd)?;
+        {
+            let _z = specula_core::profile::zone("gpu.begin");
+            dev.begin(slot.cmd)?;
+        }
         slot.state = SlotState::Recording;
         self.recording = Some(i);
         Ok(slot.cmd)
@@ -170,6 +306,7 @@ impl Uploads {
         let aligned = bytes.div_ceil(16) * 16;
         if aligned <= ARENA_BYTES {
             if slot.arena.is_none() {
+                let _z = specula_core::profile::zone("gpu.arena");
                 let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
                 slot.arena = Some(dev.create_buffer(ARENA_BYTES, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, 0, MemoryKind::Staging, "upload arena")?);
                 slot.used = 0;
@@ -233,6 +370,7 @@ impl Uploads {
                 p.1 = serial;
             }
         }
+        // Serials grow, so the queue stays in the order its batches finish.
         self.retired.extend(self.retired_now.drain(..).map(|r| (serial, r)));
         Ok(())
     }
@@ -252,17 +390,23 @@ impl Uploads {
         }
         let done = self.completed;
         self.pending_ids.retain(|&(_, s)| s == u64::MAX || s > done);
-        let before = self.retired.len();
-        let freed_slots = &mut self.freed_slots;
-        self.retired.retain(|(after, r)| {
-            if *after <= done {
-                free(dev, r, freed_slots);
-                false
-            } else {
-                true
+        self.free_finished(dev, Some(FREE_BUDGET));
+    }
+
+    /// Frees retired resources whose batch finished, oldest first, within `budget` (`None`: all).
+    fn free_finished(&mut self, dev: &Device, budget: Option<Duration>) {
+        let start = Instant::now();
+        while self.retired.front().is_some_and(|(after, _)| *after <= self.completed) {
+            if budget.is_some_and(|b| start.elapsed() >= b) {
+                break;
             }
-        });
-        self.stats.freed += (before - self.retired.len()) as u64;
+            let (_, r) = self.retired.pop_front().expect("checked");
+            match r {
+                Retired::Range(block, at, bytes) => self.blocks.free(dev, block, at, bytes),
+                r => free(dev, &r, &mut self.freed_slots),
+            }
+            self.stats.freed += 1;
+        }
     }
 
     /// Submits and waits for everything queued, and frees every retired resource whose batch
@@ -277,6 +421,7 @@ impl Uploads {
             }
         }
         self.poll(dev);
+        self.free_finished(dev, None);
         flushed
     }
 
@@ -291,6 +436,7 @@ impl Uploads {
         for r in self.retired.drain(..).map(|(_, r)| r).chain(self.retired_now.drain(..)) {
             free(dev, &r, &mut slots);
         }
+        self.blocks.destroy(dev);
         for mut slot in self.slots.drain(..) {
             Self::release_slot(dev, &mut slot);
             if let Some(a) = slot.arena.take() {
@@ -318,6 +464,8 @@ fn free(dev: &Device, r: &Retired, freed_slots: &mut Vec<u32>) {
             dev.destroy_image(i);
             freed_slots.push(*slot);
         }
+        // Blocks go with the pool.
+        Retired::Range(..) => {}
     }
 }
 
@@ -329,16 +477,18 @@ fn fence_signaled(dev: &Device, fence: VkFence) -> bool {
     r != VK_TIMEOUT
 }
 
-/// Records the copy of a staged mesh (`total` bytes at `staged`) into `buffer`.
-pub(crate) fn record_buffer_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Staged, buffer: VkBuffer, total: u64) {
-    let region = VkBufferCopy { src_offset: staged.offset, dst_offset: 0, size: total };
+/// Records the copy of a staged mesh (`total` bytes at `staged`) into `buffer` at `at`.
+pub(crate) fn record_buffer_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Staged, buffer: VkBuffer, at: u64, total: u64) {
+    let region = VkBufferCopy { src_offset: staged.offset, dst_offset: at, size: total };
     // SAFETY: recording; the staging range and the destination buffer hold at least `total` bytes.
     unsafe { (dev.fns.cmd_copy_buffer)(cmd, staged.buffer, buffer, 1, &region) };
     // Every later vertex and index read (frames submitted after this batch) sees the copy.
     dev.barrier(
         cmd,
-        &[buffer_barrier(
+        &[buffer_barrier_range(
             buffer,
+            at,
+            total,
             VK_PIPELINE_STAGE_2_COPY_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
@@ -387,4 +537,35 @@ pub(crate) fn record_image_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Sta
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         )],
     );
+}
+
+/// [`buffer_barrier`] for one range of a buffer.
+fn buffer_barrier_range(buffer: VkBuffer, offset: u64, size: u64, src_stage: VkFlags64, src_access: VkFlags64, dst_stage: VkFlags64, dst_access: VkFlags64) -> VkBufferMemoryBarrier2 {
+    VkBufferMemoryBarrier2 { offset, size, ..buffer_barrier(buffer, src_stage, src_access, dst_stage, dst_access) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(bytes: u64) -> Block {
+        let buffer = Buffer { handle: VK_NULL_HANDLE, memory: VK_NULL_HANDLE, mapped: ptr::null_mut(), bytes, kind: MemoryKind::Meshes };
+        Block { buffer, free: vec![(0, bytes)], used: 0 }
+    }
+
+    #[test]
+    fn block_ranges_fit_first_and_coalesce() {
+        let mut b = block(1024);
+        let (a, c, d) = (b.take(256).unwrap(), b.take(512).unwrap(), b.take(256).unwrap());
+        assert_eq!((a, c, d), (0, 256, 768));
+        assert_eq!(b.take(1), None, "full");
+        b.give(c, 512);
+        assert_eq!(b.take(300), Some(256), "first fit reuses the hole");
+        b.give(256, 300);
+        b.give(a, 256);
+        assert_eq!(b.free, vec![(0, 768)], "neighbours merge");
+        b.give(d, 256);
+        assert_eq!(b.free, vec![(0, 1024)]);
+        assert_eq!(b.used, 0);
+    }
 }
