@@ -7,9 +7,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
 - **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
   re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
   is playable as a vertical slice and is the engine's dogfood. **M3 has not started.**
-- **Next session: 2026-10-21.** The owner restarts then (after the weekly usage limit resets) "to get M3-M4 done"
-  (diary, 2026-10-17). Everything is committed and pushed (`d634afe`, CI green), so the "push before M3" step is
-  done. Start by confirming the go-ahead and the scope with the owner, then run M3 as lanes.
+- **Started early:** the owner had planned to restart on 2026-10-21, but upgraded their plan and gave the go-ahead
+  the night of 2026-10-17. The pre-M3 work is pushed (`d634afe`, CI green).
 - **Owner answers, 2026-10-17** (diary):
   - **Window frame floor under a swarm: make it a setting**, chosen by the controller (lead) AI before it deploys
     a swarm, from how strong the human operator's machine is. Low- and mid-spec laptops can't spare frames (a mid-spec
