@@ -56,6 +56,9 @@ pub struct Options {
     /// Native hooks the host provides; `Some` reports declared hooks missing from it
     /// (`native_unbound` warnings). `None` doesn't check.
     pub natives: Option<Vec<String>>,
+    /// Hooks with an in-process implementation (a hosted game's, e.g. `sepulcra.ground`):
+    /// headless runs can call them, so they get neither warning.
+    pub in_process: Vec<String>,
 }
 
 /// A successful compile: the rules and any warnings.
@@ -929,6 +932,9 @@ impl<'d> Cx<'d> {
         }
         if let Some(bound) = &opts.natives {
             for n in &self.natives {
+                if opts.in_process.contains(&n.hook) {
+                    continue;
+                }
                 if !bound.contains(&n.hook) {
                     self.push(
                         Diagnostic::warning(codes::NATIVE_UNBOUND, n.id.as_str(), "hook", format!("no module provides the native hook '{}' yet, so runs that use it will fail", n.hook))

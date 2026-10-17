@@ -210,6 +210,8 @@ pub enum Command {
     Physics(crate::physics_tools::PhysicsCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
     Lex(crate::lex_tools::LexCall),
+    /// Live Lex runs stepped on the engine's tick (see [`crate::lex_live`]).
+    LexLive(crate::lex_live::LiveCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -278,6 +280,8 @@ pub struct Tools {
     pub(crate) lex_runs: crate::lex_tools::Runs,
     /// One `lex_edit` per rule set at a time (held on protocol threads only).
     pub(crate) lex_locks: crate::lex_tools::Locks,
+    /// Lex native hooks the hosted game implements in-process (`lex_simulate` runs them).
+    pub(crate) lex_natives: specula_lex::Natives,
 }
 
 impl Tools {
@@ -289,7 +293,17 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default() }
+        Tools { to_engine, game_tools, lex_runs: Default::default(), lex_locks: Default::default(), lex_natives: Default::default() }
+    }
+
+    /// The hosted game's in-process Lex hooks ([`crate::game::Game::lex_natives`]).
+    pub fn with_lex_natives(mut self, natives: specula_lex::Natives) -> Tools {
+        self.lex_natives = natives;
+        self
+    }
+
+    pub(crate) fn lex_native_names(&self) -> Vec<String> {
+        self.lex_natives.keys().cloned().collect()
     }
 
     /// Sends a command to the main thread and waits for its answer.
@@ -2309,6 +2323,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
     .chain(crate::lex_tools::definitions())
+    .chain(crate::lex_live::definitions())
     .collect()
 }
 

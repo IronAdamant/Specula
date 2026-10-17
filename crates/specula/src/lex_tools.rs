@@ -24,7 +24,7 @@ use crate::world::{EntityKey, Op, Shape, SpawnSpec, UpdateSpec, World, WorldErro
 use specula_core::Json;
 use specula_lex::diag::{did_you_mean, Diagnostic};
 use specula_lex::run::{compile_query, run, show_val, RunSpec, Timed};
-use specula_lex::{compile, schema, Document, Natives, Options, Sim};
+use specula_lex::{compile, schema, Document, Options, Sim};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 
 /// The top-level group that holds every rule set.
@@ -195,11 +195,11 @@ struct SavedRun {
 
 // ---- main thread ----
 
-fn err(code: &'static str, message: impl Into<String>) -> ToolOutput {
+pub(crate) fn err(code: &'static str, message: impl Into<String>) -> ToolOutput {
     ToolOutput::error(Json::obj([("error", Json::from(code)), ("message", Json::from(message.into()))]).to_pretty())
 }
 
-fn err_with(code: &'static str, message: impl Into<String>, extra: Vec<(&str, Json)>) -> ToolOutput {
+pub(crate) fn err_with(code: &'static str, message: impl Into<String>, extra: Vec<(&str, Json)>) -> ToolOutput {
     let mut pairs = vec![("error", Json::from(code)), ("message", Json::from(message.into()))];
     pairs.extend(extra);
     ToolOutput::error(Json::obj(pairs).to_pretty())
@@ -302,12 +302,15 @@ fn list_json(world: &World, set: &str, kind: Option<&str>, after: Option<&str>, 
 }
 
 /// Answers a lex call on the main thread.
-/// `hooks`: the native hooks the module host's running modules provide (`module/name`).
-pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str, hooks: &[String]) -> ToolOutput {
+/// `hooks`: the native hooks the module host's running modules provide (`module/name`);
+/// `in_process`: the ones the hosted game implements in-process ([`crate::game::Game::lex_natives`]).
+#[allow(clippy::too_many_arguments)]
+pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str, hooks: &[String], in_process: &[String]) -> ToolOutput {
     match call {
         LexCall::Snapshot { set, only } => {
             let mut j = snapshot_json(world, &set, only.as_deref());
             j.set("hooks", Json::arr(hooks.iter().map(|h| Json::from(h.as_str()))));
+            j.set("in_process", Json::arr(in_process.iter().map(|h| Json::from(h.as_str()))));
             ToolOutput::text(j.to_string())
         }
         LexCall::Sets { after, limit } => ToolOutput::text(sets_json(world, after.as_deref(), limit).to_string()),
@@ -393,15 +396,17 @@ fn header_of(stored: Option<&Json>, set: &str) -> Json {
 
 /// A stored (or edited) set as a document. Problems with the header or with item ids become
 /// diagnostics instead of failures, so a damaged set can still be listed, validated and fixed.
-struct Loaded {
-    doc: Document,
-    problems: Vec<Diagnostic>,
+pub(crate) struct Loaded {
+    pub(crate) doc: Document,
+    pub(crate) problems: Vec<Diagnostic>,
     /// The native hooks the running modules provide (for `native_unbound` warnings).
     hooks: Vec<String>,
+    /// The hooks the hosted game implements in-process (headless runs call them too).
+    in_process: Vec<String>,
 }
 
 /// `raw`: the header as stored (`None`: no set yet). Not an object is a problem, reported.
-fn load(raw: Option<&Json>, items: &BTreeMap<String, Json>, set: &str, hooks: &[String]) -> Loaded {
+fn load(raw: Option<&Json>, items: &BTreeMap<String, Json>, set: &str, hooks: &[String], in_process: &[String]) -> Loaded {
     let mut problems = Vec::new();
     if raw.is_some_and(|h| !matches!(h, Json::Obj(_))) {
         problems.push(
@@ -430,18 +435,18 @@ fn load(raw: Option<&Json>, items: &BTreeMap<String, Json>, set: &str, hooks: &[
             Err(d) => problems.push(d.suggest(format!("delete it with lex_edit {{\"op\": \"delete\", \"id\": \"{id}\"}} and put it again under a valid id"))),
         }
     }
-    Loaded { doc, problems, hooks: hooks.to_vec() }
+    Loaded { doc, problems, hooks: hooks.to_vec(), in_process: in_process.to_vec() }
 }
 
-/// The hook names in a snapshot.
-fn hooks_of(snap: &Json) -> Vec<String> {
-    snap.get("hooks").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|h| h.as_str().map(str::to_owned)).collect()
+/// The hook names in a snapshot (`key`: hooks, the module host's; in_process, the game's).
+fn hooks_of(snap: &Json, key: &str) -> Vec<String> {
+    snap.get(key).and_then(Json::as_array).unwrap_or_default().iter().filter_map(|h| h.as_str().map(str::to_owned)).collect()
 }
 
 /// Every diagnostic, uncapped: the load problems first, then validation.
 fn all_diags(l: &Loaded) -> Vec<Diagnostic> {
     let mut d = l.problems.clone();
-    d.extend(specula_lex::compile::validate_all(&l.doc, &Options { natives: Some(l.hooks.clone()), ..Default::default() }));
+    d.extend(specula_lex::compile::validate_all(&l.doc, &Options { natives: Some(l.hooks.clone()), in_process: l.in_process.clone(), ..Default::default() }));
     d
 }
 
@@ -449,7 +454,7 @@ fn error_keys(ds: &[Diagnostic]) -> BTreeSet<(String, String, String)> {
     ds.iter().filter(|d| d.is_error()).map(|d| (d.code.to_owned(), d.item.clone(), d.path.clone())).collect()
 }
 
-fn diag_json(ds: &[Diagnostic], limit: usize) -> Json {
+pub(crate) fn diag_json(ds: &[Diagnostic], limit: usize) -> Json {
     Json::arr(ds.iter().take(limit).map(Diagnostic::to_json))
 }
 
@@ -464,7 +469,7 @@ struct EngineStore<'a> {
     session: &'a SessionInfo,
 }
 
-fn output_json(out: &ToolOutput) -> Json {
+pub(crate) fn output_json(out: &ToolOutput) -> Json {
     match out.content.first() {
         Some(specula_protocol::Content::Text(t)) => Json::parse(t).unwrap_or_else(|_| Json::from(t.as_str())),
         _ => Json::Null,
@@ -509,7 +514,7 @@ fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
         }
         let base = exists.then(|| Versions { set: snap.get("set_version").and_then(Json::as_u64).unwrap_or(0), items: base_items });
         let old_header = header_of(snap.get("header"), &e.set);
-        let hooks = hooks_of(&snap);
+        let (hooks, in_process) = (hooks_of(&snap, "hooks"), hooks_of(&snap, "in_process"));
         let damaged_header = snap.get("header").is_some_and(|h| !matches!(h, Json::Obj(_)));
         let mut header = match &e.header.whole {
             Some(h) => h.clone(),
@@ -591,8 +596,8 @@ fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
             after.retain(|k, _| touched.contains(k));
         }
         // Validate before and after, uncapped: refuse an edit that adds errors (unless a draft).
-        let old_keys = error_keys(&all_diags(&load(snap.get("header"), &before, &e.set, &hooks)));
-        let new_diags = all_diags(&load(Some(&header), &after, &e.set, &hooks));
+        let old_keys = error_keys(&all_diags(&load(snap.get("header"), &before, &e.set, &hooks, &in_process)));
+        let new_diags = all_diags(&load(Some(&header), &after, &e.set, &hooks, &in_process));
         let added: Vec<&Diagnostic> = new_diags.iter().filter(|d| d.is_error() && !old_keys.contains(&(d.code.to_owned(), d.item.clone(), d.path.clone()))).collect();
         let errors = new_diags.iter().filter(|d| d.is_error()).count();
         if !added.is_empty() && !e.allow_errors {
@@ -773,7 +778,7 @@ fn json_remove(root: &mut Json, path: &str) -> Result<(), String> {
 
 // ---- protocol threads ----
 
-fn set_arg(args: &Json, required: bool) -> Result<Option<String>, String> {
+pub(crate) fn set_arg(args: &Json, required: bool) -> Result<Option<String>, String> {
     match args.get("set") {
         None | Some(Json::Null) if required => Err("'set' is required: the rule set's name (lex_list shows them)".into()),
         None | Some(Json::Null) => Ok(None),
@@ -794,7 +799,7 @@ fn bool_of(args: &Json, key: &str) -> Result<bool, String> {
 }
 
 /// The stored set, loaded (with its load problems), from a main-thread snapshot.
-fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<Loaded, ToolOutput> {
+pub(crate) fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<Loaded, ToolOutput> {
     let j = EngineStore { tools, session }.snapshot(set)?;
     if j.get("exists") != Some(&Json::Bool(true)) {
         let sets = output_json(&tools.send(session, Command::Lex(LexCall::Sets { after: None, limit: 500 })));
@@ -806,7 +811,7 @@ fn fetch(tools: &Tools, session: &SessionInfo, set: &str) -> Result<Loaded, Tool
     for it in j.get("items").and_then(Json::as_array).unwrap_or_default() {
         items.insert(it.get("id").and_then(Json::as_str).unwrap_or("").to_owned(), it.get("item").cloned().unwrap_or(Json::Null));
     }
-    Ok(load(j.get("header"), &items, set, &hooks_of(&j)))
+    Ok(load(j.get("header"), &items, set, &hooks_of(&j, "hooks"), &hooks_of(&j, "in_process")))
 }
 
 /// A set (by name) or an inline `document`. A stored set whose header or item ids are broken is
@@ -833,7 +838,7 @@ fn doc_arg(tools: &Tools, session: &SessionInfo, args: &Json, tool: &str) -> Res
     }
 }
 
-fn params_arg(args: &Json) -> Result<Vec<(String, Json)>, String> {
+pub(crate) fn params_arg(args: &Json) -> Result<Vec<(String, Json)>, String> {
     match args.get("params") {
         None | Some(Json::Null) => Ok(Vec::new()),
         Some(Json::Obj(p)) => Ok(p.clone()),
@@ -841,7 +846,7 @@ fn params_arg(args: &Json) -> Result<Vec<(String, Json)>, String> {
     }
 }
 
-fn seed_arg(args: &Json) -> Result<u64, String> {
+pub(crate) fn seed_arg(args: &Json) -> Result<u64, String> {
     match args.get("seed") {
         None | Some(Json::Null) => Ok(1),
         Some(Json::Str(s)) => s.parse().map_err(|_| "'seed' must be a whole number (a decimal string for values above 2^53)".into()),
@@ -870,6 +875,7 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
         "lex_export" => export_tool(tools, session, args),
         "lex_simulate" => simulate_tool(tools, session, args),
         "lex_session" => session_tool(tools, session, args),
+        "lex_live" => return crate::lex_live::call(tools, session, args),
         other => Err(format!("unknown lex tool '{other}'")),
     };
     out.unwrap_or_else(|m| ToolOutput::error(crate::tools::argument_error(&m).to_pretty()))
@@ -995,7 +1001,7 @@ fn validate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
         (Some(_), None) => {
             let set = set_arg(args, true)?.expect("required");
             match fetch(tools, session, &set) {
-                Ok(l) => (l.doc, Some(set), l.problems, Some(l.hooks)),
+                Ok(l) => (l.doc, Some(set), l.problems, Some((l.hooks, l.in_process))),
                 Err(e) => return Ok(e),
             }
         }
@@ -1004,7 +1010,11 @@ fn validate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
             Err(e) => return Ok(e),
         },
     };
-    let opts = Options { overrides: params, natives: hooks };
+    let (natives, in_process) = match hooks {
+        Some((h, i)) => (Some(h), i),
+        None => (None, tools.lex_native_names()),
+    };
+    let opts = Options { overrides: params, natives, in_process };
     let rules = match compile(&doc, &opts) {
         Ok(c) => {
             diags.extend(c.warnings);
@@ -1187,7 +1197,7 @@ fn simulate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
         Ok(x) => x,
         Err(e) => return Ok(e),
     };
-    let compiled = match compile(&doc, &Options { overrides: params, natives: None }) {
+    let compiled = match compile(&doc, &Options { overrides: params, ..Default::default() }) {
         Ok(c) => c,
         Err(ds) => {
             return Ok(err_with("invalid", "the rules don't compile; fix these first (each says what to change)", vec![("diagnostics", diag_json(&ds, 50))]));
@@ -1195,7 +1205,7 @@ fn simulate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
     };
     let rules = Arc::new(compiled.rules);
     let mut sim = match &from {
-        None => match Sim::new(rules.clone(), seed_arg(args)?, &Natives::new()) {
+        None => match Sim::new(rules.clone(), seed_arg(args)?, &tools.lex_natives) {
             Ok(s) => s,
             Err(m) => return Ok(err("native_unbound", m)),
         },
@@ -1612,9 +1622,9 @@ mod tests {
             if std::mem::take(&mut self.interfere) {
                 let base = versions(self.w, &c.set);
                 let other = Commit { set: c.set.clone(), base, header: None, puts: vec![("intruder".into(), Json::parse(r#"{"kind": "resource", "start": 1}"#).unwrap(), true)], deletes: vec![] };
-                assert!(!handle(LexCall::Commit(other), self.w, self.sw, 0, BOB, "bob", &[]).is_error);
+                assert!(!handle(LexCall::Commit(other), self.w, self.sw, 0, BOB, "bob", &[], &[]).is_error);
             }
-            handle(LexCall::Commit(c), self.w, self.sw, 0, self.who, self.who.name, &[])
+            handle(LexCall::Commit(c), self.w, self.sw, 0, self.who, self.who.name, &[], &[])
         }
     }
 
@@ -1715,7 +1725,7 @@ mod tests {
         let (mut w, mut sw) = setup();
         go(&mut w, &mut sw, ANN, edit_of("rules", vec![put("gold", r#"{"kind": "resource", "start": 5}"#)]));
         let stale = Commit { set: "rules".into(), base: None, header: None, puts: vec![], deletes: vec![] };
-        let out = handle(LexCall::Commit(stale), &mut w, &mut sw, 0, ANN, "ann", &[]);
+        let out = handle(LexCall::Commit(stale), &mut w, &mut sw, 0, ANN, "ann", &[], &[]);
         assert_eq!(output_json(&out).get("error").and_then(Json::as_str), Some("set_changed"));
         // Another agent's commit lands between this edit's validation and its commit: it is
         // validated again on the new state and both survive.
@@ -1735,7 +1745,7 @@ mod tests {
         go(&mut w, &mut sw, BOB, edit_of("rules", vec![put("x", r#"{"kind": "resource", "start": 2}"#)]));
         assert_eq!(item(&w, "rules", "x").map(|(v, _)| v), Some(1));
         let late = Commit { set: "rules".into(), base: stale, header: None, puts: vec![("x".into(), Json::parse(r#"{"kind": "resource", "start": 9}"#).unwrap(), false)], deletes: vec![] };
-        let out = handle(LexCall::Commit(late), &mut w, &mut sw, 0, ANN, "ann", &[]);
+        let out = handle(LexCall::Commit(late), &mut w, &mut sw, 0, ANN, "ann", &[], &[]);
         assert_eq!(output_json(&out).get("error").and_then(Json::as_str), Some("set_changed"), "the id gives the old snapshot away");
         assert_eq!(item(&w, "rules", "x").and_then(|(_, j)| j.get("start").and_then(Json::as_i64)), Some(2), "Bob's x survives");
     }
@@ -1828,7 +1838,7 @@ mod tests {
         let u = UpdateSpec { props: Some(Json::obj([("lex_set", Json::from(5))])), ..Default::default() };
         w.update(&EntityKey::Id(set), u, "x").unwrap();
         let s = snap(&w, "s");
-        let l = load(s.get("header"), &BTreeMap::new(), "s", &[]);
+        let l = load(s.get("header"), &BTreeMap::new(), "s", &[], &[]);
         assert!(l.problems.iter().any(|d| d.path == "header"), "{:?}", l.problems);
         // An import replaces the header wholesale, which repairs it.
         let mut imp = edit_of("s", vec![put("gold", r#"{"kind": "resource", "start": 5}"#)]);

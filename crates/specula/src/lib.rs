@@ -24,6 +24,7 @@ pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+mod lex_live;
 mod lex_tools;
 mod luts;
 pub mod meshes;
@@ -291,6 +292,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.swarm.reserve(g.name());
     }
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
+    engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
     let server = Server::start(
         ServerConfig {
@@ -299,7 +301,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools)),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_lex_natives(engine.lex_natives.clone())),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -488,6 +490,10 @@ struct Engine {
     logic: logic::LogicHost,
     /// The physics simulation and its bridge to the world (see [`physics`]).
     physics: physics::Physics,
+    /// Lex rule sets the engine steps live on its tick (see [`lex_live`]).
+    lex_live: lex_live::Live,
+    /// The hosted game's in-process Lex hooks ([`game::Game::lex_natives`]).
+    lex_natives: specula_lex::Natives,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -582,6 +588,8 @@ impl Engine {
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
             logic: logic::LogicHost::new(),
             physics: physics::Physics::default(),
+            lex_live: lex_live::Live::default(),
+            lex_natives: specula_lex::Natives::new(),
         })
     }
 
@@ -604,6 +612,8 @@ impl Engine {
         self.tick_hashes.clear();
         self.trace.clear();
         self.physics.reset();
+        // Live Lex runs presented into the old world: their entities are gone with it.
+        self.lex_live = lex_live::Live::default();
         problems
     }
 
@@ -680,6 +690,11 @@ impl Engine {
                     Ok(())
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
+            }
+            // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
+            if !self.lex_live.is_empty() {
+                let _l = profile::zone("lex_live");
+                self.lex_live_tick();
             }
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
@@ -1415,8 +1430,10 @@ impl Engine {
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
-                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks)
+                let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
+                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks, &in_process)
             }
+            Command::LexLive(call) => self.lex_live_call(call, &by, w),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
@@ -2037,6 +2054,7 @@ fn call_class(command: &Command) -> Class {
         Command::Physics(call) => call.class(),
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
+        Command::LexLive(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)
