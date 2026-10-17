@@ -7,7 +7,16 @@ memory of the earlier ones. This page is **current state and what's next** only;
 - **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
   re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
   is playable as a vertical slice and is the engine's dogfood. **M3 has not started.**
-- **Next:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
+- **Next session: 2026-10-21.** The owner restarts then (after the weekly usage limit resets) "to get M3-M4 done"
+  (diary, 2026-10-17). Everything is committed and pushed (`d634afe`, CI green), so the "push before M3" step is
+  done. Start by confirming the go-ahead and the scope with the owner, then run M3 as lanes.
+- **Owner answers, 2026-10-17** (diary):
+  - **Window frame floor under a swarm: make it a setting**, chosen by the controller (lead) AI before it deploys
+    a swarm, from how strong the human operator's machine is. Low- and mid-spec laptops can't spare frames (a mid-spec
+    one might for 2D, depending on its hardware); high-spec laptops, desktops and cloud hardware can. Today it's the
+    constant `BUSY_FRAME` (60 fps) in `crates/specula/src/schedule.rs`; the ROADMAP swarm track has the item.
+  - **The stronger cyan selection mark: yes**, keep it (STYLE.md's highlight rule stands).
+- **M3 plan:** M3 needs the owner's go-ahead. Don't start it unasked. Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
   Locus (placement by relations), animation A3-A4 with agent-authored motion and motion checks, physics P1-P4,
@@ -193,11 +202,6 @@ answer where it applies.
 - **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
   `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
 - **crates.io:** whether and when to publish the crates.
-- **Window under a swarm:** the window keeps at least 60 fps while agents are backed up (`BUSY_FRAME` in
-  `crates/specula/src/schedule.rs`), which costs a 64-agent swarm about 20% throughput. Keep 60, or make it a
-  `perf.toml` setting?
-- **Selection look:** selected stones now glow saturated cyan (glow 2.0) instead of the old pale mark that
-  rendered near-white. Is that the look you want?
 - **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
 
 ## Claude's opinions and thoughts
@@ -228,8 +232,9 @@ answer where it applies.
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
 **Recommendations for the next session:**
-1. **Ask before M3.** If the owner gives the go-ahead, push first (they said so), then start with Lex (gameplay as
-   data), since Locus, the balance lab and agent evals all build on it. Run it as lanes with reviews, as in M2.
+1. **On 2026-10-21, confirm the M3 go-ahead and scope** (already pushed), then start with Lex (gameplay as data),
+   since Locus, the balance lab and agent evals all build on it. Run it as lanes with reviews, as in M2. The swarm
+   frame-floor setting (owner answer above) is a small early lane.
 2. **Bring the open owner decisions** (the list above) to the owner in one short batch, with Claude's recommendation
    for each; several of them (night darkness, title screen, settings) shape Sepulcra's M3 work.
 3. **Keep Sepulcra the dogfood.** Each M3 feature should land in the game (rules moved into Lex data, physics on

@@ -27,6 +27,8 @@ tmp/
 
 # Local agent client settings (project .claude/agents stays tracked)
 .claude/settings.local.json
+# Machine-local agent notes (personal paths; auto-loaded by Claude Code)
+CLAUDE.local.md
 .grok/
 
 # Tooling caches / local indexes (not product source)

@@ -218,6 +218,12 @@ entities only; everything else is the gap.
 - [ ] **Director pattern** (M4–M5): one lead agent turns the game design doc into tasks, assigns roles and tracks
   progress on the board, with the owner as final reviewer.
   *Why:* this is the "agents complete the entire game" path.
+- [ ] **Swarm frame floor as a setting** (M3; owner, 2026-10-17): the window's minimum frame rate while agents are
+  backed up (today the constant `BUSY_FRAME`, 60 fps, in `crates/specula/src/schedule.rs`) becomes a setting
+  (`perf.toml` and a tool) that the controller (lead) AI sets before it deploys a swarm, from the operator's
+  hardware: low- and mid-spec laptops keep the window fluid at the swarm's expense; high-spec machines and cloud
+  hardware can trade frames for agent throughput.
+  *Why:* the right trade depends on how strong the human operator's machine is.
 - [ ] **Auth before any non-localhost bind** (before any remote agent): per-agent tokens, with claims tied to tokens.
 - [ ] **Scale drills** (every milestone from M1): 16, then 64 concurrent agents. Measure throughput, conflict rate,
   token cost and reject reasons.
