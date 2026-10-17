@@ -532,21 +532,17 @@ fn skin_vertex(m: &specula_model::MeshData, skin: &[Affine], i: usize) -> V3 {
     p
 }
 
+/// Feet sliding: the worst foot the rules check is one check; each foot the rules exempt is
+/// measured too and reported as its own exempt check (so a label can say what passed only by
+/// exemption, and how much that foot slides).
 fn foot_sliding(ctx: &Ctx, s: &Sampled, tracks: &[FootTrack], out: &mut Report) {
     if tracks.is_empty() || s.heads.len() < 2 {
         return;
     }
     let skel = &ctx.set.skeleton;
     let h = ctx.rules.contact_m;
-    // Per foot: (weighted mean m/s, fastest m/s, when, contact fraction); the worst foot is reported.
-    let mut worst: Option<(f32, f32, f32, f32, usize)> = None;
-    let mut exempt_feet = Vec::new();
-    for tr in tracks {
-        let f = tr.bone;
-        if ctx.rules.allows(&ctx.subject, "foot_sliding", Some(&skel.names[f])) {
-            exempt_feet.push(f);
-            continue;
-        }
+    // Per foot: (weighted mean m/s, fastest m/s, when, contact fraction, bone).
+    let measure = |tr: &FootTrack| {
         let (mut sum, mut n, mut fastest, mut at) = (0.0f64, 0usize, 0.0f32, 0.0f32);
         for k in 0..tr.frames.len() - 1 {
             let ((p, hp), (q, hq)) = (tr.frames[k], tr.frames[k + 1]);
@@ -563,26 +559,33 @@ fn foot_sliding(ctx: &Ctx, s: &Sampled, tracks: &[FootTrack], out: &mut Report) 
             }
         }
         let mean = if n > 0 { (sum / n as f64) as f32 } else { 0.0 };
-        let contact = n as f32 / (tr.frames.len() - 1) as f32;
-        if worst.is_none_or(|w| mean > w.0) {
-            worst = Some((mean, fastest, at, contact, f));
-        }
-    }
-    let Some((mean, fastest, at, contact, foot)) = worst else {
-        // Every foot is exempt: say so (passed, exempt).
-        let mut out_c = Report::default();
-        ctx.check(&mut out_c, "foot_sliding", 0.0, "cm/s", None, exempt_feet.first().copied(), Vec::new());
-        if let Some(c) = out_c.checks.first_mut() {
-            c.exempt = true;
-        }
-        out.checks.extend(out_c.checks);
-        return;
+        (mean, fastest, at, n as f32 / (tr.frames.len() - 1) as f32, tr.bone)
     };
-    let mut detail = vec![("fastest_cm_s", fastest * 100.0), ("contact", contact)];
-    if !exempt_feet.is_empty() {
-        detail.push(("exempt_feet", exempt_feet.len() as f32));
+    let mut worst: Option<(f32, f32, f32, f32, usize)> = None;
+    let mut exempt = Vec::new();
+    for tr in tracks {
+        let m = measure(tr);
+        if ctx.rules.allows(&ctx.subject, "foot_sliding", Some(&skel.names[tr.bone])) {
+            exempt.push(m);
+        } else if worst.is_none_or(|w| m.0 > w.0) {
+            worst = Some(m);
+        }
     }
-    ctx.check(out, "foot_sliding", mean * 100.0, "cm/s", Some(at), Some(foot), detail);
+    if let Some((mean, fastest, at, contact, foot)) = worst {
+        let mut detail = vec![("fastest_cm_s", fastest * 100.0), ("contact", contact)];
+        if !exempt.is_empty() {
+            detail.push(("exempt_feet", exempt.len() as f32));
+        }
+        ctx.check(out, "foot_sliding", mean * 100.0, "cm/s", Some(at), Some(foot), detail);
+    }
+    for (mean, fastest, at, contact, foot) in exempt {
+        let mut one = Report::default();
+        ctx.check(&mut one, "foot_sliding", mean * 100.0, "cm/s", Some(at), Some(foot), vec![("fastest_cm_s", fastest * 100.0), ("contact", contact)]);
+        for c in &mut one.checks {
+            (c.exempt, c.passed) = (true, true);
+        }
+        out.checks.extend(one.checks);
+    }
 }
 
 /// The lowest sole over the whole subject should reach the ground.

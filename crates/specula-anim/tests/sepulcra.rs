@@ -135,6 +135,10 @@ fn creature_motion_passes_its_style_rules() {
     }
     let walk = all.checks.iter().find(|c| c.subject == "shambler/creature.move" && c.check == "foot_sliding").unwrap();
     assert!(walk.detail.iter().any(|(k, v)| *k == "contact" && *v > 0.5), "{walk:?}");
+    // The dragged foot is measured and reported as exempt (filmstrip labels say so).
+    let dragged = all.checks.iter().find(|c| c.subject == "shambler/creature.move" && c.check == "foot_sliding" && c.exempt).unwrap();
+    assert_eq!(dragged.bone.as_deref(), Some("foot_r"));
+    assert!(dragged.value > 0.0, "{dragged:?}");
 }
 
 #[test]
@@ -206,4 +210,4 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "7588e27a7d1c7ccc";
+const PINNED: &str = "80f31428d61d6110";
