@@ -103,27 +103,39 @@ that stays in its cell is updated in place), rebuilt only when the world is repl
 **Sources.** The window's camera every frame, and each capture's camera for 10 s after it (at most four), so an agent's
 next capture from about the same place finds its view resident.
 
-**Wanted** (recomputed when a new capture view or a jump of the window's camera asks for it at once; otherwise at most
-every 100 ms while the window's camera moves or the world or the builds change, and at least once a second): a cell's
-members are wanted when a source is within `radius_m`, unless the cell's proxy is current and the source is beyond
-`preload` × its switch distance (the proxy draws them). A cell whose proxy is stale or still coming (an edit, a build
-landing) has its mergeable members stand in for it as far as proxies are wanted (`hlod_radius_m`), so it never vanishes
-while its proxy is rebuilt. Models that can't be merged (glass, textured, animated, moving) are drawn only within
-`radius_m`: raise it for long views of such models. Priority is the distance to the cell's box, halved inside the
-window's view frustum and quartered for captures (an agent is waiting); transient model entities (a game's
-presentation) are always wanted first. Proxies are wanted within `hlod_radius_m`, at half the priority of their cell
-(they're cheap and cover a lot); built proxies of cells no longer wanted are dropped.
+**Wanted.** A *pass* walks every cell and works out what its members and its proxy are wanted for. It is spread over
+frames (each frame spends half the upload budget on it, at least one cell), so a big world's update never costs a frame
+more than that; a capture from a new view or a jump of the window's camera runs a whole pass at once (an agent is
+waiting). Passes start when the window's camera moves (a quarter cell, or a tenth of the way to the nearest cell, a turn
+or a zoom: at most every 100 ms), when the world or the builds change, and at least once a second. Changed entities
+are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file); captures file
+everything at once.
 
-**Progressive levels.** A build uploads one LOD per item, **coarsest first**. An entity whose chosen level isn't
-resident yet draws the finest resident one (`LodStats::coarser`); it is never drawn from a level finer than the data.
-Entities with nothing resident aren't drawn (`not_resident`). So a new area appears coarse within a frame or two and
-sharpens, and nothing waits.
+- Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`: raise it for long views
+  of such models.
+- Mergeable members are wanted wherever a camera wouldn't draw the cell's proxy: within `preload` × its switch
+  distance when the proxy is current, whatever `radius_m` says (so there is no band where neither draws).
+- A cell whose proxy is stale or still coming (an edit, a build landing) has its mergeable members **stand in** for it
+  as far as proxies are wanted (`hlod_radius_m`); beyond `radius_m` (and the switch distance) they are wanted *softly*:
+  only their coarsest level, and they give way to anything nearer or hard-wanted under the memory budget.
+- **Wide** models (wider than a cell: a terrain, a cliff range) are wanted by their own box and never merged, so one
+  big model never stretches its cell over the world.
+- Priority is the distance to the cell's box (or the wide model's), halved inside the window's view frustum and
+  quartered for captures (an agent is waiting); transient model entities (a game's presentation) come first. Proxies
+  are wanted within `hlod_radius_m` at half their cell's priority; built proxies of cells no longer wanted are dropped.
+
+**Progressive levels.** A build uploads one LOD per item, **coarsest first**, and only down to the finest level a
+camera needs (its size on screen at that distance, with the window's LOD hysteresis as margin): a model 300 m away
+never has its LOD 0 uploaded. An entity whose chosen level isn't resident yet draws the finest resident one
+(`LodStats::coarser`). Entities with nothing resident aren't drawn (`not_resident`). So a new area appears coarse
+within a frame or two and sharpens, and nothing waits.
 
 ## Residency and eviction
 
 Uploaded builds and proxies count against `memory_mb` (`GpuModel::bytes`, proxy bytes). Before an upload that would go
-over, what **no source wants** is evicted, least recently wanted first (builds and proxies by the same clock) through
-`retire_*`: never a wait. A textured glTF build's pixels left the CPU at upload, so when an evicted one is wanted again
+over, what **no source wants** is evicted, least recently wanted first (builds and proxies by the same clock), then
+soft stand-ins and wanted proxies the window isn't drawing, farthest first, for anything nearer (a hard-wanted item may
+evict any of those), through `retire_*`: never a wait. A textured glTF build's pixels left the CPU at upload, so when an evicted one is wanted again
 the library imports it again (its entities show as building meanwhile). If the wanted set alone exceeds the budget, the
 lower-priority remainder stays out and is reported (`stream_memory_over_budget`); once nothing more can be evicted in a
 frame the rest are skipped at once, and captures don't wait for them. Nothing is evicted eagerly: a small world never
@@ -160,7 +172,7 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 
 ## What agents see
 
-- `perf_frame.streaming`: settings and who set them, this frame's uploads (count, KB, ms, deferred, memory-blocked,
+- `perf_frame.streaming`: settings and who set them, wanted / standing-in / blocked builds, blocked proxies, this frame's uploads (count, KB, ms, deferred, memory-blocked,
   evicted), the upload-ms series, totals, resident and budget MB, live / uploaded / partial / wanted / pending builds,
   sources, cells, the learned ms/MB, HLOD (cells current, stale, building, window cells and covered entities, proxy
   draws, build ms), the GPU's queued-upload counters; budget misses in `errors`.
@@ -168,6 +180,8 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 - **Sight packets:** `streaming {hlod_cells, hlod_entities, not_resident, coarser_lod, note}`; subjects get
   `drawn_as: "hlod"` (drawn merged: `visible_px` is null, the pixels belong to the proxy) or `"not_resident"` (built,
   not on the GPU, not drawn), and `resident_lods_from` while finer levels stream. A warning names not-resident models.
+  `sight_compare` doesn't diff the visibility of subjects drawn in a proxy on either side (no pixel count of their
+  own); it counts them in `visibility_not_compared_hlod`.
   Captures park until what their view needs (within `radius_m`, not proxied) is resident, like they wait for builds,
   so a capture shows the world as a player standing there would see it.
 - Tools: `stream_state` (summary, nearest cells with residency and proxy state and switch distance, entities not

@@ -262,9 +262,9 @@ impl Uploads {
             return Ok(self.slots[i].cmd);
         }
         // Fences are polled (and retired resources freed) once a frame, at `flush`; here only
-        // when no slot is free (on the Intel driver a poll can take milliseconds while the GPU
-        // is saturated).
-        if !self.slots.iter().any(|s| s.state == SlotState::Free) {
+        // when no slot is free and no more may be made (on the Intel driver a poll can take
+        // milliseconds while the GPU is saturated), so `slot_free` means "no poll".
+        if self.slots.len() == MAX_SLOTS && !self.slots.iter().any(|s| s.state == SlotState::Free) {
             let _z = specula_core::profile::zone("gpu.poll");
             self.poll_fences(dev);
         }
