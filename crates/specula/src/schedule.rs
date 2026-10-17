@@ -19,15 +19,15 @@
 //! their highest). Where it doesn't say, probes measure it: every 8th frame (and the first few)
 //! gets the smallest window, and the median of the last 7 probes' gaps since the previous present
 //! is the interval. (Measuring every gap instead would let an estimate keep itself too long:
-//! windows sized for it stretch the gaps.) **Under
-//! a backlog** (calls still queued as windows end, four windows running) the loop presents on
-//! every n-th vblank, n the most that keeps 60 fps (4 at 240 Hz, 1 at 60 Hz), and agents get the
-//! rest of each period, at least a quarter of it. A present usually finds a free image then and
-//! returns at once, so with n > 1 the window is steered by feedback instead: each frame it moves
-//! half the way to calling `present` a margin before the period is up (an early frame waits in
-//! the swapchain's queue for its vblank). A single fast agent can
-//! make a backlog too (its next call already waiting as windows end); one that pauses between
-//! calls keeps the display's full rate.
+//! windows sized for it stretch the gaps.)
+//!
+//! **Under a backlog** (at least two calls still queued as windows end, four windows running) the
+//! loop presents on every n-th vblank, n the most that keeps 60 fps (4 at 240 Hz, 1 at 60 Hz), and
+//! agents get the rest of each period, at least a quarter of it. A present usually finds a free
+//! image then and returns at once, so with n > 1 the window is steered by feedback instead: each
+//! frame it moves half the way to calling `present` a margin before the period is up (an early
+//! frame waits in the swapchain's queue for its vblank). One sequential agent never has two calls
+//! queued, so however fast it is, the human's window keeps the display's full rate.
 //!
 //! **Late frames** (the gap over the period plus half a refresh) raise the caution. A late frame
 //! whose present blocked over a refresh was submitted before its vblank and skipped by the display
@@ -35,12 +35,25 @@
 //! against the window.
 //!
 //! **Calls.** A call starts only as the first of a window or when the window still has room for
-//! the longest call of its kind lately (heavy ones, [`Schedule::serve`]'s `heavy`: captures,
-//! saves, loads; and the rest); otherwise it waits, at the head of the queue, for the next window.
-//! So a capture lands where the old loop ran it (right after a present) rather than pushing a frame
-//! past its vblank. The order calls are applied in never changes: a held call is the next handled.
+//! what calls of its [`Class`] cost lately: a decaying maximum per class, which halves every
+//! 50 ms down to the class's guess, so one slow call holds back neither other classes nor its own
+//! for long. A call that doesn't fit waits, at the head of the queue, for the next window. So a
+//! capture lands where the old loop ran it (right after a present) rather than pushing a frame
+//! past its vblank. The order calls are applied in never changes: held calls are the next handled.
+//!
+//! **Waiting.** A timed wait ends on the OS timer tick after its timeout (1 ms ticks with
+//! `FineTimer`), and std rounds timeouts up to whole milliseconds, but a call wakes a wait at
+//! once. So a window waits in whole milliseconds that end by its deadline plus half the base
+//! margin (the caution left out, or a raised margin would let waits run later and frames be late
+//! again); once less than that is left it waits a last millisecond only if it is serving an agent
+//! (whose next call is likely under way) and even a late wake-up leaves the frame on time, else
+//! it ends. Never busy-waits.
+//!
+//! Time comes from the [`Inbox`] the calls come from: real time in the engine, a simulated clock
+//! in the tests, which run the whole loop against a simulated display deterministically.
 
 use specula_core::Json;
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -61,12 +74,13 @@ pub const MAX_SERVE: Duration = Duration::from_millis(50);
 pub const MINIMIZED_SERVE: Duration = Duration::from_millis(16);
 /// Under a backlog, frames come at least this often (60 fps), on whole vblanks.
 const BUSY_FRAME: Duration = Duration::from_micros(16_667);
-/// Windows ending with calls queued, in a row, that make a backlog (and as many clear ones end it).
+/// Windows ending with a backlog, in a row, that make one (and as many clear ones end it).
 const BUSY_AFTER: u8 = 4;
-/// What a heavy call is assumed to cost before one has been timed.
-const HEAVY_GUESS: Duration = Duration::from_millis(8);
-/// What any other call is assumed to cost before one has been timed.
-const LIGHT_GUESS: Duration = Duration::from_micros(200);
+/// Calls queued as a window ends that make it end with a backlog (one sequential agent has at
+/// most one call queued).
+const BACKLOG_CALLS: usize = 2;
+/// A class's cost estimate halves this often (down to its guess).
+const COST_HALF_LIFE: Duration = Duration::from_millis(50);
 /// The refresh interval assumed before two presents have been timed.
 const REFRESH_GUESS: Duration = Duration::from_micros(16_667);
 /// Shorter gaps between presents are ignored (a burst after a stall).
@@ -97,10 +111,81 @@ fn whole_ms(d: Duration) -> Duration {
     Duration::from_millis(d.as_millis() as u64)
 }
 
+/// What a call costs, roughly: each class's recent cost is tracked apart, so a slow call holds
+/// back only calls like it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// Reads: queries, listings, history, info, perf.
+    Read,
+    /// Edits: spawns, sets, deletes, small batches, undo, claims, environment, the window camera.
+    Edit,
+    /// Renders: captures and every other sight call.
+    Render,
+    /// Disk: saves, loads, model builds and reloads.
+    Disk,
+    /// Big work: large batches, a journal replay check.
+    Big,
+    /// Simulation: stepping the clock.
+    Sim,
+    /// The hosted game's own tools.
+    Game,
+}
+
+const CLASSES: usize = 7;
+
+impl Class {
+    const ALL: [Class; CLASSES] = [Class::Read, Class::Edit, Class::Render, Class::Disk, Class::Big, Class::Sim, Class::Game];
+
+    /// What a call of this class is assumed to cost before one has been timed, and the least its
+    /// estimate decays to.
+    fn guess(self) -> Duration {
+        match self {
+            Class::Read | Class::Edit => Duration::from_micros(200),
+            Class::Game => Duration::from_micros(500),
+            Class::Sim => Duration::from_millis(1),
+            Class::Render | Class::Disk | Class::Big => Duration::from_millis(8),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Class::Read => "read",
+            Class::Edit => "edit",
+            Class::Render => "render",
+            Class::Disk => "disk",
+            Class::Big => "big",
+            Class::Sim => "sim",
+            Class::Game => "game",
+        }
+    }
+}
+
+/// Where calls come from, and the clock they are timed by.
+pub trait Inbox<R> {
+    fn now(&self) -> Instant;
+    fn try_recv(&mut self) -> Result<R, TryRecvError>;
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<R, RecvTimeoutError>;
+}
+
+/// The engine's: a channel, and real time.
+impl<R> Inbox<R> for &Receiver<R> {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn try_recv(&mut self) -> Result<R, TryRecvError> {
+        Receiver::try_recv(self)
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<R, RecvTimeoutError> {
+        Receiver::recv_timeout(self, timeout)
+    }
+}
+
 /// Why [`Schedule::serve`] returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Served {
-    /// The window ended (or a call is held for the next one).
+    /// The window ended (calls may be held for the next one).
     Window,
     /// `stop` said so.
     Stopped,
@@ -116,10 +201,8 @@ pub struct Schedule {
     sized: Duration,
     /// The frame period `sized` was computed for.
     sized_for: Duration,
-    /// The longest heavy call lately (decays by 1/8 per heavy call).
-    heavy_cost: Duration,
-    /// The longest other call lately (decays by 1/16 per call).
-    light_cost: Duration,
+    /// Per [`Class`]: the longest call lately and when it was measured (see [`Schedule::cost`]).
+    costs: [(Duration, Option<Instant>); CLASSES],
     /// The last presented frame's number (presents that showed nothing don't count) and when it
     /// was presented.
     last_frame: (u64, Option<Instant>),
@@ -136,7 +219,7 @@ pub struct Schedule {
     work: Duration,
     /// The margin's multiple, 1 to [`MAX_CAUTION`].
     caution: f32,
-    /// Windows that ended with calls queued, counted up to `2 * BUSY_AFTER` and down by clear
+    /// Windows that ended with a backlog, counted up to `2 * BUSY_AFTER` and down by clear
     /// ones; a backlog from [`BUSY_AFTER`].
     pressure: u8,
     /// Since start: serve windows, calls handled in them, calls held for the next window, late
@@ -157,8 +240,7 @@ impl Default for Schedule {
             serve: MIN_SERVE,
             sized: MIN_SERVE,
             sized_for: REFRESH_GUESS,
-            heavy_cost: HEAVY_GUESS,
-            light_cost: LIGHT_GUESS,
+            costs: Class::ALL.map(|c| (c.guess(), None)),
             last_frame: (0, None),
             display: None,
             refresh: None,
@@ -184,6 +266,7 @@ impl Schedule {
     /// perf_frame's `serve` section.
     pub fn to_json(self) -> Json {
         let ms = |d: Duration| Json::from((d.as_secs_f64() * 1e6).round() / 1e3);
+        let now = Instant::now();
         Json::obj([
             ("window_ms", ms(self.sized)),
             ("frame_period_ms", ms(self.period())),
@@ -192,8 +275,7 @@ impl Schedule {
             ("frame_work_ms", ms(self.work)),
             ("margin_ms", ms(self.margin())),
             ("backlog", Json::from(self.busy())),
-            ("heavy_cost_ms", ms(self.heavy_cost)),
-            ("light_cost_ms", ms(self.light_cost)),
+            ("call_cost_ms", Json::obj(Class::ALL.map(|c| (c.name(), ms(self.cost(c, now)))))),
             ("windows", Json::from(self.windows)),
             ("backlog_windows", Json::from(self.busy_windows)),
             ("calls", Json::from(self.calls)),
@@ -239,8 +321,27 @@ impl Schedule {
     /// How long `present` should still block: a quarter of the refresh interval (0.5 to 3 ms)
     /// times the caution, at most a refresh.
     pub fn margin(&self) -> Duration {
-        let refresh = self.refresh();
-        (refresh / 4).clamp(MIN_MARGIN, MAX_MARGIN).mul_f32(self.caution).min(refresh)
+        self.base_margin().mul_f32(self.caution).min(self.refresh())
+    }
+
+    /// The margin without the caution: a quarter of the refresh interval, 0.5 to 3 ms.
+    fn base_margin(&self) -> Duration {
+        (self.refresh() / 4).clamp(MIN_MARGIN, MAX_MARGIN)
+    }
+
+    /// What a call of `class` is expected to cost at `now`: the longest lately, halving every
+    /// [`COST_HALF_LIFE`] since it was measured, never under the class's guess.
+    fn cost(&self, class: Class, now: Instant) -> Duration {
+        let (cost, at) = self.costs[class as usize];
+        let age = at.map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+        let halvings = age.as_secs_f64() / COST_HALF_LIFE.as_secs_f64();
+        cost.mul_f64(0.5f64.powf(halvings.min(64.0))).max(class.guess())
+    }
+
+    /// A call of `class` took `took`, measured at `now`.
+    fn costed(&mut self, class: Class, took: Duration, now: Instant) {
+        let decayed = self.cost(class, now);
+        self.costs[class as usize] = (took.max(decayed - decayed / 16), Some(now));
     }
 
     /// Sizes the next window after a present that returned at `now`. `frame` is the presented
@@ -295,7 +396,7 @@ impl Schedule {
             // gap less what it blocked) to the period less the base margin. A present with free
             // images returns at once, and a frame presented early waits in the queue for its
             // vblank, so early is safe and the caution isn't needed.
-            let base_margin = (refresh / 4).clamp(MIN_MARGIN, MAX_MARGIN);
+            let base_margin = self.base_margin();
             let ready = gap.saturating_sub(blocked).as_secs_f64();
             let error = (period - base_margin).as_secs_f64() - ready;
             Duration::from_secs_f64((self.sized.as_secs_f64() + error / 2.0).max(0.0))
@@ -315,26 +416,34 @@ impl Schedule {
         }
     }
 
-    /// A window ended; `backlog`: calls were still queued.
-    fn ended(&mut self, backlog: bool) -> Served {
+    /// A window ended. Calls already queued are taken into `held` (in order) until it holds
+    /// [`BACKLOG_CALLS`]; that many make a backlog.
+    fn ended<R>(&mut self, inbox: &mut impl Inbox<R>, held: &mut VecDeque<R>) -> Served {
+        while held.len() < BACKLOG_CALLS {
+            match inbox.try_recv() {
+                Ok(r) => held.push_back(r),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Served::Disconnected,
+            }
+        }
         if self.busy() {
             self.busy_windows += 1;
         }
+        let backlog = held.len() >= BACKLOG_CALLS;
         self.pressure = if backlog { (self.pressure + 1).min(2 * BUSY_AFTER) } else { self.pressure.saturating_sub(1) };
         Served::Window
     }
 
-    /// Serves calls from `requests` (oldest first; `held` before any) until `deadline`, waking
-    /// as each arrives; the window ends by the deadline (a timed wait may end up to half the
-    /// margin after it) unless a call is still being handled.
-    /// `heavy` marks calls that may take long; `handle` applies one; `stop` is checked between
-    /// calls (a wait never outlasts the window). Never busy-waits.
+    /// Serves calls from `inbox` (oldest first; `held` before any) until `deadline`, waking as
+    /// each arrives (see the module docs for how waits end). `class` tells what a call costs;
+    /// `handle` applies one; `stop` is checked between calls. Calls still queued at the end may be
+    /// moved to `held`, which the next window starts with.
     pub fn serve<R>(
         &mut self,
-        requests: &Receiver<R>,
-        held: &mut Option<R>,
+        inbox: &mut impl Inbox<R>,
+        held: &mut VecDeque<R>,
         deadline: Instant,
-        heavy: impl Fn(&R) -> bool,
+        class: impl Fn(&R) -> Class,
         mut handle: impl FnMut(R),
         mut stop: impl FnMut() -> bool,
     ) -> Served {
@@ -344,63 +453,52 @@ impl Schedule {
             if stop() {
                 return Served::Stopped;
             }
-            let now = Instant::now();
-            let request = match held.take() {
+            let now = inbox.now();
+            let request = match held.pop_front() {
                 Some(r) => r,
-                None if now >= deadline => {
-                    // Over: whether calls are queued decides the backlog (the next window starts
-                    // with the oldest).
-                    return match requests.try_recv() {
-                        Ok(r) => {
-                            *held = Some(r);
-                            self.ended(true)
-                        }
-                        Err(TryRecvError::Empty) => self.ended(false),
-                        Err(TryRecvError::Disconnected) => Served::Disconnected,
-                    };
-                }
+                None if now >= deadline => return self.ended(inbox, held),
                 None => {
-                    // A timed wait ends on the OS timer tick after its timeout (up to a tick
-                    // late; 1 ms with `FineTimer`), and std rounds timeouts up to whole
-                    // milliseconds: wait whole milliseconds that end by the deadline plus half the
-                    // margin (which is there for late wake-ups), then only take what has already
-                    // arrived. A call wakes a wait at once, whatever the timer.
-                    let latest = deadline + self.margin() / 2;
-                    let wait = whole_ms((latest - now).saturating_sub(TIMER_SLOP));
-                    if wait.is_zero() {
-                        match requests.try_recv() {
-                            Ok(r) => r,
-                            Err(TryRecvError::Empty) => return self.ended(false),
-                            Err(TryRecvError::Disconnected) => return Served::Disconnected,
-                        }
+                    // Never tied to the caution: a margin raised by late frames shrinks the window
+                    // by as much, and must not let waits run later in turn.
+                    let latest = deadline + self.base_margin() / 2;
+                    let mut wait = whole_ms((latest - now).saturating_sub(TIMER_SLOP));
+                    // Serving an agent whose next call is likely under way: one last wait, if
+                    // even its latest wake-up leaves the frame on time (the deadline plus the
+                    // whole margin is when frame work must start).
+                    let last = wait.is_zero() && !first && now + 2 * TIMER_SLOP <= deadline + self.margin();
+                    if last {
+                        wait = TIMER_SLOP;
+                    }
+                    let received = if wait.is_zero() {
+                        inbox.try_recv().map_err(|e| match e {
+                            TryRecvError::Empty => RecvTimeoutError::Timeout,
+                            TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+                        })
                     } else {
-                        match requests.recv_timeout(wait) {
-                            Ok(r) => r,
-                            Err(RecvTimeoutError::Timeout) => continue,
-                            Err(RecvTimeoutError::Disconnected) => return Served::Disconnected,
-                        }
+                        inbox.recv_timeout(wait)
+                    };
+                    match received {
+                        Ok(r) => r,
+                        Err(RecvTimeoutError::Timeout) if !wait.is_zero() && !last => continue,
+                        Err(RecvTimeoutError::Timeout) => return self.ended(inbox, held),
+                        Err(RecvTimeoutError::Disconnected) => return Served::Disconnected,
                     }
                 }
             };
             // A call that would likely run past the deadline waits for the next window (unless
             // it is this window's first: every window makes progress).
-            let is_heavy = heavy(&request);
-            let cost = if is_heavy { self.heavy_cost } else { self.light_cost };
-            if !first && Instant::now() + cost > deadline {
-                *held = Some(request);
+            let kind = class(&request);
+            let now = inbox.now();
+            if !first && now + self.cost(kind, now) > deadline {
+                held.push_front(request);
                 self.held += 1;
-                return self.ended(true);
+                return self.ended(inbox, held);
             }
             first = false;
-            let started = Instant::now();
             handle(request);
             self.calls += 1;
-            let took = started.elapsed();
-            if is_heavy {
-                self.heavy_cost = took.max(self.heavy_cost - self.heavy_cost / 8);
-            } else {
-                self.light_cost = took.max(self.light_cost - self.light_cost / 16);
-            }
+            let done = inbox.now();
+            self.costed(kind, done - now, done);
         }
     }
 }
@@ -408,6 +506,8 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::mpsc::{self, Sender};
 
     fn ms(v: f64) -> Duration {
@@ -580,63 +680,313 @@ mod tests {
         assert_eq!(s.sized, MAX_SERVE);
     }
 
-    #[test]
-    fn a_heavy_call_waits_at_the_head_of_the_queue_and_order_is_kept() {
-        let (tx, rx) = mpsc::channel();
-        // 1 light, 2 heavy (it doesn't fit the window), 3 light.
-        for r in [1, 2, 3] {
-            tx.send(r).unwrap();
-        }
-        let mut s = Schedule { heavy_cost: Duration::from_secs(5), ..Schedule::default() };
-        let mut held = None;
-        let mut order = Vec::new();
-        let deadline = Instant::now() + ms(50.0);
-        let end = s.serve(&rx, &mut held, deadline, |r| *r == 2, |r| order.push(r), || false);
-        assert_eq!((end, order.as_slice(), held), (Served::Window, &[1][..], Some(2)));
-        // The next window starts with it, however heavy, then goes on in order.
-        let deadline = Instant::now() + ms(5.0);
-        let end = s.serve(&rx, &mut held, deadline, |r| *r == 2, |r| order.push(r), || false);
-        assert_eq!((end, order.as_slice(), held), (Served::Window, &[1, 2, 3][..], None));
-        assert_eq!((s.calls, s.held, s.windows, s.pressure), (3, 1, 2, 0));
+
+    // ---------------------------------------------------------------------------------------
+    // The loop against a simulated clock and display: deterministic, so fit for any CI machine.
+
+    /// A call in the simulation: when it arrives, what handling it costs, its class, and the
+    /// client that sends its next call a round trip after the reply (if any).
+    #[derive(Clone, Copy, Debug)]
+    struct Call {
+        id: u64,
+        at: Duration,
+        cost: Duration,
+        class: Class,
+        client: Option<usize>,
     }
 
-    #[test]
-    fn any_call_that_would_run_past_the_deadline_waits_unless_it_is_the_first() {
-        let (tx, rx) = mpsc::channel();
-        for r in [1, 2] {
-            tx.send(r).unwrap();
-        }
-        let mut s = Schedule { light_cost: Duration::from_secs(5), ..Schedule::default() };
-        let (mut held, mut order) = (None, Vec::new());
-        let end = s.serve(&rx, &mut held, Instant::now() + ms(50.0), |_| false, |r| order.push(r), || false);
-        assert_eq!((end, order.as_slice(), held), (Served::Window, &[1][..], Some(2)));
-        // What it really costs is learned (a decaying maximum).
-        assert!(s.light_cost < Duration::from_secs(5));
+    /// Simulated time and calls. Timed waits end like Windows' under a 1 ms timer: the timeout
+    /// rounded up to whole milliseconds, then half a tick late; a call arriving first wakes them.
+    struct Sim {
+        origin: Instant,
+        t: Duration,
+        /// Arrivals, in order.
+        queue: VecDeque<Call>,
+        /// Clients' round trip from a reply to their next call.
+        rtt: Duration,
+        handled: Vec<u64>,
+        next_id: u64,
     }
 
-    #[test]
-    fn windows_ending_with_calls_queued_make_a_backlog() {
-        let (tx, rx) = mpsc::channel();
-        let mut s = Schedule::default();
-        let mut held = None;
-        for round in 0..BUSY_AFTER {
-            assert!(!s.busy());
-            for r in 0..3 {
-                tx.send(round * 10 + r).unwrap();
+    type Shared = Rc<RefCell<Sim>>;
+
+    impl Sim {
+        fn new(rtt: Duration) -> Shared {
+            Rc::new(RefCell::new(Sim { origin: Instant::now(), t: Duration::ZERO, queue: VecDeque::new(), rtt, handled: Vec::new(), next_id: 0 }))
+        }
+
+        fn push(&mut self, at: Duration, cost: Duration, class: Class, client: Option<usize>) {
+            let call = Call { id: self.next_id, at, cost, class, client };
+            self.next_id += 1;
+            let i = self.queue.iter().position(|c| c.at > at).unwrap_or(self.queue.len());
+            self.queue.insert(i, call);
+        }
+
+        fn handle(&mut self, c: Call) {
+            self.t += c.cost;
+            self.handled.push(c.id);
+            if c.client.is_some() {
+                let at = self.t + self.rtt;
+                self.push(at, c.cost, c.class, c.client);
             }
-            // A deadline already past: one call, and the next is held.
-            let end = s.serve(&rx, &mut held, Instant::now(), |_| false, |_| {}, || false);
+        }
+    }
+
+    struct SimInbox(Shared);
+
+    impl Inbox<Call> for SimInbox {
+        fn now(&self) -> Instant {
+            let s = self.0.borrow();
+            s.origin + s.t
+        }
+
+        fn try_recv(&mut self) -> Result<Call, TryRecvError> {
+            let mut s = self.0.borrow_mut();
+            match s.queue.front() {
+                Some(c) if c.at <= s.t => Ok(s.queue.pop_front().expect("front")),
+                _ => Err(TryRecvError::Empty),
+            }
+        }
+
+        fn recv_timeout(&mut self, timeout: Duration) -> Result<Call, RecvTimeoutError> {
+            let mut s = self.0.borrow_mut();
+            let fires = s.t + Duration::from_millis(timeout.as_nanos().div_ceil(1_000_000) as u64) + ms(0.5);
+            match s.queue.front().copied() {
+                Some(c) if c.at <= fires => {
+                    s.t = s.t.max(c.at);
+                    Ok(s.queue.pop_front().expect("front"))
+                }
+                _ => {
+                    s.t = fires;
+                    Err(RecvTimeoutError::Timeout)
+                }
+            }
+        }
+    }
+
+    /// What one stretch of the simulated loop did.
+    #[derive(Debug)]
+    struct Run {
+        calls_per_s: f64,
+        fps: f64,
+        late: u64,
+        frames: u64,
+    }
+
+    /// Runs the windowed loop for `seconds` of simulated time: serve, `work` of frame work, then a
+    /// FIFO present that blocks until the next vblank of a display refreshing every `refresh`.
+    fn sim_loop(s: &mut Schedule, sim: &Shared, refresh: Duration, work: Duration, seconds: f64) -> Run {
+        let mut inbox = SimInbox(Rc::clone(sim));
+        let mut held = VecDeque::new();
+        let (start, calls) = (sim.borrow().t, sim.borrow().handled.len());
+        let (mut frames, mut late, mut last) = (0, 0, None);
+        while sim.borrow().t < start + Duration::from_secs_f64(seconds) {
+            let period = s.period();
+            let t0 = sim.borrow().t;
+            let deadline = sim.borrow().origin + t0 + s.window();
+            let handler = Rc::clone(sim);
+            let end = s.serve(&mut inbox, &mut held, deadline, |c| c.class, |c| handler.borrow_mut().handle(c), || false);
             assert_eq!(end, Served::Window);
-            assert!(held.is_some());
-            while rx.try_recv().is_ok() {}
-            held = None;
+            let mut st = sim.borrow_mut();
+            let served = st.t - t0;
+            st.t += work;
+            let at = refresh * (st.t.as_nanos() / refresh.as_nanos() + 1) as u32;
+            let blocked = at - st.t;
+            st.t = at;
+            late += last.is_some_and(|prev| at - prev > period + refresh / 2) as u64;
+            last = Some(at);
+            frames += 1;
+            let now = st.origin + st.t;
+            drop(st);
+            s.presented(s.last_frame.0 + 1, served, blocked, now);
         }
+        let elapsed = (sim.borrow().t - start).as_secs_f64();
+        let calls = (sim.borrow().handled.len() - calls) as f64;
+        // Calls held for the next window go back to the head of the queue for the next stretch.
+        while let Some(c) = held.pop_back() {
+            sim.borrow_mut().queue.push_front(c);
+        }
+        Run { calls_per_s: calls / elapsed, fps: frames as f64 / elapsed, late, frames }
+    }
+
+    /// Before this schedule, one agent that waits for each reply got one call per frame (60/s
+    /// at 60 Hz). Now it gets many, and however fast it is, it never makes a backlog: the
+    /// human's window keeps the display's full rate and its vblanks.
+    #[test]
+    fn one_sequential_agent_gets_over_300_calls_a_second_and_keeps_the_display_rate() {
+        for refresh in [HZ60, HZ240] {
+            for rtt in [ms(0.05), ms(0.7)] {
+                let sim = Sim::new(rtt);
+                sim.borrow_mut().push(Duration::ZERO, ms(0.1), Class::Edit, Some(0));
+                let mut s = Schedule::default();
+                s.set_display_refresh(Some(refresh));
+                sim_loop(&mut s, &sim, refresh, ms(1.0), 0.5);
+                let run = sim_loop(&mut s, &sim, refresh, ms(1.0), 2.0);
+                eprintln!("{refresh:?} display, round trip {rtt:?}: {run:?}");
+                let hz = 1.0 / refresh.as_secs_f64();
+                assert!(run.calls_per_s > 300.0, "{run:?} at {refresh:?}, round trip {rtt:?}");
+                assert!(run.fps > hz * 0.97, "{run:?} at {refresh:?}, round trip {rtt:?}");
+                assert!(run.late * 50 <= run.frames, "{run:?} at {refresh:?}, round trip {rtt:?}");
+                assert_eq!(s.busy_windows, 0, "one agent made a backlog at {refresh:?}, round trip {rtt:?}");
+            }
+        }
+    }
+
+    /// A slow agent (a round trip of 2 ms, longer than a 240 Hz window) still gets a call in
+    /// most frames, not one call per window at best.
+    #[test]
+    fn short_windows_wait_for_an_agents_next_call() {
+        let sim = Sim::new(ms(1.2));
+        sim.borrow_mut().push(Duration::ZERO, ms(0.1), Class::Edit, Some(0));
+        let mut s = Schedule::default();
+        s.set_display_refresh(Some(HZ240));
+        sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.5);
+        let run = sim_loop(&mut s, &sim, HZ240, ms(1.0), 2.0);
+        eprintln!("240 Hz display, round trip 1.2 ms: {run:?}");
+        assert!(run.calls_per_s > 1.5 * run.fps, "{run:?}");
+        assert!(run.late * 20 <= run.frames, "{run:?}");
+    }
+
+    /// A raised caution shrinks the window; waits must not then run later in turn, or frames
+    /// stay late and the caution never comes down (seen live on a hybrid-GPU laptop).
+    #[test]
+    fn a_raised_caution_comes_back_down() {
+        for rtt in [None, Some(ms(1.2))] {
+            let sim = Sim::new(rtt.unwrap_or(Duration::ZERO));
+            if rtt.is_some() {
+                sim.borrow_mut().push(Duration::ZERO, ms(0.1), Class::Edit, Some(0));
+            }
+            let mut s = Schedule::default();
+            s.set_display_refresh(Some(HZ240));
+            sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.1);
+            s.caution = MAX_CAUTION;
+            let run = sim_loop(&mut s, &sim, HZ240, ms(1.0), 2.0);
+            assert_eq!(run.late, 0, "{run:?}, round trip {rtt:?}");
+            assert!(s.caution < 1.1, "caution {}, round trip {rtt:?}", s.caution);
+        }
+    }
+
+    /// Eight agents whose calls take 0.3 ms each keep the queue full: at 240 Hz the loop drops to
+    /// 60 fps on whole vblanks and agents get most of the time.
+    #[test]
+    fn a_swarm_backlog_trades_the_display_rate_down_to_60_fps() {
+        let sim = Sim::new(ms(0.7));
+        for client in 0..8 {
+            sim.borrow_mut().push(Duration::ZERO, ms(0.3), Class::Edit, Some(client));
+        }
+        let mut s = Schedule::default();
+        s.set_display_refresh(Some(HZ240));
+        sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.5);
+        let run = sim_loop(&mut s, &sim, HZ240, ms(1.0), 2.0);
+        eprintln!("240 Hz display, 8 agents: {run:?}");
         assert!(s.busy());
-        // Clear windows end it.
-        for _ in 0..BUSY_AFTER {
-            s.serve(&rx, &mut held, Instant::now(), |_| false, |_| {}, || false);
+        // Serving all the time would be 3333 calls/s.
+        assert!(run.calls_per_s > 2500.0, "{run:?}");
+        assert!((55.0..=65.0).contains(&run.fps), "{run:?}");
+        assert!(run.late * 20 <= run.frames, "{run:?}");
+        // And when the swarm stops, the display's rate comes back.
+        sim.borrow_mut().queue.clear();
+        sim_loop(&mut s, &sim, HZ240, ms(1.0), 0.2);
+        let idle = sim_loop(&mut s, &sim, HZ240, ms(1.0), 1.0);
+        assert!(!s.busy() && idle.fps > 235.0, "{idle:?}");
+    }
+
+    /// 13 ms windows on a 60 Hz display serving a queue: how many it takes to handle everything.
+    fn windows_to_drain(sim: &Shared, s: &mut Schedule) -> u32 {
+        let mut inbox = SimInbox(Rc::clone(sim));
+        let mut held = VecDeque::new();
+        let mut windows = 0;
+        while !sim.borrow().queue.is_empty() || !held.is_empty() {
+            let deadline = inbox.now() + ms(13.0);
+            let handler = Rc::clone(sim);
+            s.serve(&mut inbox, &mut held, deadline, |c| c.class, |c| handler.borrow_mut().handle(c), || false);
+            // Frame work, then a present that blocks until the next 60 Hz vblank.
+            let mut st = sim.borrow_mut();
+            st.t = HZ60 * ((st.t + ms(3.0)).as_nanos() / HZ60.as_nanos() + 1) as u32;
+            drop(st);
+            windows += 1;
+            assert!(windows < 1000, "never drained");
         }
-        assert!(!s.busy());
+        windows
+    }
+
+    /// Reviewer finding: one 500 ms call then 2,000 cheap ones queued got exactly one call per
+    /// window for ~56 windows (one cost estimate for every light call, decaying per call).
+    #[test]
+    fn one_slow_call_does_not_hold_back_the_queue_behind_it() {
+        // Another class: not held back at all.
+        let sim = Sim::new(Duration::ZERO);
+        sim.borrow_mut().push(Duration::ZERO, ms(500.0), Class::Sim, None);
+        for _ in 0..2000 {
+            sim.borrow_mut().push(Duration::ZERO, ms(0.01), Class::Read, None);
+        }
+        let windows = windows_to_drain(&sim, &mut Schedule::default());
+        eprintln!("drained in {windows} windows");
+        assert!(windows <= 4, "{windows} windows");
+        // The same class: its estimate halves every 50 ms, so the queue moves within a few frames.
+        let sim = Sim::new(Duration::ZERO);
+        for i in 0..2001 {
+            sim.borrow_mut().push(Duration::ZERO, if i == 0 { ms(500.0) } else { ms(0.01) }, Class::Edit, None);
+        }
+        let windows = windows_to_drain(&sim, &mut Schedule::default());
+        eprintln!("drained in {windows} windows");
+        assert!(windows <= 20, "{windows} windows");
+        let order = sim.borrow().handled.clone();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "calls ran out of order");
+    }
+
+    #[test]
+    fn a_call_that_would_run_past_the_deadline_waits_at_the_head_of_the_queue_unless_first() {
+        let sim = Sim::new(Duration::ZERO);
+        for class in [Class::Read, Class::Render, Class::Read] {
+            sim.borrow_mut().push(Duration::ZERO, ms(0.1), class, None);
+        }
+        let mut s = Schedule::default();
+        s.costs[Class::Render as usize] = (Duration::from_secs(5), Some(sim.borrow().origin));
+        let (mut inbox, mut held) = (SimInbox(Rc::clone(&sim)), VecDeque::new());
+        let handler = Rc::clone(&sim);
+        let mut handle = |c: Call| handler.borrow_mut().handle(c);
+        let deadline = inbox.now() + ms(50.0);
+        s.serve(&mut inbox, &mut held, deadline, |c| c.class, &mut handle, || false);
+        assert_eq!((sim.borrow().handled.clone(), held.iter().map(|c| c.id).collect::<Vec<_>>()), (vec![0], vec![1, 2]));
+        // The next window starts with it, however costly, then goes on in order.
+        let deadline = inbox.now() + ms(50.0);
+        s.serve(&mut inbox, &mut held, deadline, |c| c.class, &mut handle, || false);
+        assert_eq!((sim.borrow().handled.clone(), held.len()), (vec![0, 1, 2], 0));
+        assert_eq!((s.calls, s.held, s.windows), (3, 1, 2));
+    }
+
+    #[test]
+    fn two_calls_queued_as_windows_end_make_a_backlog_and_one_does_not() {
+        for (queued, busy) in [(1, false), (2, true)] {
+            let sim = Sim::new(Duration::ZERO);
+            let mut s = Schedule::default();
+            let (mut inbox, mut held) = (SimInbox(Rc::clone(&sim)), VecDeque::new());
+            for _ in 0..BUSY_AFTER {
+                // A window whose deadline has passed handles nothing new: `queued` calls wait.
+                for _ in 0..queued {
+                    let t = sim.borrow().t;
+                    sim.borrow_mut().push(t, ms(0.1), Class::Read, None);
+                }
+                let handler = Rc::clone(&sim);
+                let deadline = inbox.now();
+                s.serve(&mut inbox, &mut held, deadline, |c| c.class, |c| handler.borrow_mut().handle(c), || false);
+                assert_eq!(held.len(), queued);
+                held.clear();
+            }
+            assert_eq!(s.busy(), busy, "{queued} queued");
+        }
+    }
+
+    #[test]
+    fn class_costs_decay_to_their_guess() {
+        let mut s = Schedule::default();
+        let t = Instant::now();
+        s.costed(Class::Read, ms(100.0), t);
+        assert_eq!(s.cost(Class::Read, t), ms(100.0));
+        assert!(s.cost(Class::Read, t + COST_HALF_LIFE).abs_diff(ms(50.0)) < ms(0.01));
+        assert_eq!(s.cost(Class::Read, t + Duration::from_secs(10)), Class::Read.guess());
+        assert_eq!(s.cost(Class::Render, t), Class::Render.guess());
     }
 
     #[test]
@@ -644,12 +994,13 @@ mod tests {
         let (tx, rx) = mpsc::channel::<u32>();
         let mut s = Schedule::default();
         let far = Instant::now() + Duration::from_secs(10);
-        assert_eq!(s.serve(&rx, &mut None, far, |_| false, |_| {}, || true), Served::Stopped);
+        let mut inbox = &rx;
+        assert_eq!(s.serve(&mut inbox, &mut VecDeque::new(), far, |_| Class::Read, |_| {}, || true), Served::Stopped);
         drop(tx);
-        assert_eq!(s.serve(&rx, &mut None, far, |_| false, |_| {}, || false), Served::Disconnected);
+        assert_eq!(s.serve(&mut inbox, &mut VecDeque::new(), far, |_| Class::Read, |_| {}, || false), Served::Disconnected);
     }
 
-    /// With nothing to serve, a window is a wait or two (no spinning) that ends by its deadline.
+    /// With nothing to serve, a window is a wait or two (no spinning) that ends near its deadline.
     #[test]
     fn an_idle_window_sleeps_until_its_deadline() {
         let _timer = specula_platform::timer::FineTimer::request();
@@ -661,7 +1012,7 @@ mod tests {
             wakes += 1;
             false
         };
-        let end = s.serve(&rx, &mut None, start + ms(30.0), |_| false, |_| {}, stop);
+        let end = s.serve(&mut &rx, &mut VecDeque::new(), start + ms(30.0), |_| Class::Read, |_| {}, stop);
         let took = start.elapsed();
         assert_eq!(end, Served::Window);
         assert!(took >= ms(27.0), "{took:?}");
@@ -674,18 +1025,22 @@ mod tests {
         assert_eq!(whole_ms(ms(1.9).saturating_sub(TIMER_SLOP)), Duration::ZERO);
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The same against real time and threads. Timing-sensitive (a loaded or small machine fails
+    // them), so ignored by default: `cargo test -p specula --lib schedule -- --ignored --nocapture`.
+
     /// A call and where its reply goes, like the engine's.
-    struct Call {
+    struct RealCall {
         n: u64,
         reply: Sender<u64>,
     }
 
-    /// The windowed loop against a fake display: frame work takes 1 to 1.5 ms, and `present`
-    /// blocks until the next vblank (FIFO; a late frame waits for the vblank after). `clients`
-    /// threads call back to back, each waiting for its reply, as MCP agents do; handling a call
-    /// takes `cost`. Returns (calls per second, frames, frames later than their period).
-    fn fake_display(refresh: Duration, clients: usize, cost: Duration, run_for: Duration) -> (f64, u64, u64) {
-        let (to_engine, requests) = mpsc::channel::<Call>();
+    /// The windowed loop against a fake display in real time: frame work takes 1 to 1.5 ms, and
+    /// `present` sleeps until the next vblank. `clients` threads call back to back, each waiting
+    /// for its reply; handling a call takes `cost`. Returns (calls per second, frames, frames
+    /// later than their period).
+    fn real_display(refresh: Duration, clients: usize, cost: Duration, run_for: Duration) -> (f64, u64, u64) {
+        let (to_engine, requests) = mpsc::channel::<RealCall>();
         let threads: Vec<_> = (0..clients)
             .map(|_| {
                 let to_engine = to_engine.clone();
@@ -694,7 +1049,7 @@ mod tests {
                     let start = Instant::now();
                     let mut calls = 0u64;
                     while start.elapsed() < run_for {
-                        to_engine.send(Call { n: calls, reply: reply_tx.clone() }).unwrap();
+                        to_engine.send(RealCall { n: calls, reply: reply_tx.clone() }).unwrap();
                         assert_eq!(replies.recv().unwrap(), calls);
                         calls += 1;
                     }
@@ -704,20 +1059,19 @@ mod tests {
             .collect();
         drop(to_engine);
         let mut s = Schedule::default();
-        let mut held = None;
+        s.set_display_refresh(Some(refresh));
+        let mut held = VecDeque::new();
         let origin = Instant::now();
         let (mut frames, mut late, mut last_vblank) = (0u64, 0u64, None);
         let mut seed = 0x2545_f491_u32;
-        let handle = |c: Call| {
-            if !cost.is_zero() {
-                let t = Instant::now();
-                while t.elapsed() < cost {}
-            }
+        let handle = |c: RealCall| {
+            let t = Instant::now();
+            while t.elapsed() < cost {}
             c.reply.send(c.n).unwrap();
         };
         loop {
             let served_from = Instant::now();
-            let end = s.serve(&requests, &mut held, served_from + s.window(), |_| false, handle, || false);
+            let end = s.serve(&mut &requests, &mut held, served_from + s.window(), |_| Class::Edit, handle, || false);
             if end == Served::Disconnected {
                 break;
             }
@@ -739,33 +1093,26 @@ mod tests {
         (calls as f64 / origin.elapsed().as_secs_f64(), frames, late)
     }
 
-    /// Before this schedule, a sequential client got one call per frame (60/s at 60 Hz). Frame
-    /// pacing must hold meanwhile: nearly every frame lands on the next vblank (a loaded CI machine
-    /// may miss a few).
     #[test]
-    fn one_sequential_client_gets_over_300_calls_a_second() {
-        // Timed waits wake on the OS timer tick (15.6 ms by default on Windows): ask for 1 ms, as
-        // the engine does while its window is open.
+    #[ignore = "real time: run on an idle machine with -- --ignored --nocapture"]
+    fn real_time_one_sequential_client() {
         let _timer = specula_platform::timer::FineTimer::request();
         for refresh in [HZ60, HZ240] {
-            let (rate, frames, late) = fake_display(refresh, 1, Duration::ZERO, Duration::from_millis(1500));
+            let (rate, frames, late) = real_display(refresh, 1, Duration::ZERO, Duration::from_millis(1500));
             eprintln!("{refresh:?} display: one sequential client {rate:.0} calls/s; {frames} frames, {late} late");
             assert!(rate > 300.0, "{rate:.0} calls/s at a {refresh:?} refresh");
             assert!(late * 10 <= frames, "{late} of {frames} frames late at a {refresh:?} refresh");
         }
     }
 
-    /// Eight clients whose calls take 0.3 ms each keep the queue full: at 240 Hz the loop drops to
-    /// 60 fps on whole vblanks and agents get most of the time.
     #[test]
-    fn a_swarm_backlog_trades_the_display_rate_down_to_60_fps() {
+    #[ignore = "real time: run on an idle machine with -- --ignored --nocapture"]
+    fn real_time_swarm_backlog() {
         let _timer = specula_platform::timer::FineTimer::request();
         let run_for = Duration::from_millis(1500);
-        let (rate, frames, late) = fake_display(HZ240, 8, ms(0.3), run_for);
+        let (rate, frames, late) = real_display(HZ240, 8, ms(0.3), run_for);
         let fps = frames as f64 / run_for.as_secs_f64();
         eprintln!("240 Hz display, 8 clients at 0.3 ms a call: {rate:.0} calls/s; {fps:.0} fps, {late} of {frames} late");
-        // Serving all the time would be 3333 calls/s; serving only the margin of every vblank
-        // about half that.
         assert!(rate > 2000.0, "{rate:.0} calls/s");
         assert!((45.0..=80.0).contains(&fps), "{fps:.0} fps");
         assert!(late * 10 <= frames, "{late} of {frames} frames late");

@@ -76,7 +76,8 @@ mod tests {
         let timer = FineTimer::request();
         assert_eq!(timer.active(), cfg!(windows));
         let (_tx, rx) = std::sync::mpsc::channel::<()>();
-        // The best of several: a busy machine may delay any one wake-up.
+        // The best of several: a busy machine may delay any one wake-up. Under 12 ms still tells
+        // a 1 ms timer from the 15.6 ms default.
         let best = (0..5)
             .map(|_| {
                 let t = Instant::now();
@@ -85,6 +86,6 @@ mod tests {
             })
             .min()
             .unwrap();
-        assert!(best >= Duration::from_millis(2) && best < Duration::from_millis(6), "a 2 ms wait took {best:?}");
+        assert!(best >= Duration::from_millis(2) && best < Duration::from_millis(12), "a 2 ms wait took {best:?}");
     }
 }

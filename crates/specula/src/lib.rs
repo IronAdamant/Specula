@@ -38,7 +38,7 @@ use game::{Clock, Ctx, Game, MAX_GAME_OVERLAY_QUADS};
 use journal::{Kind, Writer};
 use meshes::{LatheMeshes, ShapeMeshes};
 use models::{GpuModels, Library, LodChoice, LodStats, SharedLibrary};
-use schedule::{Schedule, Served};
+use schedule::{Class, Schedule, Served};
 use sight::{Camera, Meshes, View};
 use specula_core::deflate::Level;
 use specula_core::math::Mat4;
@@ -93,7 +93,7 @@ const DEFAULT_TICK_HZ: u32 = 30;
 const TICK_HASHES: usize = 1024;
 /// How often claims of vanished sessions are dropped.
 const CLAIM_SWEEP_EVERY: Duration = Duration::from_secs(1);
-/// world_batch calls with more ops than this count as heavy for the window's schedule.
+/// world_batch calls with more ops than this are big work for the window's schedule.
 const HEAVY_BATCH_OPS: usize = 256;
 /// How often the windowed loop asks for its display's refresh rate.
 const REFRESH_ASK_EVERY: Duration = Duration::from_secs(1);
@@ -1151,8 +1151,10 @@ impl Engine {
         let mut schedule = Schedule::default();
         // The display's refresh rate, asked every second (the window may move to another display).
         let mut refresh_asked: Option<Instant> = None;
-        // The oldest queued call when the last serve window ended: the next one starts with it.
-        let mut held: Option<Request> = None;
+        // The oldest calls queued when the last serve window ended (at most two): the next one
+        // starts with them.
+        let mut held: VecDeque<Request> = VecDeque::with_capacity(2);
+        let mut inbox = requests;
         let mut minimized = false;
         loop {
             // Everything recorded during the previous iteration is that frame's profile.
@@ -1169,10 +1171,10 @@ impl Engine {
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
             let serve_start = Instant::now();
             let ended = schedule.serve(
-                requests,
+                &mut inbox,
                 &mut held,
                 serve_start + window,
-                |r| heavy(&r.command),
+                |r| call_class(&r.command),
                 |r| {
                     let _z = profile::zone("requests");
                     self.handle(r, server);
@@ -1180,8 +1182,8 @@ impl Engine {
                 || interrupt::requested() || ui.close_requested(),
             );
             if ended != Served::Window {
-                // Stopping (or the server is gone). A held call's reply channel closes as it
-                // drops, which answers it "shutting down".
+                // Stopping (or the server is gone). Held calls' reply channels close as they
+                // drop, which answers them "shutting down".
                 break;
             }
             let served = serve_start.elapsed();
@@ -1921,14 +1923,40 @@ impl Engine {
     }
 }
 
-/// Calls that may take long (renders, disk, a journal replay, big batches): a serve window only
-/// starts one when it has room (see `schedule`), else the next window starts with it.
-fn heavy(command: &Command) -> bool {
+/// What kind of cost a call has, for the window's schedule: a serve window only starts a call
+/// when it has room for what calls of its class cost lately (see `schedule`).
+fn call_class(command: &Command) -> Class {
     match command {
-        Command::Frame(_) | Command::Sight(_) | Command::Save { .. } | Command::Load { .. } | Command::ModelReload => true,
-        Command::Hash { verify, .. } => *verify,
-        Command::Batch(ops) => ops.len() > HEAVY_BATCH_OPS,
-        _ => false,
+        Command::Frame(_) | Command::Sight(_) => Class::Render,
+        Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
+        Command::Hash { verify: true, .. } => Class::Big,
+        Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
+        Command::Time(TimeOp::Step(_)) => Class::Sim,
+        Command::Game { .. } => Class::Game,
+        Command::Spawn(_)
+        | Command::Set(..)
+        | Command::Delete(..)
+        | Command::Batch(_)
+        | Command::Env(_)
+        | Command::View(_)
+        | Command::Undo(_)
+        | Command::Hello { .. }
+        | Command::ClaimTake(_)
+        | Command::ClaimRenew { .. }
+        | Command::ClaimRelease { .. }
+        | Command::ClaimShare { .. }
+        | Command::Time(_)
+        | Command::PerfCapture(_) => Class::Edit,
+        Command::Query(_)
+        | Command::TileGet { .. }
+        | Command::Info
+        | Command::Perf { .. }
+        | Command::PerfZones(_)
+        | Command::PerfMemory { .. }
+        | Command::History(_)
+        | Command::Changes(_)
+        | Command::Hash { .. }
+        | Command::ClaimList { .. } => Class::Read,
     }
 }
 
@@ -2019,18 +2047,19 @@ fn prune_capture_runs(root: &Path, keep: usize, current: &Path) {
 mod tests {
     use super::*;
 
-    /// Renders, disk, journal replays and big batches wait for room in a serve window; ordinary
-    /// edits and reads don't.
+    /// Each kind of cost is tracked apart: a slow step or game tool doesn't hold back edits.
     #[test]
-    fn calls_that_may_take_long_are_heavy() {
-        assert!(heavy(&Command::Save { name: None, overwrite: false }));
-        assert!(heavy(&Command::Load { name: "w".into(), force: false }));
-        assert!(heavy(&Command::ModelReload));
-        assert!(heavy(&Command::Hash { recent: 0, tick: None, verify: true }));
-        assert!(!heavy(&Command::Hash { recent: 8, tick: None, verify: false }));
-        assert!(!heavy(&Command::Info));
-        assert!(!heavy(&Command::Batch(Vec::new())));
-        assert!(!heavy(&Command::Time(TimeOp::Step(1))));
+    fn calls_are_classed_by_what_they_cost() {
+        assert_eq!(call_class(&Command::Save { name: None, overwrite: false }), Class::Disk);
+        assert_eq!(call_class(&Command::Load { name: "w".into(), force: false }), Class::Disk);
+        assert_eq!(call_class(&Command::ModelReload), Class::Disk);
+        assert_eq!(call_class(&Command::Hash { recent: 0, tick: None, verify: true }), Class::Big);
+        assert_eq!(call_class(&Command::Hash { recent: 8, tick: None, verify: false }), Class::Read);
+        assert_eq!(call_class(&Command::Info), Class::Read);
+        assert_eq!(call_class(&Command::Batch(Vec::new())), Class::Edit);
+        assert_eq!(call_class(&Command::Time(TimeOp::Step(18_000))), Class::Sim);
+        assert_eq!(call_class(&Command::Time(TimeOp::Pause)), Class::Edit);
+        assert_eq!(call_class(&Command::Game { name: "play_x".into(), args: Json::Null }), Class::Game);
     }
 
     /// Reviewer finding (round 7, F5): an agent camera in the window must never lock the human
