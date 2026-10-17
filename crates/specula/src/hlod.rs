@@ -45,7 +45,7 @@ pub const HYSTERESIS: f32 = 0.10;
 /// Entity ids above this are never merged (the cover bitset stays at most 8 MB).
 pub const MAX_COVER_ID: u64 = 1 << 26;
 /// Vertices one proxy holds at most; members past it stay on their own.
-pub const MAX_PROXY_VERTICES: usize = 1 << 20;
+pub const MAX_PROXY_VERTICES: usize = 1 << 18;
 /// Proxy builds queued or running at once.
 pub const MAX_JOBS: usize = 16;
 /// The coarsest level `select_lod` ever picks.
@@ -510,7 +510,7 @@ impl Hlod {
     /// Built proxies waiting for upload: `(priority, cell, bytes of the next group)`.
     pub fn uploads(&self) -> impl Iterator<Item = (f32, CellKey, u64)> + '_ {
         self.cells.iter().filter_map(|(k, c)| {
-            let r = c.ready.as_ref()?;
+            let r = c.ready.as_ref().filter(|r| r.key == c.content.key)?;
             let want = c.want?;
             let next = if c.staged.0 == r.key { c.staged.1.len() } else { 0 };
             let g = r.groups.get(next)?;
@@ -523,6 +523,10 @@ impl Hlod {
     /// is retired. Returns the bytes uploaded.
     pub fn upload(&mut self, cell: CellKey, gpu: &mut Gpu) -> Result<u64, String> {
         let Some(c) = self.cells.get_mut(&cell) else { return Ok(0) };
+        if c.ready.as_ref().is_some_and(|r| r.key != c.content.key) {
+            // The cell changed while it waited: a newer build comes.
+            c.ready = None;
+        }
         let Some(r) = &c.ready else { return Ok(0) };
         if c.staged.0 != r.key {
             // Groups of an older build: gone.

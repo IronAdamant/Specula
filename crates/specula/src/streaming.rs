@@ -433,6 +433,8 @@ pub struct Streamer {
     updates: u64,
     last_update: Option<Instant>,
     force_update: bool,
+    /// The world or the builds changed since the last update (it runs within UPDATE_EVERY).
+    stale: bool,
     /// Where the window's eye was and which way it looked at the last update.
     window_eye: Option<(Vec3, Vec3)>,
     /// The window's camera moved (or turned) since the last update.
@@ -480,6 +482,7 @@ impl Streamer {
             updates: 0,
             last_update: None,
             force_update: true,
+            stale: false,
             window_eye: None,
             window_moved: false,
             frame: FrameUpload::default(),
@@ -530,9 +533,7 @@ impl Streamer {
         if old.enabled != self.cfg.enabled || old.hlod != self.cfg.hlod || old.cell_m != self.cfg.cell_m {
             self.hlod.clear(gpu);
             self.index = Index::default();
-            for m in &mut models.cover {
-                *m = 0;
-            }
+            models.cover.fill(0);
         }
         if old.enabled && !self.cfg.enabled {
             // The plain path uploads whole builds: partial ones go and come back complete.
@@ -643,7 +644,7 @@ impl Streamer {
         }
         let live = &self.live;
         models.failed.retain(|id, _| live.contains_key(id));
-        self.force_update = true;
+        self.stale = true;
         std::mem::take(&mut self.upload_errors)
     }
 
@@ -667,11 +668,13 @@ impl Streamer {
         // Finished proxy builds are taken every frame (their uploads go by priority).
         self.hlod.collect();
         let since = self.last_update.map_or(Duration::MAX, |t| now.duration_since(t));
-        let due = self.force_update || changed || since >= UPDATE_IDLE || (self.window_moved && since >= UPDATE_EVERY);
+        self.stale |= changed;
+        let due = self.force_update || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
         if due {
             self.update(world, models, library, gpu, now);
         }
-        self.pump(gpu, models, library);
+        // The frame's streaming work so far (filing, the wanted set) counts against the upload budget.
+        self.pump(gpu, models, library, now);
     }
 
     /// Recomputes HLOD contents of changed cells, the wanted builds and proxies, and schedules
@@ -680,6 +683,7 @@ impl Streamer {
         self.updates += 1;
         self.last_update = Some(now);
         self.force_update = false;
+        self.stale = false;
         self.window_eye = self.sources.iter().find(|s| s.kind == SourceKind::Window).map(|s| (s.eye, s.dir));
         self.window_moved = false;
         let frame = self.updates;
@@ -776,7 +780,7 @@ impl Streamer {
 
     /// Uploads within the frame's budget, evicting under the memory budget (see the module
     /// docs).
-    fn pump(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary) {
+    fn pump(&mut self, gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, frame_start: Instant) {
         let _z = specula_core::profile::zone("pump");
         enum Item {
             Build(u64),
@@ -811,7 +815,7 @@ impl Streamer {
         let mut blocked = 0u64;
         let count = items.len() as u32;
         for (i, (_, item, est)) in items.into_iter().enumerate() {
-            let spent = started.elapsed().as_secs_f64() * 1e3;
+            let spent = frame_start.elapsed().as_secs_f64() * 1e3;
             if spent >= budget_ms {
                 self.frame.deferred += count - i as u32;
                 break;
@@ -851,9 +855,12 @@ impl Streamer {
                     // Learn the costs: small items give the fixed part, big ones the part per MB.
                     let mb = bytes as f64 / 1_048_576.0;
                     if bytes < 64 * 1024 {
+                        // A sample past 3x the estimate is a stall (a busy driver, the OS), not the cost:
+                        // clipped, so one never starves the budget for later frames.
+                        let ms = ms.min(self.ms_per_item * 3.0 + 0.05);
                         self.ms_per_item = (self.ms_per_item * 0.9 + ms * 0.1).clamp(0.001, 50.0);
                     } else {
-                        let rate = (ms - self.ms_per_item).max(0.0) / mb;
+                        let rate = ((ms - self.ms_per_item).max(0.0) / mb).min(self.ms_per_mb * 3.0 + 0.1);
                         self.ms_per_mb = (self.ms_per_mb * 0.8 + rate * 0.2).clamp(0.05, 200.0);
                     }
                 }

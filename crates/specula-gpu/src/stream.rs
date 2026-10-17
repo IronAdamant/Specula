@@ -253,9 +253,12 @@ impl Uploads {
         if let Some(i) = self.recording {
             return Ok(self.slots[i].cmd);
         }
-        {
+        // Fences are polled (and retired resources freed) once a frame, at `flush`; here only
+        // when no slot is free (on the Intel driver a poll can take milliseconds while the GPU
+        // is saturated).
+        if !self.slots.iter().any(|s| s.state == SlotState::Free) {
             let _z = specula_core::profile::zone("gpu.poll");
-            self.poll(dev);
+            self.poll_fences(dev);
         }
         let i = match self.slots.iter().position(|s| s.state == SlotState::Free) {
             Some(i) => i,
@@ -279,7 +282,7 @@ impl Uploads {
                 if dev.wait_fence(self.slots[oldest].fence).is_err() {
                     dev.wait_idle();
                 }
-                self.poll(dev);
+                self.poll_fences(dev);
                 self.slots.iter().position(|s| s.state == SlotState::Free).unwrap_or(oldest)
             }
         };
@@ -377,6 +380,13 @@ impl Uploads {
 
     /// Takes finished batches (fences polled, never waited) and frees what they release.
     pub fn poll(&mut self, dev: &Device) {
+        self.poll_fences(dev);
+        let _z = specula_core::profile::zone("gpu.free");
+        self.free_finished(dev, Some(FREE_BUDGET));
+    }
+
+    /// Takes finished batches (fences polled, never waited); frees nothing.
+    fn poll_fences(&mut self, dev: &Device) {
         for slot in &mut self.slots {
             if let SlotState::InFlight(serial) = slot.state {
                 if fence_signaled(dev, slot.fence) {
@@ -390,7 +400,6 @@ impl Uploads {
         }
         let done = self.completed;
         self.pending_ids.retain(|&(_, s)| s == u64::MAX || s > done);
-        self.free_finished(dev, Some(FREE_BUDGET));
     }
 
     /// Frees retired resources whose batch finished, oldest first, within `budget` (`None`: all).
