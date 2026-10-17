@@ -162,7 +162,7 @@ P1–P3 as designed above, with these changes and details. Each amendment says w
 (support mappings, GJK), `contact` (narrowphase), `query` (raycasts, shape casts, overlaps), `solver` (Soft Step),
 `space` (the world: bodies, pairs, step, sleep, tunnelling guard, events, hash), `character` (P2). The engine bridge is
 `crates/specula/src/physics.rs`; the tools and overlays are `crates/specula/src/physics_tools.rs`. Live check:
-`scripts/physics_check.py`; benchmark: `cargo run --release -p specula-physics --example bench`.
+`scripts/physics_check.py`; benchmark: `cargo run --release -p specula-physics --example physics_bench`.
 
 **Components (world data).** `collider: {shape: box | sphere | capsule | hull (4–64 points) | mesh (≤ 4,096 vertices,
 8,192 triangles; static only) | heightfield (2–129 per side; static only), offset, is_trigger, layer, mask (layer

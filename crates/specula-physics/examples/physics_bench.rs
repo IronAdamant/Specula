@@ -1,6 +1,6 @@
 //! Physics benchmark (foundation F3): the PHYSICS.md budget scenes, timed on this machine.
 //!
-//! `cargo run --release -p specula-physics --example bench [-- --quick]`
+//! `cargo run --release -p specula-physics --example physics_bench [-- --quick]`
 //!
 //! - **pyramid**: a 20-row pyramid of boxes (210 bodies) settling and falling asleep.
 //! - **awake 1000**: 1,000 mixed bodies (boxes, spheres, capsules, hulls) raining onto a floor;

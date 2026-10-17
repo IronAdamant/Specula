@@ -72,7 +72,7 @@ def scene_ops():
         # A bouncing ball.
         {"op": "spawn", "shape": "sphere", "name": "ball", "position": [3, 6, -4], "scale": [0.6, 0.6, 0.6], "color": "#d04a4a",
          "collider": {"shape": "sphere", "radius": 0.5, "restitution": 0.7}, "body": {"kind": "dynamic", "mass": 1}},
-        # A thin wall and a fast slug fired at it (300 m/s: 5 m per tick).
+        # A thin wall and a fast slug fired at it (300 m/s: 10 m per tick at the engine's 30 Hz).
         {"op": "spawn", "shape": "cube", "name": "thin_wall", "position": [8, 1.5, 4], "scale": [0.05, 3, 3], "color": "#9aa0aa",
          "collider": {"shape": "box"}},
         {"op": "spawn", "shape": "sphere", "name": "slug", "position": [-8, 1.5, 4], "scale": [0.2, 0.2, 0.2], "color": "#f0d040",
@@ -82,7 +82,7 @@ def scene_ops():
          "collider": {"shape": "box", "is_trigger": True, "layer": "sensors"}},
         {"op": "spawn", "shape": "sphere", "name": "drop", "position": [0, 6, 4], "scale": [0.4, 0.4, 0.4], "color": "#40c0c0",
          "collider": {"shape": "sphere", "radius": 0.5}, "body": {"kind": "dynamic", "mass": 1}},
-        # Stairs and a character that walks up them.
+        # Stairs and a character that walks up them (four 0.2 m steps, a 0.75 m gap, a landing).
         {"op": "spawn", "shape": "group", "name": "stairs"},
     ]
     for i in range(4):
@@ -140,7 +140,8 @@ def run(m, failures, label):
         {"check": "no_tunnelling"},
         {"check": "energy", "max_gain_j": 5},
         {"check": "inside", "entity": "/hero", "min": [9.5, 1.6, -4.5], "max": [10.4, 1.8, -3.5]},
-        {"check": "inside", "entity": "/rock", "min": [-12, 0.2, 8], "max": [-8, 2.5, 12]},
+        # Resting on the mound's 1.2 m peak, not sunk into it (its centre ~0.35-0.45 m above).
+        {"check": "inside", "entity": "/rock", "min": [-10.6, 1.45, 9.4], "max": [-9.4, 1.75, 10.6]},
     ])
     (OUT / f"{label}_checks.json").write_text(json.dumps(checks, indent=2))
     for r in checks["results"]:
@@ -167,6 +168,9 @@ def run(m, failures, label):
     check("contacts" in od.get("drawn", []) and od.get("contacts", {}).get("points", 0) > 20,
           f"{label}: contacts overlay drew {od.get('contacts', {}).get('points')} points", failures)
     save(f"{label}_stairs", m.call("sight_frame", overlays=["colliders", "contacts"], eye=[7, 3, 2], target=[8, 1, -4], width=960, height=540))
+    rock, _ = save(f"{label}_rock", m.call("sight_frame", overlays=["colliders", "contacts"], eye=[-6, 4, 15], target=[-10, 1.2, 10], width=960, height=540))
+    rock_subject = next((x for x in rock.get("subjects", []) if x.get("path") == "/rock"), {})
+    check(rock_subject.get("on_screen") is True, f"{label}: the rock on the mound is in its close-up", failures)
     hashes = m.json("world_hash", recent=1, verify=True)
     check(hashes["verify"]["matches"], f"{label}: the journal replays the world exactly", failures)
     check("physics" in hashes, f"{label}: world_hash reports the physics state hash", failures)
