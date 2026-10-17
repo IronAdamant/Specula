@@ -2584,8 +2584,9 @@ fn validate(d: &BodyDesc) -> Result<(), PhysicsError> {
         return Err(PhysicsError::new("invalid_body", "a dynamic body needs a positive mass").with("field", "mass"));
     }
     if let Some(c) = &d.collider {
-        if let (Some(h), false) = (c.shape.polytope(), d.kind == BodyKind::Static) {
-            if matches!(c.shape, Shape::Hull(_)) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS {
+        let big_part = c.shape.compound_parts().and_then(|ps| ps.iter().find_map(|(_, s)| s.polytope().filter(|h| matches!(s, Shape::Hull(_)) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS)));
+        if let (Some(h), false) = (c.shape.polytope().or(big_part), d.kind == BodyKind::Static) {
+            if (matches!(c.shape, Shape::Hull(_)) || big_part.is_some()) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS {
                 return Err(PhysicsError::new(
                     "hull_too_big",
                     format!(

@@ -61,7 +61,21 @@ pub enum ColliderShape {
     /// Static only: `columns × rows` heights (row by row along +Z, each along +X), `cell`
     /// metres apart on X and Z, centred on the entity's origin.
     Heightfield { columns: u32, rows: u32, cell: [f32; 2], heights: Arc<Vec<f32>> },
+    /// Convex parts (box, sphere, capsule, hull) together, each with its own offset and
+    /// rotation: one body of several shapes (any body kind).
+    Compound { parts: Arc<Vec<CompoundPart>> },
 }
+
+/// One part of a compound collider.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompoundPart {
+    pub shape: ColliderShape,
+    pub offset: Vec3,
+    pub rotation_deg: Vec3,
+}
+
+/// Most parts of a compound collider.
+pub const MAX_COMPOUND_PARTS: usize = specula_physics::shape::MAX_COMPOUND_PARTS;
 
 impl ColliderShape {
     pub fn name(&self) -> &'static str {
@@ -72,6 +86,7 @@ impl ColliderShape {
             ColliderShape::Hull { .. } => "hull",
             ColliderShape::Mesh { .. } => "mesh",
             ColliderShape::Heightfield { .. } => "heightfield",
+            ColliderShape::Compound { .. } => "compound",
         }
     }
 
@@ -120,6 +135,19 @@ impl Collider {
     /// JSON (defaults left out, so older worlds' colliders read and hash as before).
     pub fn to_json(&self) -> Json {
         let mut f = match &self.shape {
+            ColliderShape::Compound { parts } => vec![
+                ("shape", Json::from("compound")),
+                (
+                    "parts",
+                    Json::arr(parts.iter().map(|p| {
+                        let mut j = Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.to_json();
+                        if p.rotation_deg != Vec3::ZERO {
+                            j.set("rotation_deg", vec3_json(p.rotation_deg));
+                        }
+                        j
+                    })),
+                ),
+            ],
             ColliderShape::Box { size } => vec![("shape", Json::from("box")), ("size", vec3_json(*size))],
             ColliderShape::Sphere { radius } => vec![("shape", Json::from("sphere")), ("radius", Json::from(*radius))],
             ColliderShape::Capsule { radius, height } => {
@@ -163,6 +191,18 @@ impl Collider {
     /// Value checks (the world runs them on every write).
     pub(crate) fn validate(&self) -> Result<(), WorldError> {
         match &self.shape {
+            ColliderShape::Compound { parts } => {
+                if parts.is_empty() || parts.len() > MAX_COMPOUND_PARTS {
+                    return Err(invalid("collider.parts", format!("'collider.parts' lists 1 to {MAX_COMPOUND_PARTS} parts")));
+                }
+                for (i, p) in parts.iter().enumerate() {
+                    if matches!(p.shape, ColliderShape::Compound { .. } | ColliderShape::Mesh { .. } | ColliderShape::Heightfield { .. }) {
+                        return Err(invalid("collider.parts", format!("'collider.parts'[{i}] must be a box, sphere, capsule or hull")));
+                    }
+                    Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.validate().map_err(|e| e.with("part", i))?;
+                    check_point("collider.parts.rotation_deg", p.rotation_deg).map_err(|e| e.with("part", i))?;
+                }
+            }
             ColliderShape::Box { size } => {
                 [size.x, size.y, size.z].iter().try_for_each(|v| check_num("collider.size", *v, &COLLIDER_SIZE))?
             }
@@ -483,6 +523,13 @@ impl Collider {
                 h.write_u32(*rows);
                 cell.iter().chain(heights.iter()).for_each(|v| h.write_f32(*v));
             }
+            ColliderShape::Compound { parts } => {
+                h.write_u64(parts.len() as u64);
+                for p in parts.iter() {
+                    h.write_u64(Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.field_hash());
+                    v3(&mut h, &p.rotation_deg);
+                }
+            }
         }
         v3(&mut h, &self.offset);
         h.write_bool(self.is_trigger);
@@ -569,7 +616,7 @@ pub(crate) fn check_pair(c: Option<&Collider>, b: Option<&Body>) -> Result<(), W
         }
     }
     if let Some(b) = b {
-        if b.character.is_some() && c.is_none_or(|c| c.shape.static_only() || c.is_trigger) {
+        if b.character.is_some() && c.is_none_or(|c| c.shape.static_only() || c.is_trigger || matches!(c.shape, ColliderShape::Compound { .. })) {
             return Err(WorldError::new("invalid_component", "a character needs a solid convex collider (a capsule, usually)").with("field", "collider"));
         }
     }
@@ -624,12 +671,13 @@ fn check_object_keys(o: &Json, what: &str, allowed: &[&str]) -> Result<(), Strin
 
 const COLLIDER_KEYS: &[&str] = &[
     "shape", "size", "radius", "height", "points", "vertices", "triangles", "columns", "rows", "cell", "heights", "offset", "is_trigger",
-    "layer", "mask", "friction", "restitution",
+    "layer", "mask", "friction", "restitution", "parts",
 ];
+const PART_KEYS: &[&str] = &["shape", "size", "radius", "height", "points", "offset", "rotation_deg"];
 
 /// `collider`: `{shape, ...}` or `false` to remove it (see the world_spawn schema).
 pub(crate) fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
-    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule|hull|mesh|heightfield, ...}";
+    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule|hull|mesh|heightfield|compound, ...}";
     let c = match args.get("collider") {
         None | Some(Json::Null) => return Ok(None),
         Some(Json::Bool(false)) => return Ok(Some(None)),
@@ -652,6 +700,26 @@ pub(crate) fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, Stri
         list.iter().map(|p| point(p, &field)).collect()
     };
     let shape = match c.get("shape").and_then(Json::as_str) {
+        Some("compound") => {
+            let list = c.get("parts").and_then(Json::as_array).ok_or("'collider.parts' must be an array of parts: {shape: box|sphere|capsule|hull, ..., offset, rotation_deg}")?;
+            if list.is_empty() || list.len() > MAX_COMPOUND_PARTS {
+                return Err(format!("'collider.parts' lists 1 to {MAX_COMPOUND_PARTS} parts"));
+            }
+            let mut parts = Vec::with_capacity(list.len());
+            for (i, p) in list.iter().enumerate() {
+                check_object_keys(p, &format!("collider.parts[{i}]"), PART_KEYS)?;
+                if !matches!(p.get("shape").and_then(Json::as_str), Some("box" | "sphere" | "capsule" | "hull")) {
+                    return Err(format!("'collider.parts[{i}].shape' must be box, sphere, capsule or hull"));
+                }
+                let mut plain = p.clone();
+                if let Json::Obj(pairs) = &mut plain {
+                    pairs.retain(|(k, _)| k != "rotation_deg");
+                }
+                let part = collider_arg(&Json::obj([("collider", plain)])).map_err(|e| format!("'collider.parts[{i}]': {e}"))?.flatten().expect("an object");
+                parts.push(CompoundPart { shape: part.shape, offset: part.offset, rotation_deg: opt_point(p, "rotation_deg", "collider.parts.rotation_deg")?.unwrap_or(Vec3::ZERO) });
+            }
+            ColliderShape::Compound { parts: Arc::new(parts) }
+        }
         Some("box") => ColliderShape::Box { size: opt_point(c, "size", "collider.size")?.unwrap_or(Vec3::ONE) },
         Some("sphere") => ColliderShape::Sphere { radius: size("radius", Some(0.5))? },
         Some("capsule") => ColliderShape::Capsule { radius: size("radius", None)?, height: size("height", None)? },
@@ -1120,6 +1188,24 @@ fn build_shape(c: &Collider, s: Vec3) -> Result<Shape, String> {
             (cell[0] * s.x, cell[1] * s.z),
         )
         .map_err(|e| e.message)?,
+        // Parts scale like the entity (a rotated part under an uneven scale keeps its own
+        // proportions, scaled by the axis it lies along most: close, not exact).
+        ColliderShape::Compound { parts } => {
+            let built = parts
+                .iter()
+                .map(|p| {
+                    let q = Quat::from_euler_xyz_deg(p.rotation_deg.x, p.rotation_deg.y, p.rotation_deg.z);
+                    let along = |axis: Vec3| {
+                        let w = q.rotate(axis);
+                        Vec3::new(w.x.abs(), w.y.abs(), w.z.abs()).dot(s)
+                    };
+                    let part_scale = Vec3::new(along(Vec3::X), along(Vec3::Y), along(Vec3::Z));
+                    let shape = build_shape(&Collider { shape: p.shape.clone(), ..Collider::default() }, part_scale)?;
+                    Ok((Pose::new(mul3(p.offset, s), q), shape))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Shape::compound(built).map_err(|e| e.message)?
+        }
     };
     Ok(shape)
 }
@@ -2087,5 +2173,38 @@ mod tests {
         run(&mut w, &mut p, None, 2);
         assert_ne!(p.hash(), Some(stale));
         assert_eq!(p.hash(), Some(specula_physics::Space::default().hash()));
+    }
+
+    /// Compound colliders: parsed, validated, round-tripped, hashed and simulated as one body.
+    #[test]
+    fn compound_colliders_are_one_body_of_several_shapes() {
+        let j = Json::parse(
+            r#"{"collider":{"shape":"compound","parts":[{"shape":"box","size":[1,0.1,0.6],"offset":[0,0.45,0]},
+                {"shape":"sphere","radius":0.2,"offset":[0.4,0.2,0.25]},{"shape":"sphere","radius":0.2,"offset":[-0.4,0.2,0.25]},
+                {"shape":"capsule","radius":0.1,"height":0.7,"offset":[0,0.2,-0.25],"rotation_deg":[0,0,90]}]}}"#,
+        )
+        .unwrap();
+        let c = collider_arg(&j).unwrap().unwrap().unwrap();
+        c.validate().unwrap();
+        assert_eq!(collider_arg(&Json::obj([("collider", c.to_json())])).unwrap().unwrap().unwrap(), c, "round trip");
+        let bad = |t: &str| collider_arg(&Json::parse(t).unwrap()).and_then(|c| c.unwrap().unwrap().validate().map_err(|e| e.message)).unwrap_err();
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[]}}"#).contains("1 to 16"));
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[{"shape":"heightfield"}]}}"#).contains("box, sphere, capsule or hull"));
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[{"shape":"box","layer":"x"}]}}"#).contains("not a field"));
+        // A cart (a deck on two wheels and an axle) dropped on the floor rests on its parts.
+        let mut w = World::default();
+        floor(&mut w);
+        let mut s = SpawnSpec::new(WShape::Group);
+        s.name = Some("cart".into());
+        s.position = Vec3::new(0.0, 2.0, 0.0);
+        s.collider = Some(c);
+        s.body = Some(Body::new(BodyKind::Dynamic, 30.0));
+        let id = w.spawn(s, "t").unwrap().id;
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 240);
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let e = w.get(id).unwrap();
+        assert!(e.position.y > -0.05 && e.position.y < 0.15, "resting on its wheels and axle: {:?}", e.position);
+        assert!(e.body.unwrap().sleeping, "{:?}", e.body);
     }
 }

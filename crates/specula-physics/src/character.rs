@@ -119,8 +119,8 @@ impl Space {
         }
         let col =
             body.collider.ok_or_else(|| PhysicsError::new("no_collider", "a character needs a collider (a capsule)").with("key", key))?;
-        if col.shape.is_static_only() {
-            return Err(PhysicsError::new("static_only_shape", "a character's collider must be convex (capsule, sphere, box or hull)")
+        if col.shape.is_static_only() || col.shape.compound_parts().is_some() {
+            return Err(PhysicsError::new("not_convex", "a character's collider must be convex (capsule, sphere, box or hull)")
                 .with("key", key));
         }
         let shape = col.shape.clone();

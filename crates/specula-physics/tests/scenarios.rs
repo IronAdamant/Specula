@@ -250,6 +250,36 @@ fn fast_bodies_do_not_tunnel_through_thin_dynamic_bodies() {
 }
 
 #[test]
+fn compound_bodies_stand_on_their_parts() {
+    // A stool: a seat on four thin legs, dropped from a metre. It lands on its legs, upright,
+    // with the seat clear of the floor.
+    let mut s = Space::default();
+    ground(&mut s);
+    let leg = |x: f32, z: f32| (Pose::at(v3(x, -0.25, z)), Shape::cuboid(v3(0.03, 0.25, 0.03)));
+    let stool = Shape::compound(vec![(Pose::at(v3(0.0, 0.03, 0.0)), Shape::cuboid(v3(0.3, 0.03, 0.3))), leg(0.25, 0.25), leg(-0.25, 0.25), leg(0.25, -0.25), leg(-0.25, -0.25)]).unwrap();
+    let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.0, 1.5, 0.0)), Some(ColliderDesc::new(stool)));
+    d.mass = 4.0;
+    s.insert(2, d).unwrap();
+    for _ in 0..240 {
+        s.step(DT);
+    }
+    let b = s.body(2).unwrap();
+    assert!((b.pose.p.y - 0.5).abs() < 0.02, "on its legs: the seat's underside at {}", b.pose.p.y);
+    assert!(b.pose.q.rotate(Vec3::Y).y > 0.999, "upright");
+    assert!(b.sleeping, "and asleep");
+    // Its centre of mass is where its parts' volumes put it (the seat is most of it).
+    assert!(b.center.y > b.pose.p.y - 0.1 && b.center.y < b.pose.p.y + 0.03, "{:?}", b.center);
+    // Rays and casts see the parts, not the box around them: one between the legs misses.
+    let (hits, _) = s.raycast(v3(0.0, 0.25, -2.0), v3(0.0, 0.0, 1.0), 4.0, &Filter::default(), 4);
+    assert!(hits.is_empty(), "between the legs: {hits:?}");
+    let (hits, _) = s.raycast(v3(0.25, 0.25, -2.0), v3(0.0, 0.0, 1.0), 4.0, &Filter::default(), 4);
+    assert_eq!(hits.first().map(|h| h.key), Some(2), "a leg");
+    // Nested compounds, meshes inside them and empty ones are refused.
+    assert!(Shape::compound(vec![]).is_err());
+    assert!(Shape::compound(vec![(Pose::IDENTITY, Shape::compound(vec![(Pose::IDENTITY, Shape::sphere(1.0))]).unwrap())]).is_err());
+}
+
+#[test]
 fn triggers_report_enter_and_exit() {
     let mut s = Space::default();
     let mut zone = ColliderDesc::new(Shape::cuboid(v3(2.0, 0.5, 2.0)));

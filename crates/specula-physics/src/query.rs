@@ -22,6 +22,13 @@ pub struct RayHit {
 /// The first hit of the ray `origin + t·dir` (`dir` unit length, `t ≤ max`) on `shape` at
 /// `pose`.
 pub fn ray_shape(shape: &Shape, pose: &Pose, origin: Vec3, dir: Vec3, max: f32) -> Option<RayHit> {
+    if let Some(parts) = shape.compound_parts() {
+        // The nearest part's hit (ties to the lower part).
+        return parts.iter().filter_map(|(lp, s)| ray_shape(s, &pose.mul(lp), origin, dir, max)).fold(None, |best: Option<RayHit>, h| match best {
+            Some(b) if b.distance <= h.distance => Some(b),
+            _ => Some(h),
+        });
+    }
     let o = pose.inv_point(origin);
     let d = pose.inv_vector(dir);
     let local = match shape {
@@ -31,6 +38,7 @@ pub fn ray_shape(shape: &Shape, pose: &Pose, origin: Vec3, dir: Vec3, max: f32) 
         Shape::Hull(h) => ray_hull(h, o, d, max),
         Shape::Mesh(m) => ray_mesh(m, o, d, max),
         Shape::Heightfield(h) => ray_mesh(&h.mesh, o, d, max),
+        Shape::Compound(_) => unreachable!("handled above"),
     }?;
     Some(RayHit { distance: local.0, point: origin + dir * local.0, normal: pose.vector(local.1), triangle: local.2 })
 }
@@ -213,6 +221,13 @@ const CAST_ITERATIONS: usize = 32;
 /// is where the gap first falls to `skin` (a small positive distance keeps casts from ending
 /// inside surfaces).
 pub fn cast_shape(caster: &Shape, from: &Pose, delta: Vec3, target: &Shape, target_pose: &Pose, skin: f32) -> Option<CastHit> {
+    if let Some(parts) = target.compound_parts() {
+        // The earliest part's hit (ties to the lower part).
+        return parts.iter().filter_map(|(lp, s)| cast_shape(caster, from, delta, s, &target_pose.mul(lp), skin)).fold(None, |best: Option<CastHit>, h| match best {
+            Some(b) if b.fraction <= h.fraction => Some(b),
+            _ => Some(h),
+        });
+    }
     let c = convex(caster, from)?;
     if let Some(mesh) = target.triangles() {
         // The caster's box swept through the mesh's BVH, nearest first, pruned by the best hit

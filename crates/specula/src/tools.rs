@@ -1651,7 +1651,9 @@ fn definitions() -> Vec<ToolDef> {
                      {shape: box (size [x,y,z], default 1) | sphere (radius, default 0.5) | capsule (radius, height = \
                      total height along local +Y) | hull (points: 4..64 [x,y,z]) | mesh (vertices [[x,y,z]...], \
                      triangles [[a,b,c]...]; static only) | heightfield (columns, rows 2..129, cell [x,z] m, heights \
-                     row by row along +Z; static only), offset?, is_trigger? (reports enter/exit, never blocks), \
+                     row by row along +Z; static only) | compound (parts: 1..16 of {shape: box, sphere, capsule or \
+                     hull, its fields, offset, rotation_deg}: one body of several shapes), offset?, is_trigger? \
+                     (reports enter/exit, never blocks), \
                      layer? (a name, default \"default\"), mask? (layer names it collides with; default all), \
                      friction? (default 0.6), restitution? (bounce 0..1)}; false removes it",
                 ),

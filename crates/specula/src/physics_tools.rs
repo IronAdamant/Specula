@@ -1044,6 +1044,11 @@ fn draw_shape(p: &mut Painter, shape: &Shape, pose: &Pose, color: [f32; 4], budg
                 p.line(pose.point(hull.points[e.v[0] as usize]), pose.point(hull.points[e.v[1] as usize]), color, 1.5);
             }
         }
+        Shape::Compound(c) => {
+            for (lp, s) in &c.parts {
+                draw_shape(p, s, &pose.mul(lp), color, budget);
+            }
+        }
         Shape::Mesh(_) | Shape::Heightfield(_) => {
             let Some(mesh) = shape.triangles() else { return };
             for t in 0..mesh.triangles.len() {
