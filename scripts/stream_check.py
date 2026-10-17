@@ -338,7 +338,18 @@ def run_streaming(a, out, ops, report, check):
         # --- the same flight with streaming off (everything resident, per object, no proxies: the
         # old path, in this binary)
         mcp.call("stream_settings", enabled=False)
-        mcp.call("window_view", eye=path[0], target=[path[0][0] + 30, 10, path[0][2] + 30], fov_y_deg=60)
+        # The old path uploads every build at once, synchronously: the engine is busy for a
+        # while (that stall is what streaming removes); wait it out.
+        t = time.perf_counter()
+        while True:
+            try:
+                mcp.call("window_view", eye=path[0], target=[path[0][0] + 30, 10, path[0][2] + 30], fov_y_deg=60)
+                break
+            except RuntimeError as e:
+                if "busy" not in str(e) or time.perf_counter() - t > 300:
+                    raise
+        report["streaming_off_switch_s"] = round(time.perf_counter() - t, 1)
+        print(f"switching streaming off (everything uploaded at once): engine busy for about {report['streaming_off_switch_s']} s")
         time.sleep(2)
         fly_off = mcp.json("stream_fly", path=path, speed_mps=a.speed)
         report["flight_streaming_off"] = {k: v for k, v in fly_off.items() if k != "streaming_now"}

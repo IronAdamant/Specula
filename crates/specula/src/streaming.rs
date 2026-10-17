@@ -322,6 +322,8 @@ struct Index {
     rebound: Vec<CellKey>,
     /// The cell size it was built for.
     cell_m: f32,
+    /// Changed entities not filed yet (sorted).
+    backlog: Vec<u64>,
 }
 
 fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
@@ -333,14 +335,18 @@ impl Index {
     /// Brings the index up to date with `world`. Returns whether anything changed; `touched`
     /// gets the cells where a patch changed a mergeable member (one an HLOD proxy may hold;
     /// cleared first; empty after a rebuild).
-    fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>) -> bool {
+    ///
+    /// Changed entities are filed within `slice` (at least one); the rest wait in a backlog for
+    /// the next call (an agent's 1,000-spawn batch costs a few milliseconds to file).
+    fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>, slice: Duration) -> bool {
         touched.clear();
         let key = (generation, cell_m.to_bits());
-        if self.key == Some(key) && self.epoch == world.draw_epoch() {
+        if self.key == Some(key) && self.epoch == world.draw_epoch() && self.backlog.is_empty() {
             return false;
         }
-        let patched = self.key == Some(key) && self.patch(world, cell_m, now, touched);
+        let patched = self.key == Some(key) && self.patch(world, cell_m, now, touched, slice);
         if !patched {
+            self.backlog.clear();
             self.cells.clear();
             self.cell_of.clear();
             for e in world.persistent_entities().filter(|e| e.shape == Shape::Model) {
@@ -362,12 +368,22 @@ impl Index {
 
     /// The changed entities only; false when the world's change record doesn't reach back. An
     /// entity that stays in its cell is updated in place.
-    fn patch(&mut self, world: &World, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>) -> bool {
-        let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
-        let mut ids: Vec<u64> = changes.collect();
-        ids.sort_unstable();
-        ids.dedup();
-        for id in ids {
+    fn patch(&mut self, world: &World, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>, slice: Duration) -> bool {
+        if self.epoch != world.draw_epoch() {
+            let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
+            self.backlog.extend(changes);
+            self.backlog.sort_unstable();
+            self.backlog.dedup();
+            self.epoch = world.draw_epoch();
+        }
+        let started = Instant::now();
+        let mut done = 0;
+        for i in 0..self.backlog.len() {
+            if i > 0 && started.elapsed() >= slice {
+                break;
+            }
+            done = i + 1;
+            let id = self.backlog[i];
             let now_in = world.get(id).filter(|e| e.shape == Shape::Model).map(|e| (cell_key(e.world_position(), cell_m), e));
             let old = self.cell_of.get(&id).copied();
             let boxed = |k: CellKey, mergeable: bool, touched: &mut Vec<CellKey>, rebound: &mut Vec<CellKey>| {
@@ -411,6 +427,7 @@ impl Index {
                 boxed(k, mergeable, touched, &mut self.rebound);
             }
         }
+        self.backlog.drain(..done);
         touched.sort_unstable();
         touched.dedup();
         self.rebound.sort_unstable();
@@ -830,7 +847,7 @@ impl Streamer {
         let mut touched = std::mem::take(&mut self.touched);
         let changed = {
             let _z = specula_core::profile::zone("index");
-            self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched)
+            self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched, Duration::from_secs_f64(self.cfg.upload_ms * 0.25 / 1e3))
         };
         // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
         // change at once (the entity must not stay hidden, nor show at its old place).
@@ -1838,14 +1855,14 @@ mod tests {
         let mut index = Index::default();
         let mut touched = Vec::new();
         let now = Instant::now();
-        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched, Duration::from_secs(1)));
         assert_eq!(index.cells.len(), 6, "x 0..190 in 32 m cells");
         assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
-        assert!(!index.sync(&world, 0, 32.0, now, &mut touched), "unchanged world: nothing to do");
+        assert!(!index.sync(&world, 0, 32.0, now, &mut touched, Duration::from_secs(1)), "unchanged world: nothing to do");
         // Move one far away: patched, not rebuilt.
         let rebuilds = index.rebuilds;
         world.update(&crate::world::EntityKey::Id(ids[0]), crate::world::UpdateSpec { position: Some(Vec3::new(500.0, 0.0, 5.0)), ..Default::default() }, "test").unwrap();
-        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched, Duration::from_secs(1)));
         assert_eq!(index.rebuilds, rebuilds);
         assert_eq!(index.cell_of[&ids[0]], (15, 0));
         assert!(index.cells[&(15, 0)].members[0].changed.is_some());
@@ -1853,19 +1870,31 @@ mod tests {
         assert_eq!(touched, vec![(0, 0), (15, 0)], "both cells were touched");
         // A move within its cell: updated in place, its box follows.
         world.update(&crate::world::EntityKey::Id(ids[2]), crate::world::UpdateSpec { position: Some(Vec3::new(25.0, 0.0, 5.0)), ..Default::default() }, "test").unwrap();
-        assert!(index.sync(&world, 0, 32.0, now, &mut touched));
+        assert!(index.sync(&world, 0, 32.0, now, &mut touched, Duration::from_secs(1)));
         assert_eq!(touched, vec![(0, 0)]);
         assert_eq!(index.cell_of[&ids[2]], (0, 0));
         assert_eq!(index.cells[&(0, 0)].hi.x, 30.0, "the cell's box spans its members (x 10..30)");
         assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), 20);
         world.delete(&crate::world::EntityKey::Id(ids[1]), None).unwrap();
         let hash = world.state_hash();
-        index.sync(&world, 0, 32.0, now, &mut touched);
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::from_secs(1));
         assert!(!index.cell_of.contains_key(&ids[1]));
         // Another world generation: rebuilt.
-        index.sync(&world, 1, 32.0, now, &mut touched);
+        index.sync(&world, 1, 32.0, now, &mut touched, Duration::from_secs(1));
         assert_eq!(index.rebuilds, rebuilds + 1);
         assert_eq!(world.state_hash(), hash, "filing the world never changes it");
+        // A big change is filed a slice at a time (here: one entity per call), never lost.
+        for i in 0..5 {
+            let mut s = SpawnSpec::model(crate::world::ModelSpec { recipe: "recipes/x.json".into(), params: Vec::new(), seed: Some(100 + i) });
+            s.position = Vec3::new(1000.0 + i as f32, 0.0, 0.0);
+            world.spawn(s, "test").unwrap();
+        }
+        let before = index.cell_of.len();
+        for n in 1..=5 {
+            assert!(index.sync(&world, 1, 32.0, now, &mut touched, Duration::ZERO));
+            assert_eq!(index.cell_of.len(), before + n);
+        }
+        assert!(!index.sync(&world, 1, 32.0, now, &mut touched, Duration::ZERO), "the backlog is done");
     }
 
     #[test]
