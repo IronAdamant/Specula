@@ -64,7 +64,12 @@ handoffs on entities, paths and tasks; world_rollup summarises the journal per a
 writes (stale_version, claimed) carry a 'conflict' object (base, theirs, yours, overlap) to rebase from; lease_take \
 hands out ports, GPU time and scratch folders for agents that run their own engines; swarm_settings shows the \
 operator's hardware and sets the window's frame floor before a swarm is deployed; desync_trace and desync_compare \
-find the first tick and component where two runs (or a run and its journal replay) differ.";
+find the first tick and component where two runs (or a run and its journal replay) differ. Save games: save_write \
+keeps the whole simulation at a tick (the world, the game's state, physics' hidden state, module state) and save_read \
+continues it bit-identically (save_list, save_delete). The balance lab: balance_targets checks designer targets as data \
+(win rate, leaks per wave, resource curves, time to kill...), balance_sweep scores Lex param points over many seeds in \
+parallel, balance_tune tunes params toward the targets and checks the result on held-out seeds; simulated balance \
+always needs a human playtest.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);

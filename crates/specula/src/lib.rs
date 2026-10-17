@@ -339,6 +339,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         None => engine.run_headless(&requests, &server),
     };
     engine.finish_autosave(true);
+    // Save games still being written land before the process ends.
+    engine.join_save_writes(None);
     engine.autosave(true);
     engine.save_board_blocking();
     // Parked captures and model calls hold reply channels: answer them now, or their callers
@@ -434,6 +436,8 @@ struct Engine {
     worlds_dir: PathBuf,
     /// Where save games live (`--saves`, default `./saves`; see `save_tools`).
     saves_dir: PathBuf,
+    /// Save games being written on worker threads, by name.
+    save_writes: Vec<(String, std::thread::JoinHandle<()>)>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -562,6 +566,7 @@ impl Engine {
             capture_dir,
             worlds_dir: PathBuf::from("worlds"),
             saves_dir: PathBuf::from("saves"),
+            save_writes: Vec::new(),
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
@@ -1392,6 +1397,10 @@ impl Engine {
         }
         if matches!(request.command, Command::Frame(_) | Command::Sight(_)) {
             self.handle_sight(request);
+            return;
+        }
+        if matches!(request.command, Command::SaveGame(save_tools::SaveCall::Write { .. })) {
+            self.handle_save_write(request);
             return;
         }
         let by = self.swarm.agent_name(&request.session);

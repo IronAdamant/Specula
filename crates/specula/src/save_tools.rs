@@ -172,6 +172,74 @@ fn read_head(path: &std::path::Path) -> Result<(u64, Vec<u8>), SaveError> {
     Ok((size, buf))
 }
 
+/// A save taken between ticks, ready to render and write on any thread.
+pub(crate) struct SaveJob {
+    name: String,
+    dir: PathBuf,
+    path: PathBuf,
+    tick: u64,
+    world: crate::persist::Plan,
+    meta: Json,
+    /// Everything but the world.
+    sections: Vec<Section>,
+    world_hash: u64,
+    subsystems: Json,
+    notes: Vec<Json>,
+    t0: Instant,
+    /// Time spent on the engine thread.
+    engine_ms: f64,
+}
+
+impl SaveJob {
+    /// Renders the world, packs and compresses the sections, writes the file (temporary file,
+    /// sync, rename) and reports.
+    pub(crate) fn finish(self) -> Result<Json, SaveError> {
+        let t1 = Instant::now();
+        let files = crate::persist::render_plan(&self.world);
+        let mut sections = vec![Section { name: "world".into(), data: savegame::pack_files(&files) }];
+        sections.extend(self.sections);
+        let sizes = Json::obj(sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len()))));
+        let bytes = savegame::encode(&self.meta, &sections);
+        let encode_ms = t1.elapsed().as_secs_f64() * 1000.0;
+        let t2 = Instant::now();
+        std::fs::create_dir_all(&self.dir).map_err(|e| io(&self.dir, e))?;
+        let tmp = self.path.with_extension(format!("{EXTENSION}.tmp"));
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp).map_err(|e| io(&tmp, e))?;
+            f.write_all(&bytes).and_then(|()| f.sync_all()).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                io(&tmp, e)
+            })?;
+        }
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            io(&self.path, e)
+        })?;
+        let write_ms = t2.elapsed().as_secs_f64() * 1000.0;
+        let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
+        Ok(Json::obj([
+            ("saved", Json::from(self.name.as_str())),
+            ("file", Json::from(self.path.display().to_string())),
+            ("tick", Json::from(self.tick)),
+            ("world_hash", Json::from(hex(self.world_hash))),
+            ("subsystems", self.subsystems),
+            ("bytes", Json::from(bytes.len())),
+            ("sections", sizes),
+            (
+                "timings_ms",
+                Json::obj([
+                    ("engine_thread", ms(self.engine_ms)),
+                    ("render_and_encode", ms(encode_ms)),
+                    ("write", ms(write_ms)),
+                    ("total", ms(self.t0.elapsed().as_secs_f64() * 1000.0)),
+                ]),
+            ),
+            ("notes", Json::Arr(self.notes)),
+        ]))
+    }
+}
+
 impl Engine {
     fn save_path(&self, name: &str) -> PathBuf {
         self.saves_dir.join(format!("{name}.{EXTENSION}"))
@@ -193,6 +261,11 @@ impl Engine {
     }
 
     pub(crate) fn handle_save(&mut self, call: SaveCall, w: Writer, by: &str) -> ToolOutput {
+        // What follows reads saves: let writes still running land first.
+        match &call {
+            SaveCall::Write { name, .. } | SaveCall::Read { name, .. } | SaveCall::Delete { name, .. } => self.join_save_writes(Some(name)),
+            SaveCall::List { .. } => self.join_save_writes(None),
+        }
         match call {
             SaveCall::Write { name, label, overwrite } => match self.write_save(&name, label, overwrite, by) {
                 Ok(j) => out(j),
@@ -214,8 +287,15 @@ impl Engine {
         }
     }
 
-    /// `save_write`.
+    /// `save_write`, all on this thread (player saves; tests).
     pub(crate) fn write_save(&mut self, name: &str, label: Option<String>, overwrite: bool, by: &str) -> Result<Json, SaveError> {
+        self.join_save_writes(Some(name));
+        self.begin_save(name, label, overwrite, by)?.finish()
+    }
+
+    /// The engine-thread part of a save: the state's bytes and owned copies of the world (the
+    /// costly rendering, compression and writing happen in [`SaveJob::finish`], anywhere).
+    pub(crate) fn begin_save(&mut self, name: &str, label: Option<String>, overwrite: bool, by: &str) -> Result<SaveJob, SaveError> {
         validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
         let path = self.save_path(name);
         if path.exists() && !overwrite {
@@ -244,9 +324,7 @@ impl Engine {
             }
         }
         let logic = self.logic.save_state();
-        let files = crate::persist::render(&self.world);
-        let world = savegame::pack_files(&files);
-        let snapshot_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let world = crate::persist::plan(&self.world, std::path::Path::new(""), None);
         let world_hash = self.state_hash();
         let subs = self.subsystem_hashes();
         let created = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -268,48 +346,70 @@ impl Engine {
         if let Some(l) = &label {
             meta.push(("label", Json::from(l.as_str())));
         }
-        let mut sections = vec![Section { name: "world".into(), data: world }];
+        let mut sections = Vec::new();
         for (n, d) in [("game", game), ("physics", physics), ("logic", logic)] {
             if let Some(data) = d {
                 sections.push(Section { name: n.into(), data });
             }
         }
-        let sizes = Json::obj(sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len()))));
-        let t1 = Instant::now();
-        let bytes = savegame::encode(&Json::obj(meta), &sections);
-        let encode_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        let t2 = Instant::now();
-        std::fs::create_dir_all(&self.saves_dir).map_err(|e| io(&self.saves_dir, e))?;
-        let tmp = path.with_extension(format!("{EXTENSION}.tmp"));
-        {
-            use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp).map_err(|e| io(&tmp, e))?;
-            f.write_all(&bytes).and_then(|()| f.sync_all()).map_err(|e| {
-                let _ = std::fs::remove_file(&tmp);
-                io(&tmp, e)
-            })?;
-        }
-        std::fs::rename(&tmp, &path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            io(&path, e)
-        })?;
-        let write_ms = t2.elapsed().as_secs_f64() * 1000.0;
-        let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
         let mut notes = Vec::new();
         if self.game.is_some() && !sections.iter().any(|s| s.name == "game") {
             notes.push(Json::from("the hosted game keeps no save state: a load restores the world, physics and modules, and the game starts from what the world shows"));
         }
-        Ok(Json::obj([
-            ("saved", Json::from(name)),
-            ("file", Json::from(path.display().to_string())),
-            ("tick", Json::from(tick)),
-            ("world_hash", Json::from(hex(world_hash))),
-            ("subsystems", Json::obj(subs.iter().map(|(n, h)| (*n, Json::from(hex(*h)))))),
-            ("bytes", Json::from(bytes.len())),
-            ("sections", sizes),
-            ("timings_ms", Json::obj([("snapshot", ms(snapshot_ms)), ("encode", ms(encode_ms)), ("write", ms(write_ms)), ("total", ms(t0.elapsed().as_secs_f64() * 1000.0))])),
-            ("notes", Json::Arr(notes)),
-        ]))
+        Ok(SaveJob {
+            name: name.to_owned(),
+            dir: self.saves_dir.clone(),
+            path,
+            tick,
+            world,
+            meta: Json::obj(meta),
+            sections,
+            world_hash,
+            subsystems: Json::obj(subs.iter().map(|(n, h)| (*n, Json::from(hex(*h))))),
+            notes,
+            t0,
+            engine_ms: t0.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    /// Waits for background save writes (of `name`, or all) to land, so what follows reads them.
+    pub(crate) fn join_save_writes(&mut self, name: Option<&str>) {
+        let mut keep = Vec::new();
+        for (n, h) in std::mem::take(&mut self.save_writes) {
+            if name.is_none_or(|x| x == n) || h.is_finished() {
+                let _ = h.join();
+            } else {
+                keep.push((n, h));
+            }
+        }
+        self.save_writes = keep;
+    }
+
+    /// `save_write` from an agent: the state is taken now, between ticks; the file is written
+    /// on a worker thread, which answers the call when it's on disk (the window keeps drawing).
+    pub(crate) fn handle_save_write(&mut self, request: crate::tools::Request) {
+        let crate::tools::Command::SaveGame(SaveCall::Write { name, label, overwrite }) = request.command else { return };
+        let by = self.swarm.agent_name(&request.session);
+        self.join_save_writes(Some(&name));
+        match self.begin_save(&name, label, overwrite, &by) {
+            Err(e) => {
+                let _ = request.reply.send(fail(&e));
+            }
+            Ok(job) => {
+                let reply = request.reply;
+                let spawned = std::thread::Builder::new().name("specula-save".into()).spawn(move || {
+                    let answer = match job.finish() {
+                        Ok(j) => out(j),
+                        Err(e) => fail(&e),
+                    };
+                    let _ = reply.send(answer);
+                });
+                match spawned {
+                    Ok(h) => self.save_writes.push((name, h)),
+                    Err(e) => eprintln!("specula: could not start a save writer: {e}"),
+                }
+            }
+        }
     }
 
     fn read_file(&self, name: &str) -> Result<savegame::SaveFile, SaveError> {
