@@ -66,6 +66,21 @@ pub fn client_size_of(raw: RawWindow) -> (u32, u32) {
     }
 }
 
+/// The refresh rate, in Hz, of the display showing `raw` (the nearest one), from **any** thread.
+/// `None` when the driver doesn't say or there is no backend. Variable-refresh displays report
+/// their highest rate. It can change (the window moves to another display): ask again now and then.
+pub fn refresh_rate_of(raw: RawWindow) -> Option<f64> {
+    #[cfg(windows)]
+    {
+        win32::refresh_rate_of(raw.hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,

@@ -66,6 +66,24 @@ struct Msg {
     l_private: u32,
 }
 
+/// `MONITORINFOEXW`.
+#[repr(C)]
+struct MonitorInfoExW {
+    cb_size: u32,
+    rc_monitor: Rect,
+    rc_work: Rect,
+    flags: u32,
+    device: [u16; 32],
+}
+
+/// `DEVMODEW` (220 bytes) as raw bytes: only `dmSize` (written) and `dmDisplayFrequency` (read)
+/// matter here, and its unions are easier skipped than declared.
+#[repr(C, align(4))]
+struct DevModeW([u8; DEVMODEW_SIZE]);
+const DEVMODEW_SIZE: usize = 220;
+const DEVMODEW_SIZE_OFFSET: usize = 68;
+const DEVMODEW_FREQUENCY_OFFSET: usize = 184;
+
 #[repr(C)]
 struct CreateStructW {
     lp_create_params: *mut c_void,
@@ -120,6 +138,9 @@ extern "system" {
     fn ReleaseCapture() -> i32;
     fn ScreenToClient(hwnd: Hwnd, point: *mut Point) -> i32;
     fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> i32;
+    fn MonitorFromWindow(hwnd: Hwnd, flags: u32) -> Handle;
+    fn GetMonitorInfoW(monitor: Handle, info: *mut MonitorInfoExW) -> i32;
+    fn EnumDisplaySettingsW(device: *const u16, mode: u32, devmode: *mut DevModeW) -> i32;
     // Test-only imports live here too: each DLL is declared by exactly one crate (AGENTS.md
     // rule 2), so integration tests and examples cannot declare their own `user32` imports.
     #[cfg(test)]
@@ -183,6 +204,9 @@ const WM_POINTERUPDATE: u32 = 0x0245;
 const WM_POINTERDOWN: u32 = 0x0246;
 const WM_POINTERUP: u32 = 0x0247;
 const WM_POINTERCAPTURECHANGED: u32 = 0x024C;
+
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
+const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
 
 const PT_TOUCH: u32 = 2;
 const PT_PEN: u32 = 3;
@@ -455,6 +479,44 @@ pub(crate) fn client_size_of(hwnd: Hwnd) -> (u32, u32) {
     ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32)
 }
 
+/// The refresh rate of the display nearest `hwnd` (the primary one for a null or stale handle),
+/// in Hz; `None` when the driver reports "default hardware" (0 or 1). Callable from any thread.
+pub(crate) fn refresh_rate_of(hwnd: Hwnd) -> Option<f64> {
+    // SAFETY: MonitorFromWindow accepts any handle value (null and stale ones included) with
+    // MONITOR_DEFAULTTONEAREST and always returns a monitor.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MonitorInfoExW {
+        cb_size: std::mem::size_of::<MonitorInfoExW>() as u32,
+        rc_monitor: Rect::default(),
+        rc_work: Rect::default(),
+        flags: 0,
+        device: [0; 32],
+    };
+    // SAFETY: `info` is a writable MONITORINFOEXW with cbSize set; a stale monitor handle fails.
+    if monitor.is_null() || unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return None;
+    }
+    let mut mode = DevModeW([0; DEVMODEW_SIZE]);
+    mode.0[DEVMODEW_SIZE_OFFSET..DEVMODEW_SIZE_OFFSET + 2].copy_from_slice(&(DEVMODEW_SIZE as u16).to_le_bytes());
+    // SAFETY: `info.device` is the NUL-terminated device name GetMonitorInfoW wrote; `mode` is a
+    // writable DEVMODEW of the size its dmSize declares.
+    if unsafe { EnumDisplaySettingsW(info.device.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode) } == 0 {
+        return None;
+    }
+    let at = DEVMODEW_FREQUENCY_OFFSET;
+    let hz = u32::from_le_bytes([mode.0[at], mode.0[at + 1], mode.0[at + 2], mode.0[at + 3]]);
+    refresh_hz(hz)
+}
+
+/// A reported whole-number rate in Hz: 59, 119 and 239 are the NTSC-style 60/1.001 family.
+fn refresh_hz(reported: u32) -> Option<f64> {
+    match reported {
+        0 | 1 => None,
+        hz if (hz + 1) % 30 == 0 => Some(f64::from(hz + 1) / 1.001),
+        hz => Some(f64::from(hz)),
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
     if msg == WM_NCCREATE {
         // SAFETY: for WM_NCCREATE, lParam points to the CREATESTRUCTW of the CreateWindowExW
@@ -694,6 +756,28 @@ fn handle_pointer(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: is
 mod tests {
     use super::*;
     use crate::Window as PubWindow;
+
+    #[test]
+    fn reported_refresh_rates() {
+        assert_eq!(refresh_hz(0), None);
+        assert_eq!(refresh_hz(1), None);
+        assert_eq!(refresh_hz(60), Some(60.0));
+        assert_eq!(refresh_hz(240), Some(240.0));
+        assert!((refresh_hz(59).unwrap() - 59.94).abs() < 0.01);
+        assert!((refresh_hz(119).unwrap() - 119.88).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_primary_display_reports_a_plausible_refresh_rate() {
+        // A null handle means the primary monitor. No desktop (a service session) may report none.
+        match refresh_rate_of(std::ptr::null_mut()) {
+            Some(hz) => {
+                eprintln!("primary display: {hz} Hz");
+                assert!((20.0..=1000.0).contains(&hz), "{hz} Hz");
+            }
+            None => eprintln!("skipped: no display refresh rate reported (no desktop session?)"),
+        }
+    }
 
     fn hidden(width: u32, height: u32) -> WindowDesc {
         WindowDesc { title: "specula-platform test".into(), width, height, visible: false, resizable: true }
