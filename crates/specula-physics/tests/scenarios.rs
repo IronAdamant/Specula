@@ -122,6 +122,7 @@ fn determinism_hashes_match_whatever_the_insertion_order() {
         a.step(DT);
         b.step(DT);
         assert_eq!(a.hash(), b.hash(), "diverged at tick {tick}");
+        assert_eq!(a.hash(), a.hash_uncached(), "the cached part of the hash is stale at tick {tick}");
     }
     // And a third run from scratch matches too.
     let mut c = build(false);
@@ -425,4 +426,136 @@ fn removing_a_support_wakes_what_rests_on_it() {
     }
     let top = s.body(102).unwrap();
     assert!((top.pose.p.y - 1.5).abs() < 0.05, "the top box fell onto the bottom one: {}", top.pose.p.y);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 regressions (each one a reviewer's repro).
+
+/// Finding 2: thin and huge boxes (a 1000 x 0.01 x 1000 plate) are valid colliders, and bodies
+/// rest on them.
+#[test]
+fn thin_plates_hold_bodies() {
+    let mut s = Space::default();
+    let plate = ColliderDesc::new(Shape::cuboid(v3(500.0, 0.005, 500.0)));
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::IDENTITY, Some(plate))).unwrap();
+    dynamic(&mut s, 2, Shape::cuboid(v3(0.5, 0.5, 0.5)), v3(0.0, 2.0, 0.0));
+    let tiny = ColliderDesc::new(Shape::cuboid(v3(5.0, 5.0, 5.0e-5)));
+    s.insert(3, BodyDesc::new(BodyKind::Static, Pose::at(v3(20.0, 6.0, 0.0)), Some(tiny))).unwrap();
+    for _ in 0..240 {
+        s.step(DT);
+    }
+    let b = s.body(2).unwrap();
+    assert!((b.pose.p.y - 0.505).abs() < 0.02 && b.sleeping, "{:?}", b.pose.p);
+    let (keys, _) = s.overlap(&Shape::cuboid(v3(5000.0, 5.0e-5, 5000.0)), &Pose::IDENTITY, &Filter::default(), 8);
+    assert_eq!(keys, vec![1]);
+}
+
+/// Finding 4: an idle character doesn't keep waking what is near it.
+#[test]
+fn an_idle_character_lets_its_neighbours_sleep() {
+    let mut s = Space::default();
+    ground(&mut s);
+    dynamic(&mut s, 2, Shape::cuboid(v3(0.5, 0.5, 0.5)), v3(0.62, 0.5, 0.0));
+    let c = character(&mut s, v3(-0.3, 0.92, 0.0));
+    walk(&mut s, c, Vec3::ZERO, 300);
+    assert!(s.body(2).unwrap().sleeping, "the crate sleeps next to the idle character");
+    let before = s.body(2).unwrap().pose;
+    walk(&mut s, c, Vec3::ZERO, 120);
+    assert!(s.body(2).unwrap().sleeping);
+    assert_eq!(s.body(2).unwrap().pose, before);
+    // Walking into it wakes and pushes it.
+    walk(&mut s, c, v3(1.0, 0.0, 0.0), 60);
+    assert!(s.body(2).unwrap().pose.p.x > before.p.x + 0.2, "{:?}", s.body(2).unwrap().pose.p);
+}
+
+/// Finding 5: a big box on a fine heightfield is held at its corners (nearest-first triangles),
+/// rests and sleeps, and the per-pair cap is reported as a structured budget error.
+#[test]
+fn big_boxes_rest_on_fine_heightfields() {
+    let n = 129usize;
+    let hf = Shape::heightfield(n, n, vec![0.0; n * n], (0.25, 0.25)).unwrap();
+    let mut s = Space::default();
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::IDENTITY, Some(ColliderDesc::new(hf)))).unwrap();
+    dynamic(&mut s, 2, Shape::cuboid(v3(3.0, 3.0, 3.0)), v3(0.3, 3.5, 0.2));
+    let mut capped = false;
+    for _ in 0..600 {
+        let r = s.step(DT);
+        capped |= r.errors.iter().any(|e| e.code == "budget" && e.message.contains("mesh triangles"));
+    }
+    let b = s.body(2).unwrap();
+    assert!((b.center.y - 3.0).abs() < 0.02 && b.sleeping, "{:?} sleeping {}", b.center, b.sleeping);
+    assert!(capped, "2,300 triangles under a 6 m box exceed the per-pair cap: reported");
+}
+
+/// Finding 5: a shape cast across a large mesh considers every triangle on its way (nearest
+/// first, pruned by the best hit), not the first few hundred.
+#[test]
+fn casts_across_large_meshes_find_their_hit() {
+    let (nx, nz) = (400usize, 4usize);
+    let mut v = Vec::new();
+    for z in 0..=nz {
+        for x in 0..=nx {
+            v.push(v3(x as f32 - 200.0, 0.0, z as f32 - 2.0));
+        }
+    }
+    let row = (nx + 1) as u32;
+    let mut t = Vec::new();
+    for z in 0..nz as u32 {
+        for x in 0..nx as u32 {
+            let a = z * row + x;
+            t.push([a, a + row, a + 1]);
+            t.push([a + 1, a + row, a + row + 1]);
+        }
+    }
+    let mut s = Space::default();
+    s.insert(1, BodyDesc::new(BodyKind::Static, Pose::IDENTITY, Some(ColliderDesc::new(Shape::mesh(v, t).unwrap())))).unwrap();
+    let (hits, _) = s.cast(&Shape::sphere(0.5), &Pose::at(v3(-190.0, 1.0, 0.0)), v3(380.0, -2.0, 0.0), &Filter::default(), 4, 0.001);
+    assert_eq!(hits.len(), 1);
+    assert!((hits[0].at - 0.25).abs() < 0.002, "{:?}", hits[0]);
+}
+
+/// Finding 6: hulls on moving bodies are capped (structured error); hull piles stay correct.
+#[test]
+fn moving_hulls_are_capped_and_hull_piles_settle() {
+    let pts: Vec<Vec3> = (0..32).map(|i| {
+        let a = i as f32 * 2.399;
+        let y = 1.0 - 2.0 * (i as f32 + 0.5) / 32.0;
+        let r = (1.0 - y * y).sqrt();
+        v3(specula_core::dmath::cos(a) * r * 0.5, y * 0.5, specula_core::dmath::sin(a) * r * 0.5)
+    }).collect();
+    let big = Shape::hull(&pts).unwrap();
+    let e = Space::default().insert(1, BodyDesc::new(BodyKind::Dynamic, Pose::IDENTITY, Some(ColliderDesc::new(big.clone())))).unwrap_err();
+    assert_eq!(e.code, "hull_too_big");
+    assert!(Space::default().insert(1, BodyDesc::new(BodyKind::Static, Pose::IDENTITY, Some(ColliderDesc::new(big)))).is_ok());
+    // A pile of 16-point hulls lands and sleeps; the cached features keep it as stable as a fresh test.
+    let small = Shape::hull(&pts.iter().step_by(2).copied().collect::<Vec<_>>()).unwrap();
+    let mut s = Space::default();
+    ground(&mut s);
+    for i in 0..27u64 {
+        dynamic(&mut s, 10 + i, small.clone(), v3((i % 3) as f32 * 1.1, 0.6 + (i / 9) as f32 * 1.1, ((i / 3) % 3) as f32 * 1.1));
+    }
+    for _ in 0..900 {
+        s.step(DT);
+    }
+    assert_eq!(s.report().awake, 0, "the hull pile sleeps");
+    let deepest = s.report().deepest.map_or(0.0, |d| d.0);
+    assert!(deepest > -0.02, "{deepest}");
+}
+
+/// Finding 8: the cached part of the hash follows every change (sleep, wake, removal, moves).
+#[test]
+fn the_incremental_hash_matches_a_full_one() {
+    let mut s = Space::default();
+    ground(&mut s);
+    tower(&mut s, 4);
+    for t in 0..400 {
+        s.step(DT);
+        if t == 200 {
+            s.remove(101);
+        }
+        if t == 300 {
+            s.set_pose(1, Pose::at(v3(0.0, -0.4, 0.0)));
+        }
+        assert_eq!(s.hash(), s.hash_uncached(), "tick {t}");
+    }
 }

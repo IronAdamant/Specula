@@ -12,6 +12,11 @@ use std::sync::Arc;
 
 /// Most points a convex hull may be built from (its cost grows with them).
 pub const MAX_HULL_POINTS: usize = 64;
+/// Most points of a hull on a dynamic or kinematic body: polytope pairs cost edges x edges,
+/// so moving hulls stay small (static ones may use [`MAX_HULL_POINTS`]).
+pub const MAX_MOVING_HULL_POINTS: usize = 16;
+/// The thinnest box half extent (thinner boxes are made this thick).
+pub const MIN_HALF_EXTENT: f32 = 1.0e-4;
 /// Most triangles of a mesh collider.
 pub const MAX_MESH_TRIANGLES: usize = 65_536;
 /// Most samples per side of a heightfield.
@@ -51,13 +56,12 @@ impl Shape {
         Shape::Capsule { radius, half_height: half_height.max(0.0) }
     }
 
+    /// A box of half extents `half` (each clamped to at least [`MIN_HALF_EXTENT`]): always valid,
+    /// however thin or large.
     pub fn cuboid(half: Vec3) -> Shape {
-        let h = half;
-        let pts: Vec<Vec3> = (0..8)
-            .map(|i| v3(if i & 1 == 0 { -h.x } else { h.x }, if i & 2 == 0 { -h.y } else { h.y }, if i & 4 == 0 { -h.z } else { h.z }))
-            .collect();
-        let hull = Hull::new(&pts).expect("a box is a valid hull");
-        Shape::Box { half, hull: Arc::new(hull) }
+        let clamp = |v: f32| if v.is_finite() { v.abs().max(MIN_HALF_EXTENT) } else { MIN_HALF_EXTENT };
+        let half = v3(clamp(half.x), clamp(half.y), clamp(half.z));
+        Shape::Box { half, hull: Arc::new(Hull::cuboid(half)) }
     }
 
     pub fn hull(points: &[Vec3]) -> Result<Shape, PhysicsError> {
@@ -301,7 +305,40 @@ impl Hull {
             loops.extend(l.iter().map(|i| remap[i]));
             starts.push(loops.len() as u32);
         }
-        // Edges: each undirected loop edge, with the faces on either side.
+        let hull = Hull::assemble(points, normals, offsets, loops, starts);
+        if hull.volume <= size * size * size * 1.0e-9 {
+            return Err(PhysicsError::new("invalid_hull", "hull has (almost) no volume"));
+        }
+        Ok(hull)
+    }
+
+    /// A box as a polytope, built directly (6 faces, 12 edges): valid for any positive half
+    /// extents, unlike the general hull builder's tolerances.
+    pub fn cuboid(h: Vec3) -> Hull {
+        let points: Vec<Vec3> = (0..8)
+            .map(|i| v3(if i & 1 == 0 { -h.x } else { h.x }, if i & 2 == 0 { -h.y } else { h.y }, if i & 4 == 0 { -h.z } else { h.z }))
+            .collect();
+        // Counter-clockwise seen from outside, in the order (and with the loop starts and signed
+        // zeros) the general builder gives a box: stacks are sensitive to contact-point order.
+        let faces: [(Vec3, f32, [u16; 4]); 6] = [
+            (v3(-0.0, -0.0, -1.0), h.z, [3, 1, 0, 2]),
+            (v3(0.0, -1.0, 0.0), h.y, [1, 5, 4, 0]),
+            (v3(-1.0, -0.0, -0.0), h.x, [6, 2, 0, 4]),
+            (v3(1.0, 0.0, 0.0), h.x, [3, 7, 5, 1]),
+            (v3(-0.0, 1.0, -0.0), h.y, [7, 3, 2, 6]),
+            (v3(0.0, 0.0, 1.0), h.z, [5, 7, 6, 4]),
+        ];
+        let mut loops = Vec::with_capacity(24);
+        let mut starts = vec![0u32];
+        for (_, _, l) in &faces {
+            loops.extend_from_slice(l);
+            starts.push(loops.len() as u32);
+        }
+        Hull::assemble(points, faces.iter().map(|f| f.0).collect(), faces.iter().map(|f| f.1).collect(), loops, starts)
+    }
+
+    /// Edges, mass properties and bounds from vertices and faces.
+    fn assemble(points: Vec<Vec3>, normals: Vec<Vec3>, offsets: Vec<f32>, loops: Vec<u16>, starts: Vec<u32>) -> Hull {
         let mut edge_faces: BTreeMap<(u16, u16), Vec<u16>> = BTreeMap::new();
         for f in 0..normals.len() {
             let l = &loops[starts[f] as usize..starts[f + 1] as usize];
@@ -312,6 +349,7 @@ impl Hull {
         }
         let edges: Vec<Edge> =
             edge_faces.into_iter().filter(|(_, f)| f.len() == 2).map(|((a, b), f)| Edge { v: [a, b], faces: [f[0], f[1]] }).collect();
+        let aabb = Aabb::of_points(points.iter().copied());
         let mut hull = Hull {
             points,
             normals,
@@ -322,19 +360,15 @@ impl Hull {
             centroid: Vec3::ZERO,
             volume: 0.0,
             unit_inertia: Mat3::ZERO,
-            aabb: bounds,
+            aabb,
             inner_radius: 0.0,
             outer_radius: 0.0,
         };
         hull.compute_mass();
-        if hull.volume <= size * size * size * 1.0e-9 {
-            return Err(PhysicsError::new("invalid_hull", "hull has (almost) no volume"));
-        }
-        hull.aabb = Aabb::of_points(hull.points.iter().copied());
         let c = hull.centroid;
         hull.inner_radius = (0..hull.normals.len()).map(|f| hull.offsets[f] - hull.normals[f].dot(c)).fold(f32::MAX, f32::min).max(0.0);
         hull.outer_radius = hull.points.iter().map(|p| (*p - c).length()).fold(0.0, f32::max);
-        Ok(hull)
+        hull
     }
 
     pub fn face_count(&self) -> usize {
@@ -621,28 +655,44 @@ impl TriMesh {
 
     /// Calls `f(triangle, max_t)` for triangles whose bounds the ray (local) may hit before the
     /// current `max_t`; `f` returns the new `max_t` (lower it to find the closest hit).
-    pub fn each_on_ray(&self, origin: Vec3, dir: Vec3, mut max_t: f32, mut f: impl FnMut(usize, f32) -> f32) {
+    pub fn each_on_ray(&self, origin: Vec3, dir: Vec3, max_t: f32, f: impl FnMut(usize, f32) -> f32) {
+        self.each_on_sweep(origin, dir, max_t, Vec3::ZERO, f);
+    }
+
+    /// Like [`TriMesh::each_on_ray`] for a box of half extents `pad` swept along the ray (a
+    /// shape cast): nodes and triangles are tested grown by `pad`, nearer children first, and
+    /// `f` lowers `max_t` to prune what lies beyond the best hit so far. No count cap.
+    pub fn each_on_sweep(&self, origin: Vec3, dir: Vec3, mut max_t: f32, pad: Vec3, mut f: impl FnMut(usize, f32) -> f32) {
         if self.nodes.is_empty() {
             return;
         }
         let inv = crate::math::inv_dir(dir);
-        let mut stack = [0u32; 64];
-        let mut top = 1;
-        while top > 0 {
-            top -= 1;
-            let ni = stack[top];
+        let grow = |b: &Aabb| Aabb { min: b.min - pad, max: b.max + pad };
+        let mut stack: Vec<u32> = Vec::with_capacity(64);
+        stack.push(0);
+        while let Some(ni) = stack.pop() {
             let node = self.nodes[ni as usize];
-            if node.aabb.ray(origin, inv, max_t).is_none() {
+            if grow(&node.aabb).ray(origin, inv, max_t).is_none() {
                 continue;
             }
             if node.count > 0 {
                 for &t in &self.order[node.index as usize..(node.index + node.count) as usize] {
-                    max_t = f(t as usize, max_t);
+                    if grow(&self.tri_aabb(t as usize)).ray(origin, inv, max_t).is_some() {
+                        max_t = f(t as usize, max_t);
+                    }
                 }
-            } else if top + 2 <= stack.len() {
-                stack[top] = node.index;
-                stack[top + 1] = ni + 1;
-                top += 2;
+            } else {
+                // Push the farther child first so the nearer one is visited first.
+                let (l, r) = (ni + 1, node.index);
+                let enter = |c: u32| grow(&self.nodes[c as usize].aabb).ray(origin, inv, max_t).map_or(f32::MAX, |(t0, _)| t0);
+                let (el, er) = (enter(l), enter(r));
+                if el <= er {
+                    stack.push(r);
+                    stack.push(l);
+                } else {
+                    stack.push(l);
+                    stack.push(r);
+                }
             }
         }
     }
@@ -725,6 +775,27 @@ mod tests {
             let (a, b, c) = (hull.points[l[0] as usize], hull.points[l[1] as usize], hull.points[l[2] as usize]);
             assert!((b - a).cross(c - a).dot(hull.normals[f]) > 0.0);
         }
+    }
+
+    /// Review round 1, finding 2: thin, huge and tiny boxes used to panic in the hull builder.
+    #[test]
+    fn boxes_are_always_valid_however_thin() {
+        for half in [v3(500.0, 0.005, 500.0), v3(5000.0, 5.0e-5, 5000.0), v3(5.0, 5.0, 5.0e-5), v3(5.0e-5, 5.0e-5, 5.0e-5), v3(f32::NAN, 1.0, 0.0)] {
+            let Shape::Box { hull, half: h } = Shape::cuboid(half) else { panic!() };
+            assert!(h.x >= MIN_HALF_EXTENT && h.y >= MIN_HALF_EXTENT && h.z >= MIN_HALF_EXTENT, "{h:?}");
+            assert_eq!((hull.points.len(), hull.face_count(), hull.edges.len()), (8, 6, 12));
+            assert!(hull.volume > 0.0 && hull.inner_radius > 0.0, "{half:?}: {}", hull.volume);
+            for f in 0..6 {
+                let l = hull.face(f);
+                let (a, b, c) = (hull.points[l[0] as usize], hull.points[l[1] as usize], hull.points[l[2] as usize]);
+                assert!((b - a).cross(c - a).dot(hull.normals[f]) > 0.0);
+            }
+        }
+        // The direct box matches the general builder's (same faces, loops and edges).
+        let h = v3(0.5, 0.3, 0.2);
+        let pts: Vec<Vec3> = (0..8).map(|i| v3(if i & 1 == 0 { -h.x } else { h.x }, if i & 2 == 0 { -h.y } else { h.y }, if i & 4 == 0 { -h.z } else { h.z })).collect();
+        let (a, b) = (Hull::new(&pts).unwrap(), Hull::cuboid(h));
+        assert_eq!((a.points, a.normals, a.loops), (b.points, b.normals, b.loops));
     }
 
     #[test]

@@ -22,7 +22,7 @@
 //! [`Settings::max_pairs`]); past a cap the extra work is dropped (deterministically, in key
 //! order) and the step's report carries a structured `budget` error naming the limit.
 
-use crate::contact::{collide, Manifold, MAX_POINTS};
+use crate::contact::{collide, collide_cached, Manifold, SatCache, MAX_POINTS};
 use crate::math::{Aabb, Mat3, Pose, Quat, Vec3};
 use crate::query::{self, CastHit, RayHit};
 use crate::shape::Shape;
@@ -249,6 +249,8 @@ struct Contact {
     trigger: bool,
     friction: f32,
     restitution: f32,
+    /// The polytope test's memory (see [`SatCache`]).
+    sat: SatCache,
 }
 
 /// What happened during a step.
@@ -438,10 +440,18 @@ pub struct Space {
     dynamic_count: usize,
     /// The last step's length (predicts motion for fat boxes and speculative margins).
     dt: f32,
+    /// Union-find buffers for islands, reused across steps.
+    uf_parent: Vec<u32>,
+    uf_time: Vec<f32>,
+    uf_island: Vec<u32>,
+    /// The hash of what lies outside the awake set (see [`Space::hash`]); `None` once anything
+    /// there changed.
+    inactive_cache: std::cell::Cell<Option<u64>>,
     // Reused buffers.
     active: Vec<u32>,
     solver_bodies: Vec<SolverBody>,
     constraints: Vec<Constraint>,
+    solver_points: Vec<SolverPoint>,
     candidates: Vec<(u64, u64)>,
 }
 
@@ -476,9 +486,14 @@ impl Space {
             touching_count: 0,
             dynamic_count: 0,
             dt: 1.0 / 60.0,
+            inactive_cache: std::cell::Cell::new(None),
+            uf_parent: Vec::new(),
+            uf_time: Vec::new(),
+            uf_island: Vec::new(),
             active: Vec::new(),
             solver_bodies: Vec::new(),
             constraints: Vec::new(),
+            solver_points: Vec::new(),
             candidates: Vec::new(),
         }
     }
@@ -606,6 +621,7 @@ impl Space {
 
     /// Keeps [`Space::awake`] in step with a body's kind and sleep state.
     fn sync_awake(&mut self, s: u32) {
+        self.inactive_cache.set(None);
         let b = self.slot(s);
         let key = b.key;
         let want = match b.desc.kind {
@@ -633,6 +649,9 @@ impl Space {
     }
 
     fn drop_contact(&mut self, k: (u64, u64)) -> Option<Contact> {
+        if !self.awake.contains(&k.0) && !self.awake.contains(&k.1) {
+            self.inactive_cache.set(None);
+        }
         let slot = self.pairs.remove(&k)?;
         let c = self.contacts[slot as usize].take().expect("live contact");
         self.contact_free.push(slot);
@@ -648,6 +667,7 @@ impl Space {
         let Some(&s) = self.by_key.get(&key) else {
             return false;
         };
+        self.inactive_cache.set(None);
         // Wake what touched it and drop its contacts.
         for p in self.pairs_of(key) {
             let c = self.drop_contact(p).expect("listed");
@@ -691,7 +711,16 @@ impl Space {
         let Some(&s) = self.by_key.get(&key) else {
             return;
         };
+        let b = self.slot(s);
+        let same = |a: Vec3, c: Vec3| a.x.to_bits() == c.x.to_bits() && a.y.to_bits() == c.y.to_bits() && a.z.to_bits() == c.z.to_bits();
+        let (q0, q1) = (b.desc.pose.q, pose.q);
+        if same(b.desc.pose.p, pose.p) && same(Vec3::new(q0.x, q0.y, q0.z), Vec3::new(q1.x, q1.y, q1.z)) && q0.w.to_bits() == q1.w.to_bits() && b.target.is_none() {
+            // Not moved (an idle character): nothing to wake or refresh.
+            return;
+        }
+        let before = b.aabb();
         self.wake_slot(s);
+        self.inactive_cache.set(None);
         let b = self.slot_mut(s);
         b.desc.pose = pose;
         b.target = None;
@@ -700,13 +729,20 @@ impl Space {
         let moves_others = b.desc.kind != BodyKind::Dynamic;
         self.refresh_proxy(s, false);
         if moves_others {
-            // Moving a static or kinematic body by hand wakes what it now overlaps.
-            if let Some(bounds) = self.slot(s).aabb() {
+            // Moving a static or kinematic body by hand wakes what its sweep (from where it was
+            // to where it is) actually overlaps, not everything within the broadphase margin.
+            let swept = match (before, self.slot(s).aabb()) {
+                (Some(a), Some(b)) => Some(a.union(&b)),
+                (a, b) => a.or(b),
+            };
+            if let Some(bounds) = swept {
+                let bounds = bounds.expand(self.settings.linear_slop);
                 let mut near = Vec::new();
-                self.dynamic_tree.query(&bounds.expand(self.settings.aabb_margin), |o| {
+                self.dynamic_tree.query(&bounds, |o| {
                     near.push(o);
                     true
                 });
+                near.retain(|&o| o != s && self.slots[o as usize].as_ref().and_then(Body::aabb).is_some_and(|ab| ab.overlaps(&bounds)));
                 near.sort_unstable();
                 for o in near {
                     self.wake_slot(o);
@@ -719,6 +755,7 @@ impl Space {
         let Some(&s) = self.by_key.get(&key) else {
             return;
         };
+        self.inactive_cache.set(None);
         self.wake_slot(s);
         let b = self.slot_mut(s);
         b.desc.velocity = v;
@@ -759,16 +796,18 @@ impl Space {
         b.desc.angular_velocity = b.desc.angular_velocity + dw;
     }
 
-    /// The velocities a dynamic body would have after `impulse` at world point `at` plus an
-    /// angular impulse (nothing changes; `None` for other bodies).
-    pub fn impulse_response(&self, key: u64, impulse: Vec3, at: Vec3, angular: Vec3) -> Option<(Vec3, Vec3)> {
+    /// The velocity changes `(linear, angular)` a dynamic body takes from `impulse` at world
+    /// point `at` (default its centre of mass) plus an angular impulse; nothing changes. `None`
+    /// for other bodies.
+    pub fn impulse_delta(&self, key: u64, impulse: Vec3, at: Option<Vec3>, angular: Vec3) -> Option<(Vec3, Vec3)> {
         let b = self.get(key).filter(|b| b.is_dynamic())?;
         let (ll, la) = locks(b, self.settings.plane_2d);
+        let at = at.unwrap_or(b.center);
         let mut dv = impulse * b.inv_mass;
         let mut dw = b.inv_inertia_world.mul_vec((at - b.center).cross(impulse) + angular);
         mask(&mut dv, ll);
         mask(&mut dw, la);
-        Some((b.desc.velocity + dv, b.desc.angular_velocity + dw))
+        Some((dv, dw))
     }
 
     pub fn body(&self, key: u64) -> Option<BodyView<'_>> {
@@ -858,6 +897,14 @@ impl Space {
         b.sleep_time = 0.0;
         b.island = NONE;
         self.sync_awake(s);
+    }
+
+    /// Wakes every sleeping body (the settings changed under them), in key order.
+    pub fn wake_all(&mut self) {
+        let sleeping: Vec<u32> = self.by_key.values().copied().filter(|s| self.slot(*s).desc.sleeping).collect();
+        for s in sleeping {
+            self.wake_slot(s);
+        }
     }
 
     /// Wakes a body and its island.
@@ -995,6 +1042,7 @@ impl Space {
                 trigger,
                 friction,
                 restitution,
+                sat: SatCache::default(),
             };
             let slot = match self.contact_free.pop() {
                 Some(slot) => {
@@ -1007,6 +1055,9 @@ impl Space {
                 }
             };
             self.pairs.insert((ka, kb), slot);
+            if !self.awake.contains(&ka) && !self.awake.contains(&kb) {
+                self.inactive_cache.set(None);
+            }
             self.reverse.insert((kb, ka));
             self.report.new_pairs += 1;
         }
@@ -1059,6 +1110,8 @@ impl Space {
         let mut m = Manifold::default();
         let mut touching_delta: isize = 0;
         let mut deepest: Option<(f32, u64, u64)> = None;
+        // Mesh triangles left untested by the per-pair cap: (pairs, triangles, first pair).
+        let mut capped: (usize, u64, Option<(u64, u64)>) = (0, 0, None);
         self.collect_sim();
         for &slot in &self.sim {
             let c = self.contacts[slot as usize].as_mut().expect("live contact");
@@ -1090,6 +1143,9 @@ impl Space {
                     m.len = 0;
                 } else {
                     collide(&ca.shape, &pa, &cb.shape, &pb, 0.0, &mut m);
+                    if m.skipped > 0 {
+                        capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
+                    }
                 }
                 let deepest = m.as_slice().iter().fold(None::<crate::contact::ContactPoint>, |d, p| match d {
                     Some(q) if q.separation <= p.separation => Some(q),
@@ -1117,7 +1173,10 @@ impl Space {
             if far {
                 m.len = 0;
             } else {
-                collide(&ca.shape, &pa, &cb.shape, &pb, margin, &mut m);
+                collide_cached(&ca.shape, &pa, &cb.shape, &pb, margin, &mut m, Some(&mut c.sat));
+                if m.skipped > 0 {
+                    capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
+                }
             }
             // Warm start: carry impulses over by feature id.
             let old = c.points;
@@ -1164,6 +1223,22 @@ impl Space {
             }
         }
         self.touching_count = (self.touching_count as isize + touching_delta) as usize;
+        if let (pairs, triangles, Some((a, b))) = capped {
+            self.report.errors.push(
+                PhysicsError::new(
+                    "budget",
+                    format!(
+                        "{triangles} mesh triangles near {pairs} bodies were not tested: a body touches at most {} triangles per tick (the ones nearest its corners); use a coarser mesh or smaller bodies",
+                        crate::contact::MAX_MESH_TRIANGLES_PER_PAIR
+                    ),
+                )
+                .with("limit", crate::contact::MAX_MESH_TRIANGLES_PER_PAIR)
+                .with("pairs", pairs)
+                .with("triangles_skipped", triangles)
+                .with("a", a)
+                .with("b", b),
+            );
+        }
         self.report.deepest = deepest;
         for k in remove {
             self.drop_contact(k);
@@ -1303,8 +1378,10 @@ impl Space {
         let settings = self.settings;
         let mut sbodies = std::mem::take(&mut self.solver_bodies);
         let mut cons = std::mem::take(&mut self.constraints);
+        let mut points = std::mem::take(&mut self.solver_points);
         sbodies.clear();
         cons.clear();
+        points.clear();
         let slots = std::mem::take(&mut self.active);
         for &s in &slots {
             let plane = settings.plane_2d;
@@ -1364,11 +1441,11 @@ impl Space {
             }
             let (ia, ib) = (if a.solver == NONE { STATIC } else { a.solver }, if b.solver == NONE { STATIC } else { b.solver });
             let both_dynamic = dyn_a && dyn_b;
-            let mut points = [SolverPoint::default(); 4];
-            for (k, p) in c.points[..c.len].iter().enumerate() {
+            let start = points.len() as u32;
+            for p in &c.points[..c.len] {
                 let ra = p.point - a.center;
                 let rb = p.point - b.center;
-                points[k] = SolverPoint {
+                points.push(SolverPoint {
                     ra,
                     rb,
                     normal: p.normal,
@@ -1376,7 +1453,7 @@ impl Space {
                     normal_impulse: p.normal_impulse,
                     tangent_impulse: p.tangent_impulse,
                     ..SolverPoint::default()
-                };
+                });
             }
             cons.push(Constraint {
                 a: ia,
@@ -1384,13 +1461,13 @@ impl Space {
                 friction: c.friction,
                 restitution: c.restitution,
                 soft: if both_dynamic { soft } else { static_soft },
-                points,
-                len: c.len,
+                start,
+                len: c.len as u32,
                 contact: slot,
             });
         }
         self.report.constraints = cons.len();
-        self.report.points = cons.iter().map(|c| c.len).sum();
+        self.report.points = points.len();
         let tuning = Tuning {
             substeps: settings.substeps.max(1),
             contact_hertz: hertz,
@@ -1399,16 +1476,17 @@ impl Space {
             restitution_threshold: settings.restitution_threshold,
             max_linear_speed: settings.max_linear_speed,
         };
-        solver::step(&mut cons, &mut sbodies, dt, &tuning);
+        solver::step(&cons, &mut points, &mut sbodies, dt, &tuning);
         // Store impulses for next step's warm start.
         for sc in &cons {
             let c = self.contacts[sc.contact as usize].as_mut().expect("live contact");
-            for k in 0..c.len {
-                c.points[k].normal_impulse = sc.points[k].normal_impulse;
-                c.points[k].tangent_impulse = sc.points[k].tangent_impulse;
-                c.points[k].max_normal_impulse = sc.points[k].max_normal_impulse;
+            for (k, sp) in points[sc.range()].iter().enumerate() {
+                c.points[k].normal_impulse = sp.normal_impulse;
+                c.points[k].tangent_impulse = sp.tangent_impulse;
+                c.points[k].max_normal_impulse = sp.max_normal_impulse;
             }
         }
+        self.solver_points = points;
         // Write dynamic bodies back.
         for &s in &slots {
             let b = self.slot_mut(s);
@@ -1528,11 +1606,10 @@ impl Space {
 
     fn sleep(&mut self, dt: f32) {
         let settings = self.settings;
-        let slots = self.active.clone();
-        // Sleep timers.
-        let mut members: Vec<u32> = Vec::new();
-        for &s in &slots {
-            let b = self.slot_mut(s);
+        // Sleep timers of the awake dynamic bodies this step simulated.
+        let mut any = false;
+        for i in 0..self.active.len() {
+            let b = self.slot_mut(self.active[i]);
             if !b.is_dynamic() || b.desc.sleeping || b.solver == NONE {
                 continue;
             }
@@ -1543,15 +1620,17 @@ impl Space {
             } else {
                 b.sleep_time += dt;
             }
-            members.push(s);
+            any = true;
         }
-        if !settings.sleep || members.is_empty() {
+        if !settings.sleep || !any {
             return;
         }
-        // Islands: union-find over touching awake dynamic pairs; a moving kinematic body keeps
-        // what it touches awake.
-        let n = self.slots.len();
-        let mut parent: Vec<u32> = (0..n as u32).collect();
+        // Islands: union-find over touching awake dynamic pairs, on solver indices (dense, in
+        // key order; buffers reused); a moving kinematic body keeps what it touches awake.
+        let n = self.solver_bodies.len();
+        let mut parent = std::mem::take(&mut self.uf_parent);
+        parent.clear();
+        parent.extend(0..n as u32);
         fn find(p: &mut [u32], mut x: u32) -> u32 {
             while p[x as usize] != x {
                 p[x as usize] = p[p[x as usize] as usize];
@@ -1559,62 +1638,72 @@ impl Space {
             }
             x
         }
-        let mut keep_awake: Vec<u32> = Vec::new();
-        for &slot in &self.sim {
-            let c = self.contact(slot);
+        for k in 0..self.sim.len() {
+            let c = self.contact(self.sim[k]);
             if !c.touching || c.trigger {
                 continue;
             }
-            let (a, b) = (self.slot(c.a), self.slot(c.b));
-            let (da, db) = (a.is_dynamic() && !a.desc.sleeping, b.is_dynamic() && !b.desc.sleeping);
+            let (ia, ib) = (c.a, c.b);
+            let (a, b) = (self.slot(ia), self.slot(ib));
+            let (da, db) = (a.is_dynamic() && !a.desc.sleeping && a.solver != NONE, b.is_dynamic() && !b.desc.sleeping && b.solver != NONE);
             if da && db {
-                let (ra, rb) = (find(&mut parent, c.a), find(&mut parent, c.b));
+                let (ra, rb) = (find(&mut parent, a.solver), find(&mut parent, b.solver));
                 if ra != rb {
-                    // Lower slot becomes the root: deterministic.
+                    // The lower index (the lower key) becomes the root: deterministic.
                     let (lo, hi) = (ra.min(rb), ra.max(rb));
                     parent[hi as usize] = lo;
                 }
             } else if da && b.desc.kind == BodyKind::Kinematic && b.active() {
-                keep_awake.push(c.a);
+                self.slot_mut(ia).sleep_time = 0.0;
             } else if db && a.desc.kind == BodyKind::Kinematic && a.active() {
-                keep_awake.push(c.b);
+                self.slot_mut(ib).sleep_time = 0.0;
             }
         }
-        for s in keep_awake {
-            self.slot_mut(s).sleep_time = 0.0;
-        }
-        // Minimum sleep time per island, in slot order.
-        let mut min_time: BTreeMap<u32, f32> = BTreeMap::new();
-        for &s in &members {
-            let r = find(&mut parent, s);
-            let t = self.slot(s).sleep_time;
-            let e = min_time.entry(r).or_insert(f32::MAX);
-            *e = e.min(t);
-        }
-        let mut groups: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for &s in &members {
-            let r = find(&mut parent, s);
-            if min_time[&r] >= settings.time_to_sleep {
-                groups.entry(r).or_default().push(s);
+        // Least sleep time per island.
+        let mut min_time = std::mem::take(&mut self.uf_time);
+        min_time.clear();
+        min_time.resize(n, f32::MAX);
+        for i in 0..self.active.len() {
+            let b = self.slot(self.active[i]);
+            if b.is_dynamic() && !b.desc.sleeping && b.solver != NONE {
+                let r = find(&mut parent, b.solver) as usize;
+                min_time[r] = min_time[r].min(b.sleep_time);
             }
         }
-        for (_, group) in groups {
-            let id = self.next_island;
-            self.next_island = self.next_island.wrapping_add(1);
-            let mut keys = Vec::with_capacity(group.len());
-            for s in group {
-                let b = self.slot_mut(s);
-                b.desc.sleeping = true;
-                b.desc.velocity = Vec3::ZERO;
-                b.desc.angular_velocity = Vec3::ZERO;
-                b.island = id;
-                keys.push(b.key);
-                self.awake.remove(&keys[keys.len() - 1]);
+        // Islands at rest long enough fall asleep together (members in key order).
+        let mut island_of = std::mem::take(&mut self.uf_island);
+        island_of.clear();
+        island_of.resize(n, NONE);
+        for i in 0..self.active.len() {
+            let s = self.active[i];
+            let b = self.slot(s);
+            if !b.is_dynamic() || b.desc.sleeping || b.solver == NONE {
+                continue;
             }
-            keys.sort_unstable();
-            self.islands.insert(id, keys);
-            self.report.islands_slept += 1;
+            let r = find(&mut parent, b.solver) as usize;
+            if min_time[r] < settings.time_to_sleep {
+                continue;
+            }
+            if island_of[r] == NONE {
+                island_of[r] = self.next_island;
+                self.islands.insert(self.next_island, Vec::new());
+                self.next_island = self.next_island.wrapping_add(1);
+                self.report.islands_slept += 1;
+            }
+            let id = island_of[r];
+            let b = self.slot_mut(s);
+            b.desc.sleeping = true;
+            b.desc.velocity = Vec3::ZERO;
+            b.desc.angular_velocity = Vec3::ZERO;
+            b.island = id;
+            let key = b.key;
+            self.awake.remove(&key);
+            self.islands.get_mut(&id).expect("just made").push(key);
+            self.inactive_cache.set(None);
         }
+        self.uf_parent = parent;
+        self.uf_time = min_time;
+        self.uf_island = island_of;
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1763,35 +1852,85 @@ impl Space {
     /// A 64-bit hash of the whole simulation state (bodies, contacts with their impulses,
     /// sleep state, characters), in key order: equal hashes mean bit-identical states.
     pub fn hash(&self) -> u64 {
+        let inactive = match self.inactive_cache.get() {
+            Some(h) => h,
+            None => {
+                let h = self.inactive_hash();
+                self.inactive_cache.set(Some(h));
+                h
+            }
+        };
+        self.combine(inactive)
+    }
+
+    /// [`Space::hash`] without the cache (tests check the two agree).
+    pub fn hash_uncached(&self) -> u64 {
+        self.combine(self.inactive_hash())
+    }
+
+    fn hash_body(h: &mut StableHasher, key: u64, b: &Body) {
+        h.write_u64(key);
+        h.write_u8(b.desc.kind as u8);
+        for v in [b.desc.pose.p, b.desc.velocity, b.desc.angular_velocity] {
+            h.write_f32(v.x);
+            h.write_f32(v.y);
+            h.write_f32(v.z);
+        }
+        let q = b.desc.pose.q;
+        [q.x, q.y, q.z, q.w].iter().for_each(|c| h.write_f32(*c));
+        h.write_bool(b.desc.sleeping);
+        h.write_f32(b.sleep_time);
+        h.write_bool(b.target.is_some());
+    }
+
+    fn hash_contact(h: &mut StableHasher, (a, b): (u64, u64), c: &Contact) {
+        h.write_u64(a);
+        h.write_u64(b);
+        h.write_bool(c.touching);
+        for p in &c.points[..c.len] {
+            h.write_u32(p.id);
+            h.write_f32(p.normal_impulse);
+            h.write_f32(p.tangent_impulse[0]);
+            h.write_f32(p.tangent_impulse[1]);
+        }
+    }
+
+    /// Static, sleeping and other bodies outside the awake set, and contacts none of whose
+    /// bodies is awake: nothing a step changes, so it is cached until something touches it.
+    fn inactive_hash(&self) -> u64 {
+        let mut h = StableHasher::with_seed(0x5068_7973_6963_7332);
+        for (&key, &s) in &self.by_key {
+            if !self.awake.contains(&key) {
+                Space::hash_body(&mut h, key, self.slot(s));
+            }
+        }
+        for (&k, &slot) in &self.pairs {
+            if !self.awake.contains(&k.0) && !self.awake.contains(&k.1) {
+                Space::hash_contact(&mut h, k, self.contact(slot));
+            }
+        }
+        h.finish()
+    }
+
+    /// The whole state: counts, the cached inactive part, then the awake bodies, their
+    /// contacts and the characters, in key order.
+    fn combine(&self, inactive: u64) -> u64 {
         let mut h = StableHasher::with_seed(0x5068_7973_6963_7331);
         h.write_u64(self.by_key.len() as u64);
-        for (&key, &s) in &self.by_key {
-            let b = self.slot(s);
-            h.write_u64(key);
-            h.write_u8(b.desc.kind as u8);
-            for v in [b.desc.pose.p, b.desc.velocity, b.desc.angular_velocity] {
-                h.write_f32(v.x);
-                h.write_f32(v.y);
-                h.write_f32(v.z);
-            }
-            let q = b.desc.pose.q;
-            [q.x, q.y, q.z, q.w].iter().for_each(|c| h.write_f32(*c));
-            h.write_bool(b.desc.sleeping);
-            h.write_f32(b.sleep_time);
-            h.write_bool(b.target.is_some());
-        }
         h.write_u64(self.pairs.len() as u64);
-        for (&(a, b), &slot) in &self.pairs {
-            let c = self.contact(slot);
-            h.write_u64(a);
-            h.write_u64(b);
-            h.write_bool(c.touching);
-            for p in &c.points[..c.len] {
-                h.write_u32(p.id);
-                h.write_f32(p.normal_impulse);
-                h.write_f32(p.tangent_impulse[0]);
-                h.write_f32(p.tangent_impulse[1]);
-            }
+        h.write_u64(inactive);
+        for &key in &self.awake {
+            Space::hash_body(&mut h, key, self.slot(self.by_key[&key]));
+        }
+        let mut keys: Vec<(u64, u64)> = Vec::new();
+        for &k in &self.awake {
+            keys.extend(self.pairs.range((k, 0)..=(k, u64::MAX)).map(|(p, _)| *p));
+            keys.extend(self.reverse.range((k, 0)..=(k, u64::MAX)).map(|(b, a)| (*a, *b)));
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        for k in keys {
+            Space::hash_contact(&mut h, k, self.contact(self.pairs[&k]));
         }
         for (k, c) in &self.characters {
             h.write_u64(*k);
@@ -1843,6 +1982,21 @@ fn validate(d: &BodyDesc) -> Result<(), PhysicsError> {
         return Err(PhysicsError::new("invalid_body", "a dynamic body needs a positive mass").with("field", "mass"));
     }
     if let Some(c) = &d.collider {
+        if let (Some(h), false) = (c.shape.polytope(), d.kind == BodyKind::Static) {
+            if matches!(c.shape, Shape::Hull(_)) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS {
+                return Err(PhysicsError::new(
+                    "hull_too_big",
+                    format!(
+                        "a hull on a moving body has at most {} points (this one has {}): pairs of hulls cost edges x edges; simplify it, or make the body static",
+                        crate::shape::MAX_MOVING_HULL_POINTS,
+                        h.points.len()
+                    ),
+                )
+                .with("field", "collider.points")
+                .with("limit", crate::shape::MAX_MOVING_HULL_POINTS)
+                .with("points", h.points.len()));
+            }
+        }
         if c.shape.is_static_only() && d.kind != BodyKind::Static {
             return Err(PhysicsError::new(
                 "static_only_shape",

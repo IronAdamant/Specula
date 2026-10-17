@@ -215,24 +215,22 @@ const CAST_ITERATIONS: usize = 32;
 pub fn cast_shape(caster: &Shape, from: &Pose, delta: Vec3, target: &Shape, target_pose: &Pose, skin: f32) -> Option<CastHit> {
     let c = convex(caster, from)?;
     if let Some(mesh) = target.triangles() {
-        let local = caster.local_aabb();
-        let start = shape_bounds_in(&local, &target_pose.inv_mul(from));
-        let swept = start.swept(target_pose.inv_vector(delta)).expand(skin);
+        // The caster's box swept through the mesh's BVH, nearest first, pruned by the best hit
+        // so far: every triangle the sweep can reach is considered (no count cap).
+        let start = shape_bounds_in(&caster.local_aabb(), &target_pose.inv_mul(from));
+        let pad = start.extents() + crate::math::splat(skin);
         let mut best: Option<CastHit> = None;
-        let mut tested = 0;
-        mesh.each_in(&swept, |t| {
-            tested += 1;
-            if tested > 256 {
-                return false;
-            }
+        mesh.each_on_sweep(start.center(), target_pose.inv_vector(delta), 1.0, pad, |t, cur| {
             let tri = Triangle::new(mesh.triangle(t).map(|v| target_pose.point(v)));
             if let Some(mut h) = cast_convex(&c, delta, &tri, 0.0, skin) {
                 h.triangle = t as u32;
-                if best.is_none_or(|b| h.fraction < b.fraction) {
+                // Ties go to the lower triangle index, whatever order the tree visits them in.
+                if h.fraction <= cur && best.is_none_or(|b| h.fraction < b.fraction || h.fraction == b.fraction && h.triangle < b.triangle) {
                     best = Some(h);
+                    return h.fraction;
                 }
             }
-            true
+            cur
         });
         return best;
     }

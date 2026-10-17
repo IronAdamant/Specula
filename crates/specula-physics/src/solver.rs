@@ -16,8 +16,9 @@
 //! Soft constraints have physical parameters (stiffness in Hz, damping ratio) instead of magic
 //! numbers, so tuning is explainable ("contacts: 30 Hz, damping 10"). Sub-stepping keeps stacks
 //! stiff at low cost. Anchors and inverse inertias are fixed for the step (so each constraint
-//! row's Jacobian is computed once in `prepare`); the current separation is recovered from
-//! each body's position and rotation change since the step began.
+//! row's angular Jacobian is computed once in `prepare`); the current separation is recovered
+//! from each body's position and rotation change since the step began. Points are stored
+//! densely (a pair uses only the points it has), since every pass streams them.
 //!
 //! **Joints (P4)** slot in beside the contacts: each joint type adds `prepare`, `warm_start`,
 //! `solve(use_bias)` and `relax` passes run in the same places as the contact passes below
@@ -76,31 +77,30 @@ impl Softness {
     }
 }
 
-/// One constraint direction between two bodies at fixed anchors: its Jacobian and the velocity
-/// change a unit impulse makes on each body.
+/// One constraint direction between two bodies at fixed anchors: its Jacobian and the angular
+/// velocity change a unit impulse makes on each body (the linear change is the body's inverse
+/// mass times `dir`, applied from the body's own data).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Row {
     pub dir: Vec3,
     /// `ra × dir`, `rb × dir`.
     pub rxa: Vec3,
     pub rxb: Vec3,
-    /// Linear and angular velocity change per unit impulse.
-    pub la: Vec3,
-    pub lb: Vec3,
+    /// Angular velocity change per unit impulse.
     pub aa: Vec3,
     pub ab: Vec3,
-    /// `1 / effective mass` inverted: the impulse per unit velocity error.
+    /// The impulse per unit velocity error (1 / effective mass).
     pub mass: f32,
 }
 
 impl Row {
-    fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: Option<&SolverBody>, b: Option<&SolverBody>) -> Row {
+    fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: &Local, b: &Local) -> Row {
         let rxa = ra.cross(dir);
         let rxb = rb.cross(dir);
-        let (la, aa) = response(a, dir, rxa);
-        let (lb, ab) = response(b, dir, rxb);
-        let k = dir.dot(la) + dir.dot(lb) + rxa.dot(aa) + rxb.dot(ab);
-        Row { dir, rxa, rxb, la, lb, aa, ab, mass: if k > 0.0 { 1.0 / k } else { 0.0 } }
+        let aa = a.inv_inertia.mul_vec(rxa);
+        let ab = b.inv_inertia.mul_vec(rxb);
+        let k = dir.dot(mul(a.inv_mass, dir)) + dir.dot(mul(b.inv_mass, dir)) + rxa.dot(aa) + rxb.dot(ab);
+        Row { dir, rxa, rxb, aa, ab, mass: if k > 0.0 { 1.0 / k } else { 0.0 } }
     }
 
     /// Relative velocity along the row (B minus A).
@@ -111,18 +111,11 @@ impl Row {
 
     #[inline]
     fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
-        a.v = a.v - self.la * l;
+        let p = self.dir * l;
+        a.v = a.v - mul(a.inv_mass, p);
         a.w = a.w - self.aa * l;
-        b.v = b.v + self.lb * l;
+        b.v = b.v + mul(b.inv_mass, p);
         b.w = b.w + self.ab * l;
-    }
-}
-
-/// Velocity change per unit impulse along `dir` (with `r × dir` precomputed).
-fn response(b: Option<&SolverBody>, dir: Vec3, rxd: Vec3) -> (Vec3, Vec3) {
-    match b {
-        Some(b) if !b.kinematic => (mul(b.inv_mass, dir), b.inv_inertia.mul_vec(rxd)),
-        _ => (Vec3::ZERO, Vec3::ZERO),
     }
 }
 
@@ -144,6 +137,7 @@ pub struct SolverPoint {
     pub relative_velocity: f32,
 }
 
+/// A contact pair's constraint; its points are `points[start..start + len]`.
 #[derive(Clone, Copy, Debug)]
 pub struct Constraint {
     pub a: u32,
@@ -151,10 +145,17 @@ pub struct Constraint {
     pub friction: f32,
     pub restitution: f32,
     pub soft: Softness,
-    pub points: [SolverPoint; 4],
-    pub len: usize,
+    pub start: u32,
+    pub len: u32,
     /// Index of the contact this came from (to store impulses back).
     pub contact: u32,
+}
+
+impl Constraint {
+    #[inline]
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start as usize..(self.start + self.len) as usize
+    }
 }
 
 /// Solver tuning (see [`crate::Settings`]).
@@ -170,48 +171,32 @@ pub struct Tuning {
 
 const MAX_ROTATION_PER_SUBSTEP: f32 = 0.25 * std::f32::consts::PI;
 
-#[inline]
-fn body(bodies: &[SolverBody], i: u32) -> Option<&SolverBody> {
-    if i == STATIC {
-        None
-    } else {
-        Some(&bodies[i as usize])
-    }
-}
-
-/// Prepares constraint rows (Jacobians, masses, tangents, relative velocity). Impulses carry
-/// over.
-pub fn prepare(constraints: &mut [Constraint], bodies: &[SolverBody]) {
-    for c in constraints.iter_mut() {
-        let (a, b) = (body(bodies, c.a), body(bodies, c.b));
-        let (la, lb) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
-        for p in &mut c.points[..c.len] {
-            let n = p.normal;
-            let (t1, t2) = crate::math::basis(n);
-            p.n = Row::new(n, p.ra, p.rb, a, b);
-            p.t1 = Row::new(t1, p.ra, p.rb, a, b);
-            p.t2 = Row::new(t2, p.ra, p.rb, a, b);
-            p.relative_velocity = p.n.velocity(&la, &lb);
-            p.max_normal_impulse = 0.0;
-        }
-    }
-}
-
-/// A constraint's body state in locals.
+/// A constraint's body state in locals (zero masses for static and kinematic bodies).
 struct Local {
     v: Vec3,
     w: Vec3,
     dp: Vec3,
     dq: Quat,
+    inv_mass: Vec3,
+    inv_inertia: Mat3,
     moves: bool,
 }
 
 impl Local {
     #[inline]
     fn load(bodies: &[SolverBody], i: u32) -> Local {
-        match body(bodies, i) {
-            None => Local { v: Vec3::ZERO, w: Vec3::ZERO, dp: Vec3::ZERO, dq: Quat::IDENTITY, moves: false },
-            Some(b) => Local { v: b.v, w: b.w, dp: b.dp, dq: b.dq, moves: !b.kinematic },
+        if i == STATIC {
+            return Local { v: Vec3::ZERO, w: Vec3::ZERO, dp: Vec3::ZERO, dq: Quat::IDENTITY, inv_mass: Vec3::ZERO, inv_inertia: Mat3::ZERO, moves: false };
+        }
+        let b = &bodies[i as usize];
+        Local {
+            v: b.v,
+            w: b.w,
+            dp: b.dp,
+            dq: b.dq,
+            inv_mass: if b.kinematic { Vec3::ZERO } else { b.inv_mass },
+            inv_inertia: if b.kinematic { Mat3::ZERO } else { b.inv_inertia },
+            moves: !b.kinematic,
         }
     }
 
@@ -221,6 +206,23 @@ impl Local {
             let b = &mut bodies[i as usize];
             b.v = self.v;
             b.w = self.w;
+        }
+    }
+}
+
+/// Prepares constraint rows (Jacobians, masses, tangents, relative velocity). Impulses carry
+/// over.
+pub fn prepare(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &[SolverBody]) {
+    for c in constraints {
+        let (a, b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        for p in &mut points[c.range()] {
+            let n = p.normal;
+            let (t1, t2) = crate::math::basis(n);
+            p.n = Row::new(n, p.ra, p.rb, &a, &b);
+            p.t1 = Row::new(t1, p.ra, p.rb, &a, &b);
+            p.t2 = Row::new(t2, p.ra, p.rb, &a, &b);
+            p.relative_velocity = p.n.velocity(&a, &b);
+            p.max_normal_impulse = 0.0;
         }
     }
 }
@@ -267,10 +269,10 @@ pub fn integrate_positions(bodies: &mut [SolverBody], h: f32) {
     }
 }
 
-pub fn warm_start(constraints: &[Constraint], bodies: &mut [SolverBody]) {
+pub fn warm_start(constraints: &[Constraint], points: &[SolverPoint], bodies: &mut [SolverBody]) {
     for c in constraints {
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
-        for p in &c.points[..c.len] {
+        for p in &points[c.range()] {
             p.n.apply(p.normal_impulse, &mut a, &mut b);
             p.t1.apply(p.tangent_impulse[0], &mut a, &mut b);
             p.t2.apply(p.tangent_impulse[1], &mut a, &mut b);
@@ -281,11 +283,12 @@ pub fn warm_start(constraints: &[Constraint], bodies: &mut [SolverBody]) {
 }
 
 /// One pass over the contacts: non-penetration (soft, with bias when `use_bias`), then friction.
-pub fn solve(constraints: &mut [Constraint], bodies: &mut [SolverBody], inv_h: f32, push_speed: f32, use_bias: bool) {
-    for c in constraints.iter_mut() {
+pub fn solve(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], inv_h: f32, push_speed: f32, use_bias: bool) {
+    for c in constraints {
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
         let dp = b.dp - a.dp;
-        for p in &mut c.points[..c.len] {
+        let pts = &mut points[c.range()];
+        for p in pts.iter_mut() {
             // Current separation from the bodies' motion since the step began.
             let pra = a.dq.rotate(p.ra);
             let prb = b.dq.rotate(p.rb);
@@ -307,7 +310,7 @@ pub fn solve(constraints: &mut [Constraint], bodies: &mut [SolverBody], inv_h: f
             p.n.apply(impulse, &mut a, &mut b);
         }
         // Friction: a disc of radius friction x normal impulse in the tangent plane.
-        for p in &mut c.points[..c.len] {
+        for p in pts.iter_mut() {
             let l1 = -p.t1.mass * p.t1.velocity(&a, &b);
             let l2 = -p.t2.mass * p.t2.velocity(&a, &b);
             let (old1, old2) = (p.tangent_impulse[0], p.tangent_impulse[1]);
@@ -328,13 +331,13 @@ pub fn solve(constraints: &mut [Constraint], bodies: &mut [SolverBody], inv_h: f
     }
 }
 
-pub fn restitution(constraints: &mut [Constraint], bodies: &mut [SolverBody], threshold: f32) {
-    for c in constraints.iter_mut() {
+pub fn restitution(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], threshold: f32) {
+    for c in constraints {
         if c.restitution == 0.0 {
             continue;
         }
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
-        for p in &mut c.points[..c.len] {
+        for p in &mut points[c.range()] {
             if p.relative_velocity > -threshold || p.max_normal_impulse == 0.0 {
                 continue;
             }
@@ -352,19 +355,19 @@ pub fn restitution(constraints: &mut [Constraint], bodies: &mut [SolverBody], th
 }
 
 /// Runs a whole step on prepared bodies and constraints.
-pub fn step(constraints: &mut [Constraint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
+pub fn step(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
     let n = t.substeps.max(1);
     let h = dt / n as f32;
     let inv_h = 1.0 / h;
-    prepare(constraints, bodies);
+    prepare(constraints, points, bodies);
     for _ in 0..n {
         integrate_velocities(bodies, h, t.max_linear_speed);
-        warm_start(constraints, bodies);
-        solve(constraints, bodies, inv_h, t.push_speed, true);
+        warm_start(constraints, points, bodies);
+        solve(constraints, points, bodies, inv_h, t.push_speed, true);
         integrate_positions(bodies, h);
-        solve(constraints, bodies, inv_h, t.push_speed, false);
+        solve(constraints, points, bodies, inv_h, t.push_speed, false);
     }
-    restitution(constraints, bodies, t.restitution_threshold);
+    restitution(constraints, points, bodies, t.restitution_threshold);
 }
 
 #[cfg(test)]
@@ -398,10 +401,12 @@ mod tests {
             lock_linear: [false; 3],
             lock_angular: [false; 3],
         };
-        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(0.0, -1.0, 0.0), None, Some(&b));
+        let bodies = [b];
+        let (a, b) = (Local::load(&bodies, STATIC), Local::load(&bodies, 0));
+        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(0.0, -1.0, 0.0), &a, &b);
         assert!((r.mass - 1.0).abs() < 1e-6);
         // Off-centre: rotation makes it lighter.
-        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), None, Some(&b));
+        let r = Row::new(Vec3::Y, Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), &a, &b);
         assert!((r.mass - 1.0 / 3.5).abs() < 1e-6);
     }
 }

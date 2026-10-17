@@ -193,7 +193,7 @@ impl Polytope for PosedHull<'_> {
 
 /// Most vertices and faces of a hull copied to world space once per test ([`WorldHull`]);
 /// bigger hulls transform on the fly ([`PosedHull`]).
-pub const WORLD_HULL_MAX: usize = 16;
+pub const WORLD_HULL_MAX: usize = 32;
 
 /// A small hull (a box, a simple hull) transformed to world space once, so the separating-axis
 /// test and clipping read plain world vertices and planes.

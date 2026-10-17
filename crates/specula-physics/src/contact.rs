@@ -22,8 +22,11 @@ use crate::shape::{Shape, TriMesh};
 
 /// Most points in a manifold.
 pub const MAX_POINTS: usize = 4;
-/// Most triangles of a mesh tested against one body per tick (bounded work).
-pub const MAX_MESH_TRIANGLES_PER_PAIR: usize = 32;
+/// Most triangles of a mesh tested against one body per tick, nearest to the body's own
+/// vertices first (bounded work; more is reported in [`Manifold::skipped`]).
+pub const MAX_MESH_TRIANGLES_PER_PAIR: usize = 256;
+/// Most candidate triangles gathered for one pair before ordering them.
+pub const MAX_MESH_CANDIDATES: usize = 16_384;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ContactPoint {
@@ -41,6 +44,8 @@ pub struct ContactPoint {
 pub struct Manifold {
     pub points: [ContactPoint; MAX_POINTS],
     pub len: usize,
+    /// Mesh triangles near the pair that were not tested (the per-pair cap); 0 normally.
+    pub skipped: u32,
 }
 
 impl Manifold {
@@ -62,6 +67,53 @@ impl Manifold {
     }
 }
 
+/// What a polytope pair remembers between ticks (temporal coherence for the separating-axis
+/// test): the separating direction while apart, or the contact feature and the relative pose
+/// it was found at. Apart pairs re-check their direction first (one support scan each); touching
+/// pairs whose relative pose moved less than 5 mm and about 1 degree since the last full test
+/// reuse the feature and only re-clip. Part of the pair's state; deterministic like the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SatCache {
+    /// 0 none, 1 a face of A, 2 a face of B, 3 an edge pair, 4 apart.
+    kind: u8,
+    i: u16,
+    j: u16,
+    /// Apart: the separating direction, in A's frame.
+    axis: Vec3,
+    /// B's pose in A's frame at the last full test: position and quaternion.
+    rel_p: Vec3,
+    rel_q: [f32; 4],
+}
+
+const SAT_NONE: u8 = 0;
+const SAT_FACE_A: u8 = 1;
+const SAT_FACE_B: u8 = 2;
+const SAT_EDGE: u8 = 3;
+const SAT_APART: u8 = 4;
+
+impl SatCache {
+    fn set(&mut self, kind: u8, i: usize, j: usize, rel: &Pose) {
+        self.kind = kind;
+        self.i = i as u16;
+        self.j = j as u16;
+        self.rel_p = rel.p;
+        self.rel_q = [rel.q.x, rel.q.y, rel.q.z, rel.q.w];
+    }
+
+    fn near(&self, rel: &Pose) -> bool {
+        let q = self.rel_q;
+        let dot = q[0] * rel.q.x + q[1] * rel.q.y + q[2] * rel.q.z + q[3] * rel.q.w;
+        len_sq(rel.p - self.rel_p) < 0.005 * 0.005 && dot.abs() > 0.99996
+    }
+}
+
+/// The poses and memory a polytope pair's test may use.
+struct Frames<'c> {
+    pa: Pose,
+    pb: Pose,
+    cache: &'c mut SatCache,
+}
+
 /// Candidate points before reduction to [`MAX_POINTS`].
 struct Candidates {
     pts: [ContactPoint; 64],
@@ -74,10 +126,18 @@ impl Candidates {
     }
 
     fn push(&mut self, p: ContactPoint) {
-        if self.len < self.pts.len() {
-            self.pts[self.len] = p;
-            self.len += 1;
+        if self.len == self.pts.len() {
+            // Full: keep the best four so far and go on (nothing is dropped unseen).
+            let mut m = Manifold::default();
+            self.reduce(&mut m);
+            self.len = 0;
+            m.as_slice().iter().for_each(|q| {
+                self.pts[self.len] = *q;
+                self.len += 1;
+            });
         }
+        self.pts[self.len] = p;
+        self.len += 1;
     }
 
     /// Keeps up to four: the deepest, the farthest from it, then the two that span the most
@@ -156,7 +216,13 @@ pub fn convex<'a>(shape: &'a Shape, pose: &Pose) -> Option<Convex<'a>> {
 
 /// Contact points between `a` at `pa` and `b` at `pb` closer than `margin` (speculative).
 pub fn collide(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mut Manifold) {
+    collide_cached(a, pa, b, pb, margin, out, None);
+}
+
+/// [`collide`] with the pair's [`SatCache`] (hull pairs reuse last tick's feature).
+pub fn collide_cached(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mut Manifold, cache: Option<&mut SatCache>) {
     out.len = 0;
+    out.skipped = 0;
     match (a.triangles(), b.triangles()) {
         (Some(_), Some(_)) => {}
         (Some(mesh), None) => {
@@ -181,7 +247,18 @@ pub fn collide(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mu
             let (Some(ca), Some(cb)) = (convex(a, pa), convex(b, pb)) else {
                 return;
             };
-            convex_vs_convex(&ca, &cb, margin, out);
+            match (&ca, &cb, cache) {
+                (Convex::Poly(x), Convex::Poly(y), Some(cache)) => {
+                    let frames = Some(Frames { pa: *pa, pb: *pb, cache });
+                    match (WorldHull::new(x), WorldHull::new(y)) {
+                        (Some(wa), Some(wb)) => poly_pair(&wa, &wb, margin, out, frames),
+                        (Some(wa), None) => poly_pair(&wa, y, margin, out, frames),
+                        (None, Some(wb)) => poly_pair(x, &wb, margin, out, frames),
+                        (None, None) => poly_pair(x, y, margin, out, frames),
+                    }
+                }
+                _ => convex_vs_convex(&ca, &cb, margin, out),
+            }
         }
     }
 }
@@ -557,13 +634,90 @@ fn face_query<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B) -> (f32,
 }
 
 fn poly_vs_poly<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin: f32, out: &mut Manifold) {
+    poly_pair(a, b, margin, out, None);
+}
+
+/// Separation of `a` and `b` along `axis` (from A towards B).
+fn separation_along<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, axis: Vec3) -> f32 {
+    axis.dot(b.support(-axis)) - axis.dot(a.support(axis))
+}
+
+/// The contact of an edge pair (`None` when the pair is degenerate or apart).
+fn edge_contact<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, i: usize, j: usize) -> Option<(Vec3, f32, Vec3)> {
+    let (p0, p1, _, _) = a.edge(i);
+    let (q0, q1, _, _) = b.edge(j);
+    let mut axis = crate::math::try_normalize((p1 - p0).cross(q1 - q0))?;
+    if axis.dot(p0 - a.center()) < 0.0 {
+        axis = -axis;
+    }
+    let (c1, c2, _, _) = closest_segments(p0, p1, q0, q1);
+    Some((axis, axis.dot(q0 - p0), (c1 + c2) * 0.5))
+}
+
+fn poly_pair<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin: f32, out: &mut Manifold, mut frames: Option<Frames>) {
     out.len = 0;
+    let rel = frames.as_ref().map(|f| f.pa.inv_mul(&f.pb));
+    // What the pair found last tick.
+    if let (Some(f), Some(rel)) = (frames.as_mut(), rel.as_ref()) {
+        let c = *f.cache;
+        match c.kind {
+            SAT_APART => {
+                let axis = f.pa.vector(c.axis);
+                if separation_along(a, b, axis) > margin {
+                    return;
+                }
+            }
+            SAT_FACE_A | SAT_FACE_B if c.near(rel) && (c.i as usize) < a.face_count().max(b.face_count()) => {
+                CLIP.with(|cell| {
+                    let clip = &mut *cell.borrow_mut();
+                    clip.cands.len = 0;
+                    if c.kind == SAT_FACE_A && (c.i as usize) < a.face_count() {
+                        face_contact(a, c.i as usize, b, margin, false, clip);
+                    } else if c.kind == SAT_FACE_B && (c.j as usize) < b.face_count() {
+                        face_contact(b, c.j as usize, a, margin, true, clip);
+                    }
+                    clip.cands.reduce(out);
+                });
+                return;
+            }
+            SAT_EDGE if c.near(rel) && (c.i as usize) < a.edge_count() && (c.j as usize) < b.edge_count() => {
+                if let Some((axis, sep, point)) = edge_contact(a, b, c.i as usize, c.j as usize) {
+                    if sep <= margin {
+                        out.push(ContactPoint { point, normal: axis, separation: sep, id: 0x4000_0000 | ((c.i as u32) << 12) | c.j as u32 });
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+    // Remember a separating direction (in A's frame) when apart.
+    let apart = |frames: &mut Option<Frames>, axis: Vec3| {
+        if let (Some(f), Some(rel)) = (frames.as_mut(), rel.as_ref()) {
+            f.cache.set(SAT_APART, 0, 0, rel);
+            f.cache.axis = f.pa.inv_vector(axis);
+        }
+    };
+    // Clearly apart: GJK's distance (linear in the vertices) settles it before the
+    // separating-axis test (edges x edges).
+    let was_touching = frames.as_ref().is_some_and(|f| matches!(f.cache.kind, SAT_FACE_A | SAT_FACE_B | SAT_EDGE));
+    if !was_touching && a.vertex_count() + b.vertex_count() > 12 {
+        let c = gjk(a, b);
+        if !c.overlap && c.distance > margin {
+            if let Some(n) = crate::math::try_normalize(c.b - c.a) {
+                apart(&mut frames, n);
+            }
+            return;
+        }
+    }
     let (sa, fa) = face_query(a, b);
     if sa > margin {
+        apart(&mut frames, a.plane(fa).0);
         return;
     }
     let (sb, fb) = face_query(b, a);
     if sb > margin {
+        apart(&mut frames, -b.plane(fb).0);
         return;
     }
     // Edge pairs. B's edges (with the cross product of their negated face normals) are read
@@ -610,12 +764,18 @@ fn poly_vs_poly<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin
         }
     });
     if se > margin {
+        apart(&mut frames, edge_axis);
         return;
     }
     const REL_EDGE: f32 = 0.90;
     const REL_FACE: f32 = 0.98;
     const ABS: f32 = 0.0025;
     let max_face = sa.max(sb);
+    let remember = |frames: &mut Option<Frames>, kind: u8, i: usize, j: usize| {
+        if let (Some(f), Some(rel)) = (frames.as_mut(), rel.as_ref()) {
+            f.cache.set(kind, i, j, rel);
+        }
+    };
     if se > REL_EDGE * max_face + ABS {
         let (p0, p1, _, _) = a.edge(edges.0);
         let (q0, q1, _, _) = b.edge(edges.1);
@@ -626,18 +786,26 @@ fn poly_vs_poly<A: Polytope + ?Sized, B: Polytope + ?Sized>(a: &A, b: &B, margin
             separation: se,
             id: 0x4000_0000 | ((edges.0 as u32) << 12) | edges.1 as u32,
         });
+        remember(&mut frames, SAT_EDGE, edges.0, edges.1);
         return;
     }
+    let face_b = sb > REL_FACE * sa + ABS;
     CLIP.with(|cell| {
         let clip = &mut *cell.borrow_mut();
         clip.cands.len = 0;
-        if sb > REL_FACE * sa + ABS {
+        if face_b {
             face_contact(b, fb, a, margin, true, clip);
         } else {
             face_contact(a, fa, b, margin, false, clip);
         }
         clip.cands.reduce(out);
     });
+    if face_b {
+        remember(&mut frames, SAT_FACE_B, 0, fb);
+    } else {
+        remember(&mut frames, SAT_FACE_A, fa, 0);
+    }
+    let _ = SAT_NONE;
 }
 
 /// Clips the incident face of `inc` against reference face `fr` of `reff`. `flipped`: the
@@ -680,17 +848,47 @@ fn mesh_vs_convex(mesh: &TriMesh, mesh_pose: &Pose, c: &Convex, local_aabb: Aabb
         Convex::Poly(p) => p.center(),
     };
     let mut cands = Candidates::new();
-    let mut tested = 0usize;
     let mut m = Manifold::default();
     let world_hull = match c {
         Convex::Poly(p) => WorldHull::new(p),
         Convex::Core(..) => None,
     };
+    // The body's own feature points in the mesh's frame: its vertices (or its core's ends).
+    let mut features = [Vec3::ZERO; 64];
+    let nf = match c {
+        Convex::Core(core, _) => {
+            let (e0, e1) = core.endpoints();
+            features[0] = mesh_pose.inv_point(e0);
+            features[1] = mesh_pose.inv_point(e1);
+            2
+        }
+        Convex::Poly(p) => {
+            let n = p.vertex_count().min(features.len());
+            for (i, f) in features.iter_mut().enumerate().take(n) {
+                *f = mesh_pose.inv_point(p.vertex(i));
+            }
+            n
+        }
+    };
+    // Gather the nearby triangles, then visit those nearest a feature point first: a box on a
+    // fine mesh gets its corners supported before anything else.
+    let mut near: Vec<(f32, u32)> = Vec::new();
+    let mut overflow = false;
     mesh.each_in(&world_bounds, |t| {
-        tested += 1;
-        if tested > MAX_MESH_TRIANGLES_PER_PAIR {
+        if near.len() == MAX_MESH_CANDIDATES {
+            overflow = true;
             return false;
         }
+        let [a, b, cc] = mesh.triangle(t);
+        let centroid = (a + b + cc) * (1.0 / 3.0);
+        let d = features[..nf].iter().map(|f| crate::math::len_sq(*f - centroid)).fold(f32::MAX, f32::min);
+        near.push((d, t as u32));
+        true
+    });
+    near.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+    let skipped = near.len().saturating_sub(MAX_MESH_TRIANGLES_PER_PAIR) + usize::from(overflow);
+    for &(_, t) in near.iter().take(MAX_MESH_TRIANGLES_PER_PAIR) {
+        let t = t as usize;
         let local = mesh.triangle(t);
         let tri = Triangle::new(local.map(|v| mesh_pose.point(v)));
         match c {
@@ -701,7 +899,7 @@ fn mesh_vs_convex(mesh: &TriMesh, mesh_pose: &Pose, c: &Convex, local_aabb: Aabb
             },
         }
         if m.len == 0 {
-            return true;
+            continue;
         }
         // Seams between triangles: take the triangle's own normal.
         let side = if tri.n.dot(center - tri.v[0]) >= 0.0 { 1.0 } else { -1.0 };
@@ -728,9 +926,9 @@ fn mesh_vs_convex(mesh: &TriMesh, mesh_pose: &Pose, c: &Convex, local_aabb: Aabb
                 cands.push(ContactPoint { id: ((t as u32) << 6) ^ (p.id & 0x3f) ^ ((p.id >> 16) & 0x3f), ..*p });
             }
         }
-        true
-    });
+    }
     cands.reduce(out);
+    out.skipped = skipped as u32;
 }
 
 /// Whether `p` (near the triangle) sits on one of its internal edges or vertices (an inactive
