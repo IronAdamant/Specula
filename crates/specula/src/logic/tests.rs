@@ -489,3 +489,43 @@ fn claims_guard_module_loads_unloads_and_hooks() {
     let replayed = swarm.journal.replay().expect("replayable");
     assert_eq!(replayed.state_hash(), world.state_hash());
 }
+
+/// Save games: a host restored from `save_state` (stores, RNG positions, pending events, held
+/// input) continues exactly like the one that saved.
+#[test]
+fn a_saved_host_continues_exactly() {
+    let mut a = Run::new();
+    a.load(ModuleCode::of::<WalkerV1>()).unwrap();
+    a.host.hold("walker", &Json::parse(r#"{"move": [1, 0], "jump": true}"#).unwrap(), 25).unwrap();
+    a.ticks(20);
+    let bytes = a.host.save_state().expect("a module ran");
+    let files = crate::persist::render(&a.world);
+    let world = crate::persist::load_with(|f| {
+        files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError::new("not_found", f.to_owned()))
+    })
+    .unwrap()
+    .0;
+    let mut b = Run { host: LogicHost::new(), world, tick: a.tick };
+    b.load(ModuleCode::of::<WalkerV1>()).unwrap();
+    assert_ne!(b.host.state_hash(), a.host.state_hash(), "a fresh load starts its own state");
+    let notes = b.host.restore_state(&bytes).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(b.host.state_hash(), a.host.state_hash());
+    assert_eq!(b.world.state_hash(), a.world.state_hash());
+    for t in 0..40 {
+        a.ticks(1);
+        b.ticks(1);
+        assert_eq!(b.host.state_hash(), a.host.state_hash(), "module state diverged {t} ticks after the load");
+        assert_eq!(b.world.state_hash(), a.world.state_hash(), "the world diverged {t} ticks after the load");
+    }
+    assert_eq!(b.state("walker", "ticks"), Value::Int(60));
+    // Damaged bytes are an error and change nothing; a host without the module says so.
+    let before = b.host.state_hash();
+    for cut in (0..bytes.len()).step_by(5) {
+        assert!(b.host.restore_state(&bytes[..cut]).is_err());
+    }
+    assert_eq!(b.host.state_hash(), before);
+    let mut c = LogicHost::new();
+    let notes = c.restore_state(&bytes).unwrap();
+    assert!(notes.iter().any(|n| n.get("module").and_then(Json::as_str) == Some("walker")), "{notes:?}");
+}

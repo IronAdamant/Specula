@@ -25,6 +25,8 @@
 pub mod character;
 mod handler;
 pub mod input;
+mod save;
+pub use save::LogicSnapshot;
 pub mod tools;
 
 use crate::world::{Mark, Recording, World, WorldError};
@@ -283,6 +285,8 @@ pub struct LogicHost {
     /// Gamepads for module actions (opened at the first window frame that needs them; `None`
     /// inside when XInput is unavailable).
     pads: Option<Option<specula_platform::gamepad::Gamepads>>,
+    /// Reused by [`LogicHost::state_hash`] (no allocation per tick once warm).
+    hash_scratch: Vec<u8>,
 }
 
 impl Default for LogicHost {
@@ -298,6 +302,7 @@ impl Default for LogicHost {
             hook_counts: BTreeMap::new(),
             mover: Box::new(Kinematic),
             pads: None,
+            hash_scratch: Vec::new(),
         }
     }
 }

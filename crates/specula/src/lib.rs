@@ -32,6 +32,8 @@ pub mod orbit;
 mod perf;
 pub mod persist;
 pub mod rollup;
+mod save_tools;
+pub mod savegame;
 pub mod physics;
 mod physics_tools;
 mod schedule;
@@ -84,7 +86,7 @@ const MAX_LISTING_BYTES: usize = 128 * 1024;
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
+[--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -118,6 +120,8 @@ struct Args {
     captures: Option<PathBuf>,
     worlds: Option<PathBuf>,
     world: Option<String>,
+    /// Where save games live (`--saves`, default `./saves`).
+    saves: Option<PathBuf>,
     /// Pipeline cache directory (`--cache`, default `./.specula-cache`).
     cache: Option<PathBuf>,
     /// How `--adapter` was given, to name the pipeline cache file.
@@ -145,6 +149,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         captures: None,
         worlds: None,
         world: None,
+        saves: None,
         cache: None,
         adapter_label: "discrete".into(),
         perf: None,
@@ -182,6 +187,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--cache" => args.cache = Some(PathBuf::from(value()?)),
             "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
+            "--saves" => args.saves = Some(PathBuf::from(value()?)),
             "--world" => {
                 let name = value()?;
                 persist::validate_world_name(&name).map_err(|e| format!("--world: {e}\n{USAGE}"))?;
@@ -252,6 +258,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
+    engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
         let dir = engine.worlds_dir.join(&name);
@@ -424,6 +431,8 @@ struct Engine {
     capture_dir: PathBuf,
     /// Where world files live (`--worlds`, default `./worlds`).
     worlds_dir: PathBuf,
+    /// Where save games live (`--saves`, default `./saves`; see `save_tools`).
+    saves_dir: PathBuf,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -551,6 +560,7 @@ impl Engine {
             frames_captured: 0,
             capture_dir,
             worlds_dir: PathBuf::from("worlds"),
+            saves_dir: PathBuf::from("saves"),
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
@@ -724,6 +734,8 @@ impl Engine {
         }
         self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
+        // The game's menu may have asked for a save or a load.
+        self.serve_game_requests();
     }
 
     /// The hosted game's interface for one image ([`Game::overlay`]) into `out` (cleared first).
@@ -1615,6 +1627,7 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
+            Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
         };
@@ -2035,6 +2048,7 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::SaveGame(call) => call.class(),
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
         Command::Spawn(_)

@@ -210,6 +210,8 @@ pub enum Command {
     Physics(crate::physics_tools::PhysicsCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
     Lex(crate::lex_tools::LexCall),
+    /// Save games (see [`crate::save_tools`]).
+    SaveGame(crate::save_tools::SaveCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -489,7 +491,10 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 Some(call) => call.map(Command::Swarm),
                 None => match crate::physics_tools::parse(other, args) {
                     Some(call) => call.map(Command::Physics),
-                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                    None => match crate::save_tools::parse(other, args) {
+                        Some(call) => call.map(Command::SaveGame),
+                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                    },
                 },
             },
         },
@@ -2309,6 +2314,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
     .chain(crate::lex_tools::definitions())
+    .chain(crate::save_tools::definitions())
     .collect()
 }
 
