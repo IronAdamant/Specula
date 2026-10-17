@@ -1210,8 +1210,13 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
                 ]));
             }
         }
-        let (mut queries, mut query_corners) = (0, 0);
-        for (_, q) in &nav.queries {
+        let (mut queries, mut query_corners, mut stale) = (0, 0, 0);
+        for (mesh, counter, q) in &nav.queries {
+            // An answer from before its navmesh changed (or went) is no longer what nav_path says.
+            if nav.meshes.get(mesh).is_none_or(|m| m.mesh.counter() != *counter) {
+                stale += 1;
+                continue;
+            }
             query_corners += q.corners.len();
             let y = Vec3::new(0.0, 0.09, 0.0);
             for wnd in q.corners.windows(2) {
@@ -1229,6 +1234,7 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
                 ("agent_corners", Json::from(corners_drawn)),
                 ("query_corners", Json::from(query_corners)),
                 ("queries", Json::from(queries)),
+                ("stale_queries_hidden", Json::from(stale)),
                 (
                     "legend",
                     Json::obj([

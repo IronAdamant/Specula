@@ -979,7 +979,8 @@ pub struct Nav {
     pub hashes: VecDeque<(u64, u64)>,
     pub last: Option<TickReport>,
     /// Recent nav_path answers (mesh, path) for the `paths` overlay.
-    pub queries: VecDeque<(u64, PathResult)>,
+    /// (Mesh, its build counter then, path): the overlay draws only answers its navmesh still gives.
+    pub queries: VecDeque<(u64, u64, PathResult)>,
     /// Wall-clock milliseconds of recent ticks.
     pub tick_ms: VecDeque<f64>,
     vocab: Option<Vocabulary>,
@@ -2528,7 +2529,8 @@ impl Nav {
         if self.queries.len() == QUERIES {
             self.queries.pop_front();
         }
-        self.queries.push_back((mesh, p));
+        let counter = self.meshes.get(&mesh).map_or(0, |m| m.mesh.counter());
+        self.queries.push_back((mesh, counter, p));
     }
 
     /// The agents' positions, corridors and goals, for the overlay.
