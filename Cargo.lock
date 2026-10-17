@@ -98,6 +98,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-locus"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula-logic"
 version = "0.3.0"
 dependencies = [
