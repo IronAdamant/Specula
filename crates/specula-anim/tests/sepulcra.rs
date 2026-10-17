@@ -1,9 +1,13 @@
 //! The Sepulcra creatures: rigs + anim sets load, clips are sane, feet stay planted, skinning
-//! the bind pose gives the rest mesh, and sampling is bit-identical (pinned).
+//! the bind pose gives the rest mesh, every clip, graph state and transition passes the motion
+//! checks of `style.toml`, and sampling is bit-identical (pinned).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use specula_anim::checks::{self, MotionRules, Report};
+use specula_anim::graph::{ParamKind, Value};
+use specula_anim::play::Graphed;
 use specula_anim::{measure, skin_mesh, AnimSet, Skeleton};
 use specula_core::hash::StableHasher;
 use specula_model::{build, BuildParams, Model, Style};
@@ -40,10 +44,10 @@ fn every_anim_file_has_a_creature() {
 #[test]
 fn creature_clips_are_complete() {
     let expect: &[(&str, &[&str])] = &[
-        ("shambler", &["idle", "walk", "attack", "death"]),
-        ("skeleton_runner", &["idle", "sprint", "leap", "death"]),
-        ("wraith", &["float", "swoop", "death"]),
-        ("bone_colossus", &["walk", "summon", "death"]),
+        ("shambler", &["idle", "walk", "attack", "death", "climb", "shuffle", "still", "flinch"]),
+        ("skeleton_runner", &["idle", "sprint", "jog", "leap", "death", "claw", "still", "flinch"]),
+        ("wraith", &["float", "glide", "dive", "swoop", "death", "float_shroud", "glide_shroud", "dive_shroud", "swoop_shroud", "still", "flinch"]),
+        ("bone_colossus", &["walk", "lumber", "idle", "summon", "pound", "death", "still", "flinch"]),
         ("brazier_fire", &["flicker"]),
     ];
     for (name, clips) in expect {
@@ -73,6 +77,68 @@ fn creature_clips_are_complete() {
     assert_eq!(event("bone_colossus", "walk", "stomp"), 2);
     assert_eq!(event("bone_colossus", "summon", "summon"), 1);
     assert_eq!(event("bone_colossus", "death", "impact"), 1);
+}
+
+/// (creature, entity scale in the game, lane speed in m/s): as the game plays them.
+const WALKERS: [(&str, f32, f32); 4] = [("shambler", 1.2, 0.8), ("skeleton_runner", 1.2, 2.2), ("wraith", 1.2, 1.4), ("bone_colossus", 1.0, 0.4)];
+
+fn rules() -> MotionRules {
+    MotionRules::from_toml(&std::fs::read_to_string(assets().join("style.toml")).unwrap(), "style.toml").unwrap()
+}
+
+#[test]
+fn creature_graphs_share_one_interface() {
+    // The game drives every creature the same way: these parameters, a state per act.
+    for (name, _, _) in WALKERS {
+        let (_, set) = creature(name);
+        let g = set.graph("creature").unwrap_or_else(|| panic!("{name}: no 'creature' graph"));
+        let kind = |p: &str| g.params[g.param(p).unwrap_or_else(|| panic!("{name}: no param {p}")) as usize].kind.clone();
+        assert_eq!(kind("act"), ParamKind::Enum(["idle", "move", "attack", "special", "death"].map(String::from).to_vec()), "{name}");
+        assert!(matches!(kind("speed"), ParamKind::Float { .. }) && matches!(kind("look"), ParamKind::Float { .. }));
+        assert_eq!((kind("hit"), kind("look_at")), (ParamKind::Trigger, ParamKind::Vec3));
+        for act in ["idle", "move", "attack", "special", "death"] {
+            assert!(g.layers[0].state(act).is_some(), "{name}: no state '{act}'");
+        }
+        assert!(g.layers.iter().any(|l| l.name == "flinch"), "{name}: hits flinch");
+    }
+}
+
+#[test]
+fn creature_motion_passes_its_style_rules() {
+    let rules = rules();
+    assert_eq!(rules.contact_m, 0.025, "the research's 2.5 cm contact rule");
+    let mut all = Report::default();
+    for (name, scale, speed) in WALKERS {
+        let (model, set) = creature(name);
+        let mesh = &model.lods[0];
+        for (id, _) in set.clips() {
+            all.checks.extend(checks::check_clip(&set, name, id, &rules, Some(mesh)).checks);
+        }
+        let g = Graphed { set: &set, graph: set.graph("creature").unwrap(), scale };
+        let act = |a: &str, v: f32| vec![("act".to_string(), Value::Name(a.into())), ("speed".to_string(), Value::Num(v))];
+        for state in ["idle", "move", "attack", "special", "death"] {
+            let r = checks::check_state(g, name, "creature", state, &act(state, speed), 3.0, &rules, Some(mesh)).unwrap();
+            assert!(r.notes.is_empty(), "{name}.{state}: {:?}", r.notes);
+            all.checks.extend(r.checks);
+        }
+        // Slowed by frost or runes: the slow end of the locomotion blend.
+        all.checks.extend(checks::check_state(g, name, "creature", "move", &act("move", speed * 0.4), 3.0, &rules, Some(mesh)).unwrap().checks);
+        for (a, b) in [("idle", "move"), ("move", "idle"), ("move", "attack"), ("attack", "move"), ("move", "special"), ("move", "death"), ("attack", "death")] {
+            all.checks.extend(checks::check_transition(g, name, "creature", &act(a, speed), &act(b, speed), 1.37, &rules, Some(mesh)).checks);
+        }
+    }
+    let failures: Vec<String> = all.failures().map(|c| format!("{} {} {:.2} {} (limit {}) {:?}", c.subject, c.check, c.value, c.unit, c.limit, c.bone)).collect();
+    assert!(failures.is_empty(), "motion checks failed:\n{}", failures.join("\n"));
+    // The checks really ran: feet were found in contact, and every kind of check appears.
+    for check in checks::CHECKS {
+        assert!(all.checks.iter().any(|c| c.check == check), "no '{check}' check ran");
+    }
+    let walk = all.checks.iter().find(|c| c.subject == "shambler/creature.move" && c.check == "foot_sliding").unwrap();
+    assert!(walk.detail.iter().any(|(k, v)| *k == "contact" && *v > 0.5), "{walk:?}");
+    // The dragged foot is measured and reported as exempt (filmstrip labels say so).
+    let dragged = all.checks.iter().find(|c| c.subject == "shambler/creature.move" && c.check == "foot_sliding" && c.exempt).unwrap();
+    assert_eq!(dragged.bone.as_deref(), Some("foot_r"));
+    assert!(dragged.value > 0.0, "{dragged:?}");
 }
 
 #[test]
@@ -144,4 +210,15 @@ fn sampled_poses_are_bit_identical_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PINNED, "Sepulcra creature motion changed");
 }
 
-const PINNED: &str = "c222c9a29c6bbb9c";
+const PINNED: &str = "80f31428d61d6110";
+
+/// The generation budget fits Sepulcra comfortably (each set uses well under a quarter of it).
+#[test]
+fn creature_sets_fit_the_generation_budget() {
+    for name in CREATURES {
+        let (_, set) = creature(name);
+        let work = set.generation_work();
+        eprintln!("{name}: generation work {work}");
+        assert!(work <= specula_anim::gen::MAX_SET_WORK / 4, "{name}: {work}");
+    }
+}

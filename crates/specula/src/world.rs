@@ -552,6 +552,12 @@ pub const ANIM_START: RangeInclusive<f64> = -1.0e9..=1.0e9;
 /// past `start`, the pose blends (smoothstep) from `from`, the animation it replaced, still
 /// playing on its own terms. So any frame can be rendered at any time with the same result, and
 /// game entities animate without per-tick state.
+///
+/// **Graph mode** (`graph` set; `clip` empty): the model's animation graph of that name plays
+/// (see `specula_anim::play`): the anim holds the graph's parameters and its settled state, and
+/// the pose is again a pure function of the render time. `speed` scales the graph's time and
+/// `start` anchors it. A write that changes a graph's parameters **settles** the play at the
+/// write's time first (`crate::anim::settle_update`), so new parameters blend instead of popping.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimSpec {
     pub clip: String,
@@ -574,12 +580,19 @@ pub struct AnimSpec {
     /// The animation being faded out (set by the world when `crossfade` > 0; its own `from` is
     /// dropped, so an interrupted fade restarts from the interrupted clip).
     pub from: Option<Box<AnimSpec>>,
+    /// Graph mode: the graph playing, its parameters and settled state (`clip` is empty).
+    pub graph: Option<Box<specula_anim::play::GraphPlay>>,
 }
 
 impl AnimSpec {
     /// `clip` at speed 1, its own loop mode, no offset or fade.
     pub fn new(clip: impl Into<String>) -> AnimSpec {
-        AnimSpec { clip: clip.into(), speed: 1.0, looping: None, time_offset: 0.0, start: None, crossfade: 0.0, from: None }
+        AnimSpec { clip: clip.into(), speed: 1.0, looping: None, time_offset: 0.0, start: None, crossfade: 0.0, from: None, graph: None }
+    }
+
+    /// Graph mode: `play` at speed 1, starting at once.
+    pub fn graph(play: specula_anim::play::GraphPlay) -> AnimSpec {
+        AnimSpec { graph: Some(Box::new(play)), ..AnimSpec::new("") }
     }
 
     /// The clip time (seconds, before wrapping) at render time `t`.
@@ -597,8 +610,18 @@ impl AnimSpec {
     }
 
     pub fn check(&self) -> Result<(), WorldError> {
-        if self.clip.is_empty() || self.clip.len() > MAX_CLIP_NAME || self.clip.chars().any(char::is_control) {
-            return Err(invalid("anim.clip", format!("'anim.clip' must be a clip name of 1..={MAX_CLIP_NAME} bytes")));
+        match &self.graph {
+            Some(g) => {
+                g.check().map_err(|m| invalid("anim.graph", m))?;
+                if !self.clip.is_empty() || self.looping.is_some() || self.time_offset != 0.0 {
+                    return Err(invalid("anim.graph", "a graph anim takes no 'clip', 'loop' or 'time_offset' (the graph decides what plays)".into()));
+                }
+            }
+            None => {
+                if self.clip.is_empty() || self.clip.len() > MAX_CLIP_NAME || self.clip.chars().any(char::is_control) {
+                    return Err(invalid("anim.clip", format!("'anim.clip' must be a clip name of 1..={MAX_CLIP_NAME} bytes")));
+                }
+            }
         }
         check_num("anim.speed", self.speed, &ANIM_SPEED)?;
         check_num("anim.time_offset", self.time_offset, &ANIM_OFFSET)?;
@@ -618,7 +641,11 @@ impl AnimSpec {
     }
 
     pub fn to_json(&self) -> Json {
-        let mut f = vec![("clip", Json::from(self.clip.as_str())), ("speed", Json::from(self.speed))];
+        let mut f = match &self.graph {
+            Some(g) => g.json_fields(),
+            None => vec![("clip", Json::from(self.clip.as_str()))],
+        };
+        f.push(("speed", Json::from(self.speed)));
         if let Some(l) = self.looping {
             f.push(("loop", Json::from(l)));
         }
@@ -637,18 +664,29 @@ impl AnimSpec {
         Json::obj(f)
     }
 
-    /// From `{clip, speed?, loop?, time_offset?, start? (seconds or "now"), crossfade?, from?}`
-    /// or a bare clip name. `"start": "now"` leaves `start` unset (resolved by the world).
+    /// From `{clip, speed?, loop?, time_offset?, start? (seconds or "now"), crossfade?, from?}`,
+    /// a bare clip name, or graph mode `{graph, params?, speed?, start?, crossfade?, clock?,
+    /// layers?}`. `"start": "now"` leaves `start` unset (resolved by the world).
     pub fn from_json(v: &Json) -> Result<AnimSpec, String> {
         if let Some(clip) = v.as_str() {
             return Ok(AnimSpec::new(clip));
         }
         let Some(obj) = v.as_object() else {
-            return Err("'anim' must be a clip name, {clip, speed?, loop?, time_offset?, start?, crossfade?} or false".into());
+            return Err("'anim' must be a clip name, {clip, speed?, loop?, time_offset?, start?, crossfade?}, {graph, params?, ...} or false".into());
         };
+        let graph_mode = v.get("graph").is_some();
         for (k, _) in obj {
-            if !matches!(k.as_str(), "clip" | "speed" | "loop" | "time_offset" | "start" | "crossfade" | "from") {
-                return Err(format!("'anim.{k}' is not an anim field (clip, speed, loop, time_offset, start, crossfade)"));
+            let ok = if graph_mode {
+                matches!(k.as_str(), "graph" | "params" | "clock" | "layers" | "speed" | "start" | "crossfade" | "from")
+            } else {
+                matches!(k.as_str(), "clip" | "speed" | "loop" | "time_offset" | "start" | "crossfade" | "from")
+            };
+            if !ok {
+                return Err(if graph_mode {
+                    format!("'anim.{k}' is not a graph anim field (graph, params, speed, start, crossfade, clock, layers)")
+                } else {
+                    format!("'anim.{k}' is not an anim field (clip, speed, loop, time_offset, start, crossfade; or graph with params)")
+                });
             }
         }
         let num = |k: &str| -> Result<Option<f64>, String> {
@@ -657,8 +695,11 @@ impl AnimSpec {
                 Some(n) => n.as_f64().map(Some).ok_or_else(|| format!("'anim.{k}' must be a number")),
             }
         };
-        let clip = v.get("clip").and_then(Json::as_str).ok_or("'anim.clip' (a clip name) is required")?;
-        let mut a = AnimSpec::new(clip);
+        let mut a = if graph_mode {
+            AnimSpec::graph(specula_anim::play::GraphPlay::from_json_fields(v)?)
+        } else {
+            AnimSpec::new(v.get("clip").and_then(Json::as_str).ok_or("'anim.clip' (a clip name) is required")?)
+        };
         a.speed = num("speed")?.map_or(1.0, |x| x as f32);
         a.looping = match v.get("loop") {
             None | Some(Json::Null) => None,
@@ -694,6 +735,11 @@ impl AnimSpec {
                 h.write_u8(1);
                 f.hash_into(h);
             }
+        }
+        // Graph mode only adds to the hash (clip anims hash as they always did).
+        if let Some(g) = &self.graph {
+            h.write_str("graph");
+            g.hash_into(h);
         }
     }
 }
@@ -737,6 +783,20 @@ pub struct ResolvedModel {
 /// (state [`ModelState::Building`]).
 pub trait ModelSource: Send + Sync {
     fn resolve(&self, spec: &ModelSpec) -> Result<ResolvedModel, WorldError>;
+
+    /// The anim set (clips and graphs, with any the world's anim assets add) of the build a
+    /// handle names, once built.
+    fn anim_set(&self, _handle: u32) -> Option<Arc<specula_anim::AnimSet>> {
+        None
+    }
+
+    /// The anim set a graph write to an entity of `handle` settles against, with `assets` (the
+    /// world's, as of the write) laid over it. It must not depend on whether or when a build
+    /// lands (foundation F2): the model library builds it from the rig and anims alone, without
+    /// waiting.
+    fn anim_set_for_write(&self, handle: u32, _assets: &crate::anim::Assets) -> Option<Arc<specula_anim::AnimSet>> {
+        self.anim_set(handle)
+    }
 }
 
 /// The world's model source, if any (`Debug` for the world's derive).
@@ -1796,7 +1856,10 @@ impl Change {
                 + e.model.as_ref().map_or(0, |m| {
                     heap(&m.recipe) + ALLOC + m.params.iter().map(|(k, _)| std::mem::size_of::<(String, f64)>() + heap(k)).sum::<usize>()
                 })
-                + e.anim.as_ref().map_or(0, |a| heap(&a.clip) + a.from.as_ref().map_or(0, |f| ALLOC + std::mem::size_of::<AnimSpec>() + heap(&f.clip)))
+                + e.anim.as_ref().map_or(0, |a| {
+                    let graph = |a: &AnimSpec| a.graph.as_ref().map_or(0, |g| ALLOC + std::mem::size_of::<specula_anim::play::GraphPlay>() + g.heap_bytes());
+                    heap(&a.clip) + graph(a) + a.from.as_ref().map_or(0, |f| ALLOC + std::mem::size_of::<AnimSpec>() + heap(&f.clip) + graph(f))
+                })
         };
         std::mem::size_of::<Change>()
             + match self {
@@ -1978,6 +2041,9 @@ pub struct World {
     transient_shapes: crate::two_d::ShapeBudget,
     /// The two budgets (perf.toml `[budgets]`).
     shape_limits: crate::two_d::ShapeLimits,
+    /// The anim assets in the world, as graph writes settle against them (derived from the
+    /// entities, refreshed inside `update`; never hashed or saved).
+    anim_assets: crate::anim::AssetCache,
 }
 
 /// The shape2d spec of an entity's 2D component, if it has one.
@@ -2188,6 +2254,18 @@ impl World {
     /// See the field: unchanged means no persistent entity changed in any way since it was read.
     pub fn draw_epoch(&self) -> u64 {
         self.draw_epoch
+    }
+
+    /// Brings the world's anim assets (what graph writes settle against) up to date.
+    pub(crate) fn refresh_anim_assets(&mut self) {
+        let mut cache = std::mem::take(&mut self.anim_assets);
+        cache.refresh(self);
+        self.anim_assets = cache;
+    }
+
+    /// The world's anim assets as of the last graph write.
+    pub fn anim_assets(&self) -> &crate::anim::Assets {
+        &self.anim_assets.assets
     }
 
     /// The ids of the persistent entities that changed (were spawned, changed, moved, removed)
@@ -2700,6 +2778,9 @@ impl World {
         check_update(&change)?;
         let id = self.resolve(key)?;
         self.check_version(id, change.expect_version)?;
+        if matches!(&change.anim, Some(Some(a)) if a.graph.is_some()) {
+            self.refresh_anim_assets();
+        }
         let e = &self.entities[&id];
         if change.profile.is_some() && e.shape != Shape::Lathe {
             return Err(WorldError::new(
@@ -2722,6 +2803,10 @@ impl World {
                 (Some(old), true) => Some(Box::new(AnimSpec { from: None, ..old.clone() })),
                 _ => None,
             };
+            // New graph parameters continue the play as of now (settled), so they blend.
+            if a.graph.is_some() {
+                crate::anim::settle_update(self, e, a)?;
+            }
         }
         if (change.recipe.is_some() || change.params.is_some()) && e.shape != Shape::Model {
             let field = if change.recipe.is_some() { "recipe" } else { "params" };

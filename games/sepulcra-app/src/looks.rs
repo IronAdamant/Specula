@@ -207,7 +207,8 @@ pub fn underside_spec(seed: u64, height: f64) -> ModelSpec {
     ModelSpec::new("recipes/slab_cliff.json").with_seed(seed).with_param("height", height)
 }
 
-/// What a creature does, as far as its animation is concerned.
+/// What a creature does, as far as its animation is concerned: the `act` parameter of its anim
+/// graph (`graphs.creature` in `assets/anims/<recipe>.json`), which picks and blends the clips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Act {
     /// Standing (spawning, waiting).
@@ -216,94 +217,52 @@ pub enum Act {
     Move,
     /// Breaking a wall.
     Attack,
-    /// A runner leaping a cracked ledge, a wraith's dive, the colossus raising shamblers.
+    /// A runner leaping a cracked ledge, a wraith's dive, the colossus raising shamblers, a
+    /// shambler hauling itself up a cliff.
     Special,
     Death,
 }
 
-/// A clip of the creature's anim set, how fast it plays (clip seconds per game second at
-/// normal speed) and whether it loops.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Clip {
-    pub name: &'static str,
-    pub rate: f32,
-    pub looping: bool,
-    /// Clip length in seconds (as in `assets/anims/*.json`; a test checks).
-    pub duration: f32,
+impl Act {
+    /// The graph's name for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Act::Idle => "idle",
+            Act::Move => "move",
+            Act::Attack => "attack",
+            Act::Special => "special",
+            Act::Death => "death",
+        }
+    }
 }
 
-const fn clip(name: &'static str, rate: f32, looping: bool, duration: f32) -> Clip {
-    Clip { name, rate, looping, duration }
-}
-
-/// How an enemy kind (its id in `enemies.json`) is drawn.
+/// How an enemy kind (its id in `enemies.json`) is drawn. How it moves is data: its anim set's
+/// `creature` graph, driven by `act`, `speed` (world m/s), `hit` and the look target.
 #[derive(Clone, Copy, Debug)]
 pub struct Creature {
     pub recipe: &'static str,
     /// Uniform scale over the recipe's real size (STYLE.md: a little oversized to read at range).
     pub scale: f32,
-    pub idle: Clip,
-    pub walk: Clip,
-    pub attack: Clip,
-    pub special: Clip,
-    pub death: Clip,
+    /// How long its special plays (the colossus's summon; one haul of a shambler's climb, which
+    /// loops), and its death, in seconds at pace 1 (the anim set's clip lengths; a test checks).
+    pub special_s: f32,
+    pub death_s: f32,
+    /// How strongly its head follows the look target (the graveyard).
+    pub look: f32,
 }
 
-/// The creature for an enemy kind. Walk rates are tuned so the feet roughly keep up with the
-/// simulated speed (shambler 0.8 m/s, runner 2.2, colossus 0.4) at this scale, within what still
-/// reads as the authored gait.
+/// The creature for an enemy kind.
 pub fn creature(kind: &str) -> Creature {
     match kind {
-        "runner" => Creature {
-            recipe: "recipes/skeleton_runner.json",
-            scale: 1.2,
-            idle: clip("idle", 1.0, true, 1.6),
-            walk: clip("sprint", 0.62, true, 0.56),
-            attack: clip("idle", 1.6, true, 1.6),
-            special: clip("leap", 1.0, false, 0.95),
-            death: clip("death", 1.0, false, 1.6),
-        },
-        "wraith" => Creature {
-            recipe: "recipes/wraith.json",
-            scale: 1.2,
-            idle: clip("float", 1.0, true, 2.4),
-            walk: clip("float", 1.0, true, 2.4),
-            attack: clip("swoop", 1.0, true, 1.4),
-            special: clip("swoop", 0.8, false, 1.4),
-            death: clip("death", 1.0, false, 1.8),
-        },
-        "colossus" => Creature {
-            recipe: "recipes/bone_colossus.json",
-            scale: 1.0,
-            idle: clip("walk", 0.2, true, 2.8),
-            walk: clip("walk", 0.55, true, 2.8),
-            attack: clip("summon", 0.9, true, 3.0),
-            special: clip("summon", 1.0, false, 3.0),
-            death: clip("death", 1.0, false, 3.4),
-        },
-        _ => Creature {
-            recipe: "recipes/shambler.json",
-            scale: 1.2,
-            idle: clip("idle", 1.0, true, 3.2),
-            walk: clip("walk", 1.15, true, 1.7),
-            attack: clip("attack", 1.0, true, 1.3),
-            special: clip("attack", 1.0, false, 1.3),
-            death: clip("death", 1.0, false, 2.4),
-        },
+        "runner" => Creature { recipe: "recipes/skeleton_runner.json", scale: 1.2, special_s: 0.95, death_s: 1.6, look: 0.4 },
+        "wraith" => Creature { recipe: "recipes/wraith.json", scale: 1.2, special_s: 1.75, death_s: 1.8, look: 0.7 },
+        "colossus" => Creature { recipe: "recipes/bone_colossus.json", scale: 1.0, special_s: 3.0, death_s: 3.4, look: 0.5 },
+        _ => Creature { recipe: "recipes/shambler.json", scale: 1.2, special_s: 1.3, death_s: 2.4, look: 0.5 },
     }
 }
 
-impl Creature {
-    pub fn clip(&self, act: Act) -> Clip {
-        match act {
-            Act::Idle => self.idle,
-            Act::Move => self.walk,
-            Act::Attack => self.attack,
-            Act::Special => self.special,
-            Act::Death => self.death,
-        }
-    }
-}
+/// Where creatures look while they march: the graveyard at the slab's centre.
+pub const LOOK_TARGET: [f32; 3] = [0.0, 1.0, 0.0];
 
 #[cfg(test)]
 mod tests {
@@ -317,19 +276,40 @@ mod tests {
         ("recipes/bone_colossus.json", include_str!("../../sepulcra/assets/anims/bone_colossus.json")),
     ];
 
+    /// The creature graphs take what the scene sets, and the timings here are the clips' lengths.
     #[test]
-    fn every_clip_exists_in_its_anim_set_with_its_length() {
+    fn creature_graphs_take_the_scene_s_parameters() {
         for kind in ["shambler", "runner", "wraith", "colossus"] {
             let c = creature(kind);
             let text = ANIMS.iter().find(|(r, _)| *r == c.recipe).expect("anim set").1;
             let set = Json::parse(text).unwrap();
-            let clips = set.get("clips").and_then(Json::as_array).unwrap();
+            let graph = set.get("graphs").and_then(|g| g.get("creature")).unwrap_or_else(|| panic!("{kind}: no creature graph"));
+            let params = graph.get("params").unwrap();
+            for p in ["act", "speed", "hit", "look_at", "look"] {
+                assert!(params.get(p).is_some(), "{kind}: no '{p}' parameter");
+            }
+            let states = graph.get("states").unwrap();
             for act in [Act::Idle, Act::Move, Act::Attack, Act::Special, Act::Death] {
-                let want = c.clip(act);
-                let found = clips.iter().find(|j| j.get("name").and_then(Json::as_str) == Some(want.name));
-                let found = found.unwrap_or_else(|| panic!("{kind}: no clip '{}'", want.name));
-                let d = found.get("duration").and_then(Json::as_f64).unwrap() as f32;
-                assert!((d - want.duration).abs() < 1e-3, "{kind}/{}: {d} s, the table says {}", want.name, want.duration);
+                assert!(states.get(act.name()).is_some(), "{kind}: no state '{}'", act.name());
+            }
+            // The special and death states' clips are as long as the table says (at their speed).
+            let clips = set.get("clips").and_then(Json::as_array).unwrap();
+            let clip_of = |state: &str| -> (String, f32) {
+                match states.get(state).unwrap() {
+                    Json::Str(c) => (c.clone(), 1.0),
+                    s => (s.get("play").and_then(Json::as_str).unwrap().to_string(), s.get("speed").and_then(Json::as_f64).unwrap_or(1.0) as f32),
+                }
+            };
+            for (state, want) in [("special", c.special_s), ("death", c.death_s)] {
+                let (name, speed) = clip_of(state);
+                let spec = clips.iter().find(|j| j.get("name").and_then(Json::as_str) == Some(name.as_str())).unwrap_or_else(|| panic!("{kind}: no clip {name}"));
+                // A chain clip takes its source's duration.
+                let d = spec
+                    .get("duration")
+                    .or_else(|| spec.get("source").and_then(Json::as_str).and_then(|src| clips.iter().find(|j| j.get("name").and_then(Json::as_str) == Some(src))?.get("duration")))
+                    .and_then(Json::as_f64)
+                    .unwrap() as f32;
+                assert!((d / speed - want).abs() < 1e-3, "{kind}/{state}: {d} s at {speed}, the table says {want}");
             }
         }
     }

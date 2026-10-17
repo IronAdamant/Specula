@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine
+from specula_mcp import ROOT, Engine, detailed
 
 PORT = 7486
 
@@ -54,7 +54,7 @@ class KeepAlive:
         return reply["result"]
 
     def call(self, tool, **args):
-        result = self.rpc("tools/call", {"name": tool, "arguments": args})
+        result = self.rpc("tools/call", {"name": tool, "arguments": detailed(tool, args)})
         if result.get("isError"):
             raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
         return result

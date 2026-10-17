@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine  # noqa: E402
+from specula_mcp import ROOT, Engine, detailed  # noqa: E402
 
 # Builds and outputs go where cargo builds (CARGO_TARGET_DIR when set).
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
@@ -216,7 +216,7 @@ def run(m, failures, label):
 
 def tool(m, name, **args):
     """(is_error, parsed or text) of a tool call, without raising on tool errors."""
-    r = m.request("tools/call", {"name": name, "arguments": args})
+    r = m.request("tools/call", {"name": name, "arguments": detailed(name, args)})
     text = next(c["text"] for c in r["content"] if c["type"] == "text")
     try:
         data = json.loads(text)

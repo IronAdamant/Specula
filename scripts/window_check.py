@@ -82,7 +82,7 @@ class Mcp:
         return reply["result"]
 
     def call(self, tool, **args):
-        result = self.request("tools/call", {"name": tool, "arguments": args})
+        result = self.request("tools/call", {"name": tool, "arguments": detailed(tool, args)})
         if result.get("isError"):
             raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
         return result

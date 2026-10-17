@@ -21,8 +21,12 @@ memory of the earlier ones. This page is **current state and what's next** only;
   playtest swarms and tool ergonomics, streaming and HLOD, then the M3 exit proof and agent evals); wave 3 (M4: stage
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
-  **Merged so far (2026-10-18):** swarm communication, the module host and physics P1-P3. Lex and animation
-  are in review rounds.
+  **Owner, 2026-10-18: M4 waits.** Finish and fully test M3, then report to the owner and **wait for their explicit
+  go-ahead before starting M4** (wave 3).
+  **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
+  animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes). Wave 2 is
+  running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
+  HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
@@ -116,7 +120,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   --seed 7` (see its TESTPLAN.md).
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
   `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
-  `--perf FILE`, and `-- GAME ARGS` for a hosted game.
+  `--perf FILE`, `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`, and
+  `-- GAME ARGS` for a hosted game.
+- **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
+  `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):
   - World: `world_spawn`, `world_set`, `world_delete`, `world_list`, `world_query` (paged filters), `world_batch`
     (atomic), `world_env`, `world_save` / `world_load` (text world files), `world_hash` (per-tick simulation hash).
@@ -130,9 +137,14 @@ In practice that means six **foundations** that apply to every change from M1 on
     `tilemap_set`).
   - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
     scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
+  - Gameplay as data (Lex): `lex_schema`, `lex_list`, `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`,
+    `lex_import`, `lex_export`, `lex_session` ([docs/design/LEX.md](docs/design/LEX.md)).
+  - Animation: `anim_get`, `anim_set` (clips and graphs as data), `anim_state`, `anim_check` (motion checks),
+    `anim_filmstrip` (contact sheets with checks); graph parameters via `world_set {anim: {graph, params}}`.
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
     `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
     `world_env {physics}` (gravity, substeps, sleep, 2D mode).
+  - Playtests: `playtest_run` (a spec as data: steps, expectations, replays) and `playtest_report`.
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
@@ -144,18 +156,18 @@ In practice that means six **foundations** that apply to every change from M1 on
   vector shapes, a UI overlay. Reversed Z.
 - **Simulation:** fixed-tick clock, seeded RNG streams, deterministic maths (`dmath`), ordered containers, a
   journal-replay test that reproduces `world_hash` in CI.
-- **Game-side crates:** `specula-anim` (clips, A1-A2), `specula-audio` (WASAPI, procedural 3D audio),
+- **Game-side crates:** `specula-anim` (A1-A3: clips, graphs, IK, motion generators and checks), `specula-audio` (WASAPI, procedural 3D audio),
   `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
   modelling, tier 1), `specula-gltf`.
-- **Size:** about 129k lines of Rust in 13 crates (16 with `specula-sdk`, `specula-logic` and `specula-physics`) plus the Sepulcra game and app; about 1,100 tests. **Zero
+- **Size:** about 129k lines of Rust in 13 crates (17 with `specula-sdk`, `specula-logic`, `specula-physics` and `specula-lex`) plus the Sepulcra game and app; about 1,100 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
-- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. No gameplay-as-data
-  (Lex) on main yet: Sepulcra's rules are hand-written Rust in `games/sepulcra`. Module characters move with a
+- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. Lex covers a slice of
+  Sepulcra (the full port is wave 2), runs headless only (not live in the window yet), and Sepulcra itself still
+  runs on its hand-written Rust rules. Module characters move with a
   simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
   requests can't be preempted.
-- **Animation** stops at stage A2 (clips and state-driven playback); blending, IK and agent-authored motion are M3.
 - **No save games** for players (world files are an editor format), no title screen in the app, settings aren't
   saved and there's no rebinding.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented

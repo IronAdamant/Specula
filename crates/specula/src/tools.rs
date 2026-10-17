@@ -46,7 +46,9 @@ HLOD proxies, and sight packets mark subjects drawn_as \"hlod\" or \"not_residen
 stream_fly (a measured flight of the window camera) show and tune it. A game running in \
 the engine adds its own tools (play_*). Game logic as code: a module is a Rust cdylib depending only on specula-sdk; \
 logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
-world; logic_status, logic_input and logic_hook inspect, drive and call it. Coordinates: metres, right-handed, +Y up; a top-down view puts \
+world; logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
+(lex_schema describes the language; lex_edit changes a set with validation, lex_simulate runs it headless and \
+deterministically). Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
 suggestion; the hosted game's name is reserved: name_reserved); \
@@ -65,7 +67,13 @@ handoffs on entities, paths and tasks; world_rollup summarises the journal per a
 writes (stale_version, claimed) carry a 'conflict' object (base, theirs, yours, overlap) to rebase from; lease_take \
 hands out ports, GPU time and scratch folders for agents that run their own engines; swarm_settings shows the \
 operator's hardware and sets the window's frame floor before a swarm is deployed; desync_trace and desync_compare \
-find the first tick and component where two runs (or a run and its journal replay) differ.";
+find the first tick and component where two runs (or a run and its journal replay) differ. playtest_run runs a headless \
+playtest as data (tool calls at ticks, expectations on their answers, captures) and records a replay that verifies by \
+hash; playtest_report polls it. Heavy tools (sight_frame, perf_frame, engine_info, world_list, world_query, world_history, \
+play_state, logic_status, playtest_*) answer concisely by default; pass response_format: \"detailed\" for everything, or \
+make detailed your session's default with agent_hello {response_format: \"detailed\"} (an engine started with \
+--response-format detailed defaults every session to it). Scripts that check data in depth should do one of these \
+(scripts/specula_mcp.py does it for you).";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -211,6 +219,12 @@ pub enum Command {
     Physics(crate::physics_tools::PhysicsCall),
     /// The streaming tools (see [`crate::stream_tools`]).
     Stream(crate::stream_tools::StreamCall),
+    /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
+    Playtest(crate::playtest_engine::PlaytestCall),
+    /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
+    Lex(crate::lex_tools::LexCall),
+    /// The animation tools (see [`crate::anim_tools`]).
+    Anim(crate::anim_tools::AnimCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -275,6 +289,14 @@ pub struct Tools {
     to_engine: Sender<Request>,
     /// Tools the hosted game added (answered by the game on the engine thread).
     game_tools: Vec<ToolDef>,
+    /// Saved `lex_simulate` runs.
+    pub(crate) lex_runs: crate::lex_tools::Runs,
+    /// One `lex_edit` per rule set at a time (held on protocol threads only).
+    pub(crate) lex_locks: crate::lex_tools::Locks,
+    /// Default response formats, the engine's and each session's (see [`crate::response`]).
+    formats: std::sync::Arc<crate::response::Defaults>,
+    /// Tools that take `response_format` themselves (a session's detailed default is passed on).
+    native_format: Vec<String>,
 }
 
 impl Tools {
@@ -286,33 +308,25 @@ impl Tools {
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
-        Tools { to_engine, game_tools }
-    }
-}
-
-impl ToolHandler for Tools {
-    fn tools(&self) -> Vec<ToolDef> {
-        let mut all = definitions();
-        all.extend(self.game_tools.iter().cloned());
-        all
-    }
-
-    fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
-        // Builds and library loads run on this connection's thread; only the swap goes to the engine.
-        match name {
-            "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
-            "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
-            _ => {}
+        let native_format = definitions().iter().chain(&game_tools).filter(|d| crate::response::takes_format(d)).map(|d| d.name.clone()).collect();
+        Tools {
+            to_engine,
+            game_tools,
+            lex_runs: Default::default(),
+            lex_locks: Default::default(),
+            formats: crate::response::Defaults::new(crate::response::Format::Concise),
+            native_format,
         }
-        let parsed = if self.game_tools.iter().any(|t| t.name == name) {
-            Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
-        } else {
-            parse(name, arguments)
-        };
-        let command = match parsed {
-            Ok(c) => c,
-            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
-        };
+    }
+
+    /// Uses `formats` for default response formats (shared with the engine thread).
+    pub fn with_formats(mut self, formats: std::sync::Arc<crate::response::Defaults>) -> Tools {
+        self.formats = formats;
+        self
+    }
+
+    /// Sends a command to the main thread and waits for its answer.
+    pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = mpsc::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
         let request = Request { session: session.clone(), command, reply, deadline };
@@ -330,7 +344,87 @@ impl ToolHandler for Tools {
     }
 }
 
-fn parse(name: &str, args: &Json) -> Result<Command, String> {
+impl ToolHandler for Tools {
+    fn tools(&self) -> Vec<ToolDef> {
+        let mut all = definitions();
+        crate::response::add_to_schemas(&mut all);
+        all.extend(self.game_tools.iter().cloned());
+        all
+    }
+
+    fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
+        // machine-readable codes, whoever built the answer).
+        crate::response::tidy(self.call_engine(session, name, arguments))
+    }
+}
+
+impl Tools {
+    fn call_engine(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        // Builds and library loads run on this connection's thread; only the swap goes to the engine.
+        match name {
+            "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
+            "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
+            _ => {}
+        }
+        // agent_hello {response_format} sets this session's default (once the hello succeeds).
+        let mut hello_format = None;
+        let stripped;
+        let arguments = if name == "agent_hello" && arguments.get(crate::response::KEY).is_some() {
+            match crate::response::Format::arg(arguments, crate::response::Format::Concise) {
+                Ok(f) => hello_format = Some(f),
+                Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+            }
+            stripped = match arguments {
+                Json::Obj(p) => Json::Obj(p.iter().filter(|(k, _)| k != crate::response::KEY).cloned().collect()),
+                other => other.clone(),
+            };
+            &stripped
+        } else {
+            arguments
+        };
+        let default = self.formats.get(&session.id);
+        // response_format of the heavy tools: taken out here, applied to the answer below.
+        let shaped = match crate::response::split(name, arguments, default) {
+            Ok(s) => s,
+            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+        };
+        let defaulted = if shaped.is_none() && self.native_format.iter().any(|t| t == name) { crate::response::with_default(arguments, default) } else { None };
+        let arguments = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(arguments);
+        let parsed = if self.game_tools.iter().any(|t| t.name == name) {
+            Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
+        } else if name.starts_with("lex_") {
+            // Lex tools do their heavy work (validation, simulation) on this thread.
+            return crate::lex_tools::call(self, session, name, arguments);
+        } else {
+            parse(name, arguments)
+        };
+        let command = match parsed {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+        };
+        let out = self.send(session, command);
+        if name == "agent_hello" && !out.is_error {
+            // The default belongs to the identity (its resume token), so a resume keeps it.
+            let token = out.content.iter().find_map(|c| match c {
+                specula_protocol::Content::Text(t) => Json::parse(t).ok()?.get("resume_token")?.as_str().map(str::to_owned),
+                specula_protocol::Content::Image { .. } => None,
+            });
+            if let Some(token) = token {
+                self.formats.hello(&session.id, &token, hello_format);
+            }
+        }
+        match shaped {
+            Some((format, _)) => crate::response::shape(name, format, out),
+            None => out,
+        }
+    }
+}
+
+pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
+    if let Some(call) = crate::playtest_engine::parse(name, args) {
+        return call.map(Command::Playtest);
+    }
     match name {
         "world_spawn" => parse_spawn(args).map(Command::Spawn),
         "world_set" => parse_set(args).map(|(key, change)| Command::Set(key, change)),
@@ -478,9 +572,12 @@ fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 Some(call) => call.map(Command::Swarm),
                 None => match crate::physics_tools::parse(other, args) {
                     Some(call) => call.map(Command::Physics),
-                    None => match crate::stream_tools::parse(other, args) {
-                        Some(call) => call.map(Command::Stream),
-                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                    None => match crate::anim_tools::parse(other, args) {
+                        Some(call) => call.map(Command::Anim),
+                        None => match crate::stream_tools::parse(other, args) {
+                            Some(call) => call.map(Command::Stream),
+                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                        },
                     },
                 },
             },
@@ -2301,7 +2398,22 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
     .chain(crate::stream_tools::definitions())
+    .chain(crate::playtest_engine::definitions())
+    .chain(crate::lex_tools::definitions())
+    .chain(crate::anim_tools::definitions())
     .collect()
+}
+
+/// The engine's own tools (a playtest checks which take `response_format`).
+pub(crate) fn engine_definitions() -> Vec<ToolDef> {
+    let mut defs = definitions();
+    crate::response::add_to_schemas(&mut defs);
+    defs
+}
+
+/// The engine's own tool names (a playtest checks its calls against them).
+pub(crate) fn engine_tool_names() -> Vec<String> {
+    definitions().into_iter().map(|t| t.name).collect()
 }
 
 #[cfg(test)]

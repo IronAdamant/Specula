@@ -903,6 +903,37 @@ pub fn build(recipe_json: &str, params: &BuildParams) -> Result<Model, RecipeErr
     build_recipe(&recipe, params)
 }
 
+/// The rig `recipe` builds with `params`, without building any geometry: the parameter values,
+/// the `let`s and the bones only, so it is cheap (microseconds for a creature). The same rig as
+/// [`build_recipe`]'s. `None` for a recipe without a rig.
+pub fn build_rig_only(recipe: &Recipe, params: &BuildParams) -> Result<Option<Rig>, RecipeError> {
+    let Some(def) = &recipe.rig else { return Ok(None) };
+    let seed = params.seed.unwrap_or(recipe.seed);
+    let vars = eval_vars(recipe, params.values)?;
+    let (rig, _) = build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false })?;
+    Ok(Some(rig))
+}
+
+/// A recipe's variables: the values given, the other parameters' defaults, then the `let`s.
+fn eval_vars(recipe: &Recipe, values: &[(&str, f64)]) -> Result<BTreeMap<String, f64>, RecipeError> {
+    let mut vars: BTreeMap<String, f64> = BTreeMap::new();
+    recipe.check_values(values)?;
+    for (k, v) in values {
+        vars.insert(k.to_string(), *v);
+    }
+    for p in &recipe.params {
+        vars.entry(p.name.clone()).or_insert(p.default);
+    }
+    for (name, ex) in &recipe.lets {
+        let v = ex.eval(&|n| vars.get(n).copied());
+        if !v.is_finite() {
+            return Err(e(&format!("let.{name}"), ErrorCode::OutOfRange, "evaluated to NaN or infinity"));
+        }
+        vars.insert(name.clone(), v);
+    }
+    Ok(vars)
+}
+
 /// Builds an already parsed recipe.
 pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, RecipeError> {
     let seed = params.seed.unwrap_or(recipe.seed);
@@ -1255,21 +1286,7 @@ fn build_parts(
     tally: &Tally,
     coarse: bool,
 ) -> Result<(Vec<BuiltPart>, BTreeMap<String, f64>), RecipeError> {
-    let mut vars: BTreeMap<String, f64> = BTreeMap::new();
-    recipe.check_values(values)?;
-    for (k, v) in values {
-        vars.insert(k.to_string(), *v);
-    }
-    for p in &recipe.params {
-        vars.entry(p.name.clone()).or_insert(p.default);
-    }
-    for (name, ex) in &recipe.lets {
-        let v = ex.eval(&|n| vars.get(n).copied());
-        if !v.is_finite() {
-            return Err(e(&format!("let.{name}"), ErrorCode::OutOfRange, "evaluated to NaN or infinity"));
-        }
-        vars.insert(name.clone(), v);
-    }
+    let vars = eval_vars(recipe, values)?;
     let ctx = Ctx { vars: &vars, style: params.style, seed, tally, coarse };
     let smooth_of = |x: &Expr, path: &str| -> Result<f32, RecipeError> {
         let v = ctx.eval(x, path)?;

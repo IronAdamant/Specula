@@ -12,6 +12,8 @@
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
 pub mod board;
+pub mod anim;
+mod anim_tools;
 pub mod cameras;
 mod capture;
 pub mod claims;
@@ -25,6 +27,7 @@ pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+mod lex_tools;
 mod luts;
 pub mod meshes;
 pub mod models;
@@ -34,6 +37,9 @@ pub mod persist;
 pub mod rollup;
 pub mod physics;
 mod physics_tools;
+pub mod playtest;
+mod playtest_engine;
+mod response;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -87,7 +93,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[-- GAME ARGS...]";
+[--paused] [--response-format concise|detailed] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -132,6 +138,11 @@ struct Args {
     style: Option<PathBuf>,
     /// Everything after `--` (or `--game-args`): the hosted game's own arguments.
     game_args: Vec<String>,
+    /// Start with the clock paused (`--paused`): nothing ticks until an agent says so, so fresh
+    /// engines start playtests from the same tick and state.
+    paused: bool,
+    /// The default `response_format` of every session (`--response-format`; concise unless set).
+    response_format: response::Format,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -153,6 +164,8 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         assets: None,
         style: None,
         game_args: Vec::new(),
+        paused: false,
+        response_format: response::Format::Concise,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -166,6 +179,14 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--style" => args.style = Some(PathBuf::from(value()?)),
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
+            "--paused" => args.paused = true,
+            "--response-format" => {
+                args.response_format = match value()?.as_str() {
+                    "concise" => response::Format::Concise,
+                    "detailed" => response::Format::Detailed,
+                    other => return Err(format!("--response-format must be concise or detailed, not '{other}'\n{USAGE}")),
+                }
+            }
             "--adapter" => {
                 let v = value()?;
                 args.adapter_label = v.clone();
@@ -242,6 +263,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
+    engine.formats = response::Defaults::new(args.response_format);
     engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
     let kind = perf::adapter_kind(engine.gpu.adapter().kind);
     eprintln!(
@@ -302,7 +324,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools)),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats))),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -328,6 +350,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.gpu.mark_warm();
     engine.game = game.take();
     engine.start_game();
+    if args.paused {
+        engine.clock.set_paused(true);
+    }
 
     let result = match &window {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
@@ -495,6 +520,10 @@ struct Engine {
     stream: streaming::Streamer,
     /// A stream_fly flight of the window camera in progress.
     fly: Option<stream_tools::Fly>,
+    /// Headless playtests: the running one and recent reports (see [`playtest`]).
+    playtests: playtest_engine::Playtests,
+    /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
+    formats: Arc<response::Defaults>,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -591,6 +620,8 @@ impl Engine {
             physics: physics::Physics::default(),
             stream: streaming::Streamer::default(),
             fly: None,
+            playtests: Default::default(),
+            formats: response::Defaults::new(response::Format::Concise),
         })
     }
 
@@ -663,6 +694,9 @@ impl Engine {
 
     /// Turns the real time since the last call into whole ticks and runs them.
     fn advance_clock(&mut self) {
+        // The world's anim assets reach the library (graph writes settle against them) without
+        // waiting for a draw: headless engines never draw.
+        self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
         let now = Instant::now();
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
@@ -971,6 +1005,10 @@ impl Engine {
                 reload.rebuilding.len(),
                 reload.errors.len()
             );
+        }
+        // Anim sets that changed reach the world here, journaled (never when a build lands).
+        if !reload.anim_handles.is_empty() && anim::resettle(&mut self.world, &reload.anim_handles) > 0 {
+            self.swarm.game_changes(&mut self.world, self.clock.tick(), anim::RELOAD_AGENT, Kind::Set);
         }
         Some(reload)
     }
@@ -1285,6 +1323,7 @@ impl Engine {
             self.poll_assets(false);
             self.pump_builds(None);
             self.serve_captures();
+            self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -1386,6 +1425,10 @@ impl Engine {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
+            if self.playtests.running() {
+                // Flat out, unless it waits for a deferred answer.
+                wait = if self.playtests.waiting_on_call() { wait.min(Duration::from_millis(1)) } else { Duration::ZERO };
+            }
             let received = requests.recv_timeout(wait);
             self.profiler.end_frame(&self.gpu);
             let _frame = profile::zone("frame");
@@ -1408,6 +1451,7 @@ impl Engine {
                 eprintln!("specula: upload batch not submitted: {e}");
             }
             self.serve_captures();
+            self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
         }
         Ok(())
     }
@@ -1432,6 +1476,10 @@ impl Engine {
             }
             Command::Stream(stream_tools::StreamCall::Fly(spec)) => {
                 self.start_fly(spec, request.reply, request.deadline);
+                return;
+            }
+            Command::Playtest(call) => {
+                self.playtest_call(call, request.session, request.reply, server);
                 return;
             }
             command => Request { command, ..request },
@@ -1476,6 +1524,10 @@ impl Engine {
             },
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
+            Command::Lex(call) => {
+                let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
+                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks)
+            }
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
@@ -1589,7 +1641,8 @@ impl Engine {
                 let stats = stats.or_else(|| self.gpu.last_frame_stats_of(FramePath::Offscreen));
                 ToolOutput::text(perf::memory_json(&self.profiler, stats.as_ref(), limit).to_string())
             }
-            Command::PerfCapture(_) => unreachable!("answered above"),
+            Command::PerfCapture(_) | Command::Playtest(_) => unreachable!("answered above"),
+            Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
             Command::Time(op) => {
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
@@ -1677,6 +1730,7 @@ impl Engine {
             Command::Stream(call) => self.stream_call(call, &request.session),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
+            Command::Anim(call) => self.anim_call(call, w, tick),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
@@ -2089,6 +2143,7 @@ impl Engine {
 fn call_class(command: &Command) -> Class {
     match command {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
+        Command::Anim(call) => anim_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),
@@ -2098,6 +2153,9 @@ fn call_class(command: &Command) -> Class {
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
         Command::Stream(call) => call.class(),
+        Command::Playtest(_) => Class::Sim,
+        Command::Lex(call) if call.is_read() => Class::Read,
+        Command::Lex(_) => Class::Edit,
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)
@@ -2275,6 +2333,10 @@ mod tests {
         let e = parse("--seed 7").err().unwrap();
         assert!(e.contains("unknown argument '--seed'") && e.contains("after --"), "{e}");
         assert_eq!(parse("--style s.json").unwrap().style.as_deref(), Some(Path::new("s.json")));
+        let a = parse("--paused --response-format detailed").unwrap();
+        assert!(a.paused && a.response_format == response::Format::Detailed);
+        assert_eq!(parse("").unwrap().response_format, response::Format::Concise);
+        assert!(parse("--response-format verbose").err().unwrap().contains("concise or detailed"));
     }
 
     #[test]

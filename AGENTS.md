@@ -53,7 +53,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-audio` | output (WASAPI), mixing, synthesis, analysis |
 | `specula-text` | TrueType fonts → glyph atlas → laid-out quads (CPU) |
 | `specula-ui` | HUD and menu toolkit for agents and humans |
-| `specula-anim` | skeletal animation (stages A1–A2) |
+| `specula-anim` | skeletal animation (A1–A3): clips, graphs, IK, motion generators, motion checks |
+| `specula-lex` | Lex: gameplay rules as typed text data (validate, compile, simulate deterministically) |
 | `specula-physics` | collision queries, triggers, character controller, rigid bodies (stages P1–P3) |
 | `specula-model` | procedural modelling: recipes → meshes, LODs, colliders |
 | `specula-gltf` | glTF 2.0 / GLB import and export |
