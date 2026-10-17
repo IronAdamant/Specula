@@ -13,6 +13,17 @@
 //! | `leap` | crouch, ballistic root arc (`distance`, `height`) with tucked legs, landing absorb; `takeoff`/`land` events; root motion | once |
 //! | `collapse` | death: `topple`, `crumble`, `scatter` (bones fly apart, seeded) or `fade` (rise, spin, shrink, `opacity` curve) | once |
 //! | `wobble` | only the `wobble` layers (mechanisms, flames) | loop |
+//! | `keys` | keyframed poses: `keys: [{time, pose: {bone: {rot, move, scale}}}]`, `interp` (`step`, `linear`, `cubic`); bones missing from a key are at rest in it; feet stay planted when `legs` are given | once |
+//! | `pose` | one held `pose` (a hand-authored stance, a grip) | loop |
+//! | `recoil` | a hit or kick: snaps to `pose` over `attack` s, then springs back (`frequency` Hz, `damping` ratio); made for additive layers | once |
+//! | `breathe` | breathing only: the last `spine` bone pitches `deg` and swells `scale`, `breaths` per loop, the head counters; made for additive layers | loop |
+//! | `chain` | secondary motion over another clip (`source`, earlier in the set): a bone `chain` (tail, shroud, cloth strip) simulated as a damped spring chain (`stiffness`, `damping`, `gravity`) driven by the source's motion and travel, then baked; loops seamlessly | the source's |
+//!
+//! `"body": "auto"` fills `pelvis`, `spine`, `head`, `legs` and `arms` from the rig's bone names
+//! (`hips`/`pelvis`, `spine*`/`chest`, `head`, `thigh_X`/`shin_X`/`foot_X`, `upperarm_X`/`forearm_X`
+//! for every side `X`), legs half a cycle apart and each arm against its side's leg: a walk cycle
+//! from a rig and a gait description (`{"kind": "gait", "body": "auto", "stride": 1.0, ...}`).
+//! Anything given explicitly wins.
 //!
 //! Body parts are named bones: `pelvis`, `spine` (list, lower first), `head`, `legs`
 //! (`{thigh, shin, foot, phase, lift, foot_pitch, z, ankle_y}`), `arms`
@@ -38,7 +49,11 @@ use crate::set::AnimSet;
 use crate::skeleton::Skeleton;
 
 /// Generator kinds.
-pub const KINDS: &[&str] = &["gait", "idle", "hover", "swing", "leap", "collapse", "wobble"];
+pub const KINDS: &[&str] = &["gait", "idle", "hover", "swing", "leap", "collapse", "wobble", "keys", "pose", "recoil", "breathe", "chain"];
+/// Most keys a `keys` spec may list.
+pub const MAX_POSE_KEYS: usize = 256;
+/// Most bones a `chain` may simulate.
+pub const MAX_CHAIN: usize = 16;
 
 /// Most a leg may stretch, as a fraction of its full length, before the pelvis is lowered.
 pub const MAX_REACH: f32 = 0.97;
@@ -180,6 +195,68 @@ fn child_of(skel: &Skeleton, child: usize, parent: usize, path: &str) -> Result<
         return Err(err(path, AnimErrorCode::InvalidRig, format!("'{}' must be a child of '{}'", skel.names[child], skel.names[parent])));
     }
     Ok(())
+}
+
+/// The body parts a rig's bone names suggest (`"body": "auto"`), as spec JSON.
+fn auto_body(skel: &Skeleton) -> Vec<(&'static str, Json)> {
+    let find = |names: &[&str]| names.iter().find_map(|n| skel.find(n));
+    let mut out: Vec<(&'static str, Json)> = Vec::new();
+    let pelvis = find(&["hips", "pelvis"]);
+    if let Some(p) = pelvis {
+        out.push(("pelvis", Json::Str(skel.names[p].clone())));
+    }
+    let head = find(&["head"]);
+    // The spine: the head's ancestors below it and above the pelvis, lowest first.
+    if let (Some(h), Some(p)) = (head, pelvis) {
+        let mut chain = Vec::new();
+        let mut k = skel.parents[h];
+        while let Some(i) = k {
+            if i as usize == p {
+                break;
+            }
+            chain.push(i as usize);
+            k = skel.parents[i as usize];
+        }
+        chain.reverse();
+        if !chain.is_empty() {
+            out.push(("spine", Json::arr(chain.iter().map(|&b| Json::Str(skel.names[b].clone())))));
+        }
+    }
+    if let Some(h) = head {
+        out.push(("head", Json::Str(skel.names[h].clone())));
+    }
+    // Sides: every suffix a thigh has (`thigh_l` → `_l`).
+    let mut legs = Vec::new();
+    let mut arms = Vec::new();
+    for (i, name) in skel.names.iter().enumerate() {
+        let Some(side) = name.strip_prefix("thigh") else { continue };
+        let (shin, foot) = (format!("shin{side}"), format!("foot{side}"));
+        let Some(sh) = skel.find(&shin) else { continue };
+        if skel.parents[sh] != Some(i as u16) {
+            continue;
+        }
+        let phase = if legs.len() % 2 == 0 { 0.0 } else { 0.5 };
+        let mut leg = vec![("thigh", Json::Str(name.clone())), ("shin", Json::Str(shin)), ("phase", Json::Num(phase))];
+        if skel.find(&foot).is_some_and(|f| skel.parents[f] == Some(sh as u16)) {
+            leg.push(("foot", Json::Str(foot)));
+        }
+        legs.push(Json::obj(leg));
+        let (upper, fore) = (format!("upperarm{side}"), format!("forearm{side}"));
+        if let Some(u) = skel.find(&upper) {
+            let mut arm = vec![("upper", Json::Str(upper)), ("phase", Json::Num(if phase == 0.0 { 0.5 } else { 0.0 })), ("swing", Json::Num(12.0)), ("bend", Json::Num(10.0))];
+            if skel.find(&fore).is_some_and(|f| skel.parents[f] == Some(u as u16)) {
+                arm.push(("fore", Json::Str(fore)));
+            }
+            arms.push(Json::obj(arm));
+        }
+    }
+    if !legs.is_empty() {
+        out.push(("legs", Json::Arr(legs)));
+    }
+    if !arms.is_empty() {
+        out.push(("arms", Json::Arr(arms)));
+    }
+    out
 }
 
 fn parse_body(o: &mut Obj, skel: &Skeleton, looping: bool) -> Result<Body, AnimError> {
@@ -423,25 +500,56 @@ struct Out {
 }
 
 fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result<Clip, AnimError> {
-    let _ = set;
     if !skel.model_aligned() {
         return Err(err("", AnimErrorCode::InvalidRig, "generators need model-aligned rest frames (recipe rigs)"));
     }
+    // `body: "auto"`: the parts the bone names suggest, under anything given explicitly.
+    let auto;
+    let spec = match spec.get("body") {
+        Some(Json::Str(a)) if a == "auto" => {
+            let mut j = spec.clone();
+            if let Json::Obj(pairs) = &mut j {
+                pairs.retain(|(k, _)| k != "body");
+            }
+            for (k, v) in auto_body(skel) {
+                if j.get(k).is_none() {
+                    j.set(k, v);
+                }
+            }
+            auto = j;
+            &auto
+        }
+        Some(_) => return Err(err("body", AnimErrorCode::WrongType, "\"body\": \"auto\" (or leave it out and name the parts)")),
+        None => spec,
+    };
     let mut o = Obj::new(spec, "", "a generator spec")?;
     let name = o.req_str("name")?.to_string();
     let kind = o.req_str("kind")?;
-    let duration = o.req_num("duration", 0.05, 60.0)?;
+    // A chain takes its source's duration and loop mode unless told otherwise.
+    let source = if kind == "chain" {
+        let sp = o.at("source");
+        let src = o.req_str("source")?;
+        let set = set.ok_or_else(|| err(&sp, AnimErrorCode::MissingField, "a chain builds on a clip of its anim set: generate it inside the set"))?;
+        let id = set.id(src).ok_or_else(|| err(&sp, AnimErrorCode::UnknownName, format!("no clip '{src}' before this one in the set (clips: {})", set.clips().map(|(_, c)| c.name.as_str()).collect::<Vec<_>>().join(", "))))?;
+        Some((set, id))
+    } else {
+        None
+    };
+    let duration = match (o.get("duration"), source) {
+        (Some(d), _) => num(d, &o.at("duration"), 0.05, 60.0)?,
+        (None, Some((set, id))) => set.clip(id).duration.max(0.05),
+        (None, None) if kind == "pose" => 1.0,
+        (None, None) => return Err(err("duration", AnimErrorCode::MissingField, "missing \"duration\"")),
+    };
     // At least 48 keys per clip, so fast cycles (a 0.5 s sprint) stay smooth and planted.
     let rate = o.num("rate", (48.0 / duration).clamp(30.0, 120.0), 4.0, 120.0)?;
-    let default_loop = matches!(kind, "gait" | "idle" | "hover" | "wobble");
+    let default_loop = match source {
+        Some((set, id)) => set.clip(id).looping,
+        None if matches!(kind, "gait" | "idle" | "hover" | "wobble" | "pose" | "breathe") => LoopMode::Loop,
+        None => LoopMode::Once,
+    };
     let looping = match o.str("loop")? {
-        None => {
-            if default_loop {
-                LoopMode::Loop
-            } else {
-                LoopMode::Once
-            }
-        }
+        None => default_loop,
         Some("loop") => LoopMode::Loop,
         Some("once") => LoopMode::Once,
         Some("ping_pong") => LoopMode::PingPong,
@@ -456,6 +564,13 @@ fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result
         "swing" => swing(&mut o, skel, &body, &times, duration)?,
         "leap" => leap(&mut o, skel, &body, &times, duration)?,
         "collapse" => collapse(&mut o, skel, &body, &times, duration)?,
+        "keys" | "pose" => keyed(&mut o, skel, &body, &times, duration, kind == "pose", looping)?,
+        "recoil" => recoil(&mut o, skel, &body, &times, duration)?,
+        "breathe" => breathe(&mut o, skel, &body, &times, duration)?,
+        "chain" => {
+            let (set, id) = source.expect("chain has a source");
+            chain(&mut o, set, id, &times, duration, looping)?
+        }
         "wobble" => {
             let frames = times
                 .iter()
@@ -479,7 +594,7 @@ fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result
             out.events.push(e);
         }
     }
-    o.finish("name, kind, duration, rate, loop, events, pelvis, spine, head, legs, arms, wobble and the kind's parameters")?;
+    o.finish("name, kind, duration, rate, loop, events, body, pelvis, spine, head, legs, arms, wobble and the kind's parameters")?;
     if looping == LoopMode::Loop {
         // A seamless loop: the last key repeats the first exactly.
         let first = out.frames[0].clone();
@@ -1036,6 +1151,271 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
         other => return Err(err(&o.at("style"), AnimErrorCode::UnknownName, format!("collapse style '{other}' (topple, crumble, scatter, fade)"))),
     };
     Ok(Out { looping: LoopMode::Once, distance: 0.0, events, curves, frames })
+}
+
+/// `keys` (poses at times) and `pose` (one held pose).
+fn keyed(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32, single: bool, looping: LoopMode) -> Result<Out, AnimError> {
+    let mut keys: Vec<(f32, Vec<PoseKey>)> = Vec::new();
+    let interp = if single {
+        let pose = parse_pose(o, "pose", skel)?;
+        if pose.is_empty() {
+            return Err(err(&o.at("pose"), AnimErrorCode::MissingField, "a pose names bones: {\"bone\": {\"rot\": [x, y, z], \"move\": [x, y, z], \"scale\": s}}"));
+        }
+        keys.push((0.0, pose));
+        Interp::Step
+    } else {
+        let interp = match o.str("interp")? {
+            None | Some("cubic") => Interp::Cubic,
+            Some("linear") => Interp::Linear,
+            Some("step") => Interp::Step,
+            Some(other) => return Err(err(&o.at("interp"), AnimErrorCode::UnknownName, format!("unknown interp '{other}' (step, linear, cubic)"))),
+        };
+        let kp = o.at("keys");
+        let items = capped(o, "keys", MAX_POSE_KEYS)?.ok_or_else(|| err(&kp, AnimErrorCode::MissingField, "missing \"keys\": [{time, pose}, ...]"))?;
+        if items.is_empty() {
+            return Err(err(&kp, AnimErrorCode::MissingField, "at least one key"));
+        }
+        for (i, k) in items.iter().enumerate() {
+            let p = format!("{kp}[{i}]");
+            let mut ko = Obj::new(k, &p, "a key")?;
+            let t = ko.req_num("time", 0.0, duration)?;
+            if let Some((prev, _)) = keys.last() {
+                if t <= *prev {
+                    return Err(err(&ko.at("time"), AnimErrorCode::NotIncreasing, format!("{t} s is not after {prev} s")));
+                }
+            }
+            let pose = parse_pose(&mut ko, "pose", skel)?;
+            ko.finish("time, pose")?;
+            keys.push((t, pose));
+        }
+        interp
+    };
+    // A looping clip ends where it starts; a once clip holds its last key.
+    let closed = looping == LoopMode::Loop && keys.len() > 1;
+    let key_at = |i: isize| -> (f32, &[PoseKey]) {
+        let n = keys.len() as isize;
+        if closed {
+            let k = i.rem_euclid(n) as usize;
+            let wraps = i.div_euclid(n) as f32;
+            (keys[k].0 + wraps * duration, &keys[k].1)
+        } else {
+            let k = i.clamp(0, n - 1) as usize;
+            (keys[k].0, &keys[k].1)
+        }
+    };
+    let make = |t: f32, crouch: f32| -> Frame {
+        let mut f = Frame::new(skel.len(), body.legs.len());
+        // The key span holding `t` (wrapping for loops).
+        let n = keys.len() as isize;
+        let mut i = keys.iter().rposition(|(kt, _)| *kt <= t).map_or(-1, |i| i as isize);
+        if !closed && i < 0 {
+            i = 0;
+        }
+        let (t0, p0) = key_at(i);
+        let (t1, p1) = key_at(i + 1);
+        let u = if t1 > t0 && (closed || i + 1 < n) { ((t - t0) / (t1 - t0)).clamp(0.0, 1.0) } else { 0.0 };
+        match interp {
+            Interp::Step => apply_poses(&mut f, &[(p0, 1.0)]),
+            Interp::Linear => apply_poses(&mut f, &[(p0, 1.0 - u), (p1, u)]),
+            Interp::Cubic => {
+                // Catmull–Rom weights over the four keys around the span (uniform).
+                let (_, pm) = key_at(i - 1);
+                let (_, p2) = key_at(i + 2);
+                let (u2, u3) = (u * u, u * u * u);
+                let w = [-0.5 * u3 + u2 - 0.5 * u, 1.5 * u3 - 2.5 * u2 + 1.0, -1.5 * u3 + 2.0 * u2 + 0.5 * u, 0.5 * u3 - 0.5 * u2];
+                apply_poses(&mut f, &[(pm, w[0]), (p0, w[1]), (p1, w[2]), (p2, w[3])]);
+            }
+        }
+        if let Some(p) = body.pelvis {
+            f.mov(p, [0.0, -crouch, 0.0]);
+        }
+        planted(&mut f, body);
+        apply_wobbles(&mut f, body, t / duration);
+        f
+    };
+    let (frames, _) = solve_all(skel, body, &make, times, !body.legs.is_empty(), "keys")?;
+    Ok(Out { looping, distance: 0.0, events: Vec::new(), curves: Vec::new(), frames })
+}
+
+/// A hit or kick: rises to the pose, then a damped spring brings it back.
+fn recoil(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32) -> Result<Out, AnimError> {
+    let pose = parse_pose(o, "pose", skel)?;
+    if pose.is_empty() {
+        return Err(err(&o.at("pose"), AnimErrorCode::MissingField, "a recoil needs the \"pose\" it snaps to"));
+    }
+    let attack = o.num("attack", 0.06, 0.0, duration * 0.5)?;
+    let freq = o.num("frequency", 3.0, 0.1, 30.0)?;
+    let zeta = o.num("damping", 0.35, 0.0, 0.99)?;
+    let event = o.str("event")?.unwrap_or("recoil").to_string();
+    let omega = std::f32::consts::TAU * freq;
+    let omega_d = omega * (1.0 - zeta * zeta).sqrt();
+    let make = |t: f32, crouch: f32| -> Frame {
+        let mut f = Frame::new(skel.len(), body.legs.len());
+        let w = if t < attack {
+            smoothstep(t / attack.max(1e-4))
+        } else {
+            let tau = t - attack;
+            specula_core::dmath::exp(-zeta * omega * tau) * specula_core::dmath::cos(omega_d * tau)
+        };
+        // Fade the tail out so the clip ends exactly at rest.
+        let end = 1.0 - smoothstep((t / duration - 0.8) / 0.2);
+        apply_poses(&mut f, &[(&pose, w * end)]);
+        if let Some(p) = body.pelvis {
+            f.mov(p, [0.0, -crouch, 0.0]);
+        }
+        planted(&mut f, body);
+        apply_wobbles(&mut f, body, t / duration);
+        f
+    };
+    let (frames, _) = solve_all(skel, body, &make, times, !body.legs.is_empty(), "pose")?;
+    Ok(Out { looping: LoopMode::Once, distance: 0.0, events: vec![Event { name: event, time: 0.0, data: String::new() }], curves: Vec::new(), frames })
+}
+
+/// Breathing only, for an additive layer.
+fn breathe(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32) -> Result<Out, AnimError> {
+    let chest = *body.spine.last().ok_or_else(|| err("spine", AnimErrorCode::MissingField, "breathe needs a \"spine\" (its last bone breathes)"))?;
+    let deg = o.num("deg", 3.0, -30.0, 30.0)?;
+    let swell = o.num("scale", 0.03, 0.0, 0.3)?;
+    let breaths = o.num("breaths", 1.0, 1.0, 32.0)?;
+    if breaths != specula_core::dmath::round(breaths) {
+        return Err(err(&o.at("breaths"), AnimErrorCode::OutOfRange, "breaths per loop must be a whole number"));
+    }
+    let frames = times
+        .iter()
+        .map(|&t| {
+            let mut f = Frame::new(skel.len(), body.legs.len());
+            // In through the first half (chest lifts back and swells), out through the second.
+            let k = 0.5 - 0.5 * cos_turns(breaths * t / duration);
+            f.rot(chest, qaxis([1.0, 0.0, 0.0], -deg * k));
+            if swell > 0.0 {
+                f.scale(chest, [1.0 + swell * k, 1.0 + 0.5 * swell * k, 1.0 + swell * k]);
+            }
+            if let Some(h) = body.head {
+                f.rot(h, qaxis([1.0, 0.0, 0.0], 0.6 * deg * k));
+            }
+            apply_wobbles(&mut f, body, t / duration);
+            f
+        })
+        .collect();
+    Ok(Out { looping: LoopMode::Loop, distance: 0.0, events: Vec::new(), curves: Vec::new(), frames })
+}
+
+/// Secondary motion: a spring chain driven by a source clip, baked over it.
+fn chain(o: &mut Obj, set: &AnimSet, source: crate::set::ClipId, times: &[f32], duration: f32, looping: LoopMode) -> Result<Out, AnimError> {
+    let skel = &set.skeleton;
+    let bones = bone_list(o, "bones", skel)?;
+    if bones.is_empty() || bones.len() > MAX_CHAIN {
+        return Err(err(&o.at("bones"), AnimErrorCode::OutOfRange, format!("a chain simulates 1..={MAX_CHAIN} bones, each the parent of the next")));
+    }
+    for w in bones.windows(2) {
+        child_of(skel, w[1], w[0], &o.at("bones"))?;
+    }
+    let stiffness = o.num("stiffness", 0.2, 0.0, 1.0)?;
+    let damping = o.num("damping", 0.1, 0.0, 1.0)?;
+    let gravity = o.num("gravity", 9.8, -50.0, 50.0)?;
+    let warmup = o.num("cycles", 3.0, 1.0, 16.0)? as usize;
+    let src = set.clip(source);
+    let speed = src.speed();
+    // Points: each chain bone's head, then the last bone's tail.
+    let last = *bones.last().expect("non-empty");
+    let mut tail = math3::sub(skel.tails[last], skel.heads[last]);
+    if math3::length(tail) < 1e-4 {
+        tail = [0.0, -0.1, 0.0];
+    }
+    let n = bones.len() + 1;
+    let point_of = |model: &[Affine], j: usize| -> V3 {
+        if j < bones.len() {
+            model[bones[j]].t
+        } else {
+            model[last].apply_point(tail)
+        }
+    };
+    let rest_len: Vec<f32> = {
+        let mut m = Vec::new();
+        skel.model_space(&skel.rest_pose(), &mut m);
+        (1..n).map(|j| math3::length(math3::sub(point_of(&m, j), point_of(&m, j - 1)))).collect()
+    };
+    let bound = set.track_bones(source).to_vec();
+    let sample = |t: f32, pose: &mut crate::skeleton::Pose| crate::blend::sample(skel, src, &bound, src.local_time(t as f64), crate::blend::Base::Rest, pose);
+    let dt = if times.len() > 1 { times[1] - times[0] } else { duration };
+    let steps = times.len() - 1;
+    let total_cycles = if looping == LoopMode::Loop { warmup + 2 } else { 1 };
+    let mut pose = skel.rest_pose();
+    let mut model: Vec<Affine> = Vec::new();
+    sample(0.0, &mut pose);
+    skel.model_space(&pose, &mut model);
+    let mut x: Vec<V3> = (0..n).map(|j| point_of(&model, j)).collect();
+    let mut prev = x.clone();
+    // Per recorded cycle: per key, the chain bones' local rotations.
+    let mut cycles: Vec<Vec<Vec<Q>>> = Vec::new();
+    for c in 0..total_cycles {
+        let mut rec: Vec<Vec<Q>> = Vec::with_capacity(times.len());
+        for (k, &t) in times.iter().enumerate() {
+            if k == steps && c + 1 < total_cycles {
+                // The next cycle's first key is this time.
+                continue;
+            }
+            sample(t, &mut pose);
+            skel.model_space(&pose, &mut model);
+            // The source travels `speed` m/s along +Z: the chain trails in the world.
+            let travel = [0.0, 0.0, speed * (c as f32 * duration + t)];
+            let target: Vec<V3> = (0..n).map(|j| math3::add(point_of(&model, j), travel)).collect();
+            if c == 0 && k == 0 {
+                x.clone_from(&target);
+                prev.clone_from(&target);
+            }
+            x[0] = target[0];
+            for j in 1..n {
+                let v = math3::scale(math3::sub(x[j], prev[j]), 1.0 - damping);
+                prev[j] = x[j];
+                x[j] = math3::add(math3::add(x[j], v), [0.0, -gravity * dt * dt, 0.0]);
+                x[j] = math3::add(x[j], math3::scale(math3::sub(target[j], x[j]), stiffness));
+            }
+            for j in 1..n {
+                let d = math3::sub(x[j], x[j - 1]);
+                let l = math3::length(d);
+                x[j] = if l > 1e-6 { math3::add(x[j - 1], math3::scale(d, rest_len[j - 1] / l)) } else { target[j] };
+            }
+            // Turn each chain bone so it points where the simulation put its child point.
+            for (j, &b) in bones.iter().enumerate() {
+                let have = math3::sub(point_of(&model, j + 1), point_of(&model, j));
+                let want = math3::sub(math3::sub(x[j + 1], travel), point_of(&model, j));
+                let turn = crate::math::qarc(have, want);
+                let g = rotation_of(&model[b]);
+                pose.local[b].r = qnorm(qmul(pose.local[b].r, qmul(qconj(g), qmul(turn, g))));
+                crate::ik::fk_from(skel, &pose, &mut model, b);
+            }
+            rec.push(bones.iter().map(|&b| pose.local[b].r).collect());
+        }
+        cycles.push(rec);
+    }
+    // Loops: the last cycle, blended at its end into the cycle before it (whose end runs into
+    // the last cycle's start), so the clip ends where it begins.
+    let rot_at = |k: usize, j: usize| -> Q {
+        let last_c = &cycles[cycles.len() - 1];
+        if looping != LoopMode::Loop {
+            return last_c[k.min(last_c.len() - 1)][j];
+        }
+        let prev_c = &cycles[cycles.len() - 2];
+        let b = if k < last_c.len() { last_c[k][j] } else { cycles[cycles.len() - 1][0][j] };
+        let a = if k < prev_c.len() { prev_c[k][j] } else { last_c[0][j] };
+        let w = smoothstep((k as f32 / steps as f32 - 0.7) / 0.3);
+        crate::math::qnlerp(b, a, w)
+    };
+    let mut frames = Vec::with_capacity(times.len());
+    for (k, &t) in times.iter().enumerate() {
+        sample(t, &mut pose);
+        let mut f = Frame::new(skel.len(), 0);
+        for b in 0..skel.len() {
+            let r = skel.rest[b];
+            f.d[b] = Transform { t: math3::sub(pose.local[b].t, r.t), r: pose.local[b].r, s: [pose.local[b].s[0] / r.s[0], pose.local[b].s[1] / r.s[1], pose.local[b].s[2] / r.s[2]] };
+        }
+        for (j, &b) in bones.iter().enumerate() {
+            f.d[b].r = rot_at(k, j);
+        }
+        frames.push(f);
+    }
+    Ok(Out { looping, distance: src.distance, events: src.events.clone(), curves: src.curves.clone(), frames })
 }
 
 /// Reads a `[x, y, z]` from JSON (helper for tests and tools).
