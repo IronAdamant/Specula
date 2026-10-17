@@ -77,6 +77,12 @@ pub trait Game {
     /// have drawn since the last step). Changes are journaled like a frame's.
     fn before_capture(&mut self, _ctx: &mut Ctx) {}
 
+    /// The game's tools (of [`Game::tools`]) that write files, such as recordings: a playtest
+    /// counts their calls toward its cap on file writes. Default: none.
+    fn file_tools(&self) -> &[&str] {
+        &[]
+    }
+
     /// Extra MCP tools (by convention `play_*`), answered by [`Game::call_tool`].
     fn tools(&self) -> Vec<ToolDef> {
         Vec::new()

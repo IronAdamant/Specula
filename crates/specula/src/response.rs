@@ -78,8 +78,9 @@ pub fn add_to_schemas(defs: &mut [ToolDef]) {
         let what = match SHAPED.iter().find(|(n, _)| *n == d.name) {
             Some((_, what)) => *what,
             None if d.name == "agent_hello" => {
-                "this session's default for every tool with a response_format: concise (the engine's default unless it \
-                 runs with --response-format detailed) or detailed (scripts that check data in depth)"
+                "this agent's default for every tool with a response_format (kept when a later session resumes it): \
+                 concise (the engine's default unless it runs with --response-format detailed) or detailed (scripts that \
+                 check data in depth)"
             }
             None => continue,
         };
@@ -89,33 +90,75 @@ pub fn add_to_schemas(defs: &mut [ToolDef]) {
     }
 }
 
-/// Default formats: the engine's (`--response-format`, concise unless set) and each session's
-/// (`agent_hello {response_format}`). Shared by the connection threads and the engine thread
-/// (playtests call as their starter's session).
+/// Default formats: the engine's (`--response-format`, concise unless set) and each agent's
+/// (`agent_hello {response_format}`). An agent's default belongs to its identity (its resume
+/// token), so a later session that resumes it keeps the default; a session that never said hello
+/// can't have one. Shared by the connection threads and the engine thread (playtests call as
+/// their starter's session).
 pub struct Defaults {
     engine: Format,
-    sessions: std::sync::Mutex<std::collections::BTreeMap<String, Format>>,
+    inner: std::sync::Mutex<DefaultsInner>,
 }
 
-/// Sessions whose default is remembered at most (the oldest by id is forgotten past it).
-const MAX_SESSION_DEFAULTS: usize = 4096;
+/// Entries kept per map at most; past it the least recently used goes.
+const MAX_DEFAULTS: usize = 4096;
+
+#[derive(Default)]
+struct DefaultsInner {
+    /// Use counter (the age of entries).
+    clock: u64,
+    /// Session id to the identity it says hello as.
+    identity_of: std::collections::BTreeMap<String, (String, u64)>,
+    /// Identity to its default.
+    formats: std::collections::BTreeMap<String, (Format, u64)>,
+}
+
+/// Inserts `k` with use time `now`, evicting the least recently used entry past [`MAX_DEFAULTS`].
+fn put<V>(map: &mut std::collections::BTreeMap<String, (V, u64)>, k: &str, v: V, now: u64) {
+    map.insert(k.to_owned(), (v, now));
+    while map.len() > MAX_DEFAULTS {
+        let oldest = map.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => map.remove(&k),
+            None => break,
+        };
+    }
+}
 
 impl Defaults {
     pub fn new(engine: Format) -> std::sync::Arc<Defaults> {
-        std::sync::Arc::new(Defaults { engine, sessions: std::sync::Mutex::new(std::collections::BTreeMap::new()) })
+        std::sync::Arc::new(Defaults { engine, inner: std::sync::Mutex::new(DefaultsInner::default()) })
     }
 
-    /// The default for `session`.
+    /// The default for `session`: its identity's, else the engine's.
     pub fn get(&self, session: &str) -> Format {
-        let map = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.get(session).copied().unwrap_or(self.engine)
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.clock += 1;
+        let now = g.clock;
+        let Some(identity) = g.identity_of.get_mut(session).map(|(i, t)| {
+            *t = now;
+            i.clone()
+        }) else {
+            return self.engine;
+        };
+        match g.formats.get_mut(&identity) {
+            Some((f, t)) => {
+                *t = now;
+                *f
+            }
+            None => self.engine,
+        }
     }
 
-    pub fn set(&self, session: &str, format: Format) {
-        let mut map = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.insert(session.to_owned(), format);
-        while map.len() > MAX_SESSION_DEFAULTS {
-            map.pop_first();
+    /// A successful `agent_hello` of `session` as `identity` (its resume token), with the default
+    /// it asked for, if it asked.
+    pub fn hello(&self, session: &str, identity: &str, format: Option<Format>) {
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.clock += 1;
+        let now = g.clock;
+        put(&mut g.identity_of, session, identity.to_owned(), now);
+        if let Some(f) = format {
+            put(&mut g.formats, identity, f, now);
         }
     }
 }
@@ -435,9 +478,22 @@ mod tests {
     fn defaults_per_engine_and_session() {
         let d = Defaults::new(Format::Concise);
         assert_eq!(d.get("s1"), Format::Concise);
-        d.set("s1", Format::Detailed);
+        d.hello("s1", "token-a", Some(Format::Detailed));
         assert_eq!((d.get("s1"), d.get("s2")), (Format::Detailed, Format::Concise));
+        // A later session resuming the same identity keeps its default.
+        d.hello("s2", "token-a", None);
+        assert_eq!(d.get("s2"), Format::Detailed);
+        d.hello("s3", "token-b", None);
+        assert_eq!(d.get("s3"), Format::Concise, "another identity");
         assert_eq!(Defaults::new(Format::Detailed).get("any"), Format::Detailed);
+        // Past the cap the least recently used goes, not the smallest id.
+        let d = Defaults::new(Format::Concise);
+        d.hello("aaa", "t-aaa", Some(Format::Detailed));
+        for i in 0..MAX_DEFAULTS {
+            assert_eq!(d.get("aaa"), Format::Detailed, "kept while in use ({i})");
+            d.hello(&format!("s{i:05}"), &format!("t{i:05}"), Some(Format::Detailed));
+        }
+        assert_eq!(d.get("aaa"), Format::Detailed);
         assert_eq!(with_default(&Json::Null, Format::Detailed).unwrap().to_string(), r#"{"response_format":"detailed"}"#);
         assert_eq!(with_default(&Json::parse(r#"{"response_format": "concise"}"#).unwrap(), Format::Detailed), None);
         assert_eq!(with_default(&Json::Null, Format::Concise), None);

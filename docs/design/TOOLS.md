@@ -73,10 +73,13 @@ read what they always read. An agent (and a client made with `detailed=False`) g
 1 found the gap: concise `engine_info` had left out a null `last_autosave_error`, which `world_roundtrip.py` reads.
 Concise `engine_info` now always carries it, null or not.
 
-**Choosing the default.** The order of precedence is: a call's own `response_format`, then the session's default
-(`agent_hello {response_format}`), then the engine's (`--response-format concise|detailed`, concise unless set). The
-defaults apply to the shaped tools above and to every tool that takes `response_format` itself (a game's `play_state`,
-`logic_status`, `playtest_*`), and inside playtests, which call as their starter's session.
+**Choosing the default.** The order of precedence is: a call's own `response_format`, then the agent's default
+(`agent_hello {response_format}`), then the engine's (`--response-format concise|detailed`, concise unless set). An
+agent's default belongs to its identity (its resume token), so a later session that resumes it with `agent_hello
+{name, resume_token}` keeps it. The engine remembers 4,096 identities and sessions, dropping the least recently used.
+The defaults apply to the shaped tools above and to the tools that take `response_format` themselves (a game's
+`play_state`, `logic_status`, `playtest_*`), and to nothing else: a tool without a format never receives the
+argument. They also apply inside playtests, whose calls go out as the session that started them.
 
 ### Measured (bytes, headless Sepulcra at tick 10,000, 40 agent cubes)
 

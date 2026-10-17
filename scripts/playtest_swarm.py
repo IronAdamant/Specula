@@ -61,12 +61,14 @@ def short(report):
 
 class Swarm:
     def __init__(self, exe, out, workers=4, lead_port=7493, use_lead=False, engine_args=(), game_args=(), verify=True,
-                 keep_scratch=False, log=print):
+                 keep_scratch=False, log=print, session_format=None):
         self.exe, self.out = Path(exe), Path(out)
         self.workers = max(1, min(int(workers), MAX_WORKERS))
         self.lead_port, self.use_lead = lead_port, use_lead
         self.engine_args, self.game_args = list(engine_args), list(game_args)
         self.verify, self.keep_scratch, self.log = verify, keep_scratch, log
+        # The playtesting session's default response_format (agent_hello), when set.
+        self.session_format = session_format
         self.lock = threading.Lock()
         self.results = {}
         self.errors = []
@@ -77,23 +79,33 @@ class Swarm:
 
     @contextlib.contextmanager
     def started(self, engine):
-        """Runs `engine`, tracked while it lives."""
-        with engine as eng:
-            with self.lock:
-                self.live.add(eng)
-            try:
+        """Runs `engine`, tracked from before it starts until it has stopped, so stop_all() also
+        reaches an engine that is still starting. Refused once the swarm is stopping."""
+        if self.stopping.is_set():
+            raise RuntimeError("the swarm is stopping: no new engines")
+        with self.lock:
+            self.live.add(engine)
+        try:
+            with engine as eng:
+                # stop_all() may have run while it started (before its process existed).
+                if self.stopping.is_set():
+                    raise RuntimeError("the swarm is stopping")
                 yield eng
-            finally:
-                with self.lock:
-                    self.live.discard(eng)
+        finally:
+            with self.lock:
+                self.live.discard(engine)
 
     def stop_all(self):
         """Stops every tracked engine (by PID: Ctrl+Break, then kill)."""
         self.stopping.set()
         with self.lock:
             engines = list(self.live)
-        for eng in engines:
-            eng.stop()
+        # All at once: each stop waits for its engine's clean exit.
+        stoppers = [threading.Thread(target=eng.stop, daemon=True) for eng in engines]
+        for t in stoppers:
+            t.start()
+        for t in stoppers:
+            t.join(40)
 
     def engine(self, port, cwd, label, cache):
         cwd.mkdir(parents=True, exist_ok=True)
@@ -104,6 +116,15 @@ class Swarm:
             args += ["--", *self.game_args]
         return Engine(self.exe, port, cwd / f"{label}.log", *args, cwd=cwd)
 
+    def session(self, eng, worker):
+        """The worker's MCP session on one of its engines (with its default format, if set). Its
+        own calls get the engine's answers as an agent would (concise unless the default says
+        otherwise); the report's fields read here are in both formats."""
+        mcp = eng.mcp(f"playtester-{worker}", detailed=False)
+        if self.session_format:
+            mcp.json("agent_hello", name=f"playtester-{worker}", role="playtester", response_format=self.session_format)
+        return mcp
+
     def run_one(self, worker, name, spec, ports, scratch):
         """Records the spec in one fresh engine, then verifies the replay in another."""
         job = scratch / name
@@ -112,7 +133,7 @@ class Swarm:
         rec_dir = job / "record"
         with self.started(self.engine(ports[0], rec_dir, "engine", scratch / "pipeline-cache")) as eng:
             result["startup_s"] = round(eng.startup_s, 2)
-            mcp = eng.mcp(f"playtester-{worker}")
+            mcp = self.session(eng, worker)
             r = finish(mcp, mcp.json("playtest_run", spec=spec, record="replay.json", overwrite=True))
             mcp.close()
         result["run"] = short(r)
@@ -135,12 +156,14 @@ class Swarm:
                 copied.append(str((dest / f"{c['label'].replace('@', '_')}.png").relative_to(self.out)))
         if copied:
             result["captures"] = copied
+        if self.stopping.is_set():
+            raise RuntimeError("the swarm is stopping: the replay was not checked")
         if self.verify and replay_src.exists():
             ver_dir = job / "verify"
             ver_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(replay_src, ver_dir / "replay.json")
             with self.started(self.engine(ports[1], ver_dir, "engine", scratch / "pipeline-cache")) as eng:
-                mcp = eng.mcp(f"playtester-{worker}")
+                mcp = self.session(eng, worker)
                 v = finish(mcp, mcp.json("playtest_run", replay="replay.json"))
                 mcp.close()
                 result["verify_startup_s"] = round(eng.startup_s, 2)

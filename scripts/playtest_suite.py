@@ -258,6 +258,8 @@ def main():
     ap.add_argument("--results", default=str(ROOT / "perf" / "playtests"), help="folder for the kept results file")
     ap.add_argument("--keep-scratch", action="store_true")
     ap.add_argument("--adapter", default=None, help="engine --adapter for every engine (discrete, integrated or an index)")
+    ap.add_argument("--session-format", choices=["concise", "detailed"], default=None,
+                    help="each playtesting session's default response_format (agent_hello), which the playtests' calls inherit")
     a = ap.parse_args()
     exe = Path(a.exe)
     if not exe.exists():
@@ -271,7 +273,8 @@ def main():
     for label, workers in [("parallel", a.workers)] + ([("serial", 1)] if a.serial else []):
         out = Path(a.out) / label
         engine_args = ["--adapter", a.adapter] if a.adapter else []
-        swarm = Swarm(exe, out, workers, a.lead_port, engine_args=engine_args, game_args=["--mute"], keep_scratch=a.keep_scratch)
+        swarm = Swarm(exe, out, workers, a.lead_port, engine_args=engine_args, game_args=["--mute"], keep_scratch=a.keep_scratch,
+                      session_format=a.session_format)
         r = swarm.run(specs)
         runs[label] = r
         print(f"{label}: {r['passed']}/{r['playtests']} passed, {r['verified']} replays verified by hash, "
@@ -287,6 +290,7 @@ def main():
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "exe": exe.name,
         "adapter": a.adapter or "discrete (default)",
+        "session_format": a.session_format or "engine default (concise)",
         "playtests": p["playtests"],
         "passed": p["passed"],
         "verified": p["verified"],

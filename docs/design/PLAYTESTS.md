@@ -37,14 +37,16 @@ when a condition holds:
   `time_control` (except `info`) until it ends; ticks queued by an earlier `step` are dropped.
 - **Bounds**: a spec is at most 256 KB of JSON, with 256 steps, 64 end steps, 32 expectations a step, each matcher
   at most 2 KB and each path 256 characters. A run is at most 1,000,000 ticks, `max_wall_s` (default 600, at most
-  3600) and 64 file-writing calls (`sight_frame`, `sight_orbit`, `sight_compare`, `perf_capture`; past that a call
-  fails with `capture_limit`, and the engine never sees it). Reports quote values cut to 240 characters and have
+  3600) and 64 file-writing calls (`sight_frame`, `sight_orbit`, `sight_compare`, `perf_capture`, and the game's
+  own, which it declares with `Game::file_tools`: Sepulcra's `play_record`). Past that a call fails with
+  `capture_limit`, and the engine never sees it. Captures made by `until` calls are listed too. Reports quote values cut to 240 characters and have
   byte budgets: failures 6 KB concise and 48 KB detailed, the whole report 128 KB. The engine keeps 16 finished
   reports, and at most 32 callers wait on a run.
 - **Ownership**: only the agent that started a playtest (by identity key) cancels it. Another agent needs
   `force: true`, and the cancel is logged on the board's event feed.
 - **Replay files** are written only under `playtests/` in the engine's working directory, only as `.json`, and never
-  over an existing file unless `overwrite: true`. Sepulcra's `play_record` follows the same rule: `.json` only, and
+  over an existing file unless `overwrite: true`. A link or junction inside `playtests/` can't carry the write
+  elsewhere: the resolved folder must still be under `playtests/`. Sepulcra's `play_record` follows the same rule: `.json` only, and
   no overwrite unasked.
 
 `playtest_run {spec | path | replay, record?, wait_s?}` starts one (one at a time per engine) and answers when it ends

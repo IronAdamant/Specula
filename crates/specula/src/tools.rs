@@ -399,8 +399,15 @@ impl Tools {
             Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
         };
         let out = self.send(session, command);
-        if let (Some(f), false) = (hello_format, out.is_error) {
-            self.formats.set(&session.id, f);
+        if name == "agent_hello" && !out.is_error {
+            // The default belongs to the identity (its resume token), so a resume keeps it.
+            let token = out.content.iter().find_map(|c| match c {
+                specula_protocol::Content::Text(t) => Json::parse(t).ok()?.get("resume_token")?.as_str().map(str::to_owned),
+                specula_protocol::Content::Image { .. } => None,
+            });
+            if let Some(token) = token {
+                self.formats.hello(&session.id, &token, hello_format);
+            }
         }
         match shaped {
             Some((format, _)) => crate::response::shape(name, format, out),
@@ -2386,6 +2393,13 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::lex_tools::definitions())
     .chain(crate::anim_tools::definitions())
     .collect()
+}
+
+/// The engine's own tools (a playtest checks which take `response_format`).
+pub(crate) fn engine_definitions() -> Vec<ToolDef> {
+    let mut defs = definitions();
+    crate::response::add_to_schemas(&mut defs);
+    defs
 }
 
 /// The engine's own tool names (a playtest checks its calls against them).

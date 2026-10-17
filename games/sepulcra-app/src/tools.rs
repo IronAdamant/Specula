@@ -249,9 +249,9 @@ fn seed_arg(args: &Json) -> Result<u64, ToolOutput> {
 }
 
 /// Windows device names: a file called `NUL.json` or `CON` is a device, not a file.
-const RESERVED: [&str; 24] = [
+const RESERVED: [&str; 32] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
-    "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$", "CONOUT$",
+    "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$", "CONOUT$", "COM0", "LPT0", "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
 ];
 
 /// A path for people: without Windows' `\\?\` prefix that canonical paths carry.

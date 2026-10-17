@@ -657,6 +657,18 @@ struct Capture {
     packet: Json,
 }
 
+/// Lists a capture when `answer` names an image file (counted always, listed up to
+/// [`MAX_CAPTURES`]).
+fn note_capture(captures: &mut Vec<Capture>, total: &mut usize, answer: &Json, label: impl FnOnce() -> String, tick: u64) {
+    let Some(image) = answer.get("image").filter(|i| i.get("path").is_some()) else { return };
+    *total += 1;
+    if captures.len() < MAX_CAPTURES {
+        let png = image.get("path").cloned().unwrap_or(Json::Null);
+        let packet = image.get("packet_path").cloned().unwrap_or(Json::Null);
+        captures.push(Capture { label: label(), tick, png, packet });
+    }
+}
+
 /// Where a part of the run stands, for reports.
 fn why_json(why: Why) -> (Json, &'static str) {
     match why {
@@ -873,6 +885,10 @@ impl Run {
         if why == Why::Until {
             self.until_checked = Some(tick);
             let u = self.spec.until.as_ref().expect("until calls only exist with until");
+            if !out.is_error {
+                // An until call that captures (sight_frame every N ticks) is listed like a step's.
+                note_capture(&mut self.captures, &mut self.captures_total, &answer, || format!("until:{}@{tick}", u.call), tick);
+            }
             if out.is_error {
                 let call = u.call.clone();
                 self.fail(Failure { why, label: None, tick, call, kind: "call_error", path: None, expected: Json::Null, actual: quote(&answer) });
@@ -920,15 +936,8 @@ impl Run {
             }
         }
         if !out.is_error {
-            if let Some(image) = answer.get("image").filter(|i| i.get("path").is_some()) {
-                self.captures_total += 1;
-                if self.captures.len() < MAX_CAPTURES {
-                    let label = step.label.clone().unwrap_or_else(|| format!("{}@{tick}", step.call));
-                    let png = image.get("path").cloned().unwrap_or(Json::Null);
-                    let packet = image.get("packet_path").cloned().unwrap_or(Json::Null);
-                    self.captures.push(Capture { label, tick, png, packet });
-                }
-            }
+            let label = || step.label.clone().unwrap_or_else(|| format!("{}@{tick}", step.call));
+            note_capture(&mut self.captures, &mut self.captures_total, &answer, label, tick);
         }
         let ok = problems.is_empty();
         if self.results.len() < MAX_RESULTS {
@@ -1172,9 +1181,9 @@ pub fn parse_replay(text: &str, path: &str, tick_hz: u32) -> Result<(Spec, Expec
 }
 
 /// Windows device names: `NUL.json` is the device NUL, not a file.
-const RESERVED: [&str; 22] = [
+const RESERVED: [&str; 32] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
-    "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$", "CONOUT$", "COM0", "LPT0", "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
 ];
 
 /// A file path for playtest files: relative to `root` (the engine's working directory), without
@@ -1329,6 +1338,15 @@ mod tests {
     }
 
     #[test]
+    fn captures_from_until_calls_are_listed_too() {
+        let mut run = Run::new(spec(r#"{"name": "u", "until": {"call": "sight_frame", "every": 10, "expect": {"done": true}}, "ticks": 30}"#), None);
+        drive(&mut run, |_, _| ok(r#"{"image": {"path": "a.png"}, "done": false}"#));
+        let r = run.report(false);
+        assert_eq!(r.get("captures_total").and_then(Json::as_u64), Some(4), "ticks 0, 10, 20, 30");
+        assert_eq!(r.get("captures").and_then(Json::as_array).map(<[Json]>::len), Some(4));
+    }
+
+    #[test]
     fn captures_are_listed() {
         let mut run = Run::new(spec(r#"{"name": "c", "steps": [{"at": 5, "call": "sight_frame", "label": "look"}]}"#), None);
         drive(&mut run, |_, _| ok(r#"{"image": {"path": "a.png", "packet_path": "a.json"}}"#));
@@ -1450,7 +1468,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("specula-playtest-paths-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         assert!(safe_path(&root, "a/b.json", true).is_ok());
-        for bad in ["../x.json", "C:/x.json", "/x.json", "a/NUL.json", "a:b", ""] {
+        for bad in ["../x.json", "C:/x.json", "/x.json", "a/NUL.json", "a:b", "", "COM¹.json", "lpt0.json", "CONIN$.json"] {
             assert!(safe_path(&root, bad, true).is_err(), "{bad}");
         }
         std::fs::write(root.join("s.json"), "{}").unwrap();

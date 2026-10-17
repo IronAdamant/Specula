@@ -156,6 +156,11 @@ pub(crate) trait Host {
     /// The hosted game's name and its tools' names.
     fn game(&self) -> Option<(String, Vec<String>)>;
     fn engine_tools(&self) -> Vec<String>;
+    /// Tools that take `response_format` themselves (the starter's detailed default is passed
+    /// on to them, and only to them).
+    fn native_format_tools(&self) -> Vec<String>;
+    /// The hosted game's tools that write files (each counts toward the playtest's file cap).
+    fn game_file_tools(&self) -> Vec<String>;
     /// A session's agent name and identity key.
     fn identity(&self, session: &SessionInfo) -> (String, String);
     fn format_default(&self, session: &SessionInfo) -> Format;
@@ -198,6 +203,10 @@ struct Active {
     /// Where to write the replay: (as shown, resolved).
     record: Option<(String, PathBuf)>,
     game_tools: Vec<String>,
+    /// See [`Host::native_format_tools`].
+    native_format: Vec<String>,
+    /// Engine and game tools that write files.
+    file_tools: Vec<String>,
     waiters: Vec<Waiter>,
     /// Who asked to cancel it.
     cancel: Option<String>,
@@ -388,6 +397,12 @@ impl Playtests {
                 }
                 let shown = format!("{RECORD_DIR}/{rel}");
                 let path = playtest::safe_path(&root, &shown, true).map_err(|e| io("record", e))?;
+                // safe_path keeps it inside the working directory; a junction or link inside
+                // playtests/ must not carry it anywhere else in there.
+                let confined = root.canonicalize().map(|r| r.join(RECORD_DIR)).ok().is_some_and(|dir| path.parent().is_some_and(|p| p.starts_with(&dir)));
+                if !confined {
+                    return Err(io("record", format!("'{shown}' resolves outside {RECORD_DIR}/ (through a link or junction)")));
+                }
                 if path.exists() && !overwrite {
                     return Err(error("exists", format!("{shown} already exists; pass overwrite: true to replace it"), vec![("path", Json::from(shown.as_str()))]));
                 }
@@ -411,6 +426,8 @@ impl Playtests {
             waiting: None,
             record,
             game_tools,
+            native_format: host.native_format_tools(),
+            file_tools: FILE_TOOLS.iter().map(|t| (*t).to_owned()).chain(host.game_file_tools()).collect(),
             waiters: Vec::new(),
             cancel: None,
             file_calls: 0,
@@ -495,7 +512,7 @@ impl Playtests {
         if let Some(why) = playtest::forbidden(tool) {
             return Err(error("forbidden", format!("a playtest can't call {tool}: {why}"), vec![]));
         }
-        if FILE_TOOLS.contains(&tool) {
+        if a.file_tools.iter().any(|t| t == tool) {
             if a.file_calls >= playtest::MAX_CAPTURES {
                 let msg = format!("a playtest makes at most {} calls that write files (captures, traces)", playtest::MAX_CAPTURES);
                 return Err(error("capture_limit", msg, vec![("max", Json::from(playtest::MAX_CAPTURES))]));
@@ -507,7 +524,8 @@ impl Playtests {
         let default = host.format_default(&a.session);
         let shaped = crate::response::split(tool, args, default).map_err(|e| ToolOutput::error(argument_error(&e).to_string()))?;
         let format = shaped.as_ref().map(|(f, _)| *f);
-        let defaulted = if shaped.is_none() { crate::response::with_default(args, default) } else { None };
+        let native = shaped.is_none() && a.native_format.iter().any(|t| t == tool);
+        let defaulted = if native { crate::response::with_default(args, default) } else { None };
         let args = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(args);
         let game_tool = a.game_tools.iter().any(|t| t == tool);
         let rx = host.dispatch(&a.session, tool, args, game_tool)?;
@@ -560,6 +578,15 @@ impl Host for EngineHost<'_> {
 
     fn engine_tools(&self) -> Vec<String> {
         crate::tools::engine_tool_names()
+    }
+
+    fn native_format_tools(&self) -> Vec<String> {
+        let game = self.e.game.as_ref().map(|g| g.tools()).unwrap_or_default();
+        crate::tools::engine_definitions().iter().chain(&game).filter(|d| crate::response::takes_format(d)).map(|d| d.name.clone()).collect()
+    }
+
+    fn game_file_tools(&self) -> Vec<String> {
+        self.e.game.as_ref().map(|g| g.file_tools().iter().map(|t| (*t).to_owned()).collect()).unwrap_or_default()
     }
 
     fn identity(&self, session: &SessionInfo) -> (String, String) {
@@ -659,6 +686,10 @@ mod tests {
         logs: Vec<String>,
         /// Senders of answers that never come (kept so the receivers stay open).
         held: Vec<Sender<ToolOutput>>,
+        /// The starter's default format.
+        format: Format,
+        /// Every call's arguments, as dispatched.
+        args: Vec<Json>,
     }
 
     impl Fake {
@@ -666,7 +697,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("specula-playtest-engine-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
-            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new() }
+            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new(), format: Format::Concise, args: Vec::new() }
         }
     }
 
@@ -684,16 +715,22 @@ mod tests {
             Ok(self.root.clone())
         }
         fn game(&self) -> Option<(String, Vec<String>)> {
-            Some(("g".into(), vec!["play_state".into()]))
+            Some(("g".into(), vec!["play_state".into(), "play_record".into()]))
         }
         fn engine_tools(&self) -> Vec<String> {
-            ["world_query", "sight_frame", "time_control", "never"].map(String::from).to_vec()
+            ["world_query", "world_spawn", "sight_frame", "time_control", "never", "logic_status"].map(String::from).to_vec()
+        }
+        fn native_format_tools(&self) -> Vec<String> {
+            vec!["play_state".into(), "logic_status".into()]
+        }
+        fn game_file_tools(&self) -> Vec<String> {
+            vec!["play_record".into()]
         }
         fn identity(&self, s: &SessionInfo) -> (String, String) {
             (format!("agent-{}", s.id), format!("key-{}", s.id))
         }
         fn format_default(&self, _: &SessionInfo) -> Format {
-            Format::Concise
+            self.format
         }
         fn take_clock(&mut self) -> bool {
             std::mem::replace(&mut self.paused, true)
@@ -710,8 +747,13 @@ mod tests {
         }
         fn dispatch(&mut self, _: &SessionInfo, tool: &str, args: &Json, _: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
             self.calls.push(tool.to_owned());
+            self.args.push(args.clone());
             let (tx, rx) = mpsc::channel();
             match tool {
+                // As the engine's parsers do: an argument the tool doesn't take is an error.
+                "world_spawn" if args.get("response_format").is_some() => {
+                    tx.send(ToolOutput::error(r#"{"error": "invalid_argument", "message": "'response_format' is not an argument of world_spawn"}"#)).unwrap()
+                }
                 "sight_frame" => tx.send(ToolOutput::text(r#"{"image": {"path": "f.png"}}"#)).unwrap(),
                 "never" => self.held.push(tx),
                 _ => tx.send(ToolOutput::text(args.to_string())).unwrap(),
@@ -820,6 +862,47 @@ mod tests {
         ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 1000000}"#, None, false), &a);
         ask(&mut p, &mut h, report_call(true, false, Duration::ZERO), &a);
         finish(&mut p, &mut h);
+    }
+
+    #[test]
+    fn a_detailed_default_reaches_only_tools_that_take_a_format() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("detailed"), session("a"));
+        h.format = Format::Detailed;
+        let spec = r#"{"name": "d", "steps": [{"at": 0, "call": "world_spawn", "args": {"shape": "cube"}}, {"at": 0, "call": "play_state"},
+            {"at": 0, "call": "logic_status"}, {"at": 0, "call": "world_query"}]}"#;
+        ask(&mut p, &mut h, run_call(spec, None, false), &a);
+        finish(&mut p, &mut h);
+        let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
+        assert_eq!(r.unwrap().get("status").and_then(Json::as_str), Some("passed"), "world_spawn took no response_format");
+        let fmt = |i: usize| h.args[i].get("response_format").and_then(Json::as_str).map(str::to_owned);
+        assert_eq!((fmt(0), fmt(1), fmt(2)), (None, Some("detailed".into()), Some("detailed".into())));
+        assert_eq!(h.args[3].get("fields").map(Json::to_string).as_deref(), Some(r#"["all"]"#), "shaped: its own knob");
+    }
+
+    #[test]
+    fn game_tools_that_write_files_count_toward_the_cap() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("gamefiles"), session("a"));
+        let spec = r#"{"name": "rec", "until": {"call": "play_record", "every": 1, "expect": {"never": true}}, "ticks": 300}"#;
+        ask(&mut p, &mut h, run_call(spec, None, false), &a);
+        finish(&mut p, &mut h);
+        assert_eq!(h.calls.iter().filter(|c| *c == "play_record").count(), playtest::MAX_CAPTURES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replays_stay_in_playtests_through_junctions() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("junction"), session("a"));
+        std::fs::create_dir_all(h.root.join(RECORD_DIR)).unwrap();
+        let link = h.root.join(RECORD_DIR).join("jroot");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", link.to_str().unwrap(), h.root.to_str().unwrap()]).output();
+        if !made.as_ref().is_ok_and(|o| o.status.success()) {
+            eprintln!("skipped: could not create a junction ({made:?})");
+            return;
+        }
+        let (_, ans) = ask(&mut p, &mut h, run_call(r#"{"name": "j", "ticks": 1}"#, Some("jroot/escaped.json"), false), &a);
+        let _ = std::fs::remove_dir(&link);
+        assert_eq!(code(&ans.unwrap()), Some("bad_path"));
+        assert!(!h.root.join("escaped.json").exists());
     }
 
     #[test]
