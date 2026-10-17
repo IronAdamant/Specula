@@ -615,8 +615,9 @@ impl Crowd {
                 continue;
             }
             // At an off-mesh link's take-off point: start across it.
-            let ahead = mesh.first_traverse(&a.corridor);
-            if let Some((0, t)) = ahead {
+            // (Only the corridor's first step matters here: the polygon it stands in.)
+            let next_hop = a.corridor.get(..2).and_then(|w| mesh.traverse_between(w[0], w[1]));
+            if let Some(t) = next_hop {
                 if horizontal_distance(a.pos, t.from_pos) <= a.params.arrive.max(a.params.radius) && (a.pos.y - t.from_pos.y).abs() <= s.extent.y {
                     let speed = (a.params.speed * t.kind.speed_share()).max(0.1);
                     let duration = ((t.to_pos - a.pos).length() / speed).max(0.2);
@@ -633,7 +634,7 @@ impl Crowd {
             let last = *corners.last().expect("start");
             a.remaining = corners.windows(2).map(|w| (w[0] - w[1]).length()).sum::<f32>() + (a.path_end - last).length();
             let to_end = horizontal_distance(a.pos, a.path_end);
-            if to_end <= a.params.arrive.max(1.0e-3) && ahead.is_none() {
+            if to_end <= a.params.arrive.max(1.0e-3) && mesh.first_traverse(&a.corridor).is_none() {
                 a.corner = None;
                 a.remaining = 0.0;
                 if a.status == AgentStatus::Moving {

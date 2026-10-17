@@ -420,6 +420,9 @@ def features(m, failures):
     m.json("nav_path", mesh="gap", **{"from": [292, 0, -4], "to": [308, 0, 4]})
     m.json("nav_path", mesh="gap", avoid_areas=["water"], **{"from": [293, 0, -4.5], "to": [293, 0, 4.5]})
     shot = save("features_top", m.call("sight_frame", overlays=["navmesh", "paths"], ortho={"height_m": 16}, eye=[300, 30, 0.01], target=[300, 0, 0], width=1200, height=800))
+    # Oblique views: the link's arc rising over the gap (straight down it lies under the query), and the tombstone's hole.
+    save("features_link", m.call("sight_frame", overlays=["navmesh"], eye=[297, 5, -8], target=[300, 0.6, 0], width=1200, height=800))
+    save("features_tomb", m.call("sight_frame", overlays=["navmesh", "paths"], eye=[303, 5, 7], target=[306, 0, 2], width=1200, height=800))
     nm = next((n for n in shot.get("overlays", {}).get("navmesh", {}).get("navmeshes", []) if n["path"] == "/nav/gap"), {})
     check(len(nm.get("offmesh_links", [])) == 1 and nm["offmesh_links"][0]["found"] and [a["name"] for a in nm.get("areas", [])] == ["water"],
           "the features capture lists the link (found) and the water area", failures)
