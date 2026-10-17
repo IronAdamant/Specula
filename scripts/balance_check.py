@@ -36,6 +36,8 @@ def main():
     target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
     ap.add_argument("--exe", default=str(target / "release" / ("specula.exe" if sys.platform == "win32" else "specula")))
     ap.add_argument("--out", type=Path, help="save the report as JSON here")
+    ap.add_argument("--window", action="store_true", help="open the window and measure its frame times during a sweep")
+    ap.add_argument("--adapter", default=None, help="discrete | integrated | <index>")
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("never run on 7471 (the interactive engine's port)")
@@ -47,7 +49,8 @@ def main():
             problems.append(what)
 
     work = Path(tempfile.mkdtemp(prefix="balance_check_"))
-    with Engine(args.exe, args.port, work / "engine.log", "--headless", "--worlds", str(work / "worlds"), "--captures", str(work / "captures"), cwd=str(ROOT)) as eng:
+    flags = ([] if args.window else ["--headless"]) + (["--adapter", args.adapter] if args.adapter else [])
+    with Engine(args.exe, args.port, work / "engine.log", *flags, "--worlds", str(work / "worlds"), "--captures", str(work / "captures"), cwd=str(ROOT)) as eng:
         lab, other = eng.mcp("balance-lab"), eng.mcp("balance-other")
         lab.hello("tuner")
         other.hello("bystander")
@@ -101,6 +104,22 @@ def main():
         for p in many["points"]:
             tomb = next(t for t in p["targets"] if t["id"] == "tombstones_left")
             print(f"    runner_hp {p['params']['runner_hp']}: loss {p['loss']}, tombstones {tomb['mean']} +- {tomb['stdev']}, hit {p['hit']}")
+
+        if args.window:
+            # The window while a big sweep runs: frame times before and during (perf_capture).
+            capture = lambda: lab.json("perf_capture", frames=120, trace=False)["frame_ms"]
+            idle_frames = capture()
+            during = {}
+
+            def frames():
+                during.update(capture())
+
+            th = threading.Thread(target=frames)
+            th.start()
+            big = other.json("balance_sweep", set=SET, targets_file=TARGETS, grid={"runner_hp": {"from": 30, "to": 150, "steps": 24}})
+            th.join()
+            print(f"  window frame ms idle {idle_frames}; during a {big['runs']}-run sweep on {big['threads']} threads {during}")
+            report["window"] = {"idle_frame_ms": idle_frames, "sweep_frame_ms": during, "sweep_runs": big["runs"], "sweep_runs_per_s": big["runs_per_s"]}
 
         tune = [{"param": "runner_hp", "min": 40, "max": 160, "step": 1}]
         a = lab.json("balance_tune", set=SET, targets_file=TARGETS, tune=tune, budget=14, seed=7, job="proof", evals=7)
