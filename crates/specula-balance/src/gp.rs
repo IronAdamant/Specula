@@ -8,6 +8,9 @@
 //! Cholesky; expected improvement for minimisation. Only `+ - * /`, `sqrt` and
 //! `specula_core::dmath`, in a fixed order, so the same data give the same bits everywhere.
 
+// Triangular solves read clearest with indices.
+#![allow(clippy::needless_range_loop)]
+
 use specula_core::dmath;
 
 /// Length scales tried, in normalised units (from 3 % to half of each param's range).

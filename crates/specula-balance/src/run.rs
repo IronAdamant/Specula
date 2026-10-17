@@ -124,7 +124,7 @@ impl Runner {
                             applied += 1;
                             note_events(&sim, &mut born, &mut ttk);
                         }
-                        Err(r) if b.wait_on.iter().any(|c| *c == r.code) => break,
+                        Err(r) if b.wait_on.contains(&r.code) => break,
                         Err(_) => skipped += 1,
                     }
                     next += 1;

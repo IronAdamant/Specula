@@ -417,7 +417,8 @@ impl Targets {
                 }
                 continue;
             };
-            let base = ["id", "metric", "target", "tolerance", "weight"];
+            // `unit` is what to_json says the numbers are in: read back, ignored.
+            let base = ["id", "metric", "target", "tolerance", "weight", "unit"];
             let mut allowed: Vec<&str> = base.to_vec();
             let metric = match metric_name.as_str() {
                 "win_rate" => Some(Metric::Outcome { result: "won".into() }),

@@ -100,6 +100,6 @@ fn saves_from_other_content_or_damaged_ones_are_refused_before_anything_changes(
     let mut other = Content::builtin();
     other.hash ^= 0x55;
     let c = Host::new(Arc::new(other), 3);
-    let e = c.game.parse_state(&bytes).err().expect("other content");
+    let Err(e) = c.game.parse_state(&bytes) else { panic!("other content must be refused") };
     assert!(e.contains("content_changed"), "{e}");
 }

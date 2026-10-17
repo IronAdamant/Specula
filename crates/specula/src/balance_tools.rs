@@ -532,7 +532,7 @@ mod tests {
         let points = points_arg(&g).ok().unwrap();
         assert_eq!(points.len(), 6);
         assert_eq!(points[5], vec![("a".to_owned(), Json::from(2.0)), ("b".to_owned(), Json::from(1.0))]);
-        assert_eq!(points_arg(&Json::obj([])).ok().unwrap(), vec![Vec::new()]);
+        assert_eq!(points_arg(&Json::Obj(Vec::new())).ok().unwrap(), vec![Vec::new()]);
         for d in definitions() {
             assert!(d.name.starts_with("balance_") && d.name.len() <= 64);
         }
