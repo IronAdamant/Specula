@@ -57,6 +57,9 @@ pub struct AnimSet {
     masks: Vec<(String, BoneMask)>,
     /// Graphs by name, bound to the clips, with the JSON they came from (rebound by overlays).
     graphs: Vec<(String, AnimGraph)>,
+    /// Generation work its generated clips took so far (frames × bones; see
+    /// [`gen::MAX_SET_WORK`]).
+    pub(crate) generated: u64,
 }
 
 /// One clip or graph an overlay could not use (the set's own stays).
@@ -70,7 +73,7 @@ pub struct OverlayProblem {
 
 impl AnimSet {
     pub fn new(skeleton: Skeleton) -> AnimSet {
-        AnimSet { skeleton, rig: None, clips: Vec::new(), masks: Vec::new(), graphs: Vec::new() }
+        AnimSet { skeleton, rig: None, clips: Vec::new(), masks: Vec::new(), graphs: Vec::new(), generated: 0 }
     }
 
     /// Parses an anim-set file, generating every generator clip for `skeleton`.
@@ -121,14 +124,28 @@ impl AnimSet {
     }
 
     /// A clip from JSON: a keyed clip (`kind` absent or `"clip"`) or a generator spec, which may
-    /// build on this set's clips.
-    pub fn make_clip(&self, c: &Json, path: &str) -> Result<Clip, AnimError> {
+    /// build on this set's clips. A generator's work counts against the set's budget
+    /// ([`gen::MAX_SET_WORK`]; each clip within [`gen::MAX_CLIP_WORK`]): past it, a `Limit`
+    /// error at the clip's path and nothing is generated.
+    pub fn make_clip(&mut self, c: &Json, path: &str) -> Result<Clip, AnimError> {
         let kind = c.get("kind").and_then(|k| k.as_str()).unwrap_or("clip");
         if kind == "clip" {
             Clip::from_json(c, path)
         } else {
-            gen::generate_in(c, path, self)
+            let (clip, work) = gen::generate_counted(c, path, self)?;
+            self.generated += work;
+            Ok(clip)
         }
+    }
+
+    /// The generation work this set's generated clips took (frames × bones).
+    pub fn generation_work(&self) -> u64 {
+        self.generated
+    }
+
+    /// About how many bytes the set's clips hold (keys and their times), for caches.
+    pub fn approx_bytes(&self) -> usize {
+        self.clips.iter().map(|b| b.clip.tracks.iter().map(|t| t.keys.times.len() * 20).sum::<usize>() + 64).sum::<usize>() + 256
     }
 
     /// Binds and adds (or replaces) graph `name`.

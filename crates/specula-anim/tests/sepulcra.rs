@@ -211,3 +211,14 @@ fn sampled_poses_are_bit_identical_pinned() {
 }
 
 const PINNED: &str = "80f31428d61d6110";
+
+/// The generation budget fits Sepulcra comfortably (each set uses well under a quarter of it).
+#[test]
+fn creature_sets_fit_the_generation_budget() {
+    for name in CREATURES {
+        let (_, set) = creature(name);
+        let work = set.generation_work();
+        eprintln!("{name}: generation work {work}");
+        assert!(work <= specula_anim::gen::MAX_SET_WORK / 4, "{name}: {work}");
+    }
+}

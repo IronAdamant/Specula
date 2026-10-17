@@ -691,21 +691,98 @@ pub struct Library {
     anim_assets: Arc<crate::anim::Assets>,
     /// Per build: the assets' revision it was laid over with, the result and its problems.
     anim_overlays: RefCell<BTreeMap<u64, AnimOverlay>>,
-    /// The anim sets graph writes settle against, by build key (see [`Library::write_set`]).
-    write_sets: BTreeMap<BuildKey, WriteSet>,
-    /// Uses of `write_sets` so far (the least recently used goes first).
-    write_uses: u64,
+    /// The anim sets graph writes settle against (see [`Library::write_set`]).
+    writes: WriteSets,
 }
 
-/// Most anim sets kept for graph writes (rebuilt when needed again: a cache, not state).
+/// Most anim sets kept for graph writes, bases and overlays together (rebuilt when needed again:
+/// a cache, not state).
 const MAX_WRITE_SETS: usize = 64;
+/// Most bytes of clips they may hold together (about; see `AnimSet::approx_bytes`).
+const MAX_WRITE_BYTES: usize = 64 << 20;
+/// Most build keys remembered as aliases of a base (a map of small keys; cleared when full).
+const MAX_WRITE_ALIASES: usize = 4096;
 
-/// An anim set for graph writes: built from the recipe's rig and anims file alone (or the glTF's
-/// skeleton and clips), with the world's assets last laid over it.
-struct WriteSet {
+/// The anim sets graph writes settle against. A base is built from a rig and an anims file (or
+/// a glTF's skeleton and clips) and shared by every build key that comes to the same ones (seed
+/// and parameter variants of a recipe usually do); an overlay is a base with one revision of the
+/// world's assets laid over it, shared the same way.
+#[derive(Default)]
+struct WriteSets {
+    /// By base key: (rig hash, anims-file hash), or a glTF's content key.
+    bases: BTreeMap<u64, Cached>,
+    /// Build key → base key.
+    aliases: BTreeMap<BuildKey, u64>,
+    /// By (base key, asset revision).
+    overlays: BTreeMap<(u64, u64), Cached>,
+    /// Uses so far (the least recently used goes first).
+    uses: u64,
+}
+
+struct Cached {
     used: u64,
-    base: Result<Arc<AnimSet>, String>,
-    overlaid: Option<(u64, Arc<AnimSet>)>,
+    set: Result<Arc<AnimSet>, String>,
+    bytes: usize,
+}
+
+impl WriteSets {
+    fn tick(&mut self) -> u64 {
+        self.uses += 1;
+        self.uses
+    }
+
+    /// Drops the least recently used sets until there is room for one more of `bytes`.
+    fn make_room(&mut self, bytes: usize) {
+        loop {
+            let count = self.bases.len() + self.overlays.len();
+            let total: usize = self.bases.values().chain(self.overlays.values()).map(|c| c.bytes).sum();
+            if count < MAX_WRITE_SETS && total + bytes <= MAX_WRITE_BYTES {
+                return;
+            }
+            let oldest_base = self.bases.iter().min_by_key(|(_, c)| c.used).map(|(k, c)| (c.used, *k));
+            let oldest_overlay = self.overlays.iter().min_by_key(|(_, c)| c.used).map(|(k, c)| (c.used, *k));
+            match (oldest_base, oldest_overlay) {
+                (Some((ub, kb)), Some((uo, _))) if ub <= uo => {
+                    self.bases.remove(&kb);
+                }
+                (_, Some((_, ko))) => {
+                    self.overlays.remove(&ko);
+                }
+                (Some((_, kb)), None) => {
+                    self.bases.remove(&kb);
+                }
+                (None, None) => return,
+            }
+        }
+    }
+}
+
+/// Builds a base anim set (on the calling thread: rig and clip generation are bounded by the
+/// generators' budget, see `specula_anim::gen::MAX_SET_WORK`).
+fn build_base(src: BaseSource) -> Result<Arc<AnimSet>, String> {
+    match src {
+        BaseSource::Gltf(path) => {
+            let opts = specula_gltf::ImportOptions { decode_images: false, bake_texture_colors: false, ..Default::default() };
+            let import = specula_gltf::import_file(&path, &opts).map_err(|e| e.to_string())?;
+            match import.anim_set() {
+                None => Err("the glTF asset has no skin".into()),
+                Some(r) => r.map(Arc::new).map_err(|e| e.to_string()),
+            }
+        }
+        BaseSource::Rig(rig, anims) => {
+            let skel = Skeleton::from_rig(&rig).map_err(|e| e.to_string())?;
+            match anims {
+                Some(text) => AnimSet::load(&text, skel).map(Arc::new).map_err(|e| e.to_string()),
+                None => Ok(Arc::new(AnimSet::new(skel))),
+            }
+        }
+    }
+}
+
+/// What a base anim set is built from.
+enum BaseSource {
+    Rig(specula_model::Rig, Option<Arc<str>>),
+    Gltf(PathBuf),
 }
 
 /// A build's anim set with the world's assets laid over it.
@@ -773,8 +850,7 @@ impl Library {
             cache_misses: 0,
             anim_assets: Arc::new(crate::anim::Assets::new()),
             anim_overlays: RefCell::new(BTreeMap::new()),
-            write_sets: BTreeMap::new(),
-            write_uses: 0,
+            writes: WriteSets::default(),
         }
     }
 
@@ -820,60 +896,83 @@ impl Library {
 
     /// The anim set a graph write to an entity of `handle` settles against: the recipe's rig and
     /// anims file as the library knows them now (a glTF's skeleton and clips), with `assets` laid
-    /// over it. Built on the spot, without the mesh (the rig needs no geometry), and cached by
-    /// build key, so it never waits for a build and never depends on whether one has landed: the
+    /// over it. Built on the spot, without the mesh (the rig needs no geometry), and shared by
+    /// every build key with the same rig and anims file (seeded variants), so it never waits for a
+    /// build and never depends on whether one has landed: the
     /// library's knowledge of the files changes only when it polls them (the engine then
     /// re-settles the plays the change touches, see [`Reload::anim_handles`]). `None` without a
     /// rig, or when the rig or anim set fails to load (the write then only merges parameters).
     pub fn write_set(&mut self, handle: u32, assets: &crate::anim::Assets) -> Option<Arc<AnimSet>> {
         let spec = self.handles.get(handle as usize)?.as_ref()?.spec.clone();
         let key = self.key_for(&spec, false).ok()?;
-        self.write_uses += 1;
-        let used = self.write_uses;
-        if !self.write_sets.contains_key(&key) {
-            let base = self.anim_set_now(&spec, &key);
-            if self.write_sets.len() >= MAX_WRITE_SETS {
-                if let Some(old) = self.write_sets.iter().min_by_key(|(_, w)| w.used).map(|(k, _)| k.clone()) {
-                    self.write_sets.remove(&old);
+        let used = self.writes.tick();
+        // The base: by alias when this build key was seen, else from its source's key.
+        let mut source = None;
+        let base_key = match self.writes.aliases.get(&key) {
+            Some(b) => *b,
+            None => {
+                let (b, src) = self.base_source(&spec, &key).ok()?;
+                if self.writes.aliases.len() >= MAX_WRITE_ALIASES {
+                    self.writes.aliases.clear();
                 }
+                self.writes.aliases.insert(key.clone(), b);
+                source = Some(src);
+                b
             }
-            self.write_sets.insert(key.clone(), WriteSet { used, base, overlaid: None });
+        };
+        if !self.writes.bases.contains_key(&base_key) {
+            let src = match source {
+                Some(s) => s,
+                None => self.base_source(&spec, &key).ok()?.1,
+            };
+            let set = build_base(src);
+            let bytes = set.as_ref().map_or(0, |s| s.approx_bytes());
+            self.writes.make_room(bytes);
+            self.writes.bases.insert(base_key, Cached { used, set, bytes });
         }
-        let ws = self.write_sets.get_mut(&key).expect("just inserted");
-        ws.used = used;
-        let base = Arc::clone(ws.base.as_ref().ok()?);
+        let base = self.writes.bases.get_mut(&base_key).expect("just inserted");
+        base.used = used;
+        let base = Arc::clone(base.set.as_ref().ok()?);
         let Some(a) = assets.get(spec.recipe.as_str()) else { return Some(base) };
-        if let Some((rev, set)) = &ws.overlaid {
-            if *rev == a.revision {
-                return Some(Arc::clone(set));
-            }
+        let ok = (base_key, a.revision);
+        if let Some(c) = self.writes.overlays.get_mut(&ok) {
+            c.used = used;
+            return c.set.as_ref().ok().map(Arc::clone);
         }
         let (set, _) = base.with_overlay(&a.clips, &a.graphs);
         let set = Arc::new(set);
-        ws.overlaid = Some((a.revision, Arc::clone(&set)));
+        let bytes = set.approx_bytes();
+        self.writes.make_room(bytes);
+        self.writes.overlays.insert(ok, Cached { used, set: Ok(Arc::clone(&set)), bytes });
         Some(set)
     }
 
-    /// Builds the anim set of `spec` (whose build key is `key`) without its mesh.
-    fn anim_set_now(&self, spec: &ModelSpec, key: &BuildKey) -> Result<Arc<AnimSet>, String> {
+    /// What `spec`'s base anim set (build key `key`) is built from, and its base key: the rig
+    /// (built without geometry) and the anims file, or the glTF file as the library last polled
+    /// it (a file changed since is refused until the next poll announces it).
+    fn base_source(&self, spec: &ModelSpec, key: &BuildKey) -> Result<(u64, BaseSource), String> {
         if is_gltf_path(&spec.recipe) {
             let g = self.gltfs.get(&spec.recipe).filter(|g| g.content == key.0).ok_or("the glTF file changed")?;
-            let opts = specula_gltf::ImportOptions { decode_images: false, bake_texture_colors: false, ..Default::default() };
-            let import = specula_gltf::import_file(&g.path, &opts).map_err(|e| e.to_string())?;
-            return match import.anim_set() {
-                None => Err("the glTF asset has no skin".into()),
-                Some(r) => r.map(Arc::new).map_err(|e| e.to_string()),
-            };
+            let meta = std::fs::symlink_metadata(&g.path).map_err(|e| e.to_string())?;
+            if meta.len() != g.len || meta.modified().ok() != g.mtime {
+                return Err("the glTF file changed since the library last looked at it: it takes effect at the next poll".into());
+            }
+            return Ok((g.content, BaseSource::Gltf(g.path.clone())));
         }
         let info = self.recipes.get(&spec.recipe).filter(|i| i.content == key.0).ok_or("the recipe changed")?;
         let values: Vec<(&str, f64)> = spec.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let params = BuildParams { values: &values, seed: spec.seed, library: Some(&info.library), ..BuildParams::new(&info.style) };
         let rig = specula_model::recipe::build_rig_only(&info.recipe, &params).map_err(|e| e.to_string())?.ok_or("the recipe has no rig")?;
-        let skel = Skeleton::from_rig(&rig).map_err(|e| e.to_string())?;
+        let mut h = StableHasher::with_seed(0x616e_696d_6261_7365);
+        rig.hash_into(&mut h);
         match &info.anims {
-            Some(text) => AnimSet::load(text, skel).map(Arc::new).map_err(|e| e.to_string()),
-            None => Ok(Arc::new(AnimSet::new(skel))),
+            Some(t) => {
+                h.write_u8(1);
+                h.write_str(t);
+            }
+            None => h.write_u8(0),
         }
+        Ok((h.finish(), BaseSource::Rig(rig, info.anims.clone())))
     }
 
     /// The content key of a source as the library knows it now (its recipe info or glTF file).
@@ -3082,6 +3181,99 @@ mod tests {
         assert!(write(&mut world, "speed").is_err(), "the new set has no 'speed'");
         assert!(shared.lock().built(handle).is_none(), "nothing was ever built");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review round 3, finding 1: seeded variants used to each build (and evict) their own anim
+    /// set; past 64 of them every write regenerated the clips (65 shamblers: 270-320 ms a round).
+    /// Variants with the same rig and anims file share one base, and one overlay per revision.
+    #[test]
+    fn seeded_variants_share_one_anim_set() {
+        use specula_anim::graph::Value;
+        use specula_anim::play::GraphPlay;
+        let shared = Arc::new(SharedLibrary::new(Library::with_workers(&sepulcra(), None, 0)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let ids: Vec<u64> = (0..100)
+            .map(|k| {
+                let mut spec = SpawnSpec::model(ModelSpec::new("recipes/shambler.json").with_seed(1 + k));
+                let mut play = GraphPlay::new("creature");
+                play.set_param("act", Value::Name("move".into()));
+                spec.anim = Some(AnimSpec::graph(play));
+                world.spawn(spec, "t").unwrap().id
+            })
+            .collect();
+        let mut rounds = Vec::new();
+        for round in 0..3 {
+            world.set_clock_s(5.0 + round as f64);
+            let t = Instant::now();
+            for &id in &ids {
+                let mut w = GraphPlay::new("creature");
+                w.set_param("speed", Value::Num(0.4 + round as f32 * 0.1));
+                world.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(AnimSpec::graph(w))), ..Default::default() }, "t").unwrap();
+            }
+            rounds.push(t.elapsed());
+        }
+        eprintln!("100 seeded shamblers, one write each: {rounds:?}");
+        let lib = shared.lock();
+        assert_eq!(lib.writes.bases.len(), 1, "one rig and anims file: one anim set");
+        assert_eq!(lib.writes.aliases.len(), 100);
+        assert!(rounds[2] < Duration::from_secs(1), "{rounds:?}");
+    }
+
+    /// Review round 3, finding 3: the write-set cache is bounded in bytes as well as entries.
+    #[test]
+    fn write_sets_are_bounded_in_bytes() {
+        let mut w = WriteSets::default();
+        for k in 0..5u64 {
+            let used = w.tick();
+            w.make_room(20 << 20);
+            w.bases.insert(k, Cached { used, set: Err("big".into()), bytes: 20 << 20 });
+        }
+        let total: usize = w.bases.values().map(|c| c.bytes).sum();
+        assert!(total <= MAX_WRITE_BYTES && w.bases.len() == 3, "{} sets, {total} bytes", w.bases.len());
+        assert!(!w.bases.contains_key(&0) && w.bases.contains_key(&4), "the least recently used went first");
+        for k in 0..2 * MAX_WRITE_SETS as u64 {
+            let used = w.tick();
+            w.make_room(1);
+            w.overlays.insert((k, 0), Cached { used, set: Err("small".into()), bytes: 1 });
+        }
+        assert!(w.bases.len() + w.overlays.len() <= MAX_WRITE_SETS);
+    }
+
+    /// Review round 3, finding 4: a glTF changed on disk since the library last looked at it is
+    /// not settled against until the next poll announces it.
+    #[test]
+    fn gltf_write_sets_wait_for_the_poll() {
+        let root = scratch("gltfwrite", &[]);
+        let style = Style::parse(&std::fs::read_to_string(sepulcra().join(STYLE_FILE)).unwrap()).unwrap();
+        let mut lib_files = BTreeMap::new();
+        for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
+            let p = e.unwrap().path();
+            lib_files.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+        let model = build(&lib_files["wraith"], &BuildParams { library: Some(&lib_files), ..BuildParams::new(&style) }).unwrap();
+        let skel = Skeleton::from_rig(model.rig.as_ref().unwrap()).unwrap();
+        let set = AnimSet::load(&std::fs::read_to_string(sepulcra().join("anims/wraith.json")).unwrap(), skel).unwrap();
+        let clips: Vec<_> = set.clips().map(|(_, c)| c.clone()).collect();
+        let glb = specula_gltf::export_glb(&specula_gltf::ExportInput { model: &model, lod: 0, skeleton: Some(&set.skeleton), clips: &clips }).unwrap();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/wraith.glb"), &glb).unwrap();
+        let mut lib = Library::with_workers(&root, None, 0);
+        let h = lib.resolve(&ModelSpec::new("assets/wraith.glb")).unwrap().handle;
+        // Changed on disk before the first write (and before any poll): refused for now.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("assets/wraith.glb"), &glb[..glb.len()]).unwrap();
+        let mut grown = glb.clone();
+        grown.extend_from_slice(&[0u8; 4]);
+        std::fs::write(root.join("assets/wraith.glb"), &grown).unwrap();
+        let none = crate::anim::Assets::new();
+        assert!(lib.write_set(h, &none).is_none(), "unannounced content is not settled against");
+        // Back as polled: the set comes.
+        std::fs::write(root.join("assets/wraith.glb"), &glb).unwrap();
+        lib.poll(true);
+        let h = lib.resolve(&ModelSpec::new("assets/wraith.glb")).unwrap().handle;
+        let s = lib.write_set(h, &none).expect("polled content");
+        assert!(s.graph("creature").is_none() && s.len() > 5, "the glTF's clips");
     }
 
     /// The anim set built from the rig alone matches the one the full build makes.

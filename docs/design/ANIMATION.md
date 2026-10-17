@@ -145,8 +145,14 @@ their real depth and clip count (named nodes reused under each other count every
 **Writing parameters settles the play** at the write's time (the world does it in `World::update`): blends stay
 continuous, fired triggers are consumed, and parameters not given keep their values. The anim set a write settles
 against never comes from the mesh build: the library builds it on the spot from the recipe's rig (its parameters,
-`let`s and bones; no geometry) and anims file, or a glTF's skeleton and clips, cached by build key (5-9 ms the first
-time for a Sepulcra creature in release, then cached), and lays the world's anim assets as of that write over it.
+`let`s and bones; no geometry) and anims file, or a glTF's skeleton and clips (5-9 ms the first time for a Sepulcra
+creature in release). The set is shared by every build key with the same rig and anims file (seeded and parameter
+variants), and the world's anim assets as of the write are laid over it once per asset revision; the cache holds at
+most 64 sets and 64 MiB of clips. A glTF file changed on disk since the library last polled it isn't used until the
+next poll. Clip generation runs on whatever thread loads a set, the engine's included, so it has a deterministic
+budget in frames × bones: 24,000 per generated clip and 160,000 per set (overlays included; Sepulcra's largest set,
+the colossus, is about 11,000), checked before any work in anims files, overlays and `anim_set` alike, with a `Limit`
+error at the clip's path.
 Nothing waits, and nothing depends on whether or when a build lands: the library's view of the files changes only
 when the engine polls them, and a changed anim set (hot reload, `model_reload`) reaches the world right there, as
 journaled re-settles of the plays it touches (by `anim_reload`). Without an anim set (no rig, a rig or anims file that

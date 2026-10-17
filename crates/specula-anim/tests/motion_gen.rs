@@ -198,3 +198,32 @@ fn a_gait_from_the_rig_alone() {
     assert!(!set.clip(set.id("w").unwrap()).tracks.iter().any(|t| t.bone == "upperarm_l"));
     assert_eq!(set_with(r#"{ "name": "w", "kind": "gait", "body": "yes", "duration": 1, "stride": 0.5 }"#).unwrap_err().code, AnimErrorCode::WrongType);
 }
+
+/// Review round 3, finding 2: clip generation had no budget (a 128-clip file of 60 s gaits at
+/// 120 Hz took 13.8 s, 1,024 clips 93 s). Each generated clip and each set now has one, checked
+/// before any work, with a structured error at the clip's path.
+#[test]
+fn generation_is_budgeted() {
+    let legs = r#""pelvis": "hips", "legs": [ { "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l" }, { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r", "phase": 0.5 } ]"#;
+    // The reviewer's heavy clips: refused at once.
+    let heavy: Vec<String> = (0..128).map(|i| format!(r#"{{ "name": "g{i}", "kind": "gait", "duration": 60, "rate": 120, "stride": 0.9, {legs} }}"#)).collect();
+    let t = std::time::Instant::now();
+    let e = set_with(&heavy.join(", ")).unwrap_err();
+    assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+    assert_eq!(e.code, AnimErrorCode::Limit, "{e}");
+    assert_eq!(e.path, "clips[0].duration");
+    assert_eq!(e.limit, Some(gen::MAX_CLIP_WORK as f64));
+    // Many clips each within the clip budget: the set's budget stops them, naming the clip.
+    let many: Vec<String> = (0..200).map(|i| format!(r#"{{ "name": "w{i}", "kind": "gait", "duration": 2, "stride": 0.9, {legs} }}"#)).collect();
+    let e = set_with(&many.join(", ")).unwrap_err();
+    assert_eq!(e.code, AnimErrorCode::Limit, "{e}");
+    assert!(e.path.starts_with("clips[") && e.limit == Some(gen::MAX_SET_WORK as f64), "{e}");
+    // Overlays (world assets, anim_set validation) count against the same budget.
+    let base = set_with(&many[..10].join(", ")).unwrap();
+    assert!(base.generation_work() > 0);
+    let assets: Vec<(String, Json)> = (0..200).map(|i| (format!("o{i}"), Json::parse(&many[i]).unwrap())).collect();
+    let (out, problems) = base.with_overlay(&assets, &[]);
+    assert!(out.generation_work() <= gen::MAX_SET_WORK);
+    let p = problems.iter().find(|p| p.kind == "clip").expect("the budget refused some");
+    assert_eq!(p.error.code, AnimErrorCode::Limit);
+}

@@ -148,7 +148,7 @@ fn crossfade_interrupting_a_crossfade_does_not_pop() {
 fn hostile_generator_specs_fail_fast() {
     let s = skel();
     let leg = r#"{ "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l" }"#;
-    let spec = |legs: usize| format!(r#"{{ "name": "w", "kind": "gait", "duration": 60, "rate": 120, "stride": 1, "pelvis": "hips", "footstep": false, "legs": [{}] }}"#, vec![leg; legs].join(","));
+    let spec = |legs: usize| format!(r#"{{ "name": "w", "kind": "gait", "duration": 1, "rate": 30, "stride": 1, "pelvis": "hips", "footstep": false, "legs": [{}] }}"#, vec![leg; legs].join(","));
     let t = Instant::now();
     let e = gen::generate(&Json::parse(&spec(1000)).unwrap(), "", &s).unwrap_err();
     assert_eq!((e.code, e.path.as_str()), (AnimErrorCode::Limit, "legs"));

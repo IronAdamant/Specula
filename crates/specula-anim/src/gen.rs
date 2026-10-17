@@ -61,17 +61,30 @@ pub const MAX_REACH: f32 = 0.97;
 pub const MAX_LIMBS: usize = 8;
 /// Most `wobble` layers in one spec.
 pub const MAX_WOBBLES: usize = 64;
+/// Most generation work one generated clip may take, in frames × bones (a 60 s gait at 120 Hz on
+/// an 18-bone rig is about 130,000: refused; Sepulcra's clips run about 30 to 121 frames each).
+pub const MAX_CLIP_WORK: u64 = 24_000;
+/// Most generation work all the generated clips of one anim set may take together, in frames ×
+/// bones (overlays of world assets count too). Sepulcra's largest set (the colossus) is about
+/// 11,000. About a quarter of a second of generation at the limit (release).
+pub const MAX_SET_WORK: u64 = 160_000;
 
 use specula_model::rig::MAX_BONES;
 
 /// Generates the clip a spec describes, for `skel`. Errors carry paths under `path`. Kinds that
 /// build on other clips (`chain`) need [`generate_in`].
 pub fn generate(spec: &Json, path: &str, skel: &Skeleton) -> Result<Clip, AnimError> {
-    generate_inner(spec, skel, None).map_err(|e| e.under(path))
+    generate_inner(spec, skel, None).map(|(c, _)| c).map_err(|e| e.under(path))
 }
 
 /// [`generate`] for a clip of `set`: generators may build on the set's clips.
 pub fn generate_in(spec: &Json, path: &str, set: &AnimSet) -> Result<Clip, AnimError> {
+    generate_counted(spec, path, set).map(|(c, _)| c)
+}
+
+/// [`generate_in`], with the generation work it took (frames × bones), refused past
+/// [`MAX_CLIP_WORK`] or past what is left of the set's [`MAX_SET_WORK`].
+pub(crate) fn generate_counted(spec: &Json, path: &str, set: &AnimSet) -> Result<(Clip, u64), AnimError> {
     generate_inner(spec, &set.skeleton, Some(set)).map_err(|e| e.under(path))
 }
 
@@ -499,7 +512,7 @@ struct Out {
     frames: Vec<Frame>,
 }
 
-fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result<Clip, AnimError> {
+fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result<(Clip, u64), AnimError> {
     if !skel.model_aligned() {
         return Err(err("", AnimErrorCode::InvalidRig, "generators need model-aligned rest frames (recipe rigs)"));
     }
@@ -556,6 +569,17 @@ fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result
         Some(other) => return Err(err("loop", AnimErrorCode::UnknownName, format!("unknown loop mode '{other}'"))),
     };
     let n = (specula_core::dmath::round(duration * rate) as usize).max(2);
+    // Generation work is bounded before any of it is done (it runs on whatever thread loads the
+    // set, the engine's included).
+    let work = (n as u64 + 1) * skel.len() as u64;
+    if work > MAX_CLIP_WORK {
+        return Err(err("duration", AnimErrorCode::Limit, format!("generating this clip takes {} frames × {} bones = {work}; at most {MAX_CLIP_WORK}: shorten it or lower its \"rate\"", n + 1, skel.len())).with_numbers(work as f64, MAX_CLIP_WORK as f64));
+    }
+    if let Some(set) = set {
+        if set.generated + work > MAX_SET_WORK {
+            return Err(err("", AnimErrorCode::Limit, format!("the anim set's generated clips would take {} frames × bones in all with this one; at most {MAX_SET_WORK}: fewer, shorter or sparser generated clips", set.generated + work)).with_numbers((set.generated + work) as f64, MAX_SET_WORK as f64));
+        }
+    }
     let times: Vec<f32> = (0..=n).map(|k| if k == n { duration } else { duration * k as f32 / n as f32 }).collect();
     let body = parse_body(&mut o, skel, looping == LoopMode::Loop)?;
     let mut out = match kind {
@@ -611,7 +635,7 @@ fn generate_inner(spec: &Json, skel: &Skeleton, set: Option<&AnimSet>) -> Result
     };
     clip.sort_events();
     clip.validate()?;
-    Ok(clip)
+    Ok((clip, work))
 }
 
 /// Turns per-key deltas into cubic tracks, skipping channels that never leave rest.
