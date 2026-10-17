@@ -164,7 +164,8 @@ P1–P3 as designed above, with these changes and details. Each amendment says w
 `crates/specula/src/physics.rs`; the tools and overlays are `crates/specula/src/physics_tools.rs`. Live check:
 `scripts/physics_check.py`; benchmark: `cargo run --release -p specula-physics --example physics_bench`.
 
-**Components (world data).** `collider: {shape: box | sphere | capsule | hull (4–64 points) | mesh (≤ 4,096 vertices,
+**Components (world data).** `collider: {shape: box | sphere | capsule | hull (4–64 points; at most 16 on a moving
+body) | mesh (≤ 4,096 vertices,
 8,192 triangles; static only) | heightfield (2–129 per side; static only), offset, is_trigger, layer, mask (layer
 names it collides with), friction, restitution}`; `body: {kind, mass, velocity, angular_velocity, linear_damping,
 angular_damping, gravity_scale, sleeping, ccd, lock_position, lock_rotation, character}`. A collider alone is static.
@@ -193,7 +194,15 @@ triangle normal). Plus:
 - *Amendment: a normal per contact point*, not one per manifold, so a body on several mesh triangles keeps one
   manifold (Bullet's choice rather than Box2D's).
 - A box-box fast path (the 15-axis oriented-box test, then the same clipping), checked against the general test on
-  random poses.
+  random poses. Boxes are built directly (6 faces, 12 edges), so any positive size works; half extents are at least
+  0.1 mm.
+- *Amendment: a per-pair memory for polytope pairs* (temporal coherence): while apart, the pair re-checks last tick's
+  separating direction first (one support scan each); while touching, if the relative pose moved less than 5 mm and
+  about 1° since the last full test, it reuses that face or edge and only re-clips. Hull pairs cost edges × edges, so
+  hulls on moving bodies are capped at 16 points (a structured error says so); static hulls take up to 64.
+- Against meshes, the triangles near a body are visited nearest its own vertices first (so a box's corners are
+  supported first), up to 256 a tick; more is a structured `budget` error. Shape casts against meshes sweep the BVH
+  nearest-first, pruned by the best hit so far, with no cap.
 - Feature ids per point carry warm-start impulses across ticks.
 
 **Solver.** Soft Step as designed: substeps of integrate, warm start, solve (soft, push-out capped at 3 m/s), integrate
@@ -247,14 +256,20 @@ indicator), `physics_check` (scenario assertions as data), `physics_impulse`. Si
 `contacts`. `perf_frame` has a `physics` section (stage times, counts, budget errors, automatic checks);
 `perf.example.toml` budgets the `frame/sim/physics` zone.
 
-**Bounded work.** Bodies (20,000) and pairs (65,536) are capped, as are triangles per mesh pair (32), events per step
-and every query result; a cap that bites is a structured `budget` error in `physics_info` and `perf_frame`.
+**Bounded work.** Bodies (20,000) and pairs (65,536) are capped, as are triangles per mesh pair (256, nearest first),
+events per step and every query result; a cap that bites is a structured `budget` error in `physics_info` and
+`perf_frame`. The physics hash caches the part outside the awake set (static and sleeping bodies and their pairs), so a
+sleeping world costs nearly nothing to hash too; moving bodies' world-hash share is written field by field (no JSON).
 
-**Measured (2026-10-18, i9-13900HX, one thread, release, shared machine so ±30%).** `bench` at 60 Hz, 4 substeps:
-20-row pyramid settles (top box 3 cm low) and sleeps; 10,000 sleeping bodies 0.001 ms a tick (target: nearly nothing);
-100 characters on a heightfield 0.010–0.015 ms each (target 0.05); 1,000 awake mixed bodies piling up 3.8–5.6 ms a tick
-(target 2 ms: **not met yet**; narrowphase and solver about half each). The next steps there are friction at the
-manifold centre instead of per point, SIMD rows (Box2D's wide solver) and deterministic parallel narrowphase.
+**Measured (2026-10-18, i9-13900HX, one thread, release, shared machine so ±30%).** `physics_bench` at 60 Hz, 4
+substeps: 20-row pyramid settles (top box 3 cm low) and sleeps; 10,000 sleeping bodies 0.001 ms a tick and 0.009 ms to
+hash (target: nearly nothing); 100 characters on a heightfield 0.010–0.015 ms each (target 0.05); 1,000 awake mixed
+bodies piling up 3.9–4.2 ms a tick (target 2 ms: **not met yet**: narrowphase 1.5–1.7 ms, solver 1.75–1.8 ms; the
+solver is compute-bound, as packing its points densely changed nothing). 1,000 falling 16-point hulls: narrowphase
+about 15 ms a tick while they land (58 ms before the per-pair memory), far less once they rest. The world hash of 1,000
+moving boxes: 0.4–0.5 ms a tick (9.3 ms when bodies were hashed as JSON). The next steps for the 2 ms target are
+friction at the manifold centre instead of per point, SIMD rows (Box2D's wide solver) and a deterministic parallel
+narrowphase.
 
 **Deferred.** P4 (joints, ragdolls); dynamic-versus-dynamic continuous collision; auto-colliders from models; compound
 colliders (one collider per entity: build compounds from child entities with static colliders, or a hull); tile-map
