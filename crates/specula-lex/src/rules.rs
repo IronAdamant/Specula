@@ -406,6 +406,8 @@ pub struct OutcomeDef {
     pub result: String,
     pub when: Ex,
     pub priority: i64,
+    /// Reads no entity scans (count, occupied), so it is checked after every entity's step.
+    pub cheap: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

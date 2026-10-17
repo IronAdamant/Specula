@@ -401,6 +401,25 @@ fn runtime_problems_are_reported_not_fatal() {
 }
 
 #[test]
+fn outcomes_that_count_entities_are_checked_each_phase() {
+    // `count(...)` scans every entity, so it is checked at phase ends (still the same tick);
+    // a resource outcome is checked after every step.
+    let items = with_base(
+        r#""horde": {"kind": "timer", "every": "0.1s", "do": [{"spawn": "dummy", "at": "a"}, {"add": "gold", "amount": 1}]},
+           "crowded": {"kind": "outcome", "result": "crowded", "when": "count(enemy) >= 3"}"#,
+    );
+    let mut s = sim(&items, 1);
+    for _ in 0..5 {
+        s.step(&[]);
+    }
+    assert_eq!(s.outcome(), Some(("crowded", 2)), "decided in the tick the third one spawned");
+    let r = s.rules();
+    assert!(!r.outcomes[0].cheap);
+    let items = with_base(r#""horde": {"kind": "timer", "every": "0.1s", "do": [{"add": "gold", "amount": 1}]}, "rich": {"kind": "outcome", "result": "rich", "when": "res.gold >= 3"}"#);
+    assert!(rules(&items).outcomes[0].cheap);
+}
+
+#[test]
 fn runs_are_deterministic_and_reports_are_bounded() {
     let items = with_base(
         r#""spawn_dummy": {"kind": "timer", "every": "0.3s", "do": [{"spawn": "dummy", "at": "a"}]},
@@ -415,6 +434,7 @@ fn runs_are_deterministic_and_reports_are_bounded() {
             watch: vec![compile_query(&r, "res.gold").unwrap(), compile_query(&r, "count(enemy)").unwrap()],
             expect: vec![compile_query(&r, "res.gold > 0").unwrap(), compile_query(&r, "count(enemy) == 0").unwrap()],
             sample_every: 1,
+            deadline: None,
         };
         run(&mut s, &spec)
     };

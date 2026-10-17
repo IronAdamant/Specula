@@ -38,6 +38,8 @@ const MAX_OPS: usize = 500;
 pub const MAX_SIM_TICKS: u64 = 216_000;
 /// Default ticks for `lex_simulate`.
 const DEFAULT_SIM_TICKS: u64 = 36_000;
+/// Wall time one `lex_simulate` call may take (it reports where it stopped).
+const SIM_WALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 /// Most commands per `lex_simulate`.
 const MAX_SIM_COMMANDS: usize = 5_000;
 /// Most watch / expect expressions.
@@ -101,7 +103,9 @@ pub struct Runs(Mutex<VecDeque<SavedRun>>);
 
 struct SavedRun {
     name: String,
+    /// The saving client's name (for lists) and session (only it may overwrite the run).
     owner: String,
+    session: String,
     set: String,
     sim: Sim,
 }
@@ -999,7 +1003,7 @@ fn simulate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
         Ok(w) => w,
         Err(e) => return Ok(e),
     };
-    let spec = RunSpec { ticks, commands, watch, expect, sample_every };
+    let spec = RunSpec { ticks, commands, watch, expect, sample_every, deadline: Some(Instant::now() + SIM_WALL_BUDGET) };
     let started = Instant::now();
     let mut report = run(&mut sim, &spec);
     report.set("wall_ms", Json::from((started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0));
@@ -1011,17 +1015,22 @@ fn simulate_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<To
     }
     if let Some(name) = save_as {
         let mut runs = tools.lex_runs.0.lock().unwrap_or_else(|p| p.into_inner());
+        // Another session's run is never overwritten.
+        if let Some(other) = runs.iter().find(|r| r.name == name && r.session != session.id) {
+            report.set("save_error", Json::from(format!("the run name '{name}' belongs to {}'s session; nothing was saved (pick another save_as)", other.owner)));
+            return Ok(ToolOutput::text(report.to_string()));
+        }
         runs.retain(|r| r.name != name);
         if runs.len() >= MAX_RUNS {
             runs.pop_front();
         }
-        runs.push_back(SavedRun { name: name.clone(), owner: session.client_name.clone(), set: set.clone().unwrap_or_default(), sim });
+        runs.push_back(SavedRun { name: name.clone(), owner: session.client_name.clone(), session: session.id.clone(), set: set.clone().unwrap_or_default(), sim });
         report.set("saved_as", Json::from(name));
     }
     Ok(ToolOutput::text(report.to_string()))
 }
 
-fn session_tool(tools: &Tools, _session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
+fn session_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     check_keys(args, "lex_session", &[&["action", "name", "archetype", "tag", "cursor", "limit"]])?;
     let action = crate::tools::string_arg(args, "action")?.unwrap_or("list");
     let mut runs = tools.lex_runs.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -1053,6 +1062,9 @@ fn session_tool(tools: &Tools, _session: &SessionInfo, args: &Json) -> Result<To
         )),
         "delete" => {
             let i = find(&runs, name)?;
+            if runs[i].session != session.id {
+                return Err(format!("run {:?} belongs to {}'s session; only it can delete it", runs[i].name, runs[i].owner));
+            }
             runs.remove(i);
             Ok(ToolOutput::text(Json::obj([("deleted", Json::from(name.unwrap_or("")))]).to_string()))
         }

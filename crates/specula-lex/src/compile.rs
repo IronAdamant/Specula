@@ -1699,7 +1699,9 @@ impl<'d> Cx<'d> {
         let result = self.req(v, "result").and_then(|r| self.string(&r));
         let when = self.req(v, "when").and_then(|w| self.bool_expr(&w, &sc));
         let priority = v.key("priority").and_then(|p| self.const_num(&p, Unit::Int)).unwrap_or(0);
-        Some(OutcomeDef { id: v.item.to_owned(), result: result?, when: when?, priority })
+        let when = when?;
+        let cheap = !expr::scans_entities(&when);
+        Some(OutcomeDef { id: v.item.to_owned(), result: result?, when, priority, cheap })
     }
 
     // ---- actions ----

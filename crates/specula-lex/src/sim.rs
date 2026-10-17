@@ -21,7 +21,7 @@ pub const MAX_EVENTS_PER_TICK: usize = 100_000;
 /// Most entities one spawn action creates.
 pub const MAX_SPAWN_COUNT: i64 = 10_000;
 /// Most live entities; spawns beyond it are refused (`entity_limit`).
-pub const MAX_ENTITIES: usize = 1_000_000;
+pub const MAX_ENTITIES: usize = 100_000;
 /// Run-time diagnostics kept with their message (counts are always kept).
 const MAX_DIAG_MESSAGES: usize = 20;
 
@@ -243,9 +243,20 @@ pub struct State {
     pub event_counts: Vec<u64>,
     pub diag: RtDiag,
     pub native_calls: Vec<u64>,
+    /// Something an outcome could read changed (cheap outcomes are due).
     dirty: bool,
+    /// Since the last full check (outcomes that scan entities are due).
+    dirty_full: bool,
     effect_seq: u32,
     dispatched: usize,
+}
+
+impl State {
+    /// Something outcomes could read changed.
+    fn mark(&mut self) {
+        self.dirty = true;
+        self.dirty_full = true;
+    }
 }
 
 /// A running rule set.
@@ -297,6 +308,7 @@ impl Sim {
             diag: RtDiag::default(),
             native_calls: vec![0; rules.natives.len()],
             dirty: true,
+            dirty_full: true,
             effect_seq: 0,
             dispatched: 0,
         };
@@ -710,42 +722,56 @@ impl Core<'_> {
         if self.st.outcome.is_some() {
             return;
         }
-        self.phase_waves();
-        if !self.decided() {
-            self.phase_spawns();
-        }
-        if !self.decided() {
-            self.phase_timers();
-        }
-        for phase in [Phase::Spawn, Phase::Move, Phase::Act] {
-            if self.decided() {
+        // Each phase ends with its events reaching rules and a full outcome check; a decided
+        // run skips the rest of the tick (but not cleanup).
+        let phases: [fn(&mut Self); 8] = [
+            Self::phase_waves,
+            Self::phase_spawns,
+            Self::phase_timers,
+            |c| c.phase_behaviours(Phase::Spawn),
+            |c| c.phase_behaviours(Phase::Move),
+            |c| c.phase_behaviours(Phase::Act),
+            Self::phase_projectiles,
+            Self::phase_effects,
+        ];
+        for phase in phases {
+            phase(self);
+            if self.phase_end() {
                 break;
             }
-            self.phase_behaviours(phase);
-        }
-        if !self.decided() {
-            self.phase_projectiles();
-        }
-        if !self.decided() {
-            self.phase_effects();
         }
         self.cleanup();
         self.st.tick += 1;
     }
 
-    /// Dispatches queued events, then checks outcomes. True once the run is decided.
-    fn decided(&mut self) -> bool {
+    /// The end of a phase: queued events reach rules and machines, then every outcome is
+    /// checked. True once the run is decided.
+    fn phase_end(&mut self) -> bool {
         self.dispatch();
-        self.check_outcomes();
+        self.check_outcomes(true);
         self.st.outcome.is_some()
     }
 
-    fn check_outcomes(&mut self) {
-        if self.st.outcome.is_some() || !self.st.dirty {
+    /// After one entity's step: the outcomes that don't scan entities (resources, waves, the
+    /// tick) are checked at once, so a loss stops the tick right after the step that caused
+    /// it. True once the run is decided.
+    fn decided(&mut self) -> bool {
+        self.check_outcomes(false);
+        self.st.outcome.is_some()
+    }
+
+    fn check_outcomes(&mut self, full: bool) {
+        if self.st.outcome.is_some() || !(self.st.dirty || (full && self.st.dirty_full)) {
             return;
         }
         self.st.dirty = false;
+        if full {
+            self.st.dirty_full = false;
+        }
         for o in &self.r.outcomes {
+            if !full && !o.cheap {
+                continue;
+            }
             match self.eval(&o.when, &Frame::default()) {
                 Ok(Val::Bool(true)) => {
                     self.st.outcome = Some((o.result.clone(), self.st.tick));
@@ -779,7 +805,7 @@ impl Core<'_> {
         let w = usize::from(self.st.wave);
         let Some(def) = waves.waves.get(w) else { return Err(rt("no_more_waves", "every wave has started")) };
         self.st.wave += 1;
-        self.st.dirty = true;
+        self.st.mark();
         let number = self.st.wave;
         self.emit(ev::WAVE_STARTED, None, None, i64::from(number));
         if let Err(e) = self.actions(&def.on_start, &Frame::default()) {
@@ -1241,7 +1267,7 @@ impl Core<'_> {
         }
         // Impact: the projectile is gone either way.
         self.st.ents[i].alive = false;
-        self.st.dirty = true;
+        self.st.mark();
         let splash = self.int(splash, &f)?;
         let (sarch, sb) = p.attack;
         let BehKind::Attack(def) = &self.r.archetypes[usize::from(sarch)].behaviours[usize::from(sb)].kind else { return Ok(()) };
@@ -1439,7 +1465,7 @@ impl Core<'_> {
                         self.transitions(j, Some(e.kind));
                     }
                 }
-                self.st.dirty = true;
+                self.st.mark();
             }
         }
     }
@@ -1455,13 +1481,13 @@ impl Core<'_> {
             let s = self.st.wave_stats[w];
             if s.started_at.is_some() && s.cleared_at.is_none() && s.pending == 0 && s.alive == 0 {
                 self.st.wave_stats[w].cleared_at = Some(self.st.tick);
-                self.st.dirty = true;
+                self.st.mark();
                 self.emit(ev::WAVE_CLEARED, None, None, w as i64 + 1);
             }
         }
         self.dispatch();
-        self.st.dirty = true;
-        self.check_outcomes();
+        self.st.mark();
+        self.check_outcomes(true);
     }
 
     // ---- entities ----
@@ -1503,7 +1529,7 @@ impl Core<'_> {
             e.pos = lerp(pd.points[seg as usize], pd.points[(seg as usize + 1) % pd.points.len()], progress, pd.seg[seg as usize]);
         }
         self.st.ents.push(e);
-        self.st.dirty = true;
+        self.st.mark();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.spawned += 1;
@@ -1554,7 +1580,7 @@ impl Core<'_> {
         }
         e.alive = false;
         let (id, arch, wave) = (e.id, e.arch, e.wave);
-        self.st.dirty = true;
+        self.st.mark();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.died += 1;
@@ -1578,7 +1604,7 @@ impl Core<'_> {
         }
         e.alive = false;
         let (id, wave) = (e.id, e.wave);
-        self.st.dirty = true;
+        self.st.mark();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.removed += 1;
@@ -1626,7 +1652,7 @@ impl Core<'_> {
             ModOp::Mul => arith(Arith::MulRatio, before, v).unwrap_or(before),
             ModOp::Set => v,
         };
-        self.st.dirty = true;
+        self.st.mark();
         if is_health {
             let after = self.st.ents[i].base[slot];
             if after < before {
@@ -1715,7 +1741,7 @@ impl Core<'_> {
             }
         };
         if applied {
-            self.st.dirty = true;
+            self.st.mark();
             self.emit(ev::EFFECT_APPLIED, Some(target), source, magnitude);
             self.actions(&def.on_apply, &f)?;
             if let Some(i) = idx_of(self.st, target) {
@@ -1765,7 +1791,7 @@ impl Core<'_> {
         e.base = base;
         e.beh = beh;
         e.state = state;
-        self.st.dirty = true;
+        self.st.mark();
         self.init_timed(i);
         self.health_check(i, None);
         Ok(())
@@ -1799,7 +1825,7 @@ impl Core<'_> {
         let slot = &mut self.st.res[usize::from(r)];
         if *slot != v {
             *slot = v;
-            self.st.dirty = true;
+            self.st.mark();
         }
     }
 
@@ -1987,7 +2013,7 @@ impl Core<'_> {
             return Err(Rejection::new("runtime_error", format!("command '{}' failed and was rolled back: {}", def.id, e.message)).with("cause", Json::from(e.code)));
         }
         self.dispatch();
-        self.check_outcomes();
+        self.check_outcomes(true);
         Ok(())
     }
 }

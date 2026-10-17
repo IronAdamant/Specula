@@ -1156,6 +1156,19 @@ fn call(fname: &str, args: &[Ast], col: usize, sc: &Scope) -> Result<(Ex, Ty), E
     }
 }
 
+/// Whether evaluating `ex` walks the entity list (`count`, `occupied`): such expressions cost
+/// O(entities), so outcomes that use them are checked once per phase, not after every step.
+pub fn scans_entities(ex: &Ex) -> bool {
+    use Ex::*;
+    match ex {
+        Count(_) | Occupied(..) => true,
+        Attr(a, _) | Alive(a) | PathRemaining(a) | ArchOf(a) | Next(a) | ArchAttr(a, _) | Neg(a) | Not(a) | Abs(a) | Exists(a) | Has(a, _) | Chance(_, a) => scans_entities(a),
+        Arith(_, a, b) | Cmp(_, a, b) | And(a, b) | Or(a, b) | Min(a, b) | Max(a, b) | Dist(a, b) | Rand(_, a, b) => scans_entities(a) || scans_entities(b),
+        If(a, b, c) | Clamp(a, b, c) => scans_entities(a) || scans_entities(b) || scans_entities(c),
+        _ => false,
+    }
+}
+
 /// Folds constant subexpressions (pure ones only: never `rand`, `chance` or state reads).
 fn fold(ex: Ex) -> Result<Ex, ExprError> {
     use Ex::*;

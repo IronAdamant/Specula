@@ -107,14 +107,16 @@ pub struct Timed {
 
 #[derive(Clone, Debug, Default)]
 pub struct RunSpec {
-    /// Most ticks to run.
+    /// Most ticks to run (a run also stops at an outcome: nothing happens after one).
     pub ticks: u32,
-    /// Stop at an outcome (always true in practice: nothing happens after one).
     pub commands: Vec<Timed>,
     pub watch: Vec<Query>,
     pub expect: Vec<Query>,
     /// Sample `watch` every this many ticks (0: only at the end); widened to fit [`MAX_SAMPLES`].
     pub sample_every: u32,
+    /// A wall-clock limit (tools set one so a runaway rule set can't hang a call). Where the
+    /// run stopped is reported; everything up to that tick is still deterministic.
+    pub deadline: Option<std::time::Instant>,
 }
 
 /// Runs `spec` on `sim` and reports.
@@ -150,8 +152,13 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
             rejections.push(j);
         }
     };
+    let mut stopped_early = false;
     while sim.tick() < end && sim.outcome().is_none() {
         let now = sim.tick();
+        if (now - start) % 64 == 0 && spec.deadline.is_some_and(|d| std::time::Instant::now() > d) {
+            stopped_early = true;
+            break;
+        }
         let mut batch: Vec<CommandCall> = Vec::new();
         let mut names: Vec<&str> = Vec::new();
         while next < cmds.len() && cmds[next].tick <= now {
@@ -227,6 +234,12 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
         ("commands", Json::obj([("applied", Json::from(applied - refused)), ("refused", Json::from(refused)), ("not_reached", Json::from(unapplied))])),
         ("hash", Json::from(format!("{:016x}", sim.hash()))),
     ];
+    if stopped_early {
+        out.push((
+            "stopped_early",
+            Json::from(format!("the wall-time budget ran out at tick {}; run fewer ticks per call, or save_as and continue with from", sim.tick())),
+        ));
+    }
     if let Some(w) = waves {
         out.push(("waves", w));
     }
