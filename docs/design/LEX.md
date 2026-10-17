@@ -301,6 +301,8 @@ and uses it as a behaviour (`{"type": "native", "hook": "flow_route"}`) or an ac
   `cx.refuse_with(code, message, &[("enemy", id)])` adds numbers to the refusal (at most 16).
 - **Refusal details.** A `require` may carry `details: {name: number expression}` (at most 16, like native args),
   evaluated when it refuses: Sepulcra's upgrade says `{need, have}` with `not_enough_dust`, like a `cost` does.
+  Names the refusal sets itself (`code`, `message`, `error`, `command`, `tick`, `by`) are refused at compile time,
+  and `refuse_with` leaves them out.
 - *(Sepulcra port)* **Caching.** A bound hook is shared by a run's clones, so what it derives from the state (flow
   fields from walls) is keyed by `cx.generation()`: a pair (the state value's identity, a counter bumped when an
   entity appears, leaves, changes archetype or gains or loses an effect instance). Every clone, including a
@@ -549,9 +551,18 @@ and fast-forwards it with everything else. At most 4 runs at once.
   the set holding the same object, so the controls live in the rule set. Bindings are checked when the run starts
   (actions and commands must exist). Once per engine tick, before the run steps, the actions' state is taken
   (window frames latched since the last tick, plus what agents hold with `lex_live {action: input, actions,
-  ticks}`) and each binding that fires applies its command at the run's tick like an agent's, journaled with `by:
-  "input"` (so `journal` still replays headless); refusals land in `status.recent`. A hosted game can still turn
-  its own input into commands (Sepulcra's `--rules lex`, below).
+  ticks}`). `pressed` and `released` bindings fire then; `held` bindings fire once per Lex tick stepped (so their
+  rate is the set's, not the engine's). Each fired command applies at the run's tick, journaled (so `journal`
+  still replays headless); refusals land in `status.recent`. **Who:** an action an agent holds fires as that agent:
+  its path claim on the run is checked, its claims cover what the command's hooks change, and the journal says `by`
+  it, exactly like its own `command`; window and gamepad input is the local player's, journaled `by: "input"`.
+  **Bounds:** at most 8 input commands per run per engine tick, each charged to the work allowance (the rest are
+  dropped and counted in `status.input_commands`), and input may fill only half of the journal, so agents'
+  commands always have room (past it input is refused with `input_journal_full`). A hosted game can still turn its
+  own input into commands (Sepulcra's `--rules lex`, below).
+- **Commands cost no copy of the run.** Lex undoes a refused command, and one whose native panics, from the
+  snapshot it takes anyway; `Sim::apply_undoable` keeps that snapshot only when the command reached a native, so a
+  live command whose hooks' world changes a claim refuses is put back without the run being copied first.
 - **Halts and restarts.** `halted` says whether the run is `resumable`: a work-cap halt (the tick finished) and a
   panic inside a command (the command was undone) leave the state whole, so `resume` carries on from that tick; a
   panic in a tick, or the wall-time backstop, cut a tick off part-way, so only `restart` (tick 0 again, with the

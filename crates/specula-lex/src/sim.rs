@@ -74,6 +74,12 @@ fn rt(code: &'static str, message: impl Into<String>) -> RtErr {
     RtErr { code, message: message.into(), refusal: None }
 }
 
+/// What puts a run back to before a command ([`Sim::apply_undoable`]).
+pub struct Undo(Box<State>);
+
+/// Detail names a refusal sets itself: a requirement's or a hook's details can't use them.
+pub const RESERVED_DETAILS: [&str; 6] = ["code", "message", "error", "command", "tick", "by"];
+
 /// Why a command was refused. Refused commands change nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rejection {
@@ -520,6 +526,24 @@ impl Sim {
         self.command(call, Some(host))
     }
 
+    /// [`Sim::apply_hosted`] for a caller that may still refuse what the command's natives did
+    /// outside the run (a module hook's world changes): `Ok(Some(undo))` when it called a native
+    /// ([`Sim::undo`] puts the run back), `Ok(None)` when it called none (nothing outside the run
+    /// can have changed). A refused command, or a native that panics, changes nothing either
+    /// way: the run keeps (or is put back to) the state before it, at no extra copy.
+    pub fn apply_undoable(&mut self, call: &CommandCall, host: &mut dyn NativeHost) -> Result<Option<Undo>, Rejection> {
+        self.begin();
+        let mut core = self.core(true, Some(host));
+        core.keep = true;
+        core.command(call)?;
+        Ok(core.kept.take().map(|s| Undo(Box::new(s))))
+    }
+
+    /// Puts the run back to before the command [`Sim::apply_undoable`] applied.
+    pub fn undo(&mut self, undo: Undo) {
+        self.st = *undo.0;
+    }
+
     /// Resets the per-tick event list, dispatch count and work budget.
     fn begin(&mut self) {
         // Granted tags that ran out stop counting this tick: natives' tag caches must see it.
@@ -552,6 +576,8 @@ impl Sim {
             depth: 0,
             deadline: self.deadline,
             in_command,
+            keep: false,
+            kept: None,
             host,
             refusal: None,
             order: &mut self.order,
@@ -655,6 +681,9 @@ struct Core<'a> {
     /// Applying a command: work is charged to the commands' budget, so commands can never
     /// starve the tick's phases (nor the phases the commands).
     in_command: bool,
+    /// Keep a successful command's snapshot when it called a native ([`Sim::apply_undoable`]).
+    keep: bool,
+    kept: Option<State>,
 }
 
 fn idx_of(st: &State, id: u32) -> Option<usize> {
@@ -2566,7 +2595,17 @@ impl Core<'_> {
             self.set_res(res, cur.saturating_sub(need));
         }
         self.refusal = None;
-        if let Err(e) = self.actions(&def.actions, &f) {
+        let natives_before: u64 = self.st.native_calls.iter().sum();
+        // A native that panics (other code) leaves the state as the command found it, then the
+        // panic goes on to the caller.
+        let acted = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.actions(&def.actions, &f))) {
+            Ok(r) => r,
+            Err(p) => {
+                *self.st = snapshot;
+                std::panic::resume_unwind(p);
+            }
+        };
+        if let Err(e) = acted {
             // The snapshot is a new state value (a fresh instance), so nothing a native cached
             // for the abandoned one can be mistaken for it.
             *self.st = snapshot;
@@ -2579,8 +2618,16 @@ impl Core<'_> {
             }
             return Err(Rejection::new("runtime_error", format!("command '{}' failed and was rolled back: {}", def.id, e.message)).with("cause", Json::from(e.code)));
         }
-        self.dispatch();
-        self.check_outcomes(true);
+        if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.dispatch();
+            self.check_outcomes(true);
+        })) {
+            *self.st = snapshot;
+            std::panic::resume_unwind(p);
+        }
+        if self.keep && self.st.native_calls.iter().sum::<u64>() != natives_before {
+            self.kept = Some(snapshot);
+        }
         Ok(())
     }
 }
@@ -2875,10 +2922,12 @@ impl NativeCtx<'_, '_> {
         self.refuse_with(code, message, &[])
     }
 
-    /// [`NativeCtx::refuse`] with numbers the refusal carries (`enemy`, `need`; at most 16).
+    /// [`NativeCtx::refuse`] with numbers the refusal carries (`enemy`, `need`; at most 16; the
+    /// names in [`RESERVED_DETAILS`] are left out).
     pub fn refuse_with(&mut self, code: &str, message: impl Into<String>, details: &[(&str, i64)]) -> String {
         if self.core.in_command {
-            let details = details.iter().take(crate::compile::MAX_NATIVE_ARGS).map(|(k, v)| ((*k).to_owned(), *v)).collect();
+            // Names the refusal sets itself (code, message, ...) are left out, never overwritten.
+            let details = details.iter().filter(|(k, _)| !RESERVED_DETAILS.contains(k)).take(crate::compile::MAX_NATIVE_ARGS).map(|(k, v)| ((*k).to_owned(), *v)).collect();
             self.core.refusal = Some((code.to_owned(), details));
         }
         message.into()

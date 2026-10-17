@@ -440,3 +440,68 @@ fn refusals_carry_details_from_requirements_and_hooks() {
     let bad = with_base(r#""b": {"kind": "command", "require": [{"when": "true", "code": "x", "details": {"d": "spots"}}], "do": []}"#);
     assert!(!codes(&bad).is_empty(), "a site is not a number");
 }
+
+/// Refuses with details named like the refusal's own fields, and one of its own.
+struct Shadow;
+
+impl NativeHook for Shadow {
+    fn run(&self, cx: &mut NativeCtx<'_, '_>) -> Result<(), String> {
+        Err(cx.refuse_with("blocked", "no", &[("code", 1), ("message", 2), ("error", 3), ("command", 4), ("tick", 5), ("by", 6), ("enemy", 7)]))
+    }
+}
+
+/// Review round 3 (finding 3, details.rs): detail names can't shadow the refusal's own keys:
+/// refused at compile time in a requirement, left out of a hook's refusal.
+#[test]
+fn refusal_details_cant_shadow_the_refusals_own_keys() {
+    for name in specula_lex::RESERVED_DETAILS {
+        let items = with_base(&format!(r#""b": {{"kind": "command", "require": [{{"when": "false", "code": "x", "details": {{"{name}": 1}}}}], "do": []}}"#));
+        assert!(codes(&items).iter().any(|(c, p)| c == "invalid" && p.ends_with(&format!("details.{name}"))), "{name}: {:?}", codes(&items));
+    }
+    let items = with_base(r#""shadow": {"kind": "native", "hook": "test.shadow", "reason": "a test"}, "poke": {"kind": "command", "do": [{"native": "shadow"}]}"#);
+    let mut n = Natives::new();
+    n.insert("test.shadow".into(), Arc::new(Shadow) as Arc<dyn NativeHook>);
+    let mut s = Sim::new(rules(&items), 1, &n).unwrap();
+    let r = cmd(&mut s, "poke", "{}").unwrap_err();
+    assert_eq!(r.code, "blocked");
+    let j = r.to_json();
+    assert_eq!((j.get("code"), j.get("message"), j.get("command")), (Some(&Json::from("blocked")), Some(&Json::from("no")), Some(&Json::from("poke"))), "{j}");
+    assert!(r.details.iter().all(|(k, _)| !specula_lex::RESERVED_DETAILS.contains(&k.as_str()) || k == "command"), "{:?}", r.details);
+    assert_eq!(j.get("enemy"), Some(&Json::from(7)));
+}
+
+/// A host that panics, or counts its calls.
+struct Panicky(bool, u32);
+
+impl NativeHost for Panicky {
+    fn call(&mut self, _hook: &NativeDef, _entity: Option<u32>, _args: specula_lex::NativeArgs<'_>, _tick: u32) -> Result<(), String> {
+        self.1 += 1;
+        if self.0 {
+            panic!("the host panicked");
+        }
+        Ok(())
+    }
+}
+
+/// Review round 3 (finding 2, cloneperf.rs): a live command no longer needs a copy of the run.
+/// `apply_undoable` hands back what undoes a command only when it reached a native; a command
+/// whose native panics leaves the run as it was.
+#[test]
+fn commands_are_undoable_without_a_copy_unless_they_reach_a_native() {
+    let items = with_base(r#""fx": {"kind": "native", "hook": "mod/fx", "reason": "a world effect"}, "ping": {"kind": "command", "do": [{"native": "fx"}, {"add": "gold", "amount": 1}]}, "plain": {"kind": "command", "do": [{"add": "gold", "amount": 2}]}"#);
+    let mut s = Sim::new_hosted(rules(&items), 1, &Natives::new()).unwrap();
+    let mut host = Panicky(false, 0);
+    let plain = s.parse_command("plain", &Json::Null).unwrap();
+    assert!(s.apply_undoable(&plain, &mut host).unwrap().is_none(), "no native: nothing to undo outside the run, no copy kept");
+    assert_eq!(s.resource("gold"), Some(2));
+    let ping = s.parse_command("ping", &Json::Null).unwrap();
+    let before = s.hash();
+    let undo = s.apply_undoable(&ping, &mut host).unwrap().expect("it reached a native");
+    assert_eq!((s.resource("gold"), host.1), (Some(3), 1));
+    s.undo(undo);
+    assert_eq!((s.resource("gold"), s.hash()), (Some(2), before), "put back");
+    let mut boom = Panicky(true, 0);
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.apply_undoable(&ping, &mut boom)));
+    assert!(panicked.is_err());
+    assert_eq!((s.resource("gold"), s.hash()), (Some(2), before), "a panicking native leaves the run as it was");
+}

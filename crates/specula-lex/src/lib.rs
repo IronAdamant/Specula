@@ -34,7 +34,7 @@ pub use compile::{compile, validate, Compiled, Options};
 pub use diag::{Diagnostic, Severity};
 pub use doc::{Document, FORMAT_VERSION};
 pub use rules::Rules;
-pub use sim::{CommandCall, Event, NativeArgs, NativeCtx, NativeHook, NativeHost, Natives, Rejection, Sim, Val};
+pub use sim::{CommandCall, Event, NativeArgs, NativeCtx, NativeHook, NativeHost, Natives, Rejection, Sim, Undo, Val, RESERVED_DETAILS};
 pub use units::Unit;
 
 /// Bumped when the runtime's semantics change in a way that changes results (like

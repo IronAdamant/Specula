@@ -1947,6 +1947,13 @@ impl<'d> Cx<'d> {
                 let message = r.key("message").and_then(|m| self.string(&m));
                 // Numbers for the refusal, like native args (at most 16, numbers or expressions).
                 let details = r.key("details").map(|d| self.native_args(&d, &sc)).unwrap_or_default();
+                if let Some(dv) = r.key("details") {
+                    for (k, x) in dv.j.as_object().unwrap_or_default() {
+                        if crate::sim::RESERVED_DETAILS.contains(&k.as_str()) {
+                            self.push(dv.sub(k, x).err(codes::INVALID, format!("'{k}' is a name the refusal sets itself ({})", crate::sim::RESERVED_DETAILS.join(", "))).suggest("name it for what it counts (need, have, enemy)"));
+                        }
+                    }
+                }
                 if let (Some(cond), Some(code)) = (cond, code) {
                     let message = message.unwrap_or_else(|| format!("refused: {code}"));
                     require.push(Require { cond, code, message, details });

@@ -131,12 +131,19 @@ pub enum Edge {
 /// A run's input: the actions (window frames and agents' holds in, one state per engine tick
 /// out) and the bindings.
 struct LiveInput {
+    /// Who holds each action an agent holds (its commands run as that agent's).
+    holders: BTreeMap<String, Holder>,
     spec: Arc<InputSpec>,
     actions: crate::logic::input::ModuleInput,
 }
 
 /// At most this many input bindings per run.
 const MAX_BINDINGS: usize = 64;
+/// Commands one run's input may fire in one engine tick (each is also charged to the work
+/// allowance).
+const MAX_INPUT_COMMANDS_PER_TICK: usize = 8;
+/// The part of a run's journal its input may fill (agents' commands keep the rest).
+const MAX_INPUT_JOURNAL: usize = MAX_JOURNAL / 2;
 
 impl LiveCall {
     pub fn class(&self) -> Class {
@@ -197,6 +204,10 @@ struct Run {
     /// The work of the last Lex tick, and what the run spent of this engine tick's allowance.
     last_work: u64,
     spent: u64,
+    /// Commands input journaled (at most [`MAX_INPUT_JOURNAL`]), and input commands dropped
+    /// past the per-tick cap or the allowance.
+    input_journaled: usize,
+    input_dropped: u64,
     /// The run was stopped by an overrun or a panic: why (it steps no more).
     halted: Option<Json>,
     /// Accepted commands: (Lex tick, command, args, who).
@@ -441,33 +452,40 @@ fn engine_ticks_for(lex_ticks: u32, lex_hz: u32, hz: u32) -> u64 {
 /// run's own input (window, gamepad, held actions): journaled like the run's ticks. Answers the
 /// accepted command, or the error (a panicking native also halts the run).
 #[allow(clippy::too_many_arguments)]
-fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
+fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, input: bool, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
     if run.journal.len() >= MAX_JOURNAL {
         return Err(Json::obj([
             ("error", Json::from("journal_full")),
             ("message", Json::from(format!("this run has journaled {MAX_JOURNAL} commands; restart it or start another to keep runs replayable"))),
         ]));
     }
+    // Input may use only part of the journal, so agents' own commands always have room.
+    if input && run.input_journaled >= MAX_INPUT_JOURNAL {
+        return Err(Json::obj([
+            ("error", Json::from("input_journal_full")),
+            ("message", Json::from(format!("this run's input has journaled {MAX_INPUT_JOURNAL} commands (input may use that much of the journal); agents' commands still apply; restart the run to play on with input"))),
+        ]));
+    }
     let call = run.sim.parse_command(name, args).map_err(|r| refusal_json(&r))?;
     let at = run.sim.tick();
-    let before = run.sim.clone();
     let mark = world.mark();
     let agent = run.agent.clone();
     logic.stage();
+    // Lex undoes a refused command, or one whose native panics, itself; it hands back what
+    // undoes a successful one only when the command reached a native (no copy otherwise).
     let result = {
         let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: true };
         let sim = &mut run.sim;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_hosted(&call, &mut host)))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
     };
     let undo = |world: &mut World, swarm: &mut Swarm, logic: &mut LogicHost| {
         world.rollback_to(mark);
         swarm.note_rolled_back(world);
         logic.drop_staged();
     };
-    match result {
+    let before = match result {
         Err(p) => {
             undo(world, swarm, logic);
-            run.sim = before;
             halt(run, "native_panicked", format!("a native panicked in command '{name}': {}", panic_text(&*p)), true, true);
             let mut j = run.halted.clone().unwrap_or(Json::Null);
             j.set("hint", Json::from("the command was undone and the run is halted; lex_live {action: resume} carries on"));
@@ -482,14 +500,16 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
             push_recent(&mut run.recent, j.clone());
             return Err(j);
         }
-        Ok(Ok(())) => {}
-    }
+        Ok(Ok(u)) => u,
+    };
     match w {
         Some(w) => {
             if let Err(e) = swarm.check_game_changes(world, mark, tick, &agent, w) {
                 // The world is back at the mark; the run and the modules go back with it.
                 logic.drop_staged();
-                run.sim = before;
+                if let Some(u) = before {
+                    run.sim.undo(u);
+                }
                 let mut j = e.to_json();
                 j.set("command", Json::from(name));
                 j.set("note", Json::from("the command's module hooks changed the world where a claim refuses it; nothing was applied"));
@@ -499,6 +519,9 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
         None => swarm.game_changes(world, tick, &agent, Kind::GameTick),
     }
     logic.keep_staged();
+    if input {
+        run.input_journaled += 1;
+    }
     run.journal.push((at, name.to_owned(), args.clone(), by.to_owned()));
     run.presented = None;
     present(world, swarm, tick, run);
@@ -506,9 +529,27 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
 }
 
 /// The commands a run's input fires this engine tick (its actions' state for the tick taken).
-fn input_commands(input: &mut LiveInput) -> Vec<(String, Json)> {
+/// A command a run's input fires, and the agent holding the action (`None`: the window or a
+/// gamepad, the local player).
+struct Fired {
+    command: String,
+    args: Json,
+    who: Option<Holder>,
+}
+
+/// An agent holding an input action: its name and session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Holder {
+    name: String,
+    session: Option<String>,
+}
+
+/// The commands a run's input fires this engine tick (its actions' state for the tick taken):
+/// edges (`pressed`, `released`) once, and `held` bindings separately (the caller fires those
+/// once per Lex tick stepped).
+fn input_commands(input: &mut LiveInput) -> (Vec<Fired>, Vec<Fired>) {
     let states = input.actions.take_tick();
-    let mut out = Vec::new();
+    let (mut edges, mut held) = (Vec::new(), Vec::new());
     for b in &input.spec.bindings {
         let Some(s) = states.get(&b.action).and_then(|v| v.as_list()) else { continue };
         let flag = |i: usize| s.get(i).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -520,10 +561,59 @@ fn input_commands(input: &mut LiveInput) -> Vec<(String, Json)> {
         if fires {
             let value = |i: usize| s.get(i).and_then(|v| v.as_f32()).unwrap_or(0.0);
             let (x, y) = (value(3), value(4));
-            out.push((b.command.clone(), substitute(&b.args, x, y)));
+            let f = Fired { command: b.command.clone(), args: substitute(&b.args, x, y), who: input.holders.get(&b.action).cloned() };
+            if b.on == Edge::Held {
+                held.push(f);
+            } else {
+                edges.push(f);
+            }
         }
     }
-    out
+    // An agent's hold is over once its action is idle again (the release has fired).
+    input.holders.retain(|action, _| states.get(action).is_some());
+    (edges, held)
+}
+
+/// Applies commands a run's input fired: an agent's hold runs as that agent (its claims on the
+/// run and on what the command's hooks change both apply; journaled `by` it), the window and
+/// gamepads as the run's own input. Past [`MAX_INPUT_COMMANDS_PER_TICK`] in this engine tick, or
+/// past the work allowance, the rest are dropped (counted in status).
+#[allow(clippy::too_many_arguments)]
+fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, spent: &mut u64, limits: Limits, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
+    for f in list {
+        if run.halted.is_some() || run.sim.outcome().is_some() {
+            return;
+        }
+        if *fired_n >= MAX_INPUT_COMMANDS_PER_TICK || *spent >= limits.work_per_tick {
+            run.input_dropped += 1;
+            continue;
+        }
+        *fired_n += 1;
+        // A command costs about what Lex copies to undo it: the state, by its entities.
+        let cost = run.sim.entities().len() as u64 + 1;
+        *spent = spent.saturating_add(cost);
+        run.spent = run.spent.saturating_add(cost);
+        let path = format!("/{ROOT}/{}", run.agent.trim_start_matches("lex:"));
+        let (by, result) = match &f.who {
+            Some(h) => {
+                let w = Writer { name: &h.name, session: h.session.as_deref() };
+                let r = match swarm.check_claimed_path(&path, w, "fire this live run's input") {
+                    Err(e) => Err(e.to_json()),
+                    Ok(()) => apply_command(run, &f.command, &f.args, &h.name, Some(w), true, world, logic, swarm, tick, hz),
+                };
+                (h.name.as_str(), r)
+            }
+            None => ("input", apply_command(run, &f.command, &f.args, "input", None, true, world, logic, swarm, tick, hz)),
+        };
+        // Refusals are in `recent` already; the rest (claims, a bad binding's args) go there too.
+        if let Err(mut j) = result {
+            if j.get("by").is_none() {
+                j.set("by", Json::from(by));
+                j.set("command", Json::from(f.command.as_str()));
+                push_recent(&mut run.recent, j);
+            }
+        }
+    }
 }
 
 /// A binding's args with `"$x"` / `"$y"` as the action's value in thousandths.
@@ -581,7 +671,7 @@ impl Live {
                     return world_error(&e);
                 }
                 let Env { world, logic, swarm, tick, hz, .. } = env;
-                match apply_command(run, &name, &args, by, Some(w), world, logic, swarm, tick, hz) {
+                match apply_command(run, &name, &args, by, Some(w), false, world, logic, swarm, tick, hz) {
                     Ok(mut j) => {
                         j.set("set", Json::from(set.as_str()));
                         ToolOutput::text(j.to_pretty())
@@ -598,7 +688,15 @@ impl Live {
                     return error("no_input", format!("set '{set}' was started without input bindings: lex_live {{action: start, input: {{actions, bindings}}}}"));
                 };
                 match input.actions.hold(&actions, ticks) {
-                    Ok(held) => ToolOutput::text(Json::obj([("set", Json::from(set.as_str())), ("held", held), ("note", Json::from("held actions fire their bindings from the next engine tick"))]).to_pretty()),
+                    Ok(held) => {
+                        // The commands these actions fire run as this agent (claim-checked).
+                        let holder = Holder { name: by.to_owned(), session: w.session.map(str::to_owned) };
+                        for (name, _) in actions.as_object().unwrap_or_default() {
+                            input.holders.insert(name.clone(), holder.clone());
+                        }
+                        let note = "held actions fire their bindings from the next engine tick, as your commands: your claims apply and the journal says by you";
+                        ToolOutput::text(Json::obj([("set", Json::from(set.as_str())), ("held", held), ("note", Json::from(note))]).to_pretty())
+                    }
                     Err(m) => ToolOutput::error(crate::tools::argument_error(&m).to_pretty()),
                 }
             }
@@ -716,7 +814,7 @@ impl Live {
         let input = match &s.input {
             None => None,
             Some(spec) => match crate::logic::input::ModuleInput::new(&spec.actions) {
-                Ok(actions) => Some(LiveInput { spec: Arc::clone(spec), actions }),
+                Ok(actions) => Some(LiveInput { holders: BTreeMap::new(), spec: Arc::clone(spec), actions }),
                 Err(e) => return error("invalid_input", format!("input.actions: {e}")),
             },
         };
@@ -751,6 +849,8 @@ impl Live {
             behind: 0,
             last_work: 0,
             spent: 0,
+            input_journaled: 0,
+            input_dropped: 0,
             halted: None,
             journal: Vec::new(),
             recent: VecDeque::new(),
@@ -780,32 +880,34 @@ impl Live {
             if run.halted.is_some() {
                 continue;
             }
-            // The run's input first: the commands its actions fire, at its current tick.
-            if let Some(input) = &mut run.input {
-                let fired = input_commands(input);
-                for (name, args) in fired {
-                    if run.halted.is_some() || run.sim.outcome().is_some() {
-                        break;
-                    }
-                    if let Err(j) = apply_command(run, &name, &args, "input", None, world, logic, swarm, tick, hz) {
-                        // Refusals are in `recent` already; the rest (a bad binding's args) too.
-                        if j.get("by").is_none() {
-                            let mut j = j;
-                            j.set("by", Json::from("input"));
-                            push_recent(&mut run.recent, j);
-                        }
-                    }
+            run.spent = 0;
+            // The run's input first: the edges its actions fire, at its current tick; `held`
+            // bindings fire before each Lex tick stepped below (once per Lex tick, whatever the
+            // engine's rate). At most MAX_INPUT_COMMANDS_PER_TICK, each charged to the allowance.
+            let mut fired_n = 0;
+            let held = match &mut run.input {
+                Some(input) => {
+                    let (edges, held) = input_commands(input);
+                    fire(run, edges, &mut fired_n, &mut spent, limits, world, logic, swarm, tick, hz);
+                    held
                 }
-                if run.halted.is_some() {
-                    continue;
-                }
+                None => Vec::new(),
+            };
+            if run.halted.is_some() {
+                continue;
             }
             let lex_hz = u64::from(run.sim.rules().tick_hz);
             let done = tick.saturating_sub(run.started) + 1;
             let target = (u128::from(done) * u128::from(lex_hz) / u128::from(hz)).min(u128::from(u32::MAX)) as u32;
             let mut steps = 0;
-            run.spent = 0;
             while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK && spent < limits.work_per_tick {
+                if !held.is_empty() {
+                    let now: Vec<Fired> = held.iter().map(|f| Fired { command: f.command.clone(), args: f.args.clone(), who: f.who.clone() }).collect();
+                    fire(run, now, &mut fired_n, &mut spent, limits, world, logic, swarm, tick, hz);
+                    if run.halted.is_some() || run.sim.outcome().is_some() {
+                        break;
+                    }
+                }
                 let agent = run.agent.clone();
                 let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: false };
                 let sim = &mut run.sim;
@@ -1012,6 +1114,7 @@ fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json 
         ("hidden", Json::from(run.hidden)),
         ("behind", Json::from(run.behind)),
         ("work", Json::obj([("last_tick", Json::from(run.last_work)), ("this_engine_tick", Json::from(run.spent))])),
+        ("input_commands", Json::obj([("journaled", Json::from(run.input_journaled)), ("max", Json::from(MAX_INPUT_JOURNAL)), ("dropped", Json::from(run.input_dropped))])),
         ("halted", run.halted.clone().unwrap_or(Json::Null)),
         ("commands", Json::from(run.journal.len())),
         ("hash", hex(run.sim.hash())),
@@ -1606,6 +1709,115 @@ mod tests {
     /// Generic input: the set's own data item binds Space to `build` (and a held stick to a
     /// command with the value). A window key press, or an agent holding the action, fires the
     /// command at the run's tick, journaled as `input` and replayable headless.
+    /// A linked-in module whose `bump` hook keeps a counter and spawns `/counter/made` (n).
+    fn load_counter(rig: &mut Rig) {
+        use specula_sdk::{Cx, HookDef, Module, ModuleInfo, SdkError, Spawn, Value};
+        #[derive(Default)]
+        struct Counter;
+        impl Module for Counter {
+            fn describe(&self) -> ModuleInfo {
+                ModuleInfo { name: "counter", hooks: vec![HookDef { name: "bump", doc: "counts and spawns", args: r#"{"type": "object"}"# }], ..ModuleInfo::default() }
+            }
+            fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {
+                cx.spawn(Spawn::new("group").name("counter")).map(drop)
+            }
+            fn hook(&self, cx: &mut Cx, _name: &str, _args: &Value) -> Result<Value, SdkError> {
+                let n = cx.state("n")?.as_u64().unwrap_or(0) + 1;
+                cx.set_state("n", n)?;
+                cx.spawn(Spawn::new("cube").name(&format!("made{n}")).parent("/counter"))?;
+                Ok(Value::from(n))
+            }
+        }
+        let journal = &mut |w: &mut World, _: Mark, _: &str, _| {
+            w.take_changes();
+            Ok(())
+        };
+        rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
+    }
+
+    /// A set whose `bump` command calls `counter/bump`, with input bindings: `go` (held) and
+    /// `tap` (pressed) both fire `bump`; `many` binds `go` 64 times.
+    fn bump_set(many: bool) -> (Arc<Rules>, Option<Arc<InputSpec>>) {
+        let set = r#"{"lex": 1, "name": "t", "tick_hz": 30, "items": {
+            "bump_hook": {"kind": "native", "hook": "counter/bump", "reason": "a test"},
+            "bump": {"kind": "command", "do": [{"native": "bump_hook"}]}}}"#;
+        let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(set).unwrap(), &Options::default()).unwrap().rules);
+        let one = r#"{"action": "go", "on": "held", "command": "bump"}"#;
+        let bindings: Vec<&str> = if many { vec![one; MAX_BINDINGS] } else { vec![one, r#"{"action": "tap", "command": "bump"}"#] };
+        let input = format!(
+            r#"{{"input": {{"actions": {{"format": "specula.input.v1", "actions": [{{"name": "go", "kind": "button", "bindings": ["Key.G"]}}, {{"name": "tap", "kind": "button", "bindings": ["Key.T"]}}]}}, "bindings": [{}]}}}}"#,
+            bindings.join(", ")
+        );
+        let input = input_arg(&Json::parse(&input).unwrap(), &rules).unwrap();
+        (rules, input)
+    }
+
+    /// Review round 3 (finding 1, input3.py launder): commands an agent's held input fires run
+    /// as that agent, so bob's claim on /counter refuses ann's held `bump` like her direct
+    /// command; bob's own hold goes through and is journaled by him.
+    #[test]
+    fn held_input_runs_as_the_agent_holding_it() {
+        use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
+        let mut rig = Rig::new(30);
+        let (_, bob) = two_agents(&mut rig);
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.swarm.take_claim(&rig.world, &bob, ClaimSpec { scope: Scope::path("/counter").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let direct = rig.call(LiveCall::Command { set: "t".into(), name: "bump".into(), args: Json::Null });
+        assert!(direct.is_error && json(&direct).get("error") == Some(&Json::from("claimed")), "{}", json(&direct));
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("tap", Json::Bool(true))]), ticks: 1 }).is_error);
+        rig.ticks(3);
+        let run = rig.run_status("t");
+        assert_eq!(run.get("commands").and_then(Json::as_u64), Some(0), "nothing journaled: {run}");
+        let mut untouched = Sim::new_hosted(rules, 1, &Default::default()).unwrap();
+        untouched.run_to(run.get("tick").and_then(Json::as_u64).unwrap() as u32);
+        assert_eq!(run.get("hash").cloned(), Some(hex(untouched.hash())), "the run was put back (as if never commanded)");
+        assert!(rig.world.find_path("/counter/made1").is_err(), "nor the world");
+        let recent = run.get("recent").and_then(Json::as_array).unwrap();
+        assert!(recent.iter().any(|r| r.get("by") == Some(&Json::from("ann")) && r.get("error") == Some(&Json::from("claimed"))), "{run}");
+        // Bob's hold runs as bob: his claim allows it.
+        let out = rig.live.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("tap", Json::Bool(true))]), ticks: 1 }, "bob", bob_w, Env { world: &mut rig.world, logic: &mut rig.logic, swarm: &mut rig.swarm, natives: &rig.natives, tick: rig.tick, hz: rig.hz });
+        assert!(!out.is_error, "{}", json(&out));
+        rig.ticks(3);
+        let j = json(&rig.call(LiveCall::Journal { set: "t".into(), offset: 0, limit: 10 }));
+        let cmds = j.get("commands").and_then(Json::as_array).unwrap();
+        assert_eq!(cmds.len(), 1, "{j}");
+        assert_eq!(cmds[0].get("by"), Some(&Json::from("bob")));
+        assert!(rig.world.find_path("/counter/made1").is_ok());
+    }
+
+    /// Review round 3 (finding 2, input3.py flood): 64 held bindings fire once per Lex tick, at
+    /// most MAX_INPUT_COMMANDS_PER_TICK per engine tick, the rest dropped and counted; input
+    /// may fill only its part of the journal, so agents' commands still apply.
+    #[test]
+    fn held_input_is_capped_and_leaves_agents_room() {
+        let mut rig = Rig::new(60);
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(true);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 100 }).is_error);
+        rig.ticks(20);
+        let run = rig.run_status("t");
+        let lex_ticks = run.get("tick").and_then(Json::as_u64).unwrap();
+        assert_eq!(lex_ticks, 10, "a 30 Hz set under a 60 Hz engine");
+        let journaled = run.get("commands").and_then(Json::as_u64).unwrap();
+        assert_eq!(journaled, lex_ticks * MAX_INPUT_COMMANDS_PER_TICK as u64, "8 per Lex tick stepped (one Lex tick per two engine ticks): {run}");
+        let ic = run.get("input_commands").cloned().unwrap();
+        assert_eq!(ic.get("dropped").and_then(Json::as_u64), Some(lex_ticks * (MAX_BINDINGS - MAX_INPUT_COMMANDS_PER_TICK) as u64), "{ic}");
+        // Input's part of the journal used up: input is refused, agents still get through.
+        rig.live.runs.get_mut("t").unwrap().input_journaled = MAX_INPUT_JOURNAL;
+        rig.ticks(2);
+        let run = rig.run_status("t");
+        assert_eq!(run.get("commands").and_then(Json::as_u64), Some(journaled), "no more input commands");
+        assert!(run.get("recent").and_then(Json::as_array).unwrap().iter().any(|r| r.get("error") == Some(&Json::from("input_journal_full"))), "{run}");
+        let out = rig.call(LiveCall::Command { set: "t".into(), name: "bump".into(), args: Json::Null });
+        assert!(!out.is_error, "an agent's own command still applies: {}", json(&out));
+    }
+
     #[test]
     fn input_bindings_make_a_run_playable_without_a_hosted_game() {
         let controls = r#""controls": {"kind": "data", "value": {
@@ -1632,7 +1844,7 @@ mod tests {
         rig.ticks(1);
         let run = rig.run_status("t");
         let recent = run.get("recent").and_then(Json::as_array).unwrap();
-        assert!(recent.iter().any(|r| r.get("by") == Some(&Json::from("input")) && r.get("error") == Some(&Json::from("not_enough_gold"))), "{run}");
+        assert!(recent.iter().any(|r| r.get("by") == Some(&Json::from("ann")) && r.get("error") == Some(&Json::from("not_enough_gold"))), "ann's hold runs as ann: {run}");
         assert_eq!(run.get("input").and_then(|i| i.get("bindings")).and_then(Json::as_array).map(<[Json]>::len), Some(1));
         // The journal has the input's command; it replays headless to the live hash.
         let j = json(&rig.call(LiveCall::Journal { set: "t".into(), offset: 0, limit: 10 }));
