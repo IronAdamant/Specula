@@ -199,7 +199,24 @@ streaming off, and a flight doesn't change it), and the Sepulcra run in Measurem
 
 ## Measurements
 
-See the lane report and `scripts/stream_check.py`'s `report.json` (numbers on the Intel iGPU, 1280x720).
+`python scripts/stream_check.py` (Intel iGPU, 1280x720, 2026-10-18; a 24 x 24-cell world of 8,316 procedural
+entities, 6,021 builds, 128 MB budget, 2 ms / 8 MB upload budget per frame; `--baseline-exe` for the old path).
+Other sessions shared the machine, so frame times are noisy (most slow frames are `frame/present`, the GPU itself);
+the checks attribute each slow frame to its zones.
+
+| | before (main) | streaming |
+|---|---|---|
+| loading, slowest frame | 6,093 ms (`sync_meshes` 5,820) | 94 ms; `frame/stream` p99 2.3 ms, max 6.9 |
+| loading, frame p99 | 991 ms | 69 ms |
+| flight at 25 m/s, frame p99 | 237 ms (streaming off, same binary: 191) | 33 ms; `frame/stream` max 2.2 ms, 0 frames over from streaming |
+| upload ms per frame | - | p99 1.2, max 1.5 |
+| far vantage: draw calls / submitted | 7,350 / 9,738 | 2,536 / 2,585 with HLOD, 0 pixels different |
+| far vantage: draw-list CPU, mean / p95 | 4.9 / 11.1 ms | 0.43 / 0.52 ms |
+| switching streaming off (upload everything) | - | the engine is busy for 15-90 s |
+
+The world hash is identical with streaming on and off, the flight doesn't change it, and Sepulcra plays tick-identically
+both ways. Loading still had 5 frames of 2,353 with `frame/stream` over twice the budget (a 4.5 ms
+`vkBeginCommandBuffer` and descheduled pumps), above the check's 0.1 % allowance.
 
 ## Later
 
