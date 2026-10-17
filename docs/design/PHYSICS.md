@@ -252,7 +252,7 @@ and every query result; a cap that bites is a structured `budget` error in `phys
 
 **Measured (2026-10-18, i9-13900HX, one thread, release, shared machine so ±30%).** `bench` at 60 Hz, 4 substeps:
 20-row pyramid settles (top box 3 cm low) and sleeps; 10,000 sleeping bodies 0.001 ms a tick (target: nearly nothing);
-100 characters on a heightfield 0.010–0.015 ms each (target 0.05); 1,000 awake mixed bodies piling up 4.3–5.6 ms a tick
+100 characters on a heightfield 0.010–0.015 ms each (target 0.05); 1,000 awake mixed bodies piling up 3.8–5.6 ms a tick
 (target 2 ms: **not met yet**; narrowphase and solver about half each). The next steps there are friction at the
 manifold centre instead of per point, SIMD rows (Box2D's wide solver) and deterministic parallel narrowphase.
 
