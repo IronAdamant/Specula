@@ -287,9 +287,10 @@ struct Cell {
     hi: Vec3,
     /// Its HLOD content must be worked out again.
     dirty: bool,
-    /// Its members' distinct model handles, and whether the cell's proxy holds them (the
-    /// wanted set walks these, not every member). Wide members aren't in it.
-    handles: Vec<(u32, bool)>,
+    /// Its members' distinct model handles, whether the cell's proxy holds them, and their
+    /// largest world scale (the wanted set walks these, not every member). Wide members aren't
+    /// in it.
+    handles: Vec<(u32, bool, f32)>,
     /// It has wide members (wanted one by one, by their own boxes).
     has_wide: bool,
 }
@@ -525,10 +526,10 @@ pub struct Streamer {
     /// Builds wanted at some update: `(priority, the update it was last wanted in, hard)`;
     /// wanted now when that is the latest update. Lower priority first; soft ones stand in for
     /// a proxy and may be evicted for anything nearer.
-    want: IdMap<u64, (f32, u64, bool)>,
-    /// Builds wanted now and not all uploaded, by priority (made at each update; the pump skips
-    /// what finished since).
-    pending: Vec<(f32, u64)>,
+    want: IdMap<u64, (f32, u64, bool, usize)>,
+    /// Builds wanted now and not uploaded down to the finest level needed, by priority:
+    /// `(priority, build, hard, level)` (made at each update; the pump skips what finished).
+    pending: Vec<(f32, u64, bool, usize)>,
     sources: Vec<Source>,
     updates: u64,
     last_update: Option<Instant>,
@@ -841,6 +842,7 @@ impl Streamer {
         // HLOD contents of changed cells (and of cells still waiting for builds).
         {
             let _z = specula_core::profile::zone("hlod_content");
+            let left_out = self.hlod.take_left_out();
             let lib = library.lock();
             let mut gone = Vec::new();
             for (k, c) in &mut self.index.cells {
@@ -859,16 +861,24 @@ impl Streamer {
                         self.hlod.set_content(*k, content);
                     }
                 }
-                if c.dirty || waiting {
-                    let merged: &[u64] = self.hlod.content(*k).map_or(&[], |ct| ct.members.as_slice());
+                if c.dirty || waiting || left_out.binary_search(k).is_ok() {
+                    // What the proxy holds: the uploaded one's members (a full proxy leaves some
+                    // out: they draw on their own), else what the next one will hold.
+                    let merged = self.hlod.proxy_members(*k);
                     c.handles.clear();
                     for m in c.members.iter().filter(|m| !m.wide) {
                         if let Some(h) = m.handle {
-                            c.handles.push((h, merged.binary_search(&m.id).is_ok()));
+                            c.handles.push((h, merged.binary_search(&m.id).is_ok(), max_scale(&m.world)));
                         }
                     }
-                    c.handles.sort_unstable();
-                    c.handles.dedup();
+                    c.handles.sort_by_key(|&(h, merged, _)| (h, merged));
+                    c.handles.dedup_by(|a, b| {
+                        let same = (a.0, a.1) == (b.0, b.1);
+                        if same {
+                            b.2 = b.2.max(a.2);
+                        }
+                        same
+                    });
                 }
                 c.dirty = false;
             }
@@ -885,33 +895,43 @@ impl Streamer {
         let want = &mut self.want;
         // `hard`: a camera would draw it (or it is a game's presentation); soft: it stands in
         // for a proxy that isn't there yet, and gives way to what is hard-wanted or nearer.
-        let mut wish = |b: u64, p: f32, hard: bool| {
-            let e = want.entry(b).or_insert((p, frame, hard));
+        // `level`: the finest LOD it needs (a far camera never needs LOD 0 uploaded).
+        let mut wish = |b: u64, p: f32, hard: bool, level: usize| {
+            let e = want.entry(b).or_insert((p, frame, hard, level));
             if e.1 != frame {
-                *e = (p, frame, hard);
+                *e = (p, frame, hard, level);
             } else {
                 e.0 = e.0.min(p);
                 e.2 |= hard;
+                e.3 = e.3.min(level);
             }
         };
-        let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
-        let low = |a: Option<(f32, bool)>, p: f32, hard: bool| match a {
-            None => Some((p, hard)),
-            Some((q, h)) => Some((q.min(p), h || hard)),
+        let live = &self.live;
+        // The finest level a camera at `d` (field of view, viewport height) would draw `b` at,
+        // with a world scale of `scale` (one level finer at the window's hysteresis edge).
+        let level_at = |b: u64, scale: f32, d: f32, fov: f32, vh: u32| -> usize {
+            let Some(built) = live.get(&b) else { return 0 };
+            let (lo, hi) = built.bounds();
+            let r = ((hi - lo).length() * 0.5).max(1e-3) * scale;
+            let px = crate::models::screen_px(r, d.max(0.0), fov, vh) * (1.0 + crate::models::LOD_HYSTERESIS);
+            crate::models::select_lod(px, built.model.lods.len(), None)
         };
+        let build_of = |h: Option<u32>| h.and_then(|h| models.by_handle.get(h as usize).copied().flatten());
+        // The sources a cell's members are wanted by: `(priority, hard, distance, source)`.
+        let mut members_by: Vec<(f32, bool, f32, usize)> = Vec::new();
+        let mut others_by: Vec<(f32, bool, f32, usize)> = Vec::new();
         for (k, c) in &self.index.cells {
-            // Per kind of member: the best priority over the sources, and whether hard.
-            let mut members_p: Option<(f32, bool)> = None;
-            let mut others_p: Option<(f32, bool)> = None;
+            members_by.clear();
+            others_by.clear();
             let mut proxy_p: Option<f32> = None;
             let current = hlod_on && self.hlod.has_current(*k);
             let content = self.hlod.content(*k);
             let merging = hlod_on && content.is_some_and(|ct| ct.key != 0);
-            for s in &self.sources {
+            for (si, s) in self.sources.iter().enumerate() {
                 let d = hlod::box_distance(s.eye, c.lo, c.hi);
                 let p = d * s.weight(c.lo, c.hi);
                 if d < cfg.radius_m {
-                    others_p = low(others_p, p, true);
+                    others_by.push((p, true, d, si));
                 }
                 if merging && d < cfg.hlod_radius_m {
                     // Wanted wherever this camera wouldn't draw the proxy (within preload x the
@@ -921,24 +941,27 @@ impl Streamer {
                     let sw = content.map_or(0.0, |ct| hlod::switch_distance(ct.k, s.fov_y_deg, s.viewport_h, cfg.hlod_min_m));
                     if current {
                         if d <= sw * cfg.preload {
-                            members_p = low(members_p, p, true);
+                            members_by.push((p, true, d, si));
                         }
                     } else {
-                        members_p = low(members_p, p, d < cfg.radius_m || d <= sw * cfg.preload);
+                        members_by.push((p, d < cfg.radius_m || d <= sw * cfg.preload, d, si));
                     }
                 } else if !merging && d < cfg.radius_m {
-                    members_p = low(members_p, p, true);
+                    members_by.push((p, true, d, si));
                 }
                 if hlod_on && d < cfg.hlod_radius_m {
                     let pp = p * 0.5;
                     proxy_p = Some(proxy_p.map_or(pp, |q: f32| q.min(pp)));
                 }
             }
-            if members_p.is_some() || others_p.is_some() {
-                for &(h, in_proxy) in &c.handles {
-                    let p = if in_proxy { members_p } else { others_p };
-                    if let (Some((p, hard)), Some(b)) = (p, build_of(Some(h))) {
-                        wish(b, p, hard);
+            if !members_by.is_empty() || !others_by.is_empty() {
+                for &(h, in_proxy, scale) in &c.handles {
+                    let Some(b) = build_of(Some(h)) else { continue };
+                    for &(p, hard, d, si) in if in_proxy { &members_by } else { &others_by } {
+                        // A soft stand-in only needs the coarsest level (the proxy's).
+                        let s = &self.sources[si];
+                        let level = if hard { level_at(b, scale, d, s.fov_y_deg, s.viewport_h) } else { usize::MAX };
+                        wish(b, p, hard, level);
                     }
                 }
             }
@@ -949,7 +972,7 @@ impl Streamer {
                     for s in &self.sources {
                         let d = hlod::box_distance(s.eye, m.lo, m.hi);
                         if d < cfg.radius_m {
-                            wish(b, d * s.weight(m.lo, m.hi), true);
+                            wish(b, d * s.weight(m.lo, m.hi), true, level_at(b, max_scale(&m.world), d, s.fov_y_deg, s.viewport_h));
                         }
                     }
                 }
@@ -961,18 +984,18 @@ impl Streamer {
         // A game's presentation (transient models) comes first.
         for e in world.transient_entities().filter(|e| e.shape == Shape::Model) {
             if let Some(b) = build_of(e.resolved_model().map(|r| r.handle)) {
-                wish(b, 0.0, true);
+                wish(b, 0.0, true, 0);
             }
         }
         let live = &self.live;
         if self.want.len() > live.len() * 2 + 64 {
             self.want.retain(|b, _| live.contains_key(b));
         }
-        // What the pump works through until the next update.
+        // What the pump works through until the next update: down to the finest level needed.
         self.pending.clear();
-        for (b, &(p, f, _)) in &self.want {
-            if f == frame && live.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > 0) {
-                self.pending.push((p, *b));
+        for (b, &(p, f, hard, level)) in &self.want {
+            if f == frame && live.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > level) {
+                self.pending.push((p, *b, hard, level));
             }
         }
         self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -998,7 +1021,7 @@ impl Streamer {
         // The pending builds (sorted at the last update; finished ones dropped here) merged with
         // the proxies waiting for upload (few), by priority.
         let live = &self.live;
-        self.pending.retain(|(_, b)| live.contains_key(b) && !models.failed.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > 0));
+        self.pending.retain(|&(_, b, _, level)| live.contains_key(&b) && !models.failed.contains_key(&b) && models.uploaded.get(&b).is_none_or(|m| m.resident_from > level));
         let mut proxies: Vec<(f32, CellKey, u64)> = if self.hlod_on() { self.hlod.uploads().collect() } else { Vec::new() };
         if self.pending.is_empty() && proxies.is_empty() {
             self.blocked_bytes = 0;
@@ -1015,15 +1038,15 @@ impl Streamer {
             match (build, proxy) {
                 (Some(b), Some(p)) if p.0 <= b.0 => {
                     pi += 1;
-                    Some((p.0, Item::Proxy(p.1), p.2))
+                    Some((p.0, false, Item::Proxy(p.1), p.2))
                 }
-                (Some(&(pr, b)), _) => {
+                (Some(&(pr, b, hard, _)), _) => {
                     bi += 1;
-                    Some((pr, Item::Build(b), 0))
+                    Some((pr, hard, Item::Build(b), 0))
                 }
                 (None, Some(p)) => {
                     pi += 1;
-                    Some((p.0, Item::Proxy(p.1), p.2))
+                    Some((p.0, false, Item::Proxy(p.1), p.2))
                 }
                 (None, None) => None,
             }
@@ -1034,8 +1057,9 @@ impl Streamer {
         let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
         let mut resident = models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes();
         let mut blocked = 0u64;
-        // Nothing more to evict this frame: later items over the budget are blocked at once.
-        let mut evicted_all = false;
+        // The lowest eviction threshold found to leave nothing to evict: an item whose threshold
+        // is no lower is blocked at once (items come nearest first; a hard one goes lower).
+        let mut exhausted = f32::INFINITY;
         // What may be evicted, worked out once per pump when first needed.
         let mut victims: Option<VecDeque<(f32, Victim)>> = None;
         self.blocked.clear();
@@ -1043,7 +1067,7 @@ impl Streamer {
         let count = (pending.len() + proxies.len()) as u32;
         // What earlier pumps of this frame (captures' calls) spent comes off the budget.
         let already = self.spent_ms;
-        for (i, (prio, item, est)) in items.enumerate() {
+        for (i, (prio, hard, item, est)) in items.enumerate() {
             let est = match item {
                 Item::Build(b) => next_level_bytes(&self.live[&b], models.uploaded.get(&b)),
                 Item::Proxy(_) => est,
@@ -1060,12 +1084,14 @@ impl Streamer {
                 continue;
             }
             if resident + est > memory {
-                if !evicted_all {
+                // A hard-wanted item may evict any soft victim; others only farther ones.
+                let threshold = if hard { f32::NEG_INFINITY } else { prio };
+                if threshold < exhausted {
                     let v = victims.get_or_insert_with(|| self.victims(models));
-                    resident -= self.evict_for(resident + est - memory, prio, v, gpu, models);
+                    resident -= self.evict_for(resident + est - memory, threshold, v, gpu, models);
                 }
                 if resident + est > memory {
-                    evicted_all = true;
+                    exhausted = exhausted.min(threshold);
                     self.frame.memory_blocked += 1;
                     blocked += est;
                     match item {
@@ -1188,6 +1214,8 @@ impl Streamer {
             .uploaded
             .keys()
             .filter_map(|id| self.want.get(id).filter(|e| e.1 == self.updates && !e.2).map(|e| (e.0, Victim::Build(*id))))
+            // Wanted proxies too (far ones give way to what is near).
+            .chain(self.hlod.wanted_uploaded().into_iter().map(|(p, cell)| (p, Victim::Proxy(cell))))
             .collect();
         soft.sort_by(|a, b| b.0.total_cmp(&a.0));
         gone.into_iter().map(|(_, v)| (f32::INFINITY, v)).chain(soft).collect()
@@ -1201,6 +1229,7 @@ impl Streamer {
         let mut freed = 0;
         while freed < need {
             let Some(&(p, victim)) = victims.front() else { break };
+            // Unwanted ones (priority infinity) always go; soft ones only for a nearer item.
             if p <= prio {
                 break;
             }
@@ -1299,19 +1328,24 @@ impl Streamer {
                         }
                     }
                 }
-                let merged: &[u64] = content.map_or(&[], |ct| ct.members.as_slice());
+                let merged = if self.hlod_on() { self.hlod.proxy_members(*k) } else { &[] };
+                let sw = content.filter(|ct| ct.key != 0).map_or(0.0, |ct| hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m));
                 for m in &c.members {
                     let in_proxy = merged.binary_search(&m.id).is_ok();
                     if in_proxy && proxied {
                         continue;
                     }
-                    // What this view draws on its own: wide models by their own box; merged
-                    // members of a current proxy wherever the view doesn't draw the proxy; the
-                    // rest within radius_m (members standing in beyond it are soft: not waited).
+                    // What this view draws on its own, as the wanted set has it: wide models by
+                    // their own box; merged members of a current proxy wherever the view doesn't
+                    // draw the proxy, of a coming one within radius_m or preload x the switch
+                    // distance (beyond, they stand in softly: not waited for); the rest within
+                    // radius_m.
                     let near = if m.wide {
                         hlod::box_distance(cam.eye, m.lo, m.hi) < self.cfg.radius_m
                     } else if in_proxy && current {
                         d < self.cfg.hlod_radius_m
+                    } else if in_proxy {
+                        d < self.cfg.radius_m || (d <= sw * self.cfg.preload && d < self.cfg.hlod_radius_m)
                     } else {
                         d < self.cfg.radius_m
                     };
@@ -1527,9 +1561,7 @@ fn content_of(c: &Cell, lib: &crate::models::Library, world: &World) -> Content 
         }
         let (lo, hi) = built.bounds();
         let centre = m.world.transform_point((lo + hi) * 0.5);
-        let c3 = &m.world.cols;
-        let scale = [c3[0], c3[1], c3[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max);
-        let radius = ((hi - lo).length() * 0.5).max(1e-3) * scale;
+        let radius = ((hi - lo).length() * 0.5).max(1e-3) * max_scale(&m.world);
         ct.k = ct.k.max(hlod::switch_factor(radius, level));
         if first {
             ct.lo = centre;
@@ -1568,6 +1600,12 @@ fn inputs_of(c: &Cell, content: &Content, lib: &crate::models::Library) -> Optio
     // The proxy's frame: the cell's members' centre, rounded to a metre (stable under edits).
     let o = (content.lo + content.hi) * 0.5;
     Some((Vec3::new(o.x.round(), o.y.round(), o.z.round()), out))
+}
+
+/// The longest of a transform's axis columns: how much it scales a model's bounds at most.
+fn max_scale(world: &Mat4) -> f32 {
+    let c = &world.cols;
+    [c[0], c[1], c[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max)
 }
 
 /// Estimated GPU bytes of the next level `upload_next_level` would upload.

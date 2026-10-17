@@ -377,6 +377,8 @@ pub struct Hlod {
     pub stats: HlodStats,
     /// The last proxy build's error.
     pub last_error: Option<String>,
+    /// Cells whose proxy left members out (streaming wants those on their own).
+    left_out_cells: Vec<CellKey>,
 }
 
 impl Hlod {
@@ -435,6 +437,32 @@ impl Hlod {
                 c.last_wanted = frame;
             }
         }
+    }
+
+    /// Uploaded proxies of wanted cells the window doesn't draw now: `(priority, cell)` (they
+    /// may give way to nearer content under the memory budget).
+    pub fn wanted_uploaded(&self) -> Vec<(f32, CellKey)> {
+        self.cells.iter().filter(|(_, c)| c.uploaded.is_some() && !c.window_on).filter_map(|(k, c)| Some((c.want?, *k))).collect()
+    }
+
+    /// The members cell `cell`'s proxy holds: the current uploaded proxy's (a full proxy leaves
+    /// some out), else what the next one will hold.
+    pub fn proxy_members(&self, cell: CellKey) -> &[u64] {
+        match self.cells.get(&cell) {
+            Some(c) => match c.current() {
+                Some(u) => &u.members,
+                None => &c.content.members,
+            },
+            None => &[],
+        }
+    }
+
+    /// Cells whose uploaded proxy left members out since the last call.
+    pub fn take_left_out(&mut self) -> Vec<CellKey> {
+        let mut v = std::mem::take(&mut self.left_out_cells);
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// Whether the window draws cell `cell` as its proxy now.
@@ -577,6 +605,9 @@ impl Hlod {
         let draws = std::mem::take(&mut c.staged.1);
         let bytes = p.groups.iter().map(group_bytes).sum();
         let members: Vec<u64> = c.content.members.iter().copied().filter(|id| !p.left_out.contains(id)).collect();
+        if !p.left_out.is_empty() {
+            self.left_out_cells.push(cell);
+        }
         let new = Uploaded { key: p.key, origin: p.origin, draws, bytes, hash: p.hash, left_out: p.left_out, members };
         if let Some(old) = c.uploaded.replace(new) {
             if c.window_on {

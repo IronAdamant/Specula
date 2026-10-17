@@ -48,14 +48,14 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let shared = Arc::new(SharedLibrary::new(Library::new(&assets, None)));
     let mut world = World::default();
     world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
-    // Two clusters 600 m apart: 24 unique cliffs and 48 tombstones each.
+    // Two clusters 600 m apart: 40 unique cliffs and 32 tombstones each.
     for cluster in 0..2u64 {
         let x0 = cluster as f32 * 600.0;
         for i in 0..72u64 {
-            let (recipe, seed) = if i < 24 { ("recipes/slab_cliff.json", 100 + cluster * 100 + i) } else { ("recipes/tombstone.json", 1000 + cluster * 100 + i % 8) };
+            let (recipe, seed) = if i < 40 { ("recipes/slab_cliff.json", 100 + cluster * 100 + i) } else { ("recipes/tombstone.json", 1000 + cluster * 100 + i % 8) };
             let mut s = SpawnSpec::model(ModelSpec { recipe: recipe.into(), params: Vec::new(), seed: Some(seed) });
             s.position = Vec3::new(x0 + (i % 9) as f32 * 12.0, 0.0, (i / 9) as f32 * 12.0);
-            s.scale = if i < 24 { Vec3::new(0.3, 0.3, 0.3) } else { Vec3::ONE };
+            s.scale = if i < 40 { Vec3::new(0.6, 0.6, 0.6) } else { Vec3::ONE };
             world.spawn(s, "t").unwrap();
         }
     }
