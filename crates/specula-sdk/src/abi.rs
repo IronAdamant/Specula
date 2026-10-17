@@ -81,9 +81,12 @@ pub struct HostApi {
     /// Opaque engine state for this call.
     pub ctx: *mut c_void,
     /// A request (encoded value); the answer is written to `*out`. Returns a [`status`].
-    pub request: extern "C" fn(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32,
-    /// The call's result or error (encoded value). At most once per call; later replies replace it.
-    pub reply: extern "C" fn(ctx: *mut c_void, bytes: *const u8, len: usize),
+    /// Safety: only during the call this table was passed to, with `ctx` from it, `req_len`
+    /// readable bytes at `req` and a writable `out`.
+    pub request: unsafe extern "C" fn(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32,
+    /// The call's result or error (encoded value). At most once per call; later replies replace
+    /// it. Safety: as for `request`, with `len` readable bytes at `bytes`.
+    pub reply: unsafe extern "C" fn(ctx: *mut c_void, bytes: *const u8, len: usize),
 }
 
 /// The module's side: a static table the entry symbol points to.
@@ -94,8 +97,10 @@ pub struct ModuleApi {
     pub api_size: u32,
     /// The SDK version the module was built with (`CARGO_PKG_VERSION`, NUL-padded ASCII).
     pub sdk_version: [u8; 16],
-    /// See the module docs. Never unwinds.
-    pub call: extern "C" fn(host: *const HostApi, entry: u32, input: *const u8, input_len: usize) -> u32,
+    /// See the module docs. Never unwinds. Safety: `host` points to a valid [`HostApi`] whose
+    /// functions may be called until this returns, and `input_len` bytes at `input` are
+    /// readable for that long.
+    pub call: unsafe extern "C" fn(host: *const HostApi, entry: u32, input: *const u8, input_len: usize) -> u32,
 }
 
 /// The table for module type `M` (what [`crate::export_module!`] exports).
@@ -156,7 +161,11 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// The module side of [`ModuleApi::call`] for module type `M`.
-pub extern "C" fn call<M: Module>(host: *const HostApi, entry: u32, input: *const u8, input_len: usize) -> u32 {
+///
+/// # Safety
+/// As [`ModuleApi::call`] says: a valid `host` table for the whole call and `input_len`
+/// readable bytes at `input`.
+pub unsafe extern "C" fn call<M: Module>(host: *const HostApi, entry: u32, input: *const u8, input_len: usize) -> u32 {
     if host.is_null() {
         return status::BAD_INPUT;
     }
@@ -197,7 +206,8 @@ pub extern "C" fn call<M: Module>(host: *const HostApi, entry: u32, input: *cons
         }
     };
     let bytes = reply.encode();
-    (host.reply)(host.ctx, bytes.as_ptr(), bytes.len());
+    // SAFETY: during the call, with the call's own context and our own live buffer.
+    unsafe { (host.reply)(host.ctx, bytes.as_ptr(), bytes.len()) };
     status
 }
 
@@ -240,7 +250,9 @@ fn dispatch<M: Module>(host: &HostApi, entry: u32, input: &[u8]) -> Outcome {
 pub(crate) fn request(host: &HostApi, req: &Value) -> Result<Value, SdkError> {
     let bytes = req.encode();
     let mut out = Slice::EMPTY;
-    let status = (host.request)(host.ctx, bytes.as_ptr(), bytes.len(), &mut out);
+    // SAFETY: only reached from inside `call` (a `Cx` lives no longer), with the call's own
+    // context, our live request buffer and a writable `out`.
+    let status = unsafe { (host.request)(host.ctx, bytes.as_ptr(), bytes.len(), &mut out) };
     let answer: &[u8] = if out.len == 0 || out.ptr.is_null() {
         &[]
     } else {

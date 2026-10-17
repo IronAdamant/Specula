@@ -81,7 +81,7 @@ fn module_copy(repo: &Path) -> PathBuf {
     let sdk = repo.join("crates").join("specula-sdk");
     let manifest = format!(
         "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n\
-         [dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n\n[profile.dev]\nopt-level = 0\n",
+         [dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n\n[profile.dev]\ndebug = 0\nstrip = \"debuginfo\"\n",
         sdk.to_string_lossy().replace('\\', "/")
     );
     std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();

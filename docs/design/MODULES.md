@@ -1,0 +1,205 @@
+# Design: game modules (hot-reloaded Rust logic)
+
+Status: built 2026-10-18 (M3 lane "module host"). Decision record: [ENGINE_PLAN.md](../ENGINE_PLAN.md) ("Game logic:
+hot-reloaded Rust modules"). Rules it follows: [DETERMINISM.md](DETERMINISM.md), [AGENTS.md](../../AGENTS.md).
+
+**Goal:** game logic that no building block covers is written as Rust **modules**: small `cdylib` crates the engine
+builds, loads, runs every tick and reloads when they change, while the world keeps running. Gameplay as data (Lex) is
+the first choice; modules are the escape hatch, and Lex calls into them through named **native hooks**.
+
+## The pieces
+
+| Crate / file | Role |
+|---|---|
+| `crates/specula-sdk` | The one crate a module depends on: the `Module` trait, `Cx` (what a module may touch), `Value` (data crossing the boundary), the C ABI tables and `export_module!`. Re-exports `dmath`, `Vec3`, `Quat`. |
+| `crates/specula-logic` | The engine side, and all of the host's `unsafe`: `ModuleCode` (load a library from a versioned copy, check its ABI, call it), `BuildService` (Cargo, one at a time, merged requests), `diag` (Cargo JSON as data), `fix` (machine-applicable fixes). Knows nothing about the world. |
+| `crates/specula/src/logic/` | `LogicHost`: modules at tick boundaries, the request handler (world, state store, RNG, controller, events, log), input actions, the character controller interface, and the agent tools. |
+| `games/ambulo` | The example module: a capsule that walks and jumps (the M3 exit proof's playable character). |
+
+## Lifecycle
+
+```
+logic_build {path}            (connection thread)               (engine thread, at a tick boundary)
+  cargo build --message-format=json ──► diagnostics as data
+  copy lib to <target>/specula-modules/<name>-<pid>-<n>.dll
+  LoadLibrary the copy, check ABI table ──────────────────────► describe (name, actions, hooks)
+                                                                 old build: stop(reload); unload
+                                                                 new build: start(reloaded = true)
+                                                                 every tick: tick(actions, events)
+```
+
+- **Load or reload.** The new build is opened and ABI-checked off the engine thread, then described on it. Only if that
+  succeeds does the old build of the same name stop and unload; the new one starts with `reloaded = true`. A build
+  that fails to compile, load or describe never replaces a running one.
+- **Versioned copies.** The library is copied to a name no other load uses before loading, so Cargo can overwrite the
+  original while the module runs (Windows locks loaded DLLs). The copy is deleted after unloading; copies left by
+  engines that died are swept by pid at the next load.
+- **Tick order.** Running modules tick after the hosted game's tick, in `(order, name)` order, each with its input
+  actions for the tick and the events emitted during the previous tick.
+- **Unload.** `stop(unload)` runs first (ambulo deletes what it spawned). The state store and RNG positions stay for a
+  later load unless `forget_state`.
+
+## The engine owns all state
+
+A fresh `Self::default()` handles every call, so a module has nowhere to keep state but the engine:
+
+- **the world**: entities and their `props`, visible to agents (`world_query`), saved with the world, journaled;
+- **the state store** (`Cx::state` / `set_state`): a per-module key-value map of `Value`s (≤ 1,024 keys, ≤ 1 MiB),
+  kept across reloads;
+- **RNG streams** (`Cx::random_*`): PCG32 per `(module, stream)`, seeded from the module's seed, positions kept
+  across reloads.
+
+So a reload loses nothing by construction. `static mut`, `thread_local!`, `OnceLock` caches and threads are against
+the rules: they break determinism or dangle after an unload. (Not yet persisted: the state store and RNG positions live
+in engine memory, not in world files; that comes with save games.)
+
+## Determinism (F2)
+
+- The SDK offers only deterministic inputs: the tick number (no wall clock), engine RNG streams, the world, the tick's
+  input **actions** (never raw keys), and events in emission order. Its maps are `BTreeMap`s; `Value` encoding is
+  canonical; floats cross as exact bits.
+- Modules run in a fixed order, on the engine thread, at tick boundaries. Agent input (`logic_input`) is applied per
+  tick.
+- A failed call changes nothing: world changes are rolled back (`World::rollback_to`), and so are state writes, RNG
+  draws and events. Ids handed out during the failed call are not reused (the world's rule).
+- Each load is recorded with its tick, generation and **build hash** (hash of the library bytes) in `logic_status`
+  (DETERMINISM.md rule 8). Module world changes are journaled as `module:<name>` (like a hosted game's ticks), and
+  `world_hash {verify}` replays them to the live hash (checked by `scripts/module_reload.py`).
+- Not yet enforced: the SDK can't stop a module from calling `std::time` or `f32::sin` itself. Planned with the Rust
+  track's determinism lints (`disallowed_methods` in a module template's `clippy.toml`). The FP-environment guard
+  (rule 6) is also still to do.
+
+## The C ABI
+
+All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
+
+```rust
+#[repr(C)] pub struct ModuleApi {          // static in the module; `specula_module_entry()` returns it
+    abi_version: u32, api_size: u32,       // checked first; a mismatch is a structured `abi_mismatch`
+    sdk_version: [u8; 16],                 // CARGO_PKG_VERSION of the SDK, NUL-padded
+    call: unsafe extern "C" fn(host: *const HostApi, entry: u32, input: *const u8, len: usize) -> u32,
+}
+#[repr(C)] pub struct HostApi {            // the engine's, valid for one call
+    abi_version: u32, api_size: u32, ctx: *mut c_void,
+    request: unsafe extern "C" fn(ctx, req: *const u8, len: usize, out: *mut Slice) -> u32,
+    reply:   unsafe extern "C" fn(ctx, bytes: *const u8, len: usize),
+}
+```
+
+- Entries: `DESCRIBE 1`, `START 2`, `TICK 3`, `HOOK 4`, `STOP 5`. Statuses: `OK 0`, `ERROR 1`, `PANIC 2`,
+  `BAD_INPUT 3`, `UNKNOWN_ENTRY 4`.
+- Messages are `Value`s (null, bool, i64, f64, string, list, ordered map) in a canonical little-endian encoding.
+  Requests are maps with an `op` (`find`, `get`, `query`, `spawn`, `set`, `delete`, `state_get`, `state_set`, `rng`,
+  `move_character`, `emit`, `log`); `spawn` and `set` take exactly the fields of the `world_spawn` and `world_set`
+  tools and are validated by the same code, so modules and agents share one vocabulary and one set of error messages.
+- Neither side frees the other's memory or keeps its pointers past a call. Answers live in an engine buffer valid until
+  the module's next request; replies are copied by the engine.
+- **Panics never cross the boundary.** The SDK catches them in `call` (with message and `file:line:column` from a
+  chained panic hook in the module's own copy of std) and returns `PANIC`; the engine's trampolines catch their own.
+  The engine then rolls the call back and disables the module.
+- **Bounded work.** At most 200,000 requests per call (then `too_many_requests` and the call fails), replies ≤ 4 MiB,
+  queries ≤ 4,096 ids, ≤ 256 events per tick per module. An infinite loop that makes no requests can't be stopped
+  (no preemption); the tick's time shows it in `logic_status` (`tick_us`).
+- Additive changes (new ops, new keys) keep the version; anything else bumps it. Layout is pinned by
+  `abi::tests::layout_is_pinned`.
+- `ModuleCode::of::<M>()` runs a module type linked into the engine through the same function pointer and messages:
+  used by tests today, and the path for shipping builds on platforms that forbid loading code (F6: consoles, iOS).
+
+## Agent tools
+
+| Tool | What it does |
+|---|---|
+| `logic_build {path, check?, fix?, release?, reload?, detailed?, seed?}` | Cargo build of the module crate, diagnostics as data, optional fixes, then reload. Timings: `queued`, `build`, `reload` (`open`, `load`, `start` inside), `total`. |
+| `logic_reload {module? \| library?}` | Reload from the last library (after building it yourself) or load a prebuilt one. |
+| `logic_unload {module, forget_state?}` | Stop and unload. |
+| `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds. |
+| `logic_input {module, actions, ticks?}` | Hold actions for N ticks (buttons true/false, axes numbers, 2D axes `[x, y]`). |
+| `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). |
+
+Paths must lie under the engine's working directory, and modules may not have build scripts (zero-dep rule).
+
+### Diagnostics as data and fixes
+
+`logic_build` runs `cargo build --lib --message-format=json` and returns, per diagnostic of the module's own package:
+`level`, `code` (`E0308`, `unused_mut`), `message`, `file` (relative to the module), `line`, `column`, `end_line`,
+`end_column`, `label`, `notes` (help/note children) and `fixes` (each with `replacement` and rustc's
+`applicability`). Errors come first; at most 30 are listed (the rest counted); `detailed` adds rustc's rendering.
+`fix: true` applies every `MachineApplicable` suggestion inside the module's folder (non-overlapping, back to front, as
+`cargo fix` does), rebuilds, and repeats up to 3 rounds; `fixes_applied` lists them. `check: true` runs `cargo check`
+only.
+
+### Build service (swarms)
+
+Cargo locks its target directory, so concurrent agents' builds would just queue inside Cargo, each paying a full run.
+The engine has one `BuildService`: requests queue in arrival order and one Cargo runs at a time. A request identical
+to one that is queued but **not yet started** (same folder, profile, check and fix flags) joins it, and every
+requester gets the same report (`requests_merged`). A request never joins a running build, because the source may have
+changed after it began. Measured: three agents rebuilding at once → 2 Cargo runs (`[1, 2, 2]`).
+
+## Input: actions per tick
+
+A module declares its actions as a `specula.input.v1` map (`ModuleInfo::actions`, e.g. ambulo's `actions.json`:
+`move` (axis2, value output; WASD, arrows, left stick) and `jump` (Space, pad South)). The engine feeds window events
+and polled gamepads into a per-module `specula_input::Input` every frame and **latches** them per tick: presses
+shorter than a tick still arrive as `pressed`, delta axes sum over the frames, value axes report their level at the
+tick. Agents hold actions with `logic_input`, on top of window input; holds carry over a reload. Headless engines get
+only agent input. Modules never see keys (F6).
+
+## Character controller interface
+
+`Cx::move_character(id, motion)` moves a character entity by a displacement (gravity included) and returns
+`{position, grounded, blocked}`. Behind it is the engine's `CharacterMover` trait
+(`crates/specula/src/logic/character.rs`). Today's implementation, `Kinematic`, is a **placeholder**: a vertical capsule
+(the entity's capsule collider, feet at its origin) against the world-space boxes of other entities' colliders; it lands
+on tops (stepping up to 0.35 m), stops at sides and slides along them, with no slopes or ceilings. The physics lane's
+P2 controller replaces it with `LogicHost::set_mover` and no module changes.
+
+## Native hooks: the Lex escape hatch
+
+The contract between Lex (gameplay as data) and modules:
+
+1. **Declare.** A module lists its hooks in `ModuleInfo::hooks`: `HookDef { name, doc, args }` with `name` in
+   `[a-z][a-z0-9_]{0,63}`, a one-line `doc` saying what it does and when, and `args` as a JSON Schema (text). The
+   engine validates them at load. Qualified name: `<module>/<hook>` (e.g. `ambulo/launch`).
+2. **Discover.** `LogicHost::hooks() -> Vec<HookInfo>` lists the running modules' hooks (`qualified()`, `doc`, `args`
+   as JSON); `logic_status` shows them to agents. Lex validates a rule's `native` references against this list (an
+   unknown hook is a schema error that names the available ones).
+3. **Call.** `LogicHost::call_hook(hook, args: &Json, reason: &str, caller: &str, world, tick, tick_hz, journal)
+   -> Result<Json, WorldError>`. `reason` is required (1..300 characters): why a hook instead of data. `caller` names
+   who asked (`lex`, or the agent). The module's `Module::hook(cx, name, args)` runs with full `Cx` access (world,
+   state, RNG, controller) and answers a `Value` (returned as JSON).
+4. **Log.** Every use is logged (`tick, hook, caller, reason, ok`; last 256) and counted per hook (`hook_counts`), so
+   the data language can grow from evidence: the hooks used most are the next Lex features.
+5. **Fail safely.** A failing hook changes nothing (rolled back) and returns `hook_failed` with the module's
+   structured error; a panicking one also disables its module.
+6. **Journal.** The hook's world changes are handed to the `journal` callback: Lex passes one that records them as
+   part of its own tick (or a no-op to leave them pending for its own journaling); the `logic_hook` tool journals them
+   as the module's.
+
+Integration (after both lanes merge): the integrator connects Lex's `native` effect to `LogicHost::call_hook` with
+`caller = "lex"` and the rule's reason, and runs hooks inside Lex's tick so their changes are attributed with it.
+
+## Build times (measured 2026-10-18, this machine, windows-gnu)
+
+| What | Time |
+|---|---|
+| ambulo edit → `cargo build` (dev, opt-level 1, debuginfo; 13.5 MB DLL) | median 628 ms |
+| same, `strip = "debuginfo"` for the module (2.1 MB DLL) | median 519 ms |
+| same, opt-level 0 + strip | median 568 ms (opt-level 0 doesn't help a thin module; linking dominates) |
+| open (copy + load) of the 13.5 MB debug DLL | ~230 ms (the OS scans the new file); ~X ms stripped |
+| describe + stop + start (engine thread) | ~1.5 ms |
+| **edit → reload in a running engine** (`scripts/module_reload.py`) | **~0.95 s** (budget 2 s) |
+| ambulo tick | ~47 µs average (headless, debug engine) |
+
+So modules build with `strip = "debuginfo"` (workspace `Cargo.toml`, `[profile.dev.package.ambulo]`), and the
+library is opened off the engine thread, so a reload costs the window about a millisecond.
+
+## Not done yet
+
+- Persisting the state store and RNG positions with the world (save games).
+- Determinism lints for module crates; the FP-environment guard.
+- Loading libraries on Linux/macOS (`dlopen`): `specula_sys::dynlib` is Windows-only today, so `ModuleCode::open`
+  returns `unsupported` there (linked-in modules work everywhere).
+- A journal entry kind for loads (today the load log is in `logic_status`; the desync detector will want it in the
+  journal).
+- Preempting a runaway module (it would need a watchdog thread and a cooperative check in the SDK).

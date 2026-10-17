@@ -50,6 +50,14 @@ specula-logic = { path = "crates/specula-logic" }
 [profile.dev]
 opt-level = 1
 
+# Game modules (hot-reloaded cdylibs, docs/design/MODULES.md): no debug info, so an edit links
+# faster (~0.52 s vs 0.63 s for ambulo) and the library is 2 MB instead of 13 MB, which the engine
+# copies and maps at every reload. Panic locations still work (they don't need debug info).
+# opt-level 0 was measured too: no faster for a thin module (linking dominates).
+[profile.dev.package.ambulo]
+debug = 0
+strip = "debuginfo"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

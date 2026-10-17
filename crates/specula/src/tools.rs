@@ -281,9 +281,11 @@ impl ToolHandler for Tools {
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
-        // Builds run on this connection's thread; only their reload goes to the engine.
-        if name == "logic_build" {
-            return crate::logic::tools::build(&self.to_engine, session, arguments);
+        // Builds and library loads run on this connection's thread; only the swap goes to the engine.
+        match name {
+            "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
+            "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
+            _ => {}
         }
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })

@@ -15,7 +15,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-type CallFn = extern "C" fn(*const HostApi, u32, *const u8, usize) -> u32;
+type CallFn = unsafe extern "C" fn(*const HostApi, u32, *const u8, usize) -> u32;
 type EntryFn = extern "C" fn() -> *const ModuleApi;
 
 /// Most bytes a module may send in one reply (an answer to a hook, an error): beyond it the call
@@ -218,9 +218,10 @@ impl ModuleCode {
             request: host_request,
             reply: host_reply,
         };
-        // A safe call: `call` came from a checked ABI table (or a linked-in module) and the
-        // library stays loaded for as long as `self` lives.
-        let status = (self.call)(&host, entry, bytes.as_ptr(), bytes.len());
+        // SAFETY: `call` came from a checked ABI table (or a linked-in module) whose library
+        // stays loaded as long as `self`; `host` and its context `cx` live until it returns, and
+        // `bytes` is our own buffer.
+        let status = unsafe { (self.call)(&host, entry, bytes.as_ptr(), bytes.len()) };
         let reply = match (cx.bad_reply.take(), cx.reply.take()) {
             (Some(e), _) => return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests },
             (None, Some(r)) => Value::decode(&r).unwrap_or_else(|e| error("bad_reply", &format!("the module's reply was not a value: {e}"))),
@@ -277,7 +278,7 @@ struct CallCtx<'a> {
     bad_reply: Option<Value>,
 }
 
-extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32 {
+unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32 {
     if ctx.is_null() || out.is_null() || (req.is_null() && req_len > 0) {
         return status::BAD_INPUT;
     }
@@ -316,7 +317,7 @@ extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usize, out
     status
 }
 
-extern "C" fn host_reply(ctx: *mut c_void, bytes: *const u8, len: usize) {
+unsafe extern "C" fn host_reply(ctx: *mut c_void, bytes: *const u8, len: usize) {
     if ctx.is_null() || (bytes.is_null() && len > 0) {
         return;
     }

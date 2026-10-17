@@ -1,11 +1,12 @@
 //! The module host's agent tools: `logic_build`, `logic_reload`, `logic_unload`,
 //! `logic_status`, `logic_input` and `logic_hook`.
 //!
-//! `logic_build` runs Cargo on the calling connection's thread, never the engine's (a build
-//! takes seconds; the window and other agents keep going), through one engine-wide
-//! [`BuildService`] that runs one Cargo at a time and merges duplicate requests. Only the
-//! reload that follows a successful build goes to the engine thread, where it is applied at a
-//! tick boundary like any other command.
+//! `logic_build` and `logic_reload` do their slow parts on the calling connection's thread,
+//! never the engine's: Cargo (seconds; through one engine-wide [`BuildService`] that runs one
+//! Cargo at a time and merges duplicate requests) and opening the library (copying it and
+//! mapping it, which the OS may scan first: a few hundred ms for a large debug build). Only the
+//! swap goes to the engine thread, applied at a tick boundary like any other command (about a
+//! millisecond: describe, stop the old build, start the new one).
 
 use super::{Journal, LogicHost, Origin, Phase};
 use crate::game::Clock;
@@ -28,10 +29,10 @@ const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A module-host command for the engine thread.
 pub enum LogicCall {
-    /// Load the library a build produced (`build` is the build's report, echoed back).
-    Load { library: PathBuf, dir: Option<PathBuf>, seed: Option<u64> },
-    /// Load module `module`'s library again (or `library`, the first time).
-    Reload { module: Option<String>, library: Option<PathBuf>, seed: Option<u64> },
+    /// Swap in a library already opened (and ABI-checked) off the engine thread.
+    Load { code: ModuleCode, origin: Origin, seed: Option<u64>, open_ms: f64 },
+    /// Where module `module` was loaded from (for `logic_reload`).
+    Origin { module: String },
     Unload { module: String, forget: bool },
     Status { module: Option<String>, detailed: bool },
     Input { module: String, actions: Json, ticks: u64 },
@@ -167,18 +168,10 @@ fn seed_arg(args: &Json) -> Result<Option<u64>, String> {
     int_arg(args, "seed", 0, u64::MAX >> 11)
 }
 
-/// The engine-thread tools (`logic_build` is answered by [`build`] instead).
+/// The engine-thread tools (`logic_build` and `logic_reload` are answered by [`build`] and
+/// [`reload`] on the connection's thread instead).
 pub fn parse(name: &str, args: &Json) -> Option<Result<Command, String>> {
     let call = match name {
-        "logic_reload" => (|| {
-            check_keys(args, name, &[&["module", "library", "seed"]])?;
-            let module = string_arg(args, "module")?.map(str::to_owned);
-            let library = string_arg(args, "library")?.map(|l| project_path(l, "library")).transpose()?;
-            if module.is_none() && library.is_none() {
-                return Err("give 'module' (reload from where it was loaded) or 'library' (a module library to load)".to_owned());
-            }
-            Ok(LogicCall::Reload { module, library, seed: seed_arg(args)? })
-        })(),
         "logic_unload" => (|| {
             check_keys(args, name, &[&["module", "forget_state"]])?;
             let module = string_arg(args, "module")?.ok_or("'module' is required")?.to_owned();
@@ -226,6 +219,7 @@ fn output(r: Result<Json, WorldError>) -> ToolOutput {
     }
 }
 
+/// Opens a module library (off the engine thread: it can take a while).
 fn open(library: &Path) -> Result<ModuleCode, WorldError> {
     let copies = library.parent().unwrap_or(Path::new(".")).join("specula-modules");
     ModuleCode::open(library, &copies).map_err(|e| {
@@ -246,26 +240,21 @@ fn open(library: &Path) -> Result<ModuleCode, WorldError> {
 pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &Clock, swarm: &mut Swarm, by: &str) -> ToolOutput {
     let (tick, hz) = (clock.tick(), clock.hz());
     let journal: &mut Journal<'_> = &mut |w: &mut World, agent: &str, phase: Phase| swarm.game_changes(w, tick, agent, kind(phase));
-    let load = |host: &mut LogicHost, library: PathBuf, dir: Option<PathBuf>, seed, world: &mut World, journal: &mut Journal<'_>| {
-        let code = open(&library)?;
-        let origin = Origin { dir, library: Some(library) };
-        host.load(code, origin, seed, world, tick, hz, journal)
-    };
     let result = match call {
-        LogicCall::Load { library, dir, seed } => load(host, library, dir, seed, world, journal),
-        LogicCall::Reload { module, library, seed } => {
-            let origin = module.as_deref().and_then(|m| host.origin(m)).cloned();
-            match (module, library, origin) {
-                (_, Some(lib), origin) => load(host, lib, origin.and_then(|o| o.dir), seed, world, journal),
-                (Some(_), None, Some(Origin { library: Some(lib), dir })) => load(host, lib, dir, seed, world, journal),
-                (Some(m), None, _) => Err(WorldError::new(
-                    "no_module",
-                    format!("module '{m}' isn't loaded from a library this engine knows; give 'library' or use logic_build"),
-                )
-                .with("module", m.as_str())),
-                (None, None, _) => unreachable!("parse requires one"),
-            }
-        }
+        LogicCall::Load { code, origin, seed, open_ms } => host.load(code, origin, seed, world, tick, hz, journal).map(|mut report| {
+            // Opening the library (on the caller's thread) is part of the reload's time.
+            let mut timings = report.get("timings_ms").cloned().unwrap_or(Json::Null);
+            timings.set("open", Json::from(open_ms));
+            report.set("timings_ms", timings);
+            report
+        }),
+        LogicCall::Origin { module } => match host.origin(&module) {
+            Some(o) => Ok(Json::obj([
+                ("library", o.library.as_ref().map_or(Json::Null, |l| Json::from(l.display().to_string()))),
+                ("dir", o.dir.as_ref().map_or(Json::Null, |d| Json::from(d.display().to_string()))),
+            ])),
+            None => Err(WorldError::new("no_module", format!("no module '{module}' is loaded; give 'library' to load one")).with("module", module.as_str())),
+        },
         LogicCall::Unload { module, forget } => host.unload(&module, forget, world, tick, hz, journal),
         LogicCall::Status { module, detailed } => host.status(module.as_deref(), detailed).map(|mut j| {
             j.set("builds", builds_json());
@@ -360,27 +349,11 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     let mut reload_ms = 0.0;
     let mut failed = !report.ok;
     if let (true, Some(library)) = (report.ok && reload, report.library.clone()) {
-        let (reply, answer) = mpsc::channel();
         let t = Instant::now();
-        let request = Request {
-            session: session.clone(),
-            command: Command::Logic(LogicCall::Load { library, dir: Some(req.dir.clone()), seed }),
-            reply,
-            deadline: Instant::now() + RELOAD_TIMEOUT,
-        };
-        let loaded = if to_engine.send(request).is_err() {
-            ToolOutput::error("the engine is shutting down; the build was not loaded")
-        } else {
-            answer.recv_timeout(RELOAD_TIMEOUT + Duration::from_secs(5)).unwrap_or_else(|_| ToolOutput::error("the engine didn't apply the reload in time; it was not loaded"))
-        };
+        let (loaded, is_error) = load_library(to_engine, session, library, Some(req.dir.clone()), seed);
         reload_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let text = loaded.content.iter().find_map(|c| match c {
-            specula_protocol::Content::Text(t) => Some(t.clone()),
-            _ => None,
-        });
-        let parsed = text.as_deref().and_then(|t| Json::parse(t).ok()).unwrap_or_else(|| Json::from(text.unwrap_or_default()));
-        failed |= loaded.is_error;
-        out.set(if loaded.is_error { "reload_error" } else { "reload" }, parsed);
+        failed |= is_error;
+        out.set(if is_error { "reload_error" } else { "reload" }, loaded);
     }
     out.set(
         "timings_ms",
@@ -393,6 +366,75 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     );
     if failed {
         ToolOutput::error(out.to_string())
+    } else {
+        ToolOutput::text(out.to_string())
+    }
+}
+
+/// Sends a command to the engine thread and waits for its answer: `(answer as JSON, is_error)`.
+fn engine_call(to_engine: &Sender<Request>, session: &SessionInfo, call: LogicCall) -> (Json, bool) {
+    let (reply, answer) = mpsc::channel();
+    let request = Request { session: session.clone(), command: Command::Logic(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT };
+    let out = if to_engine.send(request).is_err() {
+        ToolOutput::error("the engine is shutting down; nothing was loaded")
+    } else {
+        answer.recv_timeout(RELOAD_TIMEOUT + Duration::from_secs(5)).unwrap_or_else(|_| ToolOutput::error("the engine didn't answer in time; nothing was loaded"))
+    };
+    let text = out.content.iter().find_map(|c| match c {
+        specula_protocol::Content::Text(t) => Some(t.clone()),
+        _ => None,
+    });
+    let json = text.as_deref().and_then(|t| Json::parse(t).ok()).unwrap_or_else(|| Json::from(text.unwrap_or_default()));
+    (json, out.is_error)
+}
+
+/// Opens `library` here (the caller's thread) and has the engine swap it in.
+fn load_library(to_engine: &Sender<Request>, session: &SessionInfo, library: PathBuf, dir: Option<PathBuf>, seed: Option<u64>) -> (Json, bool) {
+    let t = Instant::now();
+    let code = match open(&library) {
+        Ok(c) => c,
+        Err(e) => return (e.to_json(), true),
+    };
+    let open_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let origin = Origin { dir, library: Some(library) };
+    engine_call(to_engine, session, LogicCall::Load { code, origin, seed, open_ms })
+}
+
+/// `logic_reload`, on the calling connection's thread (see the module docs).
+pub fn reload(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
+    let parsed = (|| -> Result<(Option<String>, Option<PathBuf>, Option<u64>), String> {
+        check_keys(args, "logic_reload", &[&["module", "library", "seed"]])?;
+        let module = string_arg(args, "module")?.map(str::to_owned);
+        let library = string_arg(args, "library")?.map(|l| project_path(l, "library")).transpose()?;
+        if module.is_none() && library.is_none() {
+            return Err("give 'module' (reload from where it was loaded) or 'library' (a module library to load)".to_owned());
+        }
+        Ok((module, library, seed_arg(args)?))
+    })();
+    let (module, library, seed) = match parsed {
+        Ok(p) => p,
+        Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+    };
+    let (library, dir) = match (module, library) {
+        (_, Some(lib)) => (lib, None),
+        (Some(m), None) => {
+            let (origin, is_error) = engine_call(to_engine, session, LogicCall::Origin { module: m.clone() });
+            if is_error {
+                return ToolOutput::error(origin.to_pretty());
+            }
+            match origin.get("library").and_then(Json::as_str) {
+                Some(lib) => (PathBuf::from(lib), origin.get("dir").and_then(Json::as_str).map(PathBuf::from)),
+                None => {
+                    let e = WorldError::new("no_library", format!("module '{m}' wasn't loaded from a library file; give 'library'")).with("module", m.as_str());
+                    return ToolOutput::error(e.to_json().to_pretty());
+                }
+            }
+        }
+        (None, None) => unreachable!("checked above"),
+    };
+    let (out, is_error) = load_library(to_engine, session, library, dir, seed);
+    if is_error {
+        ToolOutput::error(out.to_pretty())
     } else {
         ToolOutput::text(out.to_string())
     }

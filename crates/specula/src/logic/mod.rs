@@ -701,7 +701,7 @@ impl LogicHost {
             }
             Json::obj(f)
         });
-        let tail = |q: &VecDeque<Json>| Json::arr(q.iter().rev().filter(|j| j.get("module").and_then(Json::as_str).is_none_or(&keep)).take(n).cloned().collect::<Vec<_>>().into_iter().rev());
+        let tail = |q: &VecDeque<Json>| Json::arr(q.iter().rev().filter(|j| j.get("module").and_then(Json::as_str).is_none_or(keep)).take(n).cloned().collect::<Vec<_>>().into_iter().rev());
         let log = self.log.iter().rev().filter(|l| keep(&l.module)).take(n).collect::<Vec<_>>();
         let log = Json::arr(log.into_iter().rev().map(|l| {
             Json::obj([("tick", Json::from(l.tick)), ("module", Json::from(l.module.as_str())), ("message", Json::from(l.message.as_str()))])
