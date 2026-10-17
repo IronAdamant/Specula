@@ -11,7 +11,7 @@
 //! | `hover` | float: pelvis bob and drift, a bone `chain` (tail, shroud) waving with a delay per bone | loop |
 //! | `swing` | rest → `windup` pose → `strike` pose → hold → rest, with a `hit` event; feet stay planted | once |
 //! | `leap` | crouch, ballistic root arc (`distance`, `height`) with tucked legs, landing absorb; `takeoff`/`land` events; root motion | once |
-//! | `collapse` | death: `topple`, `crumble`, `scatter` (bones fly apart, seeded) or `fade` (rise, spin, shrink, `opacity` curve) | once |
+//! | `collapse` | death: `topple`, `crumble`, `scatter` (bones fly apart, seeded) or `fade` (rise, spin, shrink, `opacity` curve); `reach` (deg) swings the arms forward over the head as a topple falls, so a body face down ends with them along the ground | once |
 //! | `wobble` | only the `wobble` layers (mechanisms, flames) | loop |
 //! | `keys` | keyframed poses: `keys: [{time, pose: {bone: {rot, move, scale}}}]`, `interp` (`step`, `linear`, `cubic`); bones missing from a key are at rest in it; feet stay planted when `legs` are given | once |
 //! | `pose` | one held `pose` (a hand-authored stance, a grip) | loop |
@@ -696,6 +696,9 @@ fn footstep_events(body: &Body, skel: &Skeleton, duration: f32, name: &str, phas
 fn gait(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32, idle: bool) -> Result<Out, AnimError> {
     let stride = if idle { 0.0 } else { o.req_num("stride", 0.0, 50.0)? };
     let duty = o.num("duty", 0.6, 0.2, 0.9)?;
+    // The part of the swing at each end where the foot rises or lands in place (moving with the
+    // ground), so it never scrapes forward while its toe is still down. Runs take less.
+    let clear = o.num("clear", if duty >= 0.5 { 0.12 } else { 0.06 }, 0.0, 0.4)?;
     let lift = o.num("lift", if idle { 0.0 } else { 0.1 }, 0.0, 3.0)?;
     let bounce = o.num("bounce", if idle { 0.006 } else { 0.03 }, 0.0, 2.0)?;
     let sway = o.num("sway", if idle { 0.015 } else { 0.02 }, 0.0, 2.0)?;
@@ -765,12 +768,25 @@ fn gait(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: f32,
             } else {
                 let q = (p - duty) / (1.0 - duty);
                 let up = specula_core::dmath::sin(std::f32::consts::PI * q);
-                // Hermite from back to front whose end slopes match the stance's backward
-                // speed, so the foot leaves and meets the ground at zero ground speed.
+                // The stance's backward speed (per unit of swing): the foot rises and lands
+                // moving with the ground over the first and last `clear` of the swing, and
+                // in between a Hermite carries it forward with matching end slopes, so it
+                // leaves and meets the ground at zero ground speed.
                 let m = -stance_len * (1.0 - duty) / duty;
-                let (q2, q3) = (q * q, q * q * q);
-                let z = (2.0 * q3 - 3.0 * q2 + 1.0) * (-0.5 * stance_len) + (q3 - 2.0 * q2 + q) * m + (-2.0 * q3 + 3.0 * q2) * (0.5 * stance_len) + (q3 - q2) * m;
-                (z, lift * l.lift * up, 22.0 * sin_turns(q) * (lift * l.lift / 0.1).min(1.0))
+                let (za, zb) = (-0.5 * stance_len + m * clear, 0.5 * stance_len - m * clear);
+                let z = if q < clear {
+                    -0.5 * stance_len + m * q
+                } else if q > 1.0 - clear {
+                    0.5 * stance_len + m * (q - 1.0)
+                } else {
+                    let span = (1.0 - 2.0 * clear).max(1e-6);
+                    let u = (q - clear) / span;
+                    let mu = m * span;
+                    let (u2, u3) = (u * u, u * u * u);
+                    (2.0 * u3 - 3.0 * u2 + 1.0) * za + (u3 - 2.0 * u2 + u) * mu + (-2.0 * u3 + 3.0 * u2) * zb + (u3 - u2) * mu
+                };
+                // The toe lifts through the swing (dorsiflexion) so it clears the ground.
+                (z, lift * l.lift * up, -14.0 * up * (lift * l.lift / 0.1).min(1.0))
             };
             f.feet[i] = Some(([l.plant[0], l.plant[1] + y, l.plant[2] + dz], pitch));
         }
@@ -1001,6 +1017,7 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
     let curl = o.num("curl", 50.0, -180.0, 180.0)?;
     let fall = o.num("fall", 82.0, 0.0, 180.0)?;
     let lie = o.num("lie", 0.12 * height, 0.0, 100.0)?;
+    let reach = o.num("reach", 0.0, -180.0, 180.0)?;
     let dir = match o.str("direction")?.unwrap_or("forward") {
         "forward" => ([1.0, 0.0, 0.0], 1.0),
         "back" => ([1.0, 0.0, 0.0], -1.0),
@@ -1047,7 +1064,7 @@ fn collapse(o: &mut Obj, skel: &Skeleton, body: &Body, times: &[f32], duration: 
                 bend_body(&mut f, buckle + 0.5 * u, drop * buckle + crouch);
                 for a in &body.arms {
                     // Arms fly up as the body drops, then splay.
-                    f.rot(a.upper, qeuler([-a.swing * (buckle - 0.6 * u), 0.0, a.roll * u]));
+                    f.rot(a.upper, qeuler([-a.swing * (buckle - 0.6 * u) - reach * u, 0.0, a.roll * u]));
                     if let Some(fo) = a.fore {
                         f.rot(fo, qaxis([1.0, 0.0, 0.0], -a.bend * buckle));
                     }

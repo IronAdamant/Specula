@@ -40,6 +40,52 @@
                 { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r" } ],
       "arms": [ { "upper": "upperarm_l", "fore": "forearm_l", "swing": 40, "bend": 20 },
                 { "upper": "upperarm_r", "fore": "forearm_r", "swing": 25, "roll": -15 } ],
-      "drop": 0.38, "curl": 45, "fall": 35, "sink": 0.7, "shrink": 0.6 }
-  ]
+      "drop": 0.38, "curl": 45, "fall": 35, "sink": 0.7, "shrink": 0.6 },
+    { "name": "shuffle", "kind": "gait", "duration": 1.7, "stride": 0.5,
+      "note": "Slowed (frost, runes): the same lurch in short dragging steps, so a slow shambler doesn't moonwalk.",
+      "pelvis": "hips", "spine": ["spine", "chest"], "head": "head",
+      "legs": [ { "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l" },
+                { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r", "phase": 0.5, "lift": 0.3 } ],
+      "arms": [ { "upper": "upperarm_l", "fore": "forearm_l", "swing": 4, "bend": 10, "phase": 0.5 },
+                { "upper": "upperarm_r", "fore": "forearm_r", "swing": 12, "roll": 10, "lag": 0.15 } ],
+      "duty": 0.7, "lift": 0.06, "bounce": 0.02, "sway": 0.05, "roll": 6, "twist": 6, "lean": 6, "nod": 4, "limp": 0.6,
+      "wobble": [ { "bone": "head", "axis": "z", "deg": 7, "cycles": 1, "phase": 0.6 } ] },
+    { "name": "still", "kind": "clip", "duration": 1, "loop": "loop", "note": "Nothing: the flinch layer's resting state." },
+    { "name": "flinch", "kind": "recoil", "duration": 0.55, "attack": 0.05, "frequency": 3.5, "damping": 0.35,
+      "note": "A bolt lands: the torso snaps back and twists away, then sways back.",
+      "pose": { "chest": { "rot": [-16, 10, 6] }, "spine": { "rot": [-6, 4, 0] }, "head": { "rot": [-12, -8, 0] },
+                "upperarm_l": { "rot": [-20, 0, 15] } } }
+  ],
+  "graphs": {
+    "creature": {
+      "note": "The game sets act, speed (world m/s), hit and the look target; the graph picks and blends the clips. Knee limits: straight is the rest bend backwards (33.8 deg).",
+      "params": { "act": { "type": "enum", "values": ["idle", "move", "attack", "special", "death"] },
+                  "speed": { "type": "float", "min": 0, "max": 20 },
+                  "hit": "trigger",
+                  "look_at": "vec3", "look": { "type": "float", "min": 0, "max": 1, "default": 0 } },
+      "nodes": { "locomotion": { "blend1d": "speed", "points": [[0.35, "shuffle"], [0.8, "walk"]] } },
+      "states": {
+        "idle": "idle",
+        "move": { "play": "locomotion", "match_speed": "speed" },
+        "attack": "attack",
+        "special": "attack",
+        "death": { "play": "death", "ik": { "feet": 0, "look": 0 } } },
+      "entry": "idle",
+      "transitions": [
+        { "from": "*", "to": "death", "when": "act == death", "blend": 0.25 },
+        { "from": "*", "to": "move", "when": "act == move", "blend": 0.3 },
+        { "from": "*", "to": "idle", "when": "act == idle", "blend": 0.35 },
+        { "from": "*", "to": "attack", "when": "act == attack", "blend": 0.4 },
+        { "from": "*", "to": "special", "when": "act == special", "blend": 0.4 },
+        { "from": "attack", "to": "attack", "exit": "end", "blend": 0.05 } ],
+      "layers": [ { "name": "flinch", "mode": "additive", "mask": "upper",
+                    "states": { "calm": "still", "hit": "flinch" },
+                    "transitions": [ { "from": "calm", "to": "hit", "when": "hit", "blend": 0 },
+                                     { "from": "hit", "to": "calm", "exit": "end", "blend": 0 } ] } ],
+      "ik": [ { "name": "feet", "kind": "feet", "pelvis": "hips", "max_step": 0.3, "max_drop": 0.3,
+                "legs": [["thigh_l", "shin_l", "foot_l"], ["thigh_r", "shin_r", "foot_r"]] },
+              { "name": "look", "kind": "look_at", "bones": ["chest", "head"], "share": [0.35, 0.65],
+                "target": "look_at", "weight": "look", "limit": 45 } ],
+      "limits": { "shin_l": { "x": [-33, 150] }, "shin_r": { "x": [-33, 150] } } }
+  }
 }

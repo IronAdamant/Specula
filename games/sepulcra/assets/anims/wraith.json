@@ -24,6 +24,45 @@
       "pelvis": "body", "spine": ["chest"], "head": "head",
       "arms": [ { "upper": "upperarm_l", "fore": "forearm_l", "swing": 70, "roll": 25 },
                 { "upper": "upperarm_r", "fore": "forearm_r", "swing": 70, "roll": -25 } ],
-      "rise": 1.3, "spin": 300, "shrink": 0.1, "curl": 30 }
-  ]
+      "rise": 1.3, "spin": 300, "shrink": 0.1, "curl": 30 },
+    { "name": "float_shroud", "kind": "chain", "source": "float", "bones": ["tail_0", "tail_1"],
+      "stiffness": 0.12, "damping": 0.08, "gravity": 3,
+      "note": "The float with its shroud as a damped spring chain: it lags the bob and swings on after it." },
+    { "name": "swoop_shroud", "kind": "chain", "source": "swoop", "bones": ["tail_0", "tail_1"],
+      "stiffness": 0.18, "damping": 0.1, "gravity": 3,
+      "note": "The dive with a shroud that streams back and whips through when the body stops." },
+    { "name": "still", "kind": "clip", "duration": 1, "loop": "loop", "note": "Nothing: the flinch layer's resting state." },
+    { "name": "flinch", "kind": "recoil", "duration": 0.5, "attack": 0.05, "frequency": 3, "damping": 0.3,
+      "note": "A rune bolt passes through: the hood snaps back and the arms flare.",
+      "pose": { "chest": { "rot": [-14, 0, 0] }, "head": { "rot": [-16, 0, 0] },
+                "upperarm_l": { "rot": [-15, 0, -20] }, "upperarm_r": { "rot": [-15, 0, 20] } } }
+  ],
+  "graphs": {
+    "creature": {
+      "note": "No feet, so no feet IK; the head watches its target. The game sets act, speed, hit and the look target.",
+      "params": { "act": { "type": "enum", "values": ["idle", "move", "attack", "special", "death"] },
+                  "speed": { "type": "float", "min": 0, "max": 20 },
+                  "hit": "trigger",
+                  "look_at": "vec3", "look": { "type": "float", "min": 0, "max": 1, "default": 0 } },
+      "states": {
+        "idle": "float_shroud",
+        "move": "float_shroud",
+        "attack": "swoop_shroud",
+        "special": { "play": "swoop_shroud", "speed": 0.8 },
+        "death": { "play": "death", "ik": { "look": 0 } } },
+      "entry": "idle",
+      "transitions": [
+        { "from": "*", "to": "death", "when": "act == death", "blend": 0.2 },
+        { "from": "*", "to": "special", "when": "act == special", "blend": 0.25 },
+        { "from": "*", "to": "attack", "when": "act == attack", "blend": 0.25 },
+        { "from": ["idle", "attack", "special"], "to": "move", "when": "act == move", "blend": 0.35 },
+        { "from": ["move", "attack", "special"], "to": "idle", "when": "act == idle", "blend": 0.35, "keep_phase": true },
+        { "from": "attack", "to": "attack", "exit": "end", "blend": 0.2 } ],
+      "layers": [ { "name": "flinch", "mode": "additive", "mask": "upper",
+                    "states": { "calm": "still", "hit": "flinch" },
+                    "transitions": [ { "from": "calm", "to": "hit", "when": "hit", "blend": 0 },
+                                     { "from": "hit", "to": "calm", "exit": "end", "blend": 0 } ] } ],
+      "ik": [ { "name": "look", "kind": "look_at", "bones": ["chest", "head"], "share": [0.25, 0.75],
+                "target": "look_at", "weight": "look", "limit": 60 } ] }
+  }
 }

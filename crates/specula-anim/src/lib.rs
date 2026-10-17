@@ -27,6 +27,7 @@
 
 pub mod animator;
 pub mod blend;
+pub mod checks;
 pub mod clip;
 pub mod error;
 pub mod gen;
