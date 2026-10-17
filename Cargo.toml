@@ -13,9 +13,12 @@ members = [
     "crates/specula-text",
     "crates/specula-audio",
     "crates/specula-ui",
+    "crates/specula-sdk",
+    "crates/specula-logic",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
+    "games/ambulo",
 ]
 
 [workspace.package]
@@ -41,6 +44,8 @@ specula-protocol = { path = "crates/specula-protocol" }
 specula-text = { path = "crates/specula-text" }
 specula-audio = { path = "crates/specula-audio" }
 specula-ui = { path = "crates/specula-ui" }
+specula-sdk = { path = "crates/specula-sdk" }
+specula-logic = { path = "crates/specula-logic" }
 
 [profile.dev]
 opt-level = 1

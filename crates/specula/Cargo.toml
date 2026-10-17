@@ -18,3 +18,6 @@ specula-gltf = { workspace = true }
 specula-protocol = { workspace = true }
 specula-sys = { workspace = true }
 specula-text = { workspace = true }
+specula-input = { workspace = true }
+specula-logic = { workspace = true }
+specula-sdk = { workspace = true }

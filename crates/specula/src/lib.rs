@@ -18,6 +18,7 @@ pub mod compare;
 pub mod effects;
 pub mod game;
 pub mod journal;
+pub mod logic;
 mod luts;
 pub mod meshes;
 pub mod models;
@@ -458,6 +459,8 @@ struct Engine {
     /// Bumped whenever the world is replaced (a revision number alone could repeat).
     world_generation: u64,
     last_claim_sweep: Instant,
+    /// Game-logic modules (hot-reloaded libraries; see [`logic`]).
+    logic: logic::LogicHost,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -546,6 +549,7 @@ impl Engine {
             hash_cache: None,
             world_generation: 0,
             last_claim_sweep: Instant::now(),
+            logic: logic::LogicHost::new(),
         })
     }
 
@@ -632,6 +636,12 @@ impl Engine {
                 self.journal_game(Kind::GameTick);
                 self.pacing.tick.push(start.elapsed());
             }
+            if !self.logic.is_empty() {
+                let _l = profile::zone("modules");
+                let (tick, swarm) = (self.clock.tick(), &mut self.swarm);
+                let journal = &mut |w: &mut World, agent: &str, phase| swarm.game_changes(w, tick, agent, logic::tools::kind(phase));
+                self.logic.tick(&mut self.world, tick, self.clock.hz(), journal);
+            }
             self.clock.finish_tick();
             let _h = profile::zone("tick_hash");
             self.record_tick_hash();
@@ -643,6 +653,7 @@ impl Engine {
     fn game_frame(&mut self, ui: &UiThread, size: (u32, u32), dt: Duration) {
         self.input.clear();
         ui.drain_events(&mut self.input);
+        self.logic.feed_window(&self.input, dt.as_secs_f32());
         // A human taking the controls takes the camera back from an agent's (window_view).
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");
@@ -1545,6 +1556,7 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
+            Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, &by),
         };
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
@@ -1916,6 +1928,9 @@ impl Engine {
             ("window", self.window_json()),
         ]);
         let mut info = info;
+        if !self.logic.is_empty() {
+            info.set("modules", self.logic.summary());
+        }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));
         }
@@ -1933,6 +1948,7 @@ fn call_class(command: &Command) -> Class {
         Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
         Command::Time(TimeOp::Step(_)) => Class::Sim,
         Command::Game { .. } => Class::Game,
+        Command::Logic(_) => Class::Disk,
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)

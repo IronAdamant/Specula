@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "ambulo"
+version = "0.1.0"
+dependencies = [
+ "specula-sdk",
+]
+
+[[package]]
 name = "sepulcra"
 version = "0.1.0"
 dependencies = [
@@ -33,9 +40,12 @@ dependencies = [
  "specula-core",
  "specula-gltf",
  "specula-gpu",
+ "specula-input",
+ "specula-logic",
  "specula-model",
  "specula-platform",
  "specula-protocol",
+ "specula-sdk",
  "specula-sys",
  "specula-text",
 ]
@@ -87,6 +97,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-logic"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-sdk",
+ "specula-sys",
+]
+
+[[package]]
 name = "specula-model"
 version = "0.3.0"
 dependencies = [
@@ -103,6 +122,13 @@ dependencies = [
 
 [[package]]
 name = "specula-protocol"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
+name = "specula-sdk"
 version = "0.3.0"
 dependencies = [
  "specula-core",
