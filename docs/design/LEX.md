@@ -107,7 +107,7 @@ Expressions are short strings: `"res.dust >= arg.stone.cost"`, `"waves.ticks_lef
 | `archetype` | An entity template: `tags`, `attributes`, `behaviours`, optional `machine`, `next` (upgrade chain), `extends`, `abstract`, `on_spawn`. |
 | `effect` | GAS-style: `duration` (`instant`, a duration or `infinite`), `period`, `modifiers`, `stacking`, `max_stacks`, `grant_tags`, `block_tags`, `on_apply`, `on_period`, `on_expire`. |
 | `machine` | A state machine: `initial`, `states` with `behaviours` (which are active), `on_enter`, `on_exit`, `transitions` (`when`, `after`, `on`). |
-| `waves` | An encounter schedule: `start`, `rng` stream, `waves` with `duration`, `on_start`, `scale` (attribute ratios for spawns) and `groups` (`archetype`, `count`, `at`, `start`, `every`). |
+| `waves` | An encounter schedule: `start`, `rng` stream, `waves` with `duration`, `on_start`, `scale` (attribute ratios for spawns) and `groups` (`archetype`, `count`, `at`, `start`, `every`). Several waves items join in id order into one schedule (`waves_01`, `waves_02`, ...), so a long schedule fits the 16 KB item limit; only the first sets `start` and `rng`. |
 | `timer` | `start`, `every`, `count`, `when`, `do`. |
 | `rule` | A trigger: `on` an event, filtered by `tags` and `when`, `do` actions. |
 | `command` | Player (or agent) input as data: typed `args`, `cost`, `require` (each with a rejection `code`), `do`. |
@@ -232,9 +232,22 @@ as data when it bites:
 | Coordinates | ±10⁹ m | compile error (`out_of_range`) |
 | Sites, tags, attributes, RNG streams | 60,000 each | compile error (`too_many`) |
 | Items per set | 10,000 | compile error |
+| Item size (compact JSON) | 16,000 bytes (an item is one world entity) | compile error (`too_large`), so a set that validates can always be stored |
+| Run state: one cell per entity plus one per attribute and behaviour | 2,000,000 cells | the spawn fails (`state_limit`) |
+| Effect instances per entity / modifiers per effect / `max_stacks` | 8 / 8 / 8 | the effect is skipped (`effect_limit`) / compile error |
+| Tags per filter, grant_tags, block_tags, blocked_by | 16 | compile error (`too_many`) |
+| Attributes / behaviours per archetype, payload entries | 64 / 32 / 16 | compile error (`too_many`) |
+| Waves / distinct events | 10,000 / 60,000 | compile error (`too_many`) |
 
 A negative cost is refused (`invalid_cost`) rather than paying the player. A command's rollback snapshots the
-state, so a command costs O(state); rules that fire thousands of commands a tick belong in timers or rules.
+state, so a command is charged its state size to the tick's work budget: once it is spent, the tick's remaining
+commands are refused with `work_limit` (send them next tick). Tag checks are charged by the tags and effects they
+scan. So the per-tick work limit, the state budget and the size caps together bound both one call's time and one
+run's memory (with 64 attributes per entity a run stops spawning near 30,000 entities, about 30 MB).
+
+The wall clock is read as work is spent, so a deadline interrupts a tick part-way: the run is then **incomplete**
+(`complete: false`): no hash and no outcome are reported, `expect` is not judged and the run can't be saved, since
+where it stopped depends on the machine.
 
 **Cost.** The Sepulcra slice runs at about 1 µs per tick in a release build, ten times the hand-written Rust sim
 (0.1 µs): a 12-minute game in about 21 ms, so a 1000-seed sweep is about 20 core-seconds
@@ -269,6 +282,18 @@ and uses it as a behaviour (`{"type": "native", "hook": "flow_route"}`) or an ac
   called, so the project's escape-hatch log is data: the most-used reasons are the next Lex features.
 - A hook's build hash belongs in the journal like any module reload (DETERMINISM.md rule 8).
 
+**With the module host (docs/design/MODULES.md, merged).** Discovery is wired: every Lex snapshot carries
+`LogicHost::hooks()` (`module/name`), so `lex_edit` and `lex_validate` warn with `native_unbound` naming the
+running hooks when a set's `native` names one no module provides. Calls are **not** wired to
+`LogicHost::call_hook` yet, on purpose: a module hook runs against the shared engine World (its Cx reads and
+writes world entities, journaled as Lex's tick), while every Lex run today is headless, on a protocol thread, over
+Lex's own integer state. Calling hooks from `lex_simulate` would write a what-if run's effects into the real world
+and make runs depend on world state outside the rule set (no longer deterministic or repeatable). The join point
+is **live Lex**: the engine stepping a set on its own tick on the main thread, presenting entities into the
+world; there a `NativeHook` adapter calls `call_hook(hook, args, reason, "lex", world, tick, hz, commit)` with a
+commit closure that journals the changes as Lex's tick (MODULES.md item 6). Headless runs keep using natives
+registered in-process (`Natives`), which is how a module's logic can also be tested headless.
+
 ## Room for Navigation & AI
 
 Movement is a behaviour type, so navigation slots in without changing the language:
@@ -284,7 +309,8 @@ Movement is a behaviour type, so navigation slots in without changing the langua
 
 Lex documents live in the engine as world entities: the set is a group at `/lex/<set>`, holding the header in its
 props, and each item is a child `/lex/<set>/<item id>` with the item in its props (`{"lex": {...}}`). So every
-item has a version (`expect_version`), path claims cover a set or one item, every edit is journaled with its author,
+item has a version (`expect_version`), path claims cover a set or one item (region claims don't: rule data has
+no place in the world, so a claim around the origin never blocks a rule edit), every edit is journaled with its author,
 `world_undo` undoes it, `world_changes` shows it, and `world_save` writes it to the world's text files (the `/lex`
 subtree gets its own file, one line per item in path order, so rule changes diff cleanly). Edits should go through
 `lex_edit` (which validates); a `world_set` on the props bypasses validation, and `lex_validate` reports the result.
@@ -315,13 +341,15 @@ named `notes` is data.
 | `lex_get` | Items in full, with versions (at most 50 per call); unknown ids come back with the closest id. |
 | `lex_edit` | Atomic `put` / `patch` (field paths like `behaviours[0].range`) / `delete` ops with `expect_version` (0: must not exist yet); creates the set when needed. The whole set is validated after the edit, and an edit that adds errors is refused with every new error (`allow_errors` stores a draft; errors already there don't block fixing others). `dry_run` only reports. |
 | `lex_validate` | Every error and warning for a set (or an inline document), the items by kind, the params (the tunable search space) and the declared native hooks with their reasons. |
-| `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; the wall clock is checked every tick (one tick is bounded by the work limit), and a call that passes 20 s stops, says at which tick (continue with `save_as` / `from`) and leaves its `expect` unjudged. |
+| `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; the wall clock is checked every tick (one tick is bounded by the work limit), and a call that passes 20 s stops, says at which tick (continue with `save_as` / `from`) and comes back `complete: false` without a hash or outcome (and can't be saved). |
 | `lex_import` / `lex_export` | A whole document in (one validated, journaled edit; `replace` deletes items it doesn't have) or out (canonical text to save as `*.lex.json`). |
 | `lex_session` | Saved runs: list them, inspect one's entities (paged; attributes in human units, effects, machine state) or delete one. |
 
 Saved runs (`save_as`, then `from`) let an agent run to a point, look, add commands and continue, or branch
 what-ifs from one state. A run remembers its rules' hash; continuing it after the rules changed is refused with
-`rules_changed`, with the fix in the error. 16 runs are kept engine-wide (oldest dropped); only the session that
+`rules_changed`, with the fix in the error. At most 4 runs per agent session and 16 in all are kept, and at most
+8 million state cells across them (oldest dropped first); `lex_session inspect` pages are capped (32 attributes
+per entity listed, about 200 KB per page) and built outside the shared list's lock. Only the session that
 saved a run can overwrite or delete it.
 
 ## Validation: errors that say what to change

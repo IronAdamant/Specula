@@ -234,6 +234,35 @@ fn hostile_sizes_are_errors_not_crashes() {
 }
 
 #[test]
+fn sizes_that_cost_memory_or_time_are_refused() {
+    // An item too big for one world entity, caught before an import fails.
+    let big: Vec<String> = (0..800).map(|_| r#"{"duration": "1s", "groups": []}"#.to_owned()).collect();
+    let ds = diags(&format!(r#""waves": {{"kind": "waves", "waves": [{}]}}"#, big.join(",")));
+    let d = one(&ds, "too_large");
+    assert!(d.suggestion.as_deref().unwrap().contains("several waves items"), "{d}");
+    // Too many attributes on one archetype (state per entity).
+    let attrs: Vec<String> = (0..65).map(|i| format!("\"a{i}\": 1")).collect();
+    let ds = diags(&format!(r#""fat": {{"kind": "archetype", "attributes": {{{}}}}}"#, attrs.join(",")));
+    assert_eq!(one(&ds, "too_many").path, "attributes");
+    // A tag filter with too many tags (every candidate check scans them).
+    let tags: Vec<String> = (0..17).map(|i| format!("\"!t{i}\"")).collect();
+    let ds = tower(&format!(r#"{{"type": "attack", "targets": ["enemy", {}], "range": 7, "cooldown": 1, "payload": []}}"#, tags.join(",")));
+    assert!(ds.iter().any(|d| d.code == "too_many" && d.path == "behaviours[0].targets"), "{ds:?}");
+    // Many waves: the counter can't overflow. (Split over items to keep each small.)
+    let mut items = vec![r#""r": {"kind": "resource", "start": 0}"#.to_owned()];
+    for k in 0..26 {
+        let w: Vec<&str> = (0..400).map(|_| r#"{"duration": "0s", "groups": []}"#).collect();
+        items.push(format!(r#""w{k:02}": {{"kind": "waves", "waves": [{}]}}"#, w.join(",")));
+    }
+    let ds = diags(&items.join(","));
+    assert!(ds.iter().any(|d| d.code == "too_many" && d.message.contains("waves")), "{:?}", ds.iter().map(|d| d.to_string()).collect::<Vec<_>>());
+    // Many custom events compile quickly and are capped.
+    let emits: Vec<String> = (0..61_000).map(|i| format!(r#"{{"emit": "e{i}"}}"#)).collect();
+    let ds = diags(&format!(r#""t": {{"kind": "timer", "do": [{}]}}"#, emits.join(",")));
+    assert!(ds.iter().any(|d| d.code == "too_many" && d.message.contains("events")));
+}
+
+#[test]
 fn a_notes_named_by_the_author_is_data() {
     let a = doc(r#""a": {"kind": "archetype", "attributes": {"notes": 1}}"#);
     let b = doc(r#""a": {"kind": "archetype", "attributes": {"notes": 2}}"#);

@@ -1413,7 +1413,10 @@ impl Engine {
             },
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
-            Command::Lex(call) => lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by),
+            Command::Lex(call) => {
+                let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
+                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks)
+            }
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);

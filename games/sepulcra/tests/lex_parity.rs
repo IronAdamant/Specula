@@ -244,6 +244,23 @@ fn bench_lex_against_rust() {
         per(rust), per(lexed), lexed.as_secs_f64() / rust.as_secs_f64(), per(lexed) * 21_600.0 / 1000.0);
 }
 
+/// A run stopped and continued (as `save_as` / `from` do) ends where an uninterrupted run does.
+#[test]
+fn a_continued_run_matches_one_run() {
+    use specula_lex::run::{run, RunSpec, Timed};
+    for seed in [1u64, 7, 99] {
+        let mut a = lex(seed);
+        let cmds: Vec<Timed> = DEFENDED.iter().map(|(t, c)| Timed { tick: *t, name: "c".into(), call: lex_cmd(&a, *c) }).collect();
+        let full = run(&mut a, &RunSpec { ticks: 9000, commands: cmds.clone(), ..Default::default() });
+        let mut b = lex(seed);
+        run(&mut b, &RunSpec { ticks: 1234, commands: cmds.iter().filter(|c| c.tick < 1234).cloned().collect(), ..Default::default() });
+        let mut c = b.clone();
+        let rest = run(&mut c, &RunSpec { ticks: 9000 - 1234, commands: cmds.iter().filter(|c| c.tick >= 1234).cloned().collect(), ..Default::default() });
+        assert_eq!(full.get("hash"), rest.get("hash"), "seed {seed}");
+        assert!(full.get("hash").is_some());
+    }
+}
+
 /// The harness must notice a one-point change to one rule, so a pass means something.
 #[test]
 fn a_changed_rule_is_caught() {

@@ -594,7 +594,11 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
             a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
         }
         (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
-            // Overlap where an entity under the path already sits in the region.
+            // Overlap where an entity under the path already sits in the region. Rule data
+            // (/lex) sits nowhere.
+            if p == "/lex" || p.starts_with("/lex/") {
+                return false;
+            }
             let root = if p == "/" { None } else { world.find_path(p).ok() };
             if p != "/" && root.is_none() {
                 return false;
@@ -610,6 +614,11 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
 /// descendants, theirs now and before the move.
 fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
+    // Rule data (Lex sets under /lex) has no place in the world: only path claims cover it.
+    let p = change.path();
+    if p == "/lex" || p.starts_with("/lex/") {
+        return points;
+    }
     match change {
         Change::Spawn { after, .. } => points.push(after.world_position()),
         Change::Delete { before, .. } => points.push(before.world_position()),

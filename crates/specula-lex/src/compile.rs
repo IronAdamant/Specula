@@ -24,6 +24,19 @@ pub const MAX_DIAGNOSTICS: usize = 200;
 /// Largest counts and sizes, so a typo can't ask for a billion spawns.
 pub const MAX_GROUP_COUNT: i64 = 100_000;
 pub const MAX_ITEMS: usize = 10_000;
+/// Largest item, as compact JSON: an item is stored as one world entity, whose props are
+/// at most 16 KiB. Split big schedules over several `waves` items.
+pub const MAX_ITEM_BYTES: usize = 16_000;
+/// Most tags in one tag filter, and most tags an effect grants or blocks (tag checks scan
+/// them for every candidate).
+pub const MAX_FILTER_TAGS: usize = 16;
+/// Most attributes and behaviours per archetype, modifiers per effect and payload entries.
+pub const MAX_ATTRS_PER_ARCHETYPE: usize = 64;
+pub const MAX_BEHAVIOURS: usize = 32;
+pub const MAX_MODIFIERS: usize = 8;
+pub const MAX_PAYLOAD: usize = 16;
+/// Most waves in a rule set.
+pub const MAX_WAVES: usize = 10_000;
 /// Most spawns one wave schedules (they are all queued when it starts).
 pub const MAX_WAVE_SPAWNS: i64 = 100_000;
 /// Largest coordinate: 1e9 m (in mm), so squared distances never overflow.
@@ -147,6 +160,8 @@ struct Cx<'d> {
     /// Archetype → (attr id, base) in attr-id order.
     arch_attrs: Vec<Vec<(u16, i64)>>,
     events: Vec<EventDef>,
+    /// Event name → index (custom names are many: a linear search per name was quadratic).
+    event_idx: BTreeMap<String, u16>,
     machines: Vec<MachineDef>,
     natives: Vec<NativeDef>,
 }
@@ -167,6 +182,7 @@ impl<'d> Cx<'d> {
             resources: Vec::new(),
             arch_attrs: Vec::new(),
             events: Vec::new(),
+            event_idx: BTreeMap::new(),
             machines: Vec::new(),
             natives: Vec::new(),
         }
@@ -198,6 +214,13 @@ impl<'d> Cx<'d> {
         let kind_names: Vec<&str> = schema::KINDS.iter().map(|k| k.name).collect();
         for (id, item) in &doc.items {
             let v = V { item: id, path: String::new(), j: item };
+            let size = item.to_string().len();
+            if size > MAX_ITEM_BYTES {
+                self.push(
+                    v.err(codes::TOO_LARGE, format!("the item is {size} bytes; an item is at most {MAX_ITEM_BYTES} (it is stored as one world entity)"))
+                        .suggest("split it: several waves items join in id order (waves_01, waves_02, ...); move shared parts into an archetype that others extend"),
+                );
+            }
             if !matches!(item, Json::Obj(_)) {
                 self.push(v.err(codes::WRONG_TYPE, format!("an item must be an object, not {}", type_name(item))).suggest("e.g. {\"kind\": \"resource\", \"start\": 0}"));
                 continue;
@@ -224,11 +247,6 @@ impl<'d> Cx<'d> {
             let ids = self.ids(kind);
             let m: BTreeMap<String, u16> = ids.into_iter().enumerate().map(|(i, id)| (id, i as u16)).collect();
             self.idx.insert(kind, m);
-        }
-        if self.ids("waves").len() > 1 {
-            for id in self.ids("waves").into_iter().skip(1) {
-                self.push(Diagnostic::error(codes::DUPLICATE, id, "", "a rule set has at most one waves item").suggest("merge the waves into the first waves item"));
-            }
         }
         self.reg.has_waves = !self.ids("waves").is_empty();
 
@@ -356,6 +374,10 @@ impl<'d> Cx<'d> {
                     }
                 }
             }
+            if list.len() > MAX_ATTRS_PER_ARCHETYPE {
+                self.push(Diagnostic::error(codes::TOO_MANY, id.as_str(), "attributes", format!("{} attributes; at most {MAX_ATTRS_PER_ARCHETYPE} per archetype", list.len())));
+                list.truncate(MAX_ATTRS_PER_ARCHETYPE);
+            }
             per_arch.push(list);
         }
         if attr_units.len() > MAX_NAMES {
@@ -378,10 +400,16 @@ impl<'d> Cx<'d> {
             collect_emits(item, &mut custom);
         }
         for name in custom {
-            if !self.events.iter().any(|e| e.name == name) {
+            if !self.event_idx.contains_key(&name) && !BUILTIN_EVENTS.iter().any(|(n, _, _)| *n == name) {
+                self.event_idx.insert(name.clone(), 0);
                 self.events.push(EventDef { name, unit: Unit::Int });
             }
         }
+        if self.events.len() > MAX_NAMES {
+            self.push(Diagnostic::error(codes::TOO_MANY, "", "", format!("{} distinct events; at most {MAX_NAMES}", self.events.len())));
+            self.events.truncate(MAX_NAMES);
+        }
+        self.event_idx = self.events.iter().enumerate().map(|(i, e)| (e.name.clone(), i as u16)).collect();
     }
 
     fn effective(&self, id: &str, chain: &mut Vec<String>) -> Option<Json> {
@@ -793,6 +821,15 @@ impl<'d> Cx<'d> {
         out
     }
 
+    /// Effect and attack tag lists (bounded: tag checks scan them).
+    fn tag_ids_capped(&self, v: &V) -> Vec<u16> {
+        let ids = self.tag_ids(v);
+        if ids.len() > MAX_FILTER_TAGS {
+            self.push(v.err(codes::TOO_MANY, format!("{} tags; at most {MAX_FILTER_TAGS} here", ids.len())));
+        }
+        ids
+    }
+
     fn tag_ids(&self, v: &V) -> Vec<u16> {
         let mut ids: Vec<u16> = self.tag_list(v, true).iter().filter_map(|t| self.reg.tags.get(t).copied()).collect();
         ids.sort_unstable();
@@ -806,6 +843,9 @@ impl<'d> Cx<'d> {
             Json::Str(s) => vec![s.clone()],
             _ => self.tag_list(v, false),
         };
+        if list.len() > MAX_FILTER_TAGS {
+            self.push(v.err(codes::TOO_MANY, format!("{} tags in one filter; at most {MAX_FILTER_TAGS}", list.len())));
+        }
         for t in list {
             let (neg, name) = match t.strip_prefix('!') {
                 Some(n) => (true, n.to_owned()),
@@ -845,7 +885,11 @@ impl<'d> Cx<'d> {
                 if !bound.contains(&n.hook) {
                     self.push(
                         Diagnostic::warning(codes::NATIVE_UNBOUND, n.id.as_str(), "hook", format!("no module provides the native hook '{}' yet, so runs that use it will fail", n.hook))
-                            .suggest("a module must register this hook (the module host), or replace the native with Lex building blocks"),
+                            .suggest(match did_you_mean(&n.hook, bound.iter().map(String::as_str)) {
+                                Some(close) => format!("{close} (running hooks: {})", bound.iter().take(12).cloned().collect::<Vec<_>>().join(", ")),
+                                None if bound.is_empty() => "no module with hooks is running: build and load one (logic_build), or replace the native with Lex building blocks".into(),
+                                None => format!("running hooks: {}; or replace the native with Lex building blocks", bound.iter().take(12).cloned().collect::<Vec<_>>().join(", ")),
+                            }),
                     );
                 }
             }
@@ -862,7 +906,29 @@ impl<'d> Cx<'d> {
         for id in self.ids("effect") {
             effects.push(self.effect(&self.item(doc.items.get_key_value(&id).expect("listed").0)));
         }
-        let waves = self.ids("waves").first().map(|id| self.waves(&self.item(doc.items.get_key_value(id).expect("listed").0)));
+        // Several waves items join in id order into one schedule; the first sets start and rng.
+        let wave_ids = self.ids("waves");
+        let mut waves: Option<WavesDef> = None;
+        for (k, id) in wave_ids.iter().enumerate() {
+            let v = self.item(doc.items.get_key_value(id).expect("listed").0);
+            if k > 0 {
+                for key in ["start", "rng"] {
+                    if let Some(x) = v.key(key) {
+                        self.push(x.err(codes::INVALID, format!("only the first waves item ('{}') sets {key}", wave_ids[0])).suggest(format!("move \"{key}\" to '{}'", wave_ids[0])));
+                    }
+                }
+            }
+            let w = self.waves(&v, k + 1 == wave_ids.len());
+            match &mut waves {
+                None => waves = Some(w),
+                Some(all) => all.waves.extend(w.waves),
+            }
+        }
+        if let Some(w) = &waves {
+            if w.waves.len() > MAX_WAVES {
+                self.push(Diagnostic::error(codes::TOO_MANY, wave_ids[0].as_str(), "waves", format!("{} waves; at most {MAX_WAVES}", w.waves.len())));
+            }
+        }
         let mut timers = Vec::new();
         for id in self.ids("timer") {
             timers.push(self.timer(&self.item(doc.items.get_key_value(&id).expect("listed").0)));
@@ -1056,8 +1122,8 @@ impl<'d> Cx<'d> {
             self.push(v.err(codes::WRONG_TYPE, "expected an event name").got(show(v.j)));
             return None;
         };
-        match self.events.iter().position(|e| e.name == name) {
-            Some(i) => Some(i as u16),
+        match self.event_idx.get(name) {
+            Some(i) => Some(*i),
             None => {
                 self.push(
                     v.err(codes::UNKNOWN_REF, format!("no event '{name}' (built-in, or raised by some emit)"))
@@ -1087,6 +1153,9 @@ impl<'d> Cx<'d> {
             match bv.j.as_array() {
                 None => self.push(bv.err(codes::WRONG_TYPE, "behaviours must be an array").got(type_name(bv.j))),
                 Some(list) => {
+                    if list.len() > MAX_BEHAVIOURS {
+                        self.push(bv.err(codes::TOO_MANY, format!("{} behaviours; at most {MAX_BEHAVIOURS} per archetype", list.len())));
+                    }
                     for (i, b) in list.iter().enumerate() {
                         if let Some(beh) = self.behaviour(&bv.index(i, b), a, machine) {
                             if behaviours.iter().any(|x| x.name == beh.name) {
@@ -1351,9 +1420,12 @@ impl<'d> Cx<'d> {
             },
         };
         let muzzle = v.key("muzzle").and_then(|m| self.point(&m)).unwrap_or([0; 3]);
-        let blocked_by = v.key("blocked_by").map(|b| self.tag_ids(&b)).unwrap_or_default();
+        let blocked_by = v.key("blocked_by").map(|b| self.tag_ids_capped(&b)).unwrap_or_default();
         let mut payload = Vec::new();
         if let Some(pv) = self.req(v, "payload") {
+            if pv.j.as_array().is_some_and(|l| l.len() > MAX_PAYLOAD) {
+                self.push(pv.err(codes::TOO_MANY, format!("at most {MAX_PAYLOAD} payload entries")));
+            }
             match pv.j.as_array() {
                 None => self.push(pv.err(codes::WRONG_TYPE, "payload must be an array").suggest("e.g. [{\"damage\": \"10pt\"}]")),
                 Some(list) => {
@@ -1432,6 +1504,9 @@ impl<'d> Cx<'d> {
         }
         let mut modifiers = Vec::new();
         if let Some(mv) = v.key("modifiers") {
+            if mv.j.as_array().is_some_and(|l| l.len() > MAX_MODIFIERS) {
+                self.push(mv.err(codes::TOO_MANY, format!("at most {MAX_MODIFIERS} modifiers per effect")));
+            }
             for (i, m) in mv.j.as_array().unwrap_or_default().iter().enumerate() {
                 let m = mv.index(i, m);
                 let spec = Spec {
@@ -1478,7 +1553,7 @@ impl<'d> Cx<'d> {
             },
         };
         let max_stacks = v.key("max_stacks").and_then(|m| self.const_num(&m, Unit::Int)).unwrap_or(1);
-        if !(1..=1000).contains(&max_stacks) {
+        if !(1..=crate::sim::MAX_EFFECTS_PER_ENTITY as i64).contains(&max_stacks) {
             self.push(v.key("max_stacks").unwrap_or(v.clone()).err(codes::OUT_OF_RANGE, "max_stacks must be from 1 to 1000"));
         }
         EffectDef {
@@ -1488,16 +1563,17 @@ impl<'d> Cx<'d> {
             magnitude_unit: munit,
             modifiers,
             stacking,
-            max_stacks: max_stacks.clamp(1, 1000) as u16,
-            grant_tags: v.key("grant_tags").map(|t| self.tag_ids(&t)).unwrap_or_default(),
-            block_tags: v.key("block_tags").map(|t| self.tag_ids(&t)).unwrap_or_default(),
+            max_stacks: max_stacks.clamp(1, crate::sim::MAX_EFFECTS_PER_ENTITY as i64) as u16,
+            grant_tags: v.key("grant_tags").map(|t| self.tag_ids_capped(&t)).unwrap_or_default(),
+            block_tags: v.key("block_tags").map(|t| self.tag_ids_capped(&t)).unwrap_or_default(),
             on_apply: v.key("on_apply").map(|a| self.actions(&a, act)).unwrap_or_default(),
             on_period: v.key("on_period").map(|a| self.actions(&a, act)).unwrap_or_default(),
             on_expire: v.key("on_expire").map(|a| self.actions(&a, act)).unwrap_or_default(),
         }
     }
 
-    fn waves(&self, v: &V) -> WavesDef {
+    /// One waves item (`last`: the schedule's last item, whose last wave may run until cleared).
+    fn waves(&self, v: &V, last: bool) -> WavesDef {
         self.fields(v, schema::kind("waves").expect("kind"), &["kind"]);
         let sc = Scope::new(&self.reg, "a wave");
         let act = Act { scope: sc, machine: None };
@@ -1537,7 +1613,7 @@ impl<'d> Cx<'d> {
                     continue;
                 }
                 let duration = ticks(w.key("duration"));
-                if duration.is_none() && w.key("duration").is_none() && i + 1 < list.len() {
+                if duration.is_none() && w.key("duration").is_none() && (i + 1 < list.len() || !last) {
                     self.push(w.err(codes::MISSING_FIELD, "every wave but the last needs a duration").suggest("add \"duration\": \"60s\""));
                 }
                 let on_start = w.key("on_start").map(|a| self.actions(&a, act)).unwrap_or_default();

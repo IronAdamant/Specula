@@ -23,6 +23,12 @@ pub const MAX_ACTION_DEPTH: u32 = 32;
 /// Entity checks (eligibility, splash, chase, count) per tick before the tick's remaining
 /// behaviours are skipped (`work_limit`): a deterministic cap on one tick's cost.
 pub const MAX_WORK_PER_TICK: u64 = 5_000_000;
+/// Most effect instances on one entity (new ones beyond are skipped, `effect_limit`).
+pub const MAX_EFFECTS_PER_ENTITY: usize = 8;
+/// The run's state budget in cells, one per entity plus one per attribute and behaviour it
+/// carries. A spawn past it fails (`state_limit`). With the caps on effects per entity and
+/// modifiers per effect, this bounds a run's memory to a few hundred MB at worst.
+pub const MAX_STATE_CELLS: u64 = 2_000_000;
 /// Most spawns waiting in the wave queue at once (a wave that would pass it isn't scheduled).
 pub const MAX_PENDING_SPAWNS: usize = 200_000;
 /// Most entities one spawn action creates.
@@ -258,6 +264,10 @@ pub struct State {
     /// This tick: events past the cap, and entity checks done (see [`MAX_WORK_PER_TICK`]).
     dropped: u64,
     work: u64,
+    /// The state budget in use (see [`MAX_STATE_CELLS`]).
+    pub cells: u64,
+    /// A wall-clock deadline cut a tick short: the state is no longer a deterministic result.
+    pub interrupted: bool,
     dispatched: usize,
 }
 
@@ -275,6 +285,7 @@ pub struct Sim {
     rules: Arc<Rules>,
     natives: Vec<Option<Arc<dyn NativeHook>>>,
     st: State,
+    deadline: Option<std::time::Instant>,
 }
 
 impl std::fmt::Debug for Sim {
@@ -322,9 +333,11 @@ impl Sim {
             effect_seq: 0,
             dropped: 0,
             work: 0,
+            cells: 0,
+            interrupted: false,
             dispatched: 0,
         };
-        Ok(Sim { rules, natives: bound, st })
+        Ok(Sim { rules, natives: bound, st, deadline: None })
     }
 
     pub fn rules(&self) -> &Arc<Rules> {
@@ -357,6 +370,11 @@ impl Sim {
         let a = self.rules.attrs.iter().position(|x| x.name == name)? as u16;
         let e = self.entity(id)?;
         attr_value(&self.rules, &self.st, e, a)
+    }
+
+    /// An entity's current attribute value by attribute index (see [`Rules::attrs`]).
+    pub fn attr_at(&self, id: u32, attr: u16) -> Option<i64> {
+        attr_value(&self.rules, &self.st, self.entity(id)?, attr)
     }
 
     pub fn resource(&self, id: &str) -> Option<i64> {
@@ -393,7 +411,7 @@ impl Sim {
     }
 
     fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
         c.command(call)
     }
 
@@ -408,7 +426,7 @@ impl Sim {
                 refused.push((i, e));
             }
         }
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
         c.tick();
         refused
     }
@@ -420,6 +438,17 @@ impl Sim {
         }
     }
 
+    /// A wall-clock limit for the next steps: past it, the current tick stops early and the run
+    /// is [`Sim::interrupted`] (its state is no longer a deterministic result).
+    pub fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.deadline = deadline;
+    }
+
+    /// A deadline cut a tick short: don't compare, save or continue this run.
+    pub fn interrupted(&self) -> bool {
+        self.st.interrupted
+    }
+
     /// A 64-bit hash of the whole state (with the rules' hash), in a fixed order.
     pub fn hash(&self) -> u64 {
         state_hash(&self.rules, &self.st)
@@ -429,7 +458,7 @@ impl Sim {
     /// only touches the RNG streams, the diagnostics and the work counter, which are restored.
     pub fn query(&mut self, ex: &Ex) -> Result<Val, RtErr> {
         let (rngs, diag, work) = (self.st.rngs.clone(), self.st.diag.clone(), self.st.work);
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0 };
+        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline };
         let v = c.eval(ex, &Frame::default());
         (self.st.rngs, self.st.diag, self.st.work) = (rngs, diag, work);
         v
@@ -453,6 +482,8 @@ struct Core<'a> {
     natives: &'a [Option<Arc<dyn NativeHook>>],
     /// Nested action lists (on_spawn spawning, on_apply applying, on_enter switching...).
     depth: u32,
+    /// A wall-clock limit, checked as work is spent; passing it interrupts the run.
+    deadline: Option<std::time::Instant>,
 }
 
 fn idx_of(st: &State, id: u32) -> Option<usize> {
@@ -552,13 +583,24 @@ impl Core<'_> {
         let before = self.st.work;
         self.st.work = self.st.work.saturating_add(n as u64);
         if self.st.work > MAX_WORK_PER_TICK && before <= MAX_WORK_PER_TICK {
-            self.note("work_limit", "more than 5 million entity checks in one tick (attacks or counts over many entities?); the rest of the tick's behaviours were skipped");
+            self.note("work_limit", "more than 5 million units of work in one tick (attacks or counts over many entities, many commands?); the rest of the tick's behaviours were skipped");
+        }
+        // The wall clock is read every 16k units of work, so a deadline interrupts within a tick.
+        if let Some(d) = self.deadline {
+            if before >> 14 != self.st.work >> 14 && std::time::Instant::now() > d {
+                self.st.interrupted = true;
+            }
         }
         self.over_budget()
     }
 
     fn over_budget(&self) -> bool {
-        self.st.work > MAX_WORK_PER_TICK
+        self.st.work > MAX_WORK_PER_TICK || self.st.interrupted
+    }
+
+    /// What checking `e` against a tag filter costs: each tag looks through the entity's effects.
+    fn check_cost(e: &Entity, f: &TagFilter) -> usize {
+        1 + (f.all.len() + f.none.len()) * (1 + e.effects.len())
     }
 
     fn note(&mut self, code: &'static str, msg: &str) {
@@ -715,13 +757,24 @@ impl Core<'_> {
             }),
             Ex::Has(e, t) => {
                 let id = self.eval_ent(e, f)?;
+                let cost = id.and_then(|id| idx_of(self.st, id)).map_or(1, |i| 1 + self.st.ents[i].effects.len());
+                if self.spend(cost) {
+                    return Err(rt("work_limit", "has() skipped: the tick's work budget is spent"));
+                }
                 Val::Bool(id.and_then(|id| idx_of(self.st, id)).is_some_and(|i| has_tag(self.r, self.st, &self.st.ents[i], *t)))
             }
             Ex::Count(t) => {
-                if self.spend(self.st.ents.len()) {
-                    return Err(rt("work_limit", "count() skipped: the tick's work budget is spent"));
+                let mut n = 0i64;
+                for j in 0..self.st.ents.len() {
+                    if self.spend(1 + self.st.ents[j].effects.len()) {
+                        return Err(rt("work_limit", "count() stopped: the tick's work budget is spent"));
+                    }
+                    let e = &self.st.ents[j];
+                    if e.alive && has_tag(self.r, self.st, e, *t) {
+                        n += 1;
+                    }
                 }
-                Val::Int(self.st.ents.iter().filter(|e| e.alive && has_tag(self.r, self.st, e, *t)).count() as i64)
+                Val::Int(n)
             }
             Ex::Dist(a, b) => {
                 let (x, y) = (self.eval_ent(a, f)?, self.eval_ent(b, f)?);
@@ -730,10 +783,18 @@ impl Core<'_> {
             }
             Ex::Occupied(s, t) => {
                 let Val::Site(site) = self.eval(s, f)? else { return Err(rt("no_site", "the site is none")) };
-                if self.spend(self.st.ents.len()) {
-                    return Err(rt("work_limit", "occupied() skipped: the tick's work budget is spent"));
+                let mut found = false;
+                for j in 0..self.st.ents.len() {
+                    if self.spend(1 + self.st.ents[j].effects.len()) {
+                        return Err(rt("work_limit", "occupied() stopped: the tick's work budget is spent"));
+                    }
+                    let e = &self.st.ents[j];
+                    if e.alive && e.site == Some(site) && has_tag(self.r, self.st, e, *t) {
+                        found = true;
+                        break;
+                    }
                 }
-                Val::Bool(self.st.ents.iter().any(|e| e.alive && e.site == Some(site) && has_tag(self.r, self.st, e, *t)))
+                Val::Bool(found)
             }
             Ex::Rand(s, lo, hi) => {
                 let (lo, hi) = (self.eval(lo, f)?.int(), self.eval(hi, f)?.int());
@@ -1157,9 +1218,12 @@ impl Core<'_> {
         });
         let mut target = target.filter(|t| valid(self, *t));
         if target.is_none() {
-            self.spend(self.st.ents.len());
             let mut best: Option<(i128, u32)> = None;
-            for e in &self.st.ents {
+            for j in 0..self.st.ents.len() {
+                if self.spend(Self::check_cost(&self.st.ents[j], targets)) {
+                    break;
+                }
+                let e = &self.st.ents[j];
                 if e.alive && e.id != id && matches(self.r, self.st, e, targets) {
                     let d = dist2(e.pos, me_pos);
                     if d <= r2 && best.is_none_or(|(bd, _)| d < bd) {
@@ -1192,9 +1256,17 @@ impl Core<'_> {
         Ok(())
     }
 
-    fn eligible(&self, j: usize, me: u32, filter: &TagFilter, from: P3, r2: i128) -> bool {
+    /// Alive, not `me`, matching and in range; charged to the work budget (false once spent).
+    fn eligible(&mut self, j: usize, me: u32, filter: &TagFilter, from: P3, r2: i128) -> bool {
         let e = &self.st.ents[j];
-        e.alive && e.id != me && matches(self.r, self.st, e, filter) && dist2(from, e.pos) <= r2
+        if !e.alive || e.id == me {
+            return false;
+        }
+        if self.spend(Self::check_cost(e, filter)) {
+            return false;
+        }
+        let e = &self.st.ents[j];
+        matches(self.r, self.st, e, filter) && dist2(from, e.pos) <= r2
     }
 
     fn attack(&mut self, i: usize, b: usize) -> Result<(), RtErr> {
@@ -1213,13 +1285,16 @@ impl Core<'_> {
         let r2 = i128::from(range).saturating_mul(i128::from(range));
         let from = self.st.ents[i].pos;
         let n = self.st.ents.len();
-        if self.spend(n) {
+        if self.over_budget() {
             return Ok(());
         }
         let fired = match def.delivery {
             Delivery::Pulse => {
                 let mut hit = false;
                 for j in 0..n {
+                    if self.over_budget() {
+                        break;
+                    }
                     if self.eligible(j, id, &def.targets, from, r2) {
                         hit = true;
                         let t = self.st.ents[j].id;
@@ -1232,6 +1307,9 @@ impl Core<'_> {
             Delivery::Instant | Delivery::Projectile => {
                 let mut best: Option<(i128, i128, usize)> = None;
                 for j in 0..n {
+                    if self.over_budget() {
+                        break;
+                    }
                     if !self.eligible(j, id, &def.targets, from, r2) {
                         continue;
                     }
@@ -1378,8 +1456,10 @@ impl Core<'_> {
         if splash > 0 {
             let r2 = i128::from(splash).saturating_mul(i128::from(splash));
             let n = self.st.ents.len();
-            self.spend(n);
             for j in 0..n {
+                if self.spend(Self::check_cost(&self.st.ents[j], &def.targets)) {
+                    break;
+                }
                 let e = &self.st.ents[j];
                 if e.alive && matches(self.r, self.st, e, &def.targets) && dist2(e.pos, p.aim) <= r2 {
                     let t = e.id;
@@ -1550,7 +1630,13 @@ impl Core<'_> {
                         continue;
                     }
                     let subject_ok = match e.subject.and_then(|s| idx_of(self.st, s)) {
-                        Some(j) => matches(self.r, self.st, &self.st.ents[j], &rule.tags),
+                        Some(j) => {
+                            if self.spend(Self::check_cost(&self.st.ents[j], &rule.tags)) {
+                                self.st.queue.clear();
+                                return;
+                            }
+                            matches(self.r, self.st, &self.st.ents[j], &rule.tags)
+                        }
                         None => rule.tags.all.is_empty() && rule.tags.none.is_empty(),
                     };
                     if !subject_ok {
@@ -1586,6 +1672,8 @@ impl Core<'_> {
     fn cleanup(&mut self) {
         // Rules hear about this tick's deaths while the dead can still be read.
         self.dispatch();
+        let freed: u64 = self.st.ents.iter().filter(|e| !e.alive).map(|e| entity_cells(&e.base, &e.beh)).sum();
+        self.st.cells = self.st.cells.saturating_sub(freed);
         self.st.ents.retain(|e| e.alive);
         if self.st.outcome.is_some() {
             return;
@@ -1635,6 +1723,12 @@ impl Core<'_> {
             pd.after[seg as usize].saturating_add(pd.seg[seg as usize].saturating_sub(progress))
         });
         let state = def.machine.map(|m| (self.r.machines[usize::from(m)].initial, tick));
+        let cells = entity_cells(&base, &beh);
+        if self.st.cells.saturating_add(cells) > MAX_STATE_CELLS {
+            self.st.next_id -= 1;
+            return Err(rt("state_limit", format!("the run's state budget ({MAX_STATE_CELLS} cells: entities x their attributes and behaviours) is spent; spawn refused")));
+        }
+        self.st.cells += cells;
         let mut e = Entity { id, arch, alive: true, pos, base, effects: Vec::new(), beh, state, wave, site, spawn_path, path_remaining };
         // A walker spawned mid-path stands where its path says.
         if let Some((p, seg, progress)) = path {
@@ -1866,6 +1960,10 @@ impl Core<'_> {
 
     #[allow(clippy::too_many_arguments)]
     fn push_effect(&mut self, i: usize, effect: u16, magnitude: i64, expires: u32, period: u32, source: Option<u32>, mods: Vec<i64>) {
+        if self.st.ents[i].effects.len() >= MAX_EFFECTS_PER_ENTITY {
+            self.note("effect_limit", &format!("entity {} already carries {MAX_EFFECTS_PER_ENTITY} effects; '{}' was not applied", self.st.ents[i].id, self.r.effects[usize::from(effect)].id));
+            return;
+        }
         let seq = self.st.effect_seq;
         self.st.effect_seq += 1;
         let tick = self.st.tick;
@@ -1900,6 +1998,8 @@ impl Core<'_> {
             .collect();
         let state = if new.machine == old.machine { e.state } else { new.machine.map(|m| (self.r.machines[usize::from(m)].initial, tick)) };
         let e = &mut self.st.ents[i];
+        let (old_cells, new_cells) = (entity_cells(&e.base, &e.beh), entity_cells(&base, &beh));
+        self.st.cells = self.st.cells.saturating_sub(old_cells).saturating_add(new_cells);
         e.arch = to;
         e.base = base;
         e.beh = beh;
@@ -2131,6 +2231,11 @@ impl Core<'_> {
                 Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
             }
         }
+        // The rollback snapshot copies the state, so it costs that much work.
+        let cost = self.st.cells as usize + self.st.pending.len() + self.st.ents.len();
+        if self.spend(cost) {
+            return Err(Rejection::new("work_limit", "this tick's work budget is spent (many commands over a large state); send the rest next tick"));
+        }
         let snapshot = self.st.clone();
         for (res, need) in costs {
             let cur = self.st.res[usize::from(res)];
@@ -2144,6 +2249,11 @@ impl Core<'_> {
         self.check_outcomes(true);
         Ok(())
     }
+}
+
+/// An entity's share of the state budget.
+fn entity_cells(base: &[i64], beh: &[BehState]) -> u64 {
+    1 + base.len() as u64 + beh.len() as u64
 }
 
 fn arch_health(r: &Rules, st: &State, e: &Entity) -> i64 {

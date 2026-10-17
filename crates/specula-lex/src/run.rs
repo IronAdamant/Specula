@@ -166,9 +166,11 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
         }
     };
     let mut stopped_early = false;
+    // The deadline also reaches inside ticks (the sim reads the clock as it spends work).
+    sim.set_deadline(spec.deadline);
     while sim.tick() < end && sim.outcome().is_none() {
         let now = sim.tick();
-        if spec.deadline.is_some_and(|d| std::time::Instant::now() > d) {
+        if sim.interrupted() || spec.deadline.is_some_and(|d| std::time::Instant::now() > d) {
             stopped_early = true;
             break;
         }
@@ -187,6 +189,8 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
             sample(sim, &mut samples);
         }
     }
+    sim.set_deadline(None);
+    stopped_early |= sim.interrupted();
     let unapplied = cmds.len() - next;
     if !spec.watch.is_empty() && samples.last().and_then(|s| s.get("tick")).and_then(Json::as_u64) != Some(u64::from(sim.tick())) {
         sample(sim, &mut samples);
@@ -243,18 +247,22 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
         ("from_tick", Json::from(start)),
         ("tick", Json::from(sim.tick())),
         ("seconds", Json::from(f64::from(sim.tick()) / f64::from(r.tick_hz))),
-        ("outcome", sim.outcome().map_or(Json::Null, |(res, t)| Json::obj([("result", Json::from(res)), ("tick", Json::from(t))]))),
+        ("complete", Json::Bool(!stopped_early)),
+        ("outcome", sim.outcome().filter(|_| !stopped_early).map_or(Json::Null, |(res, t)| Json::obj([("result", Json::from(res)), ("tick", Json::from(t))]))),
         ("resources", resources),
         ("entities", Json::obj([("alive", Json::from(st.ents.iter().filter(|e| e.alive).count())), ("by_archetype", by_arch)])),
         ("events", events),
         ("commands", Json::obj([("applied", Json::from(applied - refused)), ("refused", Json::from(refused)), ("not_reached", Json::from(unapplied))])),
-        ("hash", Json::from(format!("{:016x}", sim.hash()))),
     ];
     if stopped_early {
+        // Where it stopped depends on the machine's speed, so nothing here is a result to
+        // compare: no hash, no outcome, and the run can't be saved or continued.
         out.push((
             "stopped_early",
-            Json::from(format!("the wall-time budget ran out at tick {}; run fewer ticks per call, or save_as and continue with from", sim.tick())),
+            Json::from(format!("the wall-time budget ran out near tick {}; this run is incomplete (no hash or outcome): run fewer ticks per call, or split it with save_as and from", sim.tick())),
         ));
+    } else {
+        out.push(("hash", Json::from(format!("{:016x}", sim.hash()))));
     }
     if let Some(w) = waves {
         out.push(("waves", w));

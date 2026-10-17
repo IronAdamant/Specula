@@ -472,6 +472,102 @@ fn chained_waves_cannot_queue_without_bound() {
 }
 
 #[test]
+fn commands_share_the_tick_budget() {
+    // Each command snapshots the state for its rollback: 2000 commands over 30,000 entities
+    // would copy 60 million entities in one tick.
+    let items = r#"
+        "gold": {"kind": "resource", "start": 0},
+        "spot": {"kind": "sites", "points": {"a": [0, 0, 0]}},
+        "dummy": {"kind": "archetype", "attributes": {"hp": "1pt"}},
+        "make": {"kind": "command", "do": [{"spawn": "dummy", "at": "a", "count": 10000}]},
+        "nop": {"kind": "command", "do": [{"add": "gold", "amount": 1}]}
+    "#;
+    let mut s = sim(items, 1);
+    let make = s.parse_command("make", &Json::Null).unwrap();
+    for _ in 0..3 {
+        s.apply(&make).unwrap();
+    }
+    let nop = s.parse_command("nop", &Json::Null).unwrap();
+    let refused = s.step(&vec![nop; 2000]);
+    assert!(!refused.is_empty() && refused.iter().all(|(_, r)| r.code == "work_limit"), "{}", refused.len());
+    assert_eq!(s.resource("gold").unwrap() as usize + refused.len(), 2000, "the rest were applied");
+}
+
+#[test]
+fn the_state_budget_bounds_memory() {
+    let attrs: Vec<String> = (0..64).map(|i| format!("\"a{i}\": 1")).collect();
+    let items = format!(
+        r#""spot": {{"kind": "sites", "points": {{"a": [0, 0, 0]}}}},
+           "fat": {{"kind": "archetype", "attributes": {{{}}}}},
+           "make": {{"kind": "timer", "every": "0.1s", "do": [{{"spawn": "fat", "at": "a", "count": 10000}}]}}"#,
+        attrs.join(", ")
+    );
+    let mut s = sim(&items, 1);
+    for _ in 0..6 {
+        s.step(&[]);
+    }
+    assert!(s.state().diag.counts.contains_key("state_limit"), "{:?}", s.state().diag);
+    assert!(s.state().cells <= specula_lex::sim::MAX_STATE_CELLS);
+    assert!(s.entities().len() < 40_000, "{}", s.entities().len());
+}
+
+#[test]
+fn effects_per_entity_are_capped() {
+    let items = with_base(
+        r#""mark": {"kind": "effect", "duration": "infinite", "stacking": "independent", "max_stacks": 8},
+           "brand": {"kind": "effect", "duration": "infinite"},
+           "hit": {"kind": "command", "args": {"t": "entity"}, "do": [{"apply": "mark", "to": "arg.t"}, {"apply": "brand", "to": "arg.t"}]}"#,
+    );
+    let mut s = sim(&items, 1);
+    cmd(&mut s, "make", r#"{"what": "dummy", "at": "a"}"#).unwrap();
+    for _ in 0..9 {
+        cmd(&mut s, "hit", r#"{"t": "a"}"#).unwrap();
+    }
+    assert_eq!(s.entity(first_id(&s)).unwrap().effects.len(), specula_lex::sim::MAX_EFFECTS_PER_ENTITY);
+    assert!(s.state().diag.counts.contains_key("effect_limit"));
+}
+
+#[test]
+fn a_run_cut_short_by_the_clock_is_not_a_result() {
+    let items = with_base(r#""tick_gold": {"kind": "timer", "every": "0.1s", "do": [{"add": "gold", "amount": 1}]}"#);
+    let r = rules(&items);
+    let mut s = Sim::new(r.clone(), 1, &Natives::new()).unwrap();
+    let spec = RunSpec {
+        ticks: 100,
+        expect: vec![compile_query(&r, "res.gold >= 0").unwrap()],
+        deadline: Some(std::time::Instant::now()),
+        ..Default::default()
+    };
+    let rep = run(&mut s, &spec);
+    assert_eq!(rep.get("complete"), Some(&Json::Bool(false)));
+    assert!(rep.get("hash").is_none() && rep.get("outcome") == Some(&Json::Null), "{rep}");
+    assert_eq!(rep.get("expect_passed"), Some(&Json::Bool(false)), "expectations are not judged");
+    // Without a deadline the same run is complete and hashed.
+    let mut s = Sim::new(r, 1, &Natives::new()).unwrap();
+    let rep = run(&mut s, &RunSpec { ticks: 100, ..Default::default() });
+    assert_eq!(rep.get("complete"), Some(&Json::Bool(true)));
+    assert!(rep.get("hash").is_some());
+}
+
+#[test]
+fn several_waves_items_make_one_schedule() {
+    let items = r#"
+        "foe": {"kind": "archetype"},
+        "lane": {"kind": "path", "points": [[0,0,0],[1,0,0]]},
+        "waves_a": {"kind": "waves", "start": "1s", "waves": [
+            {"duration": "1s", "groups": [{"archetype": "foe", "count": 1, "at": ["lane"]}]},
+            {"duration": "1s", "groups": [{"archetype": "foe", "count": 1, "at": ["lane"]}]}]},
+        "waves_b": {"kind": "waves", "waves": [{"groups": [{"archetype": "foe", "count": 1, "at": ["lane"]}]}]}
+    "#;
+    let mut s = sim(items, 1);
+    for _ in 0..40 {
+        s.step(&[]);
+    }
+    assert_eq!(s.state().wave, 3, "waves_b's wave follows waves_a's two");
+    assert_eq!(s.rules().waves.as_ref().unwrap().waves.len(), 3);
+}
+
+#[test]
 fn one_tick_has_bounded_events_and_work() {
     // 2000 pulse towers over 2000 targets: 4 million hits and 8 million checks a tick, unless capped.
     let items = r#"

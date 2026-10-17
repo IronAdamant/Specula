@@ -27,6 +27,7 @@ pub mod codes {
     pub const NATIVE_UNBOUND: &str = "native_unbound";
     pub const UNSUPPORTED_VERSION: &str = "unsupported_version";
     pub const TOO_MANY: &str = "too_many";
+    pub const TOO_LARGE: &str = "too_large";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

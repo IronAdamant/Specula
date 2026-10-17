@@ -116,7 +116,7 @@ pub const KINDS: &[Spec] = &[
             f("magnitude", "unit name", false, "the unit of `magnitude` (set by the applier); default ratio"),
             f("modifiers", "[{attribute, op, value}]", false, "op: add, mul (by a ratio), set; value: an expression (may use magnitude)"),
             f("stacking", "string", false, "strongest (default), refresh, stack, independent, ignore"),
-            f("max_stacks", "int", false, "for stack and independent (default 1)"),
+            f("max_stacks", "int", false, "for stack and independent: 1 to 8 (default 1); an entity carries at most 8 effect instances"),
             f("grant_tags", "tags", false, "tags the holder has while it is active"),
             f("block_tags", "tags", false, "a target with any of these tags is immune"),
             f("on_apply", "actions", false, "self: the holder, other: the source"),
@@ -134,7 +134,7 @@ pub const KINDS: &[Spec] = &[
     },
     Spec {
         name: "waves",
-        doc: "The encounter schedule (one per rule set). Each wave starts when the last one's duration runs out (or on next_wave), runs on_start, then schedules its groups.",
+        doc: "The encounter schedule. Several waves items join in id order into one schedule (each item is at most 16 KB; only the first sets start and rng). Each wave starts when the last one's duration runs out (or on next_wave), runs on_start, then schedules its groups.",
         fields: &[
             f("start", "duration", false, "time before wave 1 (default 0)"),
             f("rng", "string", false, "the random stream for spawn points (default waves)"),
