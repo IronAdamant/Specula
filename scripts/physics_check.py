@@ -203,6 +203,9 @@ def run(m, failures, label):
     hashes = m.json("world_hash", recent=1, verify=True)
     check(hashes["verify"]["matches"], f"{label}: the journal replays the world exactly", failures)
     check("physics" in hashes, f"{label}: world_hash reports the physics state hash", failures)
+    trace = m.json("desync_trace")
+    trace_text = Path(trace["file"]).read_text() if trace.get("file") else ""
+    check('"physics"' in trace_text, f"{label}: the desync trace carries a physics subsystem hash", failures)
     perf = m.json("perf_frame")
     check("physics" in perf and perf["physics"]["bodies"] > 0, f"{label}: perf_frame has a physics section", failures)
     (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2))

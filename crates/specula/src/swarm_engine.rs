@@ -456,6 +456,10 @@ impl Engine {
         if let Some(g) = &self.game {
             g.state_hashes(&mut self.trace.scratch);
         }
+        // Physics' own state (warm starts, sleep timers, contact memory) isn't in the world hash.
+        if let Some(h) = self.physics.hash() {
+            self.trace.scratch.push(("physics", h));
+        }
         self.trace.record(tick, hash, self.world.next_id());
     }
 
