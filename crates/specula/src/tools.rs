@@ -206,6 +206,8 @@ pub enum Command {
     Logic(crate::logic::tools::LogicCall),
     /// The physics tools (see [`crate::physics_tools`]).
     Physics(crate::physics_tools::PhysicsCall),
+    /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
+    Playtest(crate::playtest_engine::PlaytestCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -325,7 +327,10 @@ impl ToolHandler for Tools {
     }
 }
 
-fn parse(name: &str, args: &Json) -> Result<Command, String> {
+pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
+    if let Some(call) = crate::playtest_engine::parse(name, args) {
+        return call.map(Command::Playtest);
+    }
     match name {
         "world_spawn" => parse_spawn(args).map(Command::Spawn),
         "world_set" => parse_set(args).map(|(key, change)| Command::Set(key, change)),
@@ -2292,7 +2297,13 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::swarm_tools::definitions())
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
+    .chain(crate::playtest_engine::definitions())
     .collect()
+}
+
+/// The engine's own tool names (a playtest checks its calls against them).
+pub(crate) fn engine_tool_names() -> Vec<String> {
+    definitions().into_iter().map(|t| t.name).collect()
 }
 
 #[cfg(test)]
