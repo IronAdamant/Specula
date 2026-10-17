@@ -109,6 +109,108 @@ impl Mind {
         Mind { def, bb, states: vec![NodeState::default(); n], tick: 0, hz: hz.max(1), trace: VecDeque::new(), running_leaves: Vec::new(), last_status: None, visits: 0 }
     }
 
+    /// The mind's whole running state, exactly (floats as bits): blackboard, every node's state,
+    /// trace, tick. [`Mind::restore`] reads it back against the same definition.
+    pub fn save(&self) -> Json {
+        let f = |v: f32| Json::from(v.to_bits());
+        let status = |s: Option<Status>| s.map_or(Json::Null, |s| Json::from(s.name()));
+        let states = self.states.iter().map(|s| {
+            Json::arr([
+                Json::from(s.running),
+                Json::from(s.cursor),
+                Json::from(s.count),
+                s.last_success.map_or(Json::Null, Json::from),
+                s.chosen.map_or(Json::Null, Json::from),
+                Json::arr(s.scores.iter().map(|(t, parts)| Json::arr([f(*t), Json::arr(parts.iter().map(|p| f(*p)))]))),
+                Json::arr(s.done.iter().map(|d| status(*d))),
+            ])
+        });
+        Json::obj([
+            ("def_nodes", Json::from(self.def.nodes.len())),
+            ("bb", Json::Obj(self.bb.iter().map(|(k, v)| (k.clone(), v.clone())).collect())),
+            ("states", Json::arr(states)),
+            ("tick", Json::from(self.tick)),
+            ("hz", Json::from(self.hz)),
+            ("trace", Json::arr(self.trace.iter().map(|t| Json::arr([Json::from(t.tick), Json::from(t.text.as_str())])))),
+            ("running_leaves", Json::arr(self.running_leaves.iter().map(|i| Json::from(*i)))),
+            ("last_status", status(self.last_status)),
+            ("visits", Json::from(self.visits)),
+        ])
+    }
+
+    /// A mind from [`Mind::save`] for definition `def` (`None` when the save doesn't fit it).
+    pub fn restore(def: Arc<Def>, j: &Json) -> Option<Mind> {
+        let n = def.nodes.len();
+        if j.get("def_nodes")?.as_u64()? != n as u64 {
+            return None;
+        }
+        let f = |j: &Json| j.as_u64().and_then(|b| u32::try_from(b).ok()).map(f32::from_bits);
+        let status = |j: &Json| -> Option<Option<Status>> {
+            match j {
+                Json::Null => Some(None),
+                Json::Str(s) => match s.as_str() {
+                    "success" => Some(Some(Status::Success)),
+                    "failure" => Some(Some(Status::Failure)),
+                    "running" => Some(Some(Status::Running)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let opt_u = |j: &Json| -> Option<Option<u64>> {
+            match j {
+                Json::Null => Some(None),
+                x => x.as_u64().map(Some),
+            }
+        };
+        let mut states = Vec::with_capacity(n);
+        for s in j.get("states")?.as_array()? {
+            let a = s.as_array()?;
+            let scores = a.get(5)?.as_array()?.iter().map(|x| {
+                let p = x.as_array()?;
+                Some((f(p.first()?)?, p.get(1)?.as_array()?.iter().map(f).collect::<Option<Vec<f32>>>()?))
+            });
+            states.push(NodeState {
+                running: a.first()?.as_bool()?,
+                cursor: usize::try_from(a.get(1)?.as_u64()?).ok()?,
+                count: u32::try_from(a.get(2)?.as_u64()?).ok()?,
+                last_success: opt_u(a.get(3)?)?,
+                chosen: opt_u(a.get(4)?)?.map(|c| usize::try_from(c).ok()).map_or(Some(None), |c| c.map(Some))?,
+                scores: scores.collect::<Option<Vec<_>>>()?,
+                done: a.get(6)?.as_array()?.iter().map(status).collect::<Option<Vec<_>>>()?,
+            });
+        }
+        if states.len() != n || states.iter().any(|s| s.cursor > n || s.chosen.is_some_and(|c| c >= n)) {
+            return None;
+        }
+        let bb: Blackboard = match j.get("bb")? {
+            Json::Obj(pairs) if pairs.len() <= MAX_KEYS => pairs.iter().cloned().collect(),
+            _ => return None,
+        };
+        let trace = j
+            .get("trace")?
+            .as_array()?
+            .iter()
+            .take(TRACE)
+            .map(|t| {
+                let a = t.as_array()?;
+                Some(TraceLine { tick: a.first()?.as_u64()?, text: a.get(1)?.as_str()?.to_owned() })
+            })
+            .collect::<Option<VecDeque<_>>>()?;
+        let running_leaves = j.get("running_leaves")?.as_array()?.iter().map(|i| i.as_u64().and_then(|i| usize::try_from(i).ok()).filter(|i| *i < n)).collect::<Option<Vec<_>>>()?;
+        Some(Mind {
+            def,
+            bb,
+            states,
+            tick: j.get("tick")?.as_u64()?,
+            hz: u32::try_from(j.get("hz")?.as_u64()?).ok()?.max(1),
+            trace,
+            running_leaves,
+            last_status: status(j.get("last_status")?)?,
+            visits: u32::try_from(j.get("visits")?.as_u64()?).ok()?,
+        })
+    }
+
     fn note(&mut self, text: String) {
         if self.trace.len() == TRACE {
             self.trace.pop_front();
@@ -737,6 +839,41 @@ mod tests {
         }
         assert_eq!(t, 3);
         assert_eq!(w.log.last().unwrap(), "chase:Abort");
+    }
+
+    #[test]
+    fn a_restored_mind_continues_exactly() {
+        let text = r#"{"parallel": [
+            {"repeat": {"sequence": [{"set": "phase", "value": 1}, {"wait": 3}, {"set": "phase", "value": "two"}]}},
+            {"utility": [
+                {"label": "chase", "considerations": [{"input": "distance", "target": "/p", "range": [0, 10], "curve": "inverse"}], "run": {"do": "chase", "target": "/p"}},
+                {"label": "patrol", "weight": 0.5, "run": {"do": "patrol", "points": [[0,0,0]]}}
+            ], "momentum": 0.1}
+        ], "succeed": 2}"#;
+        let mut a = mind(text);
+        let mut wa = World { steps: 4, distance: 6.0, ..World::default() };
+        for t in 0..37u64 {
+            wa.distance = 2.0 + (t % 9) as f64;
+            a.tick(&mut wa, t);
+        }
+        let saved = Json::parse(&a.save().to_string()).unwrap();
+        let mut b = Mind::restore(Arc::clone(&a.def), &saved).expect("restores");
+        let mut wb = World { steps: 4, distance: 6.0, progress: wa.progress, ..World::default() };
+        let hash = |m: &Mind| {
+            let mut h = specula_core::hash::StableHasher::default();
+            m.hash_into(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&a), hash(&b));
+        for t in 37..120u64 {
+            wa.distance = 2.0 + (t % 9) as f64;
+            wb.distance = wa.distance;
+            assert_eq!(a.tick(&mut wa, t), b.tick(&mut wb, t));
+            assert_eq!(hash(&a), hash(&b));
+        }
+        assert_eq!(a.status_json(4096), b.status_json(4096));
+        // A save for another definition is refused.
+        assert!(Mind::restore(Arc::new(Def::parse(&Json::parse(GUARD).unwrap(), &vocab()).unwrap()), &saved).is_none());
     }
 
     #[test]

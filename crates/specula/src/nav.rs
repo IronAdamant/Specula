@@ -54,6 +54,8 @@ pub const COLUMNS_PER_TICK: usize = 9_216;
 /// Mind work per tick (node visits, senses and inputs at 1, line-of-sight raycasts at 16):
 /// minds past it wait for the next tick, round robin by id; at least one runs.
 pub const MIND_WORK_PER_TICK: u64 = 4_096;
+/// Version of [`Nav::save_state`]'s format.
+pub const SAVE_VERSION: u64 = 1;
 /// Recent nav_path answers kept for the `paths` overlay.
 const QUERIES: usize = 4;
 
@@ -2216,6 +2218,146 @@ impl Nav {
         h.finish()
     }
 
+    /// Navigation's hidden state for a save game, exactly: each navmesh's crowd (with the mesh
+    /// hash its polygon refs belong to), each mind's running state and blackboard, the agents'
+    /// runtime goals, and the nav state hash. Everything else (navmeshes, settings, agents,
+    /// definitions) is world data and comes back with the world. Pair with
+    /// [`Nav::restore_state`] after loading the same world at the same tick.
+    pub fn save_state(&self) -> Json {
+        let f = |v: f32| Json::from(v.to_bits());
+        let v = |p: Vec3| Json::arr([f(p.x), f(p.y), f(p.z)]);
+        let meshes = self.meshes.iter().map(|(id, m)| {
+            Json::obj([
+                ("id", Json::from(*id)),
+                ("path", Json::from(m.path.as_str())),
+                ("ready", Json::from(m.ready)),
+                ("mesh_hash", Json::from(format!("{:016x}", m.mesh.hash()))),
+                ("crowd", m.crowd.save()),
+            ])
+        });
+        let minds = self.minds.iter().filter_map(|(id, m)| m.mind.as_ref().map(|mind| Json::obj([("id", Json::from(*id)), ("state", mind.save())])));
+        let agents = self.agents.iter().map(|(id, l)| {
+            Json::obj([
+                ("id", Json::from(*id)),
+                (
+                    "mind_goal",
+                    match &l.mind_goal {
+                        Some(Goal::Point(p)) => Json::obj([("point", v(*p))]),
+                        Some(Goal::Entity(e)) => Json::obj([("entity", Json::from(*e))]),
+                        None => Json::Null,
+                    },
+                ),
+                ("face", l.face.map_or(Json::Null, f)),
+                ("patrol_index", Json::from(l.patrol_index)),
+                ("wander_count", Json::from(l.wander_count)),
+                ("unreachable_ticks", Json::from(l.unreachable_ticks)),
+                ("goal_owner", l.goal_owner.map_or(Json::Null, Json::from)),
+                ("written", l.written.map_or(Json::Null, v)),
+            ])
+        });
+        Json::obj([
+            ("version", Json::from(SAVE_VERSION)),
+            ("hash", Json::from(format!("{:016x}", self.hash()))),
+            ("mind_cursor", Json::from(self.mind_cursor)),
+            ("meshes", Json::arr(meshes)),
+            ("minds", Json::arr(minds)),
+            ("agents", Json::arr(agents)),
+        ])
+    }
+
+    /// Restores [`Nav::save_state`] for `world` (the world the save was made with, loaded):
+    /// re-reads the world, builds every navmesh in full, then puts back crowds, minds and goals,
+    /// and checks the nav state hash is the saved one. On any mismatch navigation starts fresh
+    /// from the world and the error says what differed. Returns the restored hash.
+    pub fn restore_state(&mut self, world: &World, generation: u64, j: &Json) -> Result<u64, world::WorldError> {
+        let r = self.try_restore(world, generation, j);
+        if r.is_err() {
+            self.reset();
+            self.sync(world, generation);
+        }
+        r
+    }
+
+    fn try_restore(&mut self, world: &World, generation: u64, j: &Json) -> Result<u64, world::WorldError> {
+        let bad = |what: String| world::WorldError::new("invalid_save", format!("navigation's saved state: {what}"));
+        if j.get("version").and_then(Json::as_u64) != Some(SAVE_VERSION) {
+            return Err(bad(format!("version must be {SAVE_VERSION}")));
+        }
+        let hex = |k: &str, o: &Json| o.get(k).and_then(Json::as_str).and_then(|s| u64::from_str_radix(s, 16).ok());
+        let want = hex("hash", j).ok_or_else(|| bad("no hash".into()))?;
+        self.reset();
+        self.sync(world, generation);
+        let ids: Vec<u64> = self.meshes.keys().copied().collect();
+        for id in ids {
+            if let Some(m) = self.meshes.get_mut(&id) {
+                m.complete_first = false;
+            }
+            self.rebuild(id, None, world);
+        }
+        for m in j.get("meshes").and_then(Json::as_array).ok_or_else(|| bad("no meshes".into()))? {
+            let id = m.get("id").and_then(Json::as_u64).ok_or_else(|| bad("a mesh without id".into()))?;
+            let slot = self.meshes.get_mut(&id).ok_or_else(|| {
+                world::WorldError::new("state_mismatch", format!("the save has navmesh {id}, the world doesn't")).with("mesh", m.get("path").cloned().unwrap_or(Json::Null))
+            })?;
+            let saved = hex("mesh_hash", m).ok_or_else(|| bad("a mesh without mesh_hash".into()))?;
+            if m.get("ready").and_then(Json::as_bool) == Some(true) && saved != slot.mesh.hash() {
+                return Err(world::WorldError::new("state_mismatch", format!("navmesh '{}' builds differently from the saved one (the world or its settings differ)", slot.path))
+                    .with("saved", format!("{saved:016x}"))
+                    .with("built", format!("{:016x}", slot.mesh.hash())));
+            }
+            slot.crowd.restore(m.get("crowd").ok_or_else(|| bad("a mesh without crowd".into()))?).map_err(|e| nav_error(&e))?;
+        }
+        for m in j.get("minds").and_then(Json::as_array).ok_or_else(|| bad("no minds".into()))? {
+            let id = m.get("id").and_then(Json::as_u64).ok_or_else(|| bad("a mind without id".into()))?;
+            let slot = self.minds.get_mut(&id).ok_or_else(|| world::WorldError::new("state_mismatch", format!("the save has a mind on entity {id}, the world doesn't")).with("id", id))?;
+            let def = slot.mind.as_ref().map(|x| Arc::clone(&x.def)).ok_or_else(|| world::WorldError::new("state_mismatch", format!("entity {id}'s mind can't run in this world")).with("id", id))?;
+            let mind = Mind::restore(def, m.get("state").unwrap_or(&Json::Null)).ok_or_else(|| world::WorldError::new("state_mismatch", format!("entity {id}'s saved mind doesn't fit its definition")).with("id", id))?;
+            slot.hash = mind_hash(&mind);
+            slot.mind = Some(mind);
+        }
+        self.mind_cursor = j.get("mind_cursor").and_then(Json::as_u64).ok_or_else(|| bad("no mind_cursor".into()))?;
+        let fb = |x: &Json| x.as_u64().and_then(|b| u32::try_from(b).ok()).map(f32::from_bits);
+        let vb = |x: &Json| -> Option<Vec3> {
+            let a = x.as_array()?;
+            Some(Vec3::new(fb(a.first()?)?, fb(a.get(1)?)?, fb(a.get(2)?)?))
+        };
+        for a in j.get("agents").and_then(Json::as_array).ok_or_else(|| bad("no agents".into()))? {
+            let id = a.get("id").and_then(Json::as_u64).ok_or_else(|| bad("an agent without id".into()))?;
+            let link = self.agents.get_mut(&id).ok_or_else(|| world::WorldError::new("state_mismatch", format!("the save has nav agent {id}, the world doesn't")).with("id", id))?;
+            let damaged = || bad(format!("agent {id}"));
+            link.mind_goal = match a.get("mind_goal") {
+                None | Some(Json::Null) => None,
+                Some(g) => match (g.get("point"), g.get("entity")) {
+                    (Some(p), _) => Some(Goal::Point(vb(p).ok_or_else(damaged)?)),
+                    (_, Some(e)) => Some(Goal::Entity(e.as_u64().ok_or_else(damaged)?)),
+                    _ => return Err(damaged()),
+                },
+            };
+            link.face = match a.get("face") {
+                None | Some(Json::Null) => None,
+                Some(x) => Some(fb(x).ok_or_else(damaged)?),
+            };
+            link.patrol_index = a.get("patrol_index").and_then(Json::as_u64).ok_or_else(damaged)? as usize;
+            link.wander_count = a.get("wander_count").and_then(Json::as_u64).ok_or_else(damaged)?;
+            link.unreachable_ticks = a.get("unreachable_ticks").and_then(Json::as_u64).and_then(|v| u32::try_from(v).ok()).ok_or_else(damaged)?;
+            link.goal_owner = match a.get("goal_owner") {
+                None | Some(Json::Null) => None,
+                Some(x) => Some(x.as_u64().ok_or_else(damaged)? as usize),
+            };
+            link.written = match a.get("written") {
+                None | Some(Json::Null) => None,
+                Some(x) => Some(vb(x).ok_or_else(damaged)?),
+            };
+        }
+        let got = self.hash();
+        if got != want {
+            return Err(world::WorldError::new("state_mismatch", "the restored navigation state hashes differently from the saved one")
+                .with("saved", format!("{want:016x}"))
+                .with("restored", format!("{got:016x}")));
+        }
+        Ok(got)
+    }
+
     /// The nav hash at the end of the last tick (`None` before navigation ran).
     pub fn last_hash(&self) -> Option<u64> {
         self.hashes.back().map(|(_, h)| *h)
@@ -3062,6 +3204,57 @@ mod tests {
         }
         let p = w.get(a).unwrap().world_position();
         assert!(!swam && horizontal(p, Vec3::new(-5.0, 0.0, 6.0)) < 0.5, "walked around: {p:?}");
+    }
+
+    #[test]
+    fn a_saved_nav_state_continues_exactly_after_a_load() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let def = Json::parse(
+            r#"{"root": {"selector": [
+                {"sequence": [{"if": "near", "target": "/thief", "distance": 4}, {"do": "chase", "target": "/thief", "within": 0.8}]},
+                {"do": "patrol", "points": [[4, 0, 4], [4, 0, 7], [-6, 0, 6]]}
+            ]}}"#,
+        )
+        .unwrap();
+        walker(&mut w, "guard", Vec3::new(3.0, 0.5, 3.0), vec![(MIND_KEY, Json::obj([("def", def)]))]);
+        for i in 0..6 {
+            let a = walker(&mut w, &format!("walker{i}"), Vec3::new(-6.0 + i as f32, 0.5, -6.0), vec![]);
+            let goal = Json::arr([Json::from(6.0 - i as f32), Json::from(0.0), Json::from(6.0)]);
+            w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(2.5)), ("goal", goal)]))])), ..Default::default() }, "t").unwrap();
+        }
+        cube(&mut w, "thief", Vec3::new(-6.0, 0.5, -8.0), Vec3::new(0.4, 1.0, 0.4));
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let mut physics = Physics::default();
+        let tick = |nav: &mut Nav, w: &mut World, physics: &mut Physics, t: u64| {
+            nav.tick(w, physics, 0, t, 1.0 / 30.0, 30);
+            let _ = w.take_changes();
+        };
+        for t in 0..95 {
+            tick(&mut nav, &mut w, &mut physics, t);
+        }
+        // Save; "load" the same world into a fresh engine (a new generation) and restore.
+        let saved = Json::parse(&nav.save_state().to_string()).unwrap();
+        let mut w2 = w.clone();
+        let mut nav2 = Nav::default();
+        let mut physics2 = Physics::default();
+        let h = nav2.restore_state(&w2, 1, &saved).unwrap();
+        assert_eq!(h, nav.hash());
+        for t in 95..260 {
+            tick(&mut nav, &mut w, &mut physics, t);
+            nav2.tick(&mut w2, &mut physics2, 1, t, 1.0 / 30.0, 30);
+            let _ = w2.take_changes();
+            assert_eq!(nav.hash(), nav2.hash(), "tick {t}");
+        }
+        // A save for another world is refused, and navigation starts fresh.
+        let mut other = World::default();
+        room(&mut other);
+        let mut nav3 = Nav::default();
+        let err = nav3.restore_state(&other, 0, &saved).unwrap_err();
+        assert_eq!(err.code, "state_mismatch", "{}", err.message);
+        assert!(nav3.restore_state(&other, 0, &Json::parse(r#"{"version": 9}"#).unwrap()).is_err());
     }
 
     #[test]
