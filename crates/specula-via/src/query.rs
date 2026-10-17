@@ -9,7 +9,57 @@ use specula_core::math::Vec3;
 use specula_core::rng::Rng;
 use specula_core::Json;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::BinaryHeap;
+
+/// A small open-addressing map from polygon refs to node slots (a fixed hash: lookups only,
+/// never iterated, so nothing depends on its layout).
+struct Slots {
+    keys: Vec<u32>,
+    vals: Vec<u32>,
+    len: usize,
+}
+
+impl Slots {
+    const EMPTY: u32 = u32::MAX;
+
+    fn with_capacity(n: usize) -> Slots {
+        let cap = (n * 2).next_power_of_two().max(16);
+        Slots { keys: vec![Slots::EMPTY; cap], vals: vec![0; cap], len: 0 }
+    }
+
+    fn slot(&self, key: u32) -> usize {
+        let mask = self.keys.len() - 1;
+        let mut i = (key.wrapping_mul(0x9E37_79B1) >> 7) as usize & mask;
+        while self.keys[i] != Slots::EMPTY && self.keys[i] != key {
+            i = (i + 1) & mask;
+        }
+        i
+    }
+
+    fn get(&self, key: u32) -> Option<u32> {
+        let i = self.slot(key);
+        (self.keys[i] == key).then(|| self.vals[i])
+    }
+
+    fn insert(&mut self, key: u32, val: u32) {
+        if (self.len + 1) * 2 > self.keys.len() {
+            let old: Vec<(u32, u32)> = self.keys.iter().zip(&self.vals).filter(|(k, _)| **k != Slots::EMPTY).map(|(k, v)| (*k, *v)).collect();
+            let cap = self.keys.len() * 2;
+            self.keys = vec![Slots::EMPTY; cap];
+            self.vals = vec![0; cap];
+            self.len = 0;
+            for (k, v) in old {
+                self.insert(k, v);
+            }
+        }
+        let i = self.slot(key);
+        if self.keys[i] == Slots::EMPTY {
+            self.len += 1;
+        }
+        self.keys[i] = key;
+        self.vals[i] = val;
+    }
+}
 
 /// Default and largest number of polygons one path search expands.
 pub const MAX_NODES: (usize, usize) = (4096, 65536);
@@ -158,6 +208,7 @@ impl NavMesh {
             PathStatus::Complete => target,
             _ => self.poly(last).map_or(s, |p| self.closest_on_poly(p, target)),
         };
+        let polys = self.shortcut(s, end_point, polys);
         let corners = self.straighten(s, end_point, &polys, usize::MAX);
         let length = corners.windows(2).map(|w| dist(w[0], w[1])).sum();
         Some(PathResult { polys, corners, status, visited, length })
@@ -167,22 +218,27 @@ impl NavMesh {
     /// by definition, so the search returns the polygon closest to `target`.
     pub fn search(&self, sp: PolyRef, s: Vec3, goal: Option<PolyRef>, target: Vec3, max_nodes: usize) -> (Vec<PolyRef>, PathStatus, usize) {
         struct Node {
+            poly: PolyRef,
             g: f32,
             pos: Vec3,
-            parent: Option<PolyRef>,
+            parent: u32,
             closed: bool,
         }
-        let mut nodes: BTreeMap<PolyRef, Node> = BTreeMap::new();
-        let mut open: BinaryHeap<Reverse<(u32, PolyRef)>> = BinaryHeap::new();
-        nodes.insert(sp, Node { g: 0.0, pos: s, parent: None, closed: false });
-        open.push(Reverse(((dist(s, target) * H_SCALE).to_bits(), sp)));
-        let mut best = (self.poly(sp).map_or(f32::INFINITY, |p| dist(self.closest_on_poly(p, target), target)), sp);
+        const NONE: u32 = u32::MAX;
+        let mut nodes: Vec<Node> = Vec::with_capacity(256);
+        let mut index = Slots::with_capacity(256);
+        let mut open: BinaryHeap<Reverse<(u32, PolyRef, u32)>> = BinaryHeap::new();
+        nodes.push(Node { poly: sp, g: 0.0, pos: s, parent: NONE, closed: false });
+        index.insert(sp.0, 0);
+        open.push(Reverse(((dist(s, target) * H_SCALE).to_bits(), sp, 0)));
+        // The polygon nearest the target so far (by its entry point), for unreachable goals.
+        let mut best = (self.poly(sp).map_or(f32::INFINITY, |p| dist(self.closest_on_poly(p, target), target)), sp, 0u32);
         let mut visited = 0usize;
         let mut status = PathStatus::Unreachable;
         let mut found = None;
-        while let Some(Reverse((_, cur))) = open.pop() {
+        while let Some(Reverse((_, cur, ci))) = open.pop() {
             let (g, pos) = {
-                let n = nodes.get_mut(&cur).expect("queued nodes exist");
+                let n = &mut nodes[ci as usize];
                 if n.closed {
                     continue;
                 }
@@ -191,7 +247,7 @@ impl NavMesh {
             };
             if Some(cur) == goal {
                 status = PathStatus::Complete;
-                found = Some(cur);
+                found = Some(ci);
                 break;
             }
             visited += 1;
@@ -201,8 +257,8 @@ impl NavMesh {
             }
             let Some(p) = self.poly(cur) else { continue };
             for l in &p.links {
-                let Some(q) = self.poly(l.to) else { continue };
-                if nodes.get(&l.to).is_some_and(|n| n.closed) {
+                let slot = index.get(l.to.0);
+                if slot.is_some_and(|i| nodes[i as usize].closed) {
                     continue;
                 }
                 let (a, b) = self.portal(p, l);
@@ -213,66 +269,94 @@ impl NavMesh {
                     ng += dist(np, target);
                     h = 0.0;
                 } else {
-                    h = dist(np, target) * H_SCALE;
-                    let to_target = dist(self.closest_on_poly(q, target), target);
-                    if to_target < best.0 || (to_target == best.0 && l.to < best.1) {
-                        best = (to_target, l.to);
+                    let d = dist(np, target);
+                    h = d * H_SCALE;
+                    if d < best.0 || (d == best.0 && l.to < best.1) {
+                        best = (d, l.to, NONE);
                     }
                 }
-                let better = nodes.get(&l.to).is_none_or(|n| ng < n.g);
-                if better {
-                    nodes.insert(l.to, Node { g: ng, pos: np, parent: Some(cur), closed: false });
-                    open.push(Reverse(((ng + h).to_bits(), l.to)));
+                let ni = match slot {
+                    Some(i) if ng >= nodes[i as usize].g => continue,
+                    Some(i) => {
+                        let n = &mut nodes[i as usize];
+                        n.g = ng;
+                        n.pos = np;
+                        n.parent = ci;
+                        i
+                    }
+                    None => {
+                        let i = nodes.len() as u32;
+                        nodes.push(Node { poly: l.to, g: ng, pos: np, parent: ci, closed: false });
+                        index.insert(l.to.0, i);
+                        i
+                    }
+                };
+                if best.1 == l.to {
+                    best.2 = ni;
                 }
+                open.push(Reverse(((ng + h).to_bits(), l.to, ni)));
             }
         }
-        let end = found.unwrap_or(best.1);
-        let mut polys = vec![end];
-        let mut at = end;
-        while let Some(parent) = nodes.get(&at).and_then(|n| n.parent) {
-            polys.push(parent);
-            at = parent;
-            if polys.len() > nodes.len() {
-                break;
-            }
+        let end = match found {
+            Some(i) => i,
+            None => index.get(best.1 .0).unwrap_or(0),
+        };
+        let mut polys = vec![nodes[end as usize].poly];
+        let mut at = nodes[end as usize].parent;
+        while at != NONE && polys.len() <= nodes.len() {
+            polys.push(nodes[at as usize].poly);
+            at = nodes[at as usize].parent;
         }
         polys.reverse();
         (polys, status, visited)
     }
 
-    /// The portals along a polygon corridor, as (left, right) end points seen in the direction
-    /// of travel.
-    fn portals(&self, polys: &[PolyRef]) -> Vec<(Vec3, Vec3)> {
-        let mut out = Vec::with_capacity(polys.len());
-        for w in polys.windows(2) {
-            let Some(p) = self.poly(w[0]) else { break };
-            let Some(l) = p.links.iter().find(|l| l.to == w[1]) else { break };
-            let (a, b) = self.portal(p, l);
-            // Outward normal of the side: -x, +z, +x, -z.
-            let (nx, nz) = [(-1.0f32, 0.0f32), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0)][l.side as usize & 3];
-            // `a` is left when cross(normal, a - b) < 0.
-            let c = nx * (a.z - b.z) - nz * (a.x - b.x);
-            out.push(if c < 0.0 { (a, b) } else { (b, a) });
-        }
-        out
+    /// The portal from polygon `a` into its neighbour `b`, as (left, right) end points seen in
+    /// the direction of travel (`None` when they aren't neighbours).
+    pub fn portal_between(&self, a: PolyRef, b: PolyRef) -> Option<(Vec3, Vec3)> {
+        let p = self.poly(a)?;
+        let l = p.links.iter().find(|l| l.to == b)?;
+        let (x, y) = self.portal(p, l);
+        // Outward normal of the side: -x, +z, +x, -z.
+        let (nx, nz) = [(-1.0f32, 0.0f32), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0)][l.side as usize & 3];
+        // `x` is left when cross(normal, x - y) < 0.
+        let c = nx * (x.z - y.z) - nz * (x.x - y.x);
+        Some(if c < 0.0 { (x, y) } else { (y, x) })
     }
 
     /// String pulling (the simple stupid funnel algorithm) from `start` through the corridor to
     /// `end`: the start, then each corner, then the end. Stops after `max_corners` corners (the
     /// end counts as one).
     pub fn straighten(&self, start: Vec3, end: Vec3, polys: &[PolyRef], max_corners: usize) -> Vec<Vec3> {
+        // Portals are worked out as the funnel reaches them (steering needs only the first few
+        // corners of a long corridor).
         let mut portals = vec![(start, start)];
-        portals.extend(self.portals(polys));
-        portals.push((end, end));
+        let mut next = 0usize;
+        let mut closed = false;
+        let mut fetch = |portals: &mut Vec<(Vec3, Vec3)>, i: usize| -> bool {
+            while portals.len() <= i && !closed {
+                match polys.get(next..next + 2).and_then(|w| self.portal_between(w[0], w[1])) {
+                    Some(p) => {
+                        portals.push(p);
+                        next += 1;
+                    }
+                    None => {
+                        portals.push((end, end));
+                        closed = true;
+                    }
+                }
+            }
+            i < portals.len()
+        };
         let mut out = vec![start];
         let (mut apex, mut left, mut right) = (start, start, start);
         let (mut left_i, mut right_i) = (0usize, 0usize);
         let mut apex_i;
         let mut i = 1;
         let mut guard = 0usize;
-        while i < portals.len() {
+        while fetch(&mut portals, i) {
             guard += 1;
-            if guard > portals.len() * 4 + 16 || out.len() > max_corners {
+            if guard > polys.len() * 4 + 16 || out.len() > max_corners {
                 break;
             }
             let (l, r) = portals[i];
@@ -325,6 +409,110 @@ impl NavMesh {
         out
     }
 
+    /// Where the segment from `pos` toward `to` leaves rectangle `p`: the side and the point.
+    fn exit(&self, p: &Poly, pos: Vec3, to: Vec3) -> Option<(usize, f32, f32)> {
+        let r = self.rect(p);
+        let (dx, dz) = (to.x - pos.x, to.z - pos.z);
+        let mut t_exit = f32::INFINITY;
+        let mut side = 4usize;
+        let mut consider = |t: f32, s: usize| {
+            if t >= 0.0 && t < t_exit {
+                t_exit = t;
+                side = s;
+            }
+        };
+        if dx < 0.0 {
+            consider((r[0] - pos.x) / dx, 0);
+        }
+        if dx > 0.0 {
+            consider((r[2] - pos.x) / dx, 2);
+        }
+        if dz > 0.0 {
+            consider((r[3] - pos.z) / dz, 1);
+        }
+        if dz < 0.0 {
+            consider((r[1] - pos.z) / dz, 3);
+        }
+        if side == 4 {
+            return None;
+        }
+        let t = t_exit.clamp(0.0, 1.0);
+        Some((side, (pos.x + dx * t).clamp(r[0], r[2]), (pos.z + dz * t).clamp(r[1], r[3])))
+    }
+
+    /// The neighbour across `side` of `p` at the edge point `(ex, ez)`.
+    fn across(&self, p: &Poly, side: usize, ex: f32, ez: f32) -> Option<(PolyRef, &Poly)> {
+        let (cs, o) = (self.config().cell_size, self.config().bounds_min);
+        let along = if side == 0 || side == 2 { ez } else { ex };
+        let base = if side == 0 || side == 2 { o.z } else { o.x };
+        let l = p.links.iter().find(|l| usize::from(l.side) == side && along >= base + l.lo as f32 * cs && along <= base + (l.hi + 1) as f32 * cs)?;
+        self.poly(l.to).map(|q| (l.to, q))
+    }
+
+    /// Walks the straight segment `from` (on polygon `start`) to `to` across the navmesh: whether
+    /// it gets there without leaving it, and the polygons it crosses (at most `max_polys`).
+    pub fn raycast(&self, start: PolyRef, from: Vec3, to: Vec3, max_polys: usize) -> (bool, Vec<PolyRef>) {
+        let mut polys = vec![start];
+        let Some(mut p) = self.poly(start) else { return (false, polys) };
+        let mut pos = from;
+        while polys.len() <= max_polys {
+            if self.contains_xz(p, to) {
+                return (true, polys);
+            }
+            let Some((side, ex, ez)) = self.exit(p, pos, to) else { return (false, polys) };
+            let Some((r, q)) = self.across(p, side, ex, ez) else { return (false, polys) };
+            polys.push(r);
+            p = q;
+            pos = Vec3::new(ex, pos.y, ez);
+        }
+        (false, polys)
+    }
+
+    /// Shortens a corridor from `s` to `end`: where a straight walk on the navmesh reaches a
+    /// later corner of the string-pulled path, the polygons it crosses replace the detour (A*
+    /// over large polygons can bend a path at a polygon's corner it never needed).
+    pub fn shortcut(&self, s: Vec3, end: Vec3, polys: Vec<PolyRef>) -> Vec<PolyRef> {
+        if polys.len() <= 2 {
+            return polys;
+        }
+        let (start, last) = (polys[0], *polys.last().expect("not empty"));
+        let budget = polys.len() * 4 + 64;
+        let (ok, ray) = self.raycast(start, s, end, budget);
+        if ok && ray.last() == Some(&last) {
+            return ray;
+        }
+        let corners = self.straighten(s, end, &polys, 64);
+        if corners.len() <= 2 {
+            return polys;
+        }
+        let mut out = vec![start];
+        let mut i = 0;
+        let mut tries = 0;
+        while i + 1 < corners.len() {
+            let from = *out.last().expect("not empty");
+            let mut step = None;
+            for j in (i + 1..corners.len()).rev() {
+                tries += 1;
+                if tries > 128 {
+                    return polys;
+                }
+                let (ok, ray) = self.raycast(from, corners[i], corners[j], budget);
+                if ok && (j + 1 < corners.len() || ray.last() == Some(&last)) {
+                    step = Some((j, ray));
+                    break;
+                }
+            }
+            match step {
+                Some((j, ray)) => {
+                    out.extend(ray.into_iter().skip(1));
+                    i = j;
+                }
+                None => return polys,
+            }
+        }
+        out
+    }
+
     /// Moves from `from` (on polygon `start`) toward `to` across the surface: through portals
     /// where there are neighbours, sliding along edges where there are none. Returns the polygon
     /// it ends on and the point (on the surface).
@@ -337,42 +525,9 @@ impl NavMesh {
                 return (cur, Vec3::new(to.x, self.height(p, to.x, to.z), to.z));
             }
             let r = self.rect(p);
-            // Where the segment leaves the rectangle (the first side it crosses).
-            let (dx, dz) = (to.x - pos.x, to.z - pos.z);
-            let mut t_exit = f32::INFINITY;
-            let mut side = 4usize;
-            let mut consider = |t: f32, s: usize| {
-                if t >= 0.0 && t < t_exit {
-                    t_exit = t;
-                    side = s;
-                }
-            };
-            if dx < 0.0 {
-                consider((r[0] - pos.x) / dx, 0);
-            }
-            if dx > 0.0 {
-                consider((r[2] - pos.x) / dx, 2);
-            }
-            if dz > 0.0 {
-                consider((r[3] - pos.z) / dz, 1);
-            }
-            if dz < 0.0 {
-                consider((r[1] - pos.z) / dz, 3);
-            }
-            if side == 4 {
-                break;
-            }
-            let t = t_exit.clamp(0.0, 1.0);
-            let ex = (pos.x + dx * t).clamp(r[0], r[2]);
-            let ez = (pos.z + dz * t).clamp(r[1], r[3]);
+            let Some((side, ex, ez)) = self.exit(p, pos, to) else { break };
             let exit = Vec3::new(ex, self.height(p, ex, ez), ez);
-            let (cs, o) = (self.config().cell_size, self.config().bounds_min);
-            let along = if side == 0 || side == 2 { ez } else { ex };
-            let base = if side == 0 || side == 2 { o.z } else { o.x };
-            let next = p.links.iter().find(|l| {
-                usize::from(l.side) == side && along >= base + l.lo as f32 * cs && along <= base + (l.hi + 1) as f32 * cs
-            });
-            match next.and_then(|l| self.poly(l.to).map(|q| (l.to, q))) {
+            match self.across(p, side, ex, ez) {
                 Some((nr, q)) => {
                     cur = nr;
                     p = q;
@@ -473,6 +628,39 @@ mod tests {
         // Every corner is on the navmesh.
         for c in &p.corners {
             assert!(mesh.nearest(*c, Vec3::new(0.01, 0.1, 0.01)).is_some(), "corner {c:?} off the mesh");
+        }
+    }
+
+    #[test]
+    fn a_straight_line_through_a_doorway_has_no_corners() {
+        // The grid origin isn't on a whole metre (bounds from geometry plus a margin).
+        let cfg = crate::Config { bounds_min: Vec3::new(-13.4, -2.0, -13.4), bounds_max: Vec3::new(13.4, 5.3, 13.4), tile_cells: 48, ..crate::Config::default() };
+        let mut mesh = NavMesh::new(cfg).unwrap();
+        let walls = [
+            (Vec3::new(-0.2, 0.0, -12.0), Vec3::new(0.2, 2.5, -1.2)),
+            (Vec3::new(-0.2, 0.0, 1.2), Vec3::new(0.2, 2.5, 12.0)),
+            (Vec3::new(-12.4, 0.0, -12.4), Vec3::new(12.4, 2.5, -12.0)),
+            (Vec3::new(-12.4, 0.0, 12.0), Vec3::new(12.4, 2.5, 12.4)),
+            (Vec3::new(-12.4, 0.0, -12.0), Vec3::new(-12.0, 2.5, 12.0)),
+            (Vec3::new(12.0, 0.0, -12.0), Vec3::new(12.4, 2.5, 12.0)),
+        ];
+        let mut sources = vec![Source::new(crate::mesh::tests::cuboid(Vec3::new(-12.0, -1.0, -12.0), Vec3::new(12.0, 0.0, 12.0)), true)];
+        sources.extend(walls.iter().map(|(lo, hi)| Source::new(crate::mesh::tests::cuboid(*lo, *hi), true)));
+        // Pillars beside the doorway, east of the divider.
+        for z in [2.55f32, 5.25, 7.95, 10.65] {
+            sources.push(Source::new(crate::mesh::tests::cuboid(Vec3::new(1.3, 0.0, z - 0.2), Vec3::new(1.7, 2.0, z + 0.2)), true));
+        }
+        build_all(&mut mesh, &sources);
+        let p = mesh.find_path(Vec3::new(-8.0, 0.0, -4.0), Vec3::new(8.0, 0.0, 4.0), Vec3::new(1.0, 1.8, 1.0), 4096).unwrap();
+        assert!(p.complete());
+        assert_eq!(p.corners.len(), 2, "the straight line fits through the doorway: {:?}", p.corners);
+        // A path that must turn still turns at the doorway (the eroded opening steps a column at
+        // its mouth, so up to four corners), and its corridor is linked.
+        let q = mesh.find_path(Vec3::new(-8.0, 0.0, -10.0), Vec3::new(8.0, 0.0, -10.0), Vec3::new(1.0, 1.8, 1.0), 4096).unwrap();
+        assert!(q.complete() && q.corners.len() <= 6, "{:?}", q.corners);
+        assert!(q.corners.iter().any(|c| c.x.abs() < 0.7 && c.z > -1.0), "through the doorway: {:?}", q.corners);
+        for w in q.polys.windows(2) {
+            assert!(mesh.poly(w[0]).unwrap().links.iter().any(|l| l.to == w[1]), "corridor polygons are neighbours");
         }
     }
 

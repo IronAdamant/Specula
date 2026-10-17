@@ -253,7 +253,10 @@ impl Triangle {
 pub struct Source {
     pub triangles: Vec<Triangle>,
     pub solid: bool,
-    /// Bounds of the triangles.
+    /// An axis-aligned solid box (no triangles): filled column by column, without clipping
+    /// (most greybox floors and walls; much faster than their triangles).
+    pub aligned: bool,
+    /// Bounds of the triangles (the box itself when `aligned`).
     pub lo: Vec3,
     pub hi: Vec3,
 }
@@ -266,11 +269,31 @@ impl Source {
             lo = lo.min(a);
             hi = hi.max(b);
         }
-        Source { triangles, solid, lo, hi }
+        Source { triangles, solid, aligned: false, lo, hi }
+    }
+
+    /// An axis-aligned solid box.
+    pub fn aligned_box(lo: Vec3, hi: Vec3) -> Source {
+        Source { triangles: Vec::new(), solid: true, aligned: true, lo: lo.min(hi), hi: lo.max(hi) }
+    }
+
+    /// Triangles it counts as against a tile's budget.
+    pub fn triangle_count(&self) -> usize {
+        if self.aligned {
+            12
+        } else {
+            self.triangles.len()
+        }
     }
 
     /// Whether the source's bounds meet the box `lo..hi`.
     pub fn touches(&self, lo: Vec3, hi: Vec3) -> bool {
-        !self.triangles.is_empty() && self.lo.x <= hi.x && self.hi.x >= lo.x && self.lo.y <= hi.y && self.hi.y >= lo.y && self.lo.z <= hi.z && self.hi.z >= lo.z
+        (self.aligned || !self.triangles.is_empty())
+            && self.lo.x <= hi.x
+            && self.hi.x >= lo.x
+            && self.lo.y <= hi.y
+            && self.hi.y >= lo.y
+            && self.lo.z <= hi.z
+            && self.hi.z >= lo.z
     }
 }

@@ -28,11 +28,22 @@ const SPEEDS: [f32; 2] = [1.0, 0.5];
 /// Neighbour search cell size, metres.
 const GRID: f32 = 4.0;
 
+/// A neighbour as avoidance sees it.
+struct Other {
+    pos: Vec3,
+    vel: Vec3,
+    radius: f32,
+    /// It avoids too (each takes half the turn).
+    reciprocal: bool,
+}
+
 /// Crowd-wide settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CrowdSettings {
     /// Path searches served per step.
     pub repaths_per_step: usize,
+    /// Polygons path searches may expand per step, all together (at least one search runs).
+    pub nodes_per_step: usize,
     /// Polygons a corridor keeps.
     pub max_corridor: usize,
     /// Polygons one path search expands.
@@ -53,9 +64,10 @@ impl Default for CrowdSettings {
     fn default() -> CrowdSettings {
         CrowdSettings {
             repaths_per_step: 32,
+            nodes_per_step: 2048,
             max_corridor: 256,
             max_nodes: 4096,
-            repath_s: 2.0,
+            repath_s: 8.0,
             repath_distance: 0.5,
             neighbours: 6,
             horizon_s: 2.0,
@@ -308,7 +320,7 @@ impl Crowd {
             } else if !a.corridor.is_empty() {
                 a.need_path = true;
             }
-            let stale_tiles = a.corridor.iter().any(|p| mesh.rebuilt_since(p.tile(), a.path_made));
+            let stale_tiles = counter > a.path_made && a.corridor.iter().any(|p| mesh.rebuilt_since(p.tile(), a.path_made));
             if a.corridor.is_empty()
                 || stale_tiles
                 || a.path_age >= s.repath_s
@@ -327,7 +339,7 @@ impl Crowd {
         let split = order.partition_point(|k| *k <= self.last_served);
         order.rotate_left(split);
         for (served, id) in order.iter().enumerate() {
-            if served >= s.repaths_per_step {
+            if served >= s.repaths_per_step || (served > 0 && stats.nodes >= s.nodes_per_step) {
                 stats.waiting = order.len() - served;
                 break;
             }
@@ -335,16 +347,22 @@ impl Crowd {
             let (poly, target) = (a.poly.expect("filtered"), a.target.expect("filtered"));
             let goal = mesh.nearest(target, s.extent);
             let end = goal.map_or(target, |(_, e)| e);
-            let (mut polys, status, visited) = mesh.search(poly, a.pos, goal.map(|(p, _)| p), end, s.max_nodes);
+            let (polys, status, visited) = mesh.search(poly, a.pos, goal.map(|(p, _)| p), end, s.max_nodes);
             stats.nodes += visited;
             stats.repaths += 1;
-            polys.truncate(s.max_corridor);
             let complete = status == crate::query::PathStatus::Complete && polys.last() == goal.map(|(p, _)| p).as_ref();
             a.path_end = if complete {
                 end
             } else {
                 polys.last().and_then(|p| mesh.poly(*p)).map_or(a.pos, |p| mesh.closest_on_poly(p, end))
             };
+            let mut polys = mesh.shortcut(a.pos, a.path_end, polys);
+            let complete = complete && polys.len() <= s.max_corridor;
+            if polys.len() > s.max_corridor {
+                // A long way: walk the first part, then search again from there.
+                polys.truncate(s.max_corridor);
+                a.path_end = polys.last().and_then(|p| mesh.poly(*p)).map_or(a.pos, |p| mesh.closest_on_poly(p, end));
+            }
             a.corridor = polys;
             a.path_for = target;
             a.path_made = counter;
@@ -366,8 +384,11 @@ impl Crowd {
                 a.corner = None;
                 continue;
             }
-            let corners = mesh.straighten(a.pos, a.path_end, &a.corridor, 24);
-            a.remaining = corners.windows(2).map(|w| (w[0] - w[1]).length()).sum();
+            // The next few corners; past them the rest counts as a straight line (exact on the
+            // last stretch, where arrival slows the agent).
+            let corners = mesh.straighten(a.pos, a.path_end, &a.corridor, 3);
+            let last = *corners.last().expect("start");
+            a.remaining = corners.windows(2).map(|w| (w[0] - w[1]).length()).sum::<f32>() + (a.path_end - last).length();
             let to_end = horizontal_distance(a.pos, a.path_end);
             if to_end <= a.params.arrive.max(1.0e-3) {
                 a.corner = None;
@@ -423,7 +444,14 @@ impl Crowd {
             near.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
             near.truncate(s.neighbours);
             let v = if a.params.avoid && !near.is_empty() && a.desired != Vec3::ZERO {
-                self.sample(a, &near, &s)
+                let others: Vec<Other> = near
+                    .iter()
+                    .map(|(_, o)| {
+                        let b = &self.agents[o];
+                        Other { pos: b.pos, vel: b.vel, radius: b.params.radius, reciprocal: b.params.avoid && b.target.is_some() }
+                    })
+                    .collect();
+                self.sample(a, &others, &s)
             } else {
                 a.desired
             };
@@ -501,8 +529,8 @@ impl Crowd {
         stats
     }
 
-    /// The best of the sampled velocities for agent `a` among `near` neighbours.
-    fn sample(&self, a: &CrowdAgent, near: &[(f32, u64)], s: &CrowdSettings) -> Vec3 {
+    /// The best of the sampled velocities for agent `a` among its neighbours.
+    fn sample(&self, a: &CrowdAgent, near: &[Other], s: &CrowdSettings) -> Vec3 {
         let vmax = a.params.speed.max(1.0e-3);
         let dl = (a.desired.x * a.desired.x + a.desired.z * a.desired.z).sqrt();
         let (fx, fz) = if dl > 1.0e-6 { (a.desired.x / dl, a.desired.z / dl) } else { (1.0, 0.0) };
@@ -519,12 +547,10 @@ impl Crowd {
         let mut best = (f32::INFINITY, a.desired);
         for v in candidates {
             let mut tmin = s.horizon_s;
-            for (_, other) in near {
-                let b = &self.agents[other];
-                let reciprocal = b.params.avoid && b.target.is_some();
-                let vab = if reciprocal { v * 2.0 - a.vel - b.vel } else { v - b.vel };
+            for b in near {
+                let vab = if b.reciprocal { v * 2.0 - a.vel - b.vel } else { v - b.vel };
                 let (px, pz) = (a.pos.x - b.pos.x, a.pos.z - b.pos.z);
-                let r = a.params.radius + b.params.radius;
+                let r = a.params.radius + b.radius;
                 let (vx, vz) = (vab.x, vab.z);
                 let c = px * px + pz * pz - r * r;
                 let bq = px * vx + pz * vz;

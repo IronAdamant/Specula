@@ -476,8 +476,7 @@ fn evaluate(req: &Request, rels: &[&Relation], c: &Cand, k: usize, count: usize,
         Rel::On { target } => Some(*target),
         _ => None,
     });
-    let has_vertical = on_target.is_some() || rels.iter().any(|r| matches!(r.rel, Rel::Inside { y: Some(_), .. }));
-    let probe_ground = on_target.is_some() || (req.settle && !has_vertical);
+    let probe_ground = on_target.is_some() || req.settle;
     let height = req.hi.y - req.lo.y;
     let fp0 = Box3::footprint(req.lo, req.hi, Vec3::new(c.x, 0.0, c.z), yaw);
     let mut base = c.base;

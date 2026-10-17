@@ -24,6 +24,10 @@ const NO_LINK: u8 = 0xFF;
 const NO_POLY: u32 = u32::MAX;
 /// Bilinear height error a rectangle tolerates, in cell heights.
 const HEIGHT_TOLERANCE: f32 = 2.0;
+/// Walkable islands smaller than this many columns are dropped (unless they reach past the
+/// tile's border, where the neighbouring tile may see more of them): the tops of wall junctions
+/// and similar specks nobody can reach (Recast's minimum region area).
+pub const MIN_ISLAND_CELLS: usize = 8;
 
 /// A solid interval in one column, in cell heights above the bounds' floor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +79,9 @@ pub struct TileBuild {
     pub open: usize,
     pub eroded: usize,
     pub errors: Vec<NavError>,
+    /// Wall-clock microseconds per stage (rasterise, open space and links, erode and islands,
+    /// rectangles, rectangle links): a measurement, never an input.
+    pub times_us: [f64; 5],
 }
 
 /// Up to 12 points: a triangle clipped by four lines has at most 7.
@@ -197,8 +204,21 @@ impl Grid {
     }
 }
 
+/// Buffers a tile build reuses (so building tiles allocates little). Holds no state between
+/// builds: every buffer is reset before use.
+#[derive(Clone, Debug, Default)]
+pub struct Scratch {
+    cols: Vec<Vec<Span>>,
+    pieces: Vec<(usize, u16, u16, bool)>,
+    start: Vec<u32>,
+    opens: Vec<Open>,
+    seen: Vec<bool>,
+    queue: Vec<(u32, i32, i32)>,
+    poly_of: Vec<u32>,
+}
+
 /// Builds tile `(tx, tz)` from the sources that touch it (in a fixed order).
-pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Source]) -> TileBuild {
+pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Source], scratch: &mut Scratch) -> TileBuild {
     let t = cfg.tile_cells as i32;
     let b = d.border as i32;
     let w = t + 2 * b;
@@ -212,21 +232,36 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
         cells_z: d.cells_z as i32,
     };
     let mut out = TileBuild { edges: std::array::from_fn(|_| vec![Vec::new(); t as usize]), ..TileBuild::default() };
-    let mut cols: Vec<Vec<Span>> = vec![Vec::new(); (w * w) as usize];
+    let mut clock = std::time::Instant::now();
+    let mut lap = |out: &mut TileBuild, i: usize| {
+        let now = std::time::Instant::now();
+        out.times_us[i] = (now - clock).as_secs_f64() * 1.0e6;
+        clock = now;
+    };
+    let mut cols = std::mem::take(&mut scratch.cols);
+    cols.resize_with((w * w) as usize, Vec::new);
+    for c in cols.iter_mut() {
+        c.clear();
+    }
     let mut dropped = 0usize;
     let mut budget = MAX_TILE_TRIANGLES;
-    let mut pieces: Vec<(usize, u16, u16, bool)> = Vec::new();
+    let mut pieces = std::mem::take(&mut scratch.pieces);
+    pieces.clear();
     for src in sources {
-        if src.triangles.len() > budget {
-            let total: usize = sources.iter().map(|s| s.triangles.len()).sum();
+        if src.triangle_count() > budget {
+            let total: usize = sources.iter().map(|s| s.triangle_count()).sum();
             out.errors.push(
                 NavError::new("budget", format!("a tile takes at most {MAX_TILE_TRIANGLES} triangles; {total} touched it, the rest were left out"))
                     .with("tile", crate::Json::arr([crate::Json::from(tx), crate::Json::from(tz)])),
             );
             break;
         }
-        budget -= src.triangles.len();
-        if src.solid {
+        budget -= src.triangle_count();
+        if src.aligned {
+            if fill_box(cfg, d, &grid, src.lo, src.hi, &mut cols) {
+                out.triangles += 12;
+            }
+        } else if src.solid {
             // A convex solid fills each column from its lowest to its highest point; the top's
             // walkability is the highest piece's.
             pieces.clear();
@@ -287,9 +322,13 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
                 .with("tile", crate::Json::arr([crate::Json::from(tx), crate::Json::from(tz)])),
         );
     }
+    lap(&mut out, 0);
     // Open space above walkable spans, tall enough for the agent.
-    let mut start = vec![0u32; (w * w + 1) as usize];
-    let mut opens: Vec<Open> = Vec::new();
+    let mut start = std::mem::take(&mut scratch.start);
+    start.clear();
+    start.resize((w * w + 1) as usize, 0);
+    let mut opens = std::mem::take(&mut scratch.opens);
+    opens.clear();
     for lz in 0..w {
         for lx in 0..w {
             let c = grid.col(lx, lz);
@@ -344,6 +383,7 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
         let (nx, nz) = (lx + DX[dir], lz + DZ[dir]);
         Some((start[grid.col(nx, nz)] + u32::from(l), nx, nz))
     };
+    lap(&mut out, 1);
     // Erode: chamfer distance (2 straight, 3 diagonal) from spans missing a neighbour.
     for o in opens.iter_mut() {
         if o.link.contains(&NO_LINK) {
@@ -400,10 +440,54 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
             o.alive = false;
         }
     }
+    // Drop tiny islands that don't reach the grid's outer ring.
+    let mut seen = std::mem::take(&mut scratch.seen);
+    seen.clear();
+    seen.resize(opens.len(), false);
+    let mut queue = std::mem::take(&mut scratch.queue);
+    for lz in 0..w {
+        for lx in 0..w {
+            let c = grid.col(lx, lz);
+            for g in start[c]..start[c + 1] {
+                if seen[g as usize] || !opens[g as usize].alive {
+                    continue;
+                }
+                seen[g as usize] = true;
+                queue.clear();
+                queue.push((g, lx, lz));
+                let mut i = 0;
+                let mut edge = false;
+                while i < queue.len() {
+                    let (s, x, z) = queue[i];
+                    i += 1;
+                    edge |= x == 0 || z == 0 || x == w - 1 || z == w - 1;
+                    for dir in 0..4 {
+                        if let Some((n, nx, nz)) = neighbour(&opens, s, x, z, dir) {
+                            if opens[n as usize].alive && !seen[n as usize] {
+                                seen[n as usize] = true;
+                                queue.push((n, nx, nz));
+                            }
+                        }
+                    }
+                    if queue.len() >= MIN_ISLAND_CELLS {
+                        edge = true;
+                    }
+                }
+                if !edge {
+                    for &(s, _, _) in &queue {
+                        opens[s as usize].alive = false;
+                    }
+                }
+            }
+        }
+    }
     out.eroded = opens.iter().filter(|o| !o.alive).count();
+    lap(&mut out, 2);
     // Rectangles over the tile's own columns, rows first, in a fixed order.
     let floor_y = |q: u16| cfg.bounds_min.y + f32::from(q) * cfg.cell_height;
-    let mut poly_of = vec![NO_POLY; opens.len()];
+    let mut poly_of = std::mem::take(&mut scratch.poly_of);
+    poly_of.clear();
+    poly_of.resize(opens.len(), NO_POLY);
     let mut grids: Vec<Vec<Vec<u32>>> = Vec::new();
     let mut origin: Vec<(i32, i32)> = Vec::new();
     let mut truncated = false;
@@ -497,6 +581,7 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
                 .with("tile", crate::Json::arr([crate::Json::from(tx), crate::Json::from(tz)])),
         );
     }
+    lap(&mut out, 3);
     // Links inside the tile, and the tile's edge spans for its neighbours.
     for (pi, rows) in grids.iter().enumerate() {
         let (lx0, lz0) = origin[pi];
@@ -544,6 +629,8 @@ pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[&Sourc
         }
         out.rects[pi].links = links;
     }
+    *scratch = Scratch { cols, pieces, start, opens, seen, queue, poly_of };
+    lap(&mut out, 4);
     out
 }
 
@@ -563,6 +650,43 @@ fn fits(opens: &[Open], rows: &[Vec<u32>]) -> bool {
             if (f32::from(opens[s as usize].floor) - want).abs() > HEIGHT_TOLERANCE {
                 return false;
             }
+        }
+    }
+    true
+}
+
+/// Fills the tile's columns an axis-aligned solid box covers: columns it overlaps get a span
+/// from its bottom to its top, walkable (its top is flat); columns it only touches along a
+/// column line get a non-walkable span, as its side faces would. False when it misses them.
+fn fill_box(cfg: &Config, d: &Derived, grid: &Grid, lo: Vec3, hi: Vec3, cols: &mut [Vec<Span>]) -> bool {
+    let (bmin, cs, ch) = (cfg.bounds_min, cfg.cell_size, cfg.cell_height);
+    if hi.y < bmin.y || lo.y > cfg.bounds_max.y {
+        return false;
+    }
+    let to_col = |v: f32, o: f32| dmath::floor((v - o) / cs) as i64;
+    let x0 = to_col(lo.x, bmin.x).max(i64::from(grid.gx0)).max(0);
+    let z0 = to_col(lo.z, bmin.z).max(i64::from(grid.gz0)).max(0);
+    let x1 = to_col(hi.x, bmin.x).min(i64::from(grid.gx0 + grid.w - 1)).min(i64::from(grid.cells_x - 1));
+    let z1 = to_col(hi.z, bmin.z).min(i64::from(grid.gz0 + grid.w - 1)).min(i64::from(grid.cells_z - 1));
+    if x0 > x1 || z0 > z1 {
+        return false;
+    }
+    let inv_ch = 1.0 / ch;
+    let smin = dmath::floor((lo.y - bmin.y) * inv_ch + 1.0e-3) as i64;
+    let smax = dmath::ceil((hi.y - bmin.y) * inv_ch - 1.0e-3) as i64;
+    if smax < 0 || smin > i64::from(d.max_q) {
+        return false;
+    }
+    let smin = smin.clamp(0, i64::from(d.max_q)) as u16;
+    let smax = smax.clamp(i64::from(smin), i64::from(d.max_q)) as u16;
+    for gz in z0..=z1 {
+        let (c0, c1) = (bmin.z + gz as f32 * cs, bmin.z + (gz + 1) as f32 * cs);
+        let inside_z = c1 > lo.z && c0 < hi.z;
+        for gx in x0..=x1 {
+            let (r0, r1) = (bmin.x + gx as f32 * cs, bmin.x + (gx + 1) as f32 * cs);
+            let inside = inside_z && r1 > lo.x && r0 < hi.x;
+            let (lx, lz) = (gx as i32 - grid.gx0, gz as i32 - grid.gz0);
+            add_span(&mut cols[grid.col(lx, lz)], Span { min: smin, max: smax, walk: inside }, d.climb_q);
         }
     }
     true
@@ -665,11 +789,36 @@ mod tests {
     }
 
     #[test]
+    fn aligned_boxes_fill_like_their_triangles() {
+        let cfg = Config { bounds_min: Vec3::new(-3.0, -1.0, -3.0), bounds_max: Vec3::new(3.0, 4.0, 3.0), tile_cells: 48, ..Config::default() };
+        let d = Derived::of(&cfg);
+        let floor = Source::new(quad(-3.0, -3.0, 3.0, 3.0, 0.0).to_vec(), false);
+        let (lo, hi) = (Vec3::new(-1.03, 0.0, -0.61), Vec3::new(0.77, 1.1, 1.24));
+        let mut s = Scratch::default();
+        let by_tris = build_tile(&cfg, &d, 0, 0, &[&floor, &Source::new(crate::mesh::tests::cuboid(lo, hi), true)], &mut s);
+        let by_box = build_tile(&cfg, &d, 0, 0, &[&floor, &Source::aligned_box(lo, hi)], &mut s);
+        assert_eq!(by_tris.rects, by_box.rects);
+    }
+
+    #[test]
+    fn wall_tops_leave_no_specks() {
+        let cfg = Config { bounds_min: Vec3::new(-3.0, -1.0, -3.0), bounds_max: Vec3::new(3.0, 4.0, 3.0), tile_cells: 48, ..Config::default() };
+        let d = Derived::of(&cfg);
+        let floor = Source::new(quad(-3.0, -3.0, 3.0, 3.0, 0.0).to_vec(), false);
+        // A T of 0.4 m walls, 2 m tall: their tops are too narrow, even where they meet.
+        let a = Source::new(crate::mesh::tests::cuboid(Vec3::new(-3.0, 0.0, -0.2), Vec3::new(3.0, 2.0, 0.2)), true);
+        let b = Source::new(crate::mesh::tests::cuboid(Vec3::new(-0.2, 0.0, 0.2), Vec3::new(0.2, 2.0, 3.0)), true);
+        let t = build_tile(&cfg, &d, 0, 0, &[&floor, &a, &b], &mut Scratch::default());
+        assert!(!t.rects.is_empty());
+        assert!(t.rects.iter().all(|r| r.h.iter().all(|h| *h < 1.0)), "nothing on the walls: {:?}", t.rects.iter().filter(|r| r.h[0] > 1.0).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn flat_floor_is_one_rectangle_eroded_by_the_radius() {
         let cfg = Config { bounds_min: Vec3::new(0.0, -1.0, 0.0), bounds_max: Vec3::new(4.8, 3.0, 4.8), tile_cells: 32, ..Config::default() };
         let d = Derived::of(&cfg);
         let floor = Source::new(quad(0.0, 0.0, 4.8, 4.8, 0.0).to_vec(), false);
-        let t = build_tile(&cfg, &d, 0, 0, &[&floor]);
+        let t = build_tile(&cfg, &d, 0, 0, &[&floor], &mut Scratch::default());
         assert_eq!(t.rects.len(), 1, "{:?}", t.rects);
         let r = &t.rects[0];
         // Radius 0.3 m at 0.15 m cells: two columns eroded from each side.

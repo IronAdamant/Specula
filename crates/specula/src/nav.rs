@@ -44,7 +44,7 @@ pub const MAX_MINDS: usize = 1024;
 /// Per-tick hashes kept.
 const HASHES: usize = 1024;
 /// Recent nav_path answers kept for the `paths` overlay.
-const QUERIES: usize = 8;
+const QUERIES: usize = 4;
 
 fn invalid(field: &str, message: impl Into<String>) -> world::WorldError {
     world::WorldError::new("invalid_value", message).with("field", field)
@@ -185,6 +185,7 @@ impl MeshSettings {
             sources.kinematic = flag("kinematic", false)?;
             sources.under = match s.get("under") {
                 None | Some(Json::Null) => None,
+                Some(Json::Str(p)) if p.trim_end_matches('/').is_empty() && p.starts_with('/') => None,
                 Some(Json::Str(p)) if p.starts_with('/') => Some(p.trim_end_matches('/').to_owned()),
                 Some(_) => return Err(invalid("sources", "'sources.under' must be a path like \"/level\"")),
             };
@@ -302,6 +303,18 @@ fn tri(m: &Mat4, a: Vec3, b: Vec3, c: Vec3) -> Triangle {
     Triangle([m.transform_point(a), m.transform_point(b), m.transform_point(c)])
 }
 
+/// A solid box: the axis-aligned fast path when the transform doesn't turn it, else triangles.
+fn box_source(m: &Mat4, lo: Vec3, hi: Vec3) -> Source {
+    let c = &m.cols;
+    let aligned = c[0][1] == 0.0 && c[0][2] == 0.0 && c[1][0] == 0.0 && c[1][2] == 0.0 && c[2][0] == 0.0 && c[2][1] == 0.0;
+    if aligned {
+        let (a, b) = (m.transform_point(lo), m.transform_point(hi));
+        Source::aligned_box(a.min(b), a.max(b))
+    } else {
+        Source::new(box_tris(m, lo, hi), true)
+    }
+}
+
 fn box_tris(m: &Mat4, lo: Vec3, hi: Vec3) -> Vec<Triangle> {
     let c = |i: usize| Vec3::new(if i & 1 == 0 { lo.x } else { hi.x }, if i & 2 == 0 { lo.y } else { hi.y }, if i & 4 == 0 { lo.z } else { hi.z });
     let faces = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
@@ -352,6 +365,13 @@ fn sphere_tris(m: &Mat4, centre: Vec3, r: f32) -> Vec<Triangle> {
     out
 }
 
+fn collider_source(m: &Mat4, c: &physics::Collider) -> Option<Source> {
+    if let ColliderShape::Box { size } = &c.shape {
+        return Some(box_source(m, c.offset - *size * 0.5, c.offset + *size * 0.5));
+    }
+    collider_tris(m, c).map(|(t, solid)| Source::new(t, solid))
+}
+
 fn collider_tris(m: &Mat4, c: &physics::Collider) -> Option<(Vec<Triangle>, bool)> {
     let o = c.offset;
     Some(match &c.shape {
@@ -390,29 +410,42 @@ fn collider_tris(m: &Mat4, c: &physics::Collider) -> Option<(Vec<Triangle>, bool
     })
 }
 
+/// Whether an entity moves on its own (a nav agent, a dynamic body, a character): it and
+/// everything below it never feed a navmesh.
+fn mover(e: &Entity) -> bool {
+    e.props.get(AGENT_KEY).is_some() || e.body.is_some_and(|b| b.kind == BodyKind::Dynamic || b.character.is_some())
+}
+
+/// Whether an entity or one of its ancestors moves on its own.
+fn moves(world: &World, e: &Entity) -> bool {
+    let mut at = Some(e);
+    while let Some(x) = at {
+        if mover(x) {
+            return true;
+        }
+        at = x.parent.and_then(|p| world.get(p));
+    }
+    false
+}
+
 /// Whether an entity can feed a navmesh at all (and, if so, its geometry).
 fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
     if e.transient || !e.shown() || e.in_ui() || e.shape.is_2d() || e.tags.contains(IGNORE_TAG) {
         return None;
     }
-    if e.props.get(AGENT_KEY).is_some() || e.props.get(MESH_KEY).is_some() {
+    if e.props.get(MESH_KEY).is_some() || moves(world, e) {
         return None;
-    }
-    if let Some(b) = &e.body {
-        if b.kind == BodyKind::Dynamic || b.character.is_some() {
-            return None;
-        }
     }
     let m = e.model();
     let collider = match &e.collider {
-        Some(c) if !c.is_trigger => collider_tris(&m, c).map(|(t, solid)| (Source::new(t, solid), e.body.is_some_and(|b| b.kind == BodyKind::Kinematic))),
+        Some(c) if !c.is_trigger => collider_source(&m, c).map(|s| (s, e.body.is_some_and(|b| b.kind == BodyKind::Kinematic))),
         _ => None,
     };
     let shape = if e.collider.is_some() {
         None
     } else {
         match (e.shape, &e.profile) {
-            (Shape::Cube, _) => Some(Source::new(box_tris(&m, Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5)), true)),
+            (Shape::Cube, _) => Some(box_source(&m, Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))),
             (Shape::Sphere, _) => Some(Source::new(sphere_tris(&m, Vec3::ZERO, 0.5), true)),
             (Shape::Quad, _) => {
                 let (a, b, c, d) = (Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5), Vec3::new(-0.5, 0.0, 0.5));
@@ -420,7 +453,7 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
             }
             (Shape::Lathe, Some(p)) => {
                 let (lo, hi) = p.bounds();
-                Some(Source::new(box_tris(&m, lo, hi), true))
+                Some(box_source(&m, lo, hi))
             }
             _ => None,
         }
@@ -510,6 +543,8 @@ pub struct TickReport {
 pub struct Nav {
     pub meshes: BTreeMap<u64, MeshSlot>,
     sources: BTreeMap<u64, SourceEntry>,
+    /// Entities with children that move on their own (their subtrees are left out of navmeshes).
+    movers: BTreeSet<u64>,
     agents: BTreeMap<u64, AgentLink>,
     minds: BTreeMap<u64, MindSlot>,
     /// `(world generation, draw epoch)` synced up to.
@@ -1031,6 +1066,29 @@ impl Nav {
                 if self.meshes.remove(&id).is_some() {
                     self.relink_agents(world);
                 }
+            }
+        }
+        // A parent that starts or stops moving on its own takes its subtree in or out.
+        let is_mover = e.is_some_and(|e| mover(e) && world.has_children(e.id));
+        if is_mover != self.movers.contains(&id) {
+            if is_mover {
+                self.movers.insert(id);
+            } else {
+                self.movers.remove(&id);
+            }
+            let mut below = Vec::new();
+            world.walk(Some(id), |d, _| {
+                if d.id != id {
+                    below.push(d.id);
+                }
+            });
+            for d in below {
+                // Forget what was known, so the next look recomputes it.
+                if let Some(mut s) = self.sources.remove(&d) {
+                    s.version = u64::MAX;
+                    self.sources.insert(d, s);
+                }
+                self.upsert(world, d);
             }
         }
         // Geometry.
@@ -1771,6 +1829,31 @@ mod tests {
         let status = nav.mind_json(&w, g, 2048).unwrap();
         let trace = status.get("trace").unwrap().to_string();
         assert!(trace.contains("do chase"), "{trace}");
+    }
+
+    #[test]
+    fn what_moves_never_carves_the_navmesh() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        let a = walker(&mut w, "walker", Vec3::new(-5.0, 0.5, 5.0), vec![]);
+        // Its visible body: a child cube without a collider.
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("body".into());
+        s.parent = Some(EntityKey::Id(a));
+        s.scale = Vec3::new(1.5, 1.0, 1.5);
+        w.spawn(s, "t").unwrap();
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let slot = &nav.meshes[&m];
+        assert!(slot.mesh.nearest(Vec3::new(-5.0, 0.0, 5.0), Vec3::new(0.01, 0.5, 0.01)).is_some(), "no hole under the agent");
+        // A crate that becomes an agent stops being an obstacle (its tiles rebuild).
+        let c = cube(&mut w, "crate", Vec3::new(5.0, 0.5, 5.0), Vec3::ONE);
+        run(&mut nav, &mut w, 2);
+        assert!(nav.meshes[&m].mesh.nearest(Vec3::new(5.0, 0.0, 5.0), Vec3::new(0.01, 0.5, 0.01)).is_none(), "a crate is an obstacle");
+        w.update(&EntityKey::Id(c), UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::Obj(Vec::new()))])), ..Default::default() }, "t").unwrap();
+        run(&mut nav, &mut w, 3);
+        assert!(nav.meshes[&m].mesh.nearest(Vec3::new(5.0, 0.0, 5.0), Vec3::new(0.01, 0.5, 0.01)).is_some(), "an agent isn't");
     }
 
     #[test]

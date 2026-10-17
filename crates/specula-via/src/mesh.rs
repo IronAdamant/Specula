@@ -70,6 +70,8 @@ pub struct TileStats {
     pub eroded: usize,
     pub polys: usize,
     pub errors: Vec<NavError>,
+    /// See [`crate::build::TileBuild::times_us`].
+    pub times_us: [f64; 5],
 }
 
 /// A tiled navmesh.
@@ -81,6 +83,7 @@ pub struct NavMesh {
     /// When each tile was last (re)built, by [`NavMesh::counter`].
     rebuilt: Vec<u64>,
     counter: u64,
+    scratch: build::Scratch,
 }
 
 impl NavMesh {
@@ -88,7 +91,7 @@ impl NavMesh {
         cfg.validate()?;
         let d = Derived::of(&cfg);
         let n = d.tiles_x as usize * d.tiles_z as usize;
-        Ok(NavMesh { cfg, d, tiles: vec![None; n], rebuilt: vec![0; n], counter: 0 })
+        Ok(NavMesh { cfg, d, tiles: vec![None; n], rebuilt: vec![0; n], counter: 0, scratch: build::Scratch::default() })
     }
 
     pub fn config(&self) -> &Config {
@@ -184,7 +187,7 @@ impl NavMesh {
     /// Builds (or rebuilds) tile `(tx, tz)` from the sources that touch it (in a fixed order),
     /// and relinks it with its neighbours.
     pub fn build_tile(&mut self, tx: u32, tz: u32, sources: &[&Source]) -> TileStats {
-        let b: TileBuild = build::build_tile(&self.cfg, &self.d, tx, tz, sources);
+        let b: TileBuild = build::build_tile(&self.cfg, &self.d, tx, tz, sources, &mut self.scratch);
         let index = self.tile_index(tx, tz);
         let polys: Vec<Poly> = b
             .rects
@@ -207,6 +210,7 @@ impl NavMesh {
             eroded: b.eroded,
             polys: polys.len(),
             errors: b.errors,
+            times_us: b.times_us,
         };
         self.tiles[index] = Some(Tile { polys, edges: b.edges, hash: 0 });
         self.counter += 1;
