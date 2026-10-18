@@ -218,17 +218,18 @@ the checks attribute each slow frame to its zones.
 
 | | before (main) | streaming |
 |---|---|---|
-| loading, slowest frame | 6,093 ms (`sync_meshes` 5,820) | 94 ms; `frame/stream` p99 2.3 ms, max 6.9 |
-| loading, frame p99 | 991 ms | 69 ms |
-| flight at 25 m/s, frame p99 | 237 ms (streaming off, same binary: 191) | 33 ms; `frame/stream` max 2.2 ms, 0 frames over from streaming |
-| upload ms per frame | - | p99 1.2, max 1.5 |
-| far vantage: draw calls / submitted | 7,350 / 9,738 | 2,536 / 2,585 with HLOD, 0 pixels different |
-| far vantage: draw-list CPU, mean / p95 | 4.9 / 11.1 ms | 0.43 / 0.52 ms |
-| switching streaming off (upload everything) | - | the engine is busy for 15-90 s |
+| loading, slowest frame | 6,093 ms (`sync_meshes` 5,820) | 52 ms; `frame/stream` p99 2.0 ms, max 4.2 |
+| loading, frame p99 | 991 ms | 39 ms |
+| flight at 25 m/s, frame p99 | 237 ms (streaming off, same binary: 69) | 28 ms; `frame/stream` max 2.0 ms, 0 frames over from streaming |
+| upload ms per frame | - | p99 1.0, max 1.6 |
+| far vantage: draw calls / submitted | 7,350 / 9,738 | 2,573 / 3,733 with HLOD (instanced builds stay out), 0 pixels different |
+| far vantage: draw-list CPU, mean / p95 | 4.9 / 11.1 ms | 0.42 / 0.53 ms |
+| switching streaming off (upload everything) | - | the engine is busy for 10-90 s |
 
 The world hash is identical with streaming on and off, the flight doesn't change it, and Sepulcra plays tick-identically
-both ways. Loading still had 5 frames of 2,353 with `frame/stream` over twice the budget (a 4.5 ms
-`vkBeginCommandBuffer` and descheduled pumps), above the check's 0.1 % allowance.
+both ways. Loading had 1 frame of 2,400 with `frame/stream` over twice the budget (within the check's 0.1 %
+allowance for driver stalls). Earlier runs on a busier machine had up to 5, from a slow `vkBeginCommandBuffer` and
+descheduled pumps.
 
 ## Later
 
