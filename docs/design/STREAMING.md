@@ -109,10 +109,13 @@ more than that; a capture from a new view or a jump of the window's camera runs 
 waiting). Passes start when the window's camera moves (a quarter cell, or a tenth of the way to the nearest cell, a turn
 or a zoom: at most every 100 ms), when the world or the builds change, and at least once a second. Changed entities
 are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file); captures file
-everything at once.
+everything at once, and a capture after any change runs a whole pass first (it never sees the world as it was).
 
-- Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`: raise it for long views
-  of such models.
+- Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`, and beyond it wherever
+  they are at least `RESIDENT_MIN_PX` (4) pixels across: a glass tower 500 m away stays drawn. The same holds for every
+  model with `hlod` off, and for mergeable ones past `hlod_radius_m`.
+- **Orthographic** views (2D, top-down maps) measure sizes from the view's height, not the eye's distance: everything in
+  the view is wanted at its size there. They never draw proxies (their switch distances are perspective ones).
 - Mergeable members are wanted wherever a camera wouldn't draw the cell's proxy: within `preload` × its switch
   distance when the proxy is current, whatever `radius_m` says (so there is no band where neither draws).
 - A cell whose proxy is stale or still coming (an edit, a build landing) has its mergeable members **stand in** for it
@@ -121,8 +124,10 @@ everything at once.
 - **Wide** models (wider than a cell: a terrain, a cliff range) are wanted by their own box and never merged, so one
   big model never stretches its cell over the world.
 - Priority is the distance to the cell's box (or the wide model's), halved inside the window's view frustum and
-  quartered for captures (an agent is waiting); transient model entities (a game's presentation) come first. Proxies
-  are wanted within `hlod_radius_m` at half their cell's priority; built proxies of cells no longer wanted are dropped.
+  quartered for captures (an agent is waiting). Transient model entities (a game's presentation: creatures, effects)
+  aren't in cells: every frame, those whose builds aren't fully on the GPU go first, without waiting for a pass, and a
+  capture waits for the ones in its view. Proxies are wanted within `hlod_radius_m` at half their cell's priority;
+  built proxies of cells no longer wanted are dropped.
 
 **Progressive levels.** A build uploads one LOD per item, **coarsest first**, and only down to the finest level a
 camera needs (its size on screen at that distance, with the window's LOD hysteresis as margin): a model 300 m away
@@ -164,8 +169,10 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
   proxy showed). Captures decide afresh, without hysteresis (reproducible).
 - **Staleness:** a cell's content key hashes its members' ids, content hashes and builds. A change makes the proxy
   stale at once (no longer drawn; the members stand in, see Wanted), and a new one is built once the cell has been quiet
-  for `settle_s`, so an agent editing a far cell never sees a ghost of the old content. An edit of a mergeable entity in
-  a cell the window draws as a proxy updates the cover at once, not at the next periodic update.
+  for `settle_s`, so an agent editing a far cell never sees a ghost of the old content. A changed cell (an edit, or a
+  member's build rebuilt by `model_reload`) is marked dirty at once: the window redoes the ones it draws as proxies out
+  of turn in the running pass, a capture runs a whole pass first, and no capture draws a dirty cell's proxy. A capture
+  waits for a coming proxy only when its members aren't on the GPU to draw meanwhile.
 - **Drawing:** covered members are skipped in `GpuModels::draw_model` by a bitset indexed by entity id
   (`hlod::covers`, one branch per model draw); proxy draws are appended after the entity draws. The draw-list build
   itself (sight.rs, the draw cache) is untouched apart from owner id 0 for proxy draws in captures.
@@ -180,6 +187,9 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 - **Sight packets:** `streaming {hlod_cells, hlod_entities, not_resident, coarser_lod, note}`; subjects get
   `drawn_as: "hlod"` (drawn merged: `visible_px` is null, the pixels belong to the proxy) or `"not_resident"` (built,
   not on the GPU, not drawn), and `resident_lods_from` while finer levels stream. A warning names not-resident models.
+  Concise answers keep `drawn_as`, `resident_lods_from`, and the packet's `streaming` and `models` blocks whenever
+  something is merged or not resident; `sight_query` answers `drawn: false` with a reason for a not-resident entity and
+  `drawn_as: "hlod"` for a merged one.
   `sight_compare` doesn't diff the visibility of subjects drawn in a proxy on either side (no pixel count of their
   own); it counts them in `visibility_not_compared_hlod`.
   Captures park until what their view needs (within `radius_m`, not proxied) is resident, like they wait for builds,
