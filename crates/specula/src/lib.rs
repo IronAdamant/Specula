@@ -692,6 +692,31 @@ impl Engine {
         self.last_advance = Instant::now();
     }
 
+    /// Builds a loaded world's navmeshes for up to `limit` of wall time (slices back to back).
+    /// Returns whether the load is done.
+    fn build_nav_load(&mut self, limit: Duration) -> bool {
+        let started = Instant::now();
+        while self.nav.loading() {
+            if self.nav.load_slice(&self.world, self.world_generation, Some(nav::LOAD_SLICE_WORK)) {
+                break;
+            }
+            if started.elapsed() >= limit {
+                break;
+            }
+        }
+        !self.nav.loading()
+    }
+
+    /// The structured answer for a call that needs ticks while a load still builds.
+    fn nav_loading_error(&self) -> ToolOutput {
+        let mut e = WorldError::new("loading", "the loaded world's navmeshes are still being built (the simulation clock is held until they are): call again shortly")
+            .with("retry", true);
+        if let Some(Json::Arr(meshes)) = self.nav.summary_json().get("navmeshes").cloned() {
+            e = e.with("navmeshes", Json::Arr(meshes.into_iter().filter_map(|m| Some(Json::obj([("path", m.get("path")?.clone()), ("building", m.get("building").cloned().unwrap_or(Json::Null))]))).collect()));
+        }
+        world_error(&e)
+    }
+
     /// Turns the real time since the last call into whole ticks and runs them.
     fn advance_clock(&mut self) {
         // The world's anim assets reach the library (graph writes settle against them) without
@@ -699,13 +724,16 @@ impl Engine {
         self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
         let now = Instant::now();
         if self.nav.loading() {
-            // A loaded world's navmeshes build first, a slice per frame, with the simulation
-            // clock held (frames and agent calls are served meanwhile; the time doesn't become
-            // ticks later). The result doesn't depend on the slices.
+            // A loaded world's navmeshes build first, slices back to back within a frame's
+            // budget, with the simulation clock held (frames and agent calls are served between
+            // frames; the time doesn't become ticks later). The result doesn't depend on the
+            // slices.
             let _z = profile::zone("nav_load");
-            self.nav.load_slice(&self.world, self.world_generation, Some(nav::LOAD_SLICE_WORK));
-            self.last_advance = now;
-            return;
+            self.build_nav_load(nav::LOAD_FRAME);
+            self.last_advance = Instant::now();
+            if self.nav.loading() {
+                return;
+            }
         }
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
@@ -1391,6 +1419,10 @@ impl Engine {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
+            if self.nav.loading() {
+                // A load builds back to back (calls are still read between slices).
+                wait = Duration::ZERO;
+            }
             if self.playtests.running() {
                 // Flat out, unless it waits for a deferred answer.
                 wait = if self.playtests.waiting_on_call() { wait.min(Duration::from_millis(1)) } else { Duration::ZERO };
@@ -1600,6 +1632,8 @@ impl Engine {
             }
             Command::PerfCapture(_) | Command::Playtest(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
+            // Steps wait for a load to finish (bounded); they are never queued behind it.
+            Command::Time(TimeOp::Step(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
             Command::Time(op) => {
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),

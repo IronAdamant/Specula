@@ -55,7 +55,8 @@ pub enum NavCall {
 impl NavCall {
     pub fn class(&self) -> Class {
         match self {
-            NavCall::Build { .. } => Class::Big,
+            // (It writes one entity: building happens on the ticks.)
+            NavCall::Build { .. } => Class::Edit,
             NavCall::Agent { .. } | NavCall::SetMind { .. } | NavCall::ModelCollider { .. } => Class::Edit,
             _ => Class::Read,
         }
@@ -1348,6 +1349,18 @@ mod tests {
         let r = sw.commit(&mut w, 0, ann, Kind::Delete, |wd| wd.delete(&EntityKey::Path("/nav/default".into()), None).map(|_| ()));
         assert_eq!(code(r), Some("reserved"));
         assert!(w.find_path("/nav/default").is_ok());
+        // The review's p21: a batch spawning settings anywhere, or moving an entity into /nav.
+        let mut zz = SpawnSpec::new(Shape::Group);
+        zz.name = Some("zz".into());
+        zz.props = Json::obj([(nav::MESH_KEY, Json::Obj(Vec::new()))]);
+        let r = sw.commit(&mut w, 0, ann, Kind::Batch, |wd| wd.apply_batch(vec![Op::Spawn(zz)], "ann").map(|_| ()).map_err(|(_, e)| e));
+        assert_eq!(code(r), Some("reserved"));
+        let r = sw.commit(&mut w, 0, ann, Kind::Set, |wd| wd.update(&EntityKey::Path("/floor".into()), UpdateSpec { parent: Some(Some(EntityKey::Path("/nav".into()))), ..Default::default() }, "ann").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        assert!(w.find_path("/floor").is_ok(), "the floor stayed");
+        // Undoing one's own nav_build still works (undo isn't a world_* write).
+        sw.undo(&mut w, 0, ann, &crate::journal::UndoRequest { ids: None, count: 1, force: false }).unwrap();
+        assert!(w.find_path("/nav/default").is_err(), "undone");
     }
 
     fn model(recipe: &str) -> specula_model::Model {

@@ -361,6 +361,15 @@ def run(m, failures, label, big):
     check(not tool(m, "engine_info")[0] and err2 and "no_navmesh" in json.dumps(gone2),
           "a deleted navmesh: queries answer from the last tick, then 'no_navmesh'; the engine lives", failures)
     feats = features(m, failures)
+    # A load holds the clock while its navmeshes build, and time_control step waits for it (never
+    # queued behind it, never answering the old tick).
+    m.json("world_save", name="navload", overwrite=True)
+    t_before = m.json("time_control", action="info")["tick"]
+    m.json("world_load", name="navload", force=True)
+    err_step, stepped = tool(m, "time_control", action="step", ticks=3)
+    stepped_ok = (not err_step and stepped.get("tick") == t_before + 3) or (err_step and isinstance(stepped, dict) and stepped.get("error") == "loading")
+    check(stepped_ok, f"time_control step right after world_load: {stepped.get('tick') if not err_step else stepped.get('error')} (from tick {t_before})", failures)
+    check(not m.json("nav_info").get("loading"), "the load finished", failures)
     # Determinism and journal.
     hashes = m.json("world_hash", recent=1, verify=True)
     check(hashes["verify"]["matches"], "the journal replays the world exactly (nav writes included)", failures)

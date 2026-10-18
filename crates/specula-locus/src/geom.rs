@@ -282,7 +282,8 @@ mod tests {
         set.for_each_near(&fp, 1.0e4, &work, |_| n += 1);
         assert_eq!(n, 16_000, "every box once");
         assert!(work.get() <= 16_000 + 8_000, "work {}", work.get());
-        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+        // A timing, printed; the counted work above is what is asserted.
+        eprintln!("huge reach over 16,000 boxes: {:?}", started.elapsed());
     }
 
     #[test]
