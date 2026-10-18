@@ -433,7 +433,8 @@ def run_sepulcra(a, out, report, check):
     try:
         for label, port, extra in runs:
             e = Engine(exe, port, out / f"sepulcra_{label}.log", "--captures", str(out / f"sep_cap_{label}"), "--worlds",
-                       str(out / f"sep_worlds_{label}"), "--cache", str(out / "cache"), *extra, "--", "--seed", "7", cwd=str(ROOT))
+                       str(out / f"sep_worlds_{label}"), "--saves", str(out / f"sep_saves_{label}"), "--cache", str(out / "cache"),
+                       *extra, "--", "--seed", "7", cwd=str(ROOT))
             engines.append(e.__enter__())
             m = Mcp(url_for(port), f"stream-check-sepulcra-{label}")
             m.json("agent_hello", name=f"sep_{label}")
