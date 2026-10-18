@@ -1,0 +1,55 @@
+{
+  "balance": 1,
+  "name": "slice_close_call_styles",
+  "notes": "The same close call as slice.targets.json (won, about seven of ten tombstones left, runners a few seconds to kill), asked of three play styles at once: the dust-gated build order, a brazier-first build, and a rusher who calls waves early. A target hits only when it hits under every style, so tuning for this file looks for rules that feel the same however people play. A designer's draft for the balance lab (games/sepulcra/tests/balance.rs), not decided balance: every result needs a human playtest.",
+  "ticks": "12m",
+  "seeds": { "train": 16, "holdout": 16, "base": 1 },
+  "policies": [
+    {
+      "name": "dust_gated",
+      "every": "1s",
+      "wait_on": ["not_enough_dust"],
+      "steps": [
+        { "command": "place", "args": { "stone": "warding_1", "site": "top:8,14" } },
+        { "command": "place", "args": { "stone": "warding_1", "site": "top:10,16" } },
+        { "command": "place", "args": { "stone": "rune_pillar_1", "site": "top:8,16" }, "when": "res.dust >= 75" },
+        { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 70" },
+        { "command": "upgrade", "args": { "stone": "top:10,16" }, "when": "res.dust >= 70" },
+        { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 95" }
+      ]
+    },
+    {
+      "name": "braziers",
+      "every": "1s",
+      "wait_on": ["not_enough_dust"],
+      "steps": [
+        { "command": "place", "args": { "stone": "brazier_1", "site": "top:8,14" } },
+        { "command": "place", "args": { "stone": "warding_1", "site": "top:10,14" } },
+        { "command": "place", "args": { "stone": "rune_pillar_1", "site": "top:8,16" }, "when": "res.dust >= 70" },
+        { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 90" },
+        { "command": "upgrade", "args": { "stone": "top:10,14" }, "when": "res.dust >= 70" },
+        { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 120" }
+      ]
+    },
+    {
+      "name": "rusher",
+      "every": "1s",
+      "wait_on": ["not_enough_dust"],
+      "steps": [
+        { "command": "place", "args": { "stone": "warding_1", "site": "top:8,12" } },
+        { "command": "place", "args": { "stone": "warding_1", "site": "top:10,12" } },
+        { "command": "call_wave", "args": {}, "at": "5s" },
+        { "command": "upgrade", "args": { "stone": "top:8,12" }, "when": "res.dust >= 70" },
+        { "command": "call_wave", "args": {}, "after_wave": 1, "when": "count(enemy) == 0" },
+        { "command": "place", "args": { "stone": "rune_pillar_1", "site": "top:8,14" }, "when": "res.dust >= 75" },
+        { "command": "upgrade", "args": { "stone": "top:10,12" }, "when": "res.dust >= 70" },
+        { "command": "upgrade", "args": { "stone": "top:8,12" }, "when": "res.dust >= 100" }
+      ]
+    }
+  ],
+  "targets": [
+    { "id": "wins", "metric": "win_rate", "target": 1, "tolerance": 0.1 },
+    { "id": "tombstones_left", "metric": "expr", "expr": "res.tombstones", "target": 7, "tolerance": 1.25 },
+    { "id": "runner_time_to_kill", "metric": "time_to_kill", "archetype": "runner", "target": 5, "tolerance": 2, "weight": 0.25 }
+  ]
+}

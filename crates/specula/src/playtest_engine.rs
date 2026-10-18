@@ -40,7 +40,7 @@ pub const WINDOW_SLICE: Duration = Duration::from_millis(4);
 pub const RECORD_DIR: &str = "playtests";
 /// Tools that write files (images, packets, traces): a playtest makes at most
 /// [`playtest::MAX_CAPTURES`] such calls.
-const FILE_TOOLS: [&str; 4] = ["sight_frame", "sight_orbit", "sight_compare", "perf_capture"];
+const FILE_TOOLS: [&str; 5] = ["sight_frame", "sight_orbit", "sight_compare", "perf_capture", "save_write"];
 
 pub enum Source {
     Inline(Json),

@@ -34,6 +34,10 @@ use specula_core::hash::StableHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+#[path = "snapshot.rs"]
+mod snapshot;
+pub use snapshot::SNAPSHOT_VERSION;
+
 /// Simulation settings. Defaults follow Box2D v3 where it has an equivalent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {

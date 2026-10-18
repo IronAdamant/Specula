@@ -24,7 +24,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   **Owner, 2026-10-18: M4 waits.** Finish and fully test M3, then report to the owner and **wait for their explicit
   go-ahead before starting M4** (wave 3).
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
-  animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes). Wave 2 is
+  animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
+  history gallery, and save games with the balance lab. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -148,6 +149,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
     `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
     `world_env {physics}` (gravity, substeps, sleep, 2D mode).
+  - Saves and balance: `save_write`, `save_read`, `save_list`, `save_delete` (`--saves DIR`); `balance_targets`,
+    `balance_sweep`, `balance_tune`.
   - Playtests: `playtest_run` (a spec as data: steps, expectations, replays) and `playtest_report`.
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
@@ -172,8 +175,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   runs on its hand-written Rust rules. Module characters move with a
   simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
   requests can't be preempted.
-- **No save games** for players (world files are an editor format), no title screen in the app, settings aren't
-  saved and there's no rebinding.
+- No title screen in the app, settings aren't saved and there's no rebinding. Ragdoll bodies and live Lex runs aren't
+  in save files yet.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
@@ -234,6 +237,10 @@ answer where it applies.
 - **STYLE.md's questions:** floating slab over mist, or a dark canyon? Cyan magic vs green dead?
 - **Other waiting items:** DESIGN.md's **(proposal)** lines, shipping fonts, `style.json` proposals, and reviewing
   the five `docs/design/` docs (their "reviewed" boxes in ROADMAP are unticked).
+- **Sepulcra balance (from the balance lab, 2026-10-18):** tuning runner and shambler HP together hits every target for
+  the dust-gated and brazier-first builds, but a rusher who calls every wave early still loses 2 runs in 16 on unseen
+  seeds. Should calling waves early be that risky? (A human playtest decides; see
+  [docs/design/BALANCE.md](docs/design/BALANCE.md).)
 - **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
   `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
 - **crates.io:** whether and when to publish the crates.

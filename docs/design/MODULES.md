@@ -88,8 +88,8 @@ A fresh `Self::default()` handles every call, so a module has nowhere to keep st
   across reloads.
 
 So a reload loses nothing by construction. `static mut`, `thread_local!`, `OnceLock` caches and threads are against
-the rules: they break determinism or dangle after an unload. (Not yet persisted: the state store and RNG positions live
-in engine memory, not in world files; that comes with save games.)
+the rules: they break determinism or dangle after an unload. (World files don't hold the state store and RNG positions;
+save games do, with the events waiting for the next tick and agents' held input: [SAVES.md](SAVES.md).)
 
 ## Determinism (F2)
 
@@ -279,7 +279,7 @@ one agent's headless call rate (`scripts/call_rate.py`) `world_set` 1,289 → 1,
 
 ## Not done yet
 
-- Persisting the state store and RNG positions with the world (save games).
+- ~~Persisting the state store and RNG positions~~: save games carry them ([SAVES.md](SAVES.md), 2026-10-18).
 - Determinism lints for module crates; the FP-environment guard.
 - Loading libraries on Linux/macOS (`dlopen`): `specula_sys::dynlib` is Windows-only today, so `ModuleCode::open`
   returns `unsupported` there (linked-in modules work everywhere).

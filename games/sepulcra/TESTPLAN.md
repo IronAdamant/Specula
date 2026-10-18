@@ -84,6 +84,16 @@ says which), `--mute` turns sound off. Agents use the same game over MCP on the 
 - [ ] Controls lists the actions with their keys; F1 opens it too.
 - [ ] "Restart run" asks first (No is the default), then restarts the same seed.
 - [ ] The speed button (or F) cycles x1, x2, x4: everything moves and animates faster.
+- [ ] "Save / Load" in the pause menu opens Saved games: three slots and two autosaves, each with what
+  it holds (wave, tombstones), time played and when; empty ones say "Empty" and their Load is greyed.
+- [ ] Save on an empty slot saves at once ("Saving..." under the title, then a "Game saved" toast).
+  Save on a used slot asks first (No is the default); Yes replaces it.
+- [ ] Load asks first (this run is lost), then brings the saved run back, paused under the menu, with
+  "Game loaded: wave X of Y". The X deletes a slot, after asking.
+- [ ] With Autosave on in Settings (it is by default in the window), each wave's start writes the next
+  autosave in turn ("Autosaved" toast); both show up in Saved games and load like the slots.
+- [ ] All of this works with the pad (d-pad, A, B), the mouse, touch and the keys; Back (Esc / B)
+  returns to the pause menu.
 
 ## 7. Gamepad (Xbox pad, or a Steam Deck)
 

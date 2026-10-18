@@ -112,6 +112,29 @@ impl SatCache {
         }
     }
 
+    /// Writes the memory for a save (see `Space::save_state`).
+    pub fn save(&self, w: &mut specula_core::bytes::ByteWriter) {
+        w.u8(self.kind);
+        w.u16(self.i);
+        w.u16(self.j);
+        w.vec3(self.axis);
+        w.vec3(self.rel_p);
+        self.rel_q.iter().for_each(|c| w.f32(*c));
+    }
+
+    /// Reads [`SatCache::save`]'s bytes.
+    pub fn load(r: &mut specula_core::bytes::ByteReader<'_>) -> Result<SatCache, specula_core::bytes::DecodeError> {
+        let at = r.offset();
+        let kind = r.u8("sat.kind")?;
+        if kind > SAT_APART {
+            return Err(specula_core::bytes::DecodeError::new("invalid", at, "sat.kind", format!("unknown pair memory kind {kind}")));
+        }
+        let (i, j) = (r.u16("sat.i")?, r.u16("sat.j")?);
+        let (axis, rel_p) = (r.vec3("sat.axis")?, r.vec3("sat.rel_p")?);
+        let rel_q = [r.f32("sat.rel_q")?, r.f32("sat.rel_q")?, r.f32("sat.rel_q")?, r.f32("sat.rel_q")?];
+        Ok(SatCache { kind, i, j, axis, rel_p, rel_q })
+    }
+
     fn near(&self, rel: &Pose) -> bool {
         let q = self.rel_q;
         let dot = q[0] * rel.q.x + q[1] * rel.q.y + q[2] * rel.q.z + q[3] * rel.q.w;

@@ -11,6 +11,7 @@
 //! wait for vsync (see `schedule`), so agents aren't paced by the display. The human's window is
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
+mod balance_tools;
 pub mod board;
 pub mod anim;
 mod anim_tools;
@@ -34,6 +35,8 @@ pub mod orbit;
 mod perf;
 pub mod persist;
 pub mod rollup;
+mod save_tools;
+pub mod savegame;
 pub mod physics;
 mod physics_tools;
 mod joint_tools;
@@ -91,7 +94,7 @@ const MAX_LISTING_BYTES: usize = 128 * 1024;
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
-[--captures DIR] [--worlds DIR] [--world NAME] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
+[--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--response-format concise|detailed] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -125,6 +128,8 @@ struct Args {
     captures: Option<PathBuf>,
     worlds: Option<PathBuf>,
     world: Option<String>,
+    /// Where save games live (`--saves`, default `./saves`).
+    saves: Option<PathBuf>,
     /// Pipeline cache directory (`--cache`, default `./.specula-cache`).
     cache: Option<PathBuf>,
     /// How `--adapter` was given, to name the pipeline cache file.
@@ -157,6 +162,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         captures: None,
         worlds: None,
         world: None,
+        saves: None,
         cache: None,
         adapter_label: "discrete".into(),
         perf: None,
@@ -204,6 +210,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--cache" => args.cache = Some(PathBuf::from(value()?)),
             "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
+            "--saves" => args.saves = Some(PathBuf::from(value()?)),
             "--world" => {
                 let name = value()?;
                 persist::validate_world_name(&name).map_err(|e| format!("--world: {e}\n{USAGE}"))?;
@@ -275,6 +282,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
+    engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
         let dir = engine.worlds_dir.join(&name);
@@ -357,6 +365,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         None => engine.run_headless(&requests, &server),
     };
     engine.finish_autosave(true);
+    // Save games still being written land before the process ends.
+    engine.join_saves();
     engine.autosave(true);
     engine.save_board_blocking();
     // Parked captures and model calls hold reply channels: answer them now, or their callers
@@ -450,6 +460,12 @@ struct Engine {
     capture_dir: PathBuf,
     /// Where world files live (`--worlds`, default `./worlds`).
     worlds_dir: PathBuf,
+    /// Where save games live (`--saves`, default `./saves`; see `save_tools`).
+    saves_dir: PathBuf,
+    /// Save games being written on worker threads.
+    save_writes: Vec<save_tools::Writing>,
+    /// A save game being read and checked on a worker thread (one at a time).
+    save_load: Option<save_tools::Loading>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -581,6 +597,9 @@ impl Engine {
             frames_captured: 0,
             capture_dir,
             worlds_dir: PathBuf::from("worlds"),
+            saves_dir: PathBuf::from("saves"),
+            save_writes: Vec::new(),
+            save_load: None,
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
@@ -731,6 +750,10 @@ impl Engine {
             self.record_tick_hash();
         }
         self.world.set_clock_s(self.clock.seconds());
+        if ticks > 0 {
+            // A tick may have asked for something (the game's wave-start autosave).
+            self.serve_game_requests();
+        }
     }
 
     /// The game's per-frame update: input, camera, title.
@@ -767,6 +790,8 @@ impl Engine {
         }
         self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
+        // The game's menu may have asked for a save or a load.
+        self.serve_game_requests();
     }
 
     /// The hosted game's interface for one image ([`Game::overlay`]) into `out` (cleared first).
@@ -1294,6 +1319,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.poll_saves();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.advance_clock();
@@ -1377,7 +1403,7 @@ impl Engine {
             // (and about 60 times a second while perf_capture records frames).
             let most = if self.profiler.capturing() { Duration::from_millis(16) } else { Duration::from_millis(100) };
             let mut wait = self.clock.until_next().min(most);
-            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() {
+            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() || self.saves_in_flight() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
@@ -1401,6 +1427,7 @@ impl Engine {
             self.sweep_claims(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            self.poll_saves();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
         }
@@ -1439,11 +1466,17 @@ impl Engine {
             self.handle_sight(request);
             return;
         }
+        if matches!(request.command, Command::SaveGame(save_tools::SaveCall::Write { .. } | save_tools::SaveCall::Read { .. })) {
+            self.handle_save_request(request);
+            return;
+        }
         let by = self.swarm.agent_name(&request.session);
         // Ownership (claims, undo) goes by identity key, which a resumed agent keeps.
         let session = self.swarm.key(&request.session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
+        // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
+        let game_call = matches!(request.command, Command::Game { .. });
         let output = match request.command {
             Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
@@ -1674,6 +1707,7 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
+            Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
                 self.lend_physics();
@@ -1683,6 +1717,9 @@ impl Engine {
             }
             Command::Anim(call) => self.anim_call(call, w, tick),
         };
+        if game_call {
+            self.serve_game_requests();
+        }
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
@@ -2101,6 +2138,7 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,

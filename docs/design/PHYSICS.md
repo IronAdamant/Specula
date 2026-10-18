@@ -253,7 +253,9 @@ sweep there (pushing what they meet) unless the jump is over 2 m (a teleport). T
 replays physics changes exactly (`world_hash verify`). `world_hash` reports the physics state hash per tick next to the
 world's. *Limit:* hidden state (warm-start impulses, sleep timers, the exact rotation behind `rotation_deg`) isn't saved
 in world files, so a reloaded world continues deterministically from the load, but not bit-identically to the run that
-saved it.
+saved it. Save games carry all of it, so a loaded save continues bit-identically ([SAVES.md](SAVES.md)); bodies
+remember the scale their collider was built at for it (a world matrix's column lengths jitter in the last bit as a body
+turns, and the space keeps the shape it was built with).
 
 **2D.** `world_env {physics: {plane_2d: true}}` keeps dynamic bodies in the XY plane (Specula's 2D plane) turning about
 Z only, by locking axes in the solver. Shapes stay 3D (a circle is a sphere, a 2D box a thin box), so 2D games get the

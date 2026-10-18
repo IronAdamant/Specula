@@ -156,15 +156,25 @@ class Engine:
         start = time.perf_counter()
         self.proc = subprocess.Popen([str(self.exe), "--port", str(self.port), *self.args], stderr=self.log,
                                      stdout=subprocess.DEVNULL, creationflags=flags, cwd=self.cwd)
+        # The process exists: a subclass may note it (before it answers, so a kill during start-up
+        # can't hide it).
+        self.started_process()
         while not server_up(self.port):
             if self.proc.poll() is not None:
                 self.log.close()
                 raise RuntimeError(f"engine exited early:\n{self.log_path.read_text()}")
             if time.perf_counter() - start > 60:
+                # Don't leave it running: __exit__ won't run for a failed __enter__.
+                self.proc.kill()
+                self.proc.wait()
+                self.log.close()
                 raise RuntimeError("engine's MCP server never came up")
             time.sleep(0.05)
         self.startup_s = time.perf_counter() - start
         return self
+
+    def started_process(self):
+        """Called right after the engine's process starts (self.proc), before it answers."""
 
     def mcp(self, client_name, detailed=True):
         return Mcp(url_for(self.port), client_name, detailed)
