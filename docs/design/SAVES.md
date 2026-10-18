@@ -23,7 +23,7 @@ A world file holds what the world shows. The simulation remembers more:
 | Physics (`specula-physics`) | exact quaternions (the world stores Euler degrees), warm-start impulses, sleep timers and islands, the per-pair polytope memory (SAT features, part of the physics hash since review round 2), fat broadphase boxes, kinematic targets, the characters' ground memory, and the scale each collider was built at | the run continues deterministically but **diverges** from the one that saved (shown by `a_plain_rebuild_drifts...` and `a_saved_world_and_physics_continue_bit_identically` in the tests) |
 | The module host | each module's state store and RNG stream positions (MODULES.md: "comes with save games"), the events emitted in the last tick (delivered at the next), agents' held input | modules start empty |
 | The clock | the tick | tick numbers restart, so traces and journals don't line up |
-| Lex | a run's state | (no live Lex yet: see below) |
+| Lex | a run's state | Sepulcra's `--rules lex` run is in the game's section; live runs refuse saves (see below) |
 
 ## What a save holds
 
@@ -176,12 +176,27 @@ buttons with `play_ui` (`saves`, `save_1`, `load_2`, `delete_3`, `load_auto_1`, 
 
 ## Lex
 
-Lex doesn't run live in the engine yet (LEX.md: "live Lex in the window" is a later lane), so there is no live Lex
-state to save today: rule sets themselves are world entities and are in every save's `world` section. The run state is
-ready for it: `Sim::save_state` / `Sim::restore` write and check a run's whole `State` against the rules it runs under
-(the rules hash, params folded in, must match: `rules_changed`), and a restored run has the same `Sim::hash` and steps
-identically (`games/sepulcra/tests/lex_saves.rs`: the slice saved mid-wave, three seeds, 4,000 ticks). When live Lex
-lands, its sets' states become a `lex` section, one `Sim::save_state` per running set.
+**Sepulcra's `--rules lex` mode** saves its Lex run in the game's section (section version 2): the run's
+`Sim::save_state` bytes, plus the parity counts and any desync, restored against the built-in rule set (its hash must
+match) and checked against the reference state at load. A version 1 section has no Lex part, so the run replays the
+recording through Lex to the saved tick, as before. A load resumes the Lex run exactly (same Lex hash, parity on;
+`a_lex_mode_game_saves_and_loads_with_its_lex_state`).
+
+**Live Lex runs (`lex_live`) aren't in save games yet**: a live run's state would need its journal, presentation
+(the shown entities' ids, adopted from the world), credit and input with it, and agents' holds are tied to sessions,
+which saves don't keep. So `save_write`, and `save_read` (whose load replaces the world they present into), are
+refused while any set is live, with `live_lex_running` naming them: stop the runs first (their journals replay
+headless with `lex_simulate`). The run state itself is ready: `Sim::save_state` / `Sim::restore` write and check a
+run's whole `State` against the rules it runs under (the rules hash, params folded in, must match: `rules_changed`),
+and a restored run has the same `Sim::hash`, steps identically and charges the same work per tick
+(`games/sepulcra/tests/lex_saves.rs`: the slice saved mid-wave, three seeds, 4,000 ticks; the whole game, with
+natives, phase `order` and wave groups' `with`, saved every 2,500 ticks).
+
+**Lex state versions.** Version 2 adds entities' `order` and pending spawns' `with` (both in the state hash, for
+rules that use them). Version 1 reads forward: its runs had neither, so they restore with the defaults and hash as they
+did (the hash covers both only for rules that use them); rules that use them refuse a version 1 state. A restored
+state is a new state value (a fresh instance; caches miss once), and when granted tags next run out is derived from
+its effects.
 
 ## Later
 

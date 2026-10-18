@@ -8,14 +8,15 @@
 //! a later tick. Rules that changed since the save (another hash, params included) are refused:
 //! the same state under other rules is another game.
 //!
-//! The engine doesn't step Lex live yet (LEX.md: live Lex in the window is a later lane); when
-//! it does, each live set's state goes into a save game's `lex` section through this.
+//! Sepulcra's `--rules lex` mode saves its Lex run through this (in the game's section); live
+//! runs (`lex_live`) aren't in save games yet (SAVES.md, "Lex").
 
 use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
-/// Bumped when the layout changes.
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// Bumped when the layout changes (2: entities' `order` and pending spawns' `with`; version 1
+/// reads forward).
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Why saved Lex state couldn't be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,9 +144,15 @@ fn w_beh(w: &mut ByteWriter, b: &BehState) {
 impl Sim {
     /// The run's whole state as bytes (see the module docs).
     pub fn save_state(&self) -> Vec<u8> {
+        self.write_state(SNAPSHOT_VERSION)
+    }
+
+    /// The state in layout `version` (1 has no `order` or `with`: what earlier builds wrote,
+    /// for the tests that read it forward).
+    fn write_state(&self, version: u32) -> Vec<u8> {
         let st = &self.st;
         let mut w = ByteWriter::with_capacity(256 + st.ents.len() * 96);
-        w.u32(SNAPSHOT_VERSION);
+        w.u32(version);
         w.u64(self.rules.hash);
         w.u32(st.tick);
         w.u64(st.seed);
@@ -199,6 +206,9 @@ impl Sim {
                 w.u16(v.unwrap_or(0));
             }
             w.i64(e.path_remaining);
+            if version >= 2 {
+                w.i64(e.order);
+            }
         }
         w.u16(st.wave);
         w_opt32(&mut w, st.next_wave_tick);
@@ -224,6 +234,13 @@ impl Sim {
                 SpawnAt::Site(x) => {
                     w.u8(1);
                     w.u16(x);
+                }
+            }
+            if version >= 2 {
+                w.len_u32(p.with.len());
+                for (a, v) in &p.with {
+                    w.u16(*a);
+                    w.i64(*v);
                 }
             }
         }
@@ -267,8 +284,14 @@ impl Sim {
         let mut r = ByteReader::new(bytes);
         let d = dec;
         let version = r.u32("version").map_err(d)?;
-        if version != SNAPSHOT_VERSION {
-            return Err(SnapshotError { code: "unsupported_version", message: format!("Lex state version {version}; this build reads {SNAPSHOT_VERSION}"), offset: Some(0) });
+        // Version 1 (before `order` and `with`) reads forward: its runs had neither, so they
+        // restore with the defaults and hash as they did (the hash covers both only for rules
+        // that use them). Rules that use them can't have been saved as version 1.
+        if version == 0 || version > SNAPSHOT_VERSION {
+            return Err(SnapshotError { code: "unsupported_version", message: format!("Lex state version {version}; this build reads 1..={SNAPSHOT_VERSION}"), offset: Some(0) });
+        }
+        if version < 2 && (r0.ordered || r0.with_groups) {
+            return Err(SnapshotError { code: "unsupported_version", message: "Lex state version 1 can't hold `order` or `with`, which these rules use".into(), offset: Some(0) });
         }
         let hash = r.u64("rules hash").map_err(d)?;
         if hash != r0.hash {
@@ -389,7 +412,9 @@ impl Sim {
             let waves = r0.waves.as_ref().map_or(0, |w| w.waves.len());
             let (wave, site, spawn_path) = (opt("wave", 1, waves)?, opt("site", 0, r0.sites.len())?, opt("spawn_path", 0, r0.paths.len())?);
             let path_remaining = r.i64("path_remaining").map_err(d)?;
-            ents.push(Entity { id, arch, alive, pos, base, effects, beh, state, wave, site, spawn_path, path_remaining });
+            // Version 1 had no `order` (0: no rules could give one then).
+            let order = if version >= 2 { r.i64("order").map_err(d)? } else { 0 };
+            ents.push(Entity { id, arch, alive, pos, base, effects, beh, state, wave, site, spawn_path, path_remaining, order });
         }
         let waves = r0.waves.as_ref().map_or(0, |w| w.waves.len());
         let wave = r.u16("wave").map_err(d)?;
@@ -417,7 +442,19 @@ impl Sim {
                 (1, x) if usize::from(x) < r0.sites.len() => SpawnAt::Site(x),
                 (k, x) => return Err(bad(&r, format!("spawn place {k}:{x}"))),
             };
-            pending.push(Pending { tick, seq, arch, wave, at });
+            // Version 1 had no `with` (no rules could give one then).
+            let mut with = Vec::new();
+            if version >= 2 {
+                let k = r.count("pending.with", 1 << 10, 10).map_err(d)?;
+                for _ in 0..k {
+                    let (a, v) = (r.u16("with.attr").map_err(d)?, r.i64("with.value").map_err(d)?);
+                    if usize::from(a) >= r0.attrs.len() {
+                        return Err(bad(&r, format!("attribute {a} in a pending spawn's with (the rules have {})", r0.attrs.len())));
+                    }
+                    with.push((a, v));
+                }
+            }
+            pending.push(Pending { tick, seq, arch, wave, at, with });
         }
         let next_seq = r.u32("next_seq").map_err(d)?;
         let n = r.count("timers", 1 << 16, 2).map_err(d)?;
@@ -475,6 +512,14 @@ impl Sim {
                 return Err(bad(&r, format!("wave {w}'s counts (pending {}, alive {}) don't match its spawns and entities ({pending_n}, {alive_n})", s.pending, s.alive)));
             }
         }
+        // When granted tags run out next (as `begin` keeps it): derived from the effects.
+        let tag_expiry = ents
+            .iter()
+            .flat_map(|e| e.effects.iter())
+            .filter(|a| a.expires >= tick && !r0.effects[usize::from(a.effect)].grant_tags.is_empty())
+            .map(|a| a.expires)
+            .min()
+            .unwrap_or(u32::MAX);
         sim.st = State {
             tick,
             seed,
@@ -503,6 +548,11 @@ impl Sim {
             cells: cells.min(MAX_STATE_CELLS),
             interrupted,
             dispatched,
+            // A restored run is a new state value: caches keyed by (instance, gen) miss once,
+            // and natives charge their work the same either way (LEX.md, "Caching").
+            gen: 0,
+            tag_expiry,
+            instance: Instance::fresh(),
         };
         Ok(sim)
     }
@@ -625,5 +675,35 @@ mod tests {
         let c = crate::compile(&crate::Document::parse(&other).unwrap(), &Default::default()).unwrap();
         let e = Sim::restore(Arc::new(c.rules), &Natives::new(), &bytes).err().unwrap();
         assert_eq!(e.code, "rules_changed");
+    }
+
+    /// Version 1 (before `order` and `with`) reads forward: a run of rules without them
+    /// restores to the same hash and steps the same; rules with them refuse version 1.
+    #[test]
+    fn version_1_state_reads_forward() {
+        let mut a = sim(3);
+        let build = a.parse_command("build", &Json::parse(r#"{"site": "a"}"#).unwrap()).unwrap();
+        a.step(&[build]);
+        for _ in 0..150 {
+            a.step(&[]);
+        }
+        let v1 = a.write_state(1);
+        assert_ne!(v1, a.save_state());
+        let mut b = Sim::restore(Arc::clone(a.rules()), &Natives::new(), &v1).unwrap();
+        assert_eq!(b.hash(), a.hash(), "the defaults reproduce the hash");
+        assert_eq!(b.save_state(), a.save_state(), "and read forward to today's bytes");
+        for _ in 0..300 {
+            a.step(&[]);
+            b.step(&[]);
+            assert_eq!((a.hash(), a.tick_work()), (b.hash(), b.tick_work()));
+        }
+        let ordered = RULES.replace(r#""tower": {"kind": "archetype", "tags": ["tower"],"#, r#""tower": {"kind": "archetype", "tags": ["tower"], "order": "1","#);
+        assert_ne!(ordered, RULES);
+        let c = crate::compile(&crate::Document::parse(&ordered).unwrap(), &Default::default()).unwrap();
+        let o = Sim::new(Arc::new(c.rules), 1, &Natives::new()).unwrap();
+        let e = Sim::restore(Arc::clone(o.rules()), &Natives::new(), &o.write_state(1)).err().unwrap();
+        assert_eq!(e.code, "unsupported_version");
+        let back = Sim::restore(Arc::clone(o.rules()), &Natives::new(), &o.save_state()).unwrap();
+        assert_eq!(back.hash(), o.hash());
     }
 }

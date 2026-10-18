@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "13:05",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "performance",
+  "title": "Streaming and HLOD proof world",
+  "note": "First entry for streaming: a 24 x 24-cell world of 8,316 procedural models under a 128 MB budget on the Intel iGPU (stream_check.py). Near view fully resident; far view drawn through 579 merged HLOD cell proxies; HLOD on vs off differ in 0 pixels at 2,573 vs 7,350 draw calls.",
+  "source": "scripts/stream_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Near view: everything it shows waited for and resident",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 11189
+    },
+    {
+      "file": "02-frame-00003.jpg",
+      "caption": "Far view: 579 cells drawn as HLOD proxies (7,137 entities merged)",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19750
+    },
+    {
+      "file": "03-frame-00005.jpg",
+      "caption": "HLOD on | off | difference: 0 pixels over threshold (no popping)",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 120,
+      "bytes": 5972
+    }
+  ]
+}

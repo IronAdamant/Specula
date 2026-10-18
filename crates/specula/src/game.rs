@@ -77,6 +77,13 @@ pub trait Game {
     /// have drawn since the last step). Changes are journaled like a frame's.
     fn before_capture(&mut self, _ctx: &mut Ctx) {}
 
+    /// Lex native hooks the game implements in-process (e.g. `sepulcra.ground`): `lex_simulate`
+    /// and `lex_live` runs call them like Lex's own building blocks, and validation doesn't warn
+    /// about them. Default: none.
+    fn lex_natives(&self) -> specula_lex::Natives {
+        specula_lex::Natives::new()
+    }
+
     /// The game's tools (of [`Game::tools`]) that write files, such as recordings: a playtest
     /// counts their calls toward its cap on file writes. Default: none.
     fn file_tools(&self) -> &[&str] {

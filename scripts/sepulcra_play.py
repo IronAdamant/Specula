@@ -10,10 +10,13 @@ at the end (the busy wave also with the HUD, `include_ui`), records `perf_frame`
 wave, checks the HUD as data and presses its buttons (`play_ui`), checks the creatures animate
 (their `anim` component), then saves a recording with `play_record` and verifies it with
 `play_replay`. The game runs muted unless `--sound` (sound is checked as data in `play_state`).
+With `--rules lex` the game's rules run from Lex (games/sepulcra/lex, the hand-written sim kept as
+the reference): the run must keep parity on every tick and the replay must reach the same Lex hash.
 
     cargo build -p sepulcra-app --release
     python scripts/sepulcra_play.py                          # discrete GPU, port 7486
     python scripts/sepulcra_play.py --adapter integrated --port 7487
+    python scripts/sepulcra_play.py --adapter integrated --rules lex --port 7480
 
 Output (captures, packets, engine log, summary.json) goes to target/sepulcra-play/<adapter>/.
 Look at every PNG. Standard library only; keep output ASCII.
@@ -146,20 +149,21 @@ def main():
     ap.add_argument("--sound", action="store_true", help="play sound (default: --mute)")
     ap.add_argument("--exe", default=str(EXE), help="the sepulcra binary (default: this checkout's release build)")
     ap.add_argument("--out", default=None, help="output folder (default target/sepulcra-play/<adapter>)")
+    ap.add_argument("--rules", default="rust", choices=["rust", "lex"], help="the game's rules: the hand-written sim (default) or Lex")
     args = ap.parse_args()
     exe = Path(args.exe)
     if args.port == 7471:
         sys.exit("use another port than 7471 (reserved for your working engine)")
     if not exe.exists():
         sys.exit(f"{exe} not found: cargo build -p sepulcra-app --release")
-    out = Path(args.out) if args.out else ROOT / "target" / "sepulcra-play" / args.adapter
+    out = Path(args.out) if args.out else ROOT / "target" / "sepulcra-play" / (args.adapter + ("-lex" if args.rules == "lex" else ""))
     out.mkdir(parents=True, exist_ok=True)
     extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720"]
     if args.headless:
         extra.append("--headless")
     # The game's own arguments: the seed for its first run, and no sound unless asked.
-    extra += ["--", "--seed", str(args.seed)] + ([] if args.sound else ["--mute"])
-    summary = {"adapter": args.adapter, "seed": args.seed}
+    extra += ["--", "--seed", str(args.seed)] + ([] if args.sound else ["--mute"]) + ["--rules", args.rules]
+    summary = {"adapter": args.adapter, "seed": args.seed, "rules": args.rules}
     with Engine(exe, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("sepulcra-play")
 
@@ -180,6 +184,9 @@ def main():
         if first["seed"] != str(args.seed):
             raise SystemExit(f"--seed {args.seed} did not reach the game (it has {first['seed']})")
         summary["first_seed"] = first["seed"]
+        rules = first.get("rules")
+        if args.rules == "lex" and not (isinstance(rules, dict) and rules.get("rules") == "lex" and "hash" in rules):
+            raise SystemExit(f"--rules lex did not reach the game (play_state rules: {rules})")
         mcp.json("play_new", seed=args.seed)
         run.drive()
         overview = dict(eye=[38, 27, 52], target=[0, -9, 1])
@@ -225,6 +232,8 @@ def main():
                     "draw_cache": perf.get("draw_cache"),
                     "physics": perf.get("physics"),
                     "physics_zone_ms": {k: zones.get(k, {}).get("p95_ms") for k in ("frame/sim", "frame/sim/physics")},
+                    "streaming_zones_ms": {k: {"calls": z.get("calls"), "mean": z.get("mean_ms"), "p95": z.get("p95_ms"), "max": z.get("max_ms")}
+                                           for k, z in zones.items() if "sync_meshes" in k or "/stream" in k},
                 }
                 print(f"  perf at wave {st['wave']} ({st['enemies']} enemies): game_frame {perf.get('game_frame')} "
                       f"sim_tick {perf.get('sim_tick')} pacing {perf.get('frame_pacing')}")
@@ -258,16 +267,26 @@ def main():
         summary["log"] = st["log"]["items"]
         summary["layout_applied"], summary["layout_skipped"] = run.applied, run.skipped
         print(f"end: {st['outcome']} at tick {st['tick']}, tombstones {st['tombstones']}, hash {st['state_hash']}")
+        summary["end"]["rules"] = st.get("rules")
         rec = mcp.json("play_record", path="recordings/sepulcra-play.json", overwrite=True)
         rep = mcp.json("play_replay", path="recordings/sepulcra-play.json")
         summary["recording"], summary["replay"] = rec, rep
         print(f"replay: {rep['status']} (end tick {rep['end_tick']}, hash {rep['end_hash']})")
+        if args.rules == "lex":
+            lex = st.get("rules", {})
+            lex_ok = (lex.get("parity") == "ok" and lex.get("outcome") == st["outcome"]
+                      and rec.get("lex", {}).get("end_hash") == rep.get("lex", {}).get("end_hash")
+                      and rep.get("lex", {}).get("matches_reference") is True)
+            summary["lex_verified"] = lex_ok
+            print(f"lex rules: parity {lex.get('parity')} over {lex.get('checked_ticks')} ticks, outcome {lex.get('outcome')}, "
+                  f"live hash {rec.get('lex', {}).get('end_hash')} replayed {rep.get('lex', {}).get('end_hash')}: "
+                  f"{'verified' if lex_ok else 'NOT verified'}")
         summary["captures"] = run.captures
     errors = eng.validation_errors()
     summary["validation_errors"] = errors
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"validation errors at shutdown: {errors}; summary in {out / 'summary.json'}")
-    ok = errors == 0 and summary["replay"]["status"] == "verified"
+    ok = errors == 0 and summary["replay"]["status"] == "verified" and summary.get("lex_verified", True)
     sys.exit(0 if ok else 1)
 
 

@@ -105,6 +105,7 @@ pub const KINDS: &[Spec] = &[
             f("machine", "ref:machine", false, "a state machine that switches behaviours on and off"),
             f("next", "ref:archetype", false, "the next tier (read as self.next / arch.next; used by become)"),
             f("on_spawn", "actions", false, "run when an entity of this archetype appears (self)"),
+            f("order", "int expr", false, "evaluated once, after on_spawn: behaviour phases run entities by (order, id) instead of id (e.g. towers firing in grid order); default 0"),
         ],
     },
     Spec {
@@ -138,7 +139,7 @@ pub const KINDS: &[Spec] = &[
         fields: &[
             f("start", "duration", false, "time before wave 1 (default 0)"),
             f("rng", "string", false, "the random stream for spawn points (default waves)"),
-            f("waves", "[{duration, on_start, scale, groups}]", true, "groups: [{archetype, count, at: [path or site ids], start, every}]; scale: {attribute: ratio}; duration may be omitted on the last wave"),
+            f("waves", "[{duration, on_start, scale, groups}]", true, "groups: [{archetype, count, at: [path or site ids], start, every, with}]; scale: {attribute: ratio}; with: {attribute: expr} evaluated per spawn when the wave is scheduled, right after its spawn point is drawn, in attribute-name order (e.g. rand(waves, 6, 14)); duration may be omitted on the last wave"),
         ],
     },
     Spec {
@@ -166,9 +167,9 @@ pub const KINDS: &[Spec] = &[
         name: "command",
         doc: "Player or agent input as data: typed args, a cost, requirements with rejection codes, then actions. Atomic.",
         fields: &[
-            f("args", "{name: \"site\" | \"archetype\" | \"entity\" | unit name | {type, tags}}", false, "entity args accept an entity id or a site name (its occupant)"),
+            f("args", "{name: \"site\" | \"archetype\" | \"entity\" | unit name | {type, tags, of}}", false, "entity args accept an entity id or a site name (its occupant); of: a sites item id, so a site arg accepts only that item's sites"),
             f("cost", "{resource: expr}", false, "checked first (rejection not_enough_<resource>), then paid"),
-            f("require", "[{when, code, message?}]", false, "checked in order; the first false is the rejection"),
+            f("require", "[{when, code, message?, details?}]", false, "checked in order; the first false is the rejection, with details: {name: number expression} evaluated then (e.g. need, have)"),
             f("do", "actions", true, "what happens"),
         ],
     },
@@ -188,7 +189,14 @@ pub const KINDS: &[Spec] = &[
             f("hook", "string", true, "the hook's registered name, e.g. sepulcra.flow_route"),
             f("reason", "string", true, "why no Lex building block fits (this becomes the feature backlog)"),
             f("phase", "string", false, "spawn, move, act, effects (for behaviours) or any (actions only; default)"),
+            f("streams", "[stream name]", false, "the random streams the hook draws from (seeded like every stream)"),
+            f("data", "[ref:data]", false, "the data items the hook reads"),
         ],
+    },
+    Spec {
+        name: "data",
+        doc: "A table native hooks read (a map, a curve): any JSON value. The rules' hash covers it, so changing it is a rules change. At most 16 KB, like every item.",
+        fields: &[f("value", "any JSON", true, "the table")],
     },
 ];
 
@@ -242,6 +250,7 @@ pub const BEHAVIOURS: &[Spec] = &[
             f("projectile", "{archetype, with?}", false, "the projectile archetype and attributes to set on it"),
             f("muzzle", "[x, y, z] metres", false, "projectile start offset"),
             f("blocked_by", "tags", false, "no firing while the attacker has any of these"),
+            f("when", "bool expr", false, "an extra test per candidate (self: the attacker, target: the candidate), e.g. line of sight; splash ignores it"),
             f("payload", "[payload]", true, "what a hit does: {damage} or {effect, magnitude?, duration?}"),
         ],
     },
@@ -262,6 +271,7 @@ pub const BEHAVIOURS: &[Spec] = &[
             f("every", "duration", true, ""),
             f("count", "int", false, "default 1"),
             f("start", "duration", false, "delay after spawning; default every"),
+            f("with", "{attribute: expr}", false, "base values for each summon, evaluated in the spawner's context (self)"),
         ],
     },
     Spec {
@@ -272,7 +282,11 @@ pub const BEHAVIOURS: &[Spec] = &[
     Spec {
         name: "native",
         doc: "Runs a declared native hook for this entity in the hook's phase.",
-        fields: &[f("hook", "ref:native", true, ""), f("args", "{name: expr}", false, "numbers passed to the hook")],
+        fields: &[
+            f("hook", "ref:native", true, ""),
+            f("args", "{name: expr}", false, "numbers passed to the hook"),
+            f("on", "{name: actions}", false, "action lists the hook runs by name (self: the entity), e.g. on arrival"),
+        ],
     },
 ];
 
@@ -358,7 +372,8 @@ pub const NAMES: &[(&str, &str)] = &[
     ("magnitude", "inside effects: the applier's magnitude"),
     ("event.value", "inside rules: the event's value"),
     ("waves.current|total|remaining|ticks_left|all_cleared", "the wave schedule"),
-    ("<entity>.<attribute>", "current value (with effects); also alive, archetype, next, path_remaining"),
+    ("<entity>.<attribute>", "current value (with effects); also alive, archetype, next, path_remaining, x, y, z (position)"),
+    ("<site>.x|y|z", "a site's position, e.g. arg.site.x"),
     ("<archetype>.<attribute>", "base value; also next"),
 ];
 
@@ -392,7 +407,7 @@ pub fn to_json(topic: Option<&str>) -> Result<Json, String> {
             ("semantics", Json::from("integers only; / truncates toward zero; overflow saturates; x / 0 is 0 and is reported in the run's diagnostics")),
         ]),
         Some("tick") => Json::from(
-            "1 commands (in order, each atomic) 2 waves due 3 spawns due 4 timers (by id) 5 spawners 6 movement 7 attacks 8 projectiles 9 effects, lifetimes, machines 10 cleanup (remove the dead, clear waves). Entities by id within each phase; entities created during a phase join from the next. Events reach rules after each phase. Outcomes are checked after every change; the first true one ends the run on the spot.",
+            "1 commands (in order, each atomic) 2 waves due 3 spawns due 4 timers (by id) 5 spawners 6 movement 7 attacks 8 projectiles 9 effects, lifetimes, machines 10 cleanup (remove the dead, clear waves). Entities by id within each phase (by (order, id) in the behaviour phases when archetypes declare order); entities created during a phase join from the next. Events reach rules after each phase. Outcomes are checked after every change; the first true one ends the run on the spot.",
         ),
         Some("limits") => limits(),
         Some(other) => {

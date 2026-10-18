@@ -809,7 +809,13 @@ pub struct SurfaceVertex {
 /// ([`SkinVertex`]) and surface ([`SurfaceVertex`]) streams after them, `u32` indices at
 /// `index_offset`.
 pub struct Mesh {
+    /// Its own buffer, or (`pooled`) the mesh block's it lives in.
     pub buffer: Buffer,
+    /// Where its vertices start in `buffer` (0 unless pooled); the other offsets include it.
+    pub base: u64,
+    /// `(block, offset, bytes)` of a queued mesh's range in a mesh block (see `stream.rs`): its
+    /// buffer belongs to the block and is never destroyed through the mesh.
+    pub pooled: Option<(u32, u64, u64)>,
     pub index_offset: u64,
     pub index_count: u32,
     /// Object-space bounding sphere, for frustum culling.
@@ -829,7 +835,7 @@ impl Mesh {
     /// # Safety
     /// `cmd` is recording and the buffer outlives the commands.
     pub unsafe fn bind(&self, dev: &Device, cmd: VkCommandBuffer) {
-        let offset: VkDeviceSize = 0;
+        let offset: VkDeviceSize = self.base;
         (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &self.buffer.handle, &offset);
         if let Some(o) = self.skin_offset {
             (dev.fns.cmd_bind_vertex_buffers)(cmd, 1, 1, &self.buffer.handle, &o);

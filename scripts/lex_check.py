@@ -64,7 +64,7 @@ def main():
         bob.hello("bob")
         names = ann.tools()
         lex = sorted(n for n in names if n.startswith("lex_"))
-        check(lex == ["lex_edit", "lex_export", "lex_get", "lex_import", "lex_list", "lex_schema", "lex_session", "lex_simulate", "lex_validate"], f"9 lex tools listed: {lex}")
+        check(lex == ["lex_edit", "lex_export", "lex_get", "lex_import", "lex_list", "lex_live", "lex_schema", "lex_session", "lex_simulate", "lex_validate"], f"10 lex tools listed: {lex}")
         idx = ann.json("lex_schema")
         check("archetype" in [k["name"] for k in idx["kinds"]], "lex_schema lists the item kinds")
 

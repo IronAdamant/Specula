@@ -40,6 +40,15 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`. Sepulcra's creatures run on graphs with new
   clips (climb, glide, dive, pound, flinches, shuffle, jog), and the checks' fixes (a runner that hovered, colossus
   hands in the ground)
+- **Sepulcra fully in Lex, and live Lex:** the whole rule set (flow fields, walls, climbing, lane jumps, flyers, roots,
+  the colossus) as Lex data, tick-identical to the Rust sim; new general Lex features (data items, triggers, refusal
+  details, ordered archetypes, grouped spawns); `lex_live` runs a set on the engine's tick with presentation, input
+  bindings, deterministic work budgets, resumable halts and module hooks as natives; `sepulcra --rules lex` lets Lex
+  decide the game, stopping with a dialog on any desync; Lex state (snapshot v2) in save games
+- **Streaming and HLOD:** model and texture uploads go through a per-frame budget (`perf.toml [streaming]`), with no
+  waiting on the GPU in the frame; residency follows on-screen size under a memory budget; distant cells draw as
+  merged HLOD proxies built on a worker; captures wait for what they show. Tools `stream_state`, `stream_settings`,
+  `stream_fly`; `perf_frame.streaming`; sight packets mark `drawn_as: hlod | not_resident`
 - **Save games:** `.specsave` files hold the world, the hosted game, physics (with warm starts, sleep state and SAT
   memory) and module state, so a loaded game continues tick-identical; versioned with migrations, checksummed,
   bounded and fuzzed; decoded on a worker so loads never stall the engine. Tools `save_write`, `save_read`, `save_list`,

@@ -206,7 +206,7 @@ pub fn canonical(v: &Json) -> Json {
 
 /// Objects whose keys are names the author chose (an attribute or a site may be called
 /// `notes`), so a `notes` key inside them is data, not a note.
-const NAMED_MAPS: [&str; 9] = ["attributes", "points", "states", "args", "scale", "with", "cost", "items", "set"];
+const NAMED_MAPS: [&str; 10] = ["attributes", "points", "states", "args", "scale", "with", "cost", "items", "set", "value"];
 
 fn canonical_without_notes(v: &Json) -> Json {
     strip_notes(v, false)

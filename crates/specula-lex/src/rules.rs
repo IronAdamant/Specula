@@ -1,6 +1,8 @@
 //! The compiled form of a rule set: indices instead of names, integers in stored units,
 //! expressions type-checked and folded. Built by [`crate::compile`], run by [`crate::Sim`].
 
+use specula_core::Json;
+
 use crate::expr::Ex;
 use crate::units::Unit;
 
@@ -47,6 +49,8 @@ pub struct Rules {
     pub params: Vec<ParamDef>,
     pub paths: Vec<PathDef>,
     pub sites: Vec<SiteDef>,
+    /// The `sites` items, by id: [`SiteDef::group`] indexes this.
+    pub site_groups: Vec<String>,
     pub tags: Vec<String>,
     pub streams: Vec<String>,
     pub archetypes: Vec<ArchDef>,
@@ -61,6 +65,12 @@ pub struct Rules {
     pub natives: Vec<NativeDef>,
     /// Built-ins ([`BUILTIN_EVENTS`]) then custom events.
     pub events: Vec<EventDef>,
+    /// `data` items, by id: tables for native hooks (a map, a curve).
+    pub data: Vec<DataDef>,
+    /// Some archetype declares an `order`: behaviour phases run entities by (order, id).
+    pub ordered: bool,
+    /// Some wave group gives its spawns `with` values (they are then part of the state hash).
+    pub with_groups: bool,
 }
 
 impl Rules {
@@ -87,6 +97,30 @@ impl Rules {
     pub fn event(&self, name: &str) -> Option<u16> {
         self.events.iter().position(|e| e.name == name).map(|i| i as u16)
     }
+
+    /// An attribute's id (natives resolve names once, when they bind).
+    pub fn attr(&self, name: &str) -> Option<u16> {
+        self.attrs.iter().position(|a| a.name == name).map(|i| i as u16)
+    }
+
+    /// A random stream's id (natives declare theirs in `streams`).
+    pub fn stream(&self, name: &str) -> Option<u16> {
+        self.streams.iter().position(|s| s == name).map(|i| i as u16)
+    }
+
+    /// A `data` item by id.
+    pub fn data(&self, id: &str) -> Option<&DataDef> {
+        self.data.iter().find(|d| d.id == id)
+    }
+}
+
+/// A `data` item: JSON a native hook reads (the rules' hash covers it).
+#[derive(Clone, Debug)]
+pub struct DataDef {
+    pub id: String,
+    pub value: Json,
+    /// A stable hash of the canonical value, so natives can cache what they derive from it.
+    pub hash: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +163,8 @@ pub struct PathDef {
 pub struct SiteDef {
     pub name: String,
     pub pos: P3,
+    /// The `sites` item it comes from (index into [`Rules::site_groups`]).
+    pub group: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +183,8 @@ pub struct ArchDef {
     pub on_spawn: Vec<Action>,
     /// The health behaviour's attribute, when it has one.
     pub health: Option<u16>,
+    /// Evaluated once, after `on_spawn`: behaviour phases run entities by (order, id).
+    pub order: Option<Ex>,
 }
 
 impl ArchDef {
@@ -174,9 +212,10 @@ pub enum BehKind {
     Chase { targets: TagFilter, range: Ex, speed: Ex, scale: Option<Ex>, reach: Ex, on_reach: Vec<Action> },
     Attack(Box<AttackDef>),
     Projectile { speed: Ex, homing: bool, splash: Ex },
-    Spawner { arch: u16, every: Ex, count: Ex, start: Ex },
+    Spawner { arch: u16, every: Ex, count: Ex, start: Ex, with: Vec<(u16, Ex)> },
     Lifetime { duration: Ex, on_expire: Vec<Action> },
-    Native { hook: u16, args: Vec<(String, Ex)> },
+    /// `on`: named action lists the hook runs with `NativeCtx::trigger` (self: the entity).
+    Native { hook: u16, args: Vec<(String, Ex)>, on: Vec<(String, Vec<Action>)> },
 }
 
 impl BehKind {
@@ -228,6 +267,9 @@ pub enum Delivery {
 #[derive(Clone, Debug)]
 pub struct AttackDef {
     pub targets: TagFilter,
+    /// An extra eligibility test per candidate (self: the attacker, target: the candidate).
+    /// Splash doesn't use it: a landing hits what is near.
+    pub when: Option<Ex>,
     pub range: Ex,
     pub cooldown: Ex,
     pub policy: Policy,
@@ -343,6 +385,9 @@ pub struct GroupDef {
     pub at: Vec<SpawnAt>,
     pub start: u32,
     pub every: u32,
+    /// Attribute values for each spawn, evaluated when the wave is scheduled, right after its
+    /// spawn point is drawn, in attribute-name order.
+    pub with: Vec<(u16, Ex)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,7 +417,8 @@ pub struct RuleDef {
 
 #[derive(Clone, Debug)]
 pub enum ArgTy {
-    Site,
+    /// A site; `Some(group)`: one from that `sites` item.
+    Site(Option<u16>),
     Archetype(TagFilter),
     Entity(TagFilter),
     Num(Unit),
@@ -389,6 +435,8 @@ pub struct Require {
     pub cond: Ex,
     pub code: String,
     pub message: String,
+    /// Numbers the refusal carries (`need`, `have`), evaluated when it refuses.
+    pub details: Vec<(String, Ex)>,
 }
 
 #[derive(Clone, Debug)]
@@ -438,6 +486,10 @@ pub struct NativeDef {
     pub hook: String,
     pub reason: String,
     pub phase: Phase,
+    /// Random streams the hook draws from (by id).
+    pub streams: Vec<u16>,
+    /// `data` items the hook reads (indices into [`Rules::data`]).
+    pub data: Vec<u16>,
 }
 
 #[derive(Clone, Debug)]

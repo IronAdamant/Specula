@@ -23,10 +23,14 @@ pub mod conflict;
 pub mod desync;
 pub mod effects;
 pub mod game;
+pub mod hlod;
 pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+mod lex_live;
+/// Live Lex runs' work limits (perf.toml `[lex_live]`), for games that size their sets to them.
+pub use lex_live::{Limits as LexLiveLimits, LIMITS as LEX_LIVE_LIMITS};
 mod lex_tools;
 mod luts;
 pub mod meshes;
@@ -48,6 +52,8 @@ mod schedule;
 pub mod sight;
 pub mod sight_overlay;
 mod sight_tools;
+mod stream_tools;
+pub mod streaming;
 pub mod swarm;
 mod swarm_engine;
 mod swarm_tools;
@@ -288,6 +294,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
+    engine.lex_live.set_limits(perf_cfg.lex_live);
+    engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
@@ -330,6 +338,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.swarm.reserve(g.name());
     }
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
+    engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
     let server = Server::start(
         ServerConfig {
@@ -338,7 +347,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats))),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone())),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -538,6 +547,14 @@ struct Engine {
     logic: logic::LogicHost,
     /// The physics simulation and its bridge to the world (see [`physics`]).
     physics: physics::Physics,
+    /// Lex rule sets the engine steps live on its tick (see [`lex_live`]).
+    lex_live: lex_live::Live,
+    /// The hosted game's in-process Lex hooks ([`game::Game::lex_natives`]).
+    lex_natives: specula_lex::Natives,
+    /// What of the world is on the GPU: budgeted uploads, eviction, HLOD (see [`streaming`]).
+    stream: streaming::Streamer,
+    /// A stream_fly flight of the window camera in progress.
+    fly: Option<stream_tools::Fly>,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
     playtests: playtest_engine::Playtests,
     /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
@@ -645,6 +662,10 @@ impl Engine {
                 host
             },
             physics: physics::Physics::default(),
+            lex_live: lex_live::Live::default(),
+            lex_natives: specula_lex::Natives::new(),
+            stream: streaming::Streamer::default(),
+            fly: None,
             playtests: Default::default(),
             formats: response::Defaults::new(response::Format::Concise),
         })
@@ -669,6 +690,8 @@ impl Engine {
         self.tick_hashes.clear();
         self.trace.clear();
         self.physics.reset();
+        // Live Lex runs presented into the old world: their entities are gone with it.
+        self.lex_live = lex_live::Live::default();
         problems
     }
 
@@ -751,6 +774,11 @@ impl Engine {
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
                 self.return_physics();
             }
+            // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
+            if !self.lex_live.is_empty() {
+                let _l = profile::zone("lex_live");
+                self.lex_live_tick();
+            }
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
             self.clock.finish_tick();
@@ -769,6 +797,11 @@ impl Engine {
         self.input.clear();
         ui.drain_events(&mut self.input);
         self.logic.feed_window(&self.input, dt.as_secs_f32());
+        if self.lex_live.has_input() {
+            let poll = !self.logic.reads_input();
+            let pads = self.logic.pad_states(poll);
+            self.lex_live.feed_window(&self.input, pads, dt.as_secs_f32());
+        }
         // A human taking the controls takes the camera back from an agent's (window_view).
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");
@@ -984,7 +1017,12 @@ impl Engine {
         let _z = profile::zone("sync_meshes");
         let generation = self.world_generation;
         let mut errors = self.lathes.sync(&mut self.gpu, &self.world, generation);
-        errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
+        if self.stream.enabled() {
+            // Streaming uploads within each frame's budget (`stream_tick`); here only what changed.
+            errors.extend(self.stream.sync_models(&mut self.models, &mut self.gpu, &self.library, &self.world, generation));
+        } else {
+            errors.extend(self.models.sync(&mut self.gpu, &self.library, &self.world, generation));
+        }
         errors
     }
 
@@ -994,8 +1032,9 @@ impl Engine {
         let reload = self.library.lock().poll(force);
         // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
         self.two_d.poll_files(force);
-        if self.two_d.loading() > 0 {
-            self.two_d.pump(&mut self.gpu);
+        // With streaming on, finished loads are uploaded within the frame's budget (stream_tick).
+        if self.two_d.loading() > 0 && !self.stream.enabled() {
+            self.two_d.pump(&mut self.gpu, None);
         }
         // Garbage collection, whether or not anything is drawn (a headless engine never syncs
         // GPU meshes). Cheap part, every GC_UNWANTED_EVERY while builds are in flight after the
@@ -1106,7 +1145,7 @@ impl Engine {
     /// reported. `owners` gets each draw's entity (sight's ID buffer).
     fn build_draws_2d(&mut self, view_proj: &Mat4, include_ui: bool, time_s: f32, out: &mut Vec<Draw2d>, mut owners: Option<&mut Vec<u64>>) {
         out.clear();
-        self.two_d.begin_frame(&mut self.gpu);
+        self.two_d.begin_frame();
         for e in self.world.two_d_entities() {
             let Some(t) = &e.two_d else { continue };
             if !sight::in_frame(e, include_ui) {
@@ -1137,7 +1176,12 @@ impl Engine {
     /// asked for): their texture files are checked for changes now and the capture waits for
     /// that, so it shows the files as they are at the request, whatever the periodic poll did.
     fn two_d_loading(&mut self, view_proj: &Mat4, include_ui: bool, fresh: bool) -> usize {
-        self.two_d.pump(&mut self.gpu);
+        // Within what is left of the frame's upload budget (a texture held back counts as loading).
+        let allowance = self.stream.allowance();
+        let used = self.two_d.pump(&mut self.gpu, allowance);
+        if allowance.is_some() {
+            self.stream.charge(used);
+        }
         let mut waiting = 0;
         // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
         // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.
@@ -1209,6 +1253,9 @@ impl Engine {
         for w in self.build_waiters.drain(..) {
             let _ = w.reply.send(out());
         }
+        if let Some(f) = self.fly.take() {
+            f.abort();
+        }
         // A perf_capture in progress answers with the frames it has.
         self.profiler.abort_capture();
     }
@@ -1262,16 +1309,36 @@ impl Engine {
         let errors = self.sync_meshes();
         self.models.begin_frame(time_s);
         self.models.set_externals(&self.world);
+        // HLOD (see `hlod`): the view's proxies first (the window switches cells in and out),
+        // then every entity except those a proxy draws (the view's cover bits), then the proxies.
+        let mut proxies = std::mem::take(&mut self.stream.scratch);
+        proxies.clear();
+        if window {
+            self.stream.draw_window(&camera, viewport_h, &self.models, &mut proxies);
+        } else {
+            self.stream.draw_capture(&camera, viewport_h, &mut proxies);
+        }
+        let hlod = &mut self.stream.hlod;
+        std::mem::swap(&mut self.models.cover, if window { &mut hlod.window_cover } else { &mut hlod.capture_cover });
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         // The window's cache remembers each model's level itself (hysteresis); captures choose
         // afresh (reproducible).
         let lod = lod.map_or(LodChoice::Fresh, LodChoice::Fixed);
         let mut view = View { camera, viewport_h, include_ui, lod };
+        let mut owners = owners;
         let stats = if window {
             self.draw_cache.draw_list(&self.world, self.world_generation, &meshes, &mut view, out)
         } else {
-            sight::draw_list(&self.world, &meshes, &mut view, out, owners)
+            sight::draw_list(&self.world, &meshes, &mut view, out, owners.as_deref_mut())
         };
+        let hlod = &mut self.stream.hlod;
+        std::mem::swap(&mut self.models.cover, if window { &mut hlod.window_cover } else { &mut hlod.capture_cover });
+        out.extend_from_slice(&proxies);
+        // Proxy draws belong to no one entity: id 0, which the ID buffer doesn't count.
+        if let Some(o) = owners {
+            o.resize(out.len(), 0);
+        }
+        self.stream.scratch = proxies;
         (stats, errors)
     }
 
@@ -1323,8 +1390,10 @@ impl Engine {
             }
             let served = serve_start.elapsed();
             let frame_zone = profile::zone("frame");
+            let frame_started = Instant::now();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
             self.poll_saves();
@@ -1352,13 +1421,27 @@ impl Engine {
             }
             minimized = size.0 == 0 || size.1 == 0;
             if minimized {
+                // Captures still stream in while the window is minimized; with no frame to
+                // flush it, the upload batch (and retired memory) goes now. A flight ends on time.
+                self.stream_tick(None);
+                if let Err(e) = self.gpu.flush_uploads() {
+                    eprintln!("specula: upload batch not submitted: {e}");
+                }
+                self.fly_camera(human_took_controls(&self.input));
                 // Minimized: no frame to present; the next serve window keeps serving agents (and
                 // the clock) at about 60 Hz.
                 drop(frame_zone);
                 continue;
             }
             self.follow_window_camera();
+            if let Some(cam) = self.fly_camera(human_took_controls(&self.input)) {
+                self.window_follow = None;
+                self.window_camera = Some(cam);
+            }
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
+            // Streaming: this camera is a source; uploads within the frame's budget, before the
+            // draw list so this frame draws them.
+            self.stream_tick(Some((camera, size.0, size.1)));
             // The game's interface (its own zone, outside the draw list's).
             let mut game_quads = std::mem::take(&mut self.game_quads);
             self.game_overlay(size, camera, false, &mut game_quads);
@@ -1389,6 +1472,7 @@ impl Engine {
             // FIFO present paces the loop to the display refresh. How long it blocked sizes the
             // next serve window.
             let present = profile::zone("present");
+            let frame_cpu = frame_started.elapsed();
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
             let (frame_no, cpu) = self.gpu.last_window_timing();
             let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
@@ -1401,6 +1485,7 @@ impl Engine {
             self.game_quads = game_quads;
             presented?;
             self.pacing.frame.push(dt);
+            self.fly_frame(dt, frame_cpu);
         }
         Ok(())
     }
@@ -1411,7 +1496,7 @@ impl Engine {
             // (and about 60 times a second while perf_capture records frames).
             let most = if self.profiler.capturing() { Duration::from_millis(16) } else { Duration::from_millis(100) };
             let mut wait = self.clock.until_next().min(most);
-            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() || self.saves_in_flight() {
+            if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() || self.stream.busy() || self.saves_in_flight() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
@@ -1433,8 +1518,14 @@ impl Engine {
             self.advance_clock();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
+            // Streaming headless: captures' views are the sources; retired memory is freed.
+            self.stream_tick(None);
+            if let Err(e) = self.gpu.flush_uploads() {
+                eprintln!("specula: upload batch not submitted: {e}");
+            }
             self.poll_saves();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
@@ -1458,6 +1549,10 @@ impl Engine {
                     adapter: kind.to_owned(),
                 };
                 self.profiler.start_capture(spec, request.reply, request.deadline, ctx);
+                return;
+            }
+            Command::Stream(stream_tools::StreamCall::Fly(spec)) => {
+                self.start_fly(spec, request.reply, request.deadline);
                 return;
             }
             Command::Playtest(call) => {
@@ -1514,8 +1609,10 @@ impl Engine {
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
-                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks)
+                let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
+                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks, &in_process)
             }
+            Command::LexLive(call) => self.lex_live_call(call, &by, w),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
@@ -1638,6 +1735,8 @@ impl Engine {
                     TimeOp::Step(n) => {
                         self.clock.set_paused(true);
                         self.clock.step(n);
+                        // Holds of agents gone since the last frame end before these ticks fire them.
+                        self.lex_live_end_holds(server);
                         // Run them now, so the reply shows the result.
                         self.advance_clock();
                     }
@@ -1715,6 +1814,7 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
+            Command::Stream(call) => self.stream_call(call, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
@@ -2020,7 +2120,8 @@ impl Engine {
             heap_bytes: heap.installed.then_some(heap.current_bytes),
             allocations_per_frame_p95: self.profiler.allocations_p95(),
         };
-        let errors = perf::evaluate(&budgets, &sample, kind);
+        let mut errors = perf::evaluate(&budgets, &sample, kind);
+        errors.extend(self.stream.budget_errors(kind));
         let source = self.perf_cfg.source.as_ref().map_or(Json::Null, |p| Json::from(p.display().to_string()));
         let heap_mb = (heap.current_bytes as f64 / 1_048_576.0 * 10.0).round() / 10.0;
         let out = Json::obj([
@@ -2053,6 +2154,7 @@ impl Engine {
             ("transient_entities", Json::from(self.world.transient_len())),
             ("shape_budgets", self.world.shape_budgets_json()),
             ("models", self.models_json()),
+            ("streaming", self.stream.json(&self.gpu, &self.models)),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
             // and pipeline variants a background build failed to make.
@@ -2146,10 +2248,12 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::Stream(call) => call.class(),
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
+        Command::LexLive(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)

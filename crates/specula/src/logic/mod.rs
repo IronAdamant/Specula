@@ -273,6 +273,12 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
     }
 }
 
+/// Staged hook calls: the events queued before them, and each call's state and RNG undo.
+struct Staged {
+    events_at: usize,
+    undo: Vec<(String, Done)>,
+}
+
 /// See the module docs.
 pub struct LogicHost {
     slots: BTreeMap<String, Slot>,
@@ -288,6 +294,9 @@ pub struct LogicHost {
     /// Gamepads for module actions (opened at the first window frame that needs them; `None`
     /// inside when XInput is unavailable).
     pads: Option<Option<specula_platform::gamepad::Gamepads>>,
+    /// Hook calls staged by a caller that may still refuse them (a live Lex command): what to
+    /// undo if it does. See [`LogicHost::stage`].
+    staged: Option<Staged>,
     /// Reused by [`LogicHost::state_hash`] (no allocation per tick once warm).
     hash_scratch: Vec<u8>,
 }
@@ -305,6 +314,7 @@ impl Default for LogicHost {
             hook_counts: BTreeMap::new(),
             mover: Box::new(Kinematic),
             pads: None,
+            staged: None,
             hash_scratch: Vec::new(),
         }
     }
@@ -471,10 +481,14 @@ impl LogicHost {
         };
         let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len(), name);
         let result = match invoke(&slot.code, name, parts, call, input, world, tick, what) {
-            Ok(done) => match commit(world, mark, &agent, phase) {
+            Ok(mut done) => match commit(world, mark, &agent, phase) {
                 Ok(()) => {
-                    self.pending_events.extend(done.events);
-                    Ok(done.reply)
+                    self.pending_events.extend(std::mem::take(&mut done.events));
+                    let reply = std::mem::replace(&mut done.reply, Value::Null);
+                    if let Some(s) = &mut self.staged {
+                        s.undo.push((name.to_owned(), done));
+                    }
+                    Ok(reply)
                 }
                 Err(e) => {
                     world.rollback_to(mark);
@@ -708,6 +722,25 @@ impl LogicHost {
         }
     }
 
+    /// The gamepads' states as last polled (opened at first use; empty without XInput), for
+    /// other input readers in the same frame (live Lex runs), polling them if no module did.
+    pub fn pad_states(&mut self, poll: bool) -> &[specula_platform::gamepad::GamepadState] {
+        match self.pads.get_or_insert_with(|| specula_platform::gamepad::Gamepads::new().ok()) {
+            Some(p) => {
+                if poll {
+                    p.poll();
+                }
+                p.states()
+            }
+            None => &[],
+        }
+    }
+
+    /// Whether any module reads input (and so polled the gamepads this frame).
+    pub fn reads_input(&self) -> bool {
+        self.slots.values().any(|s| !s.input.is_empty())
+    }
+
     /// `logic_input`: an agent holds actions of module `name` for `ticks` ticks.
     pub fn hold(&mut self, name: &str, actions: &Json, ticks: u64) -> Result<Json, WorldError> {
         let Some(slot) = self.slots.get_mut(name) else { return Err(self.no_module(name)) };
@@ -775,6 +808,37 @@ impl LogicHost {
     /// Every native hook the running modules declare, by qualified name.
     pub fn hooks(&self) -> Vec<HookInfo> {
         self.slots.values().filter(|s| s.disabled.is_none()).flat_map(|s| s.info.hooks.iter().cloned()).collect()
+    }
+
+    /// Starts staging hook calls: until [`LogicHost::keep_staged`] or
+    /// [`LogicHost::drop_staged`], each successful call's state, RNG draws and events can still
+    /// be taken back (the caller rolls the world back itself).
+    pub fn stage(&mut self) {
+        self.staged = Some(Staged { events_at: self.pending_events.len(), undo: Vec::new() });
+    }
+
+    /// A module's state store and RNG streams, and the events queued (tests).
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(&self, module: &str) -> (BTreeMap<String, Value>, BTreeMap<String, Rng>, usize) {
+        let s = self.shared.get(module).cloned().unwrap_or_default();
+        (s.store, s.rngs, self.pending_events.len())
+    }
+
+    /// Keeps what the staged calls did.
+    pub fn keep_staged(&mut self) {
+        self.staged = None;
+    }
+
+    /// Takes back what the staged calls did to module state and RNG streams, and the events
+    /// they queued (newest first).
+    pub fn drop_staged(&mut self) {
+        let Some(s) = self.staged.take() else { return };
+        for (name, done) in s.undo.into_iter().rev() {
+            if let Some(shared) = self.shared.get_mut(&name) {
+                undo_shared(shared, done.state_undo, done.rng_undo);
+            }
+        }
+        self.pending_events.truncate(s.events_at);
     }
 
     /// Calls native hook `hook` (`module/name`) with `args`, for `caller` (an agent, or `lex`)

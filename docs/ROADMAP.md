@@ -509,7 +509,7 @@ code only where no building block fits, and playtest headless at scale.
 
 Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md) (2026-10-17, accepted by the owner).
 
-- [ ] ➕ **Gameplay as data: Lex** (Latin *lex*, "law"; owner, 2026-10-17: "you don't have to manually code a game").
+- [x] ➕ **Gameplay as data: Lex** (Latin *lex*, "law"; owner, 2026-10-17: "you don't have to manually code a game").
   A design pass first, then a typed rules language as text data:
   - behaviours as components (move, chase, patrol, spawn, damage, die, drop);
   - attributes and effects (Gameplay-Ability-System-like), events, triggers, timers, state machines;
@@ -522,8 +522,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   fixed phase order, a limits table), the 9 `lex_*` tools (rule sets stored as `/lex` entities, so versions, claims,
   journal and undo apply; only the Lex tools write `/lex`), and a Sepulcra slice in Lex that matches the Rust sim
   tick for tick (`games/sepulcra/tests/lex_parity.rs`, `scripts/lex_check.py`). Design: [design/LEX.md](design/LEX.md).
-  Still open: the full Sepulcra port (flow fields, walls, climbing, flyers, the colossus) and Lex running live in the
-  window, where native effects call module hooks (`logic_hook`); headless runs use in-process natives.
+  *Proof met 2026-10-18:* Sepulcra's whole rule set in Lex (`games/sepulcra/lex`), identical to the hand-written sim on
+  every tick across 4,100 whole games; rebuilt through the `lex_*` tools alone (`scripts/sepulcra_lex_tools.py`, 42
+  `lex_edit` calls); played live in the engine (`lex_live`, with input bindings, work budgets and module hooks as
+  natives) and as `sepulcra --rules lex`, which won on the iGPU with parity on every tick and the replay verified.
+  Lex state is in save games; live runs in saves are next.
   *Proof:* rebuild Sepulcra's rules in Lex through tools alone, with replays still matching.
 - [ ] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
   facing, spacing, avoid, inside a region, on the navmesh) and solves positions deterministically. Unsatisfied
@@ -613,8 +616,14 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   checksummed, fuzzed, decoded on a worker), `save_write`, `save_read`, `save_list`, `save_delete`; Sepulcra's Saved
   games screen (three slots, two rotating autosaves). A loaded save continues tick-identical to the run that made it
   (`scripts/save_check.py`, `desync_compare`). Design: [design/SAVES.md](design/SAVES.md).
-- [ ] ➕ **Async streaming with per-frame budgets, plus HLOD**: no synchronous loads on the simulation thread.
+- [x] ➕ **Async streaming with per-frame budgets, plus HLOD**: no synchronous loads on the simulation thread.
   *Why:* traversal stutter is Unreal's other well-known problem (survey §3).
+  *Done 2026-10-18:* uploads queued within a per-frame budget (ms and MB, `perf.toml`), residency under a memory budget
+  decided by on-screen size, merged HLOD proxies per cell, `stream_state` / `stream_settings` / `stream_fly`, sight
+  packets that say what is merged or not resident. iGPU proof (`scripts/stream_check.py`, 8,316 entities): slowest
+  loading frame 94 ms instead of 6.1 s, flight p99 28-33 ms instead of 69-237 ms, draw calls 2,573 instead of 7,350,
+  no popping, identical world hashes with streaming on or off. Design: [design/STREAMING.md](design/STREAMING.md).
+  Worlds larger than memory (disk-backed regions) are later.
 - [x] ➕ **2D physics variant** if the game is 2D.
   *Done 2026-10-18:* `world_env {physics: {plane_2d: true}}` locks bodies to the XY plane. Tile-map colliders later.
 

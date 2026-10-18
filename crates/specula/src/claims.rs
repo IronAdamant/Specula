@@ -668,13 +668,44 @@ fn rule_data_only(change: &Change) -> bool {
     }
 }
 
+fn under_lex_live(p: &str) -> bool {
+    p == "/lex_live" || p.starts_with("/lex_live/")
+}
+
+/// What `lex_live` start and stop write, exempt from region scopes: the groups `/lex_live` and
+/// `/lex_live/<set>` (no geometry, at the origin), and deletes inside `/lex_live` (what a run
+/// shows comes back while it runs). Nothing else in `/lex_live` is exempt; agents can't spawn or
+/// change entities there at all ([`touches_lex_live`]), and a run's own presentation is the
+/// rules' output, journaled without claim checks like a hosted game's.
+fn lex_live_only(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, after } => {
+            after.shape == crate::world::Shape::Group && (path == "/lex_live" || path.strip_prefix("/lex_live/").is_some_and(|s| !s.is_empty() && !s.contains('/')))
+        }
+        Change::Delete { path, .. } => under_lex_live(path),
+        _ => false,
+    }
+}
+
+/// A change that spawns or changes an entity in `/lex_live` (or moves one in or out): only
+/// `lex_live` makes them ([`crate::swarm::Swarm::commit_lex_live`]). Deleting there is anyone's
+/// (the run shows its entities again).
+pub fn touches_lex_live(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, .. } | Change::Pose { path, .. } => under_lex_live(path),
+        Change::Set { path, prev_path, .. } => under_lex_live(path) || prev_path.as_deref().is_some_and(under_lex_live),
+        _ => false,
+    }
+}
+
 /// World origins a change touches: the entity's before and after, and when it moved with
 /// descendants, theirs now and before the move.
 fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
     // Lex rule data has no place in the world: only path claims cover it. Anything else, in
-    // /lex or moving through it, is checked at both ends like any entity.
-    if rule_data_only(change) {
+    // /lex or moving through it, is checked at both ends like any entity. Live runs' output
+    // likewise.
+    if rule_data_only(change) || lex_live_only(change) {
         return points;
     }
     match change {

@@ -93,7 +93,7 @@ fn write_png(path: &Path, w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) {
 fn wait_loaded(t: &mut TwoDGpu, gpu: &mut Gpu) {
     let start = Instant::now();
     loop {
-        t.pump(gpu);
+        t.pump(gpu, None);
         if (t.loading() == 0 && t.checking() == 0) || start.elapsed() > Duration::from_secs(10) {
             return;
         }
@@ -131,7 +131,8 @@ fn textures_load_appear_and_reload() {
     let mut out = Vec::new();
     let draw = |t: &mut TwoDGpu, gpu: &mut Gpu, out: &mut Vec<Draw2d>| {
         out.clear();
-        t.begin_frame(gpu);
+        t.pump(gpu, None);
+        t.begin_frame();
         t.draws(gpu, 1, &s, &Mat4::IDENTITY, [1.0; 4], 0.0, out);
     };
     // Missing: nothing drawn, the problem says why.
@@ -185,7 +186,8 @@ fn oversized_textures_are_refused_from_the_header_and_problems_do_not_allocate()
     let mut out = Vec::with_capacity(8);
     let frame = |t: &mut TwoDGpu, gpu: &mut Gpu, out: &mut Vec<Draw2d>| {
         out.clear();
-        t.begin_frame(gpu);
+        t.pump(gpu, None);
+        t.begin_frame();
         for (i, item) in items.iter().enumerate() {
             t.draws(gpu, i as u64, item, &Mat4::IDENTITY, [1.0; 4], 0.0, out);
         }
@@ -218,13 +220,15 @@ fn deferred_shapes_tessellate_on_the_loader_and_are_shared() {
     assert!(sa.mesh().is_none(), "deferred: not tessellated while loading");
     let mut t = TwoDGpu::new(&temp_assets("shapes"));
     let mut out = Vec::new();
-    t.begin_frame(&mut gpu);
+    t.pump(&mut gpu, None);
+    t.begin_frame();
     t.draws(&mut gpu, 1, &a, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
     assert!(out.is_empty() && t.loading() == 1, "drawn once tessellated: {:?}", t.problems());
     wait_loaded(&mut t, &mut gpu);
     assert!(sa.mesh().is_some(), "tessellated on the loader thread");
     out.clear();
-    t.begin_frame(&mut gpu);
+    t.pump(&mut gpu, None);
+    t.begin_frame();
     t.draws(&mut gpu, 1, &a, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
     t.draws(&mut gpu, 2, &b, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
     assert_eq!(out.len(), 2);
@@ -253,7 +257,8 @@ fn warm_two_d_frames_allocate_nothing() {
     let target = gpu.create_target(64, 64).unwrap();
     let frame = |t: &mut TwoDGpu, gpu: &mut Gpu, out: &mut Vec<Draw2d>, time_s: f32| {
         out.clear();
-        t.begin_frame(gpu);
+        t.pump(gpu, None);
+        t.begin_frame();
         for (i, item) in items.iter().enumerate() {
             t.draws(gpu, i as u64 + 1, item, &Mat4::IDENTITY, [1.0; 4], time_s, out);
         }
@@ -274,5 +279,47 @@ fn warm_two_d_frames_allocate_nothing() {
     eprintln!("{test}: {n} allocations in 20 warm frames");
     assert_eq!(n, 0, "warm 2D frames allocate");
     gpu.destroy_target(target);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Within an upload budget: the frame's first texture always goes, one that doesn't fit what is
+/// left waits for the next pump (still loading, so a capture waits for it), then draws.
+#[test]
+fn texture_uploads_keep_to_the_frame_budget() {
+    let test = "texture_uploads_keep_to_the_frame_budget";
+    let Some(mut gpu) = gpu_or_skip(test) else { return };
+    let dir = temp_assets("budget");
+    write_png(&dir.join("s/a.png"), 64, 64, |_, _| [255, 0, 0, 255]);
+    write_png(&dir.join("s/b.png"), 64, 64, |_, _| [0, 255, 0, 255]);
+    let mut t = TwoDGpu::new(&dir);
+    let items = [sprite(r#"{"texture":"s/a.png","size":[4,4]}"#), sprite(r#"{"texture":"s/b.png","size":[4,4]}"#)];
+    let mut out = Vec::new();
+    t.begin_frame();
+    for (i, item) in items.iter().enumerate() {
+        t.draws(&mut gpu, i as u64, item, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
+    }
+    // Room for one 16 KB texture a frame.
+    let budget = two_d::Allowance { ms: 1000.0, bytes: 20 * 1024, first_free: true };
+    let start = Instant::now();
+    let mut uploads = Vec::new();
+    while t.loading() > 0 && start.elapsed() < Duration::from_secs(10) {
+        let used = t.pump(&mut gpu, Some(budget));
+        if used.items > 0 || used.deferred > 0 {
+            uploads.push((used.items, used.deferred, used.bytes));
+        }
+        gpu.flush_uploads().unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(t.loading(), 0, "both load");
+    assert!(uploads.iter().all(|u| u.0 <= 1 && u.2 <= 64 * 64 * 4), "one texture per pump: {uploads:?}");
+    assert_eq!(uploads.iter().map(|u| u.0).sum::<u32>(), 2, "{uploads:?}");
+    // Both draw (queued uploads are drawn like synchronous ones).
+    for (i, item) in items.iter().enumerate() {
+        out.clear();
+        t.begin_frame();
+        t.draws(&mut gpu, i as u64, item, &Mat4::IDENTITY, [1.0; 4], 0.0, &mut out);
+        let want = if i == 0 { [255, 0, 0] } else { [0, 255, 0] };
+        assert_eq!(&centre_pixel(&mut gpu, &out)[..3], &want, "{:?}", t.problems());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
