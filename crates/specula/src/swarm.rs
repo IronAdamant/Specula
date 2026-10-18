@@ -34,6 +34,16 @@ use specula_protocol::SessionInfo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+/// Which tool family a commit comes from: each reserved kind of data has one writer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Plain,
+    /// The lex_* tools: `/lex` rule data.
+    Lex,
+    /// physics_joint: joint data (`props.joint`).
+    Joint,
+}
+
 /// Agent identities remembered (sessions are capped at 1024 by the protocol).
 const MAX_AGENTS: usize = 1024;
 
@@ -291,7 +301,20 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, false, command)
+        self.commit_with(world, tick, w, kind, Owner::Plain, command)
+    }
+
+    /// [`Swarm::commit`] for `physics_joint`: the only writer of joint data (`props.joint`),
+    /// which checks the joint's bodies against claims itself.
+    pub fn commit_joint<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, kind, Owner::Joint, command)
     }
 
     /// [`Swarm::commit`] for the Lex tools: the only writer of the `/lex` subtree, which holds
@@ -304,7 +327,7 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, true, command)
+        self.commit_with(world, tick, w, kind, Owner::Lex, command)
     }
 
     fn commit_with<T>(
@@ -313,26 +336,46 @@ impl Swarm {
         tick: u64,
         w: Writer,
         kind: Kind,
-        lex: bool,
+        owner: Owner,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
+        let now = Instant::now();
+        let claims = &self.claims;
         // The /lex subtree is Lex rule data, written only through the lex_* tools (so its
-        // entities can be exempt from region claims without letting anything hide there). A
-        // failing command is rolled back by the journal.
+        // entities can be exempt from region claims without letting anything hide there); joint
+        // data only through physics_joint (a joint moves the bodies it links). A failing
+        // command is rolled back by the journal.
         let command = |wd: &mut World| {
             let mark = wd.mark();
             let v = command(wd)?;
-            if !lex {
-                let start = wd.mark_changes(mark);
+            let start = wd.mark_changes(mark);
+            if owner != Owner::Lex {
                 if let Some(c) = wd.pending_changes()[start..].iter().find(|c| crate::claims::touches_rule_data(c)) {
                     return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
                         .with("path", c.path().to_owned()));
                 }
             }
+            if owner != Owner::Joint {
+                for c in wd.pending_changes()[start..].iter().filter(|c| crate::claims::touches_joint_data(c)) {
+                    let Change::Delete { before, .. } = c else {
+                        return Err(WorldError::new(
+                            "reserved",
+                            format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
+                        )
+                        .with("path", c.path().to_owned())
+                        .with("field", "props.joint"));
+                    };
+                    // Removing a joint lets its bodies go: allowed with the right to change both.
+                    let spec = before.props.get(crate::physics::joints::PROP).and_then(|j| crate::physics::joints::JointSpec::from_json(j).ok());
+                    for id in spec.iter().flat_map(|s| s.a.into_iter().chain(s.b)) {
+                        if let Some(change) = crate::claims::body_change(wd, id) {
+                            claims.check(wd, std::slice::from_ref(&change), w, now).map_err(|e| e.with("note", "removing a joint lets go of the bodies it links, so it needs the right to change them"))?;
+                        }
+                    }
+                }
+            }
             Ok(v)
         };
-        let now = Instant::now();
-        let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = journal::commit(world, &mut self.journal, tick, w, kind, check, command);

@@ -634,6 +634,28 @@ pub fn touches_rule_data(change: &Change) -> bool {
     }
 }
 
+/// A change that writes joint data (`props.joint`: creates, edits or removes a joint entity):
+/// only `physics_joint` may make it ([`crate::swarm::Swarm::commit_joint`]), because a joint
+/// moves the bodies it links and must be checked against their claims; a plain write removing a
+/// joint is allowed when the writer may change both its bodies.
+pub fn touches_joint_data(change: &Change) -> bool {
+    use crate::physics::joints::is_joint;
+    match change {
+        Change::Spawn { after, .. } => is_joint(after),
+        Change::Delete { before, .. } => is_joint(before),
+        Change::Set { before, after, .. } => is_joint(after) || before.as_deref().is_some_and(is_joint),
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } => false,
+    }
+}
+
+/// What a write that moves body `id` must be allowed to do, as a change to check against
+/// claims: the entity "changed" in place, so path claims and region claims (at its position)
+/// both apply. `None` when it doesn't exist.
+pub fn body_change(world: &World, id: u64) -> Option<Change> {
+    let e = world.get(id)?;
+    Some(Change::Set { path: world.path_of(id), prev_path: None, before: Some(Box::new(e.clone())), after: Box::new(e.clone()) })
+}
+
 /// Rule data staying in `/lex` (before and after): exempt from region scopes.
 fn rule_data_only(change: &Change) -> bool {
     match change {

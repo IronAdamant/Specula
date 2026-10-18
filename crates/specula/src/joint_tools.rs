@@ -11,7 +11,7 @@ use crate::physics::joints::{JointSpec, PROP, SYNTHETIC};
 use crate::physics::{self, world_pose};
 use crate::sight_overlay::{self as ov, Painter};
 use crate::tools::{bool_arg, check_keys, int_arg, key_value, string_arg, vec3_arg};
-use crate::world::{Change, EntityKey, Shape, SpawnSpec, UpdateSpec, World, WorldError};
+use crate::world::{EntityKey, Shape, SpawnSpec, UpdateSpec, World, WorldError};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_physics::joint::JointKind;
@@ -266,6 +266,18 @@ impl crate::Engine {
         }
     }
 
+    /// Whether `w` may change every body in `bodies` (path and region claims both apply: each is
+    /// checked as a change at its position).
+    fn check_joint_bodies(&self, bodies: &[u64], w: Writer) -> Result<(), WorldError> {
+        let now = Instant::now();
+        for &id in bodies {
+            if let Some(change) = crate::claims::body_change(&self.world, id) {
+                self.swarm.claims.check(&self.world, &[change], w, now).map_err(|e| e.with("note", "a joint moves the bodies it links, so it needs the same right to change them"))?;
+            }
+        }
+        Ok(())
+    }
+
     fn joint_write(&mut self, jw: JointWrite, w: Writer, tick: u64) -> ToolOutput {
         let world = &self.world;
         let resolve = |k: &EntityKey, field: &str| world.resolve(k).map_err(|e| e.with("field", field));
@@ -290,8 +302,13 @@ impl crate::Engine {
         };
         if jw.remove {
             let id = target.expect("checked at parse");
+            // Removing a joint lets go of its bodies: the writer must be allowed to change them.
+            let bodies = old.as_ref().and_then(|j| JointSpec::from_json(j).ok()).map(|s| s.a.into_iter().chain(s.b).collect::<Vec<_>>()).unwrap_or_default();
+            if let Err(e) = self.check_joint_bodies(&bodies, w) {
+                return world_error(&e);
+            }
             let by = w.name.to_owned();
-            return match self.swarm.commit(&mut self.world, tick, w, JKind::Delete, |wd| wd.delete(&EntityKey::Id(id), None).map(|d| d.path)) {
+            return match self.swarm.commit_joint(&mut self.world, tick, w, JKind::Delete, |wd| wd.delete(&EntityKey::Id(id), None).map(|d| d.path)) {
                 Ok((path, seq)) => ToolOutput::text(Json::obj([("removed", Json::from(id)), ("path", Json::from(path)), ("by", Json::from(by)), ("journal", Json::from(seq))]).to_string()),
                 Err(e) => world_error(&e),
             };
@@ -367,21 +384,21 @@ impl crate::Engine {
             Ok(s) => s,
             Err(m) => return world_error(&WorldError::new("invalid_joint", m)),
         };
-        // A joint moves both bodies: the writer must be allowed to change them.
-        let now = Instant::now();
-        for id in spec.a.into_iter().chain(spec.b) {
-            let e = self.world.get(id).expect("resolved");
-            let change = Change::Pose { path: self.world.path_of(id), pose: crate::world::Pose::of(e) };
-            if let Err(err) = self.swarm.claims.check(&self.world, &[change], w, now) {
-                return world_error(&err.with("note", "a joint moves the bodies it links, so it needs the same right to change them"));
-            }
+        // A joint moves both bodies (and, when changed, lets go of the ones it linked): the writer
+        // must be allowed to change them all.
+        let mut bodies: Vec<u64> = spec.a.into_iter().chain(spec.b).collect();
+        bodies.extend(old_spec.iter().flat_map(|s| s.a.into_iter().chain(s.b)));
+        bodies.sort_unstable();
+        bodies.dedup();
+        if let Err(e) = self.check_joint_bodies(&bodies, w) {
+            return world_error(&e);
         }
         let props = Json::obj([(PROP, spec.to_json())]);
         let by = w.name.to_owned();
         let result = match target {
             Some(id) => {
                 let change = UpdateSpec { props: Some(props), ..Default::default() };
-                self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))
+                self.swarm.commit_joint(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))
             }
             None => {
                 let parent = match &jw.parent {
@@ -406,7 +423,7 @@ impl crate::Engine {
                 s.parent = Some(EntityKey::Id(parent));
                 s.props = props;
                 s.tags = ["joint".to_string()].into_iter().collect();
-                self.swarm.commit(&mut self.world, tick, w, JKind::Spawn, |wd| wd.spawn(s, &by).map(|e| e.id))
+                self.swarm.commit_joint(&mut self.world, tick, w, JKind::Spawn, |wd| wd.spawn(s, &by).map(|e| e.id))
             }
         };
         match result {
