@@ -25,6 +25,8 @@
 pub mod character;
 mod handler;
 pub mod input;
+mod save;
+pub use save::LogicSnapshot;
 pub mod tools;
 
 use crate::world::{Mark, Recording, World, WorldError};
@@ -152,11 +154,14 @@ pub(crate) struct Shared {
     pub seed: u64,
     /// Loads so far: the next load's generation is this + 1.
     pub loads: u64,
+    /// The store's hash for the desync detector, until the store changes (see `save`).
+    pub store_hash: std::cell::Cell<Option<u64>>,
 }
 
 impl Shared {
     /// Sets (`Some`) or removes (`None`) a key, keeping `store_bytes`; returns the old value.
     pub fn put(&mut self, key: &str, value: Option<Value>) -> Option<Value> {
+        self.store_hash.set(None);
         let size = |v: &Value| key.len() + v.encode().len();
         if let Some(v) = &value {
             self.store_bytes += size(v);
@@ -292,6 +297,8 @@ pub struct LogicHost {
     /// Hook calls staged by a caller that may still refuse them (a live Lex command): what to
     /// undo if it does. See [`LogicHost::stage`].
     staged: Option<Staged>,
+    /// Reused by [`LogicHost::state_hash`] (no allocation per tick once warm).
+    hash_scratch: Vec<u8>,
 }
 
 impl Default for LogicHost {
@@ -308,6 +315,7 @@ impl Default for LogicHost {
             mover: Box::new(Kinematic),
             pads: None,
             staged: None,
+            hash_scratch: Vec::new(),
         }
     }
 }

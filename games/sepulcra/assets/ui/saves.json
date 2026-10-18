@@ -1,0 +1,101 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "saves",
+  "input": "menu",
+  "layer": 30,
+  "modal": true,
+  "focus": "save_1",
+  "back": "close_saves",
+  "notes": "Save and load: three player slots and the two rotating autosaves. Actions: save_slot:N, load_slot:N, delete_slot:N (N = 1..3; each asks first when it would replace or lose something), load_auto:N (N = 1..2), close_saves. State per slot: slotN_name, slotN_title (what it holds), slotN_detail (time played, when), slotN_used; the same for autoN_; saves_status (a line while a save or load runs).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "menu",
+        "anchor": "center",
+        "width": "34em",
+        "max_width": "96%",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 8,
+        "children": [
+          { "type": "label", "text": "Saved games", "role": "title", "text_align": "center" },
+          { "type": "label", "text": "{saves_status}", "role": "small", "text_align": "center", "visible": "saves_status" },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 8,
+            "children": [
+              { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
+                { "type": "label", "text": "{slot1_name}", "role": "heading" },
+                { "type": "label", "text": "{slot1_title}", "role": "small" },
+                { "type": "label", "text": "{slot1_detail}", "role": "small", "visible": "slot1_used" }
+              ] },
+              { "type": "button", "id": "save_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:1", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:1", "enabled": "slot1_used" },
+              { "type": "button", "id": "delete_1", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:1", "enabled": "slot1_used", "tooltip": "Delete this save." }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 8,
+            "children": [
+              { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
+                { "type": "label", "text": "{slot2_name}", "role": "heading" },
+                { "type": "label", "text": "{slot2_title}", "role": "small" },
+                { "type": "label", "text": "{slot2_detail}", "role": "small", "visible": "slot2_used" }
+              ] },
+              { "type": "button", "id": "save_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:2", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:2", "enabled": "slot2_used" },
+              { "type": "button", "id": "delete_2", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:2", "enabled": "slot2_used", "tooltip": "Delete this save." }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 8,
+            "children": [
+              { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
+                { "type": "label", "text": "{slot3_name}", "role": "heading" },
+                { "type": "label", "text": "{slot3_title}", "role": "small" },
+                { "type": "label", "text": "{slot3_detail}", "role": "small", "visible": "slot3_used" }
+              ] },
+              { "type": "button", "id": "save_3", "style": "compact", "min_width": 76, "min_height": 44, "text": "Save", "action": "save_slot:3", "tooltip": "Save this run here." },
+              { "type": "button", "id": "load_3", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_slot:3", "enabled": "slot3_used" },
+              { "type": "button", "id": "delete_3", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:3", "enabled": "slot3_used", "tooltip": "Delete this save." }
+            ]
+          },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
+          { "type": "label", "text": "Autosaves (at the start of each wave)", "role": "small" },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 8,
+            "children": [
+              { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
+                { "type": "label", "text": "{auto1_name}", "role": "body" },
+                { "type": "label", "text": "{auto1_title}", "role": "small" },
+                { "type": "label", "text": "{auto1_detail}", "role": "small", "visible": "auto1_used" }
+              ] },
+              { "type": "button", "id": "load_auto_1", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_auto:1", "enabled": "auto1_used" }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 8,
+            "children": [
+              { "type": "box", "layout": "column", "width": "fill", "clip": true, "children": [
+                { "type": "label", "text": "{auto2_name}", "role": "body" },
+                { "type": "label", "text": "{auto2_title}", "role": "small" },
+                { "type": "label", "text": "{auto2_detail}", "role": "small", "visible": "auto2_used" }
+              ] },
+              { "type": "button", "id": "load_auto_2", "style": "compact", "min_width": 76, "min_height": 44, "text": "Load", "action": "load_auto:2", "enabled": "auto2_used" }
+            ]
+          },
+          { "type": "button", "id": "saves_back", "style": "primary", "text": "Back", "action": "close_saves" },
+          {
+            "type": "box", "layout": "row", "justify": "center", "gap": 18,
+            "children": [
+              { "type": "prompt", "action": "ui_accept", "text": "Select" },
+              { "type": "prompt", "action": "ui_back", "text": "Back" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

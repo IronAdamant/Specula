@@ -1023,6 +1023,7 @@ impl<'d> Cx<'d> {
         let streams: BTreeMap<u16, String> = self.reg.streams.borrow().iter().map(|(n, i)| (*i, n.clone())).collect();
         let n_attrs = self.reg.attrs.len();
         let ordered = archetypes.iter().any(|a: &ArchDef| a.order.is_some());
+        let with_groups = waves.as_ref().is_some_and(|w: &WavesDef| w.waves.iter().any(|wv| wv.groups.iter().any(|g| !g.with.is_empty())));
         for a in &mut archetypes {
             let mut slot = vec![u16::MAX; n_attrs];
             for (i, (attr, _)) in a.attrs.iter().enumerate() {
@@ -1054,6 +1055,7 @@ impl<'d> Cx<'d> {
             site_groups: std::mem::take(&mut self.site_groups),
             data,
             ordered,
+            with_groups,
         }
     }
 

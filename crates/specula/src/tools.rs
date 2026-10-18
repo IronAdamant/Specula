@@ -70,7 +70,13 @@ hash; playtest_report polls it. Heavy tools (sight_frame, perf_frame, engine_inf
 play_state, logic_status, playtest_*) answer concisely by default; pass response_format: \"detailed\" for everything, or \
 make detailed your session's default with agent_hello {response_format: \"detailed\"} (an engine started with \
 --response-format detailed defaults every session to it). Scripts that check data in depth should do one of these \
-(scripts/specula_mcp.py does it for you).";
+(scripts/specula_mcp.py does it for you). \
+Save games: save_write \
+keeps the whole simulation at a tick (the world, the game's state, physics' hidden state, module state) and save_read \
+continues it bit-identically (save_list, save_delete). The balance lab: balance_targets checks designer targets as data \
+(win rate, leaks per wave, resource curves, time to kill...), balance_sweep scores Lex param points over many seeds in \
+parallel, balance_tune tunes params toward the targets and checks the result on held-out seeds; simulated balance \
+always needs a human playtest.";
 
 /// How long a tool call waits for the main thread before giving up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -220,6 +226,8 @@ pub enum Command {
     Lex(crate::lex_tools::LexCall),
     /// Live Lex runs stepped on the engine's tick (see [`crate::lex_live`]).
     LexLive(crate::lex_live::LiveCall),
+    /// Save games (see [`crate::save_tools`]).
+    SaveGame(crate::save_tools::SaveCall),
     /// The animation tools (see [`crate::anim_tools`]).
     Anim(crate::anim_tools::AnimCall),
 }
@@ -292,6 +300,8 @@ pub struct Tools {
     pub(crate) lex_locks: crate::lex_tools::Locks,
     /// Lex native hooks the hosted game implements in-process (`lex_simulate` runs them).
     pub(crate) lex_natives: specula_lex::Natives,
+    /// Kept `balance_tune` jobs.
+    pub(crate) balance_jobs: crate::balance_tools::Jobs,
     /// Default response formats, the engine's and each session's (see [`crate::response`]).
     formats: std::sync::Arc<crate::response::Defaults>,
     /// Tools that take `response_format` themselves (a session's detailed default is passed on).
@@ -314,6 +324,7 @@ impl Tools {
             lex_runs: Default::default(),
             lex_locks: Default::default(),
             lex_natives: Default::default(),
+            balance_jobs: Default::default(),
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
         }
@@ -406,6 +417,9 @@ impl Tools {
         } else if name.starts_with("lex_") {
             // Lex tools do their heavy work (validation, simulation) on this thread.
             return crate::lex_tools::call(self, session, name, arguments);
+        } else if name.starts_with("balance_") {
+            // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
+            return crate::balance_tools::call(self, session, name, arguments);
         } else {
             parse(name, arguments)
         };
@@ -582,9 +596,12 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 Some(call) => call.map(Command::Swarm),
                 None => match crate::physics_tools::parse(other, args) {
                     Some(call) => call.map(Command::Physics),
-                    None => match crate::anim_tools::parse(other, args) {
-                        Some(call) => call.map(Command::Anim),
-                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                    None => match crate::save_tools::parse(other, args) {
+                        Some(call) => call.map(Command::SaveGame),
+                        None => match crate::anim_tools::parse(other, args) {
+                            Some(call) => call.map(Command::Anim),
+                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                        },
                     },
                 },
             },
@@ -2407,6 +2424,8 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
     .chain(crate::lex_live::definitions())
+    .chain(crate::save_tools::definitions())
+    .chain(crate::balance_tools::definitions())
     .chain(crate::anim_tools::definitions())
     .collect()
 }

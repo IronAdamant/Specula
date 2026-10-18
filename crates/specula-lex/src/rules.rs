@@ -69,6 +69,8 @@ pub struct Rules {
     pub data: Vec<DataDef>,
     /// Some archetype declares an `order`: behaviour phases run entities by (order, id).
     pub ordered: bool,
+    /// Some wave group gives its spawns `with` values (they are then part of the state hash).
+    pub with_groups: bool,
 }
 
 impl Rules {

@@ -16,6 +16,10 @@ use crate::expr::{arith, compare, Arith, Ex, WaveQ, Who};
 use crate::rules::*;
 use crate::units::isqrt;
 
+#[path = "sim_snapshot.rs"]
+mod snapshot;
+pub use snapshot::{SnapshotError, SNAPSHOT_VERSION};
+
 /// Most events dispatched to rules in one tick before dispatch stops (`event_storm`).
 pub const MAX_EVENTS_PER_TICK: usize = 100_000;
 /// How deeply action lists may nest before `recursion_limit` stops them.
@@ -3123,10 +3127,14 @@ fn state_hash(r: &Rules, st: &State) -> u64 {
                 h.write_u32(u32::from(x));
             }
         }
-        h.write_u64(p.with.len() as u64);
-        for (a, v) in &p.with {
-            h.write_u32(u32::from(*a));
-            h.write_i64(*v);
+        // Only rules that use them hash them, so states of rules without `with` (or `order`,
+        // below) hash as they did before these existed (saves from then compare equal).
+        if r.with_groups {
+            h.write_u64(p.with.len() as u64);
+            for (a, v) in &p.with {
+                h.write_u32(u32::from(*a));
+                h.write_i64(*v);
+            }
         }
     }
     h.write_u32(st.next_seq);
@@ -3220,7 +3228,9 @@ fn state_hash(r: &Rules, st: &State) -> u64 {
         h.write_u32(e.site.map_or(u32::MAX, u32::from));
         h.write_u32(e.spawn_path.map_or(u32::MAX, u32::from));
         h.write_i64(e.path_remaining);
-        h.write_i64(e.order);
+        if r.ordered {
+            h.write_i64(e.order);
+        }
     }
     h.finish()
 }

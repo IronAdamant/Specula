@@ -37,6 +37,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "saves.rs"]
+mod saves;
+pub use saves::{MAX_RECORDING_BYTES, MAX_STATE_BYTES};
+
 /// A window frame this recent means another follows the next tick.
 const FRAMED_WITHIN: Duration = Duration::from_millis(250);
 const LOG_LEN: usize = 32;
@@ -47,10 +51,14 @@ const GLYPHS: [(&str, Option<PadStyle>); 4] =
 
 /// What the open confirmation dialog will do on "yes".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Confirm {
+pub(crate) enum Confirm {
     Restart,
     /// The Lex rules and the reference disagreed: the run stopped ("yes" starts it again).
     Desync,
+    /// The saves screen: save over player slot N, load a slot, delete player slot N.
+    Overwrite(u8),
+    Load(saves::Slot),
+    Delete(u8),
 }
 
 /// The game, as the engine hosts it.
@@ -116,6 +124,14 @@ pub struct SepulcraGame {
     /// [`crate::lexmode`]). `rules_lex` keeps the choice across new runs.
     pub(crate) lex: Option<crate::lexmode::LexRules>,
     pub(crate) rules_lex: bool,
+    /// The pause menu's Save and Load, for the engine (see `saves`).
+    requests: Vec<specula::game::GameRequest>,
+    /// The player's slots as the last save_list showed them (the saves screen).
+    slots: Vec<saves::SlotInfo>,
+    /// "Saving…" / "Loading…" while a request runs.
+    saves_status: Option<String>,
+    /// Autosave at the start of each wave (Settings; on by default with a window).
+    autosave_on: bool,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -183,6 +199,10 @@ impl SepulcraGame {
             fire_buf: Vec::new(),
             lex: None,
             rules_lex: false,
+            requests: Vec::new(),
+            slots: Vec::new(),
+            saves_status: None,
+            autosave_on: false,
         }
     }
 
@@ -274,8 +294,13 @@ impl SepulcraGame {
             }
             verdict?;
         }
+        let before = self.pending.len();
         self.state.apply(&cmd, &mut self.pending)?;
         self.journal.push((tick, cmd));
+        // Calling a wave early starts it here, not in a tick.
+        if let Some(wave) = wave_started(&self.pending[before..]) {
+            self.autosave(wave);
+        }
         self.messages_from_pending();
         self.sounds(&self.pending.clone());
         // Show it at once, even while the engine clock is paused.
@@ -643,7 +668,10 @@ impl SepulcraGame {
             }
             "confirm_yes" => {
                 self.hud.show("confirm", false);
-                if matches!(self.confirm.take(), Some(Confirm::Restart | Confirm::Desync)) {
+                let asked = self.confirm.take();
+                if let Some(c) = asked.filter(|c| !matches!(c, Confirm::Restart | Confirm::Desync)) {
+                    self.confirmed(c);
+                } else if matches!(asked, Some(Confirm::Restart | Confirm::Desync)) {
                     self.hud.show("pause", false);
                     let (seed, content) = (self.state.seed(), self.content());
                     self.restart(world, agent, content, seed, None);
@@ -657,6 +685,13 @@ impl SepulcraGame {
                 self.hud.show("victory", false);
                 self.hud.show("defeat", false);
                 self.new_run(world, agent);
+            }
+            "open_saves" => self.open_saves(),
+            "close_saves" => self.close_saves(),
+            "toggle_autosave" => self.autosave_on = !self.autosave_on,
+            a if a.contains(':') && ["save_slot", "load_slot", "delete_slot", "load_auto"].iter().any(|p| a.starts_with(p)) => {
+                let (verb, n) = a.split_once(':').unwrap_or((a, ""));
+                self.saves_action(verb, n.parse().unwrap_or(0));
             }
             "close_result" => {
                 self.hud.show("victory", false);
@@ -784,6 +819,12 @@ impl SepulcraGame {
         hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
         if self.confirm == Some(Confirm::Restart) {
             self.hud.state.set_str("confirm_title", "Restart this run?").set_str("confirm_body", "The slab, your stones and the waves start over with the same seed.");
+        } else if let Some((title, body)) = self.confirm.and_then(|c| self.confirm_text(c)) {
+            self.hud.state.set_str("confirm_title", &title).set_str("confirm_body", &body);
+        }
+        self.hud.state.set_str("autosave_text", if self.autosave_on { "On" } else { "Off" });
+        if self.hud.visible("saves") {
+            self.fill_saves();
         }
         if self.confirm == Some(Confirm::Desync) {
             let (tick, what) = self.lex.as_ref().and_then(|l| l.desync.clone()).unwrap_or_default();
@@ -1110,6 +1151,8 @@ impl Game for SepulcraGame {
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
         let ui_dir = assets.join("ui");
         self.hud = Hud::new(Some(&ui_dir), crate::controls::bindings().expect("the built-in bindings are valid (tested)"));
+        // Autosaves are for people playing: on with a window, off headless (agents' runs).
+        self.autosave_on = ctx.windowed;
         if ctx.windowed {
             self.controls.enable_gamepads();
             if !self.mute {
@@ -1128,6 +1171,8 @@ impl Game for SepulcraGame {
     fn tick(&mut self, ctx: &mut Ctx) {
         self.events.clear();
         self.events.append(&mut self.pending);
+        // Events before this come from commands (their autosave was already asked for).
+        let from_steps = self.events.len();
         let mut stepped = 0;
         let was = self.lex_flags();
         if !self.paused {
@@ -1154,6 +1199,10 @@ impl Game for SepulcraGame {
         self.lex_verdicts(was);
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
+        // The rotating autosave as a wave starts (the save holds this tick, wave and all).
+        if let Some(wave) = wave_started(&events[from_steps..]) {
+            self.autosave(wave);
+        }
         // Flashes keep fading after the run ends (no more steps, but time still passes).
         let advance = if self.paused { 0 } else { u64::from(self.speed).max(stepped) };
         self.pres_ticks += advance;
@@ -1264,6 +1313,34 @@ impl Game for SepulcraGame {
         }
     }
 
+    fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
+        Some(self.save_bytes())
+    }
+
+    fn parse_state(&self, data: &[u8]) -> Result<Box<dyn Any>, String> {
+        self.parse_saved(data).map(|l| Box::new(l) as Box<dyn Any>)
+    }
+
+    fn state_parser(&self) -> Option<specula::game::StateParser> {
+        // Loads parse the game's section on their worker, against the content this game runs.
+        let content = self.content();
+        Some(Box::new(move |data: &[u8]| saves::parse_saved(&content, data).map(|l| Box::new(l) as Box<dyn Any + Send>)))
+    }
+
+    fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn Any>) {
+        if let Ok(l) = state.downcast::<saves::Loaded>() {
+            self.apply_saved(ctx.world, ctx.agent, *l);
+        }
+    }
+
+    fn take_requests(&mut self, out: &mut Vec<specula::game::GameRequest>) {
+        out.append(&mut self.requests);
+    }
+
+    fn request_done(&mut self, ctx: &mut Ctx, request: &specula::game::GameRequest, result: Result<Json, Json>) {
+        self.request_result(ctx.world, request, result);
+    }
+
     fn checkpoint(&self) -> Option<Box<dyn Any>> {
         Some(Box::new(Checkpoint {
             state: self.state.clone(),
@@ -1305,7 +1382,7 @@ impl Game for SepulcraGame {
         self.confirm = c.confirm;
         self.radial_cell = c.radial_cell;
         self.lex = c.lex;
-        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls"] {
+        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls", "saves"] {
             let open = c.screens.iter().any(|s| s == screen);
             if self.hud.visible(screen) != open {
                 self.hud.show(screen, open);
@@ -1314,6 +1391,11 @@ impl Game for SepulcraGame {
         // Presentation caches are rebuilt on the next frame.
         self.hover_key = None;
     }
+}
+
+/// The last wave started among `events`, if any.
+fn wave_started(events: &[Event]) -> Option<u16> {
+    events.iter().rev().find_map(|e| if let Event::WaveStarted { wave, .. } = e { Some(*wave) } else { None })
 }
 
 #[cfg(test)]
@@ -1428,6 +1510,51 @@ mod lex_rules_tests {
         assert_eq!(r, Err(Rejection::Occupied));
         assert!(g.state.stone(cell).is_none(), "the reference didn't take it either");
         assert!(!g.running());
+    }
+
+    /// Save games in `--rules lex` mode: the game section carries the Lex run's state, so a
+    /// load resumes it exactly (same Lex hash, parity on); an older section without it replays
+    /// the recording through Lex to the same state.
+    #[test]
+    fn a_lex_mode_game_saves_and_loads_with_its_lex_state() {
+        let (mut g, mut world, mut clock) = lex_game(6);
+        let content = g.state.content().clone();
+        let warding = content.stone_kind("warding").unwrap();
+        for c in ["top:8,12", "top:12,8"] {
+            g.command(&mut world, Command::PlaceStone { cell: content.map.cell_ref(c).unwrap(), stone: warding }).unwrap();
+        }
+        for _ in 0..1_200 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert!(g.running() && g.state.enemies().len() + g.state.projectiles().len() > 0, "mid-wave");
+        let bytes = g.save_bytes().unwrap();
+        let resume = |bytes: &[u8]| {
+            let (mut h, mut world2, clock2) = lex_game(6);
+            let loaded = h.parse_saved(bytes).unwrap();
+            h.apply_saved(&mut world2, "sepulcra", loaded);
+            (h, world2, clock2)
+        };
+        let (mut h, mut world2, mut clock2) = resume(&bytes);
+        let lex = |x: &SepulcraGame| x.lex.as_ref().map(|l| (l.sim.hash(), l.sim.tick(), l.desync.clone()));
+        assert_eq!(lex(&h), lex(&g), "the Lex run resumes as saved");
+        // An older section (version 1: no Lex part) replays the recording through Lex.
+        let mut v1 = {
+            let l = g.lex.take();
+            let b = g.save_bytes().unwrap();
+            g.lex = l;
+            b
+        };
+        v1.truncate(v1.len() - 1);
+        v1[..4].copy_from_slice(&1u32.to_le_bytes());
+        let (old, _, _) = resume(&v1);
+        assert_eq!(lex(&old), lex(&g), "replayed to the same Lex state");
+        for _ in 0..600 {
+            tick(&mut g, &mut world, &mut clock);
+            tick(&mut h, &mut world2, &mut clock2);
+        }
+        assert_eq!(lex(&h), lex(&g), "and steps on identically");
+        assert_eq!(h.state.tick(), g.state.tick());
+        assert_eq!(h.lex.as_ref().unwrap().desync, None, "parity holds after the load");
     }
 
     #[test]

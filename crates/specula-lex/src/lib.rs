@@ -41,5 +41,5 @@ pub use units::Unit;
 /// `dmath::VERSION`): replays recorded with another version aren't expected to match.
 ///
 /// 2 (2026-10-18): spawns that join a wave get its scale (summons, on_death and on_spawn spawns),
-/// and the state hash covers phase order keys and wave groups' `with` values.
+/// and the state hash covers phase order keys and wave groups' `with` values (only for rules that use them).
 pub const RUNTIME_VERSION: u32 = 2;

@@ -189,6 +189,11 @@ def main():
         cmds = [{"tick": c["tick"], "command": c["command"], "args": c["args"]} for c in j["commands"]]
         again = mcp.json("lex_simulate", set=SET, seed=int(j["seed"]), ticks=j["tick"], commands=cmds)
         check(again["hash"] == j["hash"] == centre["hash"], "the live journal replays headless (lex_simulate) to the same hash")
+        # Live runs aren't in save games yet: saving while one runs is refused, as data.
+        res = mcp.request("tools/call", {"name": "save_write", "arguments": {"name": "lex_tools_check", "overwrite": True}})
+        body = json.loads(res["content"][0]["text"])
+        check(res.get("isError") and body.get("error") == "live_lex_running" and SET in body.get("live", []),
+              f"save_write while the run is live is refused: {body.get('error')}")
         stop = mcp.json("lex_live", action="stop", set=SET)
         check(stop["stopped"], "stopped; its world entities are gone")
         summary["live"] = {"tick": st["tick"], "outcome": st["outcome"], "hash": st["hash"], "entities_mid_game": shot, "commands": len(cmds)}

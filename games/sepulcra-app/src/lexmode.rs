@@ -100,6 +100,14 @@ impl LexRules {
         Ok(LexRules { rules, sim, desync: None, checked: 0, accepted: 0, refused: 0, last_refusal: None })
     }
 
+    /// A Lex run restored from a save game (its state as [`Sim::save_state`] wrote it, with the
+    /// rules' hash checked), with the counts it had.
+    pub fn restored(bytes: &[u8], desync: Option<(u32, String)>, checked: u64, accepted: u64, refused: u64) -> Result<LexRules, String> {
+        let rules = Self::rules()?;
+        let sim = Sim::restore(Arc::clone(&rules), &sepulcra::lex::natives(), bytes).map_err(|e| format!("the Lex rules' state: {e}"))?;
+        Ok(LexRules { rules, sim, desync, checked, accepted, refused, last_refusal: None })
+    }
+
     /// The Lex run's verdict on a command at its current tick (applied when accepted). `state`
     /// is the reference, asked first: if it judges differently, that is a desync (and a command
     /// the reference can't take is taken back out of the Lex run).

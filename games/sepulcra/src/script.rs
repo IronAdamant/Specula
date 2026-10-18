@@ -180,6 +180,22 @@ impl Player {
     pub fn finished(&self) -> bool {
         self.next >= self.script.entries.len()
     }
+
+    /// The script being followed (save games keep it).
+    pub fn script(&self) -> &Script {
+        &self.script
+    }
+
+    /// How many entries are done (applied or skipped).
+    pub fn position(&self) -> usize {
+        self.next
+    }
+
+    /// Carries on following `script` from entry `next` (a loaded save's).
+    pub fn resume(script: Script, next: usize) -> Player {
+        let next = next.min(script.entries.len());
+        Player { script, next, skipped: Vec::new() }
+    }
 }
 
 /// One applied command and the tick it was applied at (before that tick advanced).

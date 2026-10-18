@@ -124,12 +124,71 @@ pub trait Game {
     /// Goes back to a [`Game::checkpoint`] (the world has already been rolled back to match).
     fn restore(&mut self, _checkpoint: Box<dyn Any>) {}
 
+    /// Save games (docs/design/SAVES.md): everything the game keeps outside the world that its
+    /// future depends on (its simulation, the run's recording, its own pause and speed), as
+    /// bytes in the game's own versioned format. Presentation it can rebuild from that and the
+    /// world stays out. `None` (the default): the game keeps nothing a save needs, or doesn't
+    /// support saves (`save_write` then saves the world without it, and says so). `Some(Err)`
+    /// refuses the save with that message.
+    fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
+
+    /// Reads [`Game::save_state`]'s bytes without changing anything. An error refuses the load
+    /// before the world is replaced, so it must catch everything [`Game::apply_state`] could
+    /// trip on (format, version, content that changed since the save).
+    fn parse_state(&self, _data: &[u8]) -> Result<Box<dyn Any>, String> {
+        Err(format!("the game '{}' doesn't load save games", self.name()))
+    }
+
+    /// [`Game::parse_state`] as a function that can run on another thread: a load reads and checks
+    /// a save on a worker, and only the swap (with [`Game::apply_state`]) runs on the engine
+    /// thread. It must check what `parse_state` checks, against what the game is now (capture
+    /// its content). `None` (the default): `parse_state` runs on the engine thread at the swap,
+    /// so a game with big state should provide one.
+    fn state_parser(&self) -> Option<StateParser> {
+        None
+    }
+
+    /// Takes a [`Game::parse_state`] result, after the engine made the save's world live (and
+    /// set the clock to the save's tick). The world already holds what the game had built:
+    /// adopt those entities (look them up), don't rebuild them, or the world's hash moves and
+    /// the loaded run no longer matches the one that saved. Transient presentation may be
+    /// rebuilt freely.
+    fn apply_state(&mut self, _ctx: &mut Ctx, _state: Box<dyn Any>) {}
+
+    /// Requests from the game's own interface that need the engine (a menu's Save and Load),
+    /// taken after every [`Game::frame`]. Default: none.
+    fn take_requests(&mut self, _out: &mut Vec<GameRequest>) {}
+
+    /// How a [`Game::take_requests`] request went: the tool's answer, or its error (both as
+    /// `save_write` / `save_read` / `save_list` would give them). After a load the game's state
+    /// is already the save's ([`Game::apply_state`] ran).
+    fn request_done(&mut self, _ctx: &mut Ctx, _request: &GameRequest, _result: Result<Json, Json>) {}
+
     /// The engine undid the world changes of a rejected game tool and the game had no checkpoint:
     /// make the world show the game's own state again. The entities those changes created are
     /// gone and their ids are **never reused**, so the game must drop every id it cached from the
     /// tool call (look entities up again rather than trusting stale ids).
     fn world_rolled_back(&mut self, _ctx: &mut Ctx) {}
 }
+
+/// A player-facing request a game hands the engine ([`Game::take_requests`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameRequest {
+    /// `save_write` to the save named `slot`, replacing it.
+    Save { slot: String, label: Option<String> },
+    /// `save_read` of the save named `slot` (discarding unsaved world changes: the player asked).
+    Load { slot: String },
+    /// `save_list`: the saves there are (newest first), for a load screen.
+    List,
+    /// `save_delete` of the save named `slot` (the player asked, and confirmed).
+    Delete { slot: String },
+}
+
+/// [`Game::state_parser`]: reads a game's save bytes on a worker thread into a parsed state for
+/// [`Game::apply_state`].
+pub type StateParser = Box<dyn FnOnce(&[u8]) -> Result<Box<dyn Any + Send>, String> + Send>;
 
 /// What a game can touch.
 ///
@@ -286,6 +345,14 @@ impl Clock {
         let n = (self.pending_ns / self.tick_ns()).min(max);
         self.pending_ns = if n == max { 0 } else { self.pending_ns - n * self.tick_ns() };
         n
+    }
+
+    /// Jumps to `tick` (a save game's): the rate, pause and scale stay; time not yet turned
+    /// into ticks is dropped.
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+        self.pending_ns = 0;
+        self.steps = 0;
     }
 
     /// Marks one tick as done (call after the game's `tick`).

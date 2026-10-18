@@ -298,6 +298,11 @@ impl Live {
         self.limits = limits;
     }
 
+    /// The live sets, by name.
+    pub(crate) fn sets(&self) -> Vec<String> {
+        self.runs.keys().cloned().collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.runs.is_empty()
     }

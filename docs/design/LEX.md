@@ -502,7 +502,7 @@ A native call costs work like an action (one unit plus one per arg) and `each_ta
 so hooks share the tick's work budget. The generation also moves on the tick granted tags run out, so a hook's tag
 cache can't serve tags that ended. `RUNTIME_VERSION` is **2**: spawns that join a wave without being scheduled
 (summons, `on_death` and `on_spawn` spawns) get its scale, and the state hash covers phase `order` keys and wave
-groups' `with` values (both were left out before, so hashes from version 1 differ for sets that use them).
+groups' `with` values for the rules that use them (sets without them hash as under version 1, so their old saves and hashes still compare equal).
 
 ## Live Lex (`lex_live`)
 
