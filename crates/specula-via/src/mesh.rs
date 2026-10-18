@@ -6,6 +6,7 @@
 //! navmesh is the same whatever order its tiles were built in.
 
 use crate::build::{self, opposite, EdgeSpan, TileBuild};
+// (EdgeSpan is also built from saved tiles: see `restore_tile`.)
 use crate::{Config, Derived, Input, LinkKind, Mark, NavError, OffMeshLink, Source, MAX_OFFMESH_LINKS};
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
@@ -288,6 +289,101 @@ impl NavMesh {
         self.counter = counter;
         self.rebuilt.copy_from_slice(rebuilt);
         true
+    }
+
+    /// Tile `(tx, tz)` exactly as built (its polygons with their in-tile links, its edge spans),
+    /// for a save: a tile built from geometry that has changed since can't be rebuilt from the
+    /// world. `None` when the tile isn't built. Floats are written as their bits.
+    pub fn tile_state(&self, tx: u32, tz: u32) -> Option<Json> {
+        let index = self.tile_index(tx, tz);
+        let t = self.tile(index)?;
+        let polys = t.polys.iter().map(|p| {
+            let mut a = vec![Json::from(p.x0), Json::from(p.z0), Json::from(p.x1), Json::from(p.z1)];
+            a.extend(p.h.iter().map(|h| Json::from(h.to_bits())));
+            a.push(Json::from(u32::from(p.area)));
+            // In-tile links only: links across tiles are worked out again from the edges.
+            let links = p.links.iter().filter(|l| l.to.tile() == index).map(|l| Json::arr([Json::from(u32::from(l.side)), Json::from(l.lo), Json::from(l.hi), Json::from(l.to.index())]));
+            a.push(Json::arr(links));
+            Json::Arr(a)
+        });
+        let edges = t.edges.iter().map(|side| Json::arr(side.iter().map(|col| Json::arr(col.iter().map(|e| Json::arr([Json::from(u32::from(e.floor)), Json::from(u32::from(e.ceil)), Json::from(e.poly)]))))));
+        Some(Json::obj([("polys", Json::arr(polys)), ("edges", Json::arr(edges))]))
+    }
+
+    /// Puts tile `(tx, tz)` back from [`NavMesh::tile_state`] and relinks it with its
+    /// neighbours (the build counters are not touched: restore them after). Every index and
+    /// count is checked against this navmesh: damage is an error, never a panic.
+    pub fn restore_tile(&mut self, tx: u32, tz: u32, j: &Json) -> Result<(), NavError> {
+        let bad = |m: &str| NavError::new("invalid_tile", format!("tile ({tx}, {tz}): {m}"));
+        let (nx, nz) = self.tile_count();
+        if tx >= nx || tz >= nz {
+            return Err(bad("outside the navmesh"));
+        }
+        let index = self.tile_index(tx, tz);
+        let num = |v: &Json| v.as_u64();
+        let int = |v: &Json| v.as_f64().filter(|f| f.fract() == 0.0 && f.abs() <= f64::from(i32::MAX)).map(|f| f as i32);
+        let list = j.get("polys").and_then(Json::as_array).ok_or_else(|| bad("no polys"))?;
+        if list.len() > crate::MAX_POLYS_PER_TILE {
+            return Err(bad("too many polygons"));
+        }
+        let t = self.cfg.tile_cells as i32;
+        let (gx0, gz0) = (tx as i32 * t, tz as i32 * t);
+        let mut polys = Vec::with_capacity(list.len());
+        for p in list {
+            let a = p.as_array().filter(|a| a.len() == 10).ok_or_else(|| bad("a polygon isn't [x0, z0, x1, z1, h0..h3, area, links]"))?;
+            let c: Option<Vec<i32>> = a[..4].iter().map(int).collect();
+            let c = c.ok_or_else(|| bad("a polygon's columns aren't whole numbers"))?;
+            if c[0] > c[2] || c[1] > c[3] || c[0] < gx0 || c[1] < gz0 || c[2] >= gx0 + t || c[3] >= gz0 + t {
+                return Err(bad("a polygon lies outside its tile"));
+            }
+            let mut h = [0.0f32; 4];
+            for (k, v) in a[4..8].iter().enumerate() {
+                h[k] = num(v).and_then(|b| u32::try_from(b).ok()).map(f32::from_bits).filter(|f| f.is_finite()).ok_or_else(|| bad("a polygon's height isn't a finite float"))?;
+            }
+            let area = num(&a[8]).and_then(|v| u8::try_from(v).ok()).filter(|v| usize::from(*v) < crate::MAX_AREAS).ok_or_else(|| bad("a polygon's area is out of range"))?;
+            let links = a[9].as_array().ok_or_else(|| bad("a polygon's links aren't a list"))?;
+            if links.len() > 4 * t as usize {
+                return Err(bad("too many links"));
+            }
+            let mut out = Vec::with_capacity(links.len());
+            for l in links {
+                let l = l.as_array().filter(|l| l.len() == 4).ok_or_else(|| bad("a link isn't [side, lo, hi, to]"))?;
+                let side = num(&l[0]).filter(|s| *s < 4).ok_or_else(|| bad("a link's side is out of range"))? as u8;
+                let (lo, hi) = (int(&l[1]).ok_or_else(|| bad("a link's range"))?, int(&l[2]).ok_or_else(|| bad("a link's range"))?);
+                let to = num(&l[3]).filter(|i| (*i as usize) < list.len()).ok_or_else(|| bad("a link points past the polygons"))? as usize;
+                out.push(Link { side, lo, hi, to: PolyRef::new(index, to) });
+            }
+            polys.push(Poly { x0: c[0], z0: c[1], x1: c[2], z1: c[3], h, links: out, area });
+        }
+        let sides = j.get("edges").and_then(Json::as_array).filter(|s| s.len() == 4).ok_or_else(|| bad("edges must be 4 sides"))?;
+        let mut edges: [Vec<Vec<EdgeSpan>>; 4] = std::array::from_fn(|_| Vec::new());
+        for (k, side) in sides.iter().enumerate() {
+            let cols = side.as_array().filter(|c| c.len() == t as usize).ok_or_else(|| bad("an edge side must list one entry per column"))?;
+            for col in cols {
+                let spans = col.as_array().filter(|s| s.len() <= crate::MAX_SPANS_PER_COLUMN).ok_or_else(|| bad("an edge column isn't a short list"))?;
+                let mut v = Vec::with_capacity(spans.len());
+                for e in spans {
+                    let e = e.as_array().filter(|e| e.len() == 3).ok_or_else(|| bad("an edge span isn't [floor, ceil, poly]"))?;
+                    let floor = num(&e[0]).and_then(|f| u16::try_from(f).ok()).ok_or_else(|| bad("an edge span's floor"))?;
+                    let ceil = num(&e[1]).and_then(|f| u16::try_from(f).ok()).ok_or_else(|| bad("an edge span's ceiling"))?;
+                    let poly = num(&e[2]).filter(|p| (*p as usize) < polys.len()).ok_or_else(|| bad("an edge span points past the polygons"))? as u32;
+                    v.push(EdgeSpan { floor, ceil, poly });
+                }
+                edges[k].push(v);
+            }
+        }
+        let (cs, mut sum) = (self.cfg.cell_size, 0.0f32);
+        let area_prefix: Vec<f32> = polys
+            .iter()
+            .map(|p| {
+                sum += (p.x1 - p.x0 + 1) as f32 * cs * ((p.z1 - p.z0 + 1) as f32 * cs);
+                sum
+            })
+            .collect();
+        self.tiles[index] = Some(Tile { polys, edges, hash: 0, area_prefix, area: sum });
+        self.relink(tx, tz);
+        self.reresolve_near(tx, tz);
+        Ok(())
     }
 
     /// Whether tile `index` was rebuilt after `counter`.
@@ -729,6 +825,36 @@ pub(crate) mod tests {
         }
         assert_eq!(other.hash(), full);
         assert!(buckets.values().map(Vec::len).max().unwrap() < sheet.triangles.len() / 4, "each tile reads a part");
+    }
+
+    #[test]
+    fn tiles_round_trip_exactly_and_refuse_damage() {
+        let mut m = NavMesh::new(room_config()).unwrap();
+        build_all(&mut m, &scene([-10.0, -10.0, 10.0, 10.0], &[(Vec3::new(-0.25, 0.0, -10.0), Vec3::new(0.25, 2.0, 6.0))]));
+        let full = m.hash();
+        let (nx, nz) = m.tile_count();
+        let saved: Vec<(u32, u32, Json)> = (0..nz).flat_map(|tz| (0..nx).map(move |tx| (tx, tz))).filter_map(|(tx, tz)| m.tile_state(tx, tz).map(|j| (tx, tz, j))).collect();
+        // A navmesh built from other geometry, then the saved tiles put back: the same navmesh.
+        let mut other = NavMesh::new(room_config()).unwrap();
+        build_all(&mut other, &scene([-10.0, -10.0, 10.0, 10.0], &[]));
+        for (tx, tz, j) in &saved {
+            other.restore_tile(*tx, *tz, &Json::parse(&j.to_string()).unwrap()).unwrap();
+        }
+        assert_eq!(other.hash(), full);
+        // Damage: refused, never a panic.
+        let (tx, tz, j) = &saved[0];
+        let text = j.to_string();
+        for cut in (0..text.len()).step_by(11) {
+            if let Ok(bad) = Json::parse(&text[..cut]) {
+                let _ = other.restore_tile(*tx, *tz, &bad);
+            }
+        }
+        for (k, v) in [("polys", Json::arr([Json::arr([Json::from(0)])])), ("edges", Json::arr([]))] {
+            let mut bad = j.clone();
+            bad.set(k, v);
+            assert!(other.restore_tile(*tx, *tz, &bad).is_err());
+        }
+        assert!(other.restore_tile(99, 0, j).is_err());
     }
 
     #[test]

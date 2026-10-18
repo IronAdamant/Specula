@@ -546,6 +546,9 @@ impl SaveJob {
     }
 }
 
+/// How often the game's save is tried again after a momentary refusal (`nav_building`).
+const MAX_GAME_SAVE_RETRIES: u32 = 20;
+
 impl Engine {
     fn save_path(&self, name: &str) -> PathBuf {
         self.saves_dir.join(format!("{name}.{EXTENSION}"))
@@ -692,17 +695,22 @@ impl Engine {
             }
         }
         let logic = self.logic.save_state();
-        // Navigation settles first (tiles dirty from edits are built now, as physics syncs): the
-        // save then describes it exactly. A navmesh still building is refused.
+        // Navigation's state as it is (its build state as data: nothing is built for a save, so
+        // saving never changes the run). Only a switch to new settings or a load still being
+        // prepared is refused (`nav_building`, retry).
         let nav = if self.nav.is_empty() {
             None
         } else {
-            self.nav.settle_for_save(&self.world, self.world_generation).map_err(|e| {
+            let as_save = |e: crate::world::WorldError| {
                 let mut s = SaveError::new(e.code, e.message.clone()).in_section("nav");
                 s.details = e.details.clone();
                 s
-            })?;
-            Some(crate::nav::encode_section(&self.nav.save_state()))
+            };
+            // (Synced first, as the next tick would: what changed since is marked dirty. That is
+            // the same state the next tick's sync reaches, so it changes nothing about the run.)
+            self.nav.sync(&self.world, self.world_generation);
+            self.nav.check_saveable().map_err(as_save)?;
+            Some(crate::nav::encode_section(&self.nav.save_state()).map_err(as_save)?)
         };
         let world = crate::persist::plan(&self.world, std::path::Path::new(""), None);
         let world_hash = self.state_hash();
@@ -1048,9 +1056,19 @@ impl Engine {
     /// Serves the hosted game's player-facing requests (its menu's Save, Load, List and Delete).
     /// Saves and loads run in the background like agents' and are answered when done.
     pub(crate) fn serve_game_requests(&mut self) {
+        // (MAX_GAME_SAVE_RETRIES below: how often a save refused for a moment is tried again.)
         let Some(game) = self.game.as_mut() else { return };
         let mut requests = Vec::new();
         game.take_requests(&mut requests);
+        // Saves refused for a moment come back when due (their tries go with them).
+        let now = Instant::now();
+        let mut tries: Vec<u32> = vec![0; requests.len()];
+        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.game_save_retry).into_iter().partition(|(at, _, _)| *at <= now);
+        self.game_save_retry = waiting;
+        for (_, n, req) in due {
+            requests.push(req);
+            tries.push(n);
+        }
         let by = self.game_name.clone();
         let key = format!("game:{by}");
         for (i, req) in requests.into_iter().enumerate() {
@@ -1065,6 +1083,12 @@ impl Engine {
             match started {
                 Ok(None) => {}
                 Ok(Some(j)) => self.deliver(Dest::Game(req), Ok(j)),
+                // A save refused only for a moment (a navmesh switching settings, a load being
+                // prepared): tried again when due, a few times, before the game hears of it.
+                Err(e) if e.code == "nav_building" && matches!(req, GameRequest::Save { .. }) && tries.get(i).copied().unwrap_or(0) < MAX_GAME_SAVE_RETRIES && self.game_save_retry.len() < 8 => {
+                    let wait = e.details.iter().find(|(k, _)| *k == "retry_after_ms").and_then(|(_, v)| v.as_u64()).unwrap_or(500).clamp(50, 5_000);
+                    self.game_save_retry.push((now + std::time::Duration::from_millis(wait), tries.get(i).copied().unwrap_or(0) + 1, req));
+                }
                 Err(e) => self.deliver(Dest::Game(req), Err(e)),
             }
         }
