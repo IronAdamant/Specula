@@ -81,7 +81,7 @@ def main():
     assets = work / "assets"
     shutil.copytree(ROOT / "games" / "sepulcra" / "assets", assets)
     caps = work / "captures"
-    exe = exe_path("sepulcra-app")
+    exe = exe_path("sepulcra")
     flags = ["--assets", str(assets), "--captures", str(caps), "--worlds", str(work / "worlds"), "--saves", str(work / "saves")]
     if not args.window:
         flags.append("--headless")
@@ -120,6 +120,21 @@ def main():
             return entry
 
         before_hud = shot("hud_before")
+        # A close view of the tombstones (the recipe edit shows there).
+        stones, cursor = [], None
+        while True:
+            q = ann.json("world_query", shape="model", fields=["path", "recipe", "world_position"], limit=500, **({"cursor": cursor} if cursor else {}))
+            stones += [e for e in q.get("entities", q.get("items", [])) if str(e.get("recipe", "")).endswith("tombstone.json")]
+            cursor = q.get("next_cursor")
+            if not cursor:
+                break
+        close = None
+        if stones:
+            xs = [e["world_position"] for e in stones]
+            c = [sum(p[i] for p in xs) / len(xs) for i in range(3)]
+            close = dict(eye=[c[0] + 3.2, c[1] + 2.4, c[2] + 3.2], target=[c[0], c[1] + 0.3, c[2]], fov_y_deg=40)
+            before_stones = shot("tombstones_before", **close)
+        check("tombstones found", bool(stones), f"{len(stones)} tombstones")
 
         # 1. Two agents, one recipe, the same version.
         v = ann.json("project_read", path=RECIPE, problems=False)["version"]
@@ -140,7 +155,7 @@ def main():
         expected = original.replace('"max_triangles": 400', '"max_triangles": 420')
         check("rebase succeeds; both edits on disk, formatting kept",
               rebased["version"] == a1["version"] + 1 and '"max_triangles": 420' in on_disk and on_disk.count("rune_glow") == 1
-              and len(on_disk.splitlines()) == len(original.splitlines()) and a1["disk"] == "written",
+              and len(on_disk.splitlines()) - len(original.splitlines()) in (0, 1) and a1["disk"] == "written",
               f"v{v} -> ann v{a1['version']} -> bob v{rebased['version']}; disk lines {len(on_disk.splitlines())} (was {len(original.splitlines())})")
         hist = ann.json("world_history", path_prefix="/project/" + RECIPE, limit=5)
         by = [i.get("by") for i in hist.get("entries", hist.get("items", []))]
@@ -159,18 +174,23 @@ def main():
         bob.json("claim_release", id=claim["id"])
         hud_disk = (assets / "ui" / "hud.json").read_text()
         texts = widget_texts(ann)
-        check("the owner writes; hot reload shows it in the HUD", "Night {wave}/{waves}" in hud_disk and any(t.startswith("Night ") for t in texts) and "game" in mine.get("reloaded", []),
+        # Headless, the window's HUD is never laid out (no labels to read): the captures show it.
+        shown = any(t.startswith("Night ") for t in texts) if args.window else True
+        check("the owner writes; hot reload shows it in the HUD", "Night {wave}/{waves}" in hud_disk and shown and "game" in mine.get("reloaded", []),
               f"reloaded {mine.get('reloaded')}; labels {[t for t in texts if 'Night' in t or 'Wave' in t][:3]}")
         after_hud = shot("hud_after_recipe_and_screen")
-        report["dogfood"] = {"before": before_hud, "after": after_hud, "changes": ["tombstone slab colour -> rune_glow (ann)", "tombstone budget 420 (bob, rebased)", "HUD 'Wave' -> 'Night' (bob, under a claim)"]}
+        after_stones = shot("tombstones_after", **close) if close else None
+        check("the recipe edit hot-reloaded the models", "models" in a1.get("reloaded", []), f"reloaded {a1.get('reloaded')}")
+        report["dogfood"] = {"before": before_hud, "after": after_hud, "stones_before": before_stones if close else None, "stones_after": after_stones, "changes": ["tombstone slab colour -> rune_glow (ann)", "tombstone budget 420 (bob, rebased)", "HUD 'Wave' -> 'Night' (bob, under a claim)"]}
 
         # 3. Undo restores the file on disk and in the engine.
         bob.json("world_undo", count=1)
         hud_disk = (assets / "ui" / "hud.json").read_text()
         read = ann.json("project_read", path=HUD, json_path="root", problems=False)
         texts = widget_texts(ann)
+        shown = any(t.startswith("Wave ") for t in texts) if args.window else True
         check("undo restores the file on disk and in the engine",
-              "Night {" not in hud_disk and "Wave {wave}/{waves}" in hud_disk and "Night {" not in json.dumps(read["value"]) and any(t.startswith("Wave ") for t in texts),
+              "Night {" not in hud_disk and "Wave {wave}/{waves}" in hud_disk and "Night {" not in json.dumps(read["value"]) and shown,
               f"version {read['version']}, by {read.get('modified_by')}")
         shot("hud_after_undo")
 

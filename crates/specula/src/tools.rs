@@ -38,7 +38,7 @@ an entity) and look through them (or another agent's) with sight_frame {camera};
 contact sheet of one entity; sight_compare marks a 'before' and diffs the world against it later; sight_query \
 answers one entity's on-screen facts without an image. world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
-text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
+text files. The game's text files (recipes, UI screens, sounds, style files, module sources) are project files: edit them with project_write / project_patch (validated, versioned, claimed as /project/<path>, journaled, undoable, hot-reloaded); edits made on disk are imported as the agent 'disk'. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
 perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. \
 Model meshes stream onto the GPU within per-frame budgets (never changing the simulation): far cells draw as merged \

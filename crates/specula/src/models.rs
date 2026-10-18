@@ -1510,10 +1510,12 @@ impl Library {
         if report.files_changed == 0 && !force {
             return None;
         }
-        // Handles whose recipe was forgotten above get their key worked out again.
+        // Handles whose recipe was forgotten above get their key worked out again: every handle
+        // of it (the first one's key_for makes the recipe known again, so decide up front).
+        let forgotten: BTreeSet<String> = self.handles.iter().flatten().filter(|s| !self.known(&s.spec.recipe)).map(|s| s.spec.recipe.clone()).collect();
         for h in 0..self.handles.len() {
             let Some(slot) = &self.handles[h] else { continue };
-            if self.known(&slot.spec.recipe) {
+            if !forgotten.contains(&slot.spec.recipe) {
                 continue;
             }
             let spec = slot.spec.clone();
@@ -3539,6 +3541,8 @@ mod tests {
         world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
         let id = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/block.json")), "t").unwrap().id;
         let host = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/host.json")), "t").unwrap().id;
+        // The same recipe under another seed: a second handle of it.
+        let seeded = world.spawn(SpawnSpec::model(ModelSpec { seed: Some(9), ..ModelSpec::new("recipes/block.json") }), "t").unwrap().id;
         assert_eq!(world.get(id).unwrap().model_state(), "building");
         assert!(world.get(id).unwrap().local_bounds().is_none(), "no bounds before the build lands");
         settle_shared(&shared, &mut world);
@@ -3555,17 +3559,18 @@ mod tests {
         touch("other", &block(5.0), 5);
         let report = shared.lock().poll(true).unwrap();
         assert_eq!((report.files_changed, report.rebuilding.len(), report.rebuilt.len()), (1, 0, 0), "unrelated edits rebuild nothing");
-        // The included file changes: both its own spec and the host's rebuild.
+        // The included file changes: both its own specs and the host's rebuild.
         touch("block", &block(2.0), 10);
         let report = shared.lock().poll(true).unwrap();
-        assert_eq!((report.rebuilding.len(), report.errors.len()), (2, 0), "{:?}", report.rebuilding);
+        assert_eq!((report.rebuilding.len(), report.errors.len()), (3, 0), "every handle of a changed recipe: {:?}", report.rebuilding);
         settle_shared(&shared, &mut world);
         assert_eq!(world.get(id).unwrap().local_bounds().unwrap().1.y, 2.9);
+        assert_eq!(world.get(seeded).unwrap().local_bounds().unwrap().1.y, 2.9, "not just the first handle of the recipe");
         assert_eq!(world.get(host).unwrap().local_bounds().unwrap().1.y, 2.9, "the host follows its include");
         // Break it: the error is reported and the last good build stays.
         touch("block", "{\"recipe\": 1, \"parts\": 7}", 15);
         let report = shared.lock().poll(true).unwrap();
-        assert_eq!(report.errors.len(), 1, "the host fails at build time, the block at parse time");
+        assert_eq!(report.errors.len(), 2, "the host fails at build time, both block handles at parse time");
         settle_shared(&shared, &mut world);
         assert!(world.refresh_models().is_empty(), "existing specs keep their handle");
         let handle = world.get(id).unwrap().resolved_model().unwrap().handle;
