@@ -49,7 +49,7 @@ pub enum Source {
 }
 
 pub enum PlaytestCall {
-    Run { source: Source, record: Option<String>, overwrite: bool, wait: Duration, format: Format },
+    Run { source: Source, record: Option<String>, overwrite: bool, wait: Duration, format: Format, allow_module_mismatch: bool },
     Report { id: Option<u64>, wait: Duration, cancel: bool, force: bool, format: Format },
 }
 
@@ -60,7 +60,7 @@ fn wait_arg(args: &Json, default: f32) -> Result<Duration, String> {
 pub fn parse(name: &str, args: &Json) -> Option<Result<PlaytestCall, String>> {
     let call = match name {
         "playtest_run" => (|| {
-            check_keys(args, name, &[&["spec", "path", "replay", "record", "overwrite", "wait_s", "response_format"]])?;
+            check_keys(args, name, &[&["spec", "path", "replay", "record", "overwrite", "wait_s", "response_format", "allow_module_mismatch"]])?;
             let given = ["spec", "path", "replay"].iter().filter(|k| args.get(k).is_some_and(|v| !v.is_null())).count();
             if given != 1 {
                 return Err("give exactly one of 'spec' (the playtest as JSON), 'path' (a spec file) or 'replay' (a replay file to verify)".to_owned());
@@ -81,6 +81,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<PlaytestCall, String>> {
                 overwrite: bool_arg(args, "overwrite")?.unwrap_or(false),
                 wait: wait_arg(args, MAX_WAIT_S)?,
                 format: Format::arg(args, Format::Concise)?,
+                allow_module_mismatch: bool_arg(args, "allow_module_mismatch")?.unwrap_or(false),
             })
         })(),
         "playtest_report" => (|| {
@@ -114,8 +115,10 @@ pub fn definitions() -> Vec<ToolDef> {
                           end], checkpoint_every?: ticks between hashes (300), stop_on_failure?, max_wall_s?}. A path's '#' \
                           is a length (\"enemies.items.#\"). The playtest owns the clock (time_control is refused while it \
                           runs) and calls as you; sight_frame steps are listed as captures (at most 64 file-writing calls). \
-                          record: write a replay file (spec plus every hash) under playtests/; replay: run one again and \
-                          stop at the first hash that differs, naming the parts that differ. Answers when done or after \
+                          record: write a replay file (spec plus every hash, and the game modules' builds) under playtests/; \
+                          replay: run one again and stop at the first hash that differs, naming the parts that differ (a \
+                          replay is refused with module_build_mismatch when a module's build differs from the recording's, \
+                          unless allow_module_mismatch). Answers when done or after \
                           wait_s with progress (then poll playtest_report). For identical hashes across engines start them \
                           with --paused. One playtest at a time per engine."
                 .into(),
@@ -125,6 +128,10 @@ pub fn definitions() -> Vec<ToolDef> {
                 ("replay", t("string", "A replay file to run again and verify, relative to the working directory (record's answer gives it)")),
                 ("record", t("string", "Write the replay file here when the run ends: a .json name relative to playtests/")),
                 ("overwrite", t("boolean", "Let record replace an existing replay file (refused otherwise)")),
+                (
+                    "allow_module_mismatch",
+                    t("boolean", "Run a replay even though game modules' builds differ from the recording's (reported as module_builds_differ)"),
+                ),
                 ("wait_s", t("number", "Seconds to wait for the result, 0..20 (default 20); 0 answers at once with the id")),
                 ("response_format", Format::schema()),
             ]),
@@ -171,6 +178,8 @@ pub(crate) trait Host {
     fn run_ticks(&mut self, n: u64) -> u64;
     /// The hashes a checkpoint records.
     fn parts(&mut self) -> Vec<(String, u64)>;
+    /// The game modules loaded, with their build hashes (a replay expects the same code).
+    fn module_builds(&self) -> Vec<(String, u64)>;
     /// Hands a call to the engine as `session`; the answer comes through the receiver.
     fn dispatch(&mut self, session: &SessionInfo, tool: &str, args: &Json, game_tool: bool) -> Result<Receiver<ToolOutput>, ToolOutput>;
     fn windowed(&self) -> bool;
@@ -212,6 +221,32 @@ struct Active {
     cancel: Option<String>,
     /// Calls that write files so far.
     file_calls: usize,
+    /// The game modules' builds as the run began (written to the replay file).
+    modules: Vec<(String, u64)>,
+    /// A replay allowed to run with other module builds: how they differ.
+    module_mismatch: Option<Json>,
+}
+
+/// The modules whose builds differ between a recording and this engine (`[]`: none).
+fn module_mismatch(recorded: &[(String, u64)], loaded: &[(String, u64)]) -> Vec<Json> {
+    let names: std::collections::BTreeSet<&String> = recorded.iter().chain(loaded).map(|(n, _)| n).collect();
+    let get = |l: &[(String, u64)], n: &str| l.iter().find(|(m, _)| m == n).map(|(_, h)| *h);
+    names
+        .into_iter()
+        .filter(|n| get(recorded, n) != get(loaded, n))
+        .map(|n| {
+            Json::obj([
+                ("module", Json::from(n.as_str())),
+                ("recorded", Json::from(get(recorded, n).map(crate::journal::hex))),
+                ("loaded", Json::from(get(loaded, n).map(crate::journal::hex))),
+            ])
+        })
+        .collect()
+}
+
+/// The modules' builds as a replay file lists them.
+fn modules_json(modules: &[(String, u64)]) -> Json {
+    Json::arr(modules.iter().map(|(n, h)| Json::obj([("module", Json::from(n.as_str())), ("build_hash", Json::from(crate::journal::hex(*h)))])))
 }
 
 /// A call's answer still to come: the receiver, when to give up, and the answer's shape.
@@ -276,6 +311,9 @@ impl Active {
         if format == Format::Detailed {
             extra.push(("started_by", Json::from(self.by.as_str())));
         }
+        if let Some(m) = &self.module_mismatch {
+            extra.push(("module_builds_differ", m.clone()));
+        }
         if let Some(f) = replay_file {
             extra.push(("replay_file", f.clone()));
         } else if let Some((rel, _)) = &self.record {
@@ -308,7 +346,7 @@ impl Playtests {
     /// playtest_run and playtest_report (answered now or once the playtest ends).
     pub(crate) fn call(&mut self, host: &mut dyn Host, call: PlaytestCall, session: &SessionInfo, reply: Sender<ToolOutput>) {
         match call {
-            PlaytestCall::Run { source, record, overwrite, wait, format } => match self.start(host, source, record, overwrite, session) {
+            PlaytestCall::Run { source, record, overwrite, wait, format, allow_module_mismatch } => match self.start(host, source, record, overwrite, allow_module_mismatch, session) {
                 Ok(()) => self.active.as_mut().expect("just started").wait_or_answer(reply, wait, format),
                 Err(e) => {
                     let _ = reply.send(e);
@@ -353,7 +391,7 @@ impl Playtests {
         }
     }
 
-    fn start(&mut self, host: &mut dyn Host, source: Source, record: Option<String>, overwrite: bool, session: &SessionInfo) -> Result<(), ToolOutput> {
+    fn start(&mut self, host: &mut dyn Host, source: Source, record: Option<String>, overwrite: bool, allow_module_mismatch: bool, session: &SessionInfo) -> Result<(), ToolOutput> {
         if let Some(a) = &self.active {
             return Err(error(
                 "playtest_busy",
@@ -382,6 +420,28 @@ impl Playtests {
             if game.as_ref().is_none_or(|(name, _)| name != g) {
                 let hosted = game.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str()));
                 return Err(error("wrong_game", format!("the spec is for the game '{g}'"), vec![("hosted", hosted)]));
+            }
+        }
+        // Code is part of the input (DETERMINISM.md rule 8): a replay recorded with other module
+        // builds isn't expected to match, so it is refused unless asked for.
+        let modules = host.module_builds();
+        let mut mismatch = None;
+        if let Some(recorded) = expected.as_ref().and_then(|e| e.modules.as_deref()) {
+            let differ = module_mismatch(recorded, &modules);
+            if !differ.is_empty() {
+                if !allow_module_mismatch {
+                    let names: Vec<String> = differ.iter().filter_map(|d| d.get("module").and_then(Json::as_str).map(str::to_owned)).collect();
+                    return Err(error(
+                        "module_build_mismatch",
+                        format!(
+                            "the replay was recorded with other builds of module(s) {}: load the recorded builds (logic_reload), or pass \
+                             allow_module_mismatch: true to run it anyway (its hashes are then not expected to match)",
+                            names.join(", ")
+                        ),
+                        vec![("modules", Json::Arr(differ))],
+                    ));
+                }
+                mismatch = Some(Json::Arr(differ));
             }
         }
         let game_tools = game.map(|(_, t)| t).unwrap_or_default();
@@ -431,6 +491,8 @@ impl Playtests {
             waiters: Vec::new(),
             cancel: None,
             file_calls: 0,
+            modules,
+            module_mismatch: mismatch,
         });
         Ok(())
     }
@@ -536,7 +598,9 @@ impl Playtests {
         host.release_clock(a.was_paused);
         let replay_file = a.record.as_ref().map(|(rel, path)| {
             let game = host.game().map(|(n, _)| n);
-            let text = a.run.replay_json(game.as_deref(), host.tick_hz()).to_pretty();
+            let mut replay = a.run.replay_json(game.as_deref(), host.tick_hz());
+            replay.set("modules", modules_json(&a.modules));
+            let text = replay.to_pretty();
             match std::fs::write(path, &text) {
                 Ok(()) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(true)), ("bytes", Json::from(text.len()))]),
                 Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", Json::from(e.to_string()))]),
@@ -629,7 +693,16 @@ impl Host for EngineHost<'_> {
             g.state_hashes(&mut hashes);
             parts.extend(hashes.into_iter().map(|(k, h)| (format!("game.{k}"), h)));
         }
+        // Module state the engine keeps outside the world (stores, RNG positions, events), as
+        // the desync detector hashes it.
+        if let Some(h) = self.e.logic.state_hash() {
+            parts.push(("logic".to_owned(), h));
+        }
         parts
+    }
+
+    fn module_builds(&self) -> Vec<(String, u64)> {
+        self.e.logic.builds()
     }
 
     fn dispatch(&mut self, session: &SessionInfo, tool: &str, args: &Json, game_tool: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
@@ -690,6 +763,8 @@ mod tests {
         format: Format,
         /// Every call's arguments, as dispatched.
         args: Vec<Json>,
+        /// The modules "loaded".
+        modules: Vec<(String, u64)>,
     }
 
     impl Fake {
@@ -697,7 +772,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("specula-playtest-engine-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
-            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new(), format: Format::Concise, args: Vec::new() }
+            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new(), format: Format::Concise, args: Vec::new(), modules: Vec::new() }
         }
     }
 
@@ -745,6 +820,9 @@ mod tests {
         fn parts(&mut self) -> Vec<(String, u64)> {
             vec![("world".into(), self.tick)]
         }
+        fn module_builds(&self) -> Vec<(String, u64)> {
+            self.modules.clone()
+        }
         fn dispatch(&mut self, _: &SessionInfo, tool: &str, args: &Json, _: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
             self.calls.push(tool.to_owned());
             self.args.push(args.clone());
@@ -773,7 +851,14 @@ mod tests {
     }
 
     fn run_call(spec: &str, record: Option<&str>, overwrite: bool) -> PlaytestCall {
-        PlaytestCall::Run { source: Source::Inline(Json::parse(spec).unwrap()), record: record.map(String::from), overwrite, wait: Duration::ZERO, format: Format::Concise }
+        PlaytestCall::Run {
+            source: Source::Inline(Json::parse(spec).unwrap()),
+            record: record.map(String::from),
+            overwrite,
+            wait: Duration::ZERO,
+            format: Format::Concise,
+            allow_module_mismatch: false,
+        }
     }
 
     fn report_call(cancel: bool, force: bool, wait: Duration) -> PlaytestCall {
@@ -838,11 +923,32 @@ mod tests {
         finish(&mut p, &mut h);
         // The replay runs again and verifies (the fake's hash is the tick since the start).
         h.tick = 0;
-        let replay = PlaytestCall::Run { source: Source::Replay("playtests/r.json".into()), record: None, overwrite: false, wait: Duration::ZERO, format: Format::Concise };
-        ask(&mut p, &mut h, replay, &a);
+        let replay = |allow| PlaytestCall::Run {
+            source: Source::Replay("playtests/r.json".into()),
+            record: None,
+            overwrite: false,
+            wait: Duration::ZERO,
+            format: Format::Concise,
+            allow_module_mismatch: allow,
+        };
+        ask(&mut p, &mut h, replay(false), &a);
         finish(&mut p, &mut h);
         let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
         assert_eq!(r.unwrap().get("replay").and_then(|r| r.get("verified")).and_then(Json::as_bool), Some(true));
+        // Recorded with no modules; with one loaded now, the code differs: refused, by name.
+        h.modules = vec![("ambulo".into(), 0xabc)];
+        h.tick = 0;
+        let (_, ans) = ask(&mut p, &mut h, replay(false), &a);
+        let ans = ans.expect("refused at once");
+        assert_eq!(code(&ans), Some("module_build_mismatch"), "{ans}");
+        let m = &ans.get("modules").and_then(Json::as_array).expect("named")[0];
+        assert_eq!((m.get("module").and_then(Json::as_str), m.get("recorded")), (Some("ambulo"), Some(&Json::Null)));
+        assert_eq!(m.get("loaded").and_then(Json::as_str), Some("0000000000000abc"));
+        // Asked for: it runs, and the report says the builds differ.
+        ask(&mut p, &mut h, replay(true), &a);
+        finish(&mut p, &mut h);
+        let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
+        assert_eq!(r.unwrap().get("module_builds_differ").and_then(Json::as_array).map(<[Json]>::len), Some(1));
     }
 
     #[test]

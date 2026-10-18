@@ -96,10 +96,13 @@ pub enum Kind {
     Camera,
     /// One fixed tick of the physics simulation moving bodies (coalesced, like a game tick).
     Physics,
+    /// A game module was loaded, reloaded, unloaded or disabled ([`ModuleEvent`]): code is part
+    /// of a run's input (DETERMINISM.md rule 8). No world changes; a record, not undoable.
+    Module,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -112,6 +115,7 @@ impl Kind {
         Kind::GameTool,
         Kind::Camera,
         Kind::Physics,
+        Kind::Module,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +132,7 @@ impl Kind {
             Kind::GameTool => "game_tool",
             Kind::Camera => "camera",
             Kind::Physics => "physics",
+            Kind::Module => "module",
         }
     }
 
@@ -137,6 +142,44 @@ impl Kind {
 
     pub fn is_game(self) -> bool {
         matches!(self, Kind::GameStart | Kind::GameTick | Kind::GameFrame | Kind::GameTool | Kind::Physics)
+    }
+}
+
+/// A game module's code changing (journal kind [`Kind::Module`]): which module, what happened, at
+/// which tick, and the build (a hash of the library's bytes). Replays compare these: a run
+/// recorded with one build is expected to match only with that build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleEvent {
+    /// The clock's tick when it happened: the module's first (or last) tick is this one.
+    pub tick: u64,
+    pub module: String,
+    /// `load`, `reload`, `unload` or `disabled` (a panic or a runaway stopped it).
+    pub event: &'static str,
+    /// The module's load count (1 for its first load).
+    pub generation: u64,
+    pub build_hash: u64,
+    /// For a reload: the build it replaced.
+    pub previous_build: Option<u64>,
+}
+
+impl ModuleEvent {
+    /// Whether the module runs after this event.
+    pub fn running(&self) -> bool {
+        matches!(self.event, "load" | "reload")
+    }
+
+    pub fn to_json(&self) -> Json {
+        let mut f = vec![
+            ("tick", Json::from(self.tick)),
+            ("module", Json::from(self.module.as_str())),
+            ("event", Json::from(self.event)),
+            ("generation", Json::from(self.generation)),
+            ("build_hash", Json::from(hex(self.build_hash))),
+        ];
+        if let Some(p) = self.previous_build {
+            f.push(("previous_build", Json::from(hex(p))));
+        }
+        Json::obj(f)
     }
 }
 
@@ -163,6 +206,8 @@ pub struct Entry {
     pub undoes: Vec<u64>,
     /// The undo entry that undid this one (cleared again if that undo is itself undone).
     pub undone_by: Option<u64>,
+    /// For [`Kind::Module`] entries: what happened to which module's code.
+    pub module: Option<Box<ModuleEvent>>,
     /// Entity ids touched (0 = the environment), sorted.
     ids: Vec<u64>,
     bytes: usize,
@@ -184,9 +229,11 @@ impl Entry {
         &*self.by == w.name && self.session.as_deref() == w.session
     }
 
-    /// Whether every change kept its previous state (game updates don't).
+    /// Whether every change kept its previous state (game updates don't; module events are
+    /// records of code, not world changes).
     pub fn undoable(&self) -> bool {
-        self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
+        self.kind != Kind::Module
+            && self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
     }
 
     fn matches_path(&self, prefix: &str) -> bool {
@@ -204,6 +251,9 @@ impl Entry {
         ];
         if let Some(via) = &self.via {
             f.push(("via", Json::from(&**via)));
+        }
+        if let Some(m) = &self.module {
+            f.push(("module", m.to_json()));
         }
         let relevant = |c: &&Change| path_prefix.is_none_or(|p| change_under(c, p));
         if detail {
@@ -557,6 +607,7 @@ impl Journal {
             next_id,
             undoes: Vec::new(),
             undone_by: None,
+            module: None,
             ids,
             bytes,
         };
@@ -601,6 +652,21 @@ impl Journal {
             return None;
         }
         Some(self.append(tick, game, via, kind, changes, next_id))
+    }
+
+    /// Records a module event ([`Kind::Module`]) by `by` (the agent that loaded or unloaded it, or
+    /// the module itself when it was disabled), with `via` the agent whose call caused it. Kept
+    /// with agents' entries, so a busy game never pushes them out. Returns the entry's id.
+    pub fn append_module<'w>(&mut self, by: impl Into<Writer<'w>>, via: Option<&str>, event: ModuleEvent, next_id: u64) -> u64 {
+        let tick = event.tick;
+        let seq = self.append(tick, by, via, Kind::Module, Vec::new(), next_id);
+        let extra = std::mem::size_of::<ModuleEvent>() + event.module.len();
+        if let Some(e) = self.agents.get_mut(seq) {
+            e.bytes += extra;
+            e.module = Some(Box::new(event));
+            self.agents.bytes += extra;
+        }
+        seq
     }
 
     pub fn get(&self, seq: u64) -> Option<&Entry> {
@@ -930,6 +996,16 @@ impl Journal {
                         return Err(WorldError::new("already_undone", format!("journal entry {seq} was already undone by entry {u}"))
                             .with("entry", seq)
                             .with("undone_by", u));
+                    }
+                    if e.kind == Kind::Module {
+                        return Err(WorldError::new(
+                            "not_undoable",
+                            format!(
+                                "journal entry {seq} records module code (a load, reload, unload or disable), not a world change: \
+                                 load the build you want with logic_reload or logic_build instead"
+                            ),
+                        )
+                        .with("entry", seq));
                     }
                     if !e.undoable() {
                         return Err(WorldError::new(
@@ -1715,5 +1791,28 @@ mod tests {
         let detail = j.history(&HistoryQuery { detail: true, ..q(1) });
         let item = &detail.get("entries").unwrap().as_array().unwrap()[0];
         assert_eq!(item.get("items").unwrap().to_string(), r#"[{"op":"set","id":1,"path":"/e0","version":2}]"#);
+    }
+
+    /// Module events are journaled with their build, found by kind, kept out of "undo my last
+    /// change", refused by id, and leave replay unchanged.
+    #[test]
+    fn module_events_are_journaled_records_not_undoable_changes() {
+        let (mut w, mut j) = live();
+        spawn(&mut w, &mut j, "ann", "/a");
+        let ev = ModuleEvent { tick: 7, module: "ambulo".into(), event: "reload", generation: 2, build_hash: 0xbeef, previous_build: Some(0xcafe) };
+        let seq = j.append_module(Writer::new("ann", Some("s1")), None, ev, w.next_id());
+        let h = j.history(&HistoryQuery { kinds: vec![Kind::Module], limit: 9, ..Default::default() });
+        let e = &h.get("entries").unwrap().as_array().unwrap()[0];
+        assert_eq!((e.get("id"), e.get("tick"), e.get("kind")), (Some(&Json::from(seq)), Some(&Json::from(7)), Some(&Json::from("module"))));
+        let m = e.get("module").unwrap();
+        assert_eq!(m.get("build_hash").and_then(Json::as_str), Some("000000000000beef"));
+        assert_eq!(m.get("previous_build").and_then(Json::as_str), Some("000000000000cafe"));
+        assert_eq!(e.get("undoable"), Some(&Json::from(false)));
+        let err = j.undo(&mut w, 8, "ann", &UndoRequest { ids: Some(vec![seq]), count: 1, force: true }, None).unwrap_err();
+        assert_eq!(err.code, "not_undoable");
+        // "Undo my last change" skips it and undoes the spawn.
+        let undone = j.undo(&mut w, 8, Writer::new("ann", None), &UndoRequest { count: 1, ..Default::default() }, None).unwrap();
+        assert_eq!(undone.undone, vec![1]);
+        assert_eq!(j.replay().unwrap().state_hash(), w.state_hash());
     }
 }

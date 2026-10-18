@@ -9,6 +9,7 @@
 use specula_sdk::abi::{self, status, HostApi, ModuleApi, Slice};
 use specula_sdk::{Module, Value};
 use specula_sys::dynlib::Library;
+use specula_sys::fpenv;
 use std::ffi::c_void;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -65,6 +66,12 @@ pub struct CallOutcome {
     pub reply: Value,
     /// Requests the module made.
     pub requests: u64,
+    /// The module left the floating-point control register changed (found when it made a request
+    /// or returned, and restored there; DETERMINISM.md rule 6): the first change seen.
+    pub fp_changed: Option<fpenv::Drift>,
+    /// The register was already changed before the call began (by something other than this
+    /// module; restored before calling it).
+    pub fp_before: Option<fpenv::Drift>,
 }
 
 impl CallOutcome {
@@ -208,9 +215,15 @@ impl ModuleCode {
     /// Calls entry `entry` with `input`; the module's requests go to `handler`, at most
     /// `max_requests` of them (past that each is refused with `too_many_requests` and the call
     /// fails).
+    ///
+    /// The floating-point environment is guarded on the way in and out, and whenever the module
+    /// calls back: the module starts in the default environment, the engine's handler always runs
+    /// in it, and a module that changes it is found, put right and reported
+    /// ([`CallOutcome::fp_changed`]).
     pub fn call(&self, entry: u32, input: &Value, handler: &mut dyn Handler, max_requests: u64) -> CallOutcome {
         let bytes = if input.is_null() { Vec::new() } else { input.encode() };
-        let mut cx = CallCtx { handler, answer: Vec::new(), reply: None, requests: 0, max_requests, overflowed: false, bad_reply: None };
+        let fp_before = fpenv::check_and_restore();
+        let mut cx = CallCtx { handler, answer: Vec::new(), reply: None, requests: 0, max_requests, overflowed: false, bad_reply: None, fp_changed: None };
         let host = HostApi {
             abi_version: abi::ABI_VERSION,
             api_size: std::mem::size_of::<HostApi>() as u32,
@@ -222,16 +235,20 @@ impl ModuleCode {
         // stays loaded as long as `self`; `host` and its context `cx` live until it returns, and
         // `bytes` is our own buffer.
         let status = unsafe { (self.call)(&host, entry, bytes.as_ptr(), bytes.len()) };
+        if let Some(d) = fpenv::check_and_restore() {
+            cx.fp_changed.get_or_insert(d);
+        }
+        let fp_changed = cx.fp_changed;
         let reply = match (cx.bad_reply.take(), cx.reply.take()) {
-            (Some(e), _) => return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests },
+            (Some(e), _) => return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests, fp_changed, fp_before },
             (None, Some(r)) => Value::decode(&r).unwrap_or_else(|e| error("bad_reply", &format!("the module's reply was not a value: {e}"))),
             (None, None) => Value::Null,
         };
         if cx.overflowed {
             let e = error("too_many_requests", &format!("the module made more than {max_requests} requests in one call"));
-            return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests };
+            return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests, fp_changed, fp_before };
         }
-        CallOutcome { status, reply, requests: cx.requests }
+        CallOutcome { status, reply, requests: cx.requests, fp_changed, fp_before }
     }
 }
 
@@ -276,6 +293,8 @@ struct CallCtx<'a> {
     max_requests: u64,
     overflowed: bool,
     bad_reply: Option<Value>,
+    /// The first floating-point environment change the module left (see [`ModuleCode::call`]).
+    fp_changed: Option<fpenv::Drift>,
 }
 
 unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32 {
@@ -286,6 +305,11 @@ unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usi
     // until the call returns, the module calls back only on the calling thread, and `call` does
     // not touch it while the module runs.
     let cx = unsafe { &mut *ctx.cast::<CallCtx<'_>>() };
+    // The engine's handler runs in the default floating-point environment, whatever the module
+    // set for itself.
+    if let Some(d) = fpenv::check_and_restore() {
+        cx.fp_changed.get_or_insert(d);
+    }
     let bytes: &[u8] = if req_len == 0 {
         &[]
     } else {
@@ -403,6 +427,47 @@ mod tests {
         assert_eq!(hook.reply, Value::map().with("a", 1).with("tick", 5));
         let unknown = code.call(77, &Value::Null, &mut h, 100);
         assert_eq!(unknown.status, status::UNKNOWN_ENTRY);
+    }
+
+    /// A module that changes the rounding mode: the engine's handler still runs in the default
+    /// environment, the call returns with it restored, and the change is reported.
+    #[test]
+    fn a_module_changing_the_rounding_mode_is_restored_and_reported() {
+        std::thread::spawn(|| {
+            if !fpenv::SUPPORTED {
+                eprintln!("skipped: no floating-point control register is checked on this target");
+                return;
+            }
+            struct Watch(Vec<Option<u64>>);
+            impl Handler for Watch {
+                fn request(&mut self, _req: &Value) -> Result<Value, Value> {
+                    self.0.push(fpenv::control());
+                    Ok(Value::Null)
+                }
+            }
+            let code = ModuleCode::of::<crate::fixtures::FlipRounding>();
+            let mut h = Watch(Vec::new());
+            let out = code.call(abi::entry::TICK, &Value::map().with("tick", 3), &mut h, 100);
+            assert!(out.ok(), "{out:?}");
+            assert_eq!(h.0, vec![Some(fpenv::EXPECTED)], "the handler ran in the default environment");
+            let d = out.fp_changed.expect("the change is reported");
+            assert_eq!(d.rounding(), fpenv::Rounding::TowardZero);
+            assert_eq!(out.fp_before, None);
+            assert_eq!(fpenv::control(), Some(fpenv::EXPECTED), "restored after the call");
+            // The module itself starts each call in the default environment.
+            let hook = code.call(abi::entry::HOOK, &Value::map().with("hook", "fp_probe"), &mut h, 100);
+            assert_eq!(hook.reply, Value::Int(i64::from((1.0f32 / 3.0).to_bits())), "1/3 to nearest inside the module");
+            assert!(hook.fp_changed.is_some());
+            // Changed before a call (a driver, say): restored first and reported apart.
+            // SAFETY: no float code runs before the call below restores it.
+            unsafe { fpenv::set_control(fpenv::rounding_bits(fpenv::Rounding::Up).unwrap()) };
+            let out = code.call(abi::entry::DESCRIBE, &Value::Null, &mut h, 100);
+            assert_eq!(out.fp_before.map(|d| d.rounding()), Some(fpenv::Rounding::Up));
+            assert_eq!(out.fp_changed, None, "describe leaves it alone");
+            assert_eq!(fpenv::control(), Some(fpenv::EXPECTED));
+        })
+        .join()
+        .expect("test thread");
     }
 
     #[test]

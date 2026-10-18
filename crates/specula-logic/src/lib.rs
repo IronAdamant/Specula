@@ -14,6 +14,8 @@
 pub mod build;
 pub mod diag;
 pub mod fix;
+#[doc(hidden)]
+pub mod fixtures;
 pub mod loader;
 
 pub use build::{BuildReport, BuildRequest, BuildService};

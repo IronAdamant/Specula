@@ -696,6 +696,9 @@ pub struct Expected {
     /// The original run's status.
     pub status: Option<String>,
     pub path: String,
+    /// The game modules' builds the recording ran with (`None`: a file from before they were
+    /// recorded, which can't be checked).
+    pub modules: Option<Vec<(String, u64)>>,
 }
 
 /// One playtest's progress (see the module docs).
@@ -1181,7 +1184,21 @@ pub fn parse_replay(text: &str, path: &str, tick_hz: u32) -> Result<(Spec, Expec
     }
     let checkpoints = list.iter().enumerate().map(|(i, c)| Checkpoint::from_json(c, &format!("checkpoints[{i}]"))).collect::<Result<Vec<_>, _>>()?;
     let status = v.get("status").and_then(Json::as_str).map(str::to_owned);
-    Ok((spec, Expected { checkpoints, status, path: path.to_owned() }))
+    let modules = match v.get("modules") {
+        None | Some(Json::Null) => None,
+        Some(list) => {
+            let bad = || SpecError::new("modules", "modules is a list of {module, build_hash (16 hex digits)}");
+            let items = list.as_array().ok_or_else(bad)?;
+            let mut out = Vec::new();
+            for m in items.iter().take(256) {
+                let name = m.get("module").and_then(Json::as_str).ok_or_else(bad)?;
+                let hash = m.get("build_hash").and_then(Json::as_str).and_then(|h| u64::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+                out.push((name.to_owned(), hash));
+            }
+            Some(out)
+        }
+    };
+    Ok((spec, Expected { checkpoints, status, path: path.to_owned(), modules }))
 }
 
 /// Windows device names: `NUL.json` is the device NUL, not a file.
