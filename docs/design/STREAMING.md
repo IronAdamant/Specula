@@ -109,7 +109,8 @@ more than that; a capture from a new view or a jump of the window's camera runs 
 waiting). Passes start when the window's camera moves (a quarter cell, or a tenth of the way to the nearest cell, a turn
 or a zoom: at most every 100 ms), when the world or the builds change, and at least once a second. Changed entities
 are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file); captures file
-everything at once, and a capture after any change runs a whole pass first (it never sees the world as it was).
+everything at once, and a capture redoes the changed cells in its view at once, out of turn (it never sees the world
+as it was there), without a whole pass.
 
 - Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`, and beyond it wherever
   they are at least `RESIDENT_MIN_PX` (4) pixels across: a glass tower 500 m away stays drawn. The same holds for every
@@ -153,7 +154,7 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
 
 - **Members:** persistent, shown, non-`ui` model entities without `anim`, without a kinematic or dynamic body, with a
   ready build whose coarsest level is opaque (`standard` presets) and untextured, and that fewer than `INSTANCED_MIN`
-  (8) entities use: a build many entities share is already drawn instanced (one draw for all of them, at any distance),
+  (8) shown entities use: a build many entities share is already drawn instanced (one draw for all of them, at any distance),
   so merging it would only add draws (the M2 10k field stays instanced). Everything else in the cell draws on its own
   (within `radius_m`, or beyond where big enough on screen).
 - **Geometry:** each member's **coarsest reachable LOD** (`min(lods - 1, 3)`), transformed into the proxy's frame (the
@@ -173,8 +174,8 @@ Per cell, a **proxy** merges the cell's static models into one mesh per material
   stale at once (no longer drawn; the members stand in, see Wanted), and a new one is built once the cell has been quiet
   for `settle_s`, so an agent editing a far cell never sees a ghost of the old content. A changed cell (an edit, or a
   member's build rebuilt by `model_reload`) is marked dirty at once: the window redoes the ones it draws as proxies out
-  of turn in the running pass, a capture runs a whole pass first, and no capture draws a dirty cell's proxy. A capture
-  waits for a coming proxy only when its members aren't on the GPU to draw meanwhile.
+  of turn in the running pass, a capture redoes those in its view the same way, and no capture draws a dirty cell's
+  proxy. A capture waits for a coming proxy only when its members aren't on the GPU to draw meanwhile.
 - **Drawing:** covered members are skipped in `GpuModels::draw_model` by a bitset indexed by entity id
   (`hlod::covers`, one branch per model draw); proxy draws are appended after the entity draws. The draw-list build
   itself (sight.rs, the draw cache) is untouched apart from owner id 0 for proxy draws in captures.

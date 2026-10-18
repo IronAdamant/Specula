@@ -855,10 +855,11 @@ impl Streamer {
                 }
             }
         }
-        // Builds many entities use draw instanced: no proxy merges them (cells whose builds
-        // crossed the line merge again).
+        // Builds many shown entities use draw instanced: no proxy merges them (cells whose builds
+        // crossed the line merge again). Hidden and interface entities aren't drawn instanced.
+        let _zi = specula_core::profile::zone("instanced");
         let mut uses: HashMap<u64, u32> = HashMap::new();
-        for e in world.persistent_entities().filter(|e| e.shape == Shape::Model) {
+        for e in world.persistent_entities().filter(|e| e.shape == Shape::Model && sight::in_frame(e, false)) {
             if let Some(b) = e.resolved_model().and_then(|r| models.by_handle.get(r.handle as usize).copied().flatten()) {
                 *uses.entry(b).or_default() += 1;
             }
@@ -874,6 +875,7 @@ impl Streamer {
             }
             self.instanced = instanced;
         }
+        drop(_zi);
         // Builds that landed (or changed): their members' boxes now span the models.
         let reboxed: Vec<u32> = (0..models.by_handle.len())
             .filter(|&h| models.by_handle[h].is_some() && old.get(h).copied().flatten() != models.by_handle[h])

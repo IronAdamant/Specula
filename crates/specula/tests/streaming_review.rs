@@ -351,3 +351,33 @@ fn instanced_builds_are_not_merged() {
     let stats = draw(&world, &models, &shapes, cam);
     assert_eq!(stats.not_resident, 0, "all 16 drawn as instances");
 }
+
+/// Integrator's round 2: hidden copies aren't drawn instanced, so they don't count towards
+/// INSTANCED_MIN: 7 shown + 9 hidden copies of one far build still merge into a proxy.
+#[test]
+fn hidden_copies_dont_count_as_instanced() {
+    let Some(mut gpu) = gpu_or_skip("hidden_copies_dont_count_as_instanced") else { return };
+    let shared = library();
+    let mut world = world_of(&shared);
+    for i in 0..16 {
+        let pos = Vec3::new(300.0 + (i % 4) as f32 * 6.0, 0.0, (i / 4) as f32 * 6.0);
+        let mut s = model("recipes/tombstone.json", pos, 4.0);
+        s.visible = i < 7;
+        world.spawn(s, "t").unwrap();
+    }
+    wait_builds(&shared, &mut world);
+    let mut models = GpuModels::default();
+    let mut stream = streamer(&mut gpu, &mut models, &[("hlod_min_m", Json::from(0.0))]);
+    let cam = Camera::new(Vec3::new(0.0, 30.0, 10.0), Vec3::new(300.0, 0.0, 10.0), 40.0);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
+        let mut out = Vec::new();
+        stream.draw_capture(&cam, 360, &mut out);
+        if !out.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "7 shown copies merge: {}", stream.state_json(&gpu, &models, &world, None, 8));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
