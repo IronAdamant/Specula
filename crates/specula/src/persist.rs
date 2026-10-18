@@ -380,6 +380,12 @@ pub fn render(world: &World) -> Vec<(String, String)> {
     plan(world, Path::new(""), None).render(1).0
 }
 
+/// [`render`] in two steps, so the costly part can run off the engine thread (save games):
+/// [`plan`] takes owned copies on the engine thread, this renders them anywhere.
+pub fn render_plan(plan: &Plan) -> Vec<(String, String)> {
+    plan.render(1).0
+}
+
 /// The cameras file: one camera per line.
 fn cameras_document(records: &[Json]) -> String {
     let mut out = format!("{{\n  \"format\": {},\n  \"cameras\": [", Json::from(FORMAT));

@@ -1,0 +1,24 @@
+{
+  "balance": 1,
+  "name": "slice_close_call",
+  "notes": "Balance targets for the Lex slice (slice.lex.json), played by a build order that buys as grave-dust allows (so its timing, and the run, change with the seed's drops). Wanted: the run is still won, but only just, with about seven of the ten tombstones left, and skeleton runners take a few seconds to bring down. A designer's draft for the balance lab's proof (games/sepulcra/tests/balance.rs tunes runner_hp toward it and checks the result on held-out seeds), not decided balance: every result needs a human playtest.",
+  "ticks": "12m",
+  "seeds": { "train": 24, "holdout": 24, "base": 1 },
+  "policy": {
+    "every": "1s",
+    "wait_on": ["not_enough_dust"],
+    "steps": [
+      { "command": "place", "args": { "stone": "warding_1", "site": "top:8,14" } },
+      { "command": "place", "args": { "stone": "warding_1", "site": "top:10,16" } },
+      { "command": "place", "args": { "stone": "rune_pillar_1", "site": "top:8,16" }, "when": "res.dust >= 75" },
+      { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 70" },
+      { "command": "upgrade", "args": { "stone": "top:10,16" }, "when": "res.dust >= 70" },
+      { "command": "upgrade", "args": { "stone": "top:8,14" }, "when": "res.dust >= 95" }
+    ]
+  },
+  "targets": [
+    { "id": "wins", "metric": "win_rate", "target": 1, "tolerance": 0.1 },
+    { "id": "tombstones_left", "metric": "expr", "expr": "res.tombstones", "target": 7, "tolerance": 0.75 },
+    { "id": "runner_time_to_kill", "metric": "time_to_kill", "archetype": "runner", "target": 5, "tolerance": 2, "weight": 0.25 }
+  ]
+}

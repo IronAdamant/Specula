@@ -464,6 +464,10 @@ impl Engine {
         if let Some(h) = self.nav.last_hash() {
             self.trace.scratch.push(("nav", h));
         }
+        // Module state kept in the engine (stores, RNG positions, events): saved by save games.
+        if let Some(h) = self.logic.state_hash() {
+            self.trace.scratch.push(("logic", h));
+        }
         self.trace.record(tick, hash, self.world.next_id());
     }
 

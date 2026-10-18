@@ -1,0 +1,140 @@
+{
+  "sweep": {
+    "runs": 120,
+    "runs_per_s_1": 47,
+    "runs_per_s_many": 272,
+    "threads": 16,
+    "bystander_ms": {
+      "idle_median": 7.4643999978434294,
+      "median": 22.28340000147,
+      "max": 40.239499998278916
+    }
+  },
+  "window": {
+    "idle_frame_ms": {
+      "mean": 4.206,
+      "p95": 5.358,
+      "max": 9.126
+    },
+    "sweep_frame_ms": {
+      "mean": 4.235,
+      "p95": 5.964,
+      "max": 9.435
+    },
+    "sweep_runs": 576,
+    "sweep_runs_per_s": 245
+  },
+  "tune": {
+    "best": {
+      "params": {
+        "runner_hp": "118pt"
+      },
+      "loss": 0.4229,
+      "hit": true,
+      "train": {
+        "params": {
+          "runner_hp": "118pt"
+        },
+        "rules_hash": "469fcea213f62b6a",
+        "runs": 24,
+        "loss": 0.4229,
+        "hit": true,
+        "targets": [
+          {
+            "id": "wins",
+            "mean": 1,
+            "stdev": 0,
+            "min": 1,
+            "max": 1,
+            "defined_in": 24,
+            "target": 1,
+            "tolerance": 0.1,
+            "hit": true,
+            "loss": 0
+          },
+          {
+            "id": "tombstones_left",
+            "mean": 6.5417,
+            "stdev": 0.8836,
+            "min": 6,
+            "max": 9,
+            "defined_in": 24,
+            "target": 7,
+            "tolerance": 0.75,
+            "hit": true,
+            "loss": 0.3735
+          },
+          {
+            "id": "runner_time_to_kill",
+            "mean": 5.8896,
+            "stdev": 0.0364,
+            "min": 5.8633,
+            "max": 5.9667,
+            "defined_in": 24,
+            "target": 5,
+            "tolerance": 2,
+            "hit": true,
+            "loss": 0.0495
+          }
+        ],
+        "outcomes": {
+          "won": 24
+        }
+      }
+    },
+    "held_out": {
+      "params": {
+        "runner_hp": "118pt"
+      },
+      "rules_hash": "469fcea213f62b6a",
+      "runs": 24,
+      "loss": 0.4936,
+      "hit": true,
+      "targets": [
+        {
+          "id": "wins",
+          "mean": 1,
+          "stdev": 0,
+          "min": 1,
+          "max": 1,
+          "defined_in": 24,
+          "target": 1,
+          "tolerance": 0.1,
+          "hit": true,
+          "loss": 0
+        },
+        {
+          "id": "tombstones_left",
+          "mean": 6.5,
+          "stdev": 0.8847,
+          "min": 6,
+          "max": 9,
+          "defined_in": 24,
+          "target": 7,
+          "tolerance": 0.75,
+          "hit": true,
+          "loss": 0.4444
+        },
+        {
+          "id": "runner_time_to_kill",
+          "mean": 5.8871,
+          "stdev": 0.036,
+          "min": 5.8633,
+          "max": 5.9667,
+          "defined_in": 24,
+          "target": 5,
+          "tolerance": 2,
+          "hit": true,
+          "loss": 0.0492
+        }
+      ],
+      "outcomes": {
+        "won": 24
+      }
+    },
+    "seconds": [
+      0.62,
+      0.815
+    ]
+  }
+}

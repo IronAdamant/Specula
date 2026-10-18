@@ -83,6 +83,60 @@ impl ModuleInput {
         self.time_s = old.time_s;
     }
 
+    /// For save games: what agents hold, the latched window edges and what each action reported
+    /// last tick (the edges the next tick derives from), by action name. The device state
+    /// behind window input (keys physically down) is the human's, not the save's.
+    pub(crate) fn save(&self, w: &mut specula_core::bytes::ByteWriter) {
+        let state = |w: &mut specula_core::bytes::ByteWriter, s: &ActionState| {
+            w.bool(s.held);
+            w.bool(s.pressed);
+            w.bool(s.released);
+            w.f32(s.value[0]);
+            w.f32(s.value[1]);
+        };
+        w.len_u32(self.holds.len());
+        for (name, h) in &self.holds {
+            w.str(name);
+            w.f32(h.value[0]);
+            w.f32(h.value[1]);
+            w.u64(h.ticks_left);
+        }
+        w.len_u32(self.map.actions().len());
+        for (i, a) in self.map.actions().iter().enumerate() {
+            w.str(&a.name);
+            state(w, &self.last[i]);
+            state(w, &self.latch[i]);
+        }
+    }
+
+    /// Reads [`ModuleInput::save`]'s bytes; actions this build doesn't have are skipped.
+    pub(crate) fn restore(&mut self, r: &mut specula_core::bytes::ByteReader<'_>) -> Result<(), specula_core::bytes::DecodeError> {
+        let state = |r: &mut specula_core::bytes::ByteReader<'_>| -> Result<ActionState, specula_core::bytes::DecodeError> {
+            Ok(ActionState { held: r.bool("held")?, pressed: r.bool("pressed")?, released: r.bool("released")?, value: [r.f32("value")?, r.f32("value")?] })
+        };
+        let n = r.count("holds", 4096, 20)?;
+        let mut holds = BTreeMap::new();
+        for _ in 0..n {
+            let name = r.str("holds.name", 256)?;
+            let value = [r.f32("holds.value")?, r.f32("holds.value")?];
+            let ticks_left = r.u64("holds.ticks")?;
+            if self.map.index_of(&name).is_some() {
+                holds.insert(name, Hold { value, ticks_left });
+            }
+        }
+        let n = r.count("actions", 4096, 30)?;
+        for _ in 0..n {
+            let name = r.str("actions.name", 256)?;
+            let (last, latch) = (state(r)?, state(r)?);
+            if let Some(i) = self.map.index_of(&name) {
+                self.last[i] = last;
+                self.latch[i] = latch;
+            }
+        }
+        self.holds = holds;
+        Ok(())
+    }
+
     /// One window frame's input.
     pub fn feed(&mut self, events: &[Event], pads: &[GamepadState], dt_s: f32) {
         if self.is_empty() {
