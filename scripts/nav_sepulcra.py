@@ -81,17 +81,19 @@ def main():
             cell = slab["props"]["cell_m"]
             half = cell * 10
             build = m.json("nav_build", name="slab", sources={"under": "/slab"})
-            # The game's ticks build it (tiles_per_tick a tick): wait until it is complete.
-            t0 = time.time()
+            # The fixed ticks build it (tiles_per_tick a tick); the world is paused, so step them.
+            t0, steps = time.time(), 0
             while True:
                 mesh = next(n for n in m.json("nav_info", mesh="slab")["navmeshes"] if n["path"] == "/nav/slab")
                 if mesh["ready"] and mesh["dirty_tiles"] == 0:
                     break
-                if time.time() - t0 > 60:
+                if steps > 3000:
                     raise RuntimeError(f"the slab navmesh didn't finish: {mesh}")
-                time.sleep(0.1)
+                m.json("time_control", action="step", ticks=5)
+                steps += 5
             build.update({k: mesh[k] for k in ("polygons", "tiles_built")})
             build["ms"] = round((time.time() - t0) * 1000, 1)
+            build["ticks"] = steps
             check(build["polygons"] > 0, f"nav_build from the slab the game draws: {build['polygons']} polygons, {build['tiles_built']} tiles, {build['ms']} ms", failures)
             centre = lambda c, r, y=0.0: [-half + (c + 0.5) * cell, y, -half + (r + 0.5) * cell]  # noqa: E731
             graveyard = centre(9.5, 9.5, 0.12)
