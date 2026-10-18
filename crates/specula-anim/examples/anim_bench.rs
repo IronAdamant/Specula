@@ -6,6 +6,8 @@
 //! cargo run -p specula-anim --example anim_bench --release
 //! ```
 
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;

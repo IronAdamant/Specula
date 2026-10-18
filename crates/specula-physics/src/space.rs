@@ -1289,6 +1289,7 @@ impl Space {
     }
 
     /// Advances the simulation by `dt` seconds.
+    #[allow(clippy::disallowed_methods, reason = "stage timings for perf_frame only: never read by the simulation or its hash")]
     pub fn step(&mut self, dt: f32) -> &StepReport {
         let t_start = Instant::now();
         self.report = StepReport { step: self.steps + 1, ..StepReport::default() };

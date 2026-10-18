@@ -1,6 +1,8 @@
 //! Agent-authored motion: keyframed poses, held poses, recoils, breathing, secondary-motion
 //! chains and gaits from a rig's bone names.
 
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
+
 use specula_anim::math::{qdot, qeuler};
 use specula_anim::{gen, measure, AnimErrorCode, AnimSet, Skeleton};
 use specula_core::Json;

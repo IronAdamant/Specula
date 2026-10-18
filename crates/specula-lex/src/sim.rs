@@ -796,6 +796,7 @@ fn step_toward(from: P3, to: P3, d: i64) -> (P3, bool) {
 impl Core<'_> {
     /// Adds `n` entity checks to this tick's work; true once the tick is over budget (the
     /// remaining behaviours of the tick are skipped, once noted).
+    #[allow(clippy::disallowed_methods, reason = "the wall-clock deadline marks the run interrupted (no longer a deterministic result); the work budget itself counts units, not time")]
     fn spend(&mut self, n: usize) -> bool {
         let counter = if self.in_command { &mut self.st.command_work } else { &mut self.st.work };
         let before = *counter;

@@ -14,6 +14,8 @@
 //! foot, yellow = hands, white = head, green = tail or flame tip. Opaque parts use the recipes'
 //! vertex colours; the moon casts shadows.
 
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

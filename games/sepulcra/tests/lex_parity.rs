@@ -5,6 +5,8 @@
 //! commands were refused, and every enemy's and projectile's position (to the millimetre) and
 //! every enemy's HP (to the milli-HP).
 
+#![allow(clippy::disallowed_methods, reason = "a test and benchmark harness: wall-clock timings and parallel runs, each run deterministic on its own")]
+
 use std::sync::Arc;
 
 use sepulcra::content::{Content, ENEMIES_JSON, SLAB_01_JSON, STONES_JSON};

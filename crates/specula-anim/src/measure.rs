@@ -97,7 +97,7 @@ pub fn pose_hash(set: &AnimSet, id: ClipId, step: f32) -> Result<u64, AnimError>
     if !(step.is_finite() && step > 0.0) {
         return Err(AnimError::new("step", AnimErrorCode::OutOfRange, format!("step {step} must be a positive number of seconds")));
     }
-    let samples = (clip.duration as f64 / step as f64).floor();
+    let samples = specula_core::dmath::floor_f64(clip.duration as f64 / step as f64);
     if samples >= MAX_HASH_SAMPLES as f64 {
         return Err(AnimError::new("step", AnimErrorCode::Limit, format!("{samples} samples; at most {MAX_HASH_SAMPLES}")).with_numbers(samples, MAX_HASH_SAMPLES as f64));
     }
