@@ -339,8 +339,12 @@ can't rebuild them as they are) go in the save (`NavMesh::tile_state`, `restore_
 section cap). A load builds only the up-to-date tiles (sliced, clock held), puts the stale ones back, keeps the
 queues and the build counters, so the ticks' rebuilds continue exactly. Saves while a navmesh is first being built
 work; only a switch to new settings (two navmeshes at once) or a load being prepared is refused (`nav_building`,
-`retry_after_ms`; the game's autosave is retried up to 20 times). The save syncs navigation first, which is what the
-next tick's sync does anyway. The review's p23 is a test (`saving_is_never_an_input_and_a_load_continues_mid_build_exactly`):
+`retry_after_ms`; the game's autosave is retried up to 20 times, outside the per-frame request cap, and its answer
+says `requested_tick` and `retried`). *Review round 5:* the save works on a **copy** of navigation synced to the
+world (`Nav::save_section`, `Nav::save_hash`); the live state is never touched, so an edit made after the save but
+before the next tick (spawn, save, delete) leaves the run exactly as without the save (a test, from the review's
+p29). A restore checks stale tiles are dirty and built; one that fails part way marks every tile dirty, so tiles it
+put back are rebuilt from the world over the ticks. The review's p23 is a test (`saving_is_never_an_input_and_a_load_continues_mid_build_exactly`):
 a run that saves and one that doesn't hash the same on every tick, and the save, taken mid first build with an edit
 just made, loads and continues tick for tick. Live (p23 with a load): the same world and nav hashes and walker
 position 90 ticks on; the save takes about 10 ms. `scripts/save_check.py`: Sepulcra with a slab navmesh, three walkers and a patrolling

@@ -823,6 +823,7 @@ fn source_of(world: &World, e: &Entity) -> Option<SourceEntry> {
 // Meshes, agents, minds
 
 /// One navmesh and the agents on it.
+#[derive(Clone)]
 pub struct MeshSlot {
     pub id: u64,
     pub path: String,
@@ -861,6 +862,7 @@ pub struct MeshSlot {
 type Buckets = BTreeMap<u64, BTreeMap<(u32, u32), Vec<u32>>>;
 
 /// A navmesh being built for new settings while the old one serves.
+#[derive(Clone)]
 pub struct NextMesh {
     pub settings: MeshSettings,
     pub mesh: NavMesh,
@@ -998,6 +1000,7 @@ struct AgentLink {
 }
 
 /// A mind attached to an entity.
+#[derive(Clone)]
 struct MindSlot {
     /// The `props.mind` it was made from.
     props: Json,
@@ -1046,8 +1049,8 @@ pub struct TickReport {
     pub ms: f64,
 }
 
-/// Navigation and AI state.
-#[derive(Default)]
+/// Navigation and AI state. (Clone: a save works on a copy, so saving never changes the run.)
+#[derive(Clone, Default)]
 pub struct Nav {
     pub meshes: BTreeMap<u64, MeshSlot>,
     sources: BTreeMap<u64, SourceEntry>,
@@ -2475,6 +2478,23 @@ impl Nav {
     /// unbuilt tiles, and the polygons of tiles built from geometry that has changed since), so
     /// edits and first builds in progress are fine; only a switch to new settings (an old and a
     /// new navmesh at once) or a load still being prepared are refused: `nav_building`, retry.
+    /// Navigation's state for a save of `world` now: a copy is synced to the world (marking what
+    /// the next tick's sync would mark) and saved; the live state isn't touched, so a save is
+    /// never an input to the run, whatever happens before the next tick.
+    pub fn save_section(&self, world: &World, generation: u64) -> Result<Vec<u8>, world::WorldError> {
+        let mut copy = self.clone();
+        copy.sync(world, generation);
+        copy.check_saveable()?;
+        encode_section(&copy.save_state())
+    }
+
+    /// The nav hash a save of `world` now records (the synced copy's, as [`Nav::save_section`]).
+    pub fn save_hash(&self, world: &World, generation: u64) -> u64 {
+        let mut copy = self.clone();
+        copy.sync(world, generation);
+        copy.hash()
+    }
+
     pub fn check_saveable(&self) -> Result<(), world::WorldError> {
         // (Nothing is built or changed for a save: saving is never an input to the run.)
         if let Some(m) = self.meshes.values().find(|m| m.next.is_some()) {
@@ -2553,9 +2573,16 @@ impl Nav {
         let Some(j) = self.pending_restore.take() else { return };
         let r = self.try_restore(world, &j);
         if r.is_err() {
-            // Start fresh from the world (its navmeshes are built: no second load).
+            // Start fresh from the world (its navmeshes are built: no second load). Tiles a load
+            // left unbuilt (the save's dirty ones) or a failed restore put back from the save are
+            // rebuilt from the world over the ticks: every tile is marked dirty.
             for m in self.meshes.values_mut() {
                 m.crowd = Crowd::new(CrowdSettings::default());
+                let (nx, nz) = m.mesh.tile_count();
+                let all: BTreeSet<(u32, u32)> = (0..nz).flat_map(|z| (0..nx).map(move |x| (x, z))).collect();
+                m.unbuilt = all.iter().copied().filter(|&(x, z)| m.mesh.tile(m.mesh.tile_index(x, z)).is_none()).collect();
+                m.dirty = all;
+                m.ready = m.unbuilt.is_empty();
             }
             let minds: Vec<u64> = self.minds.keys().copied().collect();
             for id in minds {
@@ -2599,15 +2626,21 @@ impl Nav {
             if stale.len() > nx as usize * nz as usize {
                 return Err(bad("more stale tiles than the navmesh has".into()));
             }
-            for s in stale {
-                let t = tiles_of(Some(&Json::arr([s.get("tile").cloned().unwrap_or(Json::Null)])), nx, nz).and_then(|t| t.into_iter().next()).ok_or_else(|| bad("a stale tile outside the navmesh".into()))?;
-                slot.mesh.restore_tile(t.0, t.1, s.get("state").unwrap_or(&Json::Null)).map_err(|e| nav_error(&e))?;
-            }
-            slot.dirty = tiles_of(m.get("dirty"), nx, nz).ok_or_else(|| bad("dirty tiles".into()))?;
-            slot.unbuilt = tiles_of(m.get("unbuilt"), nx, nz).ok_or_else(|| bad("unbuilt tiles".into()))?;
-            if !slot.unbuilt.is_subset(&slot.dirty) {
+            let dirty = tiles_of(m.get("dirty"), nx, nz).ok_or_else(|| bad("dirty tiles".into()))?;
+            let unbuilt = tiles_of(m.get("unbuilt"), nx, nz).ok_or_else(|| bad("unbuilt tiles".into()))?;
+            if !unbuilt.is_subset(&dirty) {
                 return Err(bad("unbuilt tiles that aren't dirty".into()));
             }
+            for s in stale {
+                let t = tiles_of(Some(&Json::arr([s.get("tile").cloned().unwrap_or(Json::Null)])), nx, nz).and_then(|t| t.into_iter().next()).ok_or_else(|| bad("a stale tile outside the navmesh".into()))?;
+                // A stale tile is built and waiting for a rebuild: dirty, not unbuilt.
+                if !dirty.contains(&t) || unbuilt.contains(&t) {
+                    return Err(bad("a stale tile that isn't dirty-and-built".into()));
+                }
+                slot.mesh.restore_tile(t.0, t.1, s.get("state").unwrap_or(&Json::Null)).map_err(|e| nav_error(&e))?;
+            }
+            slot.dirty = dirty;
+            slot.unbuilt = unbuilt;
             match m.get("ready").and_then(Json::as_bool) {
                 Some(true) => {
                     if !slot.ready {
@@ -3694,14 +3727,12 @@ mod tests {
             nav.tick(&mut w, &mut physics, 0, t, 1.0 / 30.0, 30);
         }
         cube(&mut w, "crate", Vec3::new(3.0, 0.5, 3.0), Vec3::ONE);
-        nav.sync(&w, 0);
-        nav.check_saveable().unwrap();
-        let bytes = encode_section(&nav.save_state()).unwrap();
+        let bytes = nav.save_section(&w, 0).unwrap();
         let parsed = parse_section(&bytes).unwrap();
         let mut back = Nav::default();
         assert_eq!(back.restore_state(&w, 1, &parsed).unwrap(), None);
         back.load_slice(&w, 1, None);
-        assert_eq!(back.take_restore_outcome().unwrap().unwrap(), nav.hash());
+        assert_eq!(back.take_restore_outcome().unwrap().unwrap(), nav.save_hash(&w, 0));
         // Damage is a structured error, never a panic: every cut, flipped bytes, wrong versions.
         for cut in (0..bytes.len()).step_by(37) {
             let _ = parse_section(&bytes[..cut]);
@@ -3724,13 +3755,74 @@ mod tests {
                 n.tick(&mut w2, &mut physics, 1, 0, 1.0 / 30.0, 30);
             }
         }
+        // A restore that fails part way (a damaged stale tile after a good one) leaves no saved
+        // tile behind: every tile is rebuilt from the world over the ticks.
+        let mut j = parse_section(&bytes).unwrap();
+        if let Some(Json::Arr(meshes)) = j.get("meshes").cloned() {
+            let mut meshes = meshes;
+            if let Some(Json::Arr(stale)) = meshes[0].get("stale").cloned() {
+                assert!(!stale.is_empty(), "the edit left stale tiles");
+                let mut stale = stale;
+                let mut broken = stale[0].clone();
+                broken.set("state", Json::obj([("polys", Json::Arr(Vec::new()))]));
+                stale.push(broken);
+                meshes[0].set("stale", Json::Arr(stale));
+            }
+            j.set("meshes", Json::Arr(meshes));
+        }
+        let mut failed = Nav::default();
+        if let Ok(None) = failed.restore_state(&w, 1, &j) {
+            failed.load_slice(&w, 1, None);
+        }
+        assert!(failed.take_restore_outcome().is_some_and(|r| r.is_err()));
+        let mut w3 = w.clone();
+        for t in 0..200 {
+            failed.tick(&mut w3, &mut physics, 1, t, 1.0 / 30.0, 30);
+        }
+        let mut whole = Nav::default();
+        whole.sync(&w3, 0);
+        build_now(&mut whole, &w3, 0, m);
+        assert_eq!(failed.meshes[&m].mesh.hash(), whole.meshes[&m].mesh.hash(), "rebuilt from the world");
         // A switch to new settings in progress (two navmeshes at once) is refused, retry later.
         let mut j = w.get(m).unwrap().props.get(MESH_KEY).unwrap().clone();
         j.set("cell_size", Json::from(0.1));
         w.update(&EntityKey::Id(m), UpdateSpec { props: Some(Json::obj([(MESH_KEY, j)])), ..Default::default() }, "t").unwrap();
-        nav.sync(&w, 0);
-        assert!(nav.meshes[&m].next.is_some());
-        assert_eq!(nav.check_saveable().unwrap_err().code, "nav_building");
+        assert_eq!(nav.save_section(&w, 0).unwrap_err().code, "nav_building");
+    }
+
+    #[test]
+    fn a_save_never_changes_the_run_whatever_happens_before_the_next_tick() {
+        // The review's p29: spawn a cube, save, delete the cube before the next tick. The run that
+        // saved and one that didn't must stay identical (the save works on a copy).
+        let run = |save: bool| {
+            let mut w = World::default();
+            room(&mut w);
+            let mut nav = Nav::default();
+            let mut physics = Physics::default();
+            nav.tick(&mut w, &mut physics, 0, 0, 1.0 / 30.0, 30);
+            let m = navmesh(&mut w);
+            let a = walker(&mut w, "w", Vec3::new(-6.0, 0.5, -6.0), vec![]);
+            w.update(&EntityKey::Id(a), UpdateSpec { props: Some(Json::obj([(AGENT_KEY, Json::obj([("speed", Json::from(2.5)), ("goal", Json::arr([Json::from(6.0), Json::from(0.0), Json::from(6.0)]))]))])), ..Default::default() }, "t").unwrap();
+            let mut hashes = Vec::new();
+            for t in 1..200u64 {
+                if t == 60 {
+                    let c = cube(&mut w, "crate", Vec3::new(1.0, 0.5, 1.0), Vec3::new(2.0, 1.0, 2.0));
+                    if save {
+                        let bytes = nav.save_section(&w, 0).unwrap();
+                        assert!(parse_section(&bytes).is_ok());
+                    }
+                    w.delete(&EntityKey::Id(c), None).unwrap();
+                }
+                nav.tick(&mut w, &mut physics, 0, t, 1.0 / 30.0, 30);
+                let _ = w.take_changes();
+                hashes.push((nav.hash(), nav.meshes[&m].dirty.len()));
+            }
+            (hashes, w.state_hash())
+        };
+        let (a, wa) = run(false);
+        let (b, wb) = run(true);
+        assert_eq!(a, b, "saving changed the run");
+        assert_eq!(wa, wb);
     }
 
     #[test]
@@ -3774,10 +3866,12 @@ mod tests {
             }
             events(&mut wb, t);
             if t == 21 {
-                na.sync(&wa, 0);
-                assert!(!na.meshes[&m].ready && !na.meshes[&m].dirty.is_empty(), "saved mid-build");
-                na.check_saveable().unwrap();
-                saved = Some((encode_section(&na.save_state()).unwrap(), wa.clone(), na.hash()));
+                let bytes = na.save_section(&wa, 0).unwrap();
+                let hash = na.save_hash(&wa, 0);
+                let j = parse_section(&bytes).unwrap();
+                let mesh = j.get("meshes").and_then(Json::as_array).unwrap()[0].clone();
+                assert!(mesh.get("ready").and_then(Json::as_bool) == Some(false) && !mesh.get("dirty").and_then(Json::as_array).unwrap().is_empty(), "saved mid-build");
+                saved = Some((bytes, wa.clone(), hash));
             }
             step(&mut na, &mut wa, &mut pa, t);
             step(&mut nb, &mut wb, &mut pb, t);

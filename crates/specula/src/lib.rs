@@ -478,7 +478,9 @@ struct Engine {
     save_load: Option<save_tools::Loading>,
     /// The game's saves refused for a moment (`nav_building`), retried when due: (due, tries,
     /// request). A wave-start autosave isn't lost to a navmesh switching settings.
-    game_save_retry: Vec<(Instant, u32, game::GameRequest)>,
+    game_save_retry: Vec<save_tools::RetrySave>,
+    /// Retried game saves under way, noted on their answers (requested tick, tries).
+    game_save_notes: Vec<(game::GameRequest, save_tools::RetryInfo)>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -624,6 +626,7 @@ impl Engine {
             save_writes: Vec::new(),
             save_load: None,
             game_save_retry: Vec::new(),
+            game_save_notes: Vec::new(),
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
