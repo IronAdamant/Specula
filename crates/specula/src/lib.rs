@@ -1591,6 +1591,9 @@ impl Engine {
         let session = self.swarm.key(&request.session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
+        // Agents' commands change the simulation too: they run in the default floating-point
+        // environment, whatever the frame just drawn (the GPU driver) left behind (rule 6).
+        self.fp.check(tick, "before_command");
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
         let game_call = matches!(request.command, Command::Game { .. });
         let output = match request.command {

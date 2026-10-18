@@ -688,7 +688,8 @@ fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(St
 
 /// A binding's args with `"$x"` / `"$y"` as the action's value in thousandths.
 fn substitute(args: &Json, x: f32, y: f32) -> Json {
-    let milli = |v: f32| Json::from((f64::from(v) * 1000.0).round().clamp(-1e12, 1e12) as i64);
+    // The command's input: rounded with dmath, the same on every platform (rule 4).
+    let milli = |v: f32| Json::from(specula_core::dmath::round_f64(f64::from(v) * 1000.0).clamp(-1e12, 1e12) as i64);
     match args {
         Json::Str(s) if s == "$x" => milli(x),
         Json::Str(s) if s == "$y" => milli(y),
