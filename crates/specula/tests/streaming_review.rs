@@ -17,6 +17,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A world edit the tests make between captures.
+type Edit = Box<dyn Fn(&mut World)>;
+
 fn gpu_or_skip(test: &str) -> Option<Gpu> {
     if !specula_gpu::is_available() {
         eprintln!("SKIPPED {test}: Vulkan is not available");
@@ -279,7 +282,7 @@ fn captures_redo_only_changed_cells_in_view() {
     }
     let passes = |stream: &Streamer, gpu: &Gpu, models: &GpuModels| stream.json(gpu, models).get("passes").and_then(Json::as_u64).unwrap();
     // Quickly (passes otherwise come every UPDATE_EVERY after a change): a few captures each.
-    let edits: [(&str, Box<dyn Fn(&mut World)>); 3] = [
+    let edits: [(&str, Edit); 3] = [
         (
             "an edit out of view",
             Box::new(move |w: &mut World| {
