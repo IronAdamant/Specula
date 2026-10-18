@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-18",
+  "time": "14:43",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "physics",
+  "topic": "physics",
+  "title": "Joints and a ragdoll on hull parts",
+  "note": "First joints entry: a door hinge at its 100 degree limit, a chain, a rope, a slider at its end and a weld, with the joints overlay and its drawn legend; then a Sepulcra shambler knocked over as a ragdoll whose parts are convex hulls fitted to its mesh, lying on its back (it sat on its coat with round capsules), and the hull overlay.",
+  "source": "scripts/joints_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-run0-joints-end.jpg",
+      "caption": "The joints overlay: 12 joints holding, legend top left",
+      "original": "run0_joints_end.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 7177
+    },
+    {
+      "file": "02-ragdoll-limp-012.jpg",
+      "caption": "Knocked back, the shambler sits back",
+      "original": "ragdoll_limp_012.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 3985
+    },
+    {
+      "file": "03-ragdoll-limp-045.jpg",
+      "caption": "Lying on its back at rest",
+      "original": "ragdoll_limp_045.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 3675
+    },
+    {
+      "file": "04-ragdoll-limp-075.jpg",
+      "caption": "Its hull parts and joints, asleep",
+      "original": "ragdoll_limp_075.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 11512
+    }
+  ]
+}
