@@ -2930,6 +2930,13 @@ impl NativeCtx<'_, '_> {
         true
     }
 
+    /// Charges what one [`NativeCtx::each_tagged`] scan costs without scanning: for a hook that
+    /// answers from a cache, so the tick's work (which live runs budget by) is the same whether
+    /// the cache hit or not. `false` as `each_tagged` would answer.
+    pub fn charge_scan(&mut self) -> bool {
+        !self.core.spend(self.core.st.ents.len())
+    }
+
     /// Uniform in `lo..=hi` from a stream by id (declared in the native's `streams`).
     pub fn range(&mut self, stream: u16, lo: i32, hi: i32) -> i32 {
         self.core.st.rngs[usize::from(stream)].range_i32(lo.min(hi), lo.max(hi))

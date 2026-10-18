@@ -263,6 +263,11 @@ impl Bound {
         let key: ViewKey = (cx.generation(), breach, radius);
         let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((_, v)) = c.views.iter().rev().find(|(k, _)| *k == key) {
+            // Work is charged as if the walls and roots were scanned: what a tick costs must
+            // not depend on what this process happens to have cached (live budgets, F2).
+            if !(cx.charge_scan() && cx.charge_scan()) {
+                return Err("work_limit: the tick's work budget ran out while finding walls".into());
+            }
             return Ok(v.clone());
         }
         let (mut walls, mut roots) = (Vec::new(), Vec::new());

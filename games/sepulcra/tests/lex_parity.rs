@@ -721,3 +721,33 @@ fn every_layout_matches_the_hand_written_sim_tick_by_tick() {
         }
     }
 }
+
+/// Review round 5 (workcache.rs): a tick's work is a function of the state alone. A run and a
+/// clone of it (a fresh state instance: the hooks' caches miss for it) step to the same hash
+/// with the same `tick_work` on every tick of a whole game, so live budgets don't depend on
+/// what a process has cached.
+#[test]
+fn tick_work_does_not_depend_on_the_native_cache() {
+    let c = full::content();
+    let rules = sepulcra::lex::compiled(&[]).unwrap();
+    let seed = 7;
+    let script = sepulcra::script::Script::parse(full::LAYOUTS[0].1, &c, "centre").unwrap();
+    let journal = sepulcra::script::run(c.clone(), seed, &script, None, |_, _| {}).journal;
+    let mut a = sepulcra::lex::sim(rules, seed).unwrap();
+    let (mut k, mut ticks) = (0, 0);
+    while a.outcome().is_none() && a.tick() < 21_000 {
+        let mut now = Vec::new();
+        while k < journal.len() && journal[k].0 <= a.tick() {
+            if let Ok(x) = sepulcra::lex::command_call(&a, &c, &journal[k].1) {
+                now.push(x);
+            }
+            k += 1;
+        }
+        let mut b = a.clone();
+        a.step(&now);
+        b.step(&now);
+        assert_eq!((a.hash(), a.tick_work()), (b.hash(), b.tick_work()), "tick {}", a.tick());
+        ticks += 1;
+    }
+    assert!(ticks > 20_000, "a whole game: {ticks} ticks");
+}

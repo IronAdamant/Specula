@@ -248,11 +248,14 @@ pub struct Live {
     next_first: usize,
     /// perf.toml `[lex_live]` (default [`LIMITS`]).
     pub(crate) limits: Limits,
+    /// The open sessions (id, agent name) as last seen ([`Live::end_holds`]): `None` until the
+    /// engine has told it (tests).
+    live_agents: Option<Vec<(String, String)>>,
 }
 
 impl Default for Live {
     fn default() -> Live {
-        Live { runs: BTreeMap::new(), next_first: 0, limits: LIMITS }
+        Live { runs: BTreeMap::new(), next_first: 0, limits: LIMITS, live_agents: None }
     }
 }
 
@@ -563,6 +566,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
 /// A command a run's input fires, and the agent holding the action (`None`: the window or a
 /// gamepad, the local player).
 struct Fired {
+    action: String,
     command: String,
     args: Json,
     who: Option<Holder>,
@@ -599,7 +603,7 @@ fn input_commands(input: &mut LiveInput) -> (Vec<Fired>, Vec<Fired>) {
                 if by_agent && who.is_none() {
                     continue;
                 }
-                let f = Fired { command: b.command.clone(), args: substitute(&b.args, x, y), who };
+                let f = Fired { action: b.action.clone(), command: b.command.clone(), args: substitute(&b.args, x, y), who };
                 if b.on == Edge::Held {
                     held.push(f);
                 } else {
@@ -613,15 +617,37 @@ fn input_commands(input: &mut LiveInput) -> (Vec<Fired>, Vec<Fired>) {
     (edges, held)
 }
 
+/// Whether a holder is still here: its session open under the same agent name (`live`: each
+/// open session's id and name). A hold made without a session (the engine's own) always is.
+fn holder_live(h: &Holder, live: &[(String, String)]) -> bool {
+    match &h.session {
+        None => true,
+        Some(sid) => live.iter().any(|(s, name)| s == sid && *name == h.name),
+    }
+}
+
 /// Applies commands a run's input fired: an agent's hold runs as that agent (its claims on the
 /// run and on what the command's hooks change both apply; journaled `by` it), the window and
 /// gamepads as the run's own input. Past [`MAX_INPUT_COMMANDS_PER_TICK`] in this engine tick, or
 /// past the work allowance, the rest are dropped (counted in status).
 #[allow(clippy::too_many_arguments)]
-fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
+fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(String, String)]>, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
     for f in list {
         if run.halted.is_some() || run.sim.outcome().is_some() {
             return;
+        }
+        // A holder whose session closed (or that goes by another name now) since the hold began
+        // fires nothing more, whenever the ticks run (a step served before the next frame too).
+        if let (Some(h), Some(live)) = (&f.who, live) {
+            if !holder_live(h, live) {
+                if let Some(i) = &mut run.input {
+                    i.agents.release(&f.action);
+                    if i.holders.remove(&f.action).is_some() {
+                        push_recent(&mut run.recent, Json::obj([("event", Json::from("hold_ended")), ("action", Json::from(f.action.as_str())), ("by", Json::from(h.name.as_str())), ("why", Json::from("the agent's session closed or it goes by another name"))]));
+                    }
+                }
+                continue;
+            }
         }
         if *fired_n >= MAX_INPUT_COMMANDS_PER_TICK || run.credit <= 0 {
             run.input_dropped += 1;
@@ -685,12 +711,13 @@ impl Live {
     /// name (`live`: each open session's id and agent name). Their actions are released and
     /// fire nothing more as theirs.
     pub(crate) fn end_holds(&mut self, live: &[(String, String)]) {
+        self.live_agents = Some(live.to_vec());
         for run in self.runs.values_mut() {
             let Some(input) = &mut run.input else { continue };
             let gone: Vec<(String, String)> = input
                 .holders
                 .iter()
-                .filter(|(_, h)| !live.iter().any(|(sid, name)| h.session.as_deref() == Some(sid.as_str()) && *name == h.name))
+                .filter(|(_, h)| !holder_live(h, live))
                 .map(|(a, h)| (a.clone(), h.name.clone()))
                 .collect();
             for (action, name) in gone {
@@ -763,6 +790,11 @@ impl Live {
                 match input.agents.hold(&actions, engine_ticks) {
                     Ok(held) => {
                         // The commands these actions fire run as this agent (claim-checked).
+                        if let (Some(live), Some(sid)) = (&mut self.live_agents, &holder.session) {
+                            if !live.iter().any(|(s, n)| s == sid && *n == holder.name) {
+                                live.push((sid.clone(), holder.name.clone()));
+                            }
+                        }
                         for (name, _) in actions.as_object().unwrap_or_default() {
                             input.holders.insert(name.clone(), holder.clone());
                         }
@@ -947,9 +979,12 @@ impl Live {
         let Env { world, logic, swarm, tick, hz, .. } = env;
         let hz = hz.max(1);
         let n = self.runs.len().max(1);
-        let share = i64::try_from((limits.work_per_tick / n as u64).max(1)).unwrap_or(i64::MAX);
+        // Only runs that can still step share the allowance (halted and ended runs take none).
+        let stepping = self.runs.values().filter(|r| r.halted.is_none() && r.sim.outcome().is_none()).count().max(1);
+        let share = i64::try_from((limits.work_per_tick / stepping as u64).max(1)).unwrap_or(i64::MAX);
         let first = self.next_first % n;
         self.next_first = self.next_first.wrapping_add(1);
+        let live_agents = self.live_agents.as_deref();
         let order: Vec<String> = self.runs.keys().cycle().skip(first).take(self.runs.len()).cloned().collect();
         for set in order {
             let Some(run) = self.runs.get_mut(&set) else { continue };
@@ -965,7 +1000,7 @@ impl Live {
             let held = match &mut run.input {
                 Some(input) => {
                     let (edges, held) = input_commands(input);
-                    fire(run, edges, &mut fired_n, world, logic, swarm, tick, hz);
+                    fire(run, edges, &mut fired_n, live_agents, world, logic, swarm, tick, hz);
                     held
                 }
                 None => Vec::new(),
@@ -981,8 +1016,8 @@ impl Live {
             let mut steps = 0;
             while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK && run.credit > 0 {
                 if !held.is_empty() {
-                    let now: Vec<Fired> = held.iter().map(|f| Fired { command: f.command.clone(), args: f.args.clone(), who: f.who.clone() }).collect();
-                    fire(run, now, &mut fired_n, world, logic, swarm, tick, hz);
+                    let now: Vec<Fired> = held.iter().map(|f| Fired { action: f.action.clone(), command: f.command.clone(), args: f.args.clone(), who: f.who.clone() }).collect();
+                    fire(run, now, &mut fired_n, live_agents, world, logic, swarm, tick, hz);
                     if run.halted.is_some() || run.sim.outcome().is_some() {
                         break;
                     }
@@ -2014,6 +2049,40 @@ mod tests {
             assert_eq!(run.get("commands").and_then(Json::as_u64), Some(before), "nothing more as ann: {run}");
             assert!(run.get("recent").and_then(Json::as_array).unwrap().iter().any(|r| r.get("event") == Some(&Json::from("hold_ended"))), "{run}");
         }
+    }
+
+    /// Review round 5: a hold whose agent is gone fires nothing even when ticks run before the
+    /// per-frame sweep has ended it (`fire` checks the holder too); and halted runs take no
+    /// share of the allowance.
+    #[test]
+    fn gone_holders_never_fire_and_halted_runs_take_no_share() {
+        let mut rig = Rig::new(30);
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.live.end_holds(&[("aaaaaa11".to_owned(), "ann".to_owned())]);
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 1000 }).is_error);
+        rig.ticks(3);
+        let before = rig.run_status("t").get("commands").and_then(Json::as_u64).unwrap();
+        assert!(before > 0);
+        // Ann's session closed; the engine has seen it, but the holds weren't swept yet.
+        rig.live.live_agents = Some(Vec::new());
+        rig.ticks(10);
+        let run = rig.run_status("t");
+        assert_eq!(run.get("commands").and_then(Json::as_u64), Some(before), "nothing fired as ann: {run}");
+        assert!(run.get("recent").and_then(Json::as_array).unwrap().iter().any(|r| r.get("event") == Some(&Json::from("hold_ended"))), "{run}");
+        assert!(!rig.live.has_holds());
+
+        // Two runs, one halted: the other gets the whole allowance.
+        let s = Start { set: "u".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.live.runs.get_mut("u").unwrap().halted = Some(Json::obj([("error", Json::from("test"))]));
+        rig.live.runs.get_mut("t").unwrap().credit = 0;
+        rig.ticks_with(1, Limits { work_per_tick: 1_000, ..LIMITS });
+        let w = rig.run_status("t").get("work").cloned().unwrap();
+        let (credit, spent) = (w.get("credit").and_then(Json::as_i64).unwrap(), w.get("this_engine_tick").and_then(Json::as_i64).unwrap());
+        assert_eq!(credit + spent, 1_000, "the halted run took no share: {w}");
     }
 
     /// Review round 4 (finding 4): `input {ticks}` counts the run's Lex ticks (a held binding

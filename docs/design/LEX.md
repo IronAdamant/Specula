@@ -307,7 +307,10 @@ and uses it as a behaviour (`{"type": "native", "hook": "flow_route"}`) or an ac
   fields from walls) is keyed by `cx.generation()`: a pair (the state value's identity, a counter bumped when an
   entity appears, leaves, changes archetype or gains or loses an effect instance). Every clone, including a
   command's rollback snapshot, is a new identity, so a key can never match two different states. Positions and
-  attribute values are not covered.
+  attribute values are not covered. **Work doesn't depend on the cache:** a native must charge what it would scan
+  whether the cache hits or not (`cx.charge_scan()` for each skipped `each_tagged`), so a tick's `tick_work`, which
+  live runs budget by, is a function of the state alone (a clone, whose caches all miss, charges the same; tested over
+  a whole game in `tick_work_does_not_depend_on_the_native_cache`).
 - *(Sepulcra port)* **Hosts.** `Sim::new_hosted` leaves hooks without an in-process implementation to a
   `NativeHost` passed to `step_hosted` / `apply_hosted` (live Lex calls module hooks through it, synchronously, in
   rule order). A host can't touch the run's state.
@@ -508,7 +511,7 @@ on the main thread every engine tick, after the hosted game and the modules, by 
 `tick_hz` has accumulated (a 30 Hz set under a 60 Hz engine steps every other tick), so `time_control` pauses, steps
 and fast-forwards it with everything else. At most 4 runs at once.
 
-- **Budgets, in work, not time (F2, F3).** Each engine tick, the live runs share 50,000 units of Lex work (each of
+- **Budgets, in work, not time (F2, F3).** Each engine tick, the live runs that can still step (not halted or ended) share 50,000 units of Lex work (each of
   n runs gets a credit of 50,000 / n; each Lex tick costs its `tick_work`, plus one per entity, plus one; input
   commands cost one per entity, plus one). A run steps while it has credit, so the step that overspends it leaves a
   **debt**: the run pauses (`behind` in `status`, `work.credit` negative) until later engine ticks have paid it back,
@@ -563,7 +566,8 @@ and fast-forwards it with everything else. At most 4 runs at once.
   it, exactly like its own `command`; window and gamepad input is the local player's, journaled `by: "input"`.
   The two are kept apart per action (a window press of an action an agent holds fires once more, as the player's),
   one agent holds an action at a time (`held_by_another`), `input {ticks}` counts the run's own Lex ticks, and a
-  hold ends with its agent: when its session closes or it goes by another name (`hold_ended` in `recent`).
+  hold ends with its agent: when its session closes or it goes by another name (`hold_ended` in `recent`), checked
+  each frame, before a `time_control` step runs ticks, and again when the hold fires.
   **Bounds:** at most 8 input commands per run per engine tick, each charged to the work allowance (the rest are
   dropped and counted in `status.input_commands`), and input may fill only half of the journal, so agents'
   commands always have room (past it input is refused with `input_journal_full`). A hosted game can still turn its

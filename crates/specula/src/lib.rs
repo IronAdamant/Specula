@@ -1613,6 +1613,8 @@ impl Engine {
                     TimeOp::Step(n) => {
                         self.clock.set_paused(true);
                         self.clock.step(n);
+                        // Holds of agents gone since the last frame end before these ticks fire them.
+                        self.lex_live_end_holds(server);
                         // Run them now, so the reply shows the result.
                         self.advance_clock();
                     }
