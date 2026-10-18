@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "15:39",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "b7829d5",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Tier-1 assets after the model lane review",
+  "note": "Hostile recipes now fail cleanly and LODs are honest (no part vanishes, bounds and volume hold); the sheet is re-rendered with reverse-Z. Visually close to the previous version.",
+  "source": "specula-model preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-t1-contact.jpg",
+      "caption": "Contact sheet",
+      "original": "sepulcra_t1_contact.png",
+      "width": 640,
+      "height": 787,
+      "bytes": 87879
+    }
+  ]
+}

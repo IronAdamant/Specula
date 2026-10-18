@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "04:17",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Headless playtests leave captures too",
+  "note": "Playtests as data: a playtest step can capture a frame, so a parallel suite of 26 playtests leaves small frames of each run (build, mid-game, end) next to its verified replay.",
+  "source": "scripts/playtest_suite.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-build.jpg",
+      "caption": "Build",
+      "original": "build.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8346
+    },
+    {
+      "file": "02-mid.jpg",
+      "caption": "Mid-game",
+      "original": "mid.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8983
+    },
+    {
+      "file": "03-end.jpg",
+      "caption": "End",
+      "original": "end.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8844
+    }
+  ]
+}

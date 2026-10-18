@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-13",
+  "time": "21:08",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "4627b7a",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "The first model gallery",
+  "note": "Every Sepulcra recipe built by the engine (model_build) and spawned as model entities in a moonlit scene, captured with sight_frame: the whole lineup and a closer look at the stones.",
+  "source": "scripts/model_gallery.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "All recipes in a row",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 12979
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "Stones and brazier up close",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15740
+    }
+  ]
+}

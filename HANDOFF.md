@@ -63,6 +63,10 @@ memory of the earlier ones. This page is **current state and what's next** only;
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`); `scripts/swarm_drill.py`
   for agent throughput.
+- **Visual history (owner, 2026-10-18, "for historical review"):** [docs/gallery](docs/gallery/README.md). After
+  every live run (tests, playtests, assets, animation, physics, navigation), add 2-6 representative captures with
+  `python scripts/gallery.py add ...` (`gallery.py subjects` lists the subjects; `dupes` and `drop` keep it lean). Thumbnails
+  are tracked; full-size originals go to the main checkout's gitignored `gallery-full/`.
 - **The plan with checkboxes:** [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Decisions and architecture:** [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 - **Hard rules:** [AGENTS.md](AGENTS.md).

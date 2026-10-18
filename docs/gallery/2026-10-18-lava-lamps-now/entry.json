@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-18",
+  "time": "10:01",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "ee02487",
+  "subject": "lava-lamps",
+  "topic": "effects",
+  "title": "Lava lamps now",
+  "note": "The benchmark on main on the iGPU. The overviews are unchanged since 2026-10-13-lava-lamps-with-real-bloom-and-fxaa (effects) and 2026-10-13-lava-lamps-the-original-benchmark (--plain), though the plain frames no longer match the originals byte for byte; L3 with effects is shown.",
+  "source": "scripts/lava_lamps.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "02-l3-t30.jpg",
+      "caption": "L3, effects",
+      "original": "l3_t30.png",
+      "width": 640,
+      "height": 782,
+      "bytes": 14674
+    }
+  ]
+}

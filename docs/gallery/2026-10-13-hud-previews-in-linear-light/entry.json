@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-13",
+  "time": "20:29",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "ffdb3b1",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "HUD previews in linear light",
+  "note": "Blending and gradients move to linear light, as on the GPU, and all colour maths goes through dmath so previews are bit-identical across platforms. Panels read slightly lighter.",
+  "source": "specula-ui hud_preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-hud-preview.jpg",
+      "caption": "HUD",
+      "original": "sepulcra_hud_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 22367
+    },
+    {
+      "file": "02-sepulcra-pause-preview.jpg",
+      "caption": "Pause menu",
+      "original": "sepulcra_pause_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 16450
+    }
+  ]
+}

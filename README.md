@@ -11,9 +11,12 @@ in real time. The agent protocol is the engine's primary interface; the human ed
 - **2D and 3D**, hot-reloaded Rust game logic, text-first world files.
 
 **Status:** M2 complete (rendering, true sight, 2D, animation, procedural models; the first game, *Sepulcra*, is a
-playable slice). M3 and M4 are in progress: gameplay as data (Lex), physics, animation graphs, hot-reloaded modules
+playable slice). M3 is in progress (M4 comes after, on the owner's go-ahead): gameplay as data (Lex), physics, animation graphs, hot-reloaded modules
 and swarm coordination are in. See [HANDOFF.md](HANDOFF.md) for the current state, [docs/ROADMAP.md](docs/ROADMAP.md)
 and [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+
+**Visual history:** [docs/gallery](docs/gallery/README.md) shows the engine, its test assets and *Sepulcra* over time,
+from the first frame to today.
 
 The goal: let a solo developer or a small studio build games at the scale of a large company by running swarms of AI
 agents in one live engine.

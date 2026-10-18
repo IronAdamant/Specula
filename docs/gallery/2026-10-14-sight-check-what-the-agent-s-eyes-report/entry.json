@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-14",
+  "time": "23:18",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "c3d9ff5",
+  "subject": "engine-tests",
+  "topic": "sight",
+  "title": "Sight check: what the agent's eyes report",
+  "note": "The sight lane's check scene: a skeleton runner in the open, a wall hiding a box (which must report visible_px 0), captured from a named camera, as an 8-view turntable with bounds and bone overlays (sight_orbit), and as a before/after comparison strip (sight_compare).",
+  "source": "scripts/sight_check.py",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "01-frame-reviewer-through-overview.jpg",
+      "caption": "Named camera",
+      "original": "frame_reviewer_through_overview.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 6197
+    },
+    {
+      "file": "02-frame-00007.jpg",
+      "caption": "Turntable with overlays",
+      "original": "frame_00007.png",
+      "width": 640,
+      "height": 481,
+      "bytes": 34802
+    },
+    {
+      "file": "03-frame-00011.jpg",
+      "caption": "Another capture",
+      "original": "frame_00011.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9453
+    },
+    {
+      "file": "04-compare-diff.jpg",
+      "caption": "sight_compare strip",
+      "original": "compare_diff.png",
+      "width": 640,
+      "height": 119,
+      "bytes": 4769
+    }
+  ]
+}

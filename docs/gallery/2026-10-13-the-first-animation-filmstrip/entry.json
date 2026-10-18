@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "19:55",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "cd464e3",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "The first animation filmstrip",
+  "note": "specula-anim's first contact sheet: every Sepulcra creature clip sampled across its cycle, with foot-slide checks.",
+  "source": "specula-anim filmstrip",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-anim-filmstrip.jpg",
+      "caption": "Filmstrip",
+      "original": "sepulcra_anim_filmstrip.png",
+      "width": 640,
+      "height": 1051,
+      "bytes": 96873
+    }
+  ]
+}

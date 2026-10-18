@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-13",
+  "time": "14:48",
+  "date_source": "file times 14:48-15:37",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "effects",
+  "title": "The render lane: shadows, bloom, fog, sky and overlay",
+  "note": "specula-gpu's feature tests as the M2 render lane added them, on a small test stage: shadow maps, bloom, fog with a sky, a moon, and the debug overlay; last, everything at once at 1280x720.",
+  "source": "specula-gpu tests (features_*)",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "01-features-shadows-nvidia-geforce-rtx-4090-laptop.jpg",
+      "caption": "Shadows",
+      "original": "features_shadows_NVIDIA_GeForce_RTX_4090_Laptop_GPU.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 3820
+    },
+    {
+      "file": "02-features-bloom-nvidia-geforce-rtx-4090-laptop-gp.jpg",
+      "caption": "Bloom",
+      "original": "features_bloom_NVIDIA_GeForce_RTX_4090_Laptop_GPU.png",
+      "width": 480,
+      "height": 272,
+      "bytes": 3301
+    },
+    {
+      "file": "03-features-fog-sky-nvidia-geforce-rtx-4090-laptop.jpg",
+      "caption": "Fog and sky",
+      "original": "features_fog_sky_NVIDIA_GeForce_RTX_4090_Laptop_GPU.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 3613
+    },
+    {
+      "file": "04-features-moon-0.jpg",
+      "caption": "Moon",
+      "original": "features_moon_0.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 2992
+    },
+    {
+      "file": "05-features-overlay-direct-0.jpg",
+      "caption": "Overlay",
+      "original": "features_overlay_direct_0.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 4131
+    },
+    {
+      "file": "06-features-all-0.jpg",
+      "caption": "All features",
+      "original": "features_all_0.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9113
+    }
+  ]
+}

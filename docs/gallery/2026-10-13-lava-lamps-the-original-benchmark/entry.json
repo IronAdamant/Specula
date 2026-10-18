@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-13",
+  "time": "12:15",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M1",
+  "commit": "",
+  "subject": "lava-lamps",
+  "topic": "effects",
+  "title": "Lava lamps: the original benchmark",
+  "note": "The owner's first asset challenge: three lamps from basic to as real as possible. L1 is opaque lathe shapes with glowing colour, L2 adds a metal base, a glass shell over tinted liquid and a point light, L3 is a ray-marched lava material with refraction and merging wax. The first frame (all three lamps) is byte-identical to docs/fidelity/lava_lamps_m0_original.png.",
+  "source": "scripts/lava_lamps.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "All three lamps",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10617
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "L1 basic",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 782,
+      "bytes": 12700
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "L2 transparent",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 782,
+      "bytes": 13956
+    },
+    {
+      "file": "04-frame-00005.jpg",
+      "caption": "L3 realistic, 30 s in",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 782,
+      "bytes": 14120
+    }
+  ]
+}

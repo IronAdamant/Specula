@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "10:16",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "navigation",
+  "topic": "navigation",
+  "title": "Navigation on Sepulcra's slab",
+  "note": "The navmesh baked over Sepulcra's slab and cliff lanes, from above and in perspective.",
+  "source": "nav check (navigation lane)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-slab-top.jpg",
+      "caption": "From above",
+      "original": "slab_top.png",
+      "width": 640,
+      "height": 640,
+      "bytes": 49360
+    },
+    {
+      "file": "02-slab-perspective.jpg",
+      "caption": "Perspective",
+      "original": "slab_perspective.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 31337
+    },
+    {
+      "file": "03-features-link.jpg",
+      "caption": "Test level: an off-mesh link",
+      "original": "features_link.png",
+      "width": 640,
+      "height": 427,
+      "bytes": 16670
+    }
+  ]
+}
