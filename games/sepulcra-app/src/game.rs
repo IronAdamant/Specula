@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 #[path = "saves.rs"]
 mod saves;
+pub use saves::{MAX_RECORDING_BYTES, MAX_STATE_BYTES};
 
 /// A window frame this recent means another follows the next tick.
 const FRAMED_WITHIN: Duration = Duration::from_millis(250);
@@ -1182,11 +1183,17 @@ impl Game for SepulcraGame {
     }
 
     fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
-        Some(Ok(self.save_bytes()))
+        Some(self.save_bytes())
     }
 
     fn parse_state(&self, data: &[u8]) -> Result<Box<dyn Any>, String> {
         self.parse_saved(data).map(|l| Box::new(l) as Box<dyn Any>)
+    }
+
+    fn state_parser(&self) -> Option<specula::game::StateParser> {
+        // Loads parse the game's section on their worker, against the content this game runs.
+        let content = self.content();
+        Some(Box::new(move |data: &[u8]| saves::parse_saved(&content, data).map(|l| Box::new(l) as Box<dyn Any + Send>)))
     }
 
     fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn Any>) {

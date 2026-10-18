@@ -40,8 +40,10 @@ pub const MAX_SECTIONS: usize = 32;
 pub const MAX_SECTION_BYTES: usize = 512 << 20;
 pub const MAX_DECODED_BYTES: u64 = 512 << 20;
 /// Decoded bytes per byte of file, at most (plus [`MAX_RATIO_SLACK`]): world text compresses
-/// about 20 to 1, so this leaves room while refusing decompression bombs.
-pub const MAX_RATIO: u64 = 64;
+/// about 20 to 1 and very repetitive worlds (many entities with the same big props) a few
+/// hundred to 1, so this leaves room while refusing decompression bombs (DEFLATE reaches about
+/// 1000 to 1). Decoding runs on a worker and the total is capped at [`MAX_DECODED_BYTES`] too.
+pub const MAX_RATIO: u64 = 1024;
 pub const MAX_RATIO_SLACK: u64 = 16 << 20;
 /// Sections smaller than this are stored raw (compressing them saves nothing).
 const RAW_BELOW: usize = 256;
@@ -225,6 +227,142 @@ pub fn peek(bytes: &[u8]) -> Result<(u32, Json), SaveError> {
     framing(bytes).map(|(v, h, _)| (v, h))
 }
 
+/// One row of a save's section table, checked against the file (nothing decompressed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableEntry {
+    pub name: String,
+    pub codec: String,
+    /// Decoded length.
+    pub bytes: u64,
+    /// Length in the file.
+    pub stored: u64,
+    /// CRC-32 of the decoded bytes.
+    pub crc32: u32,
+}
+
+/// Checks a header's section table against a file of `file_len` bytes whose sections start at
+/// `at` and end at `end` (where the checksum starts): names, codecs, sizes, the decoded total
+/// and ratio caps, and that the stored bytes exactly fill the space. Nothing is decompressed.
+fn read_table(header: &Json, at: usize, end: usize, file_len: u64) -> Result<Vec<TableEntry>, SaveError> {
+    if at > end {
+        return Err(SaveError::new("truncated", "the header runs into the checksum").at(at));
+    }
+    let table_json = header.get("sections").and_then(Json::as_array).ok_or_else(|| SaveError::new("invalid_header", "the header has no 'sections' table").at(16))?;
+    if table_json.len() > MAX_SECTIONS {
+        return Err(SaveError::new("too_large", format!("{} sections; at most {MAX_SECTIONS}", table_json.len())).at(16));
+    }
+    let declared: u64 = table_json.iter().map(|s| s.get("bytes").and_then(Json::as_u64).unwrap_or(0)).fold(0u64, u64::saturating_add);
+    if declared > MAX_DECODED_BYTES {
+        return Err(SaveError::new("too_large", format!("the sections decode to {declared} bytes in all; a save is read up to {MAX_DECODED_BYTES}")).at(16));
+    }
+    // Real saves compress a few hundred to 1 at most: a file that claims far more is a bomb.
+    let ratio_cap = MAX_RATIO_SLACK.saturating_add(MAX_RATIO.saturating_mul(file_len));
+    if declared > ratio_cap {
+        return Err(SaveError::new("too_large", format!("the sections claim {declared} bytes from a {file_len}-byte file; saves decode to at most {MAX_RATIO} times their size (plus {MAX_RATIO_SLACK} bytes)")).at(16));
+    }
+    let mut out: Vec<TableEntry> = Vec::with_capacity(table_json.len());
+    let mut pos = at as u64;
+    for (i, s) in table_json.iter().enumerate() {
+        let bad = |m: String| SaveError::new("invalid_header", format!("sections[{i}]: {m}")).at(16);
+        let name = s.get("name").and_then(Json::as_str).filter(|n| !n.is_empty() && n.len() <= 64).ok_or_else(|| bad("'name' must be 1..64 characters".into()))?;
+        if out.iter().any(|x| x.name == name) {
+            return Err(bad(format!("section '{name}' is listed twice")));
+        }
+        let codec = s.get("codec").and_then(Json::as_str).ok_or_else(|| bad("'codec' is missing".into()))?;
+        let size = s.get("bytes").and_then(Json::as_u64).ok_or_else(|| bad("'bytes' must be a whole number".into()))?;
+        let stored = s.get("stored").and_then(Json::as_u64).ok_or_else(|| bad("'stored' must be a whole number".into()))?;
+        let crc = s.get("crc32").and_then(Json::as_str).and_then(|h| u32::from_str_radix(h, 16).ok()).ok_or_else(|| bad("'crc32' must be 8 hex digits".into()))?;
+        if size > MAX_SECTION_BYTES as u64 {
+            return Err(SaveError::new("too_large", format!("section '{name}' claims {size} bytes; at most {MAX_SECTION_BYTES}")).in_section(name));
+        }
+        if !matches!(codec, "raw" | "zlib") {
+            return Err(SaveError::new("unknown_codec", format!("section '{name}' uses codec '{codec}'; this build reads raw and zlib")).in_section(name));
+        }
+        if codec == "raw" && stored != size {
+            return Err(SaveError::new("corrupt_section", format!("raw section '{name}' stores {stored} bytes but lists {size}")).in_section(name));
+        }
+        if pos.checked_add(stored).is_none_or(|e| e > end as u64) {
+            return Err(SaveError::new("truncated", format!("section '{name}' claims {stored} stored bytes but the file ends first")).in_section(name).at(pos as usize));
+        }
+        pos += stored;
+        out.push(TableEntry { name: name.to_owned(), codec: codec.to_owned(), bytes: size, stored, crc32: crc });
+    }
+    if pos != end as u64 {
+        return Err(SaveError::new("trailing", format!("{} bytes between the last section and the checksum", end as u64 - pos)).at(pos as usize));
+    }
+    Ok(out)
+}
+
+/// What [`inspect`] found: the version, the header's metadata and the section table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Inspected {
+    pub version: u32,
+    pub meta: Json,
+    pub table: Vec<TableEntry>,
+}
+
+/// Checks a save **without decompressing anything**, streaming the file: the framing, the
+/// header, the section table (sizes, caps, the stored bytes filling the file) and the file's
+/// checksum over every stored byte. Memory is the header plus a small buffer, whatever the
+/// file's size. What it can't see: a section whose stored bytes are intact but don't decode to
+/// what the table says (that takes a load).
+pub fn inspect(r: &mut impl std::io::Read, file_len: u64) -> Result<Inspected, SaveError> {
+    let io = |e: std::io::Error| SaveError::new("truncated", format!("the file ends early: {e}"));
+    if file_len < 20 {
+        return Err(SaveError::new("truncated", format!("{file_len} bytes is too short to be a save")).at(0));
+    }
+    let mut head = [0u8; 16];
+    r.read_exact(&mut head).map_err(io)?;
+    if &head[..8] != MAGIC {
+        return Err(SaveError::new("not_a_save", "the file doesn't start with SPECSAVE: it isn't a Specula save game").at(0));
+    }
+    let version = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
+    let len = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+    if len > MAX_HEADER_BYTES {
+        return Err(SaveError::new("too_large", format!("the header claims {len} bytes; at most {MAX_HEADER_BYTES}")).at(12));
+    }
+    if 16 + len as u64 + 4 > file_len {
+        return Err(SaveError::new("truncated", format!("the header claims {len} bytes but the file ends first")).at(16));
+    }
+    let mut text = vec![0u8; len];
+    r.read_exact(&mut text).map_err(io)?;
+    let mut crc = specula_core::checksum::crc32_update(specula_core::checksum::crc32_update(0, &head), &text);
+    let mut framed = head.to_vec();
+    framed.extend_from_slice(&text);
+    framed.extend_from_slice(&[0, 0, 0, 0]);
+    drop(text);
+    let (version_again, header, at) = framing(&framed)?;
+    debug_assert_eq!(version, version_again);
+    if version > VERSION {
+        return Err(SaveError::new("unsupported_version", format!("save format version {version}; this build reads up to {VERSION}: update Specula to load it")));
+    }
+    let end = usize::try_from(file_len - 4).map_err(|_| SaveError::new("too_large", "the file is too big for this machine"))?;
+    let table = read_table(&header, at, end, file_len)?;
+    // The checksum over every stored byte, streamed.
+    let mut left = file_len - 4 - at as u64;
+    let mut buf = vec![0u8; 1 << 16];
+    while left > 0 {
+        let n = (left as usize).min(buf.len());
+        r.read_exact(&mut buf[..n]).map_err(io)?;
+        crc = specula_core::checksum::crc32_update(crc, &buf[..n]);
+        left -= n as u64;
+    }
+    let mut tail = [0u8; 4];
+    r.read_exact(&mut tail).map_err(io)?;
+    let stored_crc = u32::from_le_bytes(tail);
+    if crc != stored_crc {
+        return Err(SaveError::new("checksum", format!("the file's checksum is {crc:08x} but it says {stored_crc:08x}: the save is damaged (cut short or changed)"))
+            .at(end)
+            .with("expected", format!("{stored_crc:08x}"))
+            .with("found", format!("{crc:08x}")));
+    }
+    let meta = match header {
+        Json::Obj(f) => Json::Obj(f.into_iter().filter(|(k, _)| k != "sections").collect()),
+        other => other,
+    };
+    Ok(Inspected { version, meta, table })
+}
+
 /// Reads a save: framing, checksum, every section (decompressed within its declared size and
 /// checked against its CRC), then the migrations up to [`VERSION`].
 pub fn decode(bytes: &[u8]) -> Result<SaveFile, SaveError> {
@@ -246,49 +384,20 @@ fn decode_with(bytes: &[u8], table: &[Migration], target: u32) -> Result<SaveFil
             .with("expected", format!("{stored_crc:08x}"))
             .with("found", format!("{crc:08x}")));
     }
-    if at > end {
-        return Err(SaveError::new("truncated", "the header runs into the checksum").at(at));
-    }
-    let table_json = header.get("sections").and_then(Json::as_array).ok_or_else(|| SaveError::new("invalid_header", "the header has no 'sections' table").at(16))?;
-    if table_json.len() > MAX_SECTIONS {
-        return Err(SaveError::new("too_large", format!("{} sections; at most {MAX_SECTIONS}", table_json.len())).at(16));
-    }
-    let declared: u64 = table_json.iter().map(|s| s.get("bytes").and_then(Json::as_u64).unwrap_or(0)).fold(0u64, u64::saturating_add);
-    if declared > MAX_DECODED_BYTES {
-        return Err(SaveError::new("too_large", format!("the sections decode to {declared} bytes in all; a save is read up to {MAX_DECODED_BYTES}")).at(16));
-    }
-    // Real saves compress world text about 20 to 1: a file that claims far more is a bomb.
-    let ratio_cap = MAX_RATIO_SLACK + MAX_RATIO * bytes.len() as u64;
-    if declared > ratio_cap {
-        return Err(SaveError::new("too_large", format!("the sections claim {declared} bytes from a {}-byte file; saves decode to at most {MAX_RATIO} times their size (plus {MAX_RATIO_SLACK} bytes)", bytes.len())).at(16));
-    }
-    let mut sections: Vec<Section> = Vec::with_capacity(table_json.len());
-    for (i, s) in table_json.iter().enumerate() {
-        let bad = |m: String| SaveError::new("invalid_header", format!("sections[{i}]: {m}")).at(16);
-        let name = s.get("name").and_then(Json::as_str).filter(|n| !n.is_empty() && n.len() <= 64).ok_or_else(|| bad("'name' must be 1..64 characters".into()))?;
-        if sections.iter().any(|x| x.name == name) {
-            return Err(bad(format!("section '{name}' is listed twice")));
-        }
-        let codec = s.get("codec").and_then(Json::as_str).ok_or_else(|| bad("'codec' is missing".into()))?;
-        let size = s.get("bytes").and_then(Json::as_u64).ok_or_else(|| bad("'bytes' must be a whole number".into()))?;
-        let stored = s.get("stored").and_then(Json::as_u64).ok_or_else(|| bad("'stored' must be a whole number".into()))?;
-        let crc = s.get("crc32").and_then(Json::as_str).and_then(|h| u32::from_str_radix(h, 16).ok()).ok_or_else(|| bad("'crc32' must be 8 hex digits".into()))?;
-        if size > MAX_SECTION_BYTES as u64 {
-            return Err(SaveError::new("too_large", format!("section '{name}' claims {size} bytes; at most {MAX_SECTION_BYTES}")).in_section(name));
-        }
-        let Some(raw) = usize::try_from(stored).ok().and_then(|n| bytes.get(at..at.checked_add(n)?)).filter(|_| at as u64 + stored <= end as u64) else {
-            return Err(SaveError::new("truncated", format!("section '{name}' claims {stored} stored bytes but the file ends first")).in_section(name).at(at));
-        };
-        let data = match codec {
+    let rows = read_table(&header, at, end, bytes.len() as u64)?;
+    let mut sections: Vec<Section> = Vec::with_capacity(rows.len());
+    for t in &rows {
+        let name = t.name.as_str();
+        let raw = &bytes[at..at + t.stored as usize];
+        let data = match t.codec.as_str() {
             "raw" => raw.to_vec(),
-            "zlib" => deflate::zlib_decompress_with_limit(raw, size as usize)
+            _ => deflate::zlib_decompress_with_limit(raw, t.bytes as usize)
                 .map_err(|e| SaveError::new("corrupt_section", format!("section '{name}' doesn't decompress: {e:?}")).in_section(name).at(at))?,
-            other => return Err(SaveError::new("unknown_codec", format!("section '{name}' uses codec '{other}'; this build reads raw and zlib")).in_section(name)),
         };
-        if data.len() as u64 != size {
-            return Err(SaveError::new("corrupt_section", format!("section '{name}' decodes to {} bytes, not the {size} listed", data.len())).in_section(name).at(at));
+        if data.len() as u64 != t.bytes {
+            return Err(SaveError::new("corrupt_section", format!("section '{name}' decodes to {} bytes, not the {} listed", data.len(), t.bytes)).in_section(name).at(at));
         }
-        if crc32(&data) != crc {
+        if crc32(&data) != t.crc32 {
             return Err(SaveError::new("corrupt_section", format!("section '{name}' fails its checksum")).in_section(name).at(at));
         }
         at += raw.len();
@@ -450,7 +559,8 @@ mod tests {
         let table = Json::arr([Json::obj([
             ("name", Json::from("world")),
             ("codec", Json::from("zlib")),
-            ("bytes", Json::from(data.len())),
+            // More than the stored bytes could ever decode to (DEFLATE tops out near 1032:1).
+            ("bytes", Json::from(500u64 << 20)),
             ("stored", Json::from(stored.len())),
             ("crc32", Json::from(format!("{:08x}", crc32(&data)))),
         ])]);
@@ -465,18 +575,73 @@ mod tests {
         let crc = crc32(w.bytes());
         w.u32(crc);
         assert!(w.len() < 1 << 20, "a small file");
-        let e = decode(w.bytes()).unwrap_err();
+        let Err(e) = decode(w.bytes()) else { panic!("the bomb must be refused") };
         assert_eq!(e.code, "too_large", "{e}");
         assert!(e.message.contains("times their size"), "refused by the ratio, before inflating: {e}");
+        let Err(e) = inspect(&mut std::io::Cursor::new(w.bytes()), w.len() as u64) else { panic!("inspect refuses it too") };
+        assert_eq!(e.code, "too_large", "{e}");
     }
 
-    /// Very repetitive data is stored raw rather than past the ratio loads refuse.
+    /// Very repetitive data still loads (stored raw only past what loads accept).
     #[test]
     fn repetitive_saves_still_load() {
         let meta = Json::obj([("format", Json::from(FORMAT))]);
         let sections = vec![Section { name: "world".into(), data: vec![b'a'; 40 << 20] }];
         let bytes = encode(&meta, &sections);
-        assert_eq!(decode(&bytes).unwrap().sections, sections);
+        assert!(decode(&bytes).unwrap().sections == sections);
+    }
+
+    /// The review's case: 3,000 entities with the same 16 KB prop (48 MB of world text that
+    /// compresses about 500 to 1) is written compressed, not raw: a small file that loads.
+    #[test]
+    fn repetitive_worlds_stay_compressed() {
+        let big = "x".repeat(16_000);
+        let mut text = String::new();
+        for i in 0..3000 {
+            text.push_str(&format!("{{\"name\": \"e{i}\", \"position\": [{i}, 0, 0], \"props\": {{\"p\": \"{big}\"}}}}\n"));
+        }
+        let sections = vec![Section { name: "world".into(), data: text.into_bytes() }];
+        let bytes = encode(&Json::obj([("format", Json::from(FORMAT))]), &sections);
+        assert!(bytes.len() < 2 << 20, "{} bytes for {} of text", bytes.len(), sections[0].data.len());
+        assert!(decode(&bytes).unwrap().sections == sections);
+    }
+
+    /// `inspect` streams a file and checks its framing, table and checksum without inflating:
+    /// it describes a good save, names damage, and passes a section whose stored bytes are
+    /// intact even when they wouldn't decode (that takes a load).
+    #[test]
+    fn inspect_checks_without_inflating() {
+        let (meta, sections) = sample();
+        let bytes = encode(&meta, &sections);
+        let i = inspect(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        assert_eq!(i.version, VERSION);
+        assert_eq!(i.meta.get("tick").and_then(Json::as_u64), Some(1234));
+        assert_eq!(i.table.iter().map(|t| (t.name.as_str(), t.bytes)).collect::<Vec<_>>(), sections.iter().map(|s| (s.name.as_str(), s.data.len() as u64)).collect::<Vec<_>>());
+        // Damage anywhere is the checksum's (or the framing's).
+        for at in [20, bytes.len() / 2, bytes.len() - 6] {
+            let mut x = bytes.clone();
+            x[at] ^= 0x40;
+            assert!(inspect(&mut std::io::Cursor::new(&x), x.len() as u64).is_err(), "byte {at}");
+        }
+        for cut in [0, 10, 19, bytes.len() / 2, bytes.len() - 1] {
+            assert!(inspect(&mut std::io::Cursor::new(&bytes[..cut]), cut as u64).is_err(), "cut at {cut}");
+        }
+        // A zlib section whose stream is garbage but whose stored bytes carry a good file
+        // checksum: inspect (no inflating) passes it, a load refuses it.
+        let (v, header, at) = framing(&bytes).unwrap();
+        assert_eq!(v, VERSION);
+        let game = i.table.iter().position(|t| t.name == "game").unwrap();
+        let off = at + i.table[..game].iter().map(|t| t.stored as usize).sum::<usize>();
+        let mut x = bytes.clone();
+        for b in &mut x[off + 2..off + 40] {
+            *b = 0xFF;
+        }
+        let end = x.len() - 4;
+        let crc = crc32(&x[..end]);
+        x[end..].copy_from_slice(&crc.to_le_bytes());
+        assert!(header.get("sections").is_some());
+        assert!(inspect(&mut std::io::Cursor::new(&x), x.len() as u64).is_ok());
+        assert_eq!(decode(&x).map(|_| ()).unwrap_err().code, "corrupt_section");
     }
 
     /// A small file whose table promises huge sections is refused before anything is inflated.

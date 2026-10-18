@@ -166,3 +166,38 @@ fn wave_starts_autosave_in_turn_when_switched_on() {
     }
     assert_eq!(asked, ["sepulcra_autosave_1"], "wave 3 (started by the clock) saves to autosave 1");
 }
+
+/// Loads parse the game's section on their worker thread (`Game::state_parser`), not on the
+/// engine thread: the parser is `Send`, gives what `parse_state` gives, and refuses what it
+/// refuses. The review's crafted save (a 32 MB recording inside a 1 MB file) is refused by the
+/// recording cap, on the worker.
+#[test]
+fn the_game_section_is_parsed_off_the_engine_thread() {
+    let content = Arc::new(Content::builtin());
+    let mut a = Host::new(Arc::clone(&content), 7);
+    a.call("play_new", r#"{"seed": 7, "layout": "centre"}"#);
+    for _ in 0..1200 {
+        a.tick();
+    }
+    let bytes = a.game.save_state().unwrap().unwrap();
+    let b = Host::new(Arc::clone(&content), 7);
+    let parse = b.game.state_parser().expect("Sepulcra parses saves on the load's worker");
+    let data = bytes.clone();
+    let parsed = std::thread::spawn(move || parse(&data).map(|_| ())).join().unwrap();
+    assert!(parsed.is_ok(), "{parsed:?}");
+    // The game section with a recording far over the cap (as a crafted file would carry it).
+    let state_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let at = 8 + state_len;
+    let rec_len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    let mut big = Vec::from(&bytes[..at]);
+    let rec = format!("{{\"x\": [{}0]}}", "0,".repeat(1_600_000));
+    assert!(rec.len() > sepulcra_app::game::MAX_RECORDING_BYTES);
+    big.extend_from_slice(&(rec.len() as u32).to_le_bytes());
+    big.extend_from_slice(rec.as_bytes());
+    big.extend_from_slice(&bytes[at + 4 + rec_len..]);
+    let parse = b.game.state_parser().unwrap();
+    let started = std::time::Instant::now();
+    let Err(e) = std::thread::spawn(move || parse(&big).map(|_| ())).join().unwrap() else { panic!("an oversized recording must be refused") };
+    assert!(e.contains("recording") || e.contains("damaged"), "{e}");
+    assert!(started.elapsed().as_millis() < 500, "refused by the cap before parsing: {:?}", started.elapsed());
+}

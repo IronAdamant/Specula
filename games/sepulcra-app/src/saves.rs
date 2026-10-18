@@ -22,6 +22,11 @@ use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// The game section's own layout version.
 pub const SECTION_VERSION: u32 = 1;
+/// The simulation state and the run's recording are each at most this big in a save. Real runs
+/// are a few KB (a whole ten-wave run's state about 2 KB, its recording a few hundred commands),
+/// so this is room to spare, and a crafted save can't make a load parse much.
+pub const MAX_STATE_BYTES: usize = 2 << 20;
+pub const MAX_RECORDING_BYTES: usize = 2 << 20;
 /// The player's save slots and autosaves on disk: `<prefix><n>`.
 pub const PLAYER_PREFIX: &str = "sepulcra_slot_";
 pub const AUTO_PREFIX: &str = "sepulcra_autosave_";
@@ -59,16 +64,54 @@ fn bad(e: DecodeError) -> String {
     format!("the game section is damaged: {e}")
 }
 
+/// Reads a game section against `content`, changing nothing: what [`SepulcraGame::parse_saved`]
+/// and the worker-side parser ([`specula::game::Game::state_parser`]) do.
+pub(crate) fn parse_saved(content: &Arc<Content>, data: &[u8]) -> Result<Loaded, String> {
+    let mut r = ByteReader::new(data);
+    let version = r.u32("version").map_err(bad)?;
+    if version != SECTION_VERSION {
+        return Err(format!("game section version {version}; this build reads {SECTION_VERSION}"));
+    }
+    let state = State::from_bytes(Arc::clone(content), r.blob("state", MAX_STATE_BYTES).map_err(bad)?).map_err(|e| e.to_string())?;
+    let rec = r.str("recording", MAX_RECORDING_BYTES).map_err(bad)?;
+    let journal = Recording::from_json(&rec, content, "save").map_err(|e| format!("the run's recording: {e}"))?.journal;
+    let autoplay = if r.bool("autoplay").map_err(bad)? {
+        let name = r.str("autoplay.name", 256).map_err(bad)?;
+        let text = r.str("autoplay.script", 1 << 20).map_err(bad)?;
+        let script = Script::parse(&text, content, "save").map_err(|e| format!("the build order being followed: {e}"))?;
+        let at = r.u64("autoplay.next").map_err(bad)? as usize;
+        Some((name, Player::resume(script, at)))
+    } else {
+        None
+    };
+    let paused = r.bool("paused").map_err(bad)?;
+    let speed = r.u32("speed").map_err(bad)?;
+    if !SPEEDS.contains(&speed) {
+        return Err(format!("speed {speed} isn't one of {SPEEDS:?}"));
+    }
+    let pres_ticks = r.u64("pres_ticks").map_err(bad)?;
+    r.finish().map_err(bad)?;
+    Ok(Loaded { state, journal, autoplay, paused, speed, pres_ticks })
+}
+
 impl SepulcraGame {
-    /// The game's section of a save.
-    pub(crate) fn save_bytes(&self) -> Vec<u8> {
+    /// The game's section of a save; refused when it couldn't be loaded back (over the caps).
+    pub(crate) fn save_bytes(&self) -> Result<Vec<u8>, String> {
         let content = self.state.content();
         let mut w = ByteWriter::new();
         w.u32(SECTION_VERSION);
-        w.blob(&self.state.to_bytes());
+        let state = self.state.to_bytes();
+        if state.len() > MAX_STATE_BYTES {
+            return Err(format!("the run's state is {} bytes; saves hold at most {MAX_STATE_BYTES}", state.len()));
+        }
+        w.blob(&state);
         // The run's recording, in the format play_record writes and replays read.
         let rec = Recording { seed: self.state.seed(), content_hash: content.hash, journal: self.journal.clone(), end: None };
-        w.str(&rec.to_json(content).to_string());
+        let rec = rec.to_json(content).to_string();
+        if rec.len() > MAX_RECORDING_BYTES {
+            return Err(format!("the run's recording is {} bytes; saves hold at most {MAX_RECORDING_BYTES}", rec.len()));
+        }
+        w.str(&rec);
         match &self.autoplay {
             Some((name, player)) => {
                 w.bool(true);
@@ -81,37 +124,12 @@ impl SepulcraGame {
         w.bool(self.paused);
         w.u32(self.speed);
         w.u64(self.pres_ticks);
-        w.into_bytes()
+        Ok(w.into_bytes())
     }
 
     /// Reads [`SepulcraGame::save_bytes`] against this game's content, changing nothing.
     pub(crate) fn parse_saved(&self, data: &[u8]) -> Result<Loaded, String> {
-        let content = self.content();
-        let mut r = ByteReader::new(data);
-        let version = r.u32("version").map_err(bad)?;
-        if version != SECTION_VERSION {
-            return Err(format!("game section version {version}; this build reads {SECTION_VERSION}"));
-        }
-        let state = State::from_bytes(Arc::clone(&content), r.blob("state", 64 << 20).map_err(bad)?).map_err(|e| e.to_string())?;
-        let rec = r.str("recording", 64 << 20).map_err(bad)?;
-        let journal = Recording::from_json(&rec, &content, "save").map_err(|e| format!("the run's recording: {e}"))?.journal;
-        let autoplay = if r.bool("autoplay").map_err(bad)? {
-            let name = r.str("autoplay.name", 256).map_err(bad)?;
-            let text = r.str("autoplay.script", 1 << 20).map_err(bad)?;
-            let script = Script::parse(&text, &content, "save").map_err(|e| format!("the build order being followed: {e}"))?;
-            let at = r.u64("autoplay.next").map_err(bad)? as usize;
-            Some((name, Player::resume(script, at)))
-        } else {
-            None
-        };
-        let paused = r.bool("paused").map_err(bad)?;
-        let speed = r.u32("speed").map_err(bad)?;
-        if !SPEEDS.contains(&speed) {
-            return Err(format!("speed {speed} isn't one of {SPEEDS:?}"));
-        }
-        let pres_ticks = r.u64("pres_ticks").map_err(bad)?;
-        r.finish().map_err(bad)?;
-        Ok(Loaded { state, journal, autoplay, paused, speed, pres_ticks })
+        parse_saved(&self.content(), data)
     }
 
     /// Takes a parsed section over the loaded world: the state, then the scene adopting what
@@ -297,6 +315,7 @@ impl SepulcraGame {
             (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("not_found") => "That save is gone".into(),
             (GameRequest::Save { .. }, Err(e)) if autosave => format!("Autosave skipped: {}", error(e)),
             (GameRequest::Save { .. }, Err(e)) => format!("Couldn't save: {}", error(e)),
+            (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("playtest_running") => "Can't load while a playtest is running".into(),
             (GameRequest::Load { .. }, Err(e)) => format!("Couldn't load: {}", error(e)),
             (GameRequest::Delete { .. }, Err(e)) => format!("Couldn't delete: {}", error(e)),
             (GameRequest::List, _) => return,

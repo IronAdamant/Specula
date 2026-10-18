@@ -62,6 +62,45 @@ def bomb(path, mib=300):
     return len(out)
 
 
+def sections_of(b):
+    """A save file's version, header and sections [name, decoded bytes]."""
+    ver, hl = struct.unpack_from("<II", b, 8)
+    hdr = json.loads(b[16:16 + hl])
+    at, secs = 16 + hl, []
+    for s in hdr["sections"]:
+        raw = b[at:at + s["stored"]]
+        at += s["stored"]
+        secs.append([s["name"], zlib.decompress(raw) if s["codec"] == "zlib" else raw])
+    return ver, hdr, secs
+
+
+def build_save(ver, hdr, secs):
+    """A save file from a header and sections (all compressed), checksums made right."""
+    table, body = [], b""
+    for name, data in secs:
+        st = zlib.compress(data, 6)
+        table.append({"name": name, "codec": "zlib", "bytes": len(data), "stored": len(st), "crc32": "%08x" % (zlib.crc32(data) & 0xffffffff)})
+        body += st
+    hdr = dict(hdr, sections=table)
+    t = json.dumps(hdr, separators=(",", ":")).encode()
+    out = b"SPECSAVE" + struct.pack("<II", ver, len(t)) + t + body
+    return out + struct.pack("<I", zlib.crc32(out) & 0xffffffff)
+
+
+def game_bomb(src, dst, mib=32):
+    """The review's crafted save: `src` with a `mib` MiB recording in its game section (far over
+    Sepulcra's cap), in a file of about a megabyte."""
+    ver, hdr, secs = sections_of(src.read_bytes())
+    g = dict(secs)["game"]
+    sl = struct.unpack_from("<I", g, 4)[0]
+    at = 8 + sl
+    rl = struct.unpack_from("<I", g, at)[0]
+    rec = b'{"x":[' + b"0," * (mib << 20 >> 1) + b'0]}'
+    g2 = g[:at] + struct.pack("<I", len(rec)) + rec + g[at + 4 + rl:]
+    dst.write_bytes(build_save(ver, hdr, [[n, g2 if n == "game" else d] for n, d in secs]))
+    return dst.stat().st_size
+
+
 def step(m, n):
     while n > 0:
         k = min(n, 18000)
@@ -273,7 +312,36 @@ def run(args, work):
         th.start()
         res = b.request("tools/call", {"name": "save_read", "arguments": {"name": "bomb", "force": True}})
         err = json.loads(res["content"][0]["text"])
-        check(res.get("isError") and err.get("error") == "too_large", f"a {size}-byte decompression bomb is refused ({err.get('error')}: {err.get('message', '')[:90]})")
+        # 300 MiB of zeros is under the 512 MiB decoded cap and DEFLATE's ratio: it is inflated on
+        # the load's worker (the engine thread never sees it), then refused (no world in it).
+        check(res.get("isError") and err.get("error") in ("too_large", "corrupt_section"), f"a {size}-byte decompression bomb is refused, off the engine thread ({err.get('error')}: {err.get('message', '')[:90]})")
+        # The review's game-section bomb: a 32 MiB recording in a ~1 MB file, refused by the game's
+        # cap on the load's worker.
+        gsize = game_bomb(work / "saves" / "sepulcra_slot_1.specsave", work / "saves" / "gamebomb.specsave")
+        t0 = time.perf_counter()
+        res = b.request("tools/call", {"name": "save_read", "arguments": {"name": "gamebomb", "force": True}})
+        gms = (time.perf_counter() - t0) * 1000
+        err = json.loads(res["content"][0]["text"])
+        check(res.get("isError") and err.get("error") == "game_state" and "recording" in err.get("message", "") + json.dumps(err),
+              f"a {gsize}-byte save with a 32 MiB recording is refused by the game's cap in {gms:.0f} ms ({err.get('message', '')[:100]})")
+        # Inspections stream the file and inflate nothing; at most 4 run at once (busy beyond).
+        target_name = "stress" if args.stress else "sepulcra_slot_1"
+        answers = [None] * 8
+
+        def look(i):
+            c = Mcp(url_for(pb), f"save-check-inspect-{i}")
+            r = c.request("tools/call", {"name": "save_read", "arguments": {"name": target_name, "inspect": True}})
+            answers[i] = (r.get("isError"), json.loads(r["content"][0]["text"]))
+            c.close()
+
+        lookers = [threading.Thread(target=look, args=(i,)) for i in range(8)]
+        for t in lookers:
+            t.start()
+        for t in lookers:
+            t.join()
+        ok = [a for a in answers if a and not a[0] and a[1].get("reads")]
+        busy = [a for a in answers if a and a[0] and a[1].get("error") == "busy"]
+        check(len(ok) + len(busy) == 8 and ok, f"8 inspections at once: {len(ok)} read the table and checksum, {len(busy)} busy (none failed)")
         if args.stress:
             started = time.perf_counter()
             big = b.json("save_read", name="stress", force=True)
@@ -282,6 +350,18 @@ def run(args, work):
             check(big["match"], "the stress save loads with matching hashes")
         done.set()
         th.join()
+        # A load while a playtest runs would move the clock and the world under it: refused, for
+        # an agent (even with force) and for the player's Load.
+        spec = {"name": "long", "ticks": 60000, "steps": [{"at": 0, "call": "play_state"}, {"at": 50000, "call": "play_state"}]}
+        b.request("tools/call", {"name": "playtest_run", "arguments": {"spec": spec, "wait_s": 0}})
+        res = other.request("tools/call", {"name": "save_read", "arguments": {"name": "sepulcra_slot_1", "force": True}})
+        err = json.loads(res["content"][0]["text"])
+        check(res.get("isError") and err.get("error") == "playtest_running", f"another agent's load during a playtest is refused ({err.get('error')})")
+        for press in ("menu_button", "saves", "load_1", "confirm_yes"):
+            other.request("tools/call", {"name": "play_ui", "arguments": {"press": press}})
+        said = wait_for("the player's refused load", lambda: [m for m in (lambda st: [x.get("message", "") for x in st.get("log", {}).get("items", []) if isinstance(x, dict)])(other.json("play_state", include=["log"])) if "playtest" in m])
+        check(bool(said), f"the player's Load during a playtest is refused and says why ({(said or [''])[0][:90]})")
+        b.request("tools/call", {"name": "playtest_report", "arguments": {"cancel": True, "wait_s": 5}})
         lat = sorted(latencies)
         if lat:
             print(f"  bystander world_list during the loads: {len(lat)} calls, median {lat[len(lat) // 2]:.1f} ms, max {lat[-1]:.1f} ms")

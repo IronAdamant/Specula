@@ -277,7 +277,10 @@ pub(crate) struct Prepared {
     world: crate::world::World,
     physics: crate::physics::Physics,
     physics_bytes: Option<Vec<u8>>,
+    /// The game's section when the game has no worker-side parser (parsed at the swap).
     game_bytes: Option<Vec<u8>>,
+    /// The game's section, parsed on the worker ([`crate::game::Game::state_parser`]).
+    game_parsed: Option<Box<dyn std::any::Any + Send>>,
     logic: Option<crate::logic::LogicSnapshot>,
     sections: Vec<String>,
     notes: Vec<Json>,
@@ -296,20 +299,65 @@ fn read_file(path: &std::path::Path) -> Result<savegame::SaveFile, SaveError> {
     savegame::decode(&bytes).map_err(|e| e.with("file", path.display().to_string()))
 }
 
-/// `save_read {inspect}`: the header and sections of a save that reads cleanly.
+/// All saves in a saves folder together at most this big: a swarm saving in a loop fills a
+/// folder, not the disk (`saves_full` says how to make room).
+pub const MAX_SAVES_DIR_BYTES: u64 = 4 << 30;
+
+/// Whether `dir` has room for a `new_len`-byte save at `path` (replacing what is there): the
+/// other saves' sizes plus this one stay within `cap`.
+fn dir_room(dir: &std::path::Path, path: &std::path::Path, new_len: u64, cap: u64) -> Result<(), SaveError> {
+    let mut used = 0u64;
+    let mut count = 0usize;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p == path || p.extension().and_then(|x| x.to_str()) != Some(EXTENSION) {
+                continue;
+            }
+            used = used.saturating_add(e.metadata().map_or(0, |m| m.len()));
+            count += 1;
+        }
+    }
+    if used.saturating_add(new_len) > cap {
+        return Err(SaveError::new(
+            "saves_full",
+            format!("the saves folder holds {used} bytes in {count} saves; with this {new_len}-byte save it would pass its cap of {cap} bytes: save_delete old saves (save_list shows them) or save over one"),
+        )
+        .with("used_bytes", used)
+        .with("saves", count)
+        .with("cap_bytes", cap)
+        .with("this_save_bytes", new_len));
+    }
+    Ok(())
+}
+
+/// Inspections running at once (each streams its file with a small buffer).
+static INSPECTING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_INSPECTS: usize = 4;
+
+/// `save_read {inspect}`: the header and section table of a save, its framing, table and file
+/// checksum checked by streaming the file; nothing is decompressed (`savegame::inspect`), so an
+/// inspection costs the header plus 64 KB whatever the file.
 fn inspect(path: &std::path::Path, name: &str) -> Result<Json, SaveError> {
-    let f = read_file(path)?;
+    let len = std::fs::metadata(path).map_err(|e| io(path, e))?.len();
+    if len > savegame::MAX_FILE_BYTES {
+        return Err(SaveError::new("too_large", format!("{} is {len} bytes; saves are read up to {}", path.display(), savegame::MAX_FILE_BYTES)));
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| io(path, e))?;
+    let f = savegame::inspect(&mut file, len).map_err(|e| e.with("file", path.display().to_string()))?;
     let mut j = Json::obj(header_summary(&f.meta));
     j.set("name", Json::from(name));
     j.set("version", Json::from(f.version));
-    j.set("sections", Json::obj(f.sections.iter().map(|s| (s.name.as_str(), Json::from(s.data.len())))));
+    j.set("bytes", Json::from(len));
+    j.set("sections", Json::obj(f.table.iter().map(|t| (t.name.as_str(), Json::obj([("bytes", Json::from(t.bytes)), ("stored", Json::from(t.stored)), ("codec", Json::from(t.codec.as_str()))])))));
     j.set("reads", Json::from(true));
+    j.set("checked", Json::from("framing, header, section table and the file's checksum; sections aren't decompressed (save_read loads and checks them)"));
     Ok(j)
 }
 
 /// Everything about a load that can run off the engine thread: read, decode, check the header
 /// against the engine, load the world, parse module state, restore physics against the world.
-fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hosted: Option<String>, hz: u32, generation: u64) -> Result<Prepared, SaveError> {
+fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hosted: Option<String>, hz: u32, generation: u64, parser: Option<crate::game::StateParser>) -> Result<Prepared, SaveError> {
     let t0 = Instant::now();
     let f = read_file(path)?;
     let meta = f.meta;
@@ -368,11 +416,19 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
             s
         })?;
     }
-    let game_bytes = by_name.remove("game");
+    let mut game_bytes = by_name.remove("game");
     if game_bytes.is_some() && hosted.is_none() {
         return Err(SaveError::new("wrong_game", "the save has game state but no game is hosted"));
     }
-    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, logic, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
+    // The game's state, parsed here too when the game can (its parser checks it against the game).
+    let game_parsed = match (&game_bytes, parser) {
+        (Some(b), Some(parse)) => Some(parse(b).map_err(|m| SaveError::new("game_state", format!("the game can't load this save: {m}")).in_section("game"))?),
+        _ => None,
+    };
+    if game_parsed.is_some() {
+        game_bytes = None;
+    }
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -412,6 +468,7 @@ impl SaveJob {
         let bytes = savegame::encode(&self.meta, &sections);
         let encode_ms = t1.elapsed().as_secs_f64() * 1000.0;
         let t2 = Instant::now();
+        dir_room(&self.dir, &self.path, bytes.len() as u64, MAX_SAVES_DIR_BYTES)?;
         std::fs::create_dir_all(&self.dir).map_err(|e| io(&self.dir, e))?;
         let tmp = self.path.with_extension(format!("{EXTENSION}.tmp"));
         {
@@ -500,19 +557,33 @@ impl Engine {
         let started = match call {
             SaveCall::Write { name, label, overwrite, force } => self.start_save(&name, label, overwrite, force, &by, &key, Dest::Tool(reply.clone())),
             SaveCall::Read { name, inspect: true, .. } => {
-                // Reading and checking a file needs nothing of the engine's: all on a worker.
+                // Reading and checking a file needs nothing of the engine's: on a worker, at most
+                // MAX_INSPECTS at once (each streams with a small buffer).
+                use std::sync::atomic::Ordering;
                 let path = self.save_path(&name);
                 let tx = reply.clone();
-                std::thread::Builder::new()
-                    .name("specula-save-inspect".into())
-                    .spawn(move || {
-                        let _ = tx.send(match inspect(&path, &name) {
-                            Ok(j) => out(j),
-                            Err(e) => fail(&e),
-                        });
-                    })
-                    .map(drop)
-                    .map_err(|e| SaveError::new("io", format!("could not start a reader: {e}")))
+                if let Err(m) = validate_save_name(&name) {
+                    Err(SaveError::new("invalid_argument", m))
+                } else if INSPECTING.fetch_add(1, Ordering::SeqCst) >= MAX_INSPECTS {
+                    INSPECTING.fetch_sub(1, Ordering::SeqCst);
+                    Err(SaveError::new("busy", format!("{MAX_INSPECTS} saves are being inspected; call again in a moment")).with("retry_after_ms", 200))
+                } else {
+                    std::thread::Builder::new()
+                        .name("specula-save-inspect".into())
+                        .spawn(move || {
+                            let r = inspect(&path, &name);
+                            INSPECTING.fetch_sub(1, Ordering::SeqCst);
+                            let _ = tx.send(match r {
+                                Ok(j) => out(j),
+                                Err(e) => fail(&e),
+                            });
+                        })
+                        .map(drop)
+                        .map_err(|e| {
+                            INSPECTING.fetch_sub(1, Ordering::SeqCst);
+                            SaveError::new("io", format!("could not start a reader: {e}"))
+                        })
+                }
             }
             SaveCall::Read { name, force, .. } => self.start_load(&name, force, &by, Some(key), Dest::Tool(reply.clone())),
             other => {
@@ -642,9 +713,10 @@ impl Engine {
         let (limits, hz) = (self.world.shape_limits(), self.clock.hz());
         let hosted = self.game.as_ref().map(|_| self.game_name.clone());
         let generation = self.world_generation + 1;
+        let parser = self.game.as_ref().and_then(|g| g.state_parser());
         let handle = std::thread::Builder::new()
             .name("specula-load".into())
-            .spawn(move || prepare_load(&path, limits, hosted, hz, generation))
+            .spawn(move || prepare_load(&path, limits, hosted, hz, generation, parser))
             .map_err(|e| SaveError::new("io", format!("could not start a save reader: {e}")))?;
         self.save_load = Some(Loading {
             name: name.to_owned(),
@@ -663,6 +735,12 @@ impl Engine {
     /// Claims and unsaved changes: checked when a load starts and again when it swaps in
     /// (`since`: the world's revision when it started; changes after it are unsaved too).
     fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<(), SaveError> {
+        // A playtest owns the clock and the world until it ends: a load would move both under it
+        // (and its replay would record a run nobody can reproduce). Not even with force.
+        if self.playtests.running() {
+            return Err(SaveError::new("playtest_running", "a playtest is running (it owns the clock and the world); load after it ends (playtest_report waits for it) or cancel it")
+                .with("retry_after_ms", 1000));
+        }
         self.swarm.check_replace_world(Writer::new(by, key)).map_err(|e| {
             let mut s = SaveError::new("claimed", e.message.clone());
             s.details = e.details.clone();
@@ -688,8 +766,10 @@ impl Engine {
     fn finish_load(&mut self, l: &Loading, p: Prepared) -> Result<Json, SaveError> {
         let t1 = Instant::now();
         self.check_load_allowed(l.force, &l.by, l.key.as_deref(), Some(l.revision))?;
-        let parsed = match (&p.game_bytes, self.game.as_ref()) {
-            (Some(bytes), Some(g)) => Some(g.parse_state(bytes).map_err(|m| SaveError::new("game_state", format!("the game can't load this save: {m}")).in_section("game"))?),
+        // Parsed on the worker when the game has a parser; otherwise (a game without one) here.
+        let parsed: Option<Box<dyn std::any::Any>> = match (p.game_parsed, &p.game_bytes, self.game.as_ref()) {
+            (Some(state), _, _) => Some(state),
+            (None, Some(bytes), Some(g)) => Some(g.parse_state(bytes).map_err(|m| SaveError::new("game_state", format!("the game can't load this save: {m}")).in_section("game"))?),
             _ => None,
         };
         let mut physics = p.physics;
@@ -924,6 +1004,28 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saves folder has a cap: a save that would pass it is `saves_full` (saving over a save
+    /// counts only the new one).
+    #[test]
+    fn a_full_saves_folder_is_refused() {
+        let dir = std::env::temp_dir().join(format!("specula_saves_full_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, len) in [("a", 400usize), ("b", 300)] {
+            std::fs::write(dir.join(format!("{n}.{EXTENSION}")), vec![0u8; len]).unwrap();
+        }
+        std::fs::write(dir.join("notes.txt"), vec![0u8; 5000]).unwrap();
+        let c = dir.join(format!("c.{EXTENSION}"));
+        assert!(dir_room(&dir, &c, 300, 1000).is_ok(), "700 + 300 fits 1000 (other files don't count)");
+        let e = dir_room(&dir, &c, 301, 1000).unwrap_err();
+        assert_eq!(e.code, "saves_full");
+        assert!(e.to_json().to_string().contains("\"used_bytes\":700"), "{}", e.to_json());
+        // Saving over 'a' replaces its 400 bytes.
+        assert!(dir_room(&dir, &dir.join(format!("a.{EXTENSION}")), 700, 1000).is_ok());
+        assert!(dir_room(&dir.join("missing"), &c, 10, 1000).is_ok(), "a folder not made yet is empty");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn names_and_arguments_are_checked() {

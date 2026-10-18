@@ -134,6 +134,15 @@ pub trait Game {
         Err(format!("the game '{}' doesn't load save games", self.name()))
     }
 
+    /// [`Game::parse_state`] as a function that can run on another thread: a load reads and checks
+    /// a save on a worker, and only the swap (with [`Game::apply_state`]) runs on the engine
+    /// thread. It must check what `parse_state` checks, against what the game is now (capture
+    /// its content). `None` (the default): `parse_state` runs on the engine thread at the swap,
+    /// so a game with big state should provide one.
+    fn state_parser(&self) -> Option<StateParser> {
+        None
+    }
+
     /// Takes a [`Game::parse_state`] result, after the engine made the save's world live (and
     /// set the clock to the save's tick). The world already holds what the game had built:
     /// adopt those entities (look them up), don't rebuild them, or the world's hash moves and
@@ -169,6 +178,10 @@ pub enum GameRequest {
     /// `save_delete` of the save named `slot` (the player asked, and confirmed).
     Delete { slot: String },
 }
+
+/// [`Game::state_parser`]: reads a game's save bytes on a worker thread into a parsed state for
+/// [`Game::apply_state`].
+pub type StateParser = Box<dyn FnOnce(&[u8]) -> Result<Box<dyn Any + Send>, String> + Send>;
 
 /// What a game can touch.
 ///
