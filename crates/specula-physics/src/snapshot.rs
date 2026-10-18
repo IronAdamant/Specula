@@ -84,6 +84,8 @@ fn w_settings(w: &mut ByteWriter, s: &Settings) {
     for n in [s.max_joints, s.max_cosmetic_bodies, s.max_cosmetic_pairs, s.threads] {
         w.u64(n as u64);
     }
+    w.bool(s.coloured);
+    w.bool(s.wide);
 }
 
 fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeError> {
@@ -101,12 +103,16 @@ fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeEr
     let d = Settings::default();
     let (mut joint_hertz, mut joint_damping_ratio) = (d.joint_hertz, d.joint_damping_ratio);
     let mut counts = [d.max_joints, d.max_cosmetic_bodies, d.max_cosmetic_pairs, d.threads];
+    let mut coloured = d.coloured;
+    let mut wide = d.wide;
     if version >= 2 {
         joint_hertz = r.f32(f)?;
         joint_damping_ratio = r.f32(f)?;
         for c in &mut counts {
             *c = r.u64(f)?.min(1 << 32) as usize;
         }
+        coloured = r.bool(f)?;
+        wide = r.bool(f)?;
     }
     // Threads: at least one, and no more than a machine has (the results never depend on it).
     counts[3] = counts[3].clamp(1, 64);
@@ -117,6 +123,8 @@ fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeEr
         max_cosmetic_bodies: counts[1],
         max_cosmetic_pairs: counts[2],
         threads: counts[3],
+        coloured,
+        wide,
         gravity,
         substeps,
         sleep,

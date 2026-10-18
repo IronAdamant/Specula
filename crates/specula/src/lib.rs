@@ -95,7 +95,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--response-format concise|detailed] [-- GAME ARGS...]";
+[--paused] [--response-format concise|detailed] [--physics-threads N] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -147,6 +147,9 @@ struct Args {
     paused: bool,
     /// The default `response_format` of every session (`--response-format`; concise unless set).
     response_format: response::Format,
+    /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
+    /// with the world's `physics.coloured` the contact solver. The results never depend on it.
+    physics_threads: usize,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -171,6 +174,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         game_args: Vec::new(),
         paused: false,
         response_format: response::Format::Concise,
+        physics_threads: 1,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -211,6 +215,9 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
             "--saves" => args.saves = Some(PathBuf::from(value()?)),
+            "--physics-threads" => {
+                args.physics_threads = value()?.parse().ok().filter(|n| (1..=64).contains(n)).ok_or_else(|| format!("--physics-threads must be 1..64\n{USAGE}"))?;
+            }
             "--world" => {
                 let name = value()?;
                 persist::validate_world_name(&name).map_err(|e| format!("--world: {e}\n{USAGE}"))?;
@@ -270,6 +277,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
     engine.formats = response::Defaults::new(args.response_format);
+    engine.physics.threads = args.physics_threads;
     engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
     let kind = perf::adapter_kind(engine.gpu.adapter().kind);
     eprintln!(

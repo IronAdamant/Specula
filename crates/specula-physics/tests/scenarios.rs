@@ -270,6 +270,52 @@ fn the_threaded_narrowphase_gives_the_same_states() {
     assert!(one.report().pairs > 2000, "enough pairs to split: {}", one.report().pairs);
 }
 
+/// The coloured solver on its thread pool: a heap of boxes and spheres, a pendulum chain of
+/// joints, a spinning kinematic paddle and a tower, the same states (bit for bit, every step) on
+/// 1, 2, 3, 4 and 8 threads; and coloured differs from pair order only in the order it solves.
+#[test]
+fn the_coloured_solver_gives_the_same_states_on_any_thread_count() {
+    use specula_physics::joint::{JointDesc, JointKind};
+    let build = |threads: usize| {
+        let mut s = Space::new(Settings { threads, coloured: true, ..Settings::default() });
+        ground(&mut s);
+        for i in 0..300u64 {
+            let (x, y, z) = ((i % 10) as f32 * 1.02 - 5.0, 0.5 + (i / 100) as f32 * 1.05, ((i / 10) % 10) as f32 * 1.02 - 5.0);
+            let shape = if i % 4 == 0 { Shape::sphere(0.5) } else { Shape::cuboid(v3(0.5, 0.5, 0.5)) };
+            dynamic(&mut s, 10 + i, shape, v3(x, y, z));
+        }
+        let mut k = BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, 0.3, 9.0)), Some(ColliderDesc::new(Shape::cuboid(v3(4.0, 0.3, 0.3)))));
+        k.angular_velocity = v3(0.0, 1.5, 0.0);
+        s.insert(5, k).unwrap();
+        for i in 0..6u64 {
+            dynamic(&mut s, 2000 + i, Shape::cuboid(v3(0.1, 0.25, 0.1)), v3(9.0, 6.0 - 0.5 * i as f32, 0.0));
+            let a = (i > 0).then_some(2000 + i - 1);
+            let fa = if i == 0 { Pose::at(v3(9.0, 6.25, 0.0)) } else { Pose::at(v3(0.0, -0.25, 0.0)) };
+            s.insert_joint(3000 + i, JointDesc::new(JointKind::Ball, a, Some(2000 + i), fa, Pose::at(v3(0.0, 0.25, 0.0)))).unwrap();
+        }
+        dynamic(&mut s, 2100, Shape::cuboid(v3(0.4, 0.4, 0.4)), v3(7.0, 3.5, 0.0));
+        s.set_velocity(2100, v3(4.0, 0.0, 0.0), Vec3::ZERO);
+        s
+    };
+    let mut runs: Vec<Space> = [1, 2, 3, 4, 8].into_iter().map(build).collect();
+    // And the wide solve (four constraints in lanes) on four threads.
+    let mut wide = build(4);
+    wide.settings.wide = true;
+    runs.push(wide);
+    let mut most = 0;
+    for t in 0..120 {
+        for s in &mut runs {
+            s.step(DT);
+        }
+        most = most.max(runs[0].report().constraints);
+        let h = runs[0].hash();
+        for (i, s) in runs.iter().enumerate().skip(1) {
+            assert_eq!(s.hash(), h, "{} diverged at step {t}", ["1 thread", "2 threads", "3 threads", "4 threads", "8 threads", "4 threads, wide"][i]);
+        }
+    }
+    assert!(most > 300, "enough contacts to colour: {most}");
+}
+
 #[test]
 fn compound_bodies_stand_on_their_parts() {
     // A stool: a seat on four thin legs, dropped from a metre. It lands on its legs, upright,

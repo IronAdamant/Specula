@@ -2133,7 +2133,7 @@ fn definitions() -> Vec<ToolDef> {
                     ("fog", object("Height fog: {enabled, color, density, falloff, height, start_distance, sun_scatter}")),
                     ("grading", object("Colour grading: {enabled, temperature -1..1 (+ warm), tint -1..1 (+ magenta), contrast 0..4, saturation 0..4, vibrance -1..1, lift [r,g,b] -1..1, gamma [r,g,b] 0.1..10, gain [r,g,b] 0..4, lut (PNG path under the assets root, 32x32x32 as 1024x32), lut_strength 0..1, vignette 0..1, vignette_radius 0..0.99, grain 0..4}")),
                     ("ssao", object("Ambient occlusion: {enabled, radius 0.05..10 m, intensity 0..4, samples 4..16, resolution 0.25..1 of the frame}")),
-                    ("physics", object("Physics: {gravity [x,y,z] m/s² (default [0,-9.81,0]), substeps 1..16 per 1/60 s (default 4; scaled to the tick rate), sleep (default true), plane_2d (dynamic bodies stay in the XY plane, turning about Z), contact_hertz 1..1000 (default 30), enabled}")),
+                    ("physics", object("Physics: {gravity [x,y,z] m/s² (default [0,-9.81,0]), substeps 1..16 per 1/60 s (default 4; scaled to the tick rate), sleep (default true), plane_2d (dynamic bodies stay in the XY plane, turning about Z), contact_hertz 1..1000 (default 30), enabled, coloured (graph-colour contact order, so the engine's --physics-threads solve contacts too; the same states on any thread count; default false)}")),
                 ],
                 &[],
             ),

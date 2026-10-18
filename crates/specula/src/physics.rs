@@ -882,6 +882,10 @@ pub struct PhysicsSettings {
     /// Contact stiffness, Hz.
     pub contact_hertz: f32,
     pub enabled: bool,
+    /// Solve contacts in graph-colour order (so they can run on several threads, the engine's
+    /// `--physics-threads`): the same states on any thread count, but other ones than pair
+    /// order (default off; see [`specula_physics::Settings::coloured`]).
+    pub coloured: bool,
 }
 
 impl Default for PhysicsSettings {
@@ -894,6 +898,7 @@ impl Default for PhysicsSettings {
             plane_2d: d.plane_2d,
             contact_hertz: d.contact_hertz,
             enabled: true,
+            coloured: d.coloured,
         }
     }
 }
@@ -907,9 +912,10 @@ pub struct PhysicsPatch {
     pub plane_2d: Option<bool>,
     pub contact_hertz: Option<f32>,
     pub enabled: Option<bool>,
+    pub coloured: Option<bool>,
 }
 
-const SETTING_KEYS: &[&str] = &["gravity", "substeps", "sleep", "plane_2d", "contact_hertz", "enabled"];
+const SETTING_KEYS: &[&str] = &["gravity", "substeps", "sleep", "plane_2d", "contact_hertz", "enabled", "coloured"];
 
 impl PhysicsPatch {
     pub fn parse(v: &Json) -> Result<PhysicsPatch, String> {
@@ -926,6 +932,7 @@ impl PhysicsPatch {
             plane_2d: opt_bool(v, "plane_2d", "physics.plane_2d")?,
             contact_hertz: opt_num(v, "contact_hertz", "physics.contact_hertz")?,
             enabled: opt_bool(v, "enabled", "physics.enabled")?,
+            coloured: opt_bool(v, "coloured", "physics.coloured")?,
         })
     }
 
@@ -963,17 +970,25 @@ impl PhysicsPatch {
         if let Some(v) = self.enabled {
             s.enabled = v;
         }
+        if let Some(v) = self.coloured {
+            s.coloured = v;
+        }
     }
 
     pub fn to_json(s: &PhysicsSettings) -> Json {
-        Json::obj([
+        let mut j = Json::obj([
             ("gravity", Json::arr(s.gravity.map(Json::from))),
             ("substeps", Json::from(s.substeps)),
             ("sleep", Json::from(s.sleep)),
             ("plane_2d", Json::from(s.plane_2d)),
             ("contact_hertz", Json::from(s.contact_hertz)),
             ("enabled", Json::from(s.enabled)),
-        ])
+        ]);
+        // Only when on: world files and answers stay as they were for everyone else.
+        if s.coloured {
+            j.set("coloured", Json::from(true));
+        }
+        j
     }
 
     /// Hashes nothing while the settings are all defaults, so older worlds keep their hash.
@@ -986,6 +1001,10 @@ impl PhysicsPatch {
             h.write_bool(s.plane_2d);
             h.write_f32(s.contact_hertz);
             h.write_bool(s.enabled);
+            // Only when on, so worlds with other settings keep their hash.
+            if s.coloured {
+                h.write_str("coloured");
+            }
         }
     }
 }
@@ -1001,6 +1020,7 @@ pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings
         sleep: s.sleep,
         plane_2d: s.plane_2d,
         contact_hertz: s.contact_hertz,
+        coloured: s.coloured,
         ..specula_physics::Settings::default()
     }
 }
@@ -1077,6 +1097,8 @@ pub struct TickRecord {
 /// The engine's physics: the space and its bridge to the world.
 pub struct Physics {
     pub space: Space,
+    /// Threads physics may use (the engine's `--physics-threads`; kept across resets).
+    pub threads: usize,
     seen: BTreeMap<u64, Seen>,
     layers: BTreeMap<String, u32>,
     /// `(world generation, draw epoch)` synced up to.
@@ -1110,6 +1132,7 @@ impl Default for Physics {
     fn default() -> Physics {
         Physics {
             space: Space::default(),
+            threads: 1,
             seen: BTreeMap::new(),
             layers: BTreeMap::new(),
             synced: None,
@@ -1220,7 +1243,9 @@ fn build_shape(c: &Collider, s: Vec3) -> Result<Shape, String> {
 impl Physics {
     /// Forgets everything (a new world).
     pub fn reset(&mut self) {
+        let threads = self.threads;
         *self = Physics::default();
+        self.threads = threads;
     }
 
     /// The bit of a layer name (allocated on first use; "default" is bit 0).
@@ -1594,7 +1619,9 @@ impl Physics {
     pub fn tick(&mut self, world: &mut World, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
         let started = std::time::Instant::now();
         let hz = (1.0 / dt).round() as u32;
-        let want = space_settings(settings, hz);
+        let mut want = space_settings(settings, hz);
+        // Threads are the machine's, not the world's (the results never depend on them).
+        want.threads = self.threads;
         if self.space.settings != want {
             // New gravity, substeps or 2D mode: resting bodies must feel it.
             let wake = self.space.settings.gravity != want.gravity || self.space.settings.plane_2d != want.plane_2d || self.space.settings.substeps != want.substeps || self.space.settings.sleep != want.sleep;
@@ -1802,6 +1829,28 @@ mod tests {
                 j.append_snapshot(tick, AGENT, None, Kind::Physics, changes, w.next_id());
             }
         }
+    }
+
+    /// The world's `physics.coloured` with the engine's threads: the same world, bit for bit, on
+    /// any thread count (threads are the machine's, never in the world or its hash).
+    #[test]
+    fn coloured_physics_is_the_same_on_any_thread_count() {
+        let go = |threads: usize| {
+            let mut w = World::default();
+            floor(&mut w);
+            for i in 0..400u32 {
+                crate_at(&mut w, &format!("c{i}"), Vec3::new((i % 10) as f32 * 1.05 - 5.0, 0.5 + (i / 100) as f32 * 1.1, ((i / 10) % 10) as f32 * 1.05 - 5.0));
+            }
+            let patch = crate::world::EnvPatch { physics: Some(PhysicsPatch { coloured: Some(true), ..PhysicsPatch::default() }), ..crate::world::EnvPatch::default() };
+            w.set_env(&patch).unwrap();
+            let mut p = Physics { threads, ..Physics::default() };
+            run(&mut w, &mut p, None, 60);
+            (w.state_hash(), p.space.hash(), p.space.settings.coloured)
+        };
+        let one = go(1);
+        assert!(one.2, "the world's setting reached the space");
+        assert_eq!(go(4), one);
+        assert_eq!(go(8), one);
     }
 
     /// Where an engine physics tick goes with 1,000 awake boxes (review round 2, finding 6). Run

@@ -1,6 +1,6 @@
 //! Physics benchmark (foundation F3): the PHYSICS.md budget scenes, timed on this machine.
 //!
-//! `cargo run --release -p specula-physics --example physics_bench [-- --quick] [--threads N]`
+//! `cargo run --release -p specula-physics --example physics_bench [-- --quick] [--threads N] [--coloured]`
 //!
 //! - **pyramid**: a 20-row pyramid of boxes (210 bodies) settling and falling asleep.
 //! - **awake 1000**: 1,000 mixed bodies (boxes, spheres, capsules, hulls) raining onto a floor;
@@ -79,11 +79,13 @@ impl Timing {
     }
 }
 
-/// The scenes' settings: defaults, with `--threads N` for the narrowphase.
+/// The scenes' settings: defaults, with `--threads N` (the narrowphase; with `--coloured`, the
+/// contact solver too) and `--coloured` (graph-colour solving order).
 fn settings() -> Settings {
     let args: Vec<String> = std::env::args().collect();
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).and_then(|n| n.parse().ok()).unwrap_or(Settings::default().threads);
-    Settings { threads, ..Settings::default() }
+    let coloured = args.iter().any(|a| a == "--coloured");
+    Settings { threads, coloured, ..Settings::default() }
 }
 
 fn main() {

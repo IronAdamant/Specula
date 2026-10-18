@@ -22,12 +22,12 @@
 //! [`Settings::max_pairs`]); past a cap the extra work is dropped (deterministically, in key
 //! order) and the step's report carries a structured `budget` error naming the limit.
 
-use crate::contact::{collide, collide_cached, Manifold, SatCache, MAX_POINTS};
+use crate::contact::{Manifold, SatCache, MAX_POINTS};
 use crate::joint::{JointConstraint, JointDesc, JointImpulses, JointState, Motor};
 use crate::math::{Aabb, Mat3, Pose, Quat, Vec3};
 use crate::query::{self, CastHit, RayHit};
 use crate::shape::Shape;
-use crate::solver::{self, Constraint, Softness, SolverBody, SolverPoint, Tuning, STATIC};
+use crate::solver::{self, Constraint, Imp, Softness, SolverBody, SolverPoint, Tuning, STATIC};
 use crate::tree::Tree;
 use crate::PhysicsError;
 use specula_core::hash::StableHasher;
@@ -78,11 +78,22 @@ pub struct Settings {
     /// caps, so presentation can never crowd out the simulation.
     pub max_cosmetic_bodies: usize,
     pub max_cosmetic_pairs: usize,
-    /// Threads the narrowphase may use (default 1: the calling thread only). Results never
-    /// depend on it. More helps on idle cores (about a quarter off a 1,000-body narrowphase),
-    /// but threads started each step can wait long for a busy machine to schedule them (a
-    /// loaded 24-core machine saw 50 ms steps), so it is opt-in.
+    /// Threads physics may use (default 1: the calling thread only): the narrowphase's pair
+    /// tests, and with `coloured` the contact solver, on a persistent pool
+    /// ([`crate::parallel`]: started once; a thread the machine doesn't schedule in time misses
+    /// the step instead of holding it up). Results never depend on it. Opt-in: on a busy machine
+    /// more threads compete with everything else.
     pub threads: usize,
+    /// Solve contacts in graph-colour order (Box2D v3, see [`crate::solver::colour`]) instead
+    /// of pair order. Needed to solve them on several threads (`threads` > 1); deterministic
+    /// either way, the same states on any thread count for a given choice. Default off: in pair
+    /// order a 10-box tower drifts 4.6 mm sideways as it settles, coloured 12 mm.
+    pub coloured: bool,
+    /// On the thread pool, solve contacts four at a time in lanes ([`crate::wide`], Box2D v3's
+    /// wide solver in plain Rust): bit-identical results, but measured slower (1,000 awake
+    /// boxes, 4 threads: the solve stage 1.48 ms against 1.25 one at a time; gathering the lanes
+    /// costs more than the lanes save without SIMD intrinsics), so off by default.
+    pub wide: bool,
 }
 
 impl Default for Settings {
@@ -110,6 +121,8 @@ impl Default for Settings {
             max_cosmetic_bodies: 4_096,
             max_cosmetic_pairs: 16_384,
             threads: 1,
+            coloured: false,
+            wide: false,
         }
     }
 }
@@ -459,6 +472,27 @@ pub struct CharacterState {
     pub ground: Option<u64>,
 }
 
+/// The contact solver's thread pool, started when first needed (and again for another thread
+/// count). A copied space starts without one: threads aren't state.
+#[derive(Debug, Default)]
+struct ParallelSlot(Option<Box<crate::parallel::Parallel>>);
+
+impl Clone for ParallelSlot {
+    fn clone(&self) -> ParallelSlot {
+        ParallelSlot(None)
+    }
+}
+
+impl ParallelSlot {
+    fn get(&mut self, threads: usize) -> &mut crate::parallel::Parallel {
+        let threads = threads.clamp(1, 64);
+        if self.0.as_ref().is_none_or(|p| p.threads() != threads) {
+            self.0 = Some(Box::new(crate::parallel::Parallel::new(threads)));
+        }
+        self.0.as_mut().expect("just made")
+    }
+}
+
 /// The physics world.
 #[derive(Clone, Debug)]
 pub struct Space {
@@ -503,7 +537,16 @@ pub struct Space {
     active: Vec<u32>,
     solver_bodies: Vec<SolverBody>,
     constraints: Vec<Constraint>,
+    /// The constraints' colour groups (see [`solver::colour`]) and its scratch.
+    groups: Vec<u32>,
+    colouring: solver::ColourScratch,
     solver_points: Vec<SolverPoint>,
+    solver_imps: Vec<Imp>,
+    /// The threaded narrowphase's inputs and where their results go (reused).
+    narrow_inputs: Vec<crate::parallel::NarrowIn>,
+    narrow_index: Vec<u32>,
+    /// The contact solver's threads (started on first use when `threads` > 1 and `coloured`).
+    parallel: ParallelSlot,
     candidates: Vec<(u64, u64)>,
     /// Joints by key, the bodies' joints `(body, joint)`, and the pairs joints keep from
     /// colliding (with how many joints keep each).
@@ -577,6 +620,12 @@ impl Space {
             solver_bodies: Vec::new(),
             constraints: Vec::new(),
             solver_points: Vec::new(),
+            solver_imps: Vec::new(),
+            narrow_inputs: Vec::new(),
+            narrow_index: Vec::new(),
+            parallel: ParallelSlot::default(),
+            groups: Vec::new(),
+            colouring: solver::ColourScratch::default(),
             candidates: Vec::new(),
             joints: BTreeMap::new(),
             body_joints: BTreeSet::new(),
@@ -1328,17 +1377,26 @@ impl Space {
                     *out = view.pair(sim[k]);
                 }
             } else {
-                let chunk = sim.len().div_ceil(threads);
-                std::thread::scope(|scope| {
-                    for (outs, slots) in narrow.chunks_mut(chunk).zip(sim.chunks(chunk)) {
-                        let view = &view;
-                        scope.spawn(move || {
-                            for (out, &slot) in outs.iter_mut().zip(slots) {
-                                *out = view.pair(slot);
-                            }
-                        });
+                // The cheap checks here; the pair tests on the pool's threads (started once).
+                let mut inputs = std::mem::take(&mut self.narrow_inputs);
+                let mut index = std::mem::take(&mut self.narrow_index);
+                inputs.clear();
+                index.clear();
+                for (k, &slot) in sim.iter().enumerate() {
+                    match view.input(slot) {
+                        Pre::Done(done) => narrow[k] = done,
+                        Pre::Test(input) => {
+                            index.push(k as u32);
+                            inputs.push(input);
+                        }
                     }
-                });
+                }
+                self.parallel.get(self.settings.threads).narrowphase(
+                    |job| std::mem::swap(job, &mut inputs),
+                    |i, manifold, sat| narrow[index[i] as usize] = Narrow { apart: false, manifold, sat },
+                );
+                self.narrow_inputs = inputs;
+                self.narrow_index = index;
             }
         }
         for (k, &slot) in self.sim.iter().enumerate() {
@@ -1590,9 +1648,11 @@ impl Space {
         let mut sbodies = std::mem::take(&mut self.solver_bodies);
         let mut cons = std::mem::take(&mut self.constraints);
         let mut points = std::mem::take(&mut self.solver_points);
+        let mut imps = std::mem::take(&mut self.solver_imps);
         sbodies.clear();
         cons.clear();
         points.clear();
+        imps.clear();
         let slots = std::mem::take(&mut self.active);
         for &s in &slots {
             let plane = settings.plane_2d;
@@ -1661,10 +1721,9 @@ impl Space {
                     rb,
                     normal: p.normal,
                     adjusted_separation: p.separation - (rb - ra).dot(p.normal),
-                    normal_impulse: p.normal_impulse,
-                    tangent_impulse: p.tangent_impulse,
                     ..SolverPoint::default()
                 });
+                imps.push(Imp { normal: p.normal_impulse, tangent: p.tangent_impulse, max_normal: 0.0 });
             }
             cons.push(Constraint {
                 a: ia,
@@ -1679,6 +1738,12 @@ impl Space {
         }
         self.report.constraints = cons.len();
         self.report.points = points.len();
+        if settings.coloured {
+            solver::colour(&mut cons, &sbodies, &mut self.groups, &mut self.colouring);
+        } else {
+            self.groups.clear();
+            self.groups.extend([0, cons.len() as u32]);
+        }
         let joint_soft = Softness::new(settings.joint_hertz.min(0.25 * substep_rate), settings.joint_damping_ratio, h);
         self.prepare_joints(joint_soft, h);
         let mut joints = std::mem::take(&mut self.joint_cons);
@@ -1689,18 +1754,21 @@ impl Space {
             push_speed: settings.push_speed,
             restitution_threshold: settings.restitution_threshold,
             max_linear_speed: settings.max_linear_speed,
+            wide: settings.wide,
         };
-        solver::step(&cons, &mut points, &mut joints, &mut sbodies, dt, &tuning);
+        let parallel = if settings.coloured && settings.threads > 1 { Some(self.parallel.get(settings.threads)) } else { None };
+        solver::step(&mut cons, &self.groups, &mut points, &mut imps, &mut joints, &mut sbodies, dt, &tuning, parallel);
         // Store impulses for next step's warm start.
         for sc in &cons {
             let c = self.contacts[sc.contact as usize].as_mut().expect("live contact");
-            for (k, sp) in points[sc.range()].iter().enumerate() {
-                c.points[k].normal_impulse = sp.normal_impulse;
-                c.points[k].tangent_impulse = sp.tangent_impulse;
-                c.points[k].max_normal_impulse = sp.max_normal_impulse;
+            for (k, i) in imps[sc.range()].iter().enumerate() {
+                c.points[k].normal_impulse = i.normal;
+                c.points[k].tangent_impulse = i.tangent;
+                c.points[k].max_normal_impulse = i.max_normal;
             }
         }
         self.solver_points = points;
+        self.solver_imps = imps;
         // Write dynamic bodies back.
         for &s in &slots {
             let b = self.slot_mut(s);
@@ -2574,6 +2642,12 @@ struct Narrow {
     sat: SatCache,
 }
 
+/// A pair before its shape test: done (apart, or too far), or the test to run.
+enum Pre {
+    Done(Narrow),
+    Test(crate::parallel::NarrowIn),
+}
+
 /// What the narrowphase reads (shareable across threads).
 struct NarrowView<'a> {
     slots: &'a [Option<Body>],
@@ -2588,6 +2662,18 @@ struct NarrowView<'a> {
 impl NarrowView<'_> {
     /// Contact slot `slot`'s points this step (from its bodies as they are; no state changes).
     fn pair(&self, slot: u32) -> Narrow {
+        match self.input(slot) {
+            Pre::Done(done) => done,
+            Pre::Test(input) => {
+                let (manifold, sat) = crate::parallel::test_pair(&input);
+                Narrow { apart: false, manifold, sat }
+            }
+        }
+    }
+
+    /// [`NarrowView::pair`]'s cheap part: the result when the pair needs no shape test (apart,
+    /// or its bounding spheres too far), else the test to run.
+    fn input(&self, slot: u32) -> Pre {
         let c = self.contacts[slot as usize].as_ref().expect("live contact");
         let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
         let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
@@ -2595,7 +2681,7 @@ impl NarrowView<'_> {
         let fb = fat_of(self.static_tree, self.dynamic_tree, b);
         if !fa.overlaps(&fb) {
             out.apart = true;
-            return out;
+            return Pre::Done(out);
         }
         let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
         let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
@@ -2606,14 +2692,9 @@ impl NarrowView<'_> {
         // Bounding spheres apart: no points (cheap early out).
         let reach = a.outer_radius + b.outer_radius + margin;
         if crate::math::len_sq(a.center - b.center) > reach * reach {
-            return out;
+            return Pre::Done(out);
         }
-        if c.trigger {
-            collide(&ca.shape, &pa, &cb.shape, &pb, 0.0, &mut out.manifold);
-        } else {
-            collide_cached(&ca.shape, &pa, &cb.shape, &pb, margin, &mut out.manifold, Some(&mut out.sat));
-        }
-        out
+        Pre::Test(crate::parallel::NarrowIn { a: ca.shape.clone(), pa, b: cb.shape.clone(), pb, margin, trigger: c.trigger, sat: c.sat })
     }
 }
 

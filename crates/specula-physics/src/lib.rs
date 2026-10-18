@@ -30,6 +30,8 @@ pub mod contact;
 pub mod gjk;
 pub mod joint;
 pub mod math;
+pub mod parallel;
+mod wide;
 pub mod query;
 pub mod shape;
 pub mod solver;
