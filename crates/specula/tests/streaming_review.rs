@@ -174,7 +174,10 @@ fn captures_never_draw_a_changed_cells_old_proxy() {
     let mut ids = Vec::new();
     for i in 0..16 {
         let pos = Vec3::new(300.0 + (i % 4) as f32 * 6.0, 0.0, (i / 4) as f32 * 6.0);
-        ids.push(world.spawn(model("recipes/tombstone.json", pos, 4.0), "t").unwrap().id);
+        // Seeded: a build each (a build many entities use is drawn instanced, never merged).
+        let mut spec = model("recipes/tombstone.json", pos, 4.0);
+        spec.model = Some(ModelSpec { recipe: "recipes/tombstone.json".into(), params: Vec::new(), seed: Some(100 + i) });
+        ids.push(world.spawn(spec, "t").unwrap().id);
     }
     wait_builds(&shared, &mut world);
     let mut models = GpuModels::default();
@@ -319,4 +322,32 @@ fn captures_redo_only_changed_cells_in_view() {
             eprintln!("{what}: too slow to tell ({:?})", t.elapsed());
         }
     }
+}
+
+/// Integrator's m2 run: a build many entities use is drawn instanced (one draw), so no proxy
+/// merges it: a far field of identical models keeps drawing as instances.
+#[test]
+fn instanced_builds_are_not_merged() {
+    let Some(mut gpu) = gpu_or_skip("instanced_builds_are_not_merged") else { return };
+    let shared = library();
+    let mut world = world_of(&shared);
+    for i in 0..16 {
+        let pos = Vec3::new(300.0 + (i % 4) as f32 * 6.0, 0.0, (i / 4) as f32 * 6.0);
+        world.spawn(model("recipes/tombstone.json", pos, 4.0), "t").unwrap();
+    }
+    wait_builds(&shared, &mut world);
+    let mut models = GpuModels::default();
+    let mut stream = streamer(&mut gpu, &mut models, &[("hlod_min_m", Json::from(0.0))]);
+    let cam = Camera::new(Vec3::new(0.0, 30.0, 10.0), Vec3::new(300.0, 0.0, 10.0), 40.0);
+    let shapes = ShapeMeshes::upload(&mut gpu).unwrap();
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(2) {
+        capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut out = Vec::new();
+    stream.draw_capture(&cam, 360, &mut out);
+    assert!(out.is_empty(), "no proxy for an instanced build: {}", stream.state_json(&gpu, &models, &world, None, 8));
+    let stats = draw(&world, &models, &shapes, cam);
+    assert_eq!(stats.not_resident, 0, "all 16 drawn as instances");
 }

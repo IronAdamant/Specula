@@ -49,6 +49,9 @@ pub const UPDATE_EVERY: Duration = Duration::from_millis(100);
 /// A model at least this many pixels across in a camera's view is wanted there whatever
 /// `radius_m` says (a big building or a glass tower far away stays drawn).
 pub const RESIDENT_MIN_PX: f32 = 4.0;
+/// A build at least this many entities use is drawn instanced (one draw for all of them), so
+/// HLOD leaves it out: merging it would only add draws.
+pub const INSTANCED_MIN: u32 = 8;
 /// Otherwise at least this often (cells settling for their proxies).
 pub const UPDATE_IDLE: Duration = Duration::from_secs(1);
 /// A capture's camera stays a stream source this long after the capture.
@@ -653,6 +656,8 @@ pub struct Streamer {
     /// Transient model entities' builds not on the GPU yet (a game's presentation): uploaded
     /// first, without waiting for a pass.
     transients: Vec<u64>,
+    /// Builds drawn instanced (at least [`INSTANCED_MIN`] entities): never merged.
+    instanced: std::collections::BTreeSet<u64>,
     /// The eviction queue (see `victims`), kept across frames until the next pass.
     victims_cache: Option<VecDeque<(f32, Victim)>>,
 }
@@ -706,6 +711,7 @@ impl Streamer {
             touched: Vec::new(),
             dirty_cells: Default::default(),
             transients: Vec::new(),
+            instanced: Default::default(),
             victims_cache: None,
         }
     }
@@ -848,6 +854,25 @@ impl Streamer {
                     self.dirty_cells.insert(*k);
                 }
             }
+        }
+        // Builds many entities use draw instanced: no proxy merges them (cells whose builds
+        // crossed the line merge again).
+        let mut uses: HashMap<u64, u32> = HashMap::new();
+        for e in world.persistent_entities().filter(|e| e.shape == Shape::Model) {
+            if let Some(b) = e.resolved_model().and_then(|r| models.by_handle.get(r.handle as usize).copied().flatten()) {
+                *uses.entry(b).or_default() += 1;
+            }
+        }
+        let instanced: std::collections::BTreeSet<u64> = uses.into_iter().filter(|&(_, n)| n >= INSTANCED_MIN).map(|(b, _)| b).collect();
+        if instanced != self.instanced {
+            let crossed: std::collections::BTreeSet<u64> = instanced.symmetric_difference(&self.instanced).copied().collect();
+            for (k, c) in self.index.cells.iter_mut() {
+                if c.members.iter().any(|m| m.handle.and_then(|h| models.by_handle.get(h as usize).copied().flatten()).is_some_and(|b| crossed.contains(&b))) {
+                    c.dirty = true;
+                    self.dirty_cells.insert(*k);
+                }
+            }
+            self.instanced = instanced;
         }
         // Builds that landed (or changed): their members' boxes now span the models.
         let reboxed: Vec<u32> = (0..models.by_handle.len())
@@ -1049,7 +1074,7 @@ impl Streamer {
                 .content(k)
                 .is_some_and(|ct| !ct.complete && ct.waiting_on.iter().any(|&h| lib.built(h).is_some() || lib.handle_error(h).is_some()));
             if hlod_on && (c.dirty || waiting) {
-                let content = content_of(c, &lib, world);
+                let content = content_of(c, &lib, world, &self.instanced);
                 if self.hlod.content(k) != Some(&content) {
                     self.hlod.set_content(k, content);
                 }
@@ -1631,7 +1656,7 @@ impl Streamer {
                     // members aren't on the GPU to draw meanwhile.
                     if let Some(ct) = content.filter(|ct| ct.key != 0 && ct.complete) {
                         let would = d > hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
-                        if would && !current && !c.members.iter().filter(|m| m.merges()).all(|m| resident(m.handle)) {
+                        if would && !current && !ct.members.iter().all(|id| c.members.binary_search_by_key(id, |m| m.id).is_ok_and(|i| resident(c.members[i].handle))) {
                             waiting += 1;
                         }
                     }
@@ -1861,7 +1886,7 @@ impl Streamer {
 
 /// What cell `c` merges: its mergeable members whose build is ready, opaque and untextured at
 /// its coarsest level (see `hlod`).
-fn content_of(c: &Cell, lib: &crate::models::Library, world: &World) -> Content {
+fn content_of(c: &Cell, lib: &crate::models::Library, world: &World, instanced: &std::collections::BTreeSet<u64>) -> Content {
     let mut h = StableHasher::with_seed(0x4365_6c6c_0000_0001);
     let mut ct = Content { complete: true, ..Content::default() };
     let mut first = true;
@@ -1877,7 +1902,7 @@ fn content_of(c: &Cell, lib: &crate::models::Library, world: &World) -> Content 
             continue;
         };
         let level = hlod::last_level(built.model.lods.len());
-        if !hlod::mergeable(built, level) {
+        if !hlod::mergeable(built, level) || instanced.contains(&built.id) {
             continue;
         }
         let (lo, hi) = built.bounds();

@@ -152,8 +152,10 @@ evicts. Mesh-block slack (fragmentation, the spare block) is outside `memory_mb`
 Per cell, a **proxy** merges the cell's static models into one mesh per material (usually 1-3 draws per cell):
 
 - **Members:** persistent, shown, non-`ui` model entities without `anim`, without a kinematic or dynamic body, with a
-  ready build whose coarsest level is opaque (`standard` presets) and untextured. Everything else in the cell draws on
-  its own (within `radius_m`).
+  ready build whose coarsest level is opaque (`standard` presets) and untextured, and that fewer than `INSTANCED_MIN`
+  (8) entities use: a build many entities share is already drawn instanced (one draw for all of them, at any distance),
+  so merging it would only add draws (the M2 10k field stays instanced). Everything else in the cell draws on its own
+  (within `radius_m`, or beyond where big enough on screen).
 - **Geometry:** each member's **coarsest reachable LOD** (`min(lods - 1, 3)`), transformed into the proxy's frame (the
   members' centre, rounded to a metre, for precision far from the origin), normals by the inverse transpose, the part
   and entity colours baked into the vertex colours in linear light exactly as the shader multiplies them (a white tint
