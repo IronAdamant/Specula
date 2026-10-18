@@ -8,6 +8,10 @@
 //! puts it back into a space rebuilt from the same world (same bodies, same shapes), so the
 //! loaded run continues **bit-identically**: the same [`Space::hash`] on every later step.
 //!
+//! **Cosmetic bodies are left out** (with their contacts and joints): they are presentation
+//! (transient entities' ragdolls, which saves don't keep either), outside the hash, and never
+//! touch a simulated body, so the loaded run's simulation continues bit-identically without them.
+//!
 //! What is not saved, because it is derived or rebuilt: shapes (built from the world's
 //! colliders), slot and proxy numbering and the trees' internal layout (every result is sorted
 //! by key, so they never reach the simulation), solver buffers and the last step's report.
@@ -15,10 +19,16 @@
 //! saved anyway, so a restored space reads back the same contacts before its next step.
 
 use super::*;
+use crate::joint::{Drive, JointKind};
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
-/// Bumped when the layout changes; older snapshots are refused with `unsupported_version`.
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// Bumped when the layout changes. Version 2 adds the joint settings and joints' hidden state
+/// (warm starts, last state, the step that solved them); version 1 snapshots (no joints) still
+/// load. Others are refused with `unsupported_version`.
+pub const SNAPSHOT_VERSION: u32 = 2;
+
+/// Why a joint wasn't solved, as saved (index + 1; 0: it was).
+const INACTIVE: [&str; 4] = ["missing_body", "asleep", "no_dynamic_body", "cosmetic_link"];
 
 fn decode(e: DecodeError) -> PhysicsError {
     PhysicsError::new("bad_snapshot", format!("the physics snapshot is damaged: {e}"))
@@ -69,9 +79,14 @@ fn w_settings(w: &mut ByteWriter, s: &Settings) {
     w.bool(s.plane_2d);
     w.u64(s.max_bodies as u64);
     w.u64(s.max_pairs as u64);
+    w.f32(s.joint_hertz);
+    w.f32(s.joint_damping_ratio);
+    for n in [s.max_joints, s.max_cosmetic_bodies, s.max_cosmetic_pairs, s.threads] {
+        w.u64(n as u64);
+    }
 }
 
-fn r_settings(r: &mut ByteReader<'_>) -> Result<Settings, DecodeError> {
+fn r_settings(r: &mut ByteReader<'_>, version: u32) -> Result<Settings, DecodeError> {
     let f = "settings";
     let gravity = r.vec3(f)?;
     let substeps = r.u32(f)?;
@@ -83,7 +98,25 @@ fn r_settings(r: &mut ByteReader<'_>) -> Result<Settings, DecodeError> {
     let plane_2d = r.bool(f)?;
     let max_bodies = r.u64(f)?.min(1 << 32) as usize;
     let max_pairs = r.u64(f)?.min(1 << 32) as usize;
+    let d = Settings::default();
+    let (mut joint_hertz, mut joint_damping_ratio) = (d.joint_hertz, d.joint_damping_ratio);
+    let mut counts = [d.max_joints, d.max_cosmetic_bodies, d.max_cosmetic_pairs, d.threads];
+    if version >= 2 {
+        joint_hertz = r.f32(f)?;
+        joint_damping_ratio = r.f32(f)?;
+        for c in &mut counts {
+            *c = r.u64(f)?.min(1 << 32) as usize;
+        }
+    }
+    // Threads: at least one, and no more than a machine has (the results never depend on it).
+    counts[3] = counts[3].clamp(1, 64);
     Ok(Settings {
+        joint_hertz,
+        joint_damping_ratio,
+        max_joints: counts[0],
+        max_cosmetic_bodies: counts[1],
+        max_cosmetic_pairs: counts[2],
+        threads: counts[3],
         gravity,
         substeps,
         sleep,
@@ -101,6 +134,100 @@ fn r_settings(r: &mut ByteReader<'_>) -> Result<Settings, DecodeError> {
         max_bodies,
         max_pairs,
     })
+}
+
+/// A joint's description as bytes (for engine-made joints a save keeps whole: a ragdoll's,
+/// whose opened limits and motor targets aren't in the world).
+pub fn write_joint_desc(w: &mut ByteWriter, d: &JointDesc) {
+    w.u8(d.kind as u8);
+    w.opt_u64(d.a);
+    w.opt_u64(d.b);
+    w_pose(w, &d.frame_a);
+    w_pose(w, &d.frame_b);
+    for r in [d.limit, d.swing] {
+        w.bool(r.is_some());
+        if let Some([lo, hi]) = r {
+            w.f32(lo);
+            w.f32(hi);
+        }
+    }
+    for x in [d.length[0], d.length[1], d.spring_hertz, d.spring_damping, d.rest_length, d.friction] {
+        w.f32(x);
+    }
+    w.bool(d.collide_connected);
+    match d.motor {
+        None => w.u8(0),
+        Some(m) => {
+            match m.drive {
+                Drive::Speed(s) => {
+                    w.u8(1);
+                    w.f32(s);
+                }
+                Drive::Position(p) => {
+                    w.u8(2);
+                    w.f32(p);
+                }
+                Drive::Rotation(q) => {
+                    w.u8(3);
+                    w.quat(q);
+                }
+            }
+            w.f32(m.max_force);
+            w.f32(m.hertz);
+            w.f32(m.damping_ratio);
+        }
+    }
+}
+
+/// Reads [`write_joint_desc`]'s bytes, checked as [`crate::joint::validate`] checks a new joint.
+pub fn read_joint_desc(r: &mut ByteReader<'_>) -> Result<JointDesc, PhysicsError> {
+    let f = "joint";
+    let d = |e| decode(e);
+    let kind = *JointKind::ALL.get(r.u8(f).map_err(d)? as usize).ok_or_else(|| decode(r.error("invalid", f, "unknown joint kind")))?;
+    let a = r.opt_u64(f).map_err(d)?;
+    let b = r.opt_u64(f).map_err(d)?;
+    let frame_a = r_pose(r, f).map_err(d)?;
+    let frame_b = r_pose(r, f).map_err(d)?;
+    let mut ranges = [None, None];
+    for x in &mut ranges {
+        if r.bool(f).map_err(d)? {
+            *x = Some([r.f32(f).map_err(d)?, r.f32(f).map_err(d)?]);
+        }
+    }
+    let mut v = [0.0f32; 6];
+    for x in &mut v {
+        *x = r.f32(f).map_err(d)?;
+    }
+    let collide_connected = r.bool(f).map_err(d)?;
+    let drive = match r.u8(f).map_err(d)? {
+        0 => None,
+        1 => Some(Drive::Speed(r.f32(f).map_err(d)?)),
+        2 => Some(Drive::Position(r.f32(f).map_err(d)?)),
+        3 => Some(Drive::Rotation(r.quat(f).map_err(d)?)),
+        _ => return Err(decode(r.error("invalid", f, "unknown motor drive"))),
+    };
+    let motor = match drive {
+        None => None,
+        Some(drive) => Some(Motor { drive, max_force: r.f32(f).map_err(d)?, hertz: r.f32(f).map_err(d)?, damping_ratio: r.f32(f).map_err(d)? }),
+    };
+    let desc = JointDesc {
+        kind,
+        a,
+        b,
+        frame_a,
+        frame_b,
+        limit: ranges[0],
+        swing: ranges[1],
+        length: [v[0], v[1]],
+        spring_hertz: v[2],
+        spring_damping: v[3],
+        rest_length: v[4],
+        motor,
+        friction: v[5],
+        collide_connected,
+    };
+    crate::joint::validate(&desc).map_err(|e| PhysicsError::new("bad_snapshot", format!("a saved joint is invalid: {}", e.message)))?;
+    Ok(desc)
 }
 
 /// One body's hidden state, as read (applied once every body has been read and checked).
@@ -138,9 +265,13 @@ impl Space {
         w.f32(self.dt);
         w.u32(self.next_island);
         w.u64(self.refused as u64);
-        w.len_u32(self.by_key.len());
+        let kept = |k: &u64| !self.is_cosmetic(*k);
+        w.len_u32(self.by_key.keys().filter(|k| kept(k)).count());
         for (&key, &s) in &self.by_key {
             let b = self.slot(s);
+            if b.desc.cosmetic {
+                continue;
+            }
             w.u64(key);
             w.u8(b.desc.kind as u8);
             w_pose(w, &b.desc.pose);
@@ -174,8 +305,9 @@ impl Space {
                 None => w.bool(false),
             }
         }
-        w.len_u32(self.pairs.len());
-        for (&(ka, kb), &slot) in &self.pairs {
+        let pairs: Vec<(&(u64, u64), &u32)> = self.pairs.iter().filter(|(_, s)| !self.contact(**s).cosmetic).collect();
+        w.len_u32(pairs.len());
+        for (&(ka, kb), &slot) in pairs {
             let c = self.contact(slot);
             w.u64(ka);
             w.u64(kb);
@@ -196,22 +328,44 @@ impl Space {
                 w.f32(p.max_normal_impulse);
             }
         }
-        w.len_u32(self.moved.len());
-        self.moved.iter().for_each(|k| w.u64(*k));
-        w.len_u32(self.awake.len());
-        self.awake.iter().for_each(|k| w.u64(*k));
-        w.len_u32(self.islands.len());
-        for (id, members) in &self.islands {
+        let keys = |w: &mut ByteWriter, ks: Vec<&u64>| {
+            w.len_u32(ks.len());
+            ks.into_iter().for_each(|k| w.u64(*k));
+        };
+        keys(w, self.moved.iter().filter(|k| kept(k)).collect());
+        keys(w, self.awake.iter().filter(|k| kept(k)).collect());
+        let islands: Vec<(&u32, Vec<&u64>)> = self.islands.iter().map(|(id, m)| (id, m.iter().filter(|k| kept(k)).collect::<Vec<_>>())).filter(|(_, m)| !m.is_empty()).collect();
+        w.len_u32(islands.len());
+        for (id, members) in islands {
             w.u32(*id);
-            w.len_u32(members.len());
-            members.iter().for_each(|k| w.u64(*k));
+            keys(w, members);
         }
-        w.len_u32(self.characters.len());
-        for (k, c) in &self.characters {
+        let characters: Vec<_> = self.characters.iter().filter(|(k, _)| kept(k)).collect();
+        w.len_u32(characters.len());
+        for (k, c) in characters {
             w.u64(*k);
             w.bool(c.grounded);
             w.vec3(c.ground_normal);
             w.opt_u64(c.ground);
+        }
+        let joints: Vec<_> = self.joints.iter().filter(|(_, j)| !self.joint_is_cosmetic(j)).collect();
+        w.len_u32(joints.len());
+        for (k, j) in joints {
+            w.u64(*k);
+            w.u64(j.desc_hash);
+            for v in [j.imp.linear, j.imp.angular, j.imp.motor, j.imp.friction] {
+                w.vec3(v);
+            }
+            for x in [j.imp.lower, j.imp.upper, j.imp.swing, j.imp.spring] {
+                w.f32(x);
+            }
+            let s = &j.state;
+            w.bool(s.active);
+            w.u8(s.inactive.and_then(|i| INACTIVE.iter().position(|x| *x == i)).map_or(0, |i| i as u8 + 1));
+            for x in [s.linear_error, s.angular_error, s.position, s.swing, s.limit_excess, s.force, s.torque] {
+                w.f32(x);
+            }
+            w.u64(j.solved);
         }
     }
 
@@ -220,24 +374,25 @@ impl Space {
     /// everything before changing anything: on an error the space is as it was.
     pub fn restore_state(&mut self, r: &mut ByteReader<'_>) -> Result<(), PhysicsError> {
         let version = r.u32("version").map_err(decode)?;
-        if version != SNAPSHOT_VERSION {
+        if !(1..=SNAPSHOT_VERSION).contains(&version) {
             return Err(PhysicsError::new("unsupported_version", format!("physics snapshot version {version}; this build reads {SNAPSHOT_VERSION}"))
                 .with("version", version));
         }
-        let settings = r_settings(r).map_err(decode)?;
+        let settings = r_settings(r, version).map_err(decode)?;
         let steps = r.u64("steps").map_err(decode)?;
         let dt = r.f32("dt").map_err(decode)?;
         let next_island = r.u32("next_island").map_err(decode)?;
         let refused = r.u64("refused").map_err(decode)?.min(u64::from(u32::MAX)) as usize;
         // Bodies: at least ~200 bytes each.
         let n = r.count("bodies", self.settings.max_bodies.max(settings.max_bodies), 200).map_err(decode)?;
-        if n != self.by_key.len() {
+        let rebuilt = self.by_key.keys().filter(|k| !self.is_cosmetic(**k)).count();
+        if n != rebuilt {
             return Err(PhysicsError::new(
                 "snapshot_mismatch",
-                format!("the snapshot has {n} bodies but the world rebuilt {}: the save's world and physics don't belong together", self.by_key.len()),
+                format!("the snapshot has {n} bodies but the world rebuilt {rebuilt}: the save's world and physics don't belong together"),
             )
             .with("saved", n)
-            .with("rebuilt", self.by_key.len()));
+            .with("rebuilt", rebuilt));
         }
         let mut bodies = Vec::with_capacity(n);
         let mut last = None;
@@ -273,7 +428,7 @@ impl Space {
             } else {
                 None
             };
-            let Some(&s) = self.by_key.get(&key) else {
+            let Some(&s) = self.by_key.get(&key).filter(|s| !self.slot(**s).desc.cosmetic) else {
                 return Err(mismatch(format!("the snapshot has body {key}, which the world didn't rebuild"), key));
             };
             let b = self.slot(s);
@@ -353,7 +508,8 @@ impl Space {
                     max_normal_impulse: r.f32(f).map_err(d)?,
                 };
             }
-            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat });
+            let cosmetic = ba.desc.cosmetic || bb.desc.cosmetic;
+            contacts.push(Contact { key: (ka, kb), a: sa, b: sb, points, len, touching, trigger, friction, restitution, sat, cosmetic });
         }
         let keys = |r: &mut ByteReader<'_>, f: &str, max: usize| -> Result<Vec<u64>, PhysicsError> {
             let n = r.count(f, max, 8).map_err(decode)?;
@@ -376,6 +532,65 @@ impl Space {
             let ground_normal = r.vec3(f).map_err(decode)?;
             let ground = r.opt_u64(f).map_err(decode)?;
             characters.insert(k, CharacterState { grounded, ground_normal, ground });
+        }
+        // Joints (version 2): the space was rebuilt with the same joints (same keys and
+        // descriptions); their warm starts and last states come back.
+        let mut joints = Vec::new();
+        if version >= 2 {
+            let jn = r.count("joints", settings.max_joints.max(self.settings.max_joints), 118).map_err(decode)?;
+            let rebuilt = self.joints.values().filter(|j| !self.joint_is_cosmetic(j)).count();
+            if jn != rebuilt {
+                return Err(PhysicsError::new("snapshot_mismatch", format!("the snapshot has {jn} joints but the world rebuilt {rebuilt}"))
+                    .with("saved", jn)
+                    .with("rebuilt", rebuilt));
+            }
+            for _ in 0..jn {
+                let f = "joints";
+                let d = |e| decode(e);
+                let k = r.u64(f).map_err(d)?;
+                let desc_hash = r.u64(f).map_err(d)?;
+                let mut v = [Vec3::ZERO; 4];
+                for x in &mut v {
+                    *x = r.vec3(f).map_err(d)?;
+                }
+                let mut s4 = [0.0f32; 4];
+                for x in &mut s4 {
+                    *x = r.f32(f).map_err(d)?;
+                }
+                let active = r.bool(f).map_err(d)?;
+                let inactive = match r.u8(f).map_err(d)? {
+                    0 => None,
+                    i if (i as usize) <= INACTIVE.len() => Some(INACTIVE[i as usize - 1]),
+                    _ => return Err(decode(r.error("invalid", f, "unknown reason a joint was inactive"))),
+                };
+                let mut s7 = [0.0f32; 7];
+                for x in &mut s7 {
+                    *x = r.f32(f).map_err(d)?;
+                }
+                let solved = r.u64(f).map_err(d)?;
+                let finite = v.iter().all(|x| crate::math::is_finite(*x)) && s4.iter().chain(&s7).all(|x| x.is_finite());
+                if !finite {
+                    return Err(decode(r.error("invalid", f, format!("joint {k} has a number that isn't finite"))));
+                }
+                match self.joints.get(&k) {
+                    Some(j) if j.desc_hash == desc_hash => {}
+                    Some(_) => return Err(mismatch(format!("joint {k} differs between the world and the snapshot"), k)),
+                    None => return Err(mismatch(format!("the snapshot has joint {k}, which the world didn't rebuild"), k)),
+                }
+                let imp = JointImpulses { linear: v[0], angular: v[1], motor: v[2], friction: v[3], lower: s4[0], upper: s4[1], swing: s4[2], spring: s4[3] };
+                let state = JointState {
+                    active,
+                    inactive,
+                    linear_error: s7[0],
+                    angular_error: s7[1],
+                    position: s7[2],
+                    swing: s7[3],
+                    limit_excess: s7[4],
+                    force: s7[5],
+                    torque: s7[6],
+                };
+                joints.push((k, imp, state, solved));
+            }
         }
         for k in moved.iter().chain(&awake).chain(islands.values().flatten()).chain(characters.keys()) {
             if !self.by_key.contains_key(k) {
@@ -446,6 +661,12 @@ impl Space {
         self.awake = awake.into_iter().collect();
         self.islands = islands;
         self.characters = characters;
+        for (k, imp, state, solved) in joints {
+            let j = self.joints.get_mut(&k).expect("checked above");
+            j.imp = imp;
+            j.state = state;
+            j.solved = solved;
+        }
         self.dynamic_count = self.by_key.values().filter(|s| self.slot(**s).is_dynamic()).count();
         self.active.clear();
         self.inactive_cache.set(None);
@@ -505,6 +726,67 @@ mod tests {
         a.save_state(&mut wa);
         b.save_state(&mut wb);
         assert_eq!(wa.bytes(), wb.bytes());
+    }
+
+    /// A chain of ball joints hanging from the world, a box knocking into it, and (optionally)
+    /// a cosmetic body falling beside it.
+    fn jointed(order: &[u64], cosmetic: bool) -> Space {
+        use crate::joint::{JointDesc, JointKind};
+        let mut s = Space::default();
+        for &k in order {
+            let d = match k {
+                1 => BodyDesc::new(BodyKind::Static, Pose::at(Vec3::new(0.0, -0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(Vec3::new(10.0, 0.5, 10.0))))),
+                9 => {
+                    let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::new(-2.0, 1.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(Vec3::new(0.2, 0.2, 0.2)))));
+                    d.velocity = Vec3::new(6.0, 0.0, 0.0);
+                    d
+                }
+                _ => BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::new(0.0, 3.0 - 0.5 * (k - 10) as f32, 0.0)), Some(ColliderDesc::new(Shape::cuboid(Vec3::new(0.1, 0.25, 0.1))))),
+            };
+            s.insert(k, d).unwrap();
+        }
+        if cosmetic {
+            let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::new(3.0, 2.0, 0.0)), Some(ColliderDesc::new(Shape::sphere(0.3))));
+            d.cosmetic = true;
+            s.insert(50, d).unwrap();
+        }
+        for i in 0..5u64 {
+            let top = Vec3::new(0.0, 3.25 - 0.5 * i as f32, 0.0);
+            let a = (i > 0).then_some(9 + i);
+            let fa = if i == 0 { Pose::at(top) } else { Pose::at(Vec3::new(0.0, -0.25, 0.0)) };
+            s.insert_joint(100 + i, JointDesc::new(JointKind::Ball, a, Some(10 + i), fa, Pose::at(Vec3::new(0.0, 0.25, 0.0)))).unwrap();
+        }
+        s
+    }
+
+    #[test]
+    fn joints_continue_bit_identically_and_cosmetic_bodies_stay_out() {
+        let keys: Vec<u64> = vec![1, 9, 10, 11, 12, 13, 14];
+        let mut a = jointed(&keys, true);
+        for _ in 0..40 {
+            a.step(1.0 / 60.0);
+        }
+        let mut w = ByteWriter::new();
+        a.save_state(&mut w);
+        let bytes = w.into_bytes();
+        // Rebuilt in another order and without the cosmetic body (a load has no transient
+        // entities), then restored.
+        let mut rev = keys.clone();
+        rev.reverse();
+        let mut b = jointed(&rev, false);
+        let mut r = ByteReader::new(&bytes);
+        b.restore_state(&mut r).unwrap();
+        r.finish().unwrap();
+        assert_eq!(a.hash(), b.hash());
+        for t in 0..200 {
+            a.step(1.0 / 60.0);
+            b.step(1.0 / 60.0);
+            assert_eq!(a.hash(), b.hash(), "diverged {t} steps after the restore");
+        }
+        // A space whose joints differ is a mismatch.
+        let mut c = jointed(&keys, false);
+        c.remove_joint(102);
+        assert_eq!(c.restore_state(&mut ByteReader::new(&bytes)).unwrap_err().code, "snapshot_mismatch");
     }
 
     #[test]

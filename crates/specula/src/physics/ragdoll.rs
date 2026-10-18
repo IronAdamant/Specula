@@ -45,6 +45,7 @@ use specula_anim::math::{compose, inverse, qarc, qaxis, qconj, qmul, rotation_of
 use specula_anim::play::{GraphPlayer, Graphed, Surroundings, Timing};
 use specula_anim::{AnimSet, Pose as APose};
 use specula_physics::joint::{twist_angle, Drive, JointDesc, JointKind, Motor};
+use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// The props key that holds a ragdoll.
 pub const PROP: &str = "ragdoll";
@@ -279,6 +280,8 @@ pub struct Part {
     /// A hull part's points about `offset` (scaled; empty: a capsule).
     pub hull: Vec<Vec3>,
     pub mass: f32,
+    /// The mass this part's joint carries: the part and every part below it (kg).
+    pub carried: f32,
     pub joint: Option<PartJoint>,
     /// A leg (a limb hanging from the root part): a powered ragdoll's legs follow the animation
     /// as kinematic bodies, planted where it plants them, while the upper body reacts.
@@ -404,7 +407,7 @@ pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], hulls: &[(u
                 swing,
             }
         });
-        parts.push(Part { bone: b, parent, radius, half, offset, hull, mass: 0.0, joint, planted: false });
+        parts.push(Part { bone: b, parent, radius, half, offset, hull, mass: 0.0, carried: 0.0, joint, planted: false });
     }
     // Mass: the trunk (the parts from the root part to the last branching part, the pelvis to
     // the chest) weighs four times what a limb of its length does, as bodies do; a quarter of
@@ -448,6 +451,11 @@ pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], hulls: &[(u
     let shares: Vec<f32> = parts.iter().map(|p| 0.75 * weight(p) / total + 0.25 / n).collect();
     for (p, share) in parts.iter_mut().zip(shares) {
         p.mass = mass * share;
+    }
+    // What each joint carries, once (a powered ragdoll's drives read it every tick).
+    let carried: Vec<f32> = parts.iter().map(|p| parts.iter().filter(|q| s.is_under(q.bone, p.bone)).map(|q| q.mass).sum()).collect();
+    for (p, c) in parts.iter_mut().zip(carried) {
+        p.carried = c;
     }
     parts
 }
@@ -679,6 +687,235 @@ fn pose_at(player: &mut GraphPlayer, set: &AnimSet, e: &world::Entity, t: f64, r
     }
 }
 
+/// Entity `e`'s ragdoll as `spec` and its graph describe it: its anim set, the parts, its
+/// uniform scale and its world pose. Pure: the same entity and spec always give the same parts.
+fn plan_for(world: &World, e: &world::Entity, spec: &Spec) -> Result<(Arc<AnimSet>, Vec<Part>, f32, Pose), String> {
+    if e.shape != world::Shape::Model {
+        return Err("only model entities with a rig have ragdolls".into());
+    }
+    let set = crate::anim::write_set_of(world, e).ok_or("its model has no rig (or its recipe or anims file doesn't load)")?;
+    if set.skeleton.len() < 2 {
+        return Err("its rig has one bone: nothing to joint".into());
+    }
+    let (pose_e, scale3) = world_pose(world, e);
+    let scale = (scale3.x + scale3.y + scale3.z) / 3.0;
+    let limits: Vec<Limit> = match graph_of(&set, e) {
+        Some(g) => g.limits.clone(),
+        None => specula_anim::checks::limits_of(&set),
+    };
+    let mass = spec.mass.unwrap_or(DEFAULT_MASS_KG * scale * scale * scale);
+    // Sizes: the entity's own (props) over its graph's, bone by bone; a hull over a radius from
+    // the same place.
+    let mut radii: Vec<(usize, f32)> = graph_of(&set, e).map(|g| g.ragdoll_radius.clone()).unwrap_or_default();
+    let mut hulls: Vec<(usize, Vec<V3>)> = graph_of(&set, e).map(|g| g.ragdoll_hull.clone()).unwrap_or_default();
+    for (name, r) in &spec.radii {
+        let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.radii' names no bone '{name}'"))?;
+        radii.retain(|(x, _)| *x != b);
+        radii.push((b, *r));
+        if !spec.hulls.iter().any(|(h, _)| h == name) {
+            hulls.retain(|(x, _)| *x != b);
+        }
+    }
+    for (name, pts) in &spec.hulls {
+        let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.hulls' names no bone '{name}'"))?;
+        hulls.retain(|(x, _)| *x != b);
+        hulls.push((b, pts.clone()));
+    }
+    let parts = plan(&set, &limits, &radii, &hulls, scale, mass);
+    if parts.is_empty() {
+        return Err(format!("no bone is at least {MIN_BONE_M} m long"));
+    }
+    Ok((set, parts, scale, pose_e))
+}
+
+/// A part's body at `pose` (no velocity): kinematic for a powered ragdoll's root and legs.
+fn part_body(set: &AnimSet, p: &Part, powered: bool, pose: Pose, layer: u64, id: u64, cosmetic: bool) -> Result<BodyDesc, String> {
+    let shape = if p.hull.is_empty() { Shape::capsule(p.radius, p.half) } else { Shape::hull(&p.hull).map_err(|e| format!("{}'s hull: {}", set.skeleton.names[p.bone], e.message))? };
+    let collider = ColliderDesc { layer, offset: p.offset, friction: 0.8, ..ColliderDesc::new(shape) };
+    let kind = if powered && (p.parent.is_none() || p.planted) { specula_physics::BodyKind::Kinematic } else { specula_physics::BodyKind::Dynamic };
+    let mut d = BodyDesc::new(kind, pose, Some(collider));
+    d.mass = p.mass;
+    d.linear_damping = LINEAR_DAMPING;
+    d.angular_damping = ANGULAR_DAMPING;
+    d.group = id + 1;
+    d.cosmetic = cosmetic;
+    Ok(d)
+}
+
+/// Save games (docs/design/SAVES.md): a ragdoll as the physics section holds it. Saved
+/// entities' ragdolls only (transient entities aren't saved; their cosmetic ragdolls go with
+/// them). The parts are planned again from the loaded entity (the plan is pure); what the world
+/// can't say is kept: the joints as they were (limits opened at the start, the drives' last
+/// targets), the pose and the bookkeeping. The bodies' motion and the joints' warm starts are
+/// in the space's own snapshot. The motion checks' recording starts again from the load.
+pub struct SavedRagdoll {
+    entity: u64,
+    mode: Mode,
+    strength: f32,
+    hit_seq: u64,
+    off_since: Option<f64>,
+    started_tick: u64,
+    frame_dt: f32,
+    start: Vec<Transform>,
+    pose: Vec<Transform>,
+    bones: Vec<usize>,
+    joints: Vec<(usize, JointDesc)>,
+}
+
+fn w_transform(w: &mut ByteWriter, t: &Transform) {
+    t.t.iter().chain(&t.r).chain(&t.s).for_each(|x| w.f32(*x));
+}
+
+fn r_transform(r: &mut ByteReader<'_>) -> Result<Transform, DecodeError> {
+    let mut v = [0.0f32; 10];
+    for x in &mut v {
+        *x = r.f32("ragdolls.pose")?;
+        if !x.is_finite() {
+            return Err(r.error("invalid", "ragdolls.pose", "a pose number isn't finite"));
+        }
+    }
+    Ok(Transform { t: [v[0], v[1], v[2]], r: [v[3], v[4], v[5], v[6]], s: [v[7], v[8], v[9]] })
+}
+
+fn ragdoll_bad(e: DecodeError) -> WorldError {
+    WorldError::new("bad_save", format!("the save's ragdolls are damaged: {e}")).with("section", "physics").with("offset", e.offset).with("field", e.field.as_str())
+}
+
+impl Physics {
+    /// Writes the saved entities' live ragdolls (see [`SavedRagdoll`]).
+    pub(crate) fn save_ragdolls(&self, w: &mut ByteWriter) {
+        let live: Vec<&Live> = self.ragdolls.live.values().filter(|l| !l.cosmetic).collect();
+        w.len_u32(live.len());
+        for l in live {
+            w.u64(l.entity);
+            w.u8(match l.mode {
+                Mode::Off => 0,
+                Mode::Limp => 1,
+                Mode::Powered => 2,
+            });
+            w.f32(l.strength);
+            w.u64(l.hit_seq);
+            w.bool(l.off_since.is_some());
+            if let Some(s) = l.off_since {
+                w.f64(s);
+            }
+            w.u64(l.started_tick);
+            w.f32(l.frame_dt);
+            w.len_u32(l.start.len());
+            l.start.iter().for_each(|t| w_transform(w, t));
+            w.len_u32(l.pose.local.len());
+            l.pose.local.iter().for_each(|t| w_transform(w, t));
+            w.len_u32(l.parts.len());
+            l.parts.iter().for_each(|p| w.u32(p.bone as u32));
+            let joints: Vec<(usize, &JointDesc)> = if l.off_since.is_some() {
+                Vec::new()
+            } else {
+                l.parts.iter().filter_map(|p| self.space.joint(key(l.entity, p.bone)).map(|j| (p.bone, j.desc))).collect()
+            };
+            w.len_u32(joints.len());
+            for (b, d) in joints {
+                w.u32(b as u32);
+                specula_physics::write_joint_desc(w, d);
+            }
+        }
+    }
+
+    /// Reads [`Physics::save_ragdolls`]'s bytes (nothing changes yet).
+    pub(crate) fn read_ragdolls(r: &mut ByteReader<'_>) -> Result<Vec<SavedRagdoll>, WorldError> {
+        let bones_max = specula_model::rig::MAX_BONES;
+        let n = r.count("ragdolls", MAX_RAGDOLLS, 40).map_err(ragdoll_bad)?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let f = "ragdolls";
+            let entity = r.u64(f).map_err(ragdoll_bad)?;
+            let mode = match r.u8(f).map_err(ragdoll_bad)? {
+                0 => Mode::Off,
+                1 => Mode::Limp,
+                2 => Mode::Powered,
+                _ => return Err(ragdoll_bad(r.error("invalid", f, "unknown ragdoll mode"))),
+            };
+            let strength = r.f32(f).map_err(ragdoll_bad)?;
+            let hit_seq = r.u64(f).map_err(ragdoll_bad)?;
+            let off_since = if r.bool(f).map_err(ragdoll_bad)? { Some(r.f64(f).map_err(ragdoll_bad)?) } else { None };
+            let started_tick = r.u64(f).map_err(ragdoll_bad)?;
+            let frame_dt = r.f32(f).map_err(ragdoll_bad)?;
+            if !strength.is_finite() || !frame_dt.is_finite() || off_since.is_some_and(|s| !s.is_finite()) {
+                return Err(ragdoll_bad(r.error("invalid", f, "a ragdoll number isn't finite")));
+            }
+            let k = r.count(f, bones_max, 40).map_err(ragdoll_bad)?;
+            let start = (0..k).map(|_| r_transform(r)).collect::<Result<Vec<_>, _>>().map_err(ragdoll_bad)?;
+            let k = r.count(f, bones_max, 40).map_err(ragdoll_bad)?;
+            let pose = (0..k).map(|_| r_transform(r)).collect::<Result<Vec<_>, _>>().map_err(ragdoll_bad)?;
+            let k = r.count(f, bones_max, 4).map_err(ragdoll_bad)?;
+            let bones = (0..k).map(|_| r.u32(f).map(|b| b as usize)).collect::<Result<Vec<_>, _>>().map_err(ragdoll_bad)?;
+            let k = r.count(f, bones_max, 60).map_err(ragdoll_bad)?;
+            let mut joints = Vec::with_capacity(k);
+            for _ in 0..k {
+                let b = r.u32(f).map_err(ragdoll_bad)? as usize;
+                let d = specula_physics::read_joint_desc(r).map_err(|e| WorldError::new("bad_save", format!("a saved ragdoll joint: {}", e.message)).with("section", "physics"))?;
+                joints.push((b, d));
+            }
+            out.push(SavedRagdoll { entity, mode, strength, hit_seq, off_since, started_tick, frame_dt, start, pose, bones, joints });
+        }
+        Ok(out)
+    }
+
+    /// Rebuilds saved ragdolls in a reset bridge (before the world's bodies are added): each
+    /// planned again from its entity, its parts' bodies put where its saved pose has them (the
+    /// space snapshot then sets their exact motion) and its joints as they were.
+    pub(crate) fn rebuild_ragdolls(&mut self, world: &World, saved: Vec<SavedRagdoll>) -> Result<(), WorldError> {
+        let mismatch = |id: u64, m: String| WorldError::new("save_mismatch", m).with("section", "physics").with("id", id);
+        for s in saved {
+            let id = s.entity;
+            let e = world.get(id).filter(|e| !e.transient).ok_or_else(|| mismatch(id, format!("the physics section has a ragdoll for entity {id}, which the save's world doesn't have")))?;
+            let spec = e.props.get(PROP).ok_or_else(|| mismatch(id, format!("{} had a ragdoll but has no props.ragdoll", world.path_of(id))))?;
+            let spec = Spec::from_json(spec).map_err(|m| mismatch(id, format!("{}'s props.ragdoll: {m}", world.path_of(id))))?;
+            let (set, parts, scale, pose_e) = plan_for(world, e, &spec).map_err(|m| mismatch(id, format!("{}'s ragdoll: {m}", world.path_of(id))))?;
+            let bones: Vec<usize> = parts.iter().map(|p| p.bone).collect();
+            if bones != s.bones || s.start.len() != set.skeleton.len() || s.pose.len() != set.skeleton.len() {
+                return Err(mismatch(id, format!("{}'s ragdoll has other parts than when it was saved", world.path_of(id))));
+            }
+            let pose = APose { local: s.pose };
+            if s.off_since.is_none() {
+                let layer = self.layer_bit(LAYER).map_err(|m| mismatch(id, m))?;
+                let mut m = Vec::new();
+                set.skeleton.model_space(&pose, &mut m);
+                for p in &parts {
+                    let d = part_body(&set, p, s.mode == Mode::Powered, bone_world(&pose_e, scale, &m[p.bone]), layer, id, false).map_err(|m| mismatch(id, m))?;
+                    self.space.insert(key(id, p.bone), d).map_err(|e| mismatch(id, e.message))?;
+                }
+                for (b, d) in s.joints {
+                    if !bones.contains(&b) {
+                        return Err(mismatch(id, format!("a saved joint of {}'s ragdoll is on a bone without a part", world.path_of(id))));
+                    }
+                    self.space.insert_joint(key(id, b), d).map_err(|e| mismatch(id, e.message))?;
+                }
+            }
+            let pose = Arc::new(pose);
+            self.ragdolls.live.insert(
+                id,
+                Live {
+                    entity: id,
+                    mode: s.mode,
+                    cosmetic: false,
+                    set,
+                    parts,
+                    start: s.start,
+                    scale,
+                    strength: s.strength,
+                    hit_seq: s.hit_seq,
+                    off_since: s.off_since,
+                    started_tick: s.started_tick,
+                    frames: vec![(*pose).clone()],
+                    frame_dt: s.frame_dt,
+                    pose,
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
 fn graph_of<'a>(set: &'a AnimSet, e: &world::Entity) -> Option<&'a AnimGraph> {
     e.anim.as_ref().and_then(|a| a.graph.as_ref()).and_then(|g| set.graph(&g.graph))
 }
@@ -712,6 +949,13 @@ impl Physics {
             return;
         }
         let t = world.world_time();
+        // A ragdoll restored from a save shows its pose again (the world's external poses are
+        // presentation, not saved).
+        for (id, l) in &self.ragdolls.live {
+            if world.external_pose(*id).is_none() && world.get(*id).is_some() {
+                world.set_external_pose(*id, Some(world::ExternalPose { pose: Arc::clone(&l.pose), direct: l.off_since.is_none() && l.mode == Mode::Powered }));
+            }
+        }
         // Who has a ragdoll now.
         let mut wanted: Vec<(u64, Spec)> = Vec::new();
         let transient = world.transient_entities().filter(|e| e.props.get(PROP).is_some()).map(|e| e.id);
@@ -797,41 +1041,13 @@ impl Physics {
 
     fn start_ragdoll(&mut self, world: &mut World, id: u64, spec: &Spec, t: f64, dt: f32, tick: u64) -> Result<(), String> {
         let e = world.get(id).ok_or("gone")?;
-        if e.shape != world::Shape::Model {
-            return Err("only model entities with a rig have ragdolls".into());
-        }
-        let set = crate::anim::write_set_of(world, e).ok_or("its model has no rig (or its recipe or anims file doesn't load)")?;
-        if set.skeleton.len() < 2 {
-            return Err("its rig has one bone: nothing to joint".into());
-        }
-        let (pose_e, scale3) = world_pose(world, e);
-        let scale = (scale3.x + scale3.y + scale3.z) / 3.0;
-        let limits: Vec<Limit> = match graph_of(&set, e) {
-            Some(g) => g.limits.clone(),
-            None => specula_anim::checks::limits_of(&set),
-        };
-        let mass = spec.mass.unwrap_or(DEFAULT_MASS_KG * scale * scale * scale);
-        // Sizes: the entity's own (props) over its graph's, bone by bone; a hull over a radius
-        // from the same place.
-        let mut radii: Vec<(usize, f32)> = graph_of(&set, e).map(|g| g.ragdoll_radius.clone()).unwrap_or_default();
-        let mut hulls: Vec<(usize, Vec<V3>)> = graph_of(&set, e).map(|g| g.ragdoll_hull.clone()).unwrap_or_default();
-        for (name, r) in &spec.radii {
-            let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.radii' names no bone '{name}'"))?;
-            radii.retain(|(x, _)| *x != b);
-            radii.push((b, *r));
-            if !spec.hulls.iter().any(|(h, _)| h == name) {
-                hulls.retain(|(x, _)| *x != b);
-            }
-        }
-        for (name, pts) in &spec.hulls {
-            let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.hulls' names no bone '{name}'"))?;
-            hulls.retain(|(x, _)| *x != b);
-            hulls.push((b, pts.clone()));
-        }
-        let parts = plan(&set, &limits, &radii, &hulls, scale, mass);
-        if parts.is_empty() {
-            return Err(format!("no bone is at least {MIN_BONE_M} m long"));
-        }
+        let (set, parts, scale, pose_e) = plan_for(world, e, spec)?;
+        self.start_planned(world, id, spec, set, parts, scale, pose_e, t, dt, tick)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_planned(&mut self, world: &mut World, id: u64, spec: &Spec, set: Arc<AnimSet>, parts: Vec<Part>, scale: f32, pose_e: Pose, t: f64, dt: f32, tick: u64) -> Result<(), String> {
+        let e = world.get(id).ok_or("gone")?;
         let powered = spec.mode == Mode::Powered;
         // What it was playing (without its ragdoll state, which plays this very pose), now and
         // a tick on (a game usually switches the ragdoll on in the same write that settles its
@@ -849,20 +1065,11 @@ impl Physics {
             let w = bone_world(&pose_e, scale, &m_now[p.bone]);
             starts.push((p.bone, w));
             let w1 = bone_world(&pose_e, scale, &m_next[p.bone]);
-            let shape = if p.hull.is_empty() { Shape::capsule(p.radius, p.half) } else { Shape::hull(&p.hull).map_err(|e| format!("{}'s hull: {}", set.skeleton.names[p.bone], e.message))? };
-            let collider = ColliderDesc { layer, ..ColliderDesc::new(shape) };
-            let collider = ColliderDesc { offset: p.offset, friction: 0.8, ..collider };
-            let kind = if powered && (p.parent.is_none() || p.planted) { specula_physics::BodyKind::Kinematic } else { specula_physics::BodyKind::Dynamic };
-            let mut d = BodyDesc::new(kind, w, Some(collider));
-            d.mass = p.mass;
-            d.linear_damping = LINEAR_DAMPING;
-            d.angular_damping = ANGULAR_DAMPING;
-            d.group = id + 1;
-            d.cosmetic = cosmetic;
+            let mut d = part_body(&set, p, powered, w, layer, id, cosmetic)?;
             // Moving on as the animation was (the centre's velocity from the bone's motion).
             let c_now = w.point(p.offset.p);
             let c_next = w1.point(p.offset.p);
-            if kind == specula_physics::BodyKind::Dynamic {
+            if d.kind == specula_physics::BodyKind::Dynamic {
                 d.velocity = (c_next - c_now) * inv_dt;
                 d.angular_velocity = spin(w.q, w1.q, inv_dt);
                 let vmax = 20.0;
@@ -887,8 +1094,7 @@ impl Physics {
                 specula_physics::joint::open_to(&mut jd, &pa, &pb, START_MARGIN_RAD);
             }
             // Joint friction in proportion to what the joint carries.
-            let carried: f32 = parts.iter().filter(|q| set.skeleton.is_under(q.bone, p.bone)).map(|q| q.mass).sum();
-            jd.friction = FRICTION_PER_KG * carried * scale;
+            jd.friction = FRICTION_PER_KG * p.carried * scale;
             self.space.insert_joint(key(id, p.bone), jd).map_err(|e| e.message)?;
         }
         // The entity's own collider (if any) stops colliding with its parts.
@@ -962,8 +1168,6 @@ impl Physics {
         let (pose_e, _) = world_pose(world, e);
         let live = self.ragdolls.live.get(&id).expect("checked");
         let scale = live.scale;
-        // What each joint carries: its part and the parts below it.
-        let carried = |b: usize| -> f32 { live.parts.iter().filter(|p| set.skeleton.is_under(p.bone, b)).map(|p| p.mass).sum() };
         let mut motors: Vec<(u64, Motor)> = Vec::new();
         let mut roots: Vec<(u64, Pose)> = Vec::new();
         for p in &live.parts {
@@ -975,7 +1179,7 @@ impl Physics {
                         JointKind::Hinge => Drive::Position(twist_angle(target)),
                         _ => Drive::Rotation(target),
                     };
-                    let max_force = live.strength * 25.0 * carried(p.bone) * scale.max(0.1);
+                    let max_force = live.strength * 25.0 * p.carried * scale.max(0.1);
                     motors.push((key(id, p.bone), Motor { drive, max_force, hertz: DRIVE_HZ, damping_ratio: 1.0 }));
                 }
                 _ => roots.push((key(id, p.bone), bone_world(&pose_e, scale, &m[p.bone]))),
@@ -1259,6 +1463,40 @@ mod tests {
         assert!(height(&caps, "chest") - height(&hull, "chest") > 0.15, "capsules {caps:?} hulls {hull:?}");
         // Twin runs end the same.
         assert_eq!(knocked_over(true).0, hull);
+    }
+
+    /// Save games: a saved entity's ragdoll, mid-fall, continues bit for bit in a world loaded
+    /// from its files plus the physics section; a transient entity's (cosmetic) one is dropped
+    /// without touching the simulation.
+    #[test]
+    fn ragdolls_survive_a_save_and_load_bit_identically() {
+        for powered in [false, true] {
+            let (mut w, id) = shambler_world();
+            let mut p = Physics::default();
+            run(&mut w, &mut p, 0, 30);
+            let mode = if powered { "powered" } else { "limp" };
+            ragdoll(&mut w, id, &format!(r#"{{"mode": "{mode}", "hit": {{"bone": "chest", "impulse": [0, 10, -40], "seq": 1}}}}"#));
+            run(&mut w, &mut p, 30, 12);
+            let bytes = p.save_state(&w, 0).expect("physics ran");
+            let files = crate::persist::render(&w);
+            let mut b = crate::persist::load_with(|f| {
+                files.iter().find(|(n, _)| n == f).map(|(_, t)| t.clone()).ok_or_else(|| crate::persist::PersistError::new("not_found", f.to_owned()))
+            })
+            .unwrap()
+            .0;
+            b.set_model_source(w.model_source().cloned());
+            b.set_clock_s(w.world_time());
+            let mut q = Physics::default();
+            q.restore_state(&b, 0, 41, &bytes).unwrap();
+            assert_eq!(q.hash(), Some(p.space.hash()));
+            assert_eq!(q.ragdolls.live.get(&id).map(|l| l.parts.len()), p.ragdolls.live.get(&id).map(|l| l.parts.len()));
+            for t in 42..120 {
+                run(&mut w, &mut p, t, 1);
+                run(&mut b, &mut q, t, 1);
+                assert_eq!(p.space.hash(), q.space.hash(), "{mode}: physics diverged at tick {t}");
+                assert_eq!(w.state_hash(), b.state_hash(), "{mode}: the world diverged at tick {t}");
+            }
+        }
     }
 
     /// Found in Sepulcra: the killing blow sets off the graph's flinch layer in the same write

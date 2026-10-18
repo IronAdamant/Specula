@@ -36,6 +36,7 @@ use std::time::Instant;
 
 #[path = "snapshot.rs"]
 mod snapshot;
+pub use snapshot::{read_joint_desc, write_joint_desc};
 pub use snapshot::SNAPSHOT_VERSION;
 
 /// Simulation settings. Defaults follow Box2D v3 where it has an equivalent.
@@ -2263,6 +2264,11 @@ impl Space {
     }
 
     /// Whether a joint touches a cosmetic body (left out of the hash).
+    /// Whether body `key` is cosmetic (presentation only).
+    pub(crate) fn is_cosmetic(&self, key: u64) -> bool {
+        self.get(key).is_some_and(|b| b.desc.cosmetic)
+    }
+
     fn joint_is_cosmetic(&self, j: &Joint) -> bool {
         j.desc.bodies().any(|k| self.get(k).is_some_and(|b| b.desc.cosmetic))
     }

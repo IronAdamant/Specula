@@ -41,7 +41,8 @@ pub use joint::{Drive, JointDesc, JointKind, JointState, Motor};
 pub use math::{Aabb, Pose};
 pub use shape::Shape;
 pub use space::{
-    BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, JointView, Settings, Space, StepReport,
+    read_joint_desc, write_joint_desc, BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, JointView, Settings,
+    Space, StepReport,
 };
 
 use specula_core::Json;

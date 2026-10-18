@@ -11,8 +11,9 @@
 use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
-/// Bumped when the layout changes.
-pub const BRIDGE_VERSION: u32 = 1;
+/// Bumped when the layout changes. Version 2 adds the saved entities' ragdolls (version 1
+/// saves, which have none, still load).
+pub const BRIDGE_VERSION: u32 = 2;
 /// A section bigger than this is refused (20,000 bodies with every field is about 6 MB).
 const MAX_ITEMS: usize = 1 << 20;
 /// A problem's saved text, at most (clipped when written, so whatever is written reads back).
@@ -67,6 +68,7 @@ impl Physics {
         }
         w.bool(self.settings_applied);
         w.u64(self.next_event);
+        self.save_ragdolls(&mut w);
         w.u64(self.space.hash());
         let mut space = ByteWriter::with_capacity(self.space.len() * 280);
         self.space.save_state(&mut space);
@@ -87,7 +89,7 @@ impl Physics {
     fn restore_inner(&mut self, world: &World, generation: u64, tick: u64, data: &[u8]) -> Result<(), WorldError> {
         let mut r = ByteReader::new(data);
         let version = r.u32("version").map_err(bad)?;
-        if version != BRIDGE_VERSION {
+        if !(1..=BRIDGE_VERSION).contains(&version) {
             return Err(WorldError::new("unsupported_version", format!("physics save version {version}; this build reads {BRIDGE_VERSION}"))
                 .with("section", "physics"));
         }
@@ -129,6 +131,7 @@ impl Physics {
         }
         let settings_applied = r.bool("settings_applied").map_err(bad)?;
         let next_event = r.u64("next_event").map_err(bad)?;
+        let ragdolls = if version >= 2 { Physics::read_ragdolls(&mut r)? } else { Vec::new() };
         let hash = r.u64("hash").map_err(bad)?;
         let space = r.blob("space", 1 << 30).map_err(bad)?;
         r.finish().map_err(bad)?;
@@ -138,6 +141,8 @@ impl Physics {
         // simulate, its problems, aren't in its space and stay out.)
         self.reset();
         self.layers = layers;
+        // Ragdolls first: their entities' own bodies take their collision groups.
+        self.rebuild_ragdolls(world, ragdolls)?;
         for &(id, _, _, _, scale) in &seen {
             let Some(e) = world.get(id) else {
                 return Err(WorldError::new("save_mismatch", format!("the physics section names entity {id}, which the save's world doesn't have"))
@@ -157,6 +162,20 @@ impl Physics {
                     .with("problem", why));
             }
             self.seen.insert(id, Seen { version, world: cols, shape_key, body: e.body, scale });
+        }
+        // The world's joints (after every body: their frames take the bodies' scales), and which
+        // saved entities have ragdolls.
+        for e in world.persistent_entities() {
+            if joints::is_joint(e) {
+                self.upsert_joint(world, e);
+            }
+            if e.props.get(ragdoll::PROP).is_some() {
+                self.ragdolls.persistent.insert(e.id);
+            }
+        }
+        let active: Vec<u64> = self.ragdolls.live.iter().filter(|(_, l)| l.off_since.is_none()).map(|(id, _)| *id).collect();
+        for id in active {
+            self.space.set_group(id, id + 1);
         }
         let mut sr = ByteReader::new(space);
         self.space.restore_state(&mut sr).map_err(|e| {
