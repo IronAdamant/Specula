@@ -46,3 +46,6 @@ worlds/*/world.lock
 
 # Full-size originals behind docs/gallery thumbnails (scripts/gallery.py), local only
 /gallery-full/
+
+# Save games written by engines run from the checkout (--saves defaults to ./saves)
+/saves/
