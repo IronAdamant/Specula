@@ -206,6 +206,47 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
     Some(call)
 }
 
+/// What a collider is, in a few hundred bytes: its shape, sizes or point / vertex / triangle
+/// counts, the bounds of its points, its offset.
+fn collider_summary(c: &crate::physics::Collider) -> Json {
+    use crate::physics::ColliderShape;
+    let mut j = Json::obj([("shape", Json::from(c.shape.name())), ("offset", r3(c.offset))]);
+    let bounds = |pts: &[Vec3]| {
+        let (mut lo, mut hi) = (Vec3::new(f32::MAX, f32::MAX, f32::MAX), Vec3::new(f32::MIN, f32::MIN, f32::MIN));
+        for p in pts {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        Json::obj([("min", r3(lo)), ("max", r3(hi))])
+    };
+    match &c.shape {
+        ColliderShape::Box { size } => {
+            j.set("size", r3(*size));
+        }
+        ColliderShape::Sphere { radius } => {
+            j.set("radius", Json::from(*radius));
+        }
+        ColliderShape::Capsule { radius, height } => {
+            j.set("radius", Json::from(*radius));
+            j.set("height", Json::from(*height));
+        }
+        ColliderShape::Hull { points } => {
+            j.set("points", Json::from(points.len()));
+            j.set("bounds", bounds(points));
+        }
+        ColliderShape::Mesh { vertices, triangles } => {
+            j.set("vertices", Json::from(vertices.len()));
+            j.set("triangles", Json::from(triangles.len()));
+            j.set("bounds", bounds(vertices));
+        }
+        ColliderShape::Heightfield { columns, rows, .. } => {
+            j.set("columns", Json::from(*columns));
+            j.set("rows", Json::from(*rows));
+        }
+    }
+    j
+}
+
 /// A physics collider fitted to a model's mesh (its model space, which is the entity's local
 /// space), and a note when the fit changed what was asked. Moving bodies get hulls of at most
 /// 16 points (physics refuses more); meshes are for static bodies only.
@@ -473,8 +514,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           only feed a navmesh through a collider). kind: auto (a convex hull), recipe (the recipe's own \
                           fitted collider), box, capsule (upright), hull, or mesh (exact triangles, static bodies only). \
                           A moving body (dynamic or kinematic, or moving: true) gets a hull of at most 16 points, as \
-                          physics requires. Returns the collider, its point count and a note when the fit changed what \
-                          was asked."
+                          physics requires. Returns a summary (shape, sizes or point / vertex / triangle counts, bounds, \
+                          offset; world_query fields [\"collider\"] reads the collider itself) and a note when the fit \
+                          changed what was asked."
                 .into(),
             input_schema: schema(
                 {
@@ -827,25 +869,17 @@ impl crate::Engine {
         let built = self.library.lock().built(r.handle).cloned().ok_or_else(|| WorldError::new("model_not_ready", "the model's build is gone: call again").with("id", id))?;
         let (collider, note) = fit_model_collider(&built.model, kind, moving)?;
         collider.validate()?;
-        let shape = collider.shape.name();
-        let points = match &collider.shape {
-            crate::physics::ColliderShape::Hull { points } => points.len(),
-            crate::physics::ColliderShape::Mesh { vertices, .. } => vertices.len(),
-            _ => 0,
-        };
+        let summary = collider_summary(&collider);
         let change = UpdateSpec { collider: Some(Some(collider.clone())), expect_version, ..Default::default() };
         let by = w.name.to_owned();
         let (_, seq) = self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))?;
-        let mut out = Json::obj([
-            ("id", Json::from(id)),
-            ("path", Json::from(self.world.path_of(id))),
-            ("shape", Json::from(shape)),
-            ("moving", Json::from(moving)),
-            ("collider", collider.to_json()),
-            ("journal", Json::from(seq)),
-        ]);
-        if points > 0 {
-            out.set("points", Json::from(points));
+        // A summary, not the collider itself (a mesh collider is hundreds of KB; world_query
+        // fields: ["collider"] reads it).
+        let mut out = Json::obj([("id", Json::from(id)), ("path", Json::from(self.world.path_of(id))), ("moving", Json::from(moving)), ("journal", Json::from(seq))]);
+        if let Json::Obj(pairs) = summary {
+            for (k, v) in pairs {
+                out.set(k, v);
+            }
         }
         if let Some(n) = note {
             out.set("note", Json::from(n));
@@ -1287,5 +1321,8 @@ mod tests {
         assert!((size.x - (hi[0] - lo[0])).abs() < 1.0e-3 && (b.offset.y - (lo[1] + hi[1]) * 0.5).abs() < 1.0e-3, "{size:?} {:?}", b.offset);
         // Deterministic.
         assert_eq!(fit_model_collider(&m, "auto", true).unwrap().0, c);
+        // Answers summarise (F1): a mesh collider in a few hundred bytes.
+        let s = collider_summary(&mesh);
+        assert!(s.to_string().len() < 400 && s.get("triangles").is_some() && s.get("bounds").is_some(), "{}", s.to_string());
     }
 }

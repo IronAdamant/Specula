@@ -972,6 +972,8 @@ pub struct Nav {
     los_scratch: Vec<([u32; 6], u64, bool)>,
     /// Minds that can't run, and why (kept apart from agents' problems).
     pub mind_problems: BTreeMap<u64, Json>,
+    /// Entities whose `props.nav_area` is malformed or names an area a navmesh lacks.
+    pub area_problems: BTreeMap<u64, Json>,
     /// `(world generation, draw epoch)` synced up to.
     synced: Option<(u64, u64)>,
     /// Entities navigation can't use, and why.
@@ -1578,7 +1580,9 @@ impl Nav {
             if let Some(n) = new {
                 self.sources.insert(id, n);
             }
+            self.check_area(world, id);
         } else if e.is_none() {
+            self.area_problems.remove(&id);
             if let Some(old) = self.sources.remove(&id) {
                 for m in self.meshes.values_mut() {
                     // (A deleted `under` root: its whole old area is dirty anyway.)
@@ -1706,6 +1710,59 @@ impl Nav {
             },
         );
         self.relink_agents(world);
+        self.recheck_areas(world);
+    }
+
+    /// Re-checks every entity's `props.nav_area` (a navmesh's areas changed).
+    fn recheck_areas(&mut self, world: &World) {
+        let named: Vec<u64> = self.sources.iter().filter(|(_, s)| s.area.is_some()).map(|(k, _)| *k).chain(self.area_problems.keys().copied()).collect();
+        for id in named {
+            self.check_area(world, id);
+        }
+    }
+
+    /// Checks entity `id`'s `props.nav_area`: well formed, and an area of every navmesh that
+    /// reads it (else it would quietly be plain ground).
+    fn check_area(&mut self, world: &World, id: u64) {
+        let Some(e) = world.get(id) else {
+            self.area_problems.remove(&id);
+            return;
+        };
+        let problem = match e.props.get(AREA_KEY) {
+            None => None,
+            Some(Json::Str(_)) => None,
+            Some(o @ Json::Obj(_)) if o.get("area").and_then(Json::as_str).is_some() && o.get("volume").is_none_or(|v| v.as_bool().is_some()) => None,
+            Some(_) => Some(Json::obj([
+                ("code", Json::from("invalid_nav_area")),
+                ("message", Json::from("props.nav_area must be an area name (\"water\") or {area: name, volume: true|false}; it counts as plain ground until fixed")),
+            ])),
+        };
+        let problem = problem.or_else(|| {
+            let entry = self.sources.get(&id)?;
+            let name = entry.area.as_deref()?;
+            let missing: Vec<Json> = self
+                .meshes
+                .values()
+                .filter(|m| entry.passes(&m.settings.sources, under_of(world, &m.settings.sources)) && m.settings.area_id(name) == 0)
+                .take(8)
+                .map(|m| Json::from(m.path.as_str()))
+                .collect();
+            (!missing.is_empty()).then(|| {
+                Json::obj([
+                    ("code", Json::from("unknown_area")),
+                    ("message", Json::from(format!("props.nav_area '{name}' is not an area of these navmeshes (nav_build areas): it counts as plain ground there"))),
+                    ("navmeshes", Json::Arr(missing)),
+                ])
+            })
+        });
+        match problem {
+            Some(p) => {
+                self.area_problems.insert(id, p);
+            }
+            None => {
+                self.area_problems.remove(&id);
+            }
+        }
     }
 
     /// Re-attaches every agent (a navmesh appeared, changed or went).
@@ -1928,6 +1985,7 @@ impl Nav {
                 // Polygon refs of the old grid mean nothing now: the crowd starts over.
                 slot.crowd = Crowd::new(CrowdSettings::default());
                 self.relink_agents(world);
+                self.recheck_areas(world);
                 let Some(slot) = self.meshes.get_mut(&mesh_id) else { return built };
                 slot.rebuilt_tiles += built as u64;
                 return built;
@@ -2399,7 +2457,7 @@ impl Nav {
     /// Navmesh and mind problems, one short line each (a code and the first diagnostic; ai_status
     /// has a mind's full list), within `max_bytes`. Returns the list and how many were left out.
     pub fn problems_json(&self, world: &World, max_bytes: usize) -> (Json, usize) {
-        let all: Vec<(&u64, &Json)> = self.problems.iter().chain(self.mind_problems.iter()).collect();
+        let all: Vec<(&u64, &Json)> = self.problems.iter().chain(self.mind_problems.iter()).chain(self.area_problems.iter()).collect();
         let mut out = Vec::new();
         let mut bytes = 2;
         for (n, (id, p)) in all.iter().enumerate() {
@@ -2501,7 +2559,7 @@ impl Nav {
             ("navmeshes", Json::Arr(meshes)),
             ("agents", Json::from(self.agents.len())),
             ("minds", Json::from(self.minds.len())),
-            ("problems", Json::from(self.problems.len() + self.mind_problems.len())),
+            ("problems", Json::from(self.problems.len() + self.mind_problems.len() + self.area_problems.len())),
             ("hash", Json::from(self.last_hash().map(|h| format!("{h:016x}")))),
             (
                 "last_tick",
@@ -3260,6 +3318,33 @@ mod tests {
         let err = nav3.restore_state(&other, 0, &saved).unwrap_err();
         assert_eq!(err.code, "state_mismatch", "{}", err.message);
         assert!(nav3.restore_state(&other, 0, &Json::parse(r#"{"version": 9}"#).unwrap()).is_err());
+    }
+
+    #[test]
+    fn bad_or_unknown_nav_areas_are_problems() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh_with(&mut w, &[("areas", Json::parse(r#"[{"name": "water"}]"#).unwrap())]);
+        let floor = w.find_path("/floor").unwrap();
+        let mut nav = Nav::default();
+        nav.sync(&w, 0);
+        assert!(nav.area_problems.is_empty());
+        let set = |w: &mut World, v: Json| {
+            w.update(&EntityKey::Id(floor), UpdateSpec { props: Some(Json::obj([(AREA_KEY, v)])), ..Default::default() }, "t").unwrap();
+        };
+        set(&mut w, Json::from("lava"));
+        nav.sync(&w, 0);
+        let p = nav.area_problems.get(&floor).map(Json::to_string).unwrap_or_default();
+        assert!(p.contains("unknown_area") && p.contains("/nav/default"), "{p}");
+        set(&mut w, Json::from(3));
+        nav.sync(&w, 0);
+        assert!(nav.area_problems.get(&floor).is_some_and(|p| p.to_string().contains("invalid_nav_area")));
+        set(&mut w, Json::from("water"));
+        nav.sync(&w, 0);
+        assert!(nav.area_problems.is_empty(), "{:?}", nav.area_problems);
+        let (list, _) = nav.problems_json(&w, 4096);
+        assert!(!list.to_string().contains("nav_area"));
+        let _ = m;
     }
 
     #[test]

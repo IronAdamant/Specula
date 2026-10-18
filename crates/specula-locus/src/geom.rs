@@ -147,6 +147,8 @@ pub struct BoxSet {
     /// ((row, column), box, the box's own first (row, column)): sorted.
     cells: Vec<CellEntry>,
     big: Vec<u32>,
+    /// Per box: whether it is in `big` (an O(1) test, not a scan of `big`).
+    is_big: Vec<bool>,
 }
 
 /// A grid cell (row, column), a box in it, and that box's own first cell.
@@ -188,7 +190,11 @@ impl BoxSet {
             }
         }
         cells.sort_unstable();
-        BoxSet { boxes, cells, big }
+        let mut is_big = vec![false; boxes.len()];
+        for &i in &big {
+            is_big[i as usize] = true;
+        }
+        BoxSet { boxes, cells, big, is_big }
     }
 
     pub fn len(&self) -> usize {
@@ -210,9 +216,9 @@ impl BoxSet {
         let (qx0, qz0, qx1, qz1) = (cell_of(x0 - reach), cell_of(z0 - reach), cell_of(x1 + reach), cell_of(z1 + reach));
         if !(qx0 <= qx1 && qz0 <= qz1) || (qx1 - qx0 + 1) * (qz1 - qz0 + 1) > 4096 {
             // A huge reach: everything.
-            for (i, b) in self.boxes.iter().enumerate() {
-                if !self.big.contains(&(i as u32)) {
-                    work.set(work.get() + 1);
+            for (b, big) in self.boxes.iter().zip(&self.is_big) {
+                work.set(work.get() + 1);
+                if !big {
                     f(b);
                 }
             }
@@ -261,6 +267,22 @@ mod tests {
         let got = boxes.iter().filter(|b| b.distance_xz(&fp) <= 5.0 && seen.contains(&(b.center.x * 1000.0 + b.center.z))).count();
         assert_eq!(got, want, "every box within reach");
         assert!(work.get() < 100, "looked at {} of 400", work.get());
+    }
+
+    #[test]
+    fn a_huge_reach_over_many_big_boxes_is_linear() {
+        // 8,000 boxes of 40 m (each covers more than the per-box cell cap) and 8,000 small ones.
+        let mut boxes: Vec<Box3> = (0..8000).map(|i| Box3::aligned(Vec3::new(5000.0 + (i % 100) as f32 * 50.0, 0.0, (i / 100) as f32 * 50.0), Vec3::new(5040.0 + (i % 100) as f32 * 50.0, 0.1, 40.0 + (i / 100) as f32 * 50.0))).collect();
+        boxes.extend((0..8000).map(|i| Box3::aligned(Vec3::new(-5000.0 - (i % 100) as f32 * 2.0, 0.0, (i / 100) as f32 * 2.0), Vec3::new(-4999.5 - (i % 100) as f32 * 2.0, 0.5, 0.5 + (i / 100) as f32 * 2.0))));
+        let set = BoxSet::new(boxes);
+        let fp = Box3::aligned(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0));
+        let work = std::cell::Cell::new(0);
+        let started = std::time::Instant::now();
+        let mut n = 0usize;
+        set.for_each_near(&fp, 1.0e4, &work, |_| n += 1);
+        assert_eq!(n, 16_000, "every box once");
+        assert!(work.get() <= 16_000 + 8_000, "work {}", work.get());
+        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
     }
 
     #[test]

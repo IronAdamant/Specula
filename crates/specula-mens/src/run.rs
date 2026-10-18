@@ -180,8 +180,32 @@ impl Mind {
                 done: a.get(6)?.as_array()?.iter().map(status).collect::<Option<Vec<_>>>()?,
             });
         }
-        if states.len() != n || states.iter().any(|s| s.cursor > n || s.chosen.is_some_and(|c| c >= n)) {
+        // Every index a tick will follow must fit its node (a crafted or damaged save must not
+        // panic later): cursors and choices within the children, parallel results one per child,
+        // utility scores one per option with one part per consideration.
+        if states.len() != n {
             return None;
+        }
+        for (node, st) in def.nodes.iter().zip(&states) {
+            let kids = node.children.len();
+            if (kids == 0 && st.cursor != 0) || (kids > 0 && st.cursor >= kids) {
+                return None;
+            }
+            if st.chosen.is_some_and(|c| c >= kids) || !(st.done.is_empty() || st.done.len() == kids) {
+                return None;
+            }
+            match &node.kind {
+                NodeKind::Utility { options, .. } => {
+                    if !(st.scores.is_empty() || st.scores.len() == options.len()) || st.scores.iter().zip(options).any(|((_, parts), o)| parts.len() != o.considerations.len()) {
+                        return None;
+                    }
+                }
+                _ => {
+                    if !st.scores.is_empty() || st.chosen.is_some() {
+                        return None;
+                    }
+                }
+            }
         }
         let bb: Blackboard = match j.get("bb")? {
             Json::Obj(pairs) if pairs.len() <= MAX_KEYS => pairs.iter().cloned().collect(),
@@ -872,6 +896,24 @@ mod tests {
             assert_eq!(hash(&a), hash(&b));
         }
         assert_eq!(a.status_json(4096), b.status_json(4096));
+        // Damaged states are refused, never a panic on the next tick: every cursor past its
+        // node's children, a choice past the options, a parallel result list of the wrong length.
+        for (field, value) in [(1usize, Json::from(99u64)), (4, Json::from(7u64)), (6, Json::arr([Json::Null]))] {
+            let mut bad = saved.clone();
+            if let Some(Json::Arr(states)) = bad.get("states").cloned() {
+                let st: Vec<Json> = states
+                    .into_iter()
+                    .map(|mut x| {
+                        if let Json::Arr(a) = &mut x {
+                            a[field] = value.clone();
+                        }
+                        x
+                    })
+                    .collect();
+                bad.set("states", Json::Arr(st));
+            }
+            assert!(Mind::restore(Arc::clone(&a.def), &bad).is_none(), "field {field}");
+        }
         // A save for another definition is refused.
         assert!(Mind::restore(Arc::new(Def::parse(&Json::parse(GUARD).unwrap(), &vocab()).unwrap()), &saved).is_none());
     }
