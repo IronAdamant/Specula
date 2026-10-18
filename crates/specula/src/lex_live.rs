@@ -310,6 +310,8 @@ impl Live {
 
     /// What the live runs are, for the desync detector and save games (`None`: no run): each
     /// set's Lex state and its anchor, credit, debt and counters (what decides when it steps).
+    /// What it presents is in the world hash, not here (a presented entity someone deleted is
+    /// still listed by the saving engine until the next presentation, but not by a loaded one).
     pub(crate) fn state_hash(&self) -> Option<u64> {
         if self.runs.is_empty() {
             return None;
@@ -326,7 +328,6 @@ impl Live {
             h.write_u64((r.journal_dropped + r.journal.len()) as u64);
             h.write_u64(r.input_journaled as u64);
             h.write_u64(r.input_dropped);
-            h.write_u64(r.shown.len() as u64);
             h.write_u64(r.hidden as u64);
         }
         Some(h.finish())
@@ -929,9 +930,14 @@ impl Live {
                     // them, so it replays only from a state saved at its first command.
                     ("dropped_before", Json::from(run.journal_dropped)),
                     ("next_offset", next.map_or(Json::Null, Json::from)),
+                    ("replayable", Json::Bool(run.journal_dropped == 0)),
                     (
                         "replay",
-                        Json::from("lex_simulate {set, seed, params, ticks: tick, commands} with these commands (tick, command, args) reaches this hash when no module hook writes the world"),
+                        Json::from(if run.journal_dropped == 0 {
+                            "lex_simulate {set, seed, params, ticks: tick, commands} with these commands (tick, command, args) reaches this hash when no module hook writes the world".to_owned()
+                        } else {
+                            format!("a replay from tick 0 isn't possible: a save game left out the first {} commands (it keeps the newest that fit); these commands replay only from a state saved at the first of them", run.journal_dropped)
+                        }),
                     ),
                 ]);
                 ToolOutput::text(j.to_pretty())
@@ -2214,6 +2220,31 @@ mod tests {
             r.ticks(30);
         }
         assert_eq!((a.live.state_hash(), a.world.state_hash()), (b.live.state_hash(), b.world.state_hash()));
+    }
+
+    /// Review round 7 (adopt.py): a presented entity deleted before the save isn't a mismatch:
+    /// the loaded run adopts what the world holds, matches the saving one's hashes at once, and
+    /// both show the entity again the same way.
+    #[test]
+    fn a_presented_entity_deleted_before_a_save_still_matches() {
+        let mut a = Rig::new(30);
+        saveable_run(&mut a);
+        let shown = a.shown();
+        let gone = a.world.find_path(&shown[0]).unwrap();
+        a.world.delete(&EntityKey::Id(gone), None).unwrap();
+        let bytes = a.live.save_state().unwrap().unwrap();
+        let mut b = Rig::new(30);
+        b.world = a.world.clone();
+        b.tick = a.tick;
+        let notes = b.live.apply_state(Some(parse_state(&bytes, &b.world, b.tick, &b.natives).unwrap()));
+        assert!(notes.iter().any(|n| n.get("warning") == Some(&Json::from("live_lex_presentation"))), "{notes:?}");
+        assert_eq!((b.live.state_hash(), b.world.state_hash()), (a.live.state_hash(), a.world.state_hash()), "matches at the load");
+        for t in 0..60 {
+            a.ticks(1);
+            b.ticks(1);
+            assert_eq!((a.live.state_hash(), a.world.state_hash()), (b.live.state_hash(), b.world.state_hash()), "{t} ticks after the load");
+        }
+        assert_eq!(a.shown(), b.shown());
     }
 
     /// An agent's hold isn't saved (sessions aren't): a load starts without it.

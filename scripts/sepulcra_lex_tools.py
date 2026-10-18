@@ -191,7 +191,8 @@ def main():
         check(again["hash"] == j["hash"] == centre["hash"], "the live journal replays headless (lex_simulate) to the same hash")
         # A save game takes the live run with it (its own section; save_check.py proves a load
         # continues it exactly).
-        res = mcp.request("tools/call", {"name": "save_write", "arguments": {"name": "lex_tools_check", "overwrite": True}})
+        # force: the save may be a previous run's (another session's).
+        res = mcp.request("tools/call", {"name": "save_write", "arguments": {"name": "lex_tools_check", "overwrite": True, "force": True}})
         body = json.loads(res["content"][0]["text"])
         check(not res.get("isError") and "lex_live" in body.get("sections", {}) and "lex_live" in body.get("subsystems", {}),
               f"save_write while the run is live saves it too ({body.get('sections', body)})")
