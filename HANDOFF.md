@@ -25,7 +25,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
   go-ahead before starting M4** (wave 3).
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
-  history gallery, and save games with the balance lab. Wave 2 is
+  history gallery, save games with the balance lab, and streaming with HLOD. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -149,6 +149,7 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
     `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
     `world_env {physics}` (gravity, substeps, sleep, 2D mode).
+  - Streaming: `stream_state`, `stream_settings` (lead only), `stream_fly`; distant cells draw as merged HLOD proxies.
   - Saves and balance: `save_write`, `save_read`, `save_list`, `save_delete` (`--saves DIR`); `balance_targets`,
     `balance_sweep`, `balance_tune`.
   - Playtests: `playtest_run` (a spec as data: steps, expectations, replays) and `playtest_report`.
