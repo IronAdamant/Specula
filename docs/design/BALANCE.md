@@ -165,6 +165,11 @@ game** (its hand-written rules, its tools, fresh engines).
 4. The report compares, per style, the lab's win rate and tombstones with the game's, and lists every run that
    disagrees with what differed. Any disagreement exits 1.
 
+`--out` is the script's own folder: it empties it only when it holds the script's marker file and refuses any other
+non-empty folder. Every engine it starts is listed (PID and exe) in `engines.pid` while it runs; Ctrl+C stops them
+all, and after a hard kill the next run against the same `--out` stops whichever are still running (by PID, only
+processes still running the same exe) before it starts.
+
 **Measured** (2026-10-18, release, 3 engines on ports 7601-7603): runner_hp 61 / shambler_hp 139, 16 held-out seeds
 × 3 styles = **48 playtests, 48 agree** (dust-gated win rate 1.0 and 6.69 tombstones left in both, braziers 0.94 /
 6.56, rusher 0.875 / 6.5), in 141 s wall (415 s of playtests). The comparison can fail: with `--skew shambler_hp=40`

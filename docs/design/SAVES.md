@@ -51,8 +51,14 @@ module's build hash; a load reports a missing or different build, DETERMINISM.md
 ## Loading
 
 A load runs in two halves. **On a worker thread**: read the file, decode it, run the migrations, parse and check
-every section (the world through `world_load`'s validation, the game's state, the module state) and rebuild physics
-against the save's world. **On the engine thread**: only the swap, a few milliseconds. Agents' calls keep being
+every section (the world through `world_load`'s validation, the module state, and the game's state through
+`Game::state_parser`, a `Send` parser the game hands over when the load starts) and rebuild physics against the
+save's world. **On the engine thread**: only the swap, a few milliseconds (a game without a parser has its section
+parsed at the swap; Sepulcra has one).
+
+**Not during a playtest.** A playtest owns the clock and the world until it ends, so loads are refused while one
+runs, with `force` too, at the start and again at the swap (`playtest_running`, with `retry_after_ms`); the player's
+Load from the menu says "Can't load while a playtest is running". Agents' calls keep being
 answered while a big save is read (measured below), and the engine thread never inflates a crafted file. Before the
 swap the engine checks again that nothing changed meanwhile (claims taken, unsaved edits made since the load started).
 
@@ -94,8 +100,11 @@ crc32            u32 LE of everything before it
 - **Bounded, structured errors.** File ≤ 1 GiB, header ≤ 1 MiB, ≤ 32 sections, each decoded section ≤ 512 MiB
   (decompression stops at the declared size), every count checked against the bytes left before anything is
   allocated. **Decompression bombs** are refused from the section table, before inflating anything: the sections may
-  decode to at most 64 times the file's size plus 16 MiB (`too_large`). A real save that would compress better than
-  that (very repetitive worlds) is written with that section raw, so every save the engine writes reads back. A damaged file is a `SaveError` with a code (`not_a_save`, `truncated`, `checksum`, `corrupt_section`,
+  decode to at most 1,024 times the file's size plus 16 MiB, and 512 MiB in all (`too_large`). Very repetitive worlds
+  compress a few hundred to one (3,000 entities with the same 16 KB prop: 48 MB of text in a file under 2 MB) and
+  stay compressed; only data past the cap would be written raw. Whatever passes is inflated on the load's worker.
+  The hosted game caps its own section too (Sepulcra: state and recording at most 2 MiB each, refused at write
+  time when a run would pass them, refused at load time before parsing). A damaged file is a `SaveError` with a code (`not_a_save`, `truncated`, `checksum`, `corrupt_section`,
   `invalid_header`, `too_large`, `unknown_codec`, `trailing`, `unsupported_version`, `no_migration`), the section, the
   byte offset, and what to do.
 - **Fuzzed.** Unit tests cut every save at every length, flip bits everywhere, and run thousands of random edits with the
@@ -114,9 +123,12 @@ crc32            u32 LE of everything before it
 | Tool | What it does |
 |---|---|
 | `save_write {name, label?, overwrite?, force?}` | Saves at the current tick. The engine thread takes the state and owned copies of the world (Sepulcra's world: ~3 ms); rendering, compression and writing run on a worker thread, which answers when the file is on disk. At most two saves are written at once (each holds a copy of the world): a third is `busy` with `retry_after_ms`. An existing save is replaced only with `overwrite`, and another agent's save (or one whose header can't be read) also needs `force`. |
-| `save_read {name, force?, inspect?}` | Loads (see above). Refused while other agents hold claims (`claimed`: it replaces everything they work on) and when the live world has unsaved changes (`force` discards them). `inspect` only checks and describes the file, also on a worker. One load at a time; a save being written or read is `busy`. |
+| `save_read {name, force?, inspect?}` | Loads (see above). Refused while other agents hold claims (`claimed`: it replaces everything they work on), while a playtest runs (`playtest_running`) and when the live world has unsaved changes (`force` discards them). One load at a time; a save being written or read is `busy`. `inspect` streams the file and checks its framing, header, section table and checksum **without decompressing anything** (the header plus 64 KB of memory, whatever the file); at most four run at once (`busy` beyond). |
 | `save_list {cursor?, limit?}` | Saves, newest first (reads only headers). Never waits for a save being written: that one is listed with `writing: true`. |
 | `save_delete {name, force?}` | Only the agent that wrote a save may delete it, unless `force`. |
+
+**A saves folder holds at most 4 GiB** of saves: a save that would pass it is refused (`saves_full`, with the bytes
+used, the number of saves and the cap); saving over a save counts only the new one.
 
 **Ownership is an identity, not a name.** A save's header keeps who wrote it twice: the display name, and an owner key
 derived from the writer's identity (`agent_hello`'s identity, or `game:<name>` for the hosted game's own saves), so an
@@ -149,8 +161,10 @@ buttons with `play_ui` (`saves`, `save_1`, `load_2`, `delete_3`, `load_auto_1`, 
   (world 73 KB, game 2 KB, physics 19 KB, logic 0.2 KB before compression), 5-6 ms to write; loading takes about 50 ms
   (37 ms reading and checking on the worker, 7 ms swapping on the engine thread). With 10,000 extra static entities:
   90 KB on disk (2.0 MB of world text), loading about 350 ms of which 48 ms on the engine thread; another agent's
-  `world_list` answers in 20 ms (median, 77 ms worst) while such loads run. A 300 KB decompression bomb claiming
-  300 MB is refused without inflating. The script also drives the player's Saved games screen through `play_ui`
+  `world_list` answers in 20 ms (median, 77 ms worst) while such loads run. A 300 KB file of 300 MiB of zeros is
+  inflated on the worker and refused (no world in it); a save carrying a 32 MiB recording is refused by Sepulcra's
+  cap on the worker (156 ms, the engine thread untouched); eight inspections at once all answer; a load during a
+  playtest is refused, for an agent and for the player. The script also drives the player's Saved games screen through `play_ui`
   (save two slots, a confirmed delete, a refused overwrite, a confirmed load back to the same state hash, a wave-start
   autosave) and keeps its captures (`--keep`).
 
