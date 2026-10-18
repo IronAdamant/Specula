@@ -327,6 +327,12 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
 - A malformed or unknown `props.nav_area` (an area the navmesh doesn't name) is a problem in `nav_info`
   (`invalid_nav_area`, `unknown_area` with the navmeshes), not silent plain ground.
 
+**Review round 3.** A load finishes only the tiles it brought (never built yet); edits made meanwhile are left
+to the ticks, so a busy swarm can't hold the clock. Load slices run back to back (headless wakes at once; a
+window spends 30 ms a frame). `time_control step` waits up to 2 s for a load and otherwise answers `loading`
+(steps are never queued behind it); a playtest's ticks wait up to 30 s. Playtest checkpoints hash `nav` too.
+`nav_build` is an edit-class call now that it builds nothing (a no-op answers in about 10 ms, was 104).
+
 **Links, areas, saves and model colliders (M3 additions, 2026-10-18).**
 - *Off-mesh links* are navmesh data: `props.navmesh.links` (nav_build `links`), at most 256, each `{from, to,
   kind: jump | drop | ladder, bidirectional (not for drops by default), cost, area, radius}`. Each end is found on the
