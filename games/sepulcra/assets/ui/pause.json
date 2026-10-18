@@ -6,7 +6,7 @@
   "modal": true,
   "focus": "resume",
   "back": "resume",
-  "notes": "Actions: resume, open_settings, open_controls, restart (asks first). State: wave, waves.",
+  "notes": "Actions: resume, open_saves (the Save / Load screen), open_settings, open_controls, restart (asks first). State: wave, waves.",
   "root": {
     "type": "box",
     "children": [
@@ -24,6 +24,7 @@
           { "type": "label", "text": "Wave {wave} of {waves}", "role": "subtitle", "text_align": "center" },
           { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [6, 0, 6, 0] },
           { "type": "button", "id": "resume", "style": "primary", "text": "Resume", "action": "resume" },
+          { "type": "button", "id": "saves", "text": "Save / Load", "action": "open_saves", "tooltip": "Save this run to a slot, or load a saved one." },
           { "type": "button", "id": "settings", "text": "Settings", "action": "open_settings" },
           { "type": "button", "id": "controls", "text": "Controls", "action": "open_controls" },
           { "type": "button", "id": "restart", "text": "Restart run", "action": "restart", "tooltip": "Start this seed again. Your run is lost." },

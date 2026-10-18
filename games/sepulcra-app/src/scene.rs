@@ -41,6 +41,9 @@ use specula_core::Json;
 use specula_gpu::Material;
 use std::collections::BTreeMap;
 
+#[path = "scene_adopt.rs"]
+mod adopt;
+
 /// Most point lights the game uses (the engine renders 16; leave room for agents' lights).
 const MAX_GAME_LIGHTS: usize = 12;
 /// Flashes alive at once (the oldest is reused past this).

@@ -27,7 +27,7 @@ use specula_ui::{FontSet, StateMap, Theme, ToastKind, Ui, UiEvents, Viewport};
 use std::path::Path;
 
 /// The screens the game uses, with built-in copies for when the assets folder lacks them.
-const SCREENS: [(&str, &str); 7] = [
+const SCREENS: [(&str, &str); 8] = [
     ("hud", include_str!("../../sepulcra/assets/ui/hud.json")),
     ("radial", include_str!("../../sepulcra/assets/ui/radial.json")),
     ("pause", include_str!("../../sepulcra/assets/ui/pause.json")),
@@ -35,6 +35,7 @@ const SCREENS: [(&str, &str); 7] = [
     ("defeat", include_str!("../../sepulcra/assets/ui/defeat.json")),
     ("settings", include_str!("../../sepulcra/assets/ui/settings.json")),
     ("controls", include_str!("../../sepulcra/assets/ui/controls.json")),
+    ("saves", include_str!("../../sepulcra/assets/ui/saves.json")),
 ];
 const THEME: &str = include_str!("../../sepulcra/assets/ui/theme.json");
 const CONFIRM: &str = include_str!("../../sepulcra/assets/ui/confirm.json");
@@ -69,7 +70,7 @@ pub struct Hud {
 }
 
 /// Screens the game shows and hides (the capture UI mirrors their visibility).
-const SHOWN: [&str; 8] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "confirm"];
+const SHOWN: [&str; 9] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "saves", "confirm"];
 
 /// Seconds a message stays on a capture.
 const CAPTURE_TOAST_S: f32 = 4.0;

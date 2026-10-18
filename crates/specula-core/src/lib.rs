@@ -4,6 +4,7 @@
 
 pub mod alloc;
 pub mod base64;
+pub mod bytes;
 pub mod checksum;
 pub mod deflate;
 pub mod dmath;

@@ -16,6 +16,10 @@ use crate::expr::{arith, compare, Arith, Ex, WaveQ, Who};
 use crate::rules::*;
 use crate::units::isqrt;
 
+#[path = "sim_snapshot.rs"]
+mod snapshot;
+pub use snapshot::{SnapshotError, SNAPSHOT_VERSION};
+
 /// Most events dispatched to rules in one tick before dispatch stops (`event_storm`).
 pub const MAX_EVENTS_PER_TICK: usize = 100_000;
 /// How deeply action lists may nest before `recursion_limit` stops them.
