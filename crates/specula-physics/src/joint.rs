@@ -636,6 +636,43 @@ pub fn solve(joints: &mut [JointConstraint], bodies: &mut [SolverBody], h: f32, 
     }
 }
 
+/// Widens a hinge's or ball joint's limits so the bodies' poses `pa`, `pb` lie inside them by
+/// `margin` (rad): a twist or hinge range grows on the side it is past, a swing cone grows
+/// evenly until it holds the swing (up to π). A body started past its limits (a ragdoll taking
+/// over an animation that reaches further than the rest-relative limits allow) would otherwise
+/// be flung back inside at the limit rows' push speed. Returns whether anything changed.
+pub fn open_to(desc: &mut JointDesc, pa: &Pose, pb: &Pose, margin: f32) -> bool {
+    let fa = pa.mul(&desc.frame_a);
+    let fb = pb.mul(&desc.frame_b);
+    let (xa, ya, _) = axes(fa.q);
+    let (xb, yb, _) = axes(fb.q);
+    let angle = match desc.kind {
+        JointKind::Hinge => hinge_angle(xa, ya, yb),
+        JointKind::Ball => twist_angle((fa.q.conjugate() * fb.q).normalize()),
+        _ => return false,
+    };
+    let mut changed = false;
+    if let Some([lo, hi]) = desc.limit {
+        let (nlo, nhi) = (lo.min(angle - margin), hi.max(angle + margin));
+        if nlo < lo || nhi > hi {
+            desc.limit = Some([nlo, nhi]);
+            changed = true;
+        }
+    }
+    if let (JointKind::Ball, Some(c)) = (desc.kind, desc.swing) {
+        if let (theta, Some(ax)) = swing_of(xa, xb) {
+            let lim = cone_limit(fa.q, ax, c);
+            if theta + margin > lim && lim > 0.0 {
+                // The cone's bound scales with both half-angles: grow them together.
+                let k = (theta + margin) / lim;
+                desc.swing = Some([(c[0] * k).min(core::f32::consts::PI), (c[1] * k).min(core::f32::consts::PI)]);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// A joint's measured state from the bodies' poses (`None` side: the world).
 /// `h` is the substep length (impulses become forces).
 pub fn measure(desc: &JointDesc, pa: &Pose, pb: &Pose, imp: &JointImpulses, h: f32) -> JointState {
@@ -838,5 +875,27 @@ mod tests {
         assert!(validate(&r).is_err(), "a distance joint needs a length");
         r.length = [0.0, 2.0];
         assert!(validate(&r).is_ok());
+    }
+
+    #[test]
+    fn limits_open_to_hold_a_start_past_them() {
+        let at = |q: Quat| Pose { p: Vec3::ZERO, q };
+        // A ball joint swung 1.2 rad (past a 0.5 rad cone) and twisted 0.8 (past ±0.3).
+        let mut d = JointDesc::new(JointKind::Ball, Some(1), Some(2), Pose::IDENTITY, Pose::IDENTITY);
+        d.limit = Some([-0.3, 0.3]);
+        d.swing = Some([0.5, 0.5]);
+        let q = Quat::from_axis_angle(Vec3::Z, 1.2) * Quat::from_axis_angle(Vec3::X, 0.8);
+        assert!(open_to(&mut d, &at(Quat::IDENTITY), &at(q), 0.05));
+        let s = measure(&d, &at(Quat::IDENTITY), &at(q), &JointImpulses::default(), 0.0);
+        assert!(s.limit_excess == 0.0, "inside its opened limits: {s:?} {:?} {:?}", d.limit, d.swing);
+        assert!(close(d.limit.unwrap()[1], 0.85, 1e-3) && close(d.limit.unwrap()[0], -0.3, 1e-6), "{:?}", d.limit);
+        assert!(close(d.swing.unwrap()[0], 1.25, 1e-3), "{:?}", d.swing);
+        // Already inside: unchanged.
+        assert!(!open_to(&mut d, &at(Quat::IDENTITY), &at(Quat::IDENTITY), 0.05));
+        // A hinge bent past its range opens on that side only.
+        let mut h = JointDesc::new(JointKind::Hinge, Some(1), Some(2), Pose::IDENTITY, Pose::IDENTITY);
+        h.limit = Some([0.0, 1.0]);
+        assert!(open_to(&mut h, &at(Quat::IDENTITY), &at(Quat::from_axis_angle(Vec3::X, -0.4)), 0.05));
+        assert!(close(h.limit.unwrap()[0], -0.45, 1e-4) && h.limit.unwrap()[1] == 1.0, "{:?}", h.limit);
     }
 }

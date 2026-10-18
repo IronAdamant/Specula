@@ -58,6 +58,9 @@ pub const DEFAULT_MASS_KG: f32 = 40.0;
 pub const MAX_RAGDOLLS: usize = 64;
 /// Poses recorded per ragdoll for its motion checks.
 pub const RECORD_FRAMES: usize = 150;
+/// How far inside a limit opened at the start (see [`specula_physics::joint::open_to`]) the
+/// starting pose lies (rad, about 3 degrees).
+const START_MARGIN_RAD: f32 = 0.05;
 /// Seconds a ragdoll's last pose stays after it is switched off.
 pub const FROZEN_S: f64 = 2.0;
 /// Thinnest part (model metres), and the damping parts move with (joints lose energy like real
@@ -499,7 +502,10 @@ impl Ragdolls {
 }
 
 /// The local pose `e` plays at world time `t` (no IK: the simulation's pose), or the rest pose.
-fn pose_at(player: &mut GraphPlayer, set: &AnimSet, e: &world::Entity, t: f64, ragdoll_off: bool) -> APose {
+/// `base_only` leaves the graph's other layers in their entry states: a takeover moves on at the
+/// base motion, not at a reaction layer just set off (a killing blow's flinch, whose attack would
+/// fling the arms at 15 m/s).
+fn pose_at(player: &mut GraphPlayer, set: &AnimSet, e: &world::Entity, t: f64, ragdoll_off: bool, base_only: bool) -> APose {
     let skel = &set.skeleton;
     let Some(a) = &e.anim else { return skel.rest_pose() };
     if let Some(gp) = &a.graph {
@@ -508,6 +514,10 @@ fn pose_at(player: &mut GraphPlayer, set: &AnimSet, e: &world::Entity, t: f64, r
             if ragdoll_off && graph.param(PARAM).is_some() {
                 // A powered ragdoll follows what the graph plays without its ragdoll state.
                 play.set_param(PARAM, Value::Bool(false));
+            }
+            if base_only {
+                // A layer not listed starts in its entry state at the anchor.
+                play.layers.retain(|l| l.layer == "base");
             }
             let g = Graphed { set, graph, scale: crate::anim::entity_scale(e) };
             return player.evaluate(g, &play, Timing { anchor: a.start.unwrap_or(0.0), speed: a.speed }, t, &Surroundings::default()).clone();
@@ -672,16 +682,18 @@ impl Physics {
         // What it was playing (without its ragdoll state, which plays this very pose), now and
         // a tick on (a game usually switches the ragdoll on in the same write that settles its
         // play, so the animation is only known from now on).
-        let now = pose_at(&mut self.ragdolls.player, &set, e, t, true);
-        let next = pose_at(&mut self.ragdolls.player, &set, e, t + f64::from(dt), true);
+        let now = pose_at(&mut self.ragdolls.player, &set, e, t, true, true);
+        let next = pose_at(&mut self.ragdolls.player, &set, e, t + f64::from(dt), true, true);
         let (mut m_now, mut m_next) = (Vec::new(), Vec::new());
         set.skeleton.model_space(&now, &mut m_now);
         set.skeleton.model_space(&next, &mut m_next);
         let cosmetic = e.transient;
         let layer = self.layer_bit(LAYER)?;
         let inv_dt = 1.0 / dt.max(1.0e-6);
+        let mut starts: Vec<(usize, Pose)> = Vec::with_capacity(parts.len());
         for p in &parts {
             let w = bone_world(&pose_e, scale, &m_now[p.bone]);
+            starts.push((p.bone, w));
             let w1 = bone_world(&pose_e, scale, &m_next[p.bone]);
             let collider = ColliderDesc { layer, ..ColliderDesc::new(Shape::capsule(p.radius, p.half)) };
             let collider = ColliderDesc { offset: p.offset, friction: 0.8, ..collider };
@@ -713,6 +725,12 @@ impl Physics {
             let mut jd = JointDesc::new(j.kind, Some(key(id, parent)), Some(key(id, p.bone)), j.frame_parent, j.frame_child);
             jd.limit = j.limit;
             jd.swing = j.swing;
+            // A pose already past a limit (an animation reaching further than the rest-relative
+            // limits) opens it to there: pushed back inside, the part would be flung.
+            let start = |b: usize| starts.iter().find(|(x, _)| *x == b).map(|(_, w)| *w);
+            if let (Some(pa), Some(pb)) = (start(parent), start(p.bone)) {
+                specula_physics::joint::open_to(&mut jd, &pa, &pb, START_MARGIN_RAD);
+            }
             // Joint friction in proportion to what the joint carries.
             let carried: f32 = parts.iter().filter(|q| set.skeleton.is_under(q.bone, p.bone)).map(|q| q.mass).sum();
             jd.friction = FRICTION_PER_KG * carried * scale;
@@ -783,7 +801,7 @@ impl Physics {
         let Some(e) = world.get(id) else { return };
         let Some(live) = self.ragdolls.live.get(&id) else { return };
         let set = Arc::clone(&live.set);
-        let target = pose_at(&mut self.ragdolls.player, &set, e, t, true);
+        let target = pose_at(&mut self.ragdolls.player, &set, e, t, true, false);
         let mut m = Vec::new();
         set.skeleton.model_space(&target, &mut m);
         let (pose_e, _) = world_pose(world, e);
@@ -1019,6 +1037,32 @@ mod tests {
         }
     }
 
+    /// Found in Sepulcra: the killing blow sets off the graph's flinch layer in the same write
+    /// that turns the ragdoll on; taken from the play with it, the takeover flung the hands
+    /// up at 16 m/s. The ragdoll moves on at the base motion.
+    #[test]
+    fn a_takeover_moves_on_at_the_base_motion_not_a_flinch_just_set_off() {
+        for phase in [20u64, 33] {
+            let (mut w, id) = shambler_world();
+            let mut p = Physics::default();
+            run(&mut w, &mut p, 0, phase);
+            // The blow (one write), then the death (another), at the tick's time.
+            w.set_clock_s(phase as f64 / 30.0);
+            for (name, v) in [("hit", true), ("ragdoll", true)] {
+                let mut play = specula_anim::play::GraphPlay::new("creature");
+                play.set_param(name, Value::Bool(v));
+                w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(crate::world::AnimSpec::graph(play))), ..UpdateSpec::default() }, "t").unwrap();
+            }
+            ragdoll(&mut w, id, r#"{"mode": "limp"}"#);
+            run(&mut w, &mut p, phase, 2);
+            let live = p.ragdolls.live.get(&id).expect("a live ragdoll");
+            for part in &live.parts {
+                let v = p.space.body(key(id, part.bone)).unwrap().velocity.length();
+                assert!(v < 4.0, "phase {phase}: {} moves at {v} m/s", live.set.skeleton.names[part.bone]);
+            }
+        }
+    }
+
     #[test]
     fn a_walking_shambler_falls_limp_comes_to_rest_and_lets_go() {
         let (mut w, id) = shambler_world();
@@ -1123,7 +1167,7 @@ mod tests {
         run(&mut w, &mut p, 10, 30);
         assert!(w.external_pose(id).is_some_and(|x| x.direct), "drawn as it is");
         // `run` leaves the world clock at the last tick's start; physics poses are for its end.
-        let target = |w: &World, live: &Live| pose_at(&mut GraphPlayer::new(), &live.set, w.get(id).unwrap(), w.world_time() + 1.0 / 30.0, true);
+        let target = |w: &World, live: &Live| pose_at(&mut GraphPlayer::new(), &live.set, w.get(id).unwrap(), w.world_time() + 1.0 / 30.0, true, false);
         let live = &p.ragdolls.live[&id];
         // (Its legs follow the animation kinematically: the upper body is what the motors hold.)
         let tracking = joints_off_all(live, &live.pose, &target(&w, live)).into_iter().map(|(_, d)| d).fold(0.0f32, f32::max);

@@ -853,7 +853,8 @@ pub fn check_clip(set: &AnimSet, rig: &str, id: ClipId, rules: &MotionRules, mes
 /// ground penetration, where the body comes to rest (`floating`, at the last frame), joint
 /// limits against `limits` and pops where physics takes over (the first frames): a joint jumping
 /// off the path it was moving on (the change of its per-frame motion, so a fast smooth fall isn't
-/// a pop and a teleport is), scaled to a 1.8 m figure like the transition check.
+/// a pop and a teleport is), per frame at the rules' `sample_hz` (a change of motion over a
+/// 30 Hz tick is four 60 Hz frames' worth) and scaled to a 1.8 m figure like the transition check.
 pub fn check_frames(set: &AnimSet, subject: &str, poses: &[Pose], dt: f32, limits: &[Limit], rules: &MotionRules, mesh: Option<&specula_model::MeshData>) -> Report {
     let ctx = Ctx { set, rules, subject: subject.to_string(), also: Vec::new() };
     let mut s = Sampled { dt, heads: Vec::with_capacity(poses.len()), tails: Vec::with_capacity(poses.len()), poses: Vec::with_capacity(poses.len()) };
@@ -877,6 +878,8 @@ pub fn check_frames(set: &AnimSet, subject: &str, poses: &[Pose], dt: f32, limit
     // per-frame motion (second difference). Later ones are impacts, which physics resolves.
     let height = set.skeleton.heads.iter().chain(&set.skeleton.tails).map(|p| p[1]).fold(0.0f32, f32::max).max(0.1);
     let to_human = 1.8 / height;
+    // A second difference grows with the square of the step: bring it to sample_hz frames.
+    let per_frame = (1.0 / (rules.sample_hz * dt).max(1e-3)).powi(2);
     let (mut worst, mut at, mut bone) = (0.0f32, 0.0f32, 0usize);
     for k in 2..s.heads.len().min(TAKEOVER_FRAMES) {
         for b in 1..s.heads[k].len() {
@@ -887,7 +890,7 @@ pub fn check_frames(set: &AnimSet, subject: &str, poses: &[Pose], dt: f32, limit
             }
         }
     }
-    ctx.check(&mut out, "pops", worst * 100.0 * to_human, "cm", Some(at), Some(bone), vec![("unscaled_cm", worst * 100.0), ("frame_s", dt)]);
+    ctx.check(&mut out, "pops", worst * per_frame * 100.0 * to_human, "cm", Some(at), Some(bone), vec![("unscaled_cm", worst * per_frame * 100.0), ("recorded_cm", worst * 100.0), ("frame_s", dt)]);
     if limits.is_empty() {
         out.skipped.push(format!("joint_limits: {NO_LIMITS}"));
     }
