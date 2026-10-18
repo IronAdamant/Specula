@@ -24,6 +24,16 @@ members = [
     "games/ambulo",
 ]
 
+# Lints every member inherits (`[lints] workspace = true` in its Cargo.toml; crates/specula/tests/
+# determinism_lints.rs checks each member does). Unsafe code is only for FFI, and every unsafe block
+# says why it is sound: the SAFETY comments are machine-checked.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+
 [workspace.package]
 version = "0.3.0"
 edition = "2021"

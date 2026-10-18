@@ -29,6 +29,8 @@
 //!
 //! Conventions: pixels are physical, origin top-left, y down; colours are sRGB, straight alpha.
 
+#![forbid(unsafe_code)]
+
 pub mod atlas;
 pub mod error;
 pub mod font;
