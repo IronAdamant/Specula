@@ -52,7 +52,9 @@ const HASHES: usize = 1024;
 /// widest allowed (96 x 96) a few milliseconds (more on a slow laptop).
 pub const COLUMNS_PER_TICK: usize = 9_216;
 /// Mind work per tick (node visits, senses and inputs at 1, line-of-sight raycasts at 16):
-/// minds past it wait for the next tick, round robin by id; at least one runs.
+/// minds past it wait for the next tick, round robin by id; at least one runs. Measured
+/// (release, 1,000 minds of 200 cached `sees`): about 0.4 microseconds a unit, so the budget is
+/// about 1.7 ms a tick.
 pub const MIND_WORK_PER_TICK: u64 = 4_096;
 /// Version of [`Nav::save_state`]'s format.
 pub const SAVE_VERSION: u64 = 1;
@@ -1047,12 +1049,12 @@ fn resolve_target(world: &World, v: &Json, bb: &mens::run::Blackboard) -> Option
     if let Some(p) = point_of(v) {
         return Some((p, None));
     }
-    let key = match v {
-        Json::Str(s) if s.starts_with('/') => EntityKey::Path(s.clone()),
-        Json::Str(s) => EntityKey::Name(s.clone()),
-        _ => EntityKey::Id(v.as_u64()?),
+    // (Paths and ids resolve without building a key: senses ask this many times a tick.)
+    let id = match v {
+        Json::Str(s) if s.starts_with('/') => world.find_path(s).ok()?,
+        Json::Str(s) => world.resolve(&EntityKey::Name(s.clone())).ok()?,
+        _ => v.as_u64().filter(|i| world.get(*i).is_some())?,
     };
-    let id = world.resolve(&key).ok()?;
     world.get(id).map(|e| (e.world_position(), Some(id)))
 }
 
@@ -1890,6 +1892,9 @@ impl Nav {
                     self.def_ids.insert(d);
                     let v = world.get(d).map_or(0, |e| e.version);
                     match world.get(d).and_then(|e| e.props.get(DEF_KEY)) {
+                        // (A definition already parsed at this version isn't copied again: a
+                        // thousand minds sharing a 16 KB definition would copy 16 MB.)
+                        Some(_) if self.def_cache.get(&d).is_some_and(|(cv, _)| *cv == v) => (Json::Null, Some((d, v))),
                         Some(dj) => (dj.clone(), Some((d, v))),
                         None => {
                             self.forget_mind_goals(id);
@@ -2986,7 +2991,11 @@ mod tests {
         }
         let mut nav = Nav::default();
         let mut physics = Physics::default();
+        let started = std::time::Instant::now();
         nav.tick(&mut w, &mut physics, 0, 0, 1.0 / 30.0, 30);
+        let first_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // (It was about 190 ms when each mind copied the shared definition before the cache.)
+        assert!(first_ms < 100.0, "first tick with 300 new minds sharing a 290-node definition: {first_ms:.1} ms");
         let r = nav.last.clone().unwrap();
         assert!(r.minds < 300 && r.minds_skipped == 300 - r.minds, "{r:?}");
         // (At most one mind past the budget.)
