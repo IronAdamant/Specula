@@ -450,12 +450,15 @@ impl crate::Engine {
         let mut items = Vec::new();
         let mut total = 0usize;
         let mut next = None;
+        let mut last_key = None;
         for j in space.joints() {
-            if j.key >= SYNTHETIC && !ragdolls {
+            // An entity's own ragdoll's joints are selected by naming it, with or without ragdolls.
+            let ragdoll_of_only = j.key >= SYNTHETIC && only.is_some_and(|o| physics::ragdoll::owner_of(j.key) == o);
+            if j.key >= SYNTHETIC && !ragdolls && !ragdoll_of_only {
                 continue;
             }
             if let Some(o) = only {
-                if j.key != o && j.desc.a != Some(o) && j.desc.b != Some(o) {
+                if !ragdoll_of_only && j.key != o && j.desc.a != Some(o) && j.desc.b != Some(o) {
                     continue;
                 }
             }
@@ -464,12 +467,14 @@ impl crate::Engine {
                 continue;
             }
             if items.len() == limit {
+                // The cursor is the last listed joint's key (ragdoll joints have no entity id).
                 if next.is_none() {
-                    next = items.last().and_then(|i: &Json| i.get("id")).and_then(Json::as_u64).map(|k| k.to_string());
+                    next = last_key.map(|k: u64| k.to_string());
                 }
                 continue;
             }
             items.push(self.joint_json(j.key));
+            last_key = Some(j.key);
         }
         let mut problems: Vec<Json> = self.physics.problems.iter().filter(|(k, v)| space.joint(**k).is_none() && v.get("error").and_then(Json::as_str).is_some_and(|e| e.starts_with("joint:"))).map(|(_, v)| v.clone()).take(16).collect();
         problems.truncate(16);
@@ -539,7 +544,37 @@ impl crate::Engine {
 /// `physics_check {check: joint_error | joint_limits}` over the recorded window.
 pub fn run_check(engine: &crate::Engine, name: &str, c: &Json, since: Option<u64>) -> Json {
     let world = &engine.world;
-    let window = || engine.physics.window.iter().filter(move |r| since.is_none_or(|s| r.tick >= s));
+    // The ticks recorded, plus every joint as it is now: a joint asleep (or never solved since)
+    // is in no tick's record, but its last state counts (a body asleep off its joint fails).
+    let last = engine.physics.window.back();
+    let mut now = physics::TickRecord {
+        tick: last.map_or(0, |r| r.tick),
+        deepest: None,
+        energy_change: 0.0,
+        fast: 0,
+        ccd: 0,
+        awake: 0,
+        kinetic: 0.0,
+        gainers: [(0, 0.0); 2],
+        joint: None,
+        limit: None,
+        offset: None,
+    };
+    for j in engine.physics.space.joints() {
+        let st = j.state;
+        if matches!(st.inactive, Some("cosmetic_link") | Some("missing_body")) {
+            continue;
+        }
+        if now.joint.is_none_or(|(l, a, _)| st.linear_error > l || st.linear_error == l && st.angular_error > a) {
+            now.joint = Some((st.linear_error, st.angular_error, j.key));
+        }
+        let angular = matches!(j.desc.kind, specula_physics::JointKind::Hinge | specula_physics::JointKind::Ball);
+        let slot = if angular { &mut now.limit } else { &mut now.offset };
+        if st.limit_excess > 0.0 && slot.is_none_or(|(e, _)| st.limit_excess > e) {
+            *slot = Some((st.limit_excess, j.key));
+        }
+    }
+    let window = || engine.physics.window.iter().filter(move |r| since.is_none_or(|s| r.tick >= s)).chain(std::iter::once(&now));
     let num = |k: &str, d: f32| c.get(k).and_then(Json::as_f64).map_or(d, |v| v as f32);
     let key = |k: u64| if k >= SYNTHETIC { engine.physics.key_json(world, k) } else { entity_json(world, k) };
     match name {
@@ -605,6 +640,23 @@ const PAST: [f32; 4] = [1.0, 0.25, 0.3, 1.0];
 const IDLE: [f32; 4] = [0.6, 0.62, 0.7, 0.85];
 const AXIS: [f32; 4] = [1.0, 0.95, 0.4, 1.0];
 
+/// The legend drawn in the image's top-left corner (and given in the packet).
+const LEGEND: [(&str, [f32; 4]); 5] = [("holding", OK), ("strained", STRAINED), ("past limit / apart", PAST), ("inactive", IDLE), ("axis", AXIS)];
+
+/// A small key in the top-left corner: a swatch and a name per colour, on a dark panel.
+fn draw_legend(p: &mut Painter, rows: &[(&str, [f32; 4])]) {
+    // Rows tall enough for a label's box; labels are centred on their anchor, so each goes at
+    // the middle of the room its text takes (about 7 px a character).
+    let (x, y, row) = (10.0f32, 10.0f32, 25.0f32);
+    p.rect2d([x - 6.0, y - 6.0, 176.0, row * rows.len() as f32 + 8.0], [0.05, 0.06, 0.08, 0.72]);
+    for (i, (name, color)) in rows.iter().enumerate() {
+        let cy = y + row * i as f32 + row * 0.5;
+        p.line2d([x, cy], [x + 18.0, cy], *color, 4.0);
+        let half = (name.chars().count() as f32 * 7.0 + 8.0) * 0.5;
+        p.legend_label(name, [x + 26.0 + half, cy], [0.92, 0.93, 0.96, 1.0], (rows.len() - i) as u64);
+    }
+}
+
 /// Draws the `joints` overlay: anchors, axes, the arms from each body's centre, limit arcs;
 /// coloured by how the joint holds. Returns the packet's details.
 pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &ov::Spec) -> Json {
@@ -651,7 +703,7 @@ pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &
         p.dot(fa.p, 4.0, color);
         if (fb.p - fa.p).length() > 1.0e-3 {
             p.dot(fb.p, 3.0, color);
-            p.line(fa.p, fb.p, PAST, 2.0);
+            p.line(fa.p, fb.p, color, 2.0);
         }
         let size = j.desc.bodies().filter_map(|k| space.body(k)).filter_map(|b| b.aabb).map(|bb| (bb.max - bb.min).length()).fold(0.0f32, f32::max).clamp(0.1, 1.0) * 0.35;
         let x = fa.q.rotate(Vec3::X);
@@ -676,6 +728,9 @@ pub fn paint(physics: &physics::Physics, world: &World, p: &mut Painter, spec: &
             p.line(fb.p, fb.p + fb.q.rotate(Vec3::Y) * size, color, 2.0);
         }
         drawn += 1;
+    }
+    if drawn > 0 {
+        draw_legend(p, &LEGEND);
     }
     Json::obj([
         ("drawn", Json::from(drawn)),

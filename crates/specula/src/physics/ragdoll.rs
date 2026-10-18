@@ -1334,6 +1334,13 @@ mod tests {
         assert_eq!(names, ["hips", "chest", "head", "thigh_l", "shin_l", "thigh_r", "shin_r"], "short bones and the root ride along");
         let total: f32 = parts.iter().map(|p| p.mass).sum();
         assert!((total - 40.0).abs() < 0.01, "{total}");
+        // What each joint carries is planned once (review finding 5: drives summed it per joint
+        // per tick, O(n^3) for a big skeleton): the root carries everything, an end part itself.
+        let root = parts.iter().find(|p| p.parent.is_none()).unwrap();
+        assert!((root.carried - total).abs() < 0.01, "{}", root.carried);
+        for p in parts.iter().filter(|p| !parts.iter().any(|q| q.parent == Some(p.bone))) {
+            assert_eq!(p.carried, p.mass);
+        }
         let shin = parts.iter().find(|p| set.skeleton.names[p.bone] == "shin_l").unwrap();
         let j = shin.joint.as_ref().unwrap();
         assert_eq!(j.kind, JointKind::Hinge, "one limited axis: a knee hinge");

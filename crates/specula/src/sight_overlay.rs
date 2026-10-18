@@ -340,6 +340,18 @@ impl Painter {
         }
     }
 
+    /// A filled pixel rectangle `[x, y, width, height]` (legends, panels).
+    pub fn rect2d(&mut self, rect: [f32; 4], color: [f32; 4]) {
+        self.push(OverlayQuad::solid(rect, color));
+    }
+
+    /// A legend's label: placed first (top priority) and counted with the grid's labels, not
+    /// against the entity labels' budget.
+    pub fn legend_label(&mut self, text: &str, anchor: [f32; 2], color: [f32; 4], priority: u64) {
+        let text: String = text.chars().take(MAX_LABEL_CHARS).collect();
+        self.labels.push(LabelReq { text, anchor, color, priority: u64::MAX - 64 + priority.min(63), grid: true });
+    }
+
     pub fn label(&mut self, text: &str, anchor: [f32; 2], color: [f32; 4], priority: u64) {
         let text: String = text.chars().take(MAX_LABEL_CHARS).collect();
         self.labels.push(LabelReq { text, anchor, color, priority, grid: false });

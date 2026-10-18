@@ -319,8 +319,10 @@ fn cosmetic_bodies_never_change_the_simulation() {
     };
     let (mut plain, mut with) = (build(false), build(true));
     for t in 0..240 {
-        plain.step(DT);
-        with.step(DT);
+        let ea = format!("{:?}", plain.step(DT).events);
+        let eb = format!("{:?}", with.step(DT).events);
+        // Review finding 10: nor its events (the cosmetic chain lands on the ground, quietly).
+        assert_eq!(ea, eb, "events differ at step {t}");
         assert_eq!(plain.hash(), with.hash(), "the simulation changed at step {t}");
         for i in 0..6u64 {
             assert_eq!(plain.body(10 + i).unwrap().pose, with.body(10 + i).unwrap().pose);
@@ -351,4 +353,48 @@ fn joints_wait_for_missing_bodies_and_refuse_bad_input() {
     s.settings.max_joints = 1;
     let e = s.insert_joint(12, JointDesc::new(JointKind::Ball, Some(2), None, Pose::IDENTITY, Pose::IDENTITY)).unwrap_err();
     assert_eq!(e.code, "budget");
+}
+
+/// Review finding 4 (probe "rope"): a rope tied to a box asleep 7 m below its reach used to stop
+/// pulling halfway (the correction lives in the biased pass, so the box reported rest and fell
+/// asleep in mid-air, 2.26 m off). Bodies of a joint that doesn't hold stay awake until it does,
+/// and the rope's over-stretch counts as past its limits.
+#[test]
+fn a_rope_added_to_a_sleeping_body_pulls_it_all_the_way() {
+    let mut s = Space::default();
+    ground(&mut s);
+    let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.0, 0.5, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.5, 0.5, 0.5)))));
+    d.mass = 5.0;
+    s.insert(2, d).unwrap();
+    for _ in 0..30 {
+        s.step(1.0 / 30.0);
+    }
+    let mut j = JointDesc::new(JointKind::Distance, None, Some(2), Pose::at(v3(0.0, 8.0, 0.0)), Pose::IDENTITY);
+    j.length = [0.0, 0.5];
+    s.insert_joint(10, j).unwrap();
+    s.step(1.0 / 30.0);
+    assert!(s.joint(10).unwrap().state.limit_excess > 6.0, "over-stretched counts as past the limit: {:?}", s.joint(10).unwrap().state);
+    for _ in 0..150 {
+        s.step(1.0 / 30.0);
+    }
+    let b = s.body(2).unwrap();
+    let st = s.joint(10).unwrap().state;
+    assert!(b.pose.p.y > 7.4 && st.linear_error < 0.02, "hangs from the rope: y {} error {}", b.pose.p.y, st.linear_error);
+}
+
+/// Review finding 7 (probe "wrap"): a hinge position target of 1.3e9 rad never finished a step.
+#[test]
+fn huge_hinge_targets_wrap_in_one_go() {
+    let mut s = Space::default();
+    s.insert(2, BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.5, 2.0, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.5, 0.05, 0.05)))))).unwrap();
+    let w = frame(v3(0.0, 2.0, 0.0), Vec3::Z, Vec3::Y);
+    let lb = s.body(2).unwrap().pose.inv_mul(&w);
+    for target in [1.3e9f32, -4.0e12, f32::MAX] {
+        let mut j = JointDesc::new(JointKind::Hinge, None, Some(2), w, lb);
+        j.motor = Some(Motor { drive: Drive::Position(target), max_force: 10.0, hertz: 5.0, damping_ratio: 1.0 });
+        s.insert_joint(10, j).unwrap();
+        s.step(DT);
+    }
+    let w = specula_physics::joint::wrap(1.3e9);
+    assert!(w.abs() <= PI, "{w}");
 }

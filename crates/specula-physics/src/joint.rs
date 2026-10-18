@@ -229,12 +229,16 @@ pub fn rotation_vector(q: Quat) -> Vec3 {
 
 /// An angle wrapped into `(-π, π]`.
 pub fn wrap(a: f32) -> f32 {
-    let mut a = a;
-    let tau = 2.0 * PI;
-    while a > PI {
-        a -= tau;
+    if !a.is_finite() {
+        return 0.0;
     }
-    while a <= -PI {
+    // One step, whatever the size (subtracting τ in a loop never ends once τ is below a's
+    // precision, about 1.3e8).
+    let tau = 2.0 * PI;
+    let mut a = a - tau * (a / tau).round();
+    if a > PI {
+        a -= tau;
+    } else if a <= -PI {
         a += tau;
     }
     a
@@ -722,6 +726,8 @@ pub fn measure(desc: &JointDesc, pa: &Pose, pb: &Pose, imp: &JointImpulses, h: f
             s.position = len;
             let [min, max] = desc.length;
             s.linear_error = (min - len).max(len - max).max(0.0);
+            // Past its range is past its limits too (the limits check sees ropes over-stretched).
+            s.limit_excess = s.linear_error;
         }
     }
     if h > 0.0 {

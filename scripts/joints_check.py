@@ -54,9 +54,9 @@ def check(cond, msg, failures):
         failures.append(msg)
 
 
-def tool(m, name, **args):
+def tool(m, _tool, **args):
     """(is_error, parsed or text) of a tool call, without raising on tool errors."""
-    r = m.request("tools/call", {"name": name, "arguments": args})
+    r = m.request("tools/call", {"name": _tool, "arguments": args})
     text = next(c["text"] for c in r["content"] if c["type"] == "text")
     try:
         data = json.loads(text)
@@ -219,6 +219,20 @@ def ragdolls(m, failures):
     r = m.json("ragdoll_set", path="/shambler", mode="limp", hit={"bone": "chest", "impulse": [0, 12, -80]})
     check(r.get("graph_param_ragdoll") is True, f"ragdoll: ragdoll_set sets the graph's ragdoll parameter ({r.get('graph_param_ragdoll')})", failures)
     limp = frames(m, "limp", [1, 3, 6, 9, 12, 16, 22, 30, 45, 75], overlays_at=(9, 75))
+    # Its joints page through physics_joints by cursor, and naming the shambler selects them.
+    listed, cursor, pages = [], None, 0
+    while pages < 20:
+        args = {"ragdolls": True, "limit": 4}
+        if cursor:
+            args["cursor"] = cursor
+        page = m.json("physics_joints", **args)
+        listed += page["joints"]
+        cursor, pages = page.get("next_cursor"), pages + 1
+        if not cursor:
+            break
+    check(len(listed) == page["total"] and len(listed) >= 12, f"ragdoll: its {len(listed)} joints page through 4 at a time ({pages} pages)", failures)
+    own = m.json("physics_joints", entity="/shambler")
+    check(own["total"] == len(listed), f"ragdoll: physics_joints entity=/shambler lists its ragdoll's joints ({own['total']})", failures)
     info = m.json("ragdoll_info", path="/shambler")
     (OUT / "ragdoll_limp_info.json").write_text(json.dumps(info, indent=2))
     check(info.get("active") and len(info.get("parts", [])) >= 12, f"ragdoll: {len(info.get('parts', []))} parts, {len(info.get('joints', []))} joints", failures)
@@ -259,6 +273,38 @@ def ragdolls(m, failures):
     return {"limp_checks": ch, "parts": len(info.get("parts", []))}
 
 
+def claims_probes(eng, failures):
+    """Review findings 1 and 2: a joint moves the bodies it links, so mallory can't tie alice's
+    claimed boxes (path or region claim) with physics_joint, nor write props.joint with world
+    tools at all."""
+    alice, mal = eng.mcp("alice"), eng.mcp("mallory")
+    alice.hello("alice")
+    mal.hello("mallory")
+    alice.json("time_control", action="pause")
+    alice.json("world_spawn", shape="cube", name="cfloor", position=[0, -0.5, 30], scale=[40, 1, 40], collider={"shape": "box"})
+    a = alice.json("world_spawn", shape="cube", name="abox", position=[0, 0.5, 30], collider={"shape": "box"}, body={"kind": "dynamic", "mass": 5})
+    r = alice.json("world_spawn", shape="cube", name="rbox", position=[5, 0.5, 35], collider={"shape": "box"}, body={"kind": "dynamic", "mass": 5})
+    aid, rid = a["id"], r["id"]
+    alice.json("claim_take", path="/abox", lease_s=600)
+    alice.json("claim_take", region={"min": [3, -1, 33], "max": [7, 4, 37]}, lease_s=600)
+    err, out = tool(mal, "physics_joint", kind="fixed", b=aid, anchor=[0, 6, 30])
+    check(err and "claimed" in json.dumps(out), "claims: physics_joint on a path-claimed body is refused", failures)
+    mal.json("world_spawn", shape="group", name="mg", position=[20, 0, 20])
+    err, out = tool(mal, "physics_joint", kind="distance", b=rid, anchor=[5, 8, 35], anchor_b=[5, 0.5, 35], length=[0, 0.5], parent="/mg")
+    check(err and "claimed" in json.dumps(out), "claims: physics_joint on a region-claimed body is refused", failures)
+    j = {"joint": {"kind": "distance", "a": None, "b": aid, "anchor_a": [0, 8, 0], "anchor_b": [0, 0, 0], "length": [0, 0.5]}}
+    err, out = tool(mal, "world_spawn", shape="group", name="mj", position=[20, 0, 20], props=j)
+    check(err and "reserved" in json.dumps(out), "claims: props.joint through world_spawn is reserved for physics_joint", failures)
+    err, out = tool(mal, "world_set", path="/mg", props=j)
+    check(err and "reserved" in json.dumps(out), "claims: props.joint through world_set is reserved", failures)
+    mal.json("time_control", action="step", ticks=60)
+    for path in ("/abox", "/rbox"):
+        y = entity(alice, path).get("position", [0, 99, 0])[1]
+        check(abs(y - 0.5) < 0.05, f"claims: alice's {path} stayed put (y {y})", failures)
+    joints = mal.json("physics_joints")
+    check(joints["total"] == 0, f"claims: no joint got in ({joints['total']})", failures)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7488)
@@ -287,6 +333,7 @@ def main():
     with Engine(a.exe, a.port + 1, OUT / "engine-ragdoll.log", *args, cwd=str(OUT)) as eng:
         with eng.mcp("ragdoll-check") as m:
             rag = ragdolls(m, failures)
+        claims_probes(eng, failures)
     check(eng.validation_errors() in (0, None), "ragdoll: clean shutdown", failures)
     (OUT / "summary.json").write_text(json.dumps({"runs": runs, "ragdoll": rag, "failures": failures}, indent=2))
     print("PASS" if not failures else f"FAIL ({len(failures)})")

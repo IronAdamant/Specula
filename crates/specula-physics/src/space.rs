@@ -207,6 +207,9 @@ impl BodyDesc {
 }
 
 const NONE: u32 = u32::MAX;
+/// A joint further off than this (m, and rad for angles and limits) keeps its bodies awake.
+const JOINT_WAKE_M: f32 = 0.01;
+const JOINT_WAKE_RAD: f32 = 0.02;
 
 #[derive(Clone, Debug)]
 struct Body {
@@ -1452,8 +1455,11 @@ impl Space {
         for s in wake {
             self.wake_slot(s);
         }
+        // Cosmetic bodies' contacts make no events: presentation mustn't crowd the simulation's
+        // events out of the per-step cap (or the engine's event ring).
         let room = MAX_EVENTS_PER_STEP.saturating_sub(self.report.events.len());
-        self.report.events.extend(events.into_iter().take(room));
+        let events: Vec<Event> = events.into_iter().filter(|e| !(self.is_cosmetic(e.a) || self.is_cosmetic(e.b))).take(room).collect();
+        self.report.events.extend(events);
         self.narrow = narrow;
     }
 
@@ -1897,9 +1903,14 @@ impl Space {
                 self.slot_mut(ib).sleep_time = 0.0;
             }
         }
-        // Jointed bodies sleep together; a joint to a moving kinematic body keeps them awake.
+        // Jointed bodies sleep together; a joint to a moving kinematic body keeps them awake, and
+        // so does a joint that doesn't hold yet (its correction moves the bodies through the
+        // biased pass only, so they report rest while still off: asleep, they'd stay there).
         let mut kept_awake: Vec<u64> = Vec::new();
         for c in &self.joint_cons {
+            if self.joints.get(&c.key).is_some_and(|j| j.state.linear_error > JOINT_WAKE_M || j.state.angular_error > JOINT_WAKE_RAD || j.state.limit_excess > JOINT_WAKE_RAD) {
+                kept_awake.extend(c.desc.bodies());
+            }
             let (ia, ib) = (c.a, c.b);
             let moving = |i: u32| i != STATIC && self.solver_bodies[i as usize].kinematic;
             let dynamic = |i: u32| i != STATIC && !self.solver_bodies[i as usize].kinematic;
