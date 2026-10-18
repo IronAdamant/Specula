@@ -432,7 +432,8 @@ impl Claims {
     /// Refuses replacing the whole world (`world_load`) while another agent holds a live claim:
     /// a load would wipe their claimed work. `force` doesn't override claims.
     pub fn check_replace_world(&self, w: Writer, now: Instant) -> Result<(), WorldError> {
-        let others = self.others(w, now);
+        // Claims on project files don't count: a load keeps the files.
+        let others: Vec<&Claim> = self.others(w, now).into_iter().filter(|c| !matches!(&c.scope, Scope::Path(p) if crate::project::under_root(p))).collect();
         if others.is_empty() {
             return Ok(());
         }
@@ -630,7 +631,7 @@ pub fn touches_rule_data(change: &Change) -> bool {
             under_lex(path) || prev_path.as_deref().is_some_and(under_lex) || is_rule_data(after) || before.as_deref().is_some_and(is_rule_data)
         }
         Change::Pose { path, .. } => under_lex(path),
-        Change::Env { .. } | Change::Camera { .. } => false,
+        Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => false,
     }
 }
 
@@ -709,8 +710,9 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
             }
         }
         // Only the hosted game's own ticks record poses, and they are never checked.
-        // Cameras belong to their agent name, not to any claimed region.
-        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } => {}
+        // Cameras belong to their agent name, not to any claimed region; project files have no
+        // place in the world (only path claims cover them).
+        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } | Change::File { .. } => {}
     }
     points
 }

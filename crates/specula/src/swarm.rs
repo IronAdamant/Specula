@@ -74,6 +74,8 @@ enum Owns {
     Lex,
     /// `/lex_live`: lex_live start and stop.
     LexLive,
+    /// Project files (`/project`): the project tools.
+    Project,
 }
 
 #[derive(Default)]
@@ -317,6 +319,24 @@ impl Swarm {
         self.commit_with(world, tick, w, kind, Owns::Lex, command)
     }
 
+    /// [`Swarm::commit`] for the project tools: the only writer of project files (see
+    /// [`crate::project`]); claims on `/project/...` paths apply as for entities.
+    pub fn commit_project<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, Kind::File, Owns::Project, command)
+    }
+
+    /// Journals project files read from disk (edits made outside the engine, mounts) as
+    /// [`crate::project::DISK_AGENT`]'s: a human's edit can't be refused, so no claim applies.
+    pub fn commit_disk<T>(&mut self, world: &mut World, tick: u64, command: impl FnOnce(&mut World) -> Result<T, WorldError>) -> Result<(T, Option<u64>), WorldError> {
+        journal::commit(world, &mut self.journal, tick, crate::project::DISK_AGENT, Kind::File, None, command)
+    }
+
     /// [`Swarm::commit`] for `lex_live` start and stop: the only agent writer that spawns in the
     /// `/lex_live` subtree (a run's groups; its presentation is the run's own output).
     pub fn commit_lex_live<T>(
@@ -362,6 +382,15 @@ impl Swarm {
                     )
                     .with("path", c.path().to_owned()));
                 }
+            }
+            // /project holds project files, written only through the project tools; no entity may
+            // live there (a claim on a file must never cover something else).
+            if let Some(c) = changes.iter().find(|c| (owns != Owns::Project && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
+                return Err(WorldError::new(
+                    "reserved",
+                    format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
+                )
+                .with("path", c.path().to_owned()));
             }
             Ok(v)
         };

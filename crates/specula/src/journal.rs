@@ -96,10 +96,13 @@ pub enum Kind {
     Camera,
     /// One fixed tick of the physics simulation moving bodies (coalesced, like a game tick).
     Physics,
+    /// Project files written, patched or deleted (`project_*`), or imported from disk (by
+    /// `disk`): see [`crate::project`].
+    File,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -112,6 +115,7 @@ impl Kind {
         Kind::GameTool,
         Kind::Camera,
         Kind::Physics,
+        Kind::File,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +132,7 @@ impl Kind {
             Kind::GameTool => "game_tool",
             Kind::Camera => "camera",
             Kind::Physics => "physics",
+            Kind::File => "file",
         }
     }
 
@@ -1078,6 +1083,23 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 let current = world.cameras().get(owner).and_then(|c| c.get(name)).map_or(0, |c| c.version);
                 let restored = before.as_deref().map(|b| crate::cameras::NamedCamera { version: current.max(b.version) + 1, ..b.clone() });
                 world.restore_camera(owner, name, restored)?;
+            }
+            Change::File { path, before, import, .. } => {
+                let p = crate::project::project_path_of(path).unwrap_or(path);
+                if *import && before.is_none() {
+                    return Err(WorldError::new(
+                        "not_undoable",
+                        format!("{p} was imported from disk (made outside the engine, or mounted); undoing that would delete a file nobody made here: project_delete removes it on purpose"),
+                    )
+                    .with("path", path.as_str()));
+                }
+                // A restored file is a new version of whatever is there now, within the store's limits.
+                let current = world.files().get(p).map_or(0, |f| f.version);
+                let restored = before.as_deref().map(|b| crate::project::ProjectFile { version: current.max(b.version) + 1, modified_by: Arc::clone(&by), ..b.clone() });
+                if let Some(f) = &restored {
+                    crate::project::room_for(world.files(), p, f.text.len())?;
+                }
+                world.put_file_raw(p, restored, false);
             }
         }
     }

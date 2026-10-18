@@ -235,6 +235,8 @@ pub enum Command {
     SaveGame(crate::save_tools::SaveCall),
     /// The animation tools (see [`crate::anim_tools`]).
     Anim(crate::anim_tools::AnimCall),
+    /// Project files (see [`crate::project_tools`]).
+    Project(crate::project_tools::ProjectCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -351,6 +353,12 @@ impl Tools {
         self.lex_natives.keys().cloned().collect()
     }
 
+    /// The engine thread's request channel (for tools that chain engine calls, like a write that
+    /// runs logic_build).
+    pub(crate) fn engine(&self) -> &Sender<Request> {
+        &self.to_engine
+    }
+
     /// Sends a command to the main thread and waits for its answer.
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = mpsc::channel();
@@ -422,6 +430,9 @@ impl Tools {
         } else if name.starts_with("lex_") {
             // Lex tools do their heavy work (validation, simulation) on this thread.
             return crate::lex_tools::call(self, session, name, arguments);
+        } else if name.starts_with("project_") {
+            // Patching, validation and diffs run on this thread; the engine snapshots and commits.
+            return crate::project_tools::call(self, session, name, arguments);
         } else if name.starts_with("balance_") {
             // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
             return crate::balance_tools::call(self, session, name, arguments);
@@ -2432,6 +2443,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::stream_tools::definitions())
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
+    .chain(crate::project_tools::definitions())
     .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())

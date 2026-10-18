@@ -166,6 +166,12 @@ pub trait Game {
     /// is already the save's ([`Game::apply_state`] ran).
     fn request_done(&mut self, _ctx: &mut Ctx, _request: &GameRequest, _result: Result<Json, Json>) {}
 
+    /// Project files under the assets root changed (written through the project tools, undone,
+    /// or edited on disk), named relative to the assets root (`ui/hud.json`): reload what the
+    /// game reads from them (screens, sounds). The disk already holds the new text. Model
+    /// recipes, styles and anim sets are reloaded by the engine. Default: nothing.
+    fn assets_changed(&mut self, _ctx: &mut Ctx, _paths: &[String]) {}
+
     /// The engine undid the world changes of a rejected game tool and the game had no checkpoint:
     /// make the world show the game's own state again. The entities those changes created are
     /// gone and their ids are **never reused**, so the game must drop every id it cached from the

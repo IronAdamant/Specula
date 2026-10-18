@@ -106,7 +106,7 @@ impl Group {
         for c in &e.changes {
             self.changes += 1;
             *self.ops.entry(c.op()).or_default() += 1;
-            if !matches!(c, Change::Env { .. } | Change::Camera { .. }) {
+            if !matches!(c, Change::Env { .. } | Change::Camera { .. } | Change::File { .. }) {
                 if self.entities.len() < MAX_ENTITIES {
                     self.entities.insert(c.id());
                 } else if !self.entities.contains(&c.id()) {
