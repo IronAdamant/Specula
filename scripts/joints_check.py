@@ -207,13 +207,16 @@ def ragdolls(m, failures):
     shambler = {"shape": "model", "recipe": "recipes/shambler.json", "scale": [1.2, 1.2, 1.2], "anim": {"graph": "creature", "params": {"act": "move", "speed": 0.9}}}
     m.json("world_spawn", name="shambler", position=[0, 0, 5], **shambler)
     m.json("time_control", action="step", ticks=20)
-    # Radii fitted to the mesh (written as data, before it goes limp).
-    fit = m.json("ragdoll_set", path="/shambler", fit=True)
+    # Parts fitted to the mesh (written as data, before it goes limp): convex hulls.
+    fit = m.json("ragdoll_set", path="/shambler", fit="hulls")
     radii = fit.get("ragdoll", {}).get("radii", {})
+    hulls = fit.get("ragdoll", {}).get("hulls", {})
     print(f"  ragdoll: fitted radii {json.dumps(radii)}")
+    print(f"  ragdoll: fitted hulls for {sorted(hulls)} ({sum(len(p) for p in hulls.values())} points)")
     check(len(radii) >= 12, f"ragdoll: fit measured {len(radii)} radii from the mesh", failures)
+    check(len(hulls) >= 12 and all(4 <= len(p) <= 16 for p in hulls.values()), f"ragdoll: fit measured {len(hulls)} hulls of 4..16 points", failures)
     # Limp, knocked backwards (it faces +Z).
-    r = m.json("ragdoll_set", path="/shambler", mode="limp", hit={"bone": "chest", "impulse": [0, 8, -34]})
+    r = m.json("ragdoll_set", path="/shambler", mode="limp", hit={"bone": "chest", "impulse": [0, 12, -80]})
     check(r.get("graph_param_ragdoll") is True, f"ragdoll: ragdoll_set sets the graph's ragdoll parameter ({r.get('graph_param_ragdoll')})", failures)
     limp = frames(m, "limp", [1, 3, 6, 9, 12, 16, 22, 30, 45, 75], overlays_at=(9, 75))
     info = m.json("ragdoll_info", path="/shambler")

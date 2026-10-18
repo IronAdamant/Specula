@@ -120,9 +120,40 @@ pub struct Spec {
     pub hit: Option<Hit>,
     /// Capsule radii by bone name (model metres), over the graph's `ragdoll.radius` (sorted).
     pub radii: Vec<(String, f32)>,
+    /// Convex hull parts by bone name: 4 to [`MAX_HULL_POINTS`] points in the bone's rest frame
+    /// (model metres: origin at its head, its axes), over the graph's `ragdoll.hull` and over
+    /// radii (sorted). `ragdoll_set {fit: "hulls"}` measures them.
+    pub hulls: Vec<(String, Vec<V3>)>,
 }
 
-const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit", "radii"];
+/// Points a fitted hull part has at most: moving hulls stay within physics' cap.
+pub const MAX_HULL_POINTS: usize = specula_physics::shape::MAX_MOVING_HULL_POINTS;
+/// How far a fitted hull stands out from the vertices it wraps (m): the mesh bends between bones
+/// where the rigid part doesn't, and contacts give a little on impact.
+pub const HULL_SKIN_M: f32 = 0.02;
+
+const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit", "radii", "hulls"];
+
+/// Hull points as data: `[[x, y, z], ...]`, 4 to [`MAX_HULL_POINTS`], each within ±10 m.
+pub fn hull_points(path: &str, v: &Json) -> Result<Vec<V3>, String> {
+    let bad = || format!("'{path}' must be 4 to {MAX_HULL_POINTS} points [[x, y, z], ...] in the bone's frame (model metres, within ±10)");
+    let pts = v.as_array().filter(|a| (4..=MAX_HULL_POINTS).contains(&a.len())).ok_or_else(bad)?;
+    pts.iter()
+        .map(|p| match p.as_array() {
+            Some([x, y, z]) => {
+                let c = |j: &Json| j.as_f64().filter(|f| f.is_finite() && f.abs() <= 10.0).map(|f| f as f32).ok_or_else(bad);
+                Ok([c(x)?, c(y)?, c(z)?])
+            }
+            _ => Err(bad()),
+        })
+        .collect()
+}
+
+/// The JSON of hull points, in millimetres.
+pub fn hull_json(pts: &[V3]) -> Json {
+    let mm = |x: f32| Json::from((f64::from(x) * 1000.0).round() / 1000.0);
+    Json::arr(pts.iter().map(|p| Json::arr(p.map(mm))))
+}
 
 impl Spec {
     pub fn from_json(v: &Json) -> Result<Spec, String> {
@@ -169,8 +200,20 @@ impl Spec {
             }
             radii.sort_by(|a, b| a.0.cmp(&b.0));
         }
+        let mut hulls = Vec::new();
+        if let Some(h) = v.get("hulls").filter(|h| !h.is_null()) {
+            let pairs = h.as_object().ok_or("'ragdoll.hulls' must be an object: {bone: [[x, y, z], ...]}")?;
+            if pairs.len() > specula_model::rig::MAX_BONES {
+                return Err(format!("'ragdoll.hulls' lists at most {} bones", specula_model::rig::MAX_BONES));
+            }
+            for (bone, pts) in pairs {
+                hulls.push((bone.clone(), hull_points(&format!("ragdoll.hulls.{bone}"), pts)?));
+            }
+            hulls.sort_by(|a, b| a.0.cmp(&b.0));
+        }
         Ok(Spec {
             radii,
+            hulls,
             mode,
             strength: num("strength", 0.0, 10.0)?.unwrap_or(1.0),
             mass: num("mass", 0.01, 1.0e5)?,
@@ -198,6 +241,9 @@ impl Spec {
         }
         if !self.radii.is_empty() {
             f.push(("radii", Json::obj(self.radii.iter().map(|(b, r)| (b.clone(), Json::from((f64::from(*r) * 1000.0).round() / 1000.0))))));
+        }
+        if !self.hulls.is_empty() {
+            f.push(("hulls", Json::obj(self.hulls.iter().map(|(b, p)| (b.clone(), hull_json(p))))));
         }
         Json::obj(f)
     }
@@ -228,8 +274,10 @@ pub struct Part {
     pub radius: f32,
     /// Half the capsule's segment (scaled metres).
     pub half: f32,
-    /// The capsule in the bone's frame (scaled).
+    /// The capsule (or the hull's centre) in the bone's frame (scaled).
     pub offset: Pose,
+    /// A hull part's points about `offset` (scaled; empty: a capsule).
+    pub hull: Vec<Vec3>,
     pub mass: f32,
     pub joint: Option<PartJoint>,
     /// A leg (a limb hanging from the root part): a powered ragdoll's legs follow the animation
@@ -268,8 +316,9 @@ fn segment(set: &AnimSet, rest: &[Affine], b: usize) -> V3 {
 
 /// The ragdoll of `set`'s skeleton at uniform `scale`, with `mass` kg in all, joints limited by
 /// `limits` (a graph's) and capsule radii from `radii` (model metres, by bone; the others from
-/// their bone's length): see the module docs.
-pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], scale: f32, mass: f32) -> Vec<Part> {
+/// their bone's length), or convex hulls from `hulls` (bone frame, model metres; over a radius):
+/// see the module docs.
+pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], hulls: &[(usize, Vec<V3>)], scale: f32, mass: f32) -> Vec<Part> {
     let s = &set.skeleton;
     let mut rest = Vec::new();
     s.model_space(&s.rest_pose(), &mut rest);
@@ -307,7 +356,15 @@ pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], scale: f32,
         // measured from); a guessed one: a little shorter, so ends don't scrape the ground.
         let fitted = radii.iter().any(|(rb, _)| *rb == b);
         let half = if fitted { (0.5 * l).max(0.005 * scale) } else { (0.5 * l - 0.5 * radius).max(0.25 * l) };
-        let offset = Pose { p: v3(segs[b]) * (0.5 * scale), q: q4(qarc([0.0, 1.0, 0.0], dir)) };
+        let mut offset = Pose { p: v3(segs[b]) * (0.5 * scale), q: q4(qarc([0.0, 1.0, 0.0], dir)) };
+        // A hull part: its points about their centre (the body's centre for the start velocity).
+        let mut hull = Vec::new();
+        if let Some((_, pts)) = hulls.iter().find(|(hb, _)| *hb == b) {
+            let n = pts.len().max(1) as f32;
+            let c = pts.iter().fold(Vec3::ZERO, |a, p| a + v3(*p) * (scale / n));
+            hull = pts.iter().map(|p| v3(*p) * scale - c).collect();
+            offset = Pose { p: c, q: Quat::IDENTITY };
+        }
         let parent = body_parent(b).or_else(|| first_root.filter(|r| *r != b));
         first_root = first_root.or(Some(b));
         let joint = parent.map(|p| {
@@ -347,7 +404,7 @@ pub fn plan(set: &AnimSet, limits: &[Limit], radii: &[(usize, f32)], scale: f32,
                 swing,
             }
         });
-        parts.push(Part { bone: b, parent, radius, half, offset, mass: 0.0, joint, planted: false });
+        parts.push(Part { bone: b, parent, radius, half, offset, hull, mass: 0.0, joint, planted: false });
     }
     // Mass: the trunk (the parts from the root part to the last branching part, the pelvis to
     // the chest) weighs four times what a limb of its length does, as bodies do; a quarter of
@@ -421,7 +478,7 @@ pub fn fit_radii(set: &AnimSet, mesh: &specula_model::MeshData) -> Vec<(usize, f
         let c = specula_anim::math::math3::add(head, specula_anim::math::math3::scale(ab, t));
         dists[b].push(specula_anim::math::math3::length(specula_anim::math::math3::sub(*p, c)));
     }
-    let parts = plan(set, &[], &[], 1.0, 1.0);
+    let parts = plan(set, &[], &[], &[], 1.0, 1.0);
     parts
         .iter()
         .filter_map(|part| {
@@ -435,6 +492,93 @@ pub fn fit_radii(set: &AnimSet, mesh: &specula_model::MeshData) -> Vec<(usize, f
             let leaf = !parts.iter().any(|q| q.parent == Some(part.bone));
             let r = if leaf { d[d.len() - 1] } else { d[(d.len() * 19 / 20).min(d.len() - 1)] };
             Some((part.bone, ((r * 1000.0).round() / 1000.0).clamp(MIN_RADIUS_M, 1.0)))
+        })
+        .collect()
+}
+
+/// Convex hull parts measured from a skinned mesh, for every bone that gets a part: the
+/// vertices each bone drives most, in its rest frame, wrapped by at most [`MAX_HULL_POINTS`] of
+/// them. It starts from the vertices reaching furthest along the three axes, then adds the vertex
+/// furthest outside the hull so far until none is more than a millimetre out or the next would
+/// pass the cap (so what is left out sticks out least). Deterministic: ties go to the first
+/// vertex. Bones whose vertices don't make a solid are left out (they keep capsules). For
+/// `ragdoll_set {fit: "hulls"}`.
+pub fn fit_hulls(set: &AnimSet, mesh: &specula_model::MeshData) -> Vec<(usize, Vec<V3>)> {
+    let s = &set.skeleton;
+    let mut rest = Vec::new();
+    s.model_space(&s.rest_pose(), &mut rest);
+    let inv: Vec<Affine> = rest.iter().map(|m| inverse(m).unwrap_or(Affine::IDENTITY)).collect();
+    let mut pts: Vec<Vec<Vec3>> = vec![Vec::new(); s.len()];
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let (Some(j), Some(w)) = (mesh.joints.get(i), mesh.weights.get(i)) else { break };
+        let k = (0..4).max_by_key(|&q| w[q]).unwrap_or(0);
+        let b = j[k] as usize;
+        if b < s.len() {
+            // Millimetres, as the data will hold them.
+            pts[b].push(v3(inv[b].apply_point(*p).map(|x| (x * 1000.0).round() / 1000.0)));
+        }
+    }
+    let parts = plan(set, &[], &[], &[], 1.0, 1.0);
+    parts
+        .iter()
+        .filter_map(|part| {
+            let v = &pts[part.bone];
+            if v.len() < 8 {
+                return None;
+            }
+            // The extremes along each axis, then the vertex sticking out furthest, one by one.
+            let mut chosen: Vec<Vec3> = Vec::with_capacity(MAX_HULL_POINTS);
+            for axis in 0..3 {
+                let along = |p: &Vec3| [p.x, p.y, p.z][axis];
+                for far in [false, true] {
+                    let pick = v.iter().enumerate().fold(None::<(f32, usize)>, |best, (i, p)| {
+                        let x = if far { along(p) } else { -along(p) };
+                        if best.is_none_or(|(bx, _)| x > bx) {
+                            Some((x, i))
+                        } else {
+                            best
+                        }
+                    });
+                    if let Some((_, i)) = pick {
+                        if !chosen.contains(&v[i]) {
+                            chosen.push(v[i]);
+                        }
+                    }
+                }
+            }
+            let mut hull = Shape::hull(&chosen).ok()?;
+            loop {
+                let h = hull.polytope()?;
+                let out = |p: &Vec3| h.normals.iter().zip(&h.offsets).map(|(n, o)| n.dot(*p) - o).fold(f32::MIN, f32::max);
+                let worst = v.iter().enumerate().fold(None::<(f32, usize)>, |best, (i, p)| {
+                    let d = out(p);
+                    if best.is_none_or(|(bd, _)| d > bd) {
+                        Some((d, i))
+                    } else {
+                        best
+                    }
+                });
+                let Some((_, i)) = worst.filter(|(d, _)| *d > 1.0e-3) else { break };
+                let mut next: Vec<Vec3> = h.points.clone();
+                next.push(v[i]);
+                match Shape::hull(&next) {
+                    Ok(n) if n.polytope().is_some_and(|q| q.points.len() <= MAX_HULL_POINTS) => hull = n,
+                    _ => break,
+                }
+            }
+            // A skin: the mesh bends between bones (blended weights) where the part doesn't, and
+            // contacts give a little on impact.
+            let h = hull.polytope()?;
+            let pts: Vec<V3> = h
+                .points
+                .iter()
+                .map(|p| {
+                    let out = specula_physics::math::normalize_or(*p - h.centroid, Vec3::Y);
+                    let q = *p + out * HULL_SKIN_M;
+                    [q.x, q.y, q.z].map(|x| (x * 1000.0).round() / 1000.0)
+                })
+                .collect();
+            (pts.len() >= 4).then_some((part.bone, pts))
         })
         .collect()
 }
@@ -667,14 +811,24 @@ impl Physics {
             None => specula_anim::checks::limits_of(&set),
         };
         let mass = spec.mass.unwrap_or(DEFAULT_MASS_KG * scale * scale * scale);
-        // Radii: the entity's own (props), over its graph's.
+        // Sizes: the entity's own (props) over its graph's, bone by bone; a hull over a radius
+        // from the same place.
         let mut radii: Vec<(usize, f32)> = graph_of(&set, e).map(|g| g.ragdoll_radius.clone()).unwrap_or_default();
+        let mut hulls: Vec<(usize, Vec<V3>)> = graph_of(&set, e).map(|g| g.ragdoll_hull.clone()).unwrap_or_default();
         for (name, r) in &spec.radii {
             let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.radii' names no bone '{name}'"))?;
             radii.retain(|(x, _)| *x != b);
             radii.push((b, *r));
+            if !spec.hulls.iter().any(|(h, _)| h == name) {
+                hulls.retain(|(x, _)| *x != b);
+            }
         }
-        let parts = plan(&set, &limits, &radii, scale, mass);
+        for (name, pts) in &spec.hulls {
+            let b = set.skeleton.find(name).ok_or_else(|| format!("'ragdoll.hulls' names no bone '{name}'"))?;
+            hulls.retain(|(x, _)| *x != b);
+            hulls.push((b, pts.clone()));
+        }
+        let parts = plan(&set, &limits, &radii, &hulls, scale, mass);
         if parts.is_empty() {
             return Err(format!("no bone is at least {MIN_BONE_M} m long"));
         }
@@ -695,7 +849,8 @@ impl Physics {
             let w = bone_world(&pose_e, scale, &m_now[p.bone]);
             starts.push((p.bone, w));
             let w1 = bone_world(&pose_e, scale, &m_next[p.bone]);
-            let collider = ColliderDesc { layer, ..ColliderDesc::new(Shape::capsule(p.radius, p.half)) };
+            let shape = if p.hull.is_empty() { Shape::capsule(p.radius, p.half) } else { Shape::hull(&p.hull).map_err(|e| format!("{}'s hull: {}", set.skeleton.names[p.bone], e.message))? };
+            let collider = ColliderDesc { layer, ..ColliderDesc::new(shape) };
             let collider = ColliderDesc { offset: p.offset, friction: 0.8, ..collider };
             let kind = if powered && (p.parent.is_none() || p.planted) { specula_physics::BodyKind::Kinematic } else { specula_physics::BodyKind::Dynamic };
             let mut d = BodyDesc::new(kind, w, Some(collider));
@@ -970,7 +1125,7 @@ mod tests {
     fn plans_follow_the_skeleton_and_its_limits() {
         let set = humanoid();
         let knee = Limit { bone: set.skeleton.find("shin_l").unwrap(), axes: [Some([-5.0, 150.0]), None, None] };
-        let parts = plan(&set, &[knee], &[], 1.0, 40.0);
+        let parts = plan(&set, &[knee], &[], &[], 1.0, 40.0);
         let names: Vec<&str> = parts.iter().map(|p| set.skeleton.names[p.bone].as_str()).collect();
         assert_eq!(names, ["hips", "chest", "head", "thigh_l", "shin_l", "thigh_r", "shin_r"], "short bones and the root ride along");
         let total: f32 = parts.iter().map(|p| p.mass).sum();
@@ -985,13 +1140,13 @@ mod tests {
         assert_eq!(other.joint.as_ref().unwrap().kind, JointKind::Ball, "no limits: a ball joint with a cone");
         assert_eq!(parts[0].parent, None);
         // Scaled up twice: twice the size, eight times... the mass we ask for.
-        let big = plan(&set, &[], &[], 2.0, 320.0);
+        let big = plan(&set, &[], &[], &[], 2.0, 320.0);
         assert!((big[0].half - 2.0 * parts[0].half).abs() < 1e-5 && (big[0].offset.p - parts[0].offset.p * 2.0).length() < 1e-5);
         // The same input, the same plan.
-        assert_eq!(plan(&set, &[], &[], 1.0, 40.0), plan(&set, &[], &[], 1.0, 40.0));
+        assert_eq!(plan(&set, &[], &[], &[], 1.0, 40.0), plan(&set, &[], &[], &[], 1.0, 40.0));
         // Given radii win (scaled with the entity).
         let hips = set.skeleton.find("hips").unwrap();
-        let wide = plan(&set, &[], &[(hips, 0.2)], 2.0, 40.0);
+        let wide = plan(&set, &[], &[(hips, 0.2)], &[], 2.0, 40.0);
         assert!((wide[0].radius - 0.4).abs() < 1e-6);
         assert_eq!(unkey(key(77, 5)), Some((77, 5)));
     }
@@ -1037,6 +1192,75 @@ mod tests {
         }
     }
 
+    /// The shambler's built mesh and anim set.
+    fn shambler_mesh() -> (World, u64, Arc<AnimSet>, specula_model::MeshData) {
+        let (w, id) = shambler_world();
+        let set = crate::anim::write_set_of(&w, w.get(id).unwrap()).expect("rigged");
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let style = specula_model::Style::parse(&std::fs::read_to_string(assets.join(crate::models::STYLE_FILE)).unwrap()).unwrap();
+        let recipe = std::fs::read_to_string(assets.join("recipes/shambler.json")).unwrap();
+        let model = specula_model::recipe::build(&recipe, &specula_model::recipe::BuildParams::new(&style)).unwrap();
+        (w, id, set, model.lods[0].clone())
+    }
+
+    /// A body's lowest point: its hull's lowest corner (a hull's box is a loose bound), else its box.
+    fn lowest_point(b: &specula_physics::BodyView) -> f32 {
+        match b.collider.and_then(|c| c.shape.polytope().map(|h| (c, h))) {
+            Some((c, h)) => {
+                let at = b.pose.mul(&c.offset);
+                h.points.iter().map(|q| at.point(*q).y).fold(f32::MAX, f32::min)
+            }
+            None => b.aabb.unwrap().min.y,
+        }
+    }
+
+    /// The shambler knocked over with capsule parts or fitted hull parts: where its trunk ends up.
+    fn knocked_over(hulls: bool) -> (Vec<(String, f32)>, bool) {
+        let (mut w, id, set, mesh) = shambler_mesh();
+        let mut spec = Spec {
+            mode: Mode::Limp,
+            strength: 1.0,
+            mass: None,
+            relocate: true,
+            hit: Some(Hit { bone: "chest".into(), impulse: Vec3::new(0.0, 10.0, -60.0), seq: 1 }),
+            radii: fit_radii(&set, &mesh).into_iter().map(|(b, r)| (set.skeleton.names[b].clone(), r)).collect(),
+            hulls: Vec::new(),
+        };
+        if hulls {
+            spec.hulls = fit_hulls(&set, &mesh).into_iter().map(|(b, p)| (set.skeleton.names[b].clone(), p)).collect();
+        }
+        let mut p = Physics::default();
+        run(&mut w, &mut p, 0, 30);
+        w.update(&EntityKey::Id(id), UpdateSpec { props: Some(Json::obj([(PROP, spec.to_json())])), ..UpdateSpec::default() }, "t").unwrap();
+        run(&mut w, &mut p, 30, 150);
+        let live = p.ragdolls.live.get(&id).expect("live");
+        let heights = live.parts.iter().map(|part| (live.set.skeleton.names[part.bone].clone(), p.space.body(key(id, part.bone)).unwrap().center.y)).collect();
+        let asleep = live.parts.iter().all(|part| p.space.body(key(id, part.bone)).unwrap().sleeping);
+        (heights, asleep)
+    }
+
+    #[test]
+    fn hull_parts_fitted_to_the_mesh_let_the_shambler_lie_down() {
+        let (_, _, set, mesh) = shambler_mesh();
+        let hulls = fit_hulls(&set, &mesh);
+        assert!(hulls.len() >= 12, "{} hull parts", hulls.len());
+        for (b, pts) in &hulls {
+            assert!((4..=MAX_HULL_POINTS).contains(&pts.len()), "{}: {} points", set.skeleton.names[*b], pts.len());
+            assert!(Shape::hull(&pts.iter().map(|p| v3(*p)).collect::<Vec<_>>()).is_ok());
+        }
+        assert_eq!(fit_hulls(&set, &mesh), hulls, "deterministic");
+        // Round capsules prop the hunched body up on its coat; hulls the coat's shape let it
+        // lie on its back.
+        let height = |h: &[(String, f32)], b: &str| h.iter().find(|(n, _)| n == b).unwrap().1;
+        let (caps, _) = knocked_over(false);
+        let (hull, asleep) = knocked_over(true);
+        assert!(asleep, "at rest");
+        assert!(height(&hull, "chest") < 0.45 && height(&hull, "hips") < 0.25, "lying down: {hull:?}");
+        assert!(height(&caps, "chest") - height(&hull, "chest") > 0.15, "capsules {caps:?} hulls {hull:?}");
+        // Twin runs end the same.
+        assert_eq!(knocked_over(true).0, hull);
+    }
+
     /// Found in Sepulcra: the killing blow sets off the graph's flinch layer in the same write
     /// that turns the ragdoll on; taken from the play with it, the takeover flung the hands
     /// up at 16 m/s. The ragdoll moves on at the base motion.
@@ -1077,7 +1301,7 @@ mod tests {
         let mut lowest = f32::MAX;
         for part in &live.parts {
             let b = p.space.body(key(id, part.bone)).unwrap();
-            lowest = lowest.min(b.aabb.unwrap().min.y);
+            lowest = lowest.min(lowest_point(&b));
             assert!(b.velocity.length() < 0.3 || b.sleeping, "{} still moving: {:?}", live.set.skeleton.names[part.bone], b.velocity);
         }
         assert!(lowest > -0.03 && lowest < 0.05, "on the floor: lowest point {lowest}");

@@ -851,8 +851,9 @@ fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: 
 fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
     let yaw = m.rot.y.to_radians();
     let back = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
-    // N·s on the chest: about 2.5 m/s on it, enough to topple the body backwards.
-    let knock = back * 26.0 + Vec3::new(0.0, 6.0, 0.0);
+    // N·s on the chest: about 1.2 m/s on the whole 69 kg body, enough to topple a hunched one onto
+    // its back (26 N·s sat it down on its hump).
+    let knock = back * 80.0 + Vec3::new(0.0, 12.0, 0.0);
     let ragdoll = Json::obj([
         ("mode", Json::from("limp")),
         ("hit", Json::obj([("bone", Json::from("chest")), ("impulse", Json::arr([knock.x, knock.y, knock.z].map(Json::from))), ("seq", Json::from(1))])),

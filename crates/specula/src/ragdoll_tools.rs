@@ -12,9 +12,16 @@ use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_protocol::{ToolDef, ToolOutput};
 
+/// What `ragdoll_set {fit}` measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    Capsules,
+    Hulls,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum RagdollCall {
-    Set { entity: EntityKey, mode: Option<Mode>, strength: Option<f32>, mass: Option<f32>, relocate: Option<bool>, hit: Option<(String, Vec3)>, param: bool, fit: bool },
+    Set { entity: EntityKey, mode: Option<Mode>, strength: Option<f32>, mass: Option<f32>, relocate: Option<bool>, hit: Option<(String, Vec3)>, param: bool, fit: Option<Fit> },
     Info { entity: EntityKey, checks: bool },
 }
 
@@ -45,8 +52,16 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<RagdollCall, String>> {
                     Some((bone, impulse))
                 }
             };
-            let fit = bool_arg(args, "fit")?.unwrap_or(false);
-            if mode.is_none() && hit.is_none() && !fit && args.get("strength").is_none() && args.get("mass").is_none() && args.get("relocate").is_none() {
+            let fit = match args.get("fit") {
+                None | Some(Json::Null) | Some(Json::Bool(false)) => None,
+                Some(Json::Bool(true)) => Some(Fit::Capsules),
+                Some(v) => match v.as_str() {
+                    Some("capsules") => Some(Fit::Capsules),
+                    Some("hulls") => Some(Fit::Hulls),
+                    _ => return Err("'fit' must be true or \"capsules\" (capsule radii) or \"hulls\" (convex hull parts)".into()),
+                },
+            };
+            if mode.is_none() && hit.is_none() && fit.is_none() && args.get("strength").is_none() && args.get("mass").is_none() && args.get("relocate").is_none() {
                 return Err("ragdoll_set needs 'mode' (limp, powered, off), a 'hit', 'fit', or a setting to change".into());
             }
             Ok(RagdollCall::Set {
@@ -89,10 +104,10 @@ pub fn definitions() -> Vec<ToolDef> {
         ("param", t("boolean", "Also set the anim graph's 'ragdoll' bool parameter (if it has one): true when limp, false otherwise (default true)")),
         (
             "fit",
-            t(
-                "boolean",
-                "Measure capsule radii from the built mesh (how far each bone's vertices lie from it) and store them in props.ragdoll.radii, so the body lies on its surface, not its bones; copy them into the graph's ragdoll.radius to share them",
-            ),
+            Json::obj([
+                ("description", Json::from("Measure the parts from the built mesh and store them as data, so the body lies on its surface, not its bones: true or \"capsules\" measures capsule radii (how far each bone's vertices lie from it) into props.ragdoll.radii; \"hulls\" measures convex hull parts (the vertices reaching furthest in 14 directions, at most 16 points, in each bone's rest frame) into props.ragdoll.hulls, and radii for the rest. Copy them into the graph's ragdoll.radius / ragdoll.hull to share them")),
+                ("oneOf", Json::arr([Json::obj([("type", Json::from("boolean"))]), Json::obj([("type", Json::from("string")), ("enum", Json::arr([Json::from("capsules"), Json::from("hulls")]))])])),
+            ]),
         ),
     ]);
     let mut info = id();
@@ -152,8 +167,8 @@ impl crate::Engine {
                     return world_error(&WorldError::new("no_rig", "its model has no rig (or its recipe or anims file doesn't load): nothing to build a ragdoll from").with("id", id));
                 };
                 let old = e.props.get(PROP).and_then(|j| Spec::from_json(j).ok());
-                let mut spec = old.clone().unwrap_or(Spec { mode: Mode::Off, strength: 1.0, mass: None, relocate: true, hit: None, radii: Vec::new() });
-                if fit {
+                let mut spec = old.clone().unwrap_or(Spec { mode: Mode::Off, strength: 1.0, mass: None, relocate: true, hit: None, radii: Vec::new(), hulls: Vec::new() });
+                if let Some(fit) = fit {
                     let recipe = e.model.as_ref().map(|m| m.recipe.clone()).unwrap_or_default();
                     let built = {
                         let lib = self.library.lock();
@@ -164,6 +179,11 @@ impl crate::Engine {
                     };
                     spec.radii = ragdoll::fit_radii(&set, mesh).into_iter().map(|(b, r)| (set.skeleton.names[b].clone(), r)).collect();
                     spec.radii.sort_by(|a, b| a.0.cmp(&b.0));
+                    spec.hulls = match fit {
+                        Fit::Capsules => Vec::new(),
+                        Fit::Hulls => ragdoll::fit_hulls(&set, mesh).into_iter().map(|(b, p)| (set.skeleton.names[b].clone(), p)).collect(),
+                    };
+                    spec.hulls.sort_by(|a, b| a.0.cmp(&b.0));
                 }
                 if let Some(m) = mode {
                     spec.mode = m;
@@ -261,9 +281,15 @@ impl crate::Engine {
                     ("part", Json::from(p.bone as u64)),
                     ("parent", p.parent.map_or(Json::Null, |b| Json::from(skel.names[b].as_str()))),
                     ("mass_kg", round(p.mass)),
-                    ("radius_m", round(p.radius)),
-                    ("length_m", round(2.0 * p.half + 2.0 * p.radius)),
                 ]);
+                if p.hull.is_empty() {
+                    j.set("shape", Json::from("capsule"));
+                    j.set("radius_m", round(p.radius));
+                    j.set("length_m", round(2.0 * p.half + 2.0 * p.radius));
+                } else {
+                    j.set("shape", Json::from("hull"));
+                    j.set("points", Json::from(p.hull.len() as u64));
+                }
                 if let Some(b) = self.physics.space.body(ragdoll::key(id, p.bone)) {
                     j.set("position", rv3(b.center));
                     j.set("velocity", rv3(b.velocity));
