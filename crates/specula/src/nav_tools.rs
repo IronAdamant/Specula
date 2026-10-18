@@ -91,7 +91,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<NavCall, String>> {
             check_keys(
                 args,
                 name,
-                &[&["name", "agent", "like", "cell_size", "cell_height", "tile_cells", "bounds", "margin", "sources", "tiles_per_tick", "areas", "links", "expect_version"]],
+                &[&["name", "agent", "like", "cell_size", "cell_height", "tile_cells", "bounds", "margin", "sources", "tiles_per_tick", "areas", "links", "remove", "expect_version"]],
             )?;
             let name = string_arg(args, "name")?.unwrap_or("default").to_owned();
             crate::world::validate_name(&name).map_err(|e| e.message)?;
@@ -394,6 +394,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("tiles_per_tick", t("integer", "Tile rebuild work per fixed tick after edits and while a build finishes, in default-size tiles (about 2 ms each; default 2; a tile with many triangles costs more)")),
                     ("areas", t("array", "Named areas, at most 31: [{name, cost?: 1 (0.1..1000, times the distance), flags?: [names]}]. Entities get one with props.nav_area: \"water\" (their walkable surfaces) or {area, volume: true} (their bounds mark the floor inside; they add no geometry). null removes them")),
                     ("links", t("array", "Off-mesh links, at most 256: [{from: [x,y,z], to: [x,y,z], kind?: jump|drop|ladder (default jump), bidirectional? (default: not for drops), cost?: 1, area?: name, radius?: 0.5 (how far from the navmesh its ends may be)}]. Paths and agents use them; changing only links rebuilds nothing. null removes them")),
+                    ("remove", t("boolean", "Delete the navmesh /nav/<name> (/nav is written only by nav_build)")),
                     ("expect_version", t("integer", "Refuse unless the navmesh entity is at this version")),
                 ],
                 &[],
@@ -891,6 +892,13 @@ impl crate::Engine {
     fn nav_build(&mut self, name: &str, args: &Json, expect_version: Option<u64>, w: Writer, tick: u64) -> Result<Json, WorldError> {
         let path = format!("/nav/{name}");
         let existing = self.world.find_path(&path).ok();
+        // /nav is reserved for these tools: removing a navmesh is one of them too.
+        if args.get("remove").and_then(Json::as_bool) == Some(true) {
+            let Some(id) = existing else { return Err(WorldError::new("no_navmesh", format!("there is no navmesh '{name}'")).with("path", path.as_str())) };
+            let (_, seq) = self.swarm.commit_nav(&mut self.world, tick, w, JKind::Delete, |wd| wd.delete(&EntityKey::Id(id), expect_version).map(|_| ()))?;
+            self.nav.sync(&self.world, self.world_generation);
+            return Ok(Json::obj([("removed", Json::from(path.as_str())), ("journal", Json::from(seq))]));
+        }
         // Start from the current settings when rebuilding one.
         let mut settings = match existing.and_then(|id| self.world.get(id)).and_then(|e| e.props.get(nav::MESH_KEY)) {
             Some(p) => MeshSettings::from_json(p)?,
@@ -1028,7 +1036,7 @@ impl crate::Engine {
             }
         }
         let by = w.name.to_owned();
-        let (_, seq) = self.swarm.commit(&mut self.world, tick, w, JKind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?;
+        let (_, seq) = self.swarm.commit_nav(&mut self.world, tick, w, JKind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?;
         let id = self.world.find_path(&path)?;
         self.nav.sync(&self.world, self.world_generation);
         if let Some(p) = self.nav.problems.get(&id) {
@@ -1289,6 +1297,49 @@ pub fn paint(nav: &nav::Nav, world: &World, p: &mut Painter, navmesh: bool, path
 mod tests {
     use super::*;
     use crate::physics::ColliderShape;
+
+    #[test]
+    fn only_the_nav_tools_write_navmesh_data() {
+        use crate::journal::Kind;
+        let mut w = World::default();
+        w.set_recording(crate::world::Recording::Full);
+        let mut sw = crate::swarm::Swarm::default();
+        let ann = Writer { name: "ann", session: Some("s1") };
+        let group = |name: &str, parent: Option<&str>| {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(name.into());
+            s.parent = parent.map(|p| EntityKey::Path(p.into()));
+            s
+        };
+        let code = |r: Result<((), Option<u64>), WorldError>| r.err().map(|e| e.code);
+        // world_* writers may not make /nav, nor settings anywhere.
+        let r = sw.commit(&mut w, 0, ann, Kind::Spawn, |wd| wd.spawn(group("nav", None), "ann").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        let mut floor = SpawnSpec::new(Shape::Cube);
+        floor.name = Some("floor".into());
+        sw.commit(&mut w, 0, ann, Kind::Spawn, |wd| wd.spawn(floor, "ann").map(|_| ())).unwrap();
+        let settings = UpdateSpec { props: Some(Json::obj([(nav::MESH_KEY, Json::Obj(Vec::new()))])), ..Default::default() };
+        let r = sw.commit(&mut w, 0, ann, Kind::Set, |wd| wd.update(&EntityKey::Path("/floor".into()), settings, "ann").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        // The nav tools may.
+        sw.commit_nav(&mut w, 0, ann, Kind::Spawn, |wd| wd.spawn(group("nav", None), "ann").map(|_| ())).unwrap();
+        let mut s = group("default", Some("/nav"));
+        s.props = Json::obj([(nav::MESH_KEY, Json::Obj(Vec::new()))]);
+        sw.commit_nav(&mut w, 0, ann, Kind::Spawn, |wd| wd.spawn(s, "ann").map(|_| ())).unwrap();
+        // A cube with a collider under /nav (the bypass the review found), or moving a settings
+        // group, through the world tools: refused.
+        let mut wall = SpawnSpec::new(Shape::Cube);
+        wall.name = Some("wall".into());
+        wall.parent = Some(EntityKey::Path("/nav".into()));
+        wall.collider = Some(crate::physics::Collider::default());
+        let r = sw.commit(&mut w, 0, ann, Kind::Spawn, |wd| wd.spawn(wall, "ann").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        let r = sw.commit(&mut w, 0, ann, Kind::Set, |wd| wd.update(&EntityKey::Path("/nav/default".into()), UpdateSpec { position: Some(Vec3::new(1.0, 0.0, 0.0)), ..Default::default() }, "ann").map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        let r = sw.commit(&mut w, 0, ann, Kind::Delete, |wd| wd.delete(&EntityKey::Path("/nav/default".into()), None).map(|_| ()));
+        assert_eq!(code(r), Some("reserved"));
+        assert!(w.find_path("/nav/default").is_ok());
+    }
 
     fn model(recipe: &str) -> specula_model::Model {
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");

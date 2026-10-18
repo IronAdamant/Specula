@@ -339,7 +339,10 @@ def run(m, failures, label, big):
     check(len(mid.get("overlays", {}).get("paths", {}).get("agents", [])) >= 2, "the patrol capture draws the guard and the thief", failures)
     # Review regression: a navmesh deleted between ticks, then queried, never takes the engine down.
     m.json("nav_build", name="temp")
-    m.json("world_delete", path="/nav/temp")
+    # /nav is reserved for the nav tools: world_delete is refused, nav_build remove deletes it.
+    err_del, refused = tool(m, "world_delete", path="/nav/temp")
+    check(err_del and isinstance(refused, dict) and refused.get("error") == "reserved", "world_delete on /nav is refused (reserved)", failures)
+    m.json("nav_build", name="temp", remove=True)
     err, gone = tool(m, "nav_path", mesh="temp", **{"from": [-8, 0, -4], "to": [8, 0, 4]})
     m.json("time_control", action="step", ticks=1)
     err2, gone2 = tool(m, "nav_path", mesh="temp", **{"from": [-8, 0, -4], "to": [8, 0, 4]})

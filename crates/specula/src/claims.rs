@@ -638,20 +638,46 @@ fn under_nav(p: &str) -> bool {
     p == "/nav" || p.starts_with("/nav/")
 }
 
-/// Navmesh settings: the `/nav` group and the `/nav/<name>` entities holding `props.navmesh`
-/// (data, not things in the world; see [`crate::nav`]).
-fn is_nav_data(e: &crate::world::Entity) -> bool {
-    e.props.get(crate::nav::MESH_KEY).is_some() || (e.parent.is_none() && e.name == "nav" && e.shape == crate::world::Shape::Group)
+/// A bare group: nothing drawn, no collider, no body (it can hold settings, never be in the way).
+fn bare_group(e: &crate::world::Entity) -> bool {
+    e.shape == crate::world::Shape::Group && e.collider.is_none() && e.body.is_none()
 }
 
-/// Navmesh settings staying under `/nav` (before and after): like rule data, they sit nowhere,
-/// so only path claims cover them.
+/// Navmesh settings as data: the bare `/nav` group and bare groups holding `props.navmesh`
+/// (see [`crate::nav`]). Only these are exempt from region scopes.
+fn is_nav_data(e: &crate::world::Entity) -> bool {
+    bare_group(e) && (e.props.get(crate::nav::MESH_KEY).is_some() || (e.parent.is_none() && e.name == "nav"))
+}
+
+/// A change that writes `/nav` or navmesh settings anywhere: only the nav tools may make it
+/// ([`crate::swarm::Swarm::commit_nav`]), so nothing can hide in the exemption.
+pub fn touches_nav_data(change: &Change) -> bool {
+    let settings = |e: &crate::world::Entity| e.props.get(crate::nav::MESH_KEY).is_some();
+    match change {
+        Change::Spawn { path, after } => under_nav(path) || settings(after),
+        Change::Delete { path, before } => under_nav(path) || settings(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_nav(path) || prev_path.as_deref().is_some_and(under_nav) || settings(after) || before.as_deref().is_some_and(settings)
+        }
+        Change::Pose { path, .. } => under_nav(path),
+        Change::Env { .. } | Change::Camera { .. } => false,
+    }
+}
+
+/// Navmesh settings staying under `/nav` (before and after), as bare groups: like rule data,
+/// they sit nowhere, so only path claims cover them. Anything else (a cube, a collider, a group
+/// that gained one) is checked at both ends like any entity, descendants included.
 fn nav_data_only(change: &Change) -> bool {
     match change {
         Change::Spawn { path, after } => under_nav(path) && is_nav_data(after),
         Change::Delete { path, before } => under_nav(path) && is_nav_data(before),
         Change::Set { path, prev_path, before, after } => {
-            under_nav(path) && prev_path.as_deref().is_none_or(under_nav) && is_nav_data(after) && before.as_deref().is_none_or(is_nav_data)
+            under_nav(path)
+                && prev_path.as_deref().is_none_or(under_nav)
+                && is_nav_data(after)
+                && before.as_deref().is_none_or(is_nav_data)
+                // A move carries children: only a group whose transform stayed is exempt.
+                && before.as_deref().is_none_or(|b| b.model() == after.model())
         }
         _ => false,
     }
@@ -761,9 +787,20 @@ mod tests {
         w.spawn(s, "ann").unwrap();
         let changes = w.take_changes();
         assert!(c.check(&w, &changes, ANN, now).is_ok(), "settings aren't in bob's region");
-        // A cube under /nav is in the world like any other.
+        // A cube under /nav is in the world like any other, and so is a navmesh-settings entity
+        // that is drawn or collides.
         let cube = spawn(&mut w, "/nav/crate", Vec3::ZERO, "ann");
         assert!(c.check(&w, &cube, ANN, now).is_err());
+        let mut drawn = SpawnSpec::new(Shape::Cube);
+        drawn.name = Some("sneaky".into());
+        drawn.parent = Some(EntityKey::Path("/nav".into()));
+        drawn.props = Json::obj([(crate::nav::MESH_KEY, Json::Obj(Vec::new()))]);
+        w.spawn(drawn, "ann").unwrap();
+        let sneaky = w.take_changes();
+        assert!(c.check(&w, &sneaky, ANN, now).is_err(), "a drawn cube with props.navmesh is in the region");
+        // Moving a settings group (its children with it) is checked too.
+        let moved = set(&mut w, "/nav/default", UpdateSpec { position: Some(Vec3::new(1.0, 0.0, 0.0)), ..Default::default() });
+        assert!(c.check(&w, &moved, ANN, now).is_err(), "a moved settings group is checked");
         // A path claim on /nav covers the settings.
         let mut c2 = Claims::default();
         take(&mut c2, &w, BOB, Scope::Path("/nav".into()), now).unwrap();

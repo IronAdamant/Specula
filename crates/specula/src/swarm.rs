@@ -65,6 +65,15 @@ fn random_hex() -> String {
     out
 }
 
+
+/// Who a commit writes for: reserved subtrees (`/lex`, `/nav`) take only their own tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    World,
+    Lex,
+    Nav,
+}
+
 /// See the module docs.
 #[derive(Default)]
 pub struct Swarm {
@@ -291,7 +300,20 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, false, command)
+        self.commit_with(world, tick, w, kind, Owner::World, command)
+    }
+
+    /// [`Swarm::commit`] for the navigation tools: the only writer of `/nav` and of
+    /// `props.navmesh` (navmesh settings, exempt from region claims as data that sits nowhere).
+    pub fn commit_nav<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, kind, Owner::Nav, command)
     }
 
     /// [`Swarm::commit`] for the Lex tools: the only writer of the `/lex` subtree, which holds
@@ -304,7 +326,7 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, true, command)
+        self.commit_with(world, tick, w, kind, Owner::Lex, command)
     }
 
     fn commit_with<T>(
@@ -313,7 +335,7 @@ impl Swarm {
         tick: u64,
         w: Writer,
         kind: Kind,
-        lex: bool,
+        owner: Owner,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
         // The /lex subtree is Lex rule data, written only through the lex_* tools (so its
@@ -322,11 +344,21 @@ impl Swarm {
         let command = |wd: &mut World| {
             let mark = wd.mark();
             let v = command(wd)?;
-            if !lex {
-                let start = wd.mark_changes(mark);
+            let start = wd.mark_changes(mark);
+            if owner != Owner::Lex {
                 if let Some(c) = wd.pending_changes()[start..].iter().find(|c| crate::claims::touches_rule_data(c)) {
                     return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
                         .with("path", c.path().to_owned()));
+                }
+            }
+            // Likewise /nav and navmesh settings: only the nav tools write them.
+            if owner != Owner::Nav {
+                if let Some(c) = wd.pending_changes()[start..].iter().find(|c| crate::claims::touches_nav_data(c)) {
+                    return Err(WorldError::new(
+                        "reserved",
+                        format!("'{}' is navmesh data (/nav, props.navmesh): change it with nav_build (nav_build remove: true deletes one; nav_info reads them)", c.path()),
+                    )
+                    .with("path", c.path().to_owned()));
                 }
             }
             Ok(v)
