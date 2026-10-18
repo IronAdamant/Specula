@@ -273,6 +273,23 @@ impl NavMesh {
         self.tiles().map(|(_, t)| t.polys.len()).sum()
     }
 
+    /// The build counter and when each tile was last built (saved with a crowd: its agents
+    /// compare their polygons and corridors against these).
+    pub fn build_counters(&self) -> (u64, &[u64]) {
+        (self.counter, &self.rebuilt)
+    }
+
+    /// Puts back [`NavMesh::build_counters`] (after the same tiles were rebuilt from the same
+    /// world): false when they don't fit this navmesh.
+    pub fn restore_build_counters(&mut self, counter: u64, rebuilt: &[u64]) -> bool {
+        if rebuilt.len() != self.rebuilt.len() || rebuilt.iter().any(|r| *r > counter) {
+            return false;
+        }
+        self.counter = counter;
+        self.rebuilt.copy_from_slice(rebuilt);
+        true
+    }
+
     /// Whether tile `index` was rebuilt after `counter`.
     pub fn rebuilt_since(&self, index: usize, counter: u64) -> bool {
         self.rebuilt.get(index).is_some_and(|r| *r > counter)

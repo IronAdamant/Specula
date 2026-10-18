@@ -129,6 +129,34 @@ def crates(m):
     m.json("world_batch", ops=ops)
 
 
+def navigation(m):
+    """A navmesh over the slab the game draws (built by stepping ticks), three walkers heading for the
+    graveyard and a guard whose mind patrols between two gorge spawns: navmesh, crowd and mind state
+    for the save to carry."""
+    slab = m.json("world_query", path_prefix="/slab", fields=["path", "props"], limit=1)["items"][0]
+    cell = slab["props"]["cell_m"]
+    half = cell * 10
+
+    def centre(c, r, y=0.6):
+        return [-half + (c + 0.5) * cell, y, -half + (r + 0.5) * cell]
+
+    m.json("nav_build", name="slab", sources={"under": "/slab"})
+    for _ in range(600):
+        mesh = next(n for n in m.json("nav_info", mesh="slab")["navmeshes"] if n["path"] == "/nav/slab")
+        if mesh["ready"] and mesh["dirty_tiles"] == 0:
+            break
+        m.json("time_control", action="step", ticks=5)
+    ops = []
+    for i, (c, r) in enumerate([(4, 19), (9, 19), (15, 19)]):
+        ops.append({"op": "spawn", "shape": "cube", "name": f"walker{i}", "position": centre(c, r), "scale": [0.4, 0.8, 0.4],
+                    "props": {"nav_agent": {"mesh": "slab", "speed": 1.2 + 0.3 * i, "goal": [0, 0, 0]}}})
+    patrol = {"do": "patrol", "points": [centre(4, 19, 0.0), centre(15, 19, 0.0), centre(9, 12, 0.0)]}
+    ops.append({"op": "spawn", "shape": "cube", "name": "guard", "position": centre(9, 18), "scale": [0.5, 1.0, 0.5],
+                "props": {"nav_agent": {"mesh": "slab", "speed": 2.0}, "mind": {"def": patrol}}})
+    m.json("world_batch", ops=ops)
+    return mesh
+
+
 def stress(m, n):
     """n static cubes in a few groups (a big world to save)."""
     made = 0
@@ -179,6 +207,8 @@ def run(args, work):
         a.json("time_control", action="pause")
         a.call("play_new", seed=7, layout="centre")
         crates(a)
+        nav_mesh = navigation(a)
+        print(f"A: navmesh over the slab: {nav_mesh['polygons']} polygons; 3 walkers and a patrolling guard")
         built = build_ambulo(a)
         print(f"A: ambulo loaded ({built.get('reload', {}).get('status')})")
         a.json("logic_input", module="ambulo", actions={"move": [1, 0.3]}, ticks=args.save_at + args.ticks)
@@ -191,8 +221,9 @@ def run(args, work):
         print(f"A: saved at tick {saved['tick']}: {saved['bytes']} bytes, sections {saved['sections']}, ms {saved['timings_ms']}")
         report["save"] = saved
         check(saved["tick"] == t, "the save is at the current tick")
-        for name in ("sim", "physics", "logic"):
+        for name in ("sim", "physics", "logic", "nav"):
             check(name in saved["subsystems"], f"the save covers subsystem {name}")
+        check("nav" in saved["sections"], "the save has a nav section")
         step(a, args.ticks)
         trace_a = a.json("desync_trace", from_tick=t + 1, to_tick=t + args.ticks)
         print(f"A: trace {trace_a['ticks']} ticks {trace_a['from_tick']}..{trace_a['to_tick']}")
@@ -217,7 +248,11 @@ def run(args, work):
         check(loaded["match"], "every saved hash matches right after the load")
         check(not loaded["notes"], f"no notes on load ({loaded['notes']})")
         check(b.json("time_control", action="info")["tick"] == t, "the clock is at the save's tick")
+        nav_sub = next((s for s in loaded["subsystems"] if s["name"] == "nav"), {})
+        check(nav_sub.get("pending") or nav_sub.get("match"), f"nav is restored, or pending its navmesh build ({nav_sub})")
         step(b, args.ticks)
+        restored = b.json("nav_info").get("last_restore") or {}
+        check(restored.get("restored") is True, f"navigation was restored with the saved hash ({restored})")
         trace_b = b.json("desync_trace", from_tick=t + 1, to_tick=t + args.ticks)
         cmp = b.json("desync_compare", a=trace_a["file"], b=trace_b["file"])
         report["compare"] = cmp
@@ -228,7 +263,7 @@ def run(args, work):
         rows = json.loads(Path(trace_b["file"]).read_text())["ticks"]
         names = sorted(rows[-1][2].keys()) if rows else []
         report["subsystems_compared"] = names
-        for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic"):
+        for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic", "nav"):
             check(name in names, f"subsystem {name} was compared")
         # The player's way: the pause menu's Save / Load screen (play_ui presses the buttons a
         # click, a key or a pad's accept would): slots, overwrite / load / delete confirmations.

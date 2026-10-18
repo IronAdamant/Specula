@@ -58,6 +58,53 @@ pub const COLUMNS_PER_TICK: usize = 9_216;
 pub const MIND_WORK_PER_TICK: u64 = 4_096;
 /// Version of [`Nav::save_state`]'s format.
 pub const SAVE_VERSION: u64 = 1;
+/// The save-game `nav` section: a version, then the state as JSON (floats as their bits).
+pub const SECTION_VERSION: u32 = 1;
+/// Largest `nav` section accepted (a thousand agents' corridors and minds fit in a few MB).
+pub const MAX_SECTION_BYTES: usize = 64 << 20;
+
+/// The save-game `nav` section for [`Nav::save_state`]'s state.
+pub fn encode_section(state: &Json) -> Vec<u8> {
+    let mut out = SECTION_VERSION.to_le_bytes().to_vec();
+    out.extend_from_slice(state.to_string().as_bytes());
+    out
+}
+
+/// Decodes and checks a `nav` section's shape (on a load's worker thread): its version, its
+/// size, its JSON and the kinds and counts of what it lists. Whether the state fits the world is
+/// checked when it is restored ([`Nav::restore_state`]).
+pub fn parse_section(bytes: &[u8]) -> Result<Json, (&'static str, String)> {
+    if bytes.len() > MAX_SECTION_BYTES {
+        return Err(("too_large", format!("the nav section is {} bytes; at most {MAX_SECTION_BYTES}", bytes.len())));
+    }
+    let Some((head, body)) = bytes.split_first_chunk::<4>() else { return Err(("corrupt_section", "the nav section is shorter than its version".into())) };
+    let version = u32::from_le_bytes(*head);
+    if version != SECTION_VERSION {
+        return Err(("unsupported_version", format!("nav section version {version}; this build reads {SECTION_VERSION}")));
+    }
+    let text = std::str::from_utf8(body).map_err(|_| ("corrupt_section", "the nav section isn't UTF-8 text".to_string()))?;
+    let j = Json::parse(text).map_err(|e| ("corrupt_section", format!("the nav section isn't JSON: {e:?}")))?;
+    let list = |k: &str, max: usize| -> Result<&[Json], (&'static str, String)> {
+        let l = j.get(k).and_then(Json::as_array).ok_or_else(|| ("corrupt_section", format!("the nav section has no '{k}' list")))?;
+        if l.len() > max {
+            return Err(("corrupt_section", format!("the nav section lists {} {k}; at most {max}", l.len())));
+        }
+        if l.iter().any(|x| x.get("id").and_then(Json::as_u64).is_none()) {
+            return Err(("corrupt_section", format!("an entry of '{k}' has no id")));
+        }
+        Ok(l)
+    };
+    if j.get("version").and_then(Json::as_u64) != Some(SAVE_VERSION) {
+        return Err(("unsupported_version", format!("nav state version must be {SAVE_VERSION}")));
+    }
+    if j.get("hash").and_then(Json::as_str).and_then(|s| u64::from_str_radix(s, 16).ok()).is_none() || j.get("mind_cursor").and_then(Json::as_u64).is_none() {
+        return Err(("corrupt_section", "the nav section has no hash or mind_cursor".into()));
+    }
+    list("meshes", MAX_MESHES)?;
+    list("minds", MAX_MINDS)?;
+    list("agents", MAX_MESHES * specula_via::crowd::MAX_AGENTS)?;
+    Ok(j)
+}
 /// Recent nav_path answers kept for the `paths` overlay.
 const QUERIES: usize = 4;
 
@@ -995,6 +1042,8 @@ pub struct Nav {
     /// A restore waiting for the loaded navmeshes, and its outcome once applied.
     pending_restore: Option<Json>,
     restore_outcome: Option<Result<u64, world::WorldError>>,
+    /// How the last restore went (for nav_info).
+    pub last_restore: Option<Json>,
     /// The last mind that ran (the budget's round robin), and buffers reused every tick.
     mind_cursor: u64,
     mind_order: Vec<u64>,
@@ -2324,6 +2373,8 @@ impl Nav {
                 ("path", Json::from(m.path.as_str())),
                 ("ready", Json::from(m.ready)),
                 ("mesh_hash", Json::from(format!("{:016x}", m.mesh.hash()))),
+                ("counter", Json::from(m.mesh.build_counters().0)),
+                ("rebuilt", Json::arr(m.mesh.build_counters().1.iter().map(|r| Json::from(*r)))),
                 ("crowd", m.crowd.save()),
             ])
         });
@@ -2376,6 +2427,24 @@ impl Nav {
         }
         self.apply_restore(world);
         self.take_restore_outcome().expect("just applied").map(Some)
+    }
+
+    /// Brings navigation to a state a save can describe exactly (like physics syncing before a
+    /// save): tiles dirty from edits are rebuilt now. A navmesh still being built (its first
+    /// build, new settings, or a load) can't be saved exactly: `nav_building`, retry later.
+    pub fn settle_for_save(&mut self, world: &World, generation: u64) -> Result<(), world::WorldError> {
+        self.sync(world, generation);
+        if let Some(m) = self.meshes.values().find(|m| !m.ready || m.next.is_some() || m.complete_first) {
+            return Err(world::WorldError::new("nav_building", format!("navmesh '{}' is still being built: save once it is (nav_info shows progress)", m.path)).with("retry_after_ms", 500));
+        }
+        if self.pending_restore.is_some() {
+            return Err(world::WorldError::new("nav_building", "navigation is still being restored from a load: save once it is").with("retry_after_ms", 500));
+        }
+        let ids: Vec<u64> = self.meshes.iter().filter(|(_, m)| !m.dirty.is_empty()).map(|(k, _)| *k).collect();
+        for id in ids {
+            self.rebuild(id, None, world);
+        }
+        Ok(())
     }
 
     /// The outcome of a deferred [`Nav::restore_state`], once applied.
@@ -2445,6 +2514,10 @@ impl Nav {
             self.mind_cursor = 0;
             self.resync_actors(world);
         }
+        self.last_restore = Some(match &r {
+            Ok(h) => Json::obj([("restored", Json::from(true)), ("hash", Json::from(format!("{h:016x}")))]),
+            Err(e) => Json::obj([("restored", Json::from(false)), ("error", Json::from(e.code)), ("message", Json::from(e.message.as_str()))]),
+        });
         self.restore_outcome = Some(r);
     }
 
@@ -2470,6 +2543,12 @@ impl Nav {
                 return Err(world::WorldError::new("state_mismatch", format!("navmesh '{}' builds differently from the saved one (the world or its settings differ)", slot.path))
                     .with("saved", format!("{saved:016x}"))
                     .with("built", format!("{:016x}", slot.mesh.hash())));
+            }
+            // The build counters agents compare their polygons and corridors against.
+            let counter = m.get("counter").and_then(Json::as_u64).ok_or_else(|| bad("a mesh without counter".into()))?;
+            let rebuilt: Option<Vec<u64>> = m.get("rebuilt").and_then(Json::as_array).map(|l| l.iter().map(Json::as_u64).collect()).unwrap_or(None);
+            if !rebuilt.is_some_and(|r| slot.mesh.restore_build_counters(counter, &r)) {
+                return Err(world::WorldError::new("state_mismatch", format!("navmesh '{}': its saved build counters don't fit", slot.path)));
             }
             slot.crowd.restore(m.get("crowd").ok_or_else(|| bad("a mesh without crowd".into()))?).map_err(|e| nav_error(&e))?;
         }
@@ -2666,6 +2745,7 @@ impl Nav {
             ("problems", Json::from(self.problems.len() + self.mind_problems.len() + self.area_problems.len())),
             // A loaded world's navmeshes building, the simulation clock held until they are.
             ("loading", Json::from(self.loading())),
+            ("last_restore", self.last_restore.clone().unwrap_or(Json::Null)),
             ("hash", Json::from(self.last_hash().map(|h| format!("{h:016x}")))),
             (
                 "last_tick",
@@ -3521,6 +3601,64 @@ mod tests {
             t += 1;
         }
         assert!(nav.meshes[&m].dirty.is_empty());
+    }
+
+    #[test]
+    fn the_save_section_round_trips_and_refuses_damage() {
+        let mut w = World::default();
+        room(&mut w);
+        let m = navmesh(&mut w);
+        walker(&mut w, "w", Vec3::new(-5.0, 0.5, -5.0), vec![]);
+        let mut nav = Nav::default();
+        build_now(&mut nav, &w, 0, m);
+        let mut physics = Physics::default();
+        for t in 0..20 {
+            nav.tick(&mut w, &mut physics, 0, t, 1.0 / 30.0, 30);
+        }
+        // An edit leaves tiles dirty: settling builds them, so the save is exact.
+        cube(&mut w, "crate", Vec3::new(3.0, 0.5, 3.0), Vec3::ONE);
+        nav.sync(&w, 0);
+        assert!(!nav.meshes[&m].dirty.is_empty());
+        nav.settle_for_save(&w, 0).unwrap();
+        assert!(nav.meshes[&m].dirty.is_empty());
+        let bytes = encode_section(&nav.save_state());
+        let parsed = parse_section(&bytes).unwrap();
+        let mut back = Nav::default();
+        assert_eq!(back.restore_state(&w, 1, &parsed).unwrap(), None);
+        back.load_slice(&w, 1, None);
+        assert_eq!(back.take_restore_outcome().unwrap().unwrap(), nav.hash());
+        // Damage is a structured error, never a panic: every cut, flipped bytes, wrong versions.
+        for cut in (0..bytes.len()).step_by(37) {
+            let _ = parse_section(&bytes[..cut]);
+        }
+        assert_eq!(parse_section(&bytes[..3]).unwrap_err().0, "corrupt_section");
+        let mut v2 = bytes.clone();
+        v2[0] = 2;
+        assert_eq!(parse_section(&v2).unwrap_err().0, "unsupported_version");
+        for i in (4..bytes.len()).step_by(53) {
+            let mut b = bytes.clone();
+            b[i] ^= 0x5a;
+            if let Ok(j) = parse_section(&b) {
+                let mut n = Nav::default();
+                if let Ok(None) = n.restore_state(&w, 1, &j) {
+                    n.load_slice(&w, 1, None);
+                    let _ = n.take_restore_outcome();
+                }
+                // Whatever came of it, navigation still ticks.
+                let mut w2 = w.clone();
+                n.tick(&mut w2, &mut physics, 1, 0, 1.0 / 30.0, 30);
+            }
+        }
+        // A navmesh still building can't be saved exactly.
+        let mut fresh = Nav::default();
+        fresh.tick(&mut w, &mut physics, 0, 0, 1.0 / 30.0, 30);
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("second".into());
+        s.parent = Some(EntityKey::Path("/nav".into()));
+        s.props = Json::obj([(MESH_KEY, MeshSettings::new(specula_via::Config { bounds_min: Vec3::new(-10.0, -1.0, -10.0), bounds_max: Vec3::new(10.0, 4.0, 10.0), tile_cells: 32, ..Default::default() }, Sources::default(), 1).to_json())]);
+        w.spawn(s, "t").unwrap();
+        fresh.sync(&w, 0);
+        assert_eq!(fresh.settle_for_save(&w, 0).unwrap_err().code, "nav_building");
     }
 
     #[test]

@@ -282,6 +282,9 @@ pub(crate) struct Prepared {
     /// The game's section, parsed on the worker ([`crate::game::Game::state_parser`]).
     game_parsed: Option<Box<dyn std::any::Any + Send>>,
     logic: Option<crate::logic::LogicSnapshot>,
+    /// Navigation's state, decoded and shape-checked on the worker (restored once the loaded
+    /// navmeshes are built: [`crate::nav::Nav::restore_state`]).
+    nav: Option<Json>,
     sections: Vec<String>,
     notes: Vec<Json>,
     /// The hashes may not match although the state is right: another dmath or Lex runtime.
@@ -438,6 +441,10 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
         Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
         None => None,
     };
+    let nav = match by_name.remove("nav") {
+        Some(b) => Some(crate::nav::parse_section(&b).map_err(|(code, m)| SaveError::new(code, m).in_section("nav"))?),
+        None => None,
+    };
     let physics_bytes = by_name.remove("physics");
     let mut physics = crate::physics::Physics::default();
     if let Some(b) = &physics_bytes {
@@ -459,7 +466,7 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
     if game_parsed.is_some() {
         game_bytes = None;
     }
-    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, nav, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -555,6 +562,9 @@ impl Engine {
         }
         if let Some(h) = self.logic.state_hash() {
             subs.push(("logic", h));
+        }
+        if !self.nav.is_empty() {
+            subs.push(("nav", self.nav.hash()));
         }
         subs
     }
@@ -682,6 +692,18 @@ impl Engine {
             }
         }
         let logic = self.logic.save_state();
+        // Navigation settles first (tiles dirty from edits are built now, as physics syncs): the
+        // save then describes it exactly. A navmesh still building is refused.
+        let nav = if self.nav.is_empty() {
+            None
+        } else {
+            self.nav.settle_for_save(&self.world, self.world_generation).map_err(|e| {
+                let mut s = SaveError::new(e.code, e.message.clone()).in_section("nav");
+                s.details = e.details.clone();
+                s
+            })?;
+            Some(crate::nav::encode_section(&self.nav.save_state()))
+        };
         let world = crate::persist::plan(&self.world, std::path::Path::new(""), None);
         let world_hash = self.state_hash();
         let subs = self.subsystem_hashes();
@@ -706,7 +728,7 @@ impl Engine {
             meta.push(("label", Json::from(l.as_str())));
         }
         let mut sections = Vec::new();
-        for (n, d) in [("game", game), ("physics", physics), ("logic", logic)] {
+        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav)] {
             if let Some(data) = d {
                 sections.push(Section { name: n.into(), data });
             }
@@ -822,6 +844,16 @@ impl Engine {
         } else if !self.logic.is_empty() {
             notes.push(Json::from("the save has no module state; running modules keep theirs"));
         }
+        // Navigation comes back once the loaded navmeshes are built (the clock is held until
+        // then); its hash is checked then (nav_info last_restore).
+        let mut nav_pending = false;
+        if let Some(state) = &p.nav {
+            match self.nav.restore_state(&self.world, self.world_generation, state) {
+                Ok(Some(_)) => {}
+                Ok(None) => nav_pending = true,
+                Err(e) => notes.push(Json::obj([("warning", Json::from("nav_not_restored")), ("error", Json::from(e.code)), ("message", Json::from(e.message.as_str()))])),
+            }
+        }
         if let (Some(state), Some(game)) = (parsed, self.game.as_mut()) {
             self.world.set_recording(Recording::Snapshot);
             game.apply_state(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, state);
@@ -852,11 +884,17 @@ impl Engine {
         }
         for n in names {
             let saved = saved_subs.iter().find(|(k, _)| *k == n).and_then(|(_, v)| v.as_str()).map(|s| s.chars().take(16).collect::<String>());
+            if n == "nav" && nav_pending {
+                // Checked when the restore completes (before the first tick).
+                subsystems.push(Json::obj([("name", Json::from(n)), ("saved", Json::from(saved)), ("now", Json::Null), ("pending", Json::from(true))]));
+                continue;
+            }
             let now = subs_now.iter().find(|(k, _)| *k == n).map(|(_, h)| hex(*h));
             let same = saved == now;
             all_match &= same;
             subsystems.push(Json::obj([("name", Json::from(n)), ("saved", Json::from(saved)), ("now", Json::from(now)), ("match", Json::from(same))]));
         }
+
         let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
         Ok(Json::obj([
             ("loaded", Json::from(l.name.as_str())),

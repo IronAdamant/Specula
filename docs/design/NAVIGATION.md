@@ -327,6 +327,16 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
 - A malformed or unknown `props.nav_area` (an area the navmesh doesn't name) is a problem in `nav_info`
   (`invalid_nav_area`, `unknown_area` with the navmeshes), not silent plain ground.
 
+**Save games.** A save's `nav` section (`nav::encode_section` of `Nav::save_state`, versioned, at most 64 MB) is
+decoded and shape-checked on the load's worker (`nav::parse_section`: version, JSON, kinds and counts). At the swap
+`Nav::restore_state` re-reads the loaded world and waits: the engine holds the clock while the navmeshes build in
+slices, then puts the crowds (and each navmesh's build counters, which agents compare corridors against), minds and
+goals back and checks the nav hash (`nav_info last_restore`). `save_read` lists `nav` as pending until then. Before a
+save, tiles dirty from edits are built (`Nav::settle_for_save`), so the save is exact; a navmesh still being built
+is refused (`nav_building`). `scripts/save_check.py`: Sepulcra with a slab navmesh, three walkers and a patrolling
+guard, saved at tick 651 and loaded in another engine: `desync_compare` matches on all 900 later ticks, `nav`
+included. A unit test cuts and flips the section: structured errors, never a panic.
+
 **Review round 3.** A load finishes only the tiles it brought (never built yet); edits made meanwhile are left
 to the ticks, so a busy swarm can't hold the clock. Load slices run back to back (headless wakes at once; a
 window spends 30 ms a frame). `time_control step` waits up to 2 s for a load and otherwise answers `loading`
