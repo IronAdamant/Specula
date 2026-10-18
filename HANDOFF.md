@@ -25,7 +25,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
   go-ahead before starting M4** (wave 3).
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
-  history gallery, save games with the balance lab, and streaming with HLOD. Wave 2 is
+  history gallery, save games with the balance lab, streaming with HLOD, and Sepulcra fully in Lex with live Lex. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -143,7 +143,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
     scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
   - Gameplay as data (Lex): `lex_schema`, `lex_list`, `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`,
-    `lex_import`, `lex_export`, `lex_session` ([docs/design/LEX.md](docs/design/LEX.md)).
+    `lex_import`, `lex_export`, `lex_session` ([docs/design/LEX.md](docs/design/LEX.md)); `lex_live` runs a set live in the
+    engine. Sepulcra plays from its Lex rules with `-- --rules lex`.
   - Animation: `anim_get`, `anim_set` (clips and graphs as data), `anim_state`, `anim_check` (motion checks),
     `anim_filmstrip` (contact sheets with checks); graph parameters via `world_set {anim: {graph, params}}`.
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
@@ -171,9 +172,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
-- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. Lex covers a slice of
-  Sepulcra (the full port is wave 2), runs headless only (not live in the window yet), and Sepulcra itself still
-  runs on its hand-written Rust rules. Module characters move with a
+- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. Sepulcra runs on its Rust rules by
+  default (`--rules lex` plays it from Lex). Saves are refused while a live Lex run is active (being fixed). Module characters move with a
   simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
   requests can't be preempted.
 - No title screen in the app, settings aren't saved and there's no rebinding. Ragdoll bodies and live Lex runs aren't
