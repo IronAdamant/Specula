@@ -227,6 +227,13 @@ impl SepulcraGame {
         scene.sync(world, &self.state, &[], self.now);
         scene.animate(world, 1.0, self.now);
         self.scene = Some(scene);
+        // A Lex run that disagrees with the reference (as saved, or found at the load's check)
+        // stops the game, and says so: the dialog only shows on a change otherwise.
+        if self.lex.as_ref().is_some_and(|l| l.desync.is_some()) {
+            self.confirm = Some(Confirm::Desync);
+            self.hud.show("pause", false);
+            self.hud.show("confirm", true);
+        }
     }
 
     /// A request for the engine (served after the frame, a game tool or the tick).

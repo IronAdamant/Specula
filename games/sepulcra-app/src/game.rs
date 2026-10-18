@@ -1557,6 +1557,28 @@ mod lex_rules_tests {
         assert_eq!(h.lex.as_ref().unwrap().desync, None, "parity holds after the load");
     }
 
+    /// Review round 6 (desyncui.py): loading a save whose Lex run had parted from the reference
+    /// stops the game with the dialog up, as the desync itself did.
+    #[test]
+    fn a_loaded_desynced_lex_run_shows_its_dialog() {
+        let (mut g, mut world, mut clock) = lex_game(3);
+        tick(&mut g, &mut world, &mut clock);
+        let content = g.state.content().clone();
+        let cmd = Command::PlaceStone { cell: content.map.cell_ref("top:8,12").unwrap(), stone: content.stone_kind("warding").unwrap() };
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &cmd).unwrap();
+        lex.sim.apply(&call).unwrap();
+        tick(&mut g, &mut world, &mut clock);
+        assert!(g.lex.as_ref().unwrap().desync.is_some());
+        let bytes = g.save_bytes().unwrap();
+        let (mut h, mut world2, _clock2) = lex_game(3);
+        let loaded = h.parse_saved(&bytes).unwrap();
+        h.apply_saved(&mut world2, "sepulcra", loaded);
+        assert!(!h.running(), "stopped");
+        assert_eq!(h.confirm, Some(Confirm::Desync));
+        assert!(h.hud.visible("confirm"), "the dialog is up after the load");
+    }
+
     #[test]
     fn the_end_screens_follow_the_lex_outcome() {
         let (mut g, _world, _clock) = lex_game(5);
