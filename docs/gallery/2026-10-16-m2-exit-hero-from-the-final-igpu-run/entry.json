@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "09:39",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "701f3b1",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "M2 exit hero from the final iGPU run",
+  "note": "The hero shot retaken from the final run on the Intel iGPU, the reference device.",
+  "source": "scripts/m2_exit.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-m2-exit-hero.jpg",
+      "caption": "Hero shot",
+      "original": "m2_exit_hero.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18978
+    }
+  ]
+}

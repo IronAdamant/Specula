@@ -40,6 +40,9 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`. Sepulcra's creatures run on graphs with new
   clips (climb, glide, dive, pound, flinches, shuffle, jog), and the checks' fixes (a runner that hovered, colossus
   hands in the ground)
+- **Visual history gallery:** `docs/gallery/` (55 entries from the Bevy era to today, by subject and by date, with
+  honest dates and notes), `scripts/gallery.py` (add, check, dupes, drop), the specula-core `thumb` example (zero-dep
+  downscaling to JPEG) and a JPEG known-answer test against an independent decoder
 - **Headless playtests and swarms:** playtests as data for any game (`playtest_run`, `playtest_report`: steps that call
   any tool at a tick, expectations, `until`, replays verified by checkpoint hashes of the world, physics and the
   game's subsystems), `--paused`, `scripts/playtest_swarm.py` and `scripts/playtest_suite.py` (26 Sepulcra playtests

@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-12",
+  "time": "21:16",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M0",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "The first frame an agent saw",
+  "note": "Specula's first sight_frame, from the M0 window check: a grey pillar topped with an orange sphere and a small rust-red cube on a green ground plate, flat shaded by the new runtime-loaded Vulkan renderer. Everything later in this gallery grew from this.",
+  "source": "scripts/window_check.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "window_check scene, 640x360",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4514
+    }
+  ]
+}

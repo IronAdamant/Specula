@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-13",
+  "time": "20:55",
+  "date_source": "file times 20:55-21:07",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "c37be12",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The HUD on the GPU, in the window",
+  "note": "specula-ui now draws through the GPU overlay in the live window (two runs of the hud_window example, 100 and 280 in their file names; the layout keeps its proportions), and GPU and software renderings of a test screen are compared pixel by pixel.",
+  "source": "hud_window example, specula-gpu ui tests",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "01-hud-window-100-0.jpg",
+      "caption": "GPU HUD (run 100)",
+      "original": "hud_window_100_0.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 16807
+    },
+    {
+      "file": "02-hud-window-280-0.jpg",
+      "caption": "GPU HUD (run 280)",
+      "original": "hud_window_280_0.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 10525
+    },
+    {
+      "file": "03-ui-gpu-0.jpg",
+      "caption": "GPU rendering of the UI test screen",
+      "original": "ui_gpu_0.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 16231
+    }
+  ]
+}

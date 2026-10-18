@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-13",
+  "time": "19:31",
+  "date_source": "file times 19:31-19:32",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "be82816",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Window check on the new renderer",
+  "note": "After the render lane merged, the window check's scene gains a field of a few hundred small instanced spheres around the pillar (instancing and culling), drawn in the real window.",
+  "source": "scripts/window_check.py",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "01-window-adapter0-initial.jpg",
+      "caption": "Intel iGPU window",
+      "original": "window_adapter0_initial.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8791
+    },
+    {
+      "file": "02-window-adapter1-restored.jpg",
+      "caption": "NVIDIA window after resize",
+      "original": "window_adapter1_restored.png",
+      "width": 640,
+      "height": 373,
+      "bytes": 9136
+    }
+  ]
+}

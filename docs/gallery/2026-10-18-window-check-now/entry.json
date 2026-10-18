@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-18",
+  "time": "09:57",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "ee02487",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Window check now",
+  "note": "Main's window check on both GPUs: clean on each (0 validation messages), resized, minimised and restored. Unchanged since 2026-10-13-window-check-on-the-new-renderer: it is a regression check, so it should stay the same.",
+  "source": "scripts/window_check.py",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "02-window-adapter1-restored.jpg",
+      "caption": "NVIDIA after resize",
+      "original": "window_adapter1_restored.png",
+      "width": 640,
+      "height": 366,
+      "bytes": 8825
+    }
+  ]
+}

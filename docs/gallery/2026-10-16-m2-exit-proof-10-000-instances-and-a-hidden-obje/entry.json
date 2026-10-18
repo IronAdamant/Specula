@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-16",
+  "time": "09:52",
+  "date_source": "run ids 09:52-09:53",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "701f3b1",
+  "subject": "engine-tests",
+  "topic": "performance",
+  "title": "M2 exit proof: 10,000 instances and a hidden object",
+  "note": "Other frames from the exit run on the iGPU: a fogged field of 10,000 instanced entities in the window with the full night effect stack, and the hidden-object check (a box behind a wall reports visible_px 0).",
+  "source": "scripts/m2_exit.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "10,000 instances",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 25830
+    },
+    {
+      "file": "02-frame-00011.jpg",
+      "caption": "Hidden object behind a wall",
+      "original": "frame_00011.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4576
+    }
+  ]
+}
