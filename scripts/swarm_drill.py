@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, url_for
+from specula_mcp import ROOT, Engine, detailed, url_for
 
 PORT = 7488
 # --no-comms: skip the swarm communication steps (for comparing with engines that predate them).
@@ -81,7 +81,7 @@ class Agent:
     def call(self, tool, **args):
         """(ok, payload): payload is the parsed JSON text (or the raw text)."""
         start = time.perf_counter()
-        result = self.rpc("tools/call", {"name": tool, "arguments": args})
+        result = self.rpc("tools/call", {"name": tool, "arguments": detailed(tool, args)})
         self.timings.setdefault(tool, []).append(time.perf_counter() - start)
         text = next((c["text"] for c in result["content"] if c["type"] == "text"), "")
         try:

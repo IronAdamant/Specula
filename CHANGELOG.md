@@ -40,6 +40,13 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`. Sepulcra's creatures run on graphs with new
   clips (climb, glide, dive, pound, flinches, shuffle, jog), and the checks' fixes (a runner that hovered, colossus
   hands in the ground)
+- **Headless playtests and swarms:** playtests as data for any game (`playtest_run`, `playtest_report`: steps that call
+  any tool at a tick, expectations, `until`, replays verified by checkpoint hashes of the world, physics and the
+  game's subsystems), `--paused`, `scripts/playtest_swarm.py` and `scripts/playtest_suite.py` (26 Sepulcra playtests
+  across parallel engines, every replay verified)
+- **Tool ergonomics:** heavy tools answer concisely unless asked (`response_format`, per call, per agent or per
+  engine with `--response-format`), every answer is compact JSON and every error is `{error, message}`; audit in
+  `docs/design/TOOLS.md`
 - **Physics P1-P3:** new crate `specula-physics` (std only): spheres, capsules, boxes, convex hulls, static meshes
   and heightfields; a two-tree broadphase; GJK and SAT with per-pair feature memory; raycasts, shape casts, overlaps
   and triggers; a character controller (steps, slopes, ground snap, moving platforms, pushing); Soft Step rigid

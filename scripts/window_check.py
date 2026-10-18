@@ -34,6 +34,9 @@ import zlib
 from ctypes import wintypes
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from specula_mcp import detailed  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 # Its own port by default, so the check can never touch an engine you are working in (7471).
 DEFAULT_PORT = 7491
@@ -82,7 +85,7 @@ class Mcp:
         return reply["result"]
 
     def call(self, tool, **args):
-        result = self.request("tools/call", {"name": tool, "arguments": args})
+        result = self.request("tools/call", {"name": tool, "arguments": detailed(tool, args)})
         if result.get("isError"):
             raise RuntimeError(f"{tool}: {result['content'][0]['text']}")
         return result
