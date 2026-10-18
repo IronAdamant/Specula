@@ -376,6 +376,8 @@ pub struct Sim {
     natives: Vec<Option<Arc<dyn NativeHook>>>,
     st: State,
     deadline: Option<std::time::Instant>,
+    /// A deterministic limit on one tick's phase work below Lex's own cap ([`Sim::set_work_stop`]).
+    work_stop: Option<u64>,
     /// Scratch for ordered phases (see [`Rules::ordered`]); not state.
     order: Vec<(i64, u32)>,
     /// What `order` was built for: (state instance, next id, entity count).
@@ -455,7 +457,7 @@ impl Sim {
             tag_expiry: u32::MAX,
             instance: Instance::fresh(),
         };
-        Ok(Sim { rules, natives: bound, st, deadline: None, order: Vec::new(), order_key: None })
+        Ok(Sim { rules, natives: bound, st, deadline: None, work_stop: None, order: Vec::new(), order_key: None })
     }
 
     pub fn rules(&self) -> &Arc<Rules> {
@@ -575,6 +577,7 @@ impl Sim {
             natives: &self.natives,
             depth: 0,
             deadline: self.deadline,
+            work_stop: self.work_stop,
             in_command,
             keep: false,
             kept: None,
@@ -624,6 +627,14 @@ impl Sim {
     /// is [`Sim::interrupted`] (its state is no longer a deterministic result).
     pub fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
         self.deadline = deadline;
+    }
+
+    /// A work limit for each tick's phases (below [`MAX_WORK_PER_TICK`]): a tick that passes it
+    /// stops there and the run is [`Sim::interrupted`], like a deadline, but deterministically
+    /// (the same rules and state stop at the same point on any machine). For live runs, which
+    /// must not hold the engine's thread longer than a frame allows.
+    pub fn set_work_stop(&mut self, stop: Option<u64>) {
+        self.work_stop = stop;
     }
 
     /// A deadline cut a tick short: don't compare, save or continue this run.
@@ -678,6 +689,8 @@ struct Core<'a> {
     depth: u32,
     /// A wall-clock limit, checked as work is spent; passing it interrupts the run.
     deadline: Option<std::time::Instant>,
+    /// See [`Sim::set_work_stop`].
+    work_stop: Option<u64>,
     /// Applying a command: work is charged to the commands' budget, so commands can never
     /// starve the tick's phases (nor the phases the commands).
     in_command: bool,
@@ -789,6 +802,11 @@ impl Core<'_> {
                 self.note("work_limit", "this tick's commands used more than 5 million units of work (many commands over a large state?); the rest were refused, and the tick's phases ran in full");
             } else {
                 self.note("work_limit", "more than 5 million units of work in one tick (attacks or counts over many entities?); the rest of the tick's behaviours were skipped");
+            }
+        }
+        if let Some(w) = self.work_stop {
+            if !self.in_command && now > w {
+                self.st.interrupted = true;
             }
         }
         // The wall clock is read every 16k units of work, so a deadline interrupts within a tick.
@@ -2519,6 +2537,41 @@ impl Core<'_> {
         Ok(())
     }
 
+    /// A command's costs (what it would pay) and requirements, or why it is refused.
+    fn command_checks(&mut self, def: &CommandDef, f: &Frame) -> Result<Vec<(u16, i64)>, Rejection> {
+        let mut costs = Vec::with_capacity(def.cost.len());
+        for (res, e) in &def.cost {
+            let need = self.int(e, f).map_err(|e| Rejection::new(e.code, e.message))?;
+            let have = self.st.res[usize::from(*res)];
+            let name = &self.r.resources[usize::from(*res)].id;
+            if need < 0 {
+                return Err(Rejection::new("invalid_cost", format!("the {name} cost of '{}' came to {need}; a cost can't be negative (use an action to pay out)", def.id)).with("cost", Json::from(need)));
+            }
+            if have < need {
+                return Err(Rejection::new(format!("not_enough_{name}"), format!("needs {need} {name}, has {have}"))
+                    .with("need", Json::from(need))
+                    .with("have", Json::from(have)));
+            }
+            costs.push((*res, need));
+        }
+        for req in &def.require {
+            match self.eval(&req.cond, f) {
+                Ok(Val::Bool(true)) => {}
+                Ok(_) => {
+                    let mut r = Rejection::new(req.code.as_str(), req.message.as_str());
+                    for (k, e) in &req.details {
+                        if let Ok(v) = self.int(e, f) {
+                            r = r.with(k, Json::from(v));
+                        }
+                    }
+                    return Err(r);
+                }
+                Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
+            }
+        }
+        Ok(costs)
+    }
+
     fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
         if let Some((r, t)) = &self.st.outcome {
             return Err(Rejection::new("game_over", format!("the run ended ({r} at tick {t}); every command is refused")));
@@ -2553,43 +2606,26 @@ impl Core<'_> {
             });
         }
         let f = Frame { args: &args, ..Frame::default() };
-        let mut costs = Vec::with_capacity(def.cost.len());
-        for (res, e) in &def.cost {
-            let need = self.int(e, &f).map_err(|e| Rejection::new(e.code, e.message))?;
-            let have = self.st.res[usize::from(*res)];
-            let name = &self.r.resources[usize::from(*res)].id;
-            if need < 0 {
-                return Err(Rejection::new("invalid_cost", format!("the {name} cost of '{}' came to {need}; a cost can't be negative (use an action to pay out)", def.id)).with("cost", Json::from(need)));
+        // Costs and requirements may draw random numbers (and note diagnostics): a refused
+        // command changes nothing, so those are put back on every refusal, and the snapshot
+        // that undoes the command holds them as they were before it.
+        let saved = (self.st.rngs.clone(), self.st.diag.clone());
+        let costs = match self.command_checks(def, &f) {
+            Ok(c) => c,
+            Err(r) => {
+                (self.st.rngs, self.st.diag) = saved;
+                return Err(r);
             }
-            if have < need {
-                return Err(Rejection::new(format!("not_enough_{name}"), format!("needs {need} {name}, has {have}"))
-                    .with("need", Json::from(need))
-                    .with("have", Json::from(have)));
-            }
-            costs.push((*res, need));
-        }
-        for req in &def.require {
-            match self.eval(&req.cond, &f) {
-                Ok(Val::Bool(true)) => {}
-                Ok(_) => {
-                    let mut r = Rejection::new(req.code.as_str(), req.message.as_str());
-                    for (k, e) in &req.details {
-                        if let Ok(v) = self.int(e, &f) {
-                            r = r.with(k, Json::from(v));
-                        }
-                    }
-                    return Err(r);
-                }
-                Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
-            }
-        }
+        };
         // The rollback snapshot copies the state, so it costs that much, from the commands' own
         // budget (the tick's phases keep theirs).
         let cost = self.st.cells + self.st.pending.len() as u64 + self.st.ents.len() as u64;
         if self.spend(cost as usize) {
+            (self.st.rngs, self.st.diag) = saved;
             return Err(Rejection::new("work_limit", "this tick's command budget is spent (many commands over a large state); send the rest next tick"));
         }
-        let snapshot = self.st.clone();
+        let mut snapshot = self.st.clone();
+        (snapshot.rngs, snapshot.diag) = saved;
         for (res, need) in costs {
             let cur = self.st.res[usize::from(res)];
             self.set_res(res, cur.saturating_sub(need));

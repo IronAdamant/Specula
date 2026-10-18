@@ -90,6 +90,6 @@ post_fxaa = 0.3
 # plus one per entity plus one), so steps land on the same engine ticks on every machine. One setting for
 # every adapter.
 # [lex_live]
-# work_per_tick = 2000000       # work all runs together may do per engine tick; past it a run falls behind
-# step_work = 5000000           # work one Lex tick may do (at most Lex's own cap); past it the run halts
+# work_per_tick = 50000         # work all runs together may do per engine tick (about 3 ms on the iGPU laptop); a step that overspends is a debt the run pays back by pausing
+# step_work = 250000            # work one Lex tick may do (about a frame; at most Lex's own cap of 5000000); past it the tick stops and the run halts
 # backstop_ms = 1000            # wall time one Lex tick may take (not deterministic: a backstop only)

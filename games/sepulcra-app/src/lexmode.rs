@@ -269,6 +269,52 @@ mod tests {
         assert_eq!((tick, hash, outcome.as_deref()), (lex.sim.tick(), lex.sim.hash(), Some("won")), "the replay reaches the same Lex hash");
     }
 
+    /// Sepulcra's rule set, run live (`lex_live`), keeps pace with the engine at the default
+    /// live limits: every Lex tick of a whole game (the work it does, plus one per entity) is
+    /// replayed through the live credit model at 30 and 60 engine ticks a second.
+    #[test]
+    fn sepulcra_keeps_pace_live_at_the_default_limits() {
+        let limits = specula::LEX_LIVE_LIMITS;
+        let content = Arc::new(Content::builtin());
+        let script = Script::parse(crate::tools::LAYOUTS[0].1, &content, "centre").unwrap();
+        let mut player = sepulcra::script::Player::new(script);
+        let mut state = State::new(Arc::clone(&content), 5);
+        let mut lex = LexRules::new(&content, 5).unwrap();
+        let mut ev = Vec::new();
+        let mut costs = Vec::new();
+        while state.outcome() == sepulcra::Outcome::Running && state.tick() < 40_000 {
+            for c in player.drive(&mut state, &mut ev) {
+                lex.follow(&state, &c);
+            }
+            state.step_into(&[], &mut ev);
+            ev.clear();
+            lex.step(&state);
+            costs.push(lex.sim.tick_work() + lex.sim.entities().len() as u64 + 1);
+        }
+        assert_eq!(lex.outcome(), Some("won"));
+        let max = *costs.iter().max().unwrap();
+        let mean = costs.iter().sum::<u64>() / costs.len() as u64;
+        println!("Sepulcra live cost per Lex tick: mean {mean}, max {max} (allowance {} per engine tick, step cap {})", limits.work_per_tick, limits.step_work);
+        assert!(max < limits.step_work, "no Lex tick of Sepulcra comes near the step cap: {max}");
+        for engine_hz in [30u64, 60] {
+            // The credit model of lex_live's tick (one run).
+            let share = limits.work_per_tick as i64;
+            let (mut credit, mut done, mut worst_behind) = (0i64, 0usize, 0u64);
+            let mut tick = 0u64;
+            while done < costs.len() {
+                credit = (credit + share).min(share);
+                let target = ((tick + 1) * 30 / engine_hz) as usize;
+                while done < target.min(costs.len()) && credit > 0 {
+                    credit -= costs[done] as i64;
+                    done += 1;
+                }
+                worst_behind = worst_behind.max(target.min(costs.len()).saturating_sub(done) as u64);
+                tick += 1;
+            }
+            assert!(worst_behind <= 2, "at {engine_hz} Hz the live run falls {worst_behind} Lex ticks behind");
+        }
+    }
+
     /// Lex mode's refusals carry Lex's own details: the dust an upgrade needs and has, and the
     /// enemy in a wall's way (as the game's id), equal to what the reference would say.
     #[test]

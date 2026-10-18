@@ -27,6 +27,8 @@ pub mod journal;
 pub mod leases;
 pub mod logic;
 mod lex_live;
+/// Live Lex runs' work limits (perf.toml `[lex_live]`), for games that size their sets to them.
+pub use lex_live::{Limits as LexLiveLimits, LIMITS as LEX_LIVE_LIMITS};
 mod lex_tools;
 mod luts;
 pub mod meshes;
@@ -1302,6 +1304,7 @@ impl Engine {
             let frame_zone = profile::zone("frame");
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
             self.serve_captures();
@@ -1409,6 +1412,7 @@ impl Engine {
             self.advance_clock();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
             self.serve_captures();

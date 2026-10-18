@@ -142,6 +142,11 @@ impl ModuleInput {
         Ok(self.holds_json())
     }
 
+    /// Ends an agent's hold of `name` (whatever its kind), as if released.
+    pub fn release(&mut self, name: &str) {
+        self.holds.remove(name);
+    }
+
     pub fn holds_json(&self) -> Json {
         Json::obj(self.holds.iter().map(|(n, h)| {
             (n.as_str(), Json::obj([("value", Json::arr(h.value.iter().map(|v| Json::from(*v)))), ("ticks_left", Json::from(h.ticks_left))]))

@@ -508,15 +508,20 @@ on the main thread every engine tick, after the hosted game and the modules, by 
 `tick_hz` has accumulated (a 30 Hz set under a 60 Hz engine steps every other tick), so `time_control` pauses, steps
 and fast-forwards it with everything else. At most 4 runs at once.
 
-- **Budgets, in work, not time (F2).** All live runs together may do 2,000,000 units of Lex work per engine tick
-  (each Lex tick costs its `tick_work`, plus one per entity, plus one; they take turns going first): a run short of
-  its target tick when that is spent falls behind (`behind` in `status`) and catches up on later ticks. A Lex tick
-  that does more than 5,000,000 units (its phases were cut short) **halts** the run with `work_limit`. Both depend
-  only on the rules and the state, so presentation and hook writes (which are in the world hash) land on the same
-  engine ticks on any machine. Wall time is only a backstop: a Lex tick past 1 s halts the run with `tick_overrun`,
-  marked `deterministic: false`. A run whose in-process native panics halts too (`native_panicked`). A halted run
-  (`halted: {error, message, tick, deterministic}` in `status`) takes no more commands and is stopped and started
-  again by an agent. The engine goes on.
+- **Budgets, in work, not time (F2, F3).** Each engine tick, the live runs share 50,000 units of Lex work (each of
+  n runs gets a credit of 50,000 / n; each Lex tick costs its `tick_work`, plus one per entity, plus one; input
+  commands cost one per entity, plus one). A run steps while it has credit, so the step that overspends it leaves a
+  **debt**: the run pauses (`behind` in `status`, `work.credit` negative) until later engine ticks have paid it back,
+  then catches up. A heavy set therefore slows down instead of holding the engine's thread every frame. One Lex tick
+  may do at most 250,000 units: past that it stops part-way and the run **halts** with `work_limit` (not
+  resumable). Both limits depend only on the rules and the state, so presentation and hook writes (which are in the
+  world hash) land on the same engine ticks on any machine. Calibration (2026-10-18, release build, the reference
+  iGPU laptop's CPU): 40-60 ns a unit, so the allowance is about 3 ms a frame on average and the step cap about
+  10-15 ms. Sepulcra's set costs 367 units a Lex tick on average, 1,135 at most, over a whole game
+  (`sepulcra_keeps_pace_live_at_the_default_limits`). Wall time is only a backstop: a Lex tick past 1 s halts the run
+  with `tick_overrun`, marked `deterministic: false`. A run whose in-process native panics halts too
+  (`native_panicked`). A halted run (`halted: {error, message, tick, deterministic, resumable}` in `status`) takes
+  no more commands. The engine goes on.
 
 - **Presentation.** Each live entity matching a `present` rule (`{tags, spawn}`, first match wins; default: every
   entity as a 0.5 m cube) is a world entity `/lex_live/<set>/e<id>` (props `lex_live: {id, archetype}`), moved to
@@ -556,6 +561,9 @@ and fast-forwards it with everything else. At most 4 runs at once.
   still replays headless); refusals land in `status.recent`. **Who:** an action an agent holds fires as that agent:
   its path claim on the run is checked, its claims cover what the command's hooks change, and the journal says `by`
   it, exactly like its own `command`; window and gamepad input is the local player's, journaled `by: "input"`.
+  The two are kept apart per action (a window press of an action an agent holds fires once more, as the player's),
+  one agent holds an action at a time (`held_by_another`), `input {ticks}` counts the run's own Lex ticks, and a
+  hold ends with its agent: when its session closes or it goes by another name (`hold_ended` in `recent`).
   **Bounds:** at most 8 input commands per run per engine tick, each charged to the work allowance (the rest are
   dropped and counted in `status.input_commands`), and input may fill only half of the journal, so agents'
   commands always have room (past it input is refused with `input_journal_full`). A hosted game can still turn its
@@ -563,10 +571,11 @@ and fast-forwards it with everything else. At most 4 runs at once.
 - **Commands cost no copy of the run.** Lex undoes a refused command, and one whose native panics, from the
   snapshot it takes anyway; `Sim::apply_undoable` keeps that snapshot only when the command reached a native, so a
   live command whose hooks' world changes a claim refuses is put back without the run being copied first.
-- **Halts and restarts.** `halted` says whether the run is `resumable`: a work-cap halt (the tick finished) and a
-  panic inside a command (the command was undone) leave the state whole, so `resume` carries on from that tick; a
-  panic in a tick, or the wall-time backstop, cut a tick off part-way, so only `restart` (tick 0 again, with the
-  same seed, params, `present` and `input`) runs it again.
+- **Halts and restarts.** `halted` says whether the run is `resumable`: a panic inside a command (the command was
+  undone), and a `work_limit` from Lex's own cap when `step_work` is set to it (the tick finished, as headless),
+  leave the state whole, so `resume` carries on from that tick; the live step cap below Lex's, a panic in a tick, or
+  the wall-time backstop cut a tick off part-way, so only `restart` (tick 0 again, with the same seed, params,
+  `present` and `input`) runs it again.
 - **Settings.** perf.toml `[lex_live]` sets `work_per_tick`, `step_work` and `backstop_ms` (one setting for
   every adapter, since the work limits decide where steps land); `status` shows them under `budget`, and each run's
   `work: {last_tick, this_engine_tick}`.

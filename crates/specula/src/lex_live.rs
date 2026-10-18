@@ -78,8 +78,12 @@ pub struct Limits {
     pub backstop: Duration,
 }
 
-/// The engine's limits: about 2-10 ms of Lex work per engine tick on the reference iGPU laptop.
-pub const LIMITS: Limits = Limits { work_per_tick: 2_000_000, step_work: specula_lex::sim::MAX_WORK_PER_TICK, backstop: Duration::from_secs(1) };
+/// The engine's limits, calibrated to a frame on the reference iGPU laptop (see LEX.md, "Live
+/// Lex", for the measurement: 40-60 ns a unit in release): 50k units an engine tick is about
+/// 3 ms, and one Lex tick may do 250k (about 10-15 ms, a frame) before the run halts (a step
+/// that overspends leaves a debt that pauses the run for the engine ticks that pay it
+/// back). perf.toml `[lex_live]` changes them.
+pub const LIMITS: Limits = Limits { work_per_tick: 50_000, step_work: 250_000, backstop: Duration::from_secs(1) };
 /// Refusals and hook failures kept for `status`.
 const RECENT: usize = 16;
 /// `journal` pages (default, most), and the most bytes of commands one page lists.
@@ -128,13 +132,28 @@ pub enum Edge {
     Held,
 }
 
-/// A run's input: the actions (window frames and agents' holds in, one state per engine tick
-/// out) and the bindings.
+/// A run's input: the actions, one state per engine tick, and the bindings. The local player's
+/// window and gamepad input and the agents' holds are kept apart per action, so neither is
+/// ever taken for the other.
 struct LiveInput {
+    spec: Arc<InputSpec>,
+    /// Window frames and gamepads (the local player).
+    window: crate::logic::input::ModuleInput,
+    /// Agents' holds.
+    agents: crate::logic::input::ModuleInput,
     /// Who holds each action an agent holds (its commands run as that agent's).
     holders: BTreeMap<String, Holder>,
-    spec: Arc<InputSpec>,
-    actions: crate::logic::input::ModuleInput,
+}
+
+impl LiveInput {
+    fn new(spec: &Arc<InputSpec>) -> Result<LiveInput, specula_input::InputError> {
+        Ok(LiveInput {
+            spec: Arc::clone(spec),
+            window: crate::logic::input::ModuleInput::new(&spec.actions)?,
+            agents: crate::logic::input::ModuleInput::new(&spec.actions)?,
+            holders: BTreeMap::new(),
+        })
+    }
 }
 
 /// At most this many input bindings per run.
@@ -204,6 +223,9 @@ struct Run {
     /// The work of the last Lex tick, and what the run spent of this engine tick's allowance.
     last_work: u64,
     spent: u64,
+    /// What the run may still spend (its share of each engine tick's allowance; negative: the
+    /// debt a heavy step left, paid back before it steps again).
+    credit: i64,
     /// Commands input journaled (at most [`MAX_INPUT_JOURNAL`]), and input commands dropped
     /// past the per-tick cap or the allowance.
     input_journaled: usize,
@@ -412,6 +434,15 @@ impl crate::Engine {
         lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz })
     }
 
+    /// Ends live-input holds whose agents are gone (each frame while any hold is on).
+    pub(crate) fn lex_live_end_holds(&mut self, server: &specula_protocol::Server) {
+        if !self.lex_live.has_holds() {
+            return;
+        }
+        let live: Vec<(String, String)> = server.all_sessions().iter().map(|s| (s.id.clone(), self.swarm.agent_name(s))).collect();
+        self.lex_live.end_holds(&live);
+    }
+
     /// One engine tick of every live run (after the game and the modules).
     pub(crate) fn lex_live_tick(&mut self) {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
@@ -548,29 +579,37 @@ struct Holder {
 /// edges (`pressed`, `released`) once, and `held` bindings separately (the caller fires those
 /// once per Lex tick stepped).
 fn input_commands(input: &mut LiveInput) -> (Vec<Fired>, Vec<Fired>) {
-    let states = input.actions.take_tick();
+    let window = input.window.take_tick();
+    let agents = input.agents.take_tick();
     let (mut edges, mut held) = (Vec::new(), Vec::new());
-    for b in &input.spec.bindings {
-        let Some(s) = states.get(&b.action).and_then(|v| v.as_list()) else { continue };
-        let flag = |i: usize| s.get(i).and_then(|v| v.as_bool()).unwrap_or(false);
-        let fires = match b.on {
-            Edge::Pressed => flag(1),
-            Edge::Released => flag(2),
-            Edge::Held => flag(0),
-        };
-        if fires {
-            let value = |i: usize| s.get(i).and_then(|v| v.as_f32()).unwrap_or(0.0);
-            let (x, y) = (value(3), value(4));
-            let f = Fired { command: b.command.clone(), args: substitute(&b.args, x, y), who: input.holders.get(&b.action).cloned() };
-            if b.on == Edge::Held {
-                held.push(f);
-            } else {
-                edges.push(f);
+    // The local player's bindings first, then the agents' (each by who holds the action).
+    for (states, by_agent) in [(&window, false), (&agents, true)] {
+        for b in &input.spec.bindings {
+            let Some(s) = states.get(&b.action).and_then(|v| v.as_list()) else { continue };
+            let flag = |i: usize| s.get(i).and_then(|v| v.as_bool()).unwrap_or(false);
+            let fires = match b.on {
+                Edge::Pressed => flag(1),
+                Edge::Released => flag(2),
+                Edge::Held => flag(0),
+            };
+            if fires {
+                let value = |i: usize| s.get(i).and_then(|v| v.as_f32()).unwrap_or(0.0);
+                let (x, y) = (value(3), value(4));
+                let who = if by_agent { input.holders.get(&b.action).cloned() } else { None };
+                if by_agent && who.is_none() {
+                    continue;
+                }
+                let f = Fired { command: b.command.clone(), args: substitute(&b.args, x, y), who };
+                if b.on == Edge::Held {
+                    held.push(f);
+                } else {
+                    edges.push(f);
+                }
             }
         }
     }
     // An agent's hold is over once its action is idle again (the release has fired).
-    input.holders.retain(|action, _| states.get(action).is_some());
+    input.holders.retain(|action, _| agents.get(action).is_some());
     (edges, held)
 }
 
@@ -579,19 +618,19 @@ fn input_commands(input: &mut LiveInput) -> (Vec<Fired>, Vec<Fired>) {
 /// gamepads as the run's own input. Past [`MAX_INPUT_COMMANDS_PER_TICK`] in this engine tick, or
 /// past the work allowance, the rest are dropped (counted in status).
 #[allow(clippy::too_many_arguments)]
-fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, spent: &mut u64, limits: Limits, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
+fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
     for f in list {
         if run.halted.is_some() || run.sim.outcome().is_some() {
             return;
         }
-        if *fired_n >= MAX_INPUT_COMMANDS_PER_TICK || *spent >= limits.work_per_tick {
+        if *fired_n >= MAX_INPUT_COMMANDS_PER_TICK || run.credit <= 0 {
             run.input_dropped += 1;
             continue;
         }
         *fired_n += 1;
         // A command costs about what Lex copies to undo it: the state, by its entities.
         let cost = run.sim.entities().len() as u64 + 1;
-        *spent = spent.saturating_add(cost);
+        run.credit = run.credit.saturating_sub(i64::try_from(cost).unwrap_or(i64::MAX));
         run.spent = run.spent.saturating_add(cost);
         let path = format!("/{ROOT}/{}", run.agent.trim_start_matches("lex:"));
         let (by, result) = match &f.who {
@@ -633,7 +672,31 @@ impl Live {
     pub(crate) fn feed_window(&mut self, events: &[specula_platform::Event], pads: &[specula_platform::gamepad::GamepadState], dt_s: f32) {
         for run in self.runs.values_mut() {
             if let Some(i) = &mut run.input {
-                i.actions.feed(events, pads, dt_s);
+                i.window.feed(events, pads, dt_s);
+            }
+        }
+    }
+
+    pub(crate) fn has_holds(&self) -> bool {
+        self.runs.values().any(|r| r.input.as_ref().is_some_and(|i| !i.holders.is_empty()))
+    }
+
+    /// Ends the holds of agents that are gone: their session closed, or it now goes by another
+    /// name (`live`: each open session's id and agent name). Their actions are released and
+    /// fire nothing more as theirs.
+    pub(crate) fn end_holds(&mut self, live: &[(String, String)]) {
+        for run in self.runs.values_mut() {
+            let Some(input) = &mut run.input else { continue };
+            let gone: Vec<(String, String)> = input
+                .holders
+                .iter()
+                .filter(|(_, h)| !live.iter().any(|(sid, name)| h.session.as_deref() == Some(sid.as_str()) && *name == h.name))
+                .map(|(a, h)| (a.clone(), h.name.clone()))
+                .collect();
+            for (action, name) in gone {
+                input.agents.release(&action);
+                input.holders.remove(&action);
+                push_recent(&mut run.recent, Json::obj([("event", Json::from("hold_ended")), ("action", Json::from(action.as_str())), ("by", Json::from(name.as_str())), ("why", Json::from("the agent's session closed or it goes by another name"))]));
             }
         }
     }
@@ -684,18 +747,27 @@ impl Live {
                 if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{set}"), w, "hold this live run's input actions") {
                     return world_error(&e);
                 }
+                let lex_hz = u64::from(run.sim.rules().tick_hz.max(1));
                 let Some(input) = &mut run.input else {
                     return error("no_input", format!("set '{set}' was started without input bindings: lex_live {{action: start, input: {{actions, bindings}}}}"));
                 };
-                match input.actions.hold(&actions, ticks) {
+                // One agent holds an action at a time.
+                let holder = Holder { name: by.to_owned(), session: w.session.map(str::to_owned) };
+                for (name, _) in actions.as_object().unwrap_or_default() {
+                    if let Some(other) = input.holders.get(name).filter(|h| **h != holder) {
+                        return crate::lex_tools::err_with("held_by_another", format!("'{name}' is held by {}; it fires as theirs until they release it", other.name), vec![("action", Json::from(name.as_str())), ("holder", Json::from(other.name.as_str()))]);
+                    }
+                }
+                // `ticks` are the run's own (Lex) ticks: held for that long at the engine's rate.
+                let engine_ticks = (ticks * u64::from(env.hz.max(1))).div_ceil(lex_hz).min(crate::logic::input::MAX_HOLD_TICKS);
+                match input.agents.hold(&actions, engine_ticks) {
                     Ok(held) => {
                         // The commands these actions fire run as this agent (claim-checked).
-                        let holder = Holder { name: by.to_owned(), session: w.session.map(str::to_owned) };
                         for (name, _) in actions.as_object().unwrap_or_default() {
                             input.holders.insert(name.clone(), holder.clone());
                         }
-                        let note = "held actions fire their bindings from the next engine tick, as your commands: your claims apply and the journal says by you";
-                        ToolOutput::text(Json::obj([("set", Json::from(set.as_str())), ("held", held), ("note", Json::from(note))]).to_pretty())
+                        let note = "held actions fire their bindings from the next engine tick, as your commands (your claims apply, the journal says by you); held bindings fire once per Lex tick";
+                        ToolOutput::text(Json::obj([("set", Json::from(set.as_str())), ("held", held), ("lex_ticks", Json::from(ticks)), ("engine_ticks", Json::from(engine_ticks)), ("note", Json::from(note))]).to_pretty())
                     }
                     Err(m) => ToolOutput::error(crate::tools::argument_error(&m).to_pretty()),
                 }
@@ -813,8 +885,8 @@ impl Live {
         };
         let input = match &s.input {
             None => None,
-            Some(spec) => match crate::logic::input::ModuleInput::new(&spec.actions) {
-                Ok(actions) => Some(LiveInput { holders: BTreeMap::new(), spec: Arc::clone(spec), actions }),
+            Some(spec) => match LiveInput::new(spec) {
+                Ok(i) => Some(i),
                 Err(e) => return error("invalid_input", format!("input.actions: {e}")),
             },
         };
@@ -849,6 +921,7 @@ impl Live {
             behind: 0,
             last_work: 0,
             spent: 0,
+            credit: 0,
             input_journaled: 0,
             input_dropped: 0,
             halted: None,
@@ -865,13 +938,16 @@ impl Live {
         ToolOutput::text(j.to_pretty())
     }
 
-    /// One engine tick: each run steps the Lex ticks its rate has accumulated, within `limits`
-    /// for all of them together, then shows what changed.
+    /// One engine tick: each run steps the Lex ticks its rate has accumulated, within its share
+    /// of `limits.work_per_tick`, then shows what changed. The share is a credit: a step that
+    /// overspends it leaves the run in debt, and it steps again only once later engine ticks
+    /// have paid that back, so a heavy set slows down (deterministically) instead of holding the
+    /// engine's thread.
     pub(crate) fn tick(&mut self, env: Env, limits: Limits) {
         let Env { world, logic, swarm, tick, hz, .. } = env;
         let hz = hz.max(1);
-        let mut spent: u64 = 0;
         let n = self.runs.len().max(1);
+        let share = i64::try_from((limits.work_per_tick / n as u64).max(1)).unwrap_or(i64::MAX);
         let first = self.next_first % n;
         self.next_first = self.next_first.wrapping_add(1);
         let order: Vec<String> = self.runs.keys().cycle().skip(first).take(self.runs.len()).cloned().collect();
@@ -881,14 +957,15 @@ impl Live {
                 continue;
             }
             run.spent = 0;
+            run.credit = run.credit.saturating_add(share).min(share);
             // The run's input first: the edges its actions fire, at its current tick; `held`
             // bindings fire before each Lex tick stepped below (once per Lex tick, whatever the
-            // engine's rate). At most MAX_INPUT_COMMANDS_PER_TICK, each charged to the allowance.
+            // engine's rate). At most MAX_INPUT_COMMANDS_PER_TICK, each charged to the credit.
             let mut fired_n = 0;
             let held = match &mut run.input {
                 Some(input) => {
                     let (edges, held) = input_commands(input);
-                    fire(run, edges, &mut fired_n, &mut spent, limits, world, logic, swarm, tick, hz);
+                    fire(run, edges, &mut fired_n, world, logic, swarm, tick, hz);
                     held
                 }
                 None => Vec::new(),
@@ -899,11 +976,13 @@ impl Live {
             let lex_hz = u64::from(run.sim.rules().tick_hz);
             let done = tick.saturating_sub(run.started) + 1;
             let target = (u128::from(done) * u128::from(lex_hz) / u128::from(hz)).min(u128::from(u32::MAX)) as u32;
+            // Below Lex's own cap, the live cap stops a tick part-way (deterministically).
+            let stop = (limits.step_work < specula_lex::sim::MAX_WORK_PER_TICK).then_some(limits.step_work);
             let mut steps = 0;
-            while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK && spent < limits.work_per_tick {
+            while run.sim.tick() < target && run.sim.outcome().is_none() && steps < MAX_STEPS_PER_TICK && run.credit > 0 {
                 if !held.is_empty() {
                     let now: Vec<Fired> = held.iter().map(|f| Fired { command: f.command.clone(), args: f.args.clone(), who: f.who.clone() }).collect();
-                    fire(run, now, &mut fired_n, &mut spent, limits, world, logic, swarm, tick, hz);
+                    fire(run, now, &mut fired_n, world, logic, swarm, tick, hz);
                     if run.halted.is_some() || run.sim.outcome().is_some() {
                         break;
                     }
@@ -912,26 +991,35 @@ impl Live {
                 let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: false };
                 let sim = &mut run.sim;
                 sim.set_deadline(Some(Instant::now() + limits.backstop));
+                sim.set_work_stop(stop);
                 let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.step_hosted(&[], &mut host)));
                 sim.set_deadline(None);
+                sim.set_work_stop(None);
                 if let Err(p) = stepped {
                     let message = format!("a native panicked: {}", panic_text(&*p));
                     halt(run, "native_panicked", message, true, false);
                     break;
                 }
+                let work = run.sim.tick_work();
+                let advice = "lighten the rules (fewer entities scanning each other, longer cooldowns), raise [lex_live] step_work in perf.toml, or simulate them headless with lex_simulate";
                 if run.sim.interrupted() {
-                    let message = format!("one Lex tick ran past {} ms of wall time (the live backstop), so the run stopped part-way through it; lighten the rules or simulate them headless with lex_simulate", limits.backstop.as_millis());
-                    halt(run, "tick_overrun", message, false, false);
+                    if stop.is_some_and(|s| work > s) {
+                        let message = format!("one Lex tick passed the live cap of {} units of work, so it stopped part-way; {advice}", limits.step_work);
+                        halt(run, "work_limit", message, true, false);
+                    } else {
+                        let message = format!("one Lex tick ran past {} ms of wall time (the live backstop), so the run stopped part-way through it; {advice}", limits.backstop.as_millis());
+                        halt(run, "tick_overrun", message, false, false);
+                    }
                     break;
                 }
-                let work = run.sim.tick_work();
                 if work > limits.step_work {
-                    let message = format!("one Lex tick did {work} units of work, past the live cap of {} (the rest of its phases were skipped); lighten the rules (fewer entities scanning each other, longer cooldowns) or simulate them headless with lex_simulate", limits.step_work);
+                    // Lex's own cap: the tick finished (its last behaviours skipped, as headless).
+                    let message = format!("one Lex tick did {work} units of work, past the live cap of {} (Lex skipped the rest of its behaviours, as it would headless); {advice}", limits.step_work);
                     halt(run, "work_limit", message, true, true);
                     break;
                 }
                 let cost = work + run.sim.entities().len() as u64 + 1;
-                spent = spent.saturating_add(cost);
+                run.credit = run.credit.saturating_sub(i64::try_from(cost).unwrap_or(i64::MAX));
                 run.spent = run.spent.saturating_add(cost);
                 run.last_work = work;
                 steps += 1;
@@ -1113,7 +1201,7 @@ fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json 
         ("shown", Json::from(run.shown.len())),
         ("hidden", Json::from(run.hidden)),
         ("behind", Json::from(run.behind)),
-        ("work", Json::obj([("last_tick", Json::from(run.last_work)), ("this_engine_tick", Json::from(run.spent))])),
+        ("work", Json::obj([("last_tick", Json::from(run.last_work)), ("this_engine_tick", Json::from(run.spent)), ("credit", Json::from(run.credit))])),
         ("input_commands", Json::obj([("journaled", Json::from(run.input_journaled)), ("max", Json::from(MAX_INPUT_JOURNAL)), ("dropped", Json::from(run.input_dropped))])),
         ("halted", run.halted.clone().unwrap_or(Json::Null)),
         ("commands", Json::from(run.journal.len())),
@@ -1138,7 +1226,7 @@ fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json 
             };
             Json::obj([("action", Json::from(b.action.as_str())), ("on", Json::from(on)), ("command", Json::from(b.command.as_str()))])
         }));
-        j.set("input", Json::obj([("actions", Json::arr(i.actions.names().map(Json::from))), ("bindings", bindings), ("held", i.actions.holds_json())]));
+        j.set("input", Json::obj([("actions", Json::arr(i.window.names().map(Json::from))), ("bindings", bindings), ("held", i.agents.holds_json()), ("holders", Json::Obj(i.holders.iter().map(|(a, h)| (a.clone(), Json::from(h.name.as_str()))).collect()))]));
     }
     j
 }
@@ -1310,7 +1398,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("action", t("string", "start, command, input, resume, restart, status (default), journal or stop.")),
                     ("input", Json::obj([("description", Json::from("start: {actions: {format: \"specula.input.v1\", actions: [{name, kind, bindings}]}, bindings: [{action, on?, command, args?}]}, or the id of a data item of the set holding it."))])),
                     ("actions", t("object", "input: {action: true | number | [x, y]} to hold, like logic_input.")),
-                    ("ticks", t("integer", "input: engine ticks to hold the actions (default 1; 0 releases).")),
+                    ("ticks", t("integer", "input: how many of the run's own Lex ticks to hold the actions (default 1; 0 releases); held bindings fire once per Lex tick.")),
                     ("set", t("string", "The rule set's name (it lives at /lex/<set>).")),
                     ("seed", t("integer", "start: the run's seed (default 1; a decimal string for values above 2^53).")),
                     ("params", t("object", "start: param overrides, param id -> value in the param's unit.")),
@@ -1529,9 +1617,12 @@ mod tests {
     fn live_runs_fall_behind_within_the_budget_and_overruns_halt_the_run() {
         let mut rig = Rig::new(30);
         rig.call(start(walkers_as_spheres()));
-        rig.ticks_with(10, Limits { work_per_tick: 0, ..LIMITS });
+        // An allowance of one unit: each step (at least 2 units) leaves a debt the next engine
+        // ticks pay back before the run steps again.
+        rig.ticks_with(10, Limits { work_per_tick: 1, ..LIMITS });
         let run = rig.run_status("t");
-        assert_eq!((run.get("tick").and_then(Json::as_u64), run.get("behind").and_then(Json::as_u64)), (Some(0), Some(10)), "{run}");
+        let (lex, behind) = (run.get("tick").and_then(Json::as_u64).unwrap(), run.get("behind").and_then(Json::as_u64).unwrap());
+        assert!(lex > 0 && lex < 10 && lex + behind == 10, "slowed, not stopped: {run}");
         rig.ticks(1);
         let run = rig.run_status("t");
         assert_eq!((run.get("tick").and_then(Json::as_u64), run.get("behind").and_then(Json::as_u64)), (Some(11), Some(0)), "caught up: {run}");
@@ -1704,6 +1795,87 @@ mod tests {
         assert!(rig.world.find_path("/counter/made").is_ok());
     }
 
+    /// Review round 4 (finding 1, probe.py heavy): a set doing far more work per Lex tick than an
+    /// engine tick allows doesn't step once every engine tick (holding the main thread): each
+    /// step's overspend is a debt that pauses the run until paid back, so it slows down, by the
+    /// same Lex ticks on a fast and on a slow machine; past `step_work` a tick stops and halts.
+    #[test]
+    fn a_heavy_set_slows_down_instead_of_holding_the_engine() {
+        struct Nap(u64);
+        impl specula_lex::NativeHook for Nap {
+            fn run(&self, _cx: &mut specula_lex::NativeCtx<'_, '_>) -> Result<(), String> {
+                std::thread::sleep(Duration::from_millis(self.0));
+                Ok(())
+            }
+        }
+        let heavy = |count: u32| {
+            format!(
+                r#"{{"lex": 1, "name": "heavy", "tick_hz": 30, "items": {{
+                "lane": {{"kind": "path", "points": [[0,0,0],[1,0,0]]}},
+                "nap": {{"kind": "native", "hook": "test.nap", "reason": "a test", "phase": "any"}},
+                "napping": {{"kind": "timer", "every": "1t", "do": [{{"native": "nap"}}]}},
+                "e": {{"kind": "archetype", "tags": ["enemy"], "attributes": {{"hp": "1000000pt"}},
+                      "behaviours": [{{"type": "health", "attribute": "hp"}},
+                                     {{"type": "attack", "targets": ["enemy"], "range": "1000m", "cooldown": "0.034s", "delivery": "pulse", "payload": [{{"damage": "0pt"}}]}}]}},
+                "waves": {{"kind": "waves", "waves": [{{"groups": [{{"archetype": "e", "count": {count}, "at": ["lane"], "every": "0s"}}]}}]}}}}}}"#
+            )
+        };
+        let trace = |count: u32, nap: u64| {
+            let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&heavy(count)).unwrap(), &Options::default()).unwrap().rules);
+            let mut rig = Rig::new(60);
+            rig.natives.insert("test.nap".into(), Arc::new(Nap(nap)) as Arc<dyn specula_lex::NativeHook>);
+            let s = Start { set: "heavy".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+            assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+            let mut out = Vec::new();
+            for _ in 0..90 {
+                rig.ticks(1);
+                let run = rig.run_status("heavy");
+                out.push((run.get("tick").and_then(Json::as_u64).unwrap(), run.get("halted").and_then(|h| h.get("error")).cloned()));
+            }
+            (out, rig.run_status("heavy"))
+        };
+        // 200 entities pulsing at each other: about 160k units a Lex tick, past two engine ticks'
+        // allowance, under the step cap.
+        let (fast, run) = trace(200, 0);
+        let lex = fast.last().unwrap().0;
+        assert!(fast.iter().all(|t| t.1.is_none()), "never halted: {run}");
+        assert!(lex > 5 && lex < 45, "slowed down: {lex} Lex ticks in 90 engine ticks (45 wanted): {run}");
+        let steps_per_engine_tick = fast.windows(2).map(|w| w[1].0 - w[0].0).max().unwrap();
+        assert_eq!(steps_per_engine_tick, 1, "at most one (overspending) step per engine tick");
+        let (slow, _) = trace(200, 2);
+        assert_eq!(fast, slow, "the same Lex ticks on a slow machine");
+        // 2,000 entities: about 4M units a Lex tick. The first tick stops at the step cap and
+        // the run halts; the engine never runs a whole such tick.
+        let (huge, run) = trace(2_000, 0);
+        let h = run.get("halted").cloned().unwrap();
+        assert_eq!((h.get("error"), h.get("resumable"), h.get("deterministic")), (Some(&Json::from("work_limit")), Some(&Json::Bool(false)), Some(&Json::Bool(true))), "{run}");
+        assert!(huge.last().unwrap().0 <= 1, "{run}");
+    }
+
+    /// How long a unit of live work takes on this machine (for calibrating [`LIMITS`]): run with
+    /// `cargo test --release -p specula --lib measure_live_work -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_live_work_unit_time() {
+        for count in [100u32, 300, 700] {
+            let doc = format!(
+                r#"{{"lex": 1, "name": "m", "tick_hz": 30, "items": {{"lane": {{"kind": "path", "points": [[0,0,0],[1,0,0]]}},
+                "e": {{"kind": "archetype", "tags": ["enemy"], "attributes": {{"hp": "1000000pt"}}, "behaviours": [{{"type": "health", "attribute": "hp"}}, {{"type": "attack", "targets": ["enemy"], "range": "1000m", "cooldown": "0.034s", "delivery": "pulse", "payload": [{{"damage": "0pt"}}]}}]}},
+                "waves": {{"kind": "waves", "waves": [{{"groups": [{{"archetype": "e", "count": {count}, "at": ["lane"], "every": "0s"}}]}}]}}}}}}"#
+            );
+            let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&doc).unwrap(), &Options::default()).unwrap().rules);
+            let mut sim = Sim::new(rules, 1, &Default::default()).unwrap();
+            sim.run_to(5);
+            let (mut units, t0) = (0u64, Instant::now());
+            for _ in 0..30 {
+                sim.step(&[]);
+                units += sim.tick_work() + sim.entities().len() as u64 + 1;
+            }
+            let ns = t0.elapsed().as_nanos() as f64 / units as f64;
+            println!("{count} entities: {} units a Lex tick, {ns:.1} ns a unit, {:.2} ms a tick", units / 30, ns * units as f64 / 30.0 / 1e6);
+        }
+    }
+
     /// An in-process native that panics halts its run (in a tick or in a command); the engine
     /// goes on.
     /// Generic input: the set's own data item binds Space to `build` (and a held stick to a
@@ -1818,6 +1990,64 @@ mod tests {
         assert!(!out.is_error, "an agent's own command still applies: {}", json(&out));
     }
 
+    /// Review round 4 (finding 3, leave.py): a hold ends with its agent: when its session closes,
+    /// or the session goes by another name, nothing more fires as that agent.
+    #[test]
+    fn holds_end_with_their_agents_session() {
+        let mut rig = Rig::new(30);
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        let ann_live = [("aaaaaa11".to_owned(), "ann".to_owned())];
+        for gone in [&[][..], &[("aaaaaa11".to_owned(), "annie".to_owned())][..]] {
+            assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 1000 }).is_error);
+            rig.ticks(5);
+            rig.live.end_holds(&ann_live);
+            assert!(rig.live.has_holds(), "ann is still here");
+            let before = rig.run_status("t").get("commands").and_then(Json::as_u64).unwrap();
+            assert!(before > 0);
+            rig.live.end_holds(gone);
+            assert!(!rig.live.has_holds());
+            rig.ticks(20);
+            let run = rig.run_status("t");
+            assert_eq!(run.get("commands").and_then(Json::as_u64), Some(before), "nothing more as ann: {run}");
+            assert!(run.get("recent").and_then(Json::as_array).unwrap().iter().any(|r| r.get("event") == Some(&Json::from("hold_ended"))), "{run}");
+        }
+    }
+
+    /// Review round 4 (finding 4): `input {ticks}` counts the run's Lex ticks (a held binding
+    /// fires once per Lex tick, so 5 ticks fire 5 commands under a faster engine), and the local
+    /// player's window input on an action an agent holds stays the player's.
+    #[test]
+    fn holds_count_lex_ticks_and_window_input_stays_the_players() {
+        let mut rig = Rig::new(60);
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.ticks(4);
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 5 }).is_error);
+        rig.ticks(30);
+        let j = json(&rig.call(LiveCall::Journal { set: "t".into(), offset: 0, limit: 100 }));
+        assert_eq!(j.get("total").and_then(Json::as_u64), Some(5), "5 Lex ticks held, 5 commands: {j}");
+        // Ann holds `tap` while the player presses it at the window: one command each, each
+        // attributed to whoever gave it.
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("tap", Json::Bool(true))]), ticks: 3 }).is_error);
+        let down = specula_platform::Event::KeyDown { code: u32::from(b'T'), repeat: false };
+        let up = specula_platform::Event::KeyUp { code: u32::from(b'T') };
+        rig.live.feed_window(&[down], &[], 0.01);
+        rig.live.feed_window(&[up], &[], 0.01);
+        rig.ticks(2);
+        let j = json(&rig.call(LiveCall::Journal { set: "t".into(), offset: 5, limit: 100 }));
+        let by: Vec<Json> = j.get("commands").and_then(Json::as_array).unwrap().iter().filter_map(|c| c.get("by").cloned()).collect();
+        assert_eq!(by, vec![Json::from("input"), Json::from("ann")], "{j}");
+        // Another agent can't take over ann's hold.
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let out = rig.live.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("tap", Json::Bool(true))]), ticks: 3 }, "bob", bob_w, Env { world: &mut rig.world, logic: &mut rig.logic, swarm: &mut rig.swarm, natives: &rig.natives, tick: rig.tick, hz: rig.hz });
+        assert!(out.is_error && json(&out).get("error") == Some(&Json::from("held_by_another")), "{}", json(&out));
+    }
+
     #[test]
     fn input_bindings_make_a_run_playable_without_a_hosted_game() {
         let controls = r#""controls": {"kind": "data", "value": {
@@ -1872,18 +2102,24 @@ mod tests {
     #[test]
     fn halted_runs_resume_or_restart() {
         let mut rig = Rig::new(30);
-        // Pulsing walkers: each tick does some work, past a cap of 10.
-        let items = RULES.replace(
-            r#"{"type": "follow_path", "path": "@spawn", "speed": "2m/s", "on_arrive": [{"despawn": "self"}]}"#,
-            r#"{"type": "follow_path", "path": "@spawn", "speed": "2m/s", "on_arrive": [{"despawn": "self"}]}, {"type": "attack", "targets": ["enemy"], "range": "100m", "cooldown": "0.034s", "delivery": "pulse", "payload": [{"damage": "0pt"}]}"#,
-        );
+        // A native that panics in a command: the command is undone, so the state is whole.
+        struct CmdBoom;
+        impl specula_lex::NativeHook for CmdBoom {
+            fn run(&self, _cx: &mut specula_lex::NativeCtx<'_, '_>) -> Result<(), String> {
+                panic!("boom in a command");
+            }
+        }
+        let items = RULES.replace(r#""hook": "fx/glow""#, r#""hook": "test.cmdboom""#);
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
+        rig.natives.insert("test.cmdboom".into(), Arc::new(CmdBoom) as Arc<dyn specula_lex::NativeHook>);
         let s = Start { set: "t".into(), rules, seed: 3, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
-        rig.ticks_with(60, Limits { step_work: 1, ..LIMITS });
+        rig.ticks(30);
+        assert!(rig.call(LiveCall::Command { set: "t".into(), name: "ping".into(), args: Json::Null }).is_error);
+        rig.ticks(5);
         let run = rig.run_status("t");
         let h = run.get("halted").cloned().unwrap();
-        assert_eq!((h.get("error"), h.get("resumable")), (Some(&Json::from("work_limit")), Some(&Json::Bool(true))), "{run}");
+        assert_eq!((h.get("error"), h.get("resumable")), (Some(&Json::from("native_panicked")), Some(&Json::Bool(true))), "{run}");
         let at = run.get("tick").and_then(Json::as_u64).unwrap();
         let out = rig.call(LiveCall::Resume { set: "t".into() });
         assert!(!out.is_error, "{}", json(&out));

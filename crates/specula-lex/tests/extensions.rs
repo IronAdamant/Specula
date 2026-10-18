@@ -505,3 +505,42 @@ fn commands_are_undoable_without_a_copy_unless_they_reach_a_native() {
     assert!(panicked.is_err());
     assert_eq!((s.resource("gold"), s.hash()), (Some(2), before), "a panicking native leaves the run as it was");
 }
+
+/// Review round 4 (finding 2, undo_rng.rs): random draws a command's `cost` or `require` makes
+/// are put back when it is refused or undone (refused commands change nothing, F2).
+#[test]
+fn refused_and_undone_commands_leave_the_random_streams_as_they_were() {
+    let text = r#"{"lex": 1, "name": "u", "tick_hz": 30, "items": {
+      "gold": {"kind": "resource", "start": 100},
+      "fx": {"kind": "native", "hook": "mod/fx", "reason": "a world effect"},
+      "lucky": {"kind": "command", "require": [{"when": "rand(loot, 0, 9) == 99", "code": "unlucky"}], "do": [{"add": "gold", "amount": 1}]},
+      "pricey": {"kind": "command", "cost": {"gold": "rand(loot, 1000, 2000)"}, "do": []},
+      "pay": {"kind": "command", "cost": {"gold": "rand(loot, 1, 9)"}, "do": [{"native": "fx"}]},
+      "roll": {"kind": "command", "do": [{"add": "gold", "amount": "rand(loot, 1, 9)"}]}
+    }}"#;
+    let rules = Arc::new(compile(&Document::parse(text).unwrap(), &Options::default()).unwrap().rules);
+    let fresh = || Sim::new_hosted(rules.clone(), 1, &Natives::new()).unwrap();
+    let call = |s: &Sim, n: &str| s.parse_command(n, &Json::Null).unwrap();
+    let mut host = Recorder::default();
+    // Reference: nothing happened, then roll.
+    let mut a = fresh();
+    a.step(&[]);
+    a.apply_hosted(&call(&a, "roll"), &mut host).unwrap();
+    a.step(&[]);
+    // Refused by a requirement, and by a cost, that both draw; then roll.
+    let mut b = fresh();
+    b.step(&[]);
+    assert_eq!(b.apply_hosted(&call(&b, "lucky"), &mut host).unwrap_err().code, "unlucky");
+    assert_eq!(b.apply_hosted(&call(&b, "pricey"), &mut host).unwrap_err().code, "not_enough_gold");
+    b.apply_hosted(&call(&b, "roll"), &mut host).unwrap();
+    b.step(&[]);
+    assert_eq!((b.resource("gold"), b.hash()), (a.resource("gold"), a.hash()), "a refused command changes nothing");
+    // Undone after its cost drew (it reached a native, so it kept an undo); then roll.
+    let mut c = fresh();
+    c.step(&[]);
+    let undo = c.apply_undoable(&call(&c, "pay"), &mut host).unwrap().expect("it reached a native");
+    c.undo(undo);
+    c.apply_hosted(&call(&c, "roll"), &mut host).unwrap();
+    c.step(&[]);
+    assert_eq!((c.resource("gold"), c.hash()), (a.resource("gold"), a.hash()), "an undone command changes nothing");
+}
