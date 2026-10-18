@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-14",
+  "time": "20:55",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "performance",
+  "title": "Performance scenes",
+  "note": "The scenes perf_baseline measures: a game-like crowd of blocks and creatures with its HUD bars, 10,000 cubes, 1,000 mixed objects and 16 coloured point lights.",
+  "source": "scripts/perf_baseline.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-game.jpg",
+      "caption": "Game-like scene",
+      "original": "game.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 32463
+    },
+    {
+      "file": "02-cubes-10k.jpg",
+      "caption": "10,000 cubes",
+      "original": "cubes_10k.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 60406
+    },
+    {
+      "file": "03-mixed-1000.jpg",
+      "caption": "1,000 mixed objects",
+      "original": "mixed_1000.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 35916
+    },
+    {
+      "file": "04-lights-16.jpg",
+      "caption": "16 point lights",
+      "original": "lights_16.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 20818
+    }
+  ]
+}

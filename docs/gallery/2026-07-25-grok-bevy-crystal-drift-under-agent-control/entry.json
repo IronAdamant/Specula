@@ -1,0 +1,32 @@
+{
+  "date": "2026-07-25",
+  "time": "18:27",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "Bevy era (0.2.x)",
+  "commit": "2efad7b",
+  "subject": "bevy-era",
+  "topic": "tooling",
+  "title": "Grok-Bevy: Crystal Drift under agent control",
+  "note": "Before Specula was its own engine: Grok-Bevy drove a Bevy game (Crystal Drift) through Bevy's remote protocol over MCP. Left: the query, mutate and screenshot loop an agent ran; right: the game it captured, flat shapes on grey.",
+  "source": "docs/archive/bevy-era",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-crystal-drift-mcp-loop.jpg",
+      "caption": "The MCP loop: query, mutate, re-query, screenshot",
+      "original": "crystal-drift-mcp-loop.png",
+      "width": 640,
+      "height": 337,
+      "bytes": 27840
+    },
+    {
+      "file": "02-crystal-drift-play.jpg",
+      "caption": "Crystal Drift as the agent saw it",
+      "original": "crystal-drift-play.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4871
+    }
+  ]
+}

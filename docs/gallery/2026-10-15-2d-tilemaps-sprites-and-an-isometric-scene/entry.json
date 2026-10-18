@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-15",
+  "time": "03:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "387c260",
+  "subject": "two-d",
+  "topic": "2D",
+  "title": "2D: tilemaps, sprites and an isometric scene",
+  "note": "two_d_check's scenes: a top-down tilemap with a pond and paths, and a patch of tree sprites and a road, seen in perspective and under an orthographic isometric camera.",
+  "source": "scripts/two_d_check.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Top-down tilemap",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 47392
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "Sprites in perspective",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19090
+    },
+    {
+      "file": "03-frame-00005.jpg",
+      "caption": "Isometric, orthographic",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19725
+    }
+  ]
+}

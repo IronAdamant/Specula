@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "06:27",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Sepulcra played from its Lex rules",
+  "note": "From the Sepulcra-in-Lex lane, not merged yet: the scripted playthrough with the game's rules running live as Lex data (--rules lex) instead of hand-written Rust. Main has had the Lex slice since d2c04da, matching the hand-written sim tick for tick; live Lex play is that lane's work.",
+  "source": "scripts/sepulcra_play.py (Sepulcra-in-Lex lane)",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00003.jpg",
+      "caption": "Wave 3",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9727
+    },
+    {
+      "file": "02-frame-00006.jpg",
+      "caption": "Busy wave",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19470
+    },
+    {
+      "file": "03-frame-00007.jpg",
+      "caption": "Busy wave, overview",
+      "original": "frame_00007.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10608
+    }
+  ]
+}

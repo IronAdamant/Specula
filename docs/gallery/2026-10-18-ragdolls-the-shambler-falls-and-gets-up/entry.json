@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-18",
+  "time": "10:20",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "physics",
+  "topic": "physics",
+  "title": "Ragdolls: the shambler falls and gets up",
+  "note": "From the ragdoll lane: the joint test, then the shambler as a ragdoll built from joints: standing, gone limp (with the joint overlay), held up by powered joints, and getting back up.",
+  "source": "joints check (ragdoll lane)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-run0-joints-start.jpg",
+      "caption": "Joint test",
+      "original": "run0_joints_start.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 7992
+    },
+    {
+      "file": "02-ragdoll-limp-001.jpg",
+      "caption": "Standing",
+      "original": "ragdoll_limp_001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4268
+    },
+    {
+      "file": "03-ragdoll-limp-075.jpg",
+      "caption": "Limp, joints overlay",
+      "original": "ragdoll_limp_075.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 11246
+    },
+    {
+      "file": "04-ragdoll-powered-040.jpg",
+      "caption": "Powered joints",
+      "original": "ragdoll_powered_040.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4530
+    },
+    {
+      "file": "05-ragdoll-getup-001.jpg",
+      "caption": "Down",
+      "original": "ragdoll_getup_001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4006
+    },
+    {
+      "file": "06-ragdoll-getup-024.jpg",
+      "caption": "Getting up",
+      "original": "ragdoll_getup_024.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4225
+    }
+  ]
+}

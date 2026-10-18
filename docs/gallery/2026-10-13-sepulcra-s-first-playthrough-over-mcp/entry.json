@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-13",
+  "time": "21:51",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "688ecb6",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Sepulcra's first playthrough over MCP",
+  "note": "The first whole game of Sepulcra played by a script the way an agent would: the floating slab with its cliff lanes, the centre build, a busy wave, the bone colossus and the end, under a moonlit night.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Build phase",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 12782
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "Build, close up",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 21020
+    },
+    {
+      "file": "03-frame-00006.jpg",
+      "caption": "Busy wave",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 26039
+    },
+    {
+      "file": "04-frame-00008.jpg",
+      "caption": "Boss wave",
+      "original": "frame_00008.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 21624
+    },
+    {
+      "file": "05-frame-00010.jpg",
+      "caption": "The end",
+      "original": "frame_00010.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 13508
+    }
+  ]
+}
