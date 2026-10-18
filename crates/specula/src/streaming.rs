@@ -1084,7 +1084,14 @@ impl Streamer {
             let current = hlod_on && self.hlod.has_current(k);
             let content = self.hlod.content(k);
             let merging = hlod_on && content.is_some_and(|ct| ct.key != 0);
-            let cell_r = ((c.hi - c.lo).length() * 0.5).max(1e-3);
+            // The biggest member by the same estimate the size test uses (`built_px`), so the
+            // gate never drops one the test (or a capture's wait) would count.
+            let cell_r = c
+                .handles
+                .iter()
+                .filter_map(|&(h, _, scale)| build_of(Some(h)).and_then(|b| live.get(&b)).map(|built| (built.bounds(), scale)))
+                .map(|((lo, hi), scale)| ((hi - lo).length() * 0.5).max(1e-3) * scale)
+                .fold(1e-3f32, f32::max);
             for (si, s) in self.sources.iter().enumerate() {
                 let d = s.dist(c.lo, c.hi);
                 if s.kind == SourceKind::Window {
