@@ -548,8 +548,10 @@ struct PassState {
     /// Cells whose proxy left members out: their handles are worked out again.
     left_out: Vec<CellKey>,
     /// Cells done first, out of turn (wherever the cursor is): edits in cells the window draws
-    /// as a proxy.
+    /// as a proxy, or in a capture's view.
     urgent: Vec<CellKey>,
+    /// Only the urgent cells (no pass was running): done, the pass state goes again.
+    urgent_only: bool,
     /// The window's distance to its nearest cell so far.
     nearest: f32,
 }
@@ -648,8 +650,6 @@ pub struct Streamer {
     /// the window's proxies of them are redone out of turn, captures run a whole pass first,
     /// and no capture draws their old proxy.
     dirty_cells: std::collections::BTreeSet<CellKey>,
-    /// The window's camera is orthographic (proxies are for perspective distances: not drawn).
-    window_ortho: bool,
     /// Transient model entities' builds not on the GPU yet (a game's presentation): uploaded
     /// first, without waiting for a pass.
     transients: Vec<u64>,
@@ -705,7 +705,6 @@ impl Streamer {
             blocked_cells: Vec::new(),
             touched: Vec::new(),
             dirty_cells: Default::default(),
-            window_ortho: false,
             transients: Vec::new(),
             victims_cache: None,
         }
@@ -745,6 +744,7 @@ impl Streamer {
         if old.enabled != self.cfg.enabled || old.hlod != self.cfg.hlod || old.cell_m != self.cfg.cell_m {
             self.hlod.clear(gpu);
             self.index = Index::default();
+            self.dirty_cells.clear();
             models.cover.fill(0);
         }
         if old.enabled && !self.cfg.enabled {
@@ -767,7 +767,6 @@ impl Streamer {
         self.sources.retain(|s| s.kind != SourceKind::Window);
         if let Some((cam, w, h)) = camera {
             let dir = (cam.target - cam.eye).normalize();
-            self.window_ortho = matches!(cam.projection, sight::Projection::Ortho { .. });
             // Moved enough to matter: a quarter cell, or a tenth of the way to the nearest cell
             // (levels of detail change fastest up close), a turn, or a zoom.
             let step = (self.nearest * 0.1).clamp(0.5, self.cfg.cell_m * 0.25);
@@ -905,27 +904,34 @@ impl Streamer {
             self.index.sync(world, generation, self.cfg.cell_m, now, &mut touched, slice)
         };
         self.dirty_cells.extend(touched.iter().copied());
-        // An edit of a mergeable entity in a cell the window draws as a proxy: its cover and proxy
-        // change at once (the entity must not stay hidden, nor show at its old place). Done out
-        // of turn at the next step, without restarting the pass (edits every frame would
-        // otherwise keep it from ever finishing).
-        let urgent: Vec<CellKey> = self.dirty_cells.iter().copied().filter(|k| self.hlod.window_on(*k)).collect();
+        // (Cells gone with an index rebuild are no longer anyone's concern.)
+        let cells = &self.index.cells;
+        self.dirty_cells.retain(|k| cells.contains_key(k));
+        // A changed cell the window draws as a proxy, or one in a capture's view: its cover, proxy
+        // and wanted builds change at once (an entity must not stay hidden, nor show at its old
+        // place, nor a capture show the world as it was). Done out of turn at the next step,
+        // without restarting a pass (edits every frame would otherwise keep it from finishing).
+        let in_capture = |k: &CellKey| {
+            !new_frame && cells.get(k).is_some_and(|c| self.sources.iter().any(|s| s.kind == SourceKind::Capture && box_in_view(&s.view_proj, c.lo, c.hi)))
+        };
+        let urgent: Vec<CellKey> = self.dirty_cells.iter().copied().filter(|k| self.hlod.window_on(*k) || in_capture(k)).collect();
         self.touched = touched;
         // Finished proxy builds are taken every frame (their uploads go by priority).
         self.hlod.collect();
         let since = self.last_update.map_or(Duration::MAX, |t| now.duration_since(t));
         self.stale |= changed;
-        // A capture after a change sees it: a whole pass first (no old proxy, nothing wanted for
-        // the world as it was).
-        let capture_fresh = !new_frame && (changed || !self.dirty_cells.is_empty());
-        let due = self.force_update || capture_fresh || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
-        let whole = self.force_update || capture_fresh;
+        let due = self.force_update || since >= UPDATE_IDLE || ((self.window_moved || self.stale) && since >= UPDATE_EVERY);
+        let whole = self.force_update;
         // A forced pass (a new capture view, a jump) starts afresh, so it sees every source.
-        if (due && (self.pass.is_none() || whole)) || (!urgent.is_empty() && self.pass.is_none()) {
+        if due && (self.pass.is_none() || whole) {
             self.begin_pass(now);
         }
-        if let Some(pass) = &mut self.pass {
-            pass.urgent.extend(urgent);
+        let any_urgent = !urgent.is_empty();
+        match &mut self.pass {
+            Some(pass) => pass.urgent.extend(urgent),
+            // No pass running: only those cells, against the last pass's wanted set.
+            None if any_urgent => self.pass = Some(PassState { cursor: None, left_out: Vec::new(), urgent, urgent_only: true, nearest: f32::INFINITY }),
+            None => {}
         }
         if self.pass.is_some() {
             let _z = specula_core::profile::zone("want");
@@ -933,6 +939,10 @@ impl Streamer {
             // running one: it reads the wanted levels); otherwise a slice of the budget.
             let slice = if whole || !new_frame { f64::INFINITY } else { self.cfg.upload_ms * 0.5 };
             self.step(world, models, library, gpu, now, slice);
+            // What those cells now want uploads before the pass ends.
+            if any_urgent {
+                self.pend_wanted(models);
+            }
         }
         // A game's presentation that isn't on the GPU yet goes first, without waiting for a pass.
         self.find_transients(world, models);
@@ -954,7 +964,7 @@ impl Streamer {
         left_out.extend(self.hlod.take_left_out());
         left_out.sort_unstable();
         left_out.dedup();
-        self.pass = Some(PassState { cursor: None, left_out, urgent, nearest: f32::INFINITY });
+        self.pass = Some(PassState { cursor: None, left_out, urgent, urgent_only: false, nearest: f32::INFINITY });
     }
 
     /// Works through the running pass for at most `slice_ms` (at least one cell): each cell's
@@ -1008,9 +1018,14 @@ impl Streamer {
             let k = if let Some(k) = pass.urgent.pop() {
                 // Out of turn (visited again in turn if the cursor hasn't passed it: harmless).
                 if !self.index.cells.contains_key(&k) {
+                    self.dirty_cells.remove(&k);
                     continue;
                 }
                 k
+            } else if pass.urgent_only {
+                // Only the urgent cells: the wanted set stays the last pass's otherwise.
+                self.pass = None;
+                return;
             } else {
                 let next = match pass.cursor {
                     None => self.index.cells.keys().next().copied(),
@@ -1069,22 +1084,27 @@ impl Streamer {
             let current = hlod_on && self.hlod.has_current(k);
             let content = self.hlod.content(k);
             let merging = hlod_on && content.is_some_and(|ct| ct.key != 0);
+            let cell_r = ((c.hi - c.lo).length() * 0.5).max(1e-3);
             for (si, s) in self.sources.iter().enumerate() {
                 let d = s.dist(c.lo, c.hi);
                 if s.kind == SourceKind::Window {
                     pass.nearest = pass.nearest.min(d);
                 }
                 let p = d * s.weight(c.lo, c.hi);
-                // Within radius_m everything is wanted; beyond, what is big enough on screen.
+                // Within radius_m everything is wanted; beyond, what is big enough on screen (none
+                // of the cell's members can be bigger than its box).
+                let reach = crate::models::screen_px(cell_r, d, s.fov_y_deg, s.viewport_h) >= RESIDENT_MIN_PX;
                 if d < cfg.radius_m {
                     others_by.push((p, true, d, si));
-                } else {
+                } else if reach {
                     far_others.push((p, d, si));
                 }
                 // Orthographic views never draw proxies (they are for perspective distances).
                 let merging = merging && s.ortho_d.is_none();
                 if merging && d >= cfg.hlod_radius_m {
-                    far_members.push((p, d, si));
+                    if reach {
+                        far_members.push((p, d, si));
+                    }
                 } else if merging {
                     // Wanted wherever this camera wouldn't draw the proxy (within preload x the
                     // switch distance, whatever radius_m says: no band where nothing draws). A
@@ -1100,7 +1120,7 @@ impl Streamer {
                     }
                 } else if d < cfg.radius_m {
                     members_by.push((p, true, d, si));
-                } else {
+                } else if reach {
                     far_members.push((p, d, si));
                 }
                 if hlod_on && s.ortho_d.is_none() && d < cfg.hlod_radius_m {
@@ -1182,6 +1202,24 @@ impl Streamer {
             self.hlod.drop_unwanted(gpu);
             let cells = &self.index.cells;
             self.hlod.schedule(now, self.cfg.settle_s, |key, content| inputs_of(cells.get(&key)?, content, &lib));
+        }
+    }
+
+    /// Adds what the running pass wants so far (and isn't on the GPU at the level wanted) to the
+    /// pump's list, which is otherwise made at a pass's end: cells done out of turn upload now.
+    fn pend_wanted(&mut self, models: &GpuModels) {
+        let frame = self.updates;
+        let listed: std::collections::BTreeSet<u64> = self.pending.iter().map(|p| p.1).collect();
+        let live = &self.live;
+        let mut added = false;
+        for (b, &(p, f, hard, level)) in &self.want {
+            if f == frame && !listed.contains(b) && live.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > level) {
+                self.pending.push((p, *b, hard, level));
+                added = true;
+            }
+        }
+        if added {
+            self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         }
     }
 
@@ -1567,7 +1605,7 @@ impl Streamer {
             let big = |b: u64, scale: f32, d: f32| self.live.get(&b).is_some_and(|built| built_px(built, scale, d, cam.fov_y_deg, *h) >= RESIDENT_MIN_PX);
             // A game's presentation in view (wanted first, see `find_transients`).
             for e in world.transient_entities().filter(|e| e.shape == Shape::Model && sight::in_frame(e, false)) {
-                let p = vp.mul_vec4(e.position.extend(1.0));
+                let p = vp.mul_vec4(e.world_position().extend(1.0));
                 let in_view = p.w > 0.0 && p.x.abs() <= p.w * 1.5 && p.y.abs() <= p.w * 1.5;
                 if in_view && build_of(e.resolved_model().map(|r| r.handle)).is_some_and(pending) {
                     waiting += 1;
@@ -1586,7 +1624,7 @@ impl Streamer {
                     // members aren't on the GPU to draw meanwhile.
                     if let Some(ct) = content.filter(|ct| ct.key != 0 && ct.complete) {
                         let would = d > hlod::switch_distance(ct.k, cam.fov_y_deg, *h, self.cfg.hlod_min_m);
-                        if would && !current && !c.members.iter().filter(|m| m.mergeable).all(|m| resident(m.handle)) {
+                        if would && !current && !c.members.iter().filter(|m| m.merges()).all(|m| resident(m.handle)) {
                             waiting += 1;
                         }
                     }
@@ -1710,6 +1748,7 @@ impl Streamer {
                 ]),
             ),
             ("resident_mb", mb(resident)),
+            ("passes", Json::from(self.updates)),
             ("models_mb", mb(model_bytes)),
             ("memory_budget_mb", Json::from(self.cfg.memory_mb)),
             ("blocked_mb", mb(self.blocked_bytes)),

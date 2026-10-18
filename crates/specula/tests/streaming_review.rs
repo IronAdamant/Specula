@@ -252,3 +252,68 @@ fn big_far_models_stay_resident() {
     let stats = draw(&world2, &models2, &shapes, ortho);
     assert_eq!(stats.not_resident, 0, "in an orthographic view: {}", stream2.state_json(&gpu, &models2, &world2, None, 8));
 }
+
+/// Review of the fixes: captures don't run whole passes for changes they can't see. An edit out
+/// of the capture's view (and a deleted cell's stale key) leave repeated captures from a known
+/// view without a pass; an edit in view is redone out of turn, also without a whole pass.
+#[test]
+fn captures_redo_only_changed_cells_in_view() {
+    let Some(mut gpu) = gpu_or_skip("captures_redo_only_changed_cells_in_view") else { return };
+    let shared = library();
+    let mut world = world_of(&shared);
+    let mut ids = Vec::new();
+    for i in 0..64 {
+        let pos = Vec3::new((i % 8) as f32 * 40.0, 0.0, (i / 8) as f32 * 40.0);
+        ids.push(world.spawn(model("recipes/tombstone.json", pos, 2.0), "t").unwrap().id);
+    }
+    // Behind the camera: out of view.
+    let behind = world.spawn(model("recipes/tombstone.json", Vec3::new(0.0, 0.0, -300.0), 2.0), "t").unwrap().id;
+    wait_builds(&shared, &mut world);
+    let mut models = GpuModels::default();
+    let mut stream = streamer(&mut gpu, &mut models, &[]);
+    let cam = Camera::new(Vec3::new(140.0, 40.0, -60.0), Vec3::new(140.0, 0.0, 140.0), 50.0);
+    for _ in 0..20 {
+        if capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam) == 0 {
+            break;
+        }
+    }
+    let passes = |stream: &Streamer, gpu: &Gpu, models: &GpuModels| stream.json(gpu, models).get("passes").and_then(Json::as_u64).unwrap();
+    // Quickly (passes otherwise come every UPDATE_EVERY after a change): a few captures each.
+    let edits: [(&str, Box<dyn Fn(&mut World)>); 3] = [
+        (
+            "an edit out of view",
+            Box::new(move |w: &mut World| {
+                w.update(&EntityKey::Id(behind), UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..Default::default() }, "t").unwrap();
+            }),
+        ),
+        (
+            "a deleted cell",
+            Box::new(move |w: &mut World| {
+                w.delete(&EntityKey::Id(behind), None).unwrap();
+            }),
+        ),
+        (
+            "an edit in view",
+            Box::new(move |w: &mut World| {
+                w.update(&EntityKey::Id(ids[9]), UpdateSpec { color: Some([0.0, 0.0, 1.0]), ..Default::default() }, "t").unwrap();
+            }),
+        ),
+    ];
+    for (what, edit) in &edits {
+        std::thread::sleep(Duration::from_millis(1100));
+        // A pass due by time (UPDATE_IDLE) runs first, then the check.
+        capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
+        edit(&mut world);
+        let t = Instant::now();
+        let before = passes(&stream, &gpu, &models);
+        for _ in 0..3 {
+            capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
+        }
+        let after = passes(&stream, &gpu, &models);
+        if t.elapsed() < Duration::from_millis(90) {
+            assert_eq!(after, before, "{what}: no whole pass");
+        } else {
+            eprintln!("{what}: too slow to tell ({:?})", t.elapsed());
+        }
+    }
+}
