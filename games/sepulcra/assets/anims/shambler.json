@@ -106,9 +106,9 @@
               { "name": "look", "kind": "look_at", "bones": ["chest", "head"], "share": [0.35, 0.65],
                 "target": "look_at", "weight": "look", "limit": 45 } ],
       "limits": { "shin_l": { "x": [-33, 150] }, "shin_r": { "x": [-33, 150] } },
-      "ragdoll": { "note": "Capsule radii (model m) measured from the mesh by ragdoll_set {fit: true}, the body lying on its surface; the feet are thinner than measured (0.124: the toes reach out, but a capsule that wide sinks the soles into the ground the walk plants them on).",
+      "ragdoll": { "note": "Capsule radii (model m) measured from the mesh by ragdoll_set {fit: true}, the body lying on its surface; the feet are thinner than measured (0.124: the toes reach out, but a capsule that wide sinks the soles into the ground the walk plants them on; at 0.08 the toes sank 3.6 cm into the slab in play, at 0.1 1 cm).",
                    "radius": { "hips": 0.411, "spine": 0.631, "chest": 0.598, "head": 0.185,
                                "upperarm_l": 0.08, "forearm_l": 0.068, "hand_l": 0.084, "upperarm_r": 0.08, "forearm_r": 0.068, "hand_r": 0.102,
-                               "thigh_l": 0.115, "shin_l": 0.075, "foot_l": 0.08, "thigh_r": 0.115, "shin_r": 0.075, "foot_r": 0.08 } } }
+                               "thigh_l": 0.115, "shin_l": 0.075, "foot_l": 0.1, "thigh_r": 0.115, "shin_r": 0.075, "foot_r": 0.1 } } }
   }
 }

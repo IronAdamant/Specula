@@ -258,10 +258,16 @@ reading the world's external poses (`World::external_pose`, `models.rs`). Joints
   farthest for end parts) and writes them as data: the mesh build is asynchronous, data isn't. A fitted capsule spans the
   bone's whole segment. *Found by the motion check:* with guessed radii the shambler's hump sank 50 cm into the ground;
   fitted, 0.05 cm. Sepulcra's shambler graph carries its fitted radii, the feet thinner than measured (a capsule as wide
-  as the toes' reach sinks the soles the walk plants).
+  as the toes' reach sinks the soles the walk plants; at 0.08 m the toes sank 3.6 cm into the slab in play, at 0.1 m
+  1 cm).
 - **Limp** (deaths, falls): starts from the play evaluated at the tick's time without IK and without its ragdoll state
   (which would play this very pose), each part moving on at the velocity the animation had (the pose a tick on); a
-  `hit` knocks a bone once per `seq` (a bone without a body passes it to its parent's). The engine records the pose each
+  `hit` knocks a bone once per `seq` (a bone without a body passes it to its parent's). That velocity comes from the
+  graph's **base layer only**: other layers (reactions) stay in their entry states. *Found in play:* Sepulcra's killing
+  blow sets off the flinch layer in the same tick (its attack turns the chest 16° in 0.05 s), which flung the shambler's
+  hands up at 16 m/s and failed the pops check (24 cm a 30 Hz frame); a test reproduces it. A joint the starting pose
+  already holds past its limits has the limit opened to there (`joint::open_to`, 3° inside) rather than being snapped
+  back inside. The engine records the pose each
   tick (150 frames) and sets it as the entity's external pose; the graph's `{external: true}` nodes play it, so
   `any → ragdoll when ragdoll` blends into it.
 - **Powered** (hit reactions): the pelvis and the legs follow the animation as kinematic bodies (planted where it
@@ -277,9 +283,12 @@ reading the world's external poses (`World::external_pose`, `models.rs`). Joints
   aren't saved in world files: a loaded world's ragdoll starts again from the animation.
 - **Motion checks on ragdolls.** `check_frames` runs ground penetration, where the body comes to rest (`floating` at
   the end), joint limits and pops where physics takes over (the first frames' change of per-frame motion; later
-  changes are impacts) on the recorded poses; `ragdoll_info` reports them with the game's `style.toml` thresholds,
-  measured by the skinned mesh when it is built. The shambler's limp death passes them all (penetration 0.05 cm,
-  floating 1.45 cm, pops 2 cm against Sepulcra's 3, 2.5 and 6 cm).
+  changes are impacts, and per frame at the rules' `sample_hz`: a change of motion over a 30 Hz tick is four 60 Hz
+  frames' worth) on the recorded poses; `ragdoll_info` reports them with the game's `style.toml` thresholds, measured
+  by the skinned mesh when it is built. The shambler's limp death passes them all, in `joints_check.py` (penetration
+  0.05 cm, floating 1.45 cm, pops 2.9 cm) and in play, dying on a Sepulcra path (penetration 1.0 cm, floating 0,
+  pops 0.7 cm), against Sepulcra's 3, 2.5 and 6 cm.
 - **Sepulcra**: shamblers die as ragdolls (knocked back from where they faced, `props.ragdoll` and the `ragdoll`
-  parameter set together) onto the slab, whose ground pieces got box colliders; the other creatures keep their death
-  clips (the runner's bones scatter, the wraith fades, the colossus crumbles: not falls).
+  parameter set together, the play otherwise left as it was: a death clip blending in at the same tick would set the
+  takeover's velocity) onto the slab, whose ground pieces got box colliders; the other creatures keep their death clips
+  (the runner's bones scatter, the wraith fades, the colossus crumbles: not falls).

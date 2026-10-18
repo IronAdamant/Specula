@@ -591,7 +591,9 @@ impl Scene {
                     // The body plays its death where it fell (or falls as a ragdoll), then goes.
                     if let Some(mut m) = self.enemies.remove(&enemy) {
                         let pace = self.pace.max(1.0);
-                        tell(world, &self.agent, &mut m, Act::Death, 0.0, false, pace);
+                        if !m.creature.ragdoll {
+                            tell(world, &self.agent, &mut m, Act::Death, 0.0, false, pace);
+                        }
                         ents::place(world, &self.agent, m.id, Some(m.cur), Some(m.rot), None);
                         ents::update(world, &self.agent, m.id, UpdateSpec { add_tags: vec!["dead".into()], ..UpdateSpec::default() });
                         if m.creature.ragdoll {
@@ -843,7 +845,9 @@ fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: 
 /// A ragdoll death (A4): the body goes limp and is knocked back, away from where it faced (the
 /// stones are ahead of it), with a little lift; its graph blends into the physics pose. The
 /// corpse is transient, so its ragdoll is cosmetic: it lands on the slab's colliders and never
-/// touches the simulation.
+/// touches the simulation. Its play stays what it was (only `ragdoll` changes): the ragdoll
+/// moves on at the velocity of what the body was doing, and a death clip blending in at the
+/// same tick would read as a fling (the shambler's hands left at 17 m/s).
 fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
     let yaw = m.rot.y.to_radians();
     let back = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
@@ -854,7 +858,7 @@ fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
         ("hit", Json::obj([("bone", Json::from("chest")), ("impulse", Json::arr([knock.x, knock.y, knock.z].map(Json::from))), ("seq", Json::from(1))])),
     ]);
     ents::update(world, agent, m.id, UpdateSpec { props: Some(Json::obj([("ragdoll", ragdoll)])), ..UpdateSpec::default() });
-    let mut play = graph_params(Act::Death, 0.0, false);
+    let mut play = graph_params(m.act, m.speed, false);
     play.set_param("ragdoll", Value::Bool(true));
     tell_id(world, agent, m.id, play, pace);
 }
