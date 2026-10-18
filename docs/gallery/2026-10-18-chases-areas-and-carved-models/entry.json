@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "12:46",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "2db96b0",
+  "subject": "navigation",
+  "topic": "navigation",
+  "title": "Chases, areas and carved models",
+  "note": "The navigation lane after review round 3, on the Intel iGPU: the guard chasing the thief over the courtyard navmesh, paths that go around a water area (purple) and hop the jump link, and a tombstone whose fitted collider carves its own hole. The jump link and Sepulcra's slab are unchanged since 2026-10-18-navigation-on-sepulcra-s-slab.",
+  "source": "scripts/nav_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-run0-chase.jpg",
+      "caption": "The guard chases the thief",
+      "original": "run0_chase.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 20486
+    },
+    {
+      "file": "02-features-top.jpg",
+      "caption": "Paths around water, across the link",
+      "original": "features_top.png",
+      "width": 640,
+      "height": 427,
+      "bytes": 15570
+    },
+    {
+      "file": "03-features-tomb.jpg",
+      "caption": "A model carving the navmesh",
+      "original": "features_tomb.png",
+      "width": 640,
+      "height": 427,
+      "bytes": 20297
+    }
+  ]
+}
