@@ -641,6 +641,9 @@ impl Engine {
         self.trace.clear();
         self.physics.reset();
         self.nav.reset();
+        // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
+        // held) before the first tick, as they were in the run that saved it.
+        self.nav.sync(&self.world, self.world_generation);
         problems
     }
 
@@ -695,6 +698,15 @@ impl Engine {
         // waiting for a draw: headless engines never draw.
         self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
         let now = Instant::now();
+        if self.nav.loading() {
+            // A loaded world's navmeshes build first, a slice per frame, with the simulation
+            // clock held (frames and agent calls are served meanwhile; the time doesn't become
+            // ticks later). The result doesn't depend on the slices.
+            let _z = profile::zone("nav_load");
+            self.nav.load_slice(&self.world, self.world_generation, Some(nav::LOAD_SLICE_WORK));
+            self.last_advance = now;
+            return;
+        }
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
         let _z = profile::zone("sim");

@@ -293,6 +293,28 @@ impl NavMesh {
         (Vec3::new(r[0] - m, self.cfg.bounds_min.y, r[1] - m), Vec3::new(r[2] + m, self.cfg.bounds_max.y, r[3] + m))
     }
 
+    /// The tiles whose builds read anything inside the box `lo..hi`, as column and row ranges
+    /// `(x0, x1, z0, z1)` (inclusive); `None` when none.
+    pub fn tile_span(&self, lo: Vec3, hi: Vec3) -> Option<(u32, u32, u32, u32)> {
+        let (cs, t) = (self.cfg.cell_size, self.cfg.tile_cells as f32);
+        let o = self.cfg.bounds_min;
+        let m = self.d.border as f32 * cs;
+        if hi.y < o.y || lo.y > self.cfg.bounds_max.y {
+            return None;
+        }
+        let span = |lo: f32, hi: f32, o: f32, n: u32| -> Option<(u32, u32)> {
+            let a = specula_core::dmath::floor((lo - m - o) / (t * cs));
+            let b = specula_core::dmath::floor((hi + m - o) / (t * cs));
+            if b < 0.0 || a >= n as f32 || !a.is_finite() || !b.is_finite() {
+                return None;
+            }
+            Some((a.max(0.0) as u32, (b as u32).min(n - 1)))
+        };
+        let (x0, x1) = span(lo.x, hi.x, o.x, self.d.tiles_x)?;
+        let (z0, z1) = span(lo.z, hi.z, o.z, self.d.tiles_z)?;
+        Some((x0, x1, z0, z1))
+    }
+
     /// The tiles whose builds read anything inside the box `lo..hi` (sorted).
     pub fn tiles_touching(&self, lo: Vec3, hi: Vec3) -> Vec<(u32, u32)> {
         let (cs, t) = (self.cfg.cell_size, self.cfg.tile_cells as f32);

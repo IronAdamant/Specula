@@ -21,6 +21,7 @@ import math
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -80,14 +81,17 @@ def main():
             cell = slab["props"]["cell_m"]
             half = cell * 10
             build = m.json("nav_build", name="slab", sources={"under": "/slab"})
-            # A navmesh is built a slice per call (the ticks finish it too): build the rest now.
-            for _ in range(200):
-                if build.get("complete", True):
+            # The game's ticks build it (tiles_per_tick a tick): wait until it is complete.
+            t0 = time.time()
+            while True:
+                mesh = next(n for n in m.json("nav_info", mesh="slab")["navmeshes"] if n["path"] == "/nav/slab")
+                if mesh["ready"] and mesh["dirty_tiles"] == 0:
                     break
-                more = m.json("nav_build", name="slab", sources={"under": "/slab"})
-                more["tiles_built"] += build["tiles_built"]
-                more["ms"] = round(more["ms"] + build["ms"], 3)
-                build = more
+                if time.time() - t0 > 60:
+                    raise RuntimeError(f"the slab navmesh didn't finish: {mesh}")
+                time.sleep(0.1)
+            build.update({k: mesh[k] for k in ("polygons", "tiles_built")})
+            build["ms"] = round((time.time() - t0) * 1000, 1)
             check(build["polygons"] > 0, f"nav_build from the slab the game draws: {build['polygons']} polygons, {build['tiles_built']} tiles, {build['ms']} ms", failures)
             centre = lambda c, r, y=0.0: [-half + (c + 0.5) * cell, y, -half + (r + 0.5) * cell]  # noqa: E731
             graveyard = centre(9.5, 9.5, 0.12)

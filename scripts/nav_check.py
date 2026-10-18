@@ -78,14 +78,24 @@ def tool(m, tool_name, **args):
 
 
 def build_all(m, **args):
-    """nav_build until complete: a big navmesh is built a slice per call (the ticks finish it
-    too, but a paused world has none). Tiles and ms are summed over the calls."""
+    """nav_build, then fixed ticks until the navmesh is complete: the ticks build it (the world is
+    paused here, so time_control step runs them). Returns nav_build's answer with the built
+    navmesh's polygons and tiles, the ticks it took and their wall time."""
     b = m.json("nav_build", **args)
-    tiles, ms, calls = b["tiles_built"], b["ms"], 1
-    while not b.get("complete", True) and calls < 200:
-        b = m.json("nav_build", **args)
-        tiles, ms, calls = tiles + b["tiles_built"], ms + b["ms"], calls + 1
-    b["tiles_built"], b["ms"], b["calls"] = tiles, round(ms, 3), calls
+    path = b["path"]
+    t0, steps = time.perf_counter(), 0
+    while True:
+        mesh = next(n for n in m.json("nav_info", mesh=path)["navmeshes"] if n["path"] == path)
+        if mesh["ready"] and mesh["dirty_tiles"] == 0 and "building_new_settings" not in mesh:
+            break
+        m.json("time_control", action="step", ticks=5)
+        steps += 5
+        if steps > 5000:
+            raise RuntimeError(f"{path} didn't finish building: {mesh}")
+    for k in ("polygons", "tiles_built", "links", "offmesh_links_found", "hash"):
+        if k in mesh:
+            b[k] = mesh[k]
+    b["ticks"], b["ms"] = steps, round((time.perf_counter() - t0) * 1000, 3)
     return b
 
 
@@ -214,10 +224,12 @@ def run(m, failures, label, big):
     print("Navmesh")
     build = build_all(m, like="/guard")
     check(build["polygons"] > 0 and build["tiles_built"] == build["tiles"][0] * build["tiles"][1],
-          f"nav_build: {build['polygons']} polygons over {build['tiles_built']} tiles in {build['ms']} ms", failures)
+          f"nav_build: {build['polygons']} polygons over {build['tiles_built']} tiles, built over {build['ticks']} ticks", failures)
     s = build["settings"]
     check(abs(s["agent_radius"] - 0.3) < 1e-4 and abs(s["agent_height"] - 1.8) < 1e-4 and abs(s["max_step"] - 0.3) < 1e-4,
           "nav_build like the guard: radius 0.3, height 1.8, step 0.3 (its capsule and controller)", failures)
+    again = m.json("nav_build", like="/guard")
+    check(again.get("unchanged") is True and again.get("journal") is None, "nav_build with the same settings again changes nothing (no journal entry, no build work)", failures)
     # Review regressions: hostile settings are refused, never a crash or a silent narrowing.
     for bad in [{"cell_size": 0}, {"tile_cells": 200}]:
         err, out = tool(m, "nav_build", name="hostile", **bad)
@@ -446,7 +458,7 @@ def big_build(m, failures):
         ms.append(q["ms"])
         if i == 0:
             check(q["complete"], f"big: a path across 100 m through 400 boxes ({q['corner_count']} corners)", failures)
-    print(f"  big: {b['polygons']} polygons, {b['tiles_built']} tiles in {b['ms']} ms over {b['calls']} calls; paths {sum(ms) / len(ms):.3f} ms mean")
+    print(f"  big: {b['polygons']} polygons, {b['tiles_built']} tiles over {b['ticks']} ticks ({b['ms']} ms wall, paused and stepped); paths {sum(ms) / len(ms):.3f} ms mean")
     return {"build_ms": b["ms"], "polygons": b["polygons"], "tiles": b["tiles_built"], "path_ms_mean": sum(ms) / len(ms), "path_ms_max": max(ms)}
 
 

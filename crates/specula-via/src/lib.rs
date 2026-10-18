@@ -515,14 +515,20 @@ impl Source {
     /// Which of its triangles each tile of `mesh` reads (for big sources: a tile then looks at
     /// its own triangles only, not all of them).
     pub fn bucket(&self, mesh: &mesh::NavMesh) -> std::collections::BTreeMap<(u32, u32), Vec<u32>> {
-        let mut out: std::collections::BTreeMap<(u32, u32), Vec<u32>> = std::collections::BTreeMap::new();
+        // Into a list per tile (no allocation per triangle), then keyed.
+        let (nx, nz) = mesh.tile_count();
+        let mut lists: Vec<Vec<u32>> = vec![Vec::new(); nx as usize * nz as usize];
         for (i, t) in self.triangles.iter().enumerate() {
             let (lo, hi) = t.aabb();
-            for tile in mesh.tiles_touching(lo, hi) {
-                out.entry(tile).or_default().push(i as u32);
+            if let Some((x0, x1, z0, z1)) = mesh.tile_span(lo, hi) {
+                for tz in z0..=z1 {
+                    for tx in x0..=x1 {
+                        lists[(tz * nx + tx) as usize].push(i as u32);
+                    }
+                }
             }
         }
-        out
+        lists.into_iter().enumerate().filter(|(_, l)| !l.is_empty()).map(|(k, l)| ((k as u32 % nx, k as u32 / nx), l)).collect()
     }
 
     /// Whether the source's bounds meet the box `lo..hi`.

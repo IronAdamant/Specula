@@ -373,8 +373,9 @@ pub fn definitions() -> Vec<ToolDef> {
                           primitives without one (cube, quad, sphere, lathe bounds); dynamic bodies, characters, nav \
                           agents, triggers, hidden, ui, transient and 'nav_ignore'-tagged entities are left out, and \
                           models only count through a collider. Writes the settings as the entity /nav/<name> \
-                          (props.navmesh; journaled, undoable, claims apply) and builds every tile now; afterwards \
-                          world edits rebuild only the tiles they touch, a few per tick (tiles_per_tick). Match a \
+                          (props.navmesh; journaled, undoable, claims apply; the same settings again change nothing); \
+                          the fixed ticks build it, tiles_per_tick of work each (while paused, time_control step), and \
+                          afterwards world edits rebuild only the tiles they touch. Match a \
                           character with like: entity (its capsule radius and height, step_height and max_slope_deg), \
                           or give agent {radius 0.3, height 1.8, max_step 0.3, max_slope_deg 45}. Bounds default to the \
                           sources' bounds plus margin (1 m) and are then fixed. Returns tiles, polygons, links, \
@@ -1018,6 +1019,9 @@ impl crate::Engine {
             .with("field", "tile_cells")
             .with("max", Json::from(read.config.tile_cells)));
         }
+        // The same settings again: nothing to write or do (how many calls were made never
+        // matters; building happens on the ticks).
+        let unchanged = existing.and_then(|id| self.world.get(id)).and_then(|e| e.props.get(nav::MESH_KEY)).is_some_and(|p| *p == props || MeshSettings::from_json(p).is_ok_and(|old| old == read)) && expect_version.is_none();
         let mut ops = Vec::new();
         if self.world.find_path("/nav").is_err() {
             let mut g = SpawnSpec::new(Shape::Group);
@@ -1035,36 +1039,41 @@ impl crate::Engine {
                 ops.push(Op::Spawn(s));
             }
         }
-        let by = w.name.to_owned();
-        let (_, seq) = self.swarm.commit_nav(&mut self.world, tick, w, JKind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?;
+        let seq = if unchanged {
+            None
+        } else {
+            let by = w.name.to_owned();
+            self.swarm.commit_nav(&mut self.world, tick, w, JKind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?.1
+        };
         let id = self.world.find_path(&path)?;
         self.nav.sync(&self.world, self.world_generation);
         if let Some(p) = self.nav.problems.get(&id) {
             return Err(WorldError::new("navmesh_invalid", "the navmesh entity was written but its settings don't build").with("problem", p.clone()).with("journal", Json::from(seq)));
         }
-        // Built within a per-call budget; the rest is built on the ticks (the old settings'
-        // navmesh, if any, serves until the new one is complete).
-        let (tiles, ms) = nav::build_within(&mut self.nav, &self.world, self.world_generation, id, Some(nav::BUILD_CALL_WORK));
+        // No building here: the ticks build it within tiles_per_tick (the old settings' navmesh,
+        // if any, serves until the new one is complete), so the navmesh at each tick depends only
+        // on the world and the ticks, never on how many calls were made.
         let slot = self.nav.meshes.get(&id).ok_or_else(|| WorldError::new("navmesh_invalid", "the navmesh entity was written but didn't build").with("journal", Json::from(seq)))?;
         let mut out = slot.mesh.summary_json();
         out.set("path", Json::from(path.as_str()));
         out.set("settings", slot.settings.to_json());
-        out.set("tiles_built", Json::from(tiles));
-        out.set("ms", Json::from((ms * 1000.0).round() / 1000.0));
+        if unchanged {
+            out.set("unchanged", Json::from(true));
+        }
         let (left, total) = match &slot.next {
             Some(n) => (n.queue.len(), n.mesh.tile_count()),
             None => (slot.dirty.len(), slot.mesh.tile_count()),
         };
-        out.set("complete", Json::from(left == 0));
+        out.set("complete", Json::from(left == 0 && slot.ready));
         if left > 0 {
             out.set("tiles_left", Json::from(left));
             out.set("tiles_total", Json::from(total.0 as usize * total.1 as usize));
             out.set(
                 "note",
                 Json::from(if slot.next.is_some() {
-                    "the rest is built over the next ticks (or call nav_build again with the same arguments to build the next slice now, e.g. while paused); the navmesh with the old settings serves until then"
+                    "built over the next ticks (tiles_per_tick; while paused, time_control step advances them; nav_info shows progress); the navmesh with the old settings serves until then"
                 } else {
-                    "the rest is built over the next ticks (or call nav_build again with the same arguments to build the next slice now, e.g. while paused); queries answer navmesh_building until then"
+                    "built over the next ticks (tiles_per_tick; while paused, time_control step advances them; nav_info shows progress); queries answer navmesh_building until then"
                 }),
             );
         }

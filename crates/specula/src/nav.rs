@@ -804,8 +804,8 @@ const BUCKET_MIN: usize = 256;
 pub const TILE_WORK: u64 = 3_364;
 /// Default tile rebuild work per tick (about 4 ms).
 pub const DEFAULT_TILES_PER_TICK: usize = 2;
-/// Work one nav_build call does before leaving the rest to the ticks (about 50 ms).
-pub const BUILD_CALL_WORK: u64 = 80_000;
+/// Work a frame spends building a loaded world's navmeshes while the clock is held (about 10 ms).
+pub const LOAD_SLICE_WORK: u64 = 16_000;
 
 /// Builds queued tiles of `mesh` in tile order, at most `budget` work units (at least one tile;
 /// `None`: all). Returns the tiles built and the work done.
@@ -832,12 +832,15 @@ fn build_queue(
         .filter(|m| m.area > 0)
         .collect();
     let mut marks: Vec<Mark> = Vec::new();
+    // Bucketing a big source's triangles is work too (4 units a triangle).
+    let mut work = 0u64;
     for (id, src, _) in &picked {
         if !src.aligned && src.triangles.len() > BUCKET_MIN && !buckets.contains_key(id) {
             buckets.insert(*id, src.bucket(mesh));
+            work += 4 * src.triangles.len() as u64;
         }
     }
-    let (mut built, mut work) = (0usize, 0u64);
+    let mut built = 0usize;
     while let Some(&(tx, tz)) = queue.iter().next() {
         let (lo, hi) = mesh.tile_input_bounds(tx, tz);
         let inputs: Vec<Input> = picked
@@ -851,7 +854,7 @@ fn build_queue(
         marks.clear();
         marks.extend(all_marks.iter().filter(|m| m.lo.x <= hi.x && m.hi.x >= lo.x && m.lo.z <= hi.z && m.hi.z >= lo.z));
         let cost = specula_via::tile_work(mesh.config(), &inputs);
-        if budget.is_some_and(|b| built > 0 && work + cost > b) {
+        if budget.is_some_and(|b| (built > 0 || work > 0) && work + cost > b) {
             break;
         }
         queue.remove(&(tx, tz));
@@ -964,6 +967,9 @@ pub struct Nav {
     /// A full look at a newly loaded world (or the first one) is under way: navmeshes made now
     /// are built in full before their first tick.
     rescanning: bool,
+    /// A restore waiting for the loaded navmeshes, and its outcome once applied.
+    pending_restore: Option<Json>,
+    restore_outcome: Option<Result<u64, world::WorldError>>,
     /// The last mind that ran (the budget's round robin), and buffers reused every tick.
     mind_cursor: u64,
     mind_order: Vec<u64>,
@@ -2333,34 +2339,96 @@ impl Nav {
     }
 
     /// Restores [`Nav::save_state`] for `world` (the world the save was made with, loaded):
-    /// re-reads the world, builds every navmesh in full, then puts back crowds, minds and goals,
+    /// re-reads the world, and once every navmesh is built (the engine builds them in slices
+    /// with the simulation clock held, see [`Nav::loading`]) puts back crowds, minds and goals
     /// and checks the nav state hash is the saved one. On any mismatch navigation starts fresh
-    /// from the world and the error says what differed. Returns the restored hash.
-    pub fn restore_state(&mut self, world: &World, generation: u64, j: &Json) -> Result<u64, world::WorldError> {
-        let r = self.try_restore(world, generation, j);
-        if r.is_err() {
-            self.reset();
-            self.sync(world, generation);
-        }
-        r
-    }
-
-    fn try_restore(&mut self, world: &World, generation: u64, j: &Json) -> Result<u64, world::WorldError> {
+    /// from the world and the outcome says what differed. Returns the restored hash when
+    /// nothing needed building, else `None`: [`Nav::take_restore_outcome`] has it once loaded.
+    pub fn restore_state(&mut self, world: &World, generation: u64, j: &Json) -> Result<Option<u64>, world::WorldError> {
         let bad = |what: String| world::WorldError::new("invalid_save", format!("navigation's saved state: {what}"));
         if j.get("version").and_then(Json::as_u64) != Some(SAVE_VERSION) {
             return Err(bad(format!("version must be {SAVE_VERSION}")));
         }
-        let hex = |k: &str, o: &Json| o.get(k).and_then(Json::as_str).and_then(|s| u64::from_str_radix(s, 16).ok());
-        let want = hex("hash", j).ok_or_else(|| bad("no hash".into()))?;
         self.reset();
         self.sync(world, generation);
-        let ids: Vec<u64> = self.meshes.keys().copied().collect();
-        for id in ids {
-            if let Some(m) = self.meshes.get_mut(&id) {
-                m.complete_first = false;
-            }
-            self.rebuild(id, None, world);
+        self.pending_restore = Some(j.clone());
+        if self.meshes.values().any(|m| m.complete_first) {
+            return Ok(None);
         }
+        self.apply_restore(world);
+        self.take_restore_outcome().expect("just applied").map(Some)
+    }
+
+    /// The outcome of a deferred [`Nav::restore_state`], once applied.
+    pub fn take_restore_outcome(&mut self) -> Option<Result<u64, world::WorldError>> {
+        self.restore_outcome.take()
+    }
+
+    /// Whether a load is still being prepared: navmeshes the world came with are being built
+    /// (or a restore waits for them). The engine holds the simulation clock meanwhile.
+    pub fn loading(&self) -> bool {
+        self.pending_restore.is_some() || self.meshes.values().any(|m| m.complete_first)
+    }
+
+    /// One slice of a load: builds the loaded navmeshes within `budget` work units (`None`: all
+    /// of it), then applies a pending restore. The navmesh that results is the same however
+    /// it is sliced, and no tick runs meanwhile, so the loaded world behaves like the run that
+    /// saved it. Returns whether the load is done.
+    pub fn load_slice(&mut self, world: &World, generation: u64, budget: Option<u64>) -> bool {
+        self.sync(world, generation);
+        let ids: Vec<u64> = self.meshes.iter().filter(|(_, m)| m.complete_first).map(|(k, _)| *k).collect();
+        for id in ids {
+            self.rebuild(id, budget, world);
+            let Some(m) = self.meshes.get_mut(&id) else { continue };
+            if m.ready && m.next.is_none() && m.dirty.is_empty() {
+                m.complete_first = false;
+            } else if budget.is_some() {
+                return false;
+            }
+        }
+        if self.meshes.values().any(|m| m.complete_first) {
+            return false;
+        }
+        if self.pending_restore.is_some() {
+            self.apply_restore(world);
+        }
+        true
+    }
+
+    fn apply_restore(&mut self, world: &World) {
+        let Some(j) = self.pending_restore.take() else { return };
+        let r = self.try_restore(&j);
+        if r.is_err() {
+            // Start fresh from the world (its navmeshes are built: no second load).
+            for m in self.meshes.values_mut() {
+                m.crowd = Crowd::new(CrowdSettings::default());
+            }
+            let minds: Vec<u64> = self.minds.keys().copied().collect();
+            for id in minds {
+                self.minds.remove(&id);
+            }
+            let agents: Vec<u64> = self.agents.keys().copied().collect();
+            for id in agents {
+                self.agents.remove(&id);
+            }
+            self.mind_cursor = 0;
+            self.resync_actors(world);
+        }
+        self.restore_outcome = Some(r);
+    }
+
+    /// Re-reads every agent and mind from the world (after a failed restore).
+    fn resync_actors(&mut self, world: &World) {
+        let ids: Vec<u64> = world.persistent_entities().filter(|e| e.props.get(AGENT_KEY).is_some() || e.props.get(MIND_KEY).is_some()).map(|e| e.id).collect();
+        for id in ids {
+            self.upsert(world, id);
+        }
+    }
+
+    fn try_restore(&mut self, j: &Json) -> Result<u64, world::WorldError> {
+        let bad = |what: String| world::WorldError::new("invalid_save", format!("navigation's saved state: {what}"));
+        let hex = |k: &str, o: &Json| o.get(k).and_then(Json::as_str).and_then(|s| u64::from_str_radix(s, 16).ok());
+        let want = hex("hash", j).ok_or_else(|| bad("no hash".into()))?;
         for m in j.get("meshes").and_then(Json::as_array).ok_or_else(|| bad("no meshes".into()))? {
             let id = m.get("id").and_then(Json::as_u64).ok_or_else(|| bad("a mesh without id".into()))?;
             let slot = self.meshes.get_mut(&id).ok_or_else(|| {
@@ -2565,6 +2633,8 @@ impl Nav {
             ("agents", Json::from(self.agents.len())),
             ("minds", Json::from(self.minds.len())),
             ("problems", Json::from(self.problems.len() + self.mind_problems.len() + self.area_problems.len())),
+            // A loaded world's navmeshes building, the simulation clock held until they are.
+            ("loading", Json::from(self.loading())),
             ("hash", Json::from(self.last_hash().map(|h| format!("{h:016x}")))),
             (
                 "last_tick",
@@ -3091,6 +3161,18 @@ mod tests {
         whole.sync(&w, 0);
         build_now(&mut whole, &w, 0, m);
         assert_eq!(whole.meshes[&m].mesh.hash(), nav.meshes[&m].mesh.hash());
+        // Nudging the terrain re-buckets its 8,192 triangles: that is the tick's work (charged),
+        // the tiles follow on the next ticks.
+        let terrain = w.find_path("/terrain").unwrap();
+        w.update(&EntityKey::Id(terrain), UpdateSpec { position: Some(Vec3::new(0.0, 0.01, 0.0)), ..Default::default() }, "t").unwrap();
+        nav.tick(&mut w, &mut physics, 0, ticks, 1.0 / 30.0, 30);
+        assert_eq!(nav.last.as_ref().unwrap().tiles_rebuilt, 0, "the bucketing used the tick's work");
+        let mut more = 0;
+        while !nav.meshes[&m].dirty.is_empty() && more < 2_000 {
+            nav.tick(&mut w, &mut physics, 0, ticks + 1 + more, 1.0 / 30.0, 30);
+            more += 1;
+        }
+        assert!(nav.meshes[&m].dirty.is_empty());
     }
 
     #[test]
@@ -3312,7 +3394,15 @@ mod tests {
         let mut w2 = w.clone();
         let mut nav2 = Nav::default();
         let mut physics2 = Physics::default();
-        let h = nav2.restore_state(&w2, 1, &saved).unwrap();
+        assert_eq!(nav2.restore_state(&w2, 1, &saved).unwrap(), None, "waits for its navmesh");
+        assert!(nav2.loading());
+        // The engine builds it in slices with the clock held; the slices don't matter.
+        let mut slices = 0;
+        while !nav2.load_slice(&w2, 1, Some(2_000)) {
+            slices += 1;
+        }
+        assert!(slices > 1 && !nav2.loading(), "{slices} slices");
+        let h = nav2.take_restore_outcome().unwrap().unwrap();
         assert_eq!(h, nav.hash());
         for t in 95..260 {
             tick(&mut nav, &mut w, &mut physics, t);
@@ -3324,7 +3414,13 @@ mod tests {
         let mut other = World::default();
         room(&mut other);
         let mut nav3 = Nav::default();
-        let err = nav3.restore_state(&other, 0, &saved).unwrap_err();
+        let err = match nav3.restore_state(&other, 0, &saved) {
+            Ok(None) => {
+                nav3.load_slice(&other, 0, None);
+                nav3.take_restore_outcome().unwrap().unwrap_err()
+            }
+            r => r.map(|_| ()).unwrap_err(),
+        };
         assert_eq!(err.code, "state_mismatch", "{}", err.message);
         assert!(nav3.restore_state(&other, 0, &Json::parse(r#"{"version": 9}"#).unwrap()).is_err());
     }
@@ -3354,6 +3450,34 @@ mod tests {
         let (list, _) = nav.problems_json(&w, 4096);
         assert!(!list.to_string().contains("nav_area"));
         let _ = m;
+    }
+
+    #[test]
+    fn navmesh_readiness_depends_only_on_the_world_and_the_ticks() {
+        // However often navigation looks at the world between ticks (nav_build calls sync it),
+        // the navmesh builds the same way: only ticks build (a load excepted, see Nav::loading).
+        let run = |looks: usize| {
+            let mut w = World::default();
+            room(&mut w);
+            let mut nav = Nav::default();
+            let mut physics = Physics::default();
+            nav.tick(&mut w, &mut physics, 0, 0, 1.0 / 30.0, 30);
+            let m = navmesh_with(&mut w, &[("tiles_per_tick", Json::from(1))]);
+            for _ in 0..looks {
+                nav.sync(&w, 0);
+            }
+            assert!(!nav.loading(), "a navmesh made in a running world is not a load");
+            let mut hashes = Vec::new();
+            for t in 1..40 {
+                nav.tick(&mut w, &mut physics, 0, t, 1.0 / 30.0, 30);
+                hashes.push(nav.hash());
+            }
+            (hashes, nav.meshes[&m].ready)
+        };
+        let (one, ready) = run(1);
+        assert!(ready);
+        assert_eq!(one, run(3).0);
+        assert_eq!(one, run(0).0);
     }
 
     #[test]
