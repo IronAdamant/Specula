@@ -30,14 +30,17 @@ Ports: --lead-port and --pool (inclusive) only. Standard library only; ASCII out
 
 --out is this script's folder: it is emptied at the start only when it is one this script made
 (it holds its marker file), and a non-empty folder without one is refused. Every engine the
-script starts is listed (PID and exe) in <out>/engines.pid while it runs; Ctrl+C stops them all,
-and if the script itself is killed hard, the next run against the same --out stops whichever of
-those are still running (by PID, only processes running the same exe) before it starts.
+script starts is listed in <out>/engines.pid from the moment its process exists until it has
+stopped cleanly (PID, start time, full exe path); Ctrl+C stops them all, and if the script
+itself is killed hard, the next run against the same --out stops whichever are still running
+before it starts: a PID only when the process with it has the same start time and exe path (a
+reused PID belongs to another program and is left alone).
 """
 import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -60,50 +63,98 @@ PIDS = "engines.pid"
 _pid_lock = threading.Lock()
 
 
-def note_pid(out, engine):
-    """Lists a started engine's PID and exe in <out>/engines.pid."""
-    if engine.proc is None:
-        return
-    with _pid_lock, open(out / PIDS, "a") as f:
-        f.write(f"{engine.proc.pid} {Path(engine.exe).name}\n")
-
-
-def running_image(pid):
-    """The image name of process `pid`, or None if it isn't running."""
+def identity(pid):
+    """(full exe path, start time) of a running process, or None: what tells a process from a
+    later one that reused its PID."""
     if sys.platform == "win32":
-        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True)
-        line = r.stdout.strip()
-        return line.split('","')[0].strip('"') if line.startswith('"') else None
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:  # STILL_ACTIVE
+                return None
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not k32.GetProcessTimes(h, *[ctypes.byref(t) for t in times]):
+                return None
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return None
+            start = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+            return os.path.normcase(buf.value), str(start)
+        finally:
+            k32.CloseHandle(h)
     try:
-        return Path(os.readlink(f"/proc/{pid}/exe")).name
-    except OSError:
+        exe = os.path.normcase(os.readlink(f"/proc/{pid}/exe"))
+        start = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19]
+        return exe, start
+    except (OSError, IndexError):
         return None
 
 
-def stop_stale(out):
-    """Stops engines a hard-killed earlier run left behind (by PID, only if the PID still runs
-    the same exe), then forgets them."""
+def note_pid(out, engine):
+    """Lists an engine in <out>/engines.pid the moment its process exists (before it answers):
+    PID, start time and full exe path, so only that very process is ever stopped later."""
+    who = identity(engine.proc.pid)
+    if who is None:
+        return
+    with _pid_lock, open(out / PIDS, "a") as f:
+        f.write(f"{engine.proc.pid}\t{who[1]}\t{who[0]}\n")
+
+
+def forget_pid(out, pid):
+    """Takes a cleanly stopped engine off the list."""
+    with _pid_lock:
+        f = out / PIDS
+        if not f.exists():
+            return
+        keep = [line for line in f.read_text().splitlines() if line.split("\t", 1)[0] != str(pid)]
+        f.write_text("".join(line + "\n" for line in keep))
+
+
+def listed(out):
+    """The engines.pid entries: (pid, start, exe path)."""
     f = out / PIDS
-    if not f.exists():
-        return 0
-    stopped = 0
-    for line in f.read_text().splitlines():
-        parts = line.split()
-        if len(parts) != 2 or not parts[0].isdigit():
+    rows = []
+    for line in (f.read_text().splitlines() if f.exists() else []):
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].isdigit():
+            rows.append((int(parts[0]), parts[1], parts[2]))
+    return rows
+
+
+def stop_stale(out):
+    """Stops engines a hard-killed earlier run left behind: each listed PID only if the process
+    with it is still the very one listed (same full exe path and start time; a reused PID is
+    another program and is left alone). Returns (stopped, still running)."""
+    stopped, left = 0, []
+    for pid, start, exe in listed(out):
+        if identity(pid) != (exe, start):
             continue
-        pid, exe = int(parts[0]), parts[1]
-        if running_image(pid) == exe:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
-            else:
-                os.kill(pid, 9)
-            # Gone before its folders are deleted (Windows keeps files open until it exits).
-            end = time.time() + 15
-            while running_image(pid) == exe and time.time() < end:
-                time.sleep(0.2)
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        else:
+            os.kill(pid, 9)
+        # Gone before its folders are deleted (Windows keeps files open until it exits).
+        end = time.time() + 15
+        while identity(pid) == (exe, start) and time.time() < end:
+            time.sleep(0.2)
+        if identity(pid) == (exe, start):
+            left.append(pid)
+        else:
             stopped += 1
-    f.unlink()
-    return stopped
+            forget_pid(out, pid)
+    return stopped, left
 
 
 def prepare_out(out):
@@ -111,30 +162,37 @@ def prepare_out(out):
     if out.exists() and any(out.iterdir()):
         if not (out / MARKER).exists():
             sys.exit(f"--out {out} isn't empty and isn't a balance_playtests folder (no {MARKER}): pick another folder")
-        n = stop_stale(out)
+        n, left = stop_stale(out)
         if n:
             print(f"stopped {n} engine(s) left running by an earlier run")
         for attempt in range(20):
             try:
                 shutil.rmtree(out)
                 break
-            except OSError:
+            except OSError as e:
                 if attempt == 19:
-                    raise
+                    alive = [pid for pid, start, exe in listed(out) if identity(pid) == (exe, start)] + left
+                    sys.exit(f"--out {out} can't be emptied ({e}). Engines from an earlier run may still be running there: "
+                             f"PIDs {sorted(set(alive)) or 'none listed'}. Stop them (by PID) or pick another --out.")
                 time.sleep(0.5)
     out.mkdir(parents=True, exist_ok=True)
     (out / MARKER).write_text("made by scripts/balance_playtests.py; the next run empties this folder\n")
 
 
 class TrackedEngine(Engine):
-    """An engine whose PID goes into the out folder's engines.pid once it runs."""
+    """An engine listed in the out folder's engines.pid from the moment its process exists
+    until it has stopped cleanly."""
 
     out = None
 
-    def __enter__(self):
-        started = super().__enter__()
+    def started_process(self):
         note_pid(self.out, self)
-        return started
+
+    def __exit__(self, *exc):
+        r = super().__exit__(*exc)
+        if self.proc is not None and self.proc.poll() is not None:
+            forget_pid(self.out, self.proc.pid)
+        return r
 
 
 
@@ -247,6 +305,11 @@ def main():
                     help="param=delta added in the game's data only: a self-test that a real difference is flagged")
     a = ap.parse_args()
     a.out = a.out.resolve()
+    if hasattr(signal, "SIGBREAK"):
+        # Ctrl+Break (and a console closing) as Ctrl+C: the engines are stopped on the way out.
+        def interrupted(*_):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGBREAK, interrupted)
     point = {}
     for p in a.point:
         k, _, v = p.partition("=")
@@ -347,8 +410,10 @@ def main():
         "wall_s": round(time.perf_counter() - started, 2),
     })
     (a.out / "report.json").write_text(json.dumps(report, indent=1))
-    # Every engine stopped cleanly: nothing left to stop next time.
-    (a.out / PIDS).unlink(missing_ok=True)
+    # Engines take themselves off engines.pid as they stop; anything still listed didn't.
+    left = [pid for pid, start, exe in listed(a.out) if identity(pid) == (exe, start)]
+    if left:
+        print(f"  WARNING: engines still running: PIDs {left} (the next run against this --out stops them)")
     for d in disagreements[:10]:
         print(f"  DISAGREE {d['run']}: {d['status']} {d.get('error') or ''} {json.dumps(d['failures'])[:400]}")
     print(f"{sw['passed']}/{len(specs)} playtests agree with the lab; {sw['wall_s']} s wall on {sw['workers']} workers "

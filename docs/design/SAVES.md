@@ -56,6 +56,11 @@ every section (the world through `world_load`'s validation, the module state, an
 save's world. **On the engine thread**: only the swap, a few milliseconds (a game without a parser has its section
 parsed at the swap; Sepulcra has one).
 
+**What a crafted load can cost.** Everything a file can claim is capped, but within the caps a crafted save can
+still keep one worker core busy for a few seconds and hold about 1.3 GB of memory (the decoded sections, the world
+built from them, physics rebuilt against it) while it is read and refused. Only one load runs at a time per engine,
+so that is the bound per engine; the engine thread and other agents' calls aren't held.
+
 **Not during a playtest.** A playtest owns the clock and the world until it ends, so loads are refused while one
 runs, with `force` too, at the start and again at the swap (`playtest_running`, with `retry_after_ms`); the player's
 Load from the menu says "Can't load while a playtest is running". Agents' calls keep being
@@ -128,7 +133,8 @@ crc32            u32 LE of everything before it
 | `save_delete {name, force?}` | Only the agent that wrote a save may delete it, unless `force`. |
 
 **A saves folder holds at most 4 GiB** of saves: a save that would pass it is refused (`saves_full`, with the bytes
-used, the number of saves and the cap); saving over a save counts only the new one.
+used, the number of saves and the cap); saving over a save counts only the new one. Saves being written reserve
+their size until their file is in place, so two writers at once can't pass the cap together.
 
 **Ownership is an identity, not a name.** A save's header keeps who wrote it twice: the display name, and an owner key
 derived from the writer's identity (`agent_hello`'s identity, or `game:<name>` for the hosted game's own saves), so an

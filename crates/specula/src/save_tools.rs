@@ -303,6 +303,37 @@ fn read_file(path: &std::path::Path) -> Result<savegame::SaveFile, SaveError> {
 /// folder, not the disk (`saves_full` says how to make room).
 pub const MAX_SAVES_DIR_BYTES: u64 = 4 << 30;
 
+/// Bytes of saves being written now (not on disk yet), per saves folder: writers reserve their
+/// size before writing, so two at once can't pass the cap together.
+static IN_FLIGHT: std::sync::Mutex<Vec<(PathBuf, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Room reserved in a saves folder for a save being written; given back when dropped.
+struct Reservation {
+    dir: PathBuf,
+    bytes: u64,
+}
+
+impl Reservation {
+    /// Reserves `new_len` bytes for a save at `path` if the folder's saves, the saves being
+    /// written into it now and this one stay within `cap` (`saves_full` otherwise).
+    fn take(dir: &std::path::Path, path: &std::path::Path, new_len: u64, cap: u64) -> Result<Reservation, SaveError> {
+        let mut flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        let writing: u64 = flight.iter().filter(|(d, _)| d == dir).map(|(_, n)| *n).sum();
+        dir_room(dir, path, new_len.saturating_add(writing), cap).map_err(|e| e.with("being_written_bytes", writing))?;
+        flight.push((dir.to_path_buf(), new_len));
+        Ok(Reservation { dir: dir.to_path_buf(), bytes: new_len })
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = flight.iter().position(|(d, n)| *d == self.dir && *n == self.bytes) {
+            flight.swap_remove(i);
+        }
+    }
+}
+
 /// Whether `dir` has room for a `new_len`-byte save at `path` (replacing what is there): the
 /// other saves' sizes plus this one stay within `cap`.
 fn dir_room(dir: &std::path::Path, path: &std::path::Path, new_len: u64, cap: u64) -> Result<(), SaveError> {
@@ -468,7 +499,8 @@ impl SaveJob {
         let bytes = savegame::encode(&self.meta, &sections);
         let encode_ms = t1.elapsed().as_secs_f64() * 1000.0;
         let t2 = Instant::now();
-        dir_room(&self.dir, &self.path, bytes.len() as u64, MAX_SAVES_DIR_BYTES)?;
+        // Held until the file is renamed into place (then it's on disk and counted there).
+        let _room = Reservation::take(&self.dir, &self.path, bytes.len() as u64, MAX_SAVES_DIR_BYTES)?;
         std::fs::create_dir_all(&self.dir).map_err(|e| io(&self.dir, e))?;
         let tmp = self.path.with_extension(format!("{EXTENSION}.tmp"));
         {
@@ -1024,6 +1056,14 @@ mod tests {
         // Saving over 'a' replaces its 400 bytes.
         assert!(dir_room(&dir, &dir.join(format!("a.{EXTENSION}")), 700, 1000).is_ok());
         assert!(dir_room(&dir.join("missing"), &c, 10, 1000).is_ok(), "a folder not made yet is empty");
+        // Two writers at once: the second sees the first's reservation (the review's two
+        // concurrent saves that passed the cap together).
+        let first = Reservation::take(&dir, &c, 200, 1000).unwrap();
+        let e = Reservation::take(&dir, &dir.join(format!("d.{EXTENSION}")), 200, 1000).map(|_| ()).unwrap_err();
+        assert_eq!(e.code, "saves_full", "700 on disk + 200 being written + 200 > 1000");
+        assert!(e.to_json().to_string().contains("\"being_written_bytes\":200"), "{}", e.to_json());
+        drop(first);
+        assert!(Reservation::take(&dir, &dir.join(format!("d.{EXTENSION}")), 200, 1000).is_ok(), "room again once the first is done");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

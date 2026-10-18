@@ -166,9 +166,11 @@ game** (its hand-written rules, its tools, fresh engines).
    disagrees with what differed. Any disagreement exits 1.
 
 `--out` is the script's own folder: it empties it only when it holds the script's marker file and refuses any other
-non-empty folder. Every engine it starts is listed (PID and exe) in `engines.pid` while it runs; Ctrl+C stops them
-all, and after a hard kill the next run against the same `--out` stops whichever are still running (by PID, only
-processes still running the same exe) before it starts.
+non-empty folder. Every engine it starts is listed in `engines.pid` from the moment its process exists until it has
+stopped cleanly (PID, start time and full exe path). Ctrl+C and Ctrl+Break stop them all; after a hard kill the next
+run against the same `--out` stops whichever are still running before it starts, a PID only when the process with it
+has the same start time and exe path (a reused PID is another program and is left alone). If the folder still can't
+be emptied, the script says which PIDs may still be running instead of failing with a traceback.
 
 **Measured** (2026-10-18, release, 3 engines on ports 7601-7603): runner_hp 61 / shambler_hp 139, 16 held-out seeds
 × 3 styles = **48 playtests, 48 agree** (dust-gated win rate 1.0 and 6.69 tombstones left in both, braziers 0.94 /
