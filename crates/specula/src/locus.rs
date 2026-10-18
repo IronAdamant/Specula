@@ -26,7 +26,7 @@ const MAX_BOXES: usize = 8192;
 const MAX_TAGGED: usize = 16_384;
 /// Work one world_place may do (see `specula_locus::Request::max_work`): a few hundred
 /// milliseconds at most.
-const MAX_WORK: u64 = 4_000_000;
+const MAX_WORK: u64 = 1_500_000;
 /// Instances listed with every relation (more list only the unsatisfied ones).
 const FULL_DETAIL: usize = 8;
 /// Bytes of placements an answer lists in detail; past them, placements are listed briefly.

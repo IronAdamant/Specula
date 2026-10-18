@@ -427,6 +427,10 @@ def features(m, failures):
     before = m.json("nav_point", mesh="gap", at=[306, 0, 2])
     c = m.json("model_collider", path="/tomb", kind="auto", moving=True)
     check(c["shape"] == "hull" and 4 <= c["points"] <= 16, f"model_collider: a hull of {c['points']} points for a moving body", failures)
+    # F1: a mesh collider is answered with a summary, not its triangles.
+    err_mesh, raw = tool(m, "model_collider", path="/tomb", kind="mesh", moving=False)
+    size = len(json.dumps(raw))
+    check(not err_mesh and raw.get("triangles", 0) > 0 and size < 2048, f"model_collider kind mesh answers in {size} bytes ({raw.get('triangles') if isinstance(raw, dict) else raw} triangles)", failures)
     c = m.json("model_collider", path="/tomb")
     m.json("time_control", action="step", ticks=10)
     after = m.json("nav_point", mesh="gap", at=[306, 0, 2])

@@ -265,7 +265,7 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
 **Review round (coordinator, 2026-10-18).**
 - Hostile settings (cell size 0, radius 1e30, NaN, zero heights) are `invalid_value` / `budget` errors: field ranges
   are checked before anything is derived from them, with saturating maths, in the tool and when world data is read.
-- *Amendment: building is sliced.* Work is counted in grid columns plus 16 per source triangle (big sources, over
+- *Amendment: building is sliced* (superseded in review round 2: `nav_build` no longer builds, and loads hold the clock). Work is counted in grid columns plus 16 per source triangle (big sources, over
   256 triangles, are bucketed by tile once, so a tile reads only its own triangles). `nav_build` does about 50 ms of
   work (80,000 units) and says `complete`, `tiles_left`; the ticks finish the rest within `tiles_per_tick` default
   tiles of work (3,364 units, about 2 ms each; default 2), and calling `nav_build` again builds the next slice (for
@@ -295,7 +295,37 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   453 ms with 290; 13 minds run per tick); a 129 x 129 heightfield: `nav_build` call 96 ms before this round's call
   budget was lowered, ticks 4.9 ms while rebuilding (was 5.1 s in one call); `world_place` with `avoid` 4,000
   tagged boxes: 34 ms for one instance, 140 ms for 8 (was minutes); 64 instances against 4,000: refused with
-  `budget` after about 4 M units.
+  `budget` after about 4 M units (1.5 M since review round 2).
+
+**Review round 2 (coordinator, 2026-10-18).**
+- *`/nav` is reserved* like `/lex`: only the nav tools (`Swarm::commit_nav`) write `/nav` or `props.navmesh`
+  anywhere; world_* writes there are refused with `reserved`. Only bare groups (no shape drawn, no collider, no
+  body) holding settings are exempt from region claims, and one whose transform changes is checked like any entity.
+  `nav_build remove: true` deletes a navmesh.
+- *Amendment: nav_build builds nothing.* It writes the settings (the same settings again are a no-op: no journal
+  entry) and the fixed ticks build within `tiles_per_tick`; a paused world advances with `time_control step`. So
+  the navmesh at every tick depends only on the world and the ticks, never on how many calls were made (one call
+  and three identical ones now give the same nav hash).
+- *Loads hold the clock.* The engine reads a loaded world's navigation as it loads; its navmeshes (built in full
+  before the first tick in the run that saved it) are now built in slices of 16,000 work units a frame, about
+  10 ms, with the simulation clock held: frames and agent calls are served meanwhile and the held time never
+  becomes ticks. `nav_info` says `loading`. `Nav::restore_state` re-reads the world and waits for those navmeshes
+  (`Nav::loading`, `Nav::load_slice`); `Nav::take_restore_outcome` has the result. A 205 m terrain after
+  `world_load`: calls answered in about 40 ms throughout, where one tick used to take 2.4 s.
+- Bucketing a big source is charged (4 units a triangle) and fills a list per tile directly (no list per
+  triangle): nudging a 129 x 129 heightfield costs a 5.7 ms tick (was 35 ms), its tiles follow on later ticks.
+- `BoxSet`'s huge-reach path tests boxes against a mask, not a scan of the big ones: 16,000 tagged boxes reach the
+  budget error in under a second (was 9.8 s); the per-call budget is 1.5 M units (about 350 ms there).
+- `model_collider` answers with a summary (shape, sizes or point / vertex / triangle counts, bounds, offset): a
+  mesh collider in a few hundred bytes (was 84-330 KB).
+- Mind work units now track cost: senses resolve their targets without building keys (a cached `sees` is about
+  0.8 us, its 2 units), about 0.4 us a unit, so 4,096 units is about 1.7 ms a tick (1,000 minds of 200 `sees`:
+  1.7 ms mean). Minds loading a shared definition already parsed at that version no longer copy its JSON (300 new
+  minds: first tick 9 ms, was about 190; 1,000 was 840 ms).
+- `Mind::restore` checks every node's cursor and choice against its children, parallel results and utility scores
+  against the node: a damaged save is refused, never a panic later.
+- A malformed or unknown `props.nav_area` (an area the navmesh doesn't name) is a problem in `nav_info`
+  (`invalid_nav_area`, `unknown_area` with the navmeshes), not silent plain ground.
 
 **Links, areas, saves and model colliders (M3 additions, 2026-10-18).**
 - *Off-mesh links* are navmesh data: `props.navmesh.links` (nav_build `links`), at most 256, each `{from, to,
