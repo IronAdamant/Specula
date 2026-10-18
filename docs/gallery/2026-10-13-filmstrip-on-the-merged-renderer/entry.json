@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "20:31",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "25e213d",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "Filmstrip on the merged renderer",
+  "note": "After the animation lane's review: the filmstrip renders with real vertex colours, moon shadows in each tile and bone-tip trails.",
+  "source": "specula-anim filmstrip",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-anim-filmstrip.jpg",
+      "caption": "Filmstrip",
+      "original": "sepulcra_anim_filmstrip.png",
+      "width": 640,
+      "height": 1067,
+      "bytes": 100261
+    }
+  ]
+}

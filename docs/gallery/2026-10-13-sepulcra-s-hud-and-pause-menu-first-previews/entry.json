@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-13",
+  "time": "19:43",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "c4a7a98",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Sepulcra's HUD and pause menu: first previews",
+  "note": "specula-ui's first screens for Sepulcra, rendered by the software rasteriser: the carved-stone theme, HUD, radial build menu and the pause menu, over a stand-in slab.",
+  "source": "specula-ui hud_preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-hud-preview.jpg",
+      "caption": "HUD with the radial build menu",
+      "original": "sepulcra_hud_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 21478
+    },
+    {
+      "file": "02-sepulcra-pause-preview.jpg",
+      "caption": "Pause menu",
+      "original": "sepulcra_pause_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 12601
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "20:00",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "dfae4b7",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "Filmstrip: contact found",
+  "note": "The foot-slide check now measures sustained contact against a robust ground height, and the filmstrip can be filtered by clip.",
+  "source": "specula-anim filmstrip",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-anim-filmstrip.jpg",
+      "caption": "Filmstrip",
+      "original": "sepulcra_anim_filmstrip.png",
+      "width": 640,
+      "height": 1051,
+      "bytes": 97594
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-18",
+  "time": "01:48",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "Animation A3: graphs, IK and motion checks",
+  "note": "From the A3 lane: per-creature contact sheets of clips, graph states and transitions with the motion checks attached, a live creature with its feet on the slab, and the new walk cycles side by side.",
+  "source": "scripts/anim_graph_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Shambler sheet",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 648,
+      "bytes": 52996
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "Bone colossus sheet",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 648,
+      "bytes": 58176
+    },
+    {
+      "file": "03-frame-00006.jpg",
+      "caption": "Live creature, feet on the slab",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 240,
+      "bytes": 17150
+    },
+    {
+      "file": "04-walkers.jpg",
+      "caption": "Walkers",
+      "original": "walkers.png",
+      "width": 640,
+      "height": 424,
+      "bytes": 45123
+    }
+  ]
+}

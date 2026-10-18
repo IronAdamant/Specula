@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "13:51",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "a223236",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "The slice with its HUD: a darker night",
+  "note": "A dim moon and a low blue fill, so fire and runes carry the scene; retaken on the iGPU. At thumbnail size it looks almost the same as the previous capture; the HUD gains its Menu button.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-sepulcra-slice-hud.jpg",
+      "caption": "Slice with HUD",
+      "original": "sepulcra_slice_hud.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 35502
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-14",
+  "time": "23:35",
+  "date_source": "file times 10-14 23:35 to 10-15 02:45",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "effects",
+  "title": "Sepulcra gets SSAO, bloom and grading",
+  "note": "The post lane's A/B check on the game: the same busy-wave view before and after its SSAO, bloom and grading changes (the difference is too subtle to see at thumbnail size), and a brazier up close with the full stack.",
+  "source": "scripts/sepulcra_play.py (post lane A/B)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00006.jpg",
+      "caption": "Before",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 26133
+    },
+    {
+      "file": "02-frame-00006.jpg",
+      "caption": "After",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 25841
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "Brazier close up, full stack",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 31630
+    }
+  ]
+}
