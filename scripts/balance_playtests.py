@@ -27,13 +27,20 @@ a policy step the game refuses, and anything in-process sweeps do differently fr
         --targets games/sepulcra/lex/slice_styles.targets.json --seeds holdout --runs 48
 
 Ports: --lead-port and --pool (inclusive) only. Standard library only; ASCII output.
+
+--out is this script's folder: it is emptied at the start only when it is one this script made
+(it holds its marker file), and a non-empty folder without one is refused. Every engine the
+script starts is listed (PID and exe) in <out>/engines.pid while it runs; Ctrl+C stops them all,
+and if the script itself is killed hard, the next run against the same --out stops whichever of
+those are still running (by PID, only processes running the same exe) before it starts.
 """
 import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
-import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +54,88 @@ SET = "sepulcra_slice"
 DATA_DIR = "balance_data"
 # Most playtests one check runs (each is a whole game in a fresh engine).
 MAX_RUNS = 128
+# What marks --out as this script's (so it may be emptied), and where engines are listed.
+MARKER = ".balance_playtests"
+PIDS = "engines.pid"
+_pid_lock = threading.Lock()
+
+
+def note_pid(out, engine):
+    """Lists a started engine's PID and exe in <out>/engines.pid."""
+    if engine.proc is None:
+        return
+    with _pid_lock, open(out / PIDS, "a") as f:
+        f.write(f"{engine.proc.pid} {Path(engine.exe).name}\n")
+
+
+def running_image(pid):
+    """The image name of process `pid`, or None if it isn't running."""
+    if sys.platform == "win32":
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True)
+        line = r.stdout.strip()
+        return line.split('","')[0].strip('"') if line.startswith('"') else None
+    try:
+        return Path(os.readlink(f"/proc/{pid}/exe")).name
+    except OSError:
+        return None
+
+
+def stop_stale(out):
+    """Stops engines a hard-killed earlier run left behind (by PID, only if the PID still runs
+    the same exe), then forgets them."""
+    f = out / PIDS
+    if not f.exists():
+        return 0
+    stopped = 0
+    for line in f.read_text().splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        pid, exe = int(parts[0]), parts[1]
+        if running_image(pid) == exe:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            else:
+                os.kill(pid, 9)
+            # Gone before its folders are deleted (Windows keeps files open until it exits).
+            end = time.time() + 15
+            while running_image(pid) == exe and time.time() < end:
+                time.sleep(0.2)
+            stopped += 1
+    f.unlink()
+    return stopped
+
+
+def prepare_out(out):
+    """Empties --out if it is this script's; refuses a folder with other things in it."""
+    if out.exists() and any(out.iterdir()):
+        if not (out / MARKER).exists():
+            sys.exit(f"--out {out} isn't empty and isn't a balance_playtests folder (no {MARKER}): pick another folder")
+        n = stop_stale(out)
+        if n:
+            print(f"stopped {n} engine(s) left running by an earlier run")
+        for attempt in range(20):
+            try:
+                shutil.rmtree(out)
+                break
+            except OSError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.5)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / MARKER).write_text("made by scripts/balance_playtests.py; the next run empties this folder\n")
+
+
+class TrackedEngine(Engine):
+    """An engine whose PID goes into the out folder's engines.pid once it runs."""
+
+    out = None
+
+    def __enter__(self):
+        started = super().__enter__()
+        note_pid(self.out, self)
+        return started
+
 
 
 def game_data(point):
@@ -132,7 +221,9 @@ class DataSwarm(Swarm):
         d.mkdir(parents=True, exist_ok=True)
         for name, text in self.data.items():
             (d / name).write_text(text)
-        return super().engine(port, cwd, label, cache)
+        e = super().engine(port, cwd, label, cache)
+        e.__class__ = TrackedEngine
+        return e
 
 
 def mean(xs):
@@ -180,16 +271,15 @@ def main():
         seeds = [int(s) for s in a.seeds.split(",")]
     seeds = seeds[:per_seed_runs]
 
-    if a.out.exists():
-        shutil.rmtree(a.out)
-    a.out.mkdir(parents=True)
+    prepare_out(a.out)
+    TrackedEngine.out = a.out
     perf = a.out / "perf.toml"
     perf.write_text(f"[swarm]\nlease_ports = [{first}, {last}]\n")
     lead_dir = a.out / "lead"
     report = {"point": point, "game_point": game_point, "targets": a.targets, "seeds": seeds}
     started = time.perf_counter()
     args = ["--headless", "--paused", "--captures", str(lead_dir / "captures"), "--perf", str(perf), "--", "--mute"]
-    with Engine(a.exe, a.lead_port, lead_dir / "lead.log", *args, cwd=str(lead_dir.parent)) as lead:
+    with TrackedEngine(a.exe, a.lead_port, lead_dir / "lead.log", *args, cwd=str(lead_dir.parent)) as lead:
         lab = lead.mcp("balance-lab")
         lab.hello("balance-lab", role="lead")
         lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text()))
@@ -257,6 +347,8 @@ def main():
         "wall_s": round(time.perf_counter() - started, 2),
     })
     (a.out / "report.json").write_text(json.dumps(report, indent=1))
+    # Every engine stopped cleanly: nothing left to stop next time.
+    (a.out / PIDS).unlink(missing_ok=True)
     for d in disagreements[:10]:
         print(f"  DISAGREE {d['run']}: {d['status']} {d.get('error') or ''} {json.dumps(d['failures'])[:400]}")
     print(f"{sw['passed']}/{len(specs)} playtests agree with the lab; {sw['wall_s']} s wall on {sw['workers']} workers "
