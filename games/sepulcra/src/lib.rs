@@ -25,6 +25,7 @@
 pub mod content;
 pub mod error;
 pub mod fixed;
+pub mod lex;
 pub mod map;
 pub mod path;
 pub mod script;

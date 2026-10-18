@@ -158,7 +158,7 @@ impl TuneJob {
         // A literal's stored value for a param, by compiling with it as an override (so units and
         // the declared range are checked exactly as lex_simulate's params are).
         let value_of = |id: &str, lit: &Json, diags: &mut Vec<Diagnostic>| -> Option<i64> {
-            match compile(doc, &Options { overrides: vec![(id.to_owned(), lit.clone())], natives: None }) {
+            match compile(doc, &Options { overrides: vec![(id.to_owned(), lit.clone())], ..Default::default() }) {
                 Ok(c) => c.rules.params.iter().find(|q| q.id == id).map(|q| q.value),
                 Err(ds) => {
                     for mut d in ds.into_iter().filter(Diagnostic::is_error) {

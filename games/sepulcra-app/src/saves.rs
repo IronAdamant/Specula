@@ -20,8 +20,11 @@ use sepulcra::script::{Recording, Script};
 use specula::game::GameRequest;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
-/// The game section's own layout version.
-pub const SECTION_VERSION: u32 = 1;
+/// The game section's own layout version. 2 adds the Lex rules' state (`--rules lex`); a
+/// version 1 section reads forward (a Lex run then replays the recording, as before saves had it).
+pub const SECTION_VERSION: u32 = 2;
+/// The Lex rules' state in a save (Sepulcra's is tens of KB).
+pub const MAX_LEX_BYTES: usize = 8 << 20;
 /// The simulation state and the run's recording are each at most this big in a save. Real runs
 /// are a few KB (a whole ten-wave run's state about 2 KB, its recording a few hundred commands),
 /// so this is room to spare, and a crafted save can't make a load parse much.
@@ -58,6 +61,8 @@ pub(crate) struct Loaded {
     paused: bool,
     speed: u32,
     pres_ticks: u64,
+    /// `--rules lex`: the Lex run as saved (`None`: the save was made without one, or is older).
+    lex: Option<crate::lexmode::LexRules>,
 }
 
 fn bad(e: DecodeError) -> String {
@@ -69,8 +74,8 @@ fn bad(e: DecodeError) -> String {
 pub(crate) fn parse_saved(content: &Arc<Content>, data: &[u8]) -> Result<Loaded, String> {
     let mut r = ByteReader::new(data);
     let version = r.u32("version").map_err(bad)?;
-    if version != SECTION_VERSION {
-        return Err(format!("game section version {version}; this build reads {SECTION_VERSION}"));
+    if version == 0 || version > SECTION_VERSION {
+        return Err(format!("game section version {version}; this build reads 1..={SECTION_VERSION}"));
     }
     let state = State::from_bytes(Arc::clone(content), r.blob("state", MAX_STATE_BYTES).map_err(bad)?).map_err(|e| e.to_string())?;
     let rec = r.str("recording", MAX_RECORDING_BYTES).map_err(bad)?;
@@ -90,8 +95,21 @@ pub(crate) fn parse_saved(content: &Arc<Content>, data: &[u8]) -> Result<Loaded,
         return Err(format!("speed {speed} isn't one of {SPEEDS:?}"));
     }
     let pres_ticks = r.u64("pres_ticks").map_err(bad)?;
+    // Version 2: the Lex rules' run (`--rules lex`), restored against the built-in rule set.
+    let lex = if version >= 2 && r.bool("lex").map_err(bad)? {
+        let bytes = r.blob("lex.state", MAX_LEX_BYTES).map_err(bad)?;
+        let desync = if r.bool("lex.desync").map_err(bad)? { Some((r.u32("lex.desync.tick").map_err(bad)?, r.str("lex.desync.what", 4096).map_err(bad)?)) } else { None };
+        let (checked, accepted, refused) = (r.u64("lex.checked").map_err(bad)?, r.u64("lex.accepted").map_err(bad)?, r.u64("lex.refused").map_err(bad)?);
+        let l = crate::lexmode::LexRules::restored(bytes, desync, checked, accepted, refused)?;
+        if l.sim.tick() != state.tick() {
+            return Err(format!("the Lex rules' state is at tick {}, the game's at {}", l.sim.tick(), state.tick()));
+        }
+        Some(l)
+    } else {
+        None
+    };
     r.finish().map_err(bad)?;
-    Ok(Loaded { state, journal, autoplay, paused, speed, pres_ticks })
+    Ok(Loaded { state, journal, autoplay, paused, speed, pres_ticks, lex })
 }
 
 impl SepulcraGame {
@@ -124,6 +142,28 @@ impl SepulcraGame {
         w.bool(self.paused);
         w.u32(self.speed);
         w.u64(self.pres_ticks);
+        match &self.lex {
+            Some(l) => {
+                let bytes = l.sim.save_state();
+                if bytes.len() > MAX_LEX_BYTES {
+                    return Err(format!("the Lex rules' state is {} bytes; saves hold at most {MAX_LEX_BYTES}", bytes.len()));
+                }
+                w.bool(true);
+                w.blob(&bytes);
+                match &l.desync {
+                    Some((t, what)) => {
+                        w.bool(true);
+                        w.u32(*t);
+                        w.str(&what.chars().take(1000).collect::<String>());
+                    }
+                    None => w.bool(false),
+                }
+                w.u64(l.checked);
+                w.u64(l.accepted);
+                w.u64(l.refused);
+            }
+            None => w.bool(false),
+        }
         Ok(w.into_bytes())
     }
 
@@ -135,6 +175,25 @@ impl SepulcraGame {
     /// Takes a parsed section over the loaded world: the state, then the scene adopting what
     /// the world holds (rebuilt only if it can't be adopted).
     pub(crate) fn apply_saved(&mut self, world: &mut World, agent: &str, l: Loaded) {
+        // `--rules lex`: the saved Lex run, or (an older save, or one made without it) the
+        // recording replayed through Lex to the saved tick; then checked against the state.
+        self.lex = if self.rules_lex {
+            match l.lex {
+                Some(lex) => Some(lex),
+                None => match crate::lexmode::LexRules::replayed(l.state.content(), l.state.seed(), &l.journal, l.state.tick()) {
+                    Ok(lex) => Some(lex),
+                    Err(e) => {
+                        self.say(format!("Lex rules off: the save doesn't run under them ({e})"));
+                        None
+                    }
+                },
+            }
+        } else {
+            None
+        };
+        if let Some(lex) = &mut self.lex {
+            lex.check(&l.state);
+        }
         self.state = l.state;
         self.journal = l.journal;
         self.autoplay = l.autoplay;
@@ -152,7 +211,7 @@ impl SepulcraGame {
         for screen in ["victory", "defeat", "radial", "confirm"] {
             self.hud.show(screen, false);
         }
-        match self.state.outcome() {
+        match self.outcome() {
             Outcome::Won => self.hud.show("victory", true),
             Outcome::Lost => self.hud.show("defeat", true),
             Outcome::Running => {}
@@ -168,6 +227,13 @@ impl SepulcraGame {
         scene.sync(world, &self.state, &[], self.now);
         scene.animate(world, 1.0, self.now);
         self.scene = Some(scene);
+        // A Lex run that disagrees with the reference (as saved, or found at the load's check)
+        // stops the game, and says so: the dialog only shows on a change otherwise.
+        if self.lex.as_ref().is_some_and(|l| l.desync.is_some()) {
+            self.confirm = Some(Confirm::Desync);
+            self.hud.show("pause", false);
+            self.hud.show("confirm", true);
+        }
     }
 
     /// A request for the engine (served after the frame, a game tool or the tick).
@@ -257,7 +323,7 @@ impl SepulcraGame {
             Confirm::Overwrite(n) => self.save_to(Slot::Player(n)),
             Confirm::Load(slot) => self.load_from(slot),
             Confirm::Delete(n) => self.request(GameRequest::Delete { slot: Self::slot_name(Slot::Player(n)) }),
-            Confirm::Restart => {}
+            Confirm::Restart | Confirm::Desync => {}
         }
     }
 
@@ -268,7 +334,7 @@ impl SepulcraGame {
             Confirm::Overwrite(n) => (format!("Save over slot {n}?"), format!("{} will be replaced by this run.", what(Slot::Player(n)))),
             Confirm::Load(slot) => ("Load this save?".into(), format!("{}. The run in play is lost unless you saved it.", what(slot))),
             Confirm::Delete(n) => (format!("Delete slot {n}?"), format!("{} will be gone for good.", what(Slot::Player(n)))),
-            Confirm::Restart => return None,
+            Confirm::Restart | Confirm::Desync => return None,
         })
     }
 

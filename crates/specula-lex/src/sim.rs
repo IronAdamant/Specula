@@ -70,11 +70,19 @@ impl Val {
 pub struct RtErr {
     pub code: &'static str,
     pub message: String,
+    /// A native hook refused the command it ran in with this code ([`NativeCtx::refuse`]).
+    pub refusal: Option<(String, Vec<(String, i64)>)>,
 }
 
 fn rt(code: &'static str, message: impl Into<String>) -> RtErr {
-    RtErr { code, message: message.into() }
+    RtErr { code, message: message.into(), refusal: None }
 }
+
+/// What puts a run back to before a command ([`Sim::apply_undoable`]).
+pub struct Undo(Box<State>);
+
+/// Detail names a refusal sets itself: a requirement's or a hook's details can't use them.
+pub const RESERVED_DETAILS: [&str; 6] = ["code", "message", "error", "command", "tick", "by"];
 
 /// Why a command was refused. Refused commands change nothing.
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +192,8 @@ pub struct Entity {
     pub site: Option<u16>,
     pub spawn_path: Option<u16>,
     pub path_remaining: i64,
+    /// Behaviour phases run entities by (order, id) when the rules use `order`.
+    pub order: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -197,13 +207,15 @@ pub struct WaveStats {
     pub alive: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Pending {
     tick: u32,
     seq: u32,
     arch: u16,
     wave: u16,
     at: SpawnAt,
+    /// The group's `with` values, drawn when the wave was scheduled.
+    with: Vec<(u16, i64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,6 +248,45 @@ impl RtDiag {
 /// A native (module) hook: the escape hatch. See [`NativeCtx`] for what it may touch.
 pub trait NativeHook: Send + Sync {
     fn run(&self, cx: &mut NativeCtx<'_, '_>) -> Result<(), String>;
+
+    /// Called once per run ([`Sim::new`]) with the compiled rules and the native item it is
+    /// bound to: resolve attribute, tag and stream names to ids, read `data` items, and return
+    /// the hook to run (`None`, the default: this one). An error refuses the run with that
+    /// message. The bound hook is shared by clones of the run, so anything it caches must be
+    /// keyed by what it was derived from (see [`NativeCtx::generation`]).
+    fn bind(&self, _rules: &Rules, _native: &NativeDef) -> Result<Option<Arc<dyn NativeHook>>, String> {
+        Ok(None)
+    }
+}
+
+/// Natives the run has no in-process implementation for, provided by whoever steps it (the
+/// engine's live Lex calls module hooks through this). Called synchronously, in rule order.
+/// The host can't touch the run's state: its effects live outside the rules (the world).
+pub trait NativeHost {
+    fn call(&mut self, hook: &NativeDef, entity: Option<u32>, args: NativeArgs<'_>, tick: u32) -> Result<(), String>;
+}
+
+/// A native call's args, as evaluated for that call (no allocation per call).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeArgs<'a> {
+    names: &'a [(String, Ex)],
+    vals: &'a [i64],
+}
+
+impl<'a> NativeArgs<'a> {
+    pub fn len(&self) -> usize {
+        self.vals.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vals.is_empty()
+    }
+
+    /// (name, value) in declaration order.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a str, i64)> + 'a {
+        let (names, vals) = (self.names, self.vals);
+        names.iter().zip(vals).map(|((k, _), v)| (k.as_str(), *v))
+    }
 }
 
 /// Hook name → implementation.
@@ -280,9 +331,41 @@ pub struct State {
     /// A wall-clock deadline cut a tick short: the state is no longer a deterministic result.
     pub interrupted: bool,
     dispatched: usize,
+    /// Bumped whenever an entity appears, leaves, changes archetype or gains or loses an
+    /// effect (so whenever which entities have which tags can change). Not hashed: natives key
+    /// what they derive from tag scans on ([`NativeCtx::generation`]).
+    gen: u64,
+    /// The earliest tick an effect that grants tags runs out (`u32::MAX`: none): has_tag stops
+    /// seeing its tags from then, so the generation moves then too.
+    tag_expiry: u32,
+    /// A fresh id for every state value, clones included, so two runs (or a run and its
+    /// rollback snapshot) never share a generation key.
+    instance: Instance,
+}
+
+/// See [`State::instance`]: cloning hands out a new id.
+#[derive(Debug)]
+struct Instance(u64);
+
+impl Instance {
+    fn fresh() -> Instance {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Instance(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Clone for Instance {
+    fn clone(&self) -> Instance {
+        Instance::fresh()
+    }
 }
 
 impl State {
+    /// Which entities have which tags may have changed.
+    fn bump(&mut self) {
+        self.gen = self.gen.wrapping_add(1);
+    }
+
     /// Something outcomes could read changed.
     fn mark(&mut self) {
         self.dirty = true;
@@ -297,6 +380,12 @@ pub struct Sim {
     natives: Vec<Option<Arc<dyn NativeHook>>>,
     st: State,
     deadline: Option<std::time::Instant>,
+    /// A deterministic limit on one tick's phase work below Lex's own cap ([`Sim::set_work_stop`]).
+    work_stop: Option<u64>,
+    /// Scratch for ordered phases (see [`Rules::ordered`]); not state.
+    order: Vec<(i64, u32)>,
+    /// What `order` was built for: (state instance, next id, entity count).
+    order_key: Option<(u64, u32, u32)>,
 }
 
 impl std::fmt::Debug for Sim {
@@ -308,10 +397,30 @@ impl std::fmt::Debug for Sim {
 impl Sim {
     /// A fresh run. Fails if the rules use a native hook `natives` doesn't provide.
     pub fn new(rules: Arc<Rules>, seed: u64, natives: &Natives) -> Result<Sim, String> {
+        Sim::build(rules, seed, natives, false)
+    }
+
+    /// A run whose natives without an in-process implementation are left to a [`NativeHost`]
+    /// given to [`Sim::step_hosted`] (live Lex in the engine). Stepping it without a host makes
+    /// those calls fail like any run-time problem (`native_unbound`).
+    pub fn new_hosted(rules: Arc<Rules>, seed: u64, natives: &Natives) -> Result<Sim, String> {
+        Sim::build(rules, seed, natives, true)
+    }
+
+    /// Natives this run leaves to a host (none for [`Sim::new`]).
+    pub fn hosted_natives(&self) -> Vec<&NativeDef> {
+        self.rules.natives.iter().zip(&self.natives).filter(|(_, b)| b.is_none()).map(|(n, _)| n).collect()
+    }
+
+    fn build(rules: Arc<Rules>, seed: u64, natives: &Natives, hosted: bool) -> Result<Sim, String> {
         let mut bound = Vec::new();
         for n in &rules.natives {
             match natives.get(&n.hook) {
-                Some(h) => bound.push(Some(Arc::clone(h))),
+                Some(h) => {
+                    let b = h.bind(&rules, n).map_err(|e| format!("native hook '{}' (item '{}') can't run these rules: {e}", n.hook, n.id))?;
+                    bound.push(Some(b.unwrap_or_else(|| Arc::clone(h))));
+                }
+                None if hosted => bound.push(None),
                 None => {
                     return Err(format!(
                         "native hook '{}' (item '{}') has no in-process implementation for this headless run (module hooks run in the engine's live tick, not in simulations): register a Natives entry, or replace the native with Lex building blocks",
@@ -348,8 +457,11 @@ impl Sim {
             cells: 0,
             interrupted: false,
             dispatched: 0,
+            gen: 0,
+            tag_expiry: u32::MAX,
+            instance: Instance::fresh(),
         };
-        Ok(Sim { rules, natives: bound, st, deadline: None })
+        Ok(Sim { rules, natives: bound, st, deadline: None, work_stop: None, order: Vec::new(), order_key: None })
     }
 
     pub fn rules(&self) -> &Arc<Rules> {
@@ -411,11 +523,50 @@ impl Sim {
     /// `events()` then shows the command's events.
     pub fn apply(&mut self, call: &CommandCall) -> Result<(), Rejection> {
         self.begin();
-        self.command(call)
+        self.command(call, None)
+    }
+
+    /// [`Sim::apply`] with a host for the natives this run leaves to one.
+    pub fn apply_hosted(&mut self, call: &CommandCall, host: &mut dyn NativeHost) -> Result<(), Rejection> {
+        self.begin();
+        self.command(call, Some(host))
+    }
+
+    /// [`Sim::apply_hosted`] for a caller that may still refuse what the command's natives did
+    /// outside the run (a module hook's world changes): `Ok(Some(undo))` when it called a native
+    /// ([`Sim::undo`] puts the run back), `Ok(None)` when it called none (nothing outside the run
+    /// can have changed). A refused command, or a native that panics, changes nothing either
+    /// way: the run keeps (or is put back to) the state before it, at no extra copy.
+    pub fn apply_undoable(&mut self, call: &CommandCall, host: &mut dyn NativeHost) -> Result<Option<Undo>, Rejection> {
+        self.begin();
+        let mut core = self.core(true, Some(host));
+        core.keep = true;
+        core.command(call)?;
+        Ok(core.kept.take().map(|s| Undo(Box::new(s))))
+    }
+
+    /// Puts the run back to before the command [`Sim::apply_undoable`] applied.
+    pub fn undo(&mut self, undo: Undo) {
+        self.st = *undo.0;
     }
 
     /// Resets the per-tick event list, dispatch count and work budget.
     fn begin(&mut self) {
+        // Granted tags that ran out stop counting this tick: natives' tag caches must see it.
+        let st = &mut self.st;
+        if st.tick >= st.tag_expiry {
+            st.bump();
+            let r = &self.rules;
+            let tick = st.tick;
+            st.tag_expiry = st
+                .ents
+                .iter()
+                .flat_map(|e| e.effects.iter())
+                .filter(|a| a.expires > tick && !r.effects[usize::from(a.effect)].grant_tags.is_empty())
+                .map(|a| a.expires)
+                .min()
+                .unwrap_or(u32::MAX);
+        }
         self.st.events.clear();
         self.st.dispatched = 0;
         self.st.dropped = 0;
@@ -423,24 +574,49 @@ impl Sim {
         self.st.command_work = 0;
     }
 
-    fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: true };
-        c.command(call)
+    fn core<'s>(&'s mut self, in_command: bool, host: Option<&'s mut dyn NativeHost>) -> Core<'s> {
+        Core {
+            r: &self.rules,
+            st: &mut self.st,
+            natives: &self.natives,
+            depth: 0,
+            deadline: self.deadline,
+            work_stop: self.work_stop,
+            in_command,
+            keep: false,
+            kept: None,
+            host,
+            refusal: None,
+            order: &mut self.order,
+            order_key: &mut self.order_key,
+        }
+    }
+
+    fn command(&mut self, call: &CommandCall, host: Option<&mut dyn NativeHost>) -> Result<(), Rejection> {
+        self.core(true, host.map(|h| -> &mut dyn NativeHost { h })).command(call)
     }
 
     /// Applies `commands` (each atomic; refusals are returned with their index), then advances
     /// one tick. Phases: waves, spawns, timers, spawners, movement, attacks, projectiles,
     /// effects and machines, cleanup; events reach rules after each phase.
     pub fn step(&mut self, commands: &[CommandCall]) -> Vec<(usize, Rejection)> {
+        self.step_inner(commands, None)
+    }
+
+    /// [`Sim::step`] with a host for the natives this run leaves to one ([`Sim::new_hosted`]).
+    pub fn step_hosted(&mut self, commands: &[CommandCall], host: &mut dyn NativeHost) -> Vec<(usize, Rejection)> {
+        self.step_inner(commands, Some(host))
+    }
+
+    fn step_inner(&mut self, commands: &[CommandCall], mut host: Option<&mut dyn NativeHost>) -> Vec<(usize, Rejection)> {
         self.begin();
         let mut refused = Vec::new();
         for (i, c) in commands.iter().enumerate() {
-            if let Err(e) = self.command(c) {
+            if let Err(e) = self.command(c, host.as_deref_mut().map(|h| -> &mut dyn NativeHost { h })) {
                 refused.push((i, e));
             }
         }
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: false };
-        c.tick();
+        self.core(false, host.map(|h| -> &mut dyn NativeHost { h })).tick();
         refused
     }
 
@@ -457,9 +633,23 @@ impl Sim {
         self.deadline = deadline;
     }
 
+    /// A work limit for each tick's phases (below [`MAX_WORK_PER_TICK`]): a tick that passes it
+    /// stops there and the run is [`Sim::interrupted`], like a deadline, but deterministically
+    /// (the same rules and state stop at the same point on any machine). For live runs, which
+    /// must not hold the engine's thread longer than a frame allows.
+    pub fn set_work_stop(&mut self, stop: Option<u64>) {
+        self.work_stop = stop;
+    }
+
     /// A deadline cut a tick short: don't compare, save or continue this run.
     pub fn interrupted(&self) -> bool {
         self.st.interrupted
+    }
+
+    /// The work the last tick's phases did, in the units of [`MAX_WORK_PER_TICK`]: a
+    /// deterministic measure of its cost (past the cap, the rest of that tick was skipped).
+    pub fn tick_work(&self) -> u64 {
+        self.st.work
     }
 
     /// A 64-bit hash of the whole state (with the rules' hash), in a fixed order.
@@ -471,8 +661,7 @@ impl Sim {
     /// only touches the RNG streams, the diagnostics and the work counter, which are restored.
     pub fn query(&mut self, ex: &Ex) -> Result<Val, RtErr> {
         let (rngs, diag, work) = (self.st.rngs.clone(), self.st.diag.clone(), self.st.work);
-        let mut c = Core { r: &self.rules, st: &mut self.st, natives: &self.natives, depth: 0, deadline: self.deadline, in_command: false };
-        let v = c.eval(ex, &Frame::default());
+        let v = self.core(false, None).eval(ex, &Frame::default());
         (self.st.rngs, self.st.diag, self.st.work) = (rngs, diag, work);
         v
     }
@@ -493,13 +682,25 @@ struct Core<'a> {
     r: &'a Rules,
     st: &'a mut State,
     natives: &'a [Option<Arc<dyn NativeHook>>],
+    /// Runs the natives the run left to a host (live Lex), if any.
+    host: Option<&'a mut dyn NativeHost>,
+    /// Set by [`NativeCtx::refuse`] while a command is applied.
+    refusal: Option<(String, Vec<(String, i64)>)>,
+    /// Scratch for ordered phases.
+    order: &'a mut Vec<(i64, u32)>,
+    order_key: &'a mut Option<(u64, u32, u32)>,
     /// Nested action lists (on_spawn spawning, on_apply applying, on_enter switching...).
     depth: u32,
     /// A wall-clock limit, checked as work is spent; passing it interrupts the run.
     deadline: Option<std::time::Instant>,
+    /// See [`Sim::set_work_stop`].
+    work_stop: Option<u64>,
     /// Applying a command: work is charged to the commands' budget, so commands can never
     /// starve the tick's phases (nor the phases the commands).
     in_command: bool,
+    /// Keep a successful command's snapshot when it called a native ([`Sim::apply_undoable`]).
+    keep: bool,
+    kept: Option<State>,
 }
 
 fn idx_of(st: &State, id: u32) -> Option<usize> {
@@ -605,6 +806,11 @@ impl Core<'_> {
                 self.note("work_limit", "this tick's commands used more than 5 million units of work (many commands over a large state?); the rest were refused, and the tick's phases ran in full");
             } else {
                 self.note("work_limit", "more than 5 million units of work in one tick (attacks or counts over many entities?); the rest of the tick's behaviours were skipped");
+            }
+        }
+        if let Some(w) = self.work_stop {
+            if !self.in_command && now > w {
+                self.st.interrupted = true;
             }
         }
         // The wall clock is read every 16k units of work, so a deadline interrupts within a tick.
@@ -716,6 +922,15 @@ impl Core<'_> {
                 let id = self.eval_ent(e, f)?;
                 let i = self.ent(id, "the entity")?;
                 Val::Int(self.st.ents[i].path_remaining)
+            }
+            Ex::Pos(e, axis) => {
+                let id = self.eval_ent(e, f)?;
+                let i = self.ent(id, "the entity")?;
+                Val::Int(self.st.ents[i].pos[usize::from(*axis)])
+            }
+            Ex::SitePos(s, axis) => {
+                let Val::Site(site) = self.eval(s, f)? else { return Err(rt("no_site", "the site is none")) };
+                Val::Int(self.r.sites[usize::from(site)].pos[usize::from(*axis)])
             }
             Ex::ArchOf(e) => {
                 let id = self.eval_ent(e, f)?;
@@ -987,10 +1202,22 @@ impl Core<'_> {
         for g in &def.groups {
             for k in 0..g.count {
                 let pick = self.st.rngs[usize::from(waves.stream)].below(g.at.len() as u32) as usize;
+                // The group's `with`, right after the spawn point is drawn (same stream order
+                // every run); a failing expression leaves that attribute at its base value.
+                let mut with = Vec::with_capacity(g.with.len());
+                for (a, e) in &g.with {
+                    match self.eval(e, &Frame::default()) {
+                        Ok(v) => with.push((*a, v.int())),
+                        Err(err) => {
+                            let m = format!("wave {number} group with: {}", err.message);
+                            self.note(err.code, &m);
+                        }
+                    }
+                }
                 let tick = self.st.tick.saturating_add(g.start).saturating_add(k.saturating_mul(g.every));
                 let seq = self.st.next_seq;
                 self.st.next_seq = self.st.next_seq.saturating_add(1);
-                fresh.push(Pending { tick, seq, arch: g.arch, wave: number, at: g.at[pick] });
+                fresh.push(Pending { tick, seq, arch: g.arch, wave: number, at: g.at[pick], with });
                 self.st.wave_stats[w].pending = self.st.wave_stats[w].pending.saturating_add(1);
             }
         }
@@ -1021,8 +1248,7 @@ impl Core<'_> {
                 SpawnAt::Path(i) => (self.r.paths[usize::from(i)].points[0], Some((i, 0, 0)), None),
                 SpawnAt::Site(s) => (self.r.sites[usize::from(s)].pos, None, Some(s)),
             };
-            let scale = &self.r.waves.as_ref().expect("pending spawns come from waves").waves[w].scale;
-            if let Err(e) = self.spawn(p.arch, pos, path, site, Some(p.wave), scale, &[]) {
+            if let Err(e) = self.spawn(p.arch, pos, path, site, Some(p.wave), &p.with) {
                 self.note(e.code, &e.message);
             }
             if self.decided() {
@@ -1071,10 +1297,33 @@ impl Core<'_> {
 
     fn phase_behaviours(&mut self, phase: Phase) {
         let n = self.st.ents.len();
-        for i in 0..n {
+        // Ordered rules run entities by (order, id); the order is built once per phase (entities
+        // spawned during it join from the next phase, and nobody leaves the list mid-phase).
+        let ordered = self.r.ordered;
+        if ordered {
+            // Keys never change after a spawn, so the sorted list stays valid while no entity
+            // has come or gone (ids only grow; a restored or cloned state is a new instance).
+            let key = (self.st.instance.0, self.st.next_id, self.st.ents.len() as u32);
+            if self.order_key.as_ref() != Some(&key) || self.order.len() != n {
+                self.order.clear();
+                self.order.extend(self.st.ents.iter().map(|e| (e.order, e.id)));
+                self.order.sort_unstable();
+                *self.order_key = Some(key);
+            }
+        }
+        for k in 0..n {
             if self.over_budget() {
                 return;
             }
+            let i = if ordered {
+                let id = self.order[k].1;
+                match idx_of(self.st, id) {
+                    Some(i) => i,
+                    None => continue,
+                }
+            } else {
+                k
+            };
             if !self.st.ents[i].alive {
                 continue;
             }
@@ -1093,9 +1342,9 @@ impl Core<'_> {
                     (Phase::Move, BehKind::FollowPath { .. } | BehKind::Patrol { .. }) => self.walk(i, b),
                     (Phase::Move, BehKind::Chase { .. }) => self.chase(i, b),
                     (Phase::Act, BehKind::Attack(_)) => self.attack(i, b),
-                    (p, BehKind::Native { hook, args }) if self.r.natives[usize::from(*hook)].phase == p => {
+                    (p, BehKind::Native { hook, args, on }) if self.r.natives[usize::from(*hook)].phase == p => {
                         let id = self.st.ents[i].id;
-                        self.native(*hook, args, &Frame { me: Some(id), ..Frame::default() })
+                        self.native(*hook, args, on, &Frame { me: Some(id), ..Frame::default() })
                     }
                     _ => Ok(()),
                 };
@@ -1112,7 +1361,7 @@ impl Core<'_> {
 
     fn spawner(&mut self, i: usize, b: usize) -> Result<(), RtErr> {
         let arch = usize::from(self.st.ents[i].arch);
-        let BehKind::Spawner { arch: what, every, count, .. } = &self.r.archetypes[arch].behaviours[b].kind else { return Ok(()) };
+        let BehKind::Spawner { arch: what, every, count, with, .. } = &self.r.archetypes[arch].behaviours[b].kind else { return Ok(()) };
         let BehState::Spawner { next } = self.st.ents[i].beh[b] else { return Ok(()) };
         if self.st.tick < next {
             return Ok(());
@@ -1121,10 +1370,14 @@ impl Core<'_> {
         let f = Frame { me: Some(id), ..Frame::default() };
         let every = self.int(every, &f)?.clamp(1, i64::from(u32::MAX / 2)) as u32;
         let count = self.int(count, &f)?.clamp(0, MAX_SPAWN_COUNT);
+        let mut wv = Vec::with_capacity(with.len());
+        for (a, e) in with {
+            wv.push((*a, self.int(e, &f)?));
+        }
         self.st.ents[i].beh[b] = BehState::Spawner { next: self.st.tick.saturating_add(every) };
         let (pos, path, wave) = self.continue_from(i);
         for _ in 0..count {
-            self.spawn(*what, pos, path, None, wave, &[], &[])?;
+            self.spawn(*what, pos, path, None, wave, &wv)?;
         }
         Ok(())
     }
@@ -1284,17 +1537,30 @@ impl Core<'_> {
         Ok(())
     }
 
-    /// Alive, not `me`, matching and in range; charged to the work budget (false once spent).
-    fn eligible(&mut self, j: usize, me: u32, filter: &TagFilter, from: P3, r2: i128) -> bool {
+    /// Alive, not `me`, matching, in range and passing the attack's `when`; charged to the
+    /// work budget (false once spent).
+    fn eligible(&mut self, j: usize, me: u32, def: &AttackDef, from: P3, r2: i128) -> bool {
         let e = &self.st.ents[j];
         if !e.alive || e.id == me {
             return false;
         }
-        if self.spend(Self::check_cost(e, filter)) {
+        if self.spend(Self::check_cost(e, &def.targets)) {
             return false;
         }
         let e = &self.st.ents[j];
-        matches(self.r, self.st, e, filter) && dist2(from, e.pos) <= r2
+        if !(matches(self.r, self.st, e, &def.targets) && dist2(from, e.pos) <= r2) {
+            return false;
+        }
+        let Some(when) = &def.when else { return true };
+        let f = Frame { me: Some(me), target: Some(e.id), ..Frame::default() };
+        match self.eval(when, &f) {
+            Ok(v) => v.bool(),
+            Err(err) => {
+                let m = format!("attack when: {}", err.message);
+                self.note(err.code, &m);
+                false
+            }
+        }
     }
 
     fn attack(&mut self, i: usize, b: usize) -> Result<(), RtErr> {
@@ -1323,7 +1589,7 @@ impl Core<'_> {
                     if self.over_budget() {
                         break;
                     }
-                    if self.eligible(j, id, &def.targets, from, r2) {
+                    if self.eligible(j, id, def, from, r2) {
                         hit = true;
                         let t = self.st.ents[j].id;
                         let vals = self.payload_values(def, &Frame { target: Some(t), ..f })?;
@@ -1338,7 +1604,7 @@ impl Core<'_> {
                     if self.over_budget() {
                         break;
                     }
-                    if !self.eligible(j, id, &def.targets, from, r2) {
+                    if !self.eligible(j, id, def, from, r2) {
                         continue;
                     }
                     let e = &self.st.ents[j];
@@ -1372,7 +1638,7 @@ impl Core<'_> {
                             }
                             let origin = [from[0].saturating_add(def.muzzle[0]), from[1].saturating_add(def.muzzle[1]), from[2].saturating_add(def.muzzle[2])];
                             let aim = self.st.ents[j].pos;
-                            let pid = self.spawn(*parch, origin, None, None, None, &[], &with_vals)?;
+                            let pid = self.spawn(*parch, origin, None, None, None, &with_vals)?;
                             if let Some(pi) = idx_of(self.st, pid) {
                                 if let Some(slot) = self.st.ents[pi].beh.iter_mut().find(|s| matches!(s, BehState::Projectile(_))) {
                                     *slot = BehState::Projectile(Box::new(Proj { target: Some(t), aim, payload: vals, attack: (arch, b as u16), source: Some(id), carry: 0 }));
@@ -1558,6 +1824,7 @@ impl Core<'_> {
             }
             if self.st.tick >= a.expires {
                 let gone = self.st.ents[i].effects.remove(k);
+                self.st.bump();
                 self.st.cells = self.st.cells.saturating_sub(effect_cells(gone.mods.len()));
                 self.emit(ev::EFFECT_EXPIRED, Some(id), a.source, i64::from(a.effect));
                 if let Err(e) = self.actions(&def.on_expire, &f) {
@@ -1731,8 +1998,9 @@ impl Core<'_> {
 
     // ---- entities ----
 
-    #[allow(clippy::too_many_arguments)]
-    fn spawn(&mut self, arch: u16, pos: P3, path: Option<(u16, u32, i64)>, site: Option<u16>, wave: Option<u16>, scale: &[(u16, i64)], with: &[(u16, i64)]) -> Result<u32, RtErr> {
+    /// Spawns one entity. One that joins a wave (`wave`) gets that wave's `scale`, whoever
+    /// spawned it (the schedule, a summoner, a rule), then the `with` values.
+    fn spawn(&mut self, arch: u16, pos: P3, path: Option<(u16, u32, i64)>, site: Option<u16>, wave: Option<u16>, with: &[(u16, i64)]) -> Result<u32, RtErr> {
         let def = &self.r.archetypes[usize::from(arch)];
         if def.abstract_ {
             return Err(rt("abstract", format!("archetype '{}' is abstract and can't be spawned", def.id)));
@@ -1741,6 +2009,10 @@ impl Core<'_> {
             return Err(rt("entity_limit", format!("{MAX_ENTITIES} entities are alive; spawn refused")));
         }
         let mut base: Vec<i64> = def.attrs.iter().map(|(_, b)| *b).collect();
+        let scale: &[(u16, i64)] = match (wave, &self.r.waves) {
+            (Some(w), Some(ws)) => ws.waves.get(usize::from(w).wrapping_sub(1)).map_or(&[], |d| &d.scale),
+            _ => &[],
+        };
         for (a, r) in scale {
             if let Some(s) = def.slot_of(*a) {
                 base[s] = arith(Arith::MulRatio, base[s], *r).unwrap_or(base[s]);
@@ -1767,7 +2039,7 @@ impl Core<'_> {
             return Err(rt("state_limit", format!("the run's state budget ({MAX_STATE_CELLS} cells: entities x their attributes and behaviours) is spent; spawn refused")));
         }
         self.st.cells += cells;
-        let mut e = Entity { id, arch, alive: true, pos, base, effects: Vec::new(), beh, state, wave, site, spawn_path, path_remaining };
+        let mut e = Entity { id, arch, alive: true, pos, base, effects: Vec::new(), beh, state, wave, site, spawn_path, path_remaining, order: 0 };
         // A walker spawned mid-path stands where its path says.
         if let Some((p, seg, progress)) = path {
             let pd = &self.r.paths[usize::from(p)];
@@ -1775,6 +2047,7 @@ impl Core<'_> {
         }
         self.st.ents.push(e);
         self.st.mark();
+        self.st.bump();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.spawned += 1;
@@ -1790,6 +2063,13 @@ impl Core<'_> {
             self.emit(ev::STATE_ENTERED, Some(id), None, i64::from(initial));
             let _ = i;
             self.actions(&self.r.machines[usize::from(m)].states[usize::from(initial)].on_enter, &f)?;
+        }
+        // The phase order key, once on_spawn has set what it reads.
+        if let Some(o) = &def.order {
+            let v = self.int_or(o, &f, 0, "order");
+            if let Some(i) = idx_of(self.st, id) {
+                self.st.ents[i].order = v;
+            }
         }
         Ok(id)
     }
@@ -1826,6 +2106,7 @@ impl Core<'_> {
         e.alive = false;
         let (id, arch, wave) = (e.id, e.arch, e.wave);
         self.st.mark();
+        self.st.bump();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.died += 1;
@@ -1850,6 +2131,7 @@ impl Core<'_> {
         e.alive = false;
         let (id, wave) = (e.id, e.wave);
         self.st.mark();
+        self.st.bump();
         if let Some(w) = wave {
             let s = &mut self.st.wave_stats[usize::from(w) - 1];
             s.removed += 1;
@@ -1987,6 +2269,7 @@ impl Core<'_> {
                 if count >= usize::from(def.max_stacks) {
                     if let Some(oldest) = self.st.ents[i].effects.iter().position(|a| a.effect == effect) {
                         let gone = self.st.ents[i].effects.remove(oldest);
+                        self.st.bump();
                         self.st.cells = self.st.cells.saturating_sub(effect_cells(gone.mods.len()));
                     }
                 }
@@ -2000,6 +2283,11 @@ impl Core<'_> {
         };
         if applied {
             self.st.mark();
+            if !def.grant_tags.is_empty() {
+                // Its tags stop counting at expiry: see State::tag_expiry. (A strongest
+                // instance may last longer; an extra bump then only costs a cache miss.)
+                self.st.tag_expiry = self.st.tag_expiry.min(expires);
+            }
             self.emit(ev::EFFECT_APPLIED, Some(target), source, magnitude);
             self.actions(&def.on_apply, &f)?;
             if let Some(i) = idx_of(self.st, target) {
@@ -2027,6 +2315,7 @@ impl Core<'_> {
         self.st.effect_seq += 1;
         let tick = self.st.tick;
         self.st.ents[i].effects.push(Active { effect, magnitude, applied: tick, expires, next_period: tick.saturating_add(period), stacks: 1, seq, source, mods });
+        self.st.bump();
     }
 
     fn become_(&mut self, i: usize, to: u16, keep: &[u16]) -> Result<(), RtErr> {
@@ -2064,22 +2353,40 @@ impl Core<'_> {
         e.beh = beh;
         e.state = state;
         self.st.mark();
+        self.st.bump();
         self.init_timed(i);
         self.health_check(i, None);
         Ok(())
     }
 
-    fn native(&mut self, hook: u16, args: &[(String, Ex)], f: &Frame) -> Result<(), RtErr> {
-        let mut vals = Vec::with_capacity(args.len());
-        for (k, e) in args {
-            vals.push((k.clone(), self.int(e, f)?));
+    fn native(&mut self, hook: u16, args: &[(String, Ex)], on: &[(String, Vec<Action>)], f: &Frame) -> Result<(), RtErr> {
+        // Args are evaluated into a stack buffer (at most MAX_NATIVE_ARGS): no allocation per call.
+        let mut vals = [0i64; crate::compile::MAX_NATIVE_ARGS];
+        for (k, (_, e)) in args.iter().enumerate().take(vals.len()) {
+            vals[k] = self.int(e, f)?;
         }
+        let vals = &vals[..args.len().min(crate::compile::MAX_NATIVE_ARGS)];
         self.st.native_calls[usize::from(hook)] += 1;
+        // A call costs work like an action (a hook's own scans are charged as it makes them).
+        if self.spend(1 + vals.len()) {
+            return Err(rt("work_limit", "the tick's work budget is spent; the native call was skipped"));
+        }
         let Some(h) = self.natives.get(usize::from(hook)).and_then(|h| h.clone()) else {
-            return Err(rt("native_unbound", format!("native hook '{}' is not provided", self.r.natives[usize::from(hook)].hook)));
+            let def = &self.r.natives[usize::from(hook)];
+            let Some(host) = self.host.as_deref_mut() else {
+                return Err(rt("native_unbound", format!("native hook '{}' is not provided", def.hook)));
+            };
+            return host.call(def, f.me, NativeArgs { names: args, vals }, self.st.tick).map_err(|m| rt("native_failed", m));
         };
-        let mut cx = NativeCtx { core: self, entity: f.me, args: &vals };
-        h.run(&mut cx).map_err(|m| rt("native_failed", m))
+        let in_command = self.in_command;
+        let mut cx = NativeCtx { core: self, entity: f.me, names: args, vals, on };
+        h.run(&mut cx).map_err(|m| {
+            let mut e = rt("native_failed", m);
+            if in_command {
+                e.refusal = self.refusal.take();
+            }
+            e
+        })
     }
 
     // ---- actions and commands ----
@@ -2160,7 +2467,7 @@ impl Core<'_> {
                     }
                 };
                 for _ in 0..count {
-                    self.spawn(arch, pos, path, site, wave, &[], &wv)?;
+                    self.spawn(arch, pos, path, site, wave, &wv)?;
                 }
             }
             Action::Despawn(e) => {
@@ -2229,9 +2536,44 @@ impl Core<'_> {
                     self.actions(otherwise, f)?;
                 }
             }
-            Action::Native { hook, args } => self.native(*hook, args, f)?,
+            Action::Native { hook, args } => self.native(*hook, args, &[], f)?,
         }
         Ok(())
+    }
+
+    /// A command's costs (what it would pay) and requirements, or why it is refused.
+    fn command_checks(&mut self, def: &CommandDef, f: &Frame) -> Result<Vec<(u16, i64)>, Rejection> {
+        let mut costs = Vec::with_capacity(def.cost.len());
+        for (res, e) in &def.cost {
+            let need = self.int(e, f).map_err(|e| Rejection::new(e.code, e.message))?;
+            let have = self.st.res[usize::from(*res)];
+            let name = &self.r.resources[usize::from(*res)].id;
+            if need < 0 {
+                return Err(Rejection::new("invalid_cost", format!("the {name} cost of '{}' came to {need}; a cost can't be negative (use an action to pay out)", def.id)).with("cost", Json::from(need)));
+            }
+            if have < need {
+                return Err(Rejection::new(format!("not_enough_{name}"), format!("needs {need} {name}, has {have}"))
+                    .with("need", Json::from(need))
+                    .with("have", Json::from(have)));
+            }
+            costs.push((*res, need));
+        }
+        for req in &def.require {
+            match self.eval(&req.cond, f) {
+                Ok(Val::Bool(true)) => {}
+                Ok(_) => {
+                    let mut r = Rejection::new(req.code.as_str(), req.message.as_str());
+                    for (k, e) in &req.details {
+                        if let Ok(v) = self.int(e, f) {
+                            r = r.with(k, Json::from(v));
+                        }
+                    }
+                    return Err(r);
+                }
+                Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
+            }
+        }
+        Ok(costs)
     }
 
     fn command(&mut self, call: &CommandCall) -> Result<(), Rejection> {
@@ -2268,45 +2610,64 @@ impl Core<'_> {
             });
         }
         let f = Frame { args: &args, ..Frame::default() };
-        let mut costs = Vec::with_capacity(def.cost.len());
-        for (res, e) in &def.cost {
-            let need = self.int(e, &f).map_err(|e| Rejection::new(e.code, e.message))?;
-            let have = self.st.res[usize::from(*res)];
-            let name = &self.r.resources[usize::from(*res)].id;
-            if need < 0 {
-                return Err(Rejection::new("invalid_cost", format!("the {name} cost of '{}' came to {need}; a cost can't be negative (use an action to pay out)", def.id)).with("cost", Json::from(need)));
+        // Costs and requirements may draw random numbers (and note diagnostics): a refused
+        // command changes nothing, so those are put back on every refusal, and the snapshot
+        // that undoes the command holds them as they were before it.
+        let saved = (self.st.rngs.clone(), self.st.diag.clone());
+        let costs = match self.command_checks(def, &f) {
+            Ok(c) => c,
+            Err(r) => {
+                (self.st.rngs, self.st.diag) = saved;
+                return Err(r);
             }
-            if have < need {
-                return Err(Rejection::new(format!("not_enough_{name}"), format!("needs {need} {name}, has {have}"))
-                    .with("need", Json::from(need))
-                    .with("have", Json::from(have)));
-            }
-            costs.push((*res, need));
-        }
-        for req in &def.require {
-            match self.eval(&req.cond, &f) {
-                Ok(Val::Bool(true)) => {}
-                Ok(_) => return Err(Rejection::new(req.code.as_str(), req.message.as_str())),
-                Err(e) => return Err(Rejection::new(req.code.as_str(), format!("{} ({})", req.message, e.message))),
-            }
-        }
+        };
         // The rollback snapshot copies the state, so it costs that much, from the commands' own
         // budget (the tick's phases keep theirs).
         let cost = self.st.cells + self.st.pending.len() as u64 + self.st.ents.len() as u64;
         if self.spend(cost as usize) {
+            (self.st.rngs, self.st.diag) = saved;
             return Err(Rejection::new("work_limit", "this tick's command budget is spent (many commands over a large state); send the rest next tick"));
         }
-        let snapshot = self.st.clone();
+        let mut snapshot = self.st.clone();
+        (snapshot.rngs, snapshot.diag) = saved;
         for (res, need) in costs {
             let cur = self.st.res[usize::from(res)];
             self.set_res(res, cur.saturating_sub(need));
         }
-        if let Err(e) = self.actions(&def.actions, &f) {
+        self.refusal = None;
+        let natives_before: u64 = self.st.native_calls.iter().sum();
+        // A native that panics (other code) leaves the state as the command found it, then the
+        // panic goes on to the caller.
+        let acted = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.actions(&def.actions, &f))) {
+            Ok(r) => r,
+            Err(p) => {
+                *self.st = snapshot;
+                std::panic::resume_unwind(p);
+            }
+        };
+        if let Err(e) = acted {
+            // The snapshot is a new state value (a fresh instance), so nothing a native cached
+            // for the abandoned one can be mistaken for it.
             *self.st = snapshot;
+            if let Some((code, details)) = e.refusal {
+                let mut r = Rejection::new(code, e.message).with("command", Json::from(def.id.as_str()));
+                for (k, v) in details {
+                    r = r.with(&k, Json::from(v));
+                }
+                return Err(r);
+            }
             return Err(Rejection::new("runtime_error", format!("command '{}' failed and was rolled back: {}", def.id, e.message)).with("cause", Json::from(e.code)));
         }
-        self.dispatch();
-        self.check_outcomes(true);
+        if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.dispatch();
+            self.check_outcomes(true);
+        })) {
+            *self.st = snapshot;
+            std::panic::resume_unwind(p);
+        }
+        if self.keep && self.st.native_calls.iter().sum::<u64>() != natives_before {
+            self.kept = Some(snapshot);
+        }
         Ok(())
     }
 }
@@ -2384,13 +2745,22 @@ pub fn parse_command(r: &Rules, name: &str, args: &Json) -> Result<CommandCall, 
         };
         let bad = |what: &str| Rejection::new("wrong_type", format!("arg '{}' must be {what}", a.name)).with("arg", Json::from(a.name.as_str()));
         out.push(match &a.ty {
-            ArgTy::Site => {
+            ArgTy::Site(group) => {
                 let s = v.as_str().ok_or_else(|| bad("a site name"))?;
-                ArgVal::Site(r.site(s).ok_or_else(|| {
+                let group = *group;
+                let in_group = |x: &crate::rules::SiteDef| group.is_none_or(|g| x.group == g);
+                let site = r.site(s).ok_or_else(|| {
                     Rejection::new("unknown_site", format!("there is no site '{s}'"))
                         .with("arg", Json::from(a.name.as_str()))
-                        .with("suggestion", Json::from(crate::diag::did_you_mean(s, r.sites.iter().map(|x| x.name.as_str())).unwrap_or_default()))
-                })?)
+                        .with("suggestion", Json::from(crate::diag::did_you_mean(s, r.sites.iter().filter(|x| in_group(x)).map(|x| x.name.as_str())).unwrap_or_default()))
+                })?;
+                if let Some(g) = group.filter(|_| !in_group(&r.sites[usize::from(site)])) {
+                    let item = &r.site_groups[usize::from(g)];
+                    return Err(Rejection::new("wrong_site", format!("arg '{}' takes a site of '{item}', and '{s}' isn't one", a.name))
+                        .with("arg", Json::from(a.name.as_str()))
+                        .with("sites", Json::from(item.as_str())));
+                }
+                ArgVal::Site(site)
             }
             ArgTy::Archetype(filter) => {
                 let s = v.as_str().ok_or_else(|| bad("an archetype id"))?;
@@ -2430,10 +2800,18 @@ pub fn parse_command(r: &Rules, name: &str, args: &Json) -> Result<CommandCall, 
 }
 
 /// What a native hook may touch: deterministic, narrow, no clock or I/O.
+///
+/// Two ways in: by name (`attr`, `set_attr`, `has_tag`, `rand`: simple, a lookup per call),
+/// and by id (`get`, `set`, `has`, `range`, `chance`, `each_tagged`: resolve names once in
+/// [`NativeHook::bind`] with [`Rules::attr`], [`Rules::tag`] and [`Rules::stream`]), for hooks
+/// that run per entity per tick.
 pub struct NativeCtx<'c, 'a> {
     core: &'c mut Core<'a>,
     entity: Option<u32>,
-    args: &'c [(String, i64)],
+    names: &'c [(String, Ex)],
+    vals: &'c [i64],
+    /// The behaviour's named action lists ([`NativeCtx::trigger`]).
+    on: &'c [(String, Vec<Action>)],
 }
 
 impl NativeCtx<'_, '_> {
@@ -2451,7 +2829,160 @@ impl NativeCtx<'_, '_> {
     }
 
     pub fn arg(&self, name: &str) -> Option<i64> {
-        self.args.iter().find(|(k, _)| k == name).map(|(_, v)| *v)
+        self.names.iter().position(|(k, _)| k == name).and_then(|i| self.vals.get(i).copied())
+    }
+
+    /// The args in declaration order, as evaluated for this call.
+    pub fn arg_at(&self, i: usize) -> Option<i64> {
+        self.vals.get(i).copied()
+    }
+
+    pub fn rules(&self) -> &Rules {
+        self.core.r
+    }
+
+    /// The current wave (0 before the first).
+    pub fn wave(&self) -> u16 {
+        self.core.st.wave
+    }
+
+    /// Changes whenever an entity appears, leaves, changes archetype or gains or loses an effect
+    /// instance (a pair: the state value's identity, then a counter). Equal pairs mean the same
+    /// live entities with the same archetypes, so what a hook derives from tag scans (walls on a
+    /// grid, say) can be cached on it. Not covered: positions, attribute values, and tags of an
+    /// effect whose time ran out before the effects phase removed it.
+    pub fn generation(&self) -> (u64, u64) {
+        (self.core.st.instance.0, self.core.st.gen)
+    }
+
+    /// An entity's current attribute value (with effects) by attribute id; `None` if it has none.
+    pub fn get(&self, id: u32, attr: u16) -> Option<i64> {
+        let i = idx_of(self.core.st, id)?;
+        attr_value(self.core.r, self.core.st, &self.core.st.ents[i], attr)
+    }
+
+    /// An entity's base attribute value by id (no effects).
+    pub fn base(&self, id: u32, attr: u16) -> Option<i64> {
+        let e = &self.core.st.ents[idx_of(self.core.st, id)?];
+        Some(e.base[self.core.r.archetypes[usize::from(e.arch)].slot_of(attr)?])
+    }
+
+    /// Sets an entity's base attribute value by id (a health attribute can kill it, at once).
+    pub fn set(&mut self, id: u32, attr: u16, value: i64) -> Result<(), String> {
+        let i = idx_of(self.core.st, id).ok_or_else(|| format!("no entity {id}"))?;
+        if self.core.r.archetypes[usize::from(self.core.st.ents[i].arch)].slot_of(attr).is_none() {
+            let name = self.core.r.attrs.get(usize::from(attr)).map_or("?", |a| a.name.as_str());
+            return Err(format!("entity {id} ({}) has no attribute '{name}'", self.core.r.archetypes[usize::from(self.core.st.ents[i].arch)].id));
+        }
+        self.core.modify_base(i, attr, ModOp::Set, value, self.entity);
+        Ok(())
+    }
+
+    /// Base values of several attributes of one entity in one lookup (`None` if it lacks one).
+    pub fn base_many<const N: usize>(&self, id: u32, attrs: [u16; N]) -> Option<[i64; N]> {
+        let e = &self.core.st.ents[idx_of(self.core.st, id)?];
+        let arch = &self.core.r.archetypes[usize::from(e.arch)];
+        let mut out = [0i64; N];
+        for (o, a) in out.iter_mut().zip(attrs) {
+            *o = e.base[arch.slot_of(a)?];
+        }
+        Some(out)
+    }
+
+    /// Sets several base values of one entity in one lookup, as [`NativeCtx::set`] would (a
+    /// health attribute among them still kills at once).
+    pub fn set_many(&mut self, id: u32, values: &[(u16, i64)]) -> Result<(), String> {
+        let i = idx_of(self.core.st, id).ok_or_else(|| format!("no entity {id}"))?;
+        let r: &Rules = self.core.r;
+        let arch = &r.archetypes[usize::from(self.core.st.ents[i].arch)];
+        for (a, v) in values {
+            let Some(slot) = arch.slot_of(*a) else {
+                let name = r.attrs.get(usize::from(*a)).map_or("?", |x| x.name.as_str());
+                return Err(format!("entity {id} ({}) has no attribute '{name}'", arch.id));
+            };
+            if arch.health == Some(*a) {
+                self.core.modify_base(i, *a, ModOp::Set, *v, self.entity);
+            } else {
+                self.core.st.ents[i].base[slot] = *v;
+            }
+        }
+        self.core.st.mark();
+        Ok(())
+    }
+
+    /// Whether a live entity has a tag (by id).
+    pub fn has(&self, id: u32, tag: u16) -> bool {
+        idx_of(self.core.st, id).is_some_and(|i| has_tag(self.core.r, self.core.st, &self.core.st.ents[i], tag))
+    }
+
+    pub fn alive(&self, id: u32) -> bool {
+        idx_of(self.core.st, id).is_some_and(|i| self.core.st.ents[i].alive)
+    }
+
+    /// Calls `f(id, position)` for every live entity with the tag, in id order (no allocation).
+    /// The scan is charged to the tick's work budget (one unit per entity); `false` when the
+    /// budget ran out first (the scan stopped: treat the result as incomplete).
+    pub fn each_tagged(&mut self, tag: u16, mut f: impl FnMut(u32, P3)) -> bool {
+        if self.core.spend(self.core.st.ents.len()) {
+            return false;
+        }
+        for e in &self.core.st.ents {
+            if e.alive && has_tag(self.core.r, self.core.st, e, tag) {
+                f(e.id, e.pos);
+            }
+        }
+        true
+    }
+
+    /// Charges what one [`NativeCtx::each_tagged`] scan costs without scanning: for a hook that
+    /// answers from a cache, so the tick's work (which live runs budget by) is the same whether
+    /// the cache hit or not. `false` as `each_tagged` would answer.
+    pub fn charge_scan(&mut self) -> bool {
+        !self.core.spend(self.core.st.ents.len())
+    }
+
+    /// Uniform in `lo..=hi` from a stream by id (declared in the native's `streams`).
+    pub fn range(&mut self, stream: u16, lo: i32, hi: i32) -> i32 {
+        self.core.st.rngs[usize::from(stream)].range_i32(lo.min(hi), lo.max(hi))
+    }
+
+    /// True with probability `permille / 1000`, from a stream by id.
+    pub fn chance(&mut self, stream: u16, permille: i64) -> bool {
+        self.core.st.rngs[usize::from(stream)].chance_permille(permille.clamp(0, 1000) as u32)
+    }
+
+    /// Runs the behaviour's `on.<name>` action list now, with `self` the entity (an unknown
+    /// name is an error naming the lists it has). The entity may not survive it.
+    pub fn trigger(&mut self, name: &str) -> Result<(), String> {
+        let on = self.on;
+        let Some((_, acts)) = on.iter().find(|(n, _)| n == name) else {
+            let have: Vec<&str> = on.iter().map(|(n, _)| n.as_str()).collect();
+            return Err(format!("the native behaviour has no 'on.{name}' action list (it has: {}); add it to the behaviour", if have.is_empty() { "none".into() } else { have.join(", ") }));
+        };
+        self.core.actions(acts, &Frame { me: self.entity, ..Frame::default() }).map_err(|e| e.message)
+    }
+
+    /// Refuses the command this action runs in with `code`: return the result as the hook's
+    /// error (`return Err(cx.refuse("enemy_in_the_way", "..."))`). The command is rolled back
+    /// and refused with that code. Outside a command it is an ordinary failure.
+    pub fn refuse(&mut self, code: &str, message: impl Into<String>) -> String {
+        self.refuse_with(code, message, &[])
+    }
+
+    /// [`NativeCtx::refuse`] with numbers the refusal carries (`enemy`, `need`; at most 16; the
+    /// names in [`RESERVED_DETAILS`] are left out).
+    pub fn refuse_with(&mut self, code: &str, message: impl Into<String>, details: &[(&str, i64)]) -> String {
+        if self.core.in_command {
+            // Names the refusal sets itself (code, message, ...) are left out, never overwritten.
+            let details = details.iter().filter(|(k, _)| !RESERVED_DETAILS.contains(k)).take(crate::compile::MAX_NATIVE_ARGS).map(|(k, v)| ((*k).to_owned(), *v)).collect();
+            self.core.refusal = Some((code.to_owned(), details));
+        }
+        message.into()
+    }
+
+    /// The position of an entity.
+    pub fn position(&self, id: u32) -> Option<P3> {
+        idx_of(self.core.st, id).map(|i| self.core.st.ents[i].pos)
     }
 
     fn attr_id(&self, name: &str) -> Option<u16> {
@@ -2517,7 +3048,7 @@ impl NativeCtx<'_, '_> {
 
     pub fn spawn(&mut self, archetype: &str, pos: P3) -> Result<u32, String> {
         let a = self.core.r.archetype(archetype).ok_or_else(|| format!("no archetype '{archetype}'"))?;
-        self.core.spawn(a, pos, None, None, None, &[], &[]).map_err(|e| e.message)
+        self.core.spawn(a, pos, None, None, None, &[]).map_err(|e| e.message)
     }
 
     pub fn despawn(&mut self, id: u32) -> Result<(), String> {
@@ -2594,6 +3125,15 @@ fn state_hash(r: &Rules, st: &State) -> u64 {
             SpawnAt::Site(x) => {
                 h.write_u8(1);
                 h.write_u32(u32::from(x));
+            }
+        }
+        // Only rules that use them hash them, so states of rules without `with` (or `order`,
+        // below) hash as they did before these existed (saves from then compare equal).
+        if r.with_groups {
+            h.write_u64(p.with.len() as u64);
+            for (a, v) in &p.with {
+                h.write_u32(u32::from(*a));
+                h.write_i64(*v);
             }
         }
     }
@@ -2688,6 +3228,9 @@ fn state_hash(r: &Rules, st: &State) -> u64 {
         h.write_u32(e.site.map_or(u32::MAX, u32::from));
         h.write_u32(e.spawn_path.map_or(u32::MAX, u32::from));
         h.write_i64(e.path_remaining);
+        if r.ordered {
+            h.write_i64(e.order);
+        }
     }
     h.finish()
 }

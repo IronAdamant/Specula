@@ -191,7 +191,7 @@ fn a_runs_trace_replays_it_without_the_policy() {
     assert!(res.unfinished.is_empty());
     let runs = &runs[0];
     assert_eq!(runs.len(), 3 * seeds.len());
-    let rules = std::sync::Arc::new(compile(&d, &Options { overrides: point.clone(), natives: None }).unwrap().rules);
+    let rules = std::sync::Arc::new(compile(&d, &Options { overrides: point.clone(), ..Default::default() }).unwrap().rules);
     for r in runs {
         let policy = &t.policies[r.policy];
         let mut sim = Sim::new(std::sync::Arc::clone(&rules), r.seed, &Natives::new()).unwrap();

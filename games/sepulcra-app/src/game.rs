@@ -53,6 +53,8 @@ const GLYPHS: [(&str, Option<PadStyle>); 4] =
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Confirm {
     Restart,
+    /// The Lex rules and the reference disagreed: the run stopped ("yes" starts it again).
+    Desync,
     /// The saves screen: save over player slot N, load a slot, delete player slot N.
     Overwrite(u8),
     Load(saves::Slot),
@@ -118,6 +120,10 @@ pub struct SepulcraGame {
     ui_frame: UiEvents,
     /// Scratch for the braziers' crackle (reused).
     fire_buf: Vec<(CellId, Vec3)>,
+    /// `--rules lex`: the Lex rules decide, the state above is their reference (see
+    /// [`crate::lexmode`]). `rules_lex` keeps the choice across new runs.
+    pub(crate) lex: Option<crate::lexmode::LexRules>,
+    pub(crate) rules_lex: bool,
     /// The pause menu's Save and Load, for the engine (see `saves`).
     requests: Vec<specula::game::GameRequest>,
     /// The player's slots as the last save_list showed them (the saves screen).
@@ -148,6 +154,7 @@ struct Checkpoint {
     screens: Vec<String>,
     confirm: Option<Confirm>,
     radial_cell: Option<CellId>,
+    lex: Option<crate::lexmode::LexRules>,
 }
 
 impl SepulcraGame {
@@ -190,10 +197,59 @@ impl SepulcraGame {
             ui_frame: UiEvents::default(),
             hud_texts: hud::Texts::default(),
             fire_buf: Vec::new(),
+            lex: None,
+            rules_lex: false,
             requests: Vec::new(),
             slots: Vec::new(),
             saves_status: None,
             autosave_on: false,
+        }
+    }
+
+    /// Starts the Lex rules for the current state (`--rules lex`), or says why not.
+    fn start_lex(&mut self) {
+        self.lex = None;
+        if !self.rules_lex {
+            return;
+        }
+        match crate::lexmode::LexRules::new(self.state.content(), self.state.seed()) {
+            Ok(l) => self.lex = Some(l),
+            Err(e) => self.say(format!("Lex rules off: {e}")),
+        }
+    }
+
+    /// Whether the run goes on: with the Lex rules on, by their outcome (and a desync stops it).
+    pub(crate) fn running(&self) -> bool {
+        match &self.lex {
+            Some(l) => l.outcome().is_none() && l.desync.is_none(),
+            None => self.state.outcome() == Outcome::Running,
+        }
+    }
+
+    /// The outcome the game shows and acts on: the Lex rules' with them on.
+    pub(crate) fn outcome(&self) -> Outcome {
+        self.lex.as_ref().map_or(self.state.outcome(), |l| l.result())
+    }
+
+    /// (ended, desynced) by the Lex rules, to see what a step or a command changed.
+    fn lex_flags(&self) -> (bool, bool) {
+        self.lex.as_ref().map_or((false, false), |l| (l.outcome().is_some(), l.desync.is_some()))
+    }
+
+    /// With the Lex rules on, they end the run: the reference's own `Won`/`Lost` give way to
+    /// theirs (in `self.events`), and a desync stops the game with a dialog saying why.
+    fn lex_verdicts(&mut self, was: (bool, bool)) {
+        let Some(lex) = &self.lex else { return };
+        let (result, desync) = (lex.result(), lex.desync.clone());
+        self.events.retain(|e| !matches!(e, Event::Won | Event::Lost));
+        if result != Outcome::Running && !was.0 {
+            self.events.push(if result == Outcome::Won { Event::Won } else { Event::Lost });
+        }
+        if let (Some((tick, _)), false) = (desync, was.1) {
+            self.confirm = Some(Confirm::Desync);
+            self.hud.show("pause", false);
+            self.hud.show("confirm", true);
+            self.say(format!("Rules desync at tick {tick}: the run stopped (play_state has what differed)"));
         }
     }
 
@@ -226,6 +282,18 @@ impl SepulcraGame {
     /// Applies a command now (at the current tick) and journals it.
     pub fn command(&mut self, world: &mut World, cmd: Command) -> Result<(), Rejection> {
         let tick = self.state.tick();
+        // With the Lex rules on, they decide (the state is their reference).
+        if let Some(lex) = &mut self.lex {
+            let was = (lex.outcome().is_some(), lex.desync.is_some());
+            let verdict = lex.decide(&self.state, &cmd);
+            if verdict.is_err() {
+                // A disagreement stops the game here (the dialog shows at once).
+                let events = std::mem::take(&mut self.events);
+                self.lex_verdicts(was);
+                self.events = events;
+            }
+            verdict?;
+        }
         let before = self.pending.len();
         self.state.apply(&cmd, &mut self.pending)?;
         self.journal.push((tick, cmd));
@@ -247,6 +315,7 @@ impl SepulcraGame {
     /// build order.
     pub fn restart(&mut self, world: &mut World, agent: &str, content: Arc<Content>, seed: u64, autoplay: Option<(String, Player)>) {
         self.state = State::new(content, seed);
+        self.start_lex();
         self.journal.clear();
         self.autoplay = autoplay;
         self.events.clear();
@@ -264,6 +333,19 @@ impl SepulcraGame {
 
     /// Replaces the state (a loaded replay) and rebuilds the scene.
     pub(crate) fn load(&mut self, world: &mut World, agent: &str, state: State, journal: Journal) {
+        // The Lex rules replay the same commands to the same tick.
+        if self.rules_lex {
+            self.lex = match crate::lexmode::LexRules::replayed(state.content(), state.seed(), &journal, state.tick()) {
+                Ok(mut l) => {
+                    l.check(&state);
+                    Some(l)
+                }
+                Err(e) => {
+                    self.say(format!("Lex rules off: the replay doesn't run under them ({e})"));
+                    None
+                }
+            };
+        }
         self.state = state;
         self.journal = journal;
         self.autoplay = None;
@@ -307,7 +389,7 @@ impl SepulcraGame {
 
     /// The pause menu (Escape, the pad's Start): pauses the game under it.
     pub(crate) fn open_menu(&mut self, world: &mut World) {
-        if self.state.outcome() == Outcome::Running {
+        if self.running() {
             self.set_paused(world, true);
             self.hud.show("pause", true);
         }
@@ -496,7 +578,7 @@ impl SepulcraGame {
                 return;
             }
             Action::NewGame => {
-                if self.state.outcome() != Outcome::Running {
+                if !self.running() {
                     self.new_run(world, agent);
                 } else {
                     self.say("The run is still going (N starts a new game after the end)".into());
@@ -587,9 +669,9 @@ impl SepulcraGame {
             "confirm_yes" => {
                 self.hud.show("confirm", false);
                 let asked = self.confirm.take();
-                if let Some(c) = asked.filter(|c| *c != Confirm::Restart) {
+                if let Some(c) = asked.filter(|c| !matches!(c, Confirm::Restart | Confirm::Desync)) {
                     self.confirmed(c);
-                } else if asked == Some(Confirm::Restart) {
+                } else if matches!(asked, Some(Confirm::Restart | Confirm::Desync)) {
                     self.hud.show("pause", false);
                     let (seed, content) = (self.state.seed(), self.content());
                     self.restart(world, agent, content, seed, None);
@@ -710,7 +792,8 @@ impl SepulcraGame {
                 s.wall(cell).map(|w| Inspect::Wall { hp: w.hp, max_hp: w.max_hp, refund: (w.cost as i64 * i64::from(content.rules.refund_percent) / 100 * i64::from(w.hp) / i64::from(w.max_hp.max(1))) as i32 })
             }
         });
-        let next = s.next_wave_tick().filter(|_| s.outcome() == Outcome::Running);
+        let running = self.running();
+        let next = s.next_wave_tick().filter(|_| running);
         let left = next.map(|t| t.saturating_sub(s.tick()));
         let info = HudInfo {
             content: &content,
@@ -727,7 +810,7 @@ impl SepulcraGame {
             inspect,
             kills: s.wave_stats().iter().map(|w| w.killed).sum(),
             run_time_s: f64::from(s.tick()) / f64::from(TICK_HZ),
-            outcome: s.outcome(),
+            outcome: self.outcome(),
             volume: self.volume,
             reduced_motion: self.reduced_motion,
             glyph_style: GLYPHS[self.glyphs].0,
@@ -742,6 +825,12 @@ impl SepulcraGame {
         self.hud.state.set_str("autosave_text", if self.autosave_on { "On" } else { "Off" });
         if self.hud.visible("saves") {
             self.fill_saves();
+        }
+        if self.confirm == Some(Confirm::Desync) {
+            let (tick, what) = self.lex.as_ref().and_then(|l| l.desync.clone()).unwrap_or_default();
+            let what: String = what.chars().take(160).collect();
+            let body = format!("The Lex rules and the reference parted at tick {tick}: {what}. The run stopped there. Start it again?");
+            self.hud.state.set_str("confirm_title", "The rules disagree").set_str("confirm_body", &body);
         }
         if let Some(cam) = camera {
             let groups = self.threat_groups();
@@ -786,6 +875,16 @@ impl SepulcraGame {
     }
 
     pub(crate) fn status_json(&self) -> Json {
+        let mut j = self.status_core();
+        j.set("rules", match &self.lex {
+            Some(l) => l.status_json(),
+            None if self.rules_lex => Json::obj([("rules", Json::from("lex")), ("off", Json::from("see the log: the Lex rules couldn't start"))]),
+            None => Json::from("rust"),
+        });
+        j
+    }
+
+    fn status_core(&self) -> Json {
         let s = &self.state;
         Json::obj([
             ("seed", Json::from(s.seed().to_string())),
@@ -793,7 +892,7 @@ impl SepulcraGame {
             ("waves_total", Json::from(u32::from(s.waves_total()))),
             ("dust", Json::from(s.dust())),
             ("tombstones", Json::from(s.tombstones())),
-            ("outcome", Json::from(outcome_name(s.outcome()))),
+            ("outcome", Json::from(outcome_name(self.outcome()))),
             ("tick", Json::from(s.tick())),
             ("enemies", Json::from(s.enemies().len())),
             ("paused", Json::from(self.paused)),
@@ -1007,13 +1106,34 @@ impl Game for SepulcraGame {
     }
 
     fn configure(&mut self, args: &[String]) -> Result<(), String> {
-        let (seed, mute) = parse_args(args)?;
+        // `--rules lex|rust` (see crate::lexmode); the rest are parse_args's.
+        let mut rest = Vec::new();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "--rules" {
+                match it.next().map(String::as_str) {
+                    Some("lex") => self.rules_lex = true,
+                    Some("rust") => self.rules_lex = false,
+                    other => return Err(format!("--rules takes lex or rust, got {other:?}")),
+                }
+            } else {
+                rest.push(a.clone());
+            }
+        }
+        let (seed, mute) = parse_args(&rest)?;
         if let Some(seed) = seed {
             self.seed_arg = Some(seed);
             self.state = State::new(self.content(), seed);
         }
         self.mute = mute;
+        if self.rules_lex {
+            self.lex = Some(crate::lexmode::LexRules::new(self.state.content(), self.state.seed())?);
+        }
         Ok(())
+    }
+
+    fn lex_natives(&self) -> specula_lex::Natives {
+        sepulcra::lex::natives()
     }
 
     fn assets_root(&self) -> Option<PathBuf> {
@@ -1054,21 +1174,29 @@ impl Game for SepulcraGame {
         // Events before this come from commands (their autosave was already asked for).
         let from_steps = self.events.len();
         let mut stepped = 0;
+        let was = self.lex_flags();
         if !self.paused {
             for _ in 0..self.speed {
-                if self.state.outcome() != Outcome::Running {
+                if !self.running() {
                     break;
                 }
                 if let Some((_, player)) = &mut self.autoplay {
                     let tick = self.state.tick();
                     for c in player.drive(&mut self.state, &mut self.events) {
+                        if let Some(lex) = &mut self.lex {
+                            lex.follow(&self.state, &c);
+                        }
                         self.journal.push((tick, c));
                     }
                 }
                 self.state.step_into(&[], &mut self.events);
+                if let Some(lex) = &mut self.lex {
+                    lex.step(&self.state);
+                }
                 stepped += 1;
             }
         }
+        self.lex_verdicts(was);
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
         // The rotating autosave as a wave starts (the save holds this tick, wave and all).
@@ -1180,6 +1308,9 @@ impl Game for SepulcraGame {
     /// state's hash, and its parts, so a divergence names what diverged first.
     fn state_hashes(&self, out: &mut Vec<(&'static str, u64)>) {
         state_hashes(&self.state, out);
+        if let Some(l) = &self.lex {
+            out.push(("lex", l.sim.hash()));
+        }
     }
 
     fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
@@ -1228,6 +1359,7 @@ impl Game for SepulcraGame {
             screens: self.hud.screens(),
             confirm: self.confirm,
             radial_cell: self.radial_cell,
+            lex: self.lex.clone(),
         }))
     }
 
@@ -1249,6 +1381,7 @@ impl Game for SepulcraGame {
         self.log = c.log;
         self.confirm = c.confirm;
         self.radial_cell = c.radial_cell;
+        self.lex = c.lex;
         for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls", "saves"] {
             let open = c.screens.iter().any(|s| s == screen);
             if self.hud.visible(screen) != open {
@@ -1290,5 +1423,170 @@ mod desync_tests {
         assert_eq!(names, ["sim", "economy", "enemies", "defences", "projectiles"]);
         let (seven, eight) = (State::new(Arc::clone(&content), 7), State::new(content, 8));
         assert_ne!(hashes(&seven)[0].1, hashes(&eight)[0].1, "the seed is in sim");
+    }
+}
+
+/// Review round 1 (finding 6): with `--rules lex`, the Lex run decides the outcome, and a
+/// disagreement with the reference stops the game visibly.
+#[cfg(test)]
+mod lex_rules_tests {
+    use super::*;
+    use specula::game::Clock;
+
+    fn lex_game(seed: u64) -> (SepulcraGame, World, Clock) {
+        let mut g = SepulcraGame::new(Arc::new(Content::builtin()), seed);
+        let mut world = World::default();
+        let clock = Clock::new(g.tick_hz());
+        g.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        g.rules_lex = true;
+        g.start_lex();
+        assert!(g.lex.is_some());
+        (g, world, clock)
+    }
+
+    fn tick(g: &mut SepulcraGame, world: &mut World, clock: &mut Clock) {
+        g.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        clock.finish_tick();
+    }
+
+    #[test]
+    fn a_desync_stops_the_game_with_a_dialog() {
+        let (mut g, mut world, mut clock) = lex_game(3);
+        for _ in 0..5 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert!(g.running());
+        // The Lex run takes a stone the reference never saw: the next comparison differs.
+        let content = g.state.content().clone();
+        let cmd = Command::PlaceStone { cell: content.map.cell_ref("top:8,12").unwrap(), stone: content.stone_kind("warding").unwrap() };
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &cmd).unwrap();
+        lex.sim.apply(&call).unwrap();
+        tick(&mut g, &mut world, &mut clock);
+        let at = g.state.tick();
+        assert!(!g.running(), "stopped");
+        assert_eq!(g.confirm, Some(Confirm::Desync));
+        assert!(g.hud.visible("confirm"), "the dialog is up");
+        for _ in 0..10 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert_eq!(g.state.tick(), at, "neither sim steps after a desync");
+        let rules = g.status_json().get("rules").cloned().unwrap();
+        assert_eq!(rules.get("parity").and_then(Json::as_str), Some("desync"), "{rules}");
+        // Commands are refused, with the reason as data.
+        let r = g.command(&mut world, Command::CallWave);
+        assert_eq!(r, Err(Rejection::GameOver));
+        assert_eq!(g.lex.as_ref().unwrap().last_refusal.as_ref().map(|r| r.0.as_str()), Some("desync"));
+    }
+
+    #[test]
+    fn lex_judges_commands_first_and_nothing_drifts() {
+        let (mut g, mut world, _clock) = lex_game(4);
+        let content = g.state.content().clone();
+        let cell = content.map.cell_ref("top:8,12").unwrap();
+        let warding = content.stone_kind("warding").unwrap();
+        // Both refuse: the game's rejection with Lex's own code beside it.
+        let lane = Command::PlaceStone { cell: content.map.cell_ref("top:9,14").unwrap(), stone: warding };
+        let r = g.command(&mut world, lane).unwrap_err();
+        assert_eq!(r, Rejection::NotBuildable);
+        assert!(g.lex.as_ref().unwrap().last_refusal.is_some());
+        assert!(g.running(), "agreeing refusals are no desync");
+        // The reference has the stone, Lex doesn't: Lex would accept, the reference refuses ...
+        let mut pending = Vec::new();
+        g.state.apply(&Command::PlaceStone { cell, stone: warding }, &mut pending).unwrap();
+        let hash = g.lex.as_ref().unwrap().sim.hash();
+        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        assert_eq!(r, Err(Rejection::Occupied));
+        assert_eq!(g.lex.as_ref().unwrap().sim.hash(), hash, "... and the Lex run takes it back");
+        assert!(!g.running(), "a desync");
+        assert_eq!(g.confirm, Some(Confirm::Desync), "shown at once");
+
+        // The other way round: Lex refuses with its code mapped, not game_over.
+        let (mut g, mut world, _clock) = lex_game(4);
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &Command::PlaceStone { cell, stone: warding }).unwrap();
+        lex.sim.apply(&call).unwrap();
+        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        assert_eq!(r, Err(Rejection::Occupied));
+        assert!(g.state.stone(cell).is_none(), "the reference didn't take it either");
+        assert!(!g.running());
+    }
+
+    /// Save games in `--rules lex` mode: the game section carries the Lex run's state, so a
+    /// load resumes it exactly (same Lex hash, parity on); an older section without it replays
+    /// the recording through Lex to the same state.
+    #[test]
+    fn a_lex_mode_game_saves_and_loads_with_its_lex_state() {
+        let (mut g, mut world, mut clock) = lex_game(6);
+        let content = g.state.content().clone();
+        let warding = content.stone_kind("warding").unwrap();
+        for c in ["top:8,12", "top:12,8"] {
+            g.command(&mut world, Command::PlaceStone { cell: content.map.cell_ref(c).unwrap(), stone: warding }).unwrap();
+        }
+        for _ in 0..1_200 {
+            tick(&mut g, &mut world, &mut clock);
+        }
+        assert!(g.running() && g.state.enemies().len() + g.state.projectiles().len() > 0, "mid-wave");
+        let bytes = g.save_bytes().unwrap();
+        let resume = |bytes: &[u8]| {
+            let (mut h, mut world2, clock2) = lex_game(6);
+            let loaded = h.parse_saved(bytes).unwrap();
+            h.apply_saved(&mut world2, "sepulcra", loaded);
+            (h, world2, clock2)
+        };
+        let (mut h, mut world2, mut clock2) = resume(&bytes);
+        let lex = |x: &SepulcraGame| x.lex.as_ref().map(|l| (l.sim.hash(), l.sim.tick(), l.desync.clone()));
+        assert_eq!(lex(&h), lex(&g), "the Lex run resumes as saved");
+        // An older section (version 1: no Lex part) replays the recording through Lex.
+        let mut v1 = {
+            let l = g.lex.take();
+            let b = g.save_bytes().unwrap();
+            g.lex = l;
+            b
+        };
+        v1.truncate(v1.len() - 1);
+        v1[..4].copy_from_slice(&1u32.to_le_bytes());
+        let (old, _, _) = resume(&v1);
+        assert_eq!(lex(&old), lex(&g), "replayed to the same Lex state");
+        for _ in 0..600 {
+            tick(&mut g, &mut world, &mut clock);
+            tick(&mut h, &mut world2, &mut clock2);
+        }
+        assert_eq!(lex(&h), lex(&g), "and steps on identically");
+        assert_eq!(h.state.tick(), g.state.tick());
+        assert_eq!(h.lex.as_ref().unwrap().desync, None, "parity holds after the load");
+    }
+
+    /// Review round 6 (desyncui.py): loading a save whose Lex run had parted from the reference
+    /// stops the game with the dialog up, as the desync itself did.
+    #[test]
+    fn a_loaded_desynced_lex_run_shows_its_dialog() {
+        let (mut g, mut world, mut clock) = lex_game(3);
+        tick(&mut g, &mut world, &mut clock);
+        let content = g.state.content().clone();
+        let cmd = Command::PlaceStone { cell: content.map.cell_ref("top:8,12").unwrap(), stone: content.stone_kind("warding").unwrap() };
+        let lex = g.lex.as_mut().unwrap();
+        let call = sepulcra::lex::command_call(&lex.sim, &content, &cmd).unwrap();
+        lex.sim.apply(&call).unwrap();
+        tick(&mut g, &mut world, &mut clock);
+        assert!(g.lex.as_ref().unwrap().desync.is_some());
+        let bytes = g.save_bytes().unwrap();
+        let (mut h, mut world2, _clock2) = lex_game(3);
+        let loaded = h.parse_saved(&bytes).unwrap();
+        h.apply_saved(&mut world2, "sepulcra", loaded);
+        assert!(!h.running(), "stopped");
+        assert_eq!(h.confirm, Some(Confirm::Desync));
+        assert!(h.hud.visible("confirm"), "the dialog is up after the load");
+    }
+
+    #[test]
+    fn the_end_screens_follow_the_lex_outcome() {
+        let (mut g, _world, _clock) = lex_game(5);
+        // The reference saying "won" while Lex runs on shows nothing (the comparison catches it).
+        g.events.push(Event::Won);
+        g.lex_verdicts((false, false));
+        assert!(!g.events.iter().any(|e| matches!(e, Event::Won)));
+        assert!(g.running());
+        assert_eq!(g.outcome(), Outcome::Running);
     }
 }

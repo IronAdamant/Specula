@@ -233,7 +233,7 @@ pub fn aggregate(point: Point, rules_hash: u64, targets: &Targets, runs: &[RunRe
 
 /// Compiles `doc` at a point and binds the targets to it.
 pub fn prepare(doc: &Document, targets: &Targets, point: &Point) -> Result<Runner, Vec<Diagnostic>> {
-    let compiled = compile(doc, &Options { overrides: point.clone(), natives: None })?;
+    let compiled = compile(doc, &Options { overrides: point.clone(), ..Default::default() })?;
     let rules = Arc::new(compiled.rules);
     // Native hooks run in the engine's live tick, not headless (as lex_simulate).
     if let Err(m) = specula_lex::Sim::new(Arc::clone(&rules), 0, &specula_lex::Natives::new()) {

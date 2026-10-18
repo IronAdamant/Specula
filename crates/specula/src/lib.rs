@@ -28,6 +28,9 @@ pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+mod lex_live;
+/// Live Lex runs' work limits (perf.toml `[lex_live]`), for games that size their sets to them.
+pub use lex_live::{Limits as LexLiveLimits, LIMITS as LEX_LIVE_LIMITS};
 mod lex_tools;
 mod luts;
 pub mod meshes;
@@ -284,6 +287,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
+    engine.lex_live.set_limits(perf_cfg.lex_live);
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
@@ -327,6 +331,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.swarm.reserve(g.name());
     }
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
+    engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
     let server = Server::start(
         ServerConfig {
@@ -335,7 +340,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats))),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone())),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -540,6 +545,10 @@ struct Engine {
     physics: physics::Physics,
     /// Navmeshes, nav agents and minds (see [`nav`]).
     nav: nav::Nav,
+    /// Lex rule sets the engine steps live on its tick (see [`lex_live`]).
+    lex_live: lex_live::Live,
+    /// The hosted game's in-process Lex hooks ([`game::Game::lex_natives`]).
+    lex_natives: specula_lex::Natives,
     /// What of the world is on the GPU: budgeted uploads, eviction, HLOD (see [`streaming`]).
     stream: streaming::Streamer,
     /// A stream_fly flight of the window camera in progress.
@@ -647,6 +656,8 @@ impl Engine {
             logic: logic::LogicHost::new(),
             physics: physics::Physics::default(),
             nav: nav::Nav::default(),
+            lex_live: lex_live::Live::default(),
+            lex_natives: specula_lex::Natives::new(),
             stream: streaming::Streamer::default(),
             fly: None,
             playtests: Default::default(),
@@ -673,6 +684,8 @@ impl Engine {
         self.tick_hashes.clear();
         self.trace.clear();
         self.physics.reset();
+        // Live Lex runs presented into the old world: their entities are gone with it.
+        self.lex_live = lex_live::Live::default();
         self.nav.reset();
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
@@ -794,6 +807,11 @@ impl Engine {
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
             }
+            // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
+            if !self.lex_live.is_empty() {
+                let _l = profile::zone("lex_live");
+                self.lex_live_tick();
+            }
             // Navigation decides and steers on the same tick, before physics walks its characters.
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
@@ -814,6 +832,11 @@ impl Engine {
         self.input.clear();
         ui.drain_events(&mut self.input);
         self.logic.feed_window(&self.input, dt.as_secs_f32());
+        if self.lex_live.has_input() {
+            let poll = !self.logic.reads_input();
+            let pads = self.logic.pad_states(poll);
+            self.lex_live.feed_window(&self.input, pads, dt.as_secs_f32());
+        }
         // A human taking the controls takes the camera back from an agent's (window_view).
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");
@@ -1404,6 +1427,7 @@ impl Engine {
             let frame_started = Instant::now();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
             self.poll_saves();
@@ -1532,6 +1556,7 @@ impl Engine {
             self.advance_clock();
             self.autosave_if_due();
             self.sweep_claims(server);
+            self.lex_live_end_holds(server);
             self.poll_assets(false);
             self.pump_builds(None);
             // Streaming headless: captures' views are the sources; retired memory is freed.
@@ -1622,8 +1647,10 @@ impl Engine {
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
-                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks)
+                let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
+                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks, &in_process)
             }
+            Command::LexLive(call) => self.lex_live_call(call, &by, w),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
@@ -1748,6 +1775,8 @@ impl Engine {
                     TimeOp::Step(n) => {
                         self.clock.set_paused(true);
                         self.clock.step(n);
+                        // Holds of agents gone since the last frame end before these ticks fire them.
+                        self.lex_live_end_holds(server);
                         // Run them now, so the reply shows the result.
                         self.advance_clock();
                     }
@@ -2269,6 +2298,7 @@ fn call_class(command: &Command) -> Class {
         Command::Playtest(_) => Class::Sim,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
+        Command::LexLive(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
         | Command::Delete(..)
