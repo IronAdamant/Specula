@@ -40,6 +40,16 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`. Sepulcra's creatures run on graphs with new
   clips (climb, glide, dive, pound, flinches, shuffle, jog), and the checks' fixes (a runner that hovered, colossus
   hands in the ground)
+- **Save games:** `.specsave` files hold the world, the hosted game, physics (with warm starts, sleep state and SAT
+  memory) and module state, so a loaded game continues tick-identical; versioned with migrations, checksummed,
+  bounded and fuzzed; decoded on a worker so loads never stall the engine. Tools `save_write`, `save_read`, `save_list`,
+  `save_delete`. Sepulcra gains a Saved games screen (three slots, two rotating autosaves, pad/mouse/touch/keys)
+- **Balance lab:** new crate `specula-balance` (targets as data, deterministic multi-threaded sweeps of Lex rules, a
+  seeded Gaussian-process tuner, several play styles at once) and tools `balance_targets`, `balance_sweep`,
+  `balance_tune`; `scripts/balance_playtests.py` cross-checks tuned points with real playtests
+- **Visual history gallery:** `docs/gallery/` (55 entries from the Bevy era to today, by subject and by date, with
+  honest dates and notes), `scripts/gallery.py` (add, check, dupes, drop), the specula-core `thumb` example (zero-dep
+  downscaling to JPEG) and a JPEG known-answer test against an independent decoder
 - **Headless playtests and swarms:** playtests as data for any game (`playtest_run`, `playtest_report`: steps that call
   any tool at a tick, expectations, `until`, replays verified by checkpoint hashes of the world, physics and the
   game's subsystems), `--paused`, `scripts/playtest_swarm.py` and `scripts/playtest_suite.py` (26 Sepulcra playtests

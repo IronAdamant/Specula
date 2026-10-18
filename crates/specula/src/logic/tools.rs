@@ -54,7 +54,7 @@ fn engine_root() -> PathBuf {
 /// the project the engine runs in. Checked by its text first (no `..`, no UNC, device or
 /// verbatim prefixes, absolute paths spelled under the root), so a refused path is never looked
 /// up on disk (or on the network); then by the file system, so links can't lead out either.
-fn project_path(path: &str, what: &str) -> Result<PathBuf, String> {
+pub(crate) fn project_path(path: &str, what: &str) -> Result<PathBuf, String> {
     let root = engine_root();
     let outside = || format!("'{what}' must be inside the engine's working directory ({}); {path} is not", root.display());
     if path.starts_with(r"\\") || path.starts_with("//") || path.contains('\0') {

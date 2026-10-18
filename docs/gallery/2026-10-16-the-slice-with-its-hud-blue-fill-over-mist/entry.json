@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "13:59",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "89360a1",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "The slice with its HUD: blue fill over mist",
+  "note": "The night's light now comes mostly from a blue fill under a dim moon, over blue mist: dark, but shadowed cliffs and their climbers stay readable. This is the capture in docs/fidelity. Again a subtle change at this size.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-sepulcra-slice-hud.jpg",
+      "caption": "Slice with HUD",
+      "original": "sepulcra_slice_hud.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 33923
+    }
+  ]
+}

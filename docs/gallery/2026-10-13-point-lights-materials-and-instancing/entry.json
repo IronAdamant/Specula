@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-13",
+  "time": "12:48",
+  "date_source": "file times 12:48-12:57",
+  "approximate": false,
+  "milestone": "M1",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "effects",
+  "title": "Point lights, materials and instancing",
+  "note": "Early renderer tests from the lava-lamp and GPU lanes: coloured point lights on PBR-lite spheres and a wall, mixed materials up close, and a grid of instanced cubes with a colour per instance.",
+  "source": "specula-gpu tests (scratch crops)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-crop-lights-wall.jpg",
+      "caption": "Point lights on spheres and a wall",
+      "original": "crop_lights_wall.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 11881
+    },
+    {
+      "file": "02-crop-mixed-yellow.jpg",
+      "caption": "Mixed materials",
+      "original": "crop_mixed_yellow.png",
+      "width": 640,
+      "height": 524,
+      "bytes": 13093
+    },
+    {
+      "file": "03-grow-0.jpg",
+      "caption": "Instanced grid",
+      "original": "grow_0.png",
+      "width": 640,
+      "height": 480,
+      "bytes": 15964
+    }
+  ]
+}

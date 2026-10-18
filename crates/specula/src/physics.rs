@@ -25,6 +25,9 @@ use specula_core::math::Vec3;
 use specula_core::Json;
 use std::sync::Arc;
 
+#[path = "physics_save.rs"]
+mod save;
+
 // ---------------------------------------------------------------------------------------------
 // Components
 
@@ -964,6 +967,10 @@ struct Seen {
     /// Collider, scale and the body's fixed parameters: unchanged means only pose or motion did.
     shape_key: u64,
     body: Option<Body>,
+    /// The scale the body's collider was built at (its world matrix's column lengths then: they
+    /// jitter in the last bit as the body turns, and the space keeps the shape it was built
+    /// with, so save games carry it).
+    scale: Vec3,
 }
 
 /// One logged event.
@@ -1208,6 +1215,12 @@ impl Physics {
 
     /// Brings one entity's physics up to date with the world.
     fn upsert(&mut self, world: &World, e: &world::Entity) {
+        self.upsert_scaled(world, e, None);
+    }
+
+    /// [`Physics::upsert`]; a body (re)built here takes its collider at `built_scale` when given
+    /// (a save game's, see `physics_save`) instead of the world matrix's.
+    fn upsert_scaled(&mut self, world: &World, e: &world::Entity, built_scale: Option<Vec3>) {
         let id = e.id;
         if !relevant(e) {
             self.forget(id);
@@ -1220,9 +1233,15 @@ impl Physics {
             }
         }
         let (pose, scale) = world_pose(world, e);
+        let scale = built_scale.unwrap_or(scale);
         let key = Physics::shape_key(e.collider.as_ref(), scale, e.body.as_ref());
         let body = e.body.unwrap_or_else(|| Body::new(BodyKind::Static, 1.0));
         let seen = self.seen.get(&id).cloned();
+        // Only a rebuild takes the new scale; a pose or motion change keeps the built shape's.
+        let built = match &seen {
+            Some(s) if s.shape_key == key && self.space.contains(id) => s.scale,
+            _ => scale,
+        };
         match seen {
             Some(s) if s.shape_key == key && self.space.contains(id) => {
                 // Only the pose or the motion changed.
@@ -1304,7 +1323,7 @@ impl Physics {
                 self.problems.remove(&id);
             }
         }
-        self.seen.insert(id, Seen { version: e.version, world: cols, shape_key: key, body: e.body });
+        self.seen.insert(id, Seen { version: e.version, world: cols, shape_key: key, body: e.body, scale: built });
     }
 
     /// Syncs what changed in the world since the last sync (or everything).

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "04:40",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "performance",
+  "title": "Streaming: a large graveyard field",
+  "note": "From the streaming and HLOD lane: a field of thousands of graves streamed in around the camera, and a strip of a comparison strip.",
+  "source": "streaming lane check",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Close",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 11459
+    },
+    {
+      "file": "02-frame-00003.jpg",
+      "caption": "Wide",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15498
+    },
+    {
+      "file": "03-frame-00005.jpg",
+      "caption": "Comparison strip",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 120,
+      "bytes": 5846
+    }
+  ]
+}

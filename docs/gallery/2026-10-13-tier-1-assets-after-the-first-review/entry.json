@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "15:02",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "7b35ebe",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Tier-1 assets after the first review",
+  "note": "From an adversarial look at the sheet: the tier II brazier gets a wider capstone and a glowing rune band, the obelisk keeps its glowing tip at LOD, the boss ribcage is larger with a deeper green heart, enemy eyes are bigger.",
+  "source": "specula-model preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-t1-contact.jpg",
+      "caption": "Contact sheet",
+      "original": "sepulcra_t1_contact.png",
+      "width": 640,
+      "height": 787,
+      "bytes": 87670
+    }
+  ]
+}

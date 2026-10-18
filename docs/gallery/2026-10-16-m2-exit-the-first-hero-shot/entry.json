@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "08:41",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "09976fd",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "M2 exit: the first hero shot",
+  "note": "The M2 exit proof's scene: a moonlit Sepulcra graveyard with recipe props, imported GLBs and animated creatures.",
+  "source": "scripts/m2_exit.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-m2-exit-hero.jpg",
+      "caption": "Hero shot",
+      "original": "m2_exit_hero.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18677
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "10:06",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Saved games",
+  "note": "From the save-games lane: the pause menu with Save and Load, the saved games list and the overwrite confirmation.",
+  "source": "save check (save-games lane)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-menu.jpg",
+      "caption": "Pause menu",
+      "original": "menu.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14337
+    },
+    {
+      "file": "02-saves.jpg",
+      "caption": "Saved games",
+      "original": "saves.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18527
+    },
+    {
+      "file": "03-confirm-overwrite.jpg",
+      "caption": "Confirm overwrite",
+      "original": "confirm_overwrite.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 16921
+    }
+  ]
+}

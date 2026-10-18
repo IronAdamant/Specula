@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-18",
+  "time": "10:02",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "ee02487",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "Creatures now: graph contact sheets",
+  "note": "Main's animation check on the iGPU: every creature's clips and graph states pass style.toml's motion rules (some rows with the exemptions and skips style.toml allows, labelled on the sheets); a live shambler's graph state, and the step test with the feet IK on a raised step.",
+  "source": "scripts/anim_graph_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Shambler",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 648,
+      "bytes": 57883
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "Bone colossus",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 648,
+      "bytes": 63334
+    },
+    {
+      "file": "03-frame-00006.jpg",
+      "caption": "Live shambler",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 39071
+    },
+    {
+      "file": "04-frame-00007.jpg",
+      "caption": "Step test",
+      "original": "frame_00007.png",
+      "width": 640,
+      "height": 530,
+      "bytes": 52302
+    }
+  ]
+}

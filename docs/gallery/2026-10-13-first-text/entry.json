@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-13",
+  "time": "14:40",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "First text: the TrueType glyph atlas",
+  "note": "specula-text's first output: TrueType fonts rasterised to a glyph atlas and laid out as quads on the CPU, at several sizes, zoomed to check hinting and spacing.",
+  "source": "specula-text example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-out.jpg",
+      "caption": "Atlas and layout",
+      "original": "out.png",
+      "width": 640,
+      "height": 573,
+      "bytes": 48470
+    },
+    {
+      "file": "02-render-text-zoom.jpg",
+      "caption": "Sizes, zoomed",
+      "original": "render_text_zoom.png",
+      "width": 640,
+      "height": 320,
+      "bytes": 27291
+    }
+  ]
+}

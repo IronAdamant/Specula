@@ -1,0 +1,13 @@
+[package]
+name = "specula-balance"
+description = "The balance lab: designer targets as data, deterministic parallel sweeps and seeded Bayesian tuning of Lex params"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-lex = { workspace = true }

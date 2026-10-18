@@ -43,3 +43,6 @@ CLAUDE.local.md
 
 # Held by a running engine that owns a world folder
 worlds/*/world.lock
+
+# Full-size originals behind docs/gallery thumbnails (scripts/gallery.py), local only
+/gallery-full/

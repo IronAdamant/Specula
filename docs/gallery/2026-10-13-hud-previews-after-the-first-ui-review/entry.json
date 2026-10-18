@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "20:02",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "b4a9306",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "HUD previews after the first UI review",
+  "note": "Threat labels rescale, the radial menu gets an opaque base so the world no longer shows through its gaps, scrolling lists draw a scroll bar. Small changes, hard to see at thumbnail size. The pause menu is unchanged since 2026-10-13-sepulcra-s-hud-and-pause-menu-first-previews.",
+  "source": "specula-ui hud_preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-hud-preview.jpg",
+      "caption": "HUD",
+      "original": "sepulcra_hud_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 21656
+    }
+  ]
+}

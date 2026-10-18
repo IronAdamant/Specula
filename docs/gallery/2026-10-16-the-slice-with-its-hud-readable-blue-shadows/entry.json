@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "13:11",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "36cb5a1",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "The slice with its HUD: readable blue shadows",
+  "note": "The fidelity capture of the vertical slice with its HUD: a selected brazier's panel, range ring and path dots.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-sepulcra-slice-hud.jpg",
+      "caption": "Slice with HUD",
+      "original": "sepulcra_slice_hud.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 37471
+    }
+  ]
+}

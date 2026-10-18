@@ -572,11 +572,16 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   colliders and contacts visible in captures.
   *Done 2026-10-18:* `physics_check` (rest, contacts, penetration, tunnelling, energy gainers, positions), automatic
   checks in `physics_info` and `perf_frame`, `colliders` and `contacts` sight overlays.
-- [ ] ➕ **Balance lab** *(research)*:
+- [x] ➕ **Balance lab** *(research)*:
   - designer targets as data (win rate per wave, gold curve, time to kill);
   - headless sweeps across parallel engines;
   - Bayesian optimisation over Lex parameters;
   - results as data, flagged "needs a human playtest", because simulated balance can mislead.
+
+  *Done 2026-10-18:* `crates/specula-balance` and `balance_targets`, `balance_sweep`, `balance_tune`. Lex is pure, so
+  sweeps run on threads inside one engine (identical on any thread count); a seeded Gaussian process tunes `param`
+  items; targets can hold across several play styles; `scripts/balance_playtests.py` replays tuned points as Sepulcra
+  playtests on parallel engines and flags any disagreement. Design: [design/BALANCE.md](design/BALANCE.md).
 - [ ] ➕ **Specula agent evals** *(research)*: a fixed suite of realistic tasks with verifiable outcomes (build a room
   that passes these checks, add a patrolling enemy, make wave 3 10% harder without breaking wave 4). It runs after
   every tool change, with a held-out set, and doubles as the public benchmark for marketing.
@@ -603,7 +608,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **Navigation and AI**: navmesh generation from world geometry, pathfinding, crowd avoidance; behaviour trees
   and utility AI as data.
   *Why:* nearly every game with NPCs needs this, and the original plan had no navigation at all.
-- [ ] ➕ **Save games** (moved earlier from M6): with determinism, a save is a serialisation of simulation state.
+- [x] ➕ **Save games** (moved earlier from M6): with determinism, a save is a serialisation of simulation state.
+  *Done 2026-10-18:* `.specsave` files (world, game, physics including its hidden state, module state; versioned,
+  checksummed, fuzzed, decoded on a worker), `save_write`, `save_read`, `save_list`, `save_delete`; Sepulcra's Saved
+  games screen (three slots, two rotating autosaves). A loaded save continues tick-identical to the run that made it
+  (`scripts/save_check.py`, `desync_compare`). Design: [design/SAVES.md](design/SAVES.md).
 - [ ] ➕ **Async streaming with per-frame budgets, plus HLOD**: no synchronous loads on the simulation thread.
   *Why:* traversal stutter is Unreal's other well-known problem (survey §3).
 - [x] ➕ **2D physics variant** if the game is 2D.
