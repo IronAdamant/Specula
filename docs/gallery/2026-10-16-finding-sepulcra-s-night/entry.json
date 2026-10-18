@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-16",
+  "time": "11:29",
+  "date_source": "run ids 11:29-13:56",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "effects",
+  "title": "Finding Sepulcra's night",
+  "note": "Lighting tries made while tuning the night (dim moon, low blue fill, mist). The differences between tries are subtle at thumbnail size.",
+  "source": "scratch lighting scripts (env*, hero*)",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "An early try",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 22520
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "The whole slab",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 13147
+    },
+    {
+      "file": "03-frame-00001.jpg",
+      "caption": "A later try",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19173
+    },
+    {
+      "file": "04-frame-00002.jpg",
+      "caption": "Hero framing with the HUD",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 23339
+    }
+  ]
+}

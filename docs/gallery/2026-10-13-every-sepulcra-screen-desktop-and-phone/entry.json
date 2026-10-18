@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-13",
+  "time": "20:16",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "b4a9306",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Every Sepulcra screen, desktop and phone",
+  "note": "All of Sepulcra's screens at desktop size, plus the HUD laid out for a phone in portrait (foundation F6): HUD, title, settings, victory, and the phone HUD with its radial menu.",
+  "source": "specula-ui hud_preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-hud-1920x1080.jpg",
+      "caption": "HUD, 1920x1080",
+      "original": "sepulcra_hud_1920x1080.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19384
+    },
+    {
+      "file": "02-sepulcra-title-1280x800.jpg",
+      "caption": "Title",
+      "original": "sepulcra_title_1280x800.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 10015
+    },
+    {
+      "file": "03-sepulcra-settings-1280x800.jpg",
+      "caption": "Settings",
+      "original": "sepulcra_settings_1280x800.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 10164
+    },
+    {
+      "file": "04-sepulcra-victory-1280x800.jpg",
+      "caption": "Victory",
+      "original": "sepulcra_victory_1280x800.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 10588
+    },
+    {
+      "file": "05-sepulcra-hud-radial-1080x2400.jpg",
+      "caption": "Phone, HUD and radial menu",
+      "original": "sepulcra_hud+radial_1080x2400.png",
+      "width": 640,
+      "height": 1422,
+      "bytes": 43776
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "19:57",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "740a12a",
+  "subject": "engine-tests",
+  "topic": "audio",
+  "title": "Sound, seen: the audio sheet",
+  "note": "specula-audio's procedural sounds drawn as waveforms and spectrograms, so an agent can check sound as an image.",
+  "source": "specula-audio sound sheet",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sound-sheet.jpg",
+      "caption": "Sound sheet",
+      "original": "sound_sheet.png",
+      "width": 640,
+      "height": 957,
+      "bytes": 124349
+    }
+  ]
+}

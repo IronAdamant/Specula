@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-17",
+  "time": "14:57",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "Pre-M3",
+  "commit": "5282929",
+  "subject": "engine-tests",
+  "topic": "effects",
+  "title": "Pre-M3 cleanup: the sky eases into the horizon",
+  "note": "GPU feature tests after the pre-M3 cleanup: the sky now eases into the horizon instead of meeting it with a crisp line, as the horizon test shows. The everything-on scene is unchanged since 2026-10-13-the-render-lane-shadows-bloom-fog-sky-and-overla.",
+  "source": "specula-gpu tests",
+  "adapter": "",
+  "images": [
+    {
+      "file": "02-features-sky-horizon-0.jpg",
+      "caption": "Horizon test",
+      "original": "features_sky_horizon_0.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 2482
+    }
+  ]
+}

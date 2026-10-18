@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "20:21",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "bda082e",
+  "subject": "lava-lamps",
+  "topic": "effects",
+  "title": "Lava lamps with real bloom and FXAA",
+  "note": "The same three lamps on the M2 renderer: real bloom and FXAA instead of the original's hand-made glow. The --plain run still reproduced the original frames pixel for pixel on both GPUs.",
+  "source": "scripts/lava_lamps.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-lava-lamps-m2-bloom.jpg",
+      "caption": "All three lamps, bloom and FXAA",
+      "original": "lava_lamps_m2_bloom.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10747
+    }
+  ]
+}

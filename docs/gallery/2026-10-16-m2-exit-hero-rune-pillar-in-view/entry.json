@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-16",
+  "time": "08:47",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "98b427b",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "M2 exit hero: rune pillar in view",
+  "note": "Skeptic follow-ups: the rune pillar is brought into view and the shadow probes move off a shadow edge.",
+  "source": "scripts/m2_exit.py",
+  "adapter": "",
+  "images": [
+    {
+      "file": "01-m2-exit-hero.jpg",
+      "caption": "Hero shot",
+      "original": "m2_exit_hero.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19025
+    }
+  ]
+}

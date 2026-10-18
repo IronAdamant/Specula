@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-15",
+  "time": "03:06",
+  "date_source": "run ids 03:06-07:43",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "cf68899",
+  "subject": "creatures",
+  "topic": "animation",
+  "title": "GPU skinning: the creatures in 3D",
+  "note": "Sepulcra's creatures skinned on the GPU and lit in a scene: the lineup (the bone colossus is the horned giant at the back), a shambler up close, and a crowd of 300 animated creatures for the skinning budget.",
+  "source": "scripts/anim_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Lineup",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15604
+    },
+    {
+      "file": "02-frame-00007.jpg",
+      "caption": "Shambler up close",
+      "original": "frame_00007.png",
+      "width": 640,
+      "height": 480,
+      "bytes": 26863
+    },
+    {
+      "file": "03-frame-00001.jpg",
+      "caption": "Crowd of 300",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 36570
+    }
+  ]
+}

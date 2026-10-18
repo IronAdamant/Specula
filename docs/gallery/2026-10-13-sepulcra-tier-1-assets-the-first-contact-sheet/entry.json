@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-13",
+  "time": "14:54",
+  "date_source": "commit",
+  "approximate": false,
+  "milestone": "M2",
+  "commit": "3fd2e96",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Sepulcra tier-1 assets: the first contact sheet",
+  "note": "The first procedural assets from specula-model recipes: the four stones (tiers I-III), wall, tombstone, fence, the four creatures, brazier fire, a slab cliff chunk and rune parts, each as silhouette, turntable and game-distance views.",
+  "source": "specula-model preview example",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-sepulcra-t1-contact.jpg",
+      "caption": "Contact sheet",
+      "original": "sepulcra_t1_contact.png",
+      "width": 640,
+      "height": 787,
+      "bytes": 88071
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-13",
+  "time": "12:42",
+  "date_source": "file times 12:42-12:49",
+  "approximate": false,
+  "milestone": "M1",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Window check and the GPU test cube",
+  "note": "The window check now screenshots the real window on both GPUs, resizing, minimising and restoring it, and specula-gpu's headless test renders its lit cube on each adapter. The scene at its first size is unchanged since 2026-10-12-the-first-frame-an-agent-saw, so only the resized window is shown.",
+  "source": "scripts/window_check.py, specula-gpu tests",
+  "adapter": "both",
+  "images": [
+    {
+      "file": "02-window-adapter0-restored.jpg",
+      "caption": "After resize and restore",
+      "original": "window_adapter0_restored.png",
+      "width": 640,
+      "height": 373,
+      "bytes": 4290
+    },
+    {
+      "file": "03-cube-0-nvidia-geforce-rtx-4090-laptop-gpu.jpg",
+      "caption": "GPU test cube, NVIDIA",
+      "original": "cube_0_NVIDIA_GeForce_RTX_4090_Laptop_GPU.png",
+      "width": 256,
+      "height": 256,
+      "bytes": 2835
+    },
+    {
+      "file": "04-cube-1-intel-r-raptorlake-s-mobile-graphics-cont.jpg",
+      "caption": "GPU test cube, Intel",
+      "original": "cube_1_Intel_R__RaptorLake_S_Mobile_Graphics_Controller.png",
+      "width": 256,
+      "height": 256,
+      "bytes": 2830
+    }
+  ]
+}

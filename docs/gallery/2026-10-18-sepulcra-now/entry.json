@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-18",
+  "time": "09:58",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "ee02487",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Sepulcra now, on the Intel iGPU",
+  "note": "The current reference: main's scripted playthrough on the iGPU (won at tick 21852, replay verified, 0 validation errors). Creatures now run on animation graphs, the selection mark glows cyan, and the night keeps its blue fill.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Build phase",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9433
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "Build, close up",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15144
+    },
+    {
+      "file": "03-frame-00006.jpg",
+      "caption": "Busy wave",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19144
+    },
+    {
+      "file": "04-frame-00008.jpg",
+      "caption": "Busy wave with the HUD",
+      "original": "frame_00008.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 26638
+    },
+    {
+      "file": "05-frame-00009.jpg",
+      "caption": "Boss wave",
+      "original": "frame_00009.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15754
+    },
+    {
+      "file": "06-frame-00011.jpg",
+      "caption": "The end",
+      "original": "frame_00011.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10035
+    }
+  ]
+}
