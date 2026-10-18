@@ -2009,6 +2009,14 @@ pub struct LodStats {
     /// Model entities not drawn because their pipeline variant failed to build.
     pub pipeline_failed: u32,
     pub triangles: u64,
+    /// Built model entities not drawn because their build isn't on the GPU (streaming: not yet
+    /// uploaded, or evicted; see `streaming`).
+    pub not_resident: u32,
+    /// Model entities drawn at a coarser LOD than their size chose, the finer one still
+    /// streaming in.
+    pub coarser: u32,
+    /// Model entities drawn merged into their cell's HLOD proxy (see `hlod`), not on their own.
+    pub hlod: u32,
 }
 
 impl LodStats {
@@ -2018,6 +2026,9 @@ impl LodStats {
             ("missing", Json::from(self.missing)),
             ("pipeline_failed", Json::from(self.pipeline_failed)),
             ("triangles", Json::from(self.triangles)),
+            ("not_resident", Json::from(self.not_resident)),
+            ("coarser_lod", Json::from(self.coarser)),
+            ("hlod", Json::from(self.hlod)),
         ])
     }
 }
@@ -2039,16 +2050,16 @@ pub enum LodChoice<'a> {
 // GPU
 
 /// One material part of one LOD, uploaded.
-struct PartDraw {
-    mesh: MeshId,
-    material: Material,
-    surface: Surface,
+pub(crate) struct PartDraw {
+    pub(crate) mesh: MeshId,
+    pub(crate) material: Material,
+    pub(crate) surface: Surface,
     /// Multiplied by the entity's colour; alpha is the opacity of glass.
-    color: [f32; 4],
-    triangles: u32,
+    pub(crate) color: [f32; 4],
+    pub(crate) triangles: u32,
     /// Skinned parts: each bone the part's vertices are weighted to, and their farthest
     /// distance from it in bone space (see [`posed_sphere`]).
-    influence: Vec<(u16, f32)>,
+    pub(crate) influence: Vec<(u16, f32)>,
 }
 
 /// The largest factor by which the linear part of `cols` (three columns) can stretch a vector:
@@ -2105,25 +2116,30 @@ pub fn posed_sphere(influence: &[(u16, f32)], model: &[Affine]) -> Option<([f32;
     (radius.is_finite()).then_some((c, radius * 1.001 + 1e-4))
 }
 
-struct GpuModel {
-    lods: Vec<Vec<PartDraw>>,
+pub(crate) struct GpuModel {
+    pub(crate) lods: Vec<Vec<PartDraw>>,
     /// Bounding sphere in object space.
-    center: Vec3,
-    radius: f32,
+    pub(crate) center: Vec3,
+    pub(crate) radius: f32,
     /// Material textures, shared by every entity of the build.
-    textures: Vec<TextureId>,
+    pub(crate) textures: Vec<TextureId>,
     /// The build's anim set (rigged models with clips).
-    anims: Option<Arc<AnimSet>>,
+    pub(crate) anims: Option<Arc<AnimSet>>,
     /// Pipeline variants its draws use: skinned (its meshes carry skin, when animated) and
     /// textured (a part has textures).
-    needs: Needs,
+    pub(crate) needs: Needs,
+    /// The finest LOD uploaded: levels from here to the last are drawable (streaming uploads the
+    /// coarsest first; a frame wanting a finer one draws this one meanwhile). 0 = all of them.
+    pub(crate) resident_from: usize,
+    /// GPU bytes its meshes and textures take (streaming's memory budget).
+    pub(crate) bytes: u64,
 }
 
 /// Pipeline variants a model's draws use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Needs {
-    skinned: bool,
-    textured: bool,
+pub(crate) struct Needs {
+    pub(crate) skinned: bool,
+    pub(crate) textured: bool,
 }
 
 /// Why an uploaded model isn't drawn yet.
@@ -2281,20 +2297,25 @@ impl AnimFrame {
 /// Uploaded builds and the handle → build map the renderer reads (see the module docs).
 #[derive(Default)]
 pub struct GpuModels {
-    uploaded: BTreeMap<u64, GpuModel>,
+    pub(crate) uploaded: BTreeMap<u64, GpuModel>,
     /// Handle → build id, as of the last sync.
-    by_handle: Vec<Option<u64>>,
+    pub(crate) by_handle: Vec<Option<u64>>,
     /// Builds whose upload failed, with why.
-    failed: BTreeMap<u64, String>,
+    pub(crate) failed: BTreeMap<u64, String>,
     /// `(world mesh epoch, library generation, world generation)` of the last sync.
-    synced: Option<(u64, u64, u64)>,
+    pub(crate) synced: Option<(u64, u64, u64)>,
+    /// Entities drawn in an HLOD proxy this frame, one bit per persistent entity id (see
+    /// `hlod`): their own draws are skipped. Empty when no HLOD applies.
+    pub(crate) cover: Vec<u64>,
     /// Animation state, written while drawing (drawing takes `&self`).
     anim: RefCell<AnimFrame>,
     /// The GPU's pipeline variants as of the last sync: a model needing one not built yet (it is
     /// being built on a worker thread) is held back like a model still building.
-    ready: PipelineVariants,
+    pub(crate) ready: PipelineVariants,
     /// Per build: the anim set its entities play (the world's assets laid over its own).
     anim_sets: BTreeMap<u64, Arc<AnimSet>>,
+    /// The world's anim assets `anim_sets` were laid over with (see [`GpuModels::sync_anim_sets`]).
+    sets_from: Option<Arc<crate::anim::Assets>>,
     /// The world's ground and anim assets as last read (see [`crate::anim::AnimEnv`]).
     env: crate::anim::AnimEnv,
 }
@@ -2304,13 +2325,12 @@ impl GpuModels {
     /// entities or the library changed since the last call. Returns messages for failed uploads.
     pub fn sync(&mut self, gpu: &mut Gpu, library: &SharedLibrary, world: &World, world_generation: u64) -> Vec<String> {
         self.ready = gpu.pipeline_variants();
-        let assets_changed = self.refresh_anim_env(library, world, world_generation);
+        self.refresh_anim_env(library, world, world_generation);
         let lib = library.lock();
         let key = (world.mesh_epoch(), lib.generation(), world_generation);
         if self.synced == Some(key) {
-            if assets_changed {
-                self.anim_sets.clear();
-                self.refresh_anim_sets(&lib, world);
+            if self.anim_sets_stale() {
+                self.sync_anim_sets(&lib, world, true);
             }
             return Vec::new();
         }
@@ -2372,9 +2392,41 @@ impl GpuModels {
                 }
             }
         }
-        self.anim_sets.retain(|id, _| self.uploaded.contains_key(id));
-        self.refresh_anim_sets(&library.lock(), world);
+        self.sync_anim_sets(&library.lock(), world, true);
         errors
+    }
+
+    /// The anim set entities of `handle` play when drawn (the world's assets laid over the
+    /// build's own); `None` without one, or before the handle's build is known.
+    pub fn anim_set_of(&self, handle: u32) -> Option<Arc<AnimSet>> {
+        let id = self.by_handle.get(handle as usize).copied().flatten()?;
+        self.anim_sets.get(&id).cloned().or_else(|| self.uploaded.get(&id).and_then(|m| m.anims.clone()))
+    }
+
+    /// Whether the world's anim assets changed since the anim sets were laid over with them
+    /// (whoever read them: a tool, the clock or a sync).
+    pub(crate) fn anim_sets_stale(&self) -> bool {
+        !self.sets_from.as_ref().is_some_and(|a| Arc::ptr_eq(a, &self.env.assets))
+    }
+
+    /// Keeps the per-build anim sets in step with the world's anim assets: all laid over again
+    /// when they changed, new builds' sets added, gone builds' dropped. `uploaded_only`: only
+    /// builds on the GPU (the plain path uploads every live build); the streamed path keeps one
+    /// per live build, so a build uploaded later plays the world's clips at once.
+    pub(crate) fn sync_anim_sets(&mut self, lib: &Library, world: &World, uploaded_only: bool) {
+        if self.anim_sets_stale() {
+            self.anim_sets.clear();
+            self.sets_from = Some(Arc::clone(&self.env.assets));
+        }
+        let live: BTreeSet<u64> = self.by_handle.iter().flatten().copied().collect();
+        let uploaded = &self.uploaded;
+        self.anim_sets.retain(|id, _| live.contains(id) && (!uploaded_only || uploaded.contains_key(id)));
+        self.refresh_anim_sets(lib, world, uploaded_only);
+    }
+
+    /// Forgets the spare animators of build `id` (its upload is gone: see `streaming`).
+    pub(crate) fn forget_animators(&mut self, id: u64) {
+        self.anim.get_mut().pool.remove(&id);
     }
 
     /// Reads the world's ground and anim assets again when an entity that matters changed, and
@@ -2423,17 +2475,19 @@ impl GpuModels {
         let first = bones.len() as u32;
         bones.extend(skin.iter().map(Affine::to_cols_array));
         let cols = world.to_cols_array();
-        for p in &model.lods[0] {
+        // (Streaming may have only coarser levels on the GPU so far: the finest one there is.)
+        for p in &model.lods[model.resident_from.min(model.lods.len().saturating_sub(1))] {
             out.push(DrawItem { mesh: p.mesh, model: cols, color: p.color, material: p.material, surface: p.surface, skin: model.needs.skinned.then_some(first), bounds: None });
         }
         Ok(())
     }
 
-    /// Each uploaded build's anim set from the library (the world's assets laid over its own).
-    fn refresh_anim_sets(&mut self, lib: &Library, world: &World) {
+    /// Each live (`uploaded_only`: uploaded) build's anim set from the library (the world's
+    /// assets laid over its own).
+    fn refresh_anim_sets(&mut self, lib: &Library, world: &World, uploaded_only: bool) {
         for h in live_handles(world) {
             let Some(Some(id)) = self.by_handle.get(h as usize).copied() else { continue };
-            if self.anim_sets.contains_key(&id) || !self.uploaded.contains_key(&id) {
+            if self.anim_sets.contains_key(&id) || (uploaded_only && !self.uploaded.contains_key(&id)) {
                 continue;
             }
             if let Some(set) = lib.anim_set(h) {
@@ -2632,8 +2686,16 @@ impl GpuModels {
         stats: &mut LodStats,
         out: &mut Vec<DrawItem>,
     ) {
+        if crate::hlod::covers(&self.cover, m.id) {
+            stats.hlod += 1;
+            return;
+        }
         let Some((id, model)) = self.model_of_handle(m.handle) else {
-            stats.missing += 1;
+            // Built but not on the GPU (streaming) vs nothing built to draw.
+            match m.handle.and_then(|h| self.by_handle.get(h as usize).copied().flatten()) {
+                Some(b) if !self.failed.contains_key(&b) => stats.not_resident += 1,
+                _ => stats.missing += 1,
+            }
             return;
         };
         match self.held_back_by(animated.is_some(), model) {
@@ -2669,6 +2731,11 @@ impl GpuModels {
                 level
             }
         };
+        // A finer level still streaming in: the finest one uploaded meanwhile.
+        if level < model.resident_from {
+            stats.coarser += 1;
+        }
+        let level = level.max(model.resident_from);
         stats.histogram[level.min(LOD_BUCKETS - 1)] += 1;
         // Every part of the LOD shares the entity's palette; each part is culled by its posed
         // sphere.
@@ -2781,6 +2848,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
         }
     }
     let mut lods = Vec::with_capacity(model.lods.len());
+    let mut mesh_bytes = 0u64;
     for lod in &model.lods {
         let mut parts = Vec::with_capacity(lod.parts.len());
         for (i, part) in lod.parts.iter().enumerate() {
@@ -2794,6 +2862,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
                 continue;
             }
             let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
+            mesh_bytes += p.bytes();
             let mesh = match gpu.upload_mesh_with(&p.vertices, &p.indices, &streams) {
                 Ok(m) => m,
                 Err(e) => {
@@ -2820,7 +2889,17 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
         skinned: built.anims.is_some() && model.lods.iter().any(MeshData::is_skinned),
         textured: lods.iter().flatten().any(|p: &PartDraw| p.surface.textures != MaterialTextures::NONE),
     };
-    Ok(GpuModel { lods, center: (lo + hi) * 0.5, radius: ((hi - lo).length() * 0.5).max(1e-3), textures, anims: built.anims.clone(), needs })
+    let bytes = texture_bytes(built) + mesh_bytes;
+    Ok(GpuModel {
+        lods,
+        center: (lo + hi) * 0.5,
+        radius: ((hi - lo).length() * 0.5).max(1e-3),
+        textures,
+        anims: built.anims.clone(),
+        needs,
+        resident_from: 0,
+        bytes,
+    })
 }
 
 /// One part of a mesh alone (re-indexed): vertices, indices, mean vertex colour (sRGB), and its
@@ -2833,6 +2912,19 @@ pub struct PartMesh {
     pub skin: Option<Vec<SkinVertex>>,
     pub uvs: Option<Vec<[f32; 2]>>,
     pub tangents: Option<Vec<[f32; 4]>>,
+}
+
+impl PartMesh {
+    /// GPU bytes of its streams as the GPU stores them (vertices, skin, UV + tangent, indices).
+    pub fn bytes(&self) -> u64 {
+        let n = self.vertices.len() as u64;
+        n * 28 + self.skin.as_ref().map_or(0, |_| n * 8) + self.uvs.as_ref().map_or(0, |_| n * 16) + self.indices.len() as u64 * 4
+    }
+}
+
+/// GPU bytes of a build's textures with their mip chains (about 4/3 of the base level).
+pub(crate) fn texture_bytes(built: &Built) -> u64 {
+    built.textures.iter().map(|t| u64::from(t.width) * u64::from(t.height) * t.format.bytes_per_pixel() as u64 * 4 / 3).sum()
 }
 
 /// Part `i` of `m` alone (see [`PartMesh`]).
@@ -2889,7 +2981,7 @@ pub fn part_look(p: &MaterialPreset, mean: [f32; 3]) -> (Material, Surface, [f32
 }
 
 /// A textured glTF material as the engine's (`textures`: the build's uploaded textures).
-fn textured_look(m: &PartMaterial, textures: &[TextureId]) -> (Material, Surface, [f32; 4]) {
+pub(crate) fn textured_look(m: &PartMaterial, textures: &[TextureId]) -> (Material, Surface, [f32; 4]) {
     let tex = |i: Option<usize>| i.and_then(|i| textures.get(i).copied());
     let surface = Surface {
         emissive: m.emissive_strength,

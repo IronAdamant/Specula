@@ -309,8 +309,22 @@ fn non_empty(v: Option<&Json>) -> bool {
     }
 }
 
-const SUBJECT_KEYS: [&str; 13] = [
-    "id", "name", "path", "on_screen", "screen", "screen_box_exact", "visible_px", "visible_px_approx", "no_pixels", "occluded", "distance_m", "layer", "transient",
+const SUBJECT_KEYS: [&str; 15] = [
+    "id",
+    "name",
+    "path",
+    "on_screen",
+    "screen",
+    "screen_box_exact",
+    "visible_px",
+    "visible_px_approx",
+    "no_pixels",
+    "occluded",
+    "distance_m",
+    "layer",
+    "transient",
+    "drawn_as",
+    "resident_lods_from",
 ];
 
 fn sight_frame(v: &Json) -> Json {
@@ -318,9 +332,14 @@ fn sight_frame(v: &Json) -> Json {
     if let Some(Json::Arr(subjects)) = v.get("subjects") {
         out.set("subjects", Json::Arr(subjects.iter().map(|s| round(&keep(s, &SUBJECT_KEYS), 2)).collect()));
     }
-    // Models that weren't drawn are worth the bytes.
-    if let Some(m) = v.get("models").filter(|m| nonzero(m.get("missing")) || nonzero(m.get("pipeline_failed"))) {
+    // Models that weren't drawn (or were drawn merged in HLOD proxies, or aren't on the GPU)
+    // are worth the bytes.
+    let notable = |m: &Json| ["missing", "pipeline_failed", "not_resident", "hlod"].iter().any(|k| nonzero(m.get(k)));
+    if let Some(m) = v.get("models").filter(|m| notable(m)) {
         out.set("models", m.clone());
+    }
+    if let Some(st) = v.get("streaming").filter(|st| ["not_resident", "hlod_entities", "coarser_lod"].iter().any(|k| nonzero(st.get(k)))) {
+        out.set("streaming", st.clone());
     }
     if let Some(c) = out.get("camera").cloned() {
         out.set("camera", round(&c, 3));
@@ -503,6 +522,25 @@ mod tests {
         ];
         add_to_schemas(&mut defs);
         assert_eq!((takes_format(&defs[0]), takes_format(&defs[1])), (true, false), "shaped tools aren't passed through");
+    }
+
+    /// Streaming review finding 5: concise captures keep what streaming says about subjects
+    /// (drawn merged in a proxy, not on the GPU) and the packet's streaming totals then.
+    #[test]
+    fn concise_captures_keep_streaming_facts() {
+        let frame = r#"{"image": {"path": "a.png"}, "models": {"missing": 0, "pipeline_failed": 0, "not_resident": 1, "hlod": 3},
+            "streaming": {"hlod_cells": 1, "hlod_entities": 3, "not_resident": 1, "coarser_lod": 0, "note": "n"},
+            "subjects": [{"id": 1, "name": "p0", "drawn_as": "hlod", "visible_px": null}, {"id": 2, "name": "g", "drawn_as": "not_resident"},
+                         {"id": 3, "name": "t", "resident_lods_from": 1, "occluded": false}]}"#;
+        let j = sight_frame(&Json::parse(frame).unwrap());
+        let subjects = j.get("subjects").and_then(Json::as_array).unwrap();
+        assert_eq!(subjects[0].get("drawn_as").and_then(Json::as_str), Some("hlod"));
+        assert_eq!(subjects[1].get("drawn_as").and_then(Json::as_str), Some("not_resident"));
+        assert_eq!(subjects[2].get("resident_lods_from").and_then(Json::as_u64), Some(1));
+        assert!(j.get("streaming").is_some() && j.get("models").is_some(), "{j}");
+        // Nothing streaming-related: neither block.
+        let plain = sight_frame(&Json::parse(r#"{"models": {"missing": 0, "hlod": 0, "not_resident": 0}, "streaming": {"not_resident": 0, "hlod_entities": 0}}"#).unwrap());
+        assert!(plain.get("streaming").is_none() && plain.get("models").is_none(), "{plain}");
     }
 
     #[test]

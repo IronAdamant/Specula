@@ -483,6 +483,8 @@ pub struct PerfConfig {
     /// `[swarm]`: the window's frame floor under a backlog and the resource lease pools (see
     /// [`SwarmConfig`]).
     pub swarm: SwarmConfig,
+    /// `[streaming]`: upload and memory budgets, cells, HLOD (see [`crate::streaming`]).
+    pub streaming: crate::streaming::StreamTable,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -495,6 +497,7 @@ impl Default for PerfConfig {
             history_frames: HISTORY,
             shapes: crate::two_d::ShapeLimits::default(),
             swarm: SwarmConfig::default(),
+            streaming: crate::streaming::StreamTable::default(),
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -550,7 +553,8 @@ impl PerfConfig {
                     }
                 }
                 "swarm" => cfg.swarm = SwarmConfig::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm)")),
+                "streaming" => cfg.streaming = crate::streaming::StreamTable::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, streaming)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;

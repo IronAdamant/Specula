@@ -552,6 +552,10 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
     let ids = owners
         .iter()
         .map(|&e| {
+            // Owner 0 (an HLOD proxy's draw, many entities at once): not counted.
+            if e == 0 {
+                return 0;
+            }
             *index.entry(e).or_insert_with(|| {
                 entities.push(e);
                 entities.len() as u32
