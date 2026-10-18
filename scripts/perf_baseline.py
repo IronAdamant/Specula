@@ -133,12 +133,13 @@ def measure_build(results):
     results["release_engine_build_s"] = round(t, 2)
 
 
-def measure_engine(exe, adapter, out_dir, quick):
+def measure_engine(exe, adapter, out_dir, quick, port=None):
+    port = port or PORT
     res = {}
     log = out_dir / f"engine_{adapter}.log"
     # Budgets: the documented example (perf_frame's errors then use the iGPU numbers).
     budgets = ["--perf", str(PERF_TOML)] if PERF_TOML.exists() else []
-    with Engine(exe, PORT, log, "--headless", "--adapter", adapter, "--captures", str(out_dir / "captures"),
+    with Engine(exe, port, log, "--headless", "--adapter", adapter, "--captures", str(out_dir / "captures"),
                 *budgets) as eng:
         res["startup_s"] = round(eng.startup_s, 3)
         m = eng.mcp("perf-baseline")
@@ -240,10 +241,13 @@ def main():
     ap.add_argument("--compare", type=Path, help="a previous baseline JSON to compare against")
     ap.add_argument("--threshold", type=float, default=0.15, help="regression threshold (fraction)")
     ap.add_argument("--out", type=Path, default=ROOT / "perf" / "baselines")
+    ap.add_argument("--exe", type=Path, help="measure this engine binary (implies no build); default target/release")
+    ap.add_argument("--port", type=int, default=PORT, help=f"engine port (default {PORT})")
+    ap.add_argument("--work", type=Path, help="where engine logs and captures go (default target/perf-baseline/<time>)")
     args = ap.parse_args()
 
     stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    work = ROOT / "target" / "perf-baseline" / stamp
+    work = args.work or ROOT / "target" / "perf-baseline" / stamp
     work.mkdir(parents=True, exist_ok=True)
     rustc = subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout.strip()
     result = {"schema": "specula.baseline/v1", "when": stamp, "label": args.label, "git": git_state(),
@@ -252,15 +256,18 @@ def main():
     result["machine"]["cpu_busy_pct_before"] = busy
     if busy is not None and busy > 20:
         print(f"WARNING: the machine is busy ({busy}% CPU) - timings will be noisy; compare with care")
-    if not args.skip_build:
-        measure_build(result["build"])
+    if args.exe:
+        exe = args.exe
     else:
-        subprocess.run(["cargo", "build", "-p", "specula", "--release", "-q"], cwd=ROOT, check=True)
-    exe = ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
+        if not args.skip_build:
+            measure_build(result["build"])
+        else:
+            subprocess.run(["cargo", "build", "-p", "specula", "--release", "-q"], cwd=ROOT, check=True)
+        exe = ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
     for name in args.adapters.split(","):
         print(f"engine: {name} ...")
         try:
-            result["engine"][name] = measure_engine(exe, ADAPTERS.get(name, name), work, args.quick)
+            result["engine"][name] = measure_engine(exe, ADAPTERS.get(name, name), work, args.quick, args.port)
         except Exception as e:  # one GPU failing must not lose the other's numbers
             result["engine"][name] = {"error": str(e)[-500:]}
 

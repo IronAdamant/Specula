@@ -40,7 +40,10 @@ answers one entity's on-screen facts without an image. world_env sets the sun, a
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
 text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
-perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. A game running in \
+perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. \
+Model meshes stream onto the GPU within per-frame budgets (never changing the simulation): far cells draw as merged \
+HLOD proxies, and sight packets mark subjects drawn_as \"hlod\" or \"not_resident\"; stream_state, stream_settings and \
+stream_fly (a measured flight of the window camera) show and tune it. A game running in \
 the engine adds its own tools (play_*). Game logic as code: a module is a Rust cdylib depending only on specula-sdk; \
 logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
 world; logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
@@ -220,6 +223,8 @@ pub enum Command {
     Logic(crate::logic::tools::LogicCall),
     /// The physics tools (see [`crate::physics_tools`]).
     Physics(crate::physics_tools::PhysicsCall),
+    /// The streaming tools (see [`crate::stream_tools`]).
+    Stream(crate::stream_tools::StreamCall),
     /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
     Playtest(crate::playtest_engine::PlaytestCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
@@ -600,7 +605,10 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                         Some(call) => call.map(Command::SaveGame),
                         None => match crate::anim_tools::parse(other, args) {
                             Some(call) => call.map(Command::Anim),
-                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                            None => match crate::stream_tools::parse(other, args) {
+                                Some(call) => call.map(Command::Stream),
+                                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                            },
                         },
                     },
                 },
@@ -2421,6 +2429,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::swarm_tools::definitions())
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
+    .chain(crate::stream_tools::definitions())
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
     .chain(crate::lex_live::definitions())

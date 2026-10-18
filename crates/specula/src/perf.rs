@@ -485,6 +485,8 @@ pub struct PerfConfig {
     pub swarm: SwarmConfig,
     /// `[lex_live]`: live Lex runs' work limits (see [`crate::lex_live::Limits`]).
     pub lex_live: crate::lex_live::Limits,
+    /// `[streaming]`: upload and memory budgets, cells, HLOD (see [`crate::streaming`]).
+    pub streaming: crate::streaming::StreamTable,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -498,6 +500,7 @@ impl Default for PerfConfig {
             shapes: crate::two_d::ShapeLimits::default(),
             swarm: SwarmConfig::default(),
             lex_live: crate::lex_live::LIMITS,
+            streaming: crate::streaming::StreamTable::default(),
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -554,7 +557,8 @@ impl PerfConfig {
                 }
                 "swarm" => cfg.swarm = SwarmConfig::parse(v)?,
                 "lex_live" => cfg.lex_live = crate::lex_live::Limits::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, lex_live)")),
+                "streaming" => cfg.streaming = crate::streaming::StreamTable::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, lex_live, streaming)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;

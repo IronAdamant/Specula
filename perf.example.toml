@@ -59,6 +59,7 @@ post_fxaa = 0.8
 "frame/game_frame" = 2.0
 "frame/draw_list/sync_meshes" = 1.0   # lathe and model meshes uploaded for the window
 "frame/draw_list" = 1.5           # building the window's draws (mesh sync included)
+"frame/stream" = 3.0              # streaming: uploads ([streaming] upload_ms) plus the wanted-set update
 "frame/autosave" = 2.0           # the engine thread's part of an autosave (the plan)
 "specula-autosave:autosave.write" = 200.0   # the worker writing world files
 
@@ -93,3 +94,21 @@ post_fxaa = 0.3
 # work_per_tick = 50000         # work all runs together may do per engine tick (about 3 ms on the iGPU laptop); a step that overspends is a debt the run pays back by pausing
 # step_work = 250000            # work one Lex tick may do (about a frame; at most Lex's own cap of 5000000); past it the tick stops and the run halts
 # backstop_ms = 1000            # wall time one Lex tick may take (not deterministic: a backstop only)
+
+# Streaming (docs/design/STREAMING.md): model meshes and HLOD proxies upload within a per-frame budget
+# and stay within a memory budget; perf_frame reports misses (stream_upload_over_budget,
+# stream_upload_spike, stream_memory_over_budget). The lead agent can change these live with
+# stream_settings. [streaming.integrated] etc. override per adapter kind. Defaults shown.
+# [streaming]
+# enabled = true          # off: every build uploads at once, no HLOD (the pre-streaming path)
+# upload_ms = 2.0         # CPU ms of uploads per frame
+# upload_mb = 8           # MB uploaded per frame
+# memory_mb = 512         # GPU memory for streamed model meshes and proxies
+# cell_m = 32             # streaming cell size
+# radius_m = 384          # model entities load within this of a camera
+# hlod = true             # merged proxies for far cells (the members' own coarsest LODs: no popping)
+# hlod_min_m = 48         # no proxy nearer than this
+# hlod_radius_m = 4096    # proxies load within this of a camera
+# preload = 1.25          # members load at this times a proxied cell's switch distance
+# settle_s = 1.0          # a changed cell's proxy is rebuilt after this quiet time
+# capture_wait = true     # sight captures wait for what their view needs to be resident

@@ -509,7 +509,7 @@ unsafe fn draw_2d(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: S
                 BatchKind::Shape(mesh) => {
                     let Some(m) = ctx.meshes.get(&mesh.0) else { continue };
                     if bound_mesh != Some(mesh.0) {
-                        let offset: VkDeviceSize = 0;
+                        let offset: VkDeviceSize = m.base;
                         (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &m.buffer.handle, &offset);
                         (dev.fns.cmd_bind_index_buffer)(cmd, m.buffer.handle, m.index_offset, VK_INDEX_TYPE_UINT32);
                         bound_mesh = Some(mesh.0);

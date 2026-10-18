@@ -83,6 +83,9 @@ pub struct SubjectState {
     /// `visible_px` is a lower bound (`visible_px_approx`): it showed, even at 0.
     pub approx: bool,
     pub position: [f32; 3],
+    /// Drawn merged in an HLOD proxy (`drawn_as: "hlod"`): its own pixels weren't counted, so
+    /// its visibility isn't compared.
+    pub merged: bool,
 }
 
 impl SubjectState {
@@ -109,6 +112,7 @@ impl SubjectState {
                 visible_px: j.get("visible_px").and_then(Json::as_u64),
                 approx: j.get("visible_px_approx").and_then(Json::as_bool) == Some(true),
                 position: pos.unwrap_or([0.0; 3]),
+                merged: j.get("drawn_as").and_then(Json::as_str) == Some("hlod"),
             },
         ))
     }
@@ -336,7 +340,8 @@ pub fn heat(after: &[u8], d: &PixelDiff, threshold: u8) -> Vec<u8> {
 ///   world position by more than 1 mm (projected boxes are compared, never an exact box with a
 ///   projected one: a change of visibility alone is not a move);
 /// - became_visible / became_hidden: pixels showing (or, without the ID buffer, on screen) at
-///   one capture and not the other, for entities that exist both times.
+///   one capture and not the other, for entities that exist both times; entities drawn merged
+///   in an HLOD proxy on either side aren't compared (`visibility_not_compared_hlod` counts them).
 ///
 /// At most `max` items are listed per kind (all are counted).
 pub fn subject_diff(
@@ -352,6 +357,8 @@ pub fn subject_diff(
     let mut moved = Vec::new();
     let mut appeared = Vec::new();
     let mut disappeared = Vec::new();
+    // Subjects drawn in an HLOD proxy on either side: visibility not compared.
+    let mut unknown = 0usize;
     let path = |s: &SubjectState| Json::from(s.path.as_str());
     let existed = |id: &u64| before_ids.binary_search(id).is_ok();
     for (id, a) in after {
@@ -374,13 +381,18 @@ pub fn subject_diff(
                 ]));
             }
         }
-        if a.seen() && !before.get(id).is_some_and(SubjectState::seen) {
+        let merged = a.merged || before.get(id).is_some_and(|b| b.merged);
+        if merged {
+            unknown += 1;
+        } else if a.seen() && !before.get(id).is_some_and(SubjectState::seen) {
             appeared.push(path(a));
         }
     }
     for (id, b) in before {
         if !exists(*id) {
             removed.push(path(b));
+        } else if b.merged || after.get(id).is_some_and(|a| a.merged) {
+            // Counted with the after side's.
         } else if b.seen() && !after.get(id).is_some_and(SubjectState::seen) {
             disappeared.push(path(b));
         }
@@ -390,13 +402,17 @@ pub fn subject_diff(
         v.truncate(max);
         Json::obj([("count", Json::from(total)), ("items", Json::Arr(v))])
     };
-    Json::obj([
+    let mut out = Json::obj([
         ("added", list(added)),
         ("removed", list(removed)),
         ("moved", list(moved)),
         ("became_visible", list(appeared)),
         ("became_hidden", list(disappeared)),
-    ])
+    ]);
+    if unknown > 0 {
+        out.set("visibility_not_compared_hlod", Json::from(unknown));
+    }
+    out
 }
 
 /// `images` side by side (all `w` × `h`, RGBA8) with a `gap` px dark gutter, scaled down by a
@@ -511,7 +527,7 @@ mod tests {
 
 
     fn st(path: &str, projected: Option<[u32; 4]>, exact: Option<[u32; 4]>, px: Option<u64>, x: f32) -> SubjectState {
-        SubjectState { path: path.into(), projected, exact, visible_px: px, approx: false, position: [x, 0.0, 0.0] }
+        SubjectState { path: path.into(), projected, exact, visible_px: px, approx: false, position: [x, 0.0, 0.0], merged: false }
     }
 
     #[test]
@@ -553,6 +569,18 @@ mod tests {
         let gone_from_view = subject_diff(&before, &ids, &BTreeMap::new(), &|_| true, 2, 10);
         assert_eq!(gone_from_view.get("removed").unwrap().get("count").and_then(Json::as_u64), Some(0));
         assert_eq!(gone_from_view.get("became_hidden").unwrap().get("count").and_then(Json::as_u64), Some(5));
+    }
+
+    /// A subject drawn merged in an HLOD proxy (no pixel count of its own) on one side: its
+    /// visibility isn't compared, it's counted apart.
+    #[test]
+    fn hlod_merged_subjects_are_not_compared() {
+        let r = Some([10, 10, 2, 2]);
+        let before = BTreeMap::from([(1, SubjectState { merged: true, ..st("/far", r, None, None, 0.0) })]);
+        let after = BTreeMap::from([(1, st("/far", r, None, Some(0), 0.0))]);
+        let j = subject_diff(&before, &[1], &after, &|_| true, 2, 10);
+        assert_eq!(j.get("became_hidden").unwrap().get("count").and_then(Json::as_u64), Some(0));
+        assert_eq!(j.get("visibility_not_compared_hlod").and_then(Json::as_u64), Some(1));
     }
 
     /// Reviewer finding (round 6): an approximate count is a lower bound and may be 0 for an
