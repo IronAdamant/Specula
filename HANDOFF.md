@@ -21,6 +21,9 @@ memory of the earlier ones. This page is **current state and what's next** only;
   playtest swarms and tool ergonomics, streaming and HLOD, then the M3 exit proof and agent evals); wave 3 (M4: stage
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
+  **Owner, 2026-10-18: shaders get a language of our own,** compiled to SPIR-V, MSL and later the console APIs, built
+  first on the Platform track (ROADMAP), so agents write a shader once for every platform. Release plan after M5: test
+  on the owner's Windows, macOS and Arch Linux machines with Sepulcra, then the Steam MVP.
   **Owner, 2026-10-18: M4 waits.** Finish and fully test M3, then report to the owner and **wait for their explicit
   go-ahead before starting M4** (wave 3).
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
