@@ -288,6 +288,12 @@ reading the world's external poses (`World::external_pose`, `models.rs`). Joints
   by the skinned mesh when it is built. The shambler's limp death passes them all, in `joints_check.py` (penetration
   0.05 cm, floating 1.45 cm, pops 2.9 cm) and in play, dying on a Sepulcra path (penetration 1.0 cm, floating 0,
   pops 0.7 cm), against Sepulcra's 3, 2.5 and 6 cm.
+- **Limitation: round capsules.** The shambler slumps into a crouched heap on its knees and hands rather than lying
+  flat: its trunk capsules (radius 0.63 and 0.6 m in model metres, the 95th percentile of a wide, hunched coat) are
+  round where the body is not, and prop it up. Shifting a capsule into the hump (fitting an offset across the bone)
+  slimmed the chest to 0.52 m but left the heap rocking and sliding at 1 m/s after 2.5 s, so it was not kept. The fix
+  is parts shaped like the mesh: convex hulls per bone (physics already has hull and compound bodies), fitted by
+  `ragdoll_set {fit}`.
 - **Sepulcra**: shamblers die as ragdolls (knocked back from where they faced, `props.ragdoll` and the `ragdoll`
   parameter set together, the play otherwise left as it was: a death clip blending in at the same tick would set the
   takeover's velocity) onto the slab, whose ground pieces got box colliders; the other creatures keep their death clips
