@@ -15,7 +15,8 @@
 //!   head: a **hinge** for bones whose graph limits give one axis (knees, elbows), else a **ball
 //!   joint** twisting about the bone with a swing cone (from the limits when given). Frames are
 //!   set from the rest pose, so joint angles are rest-relative exactly like the graph's limits.
-//!   Mass (default [`DEFAULT_MASS_KG`] for a figure at scale 1) is shared by capsule volume.
+//!   Mass (default [`DEFAULT_MASS_KG`] for a figure at scale 1) is shared as [`plan`] says. A
+//!   part can be a convex hull fitted to the mesh instead of a capsule ([`fit_hulls`]).
 //!   Parts of one ragdoll never collide with each other (one collision group).
 //! - **Starting** from the animation at the tick's time (the play evaluated without IK), with
 //!   each part's velocity from the pose a tick on, so the body falls on from how it
@@ -32,8 +33,8 @@
 //! - **Transient entities' ragdolls are cosmetic** ([`specula_physics::BodyDesc::cosmetic`]):
 //!   they land on the world's static colliders but never touch its simulated bodies or the
 //!   physics hash. Saved entities' ragdolls are simulation (hashed, deterministic in twin runs);
-//!   like warm starts their bodies aren't saved in world files: a loaded world's ragdoll starts
-//!   again from the animation.
+//!   like warm starts their bodies aren't in world files (a loaded world's ragdoll starts again
+//!   from the animation), but save games keep them ([`SavedRagdoll`]).
 //! - **Checks**: each ragdoll records its pose every tick (up to [`RECORD_FRAMES`]) and
 //!   `ragdoll_info` runs the motion checks on it (penetration, where it comes to rest, joint
 //!   limits, pops where physics takes over), beside its joints' own errors.

@@ -212,15 +212,19 @@ sweep and slide, steps, the slope limit, snapping down stairs, moving platforms 
 module changes. How it fits the host:
 
 - **The space is lent, not shared.** The engine owns its physics by value; around module calls (ticks, loads,
-  hooks) it moves it into the mover (`Engine::lend_physics`) and takes it back after (`return_physics`). Each move
-  first syncs the space with the world, so what the module did earlier in the tick is there.
+  hooks) it moves it into the mover (`Engine::lend_physics`, which first syncs the space with the world, outside any
+  call) and takes it back after (`return_physics`). A move never syncs or changes the space: syncing mid-call set
+  poses, woke bodies and reset contacts that a rolled-back call then left behind, and twin runs parted (review of the
+  lane, finding 3; a twin test now covers it). What a module spawned or moved earlier in the same call or tick is met
+  from the next tick on.
 - **Rollback-safe.** A failed call rolls the world back but not the space, so a move never changes the space: the
   controller *plans* it (`Space::plan_character`) from what is underfoot now (`Space::character_ground`: it keeps no
   memory of its own) and the result is written as world changes: the character's position, and the velocity changes
   of the dynamic bodies it pushed (as `physics_impulse` writes them). A rolled-back call takes all of it with it.
 - **Displacement in, velocity inside.** The SDK's motion includes gravity (modules own their vertical speed), so the
   adapter turns it into a velocity for one tick and runs the controller with its gravity off. The character is the
-  entity's own convex collider, else a 0.3 × 1.8 m capsule on its origin; `body.character` tunes the controller when
+  entity's own convex collider (not a compound: the controller sweeps one shape), else a 0.3 × 1.8 m capsule on its
+  origin; `body.character` tunes the controller when
   the entity has one.
 - The old `Kinematic` box-scan controller is the fallback when no space is lent (unit tests of the host).
 

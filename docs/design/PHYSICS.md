@@ -289,9 +289,9 @@ friction at the manifold centre instead of per point, SIMD rows (Box2D's wide so
 narrowphase.
 
 **Deferred (at P1–P3).** Since done in P4 (below): joints and ragdolls, continuous collision against moving bodies,
-compound colliders, a parallel narrowphase. Still open: auto-colliders from models (`ragdoll_set {fit}` shows the
-deterministic route: measure the built mesh, write the result as data); tile-map colliders for 2D; the
-1,000-awake-bodies budget; SIMD and parallel solving.
+compound colliders, a parallel narrowphase, graph-coloured and threaded solving, a wide (four-lane) solve kernel.
+Still open: auto-colliders from models (`ragdoll_set {fit}` shows the deterministic route: measure the built mesh,
+write the result as data); tile-map colliders for 2D; the 1,000-awake-bodies budget of 2 ms (see below).
 
 ## P4 as built (2026-10-18)
 
@@ -321,18 +321,35 @@ limits, force and torque), and its description, warm-start impulses and drive ta
 entity (a group, by default under body b, tagged `joint`) whose `props.joint` holds it as data, with frames in each
 body's local scaled coordinates (like collider offsets), so joints are journaled, undoable, claimable, saved and
 hashed. The bridge rebuilds a joint when its entity changes and when a body's scale does; unchanged joints keep their
-warm start. `physics_joint` makes, changes or removes one from world-space anchors and axes (it needs the right to
-change both bodies); `physics_joints` lists joints with their state; `physics_check` takes `joint_error` and
+warm start. `physics_joint` makes, changes or removes one from world-space anchors and axes; a joint moves the bodies
+it links, so it needs the right to change both (and, when changed, the ones it let go), checked as a change at each
+body so path and region claims both apply. **Joint data is reserved for it**: `props.joint` written by world tools
+(spawn, set, batch) is refused (`reserved`), and a world tool may delete a joint only with the right to both its
+bodies (review of the lane, finding 1: a joint spawned with `world_spawn` used to pull another agent's claimed box
+5 m). `physics_joints` lists joints with their state (paged by key, ragdoll joints too; naming an entity lists its
+ragdoll's); `physics_check` takes `joint_error` and
 `joint_limits`; `physics_explain` lists an entity's joints; the `joints` sight overlay draws anchors, axes and hinge
-limit arcs, coloured by how each holds. Live check: `scripts/joints_check.py` (twin runs end in the same world and
-physics hashes; undo removes a joint; the journal replays).
+limit arcs, coloured by how each holds, with a drawn legend. A joint that doesn't hold yet keeps its bodies awake
+(its correction lives in the biased pass, so a body could report rest and fall asleep in mid-air), a distance joint's
+over-stretch counts as past its limits, and the checks include every joint as it is now (asleep ones too). Live
+check: `scripts/joints_check.py` (twin runs end in the same world and physics hashes; undo removes a joint; the
+journal replays; a second agent can't tie claimed boxes, by joint tool or world tool).
 
 **Ragdolls** (`crates/specula/src/physics/ragdoll.rs`; design in [ANIMATION.md](ANIMATION.md#a4-as-built-2026-10-18)):
 capsules and joints built from a skeleton, limits from the anim graph. Transient entities' ragdolls are **cosmetic
 bodies** (`BodyDesc::cosmetic`): they collide with static and kinematic bodies and with each other, never with
 simulated dynamic bodies or triggers; queries don't see them; they have their own caps; they are left out of the state
-hash, so the simulation is bit-identical with or without them (tested). Parts of one ragdoll share a collision group
-(`BodyDesc::group`).
+hash, so the simulation is bit-identical with or without them (tested), and they make no contact events. Parts of one
+ragdoll share a collision group (`BodyDesc::group`). Parts can be **convex hulls fitted to the mesh** (16 points at
+most, the moving-hull cap; see ANIMATION.md).
+
+**Save games.** The physics snapshot (`specula-physics/src/snapshot.rs`, version 2; version 1 saves still load)
+carries the joint settings and every joint's warm starts, last state and solve step (the joints themselves are
+rebuilt from the world and checked by key and description), and leaves cosmetic bodies out (saves don't keep
+transient entities, and nothing simulated depends on them). The bridge (`physics_save.rs`, version 2) saves the saved
+entities' live ragdolls: planned again from the loaded entity (the plan is pure) with their joints as they were
+(limits opened at the start, the drives' last targets), so a ragdoll mid-fall continues bit for bit after a load
+(tested, limp and powered).
 
 **Compound colliders** (`Shape::Compound`; engine `collider {shape: compound, parts: [...]}`): 1–16 convex parts
 (box, sphere, capsule, hull) with offsets and rotations, as one body: mass and inertia from the parts' volumes
@@ -352,15 +369,30 @@ body (replays put it back; physics changes were never undoable), instead of a co
 desync marks (a `body` field) and the world hash layout are unchanged. Measured in `bridge_profile` over the same
 1,000 bodies in one run: `World::update` and its snapshot 3.6 ms, `set_motion` and its snapshot 1.9 ms (46% less).
 
-**Parallel narrowphase, opt-in.** `Settings::threads` (default 1) splits a big narrowphase (768 pairs or more) over up
-to that many scoped threads, each filling its own slice of results in pair order, merged in that order: the same states
-on any thread count (tested). On free cores it takes about a quarter off a 1,000-body narrowphase (1.65 vs 2.24 ms,
-best of six), but threads started each step can wait tens of milliseconds for a busy machine to schedule them (the
-loaded test machine saw 50 ms steps), so it stays off until there is a persistent worker pool.
+**Threads: a persistent, deterministic pool** (`specula-physics/src/parallel.rs`; `Settings::threads`, the engine's
+`--physics-threads N`, default 1). Started once; between steps the workers spin briefly then sleep. Work is split into
+chunks that whoever is free claims, the stepping thread too, and a phase ends when its chunks are done: a worker the
+machine doesn't schedule in time misses the step instead of holding it up (the scoped threads it replaces, started
+each step, saw 50 ms steps on a loaded machine). No `unsafe`: bodies and impulses live in atomics (`f32` bits) while a
+step runs, each body on its own cache line. It runs:
+- the narrowphase's pair tests (the cheap checks stay on the stepping thread), results put back in pair order;
+- with **graph colouring** (`Settings::coloured`, the world's `physics.coloured`), the contact solver: constraints
+  are coloured as Box2D v3 does (no two in a group share a moving body; a constraint with a static side never takes
+  colour 0; 24 colours, then an overflow), groups run one at a time with their constraints in parallel, small groups
+  and the overflow serially, joints serially between them. Every constraint runs the very code the single-threaded
+  solver runs, so states are bit-identical on 1, 2, 3, 4 and 8 threads (tested, with joints, a kinematic paddle and a
+  tower). Colouring is a choice, not a default: it solves in another order, and a settling 10-box tower drifts 12 mm
+  sideways coloured against 4.6 mm in pair order, so it stays off unless a world asks for threads to help.
+- **The wide kernel** (`wide.rs`, `Settings::wide`): four constraints of a colour group solved side by side in lanes,
+  bit-identical to one at a time (tested). Measured slower in plain Rust (solve stage 1.48 ms against 1.25, 4 threads):
+  gathering the lanes costs more than they save without SIMD intrinsics (which need `unsafe`), so it is off.
+- Tried and left out: friction at the manifold centre (it changed nothing alone, and with colouring the tower
+  drifted 7 cm).
 
-**The 1,000-awake-body budget: not met.** Best of six runs on the shared i9-13900HX under 76% CPU load from other
-sessions: 5.0 ms a tick (narrowphase 1.65 with four threads, 2.4 on one; solver 2.1–2.3) against main's 5.2 ms;
-uncontended runs earlier measured 3.9–4.2 ms. Tried and left out: friction at the manifold centre (two tangent rows
-and a twist row per pair instead of two rows per point) changed nothing measurable (solver 2.13 vs 2.14 ms), so
-per-point friction stays. The solver is compute-bound scalar code; the route to 2 ms is Box2D v3's: colour the
-constraint graph, solve each colour wide (SIMD-style rows), on a persistent deterministic worker pool.
+**The 1,000-awake-body budget: not met.** `physics_bench` awake 1000, back to back with main on the shared
+i9-13900HX (best of six, at about 16% CPU load from other sessions): main 3.46 ms a tick; this lane on one thread
+3.8; with 4 threads 2.9 (narrowphase 0.9); coloured on 4 threads 2.9 and on 8 threads 2.8 (solve 1.13: about 0.4 of
+it serial setup, the contact passes 0.65 against 1.0 on one thread). Under full load (100%) the same runs gave main
+4.05, coloured 8 threads 3.05. What still runs on one thread: building pairs (0.3), the narrowphase's checks and
+merge, the solver's setup (constraints, colouring, prepare, write-back) and the broadphase; the next steps toward 2 ms
+are those on the pool, then SIMD rows if `unsafe` intrinsics are ever allowed for them.

@@ -22,8 +22,9 @@ from pathlib import Path
 from specula_mcp import ROOT, Engine, detailed
 import sepulcra_play as sp
 
-# Ticks after the ragdoll is found at which a frame is taken (the game runs 30 ticks a second).
-FILM = [0, 3, 6, 12, 18, 30, 60, 120]
+# Ticks after the ragdoll is found at which a frame is taken (the game runs 30 ticks a second;
+# it removes the body a little after 60).
+FILM = [0, 3, 6, 12, 18, 30, 45, 60]
 # The checks are read here: the game removes the body a little later.
 INFO_AT = 60
 

@@ -288,12 +288,21 @@ reading the world's external poses (`World::external_pose`, `models.rs`). Joints
   by the skinned mesh when it is built. The shambler's limp death passes them all, in `joints_check.py` (penetration
   0.05 cm, floating 1.45 cm, pops 2.9 cm) and in play, dying on a Sepulcra path (penetration 1.0 cm, floating 0,
   pops 0.7 cm), against Sepulcra's 3, 2.5 and 6 cm.
-- **Limitation: round capsules.** The shambler slumps into a crouched heap on its knees and hands rather than lying
-  flat: its trunk capsules (radius 0.63 and 0.6 m in model metres, the 95th percentile of a wide, hunched coat) are
-  round where the body is not, and prop it up. Shifting a capsule into the hump (fitting an offset across the bone)
-  slimmed the chest to 0.52 m but left the heap rocking and sliding at 1 m/s after 2.5 s, so it was not kept. The fix
-  is parts shaped like the mesh: convex hulls per bone (physics already has hull and compound bodies), fitted by
-  `ragdoll_set {fit}`.
+- **Hull parts fitted to the mesh.** With round capsules the shambler slumped into a crouched heap on its knees and
+  hands: its trunk capsules (radius 0.63 and 0.6 m in model metres, the 95th percentile of a wide, hunched coat) are
+  round where the body is not, and propped it up. (Shifting a capsule into the hump slimmed the chest but left the heap
+  sliding at 1 m/s, and wasn't kept.) Now a part can be a **convex hull** of the vertices its bone drives most:
+  `ragdoll_set {fit: "hulls"}` measures them (the extremes along the three axes, then the vertex furthest outside the
+  hull so far, until none is a millimetre out or the next would pass 16 points, then a 2 cm skin for the mesh bending
+  between bones and contacts giving on impact), into `props.ragdoll.hulls` (points in each bone's rest frame), and a
+  graph shares them as `ragdoll.hull`; a bone with a hull uses it over its radius. Sepulcra's shambler graph carries
+  its hulls: knocked back (80 N·s on the chest, about 1.2 m/s on its 69 kg; 26 N·s only sat it down on its coat), it
+  lies on its back on the path, in `joints_check.py` and in play (penetration 2.6 and 2.8 cm, floating 0, pops 0.9
+  and 1.3 cm against 3, 2.5 and 6). A test compares capsules and hulls (the chest's rest height drops by more than
+  15 cm) and repeats the fit and the fall bit for bit.
+- **Saved with the world.** A saved entity's ragdoll is in save games (PHYSICS.md, "Save games"): planned again from
+  the entity, its joints as they were, its bodies' motion from the physics snapshot; it continues bit for bit. The motion
+  checks' recording starts again at the load. Transient entities' ragdolls aren't saved (nor are the entities).
 - **Sepulcra**: shamblers die as ragdolls (knocked back from where they faced, `props.ragdoll` and the `ragdoll`
   parameter set together, the play otherwise left as it was: a death clip blending in at the same tick would set the
   takeover's velocity) onto the slab, whose ground pieces got box colliders; the other creatures keep their death clips
