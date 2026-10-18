@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-18",
+  "time": "11:47",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Sepulcra on Lex: the HUD and the boss wave",
+  "note": "The --rules lex playthrough on the Intel iGPU after the Lex review rounds: the Lex run decides every command and the outcome, with the hand-written sim checked against it every tick (parity on all 21,852 ticks, won, replay verified). New since the last Lex entry: the HUD over a Lex-ruled game and the wave 10 colossus; the busy wave is unchanged since 2026-10-18-sepulcra-played-from-its-lex-rules.",
+  "source": "scripts/sepulcra_play.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00008.jpg",
+      "caption": "Wave 6 with the HUD (Lex decides the refusals: Not enough dust)",
+      "original": "frame_00008.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 28471
+    },
+    {
+      "file": "02-frame-00009.jpg",
+      "caption": "The wave 10 colossus climbs the slab",
+      "original": "frame_00009.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15659
+    }
+  ]
+}

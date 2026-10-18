@@ -1,0 +1,345 @@
+{
+  "lex": 1,
+  "name": "sepulcra",
+  "tick_hz": 30,
+  "notes": "Sepulcra's whole rule set in Lex (docs/design/LEX.md): four stones in three tiers, walls, the four enemies with the colossus's summons, ten waves, grave-dust, drops, selling, calling waves early, tombstones, win and lose. The slab (cells, sites, the air ring) is lex/slab_01.lex.json, merged in. Movement on the slab's cell graph is native (games/sepulcra/src/lex.rs): flow fields that change with walls, breaking walls, climbing, roots, lane jumps and the flyers' ring. tests/lex_parity.rs runs it next to the hand-written sim (src/sim.rs) on every layout and many seeds and compares every tick. Projectile speeds are the hand-written sim's whole millimetres per tick (22 m/s there is 733 mm a tick, so 21.99 m/s here).",
+  "items": {
+    "start_dust": { "kind": "param", "type": "int", "value": 150, "min": 0, "max": 100000, "doc": "grave-dust at the start" },
+    "start_tombstones": { "kind": "param", "type": "int", "value": 10, "min": 1, "max": 1000, "doc": "lives: a leak costs the enemy's tombstones" },
+    "sell_refund": { "kind": "param", "type": "ratio", "value": 0.7, "min": 0, "max": 1, "doc": "share of the dust spent on a stone that selling it returns (a wall: scaled by its HP left); whole percent" },
+    "early_call_per_s": { "kind": "param", "type": "ratio", "value": 0.5, "min": 0, "max": 1000, "doc": "dust per second left on the timer when a wave is called early" },
+    "edge_reach": { "kind": "param", "type": "distance", "value": 3, "min": 0, "max": 100, "doc": "a stone reaches enemies on another face only within this distance of the rim the faces share" },
+    "wall_cost": { "kind": "param", "type": "int", "value": 15, "min": 0, "max": 100000, "doc": "dust per wall" },
+    "wall_hp": { "kind": "param", "type": "points", "value": 300, "min": 1, "max": 1000000, "doc": "a wall's HP" },
+    "breach_penalty": { "kind": "param", "type": "distance", "value": 8, "min": 0, "max": 1000, "doc": "route cost per wall when walled-in enemies choose which wall to break" },
+    "roots_from_wave": { "kind": "param", "type": "int", "value": 5, "min": 1, "max": 1000, "doc": "nature: roots grow from this wave on" },
+    "roots_radius": { "kind": "param", "type": "distance", "value": 2.9, "min": 0, "max": 100, "doc": "roots reach the lane cells this close to a tier II+ stone (same face)" },
+    "roots_slow": { "kind": "param", "type": "ratio", "value": 0.15, "min": 0, "max": 0.9, "doc": "rooted cells slow ground enemies by this much (it stacks with a rune pillar's slow)" },
+
+    "dust": { "kind": "resource", "start": "$start_dust", "min": 0 },
+    "tombstones": { "kind": "resource", "start": "$start_tombstones", "min": 0 },
+
+    "slow": {
+      "kind": "effect",
+      "notes": "Rune pillars' slow: one per enemy; a stronger or equal slow replaces it and the later expiry wins.",
+      "duration": "1.5s",
+      "magnitude": "ratio",
+      "stacking": "strongest",
+      "modifiers": [{ "attribute": "speed_scale", "op": "mul", "value": "100% - magnitude" }]
+    },
+
+    "ground_move": {
+      "kind": "native", "hook": "sepulcra.ground", "phase": "move", "streams": ["lane_jump"], "data": ["slab"],
+      "reason": "Ground enemies follow Dijkstra flow fields on the slab's cell graph that change whenever a wall goes up or breaks, break the wall on the cheapest route when none is open, climb cliffs slower, are slowed on rooted cells, and leap cracked ledges by a seeded chance. Lex has no graph navigation yet (the navigation lane's navigate behaviour is the planned replacement)."
+    },
+    "air_move": {
+      "kind": "native", "hook": "sepulcra.air", "phase": "move", "data": ["slab"],
+      "reason": "Flyers circle the slab's air ring a drawn number of hops in a drawn direction, then dive at the graveyard: a path generated from seeded choices, which a fixed Lex path can't express."
+    },
+    "spot": {
+      "kind": "native", "hook": "sepulcra.spot", "data": ["slab"],
+      "reason": "A stone needs its cell (stones fire in cell order), its face and its distance to each rim, for the range-across-faces rule (written in Lex in each attack's when). These are facts of the slab's geometry, which sites don't carry."
+    },
+    "wall_clear": {
+      "kind": "native", "hook": "sepulcra.wall_clear", "data": ["slab"],
+      "reason": "A wall can't go on a cell a ground enemy stands on or is stepping into: that is a question about the movement graph's edges, which only the movement hook knows."
+    },
+
+    "enemy": {
+      "kind": "archetype",
+      "abstract": true,
+      "notes": "Every undead: health and drops. c_from .. face are the movement hooks' state (cells are the slab's cell ids; prog and elen are mm along the current edge).",
+      "tags": ["enemy"],
+      "attributes": {
+        "hp": "1pt", "speed": "1m/s", "speed_scale": "100%", "tombstones": 1, "drop_min": 1, "drop_max": 1,
+        "c_from": -1, "c_to": -1, "prog": "0m", "elen": "0m", "carry": 0, "cell": -1, "face": -1
+      },
+      "behaviours": [
+        { "type": "health", "attribute": "hp", "on_death": [{ "add": "dust", "amount": "rand(drops, self.drop_min, self.drop_max)" }] }
+      ]
+    },
+    "walker": {
+      "kind": "archetype",
+      "abstract": true,
+      "extends": "enemy",
+      "notes": "Ground enemies: walk the flow fields, break walls when walled in, cost tombstones at the graveyard.",
+      "tags": ["ground"],
+      "attributes": { "climb_speed": "100%", "wall_dps": "1pt", "jump_chance": "0%", "jump_detour": "0m", "leap": 1, "stuck": 0 },
+      "behaviours": [
+        {
+          "type": "native", "hook": "ground_move",
+          "args": { "breach": "$breach_penalty", "root_slow": "if(waves.current >= $roots_from_wave, $roots_slow, 0%)", "root_radius": "$roots_radius" },
+          "on": {
+            "arrive": [{ "add": "tombstones", "amount": "-self.tombstones" }, { "despawn": "self" }],
+            "stranded": [{ "despawn": "self" }]
+          }
+        }
+      ]
+    },
+    "flyer": {
+      "kind": "archetype",
+      "abstract": true,
+      "extends": "enemy",
+      "notes": "Flyers ignore walls and only air-targeting stones hit them. dir and hops are drawn when their wave is scheduled.",
+      "tags": ["flying"],
+      "attributes": { "ring": -1, "dir": 1, "hops": 0, "diving": 0, "circle_min": 0, "circle_max": 0 },
+      "behaviours": [
+        { "type": "native", "hook": "air_move", "on": { "arrive": [{ "add": "tombstones", "amount": "-self.tombstones" }, { "despawn": "self" }] } }
+      ]
+    },
+    "shambler": {
+      "kind": "archetype", "extends": "walker", "tags": ["climber"],
+      "notes": "Slow and tough; climbs cliffs at 60 % speed.",
+      "attributes": { "hp": "55pt", "speed": "0.8m/s", "climb_speed": "60%", "drop_min": 3, "drop_max": 5, "wall_dps": "12pt" }
+    },
+    "runner": {
+      "kind": "archetype", "extends": "walker", "tags": ["leaper"],
+      "notes": "Fast; leaps a cracked ledge by a 40 % chance when it lands at most 4 m farther from the graveyard, and always when a ledge is its only way out.",
+      "attributes": { "hp": "26pt", "speed": "2.2m/s", "drop_min": 2, "drop_max": 4, "wall_dps": "6pt", "jump_chance": "40%", "jump_detour": "4m" }
+    },
+    "wraith": {
+      "kind": "archetype", "extends": "flyer",
+      "notes": "Circles 6-14 ring points, then dives.",
+      "attributes": { "hp": "40pt", "speed": "2.4m/s", "drop_min": 5, "drop_max": 7, "circle_min": 6, "circle_max": 14 }
+    },
+    "colossus": {
+      "kind": "archetype", "extends": "walker",
+      "notes": "The boss: slow and huge; summons two shamblers on its cell every 7 s (they join its wave).",
+      "attributes": { "hp": "1250pt", "speed": "0.4m/s", "drop_min": 150, "drop_max": 150, "tombstones": 5, "wall_dps": "150pt" },
+      "behaviours": [{ "type": "spawner", "archetype": "shambler", "every": "7s", "count": 2, "with": { "c_from": "self.cell" } }]
+    },
+
+    "bolt": {
+      "kind": "archetype", "tags": ["projectile"],
+      "attributes": { "speed": "20m/s" },
+      "behaviours": [{ "type": "projectile", "speed": "self.speed", "homing": true }]
+    },
+    "lob": {
+      "kind": "archetype", "tags": ["projectile"],
+      "attributes": { "speed": "10m/s", "splash": "1m" },
+      "behaviours": [{ "type": "projectile", "speed": "self.speed", "homing": false, "splash": "self.splash" }]
+    },
+
+    "stone": {
+      "kind": "archetype",
+      "abstract": true,
+      "notes": "Every stone: what it cost, its cell, face and rim distances (sepulcra.spot fills them in), and its tier's numbers, which the attacks read. Stones act in cell order.",
+      "tags": ["stone"],
+      "attributes": {
+        "cost": 0, "invested": 0, "cell": -1, "face": 0,
+        "rim_n": "0m", "rim_e": "0m", "rim_s": "0m", "rim_w": "0m", "rim_top": "0m",
+        "range": "1m", "cooldown": "1s", "damage": "0pt", "bolt_speed": "1m/s", "splash": "0m", "slow": "0%", "slow_for": "0s"
+      },
+      "on_spawn": [{ "native": "spot" }],
+      "order": "self.cell"
+    },
+    "warding_1": {
+      "kind": "archetype", "extends": "stone", "next": "warding_2",
+      "notes": "Homing bolts at ground enemies. when: range across faces (an enemy on another face only from within edge_reach of the shared rim; flyers by range alone).",
+      "attributes": { "cost": 50, "range": "7m", "cooldown": "0.8s", "damage": "10pt", "bolt_speed": "19.98m/s" },
+      "behaviours": [{
+        "type": "attack", "targets": ["enemy", "!flying"], "range": "self.range", "cooldown": "self.cooldown", "policy": "first",
+        "when": "target.face < 0 || target.face == self.face || (self.face == 0 && (target.face == 1 && self.rim_n <= $edge_reach || target.face == 2 && self.rim_e <= $edge_reach || target.face == 3 && self.rim_s <= $edge_reach || target.face == 4 && self.rim_w <= $edge_reach)) || (self.face > 0 && target.face == 0 && self.rim_top <= $edge_reach)",
+        "projectile": { "archetype": "bolt", "with": { "speed": "self.bolt_speed" } }, "muzzle": [0, 1.5, 0],
+        "payload": [{ "damage": "self.damage" }]
+      }]
+    },
+    "warding_2": {
+      "kind": "archetype", "extends": "warding_1", "tags": ["upgrade", "roots"], "next": "warding_3",
+      "attributes": { "cost": 60, "range": "7.5m", "cooldown": "0.7s", "damage": "18pt", "bolt_speed": "21.99m/s" }
+    },
+    "warding_3": {
+      "kind": "archetype", "extends": "warding_2", "next": null,
+      "attributes": { "cost": 90, "range": "8m", "cooldown": "0.6s", "damage": "30pt", "bolt_speed": "24m/s" }
+    },
+    "rune_pillar_1": {
+      "kind": "archetype", "extends": "stone", "next": "rune_pillar_2",
+      "notes": "Pulses every ground enemy in range: a slow, then a little damage.",
+      "attributes": { "cost": 60, "range": "5m", "cooldown": "1s", "damage": "2pt", "slow": "35%", "slow_for": "1.5s" },
+      "behaviours": [{
+        "type": "attack", "targets": ["enemy", "!flying"], "range": "self.range", "cooldown": "self.cooldown", "delivery": "pulse",
+        "when": "target.face < 0 || target.face == self.face || (self.face == 0 && (target.face == 1 && self.rim_n <= $edge_reach || target.face == 2 && self.rim_e <= $edge_reach || target.face == 3 && self.rim_s <= $edge_reach || target.face == 4 && self.rim_w <= $edge_reach)) || (self.face > 0 && target.face == 0 && self.rim_top <= $edge_reach)",
+        "payload": [{ "effect": "slow", "magnitude": "self.slow", "duration": "self.slow_for" }, { "damage": "self.damage" }]
+      }]
+    },
+    "rune_pillar_2": {
+      "kind": "archetype", "extends": "rune_pillar_1", "tags": ["upgrade", "roots"], "next": "rune_pillar_3",
+      "attributes": { "cost": 60, "range": "5.5m", "damage": "4pt", "slow": "45%" }
+    },
+    "rune_pillar_3": {
+      "kind": "archetype", "extends": "rune_pillar_2", "next": null,
+      "attributes": { "cost": 90, "range": "6m", "damage": "6pt", "slow": "55%" }
+    },
+    "brazier_1": {
+      "kind": "archetype", "extends": "stone", "next": "brazier_2",
+      "notes": "Lobs fire where the target stood; it splashes every ground enemy near the landing.",
+      "attributes": { "cost": 80, "range": "6m", "cooldown": "1.6s", "damage": "16pt", "bolt_speed": "9.99m/s", "splash": "1.8m" },
+      "behaviours": [{
+        "type": "attack", "targets": ["enemy", "!flying"], "range": "self.range", "cooldown": "self.cooldown", "policy": "first",
+        "when": "target.face < 0 || target.face == self.face || (self.face == 0 && (target.face == 1 && self.rim_n <= $edge_reach || target.face == 2 && self.rim_e <= $edge_reach || target.face == 3 && self.rim_s <= $edge_reach || target.face == 4 && self.rim_w <= $edge_reach)) || (self.face > 0 && target.face == 0 && self.rim_top <= $edge_reach)",
+        "projectile": { "archetype": "lob", "with": { "speed": "self.bolt_speed", "splash": "self.splash" } }, "muzzle": [0, 1.5, 0],
+        "payload": [{ "damage": "self.damage" }]
+      }]
+    },
+    "brazier_2": {
+      "kind": "archetype", "extends": "brazier_1", "tags": ["upgrade", "roots"], "next": "brazier_3",
+      "attributes": { "cost": 80, "range": "6.5m", "cooldown": "1.5s", "damage": "28pt", "bolt_speed": "10.98m/s", "splash": "2m" }
+    },
+    "brazier_3": {
+      "kind": "archetype", "extends": "brazier_2", "next": null,
+      "attributes": { "cost": 110, "range": "7m", "cooldown": "1.4s", "damage": "45pt", "bolt_speed": "12m/s", "splash": "2.3m" }
+    },
+    "sky_obelisk_1": {
+      "kind": "archetype", "extends": "stone", "next": "sky_obelisk_2",
+      "notes": "Homing bolts at flyers only (open sky: range alone decides).",
+      "attributes": { "cost": 70, "range": "9m", "cooldown": "0.9s", "damage": "22pt", "bolt_speed": "30m/s" },
+      "behaviours": [{
+        "type": "attack", "targets": ["enemy", "flying"], "range": "self.range", "cooldown": "self.cooldown", "policy": "first",
+        "projectile": { "archetype": "bolt", "with": { "speed": "self.bolt_speed" } }, "muzzle": [0, 1.5, 0],
+        "payload": [{ "damage": "self.damage" }]
+      }]
+    },
+    "sky_obelisk_2": {
+      "kind": "archetype", "extends": "sky_obelisk_1", "tags": ["upgrade", "roots"], "next": "sky_obelisk_3",
+      "attributes": { "cost": 70, "range": "9.5m", "cooldown": "0.8s", "damage": "40pt", "bolt_speed": "31.98m/s" }
+    },
+    "sky_obelisk_3": {
+      "kind": "archetype", "extends": "sky_obelisk_2", "next": null,
+      "attributes": { "cost": 100, "range": "10m", "cooldown": "0.7s", "damage": "65pt", "bolt_speed": "33.99m/s" }
+    },
+    "low_wall": {
+      "kind": "archetype",
+      "notes": "A low stone wall on a lane cell: blocks routes until enemies with no open route break it.",
+      "tags": ["wall"],
+      "attributes": { "hp": "$wall_hp", "max_hp": "$wall_hp", "cost": "$wall_cost" },
+      "behaviours": [{ "type": "health", "attribute": "hp" }]
+    },
+
+    "place": {
+      "kind": "command",
+      "notes": "Carve a tier I stone on a free build spot (a fragment or a ledge).",
+      "args": { "site": { "type": "site", "of": "build_spots" }, "stone": { "type": "archetype", "tags": ["stone", "!upgrade"] } },
+      "require": [{ "when": "!occupied(arg.site, stone)", "code": "occupied", "message": "a stone already stands there" }],
+      "cost": { "dust": "arg.stone.cost" },
+      "do": [{ "spawn": "arg.stone", "at": "arg.site", "with": { "invested": "arg.stone.cost" } }]
+    },
+    "upgrade": {
+      "kind": "command",
+      "notes": "Carve the next tier of runes into a stone (by its site or id).",
+      "args": { "stone": { "type": "entity", "tags": ["stone"] } },
+      "require": [
+        { "when": "exists(arg.stone.next)", "code": "max_tier", "message": "the stone is at its last tier" },
+        { "when": "res.dust >= arg.stone.next.cost", "code": "not_enough_dust", "message": "not enough grave-dust", "details": { "need": "arg.stone.next.cost", "have": "res.dust" } }
+      ],
+      "do": [
+        { "add": "dust", "amount": "-arg.stone.next.cost" },
+        { "change": "arg.stone.invested", "by": "arg.stone.next.cost" },
+        { "become": "arg.stone.next", "who": "arg.stone", "keep": ["invested", "cell", "face", "rim_n", "rim_e", "rim_s", "rim_w", "rim_top"] }
+      ]
+    },
+    "sell": {
+      "kind": "command",
+      "notes": "Refunds sell_refund of everything spent on the stone (whole dust, rounded down).",
+      "args": { "stone": { "type": "entity", "tags": ["stone"] } },
+      "do": [{ "add": "dust", "amount": "arg.stone.invested * ($sell_refund / 1%) / 100" }, { "despawn": "arg.stone" }]
+    },
+    "wall": {
+      "kind": "command",
+      "notes": "Build a wall on a free lane cell no ground enemy stands on or steps into.",
+      "args": { "site": { "type": "site", "of": "wall_spots" } },
+      "require": [{ "when": "!occupied(arg.site, wall)", "code": "wall_exists", "message": "a wall already stands there" }],
+      "cost": { "dust": "low_wall.cost" },
+      "do": [
+        { "native": "wall_clear", "args": { "x": "arg.site.x", "y": "arg.site.y", "z": "arg.site.z" } },
+        { "spawn": "low_wall", "at": "arg.site" }
+      ]
+    },
+    "unwall": {
+      "kind": "command",
+      "notes": "Remove a wall: refunds sell_refund of its cost, scaled by the HP it has left (rounded down once).",
+      "args": { "wall": { "type": "entity", "tags": ["wall"] } },
+      "do": [
+        { "add": "dust", "amount": "arg.wall.cost * arg.wall.hp * ($sell_refund / 1%) / (arg.wall.max_hp * 100)" },
+        { "despawn": "arg.wall" }
+      ]
+    },
+    "call_wave": {
+      "kind": "command",
+      "notes": "Start the next wave now, for early_call_per_s dust per second left on its timer.",
+      "require": [{ "when": "waves.remaining > 0", "code": "no_more_waves", "message": "every wave has started" }],
+      "do": [{ "add": "dust", "amount": "waves.ticks_left * $early_call_per_s / 1s" }, { "next_wave": true }]
+    },
+
+    "waves": {
+      "kind": "waves",
+      "notes": "Ten waves after 30 s of building. at lists spawn points in the slab's order; every group picks one per enemy from the waves stream, and flyers then draw their direction and how many ring points they circle.",
+      "start": "30s",
+      "rng": "waves",
+      "waves": [
+        { "duration": "55s", "on_start": [{ "add": "dust", "amount": 0 }],
+          "groups": [{ "archetype": "shambler", "count": 6, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "3s" }] },
+        { "duration": "60s", "on_start": [{ "add": "dust", "amount": 40 }],
+          "groups": [
+            { "archetype": "shambler", "count": 8, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "3s" },
+            { "archetype": "runner", "count": 6, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "10s", "every": "2s" }
+          ] },
+        { "duration": "65s", "on_start": [{ "add": "dust", "amount": 50 }], "scale": { "hp": 1.1 },
+          "groups": [
+            { "archetype": "shambler", "count": 10, "at": ["cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "2.5s" },
+            { "archetype": "runner", "count": 8, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "5s", "every": "2s" }
+          ] },
+        { "duration": "65s", "on_start": [{ "add": "dust", "amount": 60 }], "scale": { "hp": 1.2 },
+          "groups": [
+            { "archetype": "shambler", "count": 8, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "3s" },
+            { "archetype": "wraith", "count": 4, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "8s", "every": "4s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } },
+            { "archetype": "runner", "count": 10, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "15s", "every": "1.5s" }
+          ] },
+        { "duration": "70s", "on_start": [{ "add": "dust", "amount": 70 }], "scale": { "hp": 1.35 },
+          "groups": [
+            { "archetype": "shambler", "count": 14, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "2.5s" },
+            { "archetype": "runner", "count": 14, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "10s", "every": "1.2s" }
+          ] },
+        { "duration": "70s", "on_start": [{ "add": "dust", "amount": 80 }], "scale": { "hp": 1.5 },
+          "groups": [
+            { "archetype": "wraith", "count": 8, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "0s", "every": "3s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } },
+            { "archetype": "runner", "count": 16, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "5s", "every": "1.2s" },
+            { "archetype": "shambler", "count": 10, "at": ["cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "10s", "every": "2.5s" }
+          ] },
+        { "duration": "75s", "on_start": [{ "add": "dust", "amount": 90 }], "scale": { "hp": 1.7 },
+          "groups": [
+            { "archetype": "shambler", "count": 16, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "2s" },
+            { "archetype": "runner", "count": 18, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "8s", "every": "1.2s" },
+            { "archetype": "wraith", "count": 4, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "20s", "every": "3s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } }
+          ] },
+        { "duration": "75s", "on_start": [{ "add": "dust", "amount": 100 }], "scale": { "hp": 1.95 },
+          "groups": [
+            { "archetype": "shambler", "count": 20, "at": ["gorge_west", "gorge_mid", "gorge_east", "cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "0s", "every": "2s" },
+            { "archetype": "wraith", "count": 10, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "10s", "every": "2.5s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } },
+            { "archetype": "runner", "count": 10, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "20s", "every": "1.2s" }
+          ] },
+        { "duration": "80s", "on_start": [{ "add": "dust", "amount": 110 }], "scale": { "hp": 2.2 },
+          "groups": [
+            { "archetype": "runner", "count": 26, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "0s", "every": "1s" },
+            { "archetype": "shambler", "count": 16, "at": ["cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "5s", "every": "2s" },
+            { "archetype": "wraith", "count": 10, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "15s", "every": "2.5s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } }
+          ] },
+        { "on_start": [{ "add": "dust", "amount": 120 }], "scale": { "hp": 2.4 },
+          "groups": [
+            { "archetype": "colossus", "count": 1, "at": ["gorge_mid"], "start": "0s" },
+            { "archetype": "shambler", "count": 12, "at": ["cliff_north_west", "cliff_north_east", "cliff_east", "cliff_west"], "start": "5s", "every": "2.5s" },
+            { "archetype": "runner", "count": 8, "at": ["gorge_west", "gorge_mid", "gorge_east"], "start": "20s", "every": "1.5s" },
+            { "archetype": "wraith", "count": 6, "at": ["air_0", "air_1", "air_2", "air_3"], "start": "30s", "every": "3s",
+              "with": { "dir": "if(rand(waves, 0, 1) == 0, 1, -1)", "hops": "rand(waves, wraith.circle_min, wraith.circle_max)" } }
+          ] }
+      ]
+    },
+
+    "lose": { "kind": "outcome", "result": "lost", "when": "res.tombstones <= 0", "priority": 1 },
+    "win": { "kind": "outcome", "result": "won", "when": "waves.all_cleared" }
+  }
+}

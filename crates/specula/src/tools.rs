@@ -229,6 +229,8 @@ pub enum Command {
     Playtest(crate::playtest_engine::PlaytestCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
     Lex(crate::lex_tools::LexCall),
+    /// Live Lex runs stepped on the engine's tick (see [`crate::lex_live`]).
+    LexLive(crate::lex_live::LiveCall),
     /// Save games (see [`crate::save_tools`]).
     SaveGame(crate::save_tools::SaveCall),
     /// The animation tools (see [`crate::anim_tools`]).
@@ -301,6 +303,8 @@ pub struct Tools {
     pub(crate) lex_runs: crate::lex_tools::Runs,
     /// One `lex_edit` per rule set at a time (held on protocol threads only).
     pub(crate) lex_locks: crate::lex_tools::Locks,
+    /// Lex native hooks the hosted game implements in-process (`lex_simulate` runs them).
+    pub(crate) lex_natives: specula_lex::Natives,
     /// Kept `balance_tune` jobs.
     pub(crate) balance_jobs: crate::balance_tools::Jobs,
     /// Default response formats, the engine's and each session's (see [`crate::response`]).
@@ -324,6 +328,7 @@ impl Tools {
             game_tools,
             lex_runs: Default::default(),
             lex_locks: Default::default(),
+            lex_natives: Default::default(),
             balance_jobs: Default::default(),
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
@@ -334,6 +339,16 @@ impl Tools {
     pub fn with_formats(mut self, formats: std::sync::Arc<crate::response::Defaults>) -> Tools {
         self.formats = formats;
         self
+    }
+
+    /// The hosted game's in-process Lex hooks ([`crate::game::Game::lex_natives`]).
+    pub fn with_lex_natives(mut self, natives: specula_lex::Natives) -> Tools {
+        self.lex_natives = natives;
+        self
+    }
+
+    pub(crate) fn lex_native_names(&self) -> Vec<String> {
+        self.lex_natives.keys().cloned().collect()
     }
 
     /// Sends a command to the main thread and waits for its answer.
@@ -2417,6 +2432,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::stream_tools::definitions())
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
+    .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())
     .chain(crate::anim_tools::definitions())

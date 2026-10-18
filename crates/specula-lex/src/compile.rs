@@ -35,6 +35,8 @@ pub const MAX_ATTRS_PER_ARCHETYPE: usize = 64;
 pub const MAX_BEHAVIOURS: usize = 32;
 pub const MAX_MODIFIERS: usize = 8;
 pub const MAX_PAYLOAD: usize = 16;
+/// Most args one native call passes (they are evaluated into a fixed buffer).
+pub const MAX_NATIVE_ARGS: usize = 16;
 /// Most waves in a rule set.
 pub const MAX_WAVES: usize = 10_000;
 /// Most spawns one wave schedules (they are all queued when it starts).
@@ -54,6 +56,9 @@ pub struct Options {
     /// Native hooks the host provides; `Some` reports declared hooks missing from it
     /// (`native_unbound` warnings). `None` doesn't check.
     pub natives: Option<Vec<String>>,
+    /// Hooks with an in-process implementation (a hosted game's, e.g. `sepulcra.ground`):
+    /// headless runs can call them, so they get neither warning.
+    pub in_process: Vec<String>,
 }
 
 /// A successful compile: the rules and any warnings.
@@ -167,6 +172,7 @@ struct Cx<'d> {
     events_overflow: bool,
     machines: Vec<MachineDef>,
     natives: Vec<NativeDef>,
+    site_groups: Vec<String>,
 }
 
 impl<'d> Cx<'d> {
@@ -189,6 +195,7 @@ impl<'d> Cx<'d> {
             events_overflow: false,
             machines: Vec::new(),
             natives: Vec::new(),
+            site_groups: Vec::new(),
         }
     }
 
@@ -303,6 +310,7 @@ impl<'d> Cx<'d> {
             self.paths.push(p);
         }
         let mut site_points: BTreeMap<String, (P3, String)> = BTreeMap::new();
+        let site_groups = self.ids("sites");
         for id in self.ids("sites") {
             let v = self.item(doc.items.get_key_value(&id).expect("listed").0);
             self.fields(&v, schema::kind("sites").expect("kind"), &["kind"]);
@@ -326,10 +334,12 @@ impl<'d> Cx<'d> {
             self.push(Diagnostic::error(codes::TOO_MANY, "", "sites", format!("{} sites; at most {MAX_NAMES}", site_points.len())));
             site_points = site_points.into_iter().take(MAX_NAMES).collect();
         }
-        for (i, (name, (pos, _))) in site_points.into_iter().enumerate() {
+        for (i, (name, (pos, item))) in site_points.into_iter().enumerate() {
             self.reg.sites.insert(name.clone(), i as u16);
-            self.sites.push(SiteDef { name, pos });
+            let group = site_groups.iter().position(|g| *g == item).unwrap_or(0) as u16;
+            self.sites.push(SiteDef { name, pos, group });
         }
+        self.site_groups = site_groups;
         // Archetypes: extends, then tags and attributes.
         let archs = self.ids("archetype");
         for id in &archs {
@@ -378,7 +388,7 @@ impl<'d> Cx<'d> {
                                     self.push(av.err(codes::INVALID, format!("'{name}' is not a valid attribute name")).suggest_opt(d.suggestion));
                                     continue;
                                 }
-                                if ["alive", "archetype", "next", "path_remaining"].contains(&name.as_str()) {
+                                if expr::RESERVED_FIELDS.contains(&name.as_str()) {
                                     self.push(av.err(codes::INVALID, format!("'{name}' is a built-in entity field, not an attribute")).suggest("choose another name"));
                                     continue;
                                 }
@@ -907,12 +917,24 @@ impl<'d> Cx<'d> {
 
     fn pass2(&mut self, opts: &Options) -> Rules {
         let doc = self.doc;
+        let mut data = Vec::new();
+        for id in self.ids("data") {
+            let v = self.item(doc.items.get_key_value(&id).expect("listed").0);
+            self.fields(&v, schema::kind("data").expect("kind"), &["kind"]);
+            let value = self.req(&v, "value").map(|x| crate::doc::canonical(x.j)).unwrap_or(Json::Null);
+            let mut h = StableHasher::with_seed(0x1e8_da7a);
+            h.write_str(&value.to_string());
+            data.push(DataDef { id: id.clone(), value, hash: h.finish() });
+        }
         for id in self.ids("native") {
             let n = self.native(&self.item(doc.items.get_key_value(&id).expect("listed").0));
             self.natives.push(n);
         }
         if let Some(bound) = &opts.natives {
             for n in &self.natives {
+                if opts.in_process.contains(&n.hook) {
+                    continue;
+                }
                 if !bound.contains(&n.hook) {
                     self.push(
                         Diagnostic::warning(codes::NATIVE_UNBOUND, n.id.as_str(), "hook", format!("no module provides the native hook '{}' yet, so runs that use it will fail", n.hook))
@@ -1000,6 +1022,8 @@ impl<'d> Cx<'d> {
         }
         let streams: BTreeMap<u16, String> = self.reg.streams.borrow().iter().map(|(n, i)| (*i, n.clone())).collect();
         let n_attrs = self.reg.attrs.len();
+        let ordered = archetypes.iter().any(|a: &ArchDef| a.order.is_some());
+        let with_groups = waves.as_ref().is_some_and(|w: &WavesDef| w.waves.iter().any(|wv| wv.groups.iter().any(|g| !g.with.is_empty())));
         for a in &mut archetypes {
             let mut slot = vec![u16::MAX; n_attrs];
             for (i, (attr, _)) in a.attrs.iter().enumerate() {
@@ -1028,6 +1052,10 @@ impl<'d> Cx<'d> {
             outcomes,
             natives: std::mem::take(&mut self.natives),
             events: std::mem::take(&mut self.events),
+            site_groups: std::mem::take(&mut self.site_groups),
+            data,
+            ordered,
+            with_groups,
         }
     }
 
@@ -1055,7 +1083,34 @@ impl<'d> Cx<'d> {
                 }
             },
         };
-        NativeDef { id: v.item.to_owned(), hook, reason, phase }
+        let mut streams = Vec::new();
+        if let Some(sv) = v.key("streams") {
+            match sv.j.as_array() {
+                Some(list) => {
+                    for (i, x) in list.iter().enumerate() {
+                        match x.as_str().filter(|n| crate::doc::check_id(n).is_ok()) {
+                            Some(n) => streams.push(self.reg.stream(n)),
+                            None => self.push(sv.index(i, x).err(codes::INVALID, "a stream name is a lowercase id, e.g. lane_jump").got(show(x))),
+                        }
+                    }
+                }
+                None => self.push(sv.err(codes::WRONG_TYPE, "streams is an array of stream names").got(show(sv.j))),
+            }
+        }
+        let mut data = Vec::new();
+        if let Some(dv) = v.key("data") {
+            match dv.j.as_array() {
+                Some(list) => {
+                    for (i, x) in list.iter().enumerate() {
+                        if let Some(d) = self.ref_of(&dv.index(i, x), "data") {
+                            data.push(d);
+                        }
+                    }
+                }
+                None => self.push(dv.err(codes::WRONG_TYPE, "data is an array of data item ids").got(show(dv.j))),
+            }
+        }
+        NativeDef { id: v.item.to_owned(), hook, reason, phase, streams, data }
     }
 
     fn machine(&self, v: &V) -> MachineDef {
@@ -1186,6 +1241,7 @@ impl<'d> Cx<'d> {
         let sc = Scope { me: Me::Arch(a), ..Scope::new(&self.reg, "an archetype") };
         let act = Act { scope: sc, machine };
         let on_spawn = v.key("on_spawn").map(|x| self.actions(&x, act)).unwrap_or_default();
+        let order = v.key("order").and_then(|o| self.num_expr(&o, Unit::Int, &sc));
         let mut behaviours: Vec<Beh> = Vec::new();
         if let Some(bv) = v.key("behaviours") {
             match bv.j.as_array() {
@@ -1243,6 +1299,7 @@ impl<'d> Cx<'d> {
             abstract_,
             on_spawn,
             health,
+            order,
         }
     }
 
@@ -1337,7 +1394,8 @@ impl<'d> Cx<'d> {
             "spawner" => {
                 let arch = self.req(v, "archetype").and_then(|x| self.spawnable(&x))?;
                 let every = num("every", Unit::Duration)?;
-                BehKind::Spawner { arch, count: opt_num("count", Unit::Int).unwrap_or(Ex::Int(1)), start: opt_num("start", Unit::Duration).unwrap_or_else(|| every.clone()), every }
+                let with = v.key("with").map(|w| self.with_attrs(&w, &me)).unwrap_or_default();
+                BehKind::Spawner { arch, count: opt_num("count", Unit::Int).unwrap_or(Ex::Int(1)), start: opt_num("start", Unit::Duration).unwrap_or_else(|| every.clone()), every, with }
             }
             "lifetime" => BehKind::Lifetime { duration: num("duration", Unit::Duration)?, on_expire: acts("on_expire", act) },
             "native" => {
@@ -1346,7 +1404,22 @@ impl<'d> Cx<'d> {
                 if self.natives.get(usize::from(hook)).is_some_and(|n| n.phase == Phase::Any) {
                     self.push(hv.err(codes::INVALID, "a native used as a behaviour must declare its phase").suggest("add \"phase\": \"move\" (or spawn, act, effects) to the native item"));
                 }
-                BehKind::Native { hook, args: v.key("args").map(|x| self.native_args(&x, &me)).unwrap_or_default() }
+                let mut on = Vec::new();
+                if let Some(ov) = v.key("on") {
+                    match ov.j.as_object() {
+                        Some(pairs) => {
+                            for (name, a) in pairs {
+                                if crate::doc::check_id(name).is_err() {
+                                    self.push(ov.sub(name, a).err(codes::INVALID, format!("'{name}' is not a valid name for an action list")).suggest("use a lowercase id, e.g. arrive"));
+                                    continue;
+                                }
+                                on.push((name.clone(), self.actions(&ov.sub(name, a), act)));
+                            }
+                        }
+                        None => self.push(ov.err(codes::WRONG_TYPE, "on is an object of name -> actions (the hook runs them by name)").got(type_name(ov.j))),
+                    }
+                }
+                BehKind::Native { hook, args: v.key("args").map(|x| self.native_args(&x, &me)).unwrap_or_default(), on }
             }
             _ => unreachable!("every behaviour spec is handled"),
         };
@@ -1364,7 +1437,10 @@ impl<'d> Cx<'d> {
 
     fn native_args(&self, v: &V, sc: &Scope) -> Vec<(String, Ex)> {
         let mut out = Vec::new();
-        for (k, x) in v.j.as_object().unwrap_or_default() {
+        if v.j.as_object().is_some_and(|o| o.len() > MAX_NATIVE_ARGS) {
+            self.push(v.err(codes::TOO_MANY, format!("at most {MAX_NATIVE_ARGS} native args")).suggest("pass fewer numbers, or read attributes in the hook"));
+        }
+        for (k, x) in v.j.as_object().unwrap_or_default().iter().take(MAX_NATIVE_ARGS) {
             let xv = v.sub(k, x);
             let ex = match x {
                 Json::Num(_) => self.num_expr(&xv, Unit::Int, sc),
@@ -1395,6 +1471,7 @@ impl<'d> Cx<'d> {
         let me = Scope { me: Me::Arch(a), ..Scope::new(&self.reg, "an attack") };
         let hit = Scope { target: true, ..me };
         let targets = self.req(v, "targets").map(|t| self.filter(&t)).unwrap_or_default();
+        let when = v.key("when").and_then(|w| self.bool_expr(&w, &hit));
         let range = self.req(v, "range").and_then(|x| self.num_expr(&x, Unit::Distance, &me));
         let cooldown = self.req(v, "cooldown").and_then(|x| self.num_expr(&x, Unit::Duration, &me));
         let policy = match v.key("policy") {
@@ -1475,7 +1552,7 @@ impl<'d> Cx<'d> {
                 }
             }
         }
-        Some(AttackDef { targets, range: range?, cooldown: cooldown?, policy, delivery, projectile, muzzle, blocked_by, payload })
+        Some(AttackDef { targets, when, range: range?, cooldown: cooldown?, policy, delivery, projectile, muzzle, blocked_by, payload })
     }
 
     fn with_attrs(&self, v: &V, sc: &Scope) -> Vec<(u16, Ex)> {
@@ -1677,6 +1754,7 @@ impl<'d> Cx<'d> {
                                 schema::Field { name: "at", ty: "", required: true, doc: "" },
                                 schema::Field { name: "start", ty: "", required: false, doc: "" },
                                 schema::Field { name: "every", ty: "", required: false, doc: "" },
+                                schema::Field { name: "with", ty: "", required: false, doc: "" },
                             ],
                         };
                         if !self.fields(&g, &gspec, &[]) {
@@ -1715,9 +1793,13 @@ impl<'d> Cx<'d> {
                         }
                         let gstart = ticks(g.key("start")).unwrap_or(0);
                         let every = ticks(g.key("every")).unwrap_or(0);
+                        // In attribute-name order (ids follow names), so the draws they make don't
+                        // depend on how the object's keys happen to be ordered.
+                        let mut with = g.key("with").map(|w| self.with_attrs(&w, &sc)).unwrap_or_default();
+                        with.sort_by_key(|(a, _)| *a);
                         if let (Some(arch), Some(count)) = (arch, count) {
                             if !at.is_empty() {
-                                groups.push(GroupDef { arch, count: count.clamp(0, MAX_GROUP_COUNT) as u32, at, start: gstart, every });
+                                groups.push(GroupDef { arch, count: count.clamp(0, MAX_GROUP_COUNT) as u32, at, start: gstart, every, with });
                             }
                         }
                     }
@@ -1780,8 +1862,27 @@ impl<'d> Cx<'d> {
                             _ => (None, None),
                         };
                         let filter = tags.map(|tg| self.filter(&tg)).unwrap_or_default();
+                        for k in t.as_object().unwrap_or_default().iter().map(|(k, _)| k.as_str()) {
+                            if !["type", "tags", "of", "notes"].contains(&k) {
+                                self.push(tv.sub(k, &Json::Null).err(codes::UNKNOWN_FIELD, format!("'{k}' is not an argument field")).expected("type, tags, of").suggest_opt(self.dym(k, ["type", "tags", "of"])));
+                            }
+                        }
+                        let of = match tv.key("of") {
+                            None => None,
+                            Some(ov) if tname == Some("site") => match ov.j.as_str().and_then(|g| self.site_groups.iter().position(|x| x == g)) {
+                                Some(g) => Some(g as u16),
+                                None => {
+                                    self.unknown_or_wrong(&ov, ov.j.as_str().unwrap_or(""), "sites");
+                                    None
+                                }
+                            },
+                            Some(ov) => {
+                                self.push(ov.err(codes::INVALID, "of restricts site arguments to one sites item").suggest("use it with \"type\": \"site\""));
+                                None
+                            }
+                        };
                         let ty = match tname {
-                            Some("site") => ArgTy::Site,
+                            Some("site") => ArgTy::Site(of),
                             Some("archetype") => ArgTy::Archetype(filter),
                             Some("entity") => ArgTy::Entity(filter),
                             Some(u) if Unit::from_name(u).is_some() => ArgTy::Num(Unit::from_name(u).expect("checked")),
@@ -1803,7 +1904,7 @@ impl<'d> Cx<'d> {
                 (
                     a.name.clone(),
                     match a.ty {
-                        ArgTy::Site => Ty::Site,
+                        ArgTy::Site(_) => Ty::Site,
                         ArgTy::Archetype(_) => Ty::Arch,
                         ArgTy::Entity(_) => Ty::Ent,
                         ArgTy::Num(u) => Ty::Num(u),
@@ -1837,6 +1938,7 @@ impl<'d> Cx<'d> {
                         schema::Field { name: "when", ty: "", required: true, doc: "" },
                         schema::Field { name: "code", ty: "", required: true, doc: "" },
                         schema::Field { name: "message", ty: "", required: false, doc: "" },
+                        schema::Field { name: "details", ty: "", required: false, doc: "" },
                     ],
                 };
                 if !self.fields(&r, &spec, &[]) {
@@ -1845,9 +1947,18 @@ impl<'d> Cx<'d> {
                 let cond = self.req(&r, "when").and_then(|w| self.bool_expr(&w, &sc));
                 let code = self.req(&r, "code").and_then(|c| self.string(&c));
                 let message = r.key("message").and_then(|m| self.string(&m));
+                // Numbers for the refusal, like native args (at most 16, numbers or expressions).
+                let details = r.key("details").map(|d| self.native_args(&d, &sc)).unwrap_or_default();
+                if let Some(dv) = r.key("details") {
+                    for (k, x) in dv.j.as_object().unwrap_or_default() {
+                        if crate::sim::RESERVED_DETAILS.contains(&k.as_str()) {
+                            self.push(dv.sub(k, x).err(codes::INVALID, format!("'{k}' is a name the refusal sets itself ({})", crate::sim::RESERVED_DETAILS.join(", "))).suggest("name it for what it counts (need, have, enemy)"));
+                        }
+                    }
+                }
                 if let (Some(cond), Some(code)) = (cond, code) {
                     let message = message.unwrap_or_else(|| format!("refused: {code}"));
-                    require.push(Require { cond, code, message });
+                    require.push(Require { cond, code, message, details });
                 }
             }
         }

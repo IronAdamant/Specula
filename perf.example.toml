@@ -87,6 +87,14 @@ post_fxaa = 0.3
 # scratch_root = "scratch"      # where scratch-folder leases are made
 # gpu_ms_per_s = 1000           # GPU time per second shared by GPU leases (advisory)
 
+# Live Lex runs (lex_live): what they may spend, in deterministic work units (a Lex tick costs its work
+# plus one per entity plus one), so steps land on the same engine ticks on every machine. One setting for
+# every adapter.
+# [lex_live]
+# work_per_tick = 50000         # work all runs together may do per engine tick (about 3 ms on the iGPU laptop); a step that overspends is a debt the run pays back by pausing
+# step_work = 250000            # work one Lex tick may do (about a frame; at most Lex's own cap of 5000000); past it the tick stops and the run halts
+# backstop_ms = 1000            # wall time one Lex tick may take (not deterministic: a backstop only)
+
 # Streaming (docs/design/STREAMING.md): model meshes and HLOD proxies upload within a per-frame budget
 # and stay within a memory budget; perf_frame reports misses (stream_upload_over_budget,
 # stream_upload_spike, stream_memory_over_budget). The lead agent can change these live with

@@ -66,6 +66,16 @@ fn random_hex() -> String {
 }
 
 /// See the module docs.
+/// Which reserved subtree a commit may write.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owns {
+    Neither,
+    /// `/lex`: the Lex tools.
+    Lex,
+    /// `/lex_live`: lex_live start and stop.
+    LexLive,
+}
+
 #[derive(Default)]
 pub struct Swarm {
     pub journal: Journal,
@@ -291,7 +301,7 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, false, command)
+        self.commit_with(world, tick, w, kind, Owns::Neither, command)
     }
 
     /// [`Swarm::commit`] for the Lex tools: the only writer of the `/lex` subtree, which holds
@@ -304,7 +314,20 @@ impl Swarm {
         kind: Kind,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, true, command)
+        self.commit_with(world, tick, w, kind, Owns::Lex, command)
+    }
+
+    /// [`Swarm::commit`] for `lex_live` start and stop: the only agent writer that spawns in the
+    /// `/lex_live` subtree (a run's groups; its presentation is the run's own output).
+    pub fn commit_lex_live<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, kind, Owns::LexLive, command)
     }
 
     fn commit_with<T>(
@@ -313,20 +336,31 @@ impl Swarm {
         tick: u64,
         w: Writer,
         kind: Kind,
-        lex: bool,
+        owns: Owns,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        // The /lex subtree is Lex rule data, written only through the lex_* tools (so its
-        // entities can be exempt from region claims without letting anything hide there). A
-        // failing command is rolled back by the journal.
+        // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
+        // holds live runs' groups and output, spawned only by lex_live (so both can be exempt
+        // from region claims without letting anything hide there). A failing command is rolled
+        // back by the journal.
         let command = |wd: &mut World| {
             let mark = wd.mark();
             let v = command(wd)?;
-            if !lex {
-                let start = wd.mark_changes(mark);
-                if let Some(c) = wd.pending_changes()[start..].iter().find(|c| crate::claims::touches_rule_data(c)) {
+            let start = wd.mark_changes(mark);
+            let changes = &wd.pending_changes()[start..];
+            if owns != Owns::Lex {
+                if let Some(c) = changes.iter().find(|c| crate::claims::touches_rule_data(c)) {
                     return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
                         .with("path", c.path().to_owned()));
+                }
+            }
+            if owns != Owns::LexLive {
+                if let Some(c) = changes.iter().find(|c| crate::claims::touches_lex_live(c)) {
+                    return Err(WorldError::new(
+                        "reserved",
+                        format!("'{}' is in /lex_live, where live Lex runs show their entities: lex_live starts and stops runs (world_delete works there; a run shows what it needs again)", c.path()),
+                    )
+                    .with("path", c.path().to_owned()));
                 }
             }
             Ok(v)
@@ -411,6 +445,17 @@ impl Swarm {
 
     /// Refuses `w` acting on what `path` names (a module's root, `/<name>`) while another agent
     /// holds a live claim covering it.
+    /// After a caller rolled the world back itself (to a mark): ids the rolled-back changes used
+    /// are never handed out again, and the journal notes it so replays agree.
+    pub fn note_rolled_back(&mut self, world: &World) {
+        self.journal.note_next_id(world.next_id());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn journal(&self) -> &journal::Journal {
+        &self.journal
+    }
+
     pub fn check_claimed_path(&self, path: &str, w: Writer, what: &str) -> Result<(), WorldError> {
         self.claims.check_path(path, w, Instant::now(), what)
     }

@@ -56,3 +56,38 @@ fn saves_all_through_a_run_restore() {
     }
     assert!(a.outcome().is_some() && saw_last, "the run reached its last wave and an outcome");
 }
+
+/// The whole game's rules (natives, phase `order`, wave groups' `with`): saved at many points of
+/// a centre-layout game, each restore has the same hash and steps on with the same hashes and
+/// the same work per tick as the run it was saved from (the hooks' caches start cold after a
+/// restore, and charge the same).
+#[test]
+fn the_whole_game_saved_anywhere_continues_identically() {
+    let content = Arc::new(sepulcra::content::Content::builtin());
+    let rules = sepulcra::lex::compiled(&[]).unwrap();
+    assert!(rules.ordered && rules.with_groups, "the set uses order and with");
+    let script = sepulcra::script::Script::parse(include_str!("../data/layouts/centre.json"), &content, "centre").unwrap();
+    let journal = sepulcra::script::run(Arc::clone(&content), 7, &script, None, |_, _| {}).journal;
+    let mut a = sepulcra::lex::sim(Arc::clone(&rules), 7).unwrap();
+    let mut k = 0;
+    while a.outcome().is_none() && a.tick() < 20_000 {
+        let mut now = Vec::new();
+        while k < journal.len() && journal[k].0 <= a.tick() {
+            now.push(sepulcra::lex::command_call(&a, &content, &journal[k].1).unwrap());
+            k += 1;
+        }
+        a.step(&now);
+        if a.tick() % 2_500 == 0 {
+            let bytes = a.save_state();
+            let mut b = Sim::restore(Arc::clone(&rules), &sepulcra::lex::natives(), &bytes).unwrap();
+            assert_eq!(b.hash(), a.hash(), "tick {}", a.tick());
+            assert_eq!(b.save_state(), bytes, "canonical bytes");
+            let mut c = a.clone();
+            for _ in 0..300 {
+                c.step(&[]);
+                b.step(&[]);
+                assert_eq!((b.hash(), b.tick_work()), (c.hash(), c.tick_work()), "after a restore at tick {}", a.tick());
+            }
+        }
+    }
+}

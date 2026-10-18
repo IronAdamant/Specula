@@ -662,6 +662,11 @@ impl Engine {
                 return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to replace it anyway, or pick another name", whose(&owner))));
             }
         }
+        // Live Lex runs aren't in the save format yet: a save without them wouldn't resume what
+        // runs now (their state, journal and presentation), so it is refused while any is live.
+        if let Some(e) = self.lex_live_refusal("saved") {
+            return Err(e);
+        }
         let t0 = Instant::now();
         let tick = self.clock.tick();
         // The game first: it may refuse.
@@ -766,7 +771,23 @@ impl Engine {
 
     /// Claims and unsaved changes: checked when a load starts and again when it swaps in
     /// (`since`: the world's revision when it started; changes after it are unsaved too).
+    /// `live_lex_running` while live Lex runs are on (they aren't in the save format yet).
+    fn lex_live_refusal(&self, what: &str) -> Option<SaveError> {
+        let sets = self.lex_live.sets();
+        (!sets.is_empty()).then(|| {
+            SaveError::new(
+                "live_lex_running",
+                format!("live Lex runs ({}) aren't in save games yet, so the game can't be {what} while one runs; lex_live {{action: stop}} them first (their journals replay with lex_simulate)", sets.join(", ")),
+            )
+            .with("live", Json::arr(sets.iter().map(|s| Json::from(s.as_str()))))
+        })
+    }
+
     fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<(), SaveError> {
+        // A load replaces the world live runs present into: stop them first.
+        if let Some(e) = self.lex_live_refusal("loaded") {
+            return Err(e);
+        }
         // A playtest owns the clock and the world until it ends: a load would move both under it
         // (and its replay would record a run nobody can reproduce). Not even with force.
         if self.playtests.running() {

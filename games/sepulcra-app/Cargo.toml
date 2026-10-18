@@ -23,6 +23,7 @@ specula = { path = "../../crates/specula" }
 specula-anim = { workspace = true }
 specula-audio = { workspace = true }
 specula-core = { workspace = true }
+specula-lex = { workspace = true }
 specula-gpu = { workspace = true }
 specula-input = { workspace = true }
 specula-platform = { workspace = true }

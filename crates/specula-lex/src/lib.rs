@@ -34,9 +34,12 @@ pub use compile::{compile, validate, Compiled, Options};
 pub use diag::{Diagnostic, Severity};
 pub use doc::{Document, FORMAT_VERSION};
 pub use rules::Rules;
-pub use sim::{CommandCall, Event, NativeCtx, NativeHook, Natives, Rejection, Sim, Val};
+pub use sim::{CommandCall, Event, NativeArgs, NativeCtx, NativeHook, NativeHost, Natives, Rejection, Sim, Undo, Val, RESERVED_DETAILS};
 pub use units::Unit;
 
 /// Bumped when the runtime's semantics change in a way that changes results (like
 /// `dmath::VERSION`): replays recorded with another version aren't expected to match.
-pub const RUNTIME_VERSION: u32 = 1;
+///
+/// 2 (2026-10-18): spawns that join a wave get its scale (summons, on_death and on_spawn spawns),
+/// and the state hash covers phase order keys and wave groups' `with` values (only for rules that use them).
+pub const RUNTIME_VERSION: u32 = 2;

@@ -22,6 +22,7 @@ pub mod controls;
 mod ents;
 pub mod game;
 pub mod hud;
+pub mod lexmode;
 pub mod looks;
 pub mod scene;
 pub mod slab;
