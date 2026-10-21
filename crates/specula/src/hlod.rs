@@ -379,6 +379,8 @@ pub struct Hlod {
     pub last_error: Option<String>,
     /// Cells whose proxy left members out (streaming wants those on their own).
     left_out_cells: Vec<CellKey>,
+    /// An upload retired GPU memory since [`Hlod::take_retired`] (see there).
+    retired_any: bool,
 }
 
 impl Hlod {
@@ -583,6 +585,7 @@ impl Hlod {
         let Some(r) = &c.ready else { return Ok(0) };
         if c.staged.0 != r.key {
             // Groups of an older build: gone.
+            self.retired_any |= !c.staged.1.is_empty();
             for (m, ..) in c.staged.1.drain(..) {
                 gpu.retire_mesh(m);
             }
@@ -592,6 +595,7 @@ impl Hlod {
         match gpu.queue_mesh(&g.vertices, &g.indices, &MeshStreams::default()) {
             Ok(mesh) => c.staged.1.push((mesh, g.material, g.surface, (g.indices.len() / 3) as u32)),
             Err(e) => {
+                self.retired_any |= !c.staged.1.is_empty();
                 for (m, ..) in c.staged.1.drain(..) {
                     gpu.retire_mesh(m);
                 }
@@ -622,9 +626,16 @@ impl Hlod {
                 c.window_on = false;
             }
             retire(gpu, &old);
+            self.retired_any = true;
         }
         self.stats.uploaded += 1;
         Ok(uploaded_now)
+    }
+
+    /// Whether an upload retired GPU memory (an older proxy or older groups) since the last call:
+    /// the streamer's running total of resident bytes is summed again.
+    pub fn take_retired(&mut self) -> bool {
+        std::mem::take(&mut self.retired_any)
     }
 
     /// GPU bytes of the uploaded proxies.

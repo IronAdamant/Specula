@@ -978,9 +978,8 @@ impl Streamer {
         let live = &self.live;
         models.failed.retain(|id, _| live.contains_key(id));
         models.sync_anim_sets(&library.lock(), world, false);
-        // Builds changed: a new eviction queue is scanned over the next frames (the old one
-        // stays meanwhile; `evict_for` checks each entry again).
-        self.victim_scan = None;
+        // Builds changed: a new eviction queue is scanned over the next frames (the old one, and a
+        // scan already running, stay meanwhile; `evict_for` checks each entry again).
         self.victims_for = None;
         self.resident_cache = None;
         self.stale = true;
@@ -1058,7 +1057,7 @@ impl Streamer {
             }
         }
         // The next eviction queue, a slice a frame, while the memory budget is full.
-        if self.memory_full && self.victims_cache.is_some() && self.victims_for != Some(self.done_pass) {
+        if self.memory_full && self.victims_cache.is_some() && (self.victims_for != Some(self.done_pass) || self.victim_scan.is_some()) {
             let _z = specula_core::profile::zone("victims_scan");
             self.scan_victims(models, self.cfg.upload_ms * 0.1);
         }
@@ -1317,8 +1316,8 @@ impl Streamer {
         }
         self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         self.done_pass = frame;
-        // The next eviction queue is scanned over the next frames, not in this one.
-        self.victim_scan = None;
+        // The next eviction queue is scanned over the next frames, not in this one (after any
+        // scan already running).
         self.resident_cache = None;
         self.nearest = pass.nearest;
         self.index.cells.retain(|_, c| !c.members.is_empty());
@@ -1438,6 +1437,9 @@ impl Streamer {
         // first time the memory budget fills, one made at once.
         let mut victims: Option<Victims> = self.victims_cache.take();
         let mut full = false;
+        let mut rebuilt = false;
+        // Upload failures (memory retired outside the count): the total is summed again.
+        let mut recount = false;
         self.blocked.clear();
         self.blocked_cells.clear();
         let count = (pending.len() + proxies.len()) as u32;
@@ -1471,9 +1473,14 @@ impl Streamer {
                 // A hard-wanted item may evict any soft victim; others only farther ones.
                 let threshold = if hard { f32::NEG_INFINITY } else { prio };
                 if threshold < exhausted {
-                    if victims.is_none() {
+                    // No queue yet, or one used up that is older than the wanted set: made now
+                    // (once a pump).
+                    let used_up = victims.as_ref().is_some_and(|v| v.front().is_none()) && self.victims_for != Some(self.done_pass);
+                    if victims.is_none() || (used_up && !rebuilt) {
+                        rebuilt = true;
                         let _z = specula_core::profile::zone("victims");
                         self.victims_cache = None;
+                        self.victim_scan = None;
                         self.scan_victims(models, f64::INFINITY);
                         victims = self.victims_cache.take();
                     }
@@ -1525,6 +1532,7 @@ impl Streamer {
                     }
                 }
                 Err(e) => {
+                    recount = true;
                     if self.upload_errors.len() < 10 {
                         self.upload_errors.push(e);
                     }
@@ -1537,7 +1545,9 @@ impl Streamer {
             self.victims_cache = victims;
         }
         self.memory_full = full;
-        self.resident_cache = Some(resident);
+        // Proxy uploads that replaced older ones retired memory the count doesn't see.
+        recount |= self.hlod.take_retired();
+        self.resident_cache = (!recount).then_some(resident);
         self.blocked_bytes = blocked;
         self.blocked.sort_unstable();
         self.blocked_cells.sort_unstable();
@@ -1626,10 +1636,9 @@ impl Streamer {
     /// isn't drawing) farthest first.
     fn scan_victims(&mut self, models: &GpuModels, slice_ms: f64) {
         let start = Instant::now();
-        let mut scan = match self.victim_scan.take() {
-            Some(s) if s.pass == self.done_pass => s,
-            _ => VictimScan { pass: self.done_pass, cursor: None, gone: Vec::new(), soft: Vec::new() },
-        };
+        // A scan runs to its end for the pass it began on (a newer pass only starts the next one:
+        // passes can end faster than a big world's scan, which would then never finish).
+        let mut scan = self.victim_scan.take().unwrap_or_else(|| VictimScan { pass: self.done_pass, cursor: None, gone: Vec::new(), soft: Vec::new() });
         let range = match scan.cursor {
             None => models.uploaded.range(..),
             Some(c) => models.uploaded.range((std::ops::Bound::Excluded(c), std::ops::Bound::Unbounded)),
@@ -1673,8 +1682,10 @@ impl Streamer {
             let bytes = match victim {
                 // (The queue may be older than this pass: a build it now wants hard stays, and
                 // one it wants at all isn't taken as unwanted.)
-                Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 == self.updates && e.2) => 0,
+                Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.2) => 0,
                 Victim::Build(id) if gone && self.wanted_now(id) => 0,
+                // A soft one the latest wanted set puts no farther than the item: it stays.
+                Victim::Build(id) if !gone && self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.0 <= prio) => 0,
                 Victim::Proxy(cell) if gone && self.hlod.wanted(cell) => 0,
                 Victim::Build(id) => {
                     let bytes = models.uploaded.get(&id).map_or(0, |m| m.bytes);
