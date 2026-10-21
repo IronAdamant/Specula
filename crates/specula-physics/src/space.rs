@@ -545,6 +545,8 @@ pub struct Space {
     /// The threaded narrowphase's inputs and where their results go (reused).
     narrow_inputs: Vec<crate::parallel::NarrowIn>,
     narrow_index: Vec<u32>,
+    /// The tunnelling guard's fast-body keys and candidates (reused).
+    ccd_buffers: (Vec<u64>, Vec<u32>),
     /// The contact solver's threads (started on first use when `threads` > 1 and `coloured`).
     parallel: ParallelSlot,
     candidates: Vec<(u64, u64)>,
@@ -623,6 +625,7 @@ impl Space {
             solver_imps: Vec::new(),
             narrow_inputs: Vec::new(),
             narrow_index: Vec::new(),
+            ccd_buffers: (Vec::new(), Vec::new()),
             parallel: ParallelSlot::default(),
             groups: Vec::new(),
             colouring: solver::ColourScratch::default(),
@@ -1367,16 +1370,13 @@ impl Space {
         // are the same however the work is split: determinism rule 7). Then one pass in order.
         let mut narrow = std::mem::take(&mut self.narrow);
         narrow.clear();
-        narrow.resize(self.sim.len(), Narrow::default());
-        {
+        // One thread: each pair is tested in the pass below, as it is used (no copies).
+        let fused = narrow_threads(self.sim.len(), self.settings.threads) <= 1;
+        if !fused {
+            narrow.resize(self.sim.len(), Narrow::default());
             let view = NarrowView { slots: &self.slots, contacts: &self.contacts, static_tree: &self.static_tree, dynamic_tree: &self.dynamic_tree, base, max_margin, dt };
             let sim = &self.sim;
-            let threads = narrow_threads(sim.len(), self.settings.threads);
-            if threads <= 1 {
-                for (k, out) in narrow.iter_mut().enumerate() {
-                    *out = view.pair(sim[k]);
-                }
-            } else {
+            {
                 // The cheap checks here; the pair tests on the pool's threads (started once).
                 let mut inputs = std::mem::take(&mut self.narrow_inputs);
                 let mut index = std::mem::take(&mut self.narrow_index);
@@ -1400,7 +1400,13 @@ impl Space {
             }
         }
         for (k, &slot) in self.sim.iter().enumerate() {
-            let pre = &narrow[k];
+            let tested;
+            let pre = if fused {
+                tested = NarrowView { slots: &self.slots, contacts: &self.contacts, static_tree: &self.static_tree, dynamic_tree: &self.dynamic_tree, base, max_margin, dt }.pair(slot);
+                &tested
+            } else {
+                &narrow[k]
+            };
             let c = self.contacts[slot as usize].as_mut().expect("live contact");
             let (ka, kb) = c.key;
             let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
@@ -1822,14 +1828,14 @@ impl Space {
         let slots = std::mem::take(&mut self.active);
         let mut fast_total = 0;
         // This step's fast bodies, by key (they aren't targets).
-        let mut fast_keys: Vec<u64> = slots
-            .iter()
-            .filter_map(|&s| {
-                let b = self.slot(s);
-                let moving = b.is_dynamic() && !b.desc.sleeping && b.solver != NONE && b.desc.collider.as_ref().is_some_and(|c| !c.is_trigger);
-                (moving && b.inner_radius > 0.0 && (b.center - b.c0).length() > 0.5 * b.inner_radius).then_some(b.key)
-            })
-            .collect();
+        // Buffers kept between steps (no allocation once warm).
+        let (mut fast_keys, mut cands) = std::mem::take(&mut self.ccd_buffers);
+        fast_keys.clear();
+        fast_keys.extend(slots.iter().filter_map(|&s| {
+            let b = self.slot(s);
+            let moving = b.is_dynamic() && !b.desc.sleeping && b.solver != NONE && b.desc.collider.as_ref().is_some_and(|c| !c.is_trigger);
+            (moving && b.inner_radius > 0.0 && (b.center - b.c0).length() > 0.5 * b.inner_radius).then_some(b.key)
+        }));
         fast_keys.sort_unstable();
         for &s in &slots {
             let b = self.slot(s);
@@ -1860,7 +1866,7 @@ impl Space {
             let start = Pose::at(c0);
             let swept = Aabb::around(c0, Vec3::new(r, r, r)).swept(delta);
             let mut best: Option<(f32, u64, CastHit)> = None;
-            let mut cands: Vec<u32> = Vec::new();
+            cands.clear();
             self.static_tree.query(&swept, |o| {
                 cands.push(o);
                 true
@@ -1872,7 +1878,7 @@ impl Space {
                 }
                 true
             });
-            for (i, o) in cands.into_iter().enumerate() {
+            for (i, &o) in cands.iter().enumerate() {
                 let ob = self.slot(o);
                 let Some(oc) = &ob.desc.collider else {
                     continue;
@@ -1914,6 +1920,7 @@ impl Space {
         }
         self.report.fast_total = fast_total;
         self.active = slots;
+        self.ccd_buffers = (fast_keys, cands);
     }
 
     fn sleep(&mut self, dt: f32) {
