@@ -15,14 +15,26 @@
 //!
 //! It reads names, not types: `x.round()` is reported whatever `x` is (a module's own type with a
 //! `round` method too). A line ending in a comment containing `determinism: allowed` (say why
-//! after it) is not reported, nor is the line after a comment line that says so.
+//! after it) is not reported, nor is the line after a comment line (on its own) that says so.
+//!
+//! Only the `.rs` files under `src/` are read: a module that pulls files from elsewhere with
+//! `#[path = "..."]` or `include!` has those unscanned (keep a module's code in its `src/`).
+//!
+//! **Bounded work** (it runs on every build): at most [`MAX_FILES`] files, [`MAX_DIRS`] folders,
+//! [`MAX_FILE_BYTES`] per file and [`MAX_TOTAL_BYTES`] in all (files past the limits are skipped and
+//! counted in a note), and hits past [`MAX_HITS`] are only counted. Tokenizing is linear in the
+//! source: measured 2026-10-22, 40-70 ms per MB in the engine's dev build, so the 4 MiB cap bounds a
+//! scan to about a quarter of a second.
 
 use crate::diag::Diagnostic;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Files scanned at most, and bytes per file.
+/// Files scanned at most, folders walked, bytes per file and bytes in all.
 pub const MAX_FILES: usize = 512;
+pub const MAX_DIRS: usize = 256;
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
+pub const MAX_TOTAL_BYTES: u64 = 4 << 20;
 /// Hits reported at most (the rest are counted in the last one's message).
 pub const MAX_HITS: usize = 64;
 /// The comment that marks a deliberate use.
@@ -66,10 +78,10 @@ struct Token {
 
 /// Splits Rust source into identifiers, punctuation and literals, skipping comments. Lines
 /// marked with [`ALLOW_MARK`] are returned too.
-fn tokenize(src: &str) -> (Vec<Token>, Vec<u32>) {
+fn tokenize(src: &str) -> (Vec<Token>, BTreeSet<u32>) {
     let chars: Vec<char> = src.chars().collect();
-    let mut out = Vec::new();
-    let mut allowed = Vec::new();
+    let mut out: Vec<Token> = Vec::new();
+    let mut allowed = BTreeSet::new();
     let (mut i, mut line, mut col) = (0usize, 1u32, 1u32);
     // Advances over `n` characters, keeping line and column.
     let step = |i: &mut usize, line: &mut u32, col: &mut u32, n: usize| {
@@ -99,9 +111,12 @@ fn tokenize(src: &str) -> (Vec<Token>, Vec<u32>) {
             }
             let text: String = chars[start..i].iter().collect();
             if text.contains(ALLOW_MARK) {
-                // The comment's own line, and the next (a comment line above the code).
-                allowed.push(l0);
-                allowed.push(l0 + 1);
+                // The comment's own line; and the next when the comment stands on its own line
+                // (a comment above the code), not when it trails code.
+                allowed.insert(l0);
+                if !out.last().is_some_and(|t| t.line == l0) {
+                    allowed.insert(l0 + 1);
+                }
             }
         } else if at(i, "/*") {
             let mut depth = 0;
@@ -219,6 +234,49 @@ fn raw_string_len(chars: &[char], i: usize) -> Option<usize> {
 
 /// The determinism hits in one source file (see the module docs).
 pub fn scan_source(src: &str) -> Vec<Hit> {
+    scan_limited(src, usize::MAX).0
+}
+
+/// What a hit says, and what to do instead.
+fn describe(rule: &str, name: &str) -> (String, String) {
+    let (message, help): (String, &str) = match (rule, name) {
+        ("hash_map", "RandomState") => ("`RandomState` is seeded per process".into(), "use a fixed hasher"),
+        ("hash_map", _) => (
+            format!("`{name}` iterates in a random order that changes every run"),
+            "use BTreeMap / BTreeSet, or a Vec indexed by id (or a HashMap with a fixed hasher that you never iterate)",
+        ),
+        ("wall_clock", _) => (
+            format!("`{name}::now()` reads the wall clock"),
+            "use the tick (Cx::tick) and Cx::dt: the tick number is the only clock the simulation sees",
+        ),
+        ("thread", _) => (
+            "a thread in a module: its timing differs every run, and it may outlive an unload".into(),
+            "do the work in tick(); the engine calls modules on one thread in a fixed order",
+        ),
+        ("static_state", _) => (
+            format!("`{name}` keeps state outside the engine (lost on reload, dangling after an unload)"),
+            "keep state in the world, Cx::set_state or an RNG stream: the engine owns all state",
+        ),
+        (_, "floor" | "ceil" | "round" | "round_ties_even" | "trunc" | "fract") => {
+            return (
+                format!("`{name}` on a float goes through the platform's maths library on some targets (mingw's round is wrong)"),
+                format!("use dmath::{name}(x) (specula_sdk::dmath); the _f64 versions for f64"),
+            )
+        }
+        (_, "mul_add") => ("`mul_add` is fused on some targets and a library call on others".into(), "write a * b + c"),
+        (_, "powi") => ("`powi` is folded differently by LLVM on different targets".into(), "multiply, or use dmath::pow"),
+        _ => {
+            return (
+                format!("`{name}` calls the platform's maths library: different bits on msvc, gnu and other OSes"),
+                format!("use specula_sdk::dmath (dmath::{} for f32, the _f64 versions for f64)", if name == "powf" { "pow" } else { name }),
+            )
+        }
+    };
+    (message, help.to_owned())
+}
+
+/// The first `room` hits in a source file, and how many more there were (counted, not built).
+pub fn scan_limited(src: &str, room: usize) -> (Vec<Hit>, usize) {
     let (toks, allowed) = tokenize(src);
     let ident = |k: usize| match toks.get(k).map(|t| &t.tok) {
         Some(Tok::Ident(s)) => Some(s.as_str()),
@@ -227,46 +285,16 @@ pub fn scan_source(src: &str) -> Vec<Hit> {
     let punct = |k: usize, c: char| toks.get(k).is_some_and(|t| t.tok == Tok::Punct(c));
     // `::` between tokens k and k+1.
     let path_sep = |k: usize| punct(k, ':') && punct(k + 1, ':');
-    let mut hits = Vec::new();
+    let (mut hits, mut more) = (Vec::new(), 0usize);
     for (k, t) in toks.iter().enumerate() {
         let Tok::Ident(name) = &t.tok else { continue };
-        let mut hit = |rule: &'static str, message: String, help: &str, len: u32| {
-            if !allowed.contains(&t.line) {
-                hits.push(Hit { line: t.line, column: t.col, end_column: t.col + len, rule, message, help: help.to_owned() });
-            }
-        };
-        match name.as_str() {
-            "HashMap" | "HashSet" => hit(
-                "hash_map",
-                format!("`{name}` iterates in a random order that changes every run"),
-                "use BTreeMap / BTreeSet, or a Vec indexed by id (or a HashMap with a fixed hasher that you never iterate)",
-                t.len,
-            ),
-            "RandomState" => hit("hash_map", "`RandomState` is seeded per process".into(), "use a fixed hasher", t.len),
-            "Instant" | "SystemTime" if path_sep(k + 1) && ident(k + 3) == Some("now") => hit(
-                "wall_clock",
-                format!("`{name}::now()` reads the wall clock"),
-                "use the tick (Cx::tick) and Cx::dt: the tick number is the only clock the simulation sees",
-                t.len + 5,
-            ),
-            "thread" if path_sep(k + 1) && matches!(ident(k + 3), Some("spawn") | Some("scope")) => hit(
-                "thread",
-                "a thread in a module: its timing differs every run, and it may outlive an unload".into(),
-                "do the work in tick(); the engine calls modules on one thread in a fixed order",
-                t.len + 7,
-            ),
-            "thread_local" if punct(k + 1, '!') => hit(
-                "static_state",
-                "`thread_local!` keeps state outside the engine (lost on reload, dangling after an unload)".into(),
-                "keep state in the world, Cx::set_state or an RNG stream: the engine owns all state",
-                t.len + 1,
-            ),
-            "static" if ident(k + 1) == Some("mut") => hit(
-                "static_state",
-                "`static mut` keeps state outside the engine (lost on reload, dangling after an unload)".into(),
-                "keep state in the world, Cx::set_state or an RNG stream: the engine owns all state",
-                t.len + 4,
-            ),
+        // (rule, the name the message is about, highlighted length)
+        let found: Option<(&'static str, &str, u32)> = match name.as_str() {
+            "HashMap" | "HashSet" | "RandomState" => Some(("hash_map", name, t.len)),
+            "Instant" | "SystemTime" if path_sep(k + 1) && ident(k + 3) == Some("now") => Some(("wall_clock", name, t.len + 5)),
+            "thread" if path_sep(k + 1) && matches!(ident(k + 3), Some("spawn") | Some("scope")) => Some(("thread", name, t.len + 7)),
+            "thread_local" if punct(k + 1, '!') => Some(("static_state", "thread_local!", t.len + 1)),
+            "static" if ident(k + 1) == Some("mut") => Some(("static_state", "static mut", t.len + 4)),
             m if PLATFORM_MATH.contains(&m) && punct(k + 1, '(') => {
                 // `x.sin(` (a method call) or `f32::sin(` (a path call).
                 let method = k > 0 && punct(k - 1, '.');
@@ -274,33 +302,35 @@ pub fn scan_source(src: &str) -> Vec<Hit> {
                 let dmath = k >= 3 && path_sep(k - 2) && ident(k - 3) == Some("dmath");
                 // `log` is also a logger's method (`cx.log(..)`): only `f32::log(..)` counts.
                 let method = method && m != "log";
-                if (method || float_path) && !dmath {
-                    let (msg, help) = match m {
-                        "floor" | "ceil" | "round" | "round_ties_even" | "trunc" | "fract" => (
-                            format!("`{m}` on a float goes through the platform's maths library on some targets (mingw's round is wrong)"),
-                            format!("use dmath::{m}(x) (specula_sdk::dmath); the _f64 versions for f64"),
-                        ),
-                        "mul_add" => ("`mul_add` is fused on some targets and a library call on others".into(), "write a * b + c".into()),
-                        "powi" => ("`powi` is folded differently by LLVM on different targets".into(), "multiply, or use dmath::pow".into()),
-                        _ => (
-                            format!("`{m}` calls the platform's maths library: different bits on msvc, gnu and other OSes"),
-                            format!("use specula_sdk::dmath (dmath::{} for f32, the _f64 versions for f64)", if m == "powf" { "pow" } else { m }),
-                        ),
-                    };
-                    hit("platform_math", msg, &help, t.len);
-                }
+                ((method || float_path) && !dmath).then_some(("platform_math", m, t.len))
             }
-            _ => {}
+            _ => None,
+        };
+        let Some((rule, about, len)) = found else { continue };
+        if allowed.contains(&t.line) {
+            continue;
         }
+        if hits.len() >= room {
+            more += 1;
+            continue;
+        }
+        let (message, help) = describe(rule, about);
+        hits.push(Hit { line: t.line, column: t.col, end_column: t.col + len, rule, message, help });
     }
-    hits
+    (hits, more)
 }
 
-/// The `.rs` files under `dir/src`, sorted (at most [`MAX_FILES`]).
+/// The `.rs` files under `dir/src`, sorted (at most [`MAX_FILES`], walking at most [`MAX_DIRS`]
+/// folders).
 fn sources(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.join("src")];
+    let mut walked = 0;
     while let Some(d) = stack.pop() {
+        walked += 1;
+        if walked > MAX_DIRS {
+            break;
+        }
         let Ok(entries) = std::fs::read_dir(&d) else { continue };
         let mut entries: Vec<_> = entries.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
@@ -322,17 +352,18 @@ fn sources(dir: &Path) -> Vec<PathBuf> {
 /// Scans a module crate's sources and returns the hits as build diagnostics (warnings).
 pub fn scan_dir(dir: &Path) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let mut more = 0usize;
+    let (mut more, mut skipped, mut total) = (0usize, 0usize, 0u64);
     for file in sources(dir) {
-        if std::fs::metadata(&file).map_or(true, |m| m.len() > MAX_FILE_BYTES) {
+        let len = std::fs::metadata(&file).map_or(u64::MAX, |m| m.len());
+        if len > MAX_FILE_BYTES || total + len > MAX_TOTAL_BYTES {
+            skipped += 1;
             continue;
         }
+        total += len;
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        for h in scan_source(&text) {
-            if out.len() == MAX_HITS {
-                more += 1;
-                continue;
-            }
+        let (hits, extra) = scan_limited(&text, MAX_HITS - out.len());
+        more += extra;
+        for h in hits {
             out.push(Diagnostic {
                 level: "warning".into(),
                 code: Some(format!("determinism::{}", h.rule)),
@@ -357,6 +388,28 @@ pub fn scan_dir(dir: &Path) -> Vec<Diagnostic> {
         if let Some(last) = out.last_mut() {
             last.notes.push(format!("note: {more} more determinism warning(s) not listed"));
         }
+    }
+    if skipped > 0 {
+        // Said once, so an agent knows the scan wasn't complete.
+        out.push(Diagnostic {
+            level: "warning".into(),
+            code: Some("determinism::not_scanned".into()),
+            message: format!(
+                "{skipped} source file(s) were not checked for determinism: over {} KiB each or {} MiB in all",
+                MAX_FILE_BYTES >> 10,
+                MAX_TOTAL_BYTES >> 20
+            ),
+            file: None,
+            line: 0,
+            column: 0,
+            end_line: 0,
+            end_column: 0,
+            label: None,
+            notes: Vec::new(),
+            fixes: Vec::new(),
+            rendered: None,
+            package: None,
+        });
     }
     out
 }
@@ -412,12 +465,36 @@ fn g<'a>(s: &'a str, x: f32) -> f32 {
 fn h(x: f32) -> f32 {
     x.sin() // determinism: allowed: display only
 }
+fn h2(x: f32) -> f32 {
+    let y = x; // determinism: allowed: trailing, so only this line
+    y.cos()
+}
 fn k(x: f32) -> f32 {
     // determinism: allowed: a cosmetic wobble
     x.cos()
 }
 "##;
-        assert_eq!(rules(src), vec![]);
+        // Only the line after a trailing mark is reported (review: a trailing mark silenced it).
+        assert_eq!(rules(src), vec![("platform_math", 16, 7)]);
+    }
+
+    /// Review: 1 MB of mark lines and hits took 0.41 s (a linear allowed-line lookup, every hit
+    /// built before the cut). Marks are a set now and hits past the room are only counted.
+    #[test]
+    fn big_sources_are_cheap_and_hits_past_the_room_are_counted() {
+        let mut s = String::new();
+        while s.len() < 480_000 {
+            s.push_str("//determinism: allowed\n");
+        }
+        let marked = s.lines().count();
+        while s.len() < 1_000_000 {
+            s.push_str("HashMap\n");
+        }
+        let (hits, more) = scan_limited(&s, 64);
+        assert_eq!(hits.len(), 64);
+        // The first HashMap line follows a standalone mark line, so it is allowed.
+        assert_eq!(hits.len() + more, s.lines().count() - marked - 1);
+        assert_eq!(hits[0].line as usize, marked + 2);
     }
 
     #[test]
