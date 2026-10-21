@@ -11,7 +11,7 @@
 //! | Target | Register | Control bits checked | Default |
 //! |---|---|---|---|
 //! | x86-64 (and x86 with SSE) | MXCSR | rounding (bits 13-14), FTZ (15), DAZ (6), exception masks (7-12) | `0x1f80` |
-//! | AArch64 | FPCR | RMode (22-23), FZ (24), DN (25), AHP (26), FZ16 (19), trap enables (8-12, 15) | `0` |
+//! | AArch64 | FPCR | RMode (22-23), FZ (24), DN (25), AHP (26), FZ16 (19), trap enables (8-12, 15), and FEAT_AFP's FIZ (0), AH (1), NEP (2) | `0` |
 //! | anything else | none | nothing: [`SUPPORTED`] is `false` and every check reports nothing | |
 //!
 //! Status flags (MXCSR bits 0-5: an inexact result happened, and so on) are sticky records,
@@ -117,7 +117,7 @@ impl Drift {
         imp::flush_to_zero(self.found)
     }
 
-    /// Subnormal inputs were read as zero (x86 DAZ; ARM has no separate bit).
+    /// Subnormal inputs were read as zero (x86 DAZ; ARM FEAT_AFP FIZ).
     pub fn denormals_are_zero(&self) -> bool {
         imp::denormals_are_zero(self.found)
     }
@@ -218,8 +218,10 @@ mod imp {
 
     pub const SUPPORTED: bool = true;
     pub const REGISTER: &str = "fpcr";
-    /// Trap enables (8-12, 15), FZ16 (19), RMode (22-23), FZ (24), DN (25), AHP (26).
-    pub const CONTROL_MASK: u64 = 0x07c8_9f00;
+    /// FEAT_AFP's FIZ (0, flush inputs to zero), AH (1, alternate handling) and NEP (2, scalar
+    /// results keep the upper vector lanes), trap enables (8-12, 15), FZ16 (19), RMode (22-23),
+    /// FZ (24), DN (25), AHP (26). (The AFP bits read as zero on cores without FEAT_AFP.)
+    pub const CONTROL_MASK: u64 = 0x07c8_9f07;
     pub const EXPECTED: u64 = 0;
     pub const RC_SHIFT: u32 = 22;
     pub const RC_MASK: u64 = 0b11 << RC_SHIFT;
@@ -246,8 +248,9 @@ mod imp {
         bits & (1 << 24) != 0
     }
 
-    pub fn denormals_are_zero(_bits: u64) -> bool {
-        false
+    /// FEAT_AFP's FIZ: subnormal inputs read as zero (like x86 DAZ).
+    pub fn denormals_are_zero(bits: u64) -> bool {
+        bits & 1 != 0
     }
 
     pub fn exceptions_unmasked(bits: u64) -> bool {
