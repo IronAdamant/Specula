@@ -380,8 +380,13 @@ def run_streaming(a, out, ops, report, check):
         fly_off = mcp.json("stream_fly", path=path, speed_mps=a.speed)
         report["flight_streaming_off"] = {k: v for k, v in fly_off.items() if k != "streaming_now"}
         print(f"flight, streaming off: {json.dumps(report['flight_streaming_off'])}")
-        p_on, p_off = fly["frame_ms"]["p99"], fly_off["frame_ms"]["p99"]
-        check(p_on <= max(budget * 1.5, p_off * 1.1 + 2.0), f"flight frame p99 with streaming {p_on} ms <= 1.5 x the {budget} ms budget, or no worse than without it ({p_off} ms)")
+        p_on = (fly.get("frame_ms") or {}).get("p99")
+        p_off = (fly_off.get("frame_ms") or {}).get("p99")
+        if p_on is None or p_off is None:
+            # A flight with no frames (the window starved: another session's load, a stalled driver).
+            check(False, f"both flights recorded frames (with streaming {fly.get('frames')}, without {fly_off.get('frames')})")
+        else:
+            check(p_on <= max(budget * 1.5, p_off * 1.1 + 2.0), f"flight frame p99 with streaming {p_on} ms <= 1.5 x the {budget} ms budget, or no worse than without it ({p_off} ms)")
         mcp.call("stream_settings", enabled=True)
         zones = mcp.json("perf_zones", min_ms=0.001, limit=40)
         report["zones_after"] = [z for z in zones.get("zones", []) if "stream" in z.get("path", "")]
