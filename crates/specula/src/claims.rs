@@ -669,6 +669,45 @@ pub fn joint_bodies(change: &Change) -> Vec<u64> {
     ids
 }
 
+/// The bodies a change moves through joints, as [`body_change`]s to check against claims (the
+/// joint rules: a joint moves the bodies it links, so whoever makes, changes or removes one
+/// needs the right to change them):
+/// - joint data itself ([`joint_bodies`]: both sides, as it was and as it is);
+/// - removing or restoring an entity that a joint links, or changing what kind of body it is or
+///   its scale (the joint's frames follow it): the joint's other bodies, which it lets go of or
+///   pulls (`world` is searched for joints naming it).
+///
+/// Moving a body you may change is not one: what is jointed to it follows, as things it pushes
+/// through contacts do (see PHYSICS.md, "Joints and claims").
+pub fn joint_rule_changes(world: &World, change: &Change) -> Vec<Change> {
+    let mut ids = joint_bodies(change);
+    let structural = |b: &crate::world::Entity, a: &crate::world::Entity| {
+        b.body.is_some() != a.body.is_some() || b.body.map(|x| x.kind) != a.body.map(|x| x.kind) || b.scale != a.scale || b.parent != a.parent
+    };
+    let linked = match change {
+        Change::Delete { before, .. } => Some(before.as_ref()),
+        Change::Spawn { after, .. } => Some(after.as_ref()),
+        Change::Set { before: Some(b), after, .. } if structural(b, after) => Some(after.as_ref()),
+        _ => None,
+    };
+    // Only bodies can be joint bodies (a joint on anything else waits for one).
+    let was_body = match change {
+        Change::Set { before: Some(b), .. } => b.body.is_some(),
+        _ => false,
+    };
+    if let Some(x) = linked.filter(|x| x.body.is_some() || was_body) {
+        for j in world.entities().filter(|j| j.id != x.id && crate::physics::joints::is_joint(j)) {
+            let Some(s) = j.props.get(crate::physics::joints::PROP).and_then(|p| crate::physics::joints::JointSpec::from_json(p).ok()) else { continue };
+            if s.a == Some(x.id) || s.b == Some(x.id) {
+                ids.extend(s.a.into_iter().chain(s.b).filter(|i| *i != x.id));
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter().filter_map(|id| body_change(world, id)).collect()
+}
+
 /// What a write that moves body `id` must be allowed to do, as a change to check against
 /// claims: the entity "changed" in place, so path claims and region claims (at its position)
 /// both apply. `None` when it doesn't exist.

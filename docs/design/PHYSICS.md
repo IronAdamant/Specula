@@ -326,7 +326,22 @@ it links, so it needs the right to change both (and, when changed, the ones it l
 body so path and region claims both apply. **Joint data is reserved for it**: `props.joint` written by world tools
 (spawn, set, batch) is refused (`reserved`), and a world tool may delete a joint only with the right to both its
 bodies (review of the lane, finding 1: a joint spawned with `world_spawn` used to pull another agent's claimed box
-5 m). `physics_joints` lists joints with their state (paged by key, ragdoll joints too; naming an entity lists its
+5 m).
+
+**Joints and claims, every write path** (review round 3): the same rule, `claims::joint_rule_changes`, applies to
+world tools (spawn, set, delete, batch: `Swarm::commit_with`), `world_undo` (`Swarm::undo`), and modules, hosted games
+and live Lex runs (`Swarm::check_game_changes`; a live run's own spawns go through `commit_lex_live`, which is
+`commit_with`). A change needs the right to change every body it moves through a joint: joint data itself (both sides,
+before and after), and removing or restoring a body a joint links, or changing its kind of body, scale or parent (the
+joint's other bodies are let go of or pulled; a module's joint onto another agent's claimed box, deleting your own hook
+to drop it, or undoing that delete to yank it back are all `claimed`). Playtests make their calls through the same
+paths, as the agent that started them. `save_read` and `world_load` replace the whole world and are refused while
+other agents hold claims. **Moving a body you may change is allowed**, even when a
+joint drags a claimed body after it: that is the same as pushing it through contacts, which claims never stopped
+(claims are about writes, not physics). The claim's holder sees who did it: `physics_explain` on the dragged body
+lists its joints, each with `made_by`, and the journal names who moved the other body.
+
+`physics_joints` lists joints with their state (paged by key, ragdoll joints too; naming an entity lists its
 ragdoll's); `physics_check` takes `joint_error` and
 `joint_limits`; `physics_explain` lists an entity's joints; the `joints` sight overlay draws anchors, axes and hinge
 limit arcs, coloured by how each holds, with a drawn legend. A joint that doesn't hold yet keeps its bodies awake

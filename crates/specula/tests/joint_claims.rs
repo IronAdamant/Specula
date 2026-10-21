@@ -153,3 +153,93 @@ fn undo_cant_tie_a_joint_onto_claimed_bodies() {
     assert!(r.is_ok(), "{:?}", r.err());
     assert!(w.entities().any(|e| e.props.get("joint").is_some()));
 }
+
+/// Mallory's kinematic hook in her own group, roped (a distance joint) to alice's box before
+/// alice claimed it: returns (swarm, world, hook, box, the hook's group).
+fn roped() -> (Swarm, World, u64, u64, u64) {
+    use specula::world::{Body, BodyKind};
+    let (s1, s2) = (session("aaaaaa11"), session("bbbbbb22"));
+    let live = vec![s1.clone(), s2.clone()];
+    let mut sw = Swarm::default();
+    sw.hello(&s1, "alice".into(), "builder".into(), None, &live).unwrap();
+    sw.hello(&s2, "mallory".into(), "builder".into(), None, &live).unwrap();
+    let mut w = World::default();
+    w.set_recording(Recording::Full);
+    let mut abox = cube("abox", Vec3::new(0.0, 6.0, 0.0));
+    abox.body = Some(Body::new(BodyKind::Dynamic, 5.0));
+    let abox = spawn(&mut sw, &mut w, ALICE, abox).unwrap();
+    let mut mg = SpawnSpec::new(Shape::Group);
+    mg.name = Some("mg".into());
+    mg.position = Vec3::new(20.0, 0.0, 20.0);
+    let mg = spawn(&mut sw, &mut w, MALLORY, mg).unwrap();
+    let mut hook = cube("hook", Vec3::new(0.0, 6.5, -20.0));
+    hook.parent = Some(EntityKey::Id(mg));
+    hook.body = Some(Body::new(BodyKind::Kinematic, 1.0));
+    let hook = spawn(&mut sw, &mut w, MALLORY, hook).unwrap();
+    let mut j = SpawnSpec::new(Shape::Group);
+    j.name = Some("rope".into());
+    j.parent = Some(EntityKey::Id(mg));
+    j.props = Json::parse(&format!(r#"{{"joint": {{"kind": "distance", "a": {hook}, "b": {abox}, "length": [0, 0.6]}}}}"#)).unwrap();
+    let by = "mallory".to_string();
+    sw.commit_joint(&mut w, 0, MALLORY, Kind::Spawn, |w| w.spawn(j, &by).map(|e| e.id)).unwrap();
+    (sw, w, hook, abox, mg)
+}
+
+fn claim_abox(sw: &mut Swarm, w: &World) {
+    sw.take_claim(w, &session("aaaaaa11"), ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+}
+
+/// Review round 3, finding 4 (probe revive.py): deleting a body a joint links lets go of the
+/// joint's other bodies, and restoring it pulls them again: both need the right to change them.
+#[test]
+fn deleting_or_restoring_a_jointed_body_needs_the_other_bodies() {
+    use specula::journal::UndoRequest;
+    // Deleting her hook (or the group holding it) while alice holds the box: refused.
+    let (mut sw, mut w, hook, _, mg) = roped();
+    claim_abox(&mut sw, &w);
+    let del = |sw: &mut Swarm, w: &mut World, id: u64| sw.commit(w, 0, MALLORY, Kind::Delete, |w| w.delete(&EntityKey::Id(id), None).map(|_| ())).map(|r| r.1).map_err(|e| e.code);
+    assert_eq!(del(&mut sw, &mut w, hook), Err("claimed"));
+    assert_eq!(del(&mut sw, &mut w, mg), Err("claimed"), "nor through its group");
+    assert!(w.get(hook).is_some());
+    // Deleted before alice's claim, then restored by an undo after it: refused too.
+    let (mut sw, mut w, hook, _, _) = roped();
+    let removed = del(&mut sw, &mut w, hook).unwrap().expect("journaled");
+    claim_abox(&mut sw, &w);
+    let r = sw.undo(&mut w, 0, MALLORY, &UndoRequest { ids: Some(vec![removed]), count: 1, force: false });
+    assert_eq!(r.err().map(|e| e.code), Some("claimed"));
+    assert!(w.get(hook).is_none(), "the hook stayed deleted");
+    // Without a claim on the box both go through.
+    let (mut sw, mut w, hook, _, _) = roped();
+    let removed = del(&mut sw, &mut w, hook).unwrap().unwrap();
+    assert!(sw.undo(&mut w, 0, MALLORY, &UndoRequest { ids: Some(vec![removed]), count: 1, force: false }).is_ok());
+    assert!(w.get(hook).is_some());
+}
+
+/// Review round 3, finding 3 (probe modjoint.py): a module or game writes through
+/// check_game_changes, which now applies the joint rules: a joint spawned onto alice's claimed
+/// box is refused, and the world rolled back.
+#[test]
+fn modules_and_games_follow_the_joint_rules() {
+    let (mut sw, mut w, _, abox, _) = roped();
+    claim_abox(&mut sw, &w);
+    let r = sw.game_tool(&mut w, 1, "nexus", MALLORY, |w| {
+        let mut j = SpawnSpec::new(Shape::Group);
+        j.name = Some("haul".into());
+        j.position = Vec3::new(30.0, 0.0, 30.0);
+        j.props = joint_props(abox);
+        w.spawn(j, "nexus").map(|e| e.id)
+    });
+    assert_eq!(r.err().map(|e| e.code), Some("claimed"));
+    assert!(w.find_path("/haul").is_err(), "rolled back");
+    // On bodies nobody claimed, a module may make joints.
+    let mut free = cube("free", Vec3::new(40.0, 1.0, 40.0));
+    free.body = Some(specula::world::Body::new(specula::world::BodyKind::Dynamic, 1.0));
+    let free = spawn(&mut sw, &mut w, MALLORY, free).unwrap();
+    let ok = sw.game_tool(&mut w, 2, "nexus", MALLORY, |w| {
+        let mut j = SpawnSpec::new(Shape::Group);
+        j.name = Some("haul2".into());
+        j.props = joint_props(free);
+        w.spawn(j, "nexus").map(|e| e.id)
+    });
+    assert!(ok.is_ok(), "{:?}", ok.err());
+}

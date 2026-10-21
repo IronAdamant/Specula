@@ -490,6 +490,11 @@ impl crate::Engine {
         let deg = |r: f32| round(r.to_degrees());
         let angular = matches!(j.desc.kind, JointKind::Hinge | JointKind::Ball);
         let mut out = if key >= SYNTHETIC { self.physics.key_json(world, key) } else { entity_json(world, key) };
+        // Who made or last changed it: a body jointed to one someone else moves follows it (as a
+        // pushed one does), and this is how a claim's holder sees who did.
+        if let Some(e) = world.get(key).filter(|_| key < SYNTHETIC) {
+            out.set("made_by", Json::from(&*e.modified_by));
+        }
         out.set("kind", Json::from(j.desc.kind.name()));
         out.set("a", side(j.desc.a));
         out.set("b", side(j.desc.b));

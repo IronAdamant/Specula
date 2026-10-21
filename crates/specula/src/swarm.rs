@@ -397,22 +397,20 @@ impl Swarm {
                 }
             }
             if owns != Owns::Joint {
-                for c in changes.iter().filter(|c| crate::claims::touches_joint_data(c)) {
-                    let Change::Delete { before, .. } = c else {
-                        return Err(WorldError::new(
-                            "reserved",
-                            format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
-                        )
-                        .with("path", c.path().to_owned())
-                        .with("field", "props.joint"));
-                    };
-                    // Removing a joint lets its bodies go: allowed with the right to change both.
-                    let spec = before.props.get(crate::physics::joints::PROP).and_then(|j| crate::physics::joints::JointSpec::from_json(j).ok());
-                    for id in spec.iter().flat_map(|s| s.a.into_iter().chain(s.b)) {
-                        if let Some(change) = crate::claims::body_change(wd, id) {
-                            claims.check(wd, std::slice::from_ref(&change), w, now).map_err(|e| e.with("note", "removing a joint lets go of the bodies it links, so it needs the right to change them"))?;
-                        }
-                    }
+                if let Some(c) = changes.iter().find(|c| crate::claims::touches_joint_data(c) && !matches!(c, Change::Delete { .. })) {
+                    return Err(WorldError::new(
+                        "reserved",
+                        format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
+                    )
+                    .with("path", c.path().to_owned())
+                    .with("field", "props.joint"));
+                }
+            }
+            // Removing a joint, or a body a joint links, lets go of the joint's other bodies:
+            // allowed with the right to change them (physics_joint checks its own writes).
+            if owns != Owns::Joint && claims.could_block(w, now) {
+                for c in changes {
+                    check_joint_rules(claims, wd, c, w, now)?;
                 }
             }
             // Likewise /nav and navmesh settings: only the nav tools write them.
@@ -441,7 +439,8 @@ impl Swarm {
         result
     }
 
-    /// Undoes `w`'s entries, checked against claims like any write.
+    /// Undoes `w`'s entries, checked against claims like any write (and the joint rules: undoing
+    /// a joint's removal ties its bodies again, restoring a jointed body pulls the others).
     pub fn undo(&mut self, world: &mut World, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
@@ -449,12 +448,7 @@ impl Swarm {
         // as physics_joint does: it needs the right to change them, before and after.
         let mut check = |world: &World, change: &Change| {
             claims.check(world, std::slice::from_ref(change), w, now)?;
-            for id in crate::claims::joint_bodies(change) {
-                if let Some(body) = crate::claims::body_change(world, id) {
-                    claims.check(world, std::slice::from_ref(&body), w, now).map_err(|e| e.with("note", "undoing a joint change moves the bodies it links, so it needs the right to change them"))?;
-                }
-            }
-            Ok(())
+            check_joint_rules(claims, world, change, w, now)
         };
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = self.journal.undo(world, tick, w, req, check);
@@ -492,7 +486,12 @@ impl Swarm {
     pub fn check_game_changes(&mut self, world: &mut World, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+        // Joint rules too: a module or game that makes a joint, or removes a body one links, moves
+        // the joint's bodies (it needs the right to change them, as physics_joint does).
+        let mut check = |world: &World, change: &Change| {
+            claims.check(world, std::slice::from_ref(change), w, now)?;
+            check_joint_rules(claims, world, change, w, now)
+        };
         let checked = if claims.could_block(w, now) { world.recheck_steps(mark, &mut check) } else { Ok(()) };
         if let Err(e) = checked {
             self.journal.note_next_id(world.next_id());
@@ -616,6 +615,17 @@ impl Swarm {
             ("leases", Json::from(self.leases.len())),
         ])
     }
+}
+
+/// The joint rules for one change ([`crate::claims::joint_rule_changes`]): every body it moves
+/// through a joint must be one `w` may change.
+fn check_joint_rules(claims: &Claims, world: &World, change: &Change, w: Writer, now: Instant) -> Result<(), WorldError> {
+    for body in crate::claims::joint_rule_changes(world, change) {
+        claims.check(world, std::slice::from_ref(&body), w, now).map_err(|e| {
+            e.with("note", "this change ties, lets go of or pulls bodies linked by a joint (props.joint), so it needs the right to change them").with("joint_change", change.path().to_owned())
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
