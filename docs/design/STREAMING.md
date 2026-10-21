@@ -144,7 +144,10 @@ within a frame or two and sharpens, and nothing waits.
 Uploaded builds and proxies count against `memory_mb` (`GpuModel::bytes`, proxy bytes). Before an upload that would go
 over, what **no source wants** is evicted, least recently wanted first (builds and proxies by the same clock), then
 soft stand-ins and wanted proxies the window isn't drawing, farthest first, for anything nearer (a hard-wanted item may
-evict any of those), through `retire_*`: never a wait. A textured glTF build's pixels left the CPU at upload, so when an evicted one is wanted again
+evict any of those), through `retire_*`: never a wait. The eviction queue (two heaps, no full sort) is scanned a slice
+a frame after each pass while the budget is full; the previous queue serves meanwhile, each entry checked again against
+the latest wanted set (nothing wanted hard, or soft and no farther, is taken). The queue used to be rebuilt in the frame
+after each pass: 0.6 ms on average, up to 2-3.5 ms on a busy iGPU. A textured glTF build's pixels left the CPU at upload, so when an evicted one is wanted again
 the library imports it again (its entities show as building meanwhile). If the wanted set alone exceeds the budget, the
 lower-priority remainder stays out and is reported (`stream_memory_over_budget`); once nothing more can be evicted in a
 frame the rest are skipped at once, and captures don't wait for them. Nothing is evicted eagerly: a small world never
