@@ -217,18 +217,55 @@ fn deleting_or_restoring_a_jointed_body_needs_the_other_bodies() {
 
 /// Review round 3, probe drag.py, decided: moving your own hook is allowed even though the rope
 /// drags alice's claimed box after it, as pushing it through contacts is (claims are about
-/// writes; PHYSICS.md "Joints and claims"). Changing what the hook is (its kind of body or
-/// scale), or where it hangs in the tree, is a joint change and needs the box.
+/// writes; PHYSICS.md "Joints and claims"). So are rescaling or reparenting it or an ancestor
+/// (round 4, probe ancestor.py: those are moves too, and the rule is the same at every level).
+/// Changing what the hook is (giving it another kind of body, or none) is a joint change and
+/// needs the box.
 #[test]
 fn moving_a_jointed_body_is_allowed_changing_what_it_is_is_not() {
     use specula::world::{Body, BodyKind};
-    let (mut sw, mut w, hook, _, _) = roped();
+    let (mut sw, mut w, hook, _, mg) = roped();
     claim_abox(&mut sw, &w);
-    let set = |sw: &mut Swarm, w: &mut World, u: UpdateSpec| sw.commit(w, 0, MALLORY, Kind::Set, |w| w.update(&EntityKey::Id(hook), u, "mallory").map(|_| ())).map(|_| ()).map_err(|e| e.code);
-    assert_eq!(set(&mut sw, &mut w, UpdateSpec { position: Some(Vec3::new(0.0, 6.5, -61.0)), ..UpdateSpec::default() }), Ok(()), "a move");
-    assert_eq!(set(&mut sw, &mut w, UpdateSpec { scale: Some(Vec3::new(2.0, 2.0, 2.0)), ..UpdateSpec::default() }), Err("claimed"), "a rescale moves the joint's frame");
-    assert_eq!(set(&mut sw, &mut w, UpdateSpec { body: Some(Some(Body::new(BodyKind::Dynamic, 1.0))), ..UpdateSpec::default() }), Err("claimed"), "a new kind of body");
-    assert_eq!(set(&mut sw, &mut w, UpdateSpec { body: Some(None), ..UpdateSpec::default() }), Err("claimed"), "no body: the joint lets go");
+    let set = |sw: &mut Swarm, w: &mut World, id: u64, u: UpdateSpec| sw.commit(w, 0, MALLORY, Kind::Set, |w| w.update(&EntityKey::Id(id), u, "mallory").map(|_| ())).map(|_| ()).map_err(|e| e.code);
+    assert_eq!(set(&mut sw, &mut w, hook, UpdateSpec { position: Some(Vec3::new(0.0, 6.5, -61.0)), ..UpdateSpec::default() }), Ok(()), "a move");
+    assert_eq!(set(&mut sw, &mut w, hook, UpdateSpec { scale: Some(Vec3::new(2.0, 2.0, 2.0)), ..UpdateSpec::default() }), Ok(()), "a rescale");
+    assert_eq!(set(&mut sw, &mut w, mg, UpdateSpec { scale: Some(Vec3::new(3.0, 3.0, 3.0)), ..UpdateSpec::default() }), Ok(()), "an ancestor's rescale");
+    assert_eq!(set(&mut sw, &mut w, hook, UpdateSpec { body: Some(Some(Body::new(BodyKind::Dynamic, 1.0))), ..UpdateSpec::default() }), Err("claimed"), "a new kind of body");
+    assert_eq!(set(&mut sw, &mut w, hook, UpdateSpec { body: Some(None), ..UpdateSpec::default() }), Err("claimed"), "no body: the joint lets go");
+}
+
+/// Review round 4, finding 2 (probe jointcost.py), as a work count: the joint rules look only at
+/// the joints a change touches (the world keeps an index by body), never at every entity, so a
+/// 1,000-spawn batch under someone's claim looks at no joint at all, and deleting a jointed body
+/// at exactly its joints. They used to scan the world and parse every joint per change (1.5 s
+/// for the batch, a bystander blocked 2.2 s).
+#[test]
+fn the_joint_rules_do_work_by_the_joints_touched_not_the_world() {
+    use specula::claims::joint_rule_work;
+    use specula::world::{Body, BodyKind};
+    let (mut sw, mut w, hook, _, _) = roped();
+    for i in 0..2000 {
+        let mut c = cube(&format!("b{i}"), Vec3::new((i % 50) as f32 * 2.0, 1.0, 100.0 + (i / 50) as f32 * 2.0));
+        c.body = Some(Body::new(BodyKind::Dynamic, 1.0));
+        spawn(&mut sw, &mut w, MALLORY, c).unwrap();
+    }
+    claim_abox(&mut sw, &w);
+    assert_eq!(w.joints_on(hook).count(), 1);
+    let before = joint_rule_work();
+    let ops: Vec<Op> = (0..1000)
+        .map(|i| {
+            let mut c = cube(&format!("n{i}"), Vec3::new(i as f32, 1.0, 300.0));
+            c.body = Some(Body::new(BodyKind::Dynamic, 1.0));
+            Op::Spawn(c)
+        })
+        .collect();
+    let by = "mallory".to_string();
+    sw.commit(&mut w, 0, MALLORY, Kind::Batch, |w| w.apply_batch(ops, &by).map(|_| ()).map_err(|(_, e)| e)).unwrap();
+    assert_eq!(joint_rule_work() - before, 0, "no joint names a new body");
+    let before = joint_rule_work();
+    let r = sw.commit(&mut w, 0, MALLORY, Kind::Delete, |w| w.delete(&EntityKey::Id(hook), None).map(|_| ()));
+    assert_eq!(r.err().map(|e| e.code), Some("claimed"));
+    assert_eq!(joint_rule_work() - before, 1, "the hook's one joint");
 }
 
 /// Review round 3, finding 3 (probe modjoint.py): a module or game writes through

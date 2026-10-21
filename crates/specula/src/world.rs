@@ -2023,6 +2023,11 @@ pub struct World {
     /// Ids of the 2D entities (sprites, tilemaps, shapes), so the window's 2D pass doesn't visit
     /// every 3D entity. Kept by `link` and `unlink` (an entity's `two_d` comes with its shape).
     flat: BTreeSet<u64>,
+    /// Joint data by body: the persistent entities whose `props.joint` names each body as `a` or
+    /// `b` (the claims' joint rules ask it per change). Kept by `link`, `unlink` and `update`.
+    joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
+    /// Each joint entity's two sides as indexed in `joints_by_body`.
+    joint_sides: BTreeMap<u64, [Option<u64>; 2]>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
@@ -2994,9 +2999,10 @@ impl World {
         if let Some(t) = tags {
             e.tags = t;
         }
-        if let Some(p) = props {
+        let rejoint = props.map(|p| {
             e.props = p;
-        }
+            joint_sides_of(e)
+        });
         if let Some(c) = change.collider {
             e.collider = c;
         }
@@ -3029,6 +3035,10 @@ impl World {
         e.version += 1;
         e.hash.0.set(None);
         e.modified_by = by;
+        if let Some(sides) = rejoint {
+            self.index_joint(id, sides);
+        }
+        let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some((old_parent, old_name)) = old {
             let new_key = (e.parent.unwrap_or(ROOT), e.name.clone());
             self.names.remove(&(old_name.clone(), id));
@@ -3171,9 +3181,46 @@ impl World {
         }
     }
 
+    /// The joints (entity ids) whose `props.joint` names `body` as one of its sides.
+    pub fn joints_on(&self, body: u64) -> impl Iterator<Item = u64> + '_ {
+        self.joints_by_body.get(&body).into_iter().flatten().copied()
+    }
+
+    /// The bodies joint entity `joint` names (as indexed), if it is one.
+    pub fn joint_sides(&self, joint: u64) -> Option<[Option<u64>; 2]> {
+        self.joint_sides.get(&joint).copied()
+    }
+
+    /// Whether any persistent entity holds joint data.
+    pub fn has_joints(&self) -> bool {
+        !self.joint_sides.is_empty()
+    }
+
+    fn index_joint(&mut self, id: u64, sides: Option<[Option<u64>; 2]>) {
+        self.unindex_joint(id);
+        let Some(sides) = sides else { return };
+        for b in sides.into_iter().flatten() {
+            self.joints_by_body.entry(b).or_default().insert(id);
+        }
+        self.joint_sides.insert(id, sides);
+    }
+
+    fn unindex_joint(&mut self, id: u64) {
+        let Some(sides) = self.joint_sides.remove(&id) else { return };
+        for b in sides.into_iter().flatten() {
+            if let Some(set) = self.joints_by_body.get_mut(&b) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.joints_by_body.remove(&b);
+                }
+            }
+        }
+    }
+
     /// Indexes `e` (its id must not be in the world).
     fn link(&mut self, e: Entity) {
         self.layout_epoch += 1;
+        self.index_joint(e.id, joint_sides_of(&e));
         self.children.insert((e.parent.unwrap_or(ROOT), e.name.clone()), e.id);
         self.names.insert((e.name.clone(), e.id));
         if e.transient {
@@ -3196,6 +3243,7 @@ impl World {
     fn unlink(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_joint(id);
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;
@@ -3708,6 +3756,7 @@ impl World {
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_joint(id);
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;
@@ -3969,6 +4018,15 @@ pub fn canonical_props(props: Json) -> Result<Json, WorldError> {
             .with("field", "props"));
     }
     Ok(props)
+}
+
+/// The sides a persistent entity's `props.joint` names (ids; `null` or anything else is none),
+/// or `None` when it holds no joint data. Indexed as written, valid or not (a claim check
+/// errs on the side of the bodies named).
+fn joint_sides_of(e: &Entity) -> Option<[Option<u64>; 2]> {
+    let j = e.props.get(crate::physics::joints::PROP).filter(|_| !e.transient)?;
+    let side = |k: &str| j.get(k).and_then(Json::as_u64);
+    Some([side("a"), side("b")])
 }
 
 /// `current` with `patch`'s keys set (a `null` value removes the key).
@@ -4452,6 +4510,35 @@ mod tests {
             assert!(w.update(&EntityKey::Id(id), bad, "t").is_err());
             assert_eq!(w.get(id).unwrap().version, version, "rejected changes don't count");
         }
+    }
+
+    /// The joint index (what the claims' joint rules look up) follows spawns, prop edits,
+    /// deletes, failed batches and rollbacks, and leaves transient entities out.
+    #[test]
+    fn the_joint_index_follows_every_change() {
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let joint = |a: &str, b: &str| Json::parse(&format!(r#"{{"joint": {{"kind": "ball", "a": {a}, "b": {b}}}}}"#)).unwrap();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("j".into());
+        s.props = joint("null", "7");
+        let j = w.spawn(s, "t").unwrap().id;
+        assert_eq!((w.joints_on(7).collect::<Vec<_>>(), w.joint_sides(j)), (vec![j], Some([None, Some(7)])));
+        w.update(&EntityKey::Id(j), UpdateSpec { props: Some(joint("3", "9")), ..UpdateSpec::default() }, "t").unwrap();
+        assert!(w.joints_on(7).next().is_none() && w.joints_on(3).eq([j]) && w.joints_on(9).eq([j]));
+        let mark = w.mark();
+        w.update(&EntityKey::Id(j), UpdateSpec { props: Some(Json::parse(r#"{"joint": null}"#).unwrap()), ..UpdateSpec::default() }, "t").unwrap();
+        assert!(!w.has_joints());
+        w.rollback_to(mark);
+        assert!(w.joints_on(3).eq([j]), "a rollback restores it");
+        w.delete(&EntityKey::Id(j), None).unwrap();
+        assert!(!w.has_joints() && w.joints_on(9).next().is_none());
+        let mut t = SpawnSpec::new(Shape::Group);
+        t.name = Some("tj".into());
+        t.transient = true;
+        t.props = joint("null", "5");
+        w.spawn(t, "t").unwrap();
+        assert!(!w.has_joints(), "transient props are presentation, not joints");
     }
 
     #[test]

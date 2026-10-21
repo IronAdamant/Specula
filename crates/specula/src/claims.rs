@@ -669,39 +669,50 @@ pub fn joint_bodies(change: &Change) -> Vec<u64> {
     ids
 }
 
+thread_local! {
+    /// Joints [`joint_rule_changes`] looked at on this thread (tests count the work with it).
+    static JOINT_RULE_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many joints the joint rules have looked at on this thread so far: the work they do,
+/// which depends on the joints a change touches, never on the world's size.
+pub fn joint_rule_work() -> u64 {
+    JOINT_RULE_WORK.with(|w| w.get())
+}
+
 /// The bodies a change moves through joints, as [`body_change`]s to check against claims (the
 /// joint rules: a joint moves the bodies it links, so whoever makes, changes or removes one
 /// needs the right to change them):
 /// - joint data itself ([`joint_bodies`]: both sides, as it was and as it is);
-/// - removing or restoring an entity that a joint links, or changing what kind of body it is or
-///   its scale (the joint's frames follow it): the joint's other bodies, which it lets go of or
-///   pulls (`world` is searched for joints naming it).
+/// - removing or restoring an entity a joint names, or giving it or taking away its body, or
+///   changing its kind of body: the joint's other bodies, which it lets go of or pulls (found
+///   in the world's joint index, [`World::joints_on`]).
 ///
-/// Moving a body you may change is not one: what is jointed to it follows, as things it pushes
-/// through contacts do (see PHYSICS.md, "Joints and claims").
+/// Moving a body you may change is not one, and nor is moving, rescaling or reparenting it or
+/// an ancestor: what is jointed to it follows, as things it pushes through contacts do (see
+/// PHYSICS.md, "Joints and claims"). Cheap: nothing to do in a world without joints, and an
+/// index lookup otherwise.
 pub fn joint_rule_changes(world: &World, change: &Change) -> Vec<Change> {
-    let mut ids = joint_bodies(change);
-    let structural = |b: &crate::world::Entity, a: &crate::world::Entity| {
-        b.body.is_some() != a.body.is_some() || b.body.map(|x| x.kind) != a.body.map(|x| x.kind) || b.scale != a.scale || b.parent != a.parent
-    };
+    let data = touches_joint_data(change);
+    if !data && !world.has_joints() {
+        return Vec::new();
+    }
+    let mut ids = if data { joint_bodies(change) } else { Vec::new() };
+    let rebodied = |b: &crate::world::Entity, a: &crate::world::Entity| b.body.map(|x| x.kind) != a.body.map(|x| x.kind);
     let linked = match change {
-        Change::Delete { before, .. } => Some(before.as_ref()),
-        Change::Spawn { after, .. } => Some(after.as_ref()),
-        Change::Set { before: Some(b), after, .. } if structural(b, after) => Some(after.as_ref()),
+        Change::Delete { before, .. } => Some(before.id),
+        Change::Spawn { after, .. } => Some(after.id),
+        Change::Set { before: Some(b), after, .. } if rebodied(b, after) => Some(after.id),
         _ => None,
     };
-    // Only bodies can be joint bodies (a joint on anything else waits for one).
-    let was_body = match change {
-        Change::Set { before: Some(b), .. } => b.body.is_some(),
-        _ => false,
-    };
-    if let Some(x) = linked.filter(|x| x.body.is_some() || was_body) {
-        for j in world.entities().filter(|j| j.id != x.id && crate::physics::joints::is_joint(j)) {
-            let Some(s) = j.props.get(crate::physics::joints::PROP).and_then(|p| crate::physics::joints::JointSpec::from_json(p).ok()) else { continue };
-            if s.a == Some(x.id) || s.b == Some(x.id) {
-                ids.extend(s.a.into_iter().chain(s.b).filter(|i| *i != x.id));
-            }
+    if let Some(x) = linked {
+        for j in world.joints_on(x) {
+            JOINT_RULE_WORK.with(|w| w.set(w.get() + 1));
+            ids.extend(world.joint_sides(j).into_iter().flatten().flatten().filter(|i| *i != x));
         }
+    }
+    if ids.is_empty() {
+        return Vec::new();
     }
     ids.sort_unstable();
     ids.dedup();

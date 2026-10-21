@@ -328,18 +328,26 @@ body so path and region claims both apply. **Joint data is reserved for it**: `p
 bodies (review of the lane, finding 1: a joint spawned with `world_spawn` used to pull another agent's claimed box
 5 m).
 
-**Joints and claims, every write path** (review round 3): the same rule, `claims::joint_rule_changes`, applies to
-world tools (spawn, set, delete, batch: `Swarm::commit_with`), `world_undo` (`Swarm::undo`), and modules, hosted games
-and live Lex runs (`Swarm::check_game_changes`; a live run's own spawns go through `commit_lex_live`, which is
-`commit_with`). A change needs the right to change every body it moves through a joint: joint data itself (both sides,
-before and after), and removing or restoring a body a joint links, or changing its kind of body, scale or parent (the
-joint's other bodies are let go of or pulled; a module's joint onto another agent's claimed box, deleting your own hook
-to drop it, or undoing that delete to yank it back are all `claimed`). Playtests make their calls through the same
-paths, as the agent that started them. `save_read` and `world_load` replace the whole world and are refused while
-other agents hold claims. **Moving a body you may change is allowed**, even when a
-joint drags a claimed body after it: that is the same as pushing it through contacts, which claims never stopped
-(claims are about writes, not physics). The claim's holder sees who did it: `physics_explain` on the dragged body
-lists its joints, each with `made_by`, and the journal names who moved the other body.
+**Joints and claims, every write path** (review rounds 3 and 4): one rule, `claims::joint_rule_changes`. A change
+needs the right to change every body it moves through a joint: joint data itself (both sides, before and after), and
+removing or restoring an entity a joint names, or giving it another kind of body or none (the joint's other bodies
+are let go of or pulled). The world keeps an index of joints by body (`World::joints_on`), so the rule costs an index
+lookup per change, and nothing in a world without joints. Where it applies:
+
+| Write path | Checked as |
+|---|---|
+| world tools: spawn, set, delete, batch (`Swarm::commit_with`) | the calling agent; joint data itself is reserved for `physics_joint` (deletes allowed) |
+| `world_undo` (`Swarm::undo`) | the calling agent (undoing a hook's delete to yank a box back is `claimed`) |
+| tools and hooks an agent calls in a module or hosted game, live Lex inputs (`Swarm::check_game_changes`) | the calling agent (a module tool's joint onto another agent's claimed box is `claimed`) |
+| `lex_live` starting and stopping runs (`commit_lex_live`, which is `commit_with`) | the calling agent |
+| playtests | the agent that started them (their calls take the paths above) |
+| `save_read`, `world_load` | refused while other agents hold claims (they replace everything) |
+| **exempt:** a module's `tick`, a hosted game's tick and live Lex runs' ticks | the game's own rules: journaled under the game's name, never checked against claims (claims hold agents back, not the game being made) |
+
+**Moving is allowed**, even when a joint drags a claimed body after it: moving, rescaling or reparenting a body you
+may change, or any of its ancestors, is the same as pushing it through contacts, which claims never stopped (claims
+are about writes, not physics). The claim's holder sees who did it: `physics_explain` on the dragged body lists its
+joints, each with `made_by`, and the journal names who moved the other body.
 
 `physics_joints` lists joints with their state (paged by key, ragdoll joints too; naming an entity lists its
 ragdoll's); `physics_check` takes `joint_error` and
