@@ -207,7 +207,7 @@ Built 2026-10-22. `scripts/determinism_check.py` checks them in a running engine
 | Target | Register | Bits checked | Default |
 |---|---|---|---|
 | x86-64 (and x86 with SSE) | MXCSR | rounding, FTZ, DAZ, exception masks (`0xffc0`) | `0x1f80` |
-| AArch64 | FPCR | RMode, FZ, DN, AHP, FZ16, trap enables (`0x07c89f00`) | `0` |
+| AArch64 | FPCR | RMode, FZ, DN, AHP, FZ16, trap enables, FEAT_AFP FIZ, AH, NEP (`0x07c89f07`) | `0` |
 | other | none | nothing (`fpenv::SUPPORTED` is false) | |
 
 Status flags are sticky records, not modes, and are ignored. The x87 control word isn't checked: Rust does its float
@@ -216,7 +216,7 @@ maths in SSE registers on these targets.
 **Where it checks.** Each change found is restored at once and recorded (`crates/specula/src/fpguard.rs`):
 - `startup`: as the engine starts, in case something loaded first changed it;
 - `between_ticks`: as each tick begins (rendering, the GPU driver or an overlay ran in between);
-- `before_command`: before each agent command (commands change the simulation too);
+- `before_command`: before each agent command, whatever it is (world edits, model builds, sight, saves, playtests);
 - around every module call (`specula_logic::ModuleCode::call`): before the call (`before_module_call`), whenever the
   module calls back (so the engine's answers to it run in the default environment), and when it returns
   (`module:<name>`). Each call also starts the module in the default environment.
@@ -236,16 +236,21 @@ whatever their creator had (on Linux, threads inherit the environment); none of 
   a world change, so it can't be undone (refused by id; "undo my last change" skips it).
 - **The build hash** is a hash of the library's bytes with the link time stamps a PE linker writes left out (COFF
   TimeDateStamp, CheckSum, export and debug directory stamps; measured 2026-10-22: two builds of the same source differ
-  in exactly those 5 bytes). The same source rebuilt keeps its hash; any code change changes it.
-- **The desync detector** keeps the module history too (last 256 events, older ones folded into a base). Traces carry
-  it (`modules` in `specula.trace/v1`, optional, so older traces still read). `desync_compare` works out which build of
+  in exactly those 5 bytes). The same source rebuilt keeps its hash; any code change changes it. *Compatibility:* the
+  formula changed on 2026-10-22, so save games and replay files written before then name their modules with the old
+  hash and report "another build" for the same code ([SAVES.md](SAVES.md)); re-save or re-record them.
+- **The desync detector** keeps the module history too (last 256 events, older ones folded into a base, which is
+  only right for ticks after the newest folded event: `known_from_tick`; earlier ticks answer `modules_known: false`).
+  Traces carry it (`modules` in `specula.trace/v1`, optional, so older traces still read). `desync_compare` works out which build of
   each module ran in each run at the divergent tick and names any module whose build, or load tick, differs, first in
   `components` (`module ambulo: build ... in a, ... in b`). Runs that match although builds differ get
   `module_builds_differ`. A trace without module history gives `modules_known: false`.
 - **Playtest replays** record the loaded modules' builds (`modules` in the replay file). A replay is refused with
   `module_build_mismatch` (naming each module, recorded and loaded build) when they differ, unless
   `allow_module_mismatch: true`, which runs it and reports `module_builds_differ`. Replay files without the list
-  aren't checked. Checkpoints now also hash the module host's state (`logic` part: stores, RNG positions, events).
+  aren't checked. Checkpoints now also hash the module host's state (`logic` part: stores, RNG positions, events); a
+  replay file whose checkpoints have no `logic` part (written before 2026-10-22) is checked without it
+  (`playtest::LATE_PARTS`).
 - Save games already name each module's build and report a mismatch on load ([SAVES.md](SAVES.md)). The journal's own
   replay (`world_hash {verify}`, `desync_compare {b: "replay"}`) replays world states, so module code can't change it.
 
@@ -263,9 +268,10 @@ whatever their creator had (on Linux, threads inherit the environment); none of 
   then carry the identical `clippy.toml`) or not; a new crate fails the test until it is classified.
 - **Modules** built by agents may have no `clippy.toml`, and clippy is too slow for the reload budget, so
   `logic_build` scans the module's `src/` itself (`specula_logic::lint`: a small Rust tokenizer, the same names, plus
-  `static mut` and `thread_local!`) and adds each hit as a warning (`code: "determinism::<rule>"`, file, line, column,
-  a help note); `determinism_warnings` counts them. They don't stop the build. `// determinism: allowed: <why>` on the
-  line (or the line above) marks a deliberate use. It reads names, not types, so `x.round()` on a module's own type is
+  `static mut` and `thread_local!`; files pulled in from outside `src/` with `#[path]` or `include!` aren't read;
+  bounded: 512 files, 256 folders, 1 MiB a file, 4 MiB in all, 40-70 ms per MB) and adds each hit as a warning (`code: "determinism::<rule>"`, file, line, column,
+  a help note); `determinism_warnings` counts them. They don't stop the build. `// determinism: allowed: <why>` at the
+  end of the line, or alone on the line above, marks a deliberate use. It reads names, not types, so `x.round()` on a module's own type is
   reported too.
 
 ## Costs and limits
