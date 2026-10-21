@@ -287,6 +287,7 @@ pub const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkFlags = 0x20;
 pub const VK_IMAGE_ASPECT_COLOR_BIT: VkFlags = 0x1;
 pub const VK_IMAGE_ASPECT_DEPTH_BIT: VkFlags = 0x2;
 pub const VK_SAMPLE_COUNT_1_BIT: VkFlags = 0x1;
+pub const VK_COMMAND_POOL_CREATE_TRANSIENT_BIT: VkFlags = 0x1;
 pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: VkFlags = 0x2;
 pub const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: VkFlags = 0x1;
 pub const VK_FENCE_CREATE_SIGNALED_BIT: VkFlags = 0x1;
@@ -1574,6 +1575,7 @@ fn_table! {
             fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult;
         end_command_buffer = c"vkEndCommandBuffer": fn(VkCommandBuffer) -> VkResult;
         reset_command_buffer = c"vkResetCommandBuffer": fn(VkCommandBuffer, VkFlags) -> VkResult;
+        reset_command_pool = c"vkResetCommandPool": fn(VkDevice, VkCommandPool, VkFlags) -> VkResult;
         create_fence = c"vkCreateFence":
             fn(VkDevice, *const VkFenceCreateInfo, *const c_void, *mut VkFence) -> VkResult;
         destroy_fence = c"vkDestroyFence": fn(VkDevice, VkFence, *const c_void);

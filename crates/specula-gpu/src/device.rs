@@ -503,10 +503,15 @@ impl Device {
     }
 
     pub fn create_command_pool(&self) -> Result<VkCommandPool, GpuError> {
+        self.create_command_pool_with(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+    }
+
+    /// A command pool with `flags` (a transient pool reset whole: see [`Device::reset_pool`]).
+    pub fn create_command_pool_with(&self, flags: VkFlags) -> Result<VkCommandPool, GpuError> {
         let info = VkCommandPoolCreateInfo {
             s_type: ST_COMMAND_POOL_CREATE_INFO,
             p_next: ptr::null(),
-            flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            flags,
             queue_family_index: self.queue_family,
         };
         let mut pool = VK_NULL_HANDLE;
@@ -535,10 +540,41 @@ impl Device {
         Ok(cmd)
     }
 
+    /// Resets every command buffer of `pool` at once, keeping the pool's memory for reuse (none of
+    /// them may be pending). Vendors recommend this over resetting command buffers one by one.
+    pub fn reset_pool(&self, pool: VkCommandPool) -> Result<(), GpuError> {
+        let _z = specula_core::profile::zone("vk.reset_pool");
+        // SAFETY: `pool` belongs to this device and none of its command buffers is pending.
+        let r = unsafe { (self.fns.reset_command_pool)(self.handle, pool, 0) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkResetCommandPool", r));
+        }
+        Ok(())
+    }
+
+    /// Begin a one-time-submit command buffer already in the initial state (its pool was reset).
+    pub fn begin_reset(&self, cmd: VkCommandBuffer) -> Result<(), GpuError> {
+        let info = VkCommandBufferBeginInfo {
+            s_type: ST_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: ptr::null(),
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: ptr::null(),
+        };
+        let _z = specula_core::profile::zone("vk.begin_cb");
+        // SAFETY: `cmd` is in the initial state (its pool was just reset, or it is new).
+        let r = unsafe { (self.fns.begin_command_buffer)(cmd, &info) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkBeginCommandBuffer", r));
+        }
+        Ok(())
+    }
+
     /// Reset and begin a one-time-submit command buffer (its previous submission must be complete).
     pub fn begin(&self, cmd: VkCommandBuffer) -> Result<(), GpuError> {
+        let zr = specula_core::profile::zone("vk.reset_cb");
         // SAFETY: `cmd` comes from a pool with RESET_COMMAND_BUFFER and is not pending.
         let r = unsafe { (self.fns.reset_command_buffer)(cmd, 0) };
+        drop(zr);
         if r != VK_SUCCESS {
             return Err(GpuError::vk("vkResetCommandBuffer", r));
         }
@@ -548,6 +584,7 @@ impl Device {
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             p_inheritance_info: ptr::null(),
         };
+        let _zb = specula_core::profile::zone("vk.begin_cb");
         // SAFETY: `cmd` is in the initial state after the reset.
         let r = unsafe { (self.fns.begin_command_buffer)(cmd, &info) };
         if r != VK_SUCCESS {

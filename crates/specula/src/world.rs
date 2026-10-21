@@ -2246,6 +2246,14 @@ impl World {
         self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e)
     }
 
+    /// The persistent entities after id `after` (all of them for `None`), by id: a reader that
+    /// walks them a slice at a time.
+    pub fn persistent_entities_after(&self, after: Option<u64>) -> impl Iterator<Item = &Entity> + '_ {
+        use std::ops::Bound;
+        let lo = after.map_or(Bound::Unbounded, Bound::Excluded);
+        self.entities.range((lo, Bound::Excluded(TRANSIENT_ID_BASE))).map(|(_, e)| e)
+    }
+
     /// The transient entities (game presentation), by id.
     pub fn transient_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.entities.range(TRANSIENT_ID_BASE..).map(|(_, e)| e)

@@ -79,6 +79,10 @@ pub(crate) enum Retired {
 
 /// Device-local block size queued meshes are carved from (a bigger mesh gets a block its size).
 pub const BLOCK_BYTES: u64 = 16 << 20;
+/// Blocks grow (16, 32, then 64 MB) as a world's meshes need more: fewer `vkAllocateMemory`
+/// calls (each a few milliseconds on the Intel iGPU) while a big world loads, and a small world
+/// keeps one small block.
+pub const MAX_BLOCK_BYTES: u64 = 64 << 20;
 /// Mesh ranges start on this alignment (index and vertex offsets stay aligned).
 const RANGE_ALIGN: u64 = 256;
 
@@ -135,7 +139,9 @@ impl Blocks {
                 }
             }
         }
-        let block_bytes = size.max(BLOCK_BYTES);
+        let blocks = self.blocks.iter().flatten().count() as u32;
+        let block_bytes = size.max((BLOCK_BYTES << blocks.min(2)).min(MAX_BLOCK_BYTES));
+        let _z = specula_core::profile::zone("gpu.block_new");
         let buffer = crate::gpu::create_mesh_buffer(dev, block_bytes)?;
         let mut block = Block { buffer, free: vec![(0, block_bytes)], used: 0 };
         let at = block.take(size).expect("a fresh block holds it");
@@ -161,7 +167,7 @@ impl Blocks {
         if b.used == 0 {
             // One empty block of the usual size is kept for what comes next; an oversized one,
             // or a second spare, goes.
-            let usual = b.buffer.bytes <= BLOCK_BYTES;
+            let usual = b.buffer.bytes <= MAX_BLOCK_BYTES;
             let empty = self.blocks.iter().flatten().filter(|b| b.used == 0).count();
             if !usual || empty > 1 {
                 if let Some(b) = self.blocks[block as usize].take() {
@@ -199,6 +205,8 @@ enum SlotState {
 }
 
 struct Slot {
+    /// Its own transient pool, reset whole when the slot is reused (no per-buffer resets).
+    pool: VkCommandPool,
     cmd: VkCommandBuffer,
     fence: VkFence,
     arena: Option<Buffer>,
@@ -256,8 +264,17 @@ impl Uploads {
         self.pending_ids.iter().any(|&(i, _)| i == id)
     }
 
+    /// Makes every batch slot up front (at device creation), so no frame creates a command pool
+    /// (the Intel driver can take a long time over its first ones).
+    pub fn warm(&mut self, dev: &Device) -> Result<(), GpuError> {
+        while self.slots.len() < MAX_SLOTS {
+            self.slots.push(new_slot(dev)?);
+        }
+        Ok(())
+    }
+
     /// The command buffer of the batch being recorded (one is started when none is).
-    pub fn recording_cmd(&mut self, dev: &Device, pool: VkCommandPool) -> Result<VkCommandBuffer, GpuError> {
+    pub fn recording_cmd(&mut self, dev: &Device) -> Result<VkCommandBuffer, GpuError> {
         if let Some(i) = self.recording {
             return Ok(self.slots[i].cmd);
         }
@@ -271,10 +288,7 @@ impl Uploads {
         let i = match self.slots.iter().position(|s| s.state == SlotState::Free) {
             Some(i) => i,
             None if self.slots.len() < MAX_SLOTS => {
-                let cmd = dev.allocate_command_buffer(pool)?;
-                // A command buffer left behind by a failed fence is freed with the pool.
-                let fence = dev.create_fence(false)?;
-                self.slots.push(Slot { cmd, fence, arena: None, used: 0, extra: Vec::new(), state: SlotState::Free });
+                self.slots.push(new_slot(dev)?);
                 self.slots.len() - 1
             }
             None => {
@@ -301,8 +315,11 @@ impl Uploads {
             Self::release_slot(dev, slot);
         }
         {
+            // The slot's own pool, reset whole (its one command buffer is done: the slot is free):
+            // the driver keeps the pool's memory, nothing is reset buffer by buffer.
             let _z = specula_core::profile::zone("gpu.begin");
-            dev.begin(slot.cmd)?;
+            dev.reset_pool(slot.pool)?;
+            dev.begin_reset(slot.cmd)?;
         }
         slot.state = SlotState::Recording;
         self.recording = Some(i);
@@ -310,8 +327,8 @@ impl Uploads {
     }
 
     /// Space for `bytes` (4-byte aligned) in the recording batch's arena, or a buffer of its own.
-    pub fn stage(&mut self, dev: &Device, pool: VkCommandPool, bytes: u64) -> Result<Staged, GpuError> {
-        self.recording_cmd(dev, pool)?;
+    pub fn stage(&mut self, dev: &Device, bytes: u64) -> Result<Staged, GpuError> {
+        self.recording_cmd(dev)?;
         let i = self.recording.expect("recording");
         let slot = &mut self.slots[i];
         let aligned = bytes.div_ceil(16) * 16;
@@ -332,6 +349,7 @@ impl Uploads {
             }
         }
         let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        let _z = specula_core::profile::zone("gpu.dedicated");
         let own = dev.create_buffer(bytes.max(4), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, 0, MemoryKind::Staging, "upload staging")?;
         let staged = Staged { buffer: own.handle, offset: 0, dst: own.mapped as *mut u8 };
         slot.extra.push(own);
@@ -353,13 +371,13 @@ impl Uploads {
 
     /// Submits the batch being recorded (with its closing barrier), or an empty one when
     /// resources were retired since the last submission. Frees what finished batches release.
-    pub fn flush(&mut self, dev: &Device, pool: VkCommandPool) -> Result<(), GpuError> {
+    pub fn flush(&mut self, dev: &Device) -> Result<(), GpuError> {
         self.poll(dev);
         if self.recording.is_none() && self.retired_now.is_empty() {
             return Ok(());
         }
         // An empty batch when only retirements are waiting (each copy carries its own barrier).
-        self.recording_cmd(dev, pool)?;
+        self.recording_cmd(dev)?;
         let i = self.recording.take().expect("recording");
         let slot = &mut self.slots[i];
         let ended = dev.end(slot.cmd).and_then(|()| dev.submit(slot.cmd, None, None, slot.fence));
@@ -428,8 +446,8 @@ impl Uploads {
 
     /// Submits and waits for everything queued, and frees every retired resource whose batch
     /// finished (freed images' slots: `take_freed_slots`).
-    pub fn finish(&mut self, dev: &Device, pool: VkCommandPool) -> Result<(), GpuError> {
-        let flushed = self.flush(dev, pool);
+    pub fn finish(&mut self, dev: &Device) -> Result<(), GpuError> {
+        let flushed = self.flush(dev);
         for slot in &self.slots {
             if let SlotState::InFlight(_) = slot.state {
                 if dev.wait_fence(slot.fence).is_err() {
@@ -459,8 +477,12 @@ impl Uploads {
             if let Some(a) = slot.arena.take() {
                 dev.destroy_buffer(&a);
             }
-            // SAFETY: the device is idle; the fence belongs to it and is destroyed once.
-            unsafe { (dev.fns.destroy_fence)(dev.handle, slot.fence, ptr::null()) };
+            // SAFETY: the device is idle; the fence and the pool (with its command buffer) belong
+            // to it and are destroyed once.
+            unsafe {
+                (dev.fns.destroy_fence)(dev.handle, slot.fence, ptr::null());
+                (dev.fns.destroy_command_pool)(dev.handle, slot.pool, ptr::null());
+            }
         }
         self.recording = None;
         self.pending_ids.clear();
@@ -483,6 +505,21 @@ fn free(dev: &Device, r: &Retired, freed_slots: &mut Vec<u32>) {
         }
         // Blocks go with the pool.
         Retired::Range(..) => {}
+    }
+}
+
+/// A batch slot: its own transient command pool and command buffer, and a fence.
+fn new_slot(dev: &Device) -> Result<Slot, GpuError> {
+    let _z = specula_core::profile::zone("gpu.slot_new");
+    let pool = dev.create_command_pool_with(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT)?;
+    let made = dev.allocate_command_buffer(pool).and_then(|cmd| dev.create_fence(false).map(|fence| (cmd, fence)));
+    match made {
+        Ok((cmd, fence)) => Ok(Slot { pool, cmd, fence, arena: None, used: 0, extra: Vec::new(), state: SlotState::Free }),
+        Err(e) => {
+            // SAFETY: the pool is new, its command buffer (if any) never used; destroyed once.
+            unsafe { (dev.fns.destroy_command_pool)(dev.handle, pool, ptr::null()) };
+            Err(e)
+        }
     }
 }
 
