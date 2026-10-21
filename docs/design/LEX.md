@@ -583,6 +583,10 @@ and fast-forwards it with everything else. At most 4 runs at once.
 - **Settings.** perf.toml `[lex_live]` sets `work_per_tick`, `step_work` and `backstop_ms` (one setting for
   every adapter, since the work limits decide where steps land); `status` shows them under `budget`, and each run's
   `work: {last_tick, this_engine_tick}`.
+- **Save games.** `save_write` takes live runs with it (the `lex_live` section: state, document, anchor, credit,
+  journal, presentation; SAVES.md, "Lex"), and `save_read` brings them back exactly, adopting what they present
+  from the loaded world. Agents' holds are left out (sessions aren't saved). A journal longer than 16 MiB keeps its
+  newest commands; `journal` then says how many came before (`dropped_before`).
 
 **Sepulcra on Lex in the window.** `sepulcra --rules lex` (the app, after `--`) runs the game's rules from the
 set: the Lex run decides every player and agent command (a refusal answers with the game's code and Lex's own under

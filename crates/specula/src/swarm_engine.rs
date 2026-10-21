@@ -468,6 +468,10 @@ impl Engine {
         if let Some(h) = self.logic.state_hash() {
             self.trace.scratch.push(("logic", h));
         }
+        // Live Lex runs' state and when they step (saved by save games).
+        if let Some(h) = self.lex_live.state_hash() {
+            self.trace.scratch.push(("lex_live", h));
+        }
         self.trace.record(tick, hash, self.world.next_id());
     }
 

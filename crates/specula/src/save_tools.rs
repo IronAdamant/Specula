@@ -285,6 +285,8 @@ pub(crate) struct Prepared {
     /// Navigation's state, decoded and shape-checked on the worker (restored once the loaded
     /// navmeshes are built: [`crate::nav::Nav::restore_state`]).
     nav: Option<Json>,
+    /// Live Lex runs, parsed and rebuilt on the worker.
+    lex_live: Option<crate::lex_live::LiveSnapshot>,
     sections: Vec<String>,
     notes: Vec<Json>,
     /// The hashes may not match although the state is right: another dmath or Lex runtime.
@@ -391,7 +393,16 @@ fn inspect(path: &std::path::Path, name: &str) -> Result<Json, SaveError> {
 
 /// Everything about a load that can run off the engine thread: read, decode, check the header
 /// against the engine, load the world, parse module state, restore physics against the world.
-fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hosted: Option<String>, hz: u32, generation: u64, parser: Option<crate::game::StateParser>) -> Result<Prepared, SaveError> {
+#[allow(clippy::too_many_arguments)]
+fn prepare_load(
+    path: &std::path::Path,
+    limits: crate::two_d::ShapeLimits,
+    hosted: Option<String>,
+    hz: u32,
+    generation: u64,
+    parser: Option<crate::game::StateParser>,
+    natives: specula_lex::Natives,
+) -> Result<Prepared, SaveError> {
     let t0 = Instant::now();
     let f = read_file(path)?;
     let meta = f.meta;
@@ -437,6 +448,11 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
     })
     .map_err(|e| SaveError::new("corrupt_section", format!("the save's world doesn't load: {e}")).in_section("world").with("cause", e.to_json()))?;
     drop(files);
+    // Live Lex runs, rebuilt against the loaded world (their presentation adopted from it).
+    let lex_live = match by_name.remove("lex_live") {
+        Some(b) => Some(crate::lex_live::parse_state(&b, &world, tick, &natives)?),
+        None => None,
+    };
     let logic = match by_name.get("logic") {
         Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
         None => None,
@@ -466,7 +482,7 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
     if game_parsed.is_some() {
         game_bytes = None;
     }
-    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, nav, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, nav, lex_live, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -597,6 +613,9 @@ impl Engine {
             // What a save records (a synced copy's hash); after a load, the restored state's.
             subs.push(("nav", self.nav.save_hash(&self.world, self.world_generation)));
         }
+        if let Some(h) = self.lex_live.state_hash() {
+            subs.push(("lex_live", h));
+        }
         subs
     }
 
@@ -703,11 +722,10 @@ impl Engine {
                 return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to replace it anyway, or pick another name", whose(&owner))));
             }
         }
-        // Live Lex runs aren't in the save format yet: a save without them wouldn't resume what
-        // runs now (their state, journal and presentation), so it is refused while any is live.
-        if let Some(e) = self.lex_live_refusal("saved") {
-            return Err(e);
-        }
+        // Live Lex runs: their own section (lex_live/save.rs). Agents' holds end with their
+        // sessions, which a save doesn't keep: left out, and said so.
+        let lex_live = self.lex_live.save_state()?;
+        let holds = self.lex_live.holds_count();
         let t0 = Instant::now();
         let tick = self.clock.tick();
         // The game first: it may refuse.
@@ -767,12 +785,18 @@ impl Engine {
             meta.push(("label", Json::from(l.as_str())));
         }
         let mut sections = Vec::new();
-        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav)] {
+        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav), ("lex_live", lex_live)] {
             if let Some(data) = d {
                 sections.push(Section { name: n.into(), data });
             }
         }
         let mut notes = Vec::new();
+        if holds > 0 {
+            notes.push(Json::obj([
+                ("note", Json::from("agents' holds on live Lex runs' input aren't saved (sessions aren't): a load starts with none")),
+                ("holds_left_out", Json::from(holds)),
+            ]));
+        }
         if self.game.is_some() && !sections.iter().any(|s| s.name == "game") {
             notes.push(Json::from("the hosted game keeps no save state: a load restores the world, physics and modules, and the game starts from what the world shows"));
         }
@@ -807,9 +831,10 @@ impl Engine {
         let hosted = self.game.as_ref().map(|_| self.game_name.clone());
         let generation = self.world_generation + 1;
         let parser = self.game.as_ref().and_then(|g| g.state_parser());
+        let natives = self.lex_natives.clone();
         let handle = std::thread::Builder::new()
             .name("specula-load".into())
-            .spawn(move || prepare_load(&path, limits, hosted, hz, generation, parser))
+            .spawn(move || prepare_load(&path, limits, hosted, hz, generation, parser, natives))
             .map_err(|e| SaveError::new("io", format!("could not start a save reader: {e}")))?;
         self.save_load = Some(Loading {
             name: name.to_owned(),
@@ -827,23 +852,7 @@ impl Engine {
 
     /// Claims and unsaved changes: checked when a load starts and again when it swaps in
     /// (`since`: the world's revision when it started; changes after it are unsaved too).
-    /// `live_lex_running` while live Lex runs are on (they aren't in the save format yet).
-    fn lex_live_refusal(&self, what: &str) -> Option<SaveError> {
-        let sets = self.lex_live.sets();
-        (!sets.is_empty()).then(|| {
-            SaveError::new(
-                "live_lex_running",
-                format!("live Lex runs ({}) aren't in save games yet, so the game can't be {what} while one runs; lex_live {{action: stop}} them first (their journals replay with lex_simulate)", sets.join(", ")),
-            )
-            .with("live", Json::arr(sets.iter().map(|s| Json::from(s.as_str()))))
-        })
-    }
-
     fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<(), SaveError> {
-        // A load replaces the world live runs present into: stop them first.
-        if let Some(e) = self.lex_live_refusal("loaded") {
-            return Err(e);
-        }
         // A playtest owns the clock and the world until it ends: a load would move both under it
         // (and its replay would record a run nobody can reproduce). Not even with force.
         if self.playtests.running() {
@@ -894,6 +903,8 @@ impl Engine {
         let mut notes: Vec<Json> = p.notes;
         notes.extend(self.replace_world(p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
         self.physics = physics;
+        // Live Lex runs: the save's (those running before stop: their world is gone).
+        notes.extend(self.lex_live.apply_state(p.lex_live));
         if let Some(snap) = p.logic {
             notes.extend(self.logic.apply_state(snap));
         } else if !self.logic.is_empty() {

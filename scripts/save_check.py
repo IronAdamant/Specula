@@ -2,12 +2,14 @@
 
 Engine A (Sepulcra, seed 7, headless by default) plays the "centre" build order with a pile of
 physics crates tumbling beside the slab and the ambulo module walking its character (so the
-world, the game's simulation, physics' hidden state and module state all move). At tick T it
+world, the game's simulation, physics' hidden state and module state all move), and a live Lex
+run (lex_live) of a small tower-defence set beside it, with input bindings an agent presses, so a
+live run's state, journal, credit and presentation are saved too. At tick T it
 writes save_write "proof", then runs N more ticks and exports its trace (desync_trace T+1..T+N).
 Engine B starts fresh, loads ambulo, save_read "proof" (every saved hash must match on load),
 runs the same N ticks and exports its trace. desync_compare of the two traces must report a match
 over all N ticks, with the world hash and the subsystems sim, economy, enemies, defences,
-projectiles, physics and logic all compared.
+projectiles, physics, logic and lex_live all compared.
 
 Also measured: save size and time (snapshot, encode, write), load time, and the same with a
 world of --stress extra entities.
@@ -172,6 +174,34 @@ def stress(m, n):
         g += 1
 
 
+# A live Lex run beside the slab: walkers, a tower the input's "build" places, gold from a
+# random stream (the RNG streams are saved), presented as spheres and cubes.
+LIVE_SET = {"lex": 1, "name": "save_live", "tick_hz": 30, "items": {
+    "gold": {"kind": "resource", "start": 20},
+    "lane": {"kind": "path", "points": [[300, 0, 0], [330, 0, 0]]},
+    "spots": {"kind": "sites", "points": {"a": [310, 0, 4], "b": [320, 0, 4]}},
+    "walker": {"kind": "archetype", "tags": ["enemy"], "attributes": {"hp": "40pt"},
+               "behaviours": [{"type": "health", "attribute": "hp"},
+                              {"type": "follow_path", "path": "@spawn", "speed": "1m/s", "on_arrive": [{"despawn": "self"}]}]},
+    "tower": {"kind": "archetype", "tags": ["tower"],
+              "behaviours": [{"type": "attack", "targets": ["enemy"], "range": "8m", "cooldown": "0.5s", "delivery": "pulse", "payload": [{"damage": "3pt"}]}]},
+    "build": {"kind": "command", "args": {"at": "site"}, "cost": {"gold": 5}, "do": [{"spawn": "tower", "at": "arg.at"}]},
+    "tithe": {"kind": "timer", "every": "1s", "do": [{"add": "gold", "amount": "rand(loot, 0, 2)"}]},
+    "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "walker", "count": 60, "at": ["lane"], "every": "0.5s"}]}]},
+    "controls": {"kind": "data", "value": {
+        "actions": {"format": "specula.input.v1", "actions": [{"name": "build", "kind": "button", "bindings": ["Key.B"]}]},
+        "bindings": [{"action": "build", "command": "build", "args": {"at": "b"}}]}},
+}}
+
+
+def start_live(m):
+    m.json("lex_import", set="save_live", document=LIVE_SET)
+    m.json("lex_live", action="start", set="save_live", seed=3, input="controls",
+           present=[{"tags": ["enemy"], "spawn": {"shape": "sphere", "scale": [0.4, 0.4, 0.4]}},
+                    {"tags": ["tower"], "spawn": {"shape": "cube"}}])
+    m.json("lex_live", action="command", set="save_live", command="build", args={"at": "a"})
+
+
 def run(args, work):
     exe = exe_path("sepulcra")
     if not exe.exists():
@@ -211,8 +241,12 @@ def run(args, work):
         print(f"A: navmesh over the slab: {nav_mesh['polygons']} polygons; 3 walkers and a patrolling guard")
         built = build_ambulo(a)
         print(f"A: ambulo loaded ({built.get('reload', {}).get('status')})")
+        start_live(a)
         a.json("logic_input", module="ambulo", actions={"move": [1, 0.3]}, ticks=args.save_at + args.ticks)
-        step(a, args.save_at // 2)
+        step(a, args.save_at // 4)
+        # An agent presses the live run's "build" (a hold of one Lex tick, over before the save).
+        a.json("lex_live", action="input", set="save_live", actions={"build": True}, ticks=1)
+        step(a, args.save_at // 2 - args.save_at // 4)
         a.call("play_command", action="call_wave")
         a.json("logic_input", module="ambulo", actions={"jump": True}, ticks=2)
         step(a, args.save_at - args.save_at // 2)
@@ -221,11 +255,15 @@ def run(args, work):
         print(f"A: saved at tick {saved['tick']}: {saved['bytes']} bytes, sections {saved['sections']}, ms {saved['timings_ms']}")
         report["save"] = saved
         check(saved["tick"] == t, "the save is at the current tick")
-        for name in ("sim", "physics", "logic", "nav"):
+        for name in ("sim", "physics", "logic", "nav", "lex_live"):
             check(name in saved["subsystems"], f"the save covers subsystem {name}")
         check("nav" in saved["sections"], "the save has a nav section")
+        live_a = a.json("lex_live", action="status", set="save_live")["runs"][0]
+        check(live_a["commands"] == 2 and live_a["shown"] > 0, f"the live run was commanded twice and shows {live_a['shown']} entities")
+        report["live_at_save"] = {k: live_a[k] for k in ("tick", "hash", "commands", "shown", "work")}
         step(a, args.ticks)
         trace_a = a.json("desync_trace", from_tick=t + 1, to_tick=t + args.ticks)
+        live_after_a = a.json("lex_live", action="status", set="save_live")["runs"][0]
         print(f"A: trace {trace_a['ticks']} ticks {trace_a['from_tick']}..{trace_a['to_tick']}")
         if args.stress:
             stress(a, args.stress)
@@ -250,6 +288,9 @@ def run(args, work):
         check(b.json("time_control", action="info")["tick"] == t, "the clock is at the save's tick")
         nav_sub = next((s for s in loaded["subsystems"] if s["name"] == "nav"), {})
         check(nav_sub.get("pending") or nav_sub.get("match"), f"nav is restored, or pending its navmesh build ({nav_sub})")
+        live_b = b.json("lex_live", action="status", set="save_live")["runs"][0]
+        check((live_b["tick"], live_b["hash"], live_b["commands"], live_b["shown"]) == (live_a["tick"], live_a["hash"], live_a["commands"], live_a["shown"]),
+              f"the live Lex run is back as saved (tick {live_b['tick']}, hash {live_b['hash']}, {live_b['shown']} shown)")
         step(b, args.ticks)
         restored = b.json("nav_info").get("last_restore") or {}
         check(restored.get("restored") is True, f"navigation was restored with the saved hash ({restored})")
@@ -263,8 +304,13 @@ def run(args, work):
         rows = json.loads(Path(trace_b["file"]).read_text())["ticks"]
         names = sorted(rows[-1][2].keys()) if rows else []
         report["subsystems_compared"] = names
-        for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic", "nav"):
+        for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic", "nav", "lex_live"):
             check(name in names, f"subsystem {name} was compared")
+        # The live run goes on as it would have (its Lex tick and hash after the N ticks).
+        live_end = b.json("lex_live", action="status", set="save_live")["runs"][0]
+        report["live_after"] = {k: live_end[k] for k in ("tick", "hash", "commands", "shown")}
+        check(all(live_end[k] == live_after_a[k] for k in ("tick", "hash", "commands", "shown", "work")),
+              f"after {args.ticks} ticks the live run is where the saving run's was (Lex tick {live_end['tick']}, hash {live_end['hash']})")
         # The player's way: the pause menu's Save / Load screen (play_ui presses the buttons a
         # click, a key or a pad's accept would): slots, overwrite / load / delete confirmations.
         print("B: the player saves and loads from the Save / Load screen")
