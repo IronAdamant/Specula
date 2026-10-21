@@ -1370,7 +1370,8 @@ impl Space {
         // are the same however the work is split: determinism rule 7). Then one pass in order.
         let mut narrow = std::mem::take(&mut self.narrow);
         narrow.clear();
-        // One thread: each pair is tested in the pass below, as it is used (no copies).
+        // One thread: each pair is tested in the pass below, in place, into one manifold and the
+        // contact's own SAT memory (no copies; returning results by value cost 20% here).
         let fused = narrow_threads(self.sim.len(), self.settings.threads) <= 1;
         if !fused {
             narrow.resize(self.sim.len(), Narrow::default());
@@ -1399,17 +1400,28 @@ impl Space {
                 self.narrow_index = index;
             }
         }
+        let mut in_place = Narrow::default();
         for (k, &slot) in self.sim.iter().enumerate() {
-            let tested;
-            let pre = if fused {
-                tested = NarrowView { slots: &self.slots, contacts: &self.contacts, static_tree: &self.static_tree, dynamic_tree: &self.dynamic_tree, base, max_margin, dt }.pair(slot);
-                &tested
-            } else {
-                &narrow[k]
-            };
             let c = self.contacts[slot as usize].as_mut().expect("live contact");
             let (ka, kb) = c.key;
             let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
+            let pre = if fused {
+                match pair_input(c, a, b, &self.static_tree, &self.dynamic_tree, base, max_margin, dt) {
+                    Pre::Done(done) => in_place = done,
+                    Pre::Test(t) => {
+                        in_place.apart = false;
+                        in_place.sat = t.sat;
+                        if t.trigger {
+                            crate::contact::collide(t.a, &t.pa, t.b, &t.pb, 0.0, &mut in_place.manifold);
+                        } else {
+                            crate::contact::collide_cached(t.a, &t.pa, t.b, &t.pb, t.margin, &mut in_place.manifold, Some(&mut in_place.sat));
+                        }
+                    }
+                }
+                &in_place
+            } else {
+                &narrow[k]
+            };
             if pre.apart {
                 if c.touching {
                     events.push(end_event(c, ka, kb));
@@ -2678,42 +2690,38 @@ struct NarrowView<'a> {
 }
 
 impl NarrowView<'_> {
-    /// Contact slot `slot`'s points this step (from its bodies as they are; no state changes).
-    fn pair(&self, slot: u32) -> Narrow {
-        match self.input(slot) {
-            Pre::Done(done) => done,
-            Pre::Test(t) => {
-                let (manifold, sat) = crate::parallel::test_shapes(t.a, &t.pa, t.b, &t.pb, t.margin, t.trigger, t.sat);
-                Narrow { apart: false, manifold, sat }
-            }
-        }
-    }
-
-    /// [`NarrowView::pair`]'s cheap part: the result when the pair needs no shape test (apart,
-    /// or its bounding spheres too far), else the test to run.
+    /// A pair's cheap part: the result when the pair needs no shape test (apart, or its bounding
+    /// spheres too far), else the test to run (on the pool's threads).
     fn input(&self, slot: u32) -> Pre<'_> {
         let c = self.contacts[slot as usize].as_ref().expect("live contact");
         let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
-        let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
-        let fa = fat_of(self.static_tree, self.dynamic_tree, a);
-        let fb = fat_of(self.static_tree, self.dynamic_tree, b);
-        if !fa.overlaps(&fb) {
-            out.apart = true;
-            return Pre::Done(out);
-        }
-        let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
-        let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
-        // Speculative contacts reach as far as the pair can close in one step (at least the base
-        // distance), so a fast approach is caught before it overlaps.
-        let closing = (a.desc.velocity - b.desc.velocity).length() + a.desc.angular_velocity.length() * a.outer_radius + b.desc.angular_velocity.length() * b.outer_radius;
-        let margin = (self.base + closing * self.dt).min(self.max_margin);
-        // Bounding spheres apart: no points (cheap early out).
-        let reach = a.outer_radius + b.outer_radius + margin;
-        if crate::math::len_sq(a.center - b.center) > reach * reach {
-            return Pre::Done(out);
-        }
-        Pre::Test(PairTest { a: &ca.shape, pa, b: &cb.shape, pb, margin, trigger: c.trigger, sat: c.sat })
+        pair_input(c, a, b, self.static_tree, self.dynamic_tree, self.base, self.max_margin, self.dt)
     }
+}
+
+/// A pair's cheap checks (see [`NarrowView::input`]), borrowing only the bodies' shapes.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn pair_input<'b>(c: &Contact, a: &'b Body, b: &'b Body, static_tree: &Tree, dynamic_tree: &Tree, base: f32, max_margin: f32, dt: f32) -> Pre<'b> {
+    let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
+    let fa = fat_of(static_tree, dynamic_tree, a);
+    let fb = fat_of(static_tree, dynamic_tree, b);
+    if !fa.overlaps(&fb) {
+        out.apart = true;
+        return Pre::Done(out);
+    }
+    let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
+    let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
+    // Speculative contacts reach as far as the pair can close in one step (at least the base
+    // distance), so a fast approach is caught before it overlaps.
+    let closing = (a.desc.velocity - b.desc.velocity).length() + a.desc.angular_velocity.length() * a.outer_radius + b.desc.angular_velocity.length() * b.outer_radius;
+    let margin = (base + closing * dt).min(max_margin);
+    // Bounding spheres apart: no points (cheap early out).
+    let reach = a.outer_radius + b.outer_radius + margin;
+    if crate::math::len_sq(a.center - b.center) > reach * reach {
+        return Pre::Done(out);
+    }
+    Pre::Test(PairTest { a: &ca.shape, pa, b: &cb.shape, pb, margin, trigger: c.trigger, sat: c.sat })
 }
 
 /// Pairs per narrowphase thread at least (fewer run on the calling thread: starting threads
