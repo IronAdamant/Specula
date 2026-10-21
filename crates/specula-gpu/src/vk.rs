@@ -163,6 +163,7 @@ pub const ST_BUFFER_DEVICE_ADDRESS_INFO: VkStructureType = 1_000_244_001;
 pub const ST_PHYSICAL_DEVICE_FEATURES_2: VkStructureType = 1_000_059_000;
 pub const ST_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2: VkStructureType = 1_000_059_006;
 pub const ST_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: VkStructureType = 1_000_237_000;
+pub const ST_MEMORY_BARRIER_2: VkStructureType = 1_000_314_000;
 pub const ST_BUFFER_MEMORY_BARRIER_2: VkStructureType = 1_000_314_001;
 pub const ST_IMAGE_MEMORY_BARRIER_2: VkStructureType = 1_000_314_002;
 pub const ST_DEPENDENCY_INFO: VkStructureType = 1_000_314_003;
@@ -1140,6 +1141,16 @@ pub struct VkSubmitInfo2 {
     pub p_command_buffer_infos: *const VkCommandBufferSubmitInfo,
     pub signal_semaphore_info_count: u32,
     pub p_signal_semaphore_infos: *const VkSemaphoreSubmitInfo,
+}
+
+#[repr(C)]
+pub struct VkMemoryBarrier2 {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub src_stage_mask: VkFlags64,
+    pub src_access_mask: VkFlags64,
+    pub dst_stage_mask: VkFlags64,
+    pub dst_access_mask: VkFlags64,
 }
 
 #[repr(C)]

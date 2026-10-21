@@ -28,7 +28,7 @@
 //! Engine code bounds what it queues per frame (bytes and time, perf.toml `[streaming]`), so a
 //! batch is a few MB at most; an item larger than the arena gets its own staging buffer.
 
-use crate::device::{buffer_barrier, image_barrier, Buffer, Device, Image};
+use crate::device::{image_barrier, Buffer, Device, Image};
 use crate::vk::*;
 use crate::{GpuError, MemoryKind};
 use std::collections::VecDeque;
@@ -376,10 +376,22 @@ impl Uploads {
         if self.recording.is_none() && self.retired_now.is_empty() {
             return Ok(());
         }
-        // An empty batch when only retirements are waiting (each copy carries its own barrier).
+        // An empty batch when only retirements are waiting.
         self.recording_cmd(dev)?;
         let i = self.recording.take().expect("recording");
         let slot = &mut self.slots[i];
+        // Every later vertex and index read (frames submitted after this batch, on the same
+        // queue) sees the batch's buffer copies: one barrier for all of them.
+        {
+            let _z = specula_core::profile::zone("vk.record");
+            dev.memory_barrier(
+                slot.cmd,
+                VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT,
+            );
+        }
         let ended = dev.end(slot.cmd).and_then(|()| dev.submit(slot.cmd, None, None, slot.fence));
         if let Err(e) = ended {
             // Nothing was queued: whatever the batch copies into is unusable, so wait for the GPU
@@ -532,24 +544,13 @@ fn fence_signaled(dev: &Device, fence: VkFence) -> bool {
 }
 
 /// Records the copy of a staged mesh (`total` bytes at `staged`) into `buffer` at `at`.
+/// Records a staged buffer copy. No barrier per copy: [`Uploads::flush`] ends a batch with one
+/// memory barrier for all of them (one driver call per batch, not two per mesh).
 pub(crate) fn record_buffer_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Staged, buffer: VkBuffer, at: u64, total: u64) {
+    let _z = specula_core::profile::zone("vk.record");
     let region = VkBufferCopy { src_offset: staged.offset, dst_offset: at, size: total };
     // SAFETY: recording; the staging range and the destination buffer hold at least `total` bytes.
     unsafe { (dev.fns.cmd_copy_buffer)(cmd, staged.buffer, buffer, 1, &region) };
-    // Every later vertex and index read (frames submitted after this batch) sees the copy.
-    dev.barrier(
-        cmd,
-        &[buffer_barrier_range(
-            buffer,
-            at,
-            total,
-            VK_PIPELINE_STAGE_2_COPY_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
-            VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT,
-        )],
-        &[],
-    );
 }
 
 /// Records the copies of a staged texture's levels (`regions`, offsets relative to the staged
@@ -591,11 +592,6 @@ pub(crate) fn record_image_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Sta
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         )],
     );
-}
-
-/// [`buffer_barrier`] for one range of a buffer.
-fn buffer_barrier_range(buffer: VkBuffer, offset: u64, size: u64, src_stage: VkFlags64, src_access: VkFlags64, dst_stage: VkFlags64, dst_access: VkFlags64) -> VkBufferMemoryBarrier2 {
-    VkBufferMemoryBarrier2 { offset, size, ..buffer_barrier(buffer, src_stage, src_access, dst_stage, dst_access) }
 }
 
 #[cfg(test)]

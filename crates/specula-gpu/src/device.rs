@@ -645,6 +645,32 @@ impl Device {
         Ok(())
     }
 
+    /// One global memory barrier: everything `src` wrote (in `src_stage`) is visible to `dst`
+    /// accesses in `dst_stage` of anything recorded or submitted after it.
+    pub fn memory_barrier(&self, cmd: VkCommandBuffer, src_stage: VkFlags64, src: VkFlags64, dst_stage: VkFlags64, dst: VkFlags64) {
+        let barrier = VkMemoryBarrier2 {
+            s_type: ST_MEMORY_BARRIER_2,
+            p_next: ptr::null(),
+            src_stage_mask: src_stage,
+            src_access_mask: src,
+            dst_stage_mask: dst_stage,
+            dst_access_mask: dst,
+        };
+        let info = VkDependencyInfo {
+            s_type: ST_DEPENDENCY_INFO,
+            p_next: ptr::null(),
+            dependency_flags: 0,
+            memory_barrier_count: 1,
+            p_memory_barriers: (&barrier as *const VkMemoryBarrier2).cast(),
+            buffer_memory_barrier_count: 0,
+            p_buffer_memory_barriers: ptr::null(),
+            image_memory_barrier_count: 0,
+            p_image_memory_barriers: ptr::null(),
+        };
+        // SAFETY: `cmd` is recording; `barrier` outlives the call.
+        unsafe { (self.fns.cmd_pipeline_barrier2)(cmd, &info) };
+    }
+
     pub fn barrier(&self, cmd: VkCommandBuffer, buffers: &[VkBufferMemoryBarrier2], images: &[VkImageMemoryBarrier2]) {
         let info = VkDependencyInfo {
             s_type: ST_DEPENDENCY_INFO,
