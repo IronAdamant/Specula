@@ -1527,6 +1527,32 @@ pub(crate) mod tests {
         assert_eq!(knocked_over(true).0, hull);
     }
 
+    /// Getting up is content: the shambler's graph has a getup state that blends from where the
+    /// body lay to standing (0.8 s) and holds it a moment before `act` takes over (no snap).
+    #[test]
+    fn the_shambler_gets_up_before_it_walks_on() {
+        let (mut w, id) = shambler_world();
+        let set_param = |w: &mut World, name: &str, v: bool, at: f64| {
+            w.set_clock_s(at);
+            let mut play = specula_anim::play::GraphPlay::new("creature");
+            play.set_param(name, Value::Bool(v));
+            w.update(&EntityKey::Id(id), UpdateSpec { anim: Some(Some(crate::world::AnimSpec::graph(play))), ..UpdateSpec::default() }, "t").unwrap();
+        };
+        set_param(&mut w, "ragdoll", true, 1.0);
+        set_param(&mut w, "ragdoll", false, 2.0);
+        let e = w.get(id).unwrap();
+        let set = crate::anim::write_set_of(&w, e).expect("the shambler's set");
+        let a = e.anim.as_ref().unwrap();
+        let gp = a.graph.as_ref().unwrap();
+        let g = Graphed { set: &set, graph: set.graph(&gp.graph).unwrap(), scale: 1.0 };
+        let timing = Timing { anchor: a.start.unwrap_or(0.0), speed: a.speed };
+        let mut sc = specula_anim::play::Scratch::default();
+        let top = |t: f64, sc: &mut specula_anim::play::Scratch| specula_anim::play::state_at(g, gp, timing, t, sc)[0].stack.last().unwrap().state.clone();
+        assert_eq!(top(2.1, &mut sc), "getup");
+        assert_eq!(top(2.7, &mut sc), "getup", "it stands a moment");
+        assert_eq!(top(3.2, &mut sc), "move", "then walks on");
+    }
+
     /// Review round 2, finding 2 (probe orphan.py): a ragdoll whose start fails partway (a
     /// budget, a shape) leaves nothing behind, and a flat hull is refused as data.
     #[test]

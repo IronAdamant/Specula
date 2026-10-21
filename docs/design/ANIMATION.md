@@ -277,7 +277,10 @@ reading the world's external poses (`World::external_pose`, `models.rs`). Joints
   (it already follows the animation). Measured: within 10° of the walk at every joint; a 21 N·s blow to the shambler's
   reaching arm (strength 0.6) knocks it 9° further off, and it recovers within 1.5 s.
 - **Off** (getting up): with `relocate` (default) the entity moves under the pelvis, the last pose stays the external
-  pose for 2 s (so the graph's transition out blends from where the body lies), and the parts go.
+  pose for 2 s (so the graph's transition out blends from where the body lies), and the parts go. How it gets up is
+  content, not code: the shambler's graph has a `getup` state (`ragdoll → getup when !ragdoll`, a 0.8 s blend into its
+  idle, held until a quarter of the idle cycle, 0.8 s, before `act` takes over), so it rises instead of snapping into
+  its walk.
 - **Saved vs transient.** Saved entities' ragdolls are simulation (hashed; twin runs step the same). Transient ones are
   cosmetic (they land on static colliders but never touch the simulation or its hash). Like warm starts, ragdoll bodies
   aren't saved in world files: a loaded world's ragdoll starts again from the animation.
