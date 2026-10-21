@@ -42,6 +42,20 @@ fn checker() -> Vec<u8> {
     (0..16 * 16).flat_map(|i| if (i % 16 / 4 + i / 64) % 2 == 0 { [230, 40, 40, 255] } else { [40, 40, 230, 255] }).collect()
 }
 
+/// Renders `draws` until every retired resource is freed. Frees are bounded per frame (a time
+/// budget, so a loaded machine frees fewer a frame) and wait for the GPU: how many frames that
+/// takes isn't fixed, only that it ends.
+fn drain(gpu: &mut Gpu, target: specula_gpu::TargetId, draws: &[DrawItem]) -> u32 {
+    for frames in 1..=500 {
+        render(gpu, target, draws);
+        if gpu.upload_stats().retired_pending == 0 {
+            return frames;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("retired resources never freed: {:?}", gpu.upload_stats());
+}
+
 fn render(gpu: &mut Gpu, target: specula_gpu::TargetId, draws: &[DrawItem]) -> Vec<u8> {
     gpu.render(target, &frame(draws)).unwrap();
     gpu.read_rgba8(target).unwrap()
@@ -92,9 +106,7 @@ fn queued_uploads_draw_like_synchronous_ones() {
         assert!(!gpu.has_texture(q_tex), "{test}: a retired texture's id is gone at once");
         let still = render(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
         assert_eq!(still, expected);
-        for _ in 0..4 {
-            render(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
-        }
+        drain(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
         let s = gpu.upload_stats();
         assert_eq!(s.freed, 3, "{test}: retired resources are freed: {s:?}");
         assert_eq!(s.retired_pending, 0, "{test}: {s:?}");
@@ -105,9 +117,7 @@ fn queued_uploads_draw_like_synchronous_ones() {
         // A synchronous destroy of a mesh whose copy is still queued settles the batch first.
         let doomed = gpu.queue_mesh(&cv, &ci, &MeshStreams::default()).unwrap();
         gpu.destroy_mesh(doomed);
-        render(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
-        render(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
-        assert_eq!(gpu.upload_stats().retired_pending, 0);
+        drain(&mut gpu, target, &scene(sync_cube, sync_quad, sync_tex));
         let errors = validation_errors(test, gpu);
         assert!(errors.is_empty(), "{test}: {errors:#?}");
     });
@@ -168,9 +178,7 @@ fn large_and_many_batches_stay_correct() {
             gpu.retire_mesh(m);
         }
         gpu.retire_mesh(big);
-        render(&mut gpu, target, &[]);
-        render(&mut gpu, target, &[]);
-        assert_eq!(gpu.upload_stats().retired_pending, 0);
+        drain(&mut gpu, target, &[]);
         let errors = validation_errors(test, gpu);
         assert!(errors.is_empty(), "{test}: {errors:#?}");
     });
