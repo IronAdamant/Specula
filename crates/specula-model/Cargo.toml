@@ -12,3 +12,6 @@ specula-core = { workspace = true }
 
 [dev-dependencies]
 specula-gpu = { workspace = true }
+
+[lints]
+workspace = true

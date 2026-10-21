@@ -1,6 +1,8 @@
 //! Animation graphs (A3): parsing and its errors, state machines resolved as pure functions of
 //! time, settling, blend trees, layers, triggers, events, root motion and IK inside a graph.
 
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
+
 use specula_anim::graph::{AnimGraph, Value};
 use specula_anim::ik::Flat;
 use specula_anim::math::{math3, Affine};

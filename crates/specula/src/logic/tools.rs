@@ -110,7 +110,11 @@ pub fn definitions() -> Vec<ToolDef> {
                           a build that fails or can't load leaves the running one in place. Compiler errors and warnings come back \
                           as data (level, code, file, line, column, label, notes, suggested fixes with their applicability); \
                           fix:true applies rustc's MachineApplicable fixes inside the module folder (as cargo fix) and rebuilds. \
-                          check:true only type-checks (fast, no reload). One Cargo runs at a time engine-wide; identical queued \
+                          check:true only type-checks (fast, no reload). The module's sources are also checked against the \
+                          determinism rules (platform maths such as f32::sin instead of dmath, wall-clock time, HashMap, threads, \
+                          static mut / thread_local): each hit is a warning with code determinism::<rule> and a help note \
+                          (determinism_warnings counts them; `// determinism: allowed: <why>` marks a deliberate use). \
+                          One Cargo runs at a time engine-wide; identical queued \
                           requests from several agents share one build (requests_merged). Timings in timings_ms. See \
                           docs/design/MODULES.md."
                 .into(),
@@ -337,6 +341,8 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
         ("fresh", Json::from(r.fresh)),
         ("errors", Json::from(r.errors())),
         ("warnings", Json::from(r.warnings())),
+        // Of the warnings: the module's own sources breaking the determinism rules.
+        ("determinism_warnings", Json::from(r.determinism_warnings())),
         ("fixable", Json::from(r.fixable())),
         ("diagnostics", Json::arr(shown)),
     ];

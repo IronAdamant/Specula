@@ -13,6 +13,8 @@
 //! the slab), `--ascii` (print the final state), `--journal FILE` (write a self-checking replay
 //! recording), `--replay FILE` (replay a recording and verify its final tick and hash).
 
+#![allow(clippy::disallowed_methods, reason = "a test and benchmark harness: wall-clock timings and parallel runs, each run deterministic on its own")]
+
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;

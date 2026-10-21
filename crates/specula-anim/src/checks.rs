@@ -258,7 +258,7 @@ pub struct Check {
 
 impl Check {
     pub fn to_json(&self) -> Json {
-        let r = |x: f32| Json::Num((x as f64 * 1000.0).round() / 1000.0);
+        let r = |x: f32| Json::Num(specula_core::dmath::round_f64(x as f64 * 1000.0) / 1000.0);
         let mut f = vec![
             ("check", Json::from(self.check)),
             ("subject", Json::Str(self.subject.clone())),
@@ -393,7 +393,7 @@ fn push_frame(out: &mut Sampled, set: &AnimSet, pose: &Pose, model: &[Affine], t
 }
 
 fn frames_for(duration: f32, hz: f32) -> usize {
-    ((duration * hz).ceil() as usize).clamp(2, MAX_FRAMES)
+    (specula_core::dmath::ceil(duration * hz) as usize).clamp(2, MAX_FRAMES)
 }
 
 /// A clip moving over the ground at its natural speed.
@@ -871,7 +871,7 @@ fn leap_apex(ctx: &Ctx, clip: &crate::clip::Clip, s: &Sampled, rate: f64, out: &
     let ev = |n: &str| clip.events.iter().find(|e| e.name == n);
     let (Some(up), Some(down)) = (ev("takeoff"), ev("land")) else { return };
     let Ok(spec) = up.data.trim().parse::<f32>() else { return };
-    let frame = |time: f32| ((time as f64 / clip.duration.max(1e-6) as f64 / rate / s.dt as f64).round() as usize).min(s.heads.len().saturating_sub(1));
+    let frame = |time: f32| (specula_core::dmath::round_f64(time as f64 / clip.duration.max(1e-6) as f64 / rate / s.dt as f64) as usize).min(s.heads.len().saturating_sub(1));
     let (k0, k1) = (frame(up.time), frame(down.time));
     if k1 <= k0 {
         return;

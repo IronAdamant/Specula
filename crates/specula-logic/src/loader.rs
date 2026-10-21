@@ -9,6 +9,7 @@
 use specula_sdk::abi::{self, status, HostApi, ModuleApi, Slice};
 use specula_sdk::{Module, Value};
 use specula_sys::dynlib::Library;
+use specula_sys::fpenv;
 use std::ffi::c_void;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -65,6 +66,12 @@ pub struct CallOutcome {
     pub reply: Value,
     /// Requests the module made.
     pub requests: u64,
+    /// The module left the floating-point control register changed (found when it made a request
+    /// or returned, and restored there; DETERMINISM.md rule 6): the first change seen.
+    pub fp_changed: Option<fpenv::Drift>,
+    /// The register was already changed before the call began (by something other than this
+    /// module; restored before calling it).
+    pub fp_before: Option<fpenv::Drift>,
 }
 
 impl CallOutcome {
@@ -114,7 +121,7 @@ impl ModuleCode {
         let n = COPIES.fetch_add(1, Ordering::Relaxed);
         let copy = copies_dir.join(format!("{stem}-{}-{n}.{ext}", std::process::id()));
         std::fs::write(&copy, &bytes).map_err(|e| LoadError::new("copy_failed", &copy, format!("cannot write the copy: {e}")))?;
-        let build_hash = specula_core::hash::hash_bytes(&bytes);
+        let build_hash = build_hash_of(&bytes);
         let fail = |e: LoadError| {
             let _ = std::fs::remove_file(&copy);
             e
@@ -208,9 +215,15 @@ impl ModuleCode {
     /// Calls entry `entry` with `input`; the module's requests go to `handler`, at most
     /// `max_requests` of them (past that each is refused with `too_many_requests` and the call
     /// fails).
+    ///
+    /// The floating-point environment is guarded on the way in and out, and whenever the module
+    /// calls back: the module starts in the default environment, the engine's handler always runs
+    /// in it, and a module that changes it is found, put right and reported
+    /// ([`CallOutcome::fp_changed`]).
     pub fn call(&self, entry: u32, input: &Value, handler: &mut dyn Handler, max_requests: u64) -> CallOutcome {
         let bytes = if input.is_null() { Vec::new() } else { input.encode() };
-        let mut cx = CallCtx { handler, answer: Vec::new(), reply: None, requests: 0, max_requests, overflowed: false, bad_reply: None };
+        let fp_before = fpenv::check_and_restore();
+        let mut cx = CallCtx { handler, answer: Vec::new(), reply: None, requests: 0, max_requests, overflowed: false, bad_reply: None, fp_changed: None };
         let host = HostApi {
             abi_version: abi::ABI_VERSION,
             api_size: std::mem::size_of::<HostApi>() as u32,
@@ -222,16 +235,20 @@ impl ModuleCode {
         // stays loaded as long as `self`; `host` and its context `cx` live until it returns, and
         // `bytes` is our own buffer.
         let status = unsafe { (self.call)(&host, entry, bytes.as_ptr(), bytes.len()) };
+        if let Some(d) = fpenv::check_and_restore() {
+            cx.fp_changed.get_or_insert(d);
+        }
+        let fp_changed = cx.fp_changed;
         let reply = match (cx.bad_reply.take(), cx.reply.take()) {
-            (Some(e), _) => return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests },
+            (Some(e), _) => return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests, fp_changed, fp_before },
             (None, Some(r)) => Value::decode(&r).unwrap_or_else(|e| error("bad_reply", &format!("the module's reply was not a value: {e}"))),
             (None, None) => Value::Null,
         };
         if cx.overflowed {
             let e = error("too_many_requests", &format!("the module made more than {max_requests} requests in one call"));
-            return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests };
+            return CallOutcome { status: status::ERROR, reply: e, requests: cx.requests, fp_changed, fp_before };
         }
-        CallOutcome { status, reply, requests: cx.requests }
+        CallOutcome { status, reply, requests: cx.requests, fp_changed, fp_before }
     }
 }
 
@@ -243,6 +260,79 @@ impl Drop for ModuleCode {
             let _ = std::fs::remove_file(copy);
         }
     }
+}
+
+/// A library's build hash: a hash of its bytes, with the link time stamps a Windows (PE) linker
+/// writes left out (the COFF header's TimeDateStamp, the optional header's CheckSum, and the
+/// export and debug directories' TimeDateStamps). Two builds of the same source then hash the
+/// same, so a replay recorded with one still matches the other (DETERMINISM.md rule 8: the build
+/// is part of a run's input), while any change to the code changes it. Other formats (ELF) are
+/// hashed whole.
+pub fn build_hash_of(bytes: &[u8]) -> u64 {
+    match pe_stamp_offsets(bytes) {
+        Some(offsets) if !offsets.is_empty() => {
+            let mut b = bytes.to_vec();
+            for (at, len) in offsets {
+                b[at..at + len].fill(0);
+            }
+            specula_core::hash::hash_bytes(&b)
+        }
+        _ => specula_core::hash::hash_bytes(bytes),
+    }
+}
+
+/// Where a PE image's time stamps and checksum are: `(file offset, length)`, every range inside
+/// `b`; `None` if it isn't a PE image.
+fn pe_stamp_offsets(b: &[u8]) -> Option<Vec<(usize, usize)>> {
+    let u16_at = |o: usize| b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as usize);
+    let u32_at = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize);
+    if b.get(..2) != Some(b"MZ") {
+        return None;
+    }
+    let pe = u32_at(0x3c)?;
+    if b.get(pe..pe + 4) != Some(b"PE\0\0") {
+        return None;
+    }
+    let coff = pe + 4;
+    let sections = u16_at(coff + 2)?;
+    let opt_size = u16_at(coff + 16)?;
+    let opt = coff + 20;
+    let (dirs, n_dirs) = match u16_at(opt)? {
+        0x10b => (opt + 96, u32_at(opt + 92)?),  // PE32
+        0x20b => (opt + 112, u32_at(opt + 108)?), // PE32+
+        _ => return None,
+    };
+    let mut out = vec![(coff + 4, 4), (opt + 64, 4)];
+    // RVA → file offset through the section table.
+    let table = opt + opt_size;
+    let file_of = |rva: usize| -> Option<usize> {
+        (0..sections.min(96)).find_map(|i| {
+            let s = table + i * 40;
+            let (vsize, vaddr, raw_size, raw_at) = (u32_at(s + 8)?, u32_at(s + 12)?, u32_at(s + 16)?, u32_at(s + 20)?);
+            (rva >= vaddr && rva < vaddr + vsize.max(raw_size)).then(|| raw_at + (rva - vaddr))
+        })
+    };
+    let dir = |i: usize| -> Option<(usize, usize)> { (i < n_dirs).then(|| Some((u32_at(dirs + i * 8)?, u32_at(dirs + i * 8 + 4)?))).flatten() };
+    // The export directory's TimeDateStamp (directory 0, +4).
+    if let Some((rva, size)) = dir(0).filter(|(rva, size)| *rva != 0 && *size >= 40) {
+        if let Some(at) = file_of(rva).filter(|at| at + 8 <= b.len()) {
+            out.push((at + 4, 4));
+        }
+        let _ = size;
+    }
+    // Each debug directory entry's TimeDateStamp (directory 6: 28-byte entries, +4).
+    if let Some((rva, size)) = dir(6).filter(|(rva, _)| *rva != 0) {
+        if let Some(at) = file_of(rva) {
+            for k in 0..(size / 28).min(64) {
+                let e = at + k * 28;
+                if e + 8 <= b.len() {
+                    out.push((e + 4, 4));
+                }
+            }
+        }
+    }
+    out.retain(|(at, len)| at + len <= b.len());
+    Some(out)
 }
 
 /// An error map `{code, message}`.
@@ -276,6 +366,8 @@ struct CallCtx<'a> {
     max_requests: u64,
     overflowed: bool,
     bad_reply: Option<Value>,
+    /// The first floating-point environment change the module left (see [`ModuleCode::call`]).
+    fp_changed: Option<fpenv::Drift>,
 }
 
 unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usize, out: *mut Slice) -> u32 {
@@ -286,6 +378,11 @@ unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usi
     // until the call returns, the module calls back only on the calling thread, and `call` does
     // not touch it while the module runs.
     let cx = unsafe { &mut *ctx.cast::<CallCtx<'_>>() };
+    // The engine's handler runs in the default floating-point environment, whatever the module
+    // set for itself.
+    if let Some(d) = fpenv::check_and_restore() {
+        cx.fp_changed.get_or_insert(d);
+    }
     let bytes: &[u8] = if req_len == 0 {
         &[]
     } else {
@@ -403,6 +500,86 @@ mod tests {
         assert_eq!(hook.reply, Value::map().with("a", 1).with("tick", 5));
         let unknown = code.call(77, &Value::Null, &mut h, 100);
         assert_eq!(unknown.status, status::UNKNOWN_ENTRY);
+    }
+
+    /// A module that changes the rounding mode: the engine's handler still runs in the default
+    /// environment, the call returns with it restored, and the change is reported.
+    #[test]
+    fn a_module_changing_the_rounding_mode_is_restored_and_reported() {
+        std::thread::spawn(|| {
+            if !fpenv::SUPPORTED {
+                eprintln!("skipped: no floating-point control register is checked on this target");
+                return;
+            }
+            struct Watch(Vec<Option<u64>>);
+            impl Handler for Watch {
+                fn request(&mut self, _req: &Value) -> Result<Value, Value> {
+                    self.0.push(fpenv::control());
+                    Ok(Value::Null)
+                }
+            }
+            let code = ModuleCode::of::<crate::fixtures::FlipRounding>();
+            let mut h = Watch(Vec::new());
+            let out = code.call(abi::entry::TICK, &Value::map().with("tick", 3), &mut h, 100);
+            assert!(out.ok(), "{out:?}");
+            assert_eq!(h.0, vec![Some(fpenv::EXPECTED)], "the handler ran in the default environment");
+            let d = out.fp_changed.expect("the change is reported");
+            assert_eq!(d.rounding(), fpenv::Rounding::TowardZero);
+            assert_eq!(out.fp_before, None);
+            assert_eq!(fpenv::control(), Some(fpenv::EXPECTED), "restored after the call");
+            // The module itself starts each call in the default environment.
+            let hook = code.call(abi::entry::HOOK, &Value::map().with("hook", "fp_probe"), &mut h, 100);
+            assert_eq!(hook.reply, Value::Int(i64::from((1.0f32 / 3.0).to_bits())), "1/3 to nearest inside the module");
+            assert!(hook.fp_changed.is_some());
+            // Changed before a call (a driver, say): restored first and reported apart.
+            // SAFETY: no float code runs before the call below restores it.
+            unsafe { fpenv::set_control(fpenv::rounding_bits(fpenv::Rounding::Up).unwrap()) };
+            let out = code.call(abi::entry::DESCRIBE, &Value::Null, &mut h, 100);
+            assert_eq!(out.fp_before.map(|d| d.rounding()), Some(fpenv::Rounding::Up));
+            assert_eq!(out.fp_changed, None, "describe leaves it alone");
+            assert_eq!(fpenv::control(), Some(fpenv::EXPECTED));
+        })
+        .join()
+        .expect("test thread");
+    }
+
+    /// A minimal PE32+ image with one section holding an export directory.
+    fn tiny_pe(stamp: u32, export_stamp: u32, code: u8) -> Vec<u8> {
+        let mut b = vec![0u8; 0x400];
+        b[..2].copy_from_slice(b"MZ");
+        b[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        b[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let coff = 0x84;
+        b[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes()); // one section
+        b[coff + 4..coff + 8].copy_from_slice(&stamp.to_le_bytes());
+        b[coff + 16..coff + 18].copy_from_slice(&240u16.to_le_bytes()); // optional header size
+        let opt = coff + 20;
+        b[opt..opt + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        b[opt + 64..opt + 68].copy_from_slice(&stamp.wrapping_mul(7).to_le_bytes()); // checksum
+        b[opt + 108..opt + 112].copy_from_slice(&16u32.to_le_bytes());
+        b[opt + 112..opt + 116].copy_from_slice(&0x1000u32.to_le_bytes()); // export dir RVA
+        b[opt + 116..opt + 120].copy_from_slice(&40u32.to_le_bytes());
+        let sec = opt + 240;
+        b[sec + 8..sec + 12].copy_from_slice(&0x200u32.to_le_bytes());
+        b[sec + 12..sec + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        b[sec + 16..sec + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        b[sec + 20..sec + 24].copy_from_slice(&0x200u32.to_le_bytes());
+        b[0x204..0x208].copy_from_slice(&export_stamp.to_le_bytes());
+        b[0x300] = code;
+        b
+    }
+
+    #[test]
+    fn build_hashes_ignore_link_time_stamps_but_not_code() {
+        let a = build_hash_of(&tiny_pe(1, 2, 0x90));
+        assert_eq!(a, build_hash_of(&tiny_pe(1_700_000_000, 1_700_000_001, 0x90)), "only the time stamps differ");
+        assert_ne!(a, build_hash_of(&tiny_pe(1, 2, 0xc3)), "the code differs");
+        let offsets = pe_stamp_offsets(&tiny_pe(1, 2, 0)).unwrap();
+        assert_eq!(offsets, vec![(0x88, 4), (0x84 + 20 + 64, 4), (0x204, 4)]);
+        // Not a PE image (an ELF library, a damaged file): the whole thing.
+        let elf = b"\x7fELF and the rest".to_vec();
+        assert_eq!(build_hash_of(&elf), specula_core::hash::hash_bytes(&elf));
+        assert_eq!(pe_stamp_offsets(b"MZ"), None, "truncated headers are not read past the end");
     }
 
     #[test]

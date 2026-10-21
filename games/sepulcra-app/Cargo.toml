@@ -30,3 +30,6 @@ specula-platform = { workspace = true }
 specula-protocol = { workspace = true }
 specula-text = { workspace = true }
 specula-ui = { workspace = true }
+
+[lints]
+workspace = true

@@ -17,6 +17,8 @@
 //! [`controls`] (all input), [`hud`] (the `specula-ui` HUD on the GPU overlay), [`audio`] (sound),
 //! [`tools`] (agents).
 
+#![forbid(unsafe_code)]
+
 pub mod audio;
 pub mod controls;
 mod ents;

@@ -245,7 +245,7 @@ impl CrowdAgent {
     }
 
     pub fn to_json(&self) -> Json {
-        let r = |v: f32| Json::from((f64::from(v) * 1000.0).round() / 1000.0);
+        let r = |v: f32| Json::from(specula_core::dmath::round_f64(f64::from(v) * 1000.0) / 1000.0);
         let v = |p: Vec3| Json::arr([r(p.x), r(p.y), r(p.z)]);
         Json::obj([
             ("status", Json::from(self.status.name())),

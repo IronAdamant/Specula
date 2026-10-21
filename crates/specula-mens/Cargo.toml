@@ -10,3 +10,6 @@ rust-version.workspace = true
 
 [dependencies]
 specula-core = { workspace = true }
+
+[lints]
+workspace = true

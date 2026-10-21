@@ -82,6 +82,8 @@
 //! alpha linear), CCW-outward triangles, and `parts` = one contiguous index range per material
 //! preset (one draw each).
 
+#![forbid(unsafe_code)]
+
 pub mod collider;
 pub mod dmath;
 pub mod error;

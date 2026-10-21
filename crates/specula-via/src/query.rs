@@ -708,7 +708,7 @@ impl NavMesh {
 
 /// A path as JSON (corners rounded to a millimetre).
 pub fn path_json(p: &PathResult, max_corners: usize) -> Json {
-    let r = |v: f32| Json::from((f64::from(v) * 1000.0).round() / 1000.0);
+    let r = |v: f32| Json::from(specula_core::dmath::round_f64(f64::from(v) * 1000.0) / 1000.0);
     let corners: Vec<Json> = p.corners.iter().take(max_corners).map(|c| Json::arr([r(c.x), r(c.y), r(c.z)])).collect();
     let out = Json::obj([
         ("status", Json::from(p.status.name())),
@@ -755,7 +755,7 @@ mod tests {
         assert!(p.corners.iter().any(|c| c.z >= 6.25), "corners {:?}", p.corners);
         // String pulling: few corners, length a little over the detour.
         assert!(p.corners.len() <= 6, "corners {:?}", p.corners);
-        let direct = 2.0 * ((5.0f32).powi(2) + (6.3f32).powi(2)).sqrt();
+        let direct = 2.0 * (5.0f32 * 5.0 + 6.3f32 * 6.3).sqrt();
         assert!(p.length >= direct - 0.05 && p.length < direct + 1.0, "length {} vs {}", p.length, direct);
         // Every corner is on the navmesh.
         for c in &p.corners {

@@ -836,14 +836,19 @@ impl Mesh {
     /// `cmd` is recording and the buffer outlives the commands.
     pub unsafe fn bind(&self, dev: &Device, cmd: VkCommandBuffer) {
         let offset: VkDeviceSize = self.base;
-        (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &self.buffer.handle, &offset);
-        if let Some(o) = self.skin_offset {
-            (dev.fns.cmd_bind_vertex_buffers)(cmd, 1, 1, &self.buffer.handle, &o);
+        // SAFETY: the caller guarantees `cmd` is recording and the buffer outlives the commands;
+        // the handle and offsets are this mesh's own, and the pointers are to locals that live
+        // through each call.
+        unsafe {
+            (dev.fns.cmd_bind_vertex_buffers)(cmd, 0, 1, &self.buffer.handle, &offset);
+            if let Some(o) = self.skin_offset {
+                (dev.fns.cmd_bind_vertex_buffers)(cmd, 1, 1, &self.buffer.handle, &o);
+            }
+            if let Some(o) = self.surface_offset {
+                (dev.fns.cmd_bind_vertex_buffers)(cmd, 2, 1, &self.buffer.handle, &o);
+            }
+            (dev.fns.cmd_bind_index_buffer)(cmd, self.buffer.handle, self.index_offset, VK_INDEX_TYPE_UINT32);
         }
-        if let Some(o) = self.surface_offset {
-            (dev.fns.cmd_bind_vertex_buffers)(cmd, 2, 1, &self.buffer.handle, &o);
-        }
-        (dev.fns.cmd_bind_index_buffer)(cmd, self.buffer.handle, self.index_offset, VK_INDEX_TYPE_UINT32);
     }
 }
 

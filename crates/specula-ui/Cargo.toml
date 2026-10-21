@@ -14,3 +14,6 @@ specula-text = { workspace = true }
 specula-input = { workspace = true }
 specula-platform = { workspace = true }
 specula-gpu = { workspace = true }
+
+[lints]
+workspace = true

@@ -2980,7 +2980,7 @@ impl World {
         if let Some(current) = &e.model {
             let seed = match change.look.seed.take() {
                 None => None,
-                Some(s) if s >= 0.0 && s.fract() == 0.0 && s <= MAX_MODEL_SEED as f32 => Some(s as u64),
+                Some(s) if s >= 0.0 && specula_core::dmath::fract(s) == 0.0 && s <= MAX_MODEL_SEED as f32 => Some(s as u64),
                 Some(_) => {
                     return Err(invalid("seed", format!("'seed' of a model must be an integer 0..{MAX_MODEL_SEED}")));
                 }

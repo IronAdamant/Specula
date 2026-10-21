@@ -85,6 +85,56 @@ fn capture(stream: &mut Streamer, gpu: &mut Gpu, models: &mut GpuModels, shared:
     stream.waiting_in(&[(cam, 640, 360)], world, models)
 }
 
+/// What streaming has done so far: proxy builds and uploads, model uploads, passes. A wait that
+/// sees none of it change for [`STUCK`] fails: the work is stuck, not slow.
+fn progress(stream: &Streamer, gpu: &Gpu, models: &GpuModels) -> String {
+    let j = stream.json(gpu, models);
+    let h = j.get("hlod").cloned().unwrap_or(Json::Null);
+    let pick = |v: &Json, k: &str| v.get(k).map_or_else(String::new, Json::to_string);
+    let totals = j.get("totals").cloned().unwrap_or(Json::Null);
+    ["built", "uploaded", "building", "ready_to_upload", "current"].iter().map(|k| pick(&h, k)).chain([pick(&totals, "uploads"), pick(&j, "passes")]).collect::<Vec<_>>().join(",")
+}
+
+/// How long a wait may see no progress at all before it calls the work stuck (generous: other
+/// sessions share this machine's CPU and GPU).
+const STUCK: Duration = Duration::from_secs(60);
+
+/// Captures (with a frame between each, as the engine runs them) until `done`; fails only when
+/// nothing progresses for [`STUCK`] (or after 600 s in all).
+#[allow(clippy::too_many_arguments)]
+fn wait_until(
+    stream: &mut Streamer,
+    gpu: &mut Gpu,
+    models: &mut GpuModels,
+    shared: &Arc<SharedLibrary>,
+    world: &World,
+    cam: Camera,
+    what: &str,
+    mut done: impl FnMut(&mut Streamer, &GpuModels) -> bool,
+) {
+    let start = Instant::now();
+    let (mut last, mut since) = (String::new(), Instant::now());
+    loop {
+        tick(stream, gpu, models, shared, world);
+        capture(stream, gpu, models, shared, world, cam);
+        if done(stream, models) {
+            return;
+        }
+        let now = progress(stream, gpu, models);
+        if now != last {
+            (last, since) = (now, Instant::now());
+        }
+        assert!(
+            since.elapsed() < STUCK && start.elapsed() < Duration::from_secs(600),
+            "{what}: stuck (no progress for {:?}, {:?} in all): {}",
+            since.elapsed(),
+            start.elapsed(),
+            stream.json(gpu, models)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn draw(world: &World, models: &GpuModels, shapes: &ShapeMeshes, cam: Camera) -> LodStats {
     models.begin_frame(1.0);
     let lathes = LatheMeshes::default();
@@ -188,15 +238,8 @@ fn captures_never_draw_a_changed_cells_old_proxy() {
         stream.draw_capture(&cam, 360, &mut out);
         hlod::covers(&stream.hlod.capture_cover, id)
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
-        if covered(&mut stream, ids[0]) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the far cell gets a proxy: {}", stream.state_json(&gpu, &models, &world, None, 8));
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let first = ids[0];
+    wait_until(&mut stream, &mut gpu, &mut models, &shared, &world, cam, "the far cell gets a proxy", |s, _| covered(s, first));
     for &id in &ids {
         world.update(&EntityKey::Id(id), UpdateSpec { color: Some([0.2, 0.2, 1.0]), ..Default::default() }, "t").unwrap();
     }
@@ -204,15 +247,66 @@ fn captures_never_draw_a_changed_cells_old_proxy() {
     capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
     assert!(!covered(&mut stream, ids[0]), "the old proxy (old colour) is not drawn");
     // The new one comes.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam);
-        if covered(&mut stream, ids[0]) {
+    wait_until(&mut stream, &mut gpu, &mut models, &shared, &world, cam, "a new proxy is built", |s, _| covered(s, first));
+}
+
+/// Integrator's follow-up: a proxy was built and then never uploaded (`ready_to_upload: 1`,
+/// `deferred` 1 every frame). A frame whose own streaming work (filing, the wanted set) had used
+/// its upload budget uploaded nothing, and that frame after frame; and captures with no frame
+/// between them shared one budget forever. Now a frame's first item always goes, and a capture
+/// long after the last frame starts a budget of its own. Deterministic: the budget is spent by
+/// a charge, not by timing.
+#[test]
+fn uploads_progress_when_the_budget_is_spent_before_the_pump() {
+    let Some(mut gpu) = gpu_or_skip("uploads_progress_when_the_budget_is_spent_before_the_pump") else { return };
+    let shared = library();
+    let mut world = world_of(&shared);
+    for i in 0..12 {
+        let mut spec = model("recipes/tombstone.json", Vec3::new((i % 4) as f32 * 3.0, 0.0, 20.0 + (i / 4) as f32 * 3.0), 1.0);
+        spec.model = Some(ModelSpec { recipe: "recipes/tombstone.json".into(), params: Vec::new(), seed: Some(500 + i) });
+        world.spawn(spec, "t").unwrap();
+    }
+    wait_builds(&shared, &mut world);
+    let shapes = ShapeMeshes::upload(&mut gpu).unwrap();
+    let cam = Camera::new(Vec3::new(4.0, 6.0, 0.0), Vec3::new(4.0, 0.0, 24.0), 50.0);
+    let spent = |ms: f64, items: u32| specula::two_d::Used { items, bytes: 0, ms, deferred: 0 };
+    let uploads = |stream: &Streamer, gpu: &Gpu, models: &GpuModels| stream.json(gpu, models).get("totals").and_then(|t| t.get("uploads")).and_then(Json::as_u64).unwrap_or(0);
+
+    // Frames whose other work used the whole budget: each still uploads its first item.
+    let mut models = GpuModels::default();
+    let mut stream = streamer(&mut gpu, &mut models, &[("upload_ms", Json::from(2.0))]);
+    stream.set_window(Some((cam, 1280, 720)));
+    // (Frames until it all arrived; a frame uploads nothing only while every upload batch is
+    // still in flight on a busy GPU, so the cap is time, generous.)
+    let deadline = Instant::now() + STUCK;
+    while Instant::now() < deadline {
+        stream.sync_models(&mut models, &mut gpu, &shared, &world, 0);
+        stream.begin_frame();
+        stream.charge(spent(1.0e6, 0));
+        stream.frame(&mut gpu, &mut models, &shared, &world, 0, true);
+        gpu.flush_uploads().unwrap();
+        if draw(&world, &models, &shapes, cam).not_resident == 0 && stream.json(&gpu, &models).get("pending_builds").and_then(Json::as_u64) == Some(0) {
             break;
         }
-        assert!(Instant::now() < deadline, "a new proxy is built");
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(2));
     }
+    assert!(uploads(&stream, &gpu, &models) > 0, "one item a frame goes: {}", stream.json(&gpu, &models));
+    assert_eq!(draw(&world, &models, &shapes, cam).not_resident, 0, "everything arrives: {}", stream.json(&gpu, &models));
+
+    // Captures with no frame between them, the budget (and the first item) spent long ago: a
+    // capture after FRAME_STALE has a budget of its own.
+    let mut models = GpuModels::default();
+    let mut stream = streamer(&mut gpu, &mut models, &[("upload_ms", Json::from(2.0))]);
+    stream.begin_frame();
+    stream.charge(spent(1.0e6, 1));
+    let deadline = Instant::now() + STUCK;
+    while Instant::now() < deadline {
+        std::thread::sleep(specula::streaming::FRAME_STALE + Duration::from_millis(20));
+        if capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam) == 0 {
+            break;
+        }
+    }
+    assert_eq!(draw(&world, &models, &shapes, cam).not_resident, 0, "captures alone upload: {}", stream.json(&gpu, &models));
 }
 
 /// Review finding 4: residency follows size on screen: a big model beyond radius_m stays on the

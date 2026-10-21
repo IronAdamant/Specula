@@ -133,6 +133,7 @@ pub struct RunSpec {
 }
 
 /// Runs `spec` on `sim` and reports.
+#[allow(clippy::disallowed_methods, reason = "the wall-clock deadline only stops a runaway call; a stopped run is reported as stopped_early, never as a result")]
 pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
     let r = std::sync::Arc::clone(sim.rules());
     let start = sim.tick();

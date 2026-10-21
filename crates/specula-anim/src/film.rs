@@ -1,6 +1,9 @@
 //! Contact-sheet helpers for animation sight (filmstrips): a 5×7 label font, tile blits and
 //! framing, on plain RGBA8 sheets. Rendering the tiles is the caller's (the engine's
 //! `anim_filmstrip`, the `filmstrip` example); this is the part both share.
+//!
+//! Presentation only (framing a camera for pictures), so platform trigonometry is fine here.
+#![allow(clippy::disallowed_methods, reason = "presentation only: contact-sheet camera framing never feeds the simulation")]
 
 use crate::math::{math3, V3};
 
