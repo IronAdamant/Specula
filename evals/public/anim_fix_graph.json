@@ -1,0 +1,394 @@
+{
+ "eval": 1,
+ "id": "anim_fix_graph",
+ "set": "public",
+ "area": "animation",
+ "title": "Fix an animation graph that motion checks flag",
+ "summary": "Motion checks as data: a teammate's edit made the shambler's feet slide and its transitions pop; the agent reads anim_check's errors and repairs the graph in place (journaled, not deleted).",
+ "game": "sepulcra",
+ "setup": [
+  {
+   "as": "animator",
+   "call": "model_build",
+   "args": {
+    "recipe": "recipes/shambler.json"
+   }
+  },
+  {
+   "as": "animator",
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "creature",
+    "patch": {
+     "states": {
+      "move": {
+       "play": "locomotion",
+       "match_speed": null,
+       "speed": 2.2
+      }
+     },
+     "transitions": [
+      {
+       "from": "*",
+       "to": "death",
+       "when": "act == death",
+       "blend": 0.25
+      },
+      {
+       "from": "*",
+       "to": "move",
+       "when": "act == move",
+       "blend": 0
+      },
+      {
+       "from": "*",
+       "to": "idle",
+       "when": "act == idle",
+       "blend": 0.35
+      },
+      {
+       "from": "*",
+       "to": "attack",
+       "when": "act == attack",
+       "blend": 0
+      },
+      {
+       "from": "*",
+       "to": "special",
+       "when": "act == special",
+       "blend": 0.6
+      },
+      {
+       "from": "attack",
+       "to": "attack",
+       "exit": "end",
+       "blend": 0.05
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "brief": "The engine hosts Sepulcra. Another agent (\"animator\") edited the shambler's animation graph \"creature\" (model recipes/shambler.json) live, and the motion checks now fail: anim_check flags foot sliding in the \"move\" state and pops in the transitions idle -> move and move -> attack (check with states [{\"state\": \"move\", \"params\": {\"act\": \"move\", \"speed\": 0.8}}] and transitions [{\"from\": {\"act\": \"idle\"}, \"to\": {\"act\": \"move\", \"speed\": 0.8}}, {\"from\": {\"act\": \"move\", \"speed\": 0.8}, \"to\": {\"act\": \"attack\"}}]). Repair the graph so those checks pass at any walking speed. Keep every state, transition and the flinch layer, and fix the world's version of the graph rather than deleting it.",
+ "tools": [
+  "anim_*",
+  "model_build",
+  "world_query",
+  "world_history",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/anims*"
+     }
+    ]
+   }
+  },
+  {
+   "name": "anim_check passes: move at 0.8 m/s, idle->move and move->attack",
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [],
+    "states": [
+     {
+      "state": "move",
+      "params": {
+       "act": "move",
+       "speed": 0.8
+      }
+     }
+    ],
+    "transitions": [
+     {
+      "from": {
+       "act": "idle"
+      },
+      "to": {
+       "act": "move",
+       "speed": 0.8
+      }
+     },
+     {
+      "from": {
+       "act": "move",
+       "speed": 0.8
+      },
+      "to": {
+       "act": "attack"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "passed": true,
+    "errors.#": 0
+   }
+  },
+  {
+   "name": "and at other walking speeds (0.5 and 1.6 m/s)",
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [],
+    "states": [
+     {
+      "state": "move",
+      "params": {
+       "act": "move",
+       "speed": 0.5
+      }
+     },
+     {
+      "state": "move",
+      "params": {
+       "act": "move",
+       "speed": 1.6
+      }
+     }
+    ]
+   },
+   "expect": {
+    "passed": true
+   }
+  },
+  {
+   "name": "the graph still has its five states, six transitions and the flinch layer",
+   "call": "anim_get",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "graph": "creature"
+   },
+   "expect": {
+    "graph.states.#": 5,
+    "graph.transitions.#": 6,
+    "graph.layers.0.name": "flinch",
+    "graph.layers.0.states.#": 2
+   }
+  },
+  {
+   "name": "the world's graph asset is fixed in place, not deleted",
+   "call": "world_query",
+   "args": {
+    "tags": [
+     "anim_asset"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "path": {
+      "contains": "graphs/creature"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [],
+    "states": [
+     {
+      "state": "move",
+      "params": {
+       "act": "move",
+       "speed": 0.8
+      }
+     }
+    ],
+    "transitions": [
+     {
+      "from": {
+       "act": "idle"
+      },
+      "to": {
+       "act": "move",
+       "speed": 0.8
+      }
+     },
+     {
+      "from": {
+       "act": "move",
+       "speed": 0.8
+      },
+      "to": {
+       "act": "attack"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "passed": false
+   }
+  },
+  {
+   "call": "anim_get",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "graph": "creature"
+   }
+  },
+  {
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "creature",
+    "patch": {
+     "states": {
+      "move": {
+       "play": "locomotion",
+       "match_speed": "speed",
+       "speed": null
+      }
+     },
+     "transitions": [
+      {
+       "from": "*",
+       "to": "death",
+       "when": "act == death",
+       "blend": 0.25
+      },
+      {
+       "from": "*",
+       "to": "move",
+       "when": "act == move",
+       "blend": 0.3
+      },
+      {
+       "from": "*",
+       "to": "idle",
+       "when": "act == idle",
+       "blend": 0.35
+      },
+      {
+       "from": "*",
+       "to": "attack",
+       "when": "act == attack",
+       "blend": 0.4
+      },
+      {
+       "from": "*",
+       "to": "special",
+       "when": "act == special",
+       "blend": 0.6
+      },
+      {
+       "from": "attack",
+       "to": "attack",
+       "exit": "end",
+       "blend": 0.05
+      }
+     ]
+    }
+   }
+  },
+  {
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [],
+    "states": [
+     {
+      "state": "move",
+      "params": {
+       "act": "move",
+       "speed": 0.8
+      }
+     }
+    ],
+    "transitions": [
+     {
+      "from": {
+       "act": "idle"
+      },
+      "to": {
+       "act": "move",
+       "speed": 0.8
+      }
+     },
+     {
+      "from": {
+       "act": "move",
+       "speed": 0.8
+      },
+      "to": {
+       "act": "attack"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "passed": true
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "fixes the pops (blends back) but leaves the move state playing at a fixed rate, so the feet still slide",
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "creature",
+    "patch": {
+     "transitions": [
+      {
+       "from": "*",
+       "to": "death",
+       "when": "act == death",
+       "blend": 0.25
+      },
+      {
+       "from": "*",
+       "to": "move",
+       "when": "act == move",
+       "blend": 0.3
+      },
+      {
+       "from": "*",
+       "to": "idle",
+       "when": "act == idle",
+       "blend": 0.35
+      },
+      {
+       "from": "*",
+       "to": "attack",
+       "when": "act == attack",
+       "blend": 0.4
+      },
+      {
+       "from": "*",
+       "to": "special",
+       "when": "act == special",
+       "blend": 0.6
+      },
+      {
+       "from": "attack",
+       "to": "attack",
+       "exit": "end",
+       "blend": 0.05
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

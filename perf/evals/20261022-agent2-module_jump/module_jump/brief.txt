@@ -1,0 +1,8 @@
+Specula agent eval: Add a jump to a game module (module_jump)
+
+A game module, "saltus" (a Rust cdylib in target/evals-work/20261022-agent2-module_jump-45516-module_jump/saltus, already built and running), adds a capsule character at /saltus/player that walks with the "move" action. Give it a jump: a button action named "jump" (bind Space and the gamepad's south button for players; agents press it with logic_input) that launches the character straight up only when it is standing on the ground, high enough that its feet rise at least 0.8 m (and no more than 1.2 m), after which it falls back and lands. Pressing jump again in mid-air must do nothing. Edit the module's files and rebuild it with logic_build {"path": "target/evals-work/20261022-agent2-module_jump-45516-module_jump/saltus"}; walking must keep working.
+
+Engine: MCP at http://127.0.0.1:7495/mcp (headless; the clock is paused: time_control steps it).
+Tools you may use: logic_*, world_query, world_list, time_control, sight_frame, physics_raycast (and agent_hello, engine_info).
+Limits: 40 tool calls, 1200 s.
+Call eval_done when you have finished.

@@ -1,0 +1,97 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 18,
+  "resp_bytes": 29082,
+  "tokens_est": 8136,
+  "wall_s": 184.73
+ },
+ "results": [
+  {
+   "id": "patrol_enemy",
+   "set": "public",
+   "area": "lex",
+   "mode": "agent",
+   "startup_s": 7.47,
+   "agent_summary": "Added archetype sentry (tag enemy, speed 1.5m/s, patrol on square in loop mode) and a timer sentries (start 0s, count 1) that spawns one sentry at square; set validates clean and simulation shows one sentry looping from [0,0,0] with crawlers, lives and defeat unchanged.",
+   "solution_wall_s": 171.43,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate 2 s",
+     "passed": true
+    },
+    {
+     "name": "one sentry, 3 m along the first side after 2 s",
+     "passed": true
+    },
+    {
+     "name": "simulate 10 s",
+     "passed": true
+    },
+    {
+     "name": "still one sentry, 15 m around the loop (on the last side, at z = 1) after 10 s",
+     "passed": true
+    },
+    {
+     "name": "the sentry is tagged enemy",
+     "passed": true
+    },
+    {
+     "name": "simulate to the tick before the run ends",
+     "passed": true
+    },
+    {
+     "name": "still exactly one sentry after 26 s",
+     "passed": true
+    },
+    {
+     "name": "the crawlers still end the run as before (lost at tick 779, nothing scored)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 9,
+    "of": 9,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 18,
+    "req_bytes": 3462,
+    "resp_bytes": 29082,
+    "tokens_est": 8136,
+    "errors": 2,
+    "error_codes": {
+     "not_run": 1,
+     "invalid_argument": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "eval_done": 1,
+     "lex_edit": 2,
+     "lex_export": 1,
+     "lex_schema": 5,
+     "lex_session": 3,
+     "lex_simulate": 3,
+     "lex_validate": 1
+    }
+   },
+   "wall_s": 184.72,
+   "validation_errors": 0
+  }
+ ]
+}

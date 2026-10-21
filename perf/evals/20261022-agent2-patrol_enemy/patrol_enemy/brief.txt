@@ -1,0 +1,8 @@
+Specula agent eval: Add a patrolling enemy in Lex (patrol_enemy)
+
+The Lex rule set "arena" (30 ticks a second) has a square path called "square" (4 m a side, a loop) and crawlers that walk to a goal. Add an enemy archetype "sentry" (tagged "enemy") that patrols "square" in a loop at 1.5 m/s, starting from the path's first point, and make exactly one sentry appear when a run starts (tick 0) and no more after that. Keep the crawlers, lives and the defeat outcome working as they do now. The set must validate with no errors.
+
+Engine: MCP at http://127.0.0.1:7493/mcp (headless; the clock is paused: time_control steps it).
+Tools you may use: lex_* (and agent_hello, engine_info).
+Limits: 30 tool calls, 600 s.
+Call eval_done when you have finished.

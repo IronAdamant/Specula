@@ -1,0 +1,3414 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "broken",
+  "tasks": 44,
+  "ran": 44,
+  "as_expected": 44,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 137,
+  "resp_bytes": 90544,
+  "tokens_est": 32641,
+  "workers": 3,
+  "board": {
+   "tasks_done": 44,
+   "tasks": 44
+  },
+  "swarm_wall_s": 667.2,
+  "wall_s": 667.23
+ },
+ "results": [
+  {
+   "id": "anim_fix_graph",
+   "set": "public",
+   "area": "animation",
+   "mode": "broken",
+   "startup_s": 5.87,
+   "solution_wall_s": 0.61,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "anim_check passes: move at 0.8 m/s, idle->move and move->attack",
+     "passed": false,
+     "detail": "passed: want true, got false; errors.#: want 0, got 1"
+    },
+    {
+     "name": "and at other walking speeds (0.5 and 1.6 m/s)",
+     "passed": false,
+     "detail": "passed: want true, got false"
+    },
+    {
+     "name": "the graph still has its five states, six transitions and the flinch layer",
+     "passed": true
+    },
+    {
+     "name": "the world's graph asset is fixed in place, not deleted",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 5,
+    "fraction": 0.6
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 603,
+    "resp_bytes": 783,
+    "tokens_est": 346,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "anim_set": 1
+    }
+   },
+   "wall_s": 142.24,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "anim_fix_graph",
+   "passed": true
+  },
+  {
+   "id": "crate_stack",
+   "set": "public",
+   "area": "physics",
+   "mode": "broken",
+   "startup_s": 7.48,
+   "solution_wall_s": 0.83,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "three dynamic bodies under /stack",
+     "passed": true
+    },
+    {
+     "name": "nothing but the ground and /stack (a group and three crates) in the world",
+     "passed": true
+    },
+    {
+     "name": "10 s of simulation: at rest, no penetration, no tunnelling, the three crates stacked over the spot",
+     "passed": false,
+     "detail": {
+      "status": "failed",
+      "failures": [
+       {
+        "part": "end",
+        "index": 2,
+        "tick": 300,
+        "call": "world_query",
+        "kind": "expect",
+        "path": "items.2.world_position.0",
+        "expected": {
+         "near": 2,
+         "tol": 0.15
+        },
+        "actual": 2.6740794
+       },
+       {
+        "part": "end",
+        "index": 2,
+        "tick": 300,
+        "call": "world_query",
+        "kind": "expect",
+        "path": "items.3.world_position.0",
+        "expected": {
+         "near": 2,
+         "tol": 0.15
+        },
+        "actual": 3.772044
+       },
+       {
+        "part": "end",
+        "index": 3,
+        "tick": 300,
+        "call": "physics_overlap",
+        "kind": "expect",
+        "path": "total",
+        "expected": 1,
+        "actual": 0
+       },
+       {
+        "part": "end",
+        "index": 3,
+        "tick": 300,
+        "call": "physics_overlap",
+        "kind": "expect",
+        "path": "entities.0.path",
+        "expected": {
+         "contains": "/stack/"
+        },
+        "actual": null
+       },
+       {
+        "part": "end",
+        "index": 4,
+        "tick": 300,
+        "call": "physics_overlap",
+        "kind": "expect",
+        "path": "total",
+        "expected": 1,
+        "actual": 0
+       },
+       {
+        "part": "end",
+        "index": 4,
+        "tick": 300,
+        "call": "physics_overlap",
+        "kind": "expect",
+        "path": "entities.0.path",
+        "expected": {
+         "contains": "/stack/"
+        },
+        "actual": null
+       }
+      ],
+      "reason": null,
+      "error": null,
+      "message": null
+     }
+    },
+    {
+     "name": "each crate is a 0.6 m cube in the world",
+     "passed": true
+    },
+    {
+     "name": "each crate weighs 20 kg",
+     "passed": true
+    },
+    {
+     "name": "after the 10 s, one crate's centre is 1.4-1.6 m up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 7,
+    "fraction": 0.714
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 731,
+    "resp_bytes": 674,
+    "tokens_est": 351,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 35.12,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/crate_stack/captures/run-1792618834-3492/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "crate_stack",
+   "passed": true
+  },
+  {
+   "id": "crate_stack~pillar_and_loose_crates",
+   "set": "public",
+   "area": "physics",
+   "mode": "broken",
+   "startup_s": 7.45,
+   "solution_wall_s": 0.93,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "1 changes the task doesn't allow: /pillar: added"
+    },
+    {
+     "name": "three dynamic bodies under /stack",
+     "passed": true
+    },
+    {
+     "name": "nothing but the ground and /stack (a group and three crates) in the world",
+     "passed": false,
+     "detail": "total: want 5, got 6"
+    },
+    {
+     "name": "10 s of simulation: at rest, no penetration, no tunnelling, the three crates stacked over the spot",
+     "passed": false,
+     "detail": "{\"status\": \"failed\", \"failures\": [{\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.1.world_position.0\", \"expected\": {\"near\": 2, \"tol\": 0.15}, \"actual\": 6}, {\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.1.world_position.2\", \"expected\": {\"near\": -1, \"tol\": 0.15}, \"actual\": 4.0000014}, {\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.2.world_position.0\", \"expected\": {\"near\": 2, \"tol\": 0.15}, \"actual\": 7}, {\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.2.world_position.2\", \"expected\": {\"near\": -1, \"tol\": 0.15}, \"actual\": 4.0000014}, {\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.3.world_position.0\", \"expected\": {\"near\": 2, \"tol\": 0.15}, \"actual\": 8.000001}, {\"part\": \"end\", \"index\": 2, \"tick\": 300, \"call\": \"world_query\", \"kind\": \"expect\", \"path\": \"items.3.world_position.2\", \"expected\": {\"near\": -1, \"tol\": 0.15}, \"actual\": 4.0000014}, {\"part\": \"end\", \"index\": 3, \"tick\": 300, \"call\": \"physics_overlap\", \"kind\": \"expect\", \"path\": \"entities.0.path\",... (1652 bytes)"
+    },
+    {
+     "name": "each crate is a 0.6 m cube in the world",
+     "passed": true
+    },
+    {
+     "name": "each crate weighs 20 kg",
+     "passed": true
+    },
+    {
+     "name": "after the 10 s, one crate's centre is 1.4-1.6 m up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 7,
+    "fraction": 0.429
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 857,
+    "resp_bytes": 723,
+    "tokens_est": 395,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 29.74,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/crate_stack~pillar_and_loose_crates/captures/run-1792618835-46404/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "crate_stack~pillar_and_loose_crates",
+   "passed": true
+  },
+  {
+   "id": "crate_stack~tall_bottom_crate",
+   "set": "public",
+   "area": "physics",
+   "mode": "broken",
+   "startup_s": 5.33,
+   "solution_wall_s": 0.56,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "three dynamic bodies under /stack",
+     "passed": true
+    },
+    {
+     "name": "nothing but the ground and /stack (a group and three crates) in the world",
+     "passed": true
+    },
+    {
+     "name": "10 s of simulation: at rest, no penetration, no tunnelling, the three crates stacked over the spot",
+     "passed": true
+    },
+    {
+     "name": "each crate is a 0.6 m cube in the world",
+     "passed": false,
+     "detail": "/stack/crate_1 is [0.6, 1.8, 0.6] m in the world; [0.6, 0.6, 0.6] wanted (within 0.02)"
+    },
+    {
+     "name": "each crate weighs 20 kg",
+     "passed": true
+    },
+    {
+     "name": "after the 10 s, one crate's centre is 1.4-1.6 m up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 7,
+    "fraction": 0.714
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 738,
+    "resp_bytes": 674,
+    "tokens_est": 353,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 22.62,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/crate_stack~tall_bottom_crate/captures/run-1792618862-31292/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "crate_stack~tall_bottom_crate",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 6.9,
+   "solution_wall_s": 1.79,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": false,
+     "detail": "items.0.bounds.min.1: want {\"near\": 0, \"tol\": 0.02}, got 0.375"
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": true
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": false,
+     "detail": "/room/furniture/chair_1 and /room/furniture/chair_2 are 0.000 m apart; at least 0.55 m wanted"
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": false,
+     "detail": "/room/furniture/chair_1 faces 123.7 degrees away from /room/furniture/table; at most 30"
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": true
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": true
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": false,
+     "detail": {
+      "status": "failed",
+      "failures": [
+       {
+        "part": "end",
+        "index": 0,
+        "tick": 30,
+        "call": "physics_check",
+        "kind": "expect",
+        "path": "pass",
+        "expected": true,
+        "actual": false
+       }
+      ],
+      "reason": null,
+      "error": null,
+      "message": null
+     }
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 10,
+    "fraction": 0.6
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 1248,
+    "resp_bytes": 843,
+    "tokens_est": 522,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 36.72,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations/captures/run-1792618869-27276/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "furniture_relations",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations~chairs_bunched",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 7.47,
+   "solution_wall_s": 3.75,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": true
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": false,
+     "detail": "count: want 4, got 0"
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": false,
+     "detail": "the query found 0 entities, at least 4 expected"
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": false,
+     "detail": "the query found 0 entities, at least 4 expected"
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": false,
+     "detail": "the query found 0 entities, at least 4 expected"
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": true
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": false,
+     "detail": {
+      "status": "failed",
+      "failures": [
+       {
+        "part": "end",
+        "index": 0,
+        "tick": 30,
+        "call": "physics_check",
+        "kind": "expect",
+        "path": "pass",
+        "expected": true,
+        "actual": false
+       }
+      ],
+      "reason": null,
+      "error": null,
+      "message": null
+     }
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 10,
+    "fraction": 0.5
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 1002,
+    "resp_bytes": 3461,
+    "tokens_est": 1115,
+    "errors": 1,
+    "error_codes": {
+     "unsatisfied": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_place": 2,
+     "world_spawn": 1
+    }
+   },
+   "wall_s": 23.5,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations~chairs_bunched/captures/run-1792618887-33160/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "furniture_relations~chairs_bunched",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations~chairs_face_north",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 6.92,
+   "solution_wall_s": 2.5,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": true
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": true
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": true
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": false,
+     "detail": "/room/furniture/chair_1 faces 179.8 degrees away from /room/furniture/table; at most 30"
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": true
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": true
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 9,
+    "of": 10,
+    "fraction": 0.9
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 959,
+    "resp_bytes": 2902,
+    "tokens_est": 965,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_place": 2,
+     "world_spawn": 1
+    }
+   },
+   "wall_s": 34.43,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations~chairs_face_north/captures/run-1792618906-33880/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "furniture_relations~chairs_face_north",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations~table_too_big",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 6.46,
+   "solution_wall_s": 3.59,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": true
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": false,
+     "detail": "count: want 4, got 1"
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": true
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": true
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": true
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": false,
+     "detail": "/room/furniture/table measures [2.0, 0.75, 1] m; [1.6, 0.75, 0.8] wanted (within 0.03)"
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 8,
+    "of": 10,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 982,
+    "resp_bytes": 3170,
+    "tokens_est": 1038,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_place": 2,
+     "world_spawn": 1
+    }
+   },
+   "wall_s": 37.72,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations~table_too_big/captures/run-1792618909-39136/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "furniture_relations~table_too_big",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations~turned_parent",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 7.47,
+   "solution_wall_s": 2.16,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": true
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": true
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": true
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": false,
+     "detail": "/room/furniture/seats/chair_0 faces 180.0 degrees away from /room/furniture/table; at most 30"
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": true
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": true
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 9,
+    "of": 10,
+    "fraction": 0.9
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 1727,
+    "resp_bytes": 1716,
+    "tokens_est": 860,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1,
+     "world_place": 1,
+     "world_spawn": 1
+    }
+   },
+   "wall_s": 33.85,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations~turned_parent/captures/run-1792618941-22680/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "furniture_relations~turned_parent",
+   "passed": true
+  },
+  {
+   "id": "furniture_relations~stretched_parent",
+   "set": "public",
+   "area": "locus",
+   "mode": "broken",
+   "startup_s": 7.49,
+   "solution_wall_s": 2.41,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+     "passed": true
+    },
+    {
+     "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+     "passed": true
+    },
+    {
+     "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+     "passed": true
+    },
+    {
+     "name": "every chair faces the table (within 30 degrees)",
+     "passed": false,
+     "detail": "/room/furniture/seats/chair_s0 faces 59.9 degrees away from /room/furniture/table; at most 30"
+    },
+    {
+     "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+     "passed": false,
+     "detail": "/room/furniture/seats/chair_s0 is [0.228, 0.5, 0.8] m in the world; [0.5, 0.5, 0.5] wanted (within 0.03)"
+    },
+    {
+     "name": "the table is 1.6 x 0.75 x 0.8 m",
+     "passed": true
+    },
+    {
+     "name": "the doorway is clear for 1 m",
+     "passed": true
+    },
+    {
+     "name": "nothing in the doorway's metre",
+     "passed": true
+    },
+    {
+     "name": "a second of physics: nothing overlaps, all at rest",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 8,
+    "of": 10,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 1720,
+    "resp_bytes": 1707,
+    "tokens_est": 856,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1,
+     "world_place": 1,
+     "world_spawn": 1
+    }
+   },
+   "wall_s": 31.57,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/furniture_relations~stretched_parent/captures/run-1792618948-13908/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "furniture_relations~stretched_parent",
+   "passed": true
+  },
+  {
+   "id": "guard_patrol",
+   "set": "public",
+   "area": "ai",
+   "mode": "broken",
+   "startup_s": 6.92,
+   "solution_wall_s": 0.83,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a navmesh exists",
+     "passed": true
+    },
+    {
+     "name": "where the guard stands now",
+     "passed": true
+    },
+    {
+     "name": "5 s pass",
+     "passed": true
+    },
+    {
+     "name": "after 5 s the guard has moved and is in the west room",
+     "passed": false,
+     "detail": "items.0.world_position: want {\"ne\": [-9, 0.9091, -9]}, got [-9, 0.9091, -9]"
+    },
+    {
+     "name": "5 s more",
+     "passed": true
+    },
+    {
+     "name": "after 10 s it is still moving, in the west room",
+     "passed": false,
+     "detail": "items.0.world_position: want {\"ne\": [-9, 0.9091, -9]}, got [-9, 0.9091, -9]"
+    },
+    {
+     "name": "10 s more",
+     "passed": true
+    },
+    {
+     "name": "after 20 s it is still patrolling the west room",
+     "passed": false,
+     "detail": "items.0.world_position: want {\"ne\": [-9, 0.9091, -9]}, got [-9, 0.9091, -9]"
+    },
+    {
+     "name": "its mind is running a patrol",
+     "passed": false,
+     "detail": "ai_status failed: {'error': 'no_mind', 'message': 'this entity has no mind (give it one with ai_set)', 'id': 13}"
+    },
+    {
+     "name": "it walked the loop: the nav agent's goal is a waypoint",
+     "passed": false,
+     "detail": "ai_status failed: {'error': 'no_mind', 'message': 'this entity has no mind (give it one with ai_set)', 'id': 13}"
+    },
+    {
+     "name": "a capture from above with the navmesh and paths",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 7,
+    "of": 12,
+    "fraction": 0.583
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 268,
+    "resp_bytes": 1585,
+    "tokens_est": 463,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "nav_agent": 1,
+     "nav_build": 1,
+     "time_control": 1
+    }
+   },
+   "wall_s": 25.4,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/guard_patrol/captures/run-1792618974-47940/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "guard_patrol",
+   "passed": true
+  },
+  {
+   "id": "hud_marker",
+   "set": "public",
+   "area": "ui",
+   "mode": "broken",
+   "startup_s": 7.95,
+   "solution_wall_s": 0.92,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "everything under /hud/objective is in the ui layer",
+     "passed": false,
+     "detail": "count: want 0, got 1"
+    },
+    {
+     "name": "exactly one 2D shape under /hud/objective",
+     "passed": true
+    },
+    {
+     "name": "it is the ring: one circle of radius about 1.5 m with a thin stroke (at most 0.25 m) and no fill, flat around the well, 2-6 cm up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "a marker floating 2.5-4 m above the well",
+     "passed": true
+    },
+    {
+     "name": "with include_ui the marker shows",
+     "passed": true
+    },
+    {
+     "name": "without it, review captures leave it out",
+     "passed": false,
+     "detail": "count: want 0, got 1"
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 7,
+    "fraction": 0.571
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 619,
+    "resp_bytes": 684,
+    "tokens_est": 325,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 21.04,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/hud_marker/captures/run-1792618977-2476/frame_00001.png",
+    "<target>/evals-runs/20261022-084017-broken/hud_marker/captures/run-1792618977-2476/frame_00002.png"
+   ],
+   "worker": 2,
+   "name": "hud_marker",
+   "passed": true
+  },
+  {
+   "id": "hud_marker~filled_square",
+   "set": "public",
+   "area": "ui",
+   "mode": "broken",
+   "startup_s": 7.49,
+   "solution_wall_s": 1.24,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "everything under /hud/objective is in the ui layer",
+     "passed": true
+    },
+    {
+     "name": "exactly one 2D shape under /hud/objective",
+     "passed": true
+    },
+    {
+     "name": "it is the ring: one circle of radius about 1.5 m with a thin stroke (at most 0.25 m) and no fill, flat around the well, 2-6 cm up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "a marker floating 2.5-4 m above the well",
+     "passed": true
+    },
+    {
+     "name": "with include_ui the marker shows",
+     "passed": true
+    },
+    {
+     "name": "without it, review captures leave it out",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 7,
+    "fraction": 0.857
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 690,
+    "resp_bytes": 684,
+    "tokens_est": 343,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 19.79,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~filled_square/captures/run-1792618980-42084/frame_00001.png",
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~filled_square/captures/run-1792618980-42084/frame_00002.png"
+   ],
+   "worker": 3,
+   "name": "hud_marker~filled_square",
+   "passed": true
+  },
+  {
+   "id": "hud_marker~square_plus_dot",
+   "set": "public",
+   "area": "ui",
+   "mode": "broken",
+   "startup_s": 5.86,
+   "solution_wall_s": 0.66,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "everything under /hud/objective is in the ui layer",
+     "passed": true
+    },
+    {
+     "name": "exactly one 2D shape under /hud/objective",
+     "passed": false,
+     "detail": "total: want 1, got 2"
+    },
+    {
+     "name": "it is the ring: one circle of radius about 1.5 m with a thin stroke (at most 0.25 m) and no fill, flat around the well, 2-6 cm up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "a marker floating 2.5-4 m above the well",
+     "passed": true
+    },
+    {
+     "name": "with include_ui the marker shows",
+     "passed": true
+    },
+    {
+     "name": "without it, review captures leave it out",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 7,
+    "fraction": 0.714
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 938,
+    "resp_bytes": 744,
+    "tokens_est": 420,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 15.75,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~square_plus_dot/captures/run-1792618996-17788/frame_00001.png",
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~square_plus_dot/captures/run-1792618996-17788/frame_00002.png"
+   ],
+   "worker": 2,
+   "name": "hud_marker~square_plus_dot",
+   "passed": true
+  },
+  {
+   "id": "hud_marker~fat_stroke_disc",
+   "set": "public",
+   "area": "ui",
+   "mode": "broken",
+   "startup_s": 6.9,
+   "solution_wall_s": 0.85,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "everything under /hud/objective is in the ui layer",
+     "passed": true
+    },
+    {
+     "name": "exactly one 2D shape under /hud/objective",
+     "passed": true
+    },
+    {
+     "name": "it is the ring: one circle of radius about 1.5 m with a thin stroke (at most 0.25 m) and no fill, flat around the well, 2-6 cm up",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "a marker floating 2.5-4 m above the well",
+     "passed": true
+    },
+    {
+     "name": "with include_ui the marker shows",
+     "passed": true
+    },
+    {
+     "name": "without it, review captures leave it out",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 7,
+    "fraction": 0.857
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 713,
+    "resp_bytes": 684,
+    "tokens_est": 349,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 17.62,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~fat_stroke_disc/captures/run-1792618999-4496/frame_00001.png",
+    "<target>/evals-runs/20261022-084017-broken/hud_marker~fat_stroke_disc/captures/run-1792618999-4496/frame_00002.png"
+   ],
+   "worker": 3,
+   "name": "hud_marker~fat_stroke_disc",
+   "passed": true
+  },
+  {
+   "id": "lantern_row",
+   "set": "public",
+   "area": "world",
+   "mode": "broken",
+   "startup_s": 7.53,
+   "solution_wall_s": 1.31,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "five lanterns",
+     "passed": true
+    },
+    {
+     "name": "a lantern at x = -4",
+     "passed": true
+    },
+    {
+     "name": "a lantern at x = -2",
+     "passed": true
+    },
+    {
+     "name": "a lantern at x = 0",
+     "passed": true
+    },
+    {
+     "name": "a lantern at x = 2",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "a lantern at x = 4",
+     "passed": false,
+     "detail": "count: want 1, got 0"
+    },
+    {
+     "name": "every lantern stands on the ground (bounds' lowest y within 2 cm of 0)",
+     "passed": false,
+     "detail": "count: want 5, got 0"
+    },
+    {
+     "name": "every lantern is lit",
+     "passed": true
+    },
+    {
+     "name": "the setup's path and ground are untouched",
+     "passed": true
+    },
+    {
+     "name": "a capture along the path shows them",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 8,
+    "of": 11,
+    "fraction": 0.727
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 971,
+    "resp_bytes": 779,
+    "tokens_est": 437,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 18.16,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/lantern_row/captures/run-1792619000-13876/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "lantern_row",
+   "passed": true
+  },
+  {
+   "id": "module_jump",
+   "set": "public",
+   "area": "modules",
+   "mode": "broken",
+   "startup_s": 6.92,
+   "solution_wall_s": 4.41,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "saltus is running",
+     "passed": true
+    },
+    {
+     "name": "the jump action is declared",
+     "passed": true
+    },
+    {
+     "name": "a playtest: jump from the ground, press again mid-air, land, walk",
+     "passed": false,
+     "detail": {
+      "status": "failed",
+      "failures": [
+       {
+        "part": "steps",
+        "index": 3,
+        "tick": 10,
+        "call": "world_query",
+        "kind": "expect",
+        "path": "items.0.world_position.1",
+        "expected": {
+         "gte": 0.8,
+         "lte": 1.2
+        },
+        "actual": 1.3800002
+       }
+      ],
+      "reason": null,
+      "error": null,
+      "message": null
+     }
+    },
+    {
+     "name": "a second jump measured every tick for 40 ticks: the feet peak between 0.8 and 1.2 m and land",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 5,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 5893,
+    "resp_bytes": 1863,
+    "tokens_est": 1939,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "(write file)": 2,
+     "agent_hello": 1,
+     "logic_build": 1
+    }
+   },
+   "wall_s": 94.3,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/module_jump/captures/run-1792619013-39244/frame_00001.png"
+   ],
+   "worker": 2,
+   "name": "module_jump",
+   "passed": true
+  },
+  {
+   "id": "module_jump~slow_high_jump",
+   "set": "public",
+   "area": "modules",
+   "mode": "broken",
+   "startup_s": 5.85,
+   "solution_wall_s": 4.39,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "saltus is running",
+     "passed": true
+    },
+    {
+     "name": "the jump action is declared",
+     "passed": true
+    },
+    {
+     "name": "a playtest: jump from the ground, press again mid-air, land, walk",
+     "passed": true
+    },
+    {
+     "name": "a second jump measured every tick for 40 ticks: the feet peak between 0.8 and 1.2 m and land",
+     "passed": false,
+     "detail": "max: want {\"gte\": 0.8, \"lte\": 1.2}, got 1.6796992; last: want {\"near\": 0, \"tol\": 0.05}, got 1.3328875 (readings over 40 ticks)"
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 5,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 4,
+    "req_bytes": 5989,
+    "resp_bytes": 1911,
+    "tokens_est": 1975,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "(write file)": 2,
+     "agent_hello": 1,
+     "logic_build": 1
+    }
+   },
+   "wall_s": 96.05,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/module_jump~slow_high_jump/captures/run-1792619016-19968/frame_00001.png"
+   ],
+   "worker": 3,
+   "name": "module_jump~slow_high_jump",
+   "passed": true
+  },
+  {
+   "id": "patrol_enemy",
+   "set": "public",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 5.93,
+   "solution_wall_s": 0.34,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate 2 s",
+     "passed": true
+    },
+    {
+     "name": "one sentry, 3 m along the first side after 2 s",
+     "passed": true
+    },
+    {
+     "name": "simulate 10 s",
+     "passed": true
+    },
+    {
+     "name": "still one sentry, 15 m around the loop (on the last side, at z = 1) after 10 s",
+     "passed": false,
+     "detail": "entities.#: want 1, got 2"
+    },
+    {
+     "name": "the sentry is tagged enemy",
+     "passed": false,
+     "detail": "count: want 1, got 2"
+    },
+    {
+     "name": "simulate to the tick before the run ends",
+     "passed": true
+    },
+    {
+     "name": "still exactly one sentry after 26 s",
+     "passed": false,
+     "detail": "entities.#: want 1, got 6"
+    },
+    {
+     "name": "the crawlers still end the run as before (lost at tick 779, nothing scored)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 7,
+    "of": 10,
+    "fraction": 0.7
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 428,
+    "resp_bytes": 554,
+    "tokens_est": 245,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 13.95,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "patrol_enemy",
+   "passed": true
+  },
+  {
+   "id": "patrol_enemy~second_sentry_later",
+   "set": "public",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 6.39,
+   "solution_wall_s": 0.36,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate 2 s",
+     "passed": true
+    },
+    {
+     "name": "one sentry, 3 m along the first side after 2 s",
+     "passed": true
+    },
+    {
+     "name": "simulate 10 s",
+     "passed": true
+    },
+    {
+     "name": "still one sentry, 15 m around the loop (on the last side, at z = 1) after 10 s",
+     "passed": true
+    },
+    {
+     "name": "the sentry is tagged enemy",
+     "passed": true
+    },
+    {
+     "name": "simulate to the tick before the run ends",
+     "passed": true
+    },
+    {
+     "name": "still exactly one sentry after 26 s",
+     "passed": false,
+     "detail": "entities.#: want 1, got 2"
+    },
+    {
+     "name": "the crawlers still end the run as before (lost at tick 779, nothing scored)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 9,
+    "of": 10,
+    "fraction": 0.9
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 563,
+    "resp_bytes": 617,
+    "tokens_est": 295,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 16.24,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "patrol_enemy~second_sentry_later",
+   "passed": true
+  },
+  {
+   "id": "playtest_noair",
+   "set": "public",
+   "area": "playtests",
+   "mode": "broken",
+   "startup_s": 5.35,
+   "solution_wall_s": 6.08,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "the last playtest passed",
+     "passed": true
+    },
+    {
+     "name": "the replay was recorded with its hash checkpoints",
+     "passed": false,
+     "detail": "checkpoints.#: want {\"gte\": 10}, got 4"
+    },
+    {
+     "name": "the recorded spec asserts, at its end, a loss at wave 6 with no tombstones",
+     "passed": false,
+     "detail": "select {\"from\": \"spec.end\", \"where\": {\"call\": \"play_state\", \"expect.outcome\": {\"in\": [\"lost\", {\"eq\": \"lost\"}]}, \"expect.wave\": {\"in\": [6, {\"eq\": 6}]}, \"expect.tombstones\": {\"in\": [0, {\"eq\": 0}, {\"lte\": 0}]}} matched nothing in {\"format\": \"specula-playtest\", \"version\": 1, \"name\": \"no_air_s1\", \"game\": \"sepulcra\", \"tick_hz\": 30, \"status\": \"passed\", \"ticks\": 600, \"spec\": {\"name\": \"no_air_s1\", \"game\": \"sepulcra\", \"steps\": [{\"at\": 0, \"call\": \"play_new\", \"args\": {\"seed\": \"1\", \"layout\": \"no_air\"}}, {\"at\": 600, \"call\": \"play_state... (1481 bytes)"
+    },
+    {
+     "name": "the game in the engine was played to the end: no_air, seed 1, lost at wave 6 with no tombstones",
+     "passed": false,
+     "detail": "outcome: want \"lost\", got \"running\"; wave: want 6, got 0; tombstones: want 0, got 10"
+    },
+    {
+     "name": "the playtest ran the whole game (over 10,000 ticks)",
+     "passed": false,
+     "detail": "ticks: want {\"gt\": 10000}, got 600"
+    }
+   ],
+   "score": {
+    "passed": 1,
+    "of": 5,
+    "fraction": 0.2
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 410,
+    "resp_bytes": 2381,
+    "tokens_est": 697,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "playtest_run": 1
+    }
+   },
+   "wall_s": 25.49,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "playtest_noair",
+   "passed": true
+  },
+  {
+   "id": "playtest_noair~no_assertions",
+   "set": "public",
+   "area": "playtests",
+   "mode": "broken",
+   "startup_s": 7.5,
+   "solution_wall_s": 13.73,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "the last playtest passed",
+     "passed": true
+    },
+    {
+     "name": "the replay was recorded with its hash checkpoints",
+     "passed": true
+    },
+    {
+     "name": "the recorded spec asserts, at its end, a loss at wave 6 with no tombstones",
+     "passed": false,
+     "detail": "select {\"from\": \"spec.end\", \"where\": {\"call\": \"play_state\", \"expect.outcome\": {\"in\": [\"lost\", {\"eq\": \"lost\"}]}, \"expect.wave\": {\"in\": [6, {\"eq\": 6}]}, \"expect.tombstones\": {\"in\": [0, {\"eq\": 0}, {\"lte\": 0}]}} matched nothing in {\"format\": \"specula-playtest\", \"version\": 1, \"name\": \"no_air_s1\", \"game\": \"sepulcra\", \"tick_hz\": 30, \"status\": \"passed\", \"ticks\": 11880, \"spec\": {\"name\": \"no_air_s1\", \"game\": \"sepulcra\", \"steps\": [{\"at\": 0, \"call\": \"play_new\", \"args\": {\"seed\": \"1\", \"layout\": \"no_air\"}}], \"until\": {\"call\": \"play_stat... (11848 bytes)"
+    },
+    {
+     "name": "the game in the engine was played to the end: no_air, seed 1, lost at wave 6 with no tombstones",
+     "passed": true
+    },
+    {
+     "name": "the playtest ran the whole game (over 10,000 ticks)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 5,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 532,
+    "resp_bytes": 11473,
+    "tokens_est": 3001,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "playtest_report": 1,
+     "playtest_run": 1
+    }
+   },
+   "wall_s": 46.94,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "playtest_noair~no_assertions",
+   "passed": true
+  },
+  {
+   "id": "recolour_claimed",
+   "set": "public",
+   "area": "swarm",
+   "mode": "broken",
+   "startup_s": 6.95,
+   "solution_wall_s": 0.57,
+   "actors": [
+    {
+     "name": "keeper",
+     "fired": 0
+    },
+    {
+     "name": "keeper",
+     "fired": 0
+    }
+   ],
+   "actor_polls": 4,
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "exactly the six lanterns the keeper placed, and each is amber",
+     "passed": true
+    },
+    {
+     "name": "each of lantern_w1..w3 and lantern_e1..e3 is amber",
+     "passed": false,
+     "detail": "count: want 6, got 3"
+    },
+    {
+     "name": "the keeper still holds its claim",
+     "passed": true
+    },
+    {
+     "name": "the lanterns didn't move and the bench is untouched",
+     "passed": true
+    },
+    {
+     "name": "lantern_w1 is where the keeper put it",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 6,
+    "fraction": 0.833
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 403,
+    "resp_bytes": 1600,
+    "tokens_est": 500,
+    "errors": 1,
+    "error_codes": {
+     "claimed": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1,
+     "world_set": 1
+    }
+   },
+   "wall_s": 17.83,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "recolour_claimed",
+   "passed": true
+  },
+  {
+   "id": "recolour_claimed~fake_lanterns",
+   "set": "public",
+   "area": "swarm",
+   "mode": "broken",
+   "startup_s": 5.86,
+   "solution_wall_s": 0.6,
+   "actors": [
+    {
+     "name": "keeper",
+     "fired": 0
+    },
+    {
+     "name": "keeper",
+     "fired": 0
+    }
+   ],
+   "actor_polls": 4,
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "3 changes the task doesn't allow: /street/fake_1: added; /street/fake_2: added; /street/fake_3: added"
+    },
+    {
+     "name": "exactly the six lanterns the keeper placed, and each is amber",
+     "passed": false,
+     "detail": "total: want 6, got 9"
+    },
+    {
+     "name": "each of lantern_w1..w3 and lantern_e1..e3 is amber",
+     "passed": false,
+     "detail": "count: want 6, got 3"
+    },
+    {
+     "name": "the keeper still holds its claim",
+     "passed": true
+    },
+    {
+     "name": "the lanterns didn't move and the bench is untouched",
+     "passed": true
+    },
+    {
+     "name": "lantern_w1 is where the keeper put it",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 6,
+    "fraction": 0.5
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 779,
+    "resp_bytes": 845,
+    "tokens_est": 406,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 19.11,
+   "validation_errors": 0,
+   "worker": 3,
+   "name": "recolour_claimed~fake_lanterns",
+   "passed": true
+  },
+  {
+   "id": "room_build",
+   "set": "public",
+   "area": "world",
+   "mode": "broken",
+   "startup_s": 7.61,
+   "solution_wall_s": 1.2,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a physics tick so the colliders are current",
+     "passed": true
+    },
+    {
+     "name": "east wall inner face at x = 3",
+     "passed": true
+    },
+    {
+     "name": "west wall inner face at x = -3",
+     "passed": true
+    },
+    {
+     "name": "north wall inner face at z = -2",
+     "passed": true
+    },
+    {
+     "name": "south wall beside the doorway at z = 2",
+     "passed": true
+    },
+    {
+     "name": "the doorway is open (a ray through it hits nothing)",
+     "passed": false,
+     "detail": "total: want 0, got 1"
+    },
+    {
+     "name": "the doorway is 1.2 m wide (rays at x = +-0.5 pass, at +-0.7 hit)",
+     "passed": false,
+     "detail": "total: want 0, got 1"
+    },
+    {
+     "name": "the doorway's west edge",
+     "passed": true
+    },
+    {
+     "name": "the doorway is 2.1 m tall (a ray at 2.0 m passes)",
+     "passed": false,
+     "detail": "total: want 0, got 1"
+    },
+    {
+     "name": "the doorway's east edge (a ray at x = 0.7 hits)",
+     "passed": true
+    },
+    {
+     "name": "the doorway's west half is open (a ray at x = -0.5 passes)",
+     "passed": false,
+     "detail": "total: want 0, got 1"
+    },
+    {
+     "name": "wall above the doorway (lintel below 2.3 m)",
+     "passed": true
+    },
+    {
+     "name": "the floor's top is at y = 0",
+     "passed": true
+    },
+    {
+     "name": "the walls are 3 m tall (east wall top)",
+     "passed": true
+    },
+    {
+     "name": "one lamp with a point light, inside the room, 2-3 m up",
+     "passed": false,
+     "detail": "items.0.world_position.1: want {\"gte\": 2, \"lte\": 3}, got 3.4"
+    },
+    {
+     "name": "a capture through the doorway shows the room",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 12,
+    "of": 17,
+    "fraction": 0.706
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 1104,
+    "resp_bytes": 840,
+    "tokens_est": 486,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 16.62,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/room_build/captures/run-1792619121-38492/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "room_build",
+   "passed": true
+  },
+  {
+   "id": "room_build~low_offset_doorway",
+   "set": "public",
+   "area": "world",
+   "mode": "broken",
+   "startup_s": 10.16,
+   "solution_wall_s": 0.64,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a physics tick so the colliders are current",
+     "passed": true
+    },
+    {
+     "name": "east wall inner face at x = 3",
+     "passed": true
+    },
+    {
+     "name": "west wall inner face at x = -3",
+     "passed": true
+    },
+    {
+     "name": "north wall inner face at z = -2",
+     "passed": true
+    },
+    {
+     "name": "south wall beside the doorway at z = 2",
+     "passed": true
+    },
+    {
+     "name": "the doorway is open (a ray through it hits nothing)",
+     "passed": true
+    },
+    {
+     "name": "the doorway is 1.2 m wide (rays at x = +-0.5 pass, at +-0.7 hit)",
+     "passed": true
+    },
+    {
+     "name": "the doorway's west edge",
+     "passed": true
+    },
+    {
+     "name": "the doorway is 2.1 m tall (a ray at 2.0 m passes)",
+     "passed": false,
+     "detail": "total: want 0, got 1"
+    },
+    {
+     "name": "the doorway's east edge (a ray at x = 0.7 hits)",
+     "passed": false,
+     "detail": "hits.0.distance: want {\"near\": 2, \"tol\": 0.03}, got null"
+    },
+    {
+     "name": "the doorway's west half is open (a ray at x = -0.5 passes)",
+     "passed": true
+    },
+    {
+     "name": "wall above the doorway (lintel below 2.3 m)",
+     "passed": true
+    },
+    {
+     "name": "the floor's top is at y = 0",
+     "passed": true
+    },
+    {
+     "name": "the walls are 3 m tall (east wall top)",
+     "passed": true
+    },
+    {
+     "name": "one lamp with a point light, inside the room, 2-3 m up",
+     "passed": true
+    },
+    {
+     "name": "a capture through the doorway shows the room",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 15,
+    "of": 17,
+    "fraction": 0.882
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 1440,
+    "resp_bytes": 956,
+    "tokens_est": 599,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 20.15,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/room_build~low_offset_doorway/captures/run-1792619129-25416/frame_00001.png"
+   ],
+   "worker": 2,
+   "name": "room_build~low_offset_doorway",
+   "passed": true
+  },
+  {
+   "id": "save_reload",
+   "set": "public",
+   "area": "saves",
+   "mode": "broken",
+   "startup_s": 9.11,
+   "solution_wall_s": 0.64,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a save named checkpoint, made at tick 90",
+     "passed": false,
+     "detail": "select {\"from\": \"saves\", \"where\": {\"name\": \"checkpoint\"}} matched nothing in {'saves': [], 'total': 0, 'not_listed': 0, 'next_cursor': None, 'writing': [], 'dir': '<target>\\\\evals-runs\\\\20261022-084017-broken\\\\save_reload\\\\saves'}"
+    },
+    {
+     "name": "the world is at tick 180",
+     "passed": false,
+     "detail": "tick: want 180, got 200"
+    },
+    {
+     "name": "the note on / quotes the current state hash",
+     "passed": false,
+     "detail": "count: want {\"gte\": 1}, got 0"
+    },
+    {
+     "name": "in order: saved at 90, hashed at 180, loaded checkpoint, stepped to 180, hashed again; the two hashes equal; one save, no other load",
+     "passed": false,
+     "detail": "the solution called save_write {\"name\": \"checkpoint\"} 0 times; exactly 1 wanted"
+    },
+    {
+     "name": "the verifier loads checkpoint itself",
+     "passed": false,
+     "detail": "save_read failed: {'error': 'not_found', 'message': '<target>\\\\evals-runs\\\\20261022-084017-broken\\\\save_reload\\\\saves\\\\checkpoint.specsave: The system cannot find the path specified. (os error 3)', 'file': '<target>\\\\evals-runs\\\\20261022-084017-broken\\\\save_reload\\\\saves\\\\checkpoint.specsave'}"
+    },
+    {
+     "name": "and runs 90 ticks",
+     "passed": false,
+     "detail": "tick: want 180, got 290"
+    },
+    {
+     "name": "reaching the same state hash the agent reported (no divergence)",
+     "passed": false,
+     "detail": "tick: want 180, got 290; state_hash: want \"7853bc025d990399\", got \"00d8161c5e4a061a\""
+    }
+   ],
+   "score": {
+    "passed": 1,
+    "of": 8,
+    "fraction": 0.125
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 5,
+    "req_bytes": 374,
+    "resp_bytes": 1051,
+    "tokens_est": 356,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "note_add": 1,
+     "time_control": 2,
+     "world_hash": 1
+    }
+   },
+   "wall_s": 62.71,
+   "validation_errors": 0,
+   "worker": 3,
+   "name": "save_reload",
+   "passed": true
+  },
+  {
+   "id": "save_reload~never_reloads",
+   "set": "public",
+   "area": "saves",
+   "mode": "broken",
+   "startup_s": 9.55,
+   "solution_wall_s": 0.92,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a save named checkpoint, made at tick 90",
+     "passed": true
+    },
+    {
+     "name": "the world is at tick 180",
+     "passed": true
+    },
+    {
+     "name": "the note on / quotes the current state hash",
+     "passed": true
+    },
+    {
+     "name": "in order: saved at 90, hashed at 180, loaded checkpoint, stepped to 180, hashed again; the two hashes equal; one save, no other load",
+     "passed": false,
+     "detail": "the solution never called save_read successfully with {\"name\": \"checkpoint\"} answering {\"loaded\": \"checkpoint\"} (after 2 of the 5 calls in order)"
+    },
+    {
+     "name": "the verifier loads checkpoint itself",
+     "passed": true
+    },
+    {
+     "name": "and runs 90 ticks",
+     "passed": true
+    },
+    {
+     "name": "reaching the same state hash the agent reported (no divergence)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 7,
+    "of": 8,
+    "fraction": 0.875
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 6,
+    "req_bytes": 408,
+    "resp_bytes": 1631,
+    "tokens_est": 509,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "note_add": 1,
+     "save_write": 1,
+     "time_control": 2,
+     "world_hash": 1
+    }
+   },
+   "wall_s": 42.8,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "save_reload~never_reloads",
+   "passed": true
+  },
+  {
+   "id": "save_reload~reload_before_running_on",
+   "set": "public",
+   "area": "saves",
+   "mode": "broken",
+   "startup_s": 7.45,
+   "solution_wall_s": 1.17,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a save named checkpoint, made at tick 90",
+     "passed": true
+    },
+    {
+     "name": "the world is at tick 180",
+     "passed": true
+    },
+    {
+     "name": "the note on / quotes the current state hash",
+     "passed": true
+    },
+    {
+     "name": "in order: saved at 90, hashed at 180, loaded checkpoint, stepped to 180, hashed again; the two hashes equal; one save, no other load",
+     "passed": false,
+     "detail": "the solution never called save_read successfully with {\"name\": \"checkpoint\"} answering {\"loaded\": \"checkpoint\"} (after 2 of the 5 calls in order)"
+    },
+    {
+     "name": "the verifier loads checkpoint itself",
+     "passed": true
+    },
+    {
+     "name": "and runs 90 ticks",
+     "passed": true
+    },
+    {
+     "name": "reaching the same state hash the agent reported (no divergence)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 7,
+    "of": 8,
+    "fraction": 0.875
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 7,
+    "req_bytes": 490,
+    "resp_bytes": 2335,
+    "tokens_est": 706,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "note_add": 1,
+     "save_read": 1,
+     "save_write": 1,
+     "time_control": 2,
+     "world_hash": 1
+    }
+   },
+   "wall_s": 41.73,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "save_reload~reload_before_running_on",
+   "passed": true
+  },
+  {
+   "id": "save_reload~second_save_loaded",
+   "set": "public",
+   "area": "saves",
+   "mode": "broken",
+   "startup_s": 6.91,
+   "solution_wall_s": 1.93,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a save named checkpoint, made at tick 90",
+     "passed": true
+    },
+    {
+     "name": "the world is at tick 180",
+     "passed": true
+    },
+    {
+     "name": "the note on / quotes the current state hash",
+     "passed": true
+    },
+    {
+     "name": "in order: saved at 90, hashed at 180, loaded checkpoint, stepped to 180, hashed again; the two hashes equal; one save, no other load",
+     "passed": false,
+     "detail": "the solution called save_read with {'name': 'late', 'force': True}, which this task rules out"
+    },
+    {
+     "name": "the verifier loads checkpoint itself",
+     "passed": true
+    },
+    {
+     "name": "and runs 90 ticks",
+     "passed": true
+    },
+    {
+     "name": "reaching the same state hash the agent reported (no divergence)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 7,
+    "of": 8,
+    "fraction": 0.875
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 10,
+    "req_bytes": 660,
+    "resp_bytes": 3866,
+    "tokens_est": 1131,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "note_add": 1,
+     "save_read": 2,
+     "save_write": 2,
+     "time_control": 2,
+     "world_hash": 2
+    }
+   },
+   "wall_s": 34.61,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "save_reload~second_save_loaded",
+   "passed": true
+  },
+  {
+   "id": "sight_hidden",
+   "set": "public",
+   "area": "sight",
+   "mode": "broken",
+   "startup_s": 7.48,
+   "solution_wall_s": 1.01,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "one crate is tagged hidden, and it is crate_4",
+     "passed": false,
+     "detail": "items.0.path: want \"/crates/crate_4\", got \"/crates/crate_5\""
+    },
+    {
+     "name": "the five others are tagged seen",
+     "passed": true
+    },
+    {
+     "name": "no crate is tagged both",
+     "passed": true
+    },
+    {
+     "name": "every crate keeps its crate tag",
+     "passed": false,
+     "detail": "total: want 6, got 0"
+    },
+    {
+     "name": "nothing moved: crate_4 still hidden from the camera, crate_5 still partly visible",
+     "passed": true
+    },
+    {
+     "name": "the wall still hides crate_4",
+     "passed": true
+    },
+    {
+     "name": "the crates are where they were (all six)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 8,
+    "fraction": 0.75
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 484,
+    "resp_bytes": 872,
+    "tokens_est": 339,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 21.11,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/sight_hidden/captures/run-1792619189-7764/frame_00001.png"
+   ],
+   "worker": 2,
+   "name": "sight_hidden",
+   "passed": true
+  },
+  {
+   "id": "sight_hidden~moved_a_seen_crate",
+   "set": "public",
+   "area": "sight",
+   "mode": "broken",
+   "startup_s": 6.4,
+   "solution_wall_s": 4.76,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "1 changes the task doesn't allow: /crates/crate_1: position changed"
+    },
+    {
+     "name": "one crate is tagged hidden, and it is crate_4",
+     "passed": true
+    },
+    {
+     "name": "the five others are tagged seen",
+     "passed": true
+    },
+    {
+     "name": "no crate is tagged both",
+     "passed": true
+    },
+    {
+     "name": "every crate keeps its crate tag",
+     "passed": true
+    },
+    {
+     "name": "nothing moved: crate_4 still hidden from the camera, crate_5 still partly visible",
+     "passed": true
+    },
+    {
+     "name": "the wall still hides crate_4",
+     "passed": true
+    },
+    {
+     "name": "the crates are where they were (all six)",
+     "passed": false,
+     "detail": "items.1.position: want {\"eq\": [-5, 0.5, 0]}, got [-5, 0.5, 3]"
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 8,
+    "fraction": 0.75
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 5,
+    "req_bytes": 873,
+    "resp_bytes": 20695,
+    "tokens_est": 5392,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "sight_frame": 2,
+     "world_batch": 1,
+     "world_set": 1
+    }
+   },
+   "wall_s": 22.57,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/sight_hidden~moved_a_seen_crate/captures/run-1792619196-22024/frame_00001.png",
+    "<target>/evals-runs/20261022-084017-broken/sight_hidden~moved_a_seen_crate/captures/run-1792619196-22024/frame_00002.png",
+    "<target>/evals-runs/20261022-084017-broken/sight_hidden~moved_a_seen_crate/captures/run-1792619196-22024/frame_00003.png"
+   ],
+   "worker": 3,
+   "name": "sight_hidden~moved_a_seen_crate",
+   "passed": true
+  },
+  {
+   "id": "undo_vandal",
+   "set": "public",
+   "area": "journal",
+   "mode": "broken",
+   "startup_s": 5.86,
+   "solution_wall_s": 0.24,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "1 changes the task doesn't allow: /garden/shrub: removed"
+    },
+    {
+     "name": "the beam is back",
+     "passed": false,
+     "detail": "world_query failed: {'error': 'not_found', 'message': \"no entity at /gate/beam: /gate has no child 'beam'\", 'path': '/gate/beam', 'deepest_existing': '/gate', 'field': 'path_prefix'}"
+    },
+    {
+     "name": "both posts have their colour and size back",
+     "passed": false,
+     "detail": "count: want 2, got 0"
+    },
+    {
+     "name": "the builder's later lamp on the gate stays",
+     "passed": true
+    },
+    {
+     "name": "the builder's bench and the gardener's shrub stay",
+     "passed": false,
+     "detail": "total: want 3, got 2"
+    },
+    {
+     "name": "the journal shows both of the vandal's entries undone",
+     "passed": false,
+     "detail": "count: want 2, got 0"
+    },
+    {
+     "name": "no other agent's entry was undone",
+     "passed": false,
+     "detail": "count: want 0, got 1"
+    }
+   ],
+   "score": {
+    "passed": 1,
+    "of": 7,
+    "fraction": 0.143
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 225,
+    "resp_bytes": 830,
+    "tokens_est": 263,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_history": 1,
+     "world_undo": 1
+    }
+   },
+   "wall_s": 17.14,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "undo_vandal",
+   "passed": true
+  },
+  {
+   "id": "undo_vandal~moved_others_work",
+   "set": "public",
+   "area": "journal",
+   "mode": "broken",
+   "startup_s": 5.82,
+   "solution_wall_s": 0.7,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "8 changes the task doesn't allow: /garden/bench: color changed; /garden/bench: position changed; /gate/lamp: color changed; /gate/lamp: emissive changed; /gate/lamp: id changed; /gate/lamp: position changed; /gate/lamp: scale changed; /gate/lamp: shape changed"
+    },
+    {
+     "name": "the beam is back",
+     "passed": true
+    },
+    {
+     "name": "both posts have their colour and size back",
+     "passed": true
+    },
+    {
+     "name": "the builder's later lamp on the gate stays",
+     "passed": true
+    },
+    {
+     "name": "the builder's bench and the gardener's shrub stay",
+     "passed": true
+    },
+    {
+     "name": "the journal shows both of the vandal's entries undone",
+     "passed": true
+    },
+    {
+     "name": "no other agent's entry was undone",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 7,
+    "fraction": 0.857
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 6,
+    "req_bytes": 548,
+    "resp_bytes": 1746,
+    "tokens_est": 573,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_delete": 1,
+     "world_history": 1,
+     "world_set": 1,
+     "world_spawn": 1,
+     "world_undo": 1
+    }
+   },
+   "wall_s": 19.36,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "undo_vandal~moved_others_work",
+   "passed": true
+  },
+  {
+   "id": "wave3_harder",
+   "set": "public",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 4.78,
+   "solution_wall_s": 0.53,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "2 changes the task doesn't allow: /lex/sepulcra/runner: props.lex.attributes.hp changed; /lex/sepulcra/shambler: props.lex.attributes.hp changed"
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 1",
+     "passed": true
+    },
+    {
+     "name": "wave 1 shamblers unchanged (55 hp)",
+     "passed": false,
+     "detail": "count: want {\"gte\": 1}, got 0"
+    },
+    {
+     "name": "simulate into wave 3",
+     "passed": true
+    },
+    {
+     "name": "wave 3 shamblers have 10% more hit points (60.5 -> 66.55)",
+     "passed": true
+    },
+    {
+     "name": "simulate to wave 3's runners",
+     "passed": true
+    },
+    {
+     "name": "wave 3 runners have 10% more hit points (28.6 -> 31.46)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 4",
+     "passed": true
+    },
+    {
+     "name": "wave 4 shamblers unchanged (66 hp)",
+     "passed": false,
+     "detail": "count: want {\"gte\": 1}, got 0"
+    },
+    {
+     "name": "simulate into wave 5",
+     "passed": true
+    },
+    {
+     "name": "wave 5 shamblers unchanged (74.25 hp)",
+     "passed": false,
+     "detail": "count: want {\"gte\": 1}, got 0"
+    },
+    {
+     "name": "the centre-heavy build still wins seed 7",
+     "passed": false,
+     "detail": "outcome.result: want \"won\", got \"lost\"; commands.refused: want 0, got 2"
+    },
+    {
+     "name": "the waves item is the shipped one except wave 3's hit-point scale",
+     "passed": true
+    },
+    {
+     "name": "no other rule item changed (the journal of /lex/sepulcra holds only edits of the waves item)",
+     "passed": false,
+     "detail": "count: want 0, got 1"
+    }
+   ],
+   "score": {
+    "passed": 9,
+    "of": 15,
+    "fraction": 0.6
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 278,
+    "resp_bytes": 558,
+    "tokens_est": 209,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 245.99,
+   "validation_errors": 0,
+   "worker": 3,
+   "name": "wave3_harder",
+   "passed": true
+  },
+  {
+   "id": "wave3_harder~other_waves_changed",
+   "set": "public",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 4.29,
+   "solution_wall_s": 3.96,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "2 changes the task doesn't allow: /lex/sepulcra/waves: props.lex.waves.1.groups.1.count changed; /lex/sepulcra/waves: props.lex.waves.2.on_start.0.amount changed"
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 1",
+     "passed": true
+    },
+    {
+     "name": "wave 1 shamblers unchanged (55 hp)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 3",
+     "passed": true
+    },
+    {
+     "name": "wave 3 shamblers have 10% more hit points (60.5 -> 66.55)",
+     "passed": true
+    },
+    {
+     "name": "simulate to wave 3's runners",
+     "passed": true
+    },
+    {
+     "name": "wave 3 runners have 10% more hit points (28.6 -> 31.46)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 4",
+     "passed": true
+    },
+    {
+     "name": "wave 4 shamblers unchanged (66 hp)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 5",
+     "passed": true
+    },
+    {
+     "name": "wave 5 shamblers unchanged (74.25 hp)",
+     "passed": true
+    },
+    {
+     "name": "the centre-heavy build still wins seed 7",
+     "passed": true
+    },
+    {
+     "name": "the waves item is the shipped one except wave 3's hit-point scale",
+     "passed": false,
+     "detail": "items.0.item.waves.1: want {\"eq\": {\"duration\": \"60s\", \"on_start\": [{\"add\": \"dust\", \"amount\": 40}], \"groups\": [{\"archetype\": \"shambler\", \"count\": 8, \"at\": [\"gorge_west\", \"gorge_mid\", \"gorge_east\", \"cliff_north_west\", \"cliff_north_east\", \"cliff_east\", \"cliff_west\"], \"start\": \"0s\", \"every\": \"3s\"}, {\"archetype\": \"runner\", \"count\": 6, \"at\": [\"gorge_west\", \"gorge_mid\", \"gorge_east\"], \"start\": \"10s\", \"every\": \"2s\"}]}}, got \"{\\\"duration\\\": \\\"60s\\\", \\\"groups\\\": [{\\\"archetype\\\": \\\"shambler\\\", \\\"at\\\": [\\\"gorge_west\\\", \\\"gorge_mid\\\", \\\"gorge_east\\\", \\\"cliff_north_west\\\", \\\"cliff_north_east\\\", \\\"cliff_east\\\", \\\"cliff_west\\\"],; items.0.item.waves.2.on_start: want {\"eq\": [{\"add\": \"dust\", \"amount\": 50}]}, got [{\"add\": \"dust\", \"amount\": 500}]"
+    },
+    {
+     "name": "no other rule item changed (the journal of /lex/sepulcra holds only edits of the waves item)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 13,
+    "of": 15,
+    "fraction": 0.867
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 396,
+    "resp_bytes": 6472,
+    "tokens_est": 1717,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1,
+     "lex_get": 1
+    }
+   },
+   "wall_s": 246.83,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "wave3_harder~other_waves_changed",
+   "passed": true
+  },
+  {
+   "id": "anim_idle_clip",
+   "set": "heldout",
+   "area": "animation",
+   "mode": "broken",
+   "startup_s": 4.26,
+   "solution_wall_s": 0.99,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "idle_calm is a 4 s looping clip of the shambler",
+     "passed": true
+    },
+    {
+     "name": "motion checks pass for the clip and the idle state",
+     "passed": true
+    },
+    {
+     "name": "the graph keeps its other states",
+     "passed": false,
+     "detail": "graph.states.#: want 5, got 1; graph.transitions.#: want 6, got null"
+    },
+    {
+     "name": "a shambler standing idle in the world",
+     "passed": true
+    },
+    {
+     "name": "a second of time",
+     "passed": true
+    },
+    {
+     "name": "plays idle_calm",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 7,
+    "fraction": 0.857
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 469,
+    "resp_bytes": 994,
+    "tokens_est": 365,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "anim_set": 2
+    }
+   },
+   "wall_s": 152.37,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "anim_idle_clip",
+   "passed": true
+  },
+  {
+   "id": "ball_launch",
+   "set": "heldout",
+   "area": "physics",
+   "mode": "broken",
+   "startup_s": 5.31,
+   "solution_wall_s": 0.53,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a launch velocity is recorded on the ball",
+     "passed": true
+    },
+    {
+     "name": "the bin wasn't moved",
+     "passed": true
+    },
+    {
+     "name": "nothing was added to the world (the setup's 7 entities)",
+     "passed": true
+    },
+    {
+     "name": "the ground is untouched",
+     "passed": true
+    },
+    {
+     "name": "replayed from the start, the ball comes to rest inside the bin",
+     "passed": false,
+     "detail": {
+      "status": "failed",
+      "failures": [
+       {
+        "part": "end",
+        "index": 0,
+        "tick": 240,
+        "call": "physics_check",
+        "kind": "expect",
+        "path": "pass",
+        "expected": true,
+        "actual": false
+       }
+      ],
+      "reason": null,
+      "error": null,
+      "message": null
+     }
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 6,
+    "fraction": 0.833
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 164,
+    "resp_bytes": 760,
+    "tokens_est": 231,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_set": 1
+    }
+   },
+   "wall_s": 26.91,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/ball_launch/captures/run-1792619385-19112/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "ball_launch",
+   "passed": true
+  },
+  {
+   "id": "ball_launch~backstop",
+   "set": "heldout",
+   "area": "physics",
+   "mode": "broken",
+   "startup_s": 5.33,
+   "solution_wall_s": 0.43,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "1 changes the task doesn't allow: /backstop: added"
+    },
+    {
+     "name": "a launch velocity is recorded on the ball",
+     "passed": true
+    },
+    {
+     "name": "the bin wasn't moved",
+     "passed": true
+    },
+    {
+     "name": "nothing was added to the world (the setup's 7 entities)",
+     "passed": false,
+     "detail": "total: want 7, got 8"
+    },
+    {
+     "name": "the ground is untouched",
+     "passed": true
+    },
+    {
+     "name": "replayed from the start, the ball comes to rest inside the bin",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 6,
+    "fraction": 0.667
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 319,
+    "resp_bytes": 568,
+    "tokens_est": 221,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 29.25,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/ball_launch~backstop/captures/run-1792619412-28492/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "ball_launch~backstop",
+   "passed": true
+  },
+  {
+   "id": "camera_overview",
+   "set": "heldout",
+   "area": "sight",
+   "mode": "broken",
+   "startup_s": 4.26,
+   "solution_wall_s": 0.2,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "a camera named overview was set",
+     "passed": true
+    },
+    {
+     "name": "through it, all five pillars show at least 300 px (visible_px)",
+     "passed": false,
+     "detail": "count: want 5, got 2"
+    },
+    {
+     "name": "the world wasn't changed",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 4,
+    "fraction": 0.75
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 174,
+    "resp_bytes": 591,
+    "tokens_est": 191,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "camera_set": 1
+    }
+   },
+   "wall_s": 14.94,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-084017-broken/camera_overview/captures/run-1792619440-13196/frame_00001.png"
+   ],
+   "worker": 1,
+   "name": "camera_overview",
+   "passed": true
+  },
+  {
+   "id": "lex_fix_errors",
+   "set": "heldout",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 6.41,
+   "solution_wall_s": 0.48,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "1 changes the task doesn't allow: /lex/arena/defeat: removed"
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "all seven items are still there",
+     "passed": false,
+     "detail": "total: want 7, got 6"
+    },
+    {
+     "name": "under their original ids (nothing deleted and re-created under a new one)",
+     "passed": false,
+     "detail": "count: want 7, got 6"
+    },
+    {
+     "name": "it plays as designed: five crawlers, lost at tick 779",
+     "passed": false,
+     "detail": "outcome.result: want \"lost\", got null; outcome.tick: want 779, got null"
+    }
+   ],
+   "score": {
+    "passed": 1,
+    "of": 5,
+    "fraction": 0.2
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 301,
+    "resp_bytes": 615,
+    "tokens_est": 229,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 17.78,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "lex_fix_errors",
+   "passed": true
+  },
+  {
+   "id": "lex_fix_errors~recreated_under_new_id",
+   "set": "heldout",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 5.84,
+   "solution_wall_s": 0.7,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": false,
+     "detail": "2 changes the task doesn't allow: /lex/arena/defeat: removed; /lex/arena/defeat_fixed: added"
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "all seven items are still there",
+     "passed": true
+    },
+    {
+     "name": "under their original ids (nothing deleted and re-created under a new one)",
+     "passed": false,
+     "detail": "count: want 7, got 6"
+    },
+    {
+     "name": "it plays as designed: five crawlers, lost at tick 779",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 5,
+    "fraction": 0.6
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 411,
+    "resp_bytes": 676,
+    "tokens_est": 271,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 13.92,
+   "validation_errors": 0,
+   "worker": 3,
+   "name": "lex_fix_errors~recreated_under_new_id",
+   "passed": true
+  },
+  {
+   "id": "lex_tower",
+   "set": "heldout",
+   "area": "lex",
+   "mode": "broken",
+   "startup_s": 6.9,
+   "solution_wall_s": 0.71,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "one tower on pad_a kills all five crawlers, for 10 gold",
+     "passed": true
+    },
+    {
+     "name": "it hits at most once a second for 5 points: the first crawler has 10 or 15 hp left after 2 s in range",
+     "passed": true
+    },
+    {
+     "name": "the first crawler's hit points",
+     "passed": false,
+     "detail": "entities.0.attributes.hp: want {\"in\": [\"10pt\", \"15pt\"]}, got \"20pt\""
+    },
+    {
+     "name": "a second tower on the same pad is refused as occupied; a third build has no gold",
+     "passed": true
+    },
+    {
+     "name": "the refusal codes",
+     "passed": false,
+     "detail": "rejections.0.code: want \"occupied\", got null; rejections.0.tick: want 1, got null"
+    },
+    {
+     "name": "without towers the crawlers still win (lost at tick 779)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 8,
+    "fraction": 0.75
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 2,
+    "req_bytes": 552,
+    "resp_bytes": 553,
+    "tokens_est": 276,
+    "errors": 0,
+    "error_codes": {},
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "lex_edit": 1
+    }
+   },
+   "wall_s": 18.36,
+   "validation_errors": 0,
+   "worker": 2,
+   "name": "lex_tower",
+   "passed": true
+  },
+  {
+   "id": "task_board_handoff",
+   "set": "heldout",
+   "area": "swarm",
+   "mode": "broken",
+   "startup_s": 6.59,
+   "solution_wall_s": 0.96,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+     "passed": true
+    },
+    {
+     "name": "the builder task is done, with a summary",
+     "passed": false,
+     "detail": "status: want \"done\", got \"open\"; result: want {\"ne\": \"\"}, got null"
+    },
+    {
+     "name": "the painter's task wasn't touched",
+     "passed": true
+    },
+    {
+     "name": "the agent that finished the task built the post",
+     "passed": false,
+     "detail": "'${t.owner}' leads nowhere in the saved answer: {\"id\": 2, \"title\": \"Build the north signpost\", \"status\": \"open\", \"priority\": 5, \"posted_by\": \"lead\", \"version\": 1, \"updated_seq\": 2, \"detail\": \"Under a group at /signs/north: a post (tag \\\"signpost\\\") 0.15 m square and 2 m tall standing on the ground at x = 0, z = -8, and a sign board (tag \\\"sign\\\")... (750 bytes)"
+    },
+    {
+     "name": "the post is 2 m tall, 0.15 m square, standing at x = 0, z = -8",
+     "passed": true
+    },
+    {
+     "name": "the board is 1.2 m wide, centred 1.7 m up on the post's south side",
+     "passed": true
+    },
+    {
+     "name": "a physics ray from the south hits the board (it has a collider)",
+     "passed": true
+    },
+    {
+     "name": "the ray",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 8,
+    "fraction": 0.75
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 3,
+    "req_bytes": 649,
+    "resp_bytes": 878,
+    "tokens_est": 381,
+    "errors": 1,
+    "error_codes": {
+     "assigned_elsewhere": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "task_take": 1,
+     "world_batch": 1
+    }
+   },
+   "wall_s": 14.17,
+   "validation_errors": 0,
+   "worker": 1,
+   "name": "task_board_handoff",
+   "passed": true
+  }
+ ]
+}

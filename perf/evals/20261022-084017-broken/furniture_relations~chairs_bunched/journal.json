@@ -1,0 +1,122 @@
+{
+ "entries": [
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "eval-verifier-ef0f36",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/room/furniture/table",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/room/furniture",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-18f9ab",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 8,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/room",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/room/floor",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/room/wall_north",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/room/wall_east",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/room/wall_west",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/room/wall_south_w",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/room/wall_south_e",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/room/doorway",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

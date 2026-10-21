@@ -1,0 +1,255 @@
+{
+ "eval": 1,
+ "id": "lex_fix_errors",
+ "set": "heldout",
+ "area": "lex",
+ "title": "Repair a rule set the validator rejects",
+ "summary": "Compiler-quality errors as the agent's guide: a draft rule set with three mistakes is fixed in place (no deletions), and its behaviour matches the designer's intent in simulation.",
+ "game": null,
+ "setup": [
+  {
+   "as": "designer",
+   "call": "lex_import",
+   "args": {
+    "set": "arena",
+    "allow_errors": true
+   },
+   "args_files": {
+    "document": "evals/fixtures/arena_broken.lex.json"
+   }
+  }
+ ],
+ "brief": "The Lex rule set \"arena\" was saved as a draft by a designer and doesn't validate. Fix every validation error in place, without deleting or renaming any item, keeping what the designer meant: crawlers walk the path to the goal, five of them arrive one every 4 s from 2 s on, and the run is lost when lives reach zero. Then make sure the set validates with no errors.",
+ "tools": [
+  "lex_*"
+ ],
+ "limits": {
+  "calls": 25,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/lex/arena/crawler",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.behaviours.1.path"
+      ]
+     },
+     {
+      "path": "/lex/arena/crawlers",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.count"
+      ]
+     },
+     {
+      "path": "/lex/arena/defeat",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.when"
+      ]
+     },
+     {
+      "path": "/lex/*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.notes",
+       "props.lex.*.notes",
+       "props.lex.*.*.notes"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the set validates with no errors",
+   "call": "lex_validate",
+   "args": {
+    "set": "arena"
+   },
+   "expect": {
+    "valid": true,
+    "errors": 0
+   }
+  },
+  {
+   "name": "all seven items are still there",
+   "call": "lex_list",
+   "args": {
+    "set": "arena"
+   },
+   "expect": {
+    "total": 7
+   }
+  },
+  {
+   "name": "under their original ids (nothing deleted and re-created under a new one)",
+   "call": "lex_list",
+   "args": {
+    "set": "arena"
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "id": {
+      "in": [
+       "square",
+       "to_goal",
+       "score",
+       "lives",
+       "crawler",
+       "crawlers",
+       "defeat"
+      ]
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 7
+   }
+  },
+  {
+   "name": "it plays as designed: five crawlers, lost at tick 779",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 3000
+   },
+   "expect": {
+    "outcome.result": "lost",
+    "outcome.tick": 779,
+    "resources.lives": 0,
+    "events.spawned": 5
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "lex_validate",
+   "args": {
+    "set": "arena"
+   },
+   "expect": {
+    "valid": false
+   }
+  },
+  {
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "patch",
+      "id": "crawler",
+      "set": {
+       "behaviours[1].path": "to_goal"
+      }
+     },
+     {
+      "op": "patch",
+      "id": "crawlers",
+      "set": {
+       "count": 5
+      }
+     },
+     {
+      "op": "patch",
+      "id": "defeat",
+      "set": {
+       "when": "res.lives <= 0"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "valid": true
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "fixes the path and the count, then deletes the outcome it couldn't fix",
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "patch",
+      "id": "crawler",
+      "set": {
+       "behaviours[1].path": "to_goal"
+      }
+     },
+     {
+      "op": "patch",
+      "id": "crawlers",
+      "set": {
+       "count": 5
+      }
+     },
+     {
+      "op": "delete",
+      "id": "defeat"
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "recreated_under_new_id",
+   "note": "fixes two items, deletes the broken outcome and re-creates it fixed as 'defeat_fixed'",
+   "steps": [
+    {
+     "call": "lex_edit",
+     "args": {
+      "set": "arena",
+      "ops": [
+       {
+        "op": "patch",
+        "id": "crawler",
+        "set": {
+         "behaviours[1].path": "to_goal"
+        }
+       },
+       {
+        "op": "patch",
+        "id": "crawlers",
+        "set": {
+         "count": 5
+        }
+       },
+       {
+        "op": "delete",
+        "id": "defeat"
+       },
+       {
+        "op": "put",
+        "id": "defeat_fixed",
+        "item": {
+         "kind": "outcome",
+         "result": "lost",
+         "when": "res.lives <= 0"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,486 @@
+{
+ "eval": 1,
+ "id": "wave3_harder",
+ "set": "public",
+ "area": "lex",
+ "title": "Make wave 3 10% harder without breaking wave 4",
+ "summary": "A targeted balance change in Sepulcra's Lex rules: only wave 3's enemies get 10% more hit points; waves 1-2 and 4-10 stay exactly as they were and the reference build still wins. Checked by simulating whole games and inspecting enemies mid-wave.",
+ "game": "sepulcra",
+ "setup": [
+  {
+   "as": "setup",
+   "call": "lex_import",
+   "args": {
+    "set": "sepulcra"
+   },
+   "args_files": {
+    "document": "games/sepulcra/lex/slab_01.lex.json"
+   }
+  },
+  {
+   "as": "setup",
+   "call": "lex_import",
+   "args": {
+    "set": "sepulcra",
+    "replace": false
+   },
+   "args_files": {
+    "document": "games/sepulcra/lex/sepulcra.lex.json"
+   }
+  }
+ ],
+ "brief": "The engine hosts Sepulcra (a tower defence) and its complete rules are stored as the Lex rule set \"sepulcra\". Make wave 3 10% harder: every enemy that spawns in wave 3 should have 10% more hit points than it has now. Waves 1-2 and 4-10 must stay exactly as they are (same enemies, same hit points), and nothing else in the rules may change. The centre-heavy build in evals/fixtures/sepulcra_centre_s7.commands.json (lex_simulate commands; seed 7) must still win. The set must validate with no errors.",
+ "tools": [
+  "lex_*",
+  "balance_*"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/lex/sepulcra/waves",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.waves.2.scale.hp"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the set validates with no errors",
+   "call": "lex_validate",
+   "args": {
+    "set": "sepulcra"
+   },
+   "expect": {
+    "valid": true,
+    "errors": 0
+   }
+  },
+  {
+   "name": "simulate into wave 1",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 910,
+    "save_as": "eval_w1"
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "wave 1 shamblers unchanged (55 hp)",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_w1",
+    "archetype": "shambler"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "attributes.hp": "55pt"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "simulate into wave 3",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 4360,
+    "save_as": "eval_w3"
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true,
+    "waves.current": 3
+   }
+  },
+  {
+   "name": "wave 3 shamblers have 10% more hit points (60.5 -> 66.55)",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_w3",
+    "archetype": "shambler"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "attributes.hp": "66.55pt"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "simulate to wave 3's runners",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 4510,
+    "save_as": "eval_w3r"
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "wave 3 runners have 10% more hit points (28.6 -> 31.46)",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_w3r",
+    "archetype": "runner"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "attributes.hp": "31.46pt"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "simulate into wave 4",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 6310,
+    "save_as": "eval_w4"
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true,
+    "waves.current": 4
+   }
+  },
+  {
+   "name": "wave 4 shamblers unchanged (66 hp)",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_w4",
+    "archetype": "shambler"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "attributes.hp": "66pt"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "simulate into wave 5",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 8260,
+    "save_as": "eval_w5"
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true,
+    "waves.current": 5
+   }
+  },
+  {
+   "name": "wave 5 shamblers unchanged (74.25 hp)",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_w5",
+    "archetype": "shambler"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "attributes.hp": "74.25pt"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "the centre-heavy build still wins seed 7",
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 30000
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "complete": true,
+    "outcome.result": "won",
+    "commands.refused": 0
+   }
+  },
+  {
+   "name": "the waves item is the shipped one except wave 3's hit-point scale",
+   "call": "lex_get",
+   "args": {
+    "set": "sepulcra",
+    "ids": [
+     "waves"
+    ]
+   },
+   "expect_files": {
+    "items.0.item.start": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.start"
+    },
+    "items.0.item.rng": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.rng"
+    },
+    "items.0.item.waves.0": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.0"
+    },
+    "items.0.item.waves.1": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.1"
+    },
+    "items.0.item.waves.3": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.3"
+    },
+    "items.0.item.waves.4": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.4"
+    },
+    "items.0.item.waves.5": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.5"
+    },
+    "items.0.item.waves.6": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.6"
+    },
+    "items.0.item.waves.7": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.7"
+    },
+    "items.0.item.waves.8": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.8"
+    },
+    "items.0.item.waves.9": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.9"
+    },
+    "items.0.item.waves.2.duration": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.2.duration"
+    },
+    "items.0.item.waves.2.on_start": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.2.on_start"
+    },
+    "items.0.item.waves.2.groups": {
+     "file": "games/sepulcra/lex/sepulcra.lex.json",
+     "at": "items.waves.waves.2.groups"
+    }
+   },
+   "expect": {
+    "items.0.item.waves.#": 10,
+    "items.0.item.waves.2.scale.#": 1
+   }
+  },
+  {
+   "name": "no other rule item changed (the journal of /lex/sepulcra holds only edits of the waves item)",
+   "call": "world_history",
+   "args": {
+    "path_prefix": "/lex/sepulcra",
+    "limit": 100,
+    "response_format": "concise"
+   },
+   "select": {
+    "from": "entries",
+    "where": {
+     "by": {
+      "ne": "setup"
+     },
+     "paths": {
+      "ne": [
+       "/lex/sepulcra/waves"
+      ]
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 0
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "lex_get",
+   "args": {
+    "set": "sepulcra",
+    "ids": [
+     "waves"
+    ]
+   },
+   "save": "w",
+   "expect": {
+    "items.0.item.waves.2.scale.hp": 1.1
+   }
+  },
+  {
+   "call": "lex_edit",
+   "args": {
+    "set": "sepulcra",
+    "ops": [
+     {
+      "op": "patch",
+      "id": "waves",
+      "set": {
+       "waves[2].scale.hp": 1.21
+      },
+      "expect_version": "${w.items.0.version}"
+     }
+    ]
+   },
+   "expect": {
+    "valid": true
+   }
+  },
+  {
+   "call": "lex_simulate",
+   "args": {
+    "set": "sepulcra",
+    "seed": 7,
+    "ticks": 30000
+   },
+   "args_files": {
+    "commands": "evals/fixtures/sepulcra_centre_s7.commands.json"
+   },
+   "expect": {
+    "outcome.result": "won"
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "raises the shambler and runner archetypes' hit points by 10%: wave 3 gets harder, and so does every other wave",
+   "call": "lex_edit",
+   "args": {
+    "set": "sepulcra",
+    "ops": [
+     {
+      "op": "patch",
+      "id": "shambler",
+      "set": {
+       "attributes.hp": "60.5pt"
+      }
+     },
+     {
+      "op": "patch",
+      "id": "runner",
+      "set": {
+       "attributes.hp": "28.6pt"
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "other_waves_changed",
+   "note": "review cheat: the right hp scale, plus fewer runners in wave 2, fewer enemies in wave 10 and 500 dust at wave 3",
+   "steps": [
+    {
+     "call": "lex_get",
+     "args": {
+      "set": "sepulcra",
+      "ids": [
+       "waves"
+      ]
+     },
+     "save": "w"
+    },
+    {
+     "call": "lex_edit",
+     "args": {
+      "set": "sepulcra",
+      "ops": [
+       {
+        "op": "patch",
+        "id": "waves",
+        "set": {
+         "waves[2].scale.hp": 1.21,
+         "waves[1].groups[1].count": 1,
+         "waves[9].groups[0].count": 1,
+         "waves[2].on_start[0].amount": 500
+        },
+        "expect_version": "${w.items.0.version}"
+       }
+      ]
+     },
+     "expect": {
+      "valid": true
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -665,6 +665,17 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   human picks, or clicks the part they dislike. Agents get the same gallery as data (`style_gallery`).
   *Why:* models can't judge beauty alone (frontier models 26.5% vs experts 68.9% at picking best and worst), and even
   experts are more consistent comparing than scoring.
+  **Owner, 2026-10-22, the pick flow:** select a variant, then two buttons:
+  - **"This one"** accepts it as is.
+  - **"This one, with edits"** opens a text field. The pick plus the note seeds a new gallery around it, and the
+    human picks again.
+  Clicking and short notes replace long prompts, so communication stays easy for people who can't say exactly what
+  they want, and less of their frustration reaches the agents. Claude's additions (proposal; the owner said "feel
+  free to mess with UX"):
+  - one-tap edit chips beside the field ("darker", "bigger", "simpler", "more detail");
+  - "none of these" for a new spread;
+  - a breadcrumb of earlier rounds to step back.
+  Every pick and note goes to the preference store.
 - [ ] ➕ **Pick-driven tuning** *(research)*: several rounds of picks drive preferential Bayesian optimisation over
   style parameters (Sequential Gallery), so a few clicks tune many parameters.
 - [ ] ➕ **Preference store** *(research)*: every pick and rejection, with its note, is kept per project (optionally

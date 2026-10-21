@@ -1,0 +1,126 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 16,
+  "resp_bytes": 3309,
+  "tokens_est": 1862,
+  "wall_s": 140.23
+ },
+ "results": [
+  {
+   "id": "room_build",
+   "set": "public",
+   "area": "world",
+   "mode": "agent",
+   "startup_s": 6.39,
+   "agent_summary": "Built /room in one world_batch: a 6.4x0.2x4.4 floor (top at y=0), four 0.2 m-thick 3 m walls with inner faces at x=+-3 and z=+-2, the south wall split into two piers and a lintel leaving a 1.2x2.1 m doorway, all with box colliders, plus a lamp sphere tagged lamp with a point light at y=2.6. Verified with physics_raycast after one tick.",
+   "solution_wall_s": 130.73,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "a physics tick so the colliders are current",
+     "passed": true
+    },
+    {
+     "name": "east wall inner face at x = 3",
+     "passed": true
+    },
+    {
+     "name": "west wall inner face at x = -3",
+     "passed": true
+    },
+    {
+     "name": "north wall inner face at z = -2",
+     "passed": true
+    },
+    {
+     "name": "south wall beside the doorway at z = 2",
+     "passed": true
+    },
+    {
+     "name": "the doorway is open (a ray through it hits nothing)",
+     "passed": true
+    },
+    {
+     "name": "the doorway is 1.2 m wide (rays at x = +-0.5 pass, at +-0.7 hit)",
+     "passed": true
+    },
+    {
+     "name": "the doorway's west edge",
+     "passed": true
+    },
+    {
+     "name": "the doorway is 2.1 m tall (a ray at 2.0 m passes)",
+     "passed": true
+    },
+    {
+     "name": "the doorway's east edge (a ray at x = 0.7 hits)",
+     "passed": true
+    },
+    {
+     "name": "the doorway's west half is open (a ray at x = -0.5 passes)",
+     "passed": true
+    },
+    {
+     "name": "wall above the doorway (lintel below 2.3 m)",
+     "passed": true
+    },
+    {
+     "name": "the floor's top is at y = 0",
+     "passed": true
+    },
+    {
+     "name": "the walls are 3 m tall (east wall top)",
+     "passed": true
+    },
+    {
+     "name": "one lamp with a point light, inside the room, 2-3 m up",
+     "passed": true
+    },
+    {
+     "name": "a capture through the doorway shows the room",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 16,
+    "of": 16,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 16,
+    "req_bytes": 4142,
+    "resp_bytes": 3309,
+    "tokens_est": 1862,
+    "errors": 1,
+    "error_codes": {
+     "not_run": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "eval_done": 1,
+     "physics_raycast": 9,
+     "time_control": 1,
+     "world_batch": 1,
+     "world_list": 1,
+     "world_query": 1
+    }
+   },
+   "wall_s": 140.22,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-agent2-room_build/room_build/captures/run-1792608326-10944/frame_00001.png"
+   ]
+  }
+ ]
+}

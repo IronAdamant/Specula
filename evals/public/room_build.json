@@ -1,0 +1,916 @@
+{
+ "eval": 1,
+ "id": "room_build",
+ "set": "public",
+ "area": "world",
+ "title": "Build a room with a doorway and a lamp",
+ "summary": "World building from a written spec: floor, four walls, a doorway, a lamp; checked by physics rays, queries and a capture.",
+ "game": null,
+ "brief": "Build a small room in an empty world. Put every piece under one group at /room.\n- Floor: covers x -3..3 and z -2..2, its top surface at y = 0.\n- Walls: 3 m tall (from y = 0 to y = 3), on all four sides, with their inner faces exactly at x = -3, x = 3, z = -2 and z = 2.\n- Doorway: a gap 1.2 m wide (x -0.6..0.6) and 2.1 m tall (y 0..2.1) in the south wall (the z = 2 side), with wall above it.\n- Lamp: one entity tagged \"lamp\" that carries a point light, inside the room between 2 and 3 m up.\nThe floor and every wall piece need a box collider (the engine checks the room with physics rays).",
+ "tools": [
+  "world_*",
+  "sight_frame",
+  "physics_raycast",
+  "physics_overlap",
+  "time_control"
+ ],
+ "limits": {
+  "calls": 40,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/room",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/room/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "a physics tick so the colliders are current",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 1
+   }
+  },
+  {
+   "name": "east wall inner face at x = 3",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1,
+     0
+    ],
+    "direction": [
+     1,
+     0,
+     0
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 3,
+     "tol": 0.03
+    },
+    "hits.0.path": {
+     "contains": "/room/"
+    }
+   }
+  },
+  {
+   "name": "west wall inner face at x = -3",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1,
+     0
+    ],
+    "direction": [
+     -1,
+     0,
+     0
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 3,
+     "tol": 0.03
+    },
+    "hits.0.path": {
+     "contains": "/room/"
+    }
+   }
+  },
+  {
+   "name": "north wall inner face at z = -2",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     -1
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    },
+    "hits.0.path": {
+     "contains": "/room/"
+    }
+   }
+  },
+  {
+   "name": "south wall beside the doorway at z = 2",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     1.5,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    }
+   }
+  },
+  {
+   "name": "the doorway is open (a ray through it hits nothing)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "the doorway is 1.2 m wide (rays at x = +-0.5 pass, at +-0.7 hit)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0.5,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "the doorway's west edge",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     -0.7,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    }
+   }
+  },
+  {
+   "name": "the doorway is 2.1 m tall (a ray at 2.0 m passes)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     2.0,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "the doorway's east edge (a ray at x = 0.7 hits)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0.7,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    }
+   }
+  },
+  {
+   "name": "the doorway's west half is open (a ray at x = -0.5 passes)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     -0.5,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "wall above the doorway (lintel below 2.3 m)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     2.3,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    }
+   }
+  },
+  {
+   "name": "the floor's top is at y = 0",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     1,
+     1,
+     1
+    ],
+    "direction": [
+     0,
+     -1,
+     0
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 1,
+     "tol": 0.02
+    },
+    "hits.0.path": {
+     "contains": "/room/"
+    }
+   }
+  },
+  {
+   "name": "the walls are 3 m tall (east wall top)",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     3.05,
+     5,
+     0
+    ],
+    "direction": [
+     0,
+     -1,
+     0
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.distance": {
+     "near": 2,
+     "tol": 0.03
+    }
+   }
+  },
+  {
+   "name": "one lamp with a point light, inside the room, 2-3 m up",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/room",
+    "tags": [
+     "lamp"
+    ],
+    "fields": [
+     "path",
+     "world_position",
+     "light"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.light": {
+     "exists": true
+    },
+    "items.0.world_position.1": {
+     "gte": 2,
+     "lte": 3
+    },
+    "items.0.world_position.0": {
+     "gt": -3,
+     "lt": 3
+    },
+    "items.0.world_position.2": {
+     "gt": -2,
+     "lt": 2
+    }
+   }
+  },
+  {
+   "name": "a capture through the doorway shows the room",
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     1.6,
+     7
+    ],
+    "target": [
+     0,
+     1.2,
+     0
+    ],
+    "width": 640,
+    "height": 400,
+    "subjects": "visible"
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/room/"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 4
+    }
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "room"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "floor",
+      "position": [
+       0,
+       -0.1,
+       0
+      ],
+      "scale": [
+       6.4,
+       0.2,
+       4.4
+      ],
+      "color": "#6b5a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_east",
+      "position": [
+       3.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       4.4
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_west",
+      "position": [
+       -3.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       4.4
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_north",
+      "position": [
+       0,
+       1.5,
+       -2.1
+      ],
+      "scale": [
+       6.4,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_south_w",
+      "position": [
+       -1.9,
+       1.5,
+       2.1
+      ],
+      "scale": [
+       2.6,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_south_e",
+      "position": [
+       1.9,
+       1.5,
+       2.1
+      ],
+      "scale": [
+       2.6,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "lintel",
+      "position": [
+       0,
+       2.55,
+       2.1
+      ],
+      "scale": [
+       1.2,
+       0.9,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/room",
+      "name": "lamp",
+      "position": [
+       0,
+       2.6,
+       0
+      ],
+      "scale": 0.3,
+      "color": "#ffd9a0",
+      "emissive": 3,
+      "tags": [
+       "lamp"
+      ],
+      "light": {
+       "intensity": 2,
+       "range": 6
+      }
+     }
+    ]
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 1
+   }
+  },
+  {
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1,
+     0
+    ],
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "max_distance": 20
+   },
+   "expect": {
+    "total": 0
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a plausible mistake: the south wall built whole (no doorway), and the lamp outside the room",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "room"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "floor",
+      "position": [
+       0,
+       -0.1,
+       0
+      ],
+      "scale": [
+       6.4,
+       0.2,
+       4.4
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_east",
+      "position": [
+       3.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       4.4
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_west",
+      "position": [
+       -3.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       4.4
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_north",
+      "position": [
+       0,
+       1.5,
+       -2.1
+      ],
+      "scale": [
+       6.4,
+       3,
+       0.2
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_south",
+      "position": [
+       0,
+       1.5,
+       2.1
+      ],
+      "scale": [
+       6.4,
+       3,
+       0.2
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/room",
+      "name": "lamp",
+      "position": [
+       0,
+       3.4,
+       0
+      ],
+      "scale": 0.3,
+      "tags": [
+       "lamp"
+      ],
+      "light": {
+       "intensity": 2
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "low_offset_doorway",
+   "note": "review cheat: a doorway 1.05 m tall, shifted east, with walls that pass the original rays",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "room"
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "floor",
+        "position": [
+         0,
+         -0.1,
+         0
+        ],
+        "scale": [
+         6.4,
+         0.2,
+         4.4
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "wall_east",
+        "position": [
+         3.1,
+         1.5,
+         0
+        ],
+        "scale": [
+         0.2,
+         3,
+         4.4
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "wall_west",
+        "position": [
+         -3.1,
+         1.5,
+         0
+        ],
+        "scale": [
+         0.2,
+         3,
+         4.4
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "wall_north",
+        "position": [
+         0,
+         1.5,
+         -2.1
+        ],
+        "scale": [
+         6.4,
+         3,
+         0.2
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "wall_south_w",
+        "position": [
+         -1.9,
+         1.5,
+         2.1
+        ],
+        "scale": [
+         2.6,
+         3,
+         0.2
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "wall_south_e",
+        "position": [
+         2.3,
+         1.5,
+         2.1
+        ],
+        "scale": [
+         1.8,
+         3,
+         0.2
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room",
+        "name": "lintel",
+        "position": [
+         0.4,
+         2.025,
+         2.1
+        ],
+        "scale": [
+         2.0,
+         1.95,
+         0.2
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "sphere",
+        "parent": "/room",
+        "name": "lamp",
+        "position": [
+         0,
+         2.6,
+         0
+        ],
+        "scale": 0.3,
+        "tags": [
+         "lamp"
+        ],
+        "light": {
+         "intensity": 2,
+         "range": 6
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

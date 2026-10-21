@@ -1,0 +1,22 @@
+{
+  "format": "specula.input.v1",
+  "actions": [
+    {
+      "name": "move",
+      "kind": "axis2",
+      "group": "walk",
+      "description": "Walk: +x = right (+X), +y = forward (-Z). Agents: logic_input {\"move\": [x, y]}.",
+      "bindings": [
+        "Pad.LeftStick",
+        { "composite": { "up": "Key.W", "down": "Key.S", "left": "Key.A", "right": "Key.D" } }
+      ]
+    },
+    {
+      "name": "jump",
+      "kind": "button",
+      "group": "walk",
+      "description": "Jump straight up, only when standing on the ground. Agents: logic_input {\"jump\": true}.",
+      "bindings": ["Key.Space", "Pad.South"]
+    }
+  ]
+}

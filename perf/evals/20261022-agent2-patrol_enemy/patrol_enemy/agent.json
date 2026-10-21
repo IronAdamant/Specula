@@ -1,0 +1,18 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 70267,
+  "tool_uses": 25,
+  "duration_ms": 158135
+ },
+ "engine_calls": 18,
+ "result": "passed 9/9",
+ "report": [
+  "Read the set with lex_export and lex_schema (kinds, behaviours, units, actions); one lex_edit (dry run first, then applied, expect_version 0) added archetype sentry (tag enemy, speed attribute 1.5 m/s, patrol square loop) and timer sentries (start 0s, count 1, spawn sentry at square).",
+  "Checked: lex_validate clean; a 30-tick run put the sentry at [1.5, 0, 0], a 360-tick run at [2, 0, 0] (wrapped the 16 m loop); a whole run lost at tick 779 with 6 spawns, one sentry throughout.",
+  "Error: lex_session {run} -> invalid_argument ('run' is not an argument); the right form is {action: inspect, name}.",
+  "Tool notes: lex_edit says tick_hz defaults to 60 without saying whether omitting it on an existing set keeps 30; lex_simulate's sample_every 150 sampled at 180, 360, ... (unexplained); nothing says spawning 'at' a path places the entity at its first point; lex_session needs name but its schema lists no required fields.",
+  "Left behind: two saved runs."
+ ]
+}

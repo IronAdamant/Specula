@@ -1,0 +1,95 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 0,
+  "unexpected": [
+   "recolour_claimed"
+  ],
+  "skipped": [],
+  "errors": [],
+  "calls": 11,
+  "resp_bytes": 5343,
+  "tokens_est": 1982,
+  "wall_s": 652.26
+ },
+ "results": [
+  {
+   "id": "recolour_claimed",
+   "set": "public",
+   "area": "swarm",
+   "mode": "agent",
+   "startup_s": 6.41,
+   "agent_summary": "Operator ended the run: the agent stopped after Claude Code's permission check blocked its bridge calls (not the engine); this verifies the state it reached.",
+   "solution_wall_s": 642.26,
+   "over_wall_limit": true,
+   "actors": [
+    {
+     "name": "keeper",
+     "fired": 1
+    },
+    {
+     "name": "keeper",
+     "fired": 1
+    }
+   ],
+   "actor_polls": 541,
+   "verifiers": [
+    {
+     "name": "exactly the six lanterns the keeper placed, and each is amber",
+     "passed": true
+    },
+    {
+     "name": "each of lantern_w1..w3 and lantern_e1..e3 is amber",
+     "passed": false,
+     "detail": "count: want 6, got 3"
+    },
+    {
+     "name": "the keeper still holds its claim",
+     "passed": true
+    },
+    {
+     "name": "the lanterns didn't move and the bench is untouched",
+     "passed": true
+    },
+    {
+     "name": "lantern_w1 is where the keeper put it",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 4,
+    "of": 5,
+    "fraction": 0.8
+   },
+   "status": "failed",
+   "solution": {
+    "calls": 11,
+    "req_bytes": 2588,
+    "resp_bytes": 5343,
+    "tokens_est": 1982,
+    "errors": 3,
+    "error_codes": {
+     "not_run": 1,
+     "invalid_argument": 2
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "claim_list": 1,
+     "eval_done": 1,
+     "note_add": 1,
+     "task_get": 1,
+     "task_post": 1,
+     "world_batch": 1,
+     "world_query": 3
+    }
+   },
+   "wall_s": 652.25,
+   "validation_errors": 0
+  }
+ ]
+}
