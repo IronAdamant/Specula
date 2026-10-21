@@ -276,15 +276,19 @@ fn uploads_progress_when_the_budget_is_spent_before_the_pump() {
     let mut models = GpuModels::default();
     let mut stream = streamer(&mut gpu, &mut models, &[("upload_ms", Json::from(2.0))]);
     stream.set_window(Some((cam, 1280, 720)));
-    for frame in 0..200 {
+    // (Frames until it all arrived; a frame uploads nothing only while every upload batch is
+    // still in flight on a busy GPU, so the cap is time, generous.)
+    let deadline = Instant::now() + STUCK;
+    while Instant::now() < deadline {
         stream.sync_models(&mut models, &mut gpu, &shared, &world, 0);
         stream.begin_frame();
         stream.charge(spent(1.0e6, 0));
         stream.frame(&mut gpu, &mut models, &shared, &world, 0, true);
         gpu.flush_uploads().unwrap();
-        if draw(&world, &models, &shapes, cam).not_resident == 0 && frame > 0 {
+        if draw(&world, &models, &shapes, cam).not_resident == 0 && stream.json(&gpu, &models).get("pending_builds").and_then(Json::as_u64) == Some(0) {
             break;
         }
+        std::thread::sleep(Duration::from_millis(2));
     }
     assert!(uploads(&stream, &gpu, &models) > 0, "one item a frame goes: {}", stream.json(&gpu, &models));
     assert_eq!(draw(&world, &models, &shapes, cam).not_resident, 0, "everything arrives: {}", stream.json(&gpu, &models));
@@ -295,7 +299,8 @@ fn uploads_progress_when_the_budget_is_spent_before_the_pump() {
     let mut stream = streamer(&mut gpu, &mut models, &[("upload_ms", Json::from(2.0))]);
     stream.begin_frame();
     stream.charge(spent(1.0e6, 1));
-    for _ in 0..100 {
+    let deadline = Instant::now() + STUCK;
+    while Instant::now() < deadline {
         std::thread::sleep(specula::streaming::FRAME_STALE + Duration::from_millis(20));
         if capture(&mut stream, &mut gpu, &mut models, &shared, &world, cam) == 0 {
             break;
