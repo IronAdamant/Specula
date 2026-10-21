@@ -139,6 +139,31 @@ pub fn context(path: &str, kind: FileKind, files: &BTreeMap<String, ProjectFile>
     }
 }
 
+/// [`check_module_manifest`], plus what needs the module's folder: `specula-sdk`'s path must lead
+/// to the SDK crate itself (a `Cargo.toml` whose package is `specula-sdk`).
+pub fn check_module_manifest_at(dir: &std::path::Path, file: &str, text: &str) -> Vec<Problem> {
+    let mut out = check_module_manifest(file, text);
+    if !out.is_empty() {
+        return out;
+    }
+    let Ok(doc) = specula_core::toml::parse(text) else { return out };
+    if let Some(p) = doc.get("dependencies").and_then(|d| d.get("specula-sdk")).and_then(|s| s.get("path")).and_then(Json::as_str) {
+        let target = std::fs::read_to_string(dir.join(p).join("Cargo.toml")).ok().and_then(|t| specula_core::toml::parse(&t).ok());
+        let name = target.as_ref().and_then(|t| t.get("package")).and_then(|p| p.get("name")).and_then(Json::as_str);
+        if name != Some("specula-sdk") {
+            out.push(Problem {
+                file: file.to_owned(),
+                severity: "error",
+                code: "not_a_module".into(),
+                at: "dependencies.specula-sdk.path".into(),
+                message: format!("specula-sdk's path ({p}) doesn't lead to the specula-sdk crate"),
+                offset: None,
+            });
+        }
+    }
+    out
+}
+
 /// Checks a module crate's `Cargo.toml` as text (what `logic_build` would refuse, without
 /// running Cargo): a `cdylib` whose only dependency is `specula-sdk` by path; no build script
 /// (`build` key), no `links`, no `[workspace]`, `[patch]`, `[replace]`, `[target]`,
@@ -158,7 +183,7 @@ pub fn check_module_manifest(file: &str, text: &str) -> Vec<Problem> {
             out.push(err("build_script", &format!("package.{k}"), format!("modules may not have package.{k}: nothing in a module's build may run code at build time")));
         }
     }
-    for t in ["workspace", "patch", "replace", "target", "build-dependencies", "bin", "example", "bench"] {
+    for t in ["workspace", "patch", "replace", "target", "build-dependencies", "build_dependencies", "dev_dependencies", "bin", "example", "bench"] {
         if doc.get(t).is_some() {
             out.push(err("not_allowed", t, format!("[{t}] isn't allowed in a module's Cargo.toml (a module is one cdylib depending only on specula-sdk)")));
         }
@@ -167,17 +192,30 @@ pub fn check_module_manifest(file: &str, text: &str) -> Vec<Problem> {
     if !cdylib {
         out.push(err("not_a_module", "lib.crate-type", "a module is a cdylib: [lib] crate-type = [\"cdylib\"]".into()));
     }
-    if doc.get("lib").and_then(|l| l.get("proc-macro")).is_some() {
-        out.push(err("build_script", "lib.proc-macro", "modules may not be proc-macro crates (they run code at build time)".into()));
+    for k in ["proc-macro", "proc_macro", "crate_type", "plugin"] {
+        if doc.get("lib").and_then(|l| l.get(k)).is_some() {
+            out.push(err("build_script", &format!("lib.{k}"), format!("lib.{k} isn't allowed in a module (a cdylib, written crate-type; never a proc-macro)")));
+        }
+    }
+    // The library's source stays in src/ (lib.path could compile any file).
+    if let Some(p) = doc.get("lib").and_then(|l| l.get("path")) {
+        let ok = p.as_str().is_some_and(|p| {
+            let p = p.replace('\\', "/");
+            p.starts_with("src/") && !p.contains(':') && !p.split('/').any(|s| s == "..")
+        });
+        if !ok {
+            out.push(err("source_path", "lib.path", "lib.path must stay inside the module's src/ folder".into()));
+        }
     }
     for table in ["dependencies", "dev-dependencies"] {
         for (name, spec) in doc.get(table).and_then(Json::as_object).unwrap_or_default() {
             let path = spec.get("path").and_then(Json::as_str);
             let foreign = ["git", "registry", "version", "registry-index"].iter().find(|k| spec.get(k).is_some());
+            let renamed = spec.get("package").and_then(Json::as_str).unwrap_or(name);
             if path.is_none() || foreign.is_some() || spec.as_str().is_some() {
                 out.push(err("third_party_crate", &format!("{table}.{name}"), format!("'{name}' must be a path dependency (zero third-party crates): {{ path = \"...\" }} only")));
-            } else if table == "dependencies" && name != "specula-sdk" {
-                out.push(err("not_a_module", &format!("{table}.{name}"), format!("modules depend on specula-sdk only, not '{name}' (engine crates are never module dependencies)")));
+            } else if table == "dependencies" && (name != "specula-sdk" || renamed != "specula-sdk") {
+                out.push(err("not_a_module", &format!("{table}.{name}"), format!("modules depend on specula-sdk only, not '{renamed}' (engine crates are never module dependencies; no renaming with package =)")));
             }
         }
     }
@@ -279,7 +317,18 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
         FileKind::Cargo => out.extend(check_module_manifest(path, text)),
-        FileKind::Rust => {}
+        // Compile-time paths (`#[path]`, `include_str!`...) stay in the module's src/.
+        FileKind::Rust => {
+            let rel = path.strip_prefix(mount_of(path)).map_or(path, |r| r.trim_start_matches('/'));
+            out.extend(specula_logic::paths::check_source(rel, text).into_iter().map(|p| Problem {
+                file: path.to_owned(),
+                severity: "error",
+                code: "source_path".into(),
+                at: format!("line {}", p.line),
+                message: p.message,
+                offset: None,
+            }));
+        }
     }
     out
 }
@@ -474,5 +523,20 @@ mod tests {
         assert!(codes(&engine_dep).contains(&"not_a_module".to_owned()));
         assert!(codes(&format!("{ambulo}[build-dependencies]\n")).contains(&"not_allowed".to_owned()));
         assert!(!validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &serde, None, &[]).is_empty(), "every Cargo.toml commit is checked");
+        // Review round 2: renaming another crate to specula-sdk, lib.path and the underscore aliases.
+        let renamed = ambulo.replace(sdk, "specula-sdk = { path = \"../../crates/specula-core\", package = \"specula-core\" }");
+        assert!(codes(&renamed).contains(&"not_a_module".to_owned()), "{:?}", codes(&renamed));
+        let dir = root.join("games/ambulo");
+        let moved = ambulo.replace(sdk, "specula-sdk = { path = \"../../crates/specula-core\" }");
+        assert!(check_module_manifest_at(&dir, "m", &moved).iter().any(|p| p.at == "dependencies.specula-sdk.path"), "the path must lead to the SDK");
+        assert!(check_module_manifest_at(&dir, "m", &ambulo).is_empty());
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\npath = \"../../crates/specula/src/lib.rs\"")).contains(&"source_path".to_owned()));
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\npath = \"src/lib.rs\"")).is_empty());
+        assert!(codes(&format!("{ambulo}[build_dependencies]\n")).contains(&"not_allowed".to_owned()));
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\nproc_macro = true")).contains(&"build_script".to_owned()));
+        // .rs commits: compile-time paths stay in src/.
+        assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "const X: &str = include_str!(\"C:/Windows/win.ini\");", None, &[]).iter().any(|p| p.code == "source_path"));
+        assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "#[path = \"../../../crates/specula/src/lib.rs\"]\nmod e;", None, &[]).iter().any(|p| p.code == "source_path"));
+        assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "const D: &str = include_str!(\"data.txt\");", None, &[]).is_empty());
     }
 }

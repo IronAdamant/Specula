@@ -5,7 +5,7 @@
 use crate::game::Ctx;
 use crate::journal::{Kind, Writer};
 use crate::project::{self, Event, FileKind, Mount, MountKind, ProjectFile, DISK_AGENT};
-use crate::project_tools::{Committed, ProjectCall, Snap};
+use crate::project_tools::{Committed, FixesCommitted, ModuleText, ProjectCall, Snap};
 use crate::world::{Change, Recording, WorldError};
 use crate::Engine;
 use specula_core::Json;
@@ -29,9 +29,10 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
     let mut later = Vec::new();
     for e in journal.touching(id, SCAN) {
         for c in e.changes.iter().rev().filter(|c| c.id() == id) {
-            let Change::File { before, after, .. } = c else { continue };
+            let Change::File { before, after, kept, .. } = c else { continue };
+            // A change whose text was dropped (the journal's file-text budget) has no text to give.
             if let Some(a) = after.as_deref().filter(|a| a.version == version) {
-                return (Some(Arc::clone(&a.text)), later);
+                return (kept.then(|| Arc::clone(&a.text)), later);
             }
             if after.as_deref().is_none_or(|a| a.version > version) && later.len() < 8 {
                 let mut f = vec![("journal", Json::from(e.seq)), ("by", Json::from(&*e.by)), ("tick", Json::from(e.tick)), ("op", Json::from(c.op()))];
@@ -44,7 +45,7 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
                 later.push(Json::obj(f));
             }
             if let Some(b) = before.as_deref().filter(|b| b.version == version) {
-                return (Some(Arc::clone(&b.text)), later);
+                return (kept.then(|| Arc::clone(&b.text)), later);
             }
             if before.as_deref().is_some_and(|b| b.version < version) {
                 return (None, later);
@@ -72,7 +73,16 @@ impl Engine {
             }
             ProjectCall::Mount { dir, name } => self.project_mount(dir, name),
             ProjectCall::FixGate { dir } => self.project_fix_gate(&dir, w),
-            ProjectCall::Adopt { dir } => self.project_adopt(&dir, w, by),
+            ProjectCall::ModuleTexts { dir, reply } => {
+                let texts = self.project_module_texts(&dir);
+                let _ = reply.send(texts);
+                ToolOutput::text("{}")
+            }
+            ProjectCall::CommitFixes { files, reply } => {
+                let done = self.project_commit_fixes(files, w, by);
+                let _ = reply.send(done);
+                ToolOutput::text("{}")
+            }
         }
     }
 
@@ -106,7 +116,8 @@ impl Engine {
             }
             _ => Vec::new(),
         };
-        Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None }
+        let held = self.project.held.contains_key(path);
+        Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None, held }
     }
 
     fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, w: Writer, by: &str) -> Committed {
@@ -260,7 +271,7 @@ impl Engine {
             return refuse("build_script", format!("{} has a build.rs: modules may not run code at build time", dir.display()));
         }
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-        let problems = crate::project_kinds::check_module_manifest("Cargo.toml", &manifest);
+        let problems = crate::project_kinds::check_module_manifest_at(&dir, "Cargo.toml", &manifest);
         if !problems.is_empty() {
             return ToolOutput::error(
                 Json::obj([
@@ -270,6 +281,14 @@ impl Engine {
                 ])
                 .to_string(),
             );
+        }
+        // One disk file, one project path: a mount may not lie inside another, or hold one.
+        let canon = specula_logic::fix::canonical(&dir);
+        if let Some(m) = self.project.mounts().iter().find(|m| m.name != name && {
+            let r = specula_logic::fix::canonical(&m.root);
+            canon.starts_with(&r) || r.starts_with(&canon)
+        }) {
+            return refuse("mount_overlap", format!("{} overlaps the mount {} ({}): one file would have two project paths (and two sets of claims)", dir.display(), m.name, m.root.display()));
         }
         let mounted = self.project.mounts().iter().any(|m| m.name == name);
         if !mounted && self.project.module_mounts() >= project::MAX_MODULE_MOUNTS {
@@ -322,49 +341,68 @@ impl Engine {
         }
     }
 
-    /// After `logic_build {fix: true}` wrote fixes into a mounted module: they are committed as the
-    /// calling agent's change (claims checked, journaled, undoable) instead of waiting to be
-    /// imported as edits by `disk`. A claim that refuses them puts the store's text back on disk.
-    fn project_adopt(&mut self, dir: &std::path::Path, w: Writer, by: &str) -> ToolOutput {
-        let Some(m) = self.project_module_mount(dir) else { return ToolOutput::text("{}") };
+    /// A mounted module's files as the store holds them (outside edits imported first): what a
+    /// fix build compiles, so its fixes are worked out against exactly these texts.
+    fn project_module_texts(&mut self, dir: &std::path::Path) -> Vec<ModuleText> {
+        let Some(m) = self.project_module_mount(dir) else { return Vec::new() };
         let prefix = format!("{}/", m.name);
-        let paths: Vec<String> = self.project.mounts().iter().filter(|x| x.name == m.name).flat_map(|x| project::scan(x).files.into_iter().map(|(rel, _)| x.path_of(&rel))).collect();
+        let paths: Vec<String> = self.world.files().range(prefix.clone()..).take_while(|(p, _)| p.starts_with(&prefix)).map(|(p, _)| p.clone()).collect();
+        let events: Vec<Event> = paths.iter().filter_map(|p| self.project.refresh(p)).collect();
+        if !events.is_empty() {
+            self.project_import(events);
+        }
+        self.world
+            .files()
+            .range(prefix.clone()..)
+            .take_while(|(p, _)| p.starts_with(&prefix))
+            .map(|(p, f)| ModuleText { disk: specula_logic::fix::canonical(&m.disk_path(&p[prefix.len()..])), path: p.clone(), version: f.version, hash: f.hash, text: Arc::clone(&f.text) })
+            .collect()
+    }
+
+    /// `logic_build {fix: true}`'s fixes for a mounted module, committed as the caller's change
+    /// (claims checked, journaled, undoable) and then written to disk by the engine: never by the
+    /// fixer, so nothing is imported as `disk`. A file changed since the build read it (another
+    /// agent's edit, a human's) keeps its text: its fixes are skipped and reported, since their
+    /// offsets belong to the old text.
+    fn project_commit_fixes(&mut self, files: Vec<(String, u64, u64, String)>, w: Writer, by: &str) -> FixesCommitted {
+        let mut out = FixesCommitted::default();
         let mut puts = Vec::new();
-        let mut stamps = Vec::new();
-        for p in paths.iter().filter(|p| p.starts_with(&prefix)) {
-            if let Some(Event::Changed { kind, text, stamp, .. }) = self.project.refresh(p) {
-                let version = self.world.file_version_floor(p) + 1;
-                puts.push((p.clone(), ProjectFile::new(kind, text, version, Arc::from(by))));
-                stamps.push((p.clone(), stamp));
+        for (path, version, hash, text) in files {
+            if let Some(ev) = self.project.refresh(&path) {
+                self.project_import(vec![ev]);
+            }
+            match self.world.files().get(&path) {
+                Some(f) if (f.version, f.hash) == (version, hash) => {
+                    if text.len() > project::MAX_FILE_BYTES {
+                        out.skipped.push((path, "the fixed file would pass 1 MiB".into()));
+                        continue;
+                    }
+                    let next = ProjectFile::new(f.kind, Arc::from(text), self.world.file_version_floor(&path) + 1, Arc::from(by));
+                    puts.push((path, next));
+                }
+                Some(f) => out.skipped.push((path, format!("changed during the build (now version {} by {}): its fixes belong to the old text", f.version, f.modified_by))),
+                None => out.skipped.push((path, "deleted during the build".into())),
             }
         }
         if puts.is_empty() {
-            return ToolOutput::text(Json::obj([("adopted", Json::from(0))]).to_string());
+            return out;
         }
-        let n = puts.len();
+        let paths: Vec<String> = puts.iter().map(|(p, _)| p.clone()).collect();
         let tick = self.clock.tick();
-        let result = self.swarm.commit_project(&mut self.world, tick, w, |wd| {
+        match self.swarm.commit_project(&mut self.world, tick, w, |wd| {
             for (p, f) in puts {
                 wd.put_file_raw(&p, Some(f), false);
             }
             Ok(())
-        });
-        match result {
+        }) {
             Ok((_, seq)) => {
-                for (p, s) in stamps {
-                    self.project.stamp(&p, s);
-                }
-                ToolOutput::text(Json::obj([("adopted", Json::from(n)), ("journal", Json::from(seq))]).to_string())
-            }
-            Err(e) => {
-                // Refused: the disk goes back to the store's text (the fixes are dropped).
-                for (p, s) in stamps {
-                    self.project.stamp(&p, project::Stamp { hash: 0, ..s });
-                }
+                out.committed = paths;
+                out.journal = seq;
                 self.project_sync_for(None);
-                ToolOutput::error(e.to_json().to_string())
             }
+            Err(e) => out.error = Some(e.to_json()),
         }
+        out
     }
 
     /// At start: the assets root becomes the `assets` mount, its files the store's first entry.
@@ -395,6 +433,9 @@ impl Engine {
             match ev {
                 Event::Changed { kind, text, stamp, .. } => {
                     if cur.is_some_and(|f| f.hash == stamp.hash) {
+                        // Readable again, and what the store holds: nothing is held any more.
+                        self.project.held.remove(&path);
+                        self.project.pending.remove(&path);
                         self.project.stamp(&path, stamp);
                         continue;
                     }
@@ -698,6 +739,67 @@ mod tests {
         w.put_file_raw(p, None, false);
         next.adopt_files(w.take_files(), rev);
         assert_eq!(next.file_version_floor(p), 4);
+    }
+
+    /// Review round 2: a version whose text the budget dropped was read back as "" (and used as
+    /// an empty conflict base). It is "not kept" now.
+    #[test]
+    fn dropped_texts_are_not_kept_versions() {
+        let s1 = session("aaaaaa11");
+        let mut sw = Swarm::default();
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        sw.hello(&s1, "ann".into(), "builder".into(), None, std::slice::from_ref(&s1)).unwrap();
+        let k1 = sw.key(&s1);
+        let ann = Writer::new("ann", Some(&k1));
+        sw.journal.set_file_budget(3_000);
+        let p = "assets/sounds/s.json";
+        for v in 1..=4u64 {
+            let text = format!("{{\"v\": {v}, \"pad\": \"{}\"}}", "x".repeat(1_000));
+            sw.commit_project(&mut w, v, ann, |wd| {
+                wd.put_file_raw(p, file(&text, v, "ann"), false);
+                Ok(())
+            })
+            .unwrap();
+        }
+        let (old, later) = super::at_version(&sw.journal, p, 1);
+        assert!(old.is_none(), "version 1's text was dropped: not kept, never \"\"");
+        assert!(!later.is_empty(), "the later changes are still listed");
+        assert!(super::at_version(&sw.journal, p, 3).0.is_some_and(|t| t.contains("\"v\": 3")));
+    }
+
+    /// Review round 2: the list of entries holding file text had no bound tied to the rings.
+    #[test]
+    fn file_text_entries_follow_the_rings() {
+        let mut j = crate::journal::Journal::with_limits(&World::default(), "t", 50, 1 << 30);
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        for v in 1..=2_000u64 {
+            crate::journal::commit(&mut w, &mut j, v, "ann", Kind::File, None, |wd| {
+                wd.put_file_raw("assets/sounds/s.json", file("{}", v, "ann"), false);
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert!(j.file_text_entries() <= 50, "{}", j.file_text_entries());
+    }
+
+    /// Review round 2: tombstone eviction took the lexicographically first path, not the oldest.
+    #[test]
+    fn the_oldest_tombstone_goes_first() {
+        let mut w = World::default();
+        let made = |w: &mut World, p: &str, v: u64| {
+            w.put_file_raw(p, file("{}", v, "ann"), false);
+            w.put_file_raw(p, None, false);
+        };
+        made(&mut w, "assets/zzz_first.json", 7);
+        for i in 0..crate::world::MAX_FILE_TOMBSTONES {
+            made(&mut w, &format!("assets/a{i:05}.json"), 2);
+        }
+        assert_eq!(w.file_version_floor("assets/a00000.json"), 7, "the oldest (zzz_first, v7) went and raised the floor");
+        assert_eq!(w.file_version_floor("assets/zzz_first.json"), 7);
+        made(&mut w, "assets/b.json", 9);
+        assert_eq!(w.file_version_floor("assets/a00001.json"), 7, "a00000 went next (v2): the floor stays 7");
     }
 
     /// Review finding: `logic_build {fix: true}` wrote a mounted module's sources past other

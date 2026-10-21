@@ -295,6 +295,8 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
         }
         at = d.parent();
     }
+    // Compile-time paths (`#[path]`, `include_str!`...) stay inside the module's src/.
+    crate::paths::check_module(&dir)?;
     let lock = workspace_root(&dir).join("Cargo.lock");
     let lock_before = std::fs::read(&lock).ok();
     let restore = || match &lock_before {

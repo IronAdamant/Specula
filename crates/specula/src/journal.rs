@@ -639,6 +639,15 @@ impl Journal {
         } else {
             self.agents.push(entry);
         }
+        // Entries the rings dropped hold no text any more: their pairs go (so the list is bounded
+        // by the rings, however small the texts).
+        while let Some(&(old, b)) = self.file_texts.front() {
+            if self.get(old).is_some() {
+                break;
+            }
+            self.file_texts.pop_front();
+            self.file_bytes -= b;
+        }
         if file_bytes > 0 {
             self.file_texts.push_back((seq, file_bytes));
             self.file_bytes += file_bytes;
@@ -656,6 +665,11 @@ impl Journal {
     /// File text held now, and its budget (see [`MAX_FILE_TEXT_BYTES`]).
     pub fn file_text(&self) -> (usize, usize) {
         (self.file_bytes, self.file_budget)
+    }
+
+    /// Entries holding file text (bounded by the rings).
+    pub fn file_text_entries(&self) -> usize {
+        self.file_texts.len()
     }
 
     #[cfg(test)]

@@ -51,16 +51,40 @@ pub enum ProjectCall {
     /// Before `logic_build {fix: true}` writes fixes into a module: refused while another agent
     /// claims any of its files (when it is mounted).
     FixGate { dir: PathBuf },
-    /// After `logic_build {fix: true}`: the fixes in a mounted module become the caller's change.
-    Adopt { dir: PathBuf },
+    /// A mounted module's files as the store holds them (what a fix build compiles).
+    ModuleTexts { dir: PathBuf, reply: Sender<Vec<ModuleText>> },
+    /// A fix build's fixed texts `(path, version, hash it was worked out from, new text)`,
+    /// committed as the caller's change; files changed since are skipped.
+    CommitFixes { files: Vec<(String, u64, u64, String)>, reply: Sender<FixesCommitted> },
+}
+
+/// One mounted module file (see [`ProjectCall::ModuleTexts`]).
+pub struct ModuleText {
+    /// Canonical disk path (what rustc's diagnostics name).
+    pub disk: PathBuf,
+    pub path: String,
+    pub version: u64,
+    pub hash: u64,
+    pub text: Arc<str>,
+}
+
+/// How [`ProjectCall::CommitFixes`] went.
+#[derive(Default)]
+pub struct FixesCommitted {
+    pub committed: Vec<String>,
+    /// `(path, why)`: files whose fixes were not applied.
+    pub skipped: Vec<(String, String)>,
+    /// The commit was refused (a claim): nothing was written.
+    pub error: Option<Json>,
+    pub journal: Option<u64>,
 }
 
 impl ProjectCall {
     pub fn class(&self) -> Class {
         match self {
             ProjectCall::List { .. } | ProjectCall::Snapshot { .. } => Class::Read,
-            ProjectCall::FixGate { .. } => Class::Read,
-            ProjectCall::Commit { .. } | ProjectCall::Mount { .. } | ProjectCall::Adopt { .. } => Class::Disk,
+            ProjectCall::FixGate { .. } | ProjectCall::ModuleTexts { .. } => Class::Read,
+            ProjectCall::Commit { .. } | ProjectCall::Mount { .. } | ProjectCall::CommitFixes { .. } => Class::Disk,
         }
     }
 }
@@ -79,6 +103,8 @@ pub struct Snap {
     pub later: Vec<Json>,
     pub context: Vec<(String, FileKind, Arc<str>)>,
     pub error: Option<WorldError>,
+    /// The file is held (the disk holds bytes that can't be mirrored).
+    pub held: bool,
 }
 
 /// How a commit went.
@@ -528,12 +554,16 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
                 }
             }
         };
-        if let (Some(n), Some(o)) = (&next, &old) {
+        if let (Some(n), Some(o), false) = (&next, &old, snap.held && replace_unreadable) {
             if n.as_str() == &**o {
                 return Ok(ToolOutput::text(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(current_version)), ("unchanged", Json::Bool(true))]).to_string()));
             }
         }
         let problems = match (next.as_deref(), old.as_deref()) {
+            (Some(n), o) if kind == FileKind::Cargo => match &snap.module_dir {
+                Some(dir) => project_kinds::check_module_manifest_at(dir, &path, n),
+                None => project_kinds::validate(&path, kind, n, o, &snap.context),
+            },
             (Some(n), o) => project_kinds::validate(&path, kind, n, o, &snap.context),
             // A delete is checked against what depends on the file (a style's recipes, a theme's screens).
             (None, Some(o)) => project_kinds::validate_delete(&path, kind, o, &snap.context),

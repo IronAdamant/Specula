@@ -591,7 +591,7 @@ impl Disk {
 
     /// What changed on disk at `path` since it was last synced, as the event to import (`None`:
     /// nothing, or `path` isn't mounted).
-    pub fn refresh(&self, path: &str) -> Option<Event> {
+    pub fn refresh(&mut self, path: &str) -> Option<Event> {
         let (mount, rel) = self.locate(path)?;
         let kind = kind_for(mount.kind, &rel)?;
         let disk = mount.disk_path(&rel);
@@ -603,7 +603,8 @@ impl Disk {
             (Some(meta), _) => match read_text(&disk) {
                 Ok((text, stamp)) if Some(stamp.hash) != known.map(|s| s.hash) => Some(Event::Changed { path: path.to_owned(), kind, text, stamp }),
                 Ok((_, stamp)) => {
-                    // Touched, same text: remember the new time.
+                    // Touched, same text: remember the new time; readable again, so not held.
+                    self.held.remove(path);
                     self.stamp(path, stamp);
                     None
                 }
@@ -654,6 +655,9 @@ impl Disk {
                 match event {
                     Event::Changed { text, stamp, .. } => {
                         if file.is_some_and(|f| f.hash == stamp.hash) {
+                            // The disk was put back to the store's text: nothing to write, nothing held.
+                            self.held.remove(&path);
+                            self.pending.remove(&path);
                             self.stamp(&path, stamp);
                         } else {
                             out.raced.push((path.clone(), text, stamp));
@@ -911,6 +915,22 @@ mod tests {
         assert!(backup.file_name().unwrap().to_string_lossy().starts_with('.'), "hidden: never mirrored");
         assert_eq!(disk.sync(&files, 3).changed, vec![path.to_owned()]);
         assert_eq!(std::fs::read_to_string(root.join("sounds/s.json")).unwrap(), "{\"b\": 2}");
+        // Review round 2: a held file is released when the disk is put back to the store's text.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("sounds/s.json"), b"{\"caf\xe9\": 1}").unwrap();
+        let Some(Event::Unreadable { len, mtime, why, .. }) = disk.refresh(path) else { panic!("held again") };
+        disk.held.insert(path.into(), (len, mtime, why)); // what the engine's import does
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("sounds/s.json"), "{\"b\": 2}").unwrap();
+        assert!(disk.refresh(path).is_none(), "the store's own text: nothing to import");
+        assert!(!disk.held.contains_key(path), "released");
+        // The same through a sync that finds the disk already holding the store's newer text.
+        files.insert(path.into(), ProjectFile::new(FileKind::Sound, Arc::from("{\"c\": 3}"), 9, Arc::from("ann")));
+        disk.held.insert(path.into(), (0, None, "x".into()));
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("sounds/s.json"), "{\"c\": 3}").unwrap();
+        let done = disk.sync(&files, 6);
+        assert!(done.failed.is_empty() && !disk.held.contains_key(path) && !disk.pending.contains_key(path), "{done:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

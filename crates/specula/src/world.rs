@@ -1931,14 +1931,24 @@ impl Change {
     }
 }
 
-/// Deleted files whose last version a world remembers by path (see `World::file_version_floor`).
+/// Deleted files whose last version a world remembers by path, the most recently deleted ones
+/// (see `World::file_version_floor`).
 pub const MAX_FILE_TOMBSTONES: usize = 16_384;
 
 /// A world's project files, handed from a world being replaced to the next.
 pub(crate) struct ProjectFiles {
     files: BTreeMap<String, crate::project::ProjectFile>,
-    floor: BTreeMap<String, u64>,
+    floor: BTreeMap<String, FileTombstone>,
+    order: BTreeMap<u64, String>,
+    seq: u64,
     floor_all: u64,
+}
+
+/// A deleted file's last version, and when it was deleted (oldest tombstones go first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FileTombstone {
+    version: u64,
+    order: u64,
 }
 
 /// Bookkeeping per heap allocation (allocator header and rounding), roughly.
@@ -2096,7 +2106,10 @@ pub struct World {
     /// Deleted files' last versions (at most [`MAX_FILE_TOMBSTONES`]; older ones raise
     /// `file_floor_all`): a file made again at a path continues its versions, so an
     /// `expect_version` read from the old file can never match the new one.
-    file_floor: BTreeMap<String, u64>,
+    file_floor: BTreeMap<String, FileTombstone>,
+    /// The tombstones by age (`FileTombstone::order` -> path): the oldest goes first.
+    file_floor_order: BTreeMap<u64, String>,
+    file_floor_seq: u64,
     file_floor_all: u64,
     /// Bumped whenever an entity is linked, unlinked, renamed or moved to another parent: path
     /// lookups cached against it stay valid while it holds (follow cameras, every frame).
@@ -2508,16 +2521,26 @@ impl World {
         }
         match (&before, &file) {
             (Some(b), None) => {
-                let v = self.file_floor.get(path).copied().unwrap_or(0).max(b.version);
-                self.file_floor.insert(path.to_owned(), v);
+                let v = self.file_floor.get(path).map_or(0, |t| t.version).max(b.version);
+                if let Some(old) = self.file_floor.get(path) {
+                    self.file_floor_order.remove(&old.order);
+                }
+                self.file_floor_seq += 1;
+                self.file_floor.insert(path.to_owned(), FileTombstone { version: v, order: self.file_floor_seq });
+                self.file_floor_order.insert(self.file_floor_seq, path.to_owned());
+                // Past the limit the oldest tombstone goes; its version raises the floor of all.
                 if self.file_floor.len() > MAX_FILE_TOMBSTONES {
-                    if let Some((_, v)) = self.file_floor.pop_first() {
-                        self.file_floor_all = self.file_floor_all.max(v);
+                    if let Some((_, oldest)) = self.file_floor_order.pop_first() {
+                        if let Some(t) = self.file_floor.remove(&oldest) {
+                            self.file_floor_all = self.file_floor_all.max(t.version);
+                        }
                     }
                 }
             }
             (_, Some(_)) => {
-                self.file_floor.remove(path);
+                if let Some(t) = self.file_floor.remove(path) {
+                    self.file_floor_order.remove(&t.order);
+                }
             }
             (None, None) => {}
         }
@@ -2532,14 +2555,20 @@ impl World {
     /// (live or deleted). A new file takes this plus one.
     pub fn file_version_floor(&self, path: &str) -> u64 {
         let live = self.files.get(path).map_or(0, |f| f.version);
-        live.max(self.file_floor.get(path).copied().unwrap_or(0)).max(self.file_floor_all)
+        live.max(self.file_floor.get(path).map_or(0, |t| t.version)).max(self.file_floor_all)
     }
 
     /// Takes the project files out (a world being replaced hands them to the next: they are the
     /// project, not the world).
     pub(crate) fn take_files(&mut self) -> ProjectFiles {
         self.files_revision += 1;
-        ProjectFiles { files: std::mem::take(&mut self.files), floor: std::mem::take(&mut self.file_floor), floor_all: self.file_floor_all }
+        ProjectFiles {
+            files: std::mem::take(&mut self.files),
+            floor: std::mem::take(&mut self.file_floor),
+            order: std::mem::take(&mut self.file_floor_order),
+            seq: self.file_floor_seq,
+            floor_all: self.file_floor_all,
+        }
     }
 
     /// Takes over the files from the world this one replaces (not recorded: the journal starts
@@ -2547,6 +2576,8 @@ impl World {
     pub(crate) fn adopt_files(&mut self, files: ProjectFiles, revision: u64) {
         self.files = files.files;
         self.file_floor = files.floor;
+        self.file_floor_order = files.order;
+        self.file_floor_seq = files.seq;
         self.file_floor_all = files.floor_all;
         self.files_revision = self.files_revision.max(revision) + 1;
     }
