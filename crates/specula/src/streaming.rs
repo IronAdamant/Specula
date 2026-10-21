@@ -661,6 +661,9 @@ pub struct Streamer {
     transients: Vec<u64>,
     /// When the current upload budget began (see [`FRAME_STALE`]).
     frame_began: Option<Instant>,
+    /// Items the frame's pumps tried (uploaded, blocked, failed or put off): the first goes
+    /// whatever the budget, the rest only within it.
+    frame_tried: u32,
     /// Builds drawn instanced (at least [`INSTANCED_MIN`] entities): never merged.
     instanced: std::collections::BTreeSet<u64>,
     /// The eviction queue (see `victims`), kept across frames until the next pass.
@@ -718,6 +721,7 @@ impl Streamer {
             transients: Vec::new(),
             instanced: Default::default(),
             frame_began: None,
+            frame_tried: 0,
             victims_cache: None,
         }
     }
@@ -1358,13 +1362,15 @@ impl Streamer {
             let spent = already + frame_start.elapsed().as_secs_f64() * 1e3;
             // Every upload batch still in flight (the GPU is that far behind): the rest waits for
             // the next frame rather than for the GPU (or for a fence poll, which the Intel driver
-            // can make slow while it is saturated). The frame's first item goes whatever the
+            // can make slow while it is saturated). The frame's first item is tried whatever the
             // frame's other work cost, so uploads always progress (a frame whose filing and
-            // wanted-set work alone exceed the budget used to upload nothing, every frame).
-            if (self.frame_items > 0 && spent >= budget_ms) || !gpu.upload_slot_free() {
+            // wanted-set work alone exceed the budget used to upload nothing, every frame); one
+            // tried, not one uploaded, so a frame whose items are all blocked stays bounded.
+            if (self.frame_tried > 0 && spent >= budget_ms) || !gpu.upload_slot_free() {
                 self.frame.deferred += count - i as u32;
                 break;
             }
+            self.frame_tried += 1;
             // An item's cost: a fixed part (buffer creation, recording) plus its size.
             let est_ms = self.ms_per_item + est as f64 / 1_048_576.0 * self.ms_per_mb;
             if self.frame_items > 0 && (spent + est_ms > budget_ms || self.frame_bytes + est > budget_bytes) {
@@ -1472,6 +1478,7 @@ impl Streamer {
     pub fn begin_frame(&mut self) {
         self.spent_ms = 0.0;
         self.frame_items = 0;
+        self.frame_tried = 0;
         self.frame_bytes = 0;
         self.frame_began = Some(Instant::now());
     }
