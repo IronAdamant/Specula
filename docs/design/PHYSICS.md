@@ -254,8 +254,13 @@ replays physics changes exactly (`world_hash verify`). `world_hash` reports the 
 world's. *Limit:* hidden state (warm-start impulses, sleep timers, the exact rotation behind `rotation_deg`) isn't saved
 in world files, so a reloaded world continues deterministically from the load, but not bit-identically to the run that
 saved it. Save games carry all of it, so a loaded save continues bit-identically ([SAVES.md](SAVES.md)); bodies
-remember the scale their collider was built at for it (a world matrix's column lengths jitter in the last bit as a body
-turns, and the space keeps the shape it was built with).
+remember the scale their collider was built at for it. **World scale** (`physics::world_scale`, what colliders, joint
+frames, the mover, ragdolls and navmeshes read) is composed level by level from the root, never from the world
+matrix's column lengths (those jitter in the last bit as a body turns, so a joint rebuilt from a moved body didn't match
+its save): an entity's axis `i` scales by `s_i × |S · R · e_i|`, `S` its parent's world scale and `R` its own rotation.
+Unturned entities, uniformly scaled parents and turns by multiples of 90° are exact (the parent's scales, swapped);
+only a child turned at an odd angle under a non-uniformly scaled parent takes the general case, and its true shape is
+sheared, which no collider follows exactly.
 
 **2D.** `world_env {physics: {plane_2d: true}}` keeps dynamic bodies in the XY plane (Specula's 2D plane) turning about
 Z only, by locking axes in the solver. Shapes stay 3D (a circle is a sphere, a 2D box a thin box), so 2D games get the
