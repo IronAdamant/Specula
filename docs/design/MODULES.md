@@ -65,10 +65,11 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   (`outside_root`);
 - **no build scripts** (`build_script`) and **no proc-macros** (`proc_macro`), anywhere in the build: they run code at
   build time;
-- **compile-time paths stay in the module's `src/`** (`source_path`, `specula_logic::paths`): `#[path = "..."]` and
-  `include_str!` / `include_bytes!` / `include!` must name a plain string literal that resolves inside `src/`, never an
-  absolute path or one climbing out (a module can't compile engine sources into itself or read
-  `C:/Windows/win.ini` at build time). The project tools apply the same check to every committed `.rs` file;
+- **compile-time paths stay in the module's folder** (`source_path`, `specula_logic::paths`): `#[path = "..."]` and
+  `include_str!` / `include_bytes!` / `include!` must name a plain string literal that resolves inside the module (its
+  `src/` and top-level files such as `actions.json`; never `target/`), never an absolute path or one climbing out (a
+  module can't compile engine sources into itself or read `C:/Windows/win.ini` at build time). The project tools apply
+  the same check to every committed `.rs` file;
 - **no `.cargo/` folder** between the module and the working directory (`cargo_config`): a `rustc-wrapper` or linker
   there would run; the project's own `.cargo/config.toml` applies;
 - **no `rust-toolchain` or `rust-toolchain.toml`** between the module and the working directory (`toolchain_file`),

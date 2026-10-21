@@ -1,6 +1,7 @@
 //! Paths a module's source names at compile time: `#[path = "..."]` on a `mod`, and the
-//! `include_str!` / `include_bytes!` / `include!` macros. They must stay inside the module's
-//! `src/` folder: a module may not compile engine sources into itself or read files elsewhere
+//! `include_str!` / `include_bytes!` / `include!` macros. They must stay inside the module's own
+//! folder (its `src/` and its top-level files, like ambulo's `actions.json`; never `target/`): a
+//! module may not compile engine sources into itself or read files elsewhere
 //! (`C:/Windows/win.ini`) at build time. Checked by [`crate::build::vet`] before every build and
 //! by the engine at every commit of a mirrored `.rs` file.
 
@@ -70,7 +71,7 @@ fn resolve(file: &str, target: &str) -> Option<String> {
 /// module, `/`-separated, e.g. `src/lib.rs`).
 pub fn check_source(rel_file: &str, text: &str) -> Vec<PathProblem> {
     let mut out = Vec::new();
-    let inside = |target: &str| resolve(rel_file, target).is_some_and(|r| r.starts_with("src/"));
+    let inside = |target: &str| resolve(rel_file, target).is_some_and(|r| !r.is_empty() && !r.starts_with("target/") && !r.starts_with(".cargo/") && r != "target");
     for (i, raw) in text.lines().enumerate() {
         let line = raw.split("//").next().unwrap_or("");
         for m in MACROS {
@@ -86,7 +87,7 @@ pub fn check_source(rel_file: &str, text: &str) -> Vec<PathProblem> {
                 let Some(args) = args.strip_prefix(['(', '[', '{']) else { continue };
                 match literal(args) {
                     Some(t) if inside(&t) => {}
-                    Some(t) => out.push(PathProblem { line: i + 1, message: format!("{m}(\"{t}\") reaches outside the module's src/ folder: modules may only include their own files") }),
+                    Some(t) => out.push(PathProblem { line: i + 1, message: format!("{m}(\"{t}\") reaches outside the module's folder: modules may only include their own files") }),
                     None => out.push(PathProblem { line: i + 1, message: format!("{m} takes a plain string literal in a module (a path built with concat!/env! could reach anywhere)") }),
                 }
             }
@@ -103,7 +104,7 @@ pub fn check_source(rel_file: &str, text: &str) -> Vec<PathProblem> {
             let Some(rest) = rest.strip_prefix('=') else { continue };
             match literal(rest) {
                 Some(t) if inside(&t) => {}
-                Some(t) => out.push(PathProblem { line: i + 1, message: format!("#[path = \"{t}\"] reaches outside the module's src/ folder: a module may only compile its own files") }),
+                Some(t) => out.push(PathProblem { line: i + 1, message: format!("#[path = \"{t}\"] reaches outside the module's folder: a module may only compile its own files") }),
                 None => out.push(PathProblem { line: i + 1, message: "#[path] takes a plain string literal".into() }),
             }
         }
@@ -133,11 +134,13 @@ mod tests {
         let ok = "#[path = \"inner/x.rs\"]\nmod x;\nconst A: &str = include_str!(\"data.txt\");\nconst B: &[u8] = include_bytes!(r\"assets/b.bin\");\n// include_str!(\"../../x\") in a comment\nfn my_include() {}\n";
         assert!(check_source("src/lib.rs", ok).is_empty(), "{:?}", check_source("src/lib.rs", ok));
         assert!(check_source("src/a/b.rs", "include!(\"../c.rs\");").is_empty(), "src/c.rs is inside");
+        assert!(check_source("src/lib.rs", "actions: include_str!(\"../actions.json\"),").is_empty(), "ambulo's own top-level file");
+        assert_eq!(check_source("src/lib.rs", "include_bytes!(\"../target/debug/x.dll\")").len(), 1, "never the build output");
         for bad in [
             "#[path = \"../../../crates/specula/src/lib.rs\"]\nmod e;",
             "const W: &str = include_str!(\"C:/Windows/win.ini\");",
             "const W: &str = include_str!(\"/etc/passwd\");",
-            "include!(\"../build.rs\");",
+            "include!(\"../../build.rs\");",
             "const P: &[u8] = include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../x\"));",
             "#![path = \"..\\\\..\\\\x.rs\"]",
         ] {

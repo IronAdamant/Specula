@@ -317,7 +317,7 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
         FileKind::Cargo => out.extend(check_module_manifest(path, text)),
-        // Compile-time paths (`#[path]`, `include_str!`...) stay in the module's src/.
+        // Compile-time paths (`#[path]`, `include_str!`...) stay in the module's folder.
         FileKind::Rust => {
             let rel = path.strip_prefix(mount_of(path)).map_or(path, |r| r.trim_start_matches('/'));
             out.extend(specula_logic::paths::check_source(rel, text).into_iter().map(|p| Problem {
@@ -534,7 +534,7 @@ mod tests {
         assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\npath = \"src/lib.rs\"")).is_empty());
         assert!(codes(&format!("{ambulo}[build_dependencies]\n")).contains(&"not_allowed".to_owned()));
         assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\nproc_macro = true")).contains(&"build_script".to_owned()));
-        // .rs commits: compile-time paths stay in src/.
+        // .rs commits: compile-time paths stay in the module's folder.
         assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "const X: &str = include_str!(\"C:/Windows/win.ini\");", None, &[]).iter().any(|p| p.code == "source_path"));
         assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "#[path = \"../../../crates/specula/src/lib.rs\"]\nmod e;", None, &[]).iter().any(|p| p.code == "source_path"));
         assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "const D: &str = include_str!(\"data.txt\");", None, &[]).is_empty());

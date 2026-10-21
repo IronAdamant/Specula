@@ -7,7 +7,7 @@
 //!   swarm ([`build::BuildService`]).
 //! - [`diag`]: Cargo's JSON messages as data (diagnostics with spans and suggested fixes).
 //! - [`fix`]: apply rustc's machine-applicable suggestions inside a module's folder.
-//! - [`paths`]: compile-time paths (`#[path]`, `include_str!`...) must stay in a module's `src/`.
+//! - [`paths`]: compile-time paths (`#[path]`, `include_str!`...) must stay in a module's own folder.
 //!
 //! The engine (`specula::logic`) owns the world, the modules' state and the tick; this crate
 //! knows nothing about either. All of the module host's `unsafe` lives in [`loader`].

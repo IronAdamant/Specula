@@ -97,7 +97,8 @@ no `build`, `links` or proc-macro (nor the `proc_macro` / `build_dependencies` s
 `[patch]`, `[replace]`, `[target]` or `[build-dependencies]`, no renaming another crate to `specula-sdk` with
 `package =`, `lib.path` inside `src/`, and only path dependencies, so a crates.io dependency or a build script never
 reaches the disk. Every `.rs` commit has its compile-time paths checked (`#[path]`, `include_str!`,
-`include_bytes!`, `include!` stay inside `src/`, as `logic_build`'s vet requires).
+`include_bytes!`, `include!` stay inside the module's folder, never `target/`, as `logic_build`'s vet requires;
+ambulo includes its own `actions.json`).
 
 **`logic_build {fix: true}` on a mounted module never writes the disk itself.** It is refused up front while another
 agent claims any of the module's files (`Claims::check_subtree`). Each round takes the store's texts first, builds
