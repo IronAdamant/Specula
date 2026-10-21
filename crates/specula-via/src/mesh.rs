@@ -321,7 +321,7 @@ impl NavMesh {
         }
         let index = self.tile_index(tx, tz);
         let num = |v: &Json| v.as_u64();
-        let int = |v: &Json| v.as_f64().filter(|f| f.fract() == 0.0 && f.abs() <= f64::from(i32::MAX)).map(|f| f as i32);
+        let int = |v: &Json| v.as_f64().filter(|f| specula_core::dmath::fract_f64(*f) == 0.0 && f.abs() <= f64::from(i32::MAX)).map(|f| f as i32);
         let list = j.get("polys").and_then(Json::as_array).ok_or_else(|| bad("no polys"))?;
         if list.len() > crate::MAX_POLYS_PER_TILE {
             return Err(bad("too many polygons"));

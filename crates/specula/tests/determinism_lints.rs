@@ -12,8 +12,18 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 7] =
-    ["crates/specula-physics", "crates/specula-anim", "crates/specula-lex", "crates/specula-balance", "crates/specula-sdk", "games/sepulcra", "games/ambulo"];
+const SIMULATION: [&str; 10] = [
+    "crates/specula-physics",
+    "crates/specula-anim",
+    "crates/specula-lex",
+    "crates/specula-balance",
+    "crates/specula-sdk",
+    "crates/specula-via",
+    "crates/specula-mens",
+    "crates/specula-locus",
+    "games/sepulcra",
+    "games/ambulo",
+];
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose
 /// simulated parts are checked by review and the replay tests rather than one crate-wide config).

@@ -3,6 +3,8 @@
 //! 100 agents stepping. Run with `cargo run --release -p specula-via --example via_bench`.
 //! Wall-clock numbers (one thread); the machine may be shared, so read them as rough.
 
+#![allow(clippy::disallowed_methods, reason = "a benchmark measures wall-clock time")]
+
 use specula_core::math::Vec3;
 use specula_core::rng::Rng;
 use specula_via::{AgentParams, Config, Crowd, CrowdSettings, NavMesh, Source, Triangle};
