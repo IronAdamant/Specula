@@ -204,6 +204,9 @@ impl crate::Engine {
                     let seq = old.as_ref().and_then(|s| s.hit.as_ref()).map_or(0, |h| h.seq) + 1;
                     spec.hit = Some(Hit { bone, impulse, seq });
                 }
+                if let Err(m) = spec.check_solid() {
+                    return world_error(&WorldError::new("invalid_component", m).with("field", if fit.is_some() { "fit" } else { "hulls" }).with("id", id));
+                }
                 let mut change = UpdateSpec { props: Some(Json::obj([(PROP, spec.to_json())])), ..UpdateSpec::default() };
                 // The graph's `ragdoll` parameter follows: true while limp.
                 let mut param_set = Json::Null;

@@ -228,6 +228,7 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
     if !matches!(s.props, Json::Null | Json::Obj(_)) {
         return Err(invalid("props", "'props' must be a JSON object".into()));
     }
+    crate::physics::ragdoll::check_props(&s.props)?;
     s.collider.as_ref().map_or(Ok(()), Collider::validate)?;
     if let Some(a) = &s.anim {
         if s.shape != Shape::Model {
@@ -262,6 +263,9 @@ pub fn check_update(u: &UpdateSpec) -> Result<(), WorldError> {
     check_tags(u.tags.iter().flatten().chain(&u.add_tags))?;
     if u.props.as_ref().is_some_and(|p| !matches!(p, Json::Obj(_))) {
         return Err(invalid("props", "'props' must be a JSON object".into()));
+    }
+    if let Some(p) = &u.props {
+        crate::physics::ragdoll::check_props(p)?;
     }
     if let Some(Some(c)) = &u.collider {
         c.validate()?;

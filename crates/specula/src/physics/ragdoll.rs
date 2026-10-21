@@ -137,6 +137,8 @@ pub const HULL_SKIN_M: f32 = 0.02;
 const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit", "radii", "hulls"];
 
 /// Hull points as data: `[[x, y, z], ...]`, 4 to [`MAX_HULL_POINTS`], each within ±10 m.
+/// Whether they make a solid is [`Spec::check_solid`]'s job (checked where the data is written,
+/// not each time it is read).
 pub fn hull_points(path: &str, v: &Json) -> Result<Vec<V3>, String> {
     let bad = || format!("'{path}' must be 4 to {MAX_HULL_POINTS} points [[x, y, z], ...] in the bone's frame (model metres, within ±10)");
     let pts = v.as_array().filter(|a| (4..=MAX_HULL_POINTS).contains(&a.len())).ok_or_else(bad)?;
@@ -150,9 +152,14 @@ pub fn hull_points(path: &str, v: &Json) -> Result<Vec<V3>, String> {
             _ => Err(bad()),
         })
         .collect::<Result<_, _>>()?;
-    // A solid: flat or repeated points make no hull (physics would refuse the part).
-    Shape::hull(&out.iter().map(|p| v3(*p)).collect::<Vec<_>>()).map_err(|e| format!("'{path}' is no solid: {}", e.message))?;
     Ok(out)
+}
+
+/// `props.ragdoll` as written (spawns and updates check it, see [`crate::world::check_spawn`]):
+/// well formed, and every hull part a solid.
+pub fn check_props(props: &Json) -> Result<(), crate::world::WorldError> {
+    let Some(r) = props.get(PROP).filter(|r| !r.is_null()) else { return Ok(()) };
+    Spec::from_json(r).and_then(|s| s.check_solid()).map_err(|m| crate::world::WorldError::new("invalid_component", m).with("field", "props.ragdoll"))
 }
 
 /// The JSON of hull points, in millimetres.
@@ -162,6 +169,16 @@ pub fn hull_json(pts: &[V3]) -> Json {
 }
 
 impl Spec {
+    /// Every hull part is a solid: flat or repeated points make no hull, and physics would refuse
+    /// the part when the ragdoll starts. Building hulls costs; this runs where `props.ragdoll` is
+    /// written ([`check_props`], `ragdoll_set`), never per tick.
+    pub fn check_solid(&self) -> Result<(), String> {
+        for (bone, pts) in &self.hulls {
+            Shape::hull(&pts.iter().map(|p| v3(*p)).collect::<Vec<_>>()).map_err(|e| format!("'ragdoll.hulls.{bone}' is no solid: {}", e.message))?;
+        }
+        Ok(())
+    }
+
     pub fn from_json(v: &Json) -> Result<Spec, String> {
         let pairs = v.as_object().ok_or("'ragdoll' must be an object: {mode: limp | powered | off, ...}")?;
         if let Some((k, _)) = pairs.iter().find(|(k, _)| !KEYS.contains(&k.as_str())) {
@@ -645,6 +662,11 @@ pub struct Ragdolls {
     /// found each tick).
     pub persistent: BTreeSet<u64>,
     player: GraphPlayer,
+    /// Each ragdoll entity's `props.ragdoll` as parsed, by the entity version it was parsed at
+    /// (read again only when the entity changes).
+    parsed: BTreeMap<u64, (u64, Result<Spec, String>)>,
+    /// How many times a `props.ragdoll` was parsed (tests guard the per-tick cost with it).
+    pub parses: u64,
 }
 
 impl Ragdolls {
@@ -972,11 +994,23 @@ impl Physics {
         let mut wanted: Vec<(u64, Spec)> = Vec::new();
         let transient = world.transient_entities().filter(|e| e.props.get(PROP).is_some()).map(|e| e.id);
         let ids: Vec<u64> = self.ragdolls.persistent.iter().copied().chain(transient).collect();
+        // Parsed specs of entities no longer listed go.
+        if self.ragdolls.parsed.len() > ids.len() {
+            self.ragdolls.parsed.retain(|k, _| ids.contains(k));
+        }
         for id in ids {
             let Some(e) = world.get(id) else { continue };
-            match Spec::from_json(e.props.get(PROP).expect("listed")) {
-                Ok(s) => wanted.push((id, s)),
-                Err(m) => self.note_problem_only(world, id, &format!("ragdoll: {m}")),
+            let fresh = self.ragdolls.parsed.get(&id).is_some_and(|(v, _)| *v == e.version);
+            if !fresh {
+                self.ragdolls.parses += 1;
+                self.ragdolls.parsed.insert(id, (e.version, Spec::from_json(e.props.get(PROP).expect("listed"))));
+            }
+            match &self.ragdolls.parsed[&id].1 {
+                Ok(s) => wanted.push((id, s.clone())),
+                Err(m) => {
+                    let m = format!("ragdoll: {m}");
+                    self.note_problem_only(world, id, &m);
+                }
             }
         }
         // Gone, or no longer a ragdoll: drop it.
@@ -1527,6 +1561,45 @@ pub(crate) mod tests {
         assert_eq!(knocked_over(true).0, hull);
     }
 
+    /// Review round 3, finding 2 (probes hullfit.py, hullcost.py): ragdoll props cost nothing per
+    /// tick while they don't change. Hull solidity is checked where the props are written; each
+    /// entity's spec is parsed once per entity version. 20 entities with 14 hull parts of 16
+    /// points, switched off, used to take 76 ms a tick (every hull built every tick).
+    #[test]
+    fn ragdoll_props_are_read_once_per_change_not_per_tick() {
+        use crate::world::{Shape as WShape, SpawnSpec};
+        let pts: Vec<String> = (0..16).map(|i| {
+            let a = i as f64 * 0.7;
+            format!("[{:.4},{:.4},{:.4}]", 0.1 * specula_core::dmath::cos_f64(a) * (1.0 + 0.1 * (i % 3) as f64), 0.02 * i as f64 - 0.15, 0.1 * specula_core::dmath::sin_f64(a))
+        }).collect();
+        let hulls: Vec<String> = (0..14).map(|b| format!("\"bone{b}\": [{}]", pts.join(","))).collect();
+        let spec = format!(r#"{{"mode": "off", "hulls": {{{}}}}}"#, hulls.join(","));
+        let mut w = World::default();
+        let mut ids = Vec::new();
+        for i in 0..20 {
+            let mut s = SpawnSpec::new(WShape::Group);
+            s.name = Some(format!("e{i}"));
+            s.props = Json::obj([(PROP, Json::parse(&spec).unwrap())]);
+            ids.push(w.spawn(s, "t").unwrap().id);
+        }
+        let mut p = Physics::default();
+        run(&mut w, &mut p, 0, 30);
+        assert_eq!(p.ragdolls.parses, 20, "once per entity while nothing changes");
+        // Moving every entity every tick re-reads them (the version changes), but cheaply: no hull
+        // is built.
+        let started = std::time::Instant::now();
+        for t in 30..60u64 {
+            for (i, id) in ids.iter().enumerate() {
+                let position = Some(Vec3::new(i as f32, 0.0, t as f32 * 0.01));
+                w.update(&EntityKey::Id(*id), UpdateSpec { position, ..UpdateSpec::default() }, "t").unwrap();
+            }
+            run(&mut w, &mut p, t, 1);
+        }
+        let took = started.elapsed();
+        assert_eq!(p.ragdolls.parses, 20 + 20 * 30);
+        assert!(took < std::time::Duration::from_millis(1500), "30 ticks of 20 changing ragdoll entities took {took:?}");
+    }
+
     /// Getting up is content: the shambler's graph has a getup state that blends from where the
     /// body lay to standing (0.8 s) and holds it a moment before `act` takes over (no snap).
     #[test]
@@ -1571,10 +1644,13 @@ pub(crate) mod tests {
         assert!(p.insert_all(parts, vec![(key(id, 2), good), (key(id, 3), bad)]).is_err());
         assert_eq!((p.space.len(), p.space.hash()), before, "no orphan parts");
         assert!(p.space.joints().next().is_none(), "nor joints");
-        // A coplanar hull never gets that far: it is refused as data.
+        // A coplanar hull never gets that far: it is refused as data where it is written.
         let flat = r#"{"mode": "limp", "hulls": {"shin_l": [[0,0,0],[0.1,0,0],[0,0.1,0],[0.1,0.1,0]]}}"#;
-        let e = Spec::from_json(&Json::parse(flat).unwrap()).unwrap_err();
+        let e = Spec::from_json(&Json::parse(flat).unwrap()).unwrap().check_solid().unwrap_err();
         assert!(e.contains("no solid"), "{e}");
+        let props = Json::obj([(PROP, Json::parse(flat).unwrap())]);
+        let e = w.update(&EntityKey::Id(id), UpdateSpec { props: Some(props), ..UpdateSpec::default() }, "t").unwrap_err();
+        assert_eq!((e.code, e.message.contains("no solid")), ("invalid_component", true), "{e:?}");
     }
 
     /// Save games: a saved entity's ragdoll, mid-fall, continues bit for bit in a world loaded
